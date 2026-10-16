@@ -254,7 +254,7 @@ entry that supersedes it, never by editing an old one.
 
 ## D-31: shipmill decides and verifies a rollout; the platform executes it
 
-- Decided: 2026-10-16, by the maintainer
+- Decided: 2026-10-16, in shipmill/shipmill#370
 - Rule: shipmill owns the policy of a rollout: when a release is promoted to the next lane, environment, or ring, which signals count as ready or bad (health, bake, a dependent's CI, an eval, a person's answer), what holds it (blockers, freezes, needs-decision), when to roll back, and the record of each of those decisions. Executing it belongs to the deploy platform, reached through the repo's own workflows: shifting traffic or canary percentages, feature flags, a store's phased release, redeploying the previous tag, and updating a consumer's dependency. shipmill grows adapters that start that execution and read its signals, never its own traffic, flag, or dependency-update machinery. The one delivery shipmill performs itself is moving its own references, such as a floating major tag, since no platform owns those
 - Why: shipmill already never deploys: `land` starts the repo's deploy workflow on the tag, and `operate` reads health, bakes, and decides a rollback. Writing the line down keeps the policy across lanes, environments, and holds in one place while each platform keeps the mechanics it does better, and stops scope from drifting into a rollout engine. A floating tag is the exception because moving it is the release reaching every consumer at once, so its promotion has to be shipmill's decision
 - Applies to: src/shipmill/operate.py, src/shipmill/land.py, [environments], move-major-tag.yml, new rollout, canary, flag, or ring features
