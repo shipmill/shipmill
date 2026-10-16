@@ -196,7 +196,7 @@ then prove it: shipmill --repo <gate checkout> gate <owner/repo> --dry-run
 
 ## Decisions relied on
 
-- D-4
+- D-33
 - D-14
 
 ## Issues

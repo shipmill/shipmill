@@ -172,7 +172,7 @@ no helpers and no token cache, and prints `would launch as <slug>[bot]`.
 
 ## Decisions relied on
 
-- D-4
+- D-33
 - D-14
 
 ## Issues

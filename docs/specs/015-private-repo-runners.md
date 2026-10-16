@@ -240,7 +240,7 @@ above; it is a warning, not part of setup's done states.
   still evaluates triggers as a scheduled one does
 - D-3: the docs, the generated `release.yml` comments, and the skill call the automation
   shipmill
-- D-4: no new config key; the runner and the schedule are wiring in `release.yml`, and the
+- D-33: no new config key; the runner and the schedule are wiring in `release.yml`, and the
   schedule is derived from `.github/shipmill.toml`
 - D-9: doctor warns about the schedule only when the policy needs a tick the file lacks
 

@@ -110,7 +110,7 @@ when its author is the App. With `app_id` unset neither reads anything for this.
 
 ## Decisions relied on
 
-- D-4
+- D-33
 - D-14
 
 ## Issues

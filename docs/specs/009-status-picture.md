@@ -264,7 +264,7 @@ names no slug.
 ## Decisions relied on
 
 - D-3: prose calls the release automation shipmill
-- D-4: `[agents]` is read from `.github/shipmill.toml`
+- D-33: `[agents]` is read from `.github/shipmill.toml`
 - D-14: the App line runs the gate's App check, which writes nothing
 - D-15: a hold stops the gate on purpose; the report counts it as the person's to lift
 - D-16: `--trusted-only` stays the unattended gate's; the report shows every item
