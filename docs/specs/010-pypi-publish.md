@@ -85,7 +85,7 @@ tool install` fetch it when needed, while `pip install` on an older interpreter 
 ## Decisions relied on
 
 - D-3
-- D-4
+- D-33
 
 ## Issues
 

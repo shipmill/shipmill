@@ -55,7 +55,7 @@ set, as `shipped.py` does today (spec 012).
 
 ### Install lines from the policy
 
-A new section in `.github/shipmill.toml` (D-4):
+A new section in `.github/shipmill.toml` (D-33):
 
 ```toml
 [notices]
@@ -132,7 +132,7 @@ It is reported, never a gate.
 ## Decisions relied on
 
 - D-3: prose calls the release automation shipmill
-- D-4: the `[notices]` section lives in `.github/shipmill.toml`
+- D-33: the `[notices]` section lives in `.github/shipmill.toml`
 - D-16: a requester's report starts no unattended work by itself
 - D-25: a stable promotion stamps its rc's base, which the holding rule follows
 - D-29: notices are found by a first-line marker

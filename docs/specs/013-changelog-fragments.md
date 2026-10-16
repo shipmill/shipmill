@@ -188,7 +188,7 @@ fragment instead.
 
 ## Decisions relied on
 
-- D-4: the setting is a key in `.github/shipmill.toml`'s `[changelog]` table
+- D-33: the setting is a key in `.github/shipmill.toml`'s `[changelog]` table
 - D-25: a stable promotion folds its version's rc sections; fragments join that fold
 - D-27: a revision older than the fragments folder has no fragments
 

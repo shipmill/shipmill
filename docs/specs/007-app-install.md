@@ -97,7 +97,7 @@ planned, so it opens the App's Install App page and says per account what to pic
 
 ## Decisions relied on
 
-- D-4
+- D-33
 - D-14
 
 ## Issues

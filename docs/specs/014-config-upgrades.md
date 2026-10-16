@@ -211,7 +211,7 @@ upgrade is an offer, not a problem.
 
 ## Decisions relied on
 
-- D-4: the setting is a key in `.github/shipmill.toml`'s `[autonomy]` table
+- D-33: the setting is a key in `.github/shipmill.toml`'s `[autonomy]` table
 - D-8: an open hold turns act into propose
 - D-9: doctor warns about `issues: write` only where it is needed
 - D-10: the maintainer accepts or declines; shipmill proposes

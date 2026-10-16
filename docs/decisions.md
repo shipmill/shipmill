@@ -35,6 +35,7 @@ entry that supersedes it, never by editing an old one.
 - Why: doctor checks the whole factory in one pass, and users learn one file
 - Applies to: src/shipmill/policy.py, src/shipmill/doctor.py, src/shipmill/init.py, .github/shipmill.toml
 - Enforced by: review, until the config loader tests land
+- Superseded by: D-32
 
 ## D-5: Specs are files in docs/specs/
 
@@ -259,3 +260,22 @@ entry that supersedes it, never by editing an old one.
 - Why: shipmill already never deploys: `land` starts the repo's deploy workflow on the tag, and `operate` reads health, bakes, and decides a rollback. Writing the line down keeps the policy across lanes, environments, and holds in one place while each platform keeps the mechanics it does better, and stops scope from drifting into a rollout engine. A floating tag is the exception because moving it is the release reaching every consumer at once, so its promotion has to be shipmill's decision
 - Applies to: src/shipmill/operate.py, src/shipmill/land.py, [environments], move-major-tag.yml, new rollout, canary, flag, or ring features
 - Enforced by: review
+
+## D-32: The config file lives in the code host's folder
+
+- Decided: 2026-10-09, in shipmill/shipmill#322
+- Rule: Every shipmill layer reads its settings from one file, one top-level section per layer, as D-4 had it; the file is `.github/shipmill.toml` in a GitHub repo and `.gitlab/shipmill.toml` in a GitLab repo, its folder names the code host, and a repo holding both fails before any host call
+- Why: GitLab projects keep their tooling under `.gitlab/`, and a config under `.github/` in a GitLab project would read as GitHub's; naming the host by the file's folder needs no new key and leaves every GitHub config as it is
+- Applies to: src/shipmill/config.py, src/shipmill/cli.py, src/shipmill/init.py, docs/specs/016-*
+- Enforced by: the config tests (with the implementing PR)
+- Supersedes: D-4
+- Superseded by: D-33
+
+## D-33: A mirrored repo holds a config per host, and where a run happens picks one
+
+- Decided: 2026-10-09, in shipmill/shipmill#322
+- Rule: Every shipmill layer reads its settings from one file per run, one top-level section per layer. The file is `.github/shipmill.toml` for GitHub and `.gitlab/shipmill.toml` for GitLab, and its folder names the host. A repo may hold both: `--host` picks one, else a GitLab pipeline reads `.gitlab/`, GitHub Actions reads `.github/`, and anywhere else with both present the run fails before any host call
+- Why: A repo kept on two hosts can release a different line from each (this repo: the package from GitHub, a web app from GitLab); failing on both files, as D-32 did, made that impossible, while the CI environment already says which host a run belongs to
+- Applies to: src/shipmill/config.py, src/shipmill/cli.py, src/shipmill/init.py, docs/specs/016-*, docs/specs/020-*
+- Enforced by: the config tests (with the implementing PR)
+- Supersedes: D-32
