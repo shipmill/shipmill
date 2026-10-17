@@ -262,7 +262,7 @@ entry that supersedes it, never by editing an old one.
 
 ## D-32: Without goals there is no roadmap plan; a milestone is the maintainer's list
 
-- Decided: 2026-10-17, by the maintainer
+- Decided: 2026-10-17, in shipmill/shipmill#376
 - Rule: shipmill drops the roadmap plan: product-intake no longer proposes, ranks, or creates milestones, and `roadmap_state.py`, `src/shipmill/roadmap.py`, and the `[roadmap]` section go. A milestone stays as the maintainer's own list of what a version must hold, and `milestone = true` keeps making a lane due by it. The work-in-progress limit triage reads moves from `[roadmap] wip` to `[agents] wip`. `[roadmap]` is deprecated before it is removed: for one minor release the policy accepts it, `doctor` warns and names `[agents] wip`, and the next minor refuses it. Product intake keeps grouping requests into opportunities and handing accepted ones to triage
 - Why: The plan ranked opportunities by evidence per load, so with no product goals above it a milestone followed the loudest requests, not a goal; no repo used it, while a manual milestone holds a real release (a 1.0.0). Planning comes back with a goals layer, which is out of scope for now; removing the code keeps agents from reading and acting on a plan that has no basis. The WIP limit governs agents' work in the delivery loop, so it outlives the roadmap
 - Applies to: skills/product-intake/SKILL.md, skills/product-intake/scripts/roadmap_state.py, src/shipmill/roadmap.py, src/shipmill/policy.py, src/shipmill/doctor.py, skills/github-issue-triage/references/spec-gate.md, skills/github-issue-triage/scripts/triage_state.py, docs/release-lanes.md, docs/flow.md, [roadmap], [agents] wip, milestones
