@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-10-17
+
+### Changed
+
+- github-pr-triage lands a pull request with a squash merge, and the base of a stack with a merge commit, instead of matching the repo's history; it never rebase-merges (D-33) (#378)
+
 ## [0.48.0] - 2026-10-10
 
 ### Changed
@@ -1453,7 +1459,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.48.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.49.0...HEAD
+[0.49.0]: https://github.com/shipmill/shipmill/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/shipmill/shipmill/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/shipmill/shipmill/compare/v0.46.0...v0.47.0
 [0.46.0]: https://github.com/shipmill/shipmill/compare/v0.45.0...v0.46.0
