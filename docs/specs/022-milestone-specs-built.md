@@ -27,7 +27,9 @@ stable, waits.
 ### Which specs a milestone holds
 
 A spec belongs to a milestone when its Issues section (`- owner/repo#N: S-NNN-1, …`)
-names an issue of this repository that is in the milestone, open or closed. Issues of
+names an issue of this repository that is in the milestone, open or closed, or when an
+issue in the milestone links the spec's file in its body (see Build issues join their
+feature's milestone, below). Issues of
 other repositories in a spec's Issues section are ignored. Specs are read from
 `docs/specs/` at main's head, so a spec marked built only on a branch doesn't count.
 
@@ -60,23 +62,42 @@ row, MILESTONE_WAITING, whose subject is the milestone and whose detail is those
 
 When it is due, the reason names its specs: `milestone 1.5.0 built: S-021, S-023`.
 
-### Unfinished goals between releases (waits on a decision)
+### Unfinished goals between releases: ship the increments
 
 Build issues of an unfinished spec merge to main one by one, and their changelog
-fragments can carry `### Added`, so the next stable release can bump to the milestone's
-minor version and ship half of its goal before the milestone is done. Which behaviour
-shipmill takes here waits on the maintainer's decision on this spec's pull request, and
-the spec is amended with its criteria before it is approved:
+fragments can carry `### Added`, so a stable release made by another trigger (quiet time, a
+schedule, by hand) can take the milestone's version before its goal is done. The
+maintainer decided on this spec's pull request to ship the increments: each stable
+release carries what is merged, the bump doesn't change, a goal can span several minor
+versions, and the milestone marks the one that completes it.
 
-1. **Ship the increments.** Each stable release carries what is merged, a goal can span
-   several minor versions, and the milestone marks the one that completes it. Nothing
-   changes in the bump; the milestone is renamed when an earlier release takes its version
-2. **Hold an unfinished goal's entries.** A fragment names its spec (`spec: S-NNN`); a
-   stable release leaves out the fragments of a spec that isn't built, and the bump
-   ignores them, so the minor version is the one that completes the goal. The code still
-   ships in the meantime, undocumented, which a library can't hide
-3. **Hold the stable lane.** While a spec in the next milestone has merged build issues
-   and isn't built, the stable lane holds; fixes reach users through the hotfix lane
+When a stable tag named like an open milestone exists, the milestone is **overtaken**:
+`shipmill status` reports MILESTONE_OVERTAKEN with the milestone and the version the lane
+would cut next, and its fix renames the milestone to that version
+(`gh api -X PATCH repos/<owner>/<repo>/milestones/<n> -f title=<next>`). Under "watch",
+github-ship-watch renames it and says so on the milestone's roadmap issue, since the
+policy already decided the version; the goal and its issues stay as they were.
+
+### Build issues join their feature's milestone
+
+The milestone has to hold a goal's build issues for the rules above to see them, and today
+nothing puts them there: product-intake moves an opportunity's existing build issues into
+its milestone and says a build issue filed later joins it, but github-issue-triage files
+build issues when a spec merges, and its spec gate never sets a milestone. Three changes
+close the hand-off:
+
+- **Triage sets it when it files them.** `specs.py split NNN --milestone <title>` adds the
+  milestone to each build issue it proposes (and to `--json`), and
+  `skills/github-issue-triage/references/spec-gate.md` (Split it into build issues) passes
+  the feature issue's milestone, when it has one, and files each with
+  `gh issue create --milestone`
+- **Triage reports one that missed it.** `triage_state.py` reads OFF_MILESTONE for an open
+  build issue whose feature issue (its parent through a sub-issue, spec 017) is in a
+  milestone it isn't in; the action sets the build issue's milestone to the feature's
+- **A milestone also holds the spec its feature issue links.** A spec belongs to a
+  milestone too when an issue in the milestone links the spec's file
+  (`docs/specs/NNN-<slug>.md`) in its body, as the spec gate's feature issue does once its
+  spec merges. A milestone that holds only the feature issue then still waits for the spec
 
 ## Acceptance criteria
 
@@ -88,6 +109,10 @@ the spec is amended with its criteria before it is approved:
 - S-022-6: When every spec of the milestone is built and every build issue is in the candidate's base, the lane is due and the reason names the specs
 - S-022-7: A milestone none of whose issues a spec names is due exactly when it is today
 - S-022-8: `shipmill status` reports MILESTONE_WAITING with the milestone and its reasons while a lane with `milestone = true` has a milestone with no open issues that is not done, and no such row otherwise
+- S-022-9: A milestone none of whose issues a spec's Issues section names, holding an issue whose body links `docs/specs/NNN-<slug>.md`, is not due while that spec isn't built
+- S-022-10: `shipmill status` reports MILESTONE_OVERTAKEN, naming the milestone and the version the lane would cut next, when a stable tag of the milestone's version exists and the milestone is open; the bump of a stable release is unchanged by any milestone
+- S-022-11: `specs.py split NNN --milestone <title>` puts the milestone on every build issue it proposes, in its text and `--json` output, and without the flag proposes none
+- S-022-12: `triage_state.py` reports OFF_MILESTONE for an open build issue whose parent feature issue is in a milestone it isn't in, and nothing for one already in it or whose parent has no milestone
 
 ## Out of scope
 
@@ -96,6 +121,8 @@ the spec is amended with its criteria before it is approved:
 - Which issues go into a milestone: the maintainer's, or product-intake's proposal
 - Holding fixes or pre-releases for a goal: they never wait on a milestone
 - Specs in other repositories: a cross-repo goal is a chain (spec 017), not a milestone
+- Holding an unfinished goal's changelog entries or the stable lane: declined on this
+  spec's pull request in favour of shipping the increments
 
 ## Decisions relied on
 
