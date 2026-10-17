@@ -267,3 +267,11 @@ entry that supersedes it, never by editing an old one.
 - Why: The plan ranked opportunities by evidence per load, so with no product goals above it a milestone followed the loudest requests, not a goal; no repo used it, while a manual milestone holds a real release (a 1.0.0). Planning comes back with a goals layer, which is out of scope for now; removing the code keeps agents from reading and acting on a plan that has no basis. The WIP limit governs agents' work in the delivery loop, so it outlives the roadmap
 - Applies to: skills/product-intake/SKILL.md, skills/product-intake/scripts/roadmap_state.py, src/shipmill/roadmap.py, src/shipmill/policy.py, src/shipmill/doctor.py, skills/github-issue-triage/references/spec-gate.md, skills/github-issue-triage/scripts/triage_state.py, docs/release-lanes.md, docs/flow.md, [roadmap], [agents] wip, milestones
 - Enforced by: review
+
+## D-33: Land a pull request with a squash, and the base of a stack with a merge commit
+
+- Decided: 2026-10-17, in shipmill/shipmill#378
+- Rule: github-pr-triage merges a pull request with a squash merge, and a pull request another open pull request is stacked on with a merge commit; where the repo's settings don't allow a squash merge, it uses a merge commit. It never rebase-merges. The choice no longer follows "the repo's history"
+- Why: The repo allows all three methods and its history mixes squash and merge commits, so "match the repo's history" left each session to choose: on 2026-10-16 a squash of a stack's base meant the child had to be rebased and force-pushed by hand. A squash keeps main one commit per pull request, which is how a reader and a revert see it; a merge commit keeps a stack's base SHAs, so its child retargets and rebases clean; a rebase merge rewrites SHAs and gives neither
+- Applies to: skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md (Merge style), gh pr merge
+- Enforced by: review
