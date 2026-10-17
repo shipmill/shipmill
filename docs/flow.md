@@ -57,6 +57,29 @@ Plain wording works the same, and the repo can be left out inside its checkout: 
 
 The bump, registry, and install commands per ecosystem (Python, Node, Rust, Go, none) are in `github-pr-triage/references/landing.md`, under Ecosystems. GitLab and other hosts aren't supported: every script calls `gh`.
 
+## Plan, goal, and release policy
+
+Three layers decide what ships when. Each lives in its own place and has its own writer, and they meet at one point: a milestone's title is the version it releases as.
+
+| Layer | Answers | Where it lives | Written by | Read by |
+|---|---|---|---|---|
+| Release policy | When each lane releases, and what holds it | `[lanes.*]`, `[gates]`, `[bump]`, `[environments]` in `.github/shipmill.toml` | The maintainer, first through `shipmill-setup` | `src/shipmill/policy.py` (validates), `src/shipmill/planner.py` (decides), `src/shipmill/ticks.py` (the cron); run by the Release workflow (`release.yml` → `prepare.yml`, `land.yml`) |
+| Plan | What to build next, and in which version | GitHub milestones (one per future version, with a due date) and `milestone-proposal` issues; capacity in `[roadmap]` (`wip`, `cadence`) | `product-intake` proposes; the maintainer approves; `product-intake` creates the milestone and moves the issues in | `roadmap_state.py`; a lane with `milestone = true` |
+| Goal | What makes a milestone's version | The feature issue in the milestone, the spec `docs/specs/NNN-*.md` its body links (criteria, build issues, status), and the build issues | `github-issue-triage` (spec gate, split); implementers; the spec reaches `status: built` once its criteria are verified | `roadmap_state.py` (a milestone's load); triage (holds and chains) |
+
+```
+product-intake ──approve──► milestone "1.5.0" ◄── feature issue ──links──► docs/specs/NNN-*.md
+                                   ▲                                          │
+                                   │ looked up by version name                └─ build issues ─► PRs ─► main
+[lanes.stable] milestone = true ───┘                                                                     │
+        └── planner: due when milestone "1.5.0" has no open issues ── cuts 1.5.0 from main (or its rc) ◄─┘
+```
+
+- **The name is the link.** A lane with `milestone = true` looks up the milestone titled with its candidate's version, so `product-intake` names a proposal after the version it should release as: the version after the newest open milestone's, or the next minor after the latest stable tag
+- **The due date doesn't release anything.** It feeds `roadmap_state.py`'s OVERDUE row; only the lane's triggers and gates cut a release
+- **Only the milestone lane waits on the plan.** Other triggers (`quiet_minutes`, `schedule`, by hand) release what is merged, so `dev`, `rc`, and fixes never wait for a goal; a stable release cut by them can take a milestone's version before its goal is done
+- **Today a milestone is done when it has no open issues** and at least one closed (`planner.py`), which says nothing about whether its spec is built
+
 ## Issue states
 
 `triage_state.py` sorts every issue into one state and exits 1 when any need action.
