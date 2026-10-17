@@ -55,8 +55,8 @@ reason found per spec, and `shipmill status` (`src/shipmill/status.py`) reports 
 row, MILESTONE_WAITING, whose subject is the milestone and whose detail is those reasons:
 
 - `milestone 1.5.0: S-021 is approved, not built`
-- `milestone 1.5.0: S-021's shipmill/shipmill#372 is not in v1.5.0rc3`
-- `milestone 1.5.0: S-021's shipmill/shipmill#373 closed with no merged pull request`
+- `milestone 1.5.0: S-021's #N is not in v1.5.0rc3`
+- `milestone 1.5.0: S-021's #N closed with no merged pull request`
 
 When it is due, the reason names its specs: `milestone 1.5.0 built: S-021, S-023`.
 
