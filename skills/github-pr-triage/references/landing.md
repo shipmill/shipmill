@@ -37,7 +37,7 @@ test "$(git rev-list --count origin/<default>.."$sha")" -gt 0
 
 ## Merge style
 
-- Match the repo's history (merge commits versus a linear history).
+- **Squash by default** (D-33): `gh pr merge <n> --squash`, so main reads one commit per pull request with its number in the subject. Where the repo's settings don't allow a squash merge, use a merge commit. Never a rebase merge: it rewrites the PR's SHAs and keeps none of the squash's single-commit history.
 - **Stacked PRs:** merge the base with a merge commit, then `gh pr edit <next> --base <default>`, check the gate again, and merge. A rebase-merge of the base rewrites its SHAs, so the next PR shows duplicate commits. Don't rely on branch deletion to retarget.
   - If the retarget restarts CI, the gate waits for the new run.
   - If the base PR changed after the child was cut (review fixes), rebase the child onto it before merging.
