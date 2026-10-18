@@ -352,10 +352,11 @@ def test_s014_9_pending_upgrades_alone_never_make_doctor_exit_1(repo: Repo, caps
     (repo.root / "changelog.d").mkdir()
     write_config(repo.root, DECIDED + AGENTS + "plugin_update = false\n")
     decided = {c.name for c in doctor(repo.root, repo.github) if c.status == "FAIL"}
-    code = main(["--repo", str(repo.root), "doctor"], github=repo.github)
+    no_claude = {"PATH": ""}  # no claude on PATH: no hook self-test against this host's real install
+    code = main(["--repo", str(repo.root), "doctor"], github=repo.github, environ=no_claude)
     assert "PASS upgrade:" not in capsys.readouterr().out
     write_config(repo.root, POLICY + AGENTS)
-    assert main(["--repo", str(repo.root), "doctor"], github=repo.github) == code
+    assert main(["--repo", str(repo.root), "doctor"], github=repo.github, environ=no_claude) == code
     assert "PASS upgrade: changelog-fragments pending" in capsys.readouterr().out
     checks = doctor(repo.root, repo.github, repo=REPO)
     assert {c.name for c in checks if c.status == "FAIL"} == decided
