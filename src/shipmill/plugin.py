@@ -30,6 +30,8 @@ SHIPMILL_REPO = "shipmill/shipmill"  # where shipmill releases
 CHECKED = "plugin-check.json"  # the last check's time, under the gate's state directory
 EVERY = dt.timedelta(hours=24)
 SCOPES = ("project", "local")  # the scopes Claude Code keys on a folder, in the order they're updated
+# where Claude Code keeps each version of the plugin's files, under the home folder (docs/install.md)
+CACHE = Path(".claude") / "plugins" / "cache" / "shipmill" / "shipmill"
 
 Runner = Callable[[list[str], Path], str]  # (command, cwd) -> its stdout; ReleaseError when it fails
 
@@ -226,11 +228,20 @@ PRECEDENCE = (Scope.LOCAL, Scope.PROJECT, Scope.USER, Scope.MANAGED)
 @dataclass(frozen=True, slots=True)
 class Listed:
     """One install of the plugin: its scope, the folder it is keyed on (None at user and
-    managed scope), and its version"""
+    managed scope), its version, and the folder its files are in when the listing names it
+    (installPath; None when it doesn't)"""
 
     scope: Scope
     folder: Path | None
     version: Version
+    path: Path | None = None
+
+    def files(self, home: Path) -> Path:
+        """The folder holding the install's files, whose hooks/ a session runs: the listing's
+        installPath, else Claude Code's cache folder for its version under home"""
+        if self.path is not None:
+            return self.path
+        return home / CACHE / str(self.version)
 
     def where(self) -> str:
         return f"{self.scope} scope" if self.folder is None else f"{self.scope} scope, keyed on {self.folder}"
@@ -260,7 +271,10 @@ def listed_installs(text: str) -> list[Listed]:
             if not isinstance(where, str):
                 raise ReleaseError(f"claude plugin list --json: {PLUGIN} {scope} install has no projectPath: {e!r}")
             folder = Path(where).resolve()
-        found.append(Listed(Scope(scope), folder, Version.parse(version)))
+        files = e.get("installPath")
+        if files is not None and not isinstance(files, str):
+            raise ReleaseError(f"claude plugin list --json: {PLUGIN} {scope} install's installPath is {files!r}")
+        found.append(Listed(Scope(scope), folder, Version.parse(version), None if files is None else Path(files)))
     return found
 
 

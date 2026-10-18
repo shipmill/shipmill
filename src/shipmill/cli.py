@@ -130,6 +130,7 @@ from shipmill.gate import (
 )
 from shipmill.github import UPGRADE_LABEL, GhCli, GitHub
 from shipmill.gitrepo import Git
+from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_operate
 from shipmill.land import ActionsRun, Prepared, Stop, cleanup, land, prepare, work_branch
 from shipmill.launchd import DEFAULT_TOOL, build, install, remove
@@ -566,7 +567,10 @@ def main(
         people = (
             None if slug is None else (lambda: agent_as_person.read(slug, state or run_state, dt.datetime.now(dt.UTC)))
         )
-        checks = doctor(root, github or (GhCli(root) if shutil.which("gh") else None), plugins, people, slug)
+        hooks = _hook_test(root, env, user_home)
+        checks = doctor(
+            root, github or (GhCli(root) if shutil.which("gh") else None), plugins, people, slug, hooks=hooks
+        )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")
         return 1 if any(c.status == "FAIL" for c in checks) else 0
@@ -703,6 +707,16 @@ def _report_work_branch(prepared: Prepared, work: str, workflow_ref: str, step_s
             out.write(f"{title}: {text}\n\n")
 
 
+def _hook_test(root: Path, environ: Mapping[str, str], home: Path) -> Callable[[], HookTest]:
+    """Spec 026's self-test for a session in root, looking programs up on environ's PATH"""
+    path = environ.get("PATH", "")
+
+    def which(name: str) -> str | None:
+        return shutil.which(name, path=path)
+
+    return lambda: self_test(root, run_command, run_hook, which, home, environ)
+
+
 def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessions) -> int:
     git = Git(root)
     path = os.environ.get("PATH", "")
@@ -728,6 +742,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         session_env,
         lambda: host_login(root),
         plugins=run_command,
+        hooks=_hook_test(root, os.environ, Path.home()),
     )
     if args.json:
         print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))
