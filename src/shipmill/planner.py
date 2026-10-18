@@ -19,8 +19,9 @@ from shipmill.version import PATTERN, ZERO, Part, Version
 
 BREAKING = "a breaking change waits for the maintainer's decision"  # a breaking stable candidate's cause
 
-# a GitHub login, or a bot's `<name>[bot]`: up to 39 letters, digits, and hyphens, not led by a hyphen
-_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?")
+# a GitHub login, or a bot's `<name>[bot]`: up to 39 letters, digits, hyphens, and underscores
+# (an Enterprise Managed User's `<handle>_<shortcode>`), not led by a hyphen
+_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,38}(?:\[bot\])?")
 
 
 class Event(StrEnum):

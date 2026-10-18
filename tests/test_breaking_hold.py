@@ -379,6 +379,22 @@ def test_s029_6_the_cli_takes_the_actor_and_refuses_a_malformed_login(
         main([*argv, "--actor", "octo;cat"], repo.github)
 
 
+def test_s029_6_an_enterprise_managed_users_login_plans_a_push_and_starts_stable(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the workflow passes every run's actor, so a login it refused would fail every release
+    repo.at(at_day(0, 6))
+    use_policy(repo, HEAD + HEADINGS + EVERY_BATCH)
+    repo.merge(1, "Breaking", "Drop the old API")
+    start(repo, at_day(0, 7), None)
+    now = at_day(0, 7).isoformat()
+    argv = ["--repo", str(repo.root), "plan", "--now", now, "--actor", "octocat_acme"]
+    assert main([*argv, "--event", "push"], repo.github) == 0
+    assert json.loads(capsys.readouterr().out)["action"] == "propose"
+    assert main([*argv, "--event", "workflow_dispatch", "--lane", "stable"], repo.github) == 0
+    assert json.loads(capsys.readouterr().out)["reason"].endswith("; breaking, started by @octocat_acme")
+
+
 def test_s029_6_land_closes_the_breaking_proposal_under_act(repo: Repo) -> None:
     repo.at(at_day(0, 6))
     use_policy(repo, HEAD + HEADINGS + EVERY_BATCH)
