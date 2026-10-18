@@ -274,6 +274,8 @@ def _settings(case: Path) -> _Settings:
     if folder.is_dir():
         for file in sorted(folder.glob("*.md")):
             name = f"{GRADERS}/{file.name}"
+            if not file.is_file():  # a FIFO or /dev/zero would block or never end the read
+                raise _Unread(f"{name} is not a regular file")
             graders.append(_type(_frontmatter(file, name), name))
     return _Settings(tags, max_turns, timeout, tuple(graders))
 

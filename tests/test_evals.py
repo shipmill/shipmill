@@ -1,11 +1,13 @@
 """Spec 025: `shipmill evals check` validates the eval suite without a model"""
 
+import os
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from shipmill import evals
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
 
@@ -261,6 +263,35 @@ def test_s025_1_unreadable_case_file_names_the_rule(
 ) -> None:
     _write(repo, f"evals/{CASE}/{file}", text)
     _fails(repo, capsys, rule)
+
+
+def test_s025_1_a_grader_that_is_not_a_regular_file_is_refused_unread(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # a FIFO or a symlink to /dev/zero would block or never end a read: refused, never opened
+    (repo / f"evals/{CASE}/graders").mkdir()
+    os.mkfifo(repo / f"evals/{CASE}/graders/pipe.md")
+    _fails(repo, capsys, r"graders/pipe\.md is not a regular file")
+    (repo / f"evals/{CASE}/graders/pipe.md").unlink()
+    (repo / f"evals/{CASE}/graders/zero.md").symlink_to("/dev/zero")
+    _fails(repo, capsys, r"graders/zero\.md is not a regular file")
+
+
+def test_s025_1_a_commit_that_is_not_a_sha_never_reaches_git(repo: Path) -> None:
+    asked: list[str] = []
+
+    def resolves(sha: str) -> bool:
+        asked.append(sha)
+        return True
+
+    for commit in ("--output=/tmp/x", "-c", "HEAD"):
+        _write(repo, "evals/cases.toml", _manifest(commit))
+        report = evals.check(repo, resolves)
+        assert report is not None
+        assert [v.rule for v in report.violations] == [
+            f"commit {commit!r} does not resolve to a commit in this repository (a 7 to 40 digit sha)"
+        ]
+    assert asked == []
 
 
 def test_s025_1_violations_name_each_case(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
