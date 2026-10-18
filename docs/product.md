@@ -22,7 +22,9 @@ below.
 - G-2: Agents' work holds a quality bar the maintainer can trust without reading every diff
 - G-3: The person who asked for a change hears where it is available at each stage and can confirm it works
 - G-4: The maintainer sees in one place what waits on them, across all their repositories
-- G-5: Agents work toward the product's written direction, and a release can be planned around a goal
+- G-5: Agents keep to the written direction: work outside the goals is postponed or declined with its reason
+- G-6: Agents pursue a goal: they propose the work that reaches it, and the maintainer approves it
+- G-7: The loop knows whether each goal is met, from a measure, and proposes changing the direction when it is
 
 ## Non-goals
 
