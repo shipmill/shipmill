@@ -13,6 +13,7 @@ from shipmill.errors import ReleaseError
 _MAX_HOURS = 7 * 24  # a week
 _REMIND_HOURS = 4
 _MAX_WAIT_MINUTES = 15
+_MAX_WIP = 100
 
 
 class Mode(StrEnum):
@@ -33,6 +34,7 @@ class AgentsConfig:
     app_id: int | None = None  # sessions write as this GitHub App (spec 004, D-14); None: the host's gh login
     mode: Mode = Mode.INTERACTIVE  # headless: `claude -p` (spec 005); either mode asks via needs-decision (D-21)
     plugin_update: bool = False  # update the gate checkout's plugin installs, once a day (D-23); False: never
+    wip: int | None = None  # at most this many issues in progress at once, read by triage (D-32); None: no limit
 
     @classmethod
     def parse(cls, table: Table) -> AgentsConfig:
@@ -46,6 +48,7 @@ class AgentsConfig:
             "app_id",
             "mode",
             "plugin_update",
+            "wip",
         )
         prompt = table.string("prompt").strip()
         if not prompt:
@@ -64,6 +67,7 @@ class AgentsConfig:
             app_id=table.integer("app_id", default=None, low=1, high=None),
             mode=table.enum("mode", Mode, default=Mode.INTERACTIVE),
             plugin_update=table.boolean("plugin_update", default=False),
+            wip=table.integer("wip", default=None, low=1, high=_MAX_WIP),
         )
 
     @classmethod

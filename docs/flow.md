@@ -35,7 +35,6 @@ Plain wording works the same, and the repo can be left out inside its checkout: 
 | Status only | `python3 $S/github-issue-triage/scripts/triage_state.py <owner/repo>` | A list of each issue's state; nothing changes |
 | Feedback status | `python3 $S/product-intake/scripts/intake_state.py <owner/repo>` | Each opportunity's state and the requests no opportunity groups yet; nothing changes |
 | Group feedback | `/shipmill:product-intake <owner/repo>` or "group the feature requests" | Opportunity issues opened or updated; the accept or decline is yours |
-| Roadmap status | `python3 $S/product-intake/scripts/roadmap_state.py <owner/repo>` | Milestone progress, WIP against `[roadmap] wip`, accepted opportunities in no milestone, and the next milestone that fits; nothing changes |
 | Triage the backlog | `/shipmill:github-issue-triage <owner/repo>` or "triage the new issues" | Comments, labels, and open PRs; nothing merged |
 | One issue | `/shipmill:github-issue-resolve 57` or "fix #57" | One PR and the issue comment |
 | Triage one issue only | "triage #57, don't fix" | The verdict comment |
@@ -64,19 +63,19 @@ Three layers decide what ships when. Each lives in its own place and has its own
 | Layer | Answers | Where it lives | Written by | Read by |
 |---|---|---|---|---|
 | Release policy | When each lane releases, and what holds it | `[lanes.*]`, `[gates]`, `[bump]`, `[environments]` in `.github/shipmill.toml` | The maintainer, first through `shipmill-setup` | `src/shipmill/policy.py` (validates), `src/shipmill/planner.py` (decides), `src/shipmill/ticks.py` (the cron); run by the Release workflow (`release.yml` → `prepare.yml`, `land.yml`) |
-| Plan | What to build next, and in which version | GitHub milestones (one per future version, with a due date) and `milestone-proposal` issues; capacity in `[roadmap]` (`wip`, `cadence`) | `product-intake` proposes; the maintainer approves; `product-intake` creates the milestone and moves the issues in | `roadmap_state.py`; a lane with `milestone = true` |
-| Goal | What makes a milestone's version | The feature issue in the milestone, the spec `docs/specs/NNN-*.md` its body links (criteria, build issues, status), and the build issues | `github-issue-triage` (spec gate, split); implementers; the spec reaches `status: built` once its criteria are verified | `roadmap_state.py` (a milestone's load); triage (holds and chains) |
+| Plan | What a version must hold | GitHub milestones, one per future version: the maintainer's milestones, their own list of the issues that version needs | The maintainer, by hand (D-32); no skill proposes, ranks, or creates one | A lane with `milestone = true`; triage, which works through a milestone's issues |
+| Goal | What makes a milestone's version | The feature issue in the milestone, the spec `docs/specs/NNN-*.md` its body links (criteria, build issues, status), and the build issues | `github-issue-triage` (spec gate, split); implementers; the spec reaches `status: built` once its criteria are verified | Triage (holds and chains) |
 
 ```
-product-intake ──approve──► milestone "1.5.0" ◄── feature issue ──links──► docs/specs/NNN-*.md
+the maintainer ──lists───► milestone "1.5.0" ◄── feature issue ──links──► docs/specs/NNN-*.md
                                    ▲                                          │
                                    │ looked up by version name                └─ build issues ─► PRs ─► main
 [lanes.stable] milestone = true ───┘                                                                     │
         └── planner: due when milestone "1.5.0" has no open issues ── cuts 1.5.0 from main (or its rc) ◄─┘
 ```
 
-- **The name is the link.** A lane with `milestone = true` looks up the milestone titled with its candidate's version, so `product-intake` names a proposal after the version it should release as: the version after the newest open milestone's, or the next minor after the latest stable tag
-- **The due date doesn't release anything.** It feeds `roadmap_state.py`'s OVERDUE row; only the lane's triggers and gates cut a release
+- **The name is the link.** A lane with `milestone = true` looks up the milestone titled with its candidate's version, so the maintainer names a milestone after the version it should release as
+- **The due date doesn't release anything.** Only the lane's triggers and gates cut a release
 - **Only the milestone lane waits on the plan.** Other triggers (`quiet_minutes`, `schedule`, by hand) release what is merged, so `dev`, `rc`, and fixes never wait for a goal; a stable release cut by them can take a milestone's version before its goal is done
 - **Today a milestone is done when it has no open issues** and at least one closed (`planner.py`), which says nothing about whether its spec is built
 
@@ -156,7 +155,7 @@ tmp/shipmill/skills/github-ship-watch/SKILL.md for <owner/repo> — watch and tr
 - A change to a flag, format, default, public API, or stored state is designed in its issue first and checked against the repo's decisions log (`DECISIONS.md` or `docs/decisions.md`); what you settle is recorded there, so it isn't asked again
 - A user's request for a new capability goes to product intake first: triage comments `Triage: **opportunity**` and intake groups it with the requests for the same outcome into one opportunity issue. Nothing is specified until you accept the opportunity (the `planned` label); declining it closes it with your reason, and later requests for the same outcome are recorded against that decline. Bugs, contract tweaks, and small additive features skip intake
 - A feature (new behaviour beyond a bug fix or a contract tweak: an accepted opportunity, a request one covers, or an issue you filed) gets a spec first: a file `docs/specs/NNN-<slug>.md` with numbered acceptance criteria, merged through its own PR before any implementer starts. Merging the spec is your approval, and the issue reads BLOCKED until then. Each criterion is proven by a test that names it (`test_sNNN_k_...` or a `proves: S-NNN-k` comment), and `specs.py coverage` fails CI when a built spec has a criterion without one
-- A merged spec splits into build issues, one PR each (`specs.py split`), linked as sub-issues of the feature issue with `chains.py link`, with `Depends on #N` lines that hold each one until its dependency closes. Every criterion belongs to exactly one build issue, which `specs.py check` verifies in CI, and a `[roadmap] wip` limit, once the config has it (#70), caps how many are in progress at once
+- A merged spec splits into build issues, one PR each (`specs.py split`), linked as sub-issues of the feature issue with `chains.py link`, with `Depends on #N` lines that hold each one until its dependency closes. Every criterion belongs to exactly one build issue, which `specs.py check` verifies in CI, and `[agents] wip` in the config (D-32), when set, caps how many are in progress at once
 - Scope is read narrowly: "triage" never merges, and "merge" never tags, unless you say so
 - A change that departs from a spec, breaks existing users, or belongs to a held PR stops and asks you, whatever the scope
 - When another session works the same repo, the skills message it first, and your word in the current session wins

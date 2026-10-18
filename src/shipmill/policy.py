@@ -94,7 +94,7 @@ class Policy:
     operate: OperateConfig  # the [operate] section, or its defaults
     autonomy: AutonomyPolicy = AutonomyPolicy()
     agents: AgentsConfig | None = None  # the gate's [agents] section; validated here, read by the gate
-    roadmap: RoadmapConfig | None = None  # the [roadmap] section; validated here, read by product-intake
+    roadmap: RoadmapConfig | None = None  # the deprecated [roadmap] section (D-32): validated, read by nothing
     fragments: str | None = None  # [changelog] fragments: the changelog fragments folder, or None (spec 013)
 
     @property

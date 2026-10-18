@@ -3,7 +3,9 @@
 Status: map and direction, 2026-10-10 (shipmill 0.45.0). Nothing here is new behaviour; specs
 carve the gaps below into buildable pieces, the first being shipmill/shipmill#334, specified
 in [spec 017](../specs/017-work-chains.md). Where this note and a merged spec differ, the
-spec wins.
+spec wins. D-32 (2026-10-17) later removed product intake's roadmap plan and `[roadmap]`:
+a milestone is the maintainer's own list, and the work-in-progress limit is `[agents] wip`;
+the tables below say so, and the gaps keep their 2026-10-10 wording.
 
 shipmill's product layer is the part of the factory that decides **what** gets built and
 **when** it ships: feedback, opportunities, specs, the task graph, milestones and releases.
@@ -21,8 +23,9 @@ layer grows on purpose rather than issue by issue.
 - **Scripts answer facts, agents judge.** Each stage has a `*_state.py` that says where every
   object stands and exits 1 when one needs action; a skill decides what to do about it
 - **The maintainer decides what and when, the spec decides how.** Accepting an opportunity
-  (D-10), merging a spec (D-5) and approving a milestone are the three human approvals on the
-  path from feedback to release. Agents propose all three, and never take them
+  (D-10) and merging a spec (D-5) are the human approvals on the path from feedback to
+  release, and a milestone is the maintainer's own list (D-32). Agents propose the first two
+  and never take them; they propose no milestone
 - **Questions wait on the forge.** Anything an agent can't decide becomes a `needs-decision`
   item (D-21), not a stalled session
 - **Forge-neutral by capability.** A relation the forge holds natively is read through the
@@ -40,8 +43,7 @@ layer grows on purpose rather than issue by issue.
 | Fix | An issue triaged **implement** (a bug or a contract tweak) | Triage | Its PR merges |
 | Decision | A `needs-decision` marker comment and label on any item | Any agent session | A trusted person replies; the next session removes the label |
 | Human item | (missing) An item only a person can do: a deploy, a credential, a payment, a vote | Today: by hand, assigned to the person | Today: the person closes it, if they remember |
-| Milestone proposal | An issue labelled `milestone-proposal` with a marker naming the milestone and its due date | Product intake's roadmap plan | The maintainer closes it with "approve" |
-| Milestone | A forge milestone named after the version it releases | The roadmap plan, once approved; or by hand | Its last issue closes |
+| Milestone | A forge milestone named after the version it releases | The maintainer, by hand (D-32) | Its last issue closes |
 | Release | A tag and a CHANGELOG section cut on a lane | The release workflow, by policy | Published; fixed issues told by shipped notices |
 
 The feature issue is already an epic in all but name: it has sub-issues, `Depends on` lines on
@@ -58,9 +60,8 @@ collaborators, D-16), and **shipmill's code** (the release planner and the gate)
 |---|---|---|---|---|
 | Feedback | NEW_FEEDBACK, OVERLAP, OPPORTUNITY_OPEN, ACCEPTED, DECLINED, NO_REASON, HANDED_OFF, DONE, MERGED (`intake_state.py`) | Groups requests, opens and updates opportunities | Accepts (`planned`) or declines with a reason | Nothing |
 | Spec | The feature reads BLOCKED on its spec PR, then UNBLOCKED or SPEC_REFUSED (`triage_state.py`); the spec's status line (`specs.py check`) | Writes the spec, opens its PR, splits it | Merges the spec PR, or closes it | `specs.py check` and `coverage` in CI |
-| Build | NEEDS_PR, IN_PROGRESS, BLOCKED, UNFILLED, UNBLOCKED, DONE_NOT_CLOSED (`triage_state.py`) | Implements, reviews, lands within `[roadmap] wip` | Nothing, unless asked | Merges on green under the repo's autonomy |
+| Build | NEEDS_PR, IN_PROGRESS, BLOCKED, UNFILLED, UNBLOCKED, DONE_NOT_CLOSED (`triage_state.py`) | Implements, reviews, lands within `[agents] wip` | Nothing, unless asked | Merges on green under the repo's autonomy |
 | Decisions | NEEDS_DECISION, then DECIDED (`triage_state.py`, `watch_state.py`) | Asks, then takes up the answer | Answers | The gate starts no session while it waits |
-| Roadmap | NEXT, PROPOSAL_OPEN, APPROVED, UNPLANNED, MILESTONE, OVERDUE, WIP_OVER (`roadmap_state.py`) | Proposes the next milestone, applies an approved one | Approves, edits or refuses the proposal | Nothing |
 | Release | A lane is due when a trigger fires and no gate holds it; `milestone = true` fires when the version's milestone has closed issues and none open (`planner.py`) | Watches, reruns, tells reporters | Holds or starts a lane by hand | Cuts the release |
 
 Read end to end, the path is:
@@ -68,7 +69,7 @@ Read end to end, the path is:
 ```text
 request ──intake──▶ opportunity ──maintainer: planned──▶ feature ──triage──▶ spec PR
    ──maintainer: merge──▶ build items (Depends on, sub-issues) ──agents──▶ merged PRs
-   ──roadmap──▶ milestone proposal ──maintainer: approve──▶ milestone "X.Y.0"
+   ──maintainer: lists──▶ milestone "X.Y.0"
    ──last issue closes──▶ lane due ──planner──▶ release X.Y.0 ──ship-watch──▶ shipped notices
 ```
 

@@ -253,6 +253,7 @@ the details.
    # app_id = 123456  # sessions write as this GitHub App; unset: as your gh login
    # mode = "headless" # interactive (default): sessions ask you; headless: `claude -p`, they ask on GitHub
    # plugin_update = true # false (default): the gate changes no plugin install; true: it updates its checkout's, once a day
+   # wip = 3          # at most 3 issues in progress at once (1..100); unset: no limit
    ```
 
    The gate's checkout has shipmill plugin installs of its own, apart from the repo's

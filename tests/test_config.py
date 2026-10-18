@@ -205,7 +205,7 @@ MESSAGES: dict[str, str] = {
     "autonomy deploy environment name": "an environment name is letters, digits, '.', '_', or '-'; got 'pro duction'",
     "autonomy deploy unknown environment": "shipmill.toml [autonomy]: deploy.qa names no environment in [environments]; known: staging",
     "autonomy a table": "shipmill.toml: autonomy must be a table, got 1",
-    "agents unknown key": "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'max_wait_minutes', 'mode', 'notify', 'plugin_update', 'prompt', 'prs', 'remind_hours', 'retry_hours']",
+    "agents unknown key": "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'max_wait_minutes', 'mode', 'notify', 'plugin_update', 'prompt', 'prs', 'remind_hours', 'retry_hours', 'wip']",
     "agents prompt required": "shipmill.toml [agents]: prompt is required",
     "agents prompt empty": "shipmill.toml [agents]: prompt must not be empty",
     "agents retry range": "shipmill.toml [agents]: retry_hours must be in 1..168, got 0",
@@ -265,7 +265,7 @@ def test_the_agents_section_alone_is_read_with_the_same_words(tmp_path: Path) ->
     assert refusal(lambda: AgentsConfig.load(tmp_path)) == "shipmill.toml: agents must be a table, got 1"
     path.write_text('[agents]\nprompt = "/t"\nwhen = 1\n', encoding="utf-8")
     assert refusal(lambda: AgentsConfig.load(tmp_path)) == (
-        "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'max_wait_minutes', 'mode', 'notify', 'plugin_update', 'prompt', 'prs', 'remind_hours', 'retry_hours']"
+        "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'max_wait_minutes', 'mode', 'notify', 'plugin_update', 'prompt', 'prs', 'remind_hours', 'retry_hours', 'wip']"
     )
 
 
@@ -283,6 +283,41 @@ def test_s003_1_the_wait_keys_default_and_read_what_is_given() -> None:
     assert agents("remind_hours = 24\nmax_wait_minutes = 120\n").remind_hours == 24  # larger than the stop is allowed
 
 
+def test_the_wip_limit_is_read_from_agents_and_is_none_when_omitted() -> None:
+    """D-32 (#377): the work-in-progress limit triage reads is [agents] wip, 1..100"""
+    assert agents("").wip is None
+    assert (agents("wip = 1\n").wip, agents("wip = 100\n").wip) == (1, 100)
+
+
+@pytest.mark.parametrize(
+    ("line", "refused"),
+    [
+        ("wip = 0", "wip must be in 1..100, got 0"),
+        ("wip = 101", "wip must be in 1..100, got 101"),
+        ('wip = "3"', "wip must be an integer, got '3'"),
+        ("wip = true", "wip must be an integer, got True"),
+    ],
+)
+def test_a_bad_wip_limit_is_refused_naming_it(line: str, refused: str) -> None:
+    assert refusal(lambda: agents(line + "\n")) == f"shipmill.toml [agents]: {refused}"
+
+
+def test_no_doc_or_skill_still_names_the_removed_roadmap_plan() -> None:
+    """D-32 (#377): outside the history (CHANGELOG, fragments, decisions), nothing points at
+    roadmap_state.py or a [roadmap] wip limit"""
+    root = Path(__file__).resolve().parents[1]
+    history = {root / "CHANGELOG.md", root / "docs" / "decisions.md"}
+    found = [
+        f"{path.relative_to(root)}: {stale}"
+        for folder in ("docs", "skills", "src", ".claude-plugin")
+        for path in sorted((root / folder).rglob("*"))
+        if path.is_file() and path.suffix in {".md", ".py", ".json", ".toml"} and path not in history
+        for stale in ("roadmap_state", "[roadmap] wip")
+        if stale in path.read_text(encoding="utf-8")
+    ]
+    assert found == []
+
+
 WAIT_REFUSALS = {
     "notify = 1": "notify must be true or false, got 1",
     'notify = "yes"': "notify must be true or false, got 'yes'",
@@ -296,11 +331,11 @@ WAIT_REFUSALS = {
     'max_wait_minutes = "4"': "max_wait_minutes must be an integer, got '4'",
     "max_wait_hours = 4": (
         "unknown keys ['max_wait_hours']; allowed: "
-        "['app_id', 'max_wait_minutes', 'mode', 'notify', 'plugin_update', 'prompt', 'prs', 'remind_hours', 'retry_hours']"
+        "['app_id', 'max_wait_minutes', 'mode', 'notify', 'plugin_update', 'prompt', 'prs', 'remind_hours', 'retry_hours', 'wip']"
     ),
     "wait_hours = 4": (
         "unknown keys ['wait_hours']; allowed: "
-        "['app_id', 'max_wait_minutes', 'mode', 'notify', 'plugin_update', 'prompt', 'prs', 'remind_hours', 'retry_hours']"
+        "['app_id', 'max_wait_minutes', 'mode', 'notify', 'plugin_update', 'prompt', 'prs', 'remind_hours', 'retry_hours', 'wip']"
     ),
 }
 

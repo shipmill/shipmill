@@ -815,7 +815,7 @@ def main() -> int:
     parser.add_argument("--bot", action="append", default=[], help="a machine user's login, not a person")
     form = parser.add_mutually_exclusive_group()
     form.add_argument("--json", action="store_true")
-    form.add_argument("--markdown", action="store_true", help="a table to post on the roadmap issue")
+    form.add_argument("--markdown", action="store_true", help="a table to post on the tracking issue")
     args = parser.parse_args()
     if args.days < 1:
         parser.error("--days must be at least 1")
