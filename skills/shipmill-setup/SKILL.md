@@ -636,3 +636,10 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
 - A project in an rc series (`1.0.0rc9`) continues it: the next rc is `1.0.0rc10`, and the
   stable lane promotes to `1.0.0`. If the user wants 1.0.0 to be a deliberate step, leave
   stable without triggers so it only runs by hand
+
+## Improve the skill
+
+When a setup goes wrong (a prerequisite missed, a lane the user didn't choose, a gate that
+never started), add the lesson to the matching step, or a check to `setup_state.py` with a
+test in shipmill's `tests/test_setup_state.py`. When a lesson goes into the skill, add a
+case under `evals/` that fails without it, in the same pull request.
