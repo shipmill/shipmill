@@ -31,6 +31,7 @@ AGENTS = '\n[agents]\nprompt = "triage {repo}"\n'
 FRAGMENTS = find(UpgradeId("changelog-fragments"))
 PLUGIN = find(UpgradeId("plugin-update"))
 DECIDED = POLICY.replace("[changelog]\n", '[changelog]\nfragments = "changelog.d"\n')
+NO_MAJOR = POLICY.replace('major = ["Breaking"]\n', "")  # no breaking stable candidate (spec 029)
 
 
 def write_config(root: Path, text: str) -> None:
@@ -323,6 +324,7 @@ def upgrade_checks(repo: Repo) -> list[Check]:
 
 
 def test_s014_9_doctor_warns_about_issues_write_only_when_upgrades_propose_and_one_is_pending(repo: Repo) -> None:
+    write_config(repo.root, NO_MAJOR)  # spec 029's breaking-candidate reason stays out of this test
     repo.write(str(CALLER), LAND_JOB.split("  land:\n")[0])  # no land job: the workflow check's failure
     assert [c.status for c in upgrade_checks(repo)] == ["PASS"]
     repo.write(str(CALLER), LAND_JOB.format(issues="read"))
@@ -332,14 +334,14 @@ def test_s014_9_doctor_warns_about_issues_write_only_when_upgrades_propose_and_o
         "upgrade autonomy is propose and 1 upgrade(s) pending, but the land job in .github/workflows/release.yml,"
         " whose grant proposes them, grants no `issues: write`: add it"
     )
-    write_config(repo.root, POLICY + '\n[autonomy]\nupgrade = "act"\n')
+    write_config(repo.root, NO_MAJOR + '\n[autonomy]\nupgrade = "act"\n')
     assert [c.status for c in upgrade_checks(repo)] == ["PASS", "WARN"]
-    write_config(repo.root, POLICY + '\n[autonomy]\nupgrade = "observe"\n')  # observe: no issue to open
+    write_config(repo.root, NO_MAJOR + '\n[autonomy]\nupgrade = "observe"\n')  # observe: no issue to open
     assert [c.status for c in upgrade_checks(repo)] == ["PASS"]
     (repo.root / "changelog.d").mkdir()
-    write_config(repo.root, DECIDED)  # nothing pending
+    write_config(repo.root, DECIDED.replace('major = ["Breaking"]\n', ""))  # nothing pending
     assert upgrade_checks(repo) == []
-    write_config(repo.root, POLICY)
+    write_config(repo.root, NO_MAJOR)
     repo.github.close_issue(repo.github.create_issue("t", f"{marker(FRAGMENTS)}\n", (UPGRADE_LABEL,)), "")
     assert upgrade_checks(repo) == []  # declined: nothing pending either
     repo.github.closed_issues.clear()
