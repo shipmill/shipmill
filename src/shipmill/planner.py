@@ -318,8 +318,8 @@ class Planner:
     def milestone_findings(self, head: str) -> list[MilestoneWaiting | MilestoneOvertaken]:
         """What `shipmill status` says of the milestones of the lanes with milestone = true
         (spec 022), read with head as main's head: each milestone with no open issues and at
-        least one closed whose goal isn't done, then each open milestone a stable tag of its
-        version took already, with the version the first such lane cuts next. Nothing is read
+        least one closed whose goal isn't done, then each open milestone with open issues a
+        stable tag of its version took already, with the version the first such lane cuts next. Nothing is read
         when no lane sets milestone; nothing here changes what a plan decides"""
         lanes = [ln for ln in PRIORITY if ln in self.policy.lanes and self.policy.lanes[ln].milestone]
         if not lanes:
@@ -342,6 +342,10 @@ class Planner:
                 found.append(MilestoneWaiting(lane, verdict))
         taken = []
         for m in self.github.open_milestones():
+            # with no open issue its own release shipped it (GitHub leaves it open) or it holds
+            # nothing: renamed, it would make the next version's milestone due at once
+            if not m.open_issues:
+                continue
             # named after a version as the lane names it (str of the release, D-32), else no goal's
             version = Version.parse(m.title) if PATTERN.fullmatch(m.title) else None
             if version is not None and str(version) == m.title and version.is_stable and self._has_tag(version):

@@ -65,7 +65,7 @@ def test_s022_8_no_row_and_nothing_read_without_a_milestone_or_a_milestone_lane(
     milestone_policy_off(repo)
     repo.github.milestone_error = "no read is made without a lane that sets milestone = true"
     in_milestone(repo, (11, "Build A"))
-    repo.github.open = [OpenMilestone(3, "1.0.0")]
+    repo.github.open = [OpenMilestone(3, "1.0.0", 1)]
     reads = repo.github.open_reads
     assert read(repo, at_day(5)) == ([], None)
     assert repo.github.open_reads == reads
@@ -98,7 +98,7 @@ def stable_released(repo: Repo) -> None:
 
 def test_s022_10_an_open_milestone_a_stable_tag_took_reads_overtaken_with_the_next_version(repo: Repo) -> None:
     stable_released(repo)
-    repo.github.open = [OpenMilestone(3, "1.1.0"), OpenMilestone(4, "1.2.0"), OpenMilestone(5, "Someday")]
+    repo.github.open = [OpenMilestone(3, "1.1.0", 1), OpenMilestone(4, "1.2.0", 1), OpenMilestone(5, "Someday", 1)]
     rows, error = read(repo, at_day(6))
     rename = "gh api -X PATCH repos/o/demo/milestones/3 -f title=1.1.1"
     assert (rows, error) == (
@@ -117,22 +117,38 @@ def test_s022_10_the_next_version_is_the_lanes_candidate(repo: Repo) -> None:
     stable_released(repo)
     repo.merge(3, "Added", "Feature C")
     release(repo, plan(repo, at_day(6)))  # 1.2.0rc1
-    repo.github.open = [OpenMilestone(3, "1.1.0")]
+    repo.github.open = [OpenMilestone(3, "1.1.0", 1)]
     rows, _ = read(repo, at_day(10))
     assert [r.detail for r in rows] == ["v1.1.0 exists; the stable lane cuts 1.2.0 next"]
 
 
 def test_s022_10_no_row_while_no_stable_tag_took_an_open_milestone(repo: Repo) -> None:
     rc_cut(repo)
-    repo.github.open = [OpenMilestone(3, "1.1.0"), OpenMilestone(4, "1.0.0rc1"), OpenMilestone(5, "v1.0.0")]
+    repo.github.open = [OpenMilestone(3, "1.1.0", 1), OpenMilestone(4, "1.0.0rc1", 1), OpenMilestone(5, "v1.0.0", 1)]
     assert read(repo, at_day(2)) == ([], None)
+
+
+def test_s022_10_a_milestone_its_own_release_shipped_is_not_overtaken(repo: Repo) -> None:
+    """GitHub leaves a milestone open after its version ships: with no open issues, the tag
+    shipped its goal rather than took it, so there is nothing to rename"""
+    fix = rc_cut(repo, {"021-goal.md": spec(21, "built", "#11")})
+    in_milestone(repo, (11, "Build A"))
+    repo.github.closes[11] = closed(11, fix)
+    release(repo, plan_stable(repo))  # 1.1.0, due by its milestone
+    assert repo.git.ok("rev-parse", "-q", "--verify", "refs/tags/v1.1.0")
+    repo.merge(2, "Fixed", "Fix B")
+    repo.github.open = [OpenMilestone(3, "1.1.0", 0)]
+    assert read(repo, at_day(6)) == ([], None)
+    repo.github.open = [OpenMilestone(3, "1.1.0", 1)]  # an issue still open: taken before done
+    rows, _ = read(repo, at_day(6))
+    assert [r.state for r in rows] == ["MILESTONE_OVERTAKEN"]
 
 
 def test_s022_10_a_milestone_never_changes_the_bump(repo: Repo) -> None:
     """The plan reads no open milestone, and an overtaken 1.1.0 and a closed 1.2.0 leave the
     fix pending a patch: the rc is 1.1.1rc1, and stable promotes it as 1.1.1"""
     stable_released(repo)
-    repo.github.open = [OpenMilestone(3, "1.1.0"), OpenMilestone(4, "1.2.0")]
+    repo.github.open = [OpenMilestone(3, "1.1.0", 1), OpenMilestone(4, "1.2.0", 1)]
     repo.github.milestones["1.2.0"] = Milestone(0, 2)
     rc = plan(repo, at_day(6))
     assert (rc.lane, str(rc.version)) == (Lane.RC, "1.1.1rc1"), rc.reason
@@ -145,13 +161,18 @@ def test_s022_10_a_milestone_never_changes_the_bump(repo: Repo) -> None:
 
 def test_parse_open_milestones_is_strict() -> None:
     found = parse_open_milestones(
-        [{"number": 4, "title": "1.2.0", "state": "open"}, {"number": 3, "title": "x", "state": "open"}]
+        [
+            {"number": 4, "title": "1.2.0", "state": "open", "open_issues": 2},
+            {"number": 3, "title": "x", "state": "open", "open_issues": 0},
+        ]
     )
-    assert found == [OpenMilestone(3, "x"), OpenMilestone(4, "1.2.0")]
+    assert found == [OpenMilestone(3, "x", 0), OpenMilestone(4, "1.2.0", 2)]
     bad_answers: list[object] = [
         {},
-        [{"number": "3", "title": "x", "state": "open"}],
-        [{"number": 3, "title": "x", "state": "closed"}],
+        [{"number": "3", "title": "x", "state": "open", "open_issues": 0}],
+        [{"number": 3, "title": "x", "state": "closed", "open_issues": 0}],
+        [{"number": 3, "title": "x", "state": "open"}],
+        [{"number": 3, "title": "x", "state": "open", "open_issues": True}],
     ]
     for bad in bad_answers:
         with pytest.raises(ReleaseError):

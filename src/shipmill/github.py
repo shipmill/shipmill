@@ -62,10 +62,12 @@ class Milestone:
 
 @dataclass(frozen=True, slots=True)
 class OpenMilestone:
-    """An open milestone: GitHub's number for it, which a rename names, and its title"""
+    """An open milestone: GitHub's number for it, which a rename names, its title, and how
+    many of its issues are open"""
 
     number: int
     title: str
+    open_issues: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -660,12 +662,20 @@ def parse_open_milestones(found: Any) -> list[OpenMilestone]:
         raise ReleaseError(f"the repository has {OPEN_MILESTONE_LIMIT} open milestones or more; shipmill reads fewer")
     milestones = []
     for m in found:
-        number = m.get("number") if isinstance(m, dict) else None
-        title = m.get("title") if isinstance(m, dict) else None
-        state = m.get("state") if isinstance(m, dict) else None
-        if not isinstance(number, int) or isinstance(number, bool) or not isinstance(title, str) or state != "open":
-            raise ReleaseError(f"gh api milestones printed {m!r}: an open milestone needs a number and a title")
-        milestones.append(OpenMilestone(number, title))
+        fields = m if isinstance(m, dict) else {}
+        number, title, count = fields.get("number"), fields.get("title"), fields.get("open_issues")
+        if (
+            not isinstance(number, int)
+            or isinstance(number, bool)
+            or not isinstance(count, int)
+            or isinstance(count, bool)
+            or not isinstance(title, str)
+            or fields.get("state") != "open"
+        ):
+            raise ReleaseError(
+                f"gh api milestones printed {m!r}: an open milestone needs a number, a title, and open_issues"
+            )
+        milestones.append(OpenMilestone(number, title, count))
     return sorted(milestones, key=lambda m: m.number)
 
 

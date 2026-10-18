@@ -132,7 +132,7 @@ then the plan names what holds it, the first reason per spec, such as
 
 `shipmill status` shows the same reasons as a MILESTONE_WAITING line. A stable release made
 by another trigger ships what is merged and keeps its bump, so it can take an unfinished
-goal's version: the open milestone is then overtaken, and status reports
+goal's version: the open milestone, with issues still open, is then overtaken, and status reports
 MILESTONE_OVERTAKEN with the version the lane cuts next and the `gh api` command that
 renames the milestone to it.
 
