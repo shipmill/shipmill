@@ -16,6 +16,8 @@ from shipmill.gitrepo import WORKFLOWS, Git, Tag
 from shipmill.policy import PRIORITY, BumpFrom, Lane, LaneRule, Mode, Policy
 from shipmill.version import ZERO, Part, Version
 
+BREAKING = "a breaking change waits for the maintainer's decision"  # a breaking stable candidate's cause
+
 
 class Event(StrEnum):
     PUSH = "push"
@@ -36,7 +38,7 @@ class Proposal:
     lane: Lane
     version: Version
     base: str
-    cause: str  # "release autonomy is propose", or "held by shipmill-hold #N"
+    cause: str  # "release autonomy is propose", "held by shipmill-hold #N", or BREAKING
 
     def as_dict(self) -> dict[str, str]:
         return {"lane": self.lane.value, "version": str(self.version), "base": self.base, "cause": self.cause}
@@ -86,6 +88,7 @@ class _Candidate:
     merges: tuple[str, ...] = ()
     prs: tuple[int, ...] = ()
     source: str = ""  # what the base is, when not main's head: the rc a promotion's base is
+    breaking: bool = False  # a stable candidate whose pending entries bump the major part (spec 029)
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,13 +167,22 @@ class Planner:
         hits = [p for p in changed if any(fnmatch.fnmatch(p, g) for g in self.policy.minor_paths)]
         return Part.MINOR if hits else Part.PATCH
 
+    def _breaking(self, pending: list[Entry]) -> bool:
+        """Whether the entries hold one under a `major` heading: read from the headings, not
+        the version, since before 1.0 a major bump moves the minor. Paths never bump the major"""
+        if self.policy.bump_from is not BumpFrom.HEADINGS:
+            return False
+        major = {h for h, part in self.policy.bump_headings.items() if part is Part.MAJOR}
+        return any(entry.heading in major for entry in pending)
+
     # -- candidates ------------------------------------------------------------------------
 
     def _candidate(self, lane: Lane, head: str) -> _Candidate | _Deferred | str:
         """What the lane would release from main's head, or why there is nothing to"""
         rule = self.policy.rule(lane)
         changelog = self.changelog_at(head)
-        pending = changelog.pending(self.fragments_at(head))
+        found = self.fragments_at(head)
+        pending = changelog.pending(found)
         if lane is Lane.STABLE and rule.promote:
             return self._promotion(rule, head)
         if lane is Lane.DEV:
@@ -196,7 +208,9 @@ class Planner:
                 return f"an rc of {target} already holds main's head"
             n = max((t.version.pre_n or 0 for t in same), default=0) + 1
             return _Candidate(target.with_pre(rule.marker, n), head, f"{len(pending)} pending entries")
-        return _Candidate(target, head, f"{len(pending)} pending entries")
+        # the release folds target's rc sections, so their entries are its own too (D-25)
+        breaking = self._breaking(changelog.promoted(target, found))
+        return _Candidate(target, head, f"{len(pending)} pending entries", breaking=breaking)
 
     def _promotion(self, rule: LaneRule, head: str) -> _Candidate | _Deferred | str:
         last = self.last_stable()
@@ -219,7 +233,8 @@ class Planner:
         base = rc.commit if on_main else self.git.first_parent(rc.commit)
         # the rc sections of version an earlier release bot wrote are pending too (D-25)
         changelog = self.changelog_at(base)
-        if not changelog.promoted(version, self.fragments_at(base)):
+        promoted = changelog.promoted(version, self.fragments_at(base))
+        if not promoted:
             sections = changelog.rc_sections(version)
             found = (
                 f"its rc sections {', '.join(f'[{v}]' for v in sections)} hold no entries"
@@ -235,7 +250,11 @@ class Planner:
                 " and soaks before it's promoted"
             )
         return _Candidate(
-            version, base, f"promotes {rc.name}, soaked {(self.now - rc.date).days} day(s)", source=rc.name
+            version,
+            base,
+            f"promotes {rc.name}, soaked {(self.now - rc.date).days} day(s)",
+            source=rc.name,
+            breaking=self._breaking(promoted),
         )
 
     def _hotfix(self, hotfix: Hotfix) -> _Candidate:
@@ -314,6 +333,17 @@ class Planner:
                 if label and (blockers := self.github.open_issues(label)):
                     return f"open '{label}' issues: {', '.join(blockers)}"
         return None
+
+    def _autonomy(self, lane: Lane, candidate: _Candidate) -> tuple[Autonomy, str]:
+        """How far a trigger releases the candidate by itself, and why not further. A breaking
+        stable candidate is at most propose, as the hold makes every stage (D-8, D-39); a
+        person starting the lane by hand doesn't come here"""
+        level = self.policy.autonomy.effective(Stage.release(), self.hold())
+        cause = self.policy.autonomy.cause(Stage.release(), self.hold())
+        if lane is Lane.STABLE and candidate.breaking and level is not Autonomy.OBSERVE:
+            # the hold names itself first: it stops the hand start that releases a breaking change
+            return Autonomy.PROPOSE, cause if self.hold().on else BREAKING
+        return level, cause
 
     # -- the decision --------------------------------------------------------------------------
 
@@ -395,8 +425,8 @@ class Planner:
                         " (a hotfix can still be started by hand)"
                     )
                     continue
-            elif (level := self.policy.autonomy.effective(Stage.release(), self.hold())) is not Autonomy.ACT:
-                cause = self.policy.autonomy.cause(Stage.release(), self.hold())
+            elif (gate := self._autonomy(current, candidate))[0] is not Autonomy.ACT:
+                level, cause = gate
                 if level is Autonomy.OBSERVE:
                     skipped.append(f"{current}: {candidate.version} is due ({due}), but {cause}")
                 else:
