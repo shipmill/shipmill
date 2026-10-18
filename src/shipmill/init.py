@@ -165,15 +165,12 @@ freeze_lanes = ["dev", "rc", "stable"]
 # quiet_minutes = 30
 # dispatch = ["publish.yml"]
 
-[lanes.rc]                          # X.Y.ZrcN from main, each workday morning
-schedule = ["Mon-Fri 07:00 UTC"]
-github_release = true
+# [lanes.rc]                        # X.Y.ZrcN for people who try a change first, by hand or on a schedule
+# schedule = ["Mon-Fri 07:00 UTC"]
+# github_release = true
 
-[lanes.stable]                      # X.Y.Z, promoted from an rc nobody reported a blocker on
-promote_from = "rc"
-min_soak_days = 3
-schedule = ["Mon 07:00 UTC"]
-milestone = true
+[lanes.stable]                      # X.Y.Z after every batch of merges; a breaking change waits for you
+quiet_minutes = 30
 github_release = true
 
 [lanes.hotfix]                      # X.Y.(Z+1) from release/X.Y with chosen PRs, by hand only

@@ -1120,13 +1120,17 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
             record = {
                 "id": str(upgrade.id),
                 "config": CONFIG_PATH.as_posix(),
-                "line": upgrade.line,
+                "line": upgrade.line if applied.added else None,
+                "removed": upgrade.removes,
                 "created": [p.as_posix() for p in applied.created],
                 "kept": [p.as_posix() for p in applied.kept],
             }
             print(json.dumps(record, indent=2))
             return 0
-        print(f"added {upgrade.line} to [{upgrade.table}] in {CONFIG_PATH}")
+        if upgrade.removes is not None:
+            print(f"removed {upgrade.removes} from [{upgrade.table}] in {CONFIG_PATH}")
+        if applied.added:
+            print(f"added {upgrade.line} to [{upgrade.table}] in {CONFIG_PATH}")
         for path in applied.created:
             print(f"wrote {path.as_posix()}")
         for path in applied.kept:
@@ -1160,7 +1164,10 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
     for offer in found:
         upgrade = offer.upgrade
         print(f"{upgrade.id} (shipmill {upgrade.version}): {upgrade.changes}")
-        print(f"  adds: [{upgrade.table}] {upgrade.line}")
+        if upgrade.removes is not None:
+            print(f"  removes: [{upgrade.table}] {upgrade.removes}")
+        if upgrade.adds(raw):
+            print(f"  adds: [{upgrade.table}] {upgrade.line}")
         print(f"  off: {upgrade.off}")
         if offer.issue is not None:
             print(f"  proposed: #{offer.issue}")

@@ -184,7 +184,13 @@ def test_init_writes_an_environments_example_that_parses(repo: Repo) -> None:
     end = text.index("\n\n", start)
     example = "\n".join(line.removeprefix("#").removeprefix(" ") for line in text[start:end].splitlines())
     assert "${{ inputs.environment }}" in text
-    repo.write(".github/shipmill.toml", text[:start] + example + text[end:])
+    text = text[:start] + example + text[end:]
+    # staging takes the rc lane, which init writes commented out (spec 029): turn it on too
+    rc = "# [lanes.rc]"
+    rc_start = text.index(rc)
+    rc_end = text.index("\n\n", rc_start)
+    lane = "\n".join(line.removeprefix("# ") for line in text[rc_start:rc_end].splitlines())
+    repo.write(".github/shipmill.toml", text[:rc_start] + lane + text[rc_end:])
     environments = Policy.load(written[0]).environments
     assert [(e.name, e.lane, e.source, e.bake_minutes) for e in environments.values()] == [
         ("staging", Lane.RC, None, 0),
