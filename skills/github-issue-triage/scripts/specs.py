@@ -8,7 +8,7 @@ Usage:
   specs.py find [--dir D] TERM...
   specs.py criteria [--dir D] NNN
   specs.py coverage [--dir D] [--root R] [--spec NNN]...
-  specs.py split [--dir D] [--repo OWNER/REPO] [--group K,K...]... [--after B:A]... [--json] NNN
+  specs.py split [--dir D] [--repo OWNER/REPO] [--group K,K...]... [--after B:A]... [--milestone T] [--json] NNN
 
 A spec has a title line, a status line, and fixed sections, in this order:
 
@@ -61,7 +61,8 @@ split    propose the build issues of an approved spec, for the criteria its Issu
           named by --after B:A (B depends on A). Prints each issue's title and body, whose
           "Depends on #{Bk}" lines and the Issues lines to add name the issues by key
           until they are filed: replace {Bk} with each issue's number as it is created.
-          --json prints the same as one JSON object
+          --milestone T puts each in milestone T (a "milestone:" line, and a "milestone"
+          key in --json); without it none has one. --json prints the same as one JSON object
 
 Exit 0 on success (find: at least one match), 1 when check (or criteria or split, for
 its spec) finds a problem, find matches nothing, or coverage finds a criterion with no test (or a
@@ -774,13 +775,18 @@ def dependencies(after: list[str], count: int) -> dict[int, list[int]]:
     return {k: sorted(v) for k, v in depends.items()}
 
 
-def task_graph(spec: Spec, groups: list[str], after: list[str], repo: str | None) -> list[dict[str, Any]]:
+def task_graph(
+    spec: Spec, groups: list[str], after: list[str], repo: str | None, milestone: str | None = None
+) -> list[dict[str, Any]]:
     """The build issues proposed for an approved spec's criteria that no build issue has yet,
-    in the order to file them. Each names the others by key, {B1}, until they have numbers"""
+    in the order to file them. Each names the others by key, {B1}, until they have numbers,
+    and carries the feature issue's milestone when one is given"""
     if spec.status != "approved":
         raise SpecError(f"{spec.id} is {spec.status or 'without a status'}; only an approved spec is split")
     if repo is not None and REPO.match(repo) is None:
         raise SpecError(f"--repo must be owner/repo, got {repo!r}")
+    if milestone is not None and (not milestone.strip() or milestone != milestone.strip() or "\n" in milestone):
+        raise SpecError(f"--milestone must be a milestone's title, one line without outer spaces, got {milestone!r}")
     assigned = {n: issue.ref for issue in spec.issues for n in issue.criteria}
     unassigned = [c.number for c in spec.criteria if c.number not in assigned and not c.dropped]
     chosen = groups_of(spec, groups, unassigned, assigned)
@@ -798,20 +804,29 @@ def task_graph(spec: Spec, groups: list[str], after: list[str], repo: str | None
         ]
         if depends[k]:
             body += ["", *(f"Depends on {prefix}#{{B{d}}}" for d in depends[k])]
-        issues.append(
-            {
-                "key": f"B{k}",
-                "title": f"{spec.title} ({', '.join(ids)})",
-                "body": "\n".join(body) + "\n",
-                "criteria": ids,
-                "depends_on": [f"B{d}" for d in depends[k]],
-                "issues_line": f"- {prefix}#{{B{k}}}: {', '.join(ids)}",
-            }
-        )
+        issue: dict[str, Any] = {
+            "key": f"B{k}",
+            "title": f"{spec.title} ({', '.join(ids)})",
+            "body": "\n".join(body) + "\n",
+            "criteria": ids,
+            "depends_on": [f"B{d}" for d in depends[k]],
+            "issues_line": f"- {prefix}#{{B{k}}}: {', '.join(ids)}",
+        }
+        if milestone is not None:
+            issue["milestone"] = milestone
+        issues.append(issue)
     return issues
 
 
-def split(directory: Path, wanted: str, groups: list[str], after: list[str], repo: str | None, as_json: bool) -> int:
+def split(
+    directory: Path,
+    wanted: str,
+    groups: list[str],
+    after: list[str],
+    repo: str | None,
+    as_json: bool,
+    milestone: str | None = None,
+) -> int:
     match = ID.match(wanted)
     if match is None:
         raise SpecError(f"a spec is named NNN, 7, or S-007, got {wanted!r}")
@@ -832,7 +847,7 @@ def split(directory: Path, wanted: str, groups: list[str], after: list[str], rep
             raise SpecError(f"every criterion of {spec.id} is in a build issue already; there is nothing to group")
         print(f"{spec.id}: every criterion is in a build issue already")
         return 0
-    issues = task_graph(spec, groups, after, repo)
+    issues = task_graph(spec, groups, after, repo, milestone)
     if as_json:
         print(json.dumps({"spec": spec.id, "path": spec.path.as_posix(), "issues": issues}, indent=2))
         return 0
@@ -840,7 +855,8 @@ def split(directory: Path, wanted: str, groups: list[str], after: list[str], rep
     print("Replace each {Bk} with that issue's number once it is filed.")
     for issue in issues:
         depends = ", ".join(issue["depends_on"]) or "nothing"
-        print(f"\n=== {issue['key']} (depends on {depends})\ntitle: {issue['title']}\n\n{issue['body']}", end="")
+        on = f"milestone: {issue['milestone']}\n" if "milestone" in issue else ""
+        print(f"\n=== {issue['key']} (depends on {depends})\ntitle: {issue['title']}\n{on}\n{issue['body']}", end="")
     print("\nThe spec's Issues section, once they are filed:\n")
     for issue in issues:
         print(issue["issues_line"])
@@ -870,6 +886,7 @@ def main() -> int:
             p.add_argument("--group", action="append", default=[], metavar="K,K", help="one build issue's criteria")
             p.add_argument("--after", action="append", default=[], metavar="B:A", help="build issue B depends on A")
             p.add_argument("--json", action="store_true", help="print the task graph as one JSON object")
+            p.add_argument("--milestone", metavar="TITLE", help="put every build issue in this milestone")
             p.add_argument("spec", metavar="NNN")
     args = parser.parse_args()
     try:
@@ -880,7 +897,7 @@ def main() -> int:
         if args.command == "coverage":
             return coverage(args.dir, args.root, args.spec)
         if args.command == "split":
-            return split(args.dir, args.spec, args.group, args.after, args.repo, args.json)
+            return split(args.dir, args.spec, args.group, args.after, args.repo, args.json, args.milestone)
         if args.command == "check" and not args.dir.is_dir():
             print("no specs")
             return 0
