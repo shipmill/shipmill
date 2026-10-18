@@ -135,8 +135,9 @@ def pr(
 
 
 def run_gate(
-    tmp_path: Path, work: Path, prs: dict[int, dict[str, Any]], *args: str
+    tmp_path: Path, work: Path | None, prs: dict[int, dict[str, Any]], *args: str
 ) -> subprocess.CompletedProcess[str]:
+    """The gate with --checkout work, or, for None, run in a folder outside any checkout"""
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     gh = fakes / "gh"
@@ -144,9 +145,20 @@ def run_gate(
     gh.chmod(0o700)
     data = tmp_path / "gh.json"
     data.write_text(json.dumps({str(n): p for n, p in prs.items()}), encoding="utf-8")
-    env = {**os.environ, "PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]), "FAKE_GH_DATA": str(data)}
-    cmd = [sys.executable, str(SCRIPT), *map(str, prs), "--checkout", str(work), *args]
-    return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env, cwd=work)
+    env = {
+        **os.environ,
+        "PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]),
+        "FAKE_GH_DATA": str(data),
+        "GIT_CEILING_DIRECTORIES": str(tmp_path),  # so no checkout above tmp_path counts
+    }
+    where = ["--checkout", str(work)] if work is not None else []
+    cwd = work if work is not None else tmp_path / "outside"
+    cwd.mkdir(exist_ok=True)
+    cmd = [sys.executable, str(SCRIPT), *map(str, prs), *where, *args]
+    return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env, cwd=cwd)
+
+
+MAIN_READY = "#7 READY state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=1 pending=0 failed=0\n"
 
 
 @pytest.fixture
@@ -200,10 +212,41 @@ def test_s024_7_without_a_direction_the_plan_is_not_checked(tmp_path: Path) -> N
     work = checkout(tmp_path, {})
     proc = run_gate(tmp_path, work, {7: pr(body="Fixes #7")}, "--bot-login", BOT)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert (
-        proc.stdout
-        == "#7 READY state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=1 pending=0 failed=0\n"
-    )
+    assert proc.stdout == MAIN_READY
+
+
+def test_a_base_with_neither_file_gates_as_before_spec_024(tmp_path: Path) -> None:
+    """No direction and no REVIEW.md: a PR editing docs/product.md isn't asked about either"""
+    work = checkout(tmp_path, {})
+    proc = run_gate(tmp_path, work, {7: pr(body="Fixes #7", files=("docs/product.md",))}, "--agent")
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+
+
+def test_outside_a_checkout_the_gate_is_as_before_spec_024(tmp_path: Path) -> None:
+    proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", files=("src/land.py",))}, "--agent")
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+
+
+def test_without_origin_head_the_prs_base_branch_is_read(tmp_path: Path, directed: Path) -> None:
+    git(directed, "remote", "set-head", "origin", "--delete")
+    proc = run_gate(tmp_path, directed, {7: pr(body="Fixes #7")}, "--bot-login", BOT)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    assert "  refused: no `## Plan` section" in proc.stdout
+
+
+def test_without_origin_head_or_the_base_branch_the_gate_stops(tmp_path: Path, directed: Path) -> None:
+    git(directed, "remote", "set-head", "origin", "--delete")
+    proc = run_gate(tmp_path, directed, {7: {**pr(), "baseRefName": "release"}}, "--bot-login", BOT)
+    assert proc.returncode == 2
+    assert "neither origin/HEAD nor origin/release is in" in proc.stderr
+
+
+def test_a_named_checkout_that_is_not_one_stops_the_gate(tmp_path: Path) -> None:
+    folder = tmp_path / "plain"
+    folder.mkdir()
+    proc = run_gate(tmp_path, folder, {7: pr()})
+    assert proc.returncode == 2
+    assert "is not a git checkout" in proc.stderr
 
 
 def test_s024_7_the_direction_is_read_from_the_default_branch_not_the_checkout(tmp_path: Path, directed: Path) -> None:
@@ -265,7 +308,7 @@ def test_the_worst_verdict_across_prs_is_the_exit_code(tmp_path: Path, directed:
     assert [line.split()[1] for line in proc.stdout.splitlines() if line.startswith("#")] == ["READY", "REFUSED"]
 
 
-def test_a_gh_failure_exits_2(tmp_path: Path, directed: Path) -> None:
+def test_a_gh_failure_exits_1_as_before(tmp_path: Path, directed: Path) -> None:
     fakes = tmp_path / "fakes"
     fakes.mkdir()
     (fakes / "gh").write_text("#!/bin/sh\necho 'no such PR' >&2\nexit 1\n")
@@ -274,14 +317,14 @@ def test_a_gh_failure_exits_2(tmp_path: Path, directed: Path) -> None:
     failed = subprocess.run(
         [sys.executable, str(SCRIPT), "9", "--checkout", str(directed)], capture_output=True, text=True, env=env
     )
-    assert failed.returncode == 2
-    assert "pr_gate: gh for #9 failed: no such PR" in failed.stderr
+    assert failed.returncode == 1
+    assert failed.stderr == "pr_gate: gh failed for #9: no such PR\n"
 
 
-def test_a_checkout_of_another_repo_is_refused(tmp_path: Path, directed: Path) -> None:
-    proc = run_gate(tmp_path, directed, {7: pr()}, "-R", "other/repo")
-    assert proc.returncode == 2
-    assert "not other/repo" in proc.stderr
+def test_a_checkout_of_another_repo_is_not_read(tmp_path: Path, directed: Path) -> None:
+    proc = run_gate(tmp_path, directed, {7: pr(body="none", files=("src/land.py",))}, "--agent", "-R", "other/repo")
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY)
+    assert "is not a checkout of other/repo; REVIEW.md and the direction unread" in proc.stderr
 
 
 # The parts, without gh

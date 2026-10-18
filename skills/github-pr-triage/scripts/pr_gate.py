@@ -11,14 +11,17 @@ And does it keep to the repo's direction (spec 024)?
   says they accepted it
 
 REVIEW.md and docs/product.md are read from the default branch of the checkout
-(--checkout, at origin/HEAD), never from the PR. A glob matches as decisions.py's scopes
-do: fnmatch, where `*` also matches `/`, or the path sits under it (`skills/**`,
-`docs/product`), relative to the repo's root.
+(--checkout, default the current directory, at origin/HEAD, or at origin/<the PR's base
+branch> when origin/HEAD isn't set), never from the PR. Outside a git checkout, or when
+that branch holds neither file, the gate judges CI alone, as it did before spec 024. A
+glob matches as decisions.py's scopes do: fnmatch, where `*` also matches `/`, or the path
+sits under it (`skills/**`, `docs/product`), relative to the repo's root.
 
-Exit codes: 0 every PR is ready; 1 a check failed; 3 a check is still pending (or --wait
-timed out); 4 a PR is not open or conflicts; 5 a PR needs the maintainer's decision; 6 an
-agent's PR is refused for its plan; 2 bad arguments, a gh or git failure, or a REVIEW.md
-or docs/product.md the gate can't read.
+Exit codes: 0 every PR is ready; 1 a check failed, or gh failed; 3 a check is still
+pending (or --wait timed out); 4 a PR is not open or conflicts; 5 a PR needs the
+maintainer's decision; 6 an agent's PR is refused for its plan; 2 bad arguments, a base
+branch the checkout lacks, a git failure, or a REVIEW.md or docs/product.md the gate can't
+read.
 """
 
 from __future__ import annotations
@@ -259,20 +262,52 @@ def git(checkout: str, *args: str) -> str:
     return run(["git", "-C", checkout, *args], f"git {args[0]} in {checkout}")
 
 
-def read_base(checkout: str, repo: str | None) -> Base:
-    """The default branch's REVIEW.md files and direction, from the checkout's origin/HEAD"""
-    if repo:
-        url = git(checkout, "remote", "get-url", "origin").strip()
-        if not re.search(r"[:/]" + re.escape(repo) + r"(\.git)?/?$", url):
-            raise GateError(f"{checkout} is a checkout of {url}, not {repo}; pass --checkout with {repo}'s checkout")
-    proc = subprocess.run(
-        ["git", "-C", checkout, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], capture_output=True, text=True
-    )
-    if proc.returncode != 0:
-        raise GateError(
-            f"can't tell the default branch in {checkout}: run `git -C {checkout} remote set-head origin --auto`"
+NO_BASE = Base(None, {})  # nothing to read: the gate judges CI alone, as before spec 024
+
+
+def quiet(checkout: str, *args: str) -> str | None:
+    """A git call whose failure is an answer (no such ref, not a checkout): its output or None"""
+    proc = subprocess.run(["git", "-C", checkout, *args], capture_output=True, text=True)
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+class Bases:
+    """The default branch's REVIEW.md files and direction, read once per ref. Outside a git
+    checkout, or in a checkout of another repo than -R names, there is nothing to read"""
+
+    def __init__(self, checkout: str | None, repo: str | None) -> None:
+        self.checkout = checkout or "."
+        self.read: dict[str, Base] = {}
+        self.inside = quiet(self.checkout, "rev-parse", "--is-inside-work-tree") == "true"
+        if not self.inside and checkout is not None:
+            raise GateError(f"--checkout {checkout} is not a git checkout")
+        if self.inside and repo:
+            url = quiet(self.checkout, "remote", "get-url", "origin") or ""
+            if not re.search(r"[:/]" + re.escape(repo) + r"(\.git)?/?$", url):
+                print(
+                    f"note: {self.checkout} is not a checkout of {repo}; REVIEW.md and the direction unread",
+                    file=sys.stderr,
+                )
+                self.inside = False
+        self.default = (
+            quiet(self.checkout, "symbolic-ref", "--short", "refs/remotes/origin/HEAD") if self.inside else None
         )
-    ref = proc.stdout.strip()
+
+    def base(self, base_branch: str) -> Base:
+        """origin/HEAD, or the PR's own base branch at origin when origin/HEAD isn't set"""
+        if not self.inside:
+            return NO_BASE
+        ref = self.default or f"origin/{base_branch}"
+        if ref not in self.read:
+            if quiet(self.checkout, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}") is None:
+                raise GateError(
+                    f"neither origin/HEAD nor {ref} is in {self.checkout}: run `git -C {self.checkout} fetch origin`"
+                )
+            self.read[ref] = read_base(self.checkout, ref)
+        return self.read[ref]
+
+
+def read_base(checkout: str, ref: str) -> Base:
     names = [n for n in git(checkout, "ls-tree", "-r", "-z", "--name-only", ref).split("\0") if n]
     tree = set(names)
 
@@ -299,13 +334,26 @@ def fetch(number: int, repo: str | None) -> dict:
     cmd.append("state,mergeable,baseRefName,headRefOid,statusCheckRollup,author,body,files,changedFiles")
     if repo:
         cmd += ["-R", repo]
-    data = json.loads(run(cmd, f"gh for #{number}"))
-    files = [str(f["path"]) for f in data.get("files") or ()]
-    if len(files) < int(data.get("changedFiles") or 0):  # gh lists the first 100 files
-        diff = ["gh", "pr", "diff", str(number), "--name-only"] + (["-R", repo] if repo else [])
-        files = [line for line in run(diff, f"gh pr diff for #{number}").splitlines() if line]
-    data["files"] = tuple(files)
+    data = json.loads(gh(cmd, number))
+    data["files"] = tuple(str(f["path"]) for f in data.get("files") or ())
     return data
+
+
+def gh(cmd: list[str], number: int) -> str:
+    """gh's output; a failure exits 1 with the message, as the gate always has"""
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        sys.exit(f"pr_gate: gh failed for #{number}: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+def all_files(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
+    """Every file the PR changes: gh pr view lists the first 100"""
+    files: tuple[str, ...] = data["files"]
+    if len(files) < int(data.get("changedFiles") or 0):
+        diff = ["gh", "pr", "diff", str(number), "--name-only"] + (["-R", repo] if repo else [])
+        files = tuple(line for line in gh(diff, number).splitlines() if line)
+    return files
 
 
 def judge(data: dict, number: int, base: Base, agent: bool, accepted: bool) -> Gate:
@@ -315,7 +363,7 @@ def judge(data: dict, number: int, base: Base, agent: bool, accepted: bool) -> G
     if agent and base.ids is not None:
         refused = plan_problems(str(data.get("body") or ""), base.ids)
     asks: list[str] = []
-    if not accepted:
+    if not accepted and (base.ids is not None or base.reviews):
         edited = [f for f in files if f == DIRECTION or f.startswith(DIRECTION_DIR)]
         asks += [f"{f} edits the product's direction, which only the maintainer changes (D-34)" for f in edited]
         for area in base.protected(files):
@@ -354,7 +402,11 @@ def main() -> int:
     parser.add_argument("--wait", action="store_true", help="poll until no check is pending")
     parser.add_argument("--interval", type=int, default=30, help="seconds between polls (default 30)")
     parser.add_argument("--timeout", type=int, default=1800, help="seconds before --wait gives up (default 1800)")
-    parser.add_argument("--checkout", default=".", help="the repo's checkout, read at origin/HEAD (default .)")
+    parser.add_argument(
+        "--checkout",
+        help="the repo's checkout, read at origin/HEAD, else at the PR's base branch on origin (default: ., "
+        "and outside a checkout nothing is read)",
+    )
     parser.add_argument("--bot-login", help="the login agents write as, such as <slug>[bot]; its PRs are agents'")
     parser.add_argument("--agent", action="store_true", help="every PR named is an agent's (a handover)")
     parser.add_argument(
@@ -369,11 +421,14 @@ def main() -> int:
         parser.error("--bot-login names a login, such as <slug>[bot]")
     deadline = time.monotonic() + args.timeout
     try:
-        base = read_base(args.checkout, args.repo)
+        bases = Bases(args.checkout, args.repo)
         while True:
             gates = []
             for number in args.prs:
                 data = fetch(number, args.repo)
+                base = bases.base(str(data["baseRefName"]))
+                if base.ids is not None or base.reviews:
+                    data["files"] = all_files(data, number, args.repo)
                 agent = args.agent or (
                     args.bot_login is not None and author_of(data.get("author") or {}) == args.bot_login
                 )
