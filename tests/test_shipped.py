@@ -365,6 +365,63 @@ def test_s021_3_an_existing_notice_counts_as_told_for_its_tag_and_stage(
     assert (posted(sp, tag, "", *comments) == []) is told
 
 
+def deployed(sp: ModuleType, environment: str, tag: str, *comments: str) -> list[str]:
+    """The bodies tell posts on issue #5, whose comments are these, for tag's deployment"""
+    calls: list[list[str]] = []
+
+    def gh(cmd: list[str]) -> str:
+        calls.append(cmd)
+        return viewed(*comments) if cmd[:3] == ["gh", "issue", "view"] else ""
+
+    sp.tell("me/demo", {5: {"abc1234"}}, tag, "`uv add demo`", ["gh"], gh, environment=environment)
+    return [c[-1] for c in calls if c[1:3] == ["issue", "comment"]]
+
+
+@pytest.mark.parametrize(
+    ("comments", "posts"),
+    [
+        ([], True),
+        (["<!-- shipmill:available: stable v1.2.0 -->\nReleased in v1.2.0.", "Released in v1.2.0."], True),
+        (["<!-- shipmill:available: production v1.2.0 -->\nDeployed to production in v1.2.0."], True),
+        (["<!-- shipmill:available: staging v1.1.0 -->\nDeployed to staging in v1.1.0."], False),  # once per stage
+        (["<!-- shipmill:available: staging v1.2.0 -->\nDeployed to staging in v1.2.0."], False),
+        (["Deployed to staging in v1.2.0."], True),  # a person's words without the marker are no notice
+    ],
+)
+def test_s021_4_a_deployment_posts_deployed_to_once_per_environment(
+    sp: ModuleType, comments: list[str], posts: bool
+) -> None:
+    found = deployed(sp, "staging", "v1.2.0", *comments)
+    if not posts:
+        assert found == []
+        return
+    # no command: the deployment, not the person, puts it there
+    assert found == ["<!-- shipmill:available: staging v1.2.0 -->\nDeployed to staging in v1.2.0."]
+
+
+def test_s021_4_a_deployment_notice_leaves_the_release_stages_as_they_were(sp: ModuleType) -> None:
+    staging = {"body": sp.deployed_notice("staging", "v1.0.0")}
+    rc = {"body": "<!-- shipmill:available: pre-release v1.0.0rc1 -->\nReleased in v1.0.0rc1 (pre-release)."}
+    stable = {"body": "<!-- shipmill:available: stable v1.0.0 -->\nReleased in v1.0.0."}
+    assert sp.told([staging], "v1.0.0") is False
+    assert sp.told([staging], "v1.0.0rc1") is False
+    assert sp.told([rc, staging], "v1.0.0rc2") is True
+    assert sp.told([rc, stable, staging], "v1.1.0rc1") is False
+    assert sp.told([stable, staging], "v1.0.0") is True
+
+
+@pytest.mark.parametrize("name", ["stable", "pre-release", "", "-x", "a b", "prod/eu"])
+def test_s021_4_environment_must_be_an_environment_s_name(sp: ModuleType, name: str) -> None:
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), "me/demo", "v1.0.0", "v1.1.0", "--environment", name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 2
+    assert "environment" in done.stderr
+
+
 @pytest.mark.parametrize(
     ("pin", "install", "given", "pre", "stable"),
     [

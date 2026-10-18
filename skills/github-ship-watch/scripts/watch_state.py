@@ -81,6 +81,13 @@ deployments and issues shipmill operate writes):
                   for those few minutes
   INCIDENT_OPEN   an open issue labelled [operate] incident_label (default "incident"),
                   with its age and the pull requests linked to close it
+  UNANNOUNCED     per environment, the closed issues its current deployment (the newest that
+                  reached success; a failed or unfinished one never counts) of a release tag
+                  fixed that have no notice of the environment, as "<tag> #N ... deployed to
+                  <environment> (since <prev>)": prev is the release tag of the newest
+                  earlier successful deployment there, else the release tag below the
+                  current one (github-pr-triage's shipped.py --environment, in plan mode;
+                  S-021-4)
 
 Intake (github-issue-triage's triage_state.py):
   ISSUES          issues needing triage action, counted by state
@@ -865,15 +872,30 @@ def fetch_tag_runs(repo: str, tag: str) -> list[Run]:
     return sorted(found, key=lambda r: r.created, reverse=True)
 
 
-def unannounced(repo: str, repo_dir: Path, prev: str, tag: str, env: dict[str, str] | None = None) -> list[str]:
-    """The issues shipped.py would tell in plan mode; ``env`` is the environment it runs in"""
-    out = run([sys.executable, str(SHIPPED), repo, prev, tag, "--repo-dir", str(repo_dir)], env=env)
+def unannounced(
+    repo: str,
+    repo_dir: Path,
+    prev: str,
+    tag: str,
+    env: dict[str, str] | None = None,
+    environment: str | None = None,
+) -> list[str]:
+    """The issues shipped.py would tell in plan mode, of the release, or with environment, of
+    tag's deployment there; ``env`` is the process environment it runs in"""
+    cmd = [sys.executable, str(SHIPPED), repo, prev, tag, "--repo-dir", str(repo_dir)]
+    out = run(cmd if environment is None else [*cmd, "--environment", environment], env=env)
     return [line.split()[0] for line in out.splitlines() if "WOULD POST" in line]
 
 
 def unannounced_row(repo: str, tag: str, prev: str, issues: list[str]) -> Row:
     """The issues the tag fixed that no notice for its stage tells; the watch posts them"""
     return Row("UNANNOUNCED", tag, f"{' '.join(issues)} (since {prev})", skill_fix("github-ship-watch", repo))
+
+
+def deployed_row(repo: str, environment: str, tag: str, prev: str, issues: list[str]) -> Row:
+    """The issues tag's deployment to the environment fixed that no notice of it tells (S-021-4)"""
+    detail = f"{' '.join(issues)} deployed to {environment} (since {prev})"
+    return Row("UNANNOUNCED", tag, detail, skill_fix("github-ship-watch", repo))
 
 
 # -- holds and operations ------------------------------------------------------------------
@@ -1163,6 +1185,26 @@ def current_deployment(deployments: list[Deployment], statuses_of: Callable[[int
     return None
 
 
+def deployed_since(
+    deployments: list[Deployment], current: Current, statuses_of: Callable[[int], list[Status]], tags: list[str]
+) -> str | None:
+    """The tag an environment ran before current's, which its notices count from (S-021-4):
+    the newest earlier deployment, newest first, of another of the release tags that reached
+    success, else the release tag just below current's. None when current's ref is no release
+    tag of the checkout, or no tag is below it. A failed or unfinished deployment never counts"""
+    key = version_key(current.tag)
+    if key is None or current.tag not in tags:
+        return None
+    for deployment in deployments:
+        earlier = deployment.ref.removeprefix("refs/tags/")
+        if deployment.id >= current.deployment.id or earlier == current.tag or earlier not in tags:
+            continue
+        if any(s.state == "success" for s in statuses_of(deployment.id)):
+            return earlier
+    below = sorted((k, t) for k, t in ((version_key(t), t) for t in tags) if k is not None and k < key)
+    return below[-1][1] if below else None
+
+
 def operate_rows(runs: list[Run], caller: str, repo: str) -> list[Row]:
     failed = failed_run(runs)
     if failed is not None:
@@ -1428,18 +1470,44 @@ def operate_start(caller: tuple[str, bool] | None, repo: str, repo_dir: Path) ->
     return "write one with `shipmill init --operate`, then run it once", fix
 
 
+def deployed_rows(
+    repo: str,
+    repo_dir: Path,
+    environment: str,
+    deployments: list[Deployment],
+    current: Current | None,
+    statuses_of: Callable[[int], list[Status]],
+    tags: list[str],
+) -> list[Row]:
+    """UNANNOUNCED for the issues the environment's current deployment fixed that no notice of
+    the environment tells yet (S-021-4); none without a successful deployment of a release tag"""
+    if current is None:
+        return []
+    prev = deployed_since(deployments, current, statuses_of, tags)
+    if prev is None:
+        return []
+    issues = unannounced(repo, repo_dir, prev, current.tag, environment=environment)
+    return [deployed_row(repo, environment, current.tag, prev, issues)] if issues else []
+
+
 def operations_rows(
-    repo: str, repo_dir: Path, envs: list[Environment], held: bool, label: str, now: dt.datetime
+    repo: str, repo_dir: Path, envs: list[Environment], held: bool, label: str, now: dt.datetime, tags: list[str]
 ) -> list[Row]:
     caller = operate_caller(repo_dir)
     runs = fetch_runs(repo, caller[0]) if caller else []
     rows = operate_rows(runs, caller[0], repo) if caller else []
     deployments = {e.name: fetch_deployments(repo, e.name) for e in envs}
-    current = {e.name: current_deployment(deployments[e.name], lambda i: fetch_statuses(repo, i)) for e in envs}
+
+    def statuses_of(deployment: int) -> list[Status]:
+        return fetch_statuses(repo, deployment)
+
+    current = {e.name: current_deployment(deployments[e.name], statuses_of) for e in envs}
     for env in envs:
         row = unhealthy_row(env.name, current[env.name], now)
         if row is not None:
             rows.append(row)
+    for env in envs:
+        rows += deployed_rows(repo, repo_dir, env.name, deployments[env.name], current[env.name], statuses_of, tags)
     issues = proposal_issues(
         fetch_issues(repo, "--label", PROPOSAL_LABEL), lambda: fetch_issues(repo, "--search", PROPOSAL_SEARCH)
     )
@@ -2267,7 +2335,8 @@ def main() -> int:
             texts = postmortem_texts(args.repo, branch)
             rows += postmortem_rows(closed, read.incident_label, texts, args.repo, now)
         if read.environments:
-            rows += operations_rows(args.repo, repo_dir, read.environments, bool(holds), read.incident_label, now)
+            names, label = [t.name for t in tags], read.incident_label
+            rows += operations_rows(args.repo, repo_dir, read.environments, bool(holds), label, now, names)
         upgrades = upgrade_rows(
             fetch_issues(args.repo, "--label", UPGRADE_LABEL),
             read.upgrade,
