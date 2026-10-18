@@ -250,6 +250,7 @@ TRIAGE_ACTION = {
     "VERIFY_DUE",
     "NO_ASSIGNEE",
     "VERIFY_CLOSED",
+    "OFF_MILESTONE",
 }
 POLICY = Path(".github/shipmill.toml")
 # a GitHub login, as a WITH_PERSON line's assignees name them: the row shows nothing else (D-16)

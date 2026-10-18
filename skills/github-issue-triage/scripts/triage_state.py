@@ -71,11 +71,16 @@ For each open issue:
                    shipmill-upgrade, and with <!-- shipmill-upgrade: <id> <version> --> as
                    its body's first line, reads as usual; any other github-actions[bot]
                    issue, or one with only the label or only the marker, is UNTRUSTED
+  OFF_MILESTONE    a build issue whose feature issue (its sub-issue parent, in this
+                   repo) is in a milestone it isn't in (spec 022): set its milestone
+                   to the parent's. Read after UNTRUSTED, NEEDS_DECISION, and DECIDED,
+                   before any other state; one already in that milestone, or whose
+                   parent has none, reads its usual state
 
 An open issue labelled human is a person's item (spec 017): its assignees do it, no PR
 state (IN_PROGRESS, DONE_NOT_CLOSED) applies, and it counts as triaged from the start, so
 its "Depends on" lines and GitHub's holds apply with no triage comment. After UNTRUSTED,
-NEEDS_DECISION, and DECIDED, it reads NO_ASSIGNEE, else UNFILLED, SPEC_REFUSED, BLOCKED,
+NEEDS_DECISION, DECIDED, and OFF_MILESTONE, it reads NO_ASSIGNEE, else UNFILLED, SPEC_REFUSED, BLOCKED,
 REVISIT, or POSTPONED as any issue would, else, with every hold closed, one of:
   NO_ASSIGNEE      labelled human with no assignee: ask the maintainer who does it
   HANDOFF_DUE      no hand-off came after its newest hold closed (or ever, with no
@@ -116,7 +121,8 @@ For the N most recently closed issues (default 20):
                    COLLABORATOR or the --bot-login: run its check
 
 With --wip N (a work-in-progress limit, such as the config's [agents] wip), a last
-line says how many issues are IN_PROGRESS, the room left under N, and the issues
+line says how many issues are IN_PROGRESS (counting an OFF_MILESTONE one with an open
+PR), the room left under N, and the issues
 ready to start (NEEDS_PR or UNBLOCKED), oldest first; with --json, as one JSON object.
 An issue labelled human never counts as in progress or ready: the limit is on agents' work.
 
@@ -124,15 +130,15 @@ An issue labelled human never counts as in progress or ready: the limit is on ag
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
 SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, SUSPECT_CLOSE, HANDOFF_DUE, VERIFY_DUE,
-NO_ASSIGNEE, or VERIFY_CLOSED (never for NEEDS_DECISION, UNTRUSTED, or WITH_PERSON),
+NO_ASSIGNEE, VERIFY_CLOSED, or OFF_MILESTONE (never for NEEDS_DECISION, UNTRUSTED, or WITH_PERSON),
 2 on bad input (an issue with more than 100
 labels) or a gh failure. It pages past 100 open issues and an issue's 50 comments, 50
 cross-references, 50 blocking issues, or 50 sub-issues, and back through tags to the
 newest stable one, with one query when nothing is capped. A page GitHub rejects for its
 resource limits is asked again at half the size, down to 10 items; one rejected at 10
-fails with one error line. When GitHub's schema has no blockedBy or subIssues (an
+fails with one error line. When GitHub's schema has no blockedBy, subIssues, or parent (an
 undefinedField error naming one, such as a GitHub Enterprise Server without issue
-dependencies), it classifies on the text holds alone and prints one "note: native
+dependencies), it classifies on the text holds alone, with no OFF_MILESTONE, and prints one "note: native
 relations unavailable: <first error line>" line to stderr; any other gh error, an error
 on one issue's relations too, still exits 2. Needs the gh
 CLI, authenticated. Python 3.10+, standard library only.
@@ -177,6 +183,11 @@ NATIVE_NODES = (
     "pageInfo { hasNextPage endCursor } nodes { number state stateReason closedAt repository { nameWithOwner } }"
 )
 NATIVE = "".join(f"\n        {field}(first: 50) {{ {NATIVE_NODES} }}" for field in NATIVE_FIELDS)
+# A build issue's feature issue is its sub-issue parent, whose milestone it should share
+# (spec 022): one field of the same query, never a call per issue
+PARENT = "\n        parent { number repository { nameWithOwner } milestone { title } }"
+# The fields only a forge with sub-issues and dependencies has: refusing one falls back
+NATIVE_SCHEMA = (*NATIVE_FIELDS, "parent")
 
 
 def open_issue_fields(native: bool) -> str:
@@ -188,6 +199,7 @@ def open_issue_fields(native: bool) -> str:
         number title body """
         + AUTHOR
         + """
+        milestone { title }
         labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
         assignees(first: 10) { nodes { login } }
         comments(last: 50) { nodes { """
@@ -198,7 +210,7 @@ def open_issue_fields(native: bool) -> str:
         + OPEN_TIMELINE
         + """
         }"""
-        + (NATIVE if native else "")
+        + (NATIVE + PARENT if native else "")
         + """
       }
 """
@@ -403,7 +415,7 @@ class NativeUnavailable(Exception):
     """The forge has no blockedBy or subIssues: classify on text holds alone"""
 
 
-NATIVE_NAME = re.compile(r"\b(?:" + "|".join(NATIVE_FIELDS) + r")\b")
+NATIVE_NAME = re.compile(r"\b(?:" + "|".join(NATIVE_SCHEMA) + r")\b")
 UNDEFINED = re.compile(r"doesn't exist on type|isn't a defined input type")
 
 
@@ -417,7 +429,7 @@ def names_native(error: object) -> bool:
     extensions = error.get("extensions")
     message = str(error.get("message", ""))
     if isinstance(extensions, dict) and extensions.get("code") == "undefinedField":
-        return extensions.get("fieldName") in NATIVE_FIELDS or NATIVE_NAME.search(message) is not None
+        return extensions.get("fieldName") in NATIVE_SCHEMA or NATIVE_NAME.search(message) is not None
     return UNDEFINED.search(message) is not None and NATIVE_NAME.search(message) is not None
 
 
@@ -465,6 +477,7 @@ ACTION = {
     "VERIFY_DUE",
     "NO_ASSIGNEE",
     "VERIFY_CLOSED",
+    "OFF_MILESTONE",
 }
 CLOSED_STATES = ("CLOSED", "NOT_PLANNED", "MERGED")  # a hold in one of these holds nothing
 HOLD = re.compile(r"\b(?:on hold|blocked|waits? on|waiting on|pending|depends on)\b", re.IGNORECASE)
@@ -902,6 +915,24 @@ def latest_stable(tags: list[dict[str, Any]], pattern: re.Pattern[str] = STABLE)
     return max(stable) if stable else None
 
 
+def off_milestone(issue: dict[str, Any], repo: tuple[str, str]) -> str | None:
+    """The note of OFF_MILESTONE (spec 022): a build issue whose feature issue, its sub-issue
+    parent in this repository, is in a milestone the build issue isn't in; None when it is
+    in that milestone, the parent has none, or it has no parent here (another repo's
+    milestones aren't this one's, and an issue fetched without native fields has none)"""
+    parent = issue.get("parent")
+    if not parent:
+        return None
+    if parent["repository"]["nameWithOwner"].lower() != "/".join(repo).lower():
+        return None
+    goal = (parent.get("milestone") or {}).get("title")
+    own = (issue.get("milestone") or {}).get("title")
+    if goal is None or own == goal:
+        return None
+    where = f"milestone {own}" if own is not None else "no milestone"
+    return f"parent #{parent['number']} is in milestone {goal}, this is in {where}"
+
+
 def classify_open(
     issue: dict[str, Any],
     marker: str,
@@ -911,9 +942,14 @@ def classify_open(
     repo: tuple[str, str],
     bot_login: str | None = None,
     closes: dict[tuple[str, str, int], str] | None = None,
+    milestone: bool = True,
 ) -> tuple[str, str]:
     """An open issue's state once gated found none; ``closes`` says when each closed hold
-    closed, which a person's item (labelled human) reads its hand-off against"""
+    closed, which a person's item (labelled human) reads its hand-off against. Without
+    ``milestone``, the state OFF_MILESTONE hides (--wip counts one hiding IN_PROGRESS)"""
+    missed = off_milestone(issue, repo) if milestone else None
+    if missed is not None:
+        return "OFF_MILESTONE", missed
     labels = {n["name"] for n in issue["labels"]["nodes"]}
     # A person's item: its assignees do it, never an implementer, so no PR state applies,
     # and it counts as triaged from the start (spec 017)
@@ -1206,13 +1242,16 @@ def classify_closed(
     return "SUSPECT_CLOSE", f"commit {closer.get('abbreviatedOid')} names #{number} only mid-line"
 
 
-def wip_room(rows: list[dict[str, Any]], wip: int, people: frozenset[int] = frozenset()) -> dict[str, Any]:
+def wip_room(
+    rows: list[dict[str, Any]], wip: int, people: frozenset[int] = frozenset(), busy: frozenset[int] = frozenset()
+) -> dict[str, Any]:
     """How many more issues may start under a WIP limit of ``wip``, counting each issue with
     an open PR as in progress, and the issues ready to start (NEEDS_PR or UNBLOCKED), oldest
     first: build issues are filed in build order. A person's item (one of ``people``) never
-    counts: the limit is on agents' work"""
+    counts: the limit is on agents' work. ``busy`` are issues whose OFF_MILESTONE hides
+    IN_PROGRESS: they count as in progress too"""
     agents = [r for r in rows if r["number"] not in people]
-    in_progress = sum(1 for r in agents if r["state"] == "IN_PROGRESS")
+    in_progress = sum(1 for r in agents if r["state"] == "IN_PROGRESS" or r["number"] in busy)
     ready = sorted(r["number"] for r in agents if r["state"] in ("NEEDS_PR", "UNBLOCKED"))
     return {"wip": wip, "in_progress": in_progress, "room": max(wip - in_progress, 0), "ready": ready}
 
@@ -1222,7 +1261,7 @@ def main() -> int:
         description=__doc__.splitlines()[0],
         epilog=(
             "States: NEW NEEDS_PR IN_PROGRESS DONE_NOT_CLOSED BLOCKED UNFILLED SPEC_REFUSED UNBLOCKED "
-            "POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED UNTRUSTED; for an issue labelled human "
+            "POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED UNTRUSTED OFF_MILESTONE; for an issue labelled human "
             "(a person's item) NO_ASSIGNEE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
             "SUSPECT_CLOSE VERIFY_CLOSED. The module docstring defines each."
         ),
@@ -1276,12 +1315,19 @@ def main() -> int:
     closes = {**closes, **{r: c for r, (_, _, c) in holds.items() if c is not None}}
     stable = latest_stable(data["tags"]["nodes"], stable_pattern)
     people: set[int] = set()
+    busy: set[int] = set()  # OFF_MILESTONE over an open PR: still in progress under --wip
     for issue in data["open"]["nodes"]:
         if HUMAN_LABEL in {n["name"] for n in issue["labels"]["nodes"]}:
             people.add(issue["number"])
         state, note = gated(issue, args.bot_login, args.trusted_only) or classify_open(
             issue, args.marker, args.postponed_label, states, stable, (owner, name), args.bot_login, closes
         )
+        if state == "OFF_MILESTONE":
+            usual = classify_open(
+                issue, args.marker, args.postponed_label, states, stable, (owner, name), args.bot_login, closes, False
+            )
+            if usual[0] == "IN_PROGRESS":
+                busy.add(issue["number"])
         row: dict[str, Any] = {"number": issue["number"], "state": state, "title": issue["title"], "note": note}
         if state == "WITH_PERSON":  # whom it waits on, for github-ship-watch's ISSUES_OPEN row
             row["assignees"] = assignees(issue)
@@ -1296,6 +1342,7 @@ def main() -> int:
         "VERIFY_CLOSED",
         "DONE_NOT_CLOSED",
         "DECIDED",
+        "OFF_MILESTONE",
         "VERIFY_DUE",
         "HANDOFF_DUE",
         "NO_ASSIGNEE",
@@ -1320,7 +1367,7 @@ def main() -> int:
         else:
             print(f"#{r['number']:<5} {r['state']:<16} {r['title'][:70]}" + (f"  [{r['note']}]" if r["note"] else ""))
     if args.wip is not None:
-        room = wip_room(rows, args.wip, frozenset(people))
+        room = wip_room(rows, args.wip, frozenset(people), frozenset(busy))
         if args.json:
             print(json.dumps(room, sort_keys=True))
         else:
