@@ -402,7 +402,12 @@ def test_prepare_yml_never_asks_a_caller_for_issues_write() -> None:
     assert "\npermissions:" not in text
     propose_job = text.split("\n  propose:\n", 1)[1]
     assert "\n    permissions:" not in propose_job
-    assert "needs.prepare.outputs.action == 'propose' && needs.prepare.outputs.mode == 'release'" in propose_job
+    # proves: S-029-4 (a release run proposes a breaking stable candidate beside it)
+    assert "needs.prepare.outputs.proposals != '' && needs.prepare.outputs.mode == 'release'" in propose_job
+    assert "continue-on-error: ${{ needs.prepare.outputs.action == 'release' }}" in propose_job
+    plan_step = text.split("      - name: Plan\n", 1)[1].split("      - name: ", 1)[0]
+    assert "ACTOR: ${{ github.triggering_actor }}" in plan_step
+    assert '[ -n "$ACTOR" ] && args+=(--actor "$ACTOR")' in plan_step
 
 
 def test_a_held_proposal_says_to_close_the_hold_under_propose_too(repo: Repo) -> None:

@@ -4,6 +4,7 @@
 import datetime as dt
 import fnmatch
 import json
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -18,11 +19,33 @@ from shipmill.version import PATTERN, ZERO, Part, Version
 
 BREAKING = "a breaking change waits for the maintainer's decision"  # a breaking stable candidate's cause
 
+# a GitHub login, or a bot's `<name>[bot]`: up to 39 letters, digits, and hyphens, not led by a hyphen
+_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?")
+
 
 class Event(StrEnum):
     PUSH = "push"
     SCHEDULE = "schedule"
     MANUAL = "workflow_dispatch"
+
+
+@dataclass(frozen=True, slots=True)
+class Actor:
+    """Who started the run ($GITHUB_TRIGGERING_ACTOR): a person, or a bot such as the App
+    an agent writes as, whose login ends in `[bot]` (spec 029)"""
+
+    login: str
+
+    def __post_init__(self) -> None:
+        if not _LOGIN.fullmatch(self.login):
+            raise ReleaseError(f"--actor is a GitHub login, such as octocat or shipmill[bot]; got {self.login!r}")
+
+    @property
+    def is_bot(self) -> bool:
+        return self.login.endswith("[bot]")
+
+    def __str__(self) -> str:
+        return self.login
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +87,7 @@ class Decision:
     base: str = ""
     merges: tuple[str, ...] = ()  # a hotfix's merge commits, in PR order
     prs: tuple[int, ...] = ()
-    proposals: tuple[Proposal, ...] = ()  # with action "propose"
+    proposals: tuple[Proposal, ...] = ()  # with action "propose", or a breaking stable one beside a release
 
     def outputs(self) -> dict[str, str]:
         return {
@@ -189,9 +212,7 @@ class Planner:
     def _breaking(self, pending: list[Entry]) -> bool:
         """Whether the entries hold one under a `major` heading: read from the headings, not
         the version, since before 1.0 a major bump moves the minor. Paths never bump the major"""
-        if self.policy.bump_from is not BumpFrom.HEADINGS:
-            return False
-        major = {h for h, part in self.policy.bump_headings.items() if part is Part.MAJOR}
+        major = self.policy.major_headings
         return any(entry.heading in major for entry in pending)
 
     # -- candidates ------------------------------------------------------------------------
@@ -404,7 +425,7 @@ class Planner:
     def _autonomy(self, lane: Lane, candidate: _Candidate) -> tuple[Autonomy, str]:
         """How far a trigger releases the candidate by itself, and why not further. A breaking
         stable candidate is at most propose, as the hold makes every stage (D-8, D-39); a
-        person starting the lane by hand doesn't come here"""
+        person starting the lane by hand doesn't come here, and plan checks it was a person"""
         level = self.policy.autonomy.effective(Stage.release(), self.hold())
         cause = self.policy.autonomy.cause(Stage.release(), self.hold())
         if lane is Lane.STABLE and candidate.breaking and level is not Autonomy.OBSERVE:
@@ -415,8 +436,15 @@ class Planner:
     # -- the decision --------------------------------------------------------------------------
 
     def plan(
-        self, event: Event, lane: Lane | None = None, dry_run: bool = False, hotfix: Hotfix | None = None
+        self,
+        event: Event,
+        lane: Lane | None = None,
+        dry_run: bool = False,
+        hotfix: Hotfix | None = None,
+        actor: Actor | None = None,
     ) -> Decision:
+        """actor is who started the run; a breaking stable candidate started by hand releases
+        only when it names a person (spec 029)"""
         mode = Mode.DRY_RUN if dry_run and self.policy.mode is not Mode.OFF else self.policy.mode
         if mode is Mode.OFF:
             return Decision(mode, "skip", "the policy's mode is off")
@@ -492,6 +520,22 @@ class Planner:
                         " (a hotfix can still be started by hand)"
                     )
                     continue
+                if current is Lane.STABLE and candidate.breaking:
+                    # the maintainer's decision is a person's hand start: not an agent writing
+                    # as the App, and not a run that doesn't say who started it (spec 029)
+                    if actor is None:
+                        skipped.append(
+                            f"{current}: {candidate.version} waits, a breaking release is started by a person,"
+                            " and this run names none (shipmill plan --actor)"
+                        )
+                        continue
+                    if actor.is_bot:
+                        skipped.append(
+                            f"{current}: {candidate.version} waits, a breaking release is started by a person,"
+                            f" not {actor}"
+                        )
+                        continue
+                    due = f"breaking, started by @{actor}"
             elif (gate := self._autonomy(current, candidate))[0] is not Autonomy.ACT:
                 level, cause = gate
                 if level is Autonomy.OBSERVE:
@@ -499,15 +543,20 @@ class Planner:
                 else:
                     proposals.append(Proposal(current, candidate.version, candidate.base, cause))
                 continue
+            # a breaking stable proposal is opened or kept up to date while rc or dev release
+            # its pre-releases (spec 029); only acting autonomy gets here with a proposal
+            waiting = tuple(p for p in proposals if p.lane is Lane.STABLE and p.cause == BREAKING)
+            proposed = [f"{p.lane}: {p.version} is due, proposed instead of released: {p.cause}" for p in waiting]
             return Decision(
                 mode,
                 "release",
-                "; ".join([f"{current} {candidate.version}: {candidate.why}", due, *notes]),
+                "; ".join([f"{current} {candidate.version}: {candidate.why}", due, *proposed, *notes]),
                 current,
                 candidate.version,
                 candidate.base,
                 candidate.merges,
                 candidate.prs,
+                proposals=waiting,
             )
         if proposals:
             proposed = [f"{p.lane}: {p.version} is due, proposed instead of released: {p.cause}" for p in proposals]

@@ -3,9 +3,16 @@ candidate whose pending entries sit under a `major` heading, it proposes it; a p
 the stable lane by hand releases it. And stable promotes an rc of any age once a trigger is due"""
 
 import datetime as dt
+import json
 
-from shipmill.planner import BREAKING, Event, Proposal
+import pytest
+
+from shipmill.cli import main
+from shipmill.errors import ReleaseError
+from shipmill.github import PROPOSAL_LABEL
+from shipmill.planner import BREAKING, Actor, Decision, Event, Planner, Proposal
 from shipmill.policy import Lane
+from shipmill.propose import Outcome, close_released, propose
 from shipmill.version import Version
 
 from .conftest import Repo, at_day
@@ -55,6 +62,15 @@ promote_from = "rc"
 quiet_minutes = 30
 github_release = true
 """
+
+
+def start(repo: Repo, now: dt.datetime, actor: str | None, lane: Lane | None = Lane.STABLE) -> Decision:
+    """Plan a workflow_dispatch run started by actor, as `shipmill plan --actor` does"""
+    repo.at(now)
+    repo.git.fetch("+refs/heads/main:refs/remotes/origin/main")
+    repo.git.run("checkout", "-q", "--detach", "origin/main")
+    planner = Planner(repo.git, repo.policy, repo.github, now)
+    return planner.plan(Event.MANUAL, lane, actor=Actor(actor) if actor else None)
 
 
 def use_policy(repo: Repo, text: str, autonomy: str = "") -> None:
@@ -113,9 +129,9 @@ def test_s029_1_a_hand_start_releases_the_breaking_change_and_lane_policy_propos
     repo.merge(1, "Breaking", "Drop the old API")
     # lane=policy plans as a scheduled run does (D-1)
     assert plan(repo, at_day(0, 7), event=Event.MANUAL).action == "propose"
-    started = plan(repo, at_day(0, 7), event=Event.MANUAL, lane=Lane.STABLE)
+    started = start(repo, at_day(0, 7), "octocat")
     assert (started.action, started.lane, str(started.version)) == ("release", Lane.STABLE, "2.0.0")
-    assert started.reason == "stable 2.0.0: 1 pending entries; started by hand"
+    assert started.reason == "stable 2.0.0: 1 pending entries; breaking, started by @octocat"
 
 
 def test_s029_1_observe_stays_observe_and_the_hold_names_itself(repo: Repo) -> None:
@@ -164,7 +180,7 @@ def test_s029_1_a_breaking_entry_in_an_rc_section_the_stable_release_folds_waits
     repo.merge(2, "Fixed", "Fix B")
     decision = plan(repo, at_day(0, 7))
     assert [(str(p.version), p.cause) for p in decision.proposals] == [("2.0.0", BREAKING)], decision.reason
-    started = plan(repo, at_day(0, 7), event=Event.MANUAL, lane=Lane.STABLE)
+    started = start(repo, at_day(0, 7), "octocat")
     assert (started.action, str(started.version)) == ("release", "2.0.0")
 
 
@@ -179,7 +195,7 @@ def test_s029_2_a_promotion_whose_rc_base_is_breaking_is_proposed(repo: Repo) ->
     decision = plan(repo, at_day(1, 9))
     assert decision.action == "propose", decision.reason
     assert decision.proposals == (Proposal(Lane.STABLE, Version.parse("2.0.0"), str(rc_base), BREAKING),)
-    started = plan(repo, at_day(1, 9), event=Event.MANUAL, lane=Lane.STABLE)
+    started = start(repo, at_day(1, 9), "octocat")
     assert (started.action, str(started.version), started.base) == ("release", "2.0.0", rc_base)
 
 
@@ -240,3 +256,135 @@ def test_s029_10_a_promotion_still_defers_when_the_ci_workflows_changed(repo: Re
     decision = plan(repo, at_day(1, 9))
     assert decision.lane is not Lane.STABLE
     assert "stable: the CI workflows (.github/workflows/) changed since v1.1.0rc1" in decision.reason
+
+
+# -- the proposal beside a pre-release, its issue, and the hand start (#462) --------------------
+
+RC_AND_STABLE = """\
+[lanes.rc]
+schedule = ["daily 07:00 UTC"]
+github_release = true
+
+[lanes.stable]
+quiet_minutes = 30
+github_release = true
+"""
+
+
+def test_s029_4_an_rc_release_proposes_the_breaking_stable_candidate_in_the_same_run(repo: Repo) -> None:
+    repo.at(at_day(0, 6))
+    use_policy(repo, HEAD + HEADINGS + RC_AND_STABLE)
+    repo.merge(1, "Breaking", "Drop the old API")
+    head = repo.git.sha()
+    decision = plan(repo, at_day(0, 8))
+    assert (decision.action, decision.lane, str(decision.version)) == ("release", Lane.RC, "2.0.0rc1")
+    assert decision.proposals == (Proposal(Lane.STABLE, Version.parse("2.0.0"), head, BREAKING),)
+    assert f"stable: 2.0.0 is due, proposed instead of released: {BREAKING}" in decision.reason
+    assert decision.reason.startswith("rc 2.0.0rc1: 1 pending entries; window 'daily 07:00 UTC' opened")
+    assert json.loads(decision.outputs()["proposals"]) == [p.as_dict() for p in decision.proposals]
+    [first] = propose(repo.git, repo.policy, repo.github, decision.proposals)
+    assert first.outcome is Outcome.OPENED
+    release(repo, decision)
+    # the next day's rc moves the proposal along with main, in place
+    repo.at(at_day(1, 6))
+    repo.merge(2, "Fixed", "Fix B")
+    later = plan(repo, at_day(1, 8))
+    assert (later.action, str(later.version)) == ("release", "2.0.0rc2")
+    [again] = propose(repo.git, repo.policy, repo.github, later.proposals)
+    assert (again.issue, again.outcome) == (first.issue, Outcome.UPDATED)
+    assert "- Fix B (#2)" in repo.github.issues[first.issue].body and len(repo.github.issues) == 1
+
+
+def test_s029_4_a_release_carries_no_proposal_when_stable_is_not_breaking(repo: Repo) -> None:
+    repo.at(at_day(0, 6))
+    use_policy(repo, HEAD + HEADINGS + RC_AND_STABLE)
+    repo.merge(1, "Added", "Feature A")
+    decision = plan(repo, at_day(0, 8))
+    assert (decision.action, decision.lane) == ("release", Lane.STABLE)
+    assert decision.proposals == () and decision.outputs()["proposals"] == ""
+
+
+def test_s029_5_the_breaking_proposal_issue_lists_the_breaking_entries_first(repo: Repo) -> None:
+    repo.at(at_day(0, 6))
+    use_policy(repo, HEAD + HEADINGS + EVERY_BATCH)
+    repo.merge(1, "Breaking", "Drop the old API")
+    repo.merge(2, "Added", "Feature A")  # merge writes it above the Breaking section
+    [done] = propose(repo.git, repo.policy, repo.github, plan(repo, at_day(0, 7)).proposals)
+    issue = repo.github.issues[done.issue]
+    assert issue.title == "Ready to release v2.0.0 on stable"
+    assert repo.github.labels[done.issue] == (PROPOSAL_LABEL,)
+    assert f"but {BREAKING}." in issue.body
+    assert "it waits for the maintainer's decision" in issue.body
+    assert issue.body.index("#### Breaking\n\n- Drop the old API (#1)") < issue.body.index("#### Added\n\n- Feature A")
+    assert "gh workflow run release.yml -f lane=stable -f dry-run=false" in issue.body
+    assert "start the lane by hand as a person" in issue.body
+
+
+def test_s029_6_a_person_releases_the_breaking_candidate_a_bot_does_not(repo: Repo) -> None:
+    repo.at(at_day(0, 6))
+    use_policy(repo, HEAD + HEADINGS + EVERY_BATCH)
+    repo.merge(1, "Breaking", "Drop the old API")
+    person = start(repo, at_day(0, 7), "octocat")
+    assert (person.action, person.lane, str(person.version)) == ("release", Lane.STABLE, "2.0.0")
+    assert person.reason.endswith("; breaking, started by @octocat")
+    bot = start(repo, at_day(0, 7), "shipmill[bot]")
+    assert (bot.action, bot.lane) == ("skip", None)
+    assert bot.reason == "stable: 2.0.0 waits, a breaking release is started by a person, not shipmill[bot]"
+    # lane=policy plans as a scheduled run does (D-1), whoever starts it
+    assert start(repo, at_day(0, 7), "octocat", lane=None).action == "propose"
+    # a run that names nobody is not a person's decision
+    unnamed = start(repo, at_day(0, 7), None)
+    assert unnamed.action == "skip" and "a breaking release is started by a person" in unnamed.reason
+
+
+def test_s029_6_the_hold_still_stops_a_persons_hand_start(repo: Repo) -> None:
+    repo.at(at_day(0, 6))
+    use_policy(repo, HEAD + HEADINGS + EVERY_BATCH)
+    repo.merge(1, "Breaking", "Drop the old API")
+    repo.github.holds = ["#7 Incident"]
+    held = start(repo, at_day(0, 7), "octocat")
+    assert held.action == "skip"
+    assert held.reason.startswith("stable: 2.0.0 held by shipmill-hold #7; close it to release by hand")
+
+
+def test_s029_6_a_bot_still_starts_a_non_breaking_stable_release(repo: Repo) -> None:
+    repo.at(at_day(0, 6))
+    use_policy(repo, HEAD + HEADINGS + EVERY_BATCH)
+    repo.merge(1, "Added", "Feature A")
+    for actor in ("shipmill[bot]", None):
+        started = start(repo, at_day(0, 7), actor)
+        assert (started.action, str(started.version)) == ("release", "1.1.0")
+        assert started.reason == "stable 1.1.0: 1 pending entries; started by hand"
+
+
+def test_s029_6_the_cli_takes_the_actor_and_refuses_a_malformed_login(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo.at(at_day(0, 6))
+    use_policy(repo, HEAD + HEADINGS + EVERY_BATCH)
+    repo.merge(1, "Breaking", "Drop the old API")
+    start(repo, at_day(0, 7), None)  # checks out main's head, as the workflow does
+    now = at_day(0, 7).isoformat()
+    argv = ["--repo", str(repo.root), "plan", "--event", "workflow_dispatch", "--lane", "stable", "--now", now]
+    assert main([*argv, "--actor", "octocat"], repo.github) == 0
+    outputs = json.loads(capsys.readouterr().out)
+    assert (outputs["action"], outputs["version"]) == ("release", "2.0.0")
+    assert outputs["reason"].endswith("; breaking, started by @octocat")
+    assert main([*argv, "--actor", "dependabot[bot]"], repo.github) == 0
+    assert json.loads(capsys.readouterr().out)["reason"].endswith("not dependabot[bot]")
+    for bad in ("octo cat", "-octocat", "octocat[app]", "a" * 40):
+        with pytest.raises(ReleaseError, match="--actor is a GitHub login"):
+            Actor(bad)
+    with pytest.raises(ReleaseError, match="--actor is a GitHub login"):
+        main([*argv, "--actor", "octo;cat"], repo.github)
+
+
+def test_s029_6_land_closes_the_breaking_proposal_under_act(repo: Repo) -> None:
+    repo.at(at_day(0, 6))
+    use_policy(repo, HEAD + HEADINGS + EVERY_BATCH)
+    repo.merge(1, "Breaking", "Drop the old API")
+    [done] = propose(repo.git, repo.policy, repo.github, plan(repo, at_day(0, 7)).proposals)
+    release(repo, start(repo, at_day(0, 7), "octocat"))
+    closed = close_released(repo.policy, repo.github, Lane.STABLE, Version.parse("2.0.0"), None)
+    assert closed == f"closed proposal #{done.issue}: v2.0.0 released"
+    assert done.issue in repo.github.closed
