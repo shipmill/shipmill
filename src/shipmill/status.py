@@ -25,9 +25,11 @@ from shipmill.app import Identity, default_key
 from shipmill.config import CONFIG_PATH, config_path, read
 from shipmill.errors import ReleaseError
 from shipmill.gate import StateRunner, skills_dir
-from shipmill.github import UPGRADE_LABEL, labelled_command, parse_labelled
+from shipmill.github import UPGRADE_LABEL, GitHub, labelled_command, parse_labelled
 from shipmill.gitrepo import Git
 from shipmill.launchd import label
+from shipmill.planner import MilestoneOvertaken, MilestoneWaiting, Planner
+from shipmill.policy import Policy
 from shipmill.upgrades import Offer, offers, pending
 from shipmill.version import Version
 
@@ -61,6 +63,11 @@ STUCK_ROWS = (
 # chain's item in a repo without a gate, or a chain walk that fails, waits on a person too
 # (spec 017): neither stops this repo's releases, and no session can clear it
 CHAIN_ROWS = ("CHAIN_NO_GATE", "CHAIN_UNREADABLE")
+# spec 022's rows, read here with the planner, never by watch_state.py: a goal's milestone
+# waiting on its specs (no verdict: the build work is the factory's), and one a stable tag
+# overtook, which a person renames to the version the lane cuts next
+MILESTONE_WAITING = "MILESTONE_WAITING"
+MILESTONE_OVERTAKEN = "MILESTONE_OVERTAKEN"
 YOURS_ROWS = (
     "HOLD",
     "PROMOTION_DUE",
@@ -68,6 +75,7 @@ YOURS_ROWS = (
     "UNTRUSTED",
     "BRANCH_DELETE_OFF",
     "SHIPMILL_OUTDATED",
+    MILESTONE_OVERTAKEN,
     *CHAIN_ROWS,
 )
 RELEASE_ROWS = ("BOT_OK", "BOT_NONE", "BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE")
@@ -90,6 +98,7 @@ PLACED = {
     "GATE_NO_APP",  # D-19's row; the github app line says the same
     "HOST_UNKNOWN",  # the sessions line says it
     "UPGRADE_PENDING",  # spec 014: the upgrade lines say it, each with its issue (S-014-15)
+    MILESTONE_WAITING,  # spec 022: the milestone lines say both
 }
 # the release rows the repo line names in place of "release ok" (S-009-17)
 RELEASE_PROBLEMS = ("BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE", "NOT_PUBLISHED", "UNANNOUNCED")
@@ -275,6 +284,7 @@ class Facts:
     command: str  # how a fix names the CLI: cli_command()'s form
     agent_as_person: Flagged | None = None  # spec 012's check, read only with [agents] app_id
     upgrades: Sequence[Offer] = ()  # spec 014's pending upgrades, each with its open issue
+    milestone_error: str | None = None  # spec 022: why the milestones weren't read, when they weren't
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,6 +423,44 @@ def read_upgrades(
         return ()
     cmd = ["gh", *labelled_command(UPGRADE_LABEL), "-R", repo]
     return offers(raw, parse_labelled(gh_read(cmd, run, "gh issue list", pause)))
+
+
+def milestone_rows(repo: str, findings: Sequence[MilestoneWaiting | MilestoneOvertaken]) -> list[Row]:
+    """S-022-8, S-022-10: the planner's milestone findings as rows, the milestone the subject:
+    a waiting goal's reasons, or the tag that overtook it, the version next, and the rename"""
+    rows = []
+    for f in findings:
+        if isinstance(f, MilestoneWaiting):
+            rows.append(Row(MILESTONE_WAITING, f.verdict.milestone, f.verdict.reason, False))
+        else:
+            detail = f"{f.version.tag} exists; the {f.lane} lane cuts {f.next} next"
+            rename = f"gh api -X PATCH repos/{repo}/milestones/{f.milestone.number} -f title={f.next}"
+            rows.append(Row(MILESTONE_OVERTAKEN, f.milestone.title, detail, False, rename))
+    return rows
+
+
+def wants_milestones(root: Path) -> bool:
+    """A lane of the checkout's config sets milestone = true: only then are milestones read"""
+    lanes = _raw(root).get("lanes")
+    return isinstance(lanes, dict) and any(
+        isinstance(t, Mapping) and t.get("milestone") is True for t in lanes.values()
+    )
+
+
+def read_milestones(repo: str, root: Path, head: str, github: GitHub, now: dt.datetime) -> tuple[list[Row], str | None]:
+    """Spec 022's rows for the lanes with milestone = true, from the planner the release runs,
+    at head (GitHub's default branch, after watch_state.py's fetch); none and nothing read
+    without such a lane. A read that fails (a policy, a changelog, or a goal the plan can't
+    read, or GitHub) is the second value, shown on the milestone line: the plan's own error
+    is BOT_PLAN_FAILED's already"""
+    if not wants_milestones(root):
+        return [], None
+    try:
+        policy = Policy.load(config_path(root))
+        findings = Planner(Git(root, policy.bot_name, policy.bot_email), policy, github, now).milestone_findings(head)
+    except ReleaseError as error:
+        return [], str(error)
+    return milestone_rows(repo, findings), None
 
 
 def read_branch(repo: str, run: StateRunner, pause: Callable[[float], None] = time.sleep) -> str:
@@ -928,6 +976,11 @@ def chain_value(r: Row) -> str:
     return f"{r.state} {subject}: {r.detail}"
 
 
+def milestone_value(r: Row) -> str:
+    """A milestone row in its own words: a waiting goal's reasons each name the milestone"""
+    return f"{r.state} {r.detail}" if r.state == MILESTONE_WAITING else r.text()
+
+
 def pull_value(facts: Facts, number: int) -> str:
     """A pull request to land, with what GitHub says keeps it from merging (S-011-17)"""
     shown = item(facts.repo, number, True)
@@ -971,6 +1024,9 @@ def item_lines(facts: Facts) -> list[str]:
     untrusted = [(r, int(n)) for r in of("UNTRUSTED") for n in re.findall(r"#(\d+)", r.detail)]
     lines += _fixed("untrusted", [(item(repo, n, n in pulls), fixed(r)) for r, n in untrusted])
     lines += _fixed("chain", [(chain_value(r), fixed(r)) for r in of(*CHAIN_ROWS)])
+    goals = [(milestone_value(r), fixed(r)) for r in of(MILESTONE_WAITING, MILESTONE_OVERTAKEN)]
+    unread = [] if facts.milestone_error is None else [(f"not read: {facts.milestone_error}", None)]
+    lines += _fixed("milestone", [*goals, *unread])
     for name, state, check in CLOSED_LINES:
         closed = sorted((i.number for i in facts.issues if i.state == state), reverse=True)
         lines += _group(name, [f"{item(repo, n, False)}{check}" for n in closed])

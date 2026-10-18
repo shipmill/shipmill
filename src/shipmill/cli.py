@@ -529,7 +529,7 @@ def main(
         ask = input if sys.stdin.isatty() and not args.owner else None
         return _app_create(root, args, api or UrllibApi(), signer or Openssl(), ask=ask)
     if args.command == "status":
-        return _status(root, args, state or run_state, api or UrllibApi(), signer or Openssl())
+        return _status(root, args, state or run_state, api or UrllibApi(), signer or Openssl(), github=github)
     if args.command == "upgrade":
         return _upgrade(root, args, github or GhCli(root))
     if args.command == "product":
@@ -920,10 +920,12 @@ def _status(
     home: Path | None = None,
     platform: str = sys.platform,
     now: dt.datetime | None = None,
+    github: GitHub | None = None,
 ) -> int:
     """Specs 008 and 009: the factory's picture for the checkout's repo, or with --rows or
     --json github-ship-watch's report passed through; exit 1 when a row needs action, 2 when
-    the script failed rather than reported"""
+    the script failed rather than reported. github answers the picture's milestone reads
+    (spec 022), gh in the checkout by default"""
     git = Git(root)
     if not git.ok("rev-parse", "--show-toplevel"):  # S-008-9: first, before any other git call
         raise ReleaseError(f"{root} is not a git checkout; run status in a checkout of the repo, or pass --repo PATH")
@@ -970,9 +972,11 @@ def _status(
     people = agent_as_person.read(slug, run, when) if gate.agents is not None and gate.agents.app_id else None
     git = Git(top)
     main = status.read_main(git, status.read_branch(slug, run))
+    # spec 022: the milestone rows of the lanes with milestone = true, from the release's planner
+    goals, goals_error = status.read_milestones(slug, top, main.remote, github or GhCli(top), when)
     facts = status.Facts(
         repo=slug,
-        rows=status.parse_rows(proc.stdout),
+        rows=[*status.parse_rows(proc.stdout), *goals],
         issues=status.read_issues(slug, run, login),
         pulls=status.read_pulls(slug, run),
         main=main,
@@ -984,6 +988,7 @@ def _status(
         command=cli_command(),
         agent_as_person=people,
         upgrades=status.read_upgrades(slug, top, run),
+        milestone_error=goals_error,
     )
     sys.stdout.write(status.report(facts).text(slug))
     return proc.returncode  # S-009-14: spec 008's code, whatever the verdict

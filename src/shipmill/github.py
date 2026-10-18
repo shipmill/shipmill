@@ -22,6 +22,7 @@ PULL_LIMIT = 1000  # open pull requests read at once; gh's own default is 30
 MERGED_PER_BRANCH = 20  # merged pull requests read per head branch name, the newest
 HISTORY_LIMIT = 100  # a merged pull request's commits, and its force-pushes, read: the last ones
 MILESTONE_LIMIT = 1000  # a milestone's issues read at once; one with more is refused
+OPEN_MILESTONE_LIMIT = 100  # open milestones read at once, one page; a repository with more is refused
 COMMENTS_READ = 30  # an issue's newest comments read for a close-confirmed marker (D-29)
 CLOSERS_READ = 20  # the pull requests read that close an issue
 CLOSES_PER_QUERY = 40  # issues read per GraphQL query by issue_closes
@@ -57,6 +58,14 @@ class Forbidden(ReleaseError):
 class Milestone:
     open_issues: int
     closed_issues: int
+
+
+@dataclass(frozen=True, slots=True)
+class OpenMilestone:
+    """An open milestone: GitHub's number for it, which a rename names, and its title"""
+
+    number: int
+    title: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +186,10 @@ class GitHub(Protocol):
         ...
 
     def milestone(self, title: str) -> Milestone | None: ...
+
+    def open_milestones(self) -> list[OpenMilestone]:
+        """The repository's open milestones, by number (fewer than OPEN_MILESTONE_LIMIT)"""
+        ...
 
     def milestone_issues(self, title: str) -> MilestoneIssues:
         """Every issue of the milestone with the title, open and closed (MILESTONE_LIMIT at most)"""
@@ -334,6 +347,10 @@ class GhCli:
             if m["title"] == title:
                 return Milestone(int(m["open_issues"]), int(m["closed_issues"]))
         return None
+
+    def open_milestones(self) -> list[OpenMilestone]:
+        path = f"repos/{{owner}}/{{repo}}/milestones?state=open&per_page={OPEN_MILESTONE_LIMIT}"
+        return parse_open_milestones(json.loads(self._gh("api", path)))
 
     def milestone_issues(self, title: str) -> MilestoneIssues:
         found = json.loads(
@@ -632,6 +649,24 @@ def parse_milestone_issues(found: Any, title: str) -> MilestoneIssues:
     if len(repos) > 1:
         raise ReleaseError(f"milestone {title} lists issues of several repositories: {sorted(repos)}")
     return MilestoneIssues(repos.pop() if repos else "", tuple(sorted(issues)))
+
+
+def parse_open_milestones(found: Any) -> list[OpenMilestone]:
+    """`gh api repos/<repo>/milestones?state=open`'s answer, by number; a full page is
+    refused, since a milestone past it would read as not open"""
+    if not isinstance(found, list):
+        raise ReleaseError(f"gh api milestones printed {type(found).__name__}, not a JSON array")
+    if len(found) >= OPEN_MILESTONE_LIMIT:
+        raise ReleaseError(f"the repository has {OPEN_MILESTONE_LIMIT} open milestones or more; shipmill reads fewer")
+    milestones = []
+    for m in found:
+        number = m.get("number") if isinstance(m, dict) else None
+        title = m.get("title") if isinstance(m, dict) else None
+        state = m.get("state") if isinstance(m, dict) else None
+        if not isinstance(number, int) or isinstance(number, bool) or not isinstance(title, str) or state != "open":
+            raise ReleaseError(f"gh api milestones printed {m!r}: an open milestone needs a number and a title")
+        milestones.append(OpenMilestone(number, title))
+    return sorted(milestones, key=lambda m: m.number)
 
 
 def parse_issue_closes(found: Any, numbers: Sequence[int]) -> list[IssueClose]:

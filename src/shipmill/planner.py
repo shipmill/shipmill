@@ -11,10 +11,10 @@ from shipmill import fragments, milestones
 from shipmill.autonomy import Autonomy, Hold, Stage
 from shipmill.changelog import Changelog, Entry
 from shipmill.errors import ReleaseError
-from shipmill.github import GitHub
+from shipmill.github import GitHub, OpenMilestone
 from shipmill.gitrepo import WORKFLOWS, Git, Tag
 from shipmill.policy import PRIORITY, BumpFrom, Lane, LaneRule, Mode, Policy
-from shipmill.version import ZERO, Part, Version
+from shipmill.version import PATTERN, ZERO, Part, Version
 
 
 class Event(StrEnum):
@@ -93,6 +93,25 @@ class _Deferred:
     """Why a lane skips this run, named in the reason of the lane that releases instead"""
 
     why: str
+
+
+@dataclass(frozen=True, slots=True)
+class MilestoneWaiting:
+    """A lane's milestone with no open issues whose goal isn't done: what holds it (spec 022)"""
+
+    lane: Lane
+    verdict: milestones.Verdict
+
+
+@dataclass(frozen=True, slots=True)
+class MilestoneOvertaken:
+    """An open milestone whose version a stable tag already took, and the version the lane
+    would cut next, which the milestone is renamed to (spec 022)"""
+
+    lane: Lane
+    milestone: OpenMilestone
+    version: Version  # the milestone's own, tagged already
+    next: Version
 
 
 @dataclass
@@ -215,7 +234,7 @@ class Planner:
             return f"{version.tag} exists already"
         # an rc cut by the bot is a stamp commit off main whose first parent is main's commit;
         # an rc tagged on main itself (a release commit) is its own base
-        on_main = self.git.is_ancestor(rc.commit, "HEAD")
+        on_main = self.git.is_ancestor(rc.commit, head)
         base = rc.commit if on_main else self.git.first_parent(rc.commit)
         # the rc sections of version an earlier release bot wrote are pending too (D-25)
         changelog = self.changelog_at(base)
@@ -295,6 +314,50 @@ class Planner:
         app_id = self.policy.agents.app_id if self.policy.agents else None
         title = str(candidate.version.release)
         return milestones.verdict(self.git, self.github, title, head, candidate.base, where, app_id)
+
+    def milestone_findings(self, head: str) -> list[MilestoneWaiting | MilestoneOvertaken]:
+        """What `shipmill status` says of the milestones of the lanes with milestone = true
+        (spec 022), read with head as main's head: each milestone with no open issues and at
+        least one closed whose goal isn't done, then each open milestone a stable tag of its
+        version took already, with the version the first such lane cuts next. Nothing is read
+        when no lane sets milestone; nothing here changes what a plan decides"""
+        lanes = [ln for ln in PRIORITY if ln in self.policy.lanes and self.policy.lanes[ln].milestone]
+        if not lanes:
+            return []
+        candidates = {lane: self._candidate(lane, head) for lane in lanes}
+        found: list[MilestoneWaiting | MilestoneOvertaken] = []
+        titles = set()
+        for lane, candidate in candidates.items():
+            if not isinstance(candidate, _Candidate) or self._has_tag(candidate.version):
+                continue
+            title = str(candidate.version.release)
+            if title in titles:  # an rc and a stable lane on one milestone: the first lane's
+                continue
+            titles.add(title)
+            milestone = self.github.milestone(title)
+            if milestone is None or milestone.open_issues or not milestone.closed_issues:
+                continue  # open issues are the ordinary wait; an empty milestone is no goal
+            verdict = self.milestone_verdict(candidate, head)
+            if not verdict.done:
+                found.append(MilestoneWaiting(lane, verdict))
+        taken = []
+        for m in self.github.open_milestones():
+            # named after a version as the lane names it (str of the release, D-32), else no goal's
+            version = Version.parse(m.title) if PATTERN.fullmatch(m.title) else None
+            if version is not None and str(version) == m.title and version.is_stable and self._has_tag(version):
+                taken.append((m, version))
+        if taken:
+            lane = lanes[0]
+            upcoming = self._next_release(candidates[lane], head)
+            found += [MilestoneOvertaken(lane, m, version, upcoming) for m, version in taken]
+        return found
+
+    def _next_release(self, candidate: _Candidate | _Deferred | str, head: str) -> Version:
+        """The stable version a lane cuts next: its candidate's, else the one main's head
+        leads to, as target works it out for a release"""
+        if isinstance(candidate, _Candidate) and not self._has_tag(candidate.version):
+            return candidate.version.release
+        return self.target(self.changelog_at(head).pending(self.fragments_at(head)), head)
 
     def hold(self) -> Hold:
         """The stop switch, read once per plan and only once a lane is due"""
