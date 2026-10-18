@@ -364,6 +364,35 @@ def test_s024_3_check_fails_a_broken_moved_section(
     assert capsys.readouterr().out.splitlines() == found
 
 
+def test_s024_3_a_moved_section_never_reads_a_file_out_of_docs_product(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A symlinked goals.md, or docs/product/ itself, pointing outside: refused, the target never quoted"""
+    secret = tmp_path / "outside" / "goals.md"
+    write(tmp_path / "outside", "TOKEN=secret\n", Path("goals.md"))
+    root = moved(tmp_path / "repo", None)
+    (root / "docs/product").mkdir()
+    (root / "docs/product/goals.md").symlink_to(secret)
+    assert problems(root) == [
+        "docs/product.md:15: docs/product/goals.md is a symlink out of docs/product/; a moved section is a file there"
+    ]
+    assert run(root, "check") == 1
+    assert "secret" not in capsys.readouterr().out
+    (root / "docs/product/goals.md").unlink()
+    (root / "docs/product").rmdir()
+    (root / "docs/product").symlink_to(secret.parent)
+    assert len(problems(root)) == 1 and "a symlink out of docs/product/" in problems(root)[0]
+
+
+def test_s024_1_check_never_reads_a_direction_symlinked_out_of_the_repo(tmp_path: Path) -> None:
+    write(tmp_path / "outside", WELL_FORMED, Path("product.md"))
+    (tmp_path / "repo/docs").mkdir(parents=True)
+    (tmp_path / "repo" / DIRECTION).symlink_to(tmp_path / "outside/product.md")
+    assert problems(tmp_path / "repo") == [
+        "docs/product.md:1: a symlink out of docs/; the direction is a file in the repo"
+    ]
+
+
 def test_s024_3_the_repos_own_direction_still_passes_with_a_section_moved(tmp_path: Path) -> None:
     """The real docs/product.md as a fixture, its Goals moved to their own file"""
     shutil.copy(ROOT / DIRECTION, write(tmp_path, "") / DIRECTION)

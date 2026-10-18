@@ -237,6 +237,9 @@ class _Parser:
         if not path.is_file():
             self.fail(DIRECTION, 1, f"no such file; the direction is {DIRECTION}, in the grammar of spec 024")
             return None
+        if not self._contained(DIRECTION, DIRECTION.parent):
+            self.fail(DIRECTION, 1, f"a symlink out of {DIRECTION.parent}/; the direction is a file in the repo")
+            return None
         name, bodies = self._sections(_lines(path))
         parts: dict[Section, str | tuple[Item, ...]] = {}
         for section in Section:
@@ -360,7 +363,19 @@ class _Parser:
         if not path.is_file():
             self.fail(body.path, number, f"`## {section.value}` moved to {relative}, which doesn't exist")
             return None
+        if not self._contained(relative, relative.parent):
+            self.fail(
+                body.path, number, f"{relative} is a symlink out of {relative.parent}/; a moved section is a file there"
+            )
+            return None
         return self._moved(section, relative, _lines(path))
+
+    def _contained(self, relative: Path, under: Path) -> bool:
+        """Whether the file, symlinks resolved, stays under the repo's `under` directory, so a link
+        never reads, and a problem never quotes, a file outside it"""
+        return (self.root / relative).resolve().is_relative_to((self.root / under).resolve()) and (
+            self.root / under
+        ).resolve().is_relative_to(self.root.resolve())
 
     def _moved(self, section: Section, path: Path, lines: list[Line]) -> _Body | None:
         body: _Body | None = None
