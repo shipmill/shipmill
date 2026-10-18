@@ -3,7 +3,9 @@
 import datetime as dt
 import importlib.util
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -1878,3 +1880,52 @@ def test_s014_10_an_upgrade_autonomy_of_another_value_is_refused(ws: ModuleType,
     assert refused.value.code == 2
     with pytest.raises(SystemExit, match=r"\[autonomy\] upgrade must be one of"):
         ws.upgrade_autonomy_toml(tomllib.loads(text), policy)
+
+
+SHIPPED_GH = """#!{python}
+import json, sys
+args = sys.argv[1:]
+if args[:2] == ["api", "graphql"]:
+    pr = {{
+        "number": 365,
+        "title": "Read the closer right",
+        "body": 'Quotes the report ("... Closes #424.") mid-line\\nFixes #5\\nCloses #777',
+        "mergedAt": "2026-10-01T00:00:00Z",
+        "closingIssuesReferences": {{"nodes": []}},
+    }}
+    print(json.dumps({{"data": {{"repository": {{"object": {{"associatedPullRequests": {{"nodes": [pr]}}}}}}}}}}))
+elif args[:3] == ["issue", "view", "5"]:
+    print(json.dumps({{"state": "CLOSED", "title": "a fix", "comments": [], "url": "https://github.com/me/demo/issues/5"}}))
+elif args[:2] == ["issue", "view"]:
+    missing = "GraphQL: Could not resolve to an issue or pull request with the number of "
+    sys.stderr.write(missing + args[2] + ". (repository.issue)\\n")
+    sys.exit(1)
+else:
+    sys.stderr.write("unexpected: " + " ".join(args) + "\\n")
+    sys.exit(3)
+"""
+
+
+def test_368_a_range_whose_pr_names_a_missing_number_still_lists_its_fixes(ws: ModuleType, tmp_path: Path) -> None:
+    # PR #365 quotes "Closes #424" mid-line and names #777, which resolves to nothing: the
+    # watch's plan-mode shipped.py run must not exit 2 over it, and still finds #5
+    git = shutil.which("git")
+    assert git is not None
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    (fakes / "gh").write_text(SHIPPED_GH.format(python=sys.executable), encoding="utf-8")
+    (fakes / "gh").chmod(0o700)
+    env = {"PATH": os.pathsep.join([str(fakes), str(Path(git).parent), "/usr/bin", "/bin"]), "HOME": str(tmp_path)}
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+
+    def sh(*cmd: str, cwd: Path = work) -> None:
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *cmd], cwd=cwd, env=env, check=True)
+
+    sh("init", "-q", "--bare", str(origin), cwd=tmp_path)
+    sh("clone", "-q", str(origin), str(work), cwd=tmp_path)
+    sh("commit", "-q", "--allow-empty", "-m", "start")
+    sh("tag", "v0.1.0")
+    sh("commit", "-q", "--allow-empty", "-m", "Read the closer right (#365)")
+    sh("tag", "v0.2.0")
+    sh("push", "-q", "--tags", "origin", "HEAD")
+    assert ws.unannounced("me/demo", work, "v0.1.0", "v0.2.0", env=env) == ["#5"]
