@@ -43,11 +43,14 @@
   product         read the product's direction, docs/product.md (spec 024): check its grammar, show it
                   or one section (--section, --json), list its ids; add, edit, and retire an item,
                   printing its line, an added one with an id its history never held
+  evals           the agents' eval suite, evals/ (spec 025): check exits 1 naming each case and the
+                  rule it breaks, without a model; a repository with no evals/ passes
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
 action, app-create or app-install left a repo without the App, product check found a broken
-rule, or review check found a malformed REVIEW.md; 2 bad input or a refused state, such as an
-edit of a file its check refuses.
+rule, review check found a malformed REVIEW.md, or evals check found a malformed case; 2 bad
+input or a refused state, such as an edit of a file its check refuses or a malformed
+evals/cases.toml.
 """
 
 import argparse
@@ -65,7 +68,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TextIO
 
-from shipmill import agent_as_person, cli_command, fragments, product, review, status
+from shipmill import agent_as_person, cli_command, evals, fragments, product, review, status
 from shipmill.agents import AgentsConfig, app_id_of
 from shipmill.app import (
     CACHE,
@@ -467,6 +470,13 @@ def _parser() -> argparse.ArgumentParser:
     for each in (checking, showing, listing, adding, editing, retiring):  # also after it: `product check --repo DIR`
         each.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
 
+    p = sub.add_parser("evals", help="check the agents' eval suite, evals/ (spec 025)")
+    evaluating = p.add_subparsers(dest="evals", required=True)
+    q = evaluating.add_parser(
+        "check", help="exit 1 naming each case of evals/ and the rule it breaks; no evals/ passes"
+    )
+    q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+
     p = sub.add_parser("launchd", help="run the gate for a dedicated checkout every few minutes (macOS)")
     p.add_argument("slug", metavar="owner/name", help="the GitHub repo; --repo is its gate checkout")
     p.add_argument("--every", type=int, default=15, help="minutes between runs (default: 15)")
@@ -528,6 +538,8 @@ def main(
         return _product(root, args)
     if args.command == "review":
         return _review(root, args)
+    if args.command == "evals":
+        return _evals(root)
     hub = github or GhCli(root)
     if args.command == "init":
         # checked before any write, on every path (spec 015)
@@ -1062,6 +1074,21 @@ def _review(root: Path, args: argparse.Namespace) -> int:
         return 0
     rubric = review.show(root, args.path)
     sys.stdout.write(json.dumps(rubric.to_json(), indent=2) + "\n" if args.json else rubric.render())
+    return 0
+
+
+def _evals(root: Path, resolves: evals.Resolves | None = None) -> int:
+    """Spec 025: one line per violation, exit 1 when any; a repository without evals/ passes,
+    so CI runs the check before the suite exists"""
+    report = evals.check(root, resolves)
+    if report is None:
+        print(f"no {evals.SUITE}/ suite: nothing to check")
+        return 0
+    for violation in report.violations:
+        print(violation)
+    if report.violations:
+        return 1
+    print(f"{evals.MANIFEST}: well formed, {report.cases} cases")
     return 0
 
 

@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }} # empty outside workflow_call: the event's commit
+          fetch-depth: 0 # evals check resolves each case's commit
 
       - uses: astral-sh/setup-uv@v10.2.0
         with:
@@ -35,6 +36,8 @@ jobs:
         run: |
           uv run --no-project python skills/github-issue-triage/scripts/specs.py check
           uv run --no-project python skills/github-issue-triage/scripts/specs.py coverage
+      - name: Check the agents' eval suite without a model (spec 025)
+        run: uv run shipmill evals check
       - name: Lint the workflows, including the template init writes
         run: |
           uvx --from actionlint-py actionlint .github/workflows/*.yml
