@@ -69,6 +69,35 @@ class LaneRule:
 
 
 @dataclass(frozen=True, slots=True)
+class NoticesConfig:
+    """[notices]: the commands the notices on fixed issues carry (spec 021), read by
+    github-pr-triage's shipped.py; each takes {version}, {tag}, and {name}"""
+
+    pin: str | None = None  # the pre-release notice's command
+    install: str | None = None  # the stable notice's command
+
+    PLACEHOLDERS = frozenset({"version", "tag", "name"})
+
+    @classmethod
+    def parse(cls, t: Table) -> NoticesConfig:
+        t.allow("pin", "install")
+        found: dict[str, str] = {}
+        for key in ("pin", "install"):
+            if key not in t.raw:
+                continue
+            value = t.string(key)
+            if not value.strip():
+                raise ReleaseError(f"{t.where}: {key} must not be empty")
+            if bad := sorted(set(_PLACEHOLDER.findall(value)) - cls.PLACEHOLDERS):
+                raise ReleaseError(f"{t.where}: {key} takes {{version}}, {{tag}}, and {{name}}; got {bad}")
+            found[key] = value
+        return cls(found.get("pin"), found.get("install"))
+
+
+_PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
+
+
+@dataclass(frozen=True, slots=True)
 class Policy:
     name: str
     mode: Mode
@@ -96,6 +125,7 @@ class Policy:
     agents: AgentsConfig | None = None  # the gate's [agents] section; validated here, read by the gate
     roadmap: RoadmapConfig | None = None  # the deprecated [roadmap] section (D-32): validated, read by nothing
     fragments: str | None = None  # [changelog] fragments: the changelog fragments folder, or None (spec 013)
+    notices: NoticesConfig = NoticesConfig()  # [notices]: validated here, read by shipped.py (spec 021)
 
     @property
     def incident_label(self) -> str | None:
@@ -132,6 +162,7 @@ class Policy:
             "agents",
             "operate",
             "roadmap",
+            "notices",
         )
         changelog = top.table("changelog")
         changelog.allow("path", "style", "fragments")
@@ -174,6 +205,7 @@ class Policy:
         autonomy.require_environments(declared.keys(), autonomy_table.where)
         agents = AgentsConfig.parse(top.table("agents")) if "agents" in raw else None
         roadmap = RoadmapConfig.parse(top.table("roadmap")) if "roadmap" in raw else None
+        notices = NoticesConfig.parse(top.table("notices", optional=True))
         return cls(
             name=top.string("name"),
             mode=top.enum("mode", Mode),
@@ -201,6 +233,7 @@ class Policy:
             operate=operate,
             roadmap=roadmap,
             fragments=fragments,
+            notices=notices,
         )
 
     def rule(self, lane: Lane) -> LaneRule:

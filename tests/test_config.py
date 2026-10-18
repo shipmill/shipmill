@@ -13,7 +13,7 @@ import pytest
 from shipmill.agents import AgentsConfig
 from shipmill.config import Table
 from shipmill.errors import ReleaseError
-from shipmill.policy import Policy
+from shipmill.policy import NoticesConfig, Policy
 
 from .conftest import POLICY
 
@@ -135,11 +135,17 @@ CASES: dict[str, list[Change]] = {
     "roadmap cadence an integer": add('\n[roadmap]\ncadence = "2w"\n'),
     "roadmap cadence range": add("\n[roadmap]\ncadence = 27\n"),
     "roadmap a table": top("roadmap = 1"),
+    # [notices]
+    "notices unknown key": add("\n[notices]\nupgrade = 'uv add -U demo'\n"),
+    "notices a string": add("\n[notices]\npin = 1\n"),
+    "notices empty": add("\n[notices]\ninstall = ' '\n"),
+    "notices placeholder": add("\n[notices]\npin = \"uv add 'demo=={semver}'\"\n"),
+    "notices a table": top("notices = 1"),
 }
 
 
 MESSAGES: dict[str, str] = {
-    "top unknown key": "shipmill.toml: unknown keys ['colour']; allowed: ['after_stamp', 'agents', 'autonomy', 'bot', 'branch', 'bump', 'changelog', 'environments', 'gates', 'lanes', 'mode', 'name', 'operate', 'publish', 'roadmap', 'version_files', 'version_lines']",
+    "top unknown key": "shipmill.toml: unknown keys ['colour']; allowed: ['after_stamp', 'agents', 'autonomy', 'bot', 'branch', 'bump', 'changelog', 'environments', 'gates', 'lanes', 'mode', 'name', 'notices', 'operate', 'publish', 'roadmap', 'version_files', 'version_lines']",
     "top name required": "shipmill.toml: name is required",
     "top name a string": "shipmill.toml: name must be a string, got 1",
     "top mode enum": "shipmill.toml: mode must be one of ['off', 'dry-run', 'release'], got 'on'",
@@ -216,6 +222,11 @@ MESSAGES: dict[str, str] = {
     "roadmap cadence an integer": "shipmill.toml [roadmap]: cadence must be an integer, got '2w'",
     "roadmap cadence range": "shipmill.toml [roadmap]: cadence must be in 1..26, got 27",
     "roadmap a table": "shipmill.toml: roadmap must be a table, got 1",
+    "notices unknown key": "shipmill.toml [notices]: unknown keys ['upgrade']; allowed: ['install', 'pin']",
+    "notices a string": "shipmill.toml [notices]: pin must be a string, got 1",
+    "notices empty": "shipmill.toml [notices]: install must not be empty",
+    "notices placeholder": "shipmill.toml [notices]: pin takes {version}, {tag}, and {name}; got ['semver']",
+    "notices a table": "shipmill.toml: notices must be a table, got 1",
 }
 
 
@@ -357,3 +368,21 @@ def test_s003_2_a_bad_wait_key_exits_2(tmp_path: Path) -> None:
     )
     assert done.returncode == 2
     assert done.stderr == "shipmill: shipmill.toml [agents]: remind_hours must be in 1..168, got 0\n"
+
+
+def test_s021_5_the_policy_reads_notices_and_an_unknown_key_exits_2(tmp_path: Path) -> None:
+    text = POLICY + "\n[notices]\npin = \"uv add 'demo=={version}'\"\ninstall = 'uv add {name}'\n"
+    notices = Policy.parse(tomllib.loads(text), "shipmill.toml").notices
+    assert (notices.pin, notices.install) == ("uv add 'demo=={version}'", "uv add {name}")
+    assert Policy.parse(tomllib.loads(POLICY), "shipmill.toml").notices == NoticesConfig()
+    path = tmp_path / ".github" / "shipmill.toml"
+    path.parent.mkdir()
+    path.write_text(POLICY + "\n[notices]\ninstall = 'uv add demo'\nupgrade = 'uv add -U demo'\n", encoding="utf-8")
+    done = subprocess.run(
+        [sys.executable, "-c", "from shipmill.cli import run; run()", "--repo", str(tmp_path), "settle-minutes"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 2
+    assert done.stderr == "shipmill: shipmill.toml [notices]: unknown keys ['upgrade']; allowed: ['install', 'pin']\n"

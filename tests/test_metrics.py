@@ -245,6 +245,14 @@ def test_issue_to_release_runs_to_the_first_released_in_notice(mx: ModuleType) -
     assert m.extra["count"] == 1
 
 
+def test_s021_3_issue_to_release_reads_a_notice_after_its_marker_line(mx: ModuleType) -> None:
+    pre = "<!-- shipmill:available: pre-release v1.0.0rc1 -->\nReleased in v1.0.0rc1 (pre-release)."
+    stable = "<!-- shipmill:available: stable v1.0.0 -->\nReleased in v1.0.0."
+    notices = [issue(1, day(10), day(8), (day(7), pre), (day(2), stable))]
+    m = by_name(mx, data(mx, notices=notices))["Issue to release"]
+    assert m.value == pytest.approx(72.0)
+
+
 def test_human_touch_counts_a_person_merging_or_approving(mx: ModuleType) -> None:
     bot = ("Bot", "github-actions")
     pulls = [
