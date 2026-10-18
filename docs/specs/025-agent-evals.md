@@ -1,6 +1,6 @@
 # S-025: Evals for the agents' instructions
 
-status: draft
+status: approved
 serves: G-2
 
 ## Problem
@@ -132,7 +132,11 @@ how the runner folds runs into a case score.
 ### The first cases
 
 The suite starts with at least 20 cases from shipmill's own issues, pull requests, and
-postmortems, each recorded at its `commit`:
+postmortems, each recorded at its `commit`, and the gate turns on only once it holds them:
+until then `evals.yml` runs on the triggers below and reports, and its pull request job
+always exits 0. `shipmill evals check --gate` exits 1 while the suite has fewer cases of a
+kind than the table asks, and `evals.yml` fails a pull request on a regression only when
+it passes:
 
 | Kind | At least | Examples |
 |---|---|---|
@@ -154,16 +158,22 @@ postmortems, each recorded at its `commit`:
   pull requests compare against
 - **Not for a pull request from a fork:** a case's scaffold runs the repository's bash and
   the run needs the API key, so as with unattended sessions (D-16) the job runs only for a
-  head in the repository. On a fork's pull request the job fails with the line
-  `evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f pr=<N>`,
-  which the maintainer runs once they have read the change
+  head in the repository. On a fork's pull request the job fails, never skips, with the
+  line `evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f
+  pr=<N>`, so the change can't land unevaluated; the maintainer dispatches that run once
+  they have read the change, and its green result is the check that counts (D-37)
 
 The job runs `claude plugin eval . --trust-plugin --scaffold --allow-tools <the case's
-tools> --ablation none --no-publish --model <pinned> -j 4 --max-cost-usd <budget> --json
-<out>`, with the API key from the repository secret `ANTHROPIC_API_KEY` and no GitHub
+tools> --ablation none --no-publish --model <pinned> --runs 3 -j 4 --max-cost-usd 15
+--json <out>`, with the API key from the repository secret `ANTHROPIC_API_KEY` and no GitHub
 token in the run's environment, uploads the JSON and the HTML report as the run's
 artifact, and writes the summary below to the job's summary. `--ablation none` skips the
 no-plugin arm, which would double the cost to measure something the gate doesn't use.
+
+The pinned model is the one the gate's sessions run, written once in `evals.yml` as the
+`EVALS_MODEL` value, so the suite measures the agents as they work; every case runs 3
+times, 4 runs at once. A dispatched run may pass another `model` input to compare, and
+its result never becomes the baseline.
 
 ### The gate against the default branch
 
@@ -171,8 +181,9 @@ no-plugin arm, which would double the cost to measure something the gate doesn't
 compares the cases both hold, and exits 1 when any of these holds, 0 otherwise:
 
 - **The suite got worse:** the head's suite pass rate is below the base's by more than
-  the tolerance (`--tolerance`, 0.05 by default)
-- **A case regressed:** it passed every run on the base and at most one run on the head
+  the tolerance, 0.05 (`--tolerance` changes it for a dispatched run, never in the pull
+  request job)
+- **A case regressed:** it passed 3 of 3 runs on the base and at most 1 of 3 on the head
 - **A new or changed case fails on its own:** a case the base lacks, or whose directory
   the pull request changed, passes fewer than 2 of its 3 runs on the head; it is judged
   against itself, since the base can't run it
@@ -188,7 +199,9 @@ fails the gate.
 
 A failing `evals` check is a red check like any other: github-pr-triage's `pr_gate.py`
 merges only on a green rollup, so a pull request that regresses the agents does not land
-until it is fixed or the maintainer accepts the red run (github-pr-triage hard rule 2).
+until it is fixed (D-37). `skills/github-pr-triage/SKILL.md` says so beside hard rule 2:
+a red `evals` check is never "proven unrelated", since it is the measure of the change
+itself; only the maintainer accepting that run lets it land.
 
 ### What it costs
 
@@ -220,6 +233,8 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - `.github/workflows/evals.yml`: the runs; `.github/workflows/ci.yml`: `shipmill evals check`
 - `docs/evals.md`: how to run a case locally, record one, and read a failing gate
 - `docs/postmortems/TEMPLATE.md` and the skills' "Improve the skill" sections
+- `skills/github-pr-triage/SKILL.md`: a red `evals` check blocks the merge (D-37)
+- `docs/decisions.md`: D-37
 - `.gitignore`: `evals/results/`
 
 ## Acceptance criteria
@@ -231,20 +246,22 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-5: With `EVAL_GH_RECORD=1`, `evals/bin/gh` forwards reads to the real `gh` and saves their answers into the case's `fixture/gh/`, and never forwards a write
 - S-025-6: `evals/scaffold.sh` leaves the workspace holding this repository at the case's `commit` with the case's fixture at `.eval/`
 - S-025-7: `evals/` holds at least 20 cases from shipmill's own history, at least 8 `verdict`, 4 `decision`, 4 `finding`, and 4 `fix`, and every one passes at least 2 of 3 runs on the default branch when the spec's build ends
-- S-025-8: `shipmill evals compare` exits 1 when the head's suite pass rate is more than the tolerance below the base's, when a case that passed every base run passes at most one head run, or when a new or changed case passes fewer than 2 of 3 head runs, and prints one line per regressed, improved, new failing, or removed case and both pass rates; it exits 0 otherwise
+- S-025-8: `shipmill evals compare` exits 1 when the head's suite pass rate is more than 0.05 below the base's, when a case that passed 3 of 3 base runs passes at most 1 of 3 head runs, or when a new or changed case passes fewer than 2 of 3 head runs, and prints one line per regressed, improved, new failing, or removed case and both pass rates; it exits 0 otherwise
 - S-025-9: `shipmill evals compare` computes pass rates from the per-run grader results in `aggregate-result.json`, counting a run as passed only when every scored grader passed
 - S-025-10: `.github/workflows/evals.yml` runs on a pull request touching `skills/**`, `.claude-plugin/**`, `evals/**`, or `src/shipmill/gate.py`, weekly on the default branch, and by `workflow_dispatch`, and on no other pull request
-- S-025-11: The evals job runs `claude plugin eval` with `--ablation none`, `--no-publish`, a pinned `--model`, and `--max-cost-usd`, with `evals/bin` first on `PATH` and no GitHub token in the run's environment, uploads the JSON result and the HTML report, and writes the moved cases, both pass rates, and the spend to the job summary
+- S-025-11: The evals job runs `claude plugin eval` with `--ablation none`, `--no-publish`, `--model` set to the gate sessions' model, `--runs 3`, `-j 4`, and `--max-cost-usd 15`, with `evals/bin` first on `PATH` and no GitHub token in the run's environment, uploads the JSON result and the HTML report, and writes the moved cases, both pass rates, and the spend to the job summary
 - S-025-12: The pull request job compares against the latest successful default-branch run's result, and runs the suite on the merge base first when that result is missing, older than 14 days, or from a different model
-- S-025-13: On a pull request from a fork the evals job runs no case and fails naming the `gh workflow run evals.yml -f pr=<N>` command
+- S-025-13: On a pull request from a fork the evals job runs no case and fails, never skips, naming the `gh workflow run evals.yml -f pr=<N>` command
 - S-025-14: A run that reaches `--max-cost-usd` fails the gate with `evals: budget reached after <n> of <m> runs` and compares nothing
 - S-025-15: `docs/postmortems/TEMPLATE.md` has an `## Eval case` section, and the "Improve the skill" section of every skill under `skills/` says to add a failing case under `evals/` with the lesson
+- S-025-16: `shipmill evals check --gate` exits 1 naming the kinds short of the first suite's counts (8 `verdict`, 4 `decision`, 4 `finding`, 4 `fix`), and while it does, the evals pull request job reports the comparison and exits 0
+- S-025-17: `skills/github-pr-triage/SKILL.md` says a red `evals` check is never proven unrelated and blocks the merge unless the maintainer accepts that run
 
 ## Out of scope
 
-- Cases a downstream repository adds for its own agents: this spec covers shipmill's
-  own suite; a later spec can ship `evals.yml` as a reusable workflow once the format has
-  held here
+- Cases other repositories add for their own agents: this spec covers shipmill's own
+  suite only; a later spec can ship `evals.yml` as a reusable workflow once the format
+  has held here
 - A sandbox repository on GitHub that runs cases end to end: the offline stub replaces it,
   and the App identity and API calls stay the scripts' tests' job
 - A command grader that reruns a fix's test in the run's workspace: the runner has none
@@ -261,6 +278,7 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - D-14: a case whose fixture sets `[agents] app_id` asserts writes go through `shipmill gh`
 - D-16: a fork's pull request starts no unattended run, so its evals run only by hand
 - D-34: cases replay the direction (`docs/product.md`) the skills read at their `commit`
+- D-37: a change to the agents' instructions lands only when the evals don't regress
 
 ## Issues
 
