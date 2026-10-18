@@ -93,7 +93,9 @@ def test_s024_9_resolve_writes_the_plan_before_the_code() -> None:
     assert template.splitlines()[0] == "## Plan"
     labels = [line.split(":", 1)[0] for line in template.splitlines()[2:]]
     assert labels == ["- Serves", "- Files", "- Order", "- Proof"]  # the lines pr_gate.py reads
-    assert "`quality bar` for a bug fix" in template
+    serves = template.splitlines()[2]
+    assert "quality bar, as two plain words, for a bug fix" in serves
+    assert "`" not in serves  # copied literally, a backticked `quality bar` fails pr_gate.py's Serves check
     prose = flat(phase)
     assert "write the pull request's `## Plan` section before any code" in prose
     assert "updated in the body before the push that departs from it" in prose

@@ -459,8 +459,8 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    one item; Non-goals may stay empty) is a question for them, not a guess. Show them the
    file before the pull request opens. Only the maintainer changes it later: the agents
    never merge an edit to it on their own. A repo without `[agents]`, where shipmill only
-   cuts releases, needs none. Offer a starter `REVIEW.md` at the root too (Important rules, a `cap:` under
-   Nits, Protected areas; `$CR review check`); it is optional
+   cuts releases, needs none. Offer a starter `REVIEW.md` at the root too (Important
+   rules, a `cap:` under Nits, Protected areas; `$CR review check`); it is optional
 3. **Its own identity (required for the gate, D-19).** Every gate gets a GitHub App, so its
    sessions' pull requests, comments, merges, and commits are made by the App's bot
    (D-14). Without `app_id`, a session writes as the host's `gh` login: its work reads as
