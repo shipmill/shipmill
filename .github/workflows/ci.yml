@@ -27,8 +27,8 @@ jobs:
           python-version: "3.14"
 
       - run: uv sync --locked
-      - run: uv run ruff check src tests skills
-      - run: uv run ruff format --check src tests skills
+      - run: uv run ruff check src tests skills hooks
+      - run: uv run ruff format --check src tests skills hooks
       - run: uv run mypy
       - run: uv run pytest -q
       - name: Check the specs, and that a test proves each criterion of a built one
