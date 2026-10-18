@@ -29,7 +29,6 @@ from shipmill.product import DIRECTION
 from shipmill.product import check as check_product
 from shipmill.stamp import project_version
 from shipmill.upgrades import offers, pending
-from shipmill.version import Part
 
 CALLER = Path(".github") / "workflows" / "release.yml"
 OPERATE_CALLER = Path(".github") / "workflows" / "operate.yml"  # calls shipmill's operate.yml on a schedule
@@ -471,7 +470,7 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
     detail += f"; upgrade {policy.autonomy.upgrades(hold)} for config upgrades"
     checks.append(Check("PASS", "autonomy", detail))
     proposes = any(policy.autonomy.configured(stage) is Autonomy.PROPOSE for stage in policy.autonomy.stages())
-    breaks = _can_break(policy)  # S-029-7: a breaking stable candidate is proposed, whatever the autonomy
+    breaks = policy.can_break  # S-029-7: a breaking stable candidate is proposed, whatever the autonomy
     if (
         (proposes or hold.on or breaks)
         and caller.is_file()
@@ -496,7 +495,7 @@ def _land_grant(policy: Policy, upgrades: int, caller: Path) -> Check | None:
     reasons = []
     if policy.autonomy.release is Autonomy.PROPOSE:
         reasons.append("release autonomy is propose, so a release closes its lane's proposal issue")
-    elif _can_break(policy):
+    elif policy.can_break:
         reasons.append(f"{_BREAKING}, so a release closes its lane's proposal issue")
     if upgrades:
         reasons.append(f"upgrade autonomy is {policy.autonomy.upgrade} and {upgrades} upgrade(s) pending")
@@ -504,16 +503,6 @@ def _land_grant(policy: Policy, upgrades: int, caller: Path) -> Check | None:
         return None
     job = f"the land job in {CALLER}" + (", whose grant proposes them," if upgrades else "")
     return Check("WARN", "permissions", f"{'; '.join(reasons)}, but {job} grants no `issues: write`: add it")
-
-
-def _can_break(policy: Policy) -> bool:
-    """Whether the config can produce a breaking stable candidate (spec 029): a stable lane,
-    with [bump] from = 'headings' and a non-empty major list; from = 'paths' never bumps the major"""
-    return (
-        Lane.STABLE in policy.lanes
-        and policy.bump_from is BumpFrom.HEADINGS
-        and any(part is Part.MAJOR for part in policy.bump_headings.values())
-    )
 
 
 def _sets_soak(raw: Mapping[str, Any]) -> bool:

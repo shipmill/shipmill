@@ -137,7 +137,7 @@ from shipmill.launchd import DEFAULT_TOOL, build, install, remove
 from shipmill.lineedit import LineText
 from shipmill.notify import Desktop
 from shipmill.operate import Http, UrllibHttp, approve, approve_rollback, operate, summary
-from shipmill.planner import Event, Hotfix, Planner, Proposal
+from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
 from shipmill.policy import Lane, Policy
 from shipmill.product import DIRECTION, ItemId, Section
 from shipmill.product import check as check_product
@@ -203,6 +203,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--hotfix-prs", default="", help="hotfix: merged pull requests, such as 12,15")
     p.add_argument("--hotfix-from", default="", help="hotfix: the stable tag to fix (default: the latest)")
     p.add_argument("--now", help="ISO time with offset (default: now)")
+    p.add_argument(
+        "--actor",
+        default=os.environ.get("GITHUB_TRIGGERING_ACTOR", ""),
+        help="who started the run; a breaking stable release started by hand needs a person"
+        " (default: $GITHUB_TRIGGERING_ACTOR)",
+    )
     p.add_argument("--github-output", type=Path)
 
     p = sub.add_parser("propose", help="open or update the issue for each release a plan proposed")
@@ -599,7 +605,8 @@ def main(
         hotfix = Hotfix(_ints(args.hotfix_prs), args.hotfix_from or None) if lane is Lane.HOTFIX else None
         if hotfix is None and (args.hotfix_prs or args.hotfix_from):
             raise ReleaseError("--hotfix-prs and --hotfix-from go with --lane hotfix")
-        decision = Planner(git, policy, hub, _now(args.now)).plan(event, lane, args.dry_run, hotfix)
+        actor = Actor(args.actor) if args.actor else None
+        decision = Planner(git, policy, hub, _now(args.now)).plan(event, lane, args.dry_run, hotfix, actor)
         outputs = decision.outputs()
         print(json.dumps(outputs, indent=2))
         _outputs(args.github_output, outputs)

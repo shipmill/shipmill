@@ -396,6 +396,13 @@ upgrade = "propose"               # observe | propose | act: config upgrades
   `observe` and `propose`; `lane=policy` follows the policy like a scheduled run. Once the
   release is tagged, the land workflow closes the lane's issue with a comment naming the tag
   and the run, and says so when the issue proposed another version
+- **A breaking stable candidate** (an entry under a `major` heading, spec 029) is proposed
+  this way under `act` too, and the run that releases rc or dev beside it opens or updates
+  the same issue, which lists the breaking entries first. Only a person's hand start of the
+  stable lane releases it: the workflow passes `$GITHUB_TRIGGERING_ACTOR` to `shipmill plan
+  --actor`, a `<name>[bot]` login skips stable with "a breaking release is started by a
+  person", and so does a run that names no actor. The land workflow closes the issue
+  once the release is tagged
 - **`intake`** (the product-intake skill) defaults to `propose`: it opens and updates
   opportunity issues, and only the maintainer accepts or declines one, so `act` is refused.
   `observe` reports the groups it would make
@@ -508,7 +515,7 @@ The workflows call these; you can run them locally too.
 | `propose` | Open or update the issue for each release a plan proposed |
 | `prepare` | Stamp a planned release; `--commit`, `--push` |
 | `land` | Push, tag, sync main, and publish a release commit that passed CI |
-| `close-proposal` | Close the lane's proposal issue once its release landed, under `release = "propose"` |
+| `close-proposal` | Close the lane's proposal issue once its release landed, under `release = "propose"` or on a stable lane that can hold a breaking change |
 | `cleanup` | Delete a release commit's work branch |
 | `sync` | Bring a stable release made off main into main, to recover a failed sync |
 | `notes` | Print a release's notes |

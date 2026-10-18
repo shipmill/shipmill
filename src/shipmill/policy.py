@@ -260,6 +260,20 @@ class Policy:
         return self.lanes[lane]
 
     @property
+    def major_headings(self) -> frozenset[str]:
+        """The headings whose entries bump the major part: a stable candidate holding one is
+        breaking and waits for the maintainer (spec 029); none under from = 'paths'"""
+        if self.bump_from is not BumpFrom.HEADINGS:
+            return frozenset()
+        return frozenset(h for h, part in self.bump_headings.items() if part is Part.MAJOR)
+
+    @property
+    def can_break(self) -> bool:
+        """Whether the stable lane can have a breaking candidate, which a proposal issue holds
+        until a person releases it"""
+        return Lane.STABLE in self.lanes and bool(self.major_headings)
+
+    @property
     def quiet_minutes(self) -> int:
         """The longest quiet trigger across the lanes"""
         return max((r.quiet_minutes or 0 for r in self.lanes.values()), default=0)

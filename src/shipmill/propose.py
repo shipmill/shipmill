@@ -13,7 +13,7 @@ from shipmill.doctor import CALLER
 from shipmill.errors import ReleaseError
 from shipmill.github import OPEN_LIMIT, PROPOSAL_LABEL, GitHub, Issue
 from shipmill.gitrepo import Git
-from shipmill.planner import Proposal
+from shipmill.planner import BREAKING, Proposal
 from shipmill.policy import Lane, Policy
 from shipmill.version import Version
 
@@ -44,19 +44,31 @@ def body(policy: Policy, proposal: Proposal, entries: list[Entry]) -> str:
     start = f"gh workflow run {CALLER.name} -f lane={proposal.lane} -f dry-run=false"
     if proposal.cause.startswith(f"held by {HOLD_LABEL}"):
         how = f"Close the open `{HOLD_LABEL}` issues first; then start the lane by hand:"
+    elif proposal.cause == BREAKING:
+        how = "To release it, start the lane by hand as a person; a run a bot or an App starts doesn't release it:"
     else:
         how = "To release it, start the lane by hand:"
     lines = [
         marker(proposal.lane),
         f"shipmill would release **{proposal.version.tag}** on the {proposal.lane} lane now, but {proposal.cause}.",
         "",
+    ]
+    if proposal.cause == BREAKING:
+        lines += [
+            "This release holds a breaking change, listed first below: it waits for the maintainer's decision,"
+            " and no trigger releases it.",
+            "",
+        ]
+    lines += [
         f"Base: `{proposal.base}`",
         "",
         "### Entries",
         "",
     ]
+    # the entries under a `major` heading first, so the breaking change is what is read first
+    major = policy.major_headings
     heading: str | None = None
-    for entry in entries:
+    for entry in sorted(entries, key=lambda e: e.heading not in major):
         if entry.heading is not None and entry.heading != heading:
             heading = entry.heading
             lines += [f"#### {heading}", ""]
@@ -143,9 +155,11 @@ def run_url(env: Mapping[str, str]) -> str | None:
 
 def close_released(policy: Policy, github: GitHub, lane: Lane, version: Version, run: str | None) -> str:
     """Close the lane's open proposal issue once land tagged its release, saying so; only
-    under release = "propose", the one setup whose callers grant the land job `issues: write`.
-    A proposal for a later version than the one released stays open, as operate leaves one"""
-    if policy.autonomy.release is not Autonomy.PROPOSE:
+    under release = "propose", or on a stable lane that can hold a breaking candidate (spec
+    029), the setups whose callers grant the land job `issues: write`. A proposal for a later
+    version than the one released stays open, as operate leaves one"""
+    breakable = lane is Lane.STABLE and policy.can_break
+    if policy.autonomy.release is not Autonomy.PROPOSE and not breakable:
         return f"release autonomy is {policy.autonomy.release}: no proposal to close"
     fix = f"grant `issues: write` to the land job in {CALLER}"
     try:
