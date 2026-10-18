@@ -55,6 +55,7 @@ class PluginRow:
     detail: str
 
 
+PAUSED = "the gate starts no session (D-35)"  # SHIPMILL_VERSION's words when a session's install is behind
 PluginRows = Callable[[], list[PluginRow]]  # the rows, or ReleaseError when they can't be read
 PeopleReader = Callable[[], Flagged]  # spec 012's flagged items, or ReleaseError when they can't be read
 
@@ -81,7 +82,9 @@ def read_plugin_rows(repo: str, root: Path) -> list[PluginRow]:
 def plugin_checks(read: PluginRows) -> list[Check]:
     """The shipmill@shipmill installs on this host that apply to the repo, as `status` reads
     them: each one behind the latest release is a WARN with the fix to run in its folder (the
-    repo's, the gate checkout's, or user scope); a failed read is a WARN, never a crash"""
+    repo's, the gate checkout's, or user scope); the versions row, which names the install a
+    session loads, is a WARN too when that install is behind, as the gate then starts no
+    session (D-35); a failed read is a WARN, never a crash"""
     try:
         rows = read()
     except ReleaseError as exc:
@@ -89,7 +92,7 @@ def plugin_checks(read: PluginRows) -> list[Check]:
     checks = []
     for row in rows:
         if row.state == "SHIPMILL_VERSION":
-            checks.append(Check("PASS", "plugin", row.detail))
+            checks.append(Check("WARN" if PAUSED in row.detail else "PASS", "plugin", row.detail))
         elif row.state == "SHIPMILL_OUTDATED":
             checks.append(Check("WARN", "plugin", f"{row.subject} {row.detail}"))
         else:

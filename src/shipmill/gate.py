@@ -35,7 +35,7 @@ from shipmill.errors import ReleaseError
 from shipmill.github import GitHub
 from shipmill.gitrepo import Git
 from shipmill.notify import Notifier, NotifyFailed
-from shipmill.plugin import CHECKED, PluginUpdate, daily_update
+from shipmill.plugin import CHECKED, Loaded, PluginUpdate, daily_update, loaded, session_project
 from shipmill.worktrees import Judged, Sessions, Verdict, judge, prune
 
 RECORD = "gate.json"
@@ -139,6 +139,7 @@ class Action(enum.Enum):
     RUNNING = "RUNNING"  # a session is still working
     WAITING = "WAITING"  # a session waits on the user
     UNCHANGED = "UNCHANGED"  # the same findings already got a session
+    PLUGIN_STALE = "PLUGIN_STALE"  # a session would load a plugin older than the latest release (D-35)
     LAUNCH = "LAUNCH"
 
 
@@ -169,6 +170,7 @@ class Decision:
     decisions: tuple[Asked, ...] = ()  # what the tick did for each item waiting on a decision (spec 005)
     asks_as: str | None = None  # a headless launch without an App: the login its questions post as
     plugin: PluginUpdate | None = None  # the daily plugin check before a launch (D-23); None: none ran
+    loaded: Loaded | None = None  # the plugin a session would load, read before a launch (D-35); None: not read
     detached: Detached | None = None  # the branch --refresh detached the gate's worktree from (#247)
 
 
@@ -939,6 +941,27 @@ def checked(config: Callable[[], AgentsConfig], args: Sequence[str]) -> Callable
     return read
 
 
+def stale(decision: Decision, git: Git, plugins: Runner | None) -> Decision:
+    """D-35: a LAUNCH whose session would load a shipmill plugin older than the latest release
+    becomes PLUGIN_STALE: no session stops or starts, and the reason names the install and its
+    fix. Otherwise the LAUNCH stands, carrying what the read found. plugins None reads nothing"""
+    if plugins is None:
+        return decision
+    common = git.run("rev-parse", "--path-format=absolute", "--git-common-dir")
+    found = loaded(git.root, session_project(git.root, common), plugins)
+    if not found.stale:
+        return replace(decision, loaded=found)
+    return replace(
+        decision,
+        action=Action.PLUGIN_STALE,
+        reason=found.reason(),
+        stop=(),
+        identity=None,
+        asks_as=None,
+        loaded=found,
+    )
+
+
 def gate(
     git: Git,
     repo: str,
@@ -957,7 +980,7 @@ def gate(
     login: Callable[[], str] | None = None,
     started: StartTime = start_time,
     new_session: Callable[[], uuid.UUID] = uuid.uuid4,
-    plugins: Runner = run_command,
+    plugins: Runner | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -994,12 +1017,18 @@ def gate(
     needs-decision.json and, without app_id, notifies for them (spec 005); the decision
     carries the mode it read and what it did for each item.
 
-    With [agents] plugin_update = true (D-23), a real LAUNCH first checks, at most once per
-    24 hours (plugin-check.json in the state directory), whether any shipmill@shipmill
-    install keyed on the checkout, at project or local scope, is behind the latest release,
-    and updates each one that is with plugins (`claude plugin update --scope <its scope>`
-    run in the checkout). The decision carries what the check did; a failed check or update
-    starts the session anyway. With false, the default, the gate changes no install"""
+    plugins runs the plugin's commands (`claude plugin ...`, `gh release view`); None, as in
+    tests that don't exercise it, reads and updates no plugin. With [agents] plugin_update =
+    true (D-23), a real LAUNCH first checks, at most once per 24 hours (plugin-check.json in
+    the state directory), whether any shipmill@shipmill install keyed on the checkout, at
+    project or local scope, is behind the latest release, and updates each one that is
+    (`claude plugin update --scope <its scope>` run in the checkout). With false, the
+    default, the gate changes no install. Then a LAUNCH, dry run or not, reads the install a
+    session in the checkout would load (D-35, plugin.loaded): when it is older than the latest
+    release the tick is PLUGIN_STALE, naming the install, its scope, and the command that
+    updates it, and stops no session and starts none; the next tick with a current install
+    launches. A failed read is reported and the session starts (as a failed D-23 check did),
+    and so does a checkout no install applies to. The decision carries both"""
     check_checkout(git, repo)
     config = checked(config, claude.args)
     state = state_dir(git)
@@ -1048,14 +1077,19 @@ def gate(
     else:
         text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login)
     if dry_run:
-        return decision, None, waiting, pruned
+        return stale(decision, git, plugins), None, waiting, pruned
     env = None
     if identity is not None:
         if app_env is None:
             raise ReleaseError(f"app_id {agents.app_id} is set, but no session env was given; no session starts")
         env = app_env(identity)
     if agents.plugin_update:  # before the session starts, so it loads the updated skills
+        if plugins is None:
+            raise ReleaseError("[agents] plugin_update = true, but no plugin command runner was given")
         decision = replace(decision, plugin=daily_update(state / CHECKED, git.root, now, plugins))
+    decision = stale(decision, git, plugins)  # after the update, so a current install launches (D-35)
+    if decision.action is Action.PLUGIN_STALE:
+        return decision, None, waiting, pruned
     for session in decision.stop:
         claude.stop(session)
     name = f"{session_name(repo)} {now:%Y-%m-%d %H:%M}"
@@ -1088,6 +1122,7 @@ def tick_record(
         "mode": None if decision.mode is None else decision.mode.value,
         "decisions": [a.record() for a in decision.decisions],
         "plugin": None if decision.plugin is None else decision.plugin.record(),
+        "loaded": None if decision.loaded is None else decision.loaded.record(),
         "detached": None if decision.detached is None else decision.detached.record(),
     }
 
@@ -1111,6 +1146,8 @@ def tick_lines(
     lines += [f"  {line}" for a in decision.decisions if (line := a.line(dry_run)) is not None]
     if decision.plugin is not None:
         lines += [f"  {line}" for line in decision.plugin.lines()]
+    if decision.loaded is not None:
+        lines += [f"  {line}" for line in decision.loaded.lines()]
     verb = "would prune" if dry_run else "pruned"
     lines += [f"  {verb} {j.path} ({j.worktree.branch})" for j in pruned]
     lines += [f"  {f.line()}" for f in decision.work]

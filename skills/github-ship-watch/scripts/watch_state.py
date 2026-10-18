@@ -155,8 +155,12 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
                   Claude Code loads it as: a linked worktree's main checkout), the gate's
                   checkout's own installs (tmp/shipmill-gate, the launchd working directory,
                   or the checkout itself when it is a linked worktree: Claude Code keys an
-                  install on each), and the marketplace's source when it isn't
-                  shipmill/shipmill (reported, never an action)
+                  install on each), the install a session in the gate's folder loads
+                  ("a session loads <scope> <version> (<project>)": the most specific scope
+                  installed for its project, local, project, user, then managed; when it is
+                  older than the latest release the gate starts no session, D-35), and the
+                  marketplace's source when it isn't shipmill/shipmill (reported, never an
+                  action)
   SHIPMILL_OUTDATED  one row per install of those older than the latest release, with the
                   command that updates it, run in its folder. When an install at the same
                   scope is keyed on a folder nested in it (the gate's checkout in the repo),
@@ -282,8 +286,9 @@ PLUGIN = "shipmill@shipmill"  # the Claude Code plugin, in its marketplace
 USER_SKILLS = (Path(".claude/skills"), Path(".agents/skills"))
 PLUGIN_CACHE = Path(".claude/plugins/cache") / PLUGIN.partition("@")[2]  # the plugin's own copies, by version
 GATE_CHECKOUT = Path("tmp/shipmill-gate")  # where shipmill-setup puts the gate's checkout
-# the gate log's decision lines: QUIET, LAUNCH, RUNNING, WAITING, UNCHANGED, HELD, or an error
-GATE_DECISION = re.compile(r"^(?:[A-Z]+|error): ")
+# the gate log's decision lines: QUIET, LAUNCH, RUNNING, WAITING, UNCHANGED, HELD,
+# PLUGIN_STALE, or an error
+GATE_DECISION = re.compile(r"^(?:[A-Z][A-Z_]*|error): ")
 VERSION_TAG = re.compile(r"^v\d+\.\d+")  # skips moving major tags such as v0
 ACTION = {
     "BOT_FAILED",
@@ -1944,15 +1949,41 @@ def plugin_fix(scope: str, where: str | None, keyed: list[tuple[str, Path]]) -> 
     return f"in {where}: {again} (`update` picks the nested install in {nested[0]}, a Claude Code bug)"
 
 
+SESSION_PRECEDENCE = ("local", "project", "user", "managed")
+
+
+def session_install(
+    keyed: list[tuple[str, Path]], unkeyed: list[tuple[str, str]], versions: dict[tuple[str, Path], str], project: Path
+) -> tuple[str, str] | None:
+    """The scope and version of the install a session in the project loads (D-35), as
+    shipmill's gate reads it (plugin.py's effective()): the most specific scope the plugin is
+    installed at for the project, local, then project, then user, then managed; None without"""
+    for scope in SESSION_PRECEDENCE:
+        found = [versions[(s, p)] for s, p in keyed if s == scope and p == project]
+        found += [v for s, v in unkeyed if s == scope]
+        if len(found) > 1:
+            raise Refused(f"error: claude plugin list --json lists {PLUGIN} twice at {scope} scope for {project}")
+        if found:
+            return scope, found[0]
+    return None
+
+
 def plugin_rows(
-    plugins: object, marketplaces: object, latest: str, folders: list[Path], gates: list[Path] | None = None
+    plugins: object,
+    marketplaces: object,
+    latest: str,
+    folders: list[Path],
+    gates: list[Path] | None = None,
+    session: Path | None = None,
 ) -> list[Row]:
     """The plugin's installs that apply to the repo, against the latest release: from `claude
     plugin list --json` and `claude plugin marketplace list --json`, parsed (None when claude
     isn't on PATH). An install applies at user scope, or at local or project scope in one of
     the folders (the projects Claude Code loads) or one of the gates (the gate's checkouts,
     which Claude Code keys installs of their own on, #233). Each install behind the release is
-    its own SHIPMILL_OUTDATED row, with the fix to run in its folder"""
+    its own SHIPMILL_OUTDATED row, with the fix to run in its folder. session, the project a
+    session in the gate's folder loads as, adds the install that session would load to
+    SHIPMILL_VERSION, and says when it is behind: the gate then starts no session (D-35)"""
     newest = version_key(latest)
     if newest is None:
         raise Refused(f"error: {SHIPMILL_REPO}'s latest release {latest!r} is not a version tag")
@@ -1962,6 +1993,8 @@ def plugin_rows(
         raise Refused("error: claude plugin list --json: expected a JSON array")
     installs = []
     keyed = []  # every scope and folder an install of the plugin is keyed on
+    unkeyed = []  # the user- and managed-scope installs: scope and version
+    versions = {}
     for e in plugins:
         if not isinstance(e, dict) or e.get("id") != PLUGIN:
             continue
@@ -1972,6 +2005,9 @@ def plugin_rows(
             raise Refused(f"error: claude plugin list --json: {PLUGIN} install {e!r}")
         if where is not None:
             keyed.append((e["scope"], Path(where)))
+            versions[(e["scope"], Path(where))] = e["version"]
+        elif e["scope"] in ("user", "managed"):
+            unkeyed.append((e["scope"], e["version"]))
         if e["scope"] == "user" or (where is not None and (Path(where) in folders or Path(where) in (gates or []))):
             installs.append((e["scope"], e["version"], where))
     rows = []
@@ -1984,6 +2020,16 @@ def plugin_rows(
             rows.append(Row("SHIPMILL_OUTDATED", f"plugin {scope}", f"{version}, latest {latest}; {fix}", fix))
     found = ", ".join(f"{scope} {version}" + (f" ({where})" if where else "") for scope, version, where in installs)
     detail = f"latest {latest}; plugin: {found or 'not installed for this repo on this host'}"
+    if session is not None:
+        loads = session_install(keyed, unkeyed, versions, session)
+        if loads is None:
+            detail += f"; a session loads none ({session})"
+        else:
+            key = version_key(f"v{loads[1]}")
+            if key is None:
+                raise Refused(f"error: {PLUGIN} {loads[0]} install has version {loads[1]!r}")
+            behind = f", older than {latest}: the gate starts no session (D-35)" if key < newest else ""
+            detail += f"; a session loads {loads[0]} {loads[1]} ({session}){behind}"
     market = PLUGIN.partition("@")[2]
     for m in marketplaces if isinstance(marketplaces, list) else []:
         origin = m.get("repo") if isinstance(m, dict) and m.get("name") == market else None
@@ -2045,11 +2091,22 @@ def shipmill_rows(repo: str, repo_dir: Path) -> list[Row]:
     plist = gate_plist(repo)
     workdir = plist.get("WorkingDirectory") if plist else None
     folders, gates = plugin_folders(repo_dir, Path(workdir) if isinstance(workdir, str) else None)
+    session = project_folder(gate_folder(repo_dir, workdir if isinstance(workdir, str) else None))
     claude = shutil.which("claude")
     if claude is None:
         return plugin_rows(None, None, latest, folders, gates)
     plugins = claude_json(claude, "plugin", "list")
-    return plugin_rows(plugins, claude_json(claude, "plugin", "marketplace", "list"), latest, folders, gates)
+    market = claude_json(claude, "plugin", "marketplace", "list")
+    return plugin_rows(plugins, market, latest, folders, gates, session)
+
+
+def gate_folder(repo_dir: Path, workdir: str | None) -> Path:
+    """The folder the gate starts its sessions in: launchd's working directory, else the
+    conventional tmp/shipmill-gate beside the main checkout when it exists, else the checkout"""
+    if workdir is not None:
+        return Path(workdir)
+    beside = project_folder(repo_dir) / GATE_CHECKOUT
+    return beside if beside.is_dir() else repo_dir
 
 
 def skill_names() -> list[str]:

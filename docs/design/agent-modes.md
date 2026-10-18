@@ -81,7 +81,12 @@ and any checkout with tracked changes, naming the files. Each run:
 7. Compares the rows with the last launch's fingerprint. The same rows within
    `retry_hours`: **UNCHANGED**, stop. A session that left an item alone on purpose
    doesn't wake a new one every tick
-8. **LAUNCH**: stops this repo's finished sessions (`claude stop` keeps their
+8. With `plugin_update = true`, updates the checkout's own plugin installs once a day
+   (D-23). Then reads the `shipmill@shipmill` install a session in the checkout would load
+   (the most specific scope installed for its project, user scope included). Older than
+   the latest release: **PLUGIN_STALE**, stop, naming the install and the command that
+   updates it; no session stops or starts until it is current (D-35)
+9. **LAUNCH**: stops this repo's finished sessions (`claude stop` keeps their
    conversation), starts `claude --bg -n "shipmill <repo> <time>" "<prompt>"` in the
    checkout with the rows appended to the prompt, each by state and subject only (an
    issue title in a row's detail is text anyone who edits the issue controls; the session
@@ -103,7 +108,7 @@ With `mode = "headless"` (spec 005, D-17) the steps change in four places:
 - Step 6 calls `watch_state.py` with `--trusted-only` (D-16), and with `app_id` set first
   runs the App's checks, then passes `--bot-login <slug>[bot]`; a failed check reads no
   state and launches nothing
-- Step 8 reads the host's login (`gh api user -q .login`; a failure exits 2 and launches
+- Step 9 reads the host's login (`gh api user -q .login`; a failure exits 2 and launches
   nothing), appends a paragraph to the prompt that sends a decision for `@<login>` to
   github-issue-triage's `references/needs-decision.md`, and starts `claude -p
   --permission-prompts none --allowedTools "<HEADLESS_TOOLS>" --disallowedTools

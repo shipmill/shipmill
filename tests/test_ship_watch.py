@@ -1355,6 +1355,32 @@ def test_a_nested_install_at_another_scope_keeps_the_update(ws: ModuleType) -> N
     ]
 
 
+def test_the_install_a_session_loads_is_the_most_specific_scope_for_its_project(ws: ModuleType) -> None:
+    # #417, D-35: the same precedence as the gate's plugin.effective()
+    root = Path("/work/r")
+    rows = ws.plugin_rows(registry(install("user", "0.24.0")), MARKETPLACE, "v0.24.0", [root], [GATE], root)
+    assert rows[0].detail == "latest v0.24.0; plugin: user 0.24.0; a session loads user 0.24.0 (/work/r)"
+    stale_user = registry(install("user", "0.23.0"), install("project", "0.22.0", str(GATE)))
+    rows = ws.plugin_rows(stale_user, MARKETPLACE, "v0.24.0", [root], [GATE], root)
+    assert rows[0].detail.endswith(
+        "; a session loads user 0.23.0 (/work/r), older than v0.24.0: the gate starts no session (D-35)"
+    )
+    both = registry(
+        install("user", "0.23.0"), install("project", "0.24.0", "/work/r"), install("local", "0.24.0", "/w")
+    )
+    rows = ws.plugin_rows(both, MARKETPLACE, "v0.24.0", [root], [GATE], root)
+    assert rows[0].detail.endswith("; a session loads project 0.24.0 (/work/r)")
+    rows = ws.plugin_rows(registry(), MARKETPLACE, "v0.24.0", [root], [GATE], root)
+    assert rows[0].detail.endswith("; a session loads none (/work/r)")
+
+
+def test_the_gate_folder_is_launchds_then_the_conventional_checkout(ws: ModuleType, tmp_path: Path) -> None:
+    assert ws.gate_folder(tmp_path, "/srv/gate") == Path("/srv/gate")
+    assert ws.gate_folder(tmp_path, None) == tmp_path  # no gate checkout beside it
+    (tmp_path / "tmp" / "shipmill-gate").mkdir(parents=True)
+    assert ws.gate_folder(tmp_path, None) == tmp_path / "tmp" / "shipmill-gate"
+
+
 def test_without_gates_a_gate_keyed_install_is_still_left_out(ws: ModuleType) -> None:
     installed = registry(install("project", "0.32.1", "/work/r"), install("project", "0.25.0", str(GATE)))
     assert states(ws.plugin_rows(installed, MARKETPLACE, "v0.32.1", [Path("/work/r")])) == ["SHIPMILL_VERSION"]

@@ -33,7 +33,7 @@ from shipmill.version import Version
 
 # the gate log's decision lines (QUIET, LAUNCH, ...), and the lines a failed tick leaves:
 # cli.run's "shipmill: <error>", uvx's "error: ...", or a traceback
-DECISION = re.compile(r"^[A-Z]+: ")
+DECISION = re.compile(r"^[A-Z][A-Z_]*: ")
 FAILURE = re.compile(r"^(?:shipmill: |error: |Traceback )")
 NEVER_EXITED = "(never exited)"  # launchctl's last exit code before a job's first run
 # a gh read failing on one of these is run once more (S-011-11): watch_state.py's
@@ -669,6 +669,9 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
         found.append(
             JobProblem(Verdict.WAITS, f"the gate: {last}", shown, attach.group() if attach else _log_fix(job, repo))
         )
+    elif last.startswith("PLUGIN_STALE"):  # D-35: no session starts until a person updates the plugin
+        fix = last.partition("until it is updated: ")[2] or _log_fix(job, repo)
+        found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", "paused: the plugin a session loads is stale", fix))
     elif last.startswith("HELD"):  # the HOLD row brings the verdict, its own line, and the fix
         held = [item(repo, int(n), False) for n in re.findall(r"#(\d+)", last.partition(": no session")[0])]
         found.append(JobProblem(None, "", f"held by {', '.join(held) or last}", None))

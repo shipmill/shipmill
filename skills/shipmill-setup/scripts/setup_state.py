@@ -51,7 +51,9 @@ Plugin (.claude/settings.json, so every session in the repo loads the skills):
   PLUGIN_OUTDATED  enabled, but an install on this host is behind shipmill's latest
                    release: one row per install (user scope, the repo's folder, the gate's
                    checkout), each with the command to run in its folder, as
-                   github-ship-watch's SHIPMILL_OUTDATED reads it (#233). --fix leaves it
+                   github-ship-watch's SHIPMILL_OUTDATED reads it (#233); and a `gate:` row
+                   when the install a session loads is one of them, as the gate then starts
+                   no session until it is updated (D-35). --fix leaves it
   PLUGIN_OK        enabled, and no install is behind (or claude isn't on PATH to read them)
 
 Labels (the triage skills and shipmill read them):
@@ -123,6 +125,8 @@ CONFIG = Path(".github/shipmill.toml")
 CALLER = Path(".github/workflows/release.yml")
 SETTINGS = Path(".claude/settings.json")
 PLUGIN = "shipmill@shipmill"
+# SHIPMILL_VERSION's clause when the install a session loads is behind (D-35)
+SESSION_PAUSED = re.compile(r"; (a session loads [^;]*the gate starts no session \(D-35\))")
 MARKETPLACE = {"source": {"source": "github", "repo": "shipmill/shipmill"}, "autoUpdate": True}
 # Where release.yml calls shipmill from: the repo, and its path before it moved to the org
 SHIPMILL_REPOS = ("shipmill/shipmill/", "romamo/shipmill/")
@@ -341,12 +345,19 @@ def watch_module() -> ModuleType:
 
 def outdated_installs(repo: str, repo_dir: Path, ws: ModuleType) -> list[str]:
     """watch_state.py's SHIPMILL_OUTDATED rows, each as `<subject>: <detail>`: the installs that
-    apply to the repo's folder and the gate's checkout, with the fix to run in each"""
+    apply to the repo's folder and the gate's checkout, with the fix to run in each; then, when
+    the install a session loads is one of them, SHIPMILL_VERSION's words for it, as the gate
+    starts no session until it is updated (D-35)"""
     try:
         rows = ws.shipmill_rows(repo, repo_dir)
     except ws.Refused as refused:
         fail(str(refused).removeprefix("error: "))
-    return [f"{r.subject}: {r.detail}" for r in rows if r.state == "SHIPMILL_OUTDATED"]
+    found = [f"{r.subject}: {r.detail}" for r in rows if r.state == "SHIPMILL_OUTDATED"]
+    for r in rows:
+        paused = SESSION_PAUSED.search(r.detail) if r.state == "SHIPMILL_VERSION" else None
+        if paused is not None:
+            found.append(f"gate: {paused.group(1)}")
+    return found
 
 
 def skill_rows(home: Path, ws: ModuleType) -> list[Row]:
