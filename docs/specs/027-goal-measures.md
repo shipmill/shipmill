@@ -1,6 +1,6 @@
 # S-027: A measure per goal, and the retro per goal
 
-status: draft
+status: approved
 serves: G-7
 
 ## Problem
@@ -76,7 +76,12 @@ holds. A goal that the forge can't measure (adoption, user satisfaction, revenue
 no measure and reads "no measure" in the retro; no external source is read. Answering #389's
 first open question this way keeps N-2 (no state of shipmill's own) and keeps every
 measure checkable by code; a later spec can add an external source declared in
-`.github/shipmill.toml` (D-4) when a goal needs one.
+`.github/shipmill.toml` (D-4) when a goal needs one. The maintainer settled this in
+chat: GitHub data only for now.
+
+**One window.** Every measure is read over the retro's week, the window its metrics.py runs
+already cover; a measure line names no window of its own. The maintainer chose this over a
+per-measure trailing window, which stays out of scope.
 
 ### `shipmill product show` and the edit commands
 
@@ -148,7 +153,10 @@ served it (numbers) this week, the counts for the week before, and its measure's
 
 A measure is read from the same metrics.py runs the retro already makes for this week and
 the week before; `met_weeks` counts the weeks in a row, back from this one, the goal was
-met. When a goal has a measure and `--met-weeks` exceeds 2, gather runs metrics.py for the
+met. The thresholds are flags of `retro.py gather`, not policy keys: a goal is proposed
+for retirement after `--met-weeks` (4) weeks met in a row and reported stalled after
+`--stalled-weeks` (3) weeks unserved, the defaults the maintainer chose. When a goal has a
+measure and `--met-weeks` exceeds 2, gather runs metrics.py for the
 earlier weeks too, each with `--until` the later window's start, and runs none when no goal
 has a measure.
 
@@ -228,6 +236,10 @@ maintainer changes it (D-34, N-3).
 - Goals in `shipmill status` or the fleet report: the retro's comment is the one place
 - Changing the direction: only the maintainer does, through the spec 024 commands and a
   pull request they merge
+- Measures for shipmill's own goals: building this spec adds none to this repo's
+  `docs/product.md`; G-1 to G-7 get a measure only when the maintainer adds it
+- Policy keys for the thresholds (an `[agents]` key): the flags of `retro.py gather` hold
+  them
 
 ## Decisions relied on
 
