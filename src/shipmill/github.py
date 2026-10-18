@@ -21,6 +21,19 @@ OPEN_LIMIT = 100  # open issues read per label: proposals are one per lane and p
 PULL_LIMIT = 1000  # open pull requests read at once; gh's own default is 30
 MERGED_PER_BRANCH = 20  # merged pull requests read per head branch name, the newest
 HISTORY_LIMIT = 100  # a merged pull request's commits, and its force-pushes, read: the last ones
+MILESTONE_LIMIT = 1000  # a milestone's issues read at once; one with more is refused
+COMMENTS_READ = 30  # an issue's newest comments read for a close-confirmed marker (D-29)
+CLOSERS_READ = 20  # the pull requests read that close an issue
+CLOSES_PER_QUERY = 40  # issues read per GraphQL query by issue_closes
+_CLOSE_FRAGMENT = (
+    "fragment closed on Issue { number state stateReason "
+    "timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { createdAt "
+    "closer { __typename ... on PullRequest { merged mergeCommit { oid } } ... on Commit { oid } } } } } "
+    f"closedByPullRequestsReferences(first: {CLOSERS_READ}, includeClosedPrs: true) "
+    "{ nodes { merged mergeCommit { oid } } } "
+    f"comments(last: {COMMENTS_READ}) "
+    "{ nodes { createdAt body authorAssociation author { __typename login } } } }"
+)
 _MERGED_FRAGMENT = (
     "fragment merged on PullRequestConnection { nodes { number headRefName baseRefName headRefOid "
     f"commits(last: {HISTORY_LIMIT}) {{ nodes {{ commit {{ oid }} }} }} "
@@ -44,6 +57,48 @@ class Forbidden(ReleaseError):
 class Milestone:
     open_issues: int
     closed_issues: int
+
+
+@dataclass(frozen=True, slots=True)
+class MilestoneIssues:
+    """The issues of a milestone, open and closed, with the repository they belong to"""
+
+    repo: str  # owner/name, as GitHub spells it
+    issues: tuple[tuple[int, str], ...]  # (number, body)
+
+
+class CloseReason(StrEnum):
+    """A closed issue's stateReason, as GitHub's GraphQL API names it"""
+
+    COMPLETED = "COMPLETED"
+    NOT_PLANNED = "NOT_PLANNED"
+    DUPLICATE = "DUPLICATE"
+
+
+@dataclass(frozen=True, slots=True)
+class IssueComment:
+    author: str  # the login; a Bot's without "[bot]", as GraphQL spells it
+    bot: bool
+    association: str  # OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...
+    created_at: dt.datetime
+    body: str
+
+
+@dataclass(frozen=True, slots=True)
+class IssueClose:
+    """How an issue closed: its reason, when it last closed, the commits known to close it
+    (the merge commit of each merged pull request that closes it, and the commit that closed
+    it), and its newest comments; reason and closed_at are None while it is open"""
+
+    number: int
+    reason: CloseReason | None
+    closed_at: dt.datetime | None
+    fixes: tuple[str, ...]  # full commit SHAs
+    comments: tuple[IssueComment, ...]  # the newest COMMENTS_READ, oldest first
+
+    @property
+    def open(self) -> bool:
+        return self.reason is None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +177,18 @@ class GitHub(Protocol):
         ...
 
     def milestone(self, title: str) -> Milestone | None: ...
+
+    def milestone_issues(self, title: str) -> MilestoneIssues:
+        """Every issue of the milestone with the title, open and closed (MILESTONE_LIMIT at most)"""
+        ...
+
+    def issue_closes(self, numbers: Sequence[int]) -> list[IssueClose]:
+        """How each of the repository's issues closed, by number; batched, none for no number"""
+        ...
+
+    def app_id(self, slug: str) -> int:
+        """The id of the GitHub App with the slug (a Bot's login without "[bot]")"""
+        ...
 
     def merge_commit(self, pr: int) -> str:
         """The commit a merged pull request landed as on the default branch"""
@@ -267,6 +334,37 @@ class GhCli:
             if m["title"] == title:
                 return Milestone(int(m["open_issues"]), int(m["closed_issues"]))
         return None
+
+    def milestone_issues(self, title: str) -> MilestoneIssues:
+        found = json.loads(
+            self._gh(
+                "issue", "list", "--milestone", title, "--state", "all", "--json", "number,body,url",
+                "--limit", str(MILESTONE_LIMIT),
+            )
+        )  # fmt: skip
+        return parse_milestone_issues(found, title)
+
+    def issue_closes(self, numbers: Sequence[int]) -> list[IssueClose]:
+        wanted = sorted(set(numbers))
+        closes: list[IssueClose] = []
+        for start in range(0, len(wanted), CLOSES_PER_QUERY):
+            chunk = wanted[start : start + CLOSES_PER_QUERY]
+            aliases = " ".join(f"i{n}: issue(number: {n}) {{ ...closed }}" for n in chunk)
+            query = (
+                "query($owner: String!, $name: String!) "
+                f"{{ repository(owner: $owner, name: $name) {{ {aliases} }} }} {_CLOSE_FRAGMENT}"
+            )
+            found = json.loads(
+                self._gh("api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", f"query={query}")
+            )
+            closes.extend(parse_issue_closes(found, chunk))
+        return closes
+
+    def app_id(self, slug: str) -> int:
+        found = self._api(f"apps/{slug}")
+        if not isinstance(found, dict) or not isinstance(found.get("id"), int):
+            raise ReleaseError(f"gh api apps/{slug} printed no App id: {str(found)[:300]}")
+        return int(found["id"])
 
     def merge_commit(self, pr: int) -> str:
         found = json.loads(self._gh("pr", "view", str(pr), "--json", "state,mergeCommit"))
@@ -508,3 +606,116 @@ def _merged_pull(node: Any) -> MergedPull | None:
             if sha is not None:
                 heads.add(sha)
     return MergedPull(number, head, frozenset(heads), base)
+
+
+_ISSUE_URL = re.compile(r"^https://[^/]+/([\w.-]+/[\w.-]+)/issues/(\d+)$")
+
+
+def parse_milestone_issues(found: Any, title: str) -> MilestoneIssues:
+    """`gh issue list --milestone --json number,body,url`'s output; the repository comes from
+    the issues' URLs, so a milestone with no issue has none"""
+    if not isinstance(found, list):
+        raise ReleaseError(f"gh issue list --milestone {title} printed {type(found).__name__}, not a JSON array")
+    if len(found) >= MILESTONE_LIMIT:
+        raise ReleaseError(f"milestone {title} holds {MILESTONE_LIMIT} issues or more; shipmill reads fewer")
+    repos = set()
+    issues = []
+    for i in found:
+        url = i.get("url") if isinstance(i, dict) else None
+        link = _ISSUE_URL.match(url) if isinstance(url, str) else None
+        if link is None or not isinstance(i.get("number"), int) or not isinstance(i.get("body"), str):
+            raise ReleaseError(f"gh issue list printed {i!r}: an issue needs a number, a body, and an issue URL")
+        if int(link.group(2)) != i["number"]:
+            raise ReleaseError(f"gh issue list printed #{i['number']} with the URL {url}")
+        repos.add(link.group(1))
+        issues.append((int(i["number"]), str(i["body"])))
+    if len(repos) > 1:
+        raise ReleaseError(f"milestone {title} lists issues of several repositories: {sorted(repos)}")
+    return MilestoneIssues(repos.pop() if repos else "", tuple(sorted(issues)))
+
+
+def parse_issue_closes(found: Any, numbers: Sequence[int]) -> list[IssueClose]:
+    """The `i<N>` issues of issue_closes' GraphQL answer; anything else is refused, since a
+    close misread could prove a goal shipped that didn't"""
+
+    def refuse(what: str) -> ReleaseError:
+        return ReleaseError(f"gh api graphql printed {what} for the issues' closes: {str(found)[:300]}")
+
+    if not isinstance(found, dict) or found.get("errors"):
+        raise refuse("errors or no object")
+    data = found.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
+    if not isinstance(repository, dict):
+        raise refuse("no repository")
+    closes = []
+    for n in numbers:
+        node = repository.get(f"i{n}")
+        if not isinstance(node, dict) or node.get("number") != n:
+            raise refuse(f"no issue #{n}")
+        closes.append(_issue_close(node))
+    return closes
+
+
+def _nodes(holder: Any, key: str, number: int) -> list[Any]:
+    connection = holder.get(key)
+    if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+        raise ReleaseError(f"gh api graphql printed no {key} for #{number}")
+    return list(connection["nodes"])
+
+
+def _merged_oid(pr: Any, number: int) -> str | None:
+    """A merged pull request's merge commit; None for one not merged"""
+    if not isinstance(pr, dict) or not isinstance(pr.get("merged"), bool):
+        raise ReleaseError(f"gh api graphql printed {pr!r} for #{number}: a pull request needs merged")
+    if not pr["merged"]:
+        return None
+    oid = _oid(pr, "mergeCommit")
+    if oid is None:
+        raise ReleaseError(f"gh api graphql printed {pr!r} for #{number}: a merged pull request needs a mergeCommit")
+    return oid
+
+
+def _issue_close(node: dict[str, Any]) -> IssueClose:
+    number = int(node["number"])
+    state, reason = node.get("state"), node.get("stateReason")
+    if state == "OPEN":
+        return IssueClose(number, None, None, (), ())
+    if state != "CLOSED" or reason not in set(CloseReason):
+        raise ReleaseError(f"gh api graphql printed state {state!r}, stateReason {reason!r} for #{number}")
+    fixes: list[str] = []
+    closed_at = None
+    events = _nodes(node, "timelineItems", number)
+    if events:
+        event = events[-1]
+        if not isinstance(event, dict) or not isinstance(event.get("createdAt"), str):
+            raise ReleaseError(f"gh api graphql printed {event!r} for #{number}: a close event needs createdAt")
+        closed_at = _time(event["createdAt"])
+        closer = event.get("closer")
+        if isinstance(closer, dict) and closer.get("__typename") == "PullRequest":
+            if (oid := _merged_oid(closer, number)) is not None:
+                fixes.append(oid)
+        elif isinstance(closer, dict) and closer.get("__typename") == "Commit":
+            if not isinstance(closer.get("oid"), str) or not closer["oid"]:
+                raise ReleaseError(f"gh api graphql printed {closer!r} for #{number}: a commit needs an oid")
+            fixes.append(str(closer["oid"]))
+        elif closer is not None and not isinstance(closer, dict):
+            raise ReleaseError(f"gh api graphql printed {closer!r} for #{number}: not a closer")
+    for pr in _nodes(node, "closedByPullRequestsReferences", number):
+        if (oid := _merged_oid(pr, number)) is not None and oid not in fixes:
+            fixes.append(oid)
+    comments = []
+    for c in _nodes(node, "comments", number):
+        if (
+            not isinstance(c, dict)
+            or not isinstance(c.get("createdAt"), str)
+            or not isinstance(c.get("body"), str)
+            or not isinstance(c.get("authorAssociation"), str)
+        ):
+            raise ReleaseError(f"gh api graphql printed {c!r} for #{number}: a comment needs createdAt, body, author")
+        author = c.get("author")  # null for a deleted account
+        if author is not None and (not isinstance(author, dict) or not isinstance(author.get("login"), str)):
+            raise ReleaseError(f"gh api graphql printed {author!r} for #{number}: an author needs a login")
+        login = str(author["login"]) if author else "ghost"
+        bot = isinstance(author, dict) and author.get("__typename") == "Bot"
+        comments.append(IssueComment(login, bot, c["authorAssociation"], _time(c["createdAt"]), c["body"]))
+    return IssueClose(number, CloseReason(reason), closed_at, tuple(fixes), tuple(comments))

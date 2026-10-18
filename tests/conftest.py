@@ -15,8 +15,10 @@ from shipmill.github import (
     DeploymentStatus,
     Forbidden,
     Issue,
+    IssueClose,
     MergedPull,
     Milestone,
+    MilestoneIssues,
     PullRequest,
     WorkflowRun,
 )
@@ -110,6 +112,11 @@ class FakeGitHub:
     comments: dict[int, list[str]] = field(default_factory=dict)  # by issue, oldest first
     labels_read: list[str] = field(default_factory=list)
     milestones: dict[str, Milestone] = field(default_factory=dict)
+    milestone_lists: dict[str, MilestoneIssues] = field(default_factory=dict)  # by title
+    milestone_reads: list[str] = field(default_factory=list)  # the titles milestone_issues read
+    closes: dict[int, IssueClose] = field(default_factory=dict)  # how issues closed, by number
+    close_reads: list[tuple[int, ...]] = field(default_factory=list)  # the numbers of each issue_closes call
+    apps: dict[str, int] = field(default_factory=dict)  # App ids by slug
     merges: dict[int, str] = field(default_factory=dict)
     releases: list[tuple[str, str, str, bool]] = field(default_factory=list)
     dispatched: list[tuple[str, str, str, dict[str, str]]] = field(default_factory=list)
@@ -152,6 +159,20 @@ class FakeGitHub:
 
     def milestone(self, title: str) -> Milestone | None:
         return self.milestones.get(title)
+
+    def milestone_issues(self, title: str) -> MilestoneIssues:
+        self.milestone_reads.append(title)
+        return self.milestone_lists.get(title, MilestoneIssues("o/demo", ()))
+
+    def issue_closes(self, numbers: Sequence[int]) -> list[IssueClose]:
+        self.close_reads.append(tuple(numbers))
+        missing = [n for n in numbers if n not in self.closes]
+        if missing:
+            raise ReleaseError(f"gh api graphql failed: Could not resolve to an Issue with the number of {missing[0]}")
+        return [self.closes[n] for n in sorted(set(numbers))]
+
+    def app_id(self, slug: str) -> int:
+        return self.apps[slug]
 
     def merge_commit(self, pr: int) -> str:
         return self.merges[pr]
