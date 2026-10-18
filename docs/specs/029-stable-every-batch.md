@@ -1,6 +1,6 @@
 # S-029: Stable on every green batch; a breaking change waits for the maintainer
 
-status: draft
+status: approved
 serves: G-1
 
 ## Problem
@@ -134,14 +134,17 @@ A new entry in the spec 014 catalogue (`src/shipmill/upgrades.py`), id
 
 - **Applies** to a config whose `[lanes.stable]` sets `min_soak_days`, whatever its value.
   It is decided once that key is gone, so a repo that edits it out by hand is done
-- **The edit** removes the `min_soak_days` and `promote_from` lines from
-  `[lanes.stable]`, and adds `quiet_minutes = 30` there when the table has no
-  `quiet_minutes`; every other byte stays (comments, `schedule`, `milestone`, the rc lane).
-  The catalogue's edit today only adds a key, so it gains removals
+- **The edit** removes the `min_soak_days` line from `[lanes.stable]` and keeps
+  `promote_from`: with `milestone = true` the promotion is the maintainer's choice of what
+  a version holds, and dropping it would ship main's head once the milestone closes. It
+  adds `quiet_minutes = 30` only when the table has no trigger at all (no `quiet_minutes`,
+  `schedule`, or `milestone`), since a new trigger beside `milestone` would release before
+  the milestone is done; every other byte stays (comments, `schedule`, `milestone`, the rc
+  lane). The catalogue's edit today only adds a key, so it gains removals
 - **The text for people:** stable releases ship every batch of merges whose CI passed,
   instead of an rc three days old that nobody ran; a breaking change still waits for the
   maintainer's hand start; the rc lane stays for people who pin pre-releases and can be
-  deleted; to keep promoting rcs without the soak, put `promote_from = "rc"` back
+  deleted along with `promote_from` when no milestone gates the stable lane
 - **Proposing and declining** work as for every upgrade (S-014): one `shipmill-upgrade`
   issue, the needs-decision question under `propose`, a pull request on an accepting
   answer. Closing the issue declines it, and its body says the next minor release refuses
@@ -172,7 +175,7 @@ A new entry in the spec 014 catalogue (`src/shipmill/upgrades.py`), id
 - S-029-9: In the minor release after the one that ships S-029-8, a policy whose `[lanes.stable]` sets `min_soak_days` exits 2 naming the key, spec 029, and `shipmill upgrade --apply stable-every-batch`
 - S-029-10: `promote_from = "rc"` without `min_soak_days` promotes the newest rc after the last stable release as soon as a stable trigger is due, whatever the rc's age, and still defers when `.github/workflows/` changed since the rc (D-28)
 - S-029-11: `shipmill init` writes `[lanes.stable]` with `quiet_minutes = 30` and `github_release = true` and none of `promote_from`, `min_soak_days`, `schedule`, or `milestone`, writes the rc lane only as comments, and the `release.yml` it derives has no `schedule` trigger
-- S-029-12: `shipmill upgrade` lists `stable-every-batch` for a config whose `[lanes.stable]` sets `min_soak_days`, and not for one without it; `--apply stable-every-batch` removes the `min_soak_days` and `promote_from` lines, adds `quiet_minutes = 30` only when the table had none, and leaves every other byte of the file unchanged
+- S-029-12: `shipmill upgrade` lists `stable-every-batch` for a config whose `[lanes.stable]` sets `min_soak_days`, and not for one without it; `--apply stable-every-batch` removes the `min_soak_days` line, keeps `promote_from`, adds `quiet_minutes = 30` only when the table had no `quiet_minutes`, `schedule`, or `milestone`, and leaves every other byte of the file unchanged
 - S-029-13: `docs/release-lanes.md`, `README.md`, `site/index.html`, `skills/shipmill-setup/SKILL.md`, and `skills/github-issue-triage/references/triage-rubric.md` describe no stable release as a soaked rc, and `docs/release-lanes.md` documents the breaking hold, `promote_from` without an age, and the `min_soak_days` deprecation
 
 ## Out of scope
