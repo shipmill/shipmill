@@ -38,7 +38,7 @@ below.
 
 - Q-1: Fail fast: a malformed config or an unexpected state stops with exit 2 and a message naming the fix, never a guess
 - Q-2: Every write an agent makes is attributed to the App, never to a person (D-14)
-- Q-3: A release ships only code whose CI passed on the exact release commit, and a stable release ships what a pre-release already carried
+- Q-3: A release ships only code whose CI passed on the exact release commit, and a breaking change reaches a stable release only after the maintainer's decision
 - Q-4: Every acceptance criterion of a spec has a test that names it
 - Q-5: A change honours the settled rules in `docs/decisions.md`, or records a superseding entry the maintainer approved
 - Q-6: The release side works without the agents
