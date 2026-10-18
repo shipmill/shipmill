@@ -135,12 +135,12 @@ def hook_command(event: str) -> str:
 
 
 def through_shell(
-    event: str, data: dict[str, Any], env: dict[str, str], plugin_root: Path = ROOT
+    event: str, data: dict[str, Any], env: dict[str, str], plugin_root: Path = ROOT, shell: str = "/bin/sh"
 ) -> subprocess.CompletedProcess[str]:
     """hooks.json's command for event as Claude Code runs it: through a shell, with
     CLAUDE_PLUGIN_ROOT set and the hook input on stdin"""
     return subprocess.run(
-        ["/bin/sh", "-c", hook_command(event)],
+        [shell, "-c", hook_command(event)],
         input=json.dumps(data),
         cwd=data["cwd"],
         env={**env, "CLAUDE_PLUGIN_ROOT": str(plugin_root)},
@@ -203,6 +203,19 @@ def test_s026_19_hook_command_runs_the_script(box: Sandbox) -> None:
     refused(through_shell("PreToolUse", data, dict(os.environ)), "rebase-merge", "D-33")
 
 
+SHELLS = [s for s in ("/bin/sh", "/bin/bash", "/bin/dash", "/bin/zsh") if Path(s).is_file()]
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_s026_19_hook_command_runs_under_each_shell(box: Sandbox, tmp_path: Path, shell: str) -> None:
+    """A refused fixture still exits 2, and a missing uv exits 1, under every shell present"""
+    data = fixture("bash-rebase-merge-refused.json", box.agents)
+    refused(through_shell("PreToolUse", data, dict(os.environ), shell=shell), "rebase-merge", "D-33")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    cant_start(through_shell("PreToolUse", data, clean_env(empty), shell=shell))
+
+
 def test_s026_19_hook_command_quotes_a_plugin_root_with_spaces(box: Sandbox, tmp_path: Path) -> None:
     if shutil.which("uv") is None:
         pytest.fail("uv runs the hooks")
@@ -233,6 +246,18 @@ def test_s026_19_failing_uv_exits_1(box: Sandbox, tmp_path: Path, event: str) ->
     fake = tmp_path / "fake"
     fake.mkdir()
     (fake / "uv").write_text("#!/bin/sh\necho 'error: no Python' >&2\nexit 2\n", encoding="utf-8")
+    (fake / "uv").chmod(0o755)
+    result = through_shell(event, event_input(event, box.agents), clean_env(fake))
+    cant_start(result)
+    assert "(uv can find or install no Python 3.11 or newer)" in result.stderr
+
+
+@pytest.mark.parametrize("event", sorted(MODES))
+def test_s026_19_uv_printing_no_path_exits_1(box: Sandbox, tmp_path: Path, event: str) -> None:
+    """A uv whose python find exits 0 but prints no path: the hook still exits 1, not 127"""
+    fake = tmp_path / "fake"
+    fake.mkdir()
+    (fake / "uv").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     (fake / "uv").chmod(0o755)
     result = through_shell(event, event_input(event, box.agents), clean_env(fake))
     cant_start(result)
