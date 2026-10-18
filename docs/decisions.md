@@ -194,6 +194,7 @@ entry that supersedes it, never by editing an old one.
 - Applies to: src/shipmill/gate.py, src/shipmill/plugin.py, src/shipmill/agents.py, src/shipmill/doctor.py, skills/github-ship-watch/scripts/watch_state.py, skills/shipmill-setup/scripts/setup_state.py, [agents] plugin_update, shipmill status
 - Enforced by: the gate and plugin tests (with the implementing PR)
 - Supersedes: D-22
+- Superseded by: D-35
 
 ## D-24: A worktree whose tip was a merged PR's head has landed
 
@@ -283,3 +284,12 @@ entry that supersedes it, never by editing an old one.
 - Why: Without a written direction the loop closes tasks correctly and can still take the product where nobody chose: triage judges each issue alone, intake ranks by volume, review checks a diff against its issue. D-32 removed the roadmap plan for lack of goals and said planning comes back with a goals layer; one structured file is the cheapest layer every agent can read and code can check, ids make a reference to a goal verifiable, and the maintainer reviews it like code
 - Applies to: docs/product.md, docs/product/, REVIEW.md, docs/specs/, src/shipmill/product.py, src/shipmill/doctor.py, skills/github-issue-triage/SKILL.md, skills/github-issue-triage/references/triage-rubric.md, skills/github-issue-triage/scripts/specs.py, skills/product-intake/SKILL.md, skills/github-issue-resolve/SKILL.md, skills/github-pr-triage/references/reviewer-brief.md, skills/github-pr-triage/scripts/pr_gate.py, skills/shipmill-setup/SKILL.md, [agents]
 - Enforced by: review, until spec 024 is built
+
+## D-35: The gate starts no session on skills older than the latest release
+
+- Decided: 2026-10-18, in shipmill/shipmill#417
+- Rule: Before it starts a session, shipmill gate reads the shipmill@shipmill version a session in its checkout would load, at any scope (user scope included), and when that version is older than the latest release it starts no session: the tick reports the stale install, its scope, and the command that updates it, and the gate starts sessions again once the install is current. With [agents] plugin_update = true it still first updates the installs keyed on its checkout once a day, as D-23 says; shipmill status and doctor report the version a session would load against the latest release
+- Why: Unattended sessions ran older skills than the repo (a 0.25.0 local install the update never reached, then a 0.48.0 user-scope install whose watch_state.py exits 2 on this repo), and Claude Code offers no way to update an install by its folder; the maintainer chose a paused gate over old skills doing unattended work
+- Applies to: src/shipmill/gate.py, src/shipmill/plugin.py, src/shipmill/agents.py, src/shipmill/doctor.py, skills/github-ship-watch/scripts/watch_state.py, skills/shipmill-setup/scripts/setup_state.py, [agents] plugin_update, shipmill status
+- Enforced by: the gate and plugin tests (with the implementing PR)
+- Supersedes: D-23
