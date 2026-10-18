@@ -294,7 +294,12 @@ def files(root: Path) -> list[PurePosixPath]:
 
 
 def _read(root: Path, file: PurePosixPath) -> tuple[Rubric, tuple[Problem, ...]]:
-    return parse((root / file).read_text(encoding="utf-8"), file)
+    """Refuses a REVIEW.md that a symlink, its own or a folder's, leads outside the checkout,
+    so a change can't feed a file from elsewhere on the machine to the reviewer"""
+    target = (root / file).resolve()
+    if not target.is_relative_to(root.resolve()):
+        raise ReleaseError(f"{file} resolves to {target}, outside the repository {root}; refusing to read it")
+    return parse(target.read_text(encoding="utf-8"), file)
 
 
 def check(root: Path) -> list[Problem]:

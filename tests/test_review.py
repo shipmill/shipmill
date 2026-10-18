@@ -248,3 +248,28 @@ def test_value_objects_validate() -> None:
         RuleId.parse("I-01")
     with pytest.raises(ReleaseError):
         Glob("a`b")
+
+
+def test_review_md_symlinked_outside_the_repo_is_refused(tmp_path: Path) -> None:
+    root = _git_repo(tmp_path / "repo")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("SECRET=1\n", encoding="utf-8")
+    (outside / "REVIEW.md").write_text("SECRET=1\n", encoding="utf-8")
+    (root / "REVIEW.md").symlink_to(outside / "secret")
+    with pytest.raises(ReleaseError, match="outside the repository"):
+        check(root)
+    with pytest.raises(ReleaseError, match="outside the repository"):
+        show(root, [])
+    (root / "REVIEW.md").unlink()
+    (root / "linked").symlink_to(outside)
+    with pytest.raises(ReleaseError, match="outside the repository"):
+        show(root, ["linked/x.py"])
+
+
+def test_review_md_symlinked_inside_the_repo_is_read(tmp_path: Path) -> None:
+    root = _git_repo(tmp_path / "repo")
+    _write(root, "docs/REVIEW.md", ROOT_REVIEW)
+    (root / "REVIEW.md").symlink_to(root / "docs" / "REVIEW.md")
+    assert check(root) == []
+    assert show(root, []).to_json()["cap"] == 3
