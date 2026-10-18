@@ -134,3 +134,7 @@ A worktree this session leaves behind once it exits (it ended before the merge, 
 - Links: issue comment, PR (and merge commit if merged)
 - Verification results, separating new tests from pre-existing failures
 - Anything left for the user: unpushed commits, divergent branches, decisions needed, and the worktree path while the PR is open
+
+## Improve the skill
+
+When a run goes wrong (a verdict the code contradicted, unpushed commits riding along in a PR, a fix on the user's checkout), add the lesson to the matching phase, so the skill doesn't repeat it. When a lesson goes into the skill, add a case under `evals/` that fails without it, in the same pull request.
