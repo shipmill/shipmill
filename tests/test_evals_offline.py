@@ -177,6 +177,41 @@ def test_s025_5_record_never_forwards_a_write_or_an_unknown_call(tmp_path: Path)
     assert not (tmp_path / "case").exists()
 
 
+def test_s025_5_record_never_forwards_a_graphql_mutation_from_input_or_a_shown_token(tmp_path: Path) -> None:
+    ws = workspace(tmp_path)
+    (ws / ".eval" / "case").write_text(f"{tmp_path / 'case'}\n", encoding="utf-8")
+    (ws / "m.json").write_text('{"query": "mutation { addStar(input: {}) { clientMutationId } }"}', encoding="utf-8")
+    bin_dir, calls = fake_gh(tmp_path)
+    path = f"{STUB.parent}{os.pathsep}{bin_dir}"
+    assert gh(ws, "api", "graphql", "--input", "m.json", path=path, EVAL_GH_RECORD="1").returncode == 0
+    assert gh(ws, "auth", "status", "--show-token", path=path, EVAL_GH_RECORD="1").returncode == 1
+    assert gh(ws, "auth", "status", "-t", path=path, EVAL_GH_RECORD="1").returncode == 1
+    assert not calls.exists()
+    assert not (tmp_path / "case").exists()
+    assert [line["kind"] for line in lines(ws)] == ["write"]
+
+
+def test_s025_3_a_workflow_run_field_is_not_read_as_a_body_file(tmp_path: Path) -> None:
+    ws = workspace(tmp_path)
+    done = gh(ws, "workflow", "run", "ci.yml", "-F", "ref=main")
+    assert done.returncode == 0, done.stderr
+    assert lines(ws) == [{"kind": "write", "args": ["workflow", "run", "ci.yml", "-F", "ref=main"]}]
+
+
+def test_s025_5_record_finds_the_real_gh_past_a_symlink_to_the_stub(tmp_path: Path) -> None:
+    ws = workspace(tmp_path)
+    (ws / ".eval" / "case").write_text(f"{tmp_path / 'case'}\n", encoding="utf-8")
+    link_bin = tmp_path / "linkbin"
+    link_bin.mkdir()
+    (link_bin / "gh").symlink_to(STUB)
+    real_bin, calls = fake_gh(tmp_path)
+    python_dir = str(Path(sys.executable).parent)
+    env = {"PATH": os.pathsep.join([str(link_bin), python_dir, str(real_bin)]), "EVAL_GH_RECORD": "1"}
+    done = subprocess.run(["gh", *VIEW], cwd=ws, env=env, capture_output=True, text=True)
+    assert (done.returncode, done.stdout) == (0, '{"title": "live"}\n'), done.stderr
+    assert calls.read_text(encoding="utf-8") == " ".join(VIEW) + "\n"
+
+
 def test_s025_5_gh_from_path_records_through_the_real_gh_never_itself(tmp_path: Path) -> None:
     # As a session runs it: plain `gh` from PATH, the stub's directory first
     ws = workspace(tmp_path)
