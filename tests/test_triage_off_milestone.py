@@ -131,3 +131,28 @@ def test_s022_12_the_script_reports_off_milestone_and_exits_1(tmp_path: Path) ->
             "note": "parent #3 is in milestone 1.5.0, this is in no milestone",
         }
     ]
+
+
+def test_s022_12_an_off_milestone_issue_with_an_open_pr_still_counts_against_the_wip_limit(tmp_path: Path) -> None:
+    # OFF_MILESTONE hides IN_PROGRESS; the room under --wip must not grow while it does
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    gh = fakes / "gh"
+    gh.write_text(FAKE_GH.format(python=sys.executable), encoding="utf-8")
+    gh.chmod(0o700)
+    item = build(None, "1.5.0")
+    item["timelineItems"]["nodes"] = [{"willCloseTarget": True, "source": {"number": 8, "state": "OPEN"}}]
+    data = tmp_path / "gh.json"
+    data.write_text(json.dumps({"data": {"repository": first_page([item])}}), encoding="utf-8")
+    env = {"PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]), "FAKE_GH_DATA": str(data)}
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "o/r", "--json", "--wip", "1"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert proc.returncode == 1, proc.stderr
+    lines = [json.loads(line) for line in proc.stdout.splitlines()]
+    assert lines[0]["state"] == "OFF_MILESTONE"
+    assert lines[-1] == {"wip": 1, "in_progress": 1, "room": 0, "ready": []}

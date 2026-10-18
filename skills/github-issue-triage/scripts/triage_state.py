@@ -121,7 +121,8 @@ For the N most recently closed issues (default 20):
                    COLLABORATOR or the --bot-login: run its check
 
 With --wip N (a work-in-progress limit, such as the config's [agents] wip), a last
-line says how many issues are IN_PROGRESS, the room left under N, and the issues
+line says how many issues are IN_PROGRESS (counting an OFF_MILESTONE one with an open
+PR), the room left under N, and the issues
 ready to start (NEEDS_PR or UNBLOCKED), oldest first; with --json, as one JSON object.
 An issue labelled human never counts as in progress or ready: the limit is on agents' work.
 
@@ -941,10 +942,12 @@ def classify_open(
     repo: tuple[str, str],
     bot_login: str | None = None,
     closes: dict[tuple[str, str, int], str] | None = None,
+    milestone: bool = True,
 ) -> tuple[str, str]:
     """An open issue's state once gated found none; ``closes`` says when each closed hold
-    closed, which a person's item (labelled human) reads its hand-off against"""
-    missed = off_milestone(issue, repo)
+    closed, which a person's item (labelled human) reads its hand-off against. Without
+    ``milestone``, the state OFF_MILESTONE hides (--wip counts one hiding IN_PROGRESS)"""
+    missed = off_milestone(issue, repo) if milestone else None
     if missed is not None:
         return "OFF_MILESTONE", missed
     labels = {n["name"] for n in issue["labels"]["nodes"]}
@@ -1239,13 +1242,16 @@ def classify_closed(
     return "SUSPECT_CLOSE", f"commit {closer.get('abbreviatedOid')} names #{number} only mid-line"
 
 
-def wip_room(rows: list[dict[str, Any]], wip: int, people: frozenset[int] = frozenset()) -> dict[str, Any]:
+def wip_room(
+    rows: list[dict[str, Any]], wip: int, people: frozenset[int] = frozenset(), busy: frozenset[int] = frozenset()
+) -> dict[str, Any]:
     """How many more issues may start under a WIP limit of ``wip``, counting each issue with
     an open PR as in progress, and the issues ready to start (NEEDS_PR or UNBLOCKED), oldest
     first: build issues are filed in build order. A person's item (one of ``people``) never
-    counts: the limit is on agents' work"""
+    counts: the limit is on agents' work. ``busy`` are issues whose OFF_MILESTONE hides
+    IN_PROGRESS: they count as in progress too"""
     agents = [r for r in rows if r["number"] not in people]
-    in_progress = sum(1 for r in agents if r["state"] == "IN_PROGRESS")
+    in_progress = sum(1 for r in agents if r["state"] == "IN_PROGRESS" or r["number"] in busy)
     ready = sorted(r["number"] for r in agents if r["state"] in ("NEEDS_PR", "UNBLOCKED"))
     return {"wip": wip, "in_progress": in_progress, "room": max(wip - in_progress, 0), "ready": ready}
 
@@ -1309,12 +1315,19 @@ def main() -> int:
     closes = {**closes, **{r: c for r, (_, _, c) in holds.items() if c is not None}}
     stable = latest_stable(data["tags"]["nodes"], stable_pattern)
     people: set[int] = set()
+    busy: set[int] = set()  # OFF_MILESTONE over an open PR: still in progress under --wip
     for issue in data["open"]["nodes"]:
         if HUMAN_LABEL in {n["name"] for n in issue["labels"]["nodes"]}:
             people.add(issue["number"])
         state, note = gated(issue, args.bot_login, args.trusted_only) or classify_open(
             issue, args.marker, args.postponed_label, states, stable, (owner, name), args.bot_login, closes
         )
+        if state == "OFF_MILESTONE":
+            usual = classify_open(
+                issue, args.marker, args.postponed_label, states, stable, (owner, name), args.bot_login, closes, False
+            )
+            if usual[0] == "IN_PROGRESS":
+                busy.add(issue["number"])
         row: dict[str, Any] = {"number": issue["number"], "state": state, "title": issue["title"], "note": note}
         if state == "WITH_PERSON":  # whom it waits on, for github-ship-watch's ISSUES_OPEN row
             row["assignees"] = assignees(issue)
@@ -1354,7 +1367,7 @@ def main() -> int:
         else:
             print(f"#{r['number']:<5} {r['state']:<16} {r['title'][:70]}" + (f"  [{r['note']}]" if r["note"] else ""))
     if args.wip is not None:
-        room = wip_room(rows, args.wip, frozenset(people))
+        room = wip_room(rows, args.wip, frozenset(people), frozenset(busy))
         if args.json:
             print(json.dumps(room, sort_keys=True))
         else:
