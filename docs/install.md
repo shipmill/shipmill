@@ -470,12 +470,12 @@ the gate's own environment to choose another ceiling.
    `--background`, or `--session-id` with exit 2: each would bring the prompts back or
    break how the gate tracks the session
 
-3. **Know what it skips.** Headless works only on trusted items (D-16): issues opened by an
-   owner, member, or collaborator, or by the App's bot, the config upgrade issues the
+3. **Know what it skips.** Headless works only on trusted items (D-16): issues opened by
+   an owner, member, or collaborator, or by the App's bot, the config upgrade issues the
    release workflow opens as `github-actions[bot]` (with the `shipmill-upgrade` label and
    its first-line marker, D-30), and pull requests whose branch is in the repo rather than
-   a fork. Every other open item reads UNTRUSTED, starts no
-   session, and waits for an interactive one; github-ship-watch lists them
+   a fork. Every other open item reads UNTRUSTED, starts no session, and waits for an
+   interactive one; github-ship-watch lists them
 
 4. **Choose how you hear about a question.**
    - **With `app_id`** (recommended): the comment comes from `<slug>[bot]`, so its mention
