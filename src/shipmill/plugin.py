@@ -1,4 +1,4 @@
-"""The gate's daily check of its own checkout's shipmill@shipmill installs (D-23).
+"""The gate's checks of the shipmill@shipmill plugin its sessions load (D-23, D-35).
 
 Claude Code keys a project- or local-scope plugin install on a folder, so the gate's checkout
 (`tmp/shipmill-gate`) can have installs of its own, apart from the repo's. With [agents]
@@ -9,11 +9,14 @@ shipmill's latest release and, when one is, updates it with `claude plugin updat
 acts on, so the check reads the installs again afterwards: an install still behind, or an
 install keyed on another folder that the update changed, is reported as a failure. The last
 check is recorded under the repo's git directory, beside the gate's other state. A failed
-check or update is reported on the tick, and the session still starts. A user-scope install
-is never updated.
+check or update is reported on the tick. A user-scope install is never updated.
+
+Then, on every launch (D-35), the gate reads the install a session in its checkout would
+load (loaded()) and starts no session while that install is older than the latest release.
 """
 
 import datetime as dt
+import enum
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -59,7 +62,7 @@ class PluginUpdate:
             if i.scope in self.updated
         ]
         if self.error is not None:
-            lines.append(f"plugin update failed, the session starts anyway: {self.error}")
+            lines.append(f"plugin update failed: {self.error}")
         return lines
 
     def record(self) -> dict[str, object]:
@@ -190,3 +193,175 @@ def daily_update(path: Path, checkout: Path, now: dt.datetime, run: Runner) -> P
         return PluginUpdate((), None, (), str(exc))
     save_checked(path, now)
     return found
+
+
+class Scope(enum.StrEnum):
+    """The scopes `claude plugin list --json` gives a marketplace install"""
+
+    LOCAL = "local"
+    PROJECT = "project"
+    USER = "user"
+    MANAGED = "managed"
+
+    @property
+    def keyed(self) -> bool:
+        """Claude Code keys a local or project install on a folder, its projectPath"""
+        return self in (Scope.LOCAL, Scope.PROJECT)
+
+
+# The install a session loads (D-35): the one at the most specific scope the plugin is
+# installed at for the session's project, local, then project, then user, then managed. This
+# is the order Claude Code's plugin docs give for `claude plugin update` without --scope
+# ("the most specific scope it's installed at for your current project"), and the order its
+# settings precedence gives enabledPlugins (local over project over user). A session's project
+# is its folder, except in a linked git worktree, where it is the worktree's main checkout:
+# `claude plugin details` in the gate's linked worktree showed the main checkout's install
+# (#198), and `claude plugin update --scope local` run there changed the main checkout's
+# install, not the one keyed on the worktree (#417). So an install keyed on a linked worktree's
+# own folder is never the one its sessions load, and an install keyed on an enclosing folder
+# that isn't the main checkout doesn't apply either.
+PRECEDENCE = (Scope.LOCAL, Scope.PROJECT, Scope.USER, Scope.MANAGED)
+
+
+@dataclass(frozen=True, slots=True)
+class Listed:
+    """One install of the plugin: its scope, the folder it is keyed on (None at user and
+    managed scope), and its version"""
+
+    scope: Scope
+    folder: Path | None
+    version: Version
+
+    def where(self) -> str:
+        return f"{self.scope} scope" if self.folder is None else f"{self.scope} scope, keyed on {self.folder}"
+
+
+def listed_installs(text: str) -> list[Listed]:
+    """Every install of the plugin from `claude plugin list --json`, at any scope, each keyed
+    install's folder resolved. Anything but the documented shape is refused"""
+    try:
+        entries = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ReleaseError(f"claude plugin list --json printed no JSON: {exc}") from None
+    if not isinstance(entries, list):
+        raise ReleaseError("claude plugin list --json: expected a JSON array")
+    found = []
+    for e in entries:
+        if not isinstance(e, dict):
+            raise ReleaseError(f"claude plugin list --json: an install is {e!r}, not an object")
+        if e.get("id") != PLUGIN:
+            continue
+        scope, version = e.get("scope"), e.get("version")
+        if not isinstance(scope, str) or scope not in set(Scope) or not isinstance(version, str):
+            raise ReleaseError(f"claude plugin list --json: {PLUGIN} install {e!r}")
+        where = e.get("projectPath")
+        folder = None
+        if Scope(scope).keyed:
+            if not isinstance(where, str):
+                raise ReleaseError(f"claude plugin list --json: {PLUGIN} {scope} install has no projectPath: {e!r}")
+            folder = Path(where).resolve()
+        found.append(Listed(Scope(scope), folder, Version.parse(version)))
+    return found
+
+
+def session_project(checkout: Path, common_dir: str) -> Path:
+    """The project Claude Code loads a session in the checkout as: a linked worktree's main
+    checkout, given `git rev-parse --path-format=absolute --git-common-dir`; the checkout itself
+    otherwise (a main checkout's common dir is its own .git)"""
+    common = Path(common_dir.strip())
+    return common.parent.resolve() if common.name == ".git" else checkout.resolve()
+
+
+def effective(installs: list[Listed], project: Path) -> Listed | None:
+    """The install a session in the project loads, by PRECEDENCE; None when none applies. Two
+    installs at the scope that decides are refused, never guessed between"""
+    for scope in PRECEDENCE:
+        found = [i for i in installs if i.scope is scope and (i.folder is None or i.folder == project)]
+        if len(found) > 1:
+            raise ReleaseError(f"claude plugin list --json lists {PLUGIN} twice at {scope} scope for {project}")
+        if found:
+            return found[0]
+    return None
+
+
+def update_command(install: Listed, installs: list[Listed]) -> str:
+    """The command that updates one install, run in its folder: github-ship-watch's fix for
+    the same install (watch_state.py's plugin_fix). `claude plugin update` run in a folder picks
+    an install at the same scope keyed on a folder nested in it (#233, a Claude Code bug), so
+    with one nested the fix reinstalls the folder's own at that scope instead"""
+    update = f"claude plugin update {PLUGIN} --scope {install.scope}"
+    if install.folder is None:
+        return update
+    top = install.folder
+    nested = sorted(
+        i.folder for i in installs if i.scope is install.scope and i.folder is not None and top in i.folder.parents
+    )
+    if not nested:
+        return f"in {top}: {update}"
+    scope = install.scope
+    again = f"claude plugin uninstall {PLUGIN} --scope {scope} && claude plugin install {PLUGIN} --scope {scope}"
+    return f"in {top}: {again} (`update` picks the nested install in {nested[0]}, a Claude Code bug)"
+
+
+@dataclass(frozen=True, slots=True)
+class Loaded:
+    """D-35: the install a session in the gate's checkout would load (None: none applies)
+    against the latest release (None when it wasn't read), with the command that updates it
+    when it is behind, or the failure that stopped the check"""
+
+    project: Path
+    install: Listed | None
+    latest: Version | None
+    fix: str | None = None
+    error: str | None = None
+
+    @property
+    def stale(self) -> bool:
+        return self.install is not None and self.latest is not None and self.install.version < self.latest
+
+    def reason(self) -> str:
+        """A PLUGIN_STALE tick's reason: the install, its scope, the latest, and the fix"""
+        if self.install is None or self.latest is None or self.fix is None:
+            raise ReleaseError(f"{PLUGIN} isn't behind the latest release, so no session is held for it")
+        return (
+            f"a session here would load {PLUGIN} {self.install.version} ({self.install.where()}),"
+            f" older than the latest release {self.latest}: no session starts until it is updated: {self.fix}"
+        )
+
+    def lines(self) -> list[str]:
+        """The tick's lines when a session starts: a failed check, or no install that applies;
+        a current install says nothing"""
+        if self.error is not None:
+            return [f"plugin check failed, the session starts anyway: {self.error}"]
+        if self.install is None:
+            return [f"plugin: no {PLUGIN} install applies to {self.project}; the session loads no shipmill skills"]
+        return []
+
+    def record(self) -> dict[str, object]:
+        install = self.install
+        return {
+            "project": str(self.project),
+            "scope": None if install is None else str(install.scope),
+            "folder": None if install is None or install.folder is None else str(install.folder),
+            "version": None if install is None else str(install.version),
+            "latest": None if self.latest is None else str(self.latest),
+            "stale": self.stale,
+            "fix": self.fix,
+            "error": self.error,
+        }
+
+
+def loaded(checkout: Path, project: Path, run: Runner) -> Loaded:
+    """D-35: read the install a session in the checkout (Claude Code's project `project`)
+    would load, and the latest release when there is one. A failed read is returned as the
+    error, for the tick to report"""
+    try:
+        installs = listed_installs(run(["claude", "plugin", "list", "--json"], checkout))
+        found = effective(installs, project)
+        if found is None:
+            return Loaded(project, None, None)
+        tag = run(["gh", "release", "view", "-R", SHIPMILL_REPO, "--json", "tagName", "-q", ".tagName"], checkout)
+        latest = Version.of_tag(tag.strip())
+    except ReleaseError as exc:
+        return Loaded(project, None, None, error=str(exc))
+    return Loaded(project, found, latest, update_command(found, installs) if found.version < latest else None)

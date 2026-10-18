@@ -73,6 +73,24 @@ def test_without_claude_the_installs_are_skipped_not_failed(ws: ModuleType) -> N
     assert found == [Check("PASS", "plugin", "latest v0.32.1; plugin: claude isn't on PATH, not read")]
 
 
+def test_the_install_a_session_loads_is_named_and_warns_when_behind(ws: ModuleType) -> None:
+    # #417, D-35: the gate's linked checkout loads the main checkout's local install, not the
+    # leftover keyed on the worktree; when it is behind, the gate starts no session
+    plugins = [install("user", "0.32.1"), install("local", "0.31.0", REPO), install("local", "0.25.0", GATE)]
+    rows = ws.plugin_rows(plugins, None, "v0.32.1", [REPO], [GATE], REPO)
+    found = plugin_checks(lambda: [PluginRow(r.state, r.subject, r.detail) for r in rows])
+    assert found[0] == Check(
+        "WARN",
+        "plugin",
+        f"latest v0.32.1; plugin: user 0.32.1, local 0.31.0 ({REPO}), local 0.25.0 ({GATE}); a session loads"
+        f" local 0.31.0 ({REPO}), older than v0.32.1: the gate starts no session (D-35)",
+    )
+    current = [install("user", "0.31.0"), install("local", "0.32.1", REPO)]
+    rows = ws.plugin_rows(current, None, "v0.32.1", [REPO], [GATE], REPO)
+    assert rows[0].detail.endswith(f"; a session loads local 0.32.1 ({REPO})")
+    assert plugin_checks(lambda: [PluginRow(r.state, r.subject, r.detail) for r in rows])[0].status == "PASS"
+
+
 def test_a_failed_read_warns_and_doctor_goes_on(repo: Repo) -> None:
     def fails() -> list[PluginRow]:
         raise ReleaseError("gh release view failed: offline")

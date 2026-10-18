@@ -35,6 +35,7 @@ KEYS = {
     "mode",
     "decisions",
     "plugin",
+    "loaded",
     "detached",
 }
 

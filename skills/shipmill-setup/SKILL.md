@@ -427,9 +427,13 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
 
    `plugin_update = true` lets the gate update its checkout's own plugin installs (project
    and local scope; never user scope), at most once a day, before it starts a session, so
-   gate sessions run the released skills; a failed update is printed on the tick and the
-   session starts anyway (D-23). Ask the user
-   before setting it: it is the policy's permission to change an install
+   gate sessions run the released skills; a failed update is printed on the tick (D-23). Ask
+   the user before setting it: it is the policy's permission to change an install. Either
+   way, the gate starts no session while the install a session in its checkout would load,
+   at any scope, is older than the latest release (D-35): the tick reads `PLUGIN_STALE` with
+   the install, its scope, and the command that updates it, and the gate starts sessions
+   again once a person runs it. The setup checklist's `PLUGIN_OUTDATED` rows name that
+   install with a `gate:` row
 
    Every time you set up the gate, ask two questions together, before writing the
    section: who should own the gate's GitHub App (step 3), and whether anyone watches

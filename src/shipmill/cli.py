@@ -116,6 +116,7 @@ from shipmill.gate import (
     host_login,
     pruner,
     refresh,
+    run_command,
     run_state,
     state_dir,
     state_failed,
@@ -716,6 +717,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         args.app_key is not None,
         session_env,
         lambda: host_login(root),
+        plugins=run_command,
     )
     if args.json:
         print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))

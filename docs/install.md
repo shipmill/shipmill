@@ -263,9 +263,18 @@ the details.
    shipmill@shipmill --scope <its scope>` in the checkout first, then reads the installs
    again: an install still behind, or one in another folder that the update changed, is
    printed as a failure. A user-scope install is never updated. A failed update is printed
-   on the tick and the session starts anyway (D-23). Either way `status`, `doctor`, and the
-   setup checklist report an install that is behind, in the repo's folder and in the gate's
-   checkout, each with its own fix
+   on the tick (D-23).
+
+   Either way, before it starts a session the gate reads the install a session in its
+   checkout would load: the most specific scope the plugin is installed at for the
+   checkout's project (local, then project, then user, then managed; a linked worktree's
+   project is its main checkout, so an install keyed on the worktree itself is never
+   loaded). While that install is older than the latest release the gate starts no
+   session: the tick prints `PLUGIN_STALE: ...` with the install, its scope, and the
+   command that updates it, and the next tick after you run it starts sessions again
+   (D-35). A failed read is printed and the session starts. `status`, `doctor`, and the
+   setup checklist report every install that is behind, in the repo's folder and in the
+   gate's checkout, each with its own fix, and name the one a session loads
 
    Without `app_id`, a session writes as your `gh` login, so its pull requests, merges,
    and commits read as yours. Set it before you schedule the gate, to have them made by a
@@ -495,7 +504,9 @@ the gate's own environment to choose another ceiling.
    a launch with `plugin_update = true` (`latest`, `installs`, each with `scope`,
    `installed`, and `updated`, and `error`), null when none ran; releases up to 0.40.0
    reported it as `installed`, `latest`, `updated`, and `error`, for the project-scope
-   install alone
+   install alone. `loaded` is the install a launch's session would load (D-35: `project`,
+   `scope`, `folder`, `version`, `latest`, `stale`, `fix`, and `error`; `action` is
+   `PLUGIN_STALE` when it is behind), null on a tick that reached no launch
 
 ## Pause or remove it
 

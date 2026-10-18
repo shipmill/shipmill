@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from shipmill import UVX
+from shipmill import UVX, status
 from shipmill.errors import ReleaseError
 from shipmill.gitrepo import Git
 from shipmill.launchd import label
@@ -169,6 +169,18 @@ def test_s011_14_each_gate_problem_has_its_fix(changed: object, fix: str) -> Non
     found = facts(gate=changed)
     assert fix in [r.fix for r in report(found).reasons]
     assert any(fix in line for line in lines(found))
+
+
+def test_a_gate_paused_on_a_stale_plugin_waits_on_you_with_the_update() -> None:
+    # #417, D-35: the gate starts no session while the plugin a session loads is behind
+    update = "claude plugin update shipmill@shipmill --scope user"
+    last = (
+        "PLUGIN_STALE: a session here would load shipmill@shipmill 0.48.0 (user scope), older than the latest"
+        f" release 0.50.0: no session starts until it is updated: {update}"
+    )
+    found = facts(gate=gate(job=job(last=last)))
+    assert [(r.text, r.fix) for r in report(found).reasons] == [(f"the gate: {last}", update)]
+    assert status.DECISION.match(last) is not None  # the log reader takes it for a decision line
 
 
 def test_s011_14_a_job_without_a_log_points_at_launchd() -> None:
