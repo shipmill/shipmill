@@ -898,7 +898,9 @@ def post(hook: HookInput, stderr: TextIO, ctx: Context) -> int:
         return 0
     output = f"{result.stdout}{result.stderr}"
     stderr.write(output if not output or output.endswith("\n") else f"{output}\n")
-    if result.returncode == 1:
+    # A check that fails prints a line per problem to stdout; uvx that can't fetch shipmill
+    # (offline) and a traceback exit 1 with stdout empty, so they didn't run, not a finding
+    if result.returncode == 1 and result.stdout.strip():
         return 2
     stderr.write(f"shipmill hook: {shlex.join(command)} exited {result.returncode}\n")
     return 1

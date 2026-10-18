@@ -839,6 +839,17 @@ def test_s026_13_without_shipmill_on_path_it_runs_through_uvx(box: Sandbox, tmp_
     assert uvx.calls() == [[*SHIPMILL[1:], "review", "check", "--repo", str(box.agents)]]
 
 
+@pytest.mark.parametrize("program", ["uvx", "shipmill"])
+def test_s026_13_exit_1_with_no_report_is_a_check_that_didnt_run(box: Sandbox, tmp_path: Path, program: str) -> None:
+    """uvx exits 1 when it can't fetch shipmill (offline), and a traceback exits 1; the checks
+    print a line per problem to stdout, so exit 1 with no stdout is an error, not a finding"""
+    failing = stub_on_path(tmp_path, program)
+    err = "error: Failed to resolve `--with` requirement\n"
+    result = failing.run(edit("post-review-check.json", box.agents, "REVIEW.md"), 1, err=err)
+    assert result.returncode == 1
+    assert result.stderr.startswith(err) and "exited 1" in result.stderr
+
+
 @pytest.mark.parametrize(
     "rel",
     [
