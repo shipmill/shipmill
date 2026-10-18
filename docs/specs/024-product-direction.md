@@ -265,4 +265,12 @@ number before the commit; CI runs both checks too.
 
 ## Issues
 
+- shipmill/shipmill#402: S-024-1, S-024-2, S-024-3, S-024-4
+- shipmill/shipmill#403: S-024-13, S-024-14
+- shipmill/shipmill#404: S-024-15, S-024-16, S-024-17
+- shipmill/shipmill#405: S-024-5
+- shipmill/shipmill#406: S-024-6
+- shipmill/shipmill#407: S-024-7
+- shipmill/shipmill#408: S-024-8, S-024-9, S-024-10, S-024-11, S-024-12
+
 ## Verification
