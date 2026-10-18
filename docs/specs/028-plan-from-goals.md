@@ -1,6 +1,6 @@
 # S-028: A plan from a goal
 
-status: draft
+status: approved
 serves: G-6
 
 ## Problem
@@ -18,6 +18,12 @@ planning comes back with a goals layer. Spec 024 is that layer; this spec plans 
 not from demand. It keeps every decision where it is today (N-3): the maintainer accepts or
 declines a plan, each feature's spec is still approved by its own merge, and a milestone is
 still the maintainer's list.
+
+The maintainer settled the open choices on this spec's pull request (#430): a plan is
+answered by a reply comment read by author association; an accepted plan creates the
+milestone it names (D-38); a request on GitHub is a trusted `goal-plan` issue answered by a
+separate plan issue; a declined plan is not proposed again by the `no-work` trigger; and
+automatic plans wait for room under `[agents] wip`.
 
 ## Behaviour
 
@@ -54,9 +60,10 @@ the goal has no open plan issue and one of these holds:
   `docs/specs/` at the default branch's head with `status: draft` or `approved` whose
   `serves:` line names `G-n`; an open issue whose newest triage comment names `Serves: G-n`
   (S-024-8); an open pull request whose `## Plan` names `G-n` in `Serves:` (S-024-9); an
-  open opportunity whose body names `G-n`; or an open plan item for `G-n` (below). Not raised
-  for a goal a plan was declined for, nor for a goal spec 027 (#389) reports met once that
-  spec is built
+  open opportunity whose body names `G-n`; or an open plan item for `G-n` (below). Never raised
+  again for a goal whose newest plan was declined, so a declined plan isn't argued twice
+  (as D-10 keeps a declined opportunity); only a `stalled` report or a request proposes
+  another. Not raised either for a goal spec 027 (#389) reports met once that spec is built
 - **`stalled`:** spec 027 (#389) reports the goal stalled. The script reads that report
   through whatever command or row spec 027 defines; until spec 027 is built this trigger
   never fires, and nothing else in this spec depends on it
@@ -68,7 +75,8 @@ the goal has no open plan issue and one of these holds:
 The `no-work` and `stalled` triggers wait while the work in progress is at the limit:
 with `[agents] wip = N` (`src/shipmill/agents.py`), PLAN_DUE for them reads only when
 `triage_state.py --wip N` reports room left, otherwise the goal is listed in the report as
-`waits for room`. A `requested` plan never waits. A pass proposes at most one plan per goal
+`waits for room`, so automatic proposals don't pile up faster than the loop works them.
+A `requested` plan never waits. A pass proposes at most one plan per goal
 at a time, so an open plan is the goal's only plan.
 
 ### The plan issue
@@ -121,8 +129,10 @@ Items are listed in the order the work should start: the session files them in t
 so triage's oldest-first dispatch under `[agents] wip` follows it. An `existing` item is
 work that already serves the goal, so the plan never proposes it a second time. Intake then
 comments `Triage: **plan**. ...` on the plan issue, so `triage_state.py` reads it TRIAGED,
-not NEW; for a `requested` plan it comments on the request issue linking the plan and
-closes the request as completed.
+not NEW. The plan is always its own issue, even for a request, so its body and grammar are
+the App's and the maintainer's request text is never overwritten: for a `requested` plan
+the session comments on the request issue linking the plan and closes the request as
+completed.
 
 ### The maintainer's answer
 
@@ -131,7 +141,9 @@ read as `needs-decision.md` reads a reply (D-16): a comment counts only when its
 `author_association` is OWNER, MEMBER, or COLLABORATOR and its author is not the
 `--bot-login`, and only when it is newer than the plan's newest revision (the opening body,
 or the App's newest comment whose first line is `<!-- shipmill:plan-revised rev=<k> -->`).
-Every other comment, and every reaction, is never read as an answer. The newest such
+Every other comment, every reaction, and every label is never read as an answer: the
+`planned` label opportunities use has no channel for an edit, and a reply carries the
+maintainer's words and author association in one place a headless gate can read. The newest such
 comment's first line decides:
 
 | First line | Answer | The session |
@@ -176,8 +188,8 @@ takes the new issues up on its next pass, within `[agents] wip`.
 
 A plan whose Milestone line names a title, once accepted, completes that milestone: the
 session puts every filed item and every `existing` item of this repository in it, creating
-the milestone when it doesn't exist. The maintainer chose it by accepting a plan that names
-it, so D-32's rule that a milestone is the maintainer's list holds. Spec 022 then treats the
+the milestone when it doesn't exist (D-38). The maintainer chose it by accepting a plan that
+names it, so D-32's rule that a milestone is the maintainer's list holds, as D-38 refines it. Spec 022 then treats the
 milestone as done when the specs its issues hold are built, and `specs.py split
 --milestone` carries it to each feature's build issues. A plan with `none` touches no
 milestone.
@@ -245,6 +257,7 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 - D-29: a first-line marker counts only from the App or a trusted author
 - D-32: a milestone is the maintainer's list, and the WIP limit is `[agents] wip`
 - D-34: the work serves the product's written direction
+- D-38: an accepted goal plan may create the milestone it names
 
 ## Issues
 
