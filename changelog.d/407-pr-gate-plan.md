@@ -1,0 +1,3 @@
+### Added
+
+- PR triage: `pr_gate.py` reads the direction and `REVIEW.md` from the default branch (spec 024). It refuses an agent's pull request (authored by `--bot-login`, or any named with `--agent`) whose body has no `## Plan` with `Serves:`, `Files:`, `Order:`, and `Proof:`, or whose `Serves:` names a goal `docs/product.md` doesn't list (exit 6, REFUSED); a repo without `docs/product.md` and a person's pull request skip the check. A pull request whose files match a `REVIEW.md` Protected areas glob, or that edits `docs/product.md` or `docs/product/`, waits on the maintainer (exit 5, NEEDS_DECISION) until `--maintainer-accepted`; a gh failure now exits 2 as documented, not 1 (#407)
