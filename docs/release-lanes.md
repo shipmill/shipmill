@@ -104,6 +104,10 @@ github_release = true
 file = "README.md"
 pattern = 'demo v\d+\.\d+\.\d+'
 replace = "demo v{version}"       # also {name}, {semver}, {minor} (X.Y), {date}
+
+[notices]                         # optional: the commands the notices on fixed issues carry
+pin = "uv add 'demo=={version}'"  # a pre-release notice's; also {tag} and {name}
+install = "uv add demo"           # a stable notice's
 ```
 
 A lane releases when one of its **triggers** is due (quiet time, a schedule window that
@@ -443,6 +447,26 @@ For one minor release a config with it still loads and `doctor` warns, naming `[
 wip`; move `wip` there and delete the section, since the next minor refuses it. A milestone
 is the maintainer's own list of what a version must hold, and `milestone = true` keeps
 making a lane due by it.
+
+## Notices on fixed issues
+
+Once a release is out, `github-ship-watch` tells each closed issue it fixed, through
+`github-pr-triage`'s `shipped.py`, one comment per **stage** the fix reaches (spec 021):
+
+| Stage | When | The comment |
+|---|---|---|
+| `pre-release` | the first dev or rc tag holding the fix | `Released in v1.5.0rc2 (pre-release).`, the `pin` command, that a plain install gets it with the next stable release, and that the person who filed the issue can react 👍 once it works or reply if it doesn't |
+| `stable` | the first stable tag holding the fix | `Released in v1.5.0.` and the `install` command |
+
+A stable release that promotes an rc tells every issue that rc fixed, even when the newest
+tag before it is a later rc. Each comment's first line is a hidden marker,
+`<!-- shipmill:available: <stage> <tag> -->`, so a rerun posts nothing, and a "Released in
+<tag>" comment from before the stages counts as told for its tag's stage.
+
+`[notices]` is optional. `pin` and `install` take `{version}`, `{tag}`, and `{name}` (the
+policy's `name`), and a notice shows the command as code. Without `install`, the
+`--install` text the session passes is used, as before; with only `install` set, a
+pre-release notice carries no command. Any other key fails the policy.
 
 ## Versions
 

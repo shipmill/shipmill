@@ -35,8 +35,8 @@ Each of the --releases newest version tags (default 3):
                   PyPI (the earliest file of any release): cut before the repo published,
                   so nothing to repair (reported, never an action)
   PUBLISHED       PyPI lists it; NO_REGISTRY when the package isn't on PyPI at all
-  UNANNOUNCED     closed issues it fixed that have no "Released in <tag>" comment
-                  (github-pr-triage's shipped.py, in plan mode)
+  UNANNOUNCED     closed issues it fixed that have no notice for the tag's stage,
+                  pre-release or stable (github-pr-triage's shipped.py, in plan mode)
 
 Hold and postmortems (a repo with a shipmill config):
   HOLD            an open shipmill-hold issue, with who opened it and when (reported, never
@@ -866,7 +866,7 @@ def unannounced(repo: str, repo_dir: Path, prev: str, tag: str, env: dict[str, s
 
 
 def unannounced_row(repo: str, tag: str, prev: str, issues: list[str]) -> Row:
-    """The issues the tag fixed that no "Released in" comment tells; the watch posts them"""
+    """The issues the tag fixed that no notice for its stage tells; the watch posts them"""
     return Row("UNANNOUNCED", tag, f"{' '.join(issues)} (since {prev})", skill_fix("github-ship-watch", repo))
 
 

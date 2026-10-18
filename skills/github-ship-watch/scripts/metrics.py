@@ -66,7 +66,8 @@ from dataclasses import dataclass, field
 from typing import Any, NoReturn
 
 STABLE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
-NOTICE = re.compile(r"^Released in \S+")  # shipped.py's marker, f"Released in {tag}"
+# shipped.py's notice: f"Released in {tag}", after its marker line since spec 021
+NOTICE = re.compile(r"^(?:<!-- shipmill:available: \S+ \S+ -->\r?\n)?Released in \S+")
 HEALTHY = re.compile(r"^\S+ is healthy again on ")  # shipmill operate's comment on an incident
 PAGE_INFO = "pageInfo { hasNextPage endCursor }"
 
