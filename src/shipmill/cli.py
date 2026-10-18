@@ -11,6 +11,9 @@
   notes           print a release's notes
   operate         check environment health, promote after the bake, roll back; approve a proposal
   doctor          check that the repository is ready for the bot
+  review          REVIEW.md, the review rubric (spec 024): check exits 1 naming the file, line, and rule
+                  a structured section breaks; show prints the rubric for the files given with --path,
+                  the root's and their directories' merged, as Markdown or --json
   status          say whether the factory works or is stuck: a verdict, then a short summary with
                   a line per reason and a direct link per item; --rows for github-ship-watch's
                   table, --json for its JSON lines
@@ -40,8 +43,8 @@
                   or one section (--section, --json), list its ids
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
-action, app-create or app-install left a repo without the App, or product check found a broken
-rule; 2 bad input or a refused state.
+action, app-create or app-install left a repo without the App, product check found a broken
+rule, or review check found a malformed REVIEW.md; 2 bad input or a refused state.
 """
 
 import argparse
@@ -59,7 +62,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TextIO
 
-from shipmill import agent_as_person, cli_command, fragments, status
+from shipmill import agent_as_person, cli_command, fragments, review, status
 from shipmill.agents import AgentsConfig, app_id_of
 from shipmill.app import (
     CACHE,
@@ -259,6 +262,18 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("doctor", help="check that the repository is ready for the bot")
+
+    p = sub.add_parser("review", help="check or show REVIEW.md, the review rubric (spec 024)")
+    reviews = p.add_subparsers(dest="review_command", required=True)
+    for name, about in (
+        ("check", "exit 1 naming the file, line, and rule when a REVIEW.md's structured sections break"),
+        ("show", "print the rubric that applies to the changed files: the root's and their directories' merged"),
+    ):
+        q = reviews.add_parser(name, help=about)
+        q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+        if name == "show":
+            q.add_argument("--path", action="append", default=[], metavar="FILE", help="a changed file (repeatable)")
+            q.add_argument("--json", action="store_true", help="print the rubric as JSON")
 
     p = sub.add_parser("status", help="say whether the factory works or is stuck (specs 008, 009)")
     p.add_argument(
@@ -476,6 +491,8 @@ def main(
         return _upgrade(root, args, github or GhCli(root))
     if args.command == "product":
         return _product(root, args)
+    if args.command == "review":
+        return _review(root, args)
     hub = github or GhCli(root)
     if args.command == "init":
         # checked before any write, on every path (spec 015)
@@ -987,6 +1004,17 @@ def _app_install(
     if args.json:
         print(json.dumps(guided.record(app_id, repos), indent=2))
     return 1 if missing else 0
+
+
+def _review(root: Path, args: argparse.Namespace) -> int:
+    if args.review_command == "check":
+        problems = review.check(root)
+        for problem in problems:
+            print(problem)
+        return 1 if problems else 0
+    rubric = review.show(root, args.path)
+    sys.stdout.write(json.dumps(rubric.to_json(), indent=2) + "\n" if args.json else rubric.render())
+    return 0
 
 
 def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
