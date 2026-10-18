@@ -594,7 +594,8 @@ class Rule:
     text: str  # the Rule line
     source: str  # where it is written
     guards: Callable[[Simple], bool]  # the rule judges this command, so a broken config refuses it
-    check: Callable[[Simple, Config, Context], Simple | None]  # the command to run instead; None allows
+    # the command to run instead, or what to do when no command is left; None allows
+    check: Callable[[Simple, Config, Context], Simple | str | None]
 
 
 def _with_args(cmd: Simple, call: GhCall, args: Sequence[str]) -> Simple:
@@ -735,6 +736,236 @@ def _force_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
     return replace(cmd, words=tuple(out))
 
 
+ORIGIN_HEAD = "refs/remotes/origin/HEAD"
+BRANCH = "<branch>"  # the work branch to push instead, which only the session knows
+
+
+def _git_out(ctx: Context, where: Path, *args: str) -> str | None:
+    """A git query's one line of output; None when it fails, which the rule reads as unknown"""
+    try:
+        result = ctx.runner(("git", *args), where)
+    except OSError:
+        return None
+    out = result.stdout.strip()
+    return out if result.returncode == 0 and out else None
+
+
+def _push_positionals(words: Sequence[str], start: int) -> tuple[list[int], set[str]]:
+    """The indexes of a git push's positional arguments (the remote, then the refspecs), and
+    its options"""
+    positionals: list[int] = []
+    options: set[str] = set()
+    options_end = False
+    i = start
+    while i < len(words):
+        word = words[i]
+        if options_end or not word.startswith("-") or word == "-":
+            positionals.append(i)
+        elif word == "--":
+            options_end = True
+        elif word in PUSH_VALUE_OPTIONS:
+            i += 1
+        elif re.fullmatch(r"-[A-Za-z]+", word):
+            letters = word[1:]
+            options.update(f"-{ch}" for ch in letters.partition("o")[0])
+            if letters.endswith("o"):  # -o takes the next word as its value
+                i += 1
+        else:
+            options.add(word.partition("=")[0])
+        i += 1
+    return positionals, options
+
+
+def _destination(refspec: str) -> str:
+    """The branch a refspec writes, without +, refs/heads/, and with HEAD left for the caller"""
+    src, colon, dst = refspec.removeprefix("+").partition(":")
+    ref = dst if colon and dst else src
+    return ref.removeprefix("refs/heads/")
+
+
+def _default_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
+    """A push to the default branch, the target of origin/HEAD: a refspec naming it, or no
+    refspec while the current branch's push target is it; instead, the same push to <branch>.
+    Unknown (origin/HEAD unset, no upstream) allows; doctor reports an unset origin/HEAD"""
+    call = git_call(cmd)
+    if not config.default_branch or call is None or cmd.words[call.sub] != "push":
+        return None
+    positionals, options = _push_positionals(cmd.words, call.sub + 1)
+    refspecs = positionals[1:]
+    if not refspecs and options & {"--tags", "--all", "--branches", "--mirror"}:
+        return None  # not the current branch's push; --all and --mirror are out of this rule
+    target = _git_out(ctx, call.where, "symbolic-ref", "--quiet", ORIGIN_HEAD)
+    if target is None or not target.startswith("refs/remotes/origin/"):
+        return None
+    default = target.removeprefix("refs/remotes/origin/")
+    if not refspecs:
+        if _git_out(ctx, call.where, "rev-parse", "--symbolic-full-name", "@{push}") != target:
+            return None
+        words = [*cmd.words] if positionals else [*cmd.words, "origin"]
+        return replace(cmd, words=(*words, f"HEAD:{BRANCH}"))
+    head: str | None = None
+    out = list(cmd.words)
+    hit = False
+    for at in refspecs:
+        word = out[at]
+        dst = _destination(word)
+        if dst in ("HEAD", "@"):
+            if head is None:
+                head = _git_out(ctx, call.where, "rev-parse", "--symbolic-full-name", "HEAD") or ""
+            dst = head.removeprefix("refs/heads/")
+        if dst == default:
+            hit = True
+            plus = "+" if word.startswith("+") else ""
+            src = word.removeprefix("+").partition(":")[0]
+            out[at] = f"{plus}{src}:{BRANCH}"
+    return replace(cmd, words=tuple(out)) if hit else None
+
+
+COPIES = frozenset({"cp", "mv", "rsync"})
+CP_VALUE_OPTIONS = frozenset({"-S", "--suffix"})
+RSYNC_VALUE_OPTIONS = frozenset(
+    {"-e", "--rsh", "-f", "--filter", "--exclude", "--include", "--exclude-from", "--include-from"}
+    | {"--files-from", "--rsync-path", "-B", "--block-size", "-T", "--temp-dir", "--partial-dir"}
+    | {"--backup-dir", "--compare-dest", "--copy-dest", "--link-dest", "--timeout", "--contimeout", "--port"}
+    | {"--bwlimit", "-M", "--remote-option", "--info", "--debug", "--max-size", "--min-size", "--suffix"}
+    | {"--password-file", "--out-format", "--log-file", "--log-file-format", "--sockopts", "--iconv"}
+    | {"--chmod", "--chown", "--usermap", "--groupmap", "--checksum-choice", "--compress-choice"}
+    | {"--compress-level", "--skip-compress", "--protocol", "--modify-window", "--max-delete", "--outbuf"}
+    | {"--stop-after", "--stop-at", "--max-alloc", "--address", "--write-batch", "--only-write-batch"}
+    | {"--read-batch", "--early-input"}
+)
+RSYNC_VALUE_SHORTS = "efBTM"
+
+
+def _copy_args(cmd: Simple) -> tuple[list[str], str | None, list[int]]:
+    """A cp, mv, or rsync's sources, its destination, and the sources' indexes in the words"""
+    rsync = cmd.program == "rsync"
+    values = RSYNC_VALUE_OPTIONS if rsync else CP_VALUE_OPTIONS
+    shorts = RSYNC_VALUE_SHORTS if rsync else "St"
+    target: str | None = None
+    at: list[int] = []
+    words = cmd.words
+    options_end = False
+    i = 1
+    while i < len(words):
+        word = words[i]
+        long, eq, attached = word.partition("=")
+        if options_end or not word.startswith("-") or word == "-":
+            at.append(i)
+        elif word == "--":
+            options_end = True
+        elif not rsync and word in ("-t", "--target-directory"):
+            target = words[i + 1] if i + 1 < len(words) else None
+            i += 1
+        elif not rsync and eq and long == "--target-directory":
+            target = attached
+        elif word in values:
+            i += 1
+        elif re.fullmatch(r"-[A-Za-z]+", word):
+            letters = word[1:]
+            cut = next((k for k, ch in enumerate(letters) if ch in shorts), len(letters))
+            if cut < len(letters):
+                value = letters[cut + 1 :] or (words[i + 1] if i + 1 < len(words) else "")
+                if letters[cut] == "t" and not rsync:
+                    target = value
+                if not letters[cut + 1 :]:
+                    i += 1
+        i += 1
+    if target is None and at:
+        target, at = words[at[-1]], at[:-1]
+    return [words[k] for k in at], target, at
+
+
+def _remote(path: str) -> bool:
+    """rsync's host:path, user@host:path, or rsync://"""
+    head = path.split("/", 1)[0]
+    return "://" in path or (":" in head and not path.startswith(("./", "/")))
+
+
+def _local(path: str, cwd: Path) -> Path:
+    return Path(os.path.realpath(os.path.join(cwd, os.path.expandvars(os.path.expanduser(path)))))
+
+
+def _glob_regex(glob: str) -> re.Pattern[str]:
+    """A [hooks] private glob, relative to the repo root: ** crosses folders, * and ? don't, and
+    a glob ending in /** matches its folder too"""
+    out: list[str] = []
+    i = 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    pattern = "".join(out)
+    if glob.endswith("/**"):
+        pattern = f"{pattern[: -len('/.*')]}(?:/.*)?"
+    return re.compile(pattern)
+
+
+def _prefix(glob: str) -> tuple[str, ...]:
+    """The glob's folders before its first wildcard"""
+    parts = glob.strip("/").split("/")
+    return tuple(next((parts[:k] for k, part in enumerate(parts) if any(c in part for c in "*?[")), parts))
+
+
+def _private(rel: Path, globs: Sequence[str]) -> bool:
+    """rel, relative to the repo root, matches a glob or is a folder holding one's files"""
+    text = rel.as_posix()
+    text = "" if text == "." else text
+    parts = () if not text else rel.parts
+    for glob in globs:
+        if _glob_regex(glob.strip("/")).fullmatch(text):
+            return True
+        prefix = _prefix(glob)
+        if prefix and prefix[: len(parts)] == parts:
+            return True
+    return False
+
+
+def _inside(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _private_check(cmd: Simple, config: Config, ctx: Context) -> Simple | str | None:
+    """A cp, mv, or rsync of a [hooks] private path to a destination outside the repo; instead,
+    the same copy without the private sources, or, when every source is private, to leave them"""
+    if not config.private or cmd.program not in COPIES:
+        return None
+    root_at = repo_root(cmd.cwd)
+    if root_at is None:
+        return None
+    root = Path(os.path.realpath(root_at))
+    sources, target, at = _copy_args(cmd)
+    if target is None or not sources:
+        return None
+    rsync = cmd.program == "rsync"
+    if not (rsync and _remote(target)) and _inside(_local(target, cmd.cwd), root):
+        return None
+    leaks: set[int] = set()
+    for k, source in zip(at, sources, strict=True):
+        if rsync and _remote(source):
+            continue
+        path = _local(source, cmd.cwd)
+        if _inside(path, root) and _private(path.relative_to(root), config.private):
+            leaks.add(k)
+    if not leaks:
+        return None
+    if len(leaks) == len(sources):  # nothing is left to copy: no command to run instead
+        return f"leave {shlex.join(cmd.words[k] for k in sorted(leaks))} in the repo"
+    return replace(cmd, words=tuple(word for k, word in enumerate(cmd.words) if k not in leaks))
+
+
 TOKEN_VARIABLES = frozenset({"GH_TOKEN", "GITHUB_TOKEN"})
 
 
@@ -762,6 +993,13 @@ RULES = (
         _rebase_check,
     ),
     Rule(
+        "default-branch-push",
+        "work lands on the default branch through a pull request; push a work branch and open one",
+        "D-36",
+        is_push,
+        _default_check,
+    ),
+    Rule(
         "force-push",
         f"force-push only with a lease pinned to a commit, --force-with-lease=<ref>:{SHA}, where {SHA}"
         " is the remote branch's commit you last fetched (git rev-parse origin/<ref>)",
@@ -776,6 +1014,13 @@ RULES = (
         "D-14",
         _app_guards,
         _app_check,
+    ),
+    Rule(
+        "private-paths",
+        "a file matching a [hooks] private glob never leaves the repo",
+        "D-36",
+        lambda cmd: cmd.program in COPIES,
+        _private_check,
     ),
 )
 
@@ -812,15 +1057,18 @@ def judge(cmd: Simple, ctx: Context) -> Refusal | None:
         fix = f"fix {CONFIG}, then run: {cmd.text()}"
         return Refusal("config", cmd.text(), config.message, str(CONFIG), fix)
     first: Rule | None = None
-    instead = cmd
+    instead: Simple | str = cmd
     for rule in rules:
+        if isinstance(instead, str):  # no command is left for a later rule to fix
+            break
         fixed = rule.check(instead, config, ctx)
         if fixed is not None:
             first = first or rule
             instead = fixed
     if first is None:
         return None
-    return Refusal(first.name, cmd.text(), first.text, first.source, instead.text())
+    text = instead if isinstance(instead, str) else instead.text()
+    return Refusal(first.name, cmd.text(), first.text, first.source, text)
 
 
 # --- The modes -------------------------------------------------------------------------------
