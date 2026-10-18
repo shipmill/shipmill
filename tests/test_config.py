@@ -13,7 +13,7 @@ import pytest
 from shipmill.agents import AgentsConfig
 from shipmill.config import Table
 from shipmill.errors import ReleaseError
-from shipmill.policy import NoticesConfig, Policy
+from shipmill.policy import HooksConfig, NoticesConfig, Policy
 
 from .conftest import POLICY
 
@@ -141,11 +141,19 @@ CASES: dict[str, list[Change]] = {
     "notices empty": add("\n[notices]\ninstall = ' '\n"),
     "notices placeholder": add("\n[notices]\npin = \"uv add 'demo=={semver}'\"\n"),
     "notices a table": top("notices = 1"),
+    # [hooks]
+    "hooks unknown key": add("\n[hooks]\nforce_push = false\n"),
+    "hooks default_branch a bool": add('\n[hooks]\ndefault_branch = "false"\n'),
+    "hooks default_branch not an integer": add("\n[hooks]\ndefault_branch = 0\n"),
+    "hooks private a list": add('\n[hooks]\nprivate = "owner/**"\n'),
+    "hooks private strings": add('\n[hooks]\nprivate = ["owner/**", 1]\n'),
+    "hooks private non-empty": add('\n[hooks]\nprivate = [""]\n'),
+    "hooks a table": top("hooks = 1"),
 }
 
 
 MESSAGES: dict[str, str] = {
-    "top unknown key": "shipmill.toml: unknown keys ['colour']; allowed: ['after_stamp', 'agents', 'autonomy', 'bot', 'branch', 'bump', 'changelog', 'environments', 'gates', 'lanes', 'mode', 'name', 'notices', 'operate', 'publish', 'roadmap', 'version_files', 'version_lines']",
+    "top unknown key": "shipmill.toml: unknown keys ['colour']; allowed: ['after_stamp', 'agents', 'autonomy', 'bot', 'branch', 'bump', 'changelog', 'environments', 'gates', 'hooks', 'lanes', 'mode', 'name', 'notices', 'operate', 'publish', 'roadmap', 'version_files', 'version_lines']",
     "top name required": "shipmill.toml: name is required",
     "top name a string": "shipmill.toml: name must be a string, got 1",
     "top mode enum": "shipmill.toml: mode must be one of ['off', 'dry-run', 'release'], got 'on'",
@@ -227,6 +235,13 @@ MESSAGES: dict[str, str] = {
     "notices empty": "shipmill.toml [notices]: install must not be empty",
     "notices placeholder": "shipmill.toml [notices]: pin takes {version}, {tag}, and {name}; got ['semver']",
     "notices a table": "shipmill.toml: notices must be a table, got 1",
+    "hooks unknown key": "shipmill.toml [hooks]: unknown keys ['force_push']; allowed: ['default_branch', 'private']",
+    "hooks default_branch a bool": "shipmill.toml [hooks]: default_branch must be true or false, got 'false'",
+    "hooks default_branch not an integer": "shipmill.toml [hooks]: default_branch must be true or false, got 0",
+    "hooks private a list": "shipmill.toml [hooks]: private must be a list of strings, got 'owner/**'",
+    "hooks private strings": "shipmill.toml [hooks]: private must be a list of non-empty strings",
+    "hooks private non-empty": "shipmill.toml [hooks]: private must be a list of non-empty strings",
+    "hooks a table": "shipmill.toml: hooks must be a table, got 1",
 }
 
 
@@ -386,3 +401,30 @@ def test_s021_5_the_policy_reads_notices_and_an_unknown_key_exits_2(tmp_path: Pa
     )
     assert done.returncode == 2
     assert done.stderr == "shipmill: shipmill.toml [notices]: unknown keys ['upgrade']; allowed: ['install', 'pin']\n"
+
+
+def hooks(text: str) -> HooksConfig:
+    return Policy.parse(tomllib.loads(POLICY + text), "shipmill.toml").hooks
+
+
+def test_s026_14_the_policy_reads_hooks_with_its_defaults() -> None:
+    assert hooks("") == HooksConfig(default_branch=True, private=())
+    assert hooks("\n[hooks]\n") == HooksConfig(default_branch=True, private=())
+    given = hooks('\n[hooks]\ndefault_branch = false\nprivate = ["owner/**", "notes/*.md"]\n')
+    assert given == HooksConfig(default_branch=False, private=("owner/**", "notes/*.md"))
+    assert hooks("\n[hooks]\nprivate = []\n").private == ()
+
+
+@pytest.mark.parametrize("name", [name for name in CASES if name.startswith("hooks ")])
+def test_s026_14_a_bad_hooks_key_exits_2_naming_it(name: str, tmp_path: Path) -> None:
+    path = tmp_path / ".github" / "shipmill.toml"
+    path.parent.mkdir()
+    path.write_text(apply(POLICY, CASES[name]), encoding="utf-8")
+    done = subprocess.run(
+        [sys.executable, "-c", "from shipmill.cli import run; run()", "--repo", str(tmp_path), "settle-minutes"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 2
+    assert done.stderr == f"shipmill: {MESSAGES[name]}\n"
