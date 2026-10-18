@@ -45,3 +45,9 @@ def test_s025_17_a_red_evals_check_is_never_proven_unrelated() -> None:
     rule_2 = text.split(" 2. **Red CI blocks the merge**", 1)[1].split(" 3. **", 1)[0]
     assert "A red `evals` check is never proven unrelated" in rule_2
     assert "it blocks the merge unless the maintainer accepts that run (D-37)" in rule_2
+
+
+def test_s025_17_a_forks_evals_land_only_after_a_dispatched_green_run() -> None:
+    text = folded(ROOT / "skills" / "github-pr-triage" / "references" / "ci-failures.md")
+    assert "A red `evals` check is always caused by the PR" in text
+    assert "`gh workflow run evals.yml -f pr=<N>`); the PR lands only after that run is green" in text
