@@ -15,7 +15,7 @@ from shipmill.github import (
     parse_issue_closes,
     parse_milestone_issues,
 )
-from shipmill.milestones import CLOSE_CONFIRMED, parse_spec
+from shipmill.milestones import CLOSE_CONFIRMED, GoalError, parse_spec
 from shipmill.planner import Decision, Event, Planner
 from shipmill.policy import Lane
 
@@ -249,6 +249,17 @@ def test_an_unreadable_goal_does_not_stop_the_rc_lane(repo: Repo) -> None:
     decision = plan_stable(repo)
     assert decision.lane is Lane.RC
     assert "stable: not planned, gh api graphql failed: Could not resolve" in decision.reason
+
+
+def test_a_failed_milestone_read_fails_the_plan_as_on_main(repo: Repo) -> None:
+    """Only the goal's reading spares rc and dev; the milestone's own read fails the plan,
+    so a GitHub outage never lets an rc release green in the stable lane's place"""
+    rc_cut(repo, {"021-goal.md": spec(21, "built", "#11")})
+    repo.merge(2, "Fixed", "Fix B")  # rc would release, were the error spared
+    repo.github.milestone_error = "gh api repos/o/demo/milestones failed: HTTP 502"
+    with pytest.raises(ReleaseError, match="HTTP 502") as raised:
+        plan_stable(repo)
+    assert not isinstance(raised.value, GoalError)
 
 
 def test_a_spec_with_an_unknown_status_in_the_milestone_fails_its_lane(repo: Repo) -> None:

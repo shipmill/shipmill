@@ -112,6 +112,7 @@ class FakeGitHub:
     comments: dict[int, list[str]] = field(default_factory=dict)  # by issue, oldest first
     labels_read: list[str] = field(default_factory=list)
     milestones: dict[str, Milestone] = field(default_factory=dict)
+    milestone_error: str = ""  # when set, reading a milestone fails with it, as gh would
     milestone_lists: dict[str, MilestoneIssues] = field(default_factory=dict)  # by title
     milestone_reads: list[str] = field(default_factory=list)  # the titles milestone_issues read
     closes: dict[int, IssueClose] = field(default_factory=dict)  # how issues closed, by number
@@ -158,6 +159,8 @@ class FakeGitHub:
         return [f"#{n} {i.title}" for n, i in sorted(self.issues.items()) if label in self.labels.get(n, ())]
 
     def milestone(self, title: str) -> Milestone | None:
+        if self.milestone_error:
+            raise ReleaseError(self.milestone_error)
         return self.milestones.get(title)
 
     def milestone_issues(self, title: str) -> MilestoneIssues:

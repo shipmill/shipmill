@@ -28,6 +28,12 @@ CLOSE_CONFIRMED = "<!-- shipmill:close-confirmed -->"
 TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 
+class GoalError(ReleaseError):
+    """A milestone's goal that can't be read: a spec, a build issue, or how one closed. It
+    fails the stable lane only, so rc and dev still release (spec 022); every other error,
+    the milestone's own read included, fails the plan as before"""
+
+
 class SpecStatus(StrEnum):
     DRAFT = "draft"
     APPROVED = "approved"
@@ -202,7 +208,17 @@ def verdict(
 ) -> Verdict:
     """Whether the milestone, which has no open issues, holds a finished goal: its specs read
     at head (main's), their build issues' fixes looked for in base (the candidate's, which
-    `where` names). With no spec in the repository, GitHub isn't asked anything more"""
+    `where` names). With no spec in the repository, GitHub isn't asked anything more.
+    GoalError for any of it that can't be read"""
+    try:
+        return _verdict(git, github, title, head, base, where, app_id)
+    except GoalError:
+        raise
+    except ReleaseError as error:
+        raise GoalError(str(error)) from error
+
+
+def _verdict(git: Git, github: GitHub, title: str, head: str, base: str, where: str, app_id: int | None) -> Verdict:
     specs = specs_at(git, head)
     if not specs:
         return Verdict(title, (), ())

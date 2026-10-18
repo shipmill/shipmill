@@ -363,10 +363,11 @@ class Planner:
                 due: str | milestones.Verdict | None = "started by hand"
             elif current is Lane.STABLE:
                 # a goal the stable lane can't read (a spec naming no issue, #296's kind of
-                # error) doesn't stop rc and dev either
+                # error) doesn't stop rc and dev either; any other error, the milestone's own
+                # read included, fails the plan as before, so an outage never releases an rc
                 try:
                     due = self._due(current, candidate, head)
-                except ReleaseError as error:
+                except milestones.GoalError as error:
                     unplanned = error
                     skipped.append(f"{current}: not planned, {error}")
                     notes.append(f"{current}: not planned, {error}")
