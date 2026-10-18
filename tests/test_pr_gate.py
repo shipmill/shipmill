@@ -333,6 +333,25 @@ def test_a_checkout_of_another_repo_is_not_read(tmp_path: Path, directed: Path) 
     assert "is not a checkout of other/repo; REVIEW.md and the direction unread" in proc.stderr
 
 
+@pytest.mark.parametrize("repo", ["demo/app", "Demo/App", "github.com/demo/app"])
+def test_a_checkout_of_the_repo_r_names_is_read_whatever_its_case(tmp_path: Path, directed: Path, repo: str) -> None:
+    """GitHub names ignore case, and gh takes [HOST/]OWNER/NAME: neither skips the direction"""
+    git(directed, "remote", "set-url", "origin", "git@github.com:Demo/App.git")
+    proc = run_gate(tmp_path, directed, {7: pr(body="none")}, "--bot-login", BOT, "-R", repo)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    assert proc.stderr == ""
+
+
+def test_a_subdirectory_review_md_glob_also_matches_relative_to_its_folder(tmp_path: Path) -> None:
+    """`shipmill review protect --dir skills github-pr-triage/**` writes a glob under skills/"""
+    sub = "## Protected areas\n\n- `github-pr-triage/**`: it merges\n"
+    work = checkout(tmp_path, {"skills/REVIEW.md": sub})
+    proc = run_gate(tmp_path, work, {7: pr(files=("skills/github-pr-triage/scripts/pr_gate.py",))})
+    assert proc.returncode == 5, proc.stdout
+    assert "matches `github-pr-triage/**` (skills/REVIEW.md): it merges" in proc.stdout
+    assert run_gate(tmp_path, work, {7: pr(files=("skills/other/x.py",))}).returncode == 0
+
+
 # The parts, without gh
 
 

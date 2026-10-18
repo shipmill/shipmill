@@ -15,7 +15,8 @@ REVIEW.md and docs/product.md are read from the default branch of the checkout
 branch> when origin/HEAD isn't set), never from the PR. Outside a git checkout, or when
 that branch holds neither file, the gate judges CI alone, as it did before spec 024. A
 glob matches as decisions.py's scopes do: fnmatch, where `*` also matches `/`, or the path
-sits under it (`skills/**`, `docs/product`), relative to the repo's root.
+sits under it (`skills/**`, `docs/product`), relative to the repo's root, and for a
+subdirectory's REVIEW.md relative to its folder too.
 
 Exit codes: 0 every PR is ready; 1 a check failed, or gh failed; 3 a check is still
 pending (or --wait timed out); 4 a PR is not open or conflicts; 5 a PR needs the
@@ -107,6 +108,13 @@ class Protected:
     glob: str
     why: str
     file: str  # the REVIEW.md that lists it
+
+    def covers(self, path: str) -> bool:
+        """The glob from the repo's root, or, in a subdirectory's REVIEW.md, from its folder
+        too (`shipmill review protect --dir` writes it so); matching more is the safe side"""
+        folder = self.file[: -len(REVIEW)]
+        inner = path[len(folder) :] if folder and path.startswith(folder) else None
+        return matches(self.glob, path) or (inner is not None and matches(self.glob, inner))
 
 
 @dataclass(frozen=True)
@@ -271,6 +279,12 @@ def quiet(checkout: str, *args: str) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
+def same_repo(url: str, repo: str) -> bool:
+    """Whether origin's URL names -R's [HOST/]OWNER/NAME; GitHub's names ignore case"""
+    tail = re.split(r"[:/]", re.sub(r"(\.git)?/*$", "", url.lower()))[-2:]
+    return tail == repo.lower().strip("/").split("/")[-2:]
+
+
 class Bases:
     """The default branch's REVIEW.md files and direction, read once per ref. Outside a git
     checkout, or in a checkout of another repo than -R names, there is nothing to read"""
@@ -283,7 +297,7 @@ class Bases:
             raise GateError(f"--checkout {checkout} is not a git checkout")
         if self.inside and repo:
             url = quiet(self.checkout, "remote", "get-url", "origin") or ""
-            if not re.search(r"[:/]" + re.escape(repo) + r"(\.git)?/?$", url):
+            if not same_repo(url, repo):
                 print(
                     f"note: {self.checkout} is not a checkout of {repo}; REVIEW.md and the direction unread",
                     file=sys.stderr,
@@ -367,7 +381,7 @@ def judge(data: dict, number: int, base: Base, agent: bool, accepted: bool) -> G
         edited = [f for f in files if f == DIRECTION or f.startswith(DIRECTION_DIR)]
         asks += [f"{f} edits the product's direction, which only the maintainer changes (D-34)" for f in edited]
         for area in base.protected(files):
-            asks += [f"{f} matches `{area.glob}` ({area.file}): {area.why}" for f in files if matches(area.glob, f)]
+            asks += [f"{f} matches `{area.glob}` ({area.file}): {area.why}" for f in files if area.covers(f)]
     return Gate(
         number,
         data["state"],
