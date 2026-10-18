@@ -282,4 +282,11 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 
 ## Issues
 
+- shipmill/shipmill#437: S-025-1, S-025-2
+- shipmill/shipmill#438: S-025-3, S-025-4, S-025-5, S-025-6
+- shipmill/shipmill#439: S-025-15, S-025-17
+- shipmill/shipmill#443: S-025-8, S-025-9, S-025-14
+- shipmill/shipmill#448: S-025-10, S-025-11, S-025-12, S-025-13, S-025-16
+- shipmill/shipmill#449: S-025-7
+
 ## Verification
