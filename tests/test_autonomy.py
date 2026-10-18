@@ -410,6 +410,29 @@ def test_prepare_yml_never_asks_a_caller_for_issues_write() -> None:
     assert '[ -n "$ACTOR" ] && args+=(--actor "$ACTOR")' in plan_step
 
 
+def test_the_propose_job_has_a_concurrency_group_apart_from_the_release_jobs() -> None:
+    # A group holds one running and one pending job and cancels an older pending one: a
+    # propose job in a run that releases rc or dev shares no group with prepare or land, so it
+    # never cancels theirs, and theirs never cancel it (a cancelled job fails the caller's call)
+    workflows = Path(__file__).parent.parent / ".github" / "workflows"
+
+    def groups(name: str) -> dict[str, str]:
+        found = re.findall(
+            r"^  ([\w-]+):\n(?:    .*\n)*?    concurrency:\n      group: (.+)\n      cancel-in-progress: (\w+)$",
+            (workflows / name).read_text(),
+            re.MULTILINE,
+        )
+        return {job: f"{group} {cancel}" for job, group, cancel in found}
+
+    settle = "${{ github.event_name == 'push' && 'shipmill-settle' || format('shipmill-settle-{0}', github.run_id) }}"
+    assert groups("prepare.yml") == {
+        "settle": f"{settle} true",
+        "prepare": "shipmill false",
+        "propose": "shipmill-propose false",
+    }
+    assert groups("land.yml") == {"land": "shipmill false", "upgrade": "shipmill-upgrade false"}
+
+
 def test_a_held_proposal_says_to_close_the_hold_under_propose_too(repo: Repo) -> None:
     # under release = "propose" a hold still refuses the hand-started lane, so the issue
     # must say to close the hold, not just to start the lane

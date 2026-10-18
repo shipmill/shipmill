@@ -165,13 +165,15 @@ jobs:
   # Opens or updates the issue for each lane the plan proposed. It sets no permissions, so
   # it runs with the caller's grant: proposing needs `issues: write` on the caller's prepare
   # job, and a caller without it fails here. A run that releases rc or dev proposes a breaking
-  # stable candidate beside it (spec 029); its failure then doesn't stop that release's CI
+  # stable candidate beside it (spec 029); its failure then doesn't stop that release's CI.
+  # Its group is its own: proposals still go one at a time across runs, but a propose job
+  # never waits behind, or cancels a pending, prepare or land in the `shipmill` group
   propose:
     needs: prepare
     if: needs.prepare.outputs.proposals != '' && needs.prepare.outputs.mode == 'release'
     continue-on-error: ${{ needs.prepare.outputs.action == 'release' }}
     concurrency:
-      group: shipmill
+      group: shipmill-propose
       cancel-in-progress: false
     runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     steps:
