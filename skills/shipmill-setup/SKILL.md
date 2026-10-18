@@ -443,6 +443,24 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    after 15 minutes. Ask whether the user answers questions sooner or later than that; set
    `max_wait_minutes` (0..10080) to match, or 0 to never stop one. `app_id` is a
    placeholder until step 3 replaces it; never merge `123456` itself
+
+   **The product's direction (D-34, spec 024).** A repo whose agents implement keeps its
+   direction in `docs/product.md`, and the agents work toward it: triage names the goal an
+   issue serves, implementers plan against it, and reviewers check the diff against it.
+   When you connect `[agents]` and the default branch has no `docs/product.md`, ask the
+   maintainer for its content, section by section: the mission (what the product is for),
+   its users, the goals it works toward now, its non-goals, and its quality bar (what
+   every change must hold). Write their words into the file's fixed structure, each item
+   one line with its id from 1 (`- U-1: ...`, `- G-1: ...`, `- N-1: ...`, `- Q-1: ...`),
+   run `$CR product check` until it exits 0, and commit the file in the same pull request
+   as the `[agents]` section. Never invent a goal, a user, a non-goal, or a quality-bar
+   item, and never fill one in from the README: what the maintainer didn't say stays out,
+   and a section they can't answer yet (Users, Goals, and Quality bar each need at least
+   one item; Non-goals may stay empty) is a question for them, not a guess. Show them the
+   file before the pull request opens. Only the maintainer changes it later: the agents
+   never merge an edit to it on their own. A repo without `[agents]`, where shipmill only
+   cuts releases, needs none. Offer a starter `REVIEW.md` at the root too (Important rules, a `cap:` under
+   Nits, Protected areas; `$CR review check`); it is optional
 3. **Its own identity (required for the gate, D-19).** Every gate gets a GitHub App, so its
    sessions' pull requests, comments, merges, and commits are made by the App's bot
    (D-14). Without `app_id`, a session writes as the host's `gh` login: its work reads as
