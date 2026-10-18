@@ -9,9 +9,9 @@ Walks `git log <prev-tag>..<tag>` in the local checkout and collects issue numbe
     closingIssuesReferences in the repo, a closing keyword in the title, or one that starts
     a line of the body outside a code fence, the trailer rule triage_state.py reads a
     closing commit with. A keyword quoted mid-line or in backticks names nothing (#368)
-A stable tag also reads the range from the newest stable tag below it (or, with none, the
-oldest version tag below it), so a stable release that promotes an rc tells every issue
-the rc held even when <prev-tag> is a later rc and <prev-tag>..<tag> holds only the stamp
+A stable tag also reads the range from the newest stable tag below it (or, when only
+pre-release tags are below it, its whole history), so a stable release that promotes an
+rc tells every issue the rc held even when <prev-tag> is a later rc and <prev-tag>..<tag> holds only the stamp
 commit (spec 021, D-25). Keeps only issues that are closed, and skips any already told at
 the tag's stage, so a second run posts nothing. A number that resolves to no issue or pull
 request of the repo is skipped with a note on stderr (#368).
@@ -121,7 +121,12 @@ def missing(cmd: list[str], stderr: str) -> bool:
 
 
 def commits(repo_dir: str, prev: str, tag: str) -> list[tuple[str, str]]:
-    out = run(["git", "log", "--format=%H%x00%B%x1e", f"{prev}..{tag}"], cwd=repo_dir)
+    return log(repo_dir, f"{prev}..{tag}")
+
+
+def log(repo_dir: str, revisions: str) -> list[tuple[str, str]]:
+    """(sha, message) of each commit git log lists for revisions"""
+    out = run(["git", "log", "--format=%H%x00%B%x1e", revisions], cwd=repo_dir)
     pairs = []
     for record in out.split("\x1e"):
         if record.strip():
@@ -294,9 +299,10 @@ def collect(repo: str, pairs: list[tuple[str, str]], gh: Callable[[list[str]], s
     return issues
 
 
-def floor_tag(repo_dir: str, tag: str) -> str | None:
-    """Where a stable tag's own range starts: the newest stable version tag below it, or with
-    none the oldest version tag below it; None for a pre-release tag, another tag, or a first tag"""
+def own_range(repo_dir: str, tag: str) -> str | None:
+    """A stable tag's own range for git log: from the newest stable version tag below it, or
+    with only pre-release tags below it its whole history, so the fixes its oldest rc held
+    count; None for a pre-release tag, another tag, or a first tag"""
     key = version_key(tag)
     if key is None or stage_of(tag) != STABLE:
         return None
@@ -304,18 +310,18 @@ def floor_tag(repo_dir: str, tag: str) -> str | None:
     below = sorted((k, t) for k, t in keyed if k is not None and k < key)
     stable = [t for _, t in below if stage_of(t) == STABLE]
     if stable:
-        return stable[-1]
-    return below[0][1] if below else None
+        return f"{stable[-1]}..{tag}"
+    return tag if below else None
 
 
 def release_commits(repo_dir: str, prev: str, tag: str) -> list[tuple[str, str]]:
     """prev..tag, and for a stable tag its own range too, so a stable release that promotes an
     rc covers every fix the rc held when prev is a later rc (spec 021, D-25)"""
     pairs = commits(repo_dir, prev, tag)
-    floor = floor_tag(repo_dir, tag)
-    if floor is not None and floor != prev:
+    revisions = own_range(repo_dir, tag)
+    if revisions is not None and revisions != f"{prev}..{tag}":
         seen = {sha for sha, _ in pairs}
-        pairs += [(sha, body) for sha, body in commits(repo_dir, floor, tag) if sha not in seen]
+        pairs += [(sha, body) for sha, body in log(repo_dir, revisions) if sha not in seen]
     return pairs
 
 
@@ -378,10 +384,13 @@ def notices_310(text: str, path: Path, ws: ModuleType) -> tuple[dict[str, str] |
     if any(n.startswith("notices.") for n in tables) or NOTICES_ANYWHERE.search(text):
         refuse(unreadable)
     name = ws.toml_string(tables.get("", ""), "name")
+    headers = re.findall(r"^\s*\[+\s*[\"']?notices\b", text, re.MULTILINE)
     if "notices" not in tables:
-        if re.search(r"^\s*\[+\s*[\"']?notices\b", text, re.MULTILINE):
+        if headers:
             refuse(unreadable)  # a malformed header such as "[notices"
         return None, name
+    if len(headers) > 1:
+        refuse(f"error: {path}: [notices] is declared twice")
     found = {}
     for line in tables["notices"].splitlines():
         if ws.blank(line):
@@ -389,6 +398,8 @@ def notices_310(text: str, path: Path, ws: ModuleType) -> tuple[dict[str, str] |
         key = PLAIN_KEY.match(line)
         if key is None:
             refuse(f"{unreadable} ({line.strip()!r})")
+        if key.group(1) in found:
+            refuse(f"error: {path} [notices]: {key.group(1)} is set twice")
         found[key.group(1)] = key.group(2)[1:-1]
     return found, name
 

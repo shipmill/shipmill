@@ -298,7 +298,7 @@ def test_s021_2_a_stable_promotion_tells_every_fix_its_rc_held(sp: ModuleType, t
     assert sp.release_commits(str(repo), "v1.0.0rc1", "v1.0.0rc2") == sp.commits(str(repo), "v1.0.0rc1", "v1.0.0rc2")
 
 
-def test_s021_2_a_first_stable_reads_from_the_oldest_tag_below_it(sp: ModuleType, tmp_path: Path) -> None:
+def test_s021_2_a_first_stable_reads_its_whole_history(sp: ModuleType, tmp_path: Path) -> None:
     repo = tmp_path / "demo"
     repo.mkdir()
     git(repo, "init", "-q", "-b", "main")
@@ -307,10 +307,31 @@ def test_s021_2_a_first_stable_reads_from_the_oldest_tag_below_it(sp: ModuleType
     stamp(repo, "main", "v1.0.0rc2")
     stamp(repo, "main", "v1.0.0")
     git(repo, "tag", "nightly")  # not a version tag: never a floor
-    assert sp.floor_tag(str(repo), "v1.0.0") == "v1.0.0rc1"
-    assert sp.floor_tag(str(repo), "v1.0.0rc2") is None
-    assert sp.floor_tag(str(repo), "v1.0.0rc1") is None
-    assert sp.floor_tag(str(repo), "nightly") is None
+    assert sp.own_range(str(repo), "v1.0.0") == "v1.0.0"  # only rcs below: its whole history
+    assert sp.own_range(str(repo), "v1.0.0rc2") is None
+    assert sp.own_range(str(repo), "v1.0.0rc1") is None
+    assert sp.own_range(str(repo), "nightly") is None
+    stamp(repo, "main", "v1.1.0")
+    assert sp.own_range(str(repo), "v1.1.0") == "v1.0.0..v1.1.0"
+
+
+def test_s021_2_a_first_stable_tells_the_fixes_its_oldest_rc_held(sp: ModuleType, tmp_path: Path) -> None:
+    # the first stable promotes rc1, the oldest tag: rc1..v1.0.0 holds only the stamp commit
+    repo = tmp_path / "demo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "Fix the thing\n\nFixes #5")
+    rc1_base = git(repo, "rev-parse", "HEAD")
+    stamp(repo, "main", "v1.0.0rc1")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "Fix another\n\nFixes #6")
+    stamp(repo, "main", "v1.0.0rc2")
+    stamp(repo, rc1_base, "v1.0.0")
+
+    def no_prs(cmd: list[str]) -> str:
+        return json.dumps({"data": {"repository": {"object": {"associatedPullRequests": {"nodes": []}}}}})
+
+    for prev in ("v1.0.0rc1", "v1.0.0rc2"):
+        assert sp.collect("me/demo", sp.release_commits(str(repo), prev, "v1.0.0"), no_prs) == {5: {rc1_base[:7]}}
 
 
 def test_s021_3_a_second_run_posts_nothing(sp: ModuleType) -> None:
@@ -405,6 +426,8 @@ def test_s021_5_a_notices_section_the_policy_refuses_exits_2(sp: ModuleType, tmp
         '[notices]\npin = "a \\"quoted\\" x"\n',  # an escape the fallback can't decode
         '[notices.extra]\npin = "x"\n',
         '[notices\npin = "x"\n',
+        '[notices]\npin = "x"\npin = "y"\n',  # invalid TOML, which tomllib refuses too
+        '[notices]\npin = "x"\n[notices]\ninstall = "y"\n',
     ],
 )
 def test_s021_5_a_notices_form_3_10_cannot_read_is_refused(sp: ModuleType, tmp_path: Path, text: str) -> None:
