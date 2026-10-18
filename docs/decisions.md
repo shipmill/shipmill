@@ -301,6 +301,7 @@ entry that supersedes it, never by editing an old one.
 - Why: Skills are advice an agent can miss, and these mistakes are writes nobody can take back: a write attributed to the maintainer, an unreviewed change on main, a rewritten history, a private file in a public repo. A hook refuses them before they happen; the maintainer chose refusal over report-only, and a paused headless gate over unattended sessions without the hooks, as D-35 chose for stale skills
 - Applies to: hooks/hooks.json, hooks/delivery.py, src/shipmill/policy.py, src/shipmill/doctor.py, src/shipmill/gate.py, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md, skills/shipmill-setup/SKILL.md, [hooks], [agents] app_id, shipmill gh
 - Enforced by: tests/test_delivery_hooks.py and the doctor and gate tests (with the implementing PR)
+- Superseded by: D-40
 
 ## D-37: A change to the agents' instructions lands only when the evals don't regress
 
@@ -325,3 +326,12 @@ entry that supersedes it, never by editing an old one.
 - Why: A time soak with nobody running the rc and no telemetry read (treaty, cloudfall: promote_from = 'rc', min_soak_days = 3) caught no defect and only added lead time; proof belongs before the merge (CI, agent review, evals, hooks, protected areas) and recovery after it (fix-forward, yank, rollback). A breaking change is the one release a person must choose, so it waits for a hand start an App can't make. A signal-based soak was considered and rejected; consumer cooldown is the consumer's tool; a milestone is a scope decision and stays
 - Applies to: src/shipmill/planner.py, src/shipmill/policy.py, src/shipmill/init.py, src/shipmill/upgrades.py, src/shipmill/propose.py, src/shipmill/doctor.py, docs/release-lanes.md, docs/product.md, skills/shipmill-setup/SKILL.md, stable lane, min_soak_days, promote_from, release lanes
 - Enforced by: review, until spec 029 is built
+
+## D-40: A delivery hook that can't start lets the command run, with a warning
+
+- Decided: 2026-10-18, in shipmill/shipmill#458
+- Rule: In a repo whose .github/shipmill.toml has an [agents] section, the shipmill plugin's PreToolUse hook refuses, with exit 2 and the command to run instead: a gh write while [agents] app_id is set unless it runs as shipmill gh (an inline GH_TOKEN=$T gh is refused too, since an empty $T falls back to the maintainer's login; shipmill gh is the way to write), a push to the default branch unless [hooks] default_branch = false, a rebase merge, a force push without --force-with-lease=<ref>:<sha>, and a cp, mv, or rsync of a [hooks] private path out of the repo; the app-writes, rebase-merge, and force-push rules have no switch, and no session can turn a rule off for itself. Only hooks/delivery.py's own refusal exits 2: when the hook can't start the script (uv missing, no Python 3.11 or newer that uv can find or install, the script missing), it exits 1 with one stderr line naming shipmill doctor, and the command runs unchecked. shipmill doctor FAILs on that case, and a headless gate whose hook self-test fails starts no session (spec 026)
+- Why: Exit 2 from uv itself (offline, or python-downloads = never) read as a refusal of every shell command, so a person's session offline stalled until a Python 3.11 was installed; the maintainer chose fail-open with a warning, since doctor and the headless gate's self-test still catch the case, so only a person's session ever runs unchecked
+- Applies to: hooks/hooks.json, hooks/delivery.py, src/shipmill/policy.py, src/shipmill/doctor.py, src/shipmill/gate.py, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md, skills/shipmill-setup/SKILL.md, [hooks], [agents] app_id, shipmill gh
+- Enforced by: tests/test_delivery_hooks.py and the doctor and gate tests (with the implementing PR)
+- Supersedes: D-36
