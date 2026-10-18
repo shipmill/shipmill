@@ -24,6 +24,8 @@ from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.gitrepo import REMOTE, Git
 from shipmill.land import BLOCKING_BRANCH, WORK_PREFIX, blocked
 from shipmill.policy import BumpFrom, Lane, Policy, VersionFiles
+from shipmill.product import DIRECTION
+from shipmill.product import check as check_product
 from shipmill.stamp import project_version
 from shipmill.upgrades import offers, pending
 
@@ -135,6 +137,8 @@ def doctor(
     add(True, "policy", f"{read}, mode {policy.mode}, lanes {', '.join(policy.lanes)}")
     if policy.roadmap is not None:
         add(False, "roadmap", _ROADMAP_DEPRECATED, warn=True)
+    if policy.agents is not None:
+        checks.append(direction_check(root))
     autonomy, hold = _autonomy(policy, github, root / CALLER)
     checks.extend(autonomy)
     checks.extend(_upgrades(policy, read_config(found), github, root / CALLER, repo))
@@ -254,6 +258,29 @@ def doctor(
     if people is not None and policy.agents is not None and policy.agents.app_id is not None:
         checks.append(agent_as_person_check(people))
     return checks
+
+
+def direction_check(root: Path) -> Check:
+    """S-024-5: a repo whose agents implement ([agents]) works toward docs/product.md (D-34), so
+    a missing direction, or one `product check` refuses, is a FAIL naming the fix. Only the
+    maintainer writes it, so the fix asks them for its content; doctor never writes it"""
+    check_command = f"`{cli_command()} product check`"
+    if not (root / DIRECTION).is_file():
+        detail = (
+            f"[agents] is set, so the agents work toward the product's direction, but there is no {DIRECTION}:"
+            " ask the maintainer for the mission, users, goals, non-goals, and quality bar and write"
+            f" {DIRECTION} in the grammar of spec 024 (the shipmill-setup skill does), then run {check_command}"
+        )
+        return Check("FAIL", "direction", detail)
+    try:
+        problems = check_product(root)
+    except ReleaseError as exc:  # a file that isn't UTF-8 text
+        return Check("FAIL", "direction", f"{exc}: fix it, then run {check_command}")
+    if problems:
+        more = "" if len(problems) == 1 else f" (and {len(problems) - 1} more)"
+        detail = f"{DIRECTION} is not well formed: {problems[0]}{more}; run {check_command} for each line, fix them"
+        return Check("FAIL", "direction", detail)
+    return Check("PASS", "direction", f"{DIRECTION} is well formed")
 
 
 def _schedule(policy: Policy, caller: str, today: dt.date) -> Check:
