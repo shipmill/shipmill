@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from shipmill import product
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "skills" / "github-issue-triage" / "scripts" / "specs.py"
 DECISIONS = (
@@ -445,3 +447,125 @@ def test_split_leaves_out_a_dropped_criterion(tmp_path: Path) -> None:
     # A criterion dropped after the split may stay in its build issue
     (root / "docs" / "specs" / "007-dry-run.md").write_text(spec("007", criteria=DROPPED))
     assert specs(root, "check").stdout == ""
+
+
+# A spec names the goals it serves (spec 024) once the repo has a direction, docs/product.md
+
+DIRECTION = """\
+# Widgets
+
+## Mission
+
+Widgets for everyone.
+
+## Users
+
+- U-1: A buyer
+
+## Goals
+
+- G-1: Widgets reach buyers in a day
+- G-3: Buyers can track a widget
+
+## Non-goals
+
+- N-1: Gadgets
+
+## Quality bar
+
+- Q-1: Fail fast
+"""
+
+
+def serving(text: str, serves: str) -> str:
+    """The spec with a serves: line right after its status line"""
+    head, status, rest = text.partition("\nstatus: ")
+    line, _, body = rest.partition("\n")
+    return f"{head}{status}{line}\nserves: {serves}\n{body}"
+
+
+def direction(root: Path, text: str = DIRECTION, **moved: str) -> Path:
+    (root / "docs" / "product.md").write_text(text)
+    for name, body in moved.items():
+        (root / "docs" / "product").mkdir(exist_ok=True)
+        (root / "docs" / "product" / name).write_text(body)
+    return root
+
+
+def test_s024_6_check_refuses_a_spec_serving_no_goal_or_one_the_direction_lacks(tmp_path: Path) -> None:
+    files = {
+        "001-none.md": spec("001"),
+        "002-unknown.md": serving(spec("002"), "G-1, G-2"),
+        "003-non-goal.md": serving(spec("003"), "N-1"),
+        "004-draft.md": spec("004", status="draft"),
+        "005-empty.md": serving(spec("005"), "G-1,"),
+        "006-mixed.md": serving(spec("006"), "G-1, quality bar"),
+    }
+    root = direction(repo(tmp_path, **files))
+    out = specs(root, "check")
+    assert out.returncode == 1
+    assert "001-none.md:3: no 'serves:' line after the status" in out.stdout
+    assert "002-unknown.md:4: serves G-2, which docs/product.md doesn't list" in out.stdout
+    assert "serves G-1," not in out.stdout
+    assert "003-non-goal.md:4: serves 'N-1'; a spec serves goal ids (G-n) or 'quality bar' alone" in out.stdout
+    assert "004-draft.md:3: no 'serves:' line" in out.stdout
+    assert "005-empty.md:4: 'serves:' names goal ids separated by commas" in out.stdout
+    assert "006-mixed.md:4: serves 'quality bar'" in out.stdout
+    assert len(out.stdout.splitlines()) == 6, out.stdout
+
+
+def test_s024_6_check_accepts_goals_the_direction_lists_and_the_quality_bar(tmp_path: Path) -> None:
+    files = {
+        "001-goals.md": serving(spec("001"), "G-1, G-3"),
+        "002-fix.md": serving(spec("002", status="draft"), "quality bar"),
+    }
+    root = direction(repo(tmp_path, **files))
+    out = specs(root, "check")
+    assert (out.returncode, out.stdout) == (0, "")
+
+
+def test_s024_6_a_built_spec_needs_no_serves_line_and_may_serve_a_retired_goal(tmp_path: Path) -> None:
+    root = direction(repo(tmp_path, **{"001-old.md": built("001"), "002-retired.md": serving(built("002"), "G-2")}))
+    out = specs(root, "check")
+    assert (out.returncode, out.stdout) == (0, "")
+
+
+def test_s024_6_without_a_direction_any_spec_passes(tmp_path: Path) -> None:
+    files = {"001-none.md": spec("001"), "002-any.md": serving(spec("002"), "G-99, whatever")}
+    out = specs(repo(tmp_path, **files), "check")
+    assert (out.returncode, out.stdout) == (0, "")
+
+
+def test_s024_6_the_serves_line_goes_right_after_the_status(tmp_path: Path) -> None:
+    late = spec("001").replace("status: approved\n", "status: approved\n\nserves: G-1\n")
+    twice = serving(serving(spec("002"), "G-1"), "G-3")
+    root = repo(tmp_path, **{"001-late.md": late, "002-twice.md": twice})
+    out = specs(root, "check").stdout
+    assert "001-late.md:5: a 'serves:' line goes right after the status line, once" in out
+    assert "002-twice.md:5: a 'serves:' line goes right after the status line, once" in out
+
+
+def test_s024_6_goals_moved_to_docs_product_are_read_from_their_file(tmp_path: Path) -> None:
+    moved_text = DIRECTION.replace(
+        "- G-1: Widgets reach buyers in a day\n- G-3: Buyers can track a widget\n", "See [Goals](product/goals.md).\n"
+    )
+    goals = "## Goals\n\n- G-1: Widgets reach buyers in a day\n- G-4: Buyers can return a widget\n"
+    root = direction(repo(tmp_path, **{"001-moved.md": serving(spec("001"), "G-4")}), moved_text, **{"goals.md": goals})
+    assert specs(root, "check").stdout == ""
+    (root / "docs" / "specs" / "001-moved.md").write_text(serving(spec("001"), "G-3"))
+    assert "serves G-3, which docs/product.md doesn't list" in specs(root, "check").stdout
+    (root / "docs" / "product" / "goals.md").unlink()
+    out = specs(root, "check")
+    assert out.returncode == 2
+    assert "'## Goals' moved to docs/product/goals.md, which doesn't exist" in out.stderr
+
+
+def test_s024_6_reads_the_same_goals_as_shipmill_product(tmp_path: Path) -> None:
+    ours = (ROOT / "docs" / "product.md").read_text()
+    goals = [str(item.id) for item in product.read(ROOT).goals]
+    files = {f"{k:03d}-g.md": serving(spec(f"{k:03d}"), g) for k, g in enumerate(goals, 1)}
+    root = direction(repo(tmp_path, **files), ours)
+    assert specs(root, "check").stdout == ""
+    beyond = max(int(g.split("-")[1]) for g in goals) + 1
+    (root / "docs" / "specs" / "001-g.md").write_text(serving(spec("001"), f"G-{beyond}"))
+    assert f"serves G-{beyond}, which docs/product.md doesn't list" in specs(root, "check").stdout

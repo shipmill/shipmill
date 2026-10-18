@@ -1,6 +1,7 @@
 # S-024: Agents work toward the product's direction
 
 status: approved
+serves: G-5
 
 ## Problem
 

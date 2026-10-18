@@ -26,12 +26,12 @@ Any other request for new behaviour is an **opportunity**: triage comments the h
 ## The gate
 
 1. **Read what's settled.** `specs.py find <the paths and areas the feature touches>` lists specs that already cover them: extend one of those rather than writing a second. `decisions.py find` on the same terms gives the rules the spec relies on
-2. **Write the spec.** `specs.py new <slug>` writes `docs/specs/NNN-<slug>.md` from the template with the next number and `status: draft`. Fill in every section from the issue and the code, except Verification:
+2. **Write the spec.** `specs.py new <slug>` writes `docs/specs/NNN-<slug>.md` from the template with the next number and `status: draft`. When the repo has a direction, `docs/product.md`, add a `serves:` line right after the status line naming the goals the feature serves (`serves: G-2, G-3`, ids from its Goals), or `serves: quality bar`; `check` refuses a spec that isn't built without one, or naming an id the direction doesn't list. Fill in every section from the issue and the code, except Verification:
    - **Behaviour** names every touched path or area in backticks, so `find` lists the spec for a change there
    - **Acceptance criteria** are checkable statements, `S-NNN-1`, `S-NNN-2`, and so on, each one a test could prove: an exit code, an output, a file written, a refusal. "Works well" isn't a criterion
    - **Decisions relied on** lists the `D-n` entries it follows; a departure from one is a question for the user, as in the design gate
    - **Issues** stays empty until the build issues exist
-3. **Check it.** `specs.py check` must pass: the sections, the criterion ids, and the decisions named
+3. **Check it.** `specs.py check` must pass: the sections, the criterion ids, the decisions named, and the goals served
 4. **Open the spec PR** on a `spec/NNN-<slug>` branch, with `status: approved` once it's ready for review: merging it with that status is the approval. Its body links the issue as "Spec for #N", never with a closing keyword or "Part of #N": `triage_state.py` would read either as the issue's fix and report IN_PROGRESS, then DONE_NOT_CLOSED once the spec merges
 5. **Comment the verdict** on the issue: **feature**, the spec PR's link, and the hold line (see [comments.md](comments.md), Feature). The hold line names the spec PR as `owner/repo#N`, so `triage_state.py` reports the issue BLOCKED while the spec PR is open and UNBLOCKED once it merges
 6. **Wait for the merge.** No implementer starts on a feature before its spec merges. A spec PR closed without merging makes the issue SPEC_REFUSED, which needs action: the spec was refused, so decide again in a new triage comment. Revise the spec in a new PR (and name it on a new hold line), postpone, or won't fix. The newer triage comment settles the refused PR, so it stops counting

@@ -1,6 +1,7 @@
 # S-021: The requester ring
 
 status: approved
+serves: G-3
 
 ## Problem
 

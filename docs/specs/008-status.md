@@ -1,6 +1,7 @@
 # S-008: shipmill status, the pipeline report from the CLI
 
 status: draft
+serves: G-4
 
 ## Problem
 

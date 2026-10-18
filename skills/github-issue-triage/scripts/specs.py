@@ -15,6 +15,7 @@ A spec has a title line, a status line, and fixed sections, in this order:
   # S-007: <title>
 
   status: draft             (draft, approved, or built)
+  serves: G-1, G-2          (the goals of docs/product.md it serves, or "quality bar")
 
   ## Problem
   ## Behaviour              (name touched paths and areas in backticks)
@@ -32,11 +33,14 @@ check     every spec is well formed: its file name, title, and sections; criteri
           a built spec lists its issues and names every criterion under Verification;
           once an approved or built spec lists build issues, each criterion is assigned
           to exactly one of them, save a dropped one (its text starts "dropped in #N"),
-          which needs no build issue and may be in one. A draft may keep the template's placeholder text
-          (D/TEMPLATE.md, or the built-in template: each paragraph of a section, word
-          for word, past "- none"); an approved spec may not in Problem, Behaviour,
-          Acceptance criteria, or Out of scope, and a built spec in no section. No
-          folder D: "no specs", exit 0
+          which needs no build issue and may be in one. When the repo has a direction,
+          docs/product.md, every spec but a built one has a serves: line right after its
+          status, naming goal ids the direction lists (moved sections in docs/product/
+          read too) or "quality bar"; without one, the line isn't checked. A draft may
+          keep the template's placeholder text (D/TEMPLATE.md, or the built-in template:
+          each paragraph of a section, word for word, past "- none"); an approved spec
+          may not in Problem, Behaviour, Acceptance criteria, or Out of scope, and a built
+          spec in no section. No folder D: "no specs", exit 0
 find      specs whose Behaviour touches a TERM (a path matches a backticked path, glob,
           or directory there; any term matches as a substring of the section).
           `find $(git diff --name-only origin/main...)` lists the specs a diff touches
@@ -99,6 +103,18 @@ SECTIONS = (
 )
 STATUS = re.compile(r"^status: (\S+)$")
 STATUSES = ("draft", "approved", "built")
+# The goals a spec serves, on the line right after its status (spec 024): goal ids, or the
+# quality bar. Checked only when the repo has a direction, and never on a built spec
+SERVES = re.compile(r"^serves:(.*)$")
+QUALITY_BAR = "quality bar"
+GOAL_ID = re.compile(r"^G-[1-9][0-9]*$")
+# The direction (spec 024), read the way `shipmill product ids` reads it: each list
+# section's `- <prefix>-<n>: <text>` items, a section moved to docs/product/<file>.md
+# through its one `See [<section>](product/<file>.md).` line read from that file
+DIRECTION = Path("docs/product.md")
+DIRECTION_PREFIXES = {"Users": "U", "Goals": "G", "Non-goals": "N", "Quality bar": "Q"}
+DIRECTION_ITEM = re.compile(r"^- ([A-Za-z]+)-([1-9][0-9]*): \S")
+DIRECTION_MOVED = re.compile(r"^See \[([^\]]+)\]\(product/([A-Za-z0-9][A-Za-z0-9_-]*\.md)\)\.$")
 # The sections an approved spec must have filled in past the template's placeholders; a
 # built spec must have filled in every section (Issues and Verification come last)
 FILLED_WHEN_APPROVED = ("Problem", "Behaviour", "Acceptance criteria", "Out of scope")
@@ -204,6 +220,9 @@ class Spec:
     slug: str
     title: str = ""
     status: str = ""
+    status_line: int = 0
+    serves: str | None = None  # the text after "serves:", None without the line
+    serves_line: int = 0
     sections: dict[str, list[tuple[int, str]]] = field(default_factory=dict)
     criteria: list[Criterion] = field(default_factory=list)
     decisions: list[tuple[int, int]] = field(default_factory=list)  # (D-n, line)
@@ -253,12 +272,17 @@ def parse(path: Path) -> tuple[Spec | None, list[str]]:
         if current is None:
             title = TITLE.match(line)
             status = STATUS.match(line)
-            if title and not spec.title:
+            serves = SERVES.match(line)
+            if serves and spec.serves is None and spec.status_line and n == spec.status_line + 1:
+                spec.serves, spec.serves_line = serves.group(1).strip(), n
+            elif serves:
+                problem(n, "a 'serves:' line goes right after the status line, once")
+            elif title and not spec.title:
                 spec.title = title.group(2).strip()
                 if int(title.group(1)) != spec.number:
                     problem(n, f"the title says S-{title.group(1)}, the file name {spec.id}")
             elif status and spec.title and not spec.status:
-                spec.status = status.group(1)
+                spec.status, spec.status_line = status.group(1), n
                 if spec.status not in STATUSES:
                     problem(n, f"status must be one of {', '.join(STATUSES)}, got '{spec.status}'")
             elif line.strip():
@@ -468,6 +492,73 @@ def check_decisions(specs: list[Spec], log: dict[int, str | None] | None) -> lis
                 problems.append(f"{where}: names D-{number}, which the decisions log lacks")
             elif log[number] is not None:
                 problems.append(f"{where}: names D-{number}, superseded by {log[number]}")
+    return problems
+
+
+def direction_ids(root: Path) -> set[str] | None:
+    """Every item id the direction at root/docs/product.md lists, moved sections included,
+    as `shipmill product ids` lists them; None when the repo has no direction. Its other
+    rules are `shipmill product check`'s; a moved section whose file is missing is refused
+    here too, since its ids can't be read"""
+    path = root / DIRECTION
+    if not path.is_file():
+        return None
+    ids: set[str] = set()
+    section: str | None = None
+    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = line.rstrip()
+        if line.startswith("#"):
+            section = line[3:].strip() if line.startswith("## ") else None
+            continue
+        if section is None or section not in DIRECTION_PREFIXES:
+            continue
+        moved = DIRECTION_MOVED.match(line)
+        if moved is None:
+            ids |= direction_items(line, section)
+            continue
+        linked = path.parent / "product" / moved.group(2)
+        if not linked.is_file():
+            raise SpecError(f"{DIRECTION}:{n}: '## {section}' moved to {linked.relative_to(root)}, which doesn't exist")
+        for moved_line in linked.read_text(encoding="utf-8").splitlines():
+            ids |= direction_items(moved_line.rstrip(), section)
+    return ids
+
+
+def direction_items(line: str, section: str) -> set[str]:
+    """The id of a direction item on this line, when it is one of the section's prefix"""
+    item = DIRECTION_ITEM.match(line)
+    if item is None or item.group(1) != DIRECTION_PREFIXES[section]:
+        return set()
+    return {f"{item.group(1)}-{int(item.group(2))}"}
+
+
+def check_serves(specs: list[Spec], ids: set[str] | None) -> list[str]:
+    """With a direction, every spec not yet built names the goals it serves, G-n ids the
+    direction lists or `quality bar`; a built spec, and any spec without a direction, passes"""
+    if ids is None:
+        return []
+    problems = []
+    for spec in specs:
+        if spec.status == "built":
+            continue
+        if spec.serves is None:
+            problems.append(
+                f"{spec.path}:{spec.status_line or 1}: no 'serves:' line after the status; name the goals it "
+                f"serves from {DIRECTION} ('serves: G-1, G-2') or 'serves: {QUALITY_BAR}'"
+            )
+            continue
+        where = f"{spec.path}:{spec.serves_line}"
+        names = [name.strip() for name in spec.serves.split(",")]
+        if names == [QUALITY_BAR]:
+            continue
+        if not all(names):
+            problems.append(f"{where}: 'serves:' names goal ids separated by commas, or '{QUALITY_BAR}' alone")
+            continue
+        for name in names:
+            if GOAL_ID.match(name) is None:
+                problems.append(f"{where}: serves {name!r}; a spec serves goal ids (G-n) or '{QUALITY_BAR}' alone")
+            elif name not in ids:
+                problems.append(f"{where}: serves {name}, which {DIRECTION} doesn't list")
     return problems
 
 
@@ -794,6 +885,7 @@ def main() -> int:
         specs, problems = load(args.dir)
         if args.command == "check":
             problems += check_decisions(specs, decision_states(args.decisions))
+            problems += check_serves(specs, direction_ids(Path(".")))
             for problem in problems:
                 print(problem)
             return 1 if problems else 0

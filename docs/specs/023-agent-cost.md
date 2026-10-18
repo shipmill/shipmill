@@ -1,6 +1,7 @@
 # S-023: What the agents cost
 
 status: draft
+serves: G-4
 
 ## Problem
 

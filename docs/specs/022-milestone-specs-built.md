@@ -1,6 +1,7 @@
 # S-022: A milestone is done when its specs are built
 
 status: approved
+serves: G-1
 
 ## Problem
 
