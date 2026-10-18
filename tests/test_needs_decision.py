@@ -423,6 +423,48 @@ def test_existing_intake_rows_keep_their_shape(ws: ModuleType) -> None:
     ]
 
 
+# -- #332, D-29: a confirmed close starts no session
+
+CLOSE_CONFIRMED = "<!-- shipmill:close-confirmed -->\nThe close is right: done by hand"
+
+
+def closed_by_hand(*comments: dict[str, Any], closed: str = "2026-10-06T09:00:00Z") -> dict[str, Any]:
+    """#81 closed as completed by hand, with no merged PR mentioning it, comments oldest first"""
+    return {
+        "number": 81,
+        "title": "Rollback drill",
+        "stateReason": "COMPLETED",
+        "labels": {"pageInfo": {"hasNextPage": False}, "nodes": [{"name": "bug"}]},
+        "comments": {"nodes": list(comments)},
+        "refs": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []},
+        "timelineItems": {"nodes": [{"createdAt": closed, "actor": None, "closer": None}]},
+    }
+
+
+def gate_on_closed(ts: ModuleType, ws: ModuleType, item: dict[str, Any]) -> Any:
+    """The gate's decision on a repo whose only issue is ``item``: triage_state.py's line and
+    exit code for it, as its main prints them, through watch_state.py's intake rows"""
+    verdict = ts.classify_closed(item, "release-blocker", bot_login=BOT)
+    lines = [] if verdict is None else [{"number": item["number"], "state": verdict[0], "title": "t", "note": ""}]
+    code = 1 if any(line["state"] in ts.ACTION for line in lines) else 0
+    found = ws.intake("o/r", code, "\n".join(json.dumps(line) for line in lines), [], comments({}), BOT, True)
+    text = "\n".join(json.dumps(r.json(), sort_keys=True) for r in found)
+    return decide(parse_findings(text), [], None, NOW, DAY)
+
+
+def test_332_a_confirmed_close_starts_no_session(ts: ModuleType, ws: ModuleType) -> None:
+    suspect = gate_on_closed(ts, ws, closed_by_hand())
+    assert suspect.action is Action.LAUNCH
+    assert [(f.state, f.detail) for f in suspect.work] == [("ISSUES", "SUSPECT_CLOSE #81")]
+    # the maintainer's or the App's marker after the close ends it: the repo reads QUIET
+    for confirmed in (comment(CLOSE_CONFIRMED), comment(CLOSE_CONFIRMED, by=BOT, association="NONE")):
+        quiet = gate_on_closed(ts, ws, closed_by_hand(confirmed))
+        assert quiet.action is Action.QUIET and quiet.work == ()
+    # `gh issue close --comment` posts the marker before the close: it never counts
+    before = closed_by_hand(comment(CLOSE_CONFIRMED), closed="2026-10-06T10:00:05Z")
+    assert gate_on_closed(ts, ws, before).action is Action.LAUNCH
+
+
 # -- #309: an answered question is DECIDED, work for the next tick
 
 # the shape of a maintainer's answer that links an open issue as context, not as a blocker
