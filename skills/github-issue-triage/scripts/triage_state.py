@@ -101,7 +101,8 @@ For the N most recently closed issues (default 20):
   SUSPECT_CLOSE    closed by a commit whose message names "#N" after a closing
                    keyword only mid-line (a quote, a test string), not as a
                    trailer, and no same-repo merged PR closes it (by GitHub's
-                   link or a closing keyword in its title or body), or closed as
+                   link, a closing keyword in its title outside backticks, or one
+                   starting a line of its body outside a code fence), or closed as
                    COMPLETED with no closer at all, unless it
                    carries --hold-label (a release hold is meant to close by hand).
                    An issue with --incident-label closed as COMPLETED with no closer
@@ -505,6 +506,12 @@ DEPENDENCY = re.compile(
 PLACEHOLDER = re.compile(r"#\{(?P<key>[^{}\s]*)\}")
 STABLE = re.compile(r"^v?\d+\.\d+\.\d+$")
 KEYWORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+# A PR's closing keyword, the one rule github-pr-triage's shipped.py reads too (#368, #416):
+# in the title outside code spans, or starting a body line (after a list bullet) outside a fence
+LINE_CLOSER = re.compile(rf"^\s*(?:[-*]\s*)?{KEYWORDS}:?\s+#(\d+)\b", re.IGNORECASE)
+TITLE_CLOSER = re.compile(rf"\b{KEYWORDS}:?\s+#(\d+)\b", re.IGNORECASE)
+CODE_SPAN = re.compile(r"`+[^`]*`+")
+FENCE = re.compile(r"^[ \t]*(?:```|~~~)")
 
 
 def gh_graphql(query: str, variables: Variables) -> dict[str, Any]:
@@ -742,12 +749,28 @@ def fetch_pages(
     return data
 
 
+def keyword_closes(title: str, body: str) -> set[int]:
+    """The issue numbers a PR's closing keywords name: one in the title outside code spans, or
+    one starting a line of the body (after an optional list bullet) outside a code fence. A
+    keyword quoted mid-line, in backticks, or in a fence names nothing (#368, #416)"""
+    found = {int(n) for n in TITLE_CLOSER.findall(CODE_SPAN.sub("", title))}
+    fenced = False
+    for line in body.splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+        elif not fenced:
+            found |= {int(n) for n in LINE_CLOSER.findall(line)}
+    return found
+
+
 def closes(pr: dict[str, Any], number: int, *, partial: bool = False) -> bool:
-    """A closing keyword (or, with ``partial``, "Part of #N", for a PR covering part of the
-    issue) naming the issue in the PR's title or body; GitHub's own willCloseTarget misses some"""
-    text = f"{pr.get('title', '')}\n{pr.get('body', '')}"
-    words = f"{KEYWORDS}|part of" if partial else KEYWORDS
-    return re.search(rf"\b(?:{words}):?\s+#{number}\b", text, re.IGNORECASE) is not None
+    """A closing keyword naming the issue by keyword_closes' rule (or, with ``partial``,
+    "Part of #N" anywhere in the PR's title or body, for a PR covering part of the issue);
+    GitHub's own willCloseTarget misses some"""
+    title, body = pr.get("title") or "", pr.get("body") or ""
+    if number in keyword_closes(title, body):
+        return True
+    return partial and re.search(rf"\bpart of:?\s+#{number}\b", f"{title}\n{body}", re.IGNORECASE) is not None
 
 
 def linked_prs(issue: dict[str, Any]) -> list[tuple[int, str, bool]]:
@@ -782,7 +805,7 @@ def merged_mentions(issue: dict[str, Any]) -> list[int]:
 
 def merged_closers(issue: dict[str, Any]) -> list[int]:
     """Same-repo merged PRs that close the issue: GitHub's willCloseTarget, or a closing
-    keyword naming it in the PR's title or body, the link DONE_NOT_CLOSED reads too"""
+    keyword naming it by keyword_closes' rule, the link DONE_NOT_CLOSED reads too"""
     return sorted(
         n["source"]["number"]
         for n in issue["refs"]["nodes"]

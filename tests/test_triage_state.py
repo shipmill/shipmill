@@ -380,6 +380,67 @@ def test_a_mid_line_commit_closer_without_a_merged_closing_pr_stays_suspect(ts: 
         assert ts.classify_closed(commit_closed(*refs), "release-blocker") == suspect, refs
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        'It quotes the bug ("... Closes #12.") mid-line',
+        "`Closes #12` in backticks at the start of a line",
+        "Notes:\n```\nFixes #12\n```",
+        "~~~\nresolves #12\n~~~",
+    ],
+)
+def test_416_a_quoted_closing_keyword_links_nothing(ts: ModuleType, body: str) -> None:
+    pr = {"number": 8, "state": "MERGED", "title": "a change (not `fixes #12`)", "body": body}
+    assert not ts.closes(pr, 12)
+    assert not ts.closes(pr, 12, partial=True)
+    item = issue(("2026-09-01T10:00:00Z", "Triage: **implement**"))
+    item["number"] = 12
+    item["timelineItems"] = {"nodes": [{"willCloseTarget": False, "isCrossRepository": False, "source": pr}]}
+    assert ts.linked_prs(item) == []
+    assert classify(ts, item) == "NEEDS_PR"  # never DONE_NOT_CLOSED over a PR that only quotes it
+
+
+@pytest.mark.parametrize(
+    ("title", "body"),
+    [
+        ("a change", "Why.\n\nFixes #12"),
+        ("a change", "- Closes #12"),
+        ("a change", "  * resolves: #12"),
+        ("Fix the thing (fixes #12)", ""),
+        ("a change", "```\nnot this\n```\nFixes #12"),  # after the fence closes
+    ],
+)
+def test_416_a_line_start_or_title_closing_keyword_still_links(ts: ModuleType, title: str, body: str) -> None:
+    pr = {"number": 8, "state": "MERGED", "title": title, "body": body}
+    assert ts.closes(pr, 12)
+    item = issue(("2026-09-01T10:00:00Z", "Triage: **implement**"))
+    item["number"] = 12
+    item["timelineItems"] = {"nodes": [{"willCloseTarget": False, "isCrossRepository": False, "source": pr}]}
+    assert ts.linked_prs(item) == [(8, "MERGED", True)]
+    assert classify(ts, item) == "DONE_NOT_CLOSED"
+
+
+def test_416_github_s_link_and_part_of_anywhere_still_link(ts: ModuleType) -> None:
+    # a cross-repo or full-URL closer reaches triage as GitHub's willCloseTarget
+    linked = {"number": 8, "state": "MERGED", "title": "x", "body": "Fixes https://github.com/o/r/issues/12"}
+    part = {"number": 9, "state": "OPEN", "title": "x", "body": "This is part of #12, the parser"}
+    item = issue()
+    item["number"] = 12
+    item["timelineItems"] = {
+        "nodes": [
+            {"willCloseTarget": True, "isCrossRepository": False, "source": linked},
+            {"willCloseTarget": False, "isCrossRepository": False, "source": part},
+        ]
+    }
+    assert ts.linked_prs(item) == [(8, "MERGED", True), (9, "OPEN", False)]
+
+
+def test_416_a_pr_body_quoting_the_closer_leaves_a_mid_line_commit_close_suspect(ts: ModuleType) -> None:
+    suspect = ("SUSPECT_CLOSE", "commit b3e999f names #424 only mid-line")
+    refs = pr_ref("MERGED", 'Quotes the commit ("Recorded as D-14. Closes #424.")')
+    assert ts.classify_closed(commit_closed(refs), "release-blocker") == suspect
+
+
 def test_more_than_100_labels_is_bad_input(ts: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
     gh = FakeGitHub(ts, {("QUERY", None, None): first_page([open_issue(7, more_labels=True)])})
     with pytest.raises(SystemExit) as exc:
