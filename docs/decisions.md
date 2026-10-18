@@ -275,3 +275,11 @@ entry that supersedes it, never by editing an old one.
 - Why: The repo allows all three methods and its history mixes squash and merge commits, so "match the repo's history" left each session to choose: on 2026-10-16 a squash of a stack's base meant the child had to be rebased and force-pushed by hand. A squash keeps main one commit per pull request, which is how a reader and a revert see it; a merge commit keeps a stack's base SHAs, so its child retargets and rebases clean; a rebase merge rewrites SHAs and gives neither
 - Applies to: skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md (Merge style), gh pr merge
 - Enforced by: review
+
+## D-34: Agents work toward the product's written intent
+
+- Decided: 2026-10-18, in shipmill/shipmill#382
+- Rule: A repo whose agents implement (its config has `[agents]`) keeps its intent in `docs/intent.md`: mission, users, numbered goals, non-goals, and a quality bar, changed only by the maintainer. Triage, product intake, specs, implementers' plans, and reviews read it: new behaviour names the goal it serves or is postponed, a non-goal is won't fix, and a pull request carries its plan; `docs/review.md` is the repo's optional review rubric (spec 024). A repo where shipmill only cuts releases needs none. This replaces the earlier view that a goals page is needed only by the features that ask for one
+- Why: Without a written direction the loop closes tasks correctly and can still take the product where nobody chose: triage judges each issue alone, intake ranks by volume, review checks a diff against its issue. D-32 removed the roadmap plan for lack of goals and said planning comes back with a goals layer; text in the repo is the cheapest layer every agent can read, and the maintainer reviews it like code
+- Applies to: docs/intent.md, docs/review.md, docs/specs/, skills/github-issue-triage/SKILL.md, skills/github-issue-triage/references/triage-rubric.md, skills/github-issue-triage/scripts/specs.py, skills/product-intake/SKILL.md, skills/github-issue-resolve/SKILL.md, skills/github-pr-triage/references/reviewer-brief.md, skills/github-pr-triage/scripts/pr_gate.py, skills/shipmill-setup/SKILL.md, src/shipmill/doctor.py, [agents]
+- Enforced by: review, until spec 024 is built
