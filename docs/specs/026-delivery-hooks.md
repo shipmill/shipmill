@@ -43,18 +43,22 @@ The plugin gains `hooks/hooks.json` at its root, which Claude Code loads with th
   "hooks": {
     "PreToolUse": [
       {"matcher": "Bash", "hooks": [{"type": "command", "timeout": 10,
-        "command": "uv run --no-project --python '>=3.11' python \"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\" pre"}]}
+        "command": "d=\"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\"; ... else exec \"$p\" \"$d\" pre; fi; ...; exit 1"}]}
     ],
     "PostToolUse": [
       {"matcher": "Edit|Write|MultiEdit", "hooks": [{"type": "command", "timeout": 60,
-        "command": "uv run --no-project --python '>=3.11' python \"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\" post"}]}
+        "command": "d=\"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\"; ... else exec \"$p\" \"$d\" post; fi; ...; exit 1"}]}
     ]
   }
 }
 ```
 
-`uv run` picks a Python with `tomllib` (3.11+) whatever `python3` is on PATH; a probe on
-the maintainer's machine, whose `python3` is 3.8, measured its startup at 20 to 30 ms.
+Each command is a POSIX sh snippet (the `...` parts are in `hooks/hooks.json` itself):
+it checks that `uv` is on PATH and the script exists, takes the interpreter from `uv python
+find --no-project '>=3.11'`, or from `uv python install '>=3.11'` and then `find`, and
+`exec`s the script with it, so the script's own exit code is the hook's. uv picks a Python
+with `tomllib` (3.11+) whatever `python3` is on PATH; a probe on the maintainer's machine,
+whose `python3` is 3.8, measured `uv run`'s startup at 20 to 30 ms.
 
 **When the hook can't start the script, the command runs** (D-40, shipmill/shipmill#458).
 uv exits 2 when it can't get a Python 3.11 or newer (offline, or `python-downloads =
