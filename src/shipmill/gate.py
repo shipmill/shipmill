@@ -969,11 +969,12 @@ def self_tested(decision: Decision, hooks: Callable[[], HookTest] | None, headle
     """S-026-16: a LAUNCH runs the delivery hooks' self-test once. A failure makes a headless
     tick HOOKS_FAILED, stopping no session and starting none, as D-35 does for stale skills: an
     unattended session is where a miss goes unseen. An interactive tick reports it and launches.
-    hooks None runs no test"""
+    A test that couldn't read what a session loads is reported and launches, as D-35 does on a
+    failed read; no claude on PATH pauses a headless tick, naming it. hooks None runs no test"""
     if hooks is None or decision.action is not Action.LAUNCH:
         return decision
     found = hooks()
-    if found.ok or not headless:
+    if not headless or not (found.failed or found.skipped):
         return replace(decision, hooks=found)
     return replace(
         decision, action=Action.HOOKS_FAILED, reason=found.reason(), stop=(), identity=None, asks_as=None, hooks=found
@@ -1175,7 +1176,8 @@ def tick_lines(
     if decision.loaded is not None:
         lines += [f"  {line}" for line in decision.loaded.lines()]
     if decision.hooks is not None and not decision.hooks.ok and decision.action is not Action.HOOKS_FAILED:
-        lines.append(f"  hooks self-test failed, the session starts anyway: {decision.hooks.line()}")
+        verb = "couldn't run" if decision.hooks.unread else "failed"
+        lines.append(f"  hooks self-test {verb}, the session starts anyway: {decision.hooks.line()}")
     verb = "would prune" if dry_run else "pruned"
     lines += [f"  {verb} {j.path} ({j.worktree.branch})" for j in pruned]
     lines += [f"  {f.line()}" for f in decision.work]

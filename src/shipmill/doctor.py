@@ -294,7 +294,8 @@ def direction_check(root: Path) -> Check:
 def hooks_checks(policy: Policy, git: Git, test: HookTester | None) -> list[Check]:
     """S-026-15: the delivery hooks' block, for a repo with [agents]: one line per rule the hook
     holds, on or off and why; the self-test against the install a session would load, a FAIL
-    naming the fix when it fails (a WARN when nothing here runs a session); and a WARN when
+    naming the fix when it fails (a WARN when nothing here runs a session, or when the test
+    couldn't read what a session loads); and a WARN when
     origin/HEAD is unset, as a hook can't tell the default branch then"""
     agents = policy.agents
     if agents is None:
@@ -311,7 +312,7 @@ def hooks_checks(policy: Policy, git: Git, test: HookTester | None) -> list[Chec
     ]
     if test is not None:
         found = test()
-        status = "PASS" if found.ok else ("WARN" if found.skipped else "FAIL")
+        status = "PASS" if found.ok else ("FAIL" if found.failed else "WARN")
         checks.append(Check(status, "hooks", found.line()))
     if not git.ok("symbolic-ref", "-q", "refs/remotes/origin/HEAD"):
         detail = "origin/HEAD is unset, so a hook can't tell the default branch: git remote set-head origin --auto"

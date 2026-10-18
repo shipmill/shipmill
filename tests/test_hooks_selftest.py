@@ -19,7 +19,7 @@ from shipmill.doctor import Check, doctor
 from shipmill.errors import ReleaseError
 from shipmill.gate import Action, Decision, Waiting, gate, tick_lines, tick_record
 from shipmill.gitrepo import Git
-from shipmill.hooks import REFUSED, HookRun, HookTest, Which, run_hook, self_test
+from shipmill.hooks import NO_CLAUDE, REFUSED, HookRun, HookTest, Which, run_hook, self_test
 from shipmill.plugin import CACHE, Listed, Scope, listed_installs
 from shipmill.version import Version
 from shipmill.worktrees import Judged
@@ -55,10 +55,13 @@ class Host:
     version: str = "0.52.0"
     installed: bool = True
     calls: list[list[str]] = field(default_factory=list)
+    unreadable: bool = False  # the listing fails
 
     def __call__(self, cmd: list[str], cwd: Path) -> str:
         self.calls.append(cmd)
         if cmd[:3] == ["claude", "plugin", "list"]:
+            if self.unreadable:
+                raise ReleaseError("claude plugin list --json exited 1")
             if not self.installed:
                 return "[]"
             entry: dict[str, str] = {"id": "shipmill@shipmill", "scope": "user", "version": self.version}
@@ -214,6 +217,57 @@ def test_s026_15_no_claude_on_path_warns(agents_repo: Repo, tmp_path: Path) -> N
     assert last.status == "WARN"
 
 
+def warned(root: Path, found: HookTest) -> str:
+    """doctor's status for the self-test's line"""
+    (last,) = [c for c in hooks_block(doctor(root, hooks=lambda: found)) if c.detail == found.line()]
+    return last.status
+
+
+def test_s026_15_an_unreadable_listing_warns_and_is_no_failure(agents_repo: Repo, tmp_path: Path) -> None:
+    """Outside S-026-15's failures: what the test can't read is a WARN, as D-35 starts on a failed read"""
+    found = run_test(agents_repo.root, Host(None, unreadable=True), tmp_path / "home")
+    assert found.unread and not found.failed and not found.ok
+    assert found.problem is not None and found.problem.startswith("can't read the shipmill@shipmill install")
+    assert warned(agents_repo.root, found) == "WARN"
+
+
+def test_s026_15_no_sh_on_path_warns(agents_repo: Repo, tmp_path: Path) -> None:
+    files = install_copy(tmp_path / "install")
+    found = run_test(agents_repo.root, Host(files), tmp_path / "home", missing=("sh",))
+    assert found.unread and not found.failed
+    assert warned(agents_repo.root, found) == "WARN"
+
+
+def test_s026_15_a_checkout_git_cant_read_warns(agents_repo: Repo, tmp_path: Path) -> None:
+    def no_git(cmd: list[str], cwd: Path) -> str:
+        raise ReleaseError("git rev-parse exited 128")
+
+    found = self_test(agents_repo.root, no_git, run_hook, which(), tmp_path / "home", os.environ)
+    assert found.unread and not found.failed
+    assert found.problem is not None and found.problem.startswith("can't tell the project a session in")
+
+
+def test_s026_15_a_settings_file_not_json_warns_after_the_hook_refuses(agents_repo: Repo, tmp_path: Path) -> None:
+    """A settings file that can't be read still runs the hook: a refusing hook WARNs, and a
+    later file setting disableAllHooks, or a hook that allows, still FAILs"""
+    files = install_copy(tmp_path / "install")
+    home = tmp_path / "home"
+    broken = agents_repo.root / ".claude" / "settings.json"
+    broken.parent.mkdir()
+    broken.write_text("{not json", encoding="utf-8")
+    found = run_test(agents_repo.root, Host(files), home)
+    assert found.unread and not found.failed, found.line()
+    assert found.problem is not None and found.problem.startswith(f"{broken} is not JSON")
+    assert warned(agents_repo.root, found) == "WARN"
+    user = home / ".claude" / "settings.json"
+    user.parent.mkdir(parents=True)
+    user.write_text(json.dumps({"disableAllHooks": True}), encoding="utf-8")
+    assert run_test(agents_repo.root, Host(files), home).failed
+    user.unlink()
+    allows = install_copy(tmp_path / "allows", stub_hooks("cat >/dev/null; exit 0"))
+    assert run_test(agents_repo.root, Host(allows), home).failed
+
+
 def test_s026_15_doctor_prints_the_block_and_warns_without_claude(
     agents_repo: Repo, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -221,7 +275,7 @@ def test_s026_15_doctor_prints_the_block_and_warns_without_claude(
     main(["--repo", str(agents_repo.root), "doctor"], environ={"PATH": ""})
     out = capsys.readouterr().out
     assert "PASS hooks: rebase-merge on: always" in out
-    assert "WARN hooks: claude isn't on PATH: nothing here starts a session to test" in out
+    assert "WARN hooks: claude isn't on PATH, so no session can start here and its hooks can't be tested" in out
 
 
 def test_s026_15_origin_head_unset_warns(agents_repo: Repo) -> None:
@@ -306,7 +360,13 @@ def test_s026_16_a_headless_gate_whose_self_test_fails_starts_no_session(checkou
     assert lines[0] == f"HOOKS_FAILED: {decision.reason}"
     record = tick_record(decision, launched, waiting, pruned, dry_run=False)
     assert record["action"] == "HOOKS_FAILED" and record["launched"] is None and record["stopped"] == []
-    assert record["hooks"] == {"ok": False, "problem": BROKEN.problem, "fix": BROKEN.fix, "skipped": False}
+    assert record["hooks"] == {
+        "ok": False,
+        "problem": BROKEN.problem,
+        "fix": BROKEN.fix,
+        "skipped": False,
+        "unread": False,
+    }
 
 
 def test_s026_16_a_headless_dry_run_reports_the_failure_too(checkout: Git) -> None:
@@ -321,6 +381,27 @@ def test_s026_16_an_interactive_gate_reports_the_failure_and_starts_the_session(
     assert (decision.action, launched, tests.runs) == (Action.LAUNCH, "s1", 1)
     lines = tick_lines(decision, launched, waiting, pruned, dry_run=False)
     assert f"  hooks self-test failed, the session starts anyway: {BROKEN.problem}: {BROKEN.fix}" in lines
+
+
+def test_s026_16_a_headless_gate_whose_test_couldnt_read_starts_the_session(checkout: Git) -> None:
+    """Only S-026-15's failures pause: an unread test is reported, and the session starts (D-35)"""
+    claude = FakeClaude()
+    unread = HookTest("can't read the shipmill@shipmill install a session loads: boom", "fix the read", unread=True)
+    decision, launched, waiting, pruned = tick(checkout, Mode.HEADLESS, FakeSelfTest(unread), claude)
+    assert (decision.action, len(claude.started)) == (Action.LAUNCH, 1) and launched is not None
+    lines = tick_lines(decision, launched, waiting, pruned, dry_run=False)
+    assert f"  hooks self-test couldn't run, the session starts anyway: {unread.line()}" in lines
+
+
+def test_s026_16_a_headless_gate_without_claude_says_so(checkout: Git) -> None:
+    claude = FakeClaude()
+    decision, launched, _, _ = tick(checkout, Mode.HEADLESS, FakeSelfTest(NO_CLAUDE), claude)
+    assert (decision.action, launched, claude.started) == (Action.HOOKS_FAILED, None, [])
+    assert decision.reason == (
+        "claude isn't on PATH, so no session can start here and its hooks can't be tested:"
+        " no session starts until the self-test passes: put claude on the PATH the gate runs with,"
+        " then run shipmill doctor"
+    )
 
 
 def test_s026_16_a_passing_self_test_launches_and_says_nothing(checkout: Git) -> None:

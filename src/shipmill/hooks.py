@@ -10,6 +10,10 @@ it fails, each with its fix, when a Claude Code settings file sets disableAllHoo
 isn't on PATH, when no install applies to the checkout, or when the install has no
 hooks/hooks.json (one older than spec 026). Any other exit, including the 1 of a hook that
 can't start its script (D-40), fails with the hook's stderr.
+
+Only those are failures (S-026-15). What stops the test from reading what a session would load
+(the plugin listing, git, sh, a settings file that isn't a JSON object) is a warning: the
+verdict is unread, doctor WARNs, and the gate starts the session, as D-35 does on a failed read.
 """
 
 import json
@@ -56,16 +60,23 @@ def run_hook(argv: list[str], stdin: str, cwd: Path, env: Mapping[str, str], tim
 @dataclass(frozen=True, slots=True)
 class HookTest:
     """The self-test's verdict: what failed and its fix, or for a pass what refused; skipped
-    is set when nothing here runs a session to test (no claude on PATH)"""
+    is set when nothing here runs a session to test (no claude on PATH), and unread when the
+    test couldn't read what a session would load (a warning, never a pause)"""
 
     problem: str | None
     fix: str | None
     detail: str = ""
     skipped: bool = False
+    unread: bool = False
 
     @property
     def ok(self) -> bool:
         return self.problem is None and not self.skipped
+
+    @property
+    def failed(self) -> bool:
+        """One of S-026-15's failures, which pause a headless gate; a skip or an unread test isn't"""
+        return self.problem is not None and not self.skipped and not self.unread
 
     def line(self) -> str:
         """doctor's line: the pass, the skip, or the problem and its fix"""
@@ -75,36 +86,58 @@ class HookTest:
 
     def reason(self) -> str:
         """A HOOKS_FAILED tick's reason: the problem, then the fix after "passes: " """
-        return (
-            f"a session here would run without the delivery hooks: {self.problem}:"
-            f" no session starts until the self-test passes: {self.fix}"
-        )
+        lead = "" if self.skipped else "a session here would run without the delivery hooks: "
+        return f"{lead}{self.problem}: no session starts until the self-test passes: {self.fix}"
 
     def record(self) -> dict[str, object]:
-        return {"ok": self.ok, "problem": self.problem, "fix": self.fix, "skipped": self.skipped}
+        return {
+            "ok": self.ok,
+            "problem": self.problem,
+            "fix": self.fix,
+            "skipped": self.skipped,
+            "unread": self.unread,
+        }
+
+
+NO_CLAUDE = HookTest(
+    "claude isn't on PATH, so no session can start here and its hooks can't be tested",
+    "put claude on the PATH the gate runs with, then run shipmill doctor",
+    skipped=True,
+)
 
 
 def failed(problem: str, fix: str) -> HookTest:
     return HookTest(problem, fix)
 
 
-def disabling(paths: list[Path]) -> HookTest | None:
-    """A failure naming the first settings file that sets disableAllHooks; one that isn't a
-    JSON object fails too, since nothing tells what Claude Code reads from it"""
+def unread(problem: str, fix: str) -> HookTest:
+    return HookTest(problem, fix, unread=True)
+
+
+def disabling(paths: list[Path]) -> tuple[HookTest | None, HookTest | None]:
+    """A failure naming the first settings file that sets disableAllHooks, and a warning naming
+    the first one that isn't a JSON object, since whether it sets it can't be read"""
+    unreadable = None
     for path in paths:
         if not path.is_file():
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            return failed(f"{path} is not JSON ({exc})", "fix it, so whether it sets disableAllHooks can be read")
+            data = f"not JSON ({exc})"
         if not isinstance(data, dict):
-            return failed(f"{path} is not a JSON object", "fix it, so whether it sets disableAllHooks can be read")
+            shown = data if isinstance(data, str) else "not a JSON object"
+            if unreadable is None:
+                unreadable = unread(
+                    f"{path} is {shown}, so whether it sets disableAllHooks can't be read",
+                    "fix it, then run shipmill doctor",
+                )
+            continue
         if data.get("disableAllHooks") is True:
             return failed(
                 f"{path} sets disableAllHooks, so a session runs no hook", f"remove disableAllHooks from {path}"
-            )
-    return None
+            ), unreadable
+    return None, unreadable
 
 
 def settings_files(checkout: Path, project: Path, home: Path) -> list[Path]:
@@ -158,13 +191,13 @@ def self_test(
     """Run the self-test for a session in checkout. run reads git and `claude plugin list
     --json`; hook runs the hook command; which looks programs up on the session's PATH"""
     if which("claude") is None:
-        return HookTest("claude isn't on PATH", "nothing here starts a session to test", skipped=True)
+        return NO_CLAUDE
     try:
         common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], checkout)
     except ReleaseError as exc:
-        return failed(f"can't tell the project a session in {checkout} loads: {exc}", "run it in a git checkout")
+        return unread(f"can't tell the project a session in {checkout} loads: {exc}", "run it in a git checkout")
     project = session_project(checkout, common)
-    disabled = disabling(settings_files(checkout, project, home))
+    disabled, unreadable = disabling(settings_files(checkout, project, home))
     if disabled is not None:
         return disabled
     if which("uv") is None:
@@ -174,12 +207,12 @@ def self_test(
         )
     shell = which("sh")
     if shell is None:
-        return failed("sh isn't on PATH, and Claude Code runs a hook through it", "put a POSIX sh on PATH")
+        return unread("sh isn't on PATH, and Claude Code runs a hook through it", "put a POSIX sh on PATH")
     try:
         installs = listed_installs(run(["claude", "plugin", "list", "--json"], checkout))
         install = effective(installs, project)
     except ReleaseError as exc:
-        return failed(f"can't read the {PLUGIN} install a session loads: {exc}", "fix the read, then run doctor again")
+        return unread(f"can't read the {PLUGIN} install a session loads: {exc}", "fix the read, then run doctor again")
     if install is None:
         return failed(
             f"no {PLUGIN} install applies to {project}, so a session loads no hooks",
@@ -200,6 +233,8 @@ def self_test(
     )
     said = done.stderr.strip().splitlines()
     if done.code == 2 and said and said[0].startswith(REFUSAL):
+        if unreadable is not None:
+            return unreadable
         return HookTest(None, None, f"self-test: {named} refused `{REFUSED}` (exit 2)")
     shown = "; ".join(said)[:300] or "no stderr"
     exited = "didn't finish" if done.code is None else f"exited {done.code}"
