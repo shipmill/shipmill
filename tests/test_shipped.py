@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -103,3 +104,92 @@ def test_without_post_nothing_is_written(sp: ModuleType) -> None:
     gh = FakeGh()
     sp.tell("me/demo", {5: {"abc1234"}}, "v1.2.0", "", None, gh)
     assert [c[:3] for c in gh.calls] == [["gh", "issue", "view"]]
+
+
+def pr(
+    body: str, title: str = "a change", links: tuple[tuple[int, str], ...] = (), merged: bool = True
+) -> dict[str, Any]:
+    nodes = [{"number": n, "repository": {"nameWithOwner": r}} for n, r in links]
+    return {
+        "number": 9,
+        "title": title,
+        "body": body,
+        "mergedAt": "2026-10-01T00:00:00Z" if merged else None,
+        "closingIssuesReferences": {"nodes": nodes},
+    }
+
+
+def test_368_a_closing_keyword_quoted_mid_line_or_in_backticks_names_nothing(sp: ModuleType) -> None:
+    body = "\n".join(
+        [
+            'It quotes the bug ("... Closes #424.") mid-line, and `Fixes #425` too',
+            "`Closes #426` in backticks at the start of a line",
+            "> Closes #427, a quote",
+            "```",
+            "Fixes #428",
+            "```",
+            "Fixes #5",
+            "- Closes #6",
+            "resolves: #7",
+        ]
+    )
+    found = sp.pr_closes("me/demo", pr(body, "Fix the thing (fixes #11, not `fixes #12`)"))
+    assert found == {5, 6, 7, 11}
+
+
+def test_368_github_s_closing_links_count_only_in_the_repo(sp: ModuleType) -> None:
+    links = ((13, "me/demo"), (14, "Me/Demo"), (15, "other/repo"))
+    assert sp.pr_closes("me/demo", pr("no keyword here", links=links)) == {13, 14}
+
+
+def test_368_collect_reads_commit_trailers_and_merged_prs_once(sp: ModuleType) -> None:
+    calls: list[list[str]] = []
+    prs = [pr('quotes ("Closes #424.")\nFixes #5'), {**pr("Fixes #8", merged=False), "number": 10}]
+
+    def gh(cmd: list[str]) -> str:
+        calls.append(cmd)
+        commit = {"associatedPullRequests": {"nodes": prs}}
+        return json.dumps({"data": {"repository": {"object": commit}}})
+
+    pairs = [("a" * 40, "a change\n\nFixes #3\nsee Fixes #4 mid-line"), ("b" * 40, "a second")]
+    assert sp.collect("me/demo", pairs, gh) == {3: {"aaaaaaa"}, 5: {"PR #9"}}
+    assert [c[:3] for c in calls] == [["gh", "api", "graphql"]] * 2
+    assert f"oid={'b' * 40}" in calls[1]
+
+
+def test_368_an_unresolvable_number_is_skipped_and_the_rest_still_told(
+    sp: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[list[str]] = []
+
+    def gh(cmd: list[str]) -> str:
+        calls.append(cmd)
+        if cmd[:4] == ["gh", "issue", "view", "424"]:
+            raise sp.NotFound(424)
+        return CLOSED if cmd[:3] == ["gh", "issue", "view"] else ""
+
+    write = ["gh"]
+    sp.tell("me/demo", {424: {"PR #365"}, 500: {"abc1234"}}, "v1.2.0", "", write, gh)
+    out = capsys.readouterr()
+    assert "#424" in out.err and "skipped" in out.err
+    assert "POSTED" in out.out
+    assert calls[-1] == ["gh", "issue", "comment", "500", "-R", "me/demo", "--body", "Released in v1.2.0."]
+
+
+NOT_FOUND_ERR = "GraphQL: Could not resolve to an issue or pull request with the number of 424. (repository.issue)"
+
+
+@pytest.mark.parametrize(
+    ("cmd", "stderr", "expected"),
+    [
+        (["gh", "issue", "view", "424", "-R", "me/demo"], NOT_FOUND_ERR, True),
+        (["gh", "issue", "view", "42", "-R", "me/demo"], NOT_FOUND_ERR, False),  # another number's answer
+        (["gh", "issue", "view", "424", "-R", "me/demo"], "HTTP 401: Bad credentials", False),
+        (["gh", "issue", "view", "424", "-R", "me/demo"], "error connecting to api.github.com", False),
+        (["gh", "issue", "comment", "424", "-R", "me/demo"], NOT_FOUND_ERR, False),  # a write never skips
+    ],
+)
+def test_368_only_gh_s_not_found_for_that_issue_view_is_a_skip(
+    sp: ModuleType, cmd: list[str], stderr: str, expected: bool
+) -> None:
+    assert sp.missing(cmd, stderr) is expected

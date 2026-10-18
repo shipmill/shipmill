@@ -859,8 +859,9 @@ def fetch_tag_runs(repo: str, tag: str) -> list[Run]:
     return sorted(found, key=lambda r: r.created, reverse=True)
 
 
-def unannounced(repo: str, repo_dir: Path, prev: str, tag: str) -> list[str]:
-    out = run([sys.executable, str(SHIPPED), repo, prev, tag, "--repo-dir", str(repo_dir)])
+def unannounced(repo: str, repo_dir: Path, prev: str, tag: str, env: dict[str, str] | None = None) -> list[str]:
+    """The issues shipped.py would tell in plan mode; ``env`` is the environment it runs in"""
+    out = run([sys.executable, str(SHIPPED), repo, prev, tag, "--repo-dir", str(repo_dir)], env=env)
     return [line.split()[0] for line in out.splitlines() if "WOULD POST" in line]
 
 
