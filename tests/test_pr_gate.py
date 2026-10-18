@@ -175,6 +175,12 @@ def test_s024_7_an_agents_pr_with_a_valid_plan_is_ready(tmp_path: Path, directed
     assert proc.stdout.startswith("#7 READY state=OPEN")
 
 
+def test_s024_7_a_fix_serving_the_quality_bar_is_ready(tmp_path: Path, directed: Path) -> None:
+    """github-issue-resolve's template writes `- Serves: quality bar` for a fix, without backticks"""
+    proc = run_gate(tmp_path, directed, {7: pr(body=PLAN.replace("G-3", "quality bar"))}, "--bot-login", BOT)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def test_s024_7_an_agents_pr_without_a_plan_is_refused(tmp_path: Path, directed: Path) -> None:
     proc = run_gate(tmp_path, directed, {7: pr(body="Fixes #7\n\nPlan: tests first\n")}, "--bot-login", BOT)
     assert proc.returncode == gate.REFUSED == 6
