@@ -1,6 +1,6 @@
 # S-026: Hooks that enforce the delivery rules
 
-status: draft
+status: approved
 serves: G-2
 
 ## Problem
@@ -26,7 +26,8 @@ or a `REVIEW.md`, a hook runs `shipmill product check` and `shipmill review chec
 broken line shows with its number before the commit, not in CI.
 
 The skills keep their text. A hook is a second line under it, for the mistakes whose cost
-is a write nobody can take back.
+is a write nobody can take back. The maintainer settled the choices below in chat when
+approving this spec, recorded as D-36.
 
 ## Behaviour
 
@@ -103,7 +104,7 @@ hostile text.
 
 | Rule | Refuses | Switch |
 |---|---|---|
-| `app-writes` | A `gh` write (table below) when `[agents] app_id` is set, unless the program is `shipmill gh` (directly or through `uvx --from ... shipmill gh`). An inline `GH_TOKEN=...` doesn't make it allowed | Always on where `app_id` is set |
+| `app-writes` | A `gh` write (table below) when `[agents] app_id` is set, unless the program is `shipmill gh` (directly or through `uvx --from ... shipmill gh`). An inline `GH_TOKEN=$T gh` is refused too: an empty `$T` falls back to the maintainer's login, while `shipmill gh` exits 2; `shipmill gh` is the way to write (D-36) | Always on where `app_id` is set |
 | `default-branch-push` | A `git push` whose destination is the default branch: a refspec naming it (`main`, `HEAD:main`, `+main`, `refs/heads/main`, `:main`), or no refspec while the current branch's push target is it | `[hooks] default_branch = false` |
 | `rebase-merge` | `gh pr merge` with `--rebase` or `-r`; a `gh api` call with `merge_method=rebase` | Always on |
 | `force-push` | A `git push` with `--force`, `-f`, a `+` refspec, `--force-with-lease` with no value, or `--force-with-lease=<ref>` with no `:<sha>`. `--force-with-lease=<ref>:<sha>` is allowed, as landing.md and watch's WORK_BRANCH_STALE use it | Always on |
@@ -162,6 +163,8 @@ private = ["owner/**"]     # globs, relative to the repo root, whose files never
 
 `app-writes`, `rebase-merge`, and `force-push` have no switch: they hold settled rules
 (D-14, D-33, and landing's lease), and a repo that needs otherwise changes the rule first.
+`default-branch-push` is the one rule a repo may switch off, and `private-paths` stays
+narrow (copies out of the repo only; see Out of scope), both as D-36 settles.
 The hook script parses `[agents] app_id` and `[hooks]` itself with `tomllib`, since the
 plugin can't import the installed `shipmill`. When the config doesn't parse or a key is
 malformed, a guarded command (a `gh` write, a `git push`, `gh pr merge`, a copy) is
@@ -190,7 +193,8 @@ private`, and reads the doctor block before it reports the agent side connected.
 A headless gate (`src/shipmill/gate.py`) runs the same self-test before it starts a
 session, at most once per tick, and when it fails starts no session and reports the
 failure on the tick, as D-35 does for stale skills: an unattended session is where an
-advice miss goes unseen. An interactive gate reports it and still starts.
+advice miss goes unseen, and the maintainer chose a paused gate over report-only (D-36).
+An interactive gate reports it and still starts.
 
 ### One rule list with the headless allowlist: no
 
@@ -267,6 +271,7 @@ that exists.
 - D-33: no rebase merge, which `rebase-merge` enforces
 - D-34: a repo with `[agents]` keeps a direction and an optional rubric, which the PostToolUse hook checks
 - D-35: the gate starts no session when a session would load stale skills, the model for the self-test pause
+- D-36: delivery rules that guard irreversible writes are enforced by plugin hooks in repos with `[agents]`; it settles the inline `GH_TOKEN=$T gh` refusal, the switches, and the headless pause
 
 ## Issues
 

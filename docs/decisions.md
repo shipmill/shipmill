@@ -293,3 +293,11 @@ entry that supersedes it, never by editing an old one.
 - Applies to: src/shipmill/gate.py, src/shipmill/plugin.py, src/shipmill/agents.py, src/shipmill/doctor.py, skills/github-ship-watch/scripts/watch_state.py, skills/shipmill-setup/scripts/setup_state.py, [agents] plugin_update, shipmill status
 - Enforced by: the gate and plugin tests (with the implementing PR)
 - Supersedes: D-23
+
+## D-36: Delivery rules that guard irreversible writes are enforced by plugin hooks in repos with [agents]
+
+- Decided: 2026-10-18, in shipmill/shipmill#433
+- Rule: In a repo whose .github/shipmill.toml has an [agents] section, the shipmill plugin's PreToolUse hook refuses, with exit 2 and the command to run instead: a gh write while [agents] app_id is set unless it runs as shipmill gh (an inline GH_TOKEN=$T gh is refused too, since an empty $T falls back to the maintainer's login; shipmill gh is the way to write), a push to the default branch unless [hooks] default_branch = false, a rebase merge, a force push without --force-with-lease=<ref>:<sha>, and a cp, mv, or rsync of a [hooks] private path out of the repo; the app-writes, rebase-merge, and force-push rules have no switch, and no session can turn a rule off for itself. A headless gate whose hook self-test fails starts no session (spec 026)
+- Why: Skills are advice an agent can miss, and these mistakes are writes nobody can take back: a write attributed to the maintainer, an unreviewed change on main, a rewritten history, a private file in a public repo. A hook refuses them before they happen; the maintainer chose refusal over report-only, and a paused headless gate over unattended sessions without the hooks, as D-35 chose for stale skills
+- Applies to: hooks/hooks.json, hooks/delivery.py, src/shipmill/policy.py, src/shipmill/doctor.py, src/shipmill/gate.py, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md, skills/shipmill-setup/SKILL.md, [hooks], [agents] app_id, shipmill gh
+- Enforced by: tests/test_delivery_hooks.py and the doctor and gate tests (with the implementing PR)
