@@ -109,6 +109,7 @@ ISSUE_LINES = (
             "HANDOFF_DUE",
             "VERIFY_DUE",
             "NO_ASSIGNEE",
+            "OFF_MILESTONE",  # spec 022: a build issue outside its feature's milestone
         ),
     ),
     ("to build", ("NEEDS_PR", "UNBLOCKED")),
