@@ -1,0 +1,9 @@
+# The shared no-miss grader (spec 025): every case carries it, copied as is into the
+# `graders:` list of its case.yaml. evals/bin/gh logs a read it has no recording for as a
+# "miss" line in .eval/gh.jsonl, so a fixture that drifts from what the skills read fails
+# the run and names the call, instead of passing on an answer the session never got.
+- type: regex
+  name: no-miss
+  target: {source: file, path: .eval/gh.jsonl}
+  pattern: '"kind": "miss"'
+  match: not_contains
