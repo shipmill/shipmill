@@ -317,3 +317,11 @@ entry that supersedes it, never by editing an old one.
 - Why: A plan is how the maintainer chooses the work that completes a goal, and the milestone is what makes a lane wait until that goal is built (spec 022); asking the maintainer to create it by hand before every accept adds a step that carries no decision the accept didn't already make
 - Applies to: skills/product-intake/SKILL.md, skills/product-intake/references/plan.md, skills/product-intake/scripts/intake_state.py, milestones
 - Enforced by: review, until spec 028 is built
+
+## D-39: Stable releases every green batch; a breaking change waits for the maintainer; a soak only when something is observed
+
+- Decided: 2026-10-18, in shipmill/shipmill#451
+- Rule: A stable lane releases every batch of merges whose CI passed on the release commit, with no time soak: min_soak_days is deprecated for one minor release and then refused (spec 029); a stable candidate whose pending entries bump the major part (before 1.0 too) is never released by a trigger, only proposed, and releases when a person starts the stable lane by hand; a pre-release lane is kept where people try a change first, and a soak is added only when something is observed during it, such as an environment's health over bake_minutes
+- Why: A time soak with nobody running the rc and no telemetry read (treaty, cloudfall: promote_from = 'rc', min_soak_days = 3) caught no defect and only added lead time; proof belongs before the merge (CI, agent review, evals, hooks, protected areas) and recovery after it (fix-forward, yank, rollback). A breaking change is the one release a person must choose, so it waits for a hand start an App can't make. A signal-based soak was considered and rejected; consumer cooldown is the consumer's tool; a milestone is a scope decision and stays
+- Applies to: src/shipmill/planner.py, src/shipmill/policy.py, src/shipmill/init.py, src/shipmill/upgrades.py, src/shipmill/propose.py, src/shipmill/doctor.py, docs/release-lanes.md, docs/product.md, skills/shipmill-setup/SKILL.md, stable lane, min_soak_days, promote_from, release lanes
+- Enforced by: review, until spec 029 is built
