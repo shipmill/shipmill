@@ -719,6 +719,189 @@ def test_s026_10_edit_starts_no_subprocess(delivery: ModuleType, box: Sandbox, n
     allowed(hook(data, "post"))
 
 
+def test_s026_10_edit_of_a_checked_path_outside_agents_starts_no_subprocess(delivery: ModuleType, box: Sandbox) -> None:
+    for root in (box.release, box.bare):
+        data = edit("post-product-check.json", root, "docs/product.md")
+        assert in_process(delivery, data, "post")[0] == 0
+        assert in_process(delivery, data, "post")[1].runs == 0
+
+
+# --- S-026-13: the checks after an edit ------------------------------------------------------
+
+STUB = """#!{python}
+import json, os, sys
+with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+sys.stdout.write(os.environ.get("STUB_OUT", ""))
+sys.stderr.write(os.environ.get("STUB_ERR", ""))
+sys.exit(int(os.environ["STUB_EXIT"]))
+"""
+
+
+def edit(name: str, root: Path, rel: str) -> dict[str, Any]:
+    """A PostToolUse fixture's input for an edit of rel in root"""
+    data = fixture(name, root)
+    data["tool_input"]["file_path"] = str(root / rel)
+    return data
+
+
+@dataclass(frozen=True)
+class Stub:
+    """A shipmill first on PATH that records its arguments and exits as the test sets"""
+
+    bin: Path
+    log: Path
+
+    def run(
+        self, data: dict[str, Any], code: int = 0, out: str = "", err: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        env = {"PATH": str(self.bin), "STUB_LOG": str(self.log), "STUB_EXIT": str(code)}
+        env |= {"STUB_OUT": out, "STUB_ERR": err}
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "post"],
+            input=json.dumps(data),
+            cwd=data["cwd"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def calls(self) -> list[list[str]]:
+        if not self.log.exists():
+            return []
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+
+def stub_on_path(tmp_path: Path, program: str) -> Stub:
+    """A PATH holding only program, a stub"""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / program
+    script.write_text(STUB.format(python=sys.executable), encoding="utf-8")
+    script.chmod(0o755)
+    return Stub(bin_dir, tmp_path / "calls.jsonl")
+
+
+@pytest.fixture
+def stub(tmp_path: Path) -> Stub:
+    return stub_on_path(tmp_path, "shipmill")
+
+
+EDIT_FIXTURES = ["post-edit.json", "post-write.json", "post-multiedit.json"]
+CHECKED = [
+    ("docs/product.md", "product"),
+    ("docs/product/goals.md", "product"),
+    ("docs/product/areas/release.md", "product"),
+    ("REVIEW.md", "review"),
+    ("src/shipmill/REVIEW.md", "review"),
+]
+
+
+@pytest.mark.parametrize("name", EDIT_FIXTURES)
+@pytest.mark.parametrize(("rel", "check"), CHECKED)
+def test_s026_13_edit_runs_its_check_and_a_pass_is_silent(
+    box: Sandbox, stub: Stub, name: str, rel: str, check: str
+) -> None:
+    allowed(stub.run(edit(name, box.agents, rel), 0, out="ok\n"))
+    assert stub.calls() == [[check, "check", "--repo", str(box.agents)]]
+
+
+@pytest.mark.parametrize(("rel", "check"), CHECKED)
+def test_s026_13_a_failed_check_exits_2_with_its_output(box: Sandbox, stub: Stub, rel: str, check: str) -> None:
+    report = f"{rel}:5: a line the {check} check refuses\n"
+    result = stub.run(edit("post-edit.json", box.agents, rel), 1, out=report, err="1 problem\n")
+    assert (result.returncode, result.stdout, result.stderr) == (2, "", f"{report}1 problem\n")
+
+
+@pytest.mark.parametrize(("rel", "check"), CHECKED)
+def test_s026_13_a_check_exiting_2_exits_1(box: Sandbox, stub: Stub, rel: str, check: str) -> None:
+    result = stub.run(edit("post-write.json", box.agents, rel), 2, err="error: bad input")
+    assert result.returncode == 1
+    assert result.stderr.startswith("error: bad input\n")
+    assert f"{check} check --repo {box.agents}" in result.stderr and "exited 2" in result.stderr
+
+
+def test_s026_13_a_check_that_cant_start_exits_1(box: Sandbox, tmp_path: Path) -> None:
+    """Neither shipmill nor uvx on PATH: a visible error, not a crash"""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    result = Stub(empty, tmp_path / "calls.jsonl").run(edit("post-product-check.json", box.agents, "docs/product.md"))
+    assert result.returncode == 1
+    lines = result.stderr.splitlines()
+    assert len(lines) == 1 and lines[0].startswith("shipmill hook: uvx --from ") and "didn't start" in lines[0]
+
+
+def test_s026_13_without_shipmill_on_path_it_runs_through_uvx(box: Sandbox, tmp_path: Path) -> None:
+    uvx = stub_on_path(tmp_path, "uvx")
+    result = uvx.run(edit("post-review-check.json", box.agents, "REVIEW.md"), 1, out="REVIEW.md:3: no rule\n")
+    assert (result.returncode, result.stderr) == (2, "REVIEW.md:3: no rule\n")
+    assert uvx.calls() == [[*SHIPMILL[1:], "review", "check", "--repo", str(box.agents)]]
+
+
+@pytest.mark.parametrize("program", ["uvx", "shipmill"])
+def test_s026_13_exit_1_with_no_report_is_a_check_that_didnt_run(box: Sandbox, tmp_path: Path, program: str) -> None:
+    """uvx exits 1 when it can't fetch shipmill (offline), and a traceback exits 1; the checks
+    print a line per problem to stdout, so exit 1 with no stdout is an error, not a finding"""
+    failing = stub_on_path(tmp_path, program)
+    err = "error: Failed to resolve `--with` requirement\n"
+    result = failing.run(edit("post-review-check.json", box.agents, "REVIEW.md"), 1, err=err)
+    assert result.returncode == 1
+    assert result.stderr.startswith(err) and "exited 1" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "src/app.py",
+        "docs/productivity.md",
+        "docs/product.md.bak",
+        "docs/specs/024-intent.md",
+        "REVIEW.md.orig",
+        "README.md",
+    ],
+)
+def test_s026_13_other_paths_run_no_check(box: Sandbox, stub: Stub, rel: str) -> None:
+    for name in EDIT_FIXTURES:
+        allowed(stub.run(edit(name, box.agents, rel), 1, out="must not run\n"))
+    assert stub.calls() == []
+
+
+def test_s026_13_no_check_outside_a_repo_with_agents(box: Sandbox, stub: Stub) -> None:
+    for root in (box.release, box.bare):
+        allowed(stub.run(edit("post-product-check.json", root, "docs/product.md"), 1, out="must not run\n"))
+        allowed(stub.run(edit("post-review-check.json", root, "REVIEW.md"), 1, out="must not run\n"))
+    outside = fixture("post-review-check.json", box.outside)
+    outside["tool_input"]["file_path"] = str(box.outside / "REVIEW.md")
+    allowed(stub.run(outside, 1, out="must not run\n"))
+    assert stub.calls() == []
+
+
+def test_s026_13_a_relative_file_path_is_read_against_the_cwd(box: Sandbox, stub: Stub) -> None:
+    data = fixture("post-product-check.json", box.agents / ".github")
+    data["tool_input"]["file_path"] = "../docs/product.md"
+    allowed(stub.run(data))
+    assert stub.calls() == [["product", "check", "--repo", str(box.agents)]]
+
+
+def test_s026_13_a_broken_config_exits_1_naming_it(tmp_path: Path, stub: Stub) -> None:
+    root = git_repo(tmp_path / "broken", "[agents\n")
+    result = stub.run(edit("post-product-check.json", root, "docs/product.md"))
+    assert result.returncode == 1 and "doesn't parse" in result.stderr
+    assert stub.calls() == []
+
+
+def test_s026_17_post_fixtures_hold_a_case_for_each_check(box: Sandbox, stub: Stub) -> None:
+    for name, check in (("post-product-check.json", "product"), ("post-review-check.json", "review")):
+        data = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+        assert data["hook_event_name"] == "PostToolUse" and data["tool_name"] in ("Edit", "Write", "MultiEdit")
+        assert "tool_response" in data
+        rel = Path(data["tool_input"]["file_path"]).relative_to(data["cwd"]).as_posix()
+        stub.log.unlink(missing_ok=True)
+        allowed(stub.run(edit(name, box.agents, rel)))
+        assert stub.calls() == [[check, "check", "--repo", str(box.agents)]]
+
+
 # --- S-026-11: the input ---------------------------------------------------------------------
 
 
