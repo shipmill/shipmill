@@ -672,6 +672,9 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
     elif last.startswith("PLUGIN_STALE"):  # D-35: no session starts until a person updates the plugin
         fix = last.partition("until it is updated: ")[2] or _log_fix(job, repo)
         found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", "paused: the plugin a session loads is stale", fix))
+    elif last.startswith("HOOKS_FAILED"):  # spec 026: no headless session starts until the hooks' self-test passes
+        fix = last.partition("until the self-test passes: ")[2] or _log_fix(job, repo)
+        found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", "paused: the hooks' self-test failed", fix))
     elif last.startswith("HELD"):  # the HOLD row brings the verdict, its own line, and the fix
         held = [item(repo, int(n), False) for n in re.findall(r"#(\d+)", last.partition(": no session")[0])]
         found.append(JobProblem(None, "", f"held by {', '.join(held) or last}", None))
