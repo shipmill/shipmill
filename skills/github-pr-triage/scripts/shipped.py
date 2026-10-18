@@ -101,8 +101,9 @@ def commits(repo_dir: str, prev: str, tag: str) -> list[tuple[str, str]]:
 def prs_for(repo: str, sha: str, gh: Callable[[list[str]], str] = run) -> list[dict[str, Any]]:
     """The PRs a commit belongs to, with GitHub's closing links"""
     owner, _, name = repo.partition("/")
-    cmd = ["gh", "api", "graphql", "-f", f"query={PULLS}", "-F", f"owner={owner}", "-F", f"name={name}"]
-    out = json.loads(gh([*cmd, "-F", f"oid={sha}"]))
+    # -f, not -F: -F would turn a numeric owner or name such as 2048 into a number GraphQL refuses
+    cmd = ["gh", "api", "graphql", "-f", f"query={PULLS}", "-f", f"owner={owner}", "-f", f"name={name}"]
+    out = json.loads(gh([*cmd, "-f", f"oid={sha}"]))
     commit = out["data"]["repository"]["object"]
     if commit is None:
         sys.stderr.write(f"error: {repo} has no commit {sha}\n")

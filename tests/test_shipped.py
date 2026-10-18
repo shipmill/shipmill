@@ -193,3 +193,16 @@ def test_368_only_gh_s_not_found_for_that_issue_view_is_a_skip(
     sp: ModuleType, cmd: list[str], stderr: str, expected: bool
 ) -> None:
     assert sp.missing(cmd, stderr) is expected
+
+
+def test_368_a_numeric_repo_name_reaches_graphql_as_a_string(sp: ModuleType) -> None:
+    # gh's -F turns "2048" into a number, and GraphQL refuses it for String!; -f keeps it a string
+    calls: list[list[str]] = []
+
+    def gh(cmd: list[str]) -> str:
+        calls.append(cmd)
+        return json.dumps({"data": {"repository": {"object": {"associatedPullRequests": {"nodes": []}}}}})
+
+    sp.prs_for("1984/2048", "1" * 40, gh)
+    flags = {calls[0][i + 1].partition("=")[0]: calls[0][i] for i, a in enumerate(calls[0]) if a in ("-f", "-F")}
+    assert flags == {"query": "-f", "owner": "-f", "name": "-f", "oid": "-f"}
