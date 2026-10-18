@@ -1,0 +1,7 @@
+{
+  "runs_planned": 1,
+  "budget_reached": false,
+  "cases": [
+    {"path": "github-issue-triage/steady", "runs": [{"graders": [{"name": "verdict", "passed": "yes"}]}]}
+  ]
+}

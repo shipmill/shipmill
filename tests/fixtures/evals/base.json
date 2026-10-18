@@ -1,0 +1,39 @@
+{
+  "model": "a recorded field the gate ignores",
+  "runs_planned": 12,
+  "budget_reached": false,
+  "cases": [
+    {
+      "path": "github-issue-triage/steady",
+      "runs": [
+        {"graders": [{"name": "verdict", "passed": true}, {"name": "note", "passed": false, "scored": false}]},
+        {"graders": [{"name": "verdict", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}]}
+      ]
+    },
+    {
+      "path": "github-issue-triage/breaks",
+      "runs": [
+        {"graders": [{"name": "verdict", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}]}
+      ]
+    },
+    {
+      "path": "github-pr-triage/heals",
+      "runs": [
+        {"graders": [{"name": "verdict", "passed": true}, {"name": "no-miss", "passed": false}]},
+        {"graders": [{"name": "verdict", "passed": false}, {"name": "no-miss", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}, {"name": "no-miss", "passed": true}]}
+      ]
+    },
+    {
+      "path": "github-pr-triage/dropped",
+      "runs": [
+        {"graders": [{"name": "verdict", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}]}
+      ]
+    }
+  ]
+}

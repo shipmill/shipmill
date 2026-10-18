@@ -1,0 +1,22 @@
+{
+  "runs_planned": 12,
+  "budget_reached": true,
+  "cases": [
+    {
+      "path": "github-issue-triage/steady",
+      "runs": [
+        {"graders": [{"name": "verdict", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}]}
+      ]
+    },
+    {
+      "path": "github-issue-triage/breaks",
+      "runs": [
+        {"graders": [{"name": "verdict", "passed": false}]},
+        {"graders": [{"name": "verdict", "passed": false}]}
+      ]
+    },
+    {"path": "github-pr-triage/heals", "runs": []}
+  ]
+}

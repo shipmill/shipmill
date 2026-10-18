@@ -1,0 +1,38 @@
+{
+  "runs_planned": 12,
+  "budget_reached": false,
+  "cases": [
+    {
+      "path": "github-issue-triage/steady",
+      "runs": [
+        {"graders": [{"name": "verdict", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}]}
+      ]
+    },
+    {
+      "path": "github-issue-triage/breaks",
+      "runs": [
+        {"graders": [{"name": "verdict", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": false}]},
+        {"graders": [{"name": "verdict", "passed": false}]}
+      ]
+    },
+    {
+      "path": "github-pr-triage/heals",
+      "runs": [
+        {"graders": [{"name": "verdict", "passed": true}, {"name": "no-miss", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}, {"name": "no-miss", "passed": true}]},
+        {"graders": [{"name": "verdict", "passed": true}, {"name": "no-miss", "passed": true}]}
+      ]
+    },
+    {
+      "path": "github-issue-resolve/added",
+      "runs": [
+        {"graders": [{"name": "plan", "passed": true}]},
+        {"graders": [{"name": "plan", "passed": false}]},
+        {"graders": [{"name": "plan", "passed": false}]}
+      ]
+    }
+  ]
+}
