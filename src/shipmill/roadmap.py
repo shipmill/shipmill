@@ -1,6 +1,7 @@
-"""The [roadmap] section of the config: the capacity the product-intake skill plans
-milestones within. Milestones are the roadmap; the skill proposes the next one from accepted
-opportunities, and its roadmap_state.py reads these keys with the same limits"""
+"""The [roadmap] section of the config, deprecated by D-32: shipmill no longer plans
+milestones, so nothing reads it. For one minor release the policy still accepts and validates
+it, and doctor warns that the work-in-progress limit is now [agents] wip; the next minor
+refuses it and this module goes"""
 
 from dataclasses import dataclass
 

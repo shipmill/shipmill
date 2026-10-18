@@ -75,14 +75,14 @@ When a stable tag named like an open milestone exists, the milestone is **overta
 `shipmill status` reports MILESTONE_OVERTAKEN with the milestone and the version the lane
 would cut next, and its fix renames the milestone to that version
 (`gh api -X PATCH repos/<owner>/<repo>/milestones/<n> -f title=<next>`). Under "watch",
-github-ship-watch renames it and says so on the milestone's roadmap issue, since the
+github-ship-watch renames it and says so on the tracking issue the user names, since the
 policy already decided the version; the goal and its issues stay as they were.
 
 ### Build issues join their feature's milestone
 
 The milestone has to hold a goal's build issues for the rules above to see them, and today
-nothing puts them there: product-intake moves an opportunity's existing build issues into
-its milestone and says a build issue filed later joins it, but github-issue-triage files
+nothing puts them there: the maintainer puts the feature issue in its milestone (D-32), but
+github-issue-triage files
 build issues when a spec merges, and its spec gate never sets a milestone. Three changes
 close the hand-off:
 
@@ -116,9 +116,8 @@ close the hand-off:
 
 ## Out of scope
 
-- Planning dates or capacity for a milestone: `[roadmap]` and product-intake already
-  propose milestones
-- Which issues go into a milestone: the maintainer's, or product-intake's proposal
+- Planning dates or capacity for a milestone: the maintainer's (D-32)
+- Which issues go into a milestone: the maintainer's (D-32)
 - Holding fixes or pre-releases for a goal: they never wait on a milestone
 - Specs in other repositories: a cross-repo goal is a chain (spec 017), not a milestone
 - Holding an unfinished goal's changelog entries or the stable lane: declined on this

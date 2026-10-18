@@ -148,13 +148,13 @@ A shipmill release can bring a feature that needs an opt-in in `.github/shipmill
 
 ## Weekly retro
 
-The retro is an option the user schedules, never a default: `/schedule` a weekly routine that follows this section for the repo and the roadmap issue the user names. It proposes; the user decides.
+The retro is an option the user schedules, never a default: `/schedule` a weekly routine that follows this section for the repo and the tracking issue the user names. It proposes; the user decides.
 
 1. Gather: `scripts/retro.py gather <owner/repo> [--days 7]` runs `metrics.py --json` for this week and the week before it (`--until` this week's start) and lists the week's refused PRs (closed without a merge) and reworked ones (merged after a review requested changes). Pass the repo's `--incident-label`, `--environment`, and `--bot` as for metrics.py
 2. Read what the numbers don't hold: the review comments on the refused and reworked PRs, for findings that recurred across two or more PRs; and the week's stuck states, from this week's watch reports, or a `watch_state.py` run when there are none (a state that held across passes, such as BOT_STALLED or PROMOTION_DUE, is stuck)
 3. Propose at most three changes, each the smallest one that removes a recurring cause: a skill edit, a check (a test, a lint, a `watch_state.py` state), or a decision. A week with nothing recurring proposes nothing
 4. Deduplicate: `scripts/retro.py dedupe <owner/repo> --title "<title>" ...` checks each proposal's title against the open issues. A DUPLICATE gets a comment on that issue only when the week adds evidence; a NEW one opens as an issue with the evidence and links
-5. Post one short comment on the roadmap issue with `gh issue comment <n> --body-file <file>`: the metrics beside last week's, what recurred, and the proposals with their issue links
+5. Post one short comment on the tracking issue the user names with `gh issue comment <n> --body-file <file>`: the metrics beside last week's, what recurred, and the proposals with their issue links
 
 The retro writes only the proposal issues and that one comment. It never edits a skill, a check, or the decisions log itself; each proposal goes through triage like any issue.
 
@@ -174,7 +174,7 @@ The retro writes only the proposal issues and that one comment. It never edits a
 - Agent share reads what the work itself says, not who clicked merge: a PR is agent-made when its body carries Claude Code's "Generated with [Claude Code]" footer or a commit carries a `Co-Authored-By: Claude` or `Claude-Session:` trailer (case-insensitive; add another agent's mark to `AGENT_MARKS`). Its detail counts the agent-made merges a person approved in a GitHub review, the human gate. Where agents merge with the owner's token, human touch reads 100% and agent share is the number to watch
 - A measure with nothing to measure says "no data", never 0. A 0% change failure rate means releases shipped and none failed
 
-The weekly metrics post is an option the user schedules, never a default: `/schedule` a weekly routine that runs `metrics.py <repo> --markdown` and posts the table as one comment on the roadmap issue the user names (`gh issue comment <n> --body-file <file>`). Posting is the routine's only write.
+The weekly metrics post is an option the user schedules, never a default: `/schedule` a weekly routine that runs `metrics.py <repo> --markdown` and posts the table as one comment on the tracking issue the user names (`gh issue comment <n> --body-file <file>`). Posting is the routine's only write.
 
 ## Fleet
 

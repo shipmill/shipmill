@@ -425,17 +425,24 @@ prints the effective autonomy per stage and warns while a hold is open. Each `de
 must name an environment in `[environments]`. `deploy` and `rollback` take effect in
 `shipmill operate` (see Operate above).
 
-## Roadmap
+## Work in progress
 
-`[roadmap]` sets the capacity the `product-intake` skill plans milestones within. It
-proposes the next milestone from accepted opportunities, ranked by evidence per load, as an
-issue the maintainer approves; `doctor` validates the section:
+`[agents] wip` caps how many issues the agents have in progress at once (an open PR or a
+running implementer): `github-issue-triage` runs `triage_state.py --wip N` and starts no
+more than the room it reports. It is an `[agents]` key, since it governs agents' work in
+the delivery loop (D-32); without it there is no limit:
 
 ```toml
-[roadmap]
-wip = 5       # issues open at once across the open milestones (1..100)
-cadence = 2   # weeks from one milestone's due date to the next (1..26)
+[agents]
+prompt = "/shipmill:github-issue-triage {repo} triage the new issues"
+wip = 3       # at most 3 issues in progress at once (1..100)
 ```
+
+`[roadmap]` is deprecated (D-32): shipmill no longer plans milestones, so nothing reads it.
+For one minor release a config with it still loads and `doctor` warns, naming `[agents]
+wip`; move `wip` there and delete the section, since the next minor refuses it. A milestone
+is the maintainer's own list of what a version must hold, and `milestone = true` keeps
+making a lane due by it.
 
 ## Versions
 

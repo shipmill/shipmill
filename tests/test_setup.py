@@ -481,12 +481,17 @@ def test_doctor_warns_when_it_cannot_ask_origin(repo: Repo) -> None:
     assert check() == ("WARN", "no 'origin' remote to ask for a branch 'shipmill'")
 
 
-def test_doctor_reports_the_roadmap_only_when_configured(repo: Repo) -> None:
+def test_doctor_warns_the_roadmap_is_deprecated_and_names_agents_wip(repo: Repo) -> None:
+    """D-32 (#377): a config with [roadmap] still loads, with a WARN naming [agents] wip"""
     assert "roadmap" not in {c.name for c in doctor(repo.root)}
     repo.write(repo.policy_file, repo.read(repo.policy_file) + "\n[roadmap]\nwip = 3\n")
     checks = {c.name: c for c in doctor(repo.root)}
-    assert checks["roadmap"].status == "PASS"
-    assert checks["roadmap"].detail == "wip 3 open issues, a milestone every 2 weeks; read by the product-intake skill"
+    assert checks["policy"].status == "PASS"
+    assert checks["roadmap"].status == "WARN"
+    assert checks["roadmap"].detail == (
+        "[roadmap] is deprecated (D-32) and read by nothing: the work-in-progress limit is [agents] wip;"
+        " move wip there and delete [roadmap], which the next minor release refuses"
+    )
     assert Policy.load(config_path(repo.root)).roadmap == RoadmapConfig(wip=3, cadence=2)
     repo.write(repo.policy_file, repo.read(repo.policy_file).replace("wip = 3", "wip = 3\ncadence = 1\nteam = 2"))
     checks = {c.name: c for c in doctor(repo.root)}

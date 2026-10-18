@@ -35,7 +35,6 @@ Plain wording works the same, and the repo can be left out inside its checkout: 
 | Status only | `python3 $S/github-issue-triage/scripts/triage_state.py <owner/repo>` | A list of each issue's state; nothing changes |
 | Feedback status | `python3 $S/product-intake/scripts/intake_state.py <owner/repo>` | Each opportunity's state and the requests no opportunity groups yet; nothing changes |
 | Group feedback | `/shipmill:product-intake <owner/repo>` or "group the feature requests" | Opportunity issues opened or updated; the accept or decline is yours |
-| Roadmap status | `python3 $S/product-intake/scripts/roadmap_state.py <owner/repo>` | Milestone progress, WIP against `[roadmap] wip`, accepted opportunities in no milestone, and the next milestone that fits; nothing changes |
 | Triage the backlog | `/shipmill:github-issue-triage <owner/repo>` or "triage the new issues" | Comments, labels, and open PRs; nothing merged |
 | One issue | `/shipmill:github-issue-resolve 57` or "fix #57" | One PR and the issue comment |
 | Triage one issue only | "triage #57, don't fix" | The verdict comment |
@@ -64,19 +63,19 @@ Three layers decide what ships when. Each lives in its own place and has its own
 | Layer | Answers | Where it lives | Written by | Read by |
 |---|---|---|---|---|
 | Release policy | When each lane releases, and what holds it | `[lanes.*]`, `[gates]`, `[bump]`, `[environments]` in `.github/shipmill.toml` | The maintainer, first through `shipmill-setup` | `src/shipmill/policy.py` (validates), `src/shipmill/planner.py` (decides), `src/shipmill/ticks.py` (the cron); run by the Release workflow (`release.yml` → `prepare.yml`, `land.yml`) |
-| Plan | What to build next, and in which version | GitHub milestones (one per future version, with a due date) and `milestone-proposal` issues; capacity in `[roadmap]` (`wip`, `cadence`) | `product-intake` proposes; the maintainer approves; `product-intake` creates the milestone and moves the issues in | `roadmap_state.py`; a lane with `milestone = true` |
-| Goal | What makes a milestone's version | The feature issue in the milestone, the spec `docs/specs/NNN-*.md` its body links (criteria, build issues, status), and the build issues | `github-issue-triage` (spec gate, split); implementers; the spec reaches `status: built` once its criteria are verified | `roadmap_state.py` (a milestone's load); triage (holds and chains) |
+| Plan | What a version must hold | GitHub milestones, one per future version: the maintainer's milestones, their own list of the issues that version needs | The maintainer, by hand (D-32); no skill proposes, ranks, or creates one | A lane with `milestone = true`; triage, which works through a milestone's issues |
+| Goal | What makes a milestone's version | The feature issue in the milestone, the spec `docs/specs/NNN-*.md` its body links (criteria, build issues, status), and the build issues | `github-issue-triage` (spec gate, split); implementers; the spec reaches `status: built` once its criteria are verified | Triage (holds and chains) |
 
 ```
-product-intake ──approve──► milestone "1.5.0" ◄── feature issue ──links──► docs/specs/NNN-*.md
+the maintainer ──lists───► milestone "1.5.0" ◄── feature issue ──links──► docs/specs/NNN-*.md
                                    ▲                                          │
                                    │ looked up by version name                └─ build issues ─► PRs ─► main
 [lanes.stable] milestone = true ───┘                                                                     │
         └── planner: due when milestone "1.5.0" has no open issues ── cuts 1.5.0 from main (or its rc) ◄─┘
 ```
 
-- **The name is the link.** A lane with `milestone = true` looks up the milestone titled with its candidate's version, so `product-intake` names a proposal after the version it should release as: the version after the newest open milestone's, or the next minor after the latest stable tag
-- **The due date doesn't release anything.** It feeds `roadmap_state.py`'s OVERDUE row; only the lane's triggers and gates cut a release
+- **The name is the link.** A lane with `milestone = true` looks up the milestone titled with its candidate's version, so the maintainer names a milestone after the version it should release as
+- **The due date doesn't release anything.** Only the lane's triggers and gates cut a release
 - **Only the milestone lane waits on the plan.** Other triggers (`quiet_minutes`, `schedule`, by hand) release what is merged, so `dev`, `rc`, and fixes never wait for a goal; a stable release cut by them can take a milestone's version before its goal is done
 - **Today a milestone is done when it has no open issues** and at least one closed (`planner.py`), which says nothing about whether its spec is built
 

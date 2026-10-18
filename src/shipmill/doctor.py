@@ -30,6 +30,10 @@ from shipmill.upgrades import offers, pending
 CALLER = Path(".github") / "workflows" / "release.yml"
 OPERATE_CALLER = Path(".github") / "workflows" / "operate.yml"  # calls shipmill's operate.yml on a schedule
 _BOT_WORKFLOWS = ("prepare.yml", "land.yml")
+_ROADMAP_DEPRECATED = (
+    "[roadmap] is deprecated (D-32) and read by nothing: the work-in-progress limit is [agents] wip;"
+    " move wip there and delete [roadmap], which the next minor release refuses"
+)
 _LOCAL_USES = re.compile(r"uses:\s*\./\.github/workflows/(?P<file>[\w.-]+\.ya?ml)")
 
 
@@ -130,7 +134,7 @@ def doctor(
     read = found.relative_to(root)
     add(True, "policy", f"{read}, mode {policy.mode}, lanes {', '.join(policy.lanes)}")
     if policy.roadmap is not None:
-        add(True, "roadmap", f"{policy.roadmap}; read by the product-intake skill")
+        add(False, "roadmap", _ROADMAP_DEPRECATED, warn=True)
     autonomy, hold = _autonomy(policy, github, root / CALLER)
     checks.extend(autonomy)
     checks.extend(_upgrades(policy, read_config(found), github, root / CALLER, repo))

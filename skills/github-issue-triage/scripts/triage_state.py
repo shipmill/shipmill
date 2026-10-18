@@ -115,8 +115,8 @@ For the N most recently closed issues (default 20):
                    whose first line is <!-- shipmill:verified --> by an OWNER, MEMBER, or
                    COLLABORATOR or the --bot-login: run its check
 
-With --wip N (a work-in-progress limit, such as [roadmap] wip once the config has it), a
-last line says how many issues are IN_PROGRESS, the room left under N, and the issues
+With --wip N (a work-in-progress limit, such as the config's [agents] wip), a last
+line says how many issues are IN_PROGRESS, the room left under N, and the issues
 ready to start (NEEDS_PR or UNBLOCKED), oldest first; with --json, as one JSON object.
 An issue labelled human never counts as in progress or ready: the limit is on agents' work.
 

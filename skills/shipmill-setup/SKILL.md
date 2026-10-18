@@ -422,6 +422,7 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    app_id = 123456    # replace with the App ID step 3 prints; sessions write as its bot
    mode = "interactive" # step 4's answer: sessions ask you; "headless": they ask on GitHub
    # plugin_update = true # default false: the gate changes no plugin install
+   # wip = 3          # at most 3 issues in progress at once (1..100); unset: no limit
    ```
 
    `plugin_update = true` lets the gate update its checkout's own plugin installs (project
