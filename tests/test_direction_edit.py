@@ -387,6 +387,33 @@ def test_s024_17_dir_creates_a_subdirectory_review_holding_only_the_touched_sect
     assert review.check(root) == [] and review.check(other) == []
 
 
+def test_s024_15_a_shallow_clone_is_refused_rather_than_reusing_a_retired_id(tmp_path: Path) -> None:
+    origin = repo(tmp_path / "origin", {"REVIEW.md": "## Important\n\n- I-1: a\n- I-2: b\n"})
+    commit(origin, {"REVIEW.md": "## Important\n\n- I-1: a\n"}, "retire I-2")
+    shallow = tmp_path / "shallow"
+    git(tmp_path, "clone", "-q", "--depth", "1", f"file://{origin}", str(shallow))
+    before = read(shallow, "REVIEW.md")
+    with pytest.raises(ReleaseError, match="shallow clone"):
+        run(shallow, "review", "add-rule", "new")
+    assert read(shallow, "REVIEW.md") == before
+
+
+def test_s024_16_protect_refuses_a_glob_spanning_lines(tmp_path: Path) -> None:
+    root = repo(tmp_path, {"REVIEW.md": REVIEW})
+    with pytest.raises(ReleaseError, match="path pattern on one line"):
+        run(root, "review", "protect", "docs\n## Important\n- I-x", "--why", "w")
+    assert read(root, "REVIEW.md") == REVIEW.encode()
+
+
+def test_s024_17_a_review_symlinked_out_of_the_repo_is_never_written_through(tmp_path: Path) -> None:
+    root = repo(tmp_path / "repo", {"skills/x.md": "x\n"})
+    outside = tmp_path / "outside.md"
+    (root / "REVIEW.md").symlink_to(outside)  # dangling: the target doesn't exist yet
+    with pytest.raises(ReleaseError, match="outside the repository"):
+        run(root, "review", "add-rule", "x")
+    assert not outside.exists()
+
+
 def test_line_text_and_documents_refuse_what_they_cannot_write(tmp_path: Path) -> None:
     for bad in ("", " x", "x ", "a\nb", "a\rb"):
         with pytest.raises(ReleaseError, match="the text is one line"):

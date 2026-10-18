@@ -68,8 +68,10 @@ class Glob:
     value: str
 
     def __post_init__(self) -> None:
-        if not self.value or self.value != self.value.strip() or "`" in self.value:
-            raise ReleaseError(f"a protected glob is a non-empty path pattern without backticks; got {self.value!r}")
+        if not self.value or self.value != self.value.strip() or "`" in self.value or len(self.value.splitlines()) != 1:
+            raise ReleaseError(
+                f"a protected glob is a non-empty path pattern on one line, without backticks; got {self.value!r}"
+            )
 
     def __str__(self) -> str:
         return self.value
@@ -436,12 +438,12 @@ def _editable(root: Path, file: PurePosixPath, create: bool) -> tuple[Document, 
     """The file's lines and rubric; refused (exit 2) when `check` refuses it, so nothing is
     written over a broken file. A missing file is a new, empty one when create is set"""
     path = root / file
+    if not path.resolve().is_relative_to(root.resolve()):  # a dangling symlink too, before it is written through
+        raise ReleaseError(f"{file} resolves to {path.resolve()}, outside the repository {root}; refusing to edit it")
     if not path.exists():
         if not create:
             raise ReleaseError(f"no {file} in {root}; nothing to retire")
         return Document.new(path), Rubric((), None, (), ())
-    if not path.resolve().is_relative_to(root.resolve()):
-        raise ReleaseError(f"{file} resolves to {path.resolve()}, outside the repository {root}; refusing to edit it")
     document = Document.read(path)
     rubric, problems = parse(document.text(), file)
     if problems:

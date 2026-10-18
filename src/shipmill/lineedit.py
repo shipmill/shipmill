@@ -106,6 +106,10 @@ def history_numbers(root: Path, paths: Sequence[PurePosixPath], prefix: str) -> 
     each commit added, removed, or kept (`git log -p`); none before the first commit"""
     git = Git(root)
     git.run("rev-parse", "--git-dir")  # refuses a folder that isn't a git checkout
+    if git.run("rev-parse", "--is-shallow-repository").strip() == "true":
+        raise ReleaseError(
+            f"{root} is a shallow clone, so its history may lack a retired id; run `git fetch --unshallow` first"
+        )
     if not git.ok("rev-parse", "--verify", "-q", "HEAD"):
         return set()
     patch = git.run_bytes(
