@@ -10,7 +10,7 @@ from shipmill.version import Version
 
 from .conftest import Repo, at_day
 from .test_fragments import add_fragment, use_fragments
-from .test_lanes import plan, release
+from .test_lanes import _tag_on_main, plan, release
 
 HEAD = """\
 name = "demo"
@@ -131,6 +131,41 @@ def test_s029_1_observe_stays_observe_and_the_hold_names_itself(repo: Repo) -> N
     # the hold stops the hand start that would release it, so the proposal names the hold (D-8)
     repo.github.holds = ["#7 Incident"]
     assert [p.cause for p in plan(repo, at_day(0, 7)).proposals] == ["held by shipmill-hold #7"]
+
+
+LEGACY_BREAKING_RC = """\
+# Changelog
+
+## [Unreleased]
+
+## [2.0.0rc1] - 2026-10-03
+
+### Breaking
+
+- Drop the old API (#1)
+
+## [1.0.0] - 2026-09-01
+
+### Added
+
+- The first release
+
+[Unreleased]: https://github.com/o/demo/compare/v2.0.0rc1...HEAD
+[2.0.0rc1]: https://github.com/o/demo/compare/v1.0.0...v2.0.0rc1
+[1.0.0]: https://github.com/o/demo/releases/tag/v1.0.0
+"""
+
+
+def test_s029_1_a_breaking_entry_in_an_rc_section_the_stable_release_folds_waits_too(repo: Repo) -> None:
+    # main's head stable release folds the version's rc sections (D-25), so their entries are its own
+    repo.at(at_day(0, 6))
+    use_policy(repo, HEAD + HEADINGS + EVERY_BATCH)
+    _tag_on_main(repo, LEGACY_BREAKING_RC, "v2.0.0rc1")
+    repo.merge(2, "Fixed", "Fix B")
+    decision = plan(repo, at_day(0, 7))
+    assert [(str(p.version), p.cause) for p in decision.proposals] == [("2.0.0", BREAKING)], decision.reason
+    started = plan(repo, at_day(0, 7), event=Event.MANUAL, lane=Lane.STABLE)
+    assert (started.action, str(started.version)) == ("release", "2.0.0")
 
 
 def test_s029_2_a_promotion_whose_rc_base_is_breaking_is_proposed(repo: Repo) -> None:

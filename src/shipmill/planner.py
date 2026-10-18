@@ -181,7 +181,8 @@ class Planner:
         """What the lane would release from main's head, or why there is nothing to"""
         rule = self.policy.rule(lane)
         changelog = self.changelog_at(head)
-        pending = changelog.pending(self.fragments_at(head))
+        found = self.fragments_at(head)
+        pending = changelog.pending(found)
         if lane is Lane.STABLE and rule.promote:
             return self._promotion(rule, head)
         if lane is Lane.DEV:
@@ -207,7 +208,9 @@ class Planner:
                 return f"an rc of {target} already holds main's head"
             n = max((t.version.pre_n or 0 for t in same), default=0) + 1
             return _Candidate(target.with_pre(rule.marker, n), head, f"{len(pending)} pending entries")
-        return _Candidate(target, head, f"{len(pending)} pending entries", breaking=self._breaking(pending))
+        # the release folds target's rc sections, so their entries are its own too (D-25)
+        breaking = self._breaking(changelog.promoted(target, found))
+        return _Candidate(target, head, f"{len(pending)} pending entries", breaking=breaking)
 
     def _promotion(self, rule: LaneRule, head: str) -> _Candidate | _Deferred | str:
         last = self.last_stable()
