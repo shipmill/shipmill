@@ -309,3 +309,11 @@ entry that supersedes it, never by editing an old one.
 - Why: The scripts' tests never covered the judgment a skill's prose asks for, so a rewording could turn a verdict, drop a review finding, or make a headless session guess, and that showed only as a bad verdict or merge in a real repo; a gate on real cases from shipmill's history catches it before it lands, and a fork's change runs the repository's scaffold and the API key, so it waits for the maintainer as unattended work does (D-16)
 - Applies to: skills/**, .claude-plugin/**, evals/**, src/shipmill/gate.py, src/shipmill/evals.py, .github/workflows/evals.yml, skills/github-pr-triage/SKILL.md
 - Enforced by: the evals check in .github/workflows/evals.yml, once spec 025 is built; review until then
+
+## D-38: An accepted goal plan may create the milestone it names
+
+- Decided: 2026-10-18, in shipmill/shipmill#430
+- Rule: When the maintainer accepts a goal plan whose Milestone section names a title, product intake puts the plan's filed and existing items of this repository in that milestone and creates it when it doesn't exist; a plan naming `none` touches no milestone, and intake still never proposes, ranks, or creates a milestone on its own. This refines D-32: a milestone stays the maintainer's list, and accepting a plan that names one is the maintainer adding to it
+- Why: A plan is how the maintainer chooses the work that completes a goal, and the milestone is what makes a lane wait until that goal is built (spec 022); asking the maintainer to create it by hand before every accept adds a step that carries no decision the accept didn't already make
+- Applies to: skills/product-intake/SKILL.md, skills/product-intake/references/plan.md, skills/product-intake/scripts/intake_state.py, milestones
+- Enforced by: review, until spec 028 is built
