@@ -119,7 +119,9 @@ def test_s010_4_stable_and_hotfix_dispatch_publish_and_doctor_passes(tmp_path: P
     # doctor on a copy of the repo's release files: no origin to ask, no tags to count from
     for name in (".github", ".claude-plugin", "changelog.d"):
         shutil.copytree(ROOT / name, tmp_path / name)
-    for name in ("CHANGELOG.md", "pyproject.toml"):
+    # the config has [agents], so doctor reads the direction too (S-024-5)
+    (tmp_path / "docs").mkdir()
+    for name in ("CHANGELOG.md", "pyproject.toml", "docs/product.md"):
         shutil.copy(ROOT / name, tmp_path / name)
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
     checks = doctor(tmp_path)
