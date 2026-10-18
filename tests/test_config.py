@@ -302,6 +302,22 @@ def test_a_bad_wip_limit_is_refused_naming_it(line: str, refused: str) -> None:
     assert refusal(lambda: agents(line + "\n")) == f"shipmill.toml [agents]: {refused}"
 
 
+def test_no_doc_or_skill_still_names_the_removed_roadmap_plan() -> None:
+    """D-32 (#377): outside the history (CHANGELOG, fragments, decisions), nothing points at
+    roadmap_state.py or a [roadmap] wip limit"""
+    root = Path(__file__).resolve().parents[1]
+    history = {root / "CHANGELOG.md", root / "docs" / "decisions.md"}
+    found = [
+        f"{path.relative_to(root)}: {stale}"
+        for folder in ("docs", "skills", "src", ".claude-plugin")
+        for path in sorted((root / folder).rglob("*"))
+        if path.is_file() and path.suffix in {".md", ".py", ".json", ".toml"} and path not in history
+        for stale in ("roadmap_state", "[roadmap] wip")
+        if stale in path.read_text(encoding="utf-8")
+    ]
+    assert found == []
+
+
 WAIT_REFUSALS = {
     "notify = 1": "notify must be true or false, got 1",
     'notify = "yes"': "notify must be true or false, got 'yes'",
