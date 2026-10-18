@@ -475,6 +475,23 @@ def test_s026_8_here_document_body_is_not_a_command(box: Sandbox) -> None:
     refused(bash(command.replace("uvx --from x shipmill gh", "gh"), box.app), "app-writes", "D-14")
 
 
+QUOTED_BODY = (
+    "uvx --from x shipmill gh pr create --title T --body \"$(cat <<'EOF'\n"
+    'The hook refuses "a && gh pr merge 5 --rebase" and "x; git push -f origin x"\n'
+    "Don't (ever) do it\n"
+    'EOF\n)" && echo done'
+)
+
+
+def test_s026_8_double_quotes_in_a_quoted_substitution_are_its_own(box: Sandbox) -> None:
+    """A body's quotes inside "$(cat <<'EOF' ... EOF)" don't end the quotes around it"""
+    allowed(bash(QUOTED_BODY, box.app))
+    allowed(bash(QUOTED_BODY.replace("uvx --from x shipmill gh pr create", "git commit"), box.app))
+    instead = refused(bash(QUOTED_BODY.replace("uvx --from x shipmill gh", "gh"), box.app), "app-writes", "D-14")
+    assert instead[:-1] == [*SHIPMILL, "gh", "pr", "create", "--title", "T", "--body"]
+    assert instead[-1].startswith("$(cat <<'EOF'") and 'refuses "a && gh pr merge 5 --rebase"' in instead[-1]
+
+
 # --- S-026-9: what a refusal says ------------------------------------------------------------
 
 

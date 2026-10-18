@@ -199,6 +199,61 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 WORD_START = " \t\n;&|()"
 
 
+HERE_DOC = re.compile(r"<<-?[ \t]*(\S+)")
+
+
+def _delimiter(word: str) -> str:
+    return re.sub(r"[;&|()<>].*", "", word).replace("'", "").replace('"', "").replace("\\", "")
+
+
+def _past_bodies(command: str, i: int, pending: list[str]) -> int:
+    """The index past the here-document bodies that start after the newline at i"""
+    lines = command[i + 1 :].split("\n")
+    skipped = 0
+    while pending and skipped < len(lines):
+        if lines[skipped].strip() == pending[0]:
+            pending.pop(0)
+        skipped += 1
+    pending.clear()
+    return i + 1 + sum(len(line) + 1 for line in lines[:skipped])
+
+
+def _substitution_end(command: str, i: int) -> int:
+    """The index past the `)` closing a `$(` whose body starts at i, with its own quotes and
+    here-documents, so a body's `"` doesn't end the double quotes around the `$(...)`"""
+    depth = 1
+    pending: list[str] = []
+    quote = ""
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            quote = "" if ch == "'" else quote
+        elif ch == "\\":
+            i += 1
+        elif quote == '"' and command.startswith("$(", i):
+            i = _substitution_end(command, i + 2)
+            continue
+        elif quote == '"':
+            quote = "" if ch == '"' else quote
+        elif ch in "'\"":
+            quote = ch
+        elif not command.startswith("<<<", i) and (match := HERE_DOC.match(command, i)) is not None:
+            pending.append(_delimiter(match.group(1)))
+            i = match.end()
+            continue
+        elif ch == "\n" and pending:
+            i = _past_bodies(command, i, pending)
+            continue
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if not depth:
+                return i + 1
+        i += 1
+    return i
+
+
 def _strip(command: str) -> str:
     """The command without comments, line continuations, and here-document bodies, which the
     hooks don't read; quotes are kept for shlex"""
@@ -216,6 +271,12 @@ def _strip(command: str) -> str:
         elif ch == "\\":
             out.append(command[i : i + 2])
             i += 1
+        elif quote == '"' and command.startswith("$(", i):
+            # "$(cat <<'EOF' ... EOF)": one word, kept as text with its own quotes escaped
+            end = _substitution_end(command, i + 2)
+            out.append(command[i:end].replace("\\", "\\\\").replace('"', '\\"'))
+            i = end
+            continue
         elif quote == '"':
             out.append(ch)
             quote = "" if ch == '"' else quote
@@ -227,25 +288,17 @@ def _strip(command: str) -> str:
             i = len(command) if end < 0 else end
             continue
         elif command.startswith("<<", i) and not command.startswith("<<<", i):
-            match = re.match(r"<<-?[ \t]*(\S+)", command[i:])
+            match = HERE_DOC.match(command, i)
             if match is None:
                 out.append(ch)
             else:
-                word = match.group(1)
-                pending.append(re.sub(r"[;&|()<>].*", "", word).replace("'", "").replace('"', "").replace("\\", ""))
+                pending.append(_delimiter(match.group(1)))
                 out.append(match.group(0))
-                i += len(match.group(0))
+                i = match.end()
                 continue
         elif ch == "\n" and pending:
             out.append(ch)
-            lines = command[i + 1 :].split("\n")
-            skipped = 0
-            while pending and skipped < len(lines):
-                if lines[skipped].strip() == pending[0]:
-                    pending.pop(0)
-                skipped += 1
-            pending.clear()
-            i += 1 + sum(len(line) + 1 for line in lines[:skipped])
+            i = _past_bodies(command, i, pending)
             continue
         else:
             out.append(ch)
