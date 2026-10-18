@@ -132,4 +132,9 @@ close the hand-off:
 
 ## Issues
 
+- shipmill/shipmill#397: S-022-1, S-022-2, S-022-3, S-022-4, S-022-5, S-022-6, S-022-7, S-022-9
+- shipmill/shipmill#398: S-022-8, S-022-10
+- shipmill/shipmill#399: S-022-11
+- shipmill/shipmill#400: S-022-12
+
 ## Verification

@@ -140,4 +140,9 @@ It is reported, never a gate.
 
 ## Issues
 
+- shipmill/shipmill#392: S-021-1, S-021-2, S-021-3, S-021-5
+- shipmill/shipmill#393: S-021-4
+- shipmill/shipmill#394: S-021-6, S-021-7
+- shipmill/shipmill#395: S-021-8
+
 ## Verification
