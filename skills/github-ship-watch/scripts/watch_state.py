@@ -38,6 +38,19 @@ Each of the --releases newest version tags (default 3):
   UNANNOUNCED     closed issues it fixed that have no notice for the tag's stage,
                   pre-release or stable (github-pr-triage's shipped.py, in plan mode)
 
+The requester's answer (spec 021), for each closed issue that a published pre-release tag
+among those has told (read on its newest comment with the `<!-- shipmill:available:
+pre-release <tag> -->` marker, the notice); the
+requester is the issue's author, compared by login exactly, and an issue a bot or a deleted
+account opened has none. Both are reported, never an action by itself: no label, hold, or
+reopen follows from either (D-16):
+  REQUESTER_CONFIRMED  the requester reacted 👍 to the notice: the issue, the tag, when, and
+                  the notice's link. A 👍 by anyone else gives no row
+  REQUESTER_REPORT  the requester commented after the notice (a shipmill notice is no
+                  comment of theirs), or reacted 👎 to it: the issue, the tag, and the
+                  comment's or the notice's link, for triage to read as a possible regression
+  The notice's reactions are read (one more gh call) only when it has a 👍 or 👎 at all
+
 Hold and postmortems (a repo with a shipmill config):
   HOLD            an open shipmill-hold issue, with who opened it and when (reported, never
                   an action by itself: a person stopped the factory on purpose)
@@ -366,6 +379,10 @@ PROPOSAL_LABEL = "shipmill-proposal"  # shipmill's github.PROPOSAL_LABEL
 PROPOSAL_SEARCH = 'in:title "Ready to"'  # proposals opened before the label; the marker in the body decides
 PROPOSAL = re.compile(r"<!-- shipmill:propose deploy=(?P<env>\S+) -->")  # shipmill's operate.deploy_marker
 PROPOSED_TAG = re.compile(r"<!-- shipmill:tag=(?P<tag>\S+) -->")
+# a notice's first line: shipped.py's MARKER (spec 021; tests/test_ship_watch.py keeps the two equal)
+AVAILABLE = re.compile(r"^<!-- shipmill:available: (\S+) (\S+) -->\s*$")
+COMMENT_ID = re.compile(r"#issuecomment-(\d+)$")  # an issue comment's URL names its id
+GHOST = "ghost"  # the login GitHub shows for every deleted account
 ENV_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # shipmill's environments._NAME
 # a gh read that fails on one of these on its stderr is run once more (S-011-11): a server
 # error, a timeout, a reset or refused connection, or a cut-off response. shipmill's
@@ -872,6 +889,24 @@ def fetch_tag_runs(repo: str, tag: str) -> list[Run]:
     return sorted(found, key=lambda r: r.created, reverse=True)
 
 
+def shipped_plan(
+    repo: str,
+    repo_dir: Path,
+    prev: str,
+    tag: str,
+    env: dict[str, str] | None = None,
+    environment: str | None = None,
+) -> tuple[list[str], list[str]]:
+    """The issues shipped.py in plan mode would tell, of the release, or with environment, of
+    tag's deployment there, and the ones it finds told already; ``env`` is the process
+    environment it runs in"""
+    cmd = [sys.executable, str(SHIPPED), repo, prev, tag, "--repo-dir", str(repo_dir)]
+    out = run(cmd if environment is None else [*cmd, "--environment", environment], env=env)
+    # "#N     <WHAT>  <title>  [source]": read by position, so a title never reads as what it does
+    lines = [line.split() for line in out.splitlines()]
+    return [w[0] for w in lines if w[1:3] == ["WOULD", "POST"]], [w[0] for w in lines if w[1:3] == ["SKIP", "notified"]]
+
+
 def unannounced(
     repo: str,
     repo_dir: Path,
@@ -880,11 +915,8 @@ def unannounced(
     env: dict[str, str] | None = None,
     environment: str | None = None,
 ) -> list[str]:
-    """The issues shipped.py would tell in plan mode, of the release, or with environment, of
-    tag's deployment there; ``env`` is the process environment it runs in"""
-    cmd = [sys.executable, str(SHIPPED), repo, prev, tag, "--repo-dir", str(repo_dir)]
-    out = run(cmd if environment is None else [*cmd, "--environment", environment], env=env)
-    return [line.split()[0] for line in out.splitlines() if "WOULD POST" in line]
+    """The issues shipped.py would tell in plan mode"""
+    return shipped_plan(repo, repo_dir, prev, tag, env, environment)[0]
 
 
 def unannounced_row(repo: str, tag: str, prev: str, issues: list[str]) -> Row:
@@ -896,6 +928,120 @@ def deployed_row(repo: str, environment: str, tag: str, prev: str, issues: list[
     """The issues tag's deployment to the environment fixed that no notice of it tells (S-021-4)"""
     detail = f"{' '.join(issues)} deployed to {environment} (since {prev})"
     return Row("UNANNOUNCED", tag, detail, skill_fix("github-ship-watch", repo))
+
+
+# -- the requester's answer (spec 021) -----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Notice:
+    """An issue's newest pre-release notice, and what its requester (the issue's author) did
+    after it: the comments they wrote, and whether anyone reacted 👍 or 👎 to it at all"""
+
+    number: int
+    tag: str
+    url: str  # the notice comment's, ending #issuecomment-<id>
+    requester: str
+    voted: bool  # a 👍 or 👎 by anyone: only then are its reactions read
+    after: tuple[str, ...]  # the URLs of the requester's comments after the notice, oldest first
+
+
+@dataclass(frozen=True)
+class Reaction:
+    login: str
+    content: str  # the REST API's: +1, -1, laugh, ...
+    created: dt.datetime
+
+
+def pre_release(tag: str) -> bool:
+    """A dev, a, b, or rc release tag, whose notice asks the requester to answer"""
+    key = version_key(tag)
+    return key is not None and (key[3] < 4 or key[5] != 2**62)
+
+
+def pre_release_notice(number: int, view: dict[str, Any]) -> Notice | None:
+    """The issue's newest pre-release notice, from `gh issue view --json author,comments`;
+    None without one, or when the author is a bot or a deleted account: a requester is a
+    person, compared by login exactly (gh names an App author app/<slug>, its comments <slug>)"""
+    author = view.get("author") or {}
+    login = author.get("login")
+    if not isinstance(login, str) or not login or author.get("is_bot") or login == GHOST:
+        return None
+    comments = view["comments"]
+    found = None
+    for at, comment in enumerate(comments):
+        marker = AVAILABLE.match(comment["body"].partition("\n")[0])
+        if marker is not None and marker.group(1) == "pre-release":
+            found = at, marker.group(2)
+    if found is None:
+        return None
+    at, tag = found
+    notice = comments[at]
+    after = tuple(
+        c["url"]
+        for c in comments[at + 1 :]
+        if (c.get("author") or {}).get("login") == login and AVAILABLE.match(c["body"].partition("\n")[0]) is None
+    )
+    groups = {g["content"] for g in notice.get("reactionGroups") or [] if g["users"]["totalCount"] > 0}
+    return Notice(number, tag, notice["url"], login, bool(groups & {"THUMBS_UP", "THUMBS_DOWN"}), after)
+
+
+def requester_rows(notice: Notice, reactions: list[Reaction], now: dt.datetime) -> list[Row]:
+    """REQUESTER_CONFIRMED when the requester reacted 👍 to the notice (S-021-6); REQUESTER_REPORT
+    when they commented after it or reacted 👎 (S-021-7). Anyone else's reaction or comment is
+    triage's, as before; both rows are reported only, and nothing follows from them by itself"""
+    mine = sorted((r for r in reactions if r.login == notice.requester), key=lambda r: r.created)
+    up = [r for r in mine if r.content == "+1"]
+    down = [r for r in mine if r.content == "-1"]
+    subject = f"#{notice.number}"
+    rows = []
+    if up:
+        detail = f"{notice.tag}: the requester reacted 👍 {ago(now - up[0].created)} ago, {notice.url}"
+        rows.append(Row("REQUESTER_CONFIRMED", subject, detail))
+    said = []
+    if notice.after:
+        more = f" (+{len(notice.after) - 1} more)" if len(notice.after) > 1 else ""
+        said.append(f"commented after the notice, {notice.after[0]}{more}")
+    if down:
+        said.append(f"reacted 👎 {ago(now - down[0].created)} ago, {notice.url}")
+    if said:
+        rows.append(Row("REQUESTER_REPORT", subject, f"{notice.tag}: the requester {'; '.join(said)}"))
+    return rows
+
+
+def fetch_view(repo: str, number: int) -> dict[str, Any]:
+    view: dict[str, Any] = json.loads(
+        run(["gh", "issue", "view", str(number), "-R", repo, "--json", "author,comments"])
+    )
+    return view
+
+
+def fetch_reactions(repo: str, url: str) -> list[Reaction]:
+    """The reactions to an issue comment, by its URL, through the REST API"""
+    found = COMMENT_ID.search(url)
+    if found is None:
+        raise Refused(f"error: {url} names no issue comment")
+    jq = '.[] | [(.user.login // ""), .content, .created_at]'
+    cmd = ["gh", "api", "-X", "GET", "--paginate", f"repos/{repo}/issues/comments/{found.group(1)}/reactions"]
+    out = run([*cmd, "--jq", jq])
+    return [Reaction(str(r[0]), str(r[1]), parse_time(str(r[2]))) for r in map(json.loads, out.splitlines())]
+
+
+def answers_rows(
+    repo: str,
+    numbers: list[int],
+    now: dt.datetime,
+    view_of: Callable[[int], dict[str, Any]],
+    reactions_of: Callable[[str], list[Reaction]],
+) -> list[Row]:
+    """The requester rows of the issues a pre-release told: each issue read once, and its
+    notice's reactions only when someone reacted 👍 or 👎 to it"""
+    rows = []
+    for number in numbers:
+        notice = pre_release_notice(number, view_of(number))
+        if notice is not None:
+            rows += requester_rows(notice, reactions_of(notice.url) if notice.voted else [], now)
+    return rows
 
 
 # -- holds and operations ------------------------------------------------------------------
@@ -2302,6 +2448,7 @@ def main() -> int:
     project = pypi_json(package) if package is not None else None
     registered = project is not None
     first = first_upload(project, package) if package is not None and project is not None else None
+    asked: dict[int, None] = {}  # the issues a pre-release told, whose requester may have answered
     for i, tag in enumerate(tags[: args.releases]):
         listed = on_pypi(f"{package}/{tag.name[1:]}") if registered else None
         row = publish_row(
@@ -2316,9 +2463,14 @@ def main() -> int:
         )
         rows.append(row)
         if row.state in {"PUBLISHED", "NO_REGISTRY"} and i + 1 < len(tags):
-            issues = unannounced(args.repo, repo_dir, tags[i + 1].name, tag.name)
+            issues, told = shipped_plan(args.repo, repo_dir, tags[i + 1].name, tag.name)
             if issues:
                 rows.append(unannounced_row(args.repo, tag.name, tags[i + 1].name, issues))
+            if pre_release(tag.name):
+                asked.update((int(n.lstrip("#")), None) for n in told)
+    rows += answers_rows(
+        args.repo, list(asked), now, lambda n: fetch_view(args.repo, n), lambda url: fetch_reactions(args.repo, url)
+    )
 
     table = None
     upgrades = None

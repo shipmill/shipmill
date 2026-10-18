@@ -479,6 +479,11 @@ tag before it is a later rc. Each comment's first line is a hidden marker,
 `<!-- shipmill:available: <stage> <tag> -->`, so a rerun posts nothing, and a "Released in
 <tag>" comment from before the stages counts as told for its tag's stage.
 
+The person who filed the issue answers on the pre-release notice: their 👍 reads as
+REQUESTER_CONFIRMED in the watch, and a reply after it or a 👎 as REQUESTER_REPORT, which a
+watch session hands to triage as a possible regression. Only the issue's author counts, and
+neither row labels, holds, or reopens anything by itself.
+
 `[notices]` is optional. `pin` and `install` take `{version}`, `{tag}`, and `{name}` (the
 policy's `name`), and a notice shows the command as code. Without `install`, the
 `--install` text the session passes is used, as before; with only `install` set, a

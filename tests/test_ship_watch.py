@@ -2047,3 +2047,131 @@ def test_s021_4_a_deployment_reports_the_fixes_the_environment_did_not_run(ws: M
     assert ws.unannounced("me/demo", work, "v0.2.0rc1", "v0.2.0", env=env, environment="staging") == ["#5"]
     # the release's own notices still read its whole stable range, as before
     assert ws.unannounced("me/demo", work, "v0.2.0rc1", "v0.2.0", env=env) == ["#5", "#6", "#7"]
+
+
+# -- spec 021: the requester's answer to a pre-release notice
+
+NOTICE_URL = "https://github.com/o/r/issues/5#issuecomment-"
+PRE_NOTICE = "<!-- shipmill:available: pre-release v1.0.0rc1 -->\nReleased in v1.0.0rc1 (pre-release)."
+
+
+def comment(login: str, body: str, id_: int, votes: tuple[str, ...] = ()) -> dict[str, object]:
+    """One comment as `gh issue view --json comments` prints it"""
+    groups = [{"content": v, "users": {"totalCount": 1}} for v in votes]
+    return {"author": {"login": login}, "body": body, "url": f"{NOTICE_URL}{id_}", "reactionGroups": groups}
+
+
+def view(author: str | None, *comments: dict[str, object], bot: bool = False) -> dict[str, object]:
+    """`gh issue view --json author,comments` of issue #5"""
+    return {"author": None if author is None else {"login": author, "is_bot": bot}, "comments": list(comments)}
+
+
+def reaction(ws: ModuleType, login: str, content: str, minutes_ago: int = 90) -> object:
+    return ws.Reaction(login, content, NOW - dt.timedelta(minutes=minutes_ago))
+
+
+def answered(ws: ModuleType, issue: dict[str, object], reactions: list[object]) -> list[Any]:
+    notice = ws.pre_release_notice(5, issue)
+    return [] if notice is None else ws.requester_rows(notice, reactions, NOW)
+
+
+def test_s021_6_the_requester_s_thumbs_up_confirms_and_anyone_else_s_does_nothing(ws: ModuleType) -> None:
+    issue = view("alice", comment("bot", PRE_NOTICE, 11, ("THUMBS_UP",)))
+    (row,) = answered(ws, issue, [reaction(ws, "alice", "+1"), reaction(ws, "bob", "-1")])
+    assert (row.state, row.subject) == ("REQUESTER_CONFIRMED", "#5")
+    assert row.detail == f"v1.0.0rc1: the requester reacted 👍 90 min ago, {NOTICE_URL}11"
+    assert answered(ws, issue, [reaction(ws, "bob", "+1"), reaction(ws, "Alice2", "+1")]) == []
+    assert answered(ws, issue, [reaction(ws, "alice", "heart")]) == []
+
+
+@pytest.mark.parametrize(
+    "issue",
+    [
+        view("shipmill-app", comment("shipmill-app", PRE_NOTICE, 11, ("THUMBS_UP",)), bot=True),  # an App opened it
+        view("ghost", comment("bot", PRE_NOTICE, 11, ("THUMBS_UP",))),  # a deleted account
+        view(None, comment("bot", PRE_NOTICE, 11, ("THUMBS_UP",))),
+        # no pre-release notice: a stable one, or the form before spec 021, asks nothing
+        view("alice", comment("bot", "<!-- shipmill:available: stable v1.0.0 -->\nReleased in v1.0.0.", 11)),
+        view("alice", comment("bot", "Released in v1.0.0rc1.", 11), comment("alice", "broken", 12)),
+    ],
+)
+def test_s021_6_an_issue_without_a_person_s_notice_has_no_requester(ws: ModuleType, issue: dict[str, object]) -> None:
+    assert ws.pre_release_notice(5, issue) is None
+
+
+def test_s021_7_a_comment_after_the_notice_or_a_thumbs_down_reports(ws: ModuleType) -> None:
+    issue = view(
+        "alice",
+        comment("alice", "It crashes on start", 10),  # before the notice: the issue itself
+        comment("bot", PRE_NOTICE, 11, ("THUMBS_DOWN",)),
+        comment("bob", "works for me", 12),
+        comment("alice", "still crashes", 13),
+        comment("alice", "with this trace", 14),
+    )
+    (row,) = answered(ws, issue, [reaction(ws, "alice", "-1", 30)])
+    assert (row.state, row.subject) == ("REQUESTER_REPORT", "#5")
+    assert row.detail == (
+        f"v1.0.0rc1: the requester commented after the notice, {NOTICE_URL}13 (+1 more); "
+        f"reacted 👎 30 min ago, {NOTICE_URL}11"
+    )
+    alone = view("alice", comment("bot", PRE_NOTICE, 11, ("THUMBS_DOWN",)))
+    (down,) = answered(ws, alone, [reaction(ws, "alice", "-1", 30)])
+    assert down.detail == f"v1.0.0rc1: the requester reacted 👎 30 min ago, {NOTICE_URL}11"
+
+
+def test_s021_7_only_the_requester_s_own_comments_after_the_newest_notice_count(ws: ModuleType) -> None:
+    stable = "<!-- shipmill:available: stable v1.0.0 -->\nReleased in v1.0.0."
+    rc2 = PRE_NOTICE.replace("rc1", "rc2")
+    issue = view(
+        "alice",
+        comment("bot", PRE_NOTICE, 11),
+        comment("alice", "rc1 broke it", 12),  # answered rc1; the newest notice is rc2's
+        comment(
+            "alice", rc2, 13
+        ),  # the maintainer filed it and posts with plain gh: the notice is no comment of theirs
+        comment("alice", stable, 14),
+        comment("bob", "same here", 15),
+    )
+    notice = ws.pre_release_notice(5, issue)
+    assert notice is not None and (notice.tag, notice.url, notice.after, notice.voted) == (
+        "v1.0.0rc2",
+        f"{NOTICE_URL}13",
+        (),
+        False,
+    )
+    assert ws.requester_rows(notice, [], NOW) == []
+
+
+def test_s021_7_neither_row_is_an_action_or_an_agent_s(ws: ModuleType) -> None:
+    for state in ("REQUESTER_CONFIRMED", "REQUESTER_REPORT"):
+        row = ws.Row(state, "#5", "v1.0.0rc1: the requester ...")
+        assert state not in ws.ACTION and state not in ws.AGENT and state not in ws.FIXED
+        assert row.json() == {"state": state, "subject": "#5", "detail": row.detail, "agent": False, "fix": None}
+
+
+def test_s021_6_reactions_are_read_only_for_a_notice_with_a_vote(ws: ModuleType) -> None:
+    views = {
+        5: view("alice", comment("bot", PRE_NOTICE, 11, ("THUMBS_UP", "HEART"))),
+        6: view("carol", comment("bot", PRE_NOTICE, 21, ("HEART",)), comment("carol", "no luck", 22)),
+        7: view("dave", comment("bot", "<!-- shipmill:available: stable v1.0.0 -->\nReleased in v1.0.0.", 31)),
+    }
+    read: list[str] = []
+
+    def reactions_of(url: str) -> list[object]:
+        read.append(url)
+        return [reaction(ws, "alice", "+1")]
+
+    rows = ws.answers_rows(REPO, [5, 6, 7], NOW, views.__getitem__, reactions_of)
+    assert [(r.state, r.subject) for r in rows] == [("REQUESTER_CONFIRMED", "#5"), ("REQUESTER_REPORT", "#6")]
+    assert read == [f"{NOTICE_URL}11"]
+    assert ws.pre_release("v1.0.0rc1") and ws.pre_release("v1.1.0.dev3") and not ws.pre_release("v1.0.0")
+
+
+def test_s021_6_the_watch_reads_a_notice_by_shipped_py_s_marker(ws: ModuleType) -> None:
+    shipped = importlib.util.spec_from_file_location("shipped_marker", ws.SHIPPED)
+    assert shipped is not None and shipped.loader is not None
+    module = importlib.util.module_from_spec(shipped)
+    sys.modules[shipped.name] = module
+    shipped.loader.exec_module(module)
+    assert ws.AVAILABLE.pattern == module.MARKER.pattern
+    assert ws.AVAILABLE.match(module.notice("v1.0.0rc1", "").partition("\n")[0]) is not None
