@@ -262,9 +262,8 @@ def test_review_md_symlinked_outside_the_repo_is_refused(tmp_path: Path) -> None
     with pytest.raises(ReleaseError, match="outside the repository"):
         show(root, [])
     (root / "REVIEW.md").unlink()
-    (root / "linked").symlink_to(outside)
-    with pytest.raises(ReleaseError, match="outside the repository"):
-        show(root, ["linked/x.py"])
+    (root / "linked").symlink_to(outside)  # git lists the link, never a REVIEW.md behind it
+    assert show(root, ["linked/x.py"]).free == ()
 
 
 def test_review_md_symlinked_inside_the_repo_is_read(tmp_path: Path) -> None:
@@ -273,3 +272,12 @@ def test_review_md_symlinked_inside_the_repo_is_read(tmp_path: Path) -> None:
     (root / "REVIEW.md").symlink_to(root / "docs" / "REVIEW.md")
     assert check(root) == []
     assert show(root, []).to_json()["cap"] == 3
+
+
+def test_show_skips_ignored_review_md_as_check_does(tmp_path: Path) -> None:
+    root = _git_repo(tmp_path / "repo")
+    _write(root, ".gitignore", "vendor/\n")
+    _write(root, "vendor/REVIEW.md", "## Important\n\nbroken\n")
+    _write(root, "REVIEW.md", ROOT_REVIEW)
+    assert check(root) == []
+    assert {r["file"] for r in show(root, ["vendor/x.py"]).to_json()["important"]} == {"REVIEW.md"}

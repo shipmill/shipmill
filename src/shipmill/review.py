@@ -323,13 +323,12 @@ def _changed(root: Path, path: str) -> PurePosixPath:
 
 def applying(root: Path, paths: Sequence[str]) -> list[PurePosixPath]:
     """The REVIEW.md files for changes to paths: the root's, then those of every directory
-    from each file up to the root, shallowest first"""
+    from each file up to the root, shallowest first; tracked or new and not ignored, as check"""
     wanted = {PurePosixPath(REVIEW)}
     for path in paths:
         for folder in _changed(root, path).parents:
             wanted.add(folder / REVIEW)
-    present = {p for p in wanted if (root / p).is_file()}
-    return sorted(present, key=lambda p: (len(p.parts), p.parts))
+    return [p for p in files(root) if p in wanted]  # the ones check reads, so show never refuses what check passed
 
 
 def show(root: Path, paths: Sequence[str]) -> Rubric:
