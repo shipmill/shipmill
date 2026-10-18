@@ -60,7 +60,7 @@ class LaneRule:
     lane: Lane
     quiet_minutes: int | None  # due once main has been quiet this long
     schedule: tuple[Window, ...]  # due once a window opened after the lane's last release
-    milestone: bool  # due once the milestone named after the version has no open issues
+    milestone: bool  # due once the milestone named after the version is done: no open issues, its specs built
     promote: bool  # stable only: promote a soaked rc instead of releasing main's head
     min_soak_days: int  # stable only, with promote
     marker: str  # rc only: a, b, or rc

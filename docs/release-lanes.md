@@ -93,7 +93,7 @@ github_release = true             # a GitHub release, marked pre-release
 promote_from = "rc"               # omit to release main's head directly
 min_soak_days = 3
 schedule = ["Mon 07:00 Europe/Kyiv"]
-milestone = true                  # due once the milestone named "1.5.0" has no open issues
+milestone = true                  # due once the milestone named "1.5.0" is done (below)
 github_release = true
 dispatch = ["publish.yml"]
 
@@ -118,6 +118,17 @@ starts a run, and the policy decides whether a window is open. When the stable l
 work out what it would promote (an rc section it can't fold, say), the run goes on to rc and
 dev and names the stable lane's error in its reason; it fails with that error only when no
 other lane releases or proposes.
+
+A milestone is done when it has no open issues and at least one closed, and, when specs in
+`docs/specs/` belong to it, when its goal is built (spec 022). A spec belongs to the
+milestone when its Issues section names an issue of the milestone, or an issue of the
+milestone links the spec's file. Then each such spec must say `status: built` at main's head,
+and each build issue it names in this repository must be closed as not planned, or closed
+by a merged pull request whose merge commit is in the candidate's base (the rc's base, for
+a promotion), or carry a trusted `<!-- shipmill:close-confirmed -->` comment (D-29). Until
+then the plan names what holds it, the first reason per spec, such as
+`milestone 1.5.0: S-021's #40 is not in v1.5.0rc3`; once done, its reason names the specs,
+`milestone 1.5.0 built: S-021, S-023`. A milestone no spec belongs to is done as before.
 
 ### The schedule in `release.yml`
 

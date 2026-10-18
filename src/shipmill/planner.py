@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from shipmill import fragments
+from shipmill import fragments, milestones
 from shipmill.autonomy import Autonomy, Hold, Stage
 from shipmill.changelog import Changelog, Entry
 from shipmill.errors import ReleaseError
@@ -85,6 +85,7 @@ class _Candidate:
     why: str
     merges: tuple[str, ...] = ()
     prs: tuple[int, ...] = ()
+    source: str = ""  # what the base is, when not main's head: the rc a promotion's base is
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,7 +234,9 @@ class Planner:
                 f"the CI workflows ({WORKFLOWS}) changed since {rc.name}; the next rc carries them"
                 " and soaks before it's promoted"
             )
-        return _Candidate(version, base, f"promotes {rc.name}, soaked {(self.now - rc.date).days} day(s)")
+        return _Candidate(
+            version, base, f"promotes {rc.name}, soaked {(self.now - rc.date).days} day(s)", source=rc.name
+        )
 
     def _hotfix(self, hotfix: Hotfix) -> _Candidate:
         if not hotfix.prs:
@@ -265,8 +268,9 @@ class Planner:
 
     # -- triggers and gates ----------------------------------------------------------------
 
-    def _due(self, lane: Lane, candidate: _Candidate, head: str) -> str | None:
-        """Which trigger made the lane due, or None"""
+    def _due(self, lane: Lane, candidate: _Candidate, head: str) -> str | milestones.Verdict | None:
+        """Which trigger made the lane due; None when none did, or the milestone's verdict
+        when its issues are closed but the goal behind them isn't done (spec 022)"""
         rule = self.policy.rule(lane)
         if rule.quiet_minutes is not None:
             quiet = self.now - self.git.commit_time(head)
@@ -280,8 +284,17 @@ class Planner:
         if rule.milestone:
             milestone = self.github.milestone(str(candidate.version.release))
             if milestone is not None and milestone.open_issues == 0 and milestone.closed_issues > 0:
-                return f"milestone {candidate.version.release} has no open issues"
+                found = self.milestone_verdict(candidate, head)
+                return found.reason if found.done else found
         return None
+
+    def milestone_verdict(self, candidate: _Candidate, head: str) -> milestones.Verdict:
+        """Whether the goal of the candidate's milestone, closed already, is done: its specs
+        at main's head, their build issues' fixes in the candidate's base"""
+        where = candidate.source or ("main's head" if candidate.base == head else candidate.base[:12])
+        app_id = self.policy.agents.app_id if self.policy.agents else None
+        title = str(candidate.version.release)
+        return milestones.verdict(self.git, self.github, title, head, candidate.base, where, app_id)
 
     def hold(self) -> Hold:
         """The stop switch, read once per plan and only once a lane is due"""
@@ -346,9 +359,28 @@ class Planner:
             if self._has_tag(candidate.version):
                 skipped.append(f"{current}: {candidate.version.tag} exists already")
                 continue
-            due = "started by hand" if lane else self._due(current, candidate, head)
+            if lane:
+                due: str | milestones.Verdict | None = "started by hand"
+            elif current is Lane.STABLE:
+                # a goal the stable lane can't read (a spec naming no issue, #296's kind of
+                # error) doesn't stop rc and dev either; any other error, the milestone's own
+                # read included, fails the plan as before, so an outage never releases an rc
+                try:
+                    due = self._due(current, candidate, head)
+                except milestones.GoalError as error:
+                    unplanned = error
+                    skipped.append(f"{current}: not planned, {error}")
+                    notes.append(f"{current}: not planned, {error}")
+                    continue
+            else:
+                due = self._due(current, candidate, head)
             if due is None:
                 skipped.append(f"{current}: {candidate.version} is ready but no trigger is due")
+                continue
+            if isinstance(due, milestones.Verdict):
+                # what holds a goal is named even when a later lane releases (spec 022)
+                skipped.append(f"{current}: {candidate.version} is ready but no trigger is due; {due.reason}")
+                notes.append(f"{current}: {due.reason}")
                 continue
             held = self._held(current)
             if held is not None:
