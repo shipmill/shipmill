@@ -10,6 +10,7 @@ fixed line format that code extracts, and a line that breaks it is an error, nev
 Every other section, and any text before the first heading, is free: passed to the reviewer
 as it is and never an error. A REVIEW.md in a subdirectory adds its rules for changes under
 it; its ids are its own, cited with its directory (`skills/I-2`), and the smallest cap wins.
+The edit commands at the end write one structured line in the working tree, never a commit.
 """
 
 import re
@@ -18,8 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from shipmill import cli_command
 from shipmill.errors import ReleaseError
 from shipmill.gitrepo import Git
+from shipmill.lineedit import Document, LineText, history_numbers
 
 REVIEW = "REVIEW.md"
 DEFAULT_CAP = 5
@@ -65,8 +68,10 @@ class Glob:
     value: str
 
     def __post_init__(self) -> None:
-        if not self.value or self.value != self.value.strip() or "`" in self.value:
-            raise ReleaseError(f"a protected glob is a non-empty path pattern without backticks; got {self.value!r}")
+        if not self.value or self.value != self.value.strip() or "`" in self.value or len(self.value.splitlines()) != 1:
+            raise ReleaseError(
+                f"a protected glob is a non-empty path pattern on one line, without backticks; got {self.value!r}"
+            )
 
     def __str__(self) -> str:
         return self.value
@@ -343,3 +348,143 @@ def show(root: Path, paths: Sequence[str]) -> Rubric:
     if problems:
         raise Malformed(problems)
     return merge(rubrics)
+
+
+# The edit commands (spec 024): an agent changes a structured line only through them, so an id
+# is never reused, a glob keeps its backticks, and Nits keeps one `cap:` line. Each refuses a
+# REVIEW.md `check` refuses, writes a section the file lacks in its fixed place (Important, then
+# Nits, then Protected areas), and leaves every other line as it was
+
+
+@dataclass(frozen=True, slots=True)
+class Edited:
+    """The line an edit wrote, or removed, and where: the REVIEW.md relative to the repo, and its line"""
+
+    file: PurePosixPath
+    line: int
+    text: str
+
+
+def review_file(root: Path, folder: str | None) -> PurePosixPath:
+    """The REVIEW.md an edit changes: the root's, or that of --dir, an existing directory in
+    the repository given relative to its root"""
+    if folder is None:
+        return PurePosixPath(REVIEW)
+    relative = PurePosixPath(Path(folder).as_posix())
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ReleaseError(f"--dir is a directory in the repository, relative to its root; got {folder!r}")
+    target = root / relative
+    if not target.is_dir():
+        raise ReleaseError(f"--dir {folder}: no such directory in {root}")
+    if not target.resolve().is_relative_to(root.resolve()):
+        raise ReleaseError(f"--dir {folder} resolves to {target.resolve()}, outside the repository {root}")
+    return relative / REVIEW
+
+
+def add_rule(root: Path, file: PurePosixPath, text: LineText) -> Edited:
+    """Append `- I-n: <text>` to Important, n one above any id the file ever held"""
+    document, rubric = _editable(root, file, create=True)
+    held = history_numbers(root, (file,), "I") | {rule.id.number for rule in rubric.important}
+    line = f"- {RuleId(max(held, default=0) + 1)}: {text}"
+    return _append(document, file, IMPORTANT, line)
+
+
+def protect(root: Path, file: PurePosixPath, glob: Glob, why: LineText) -> Edited:
+    """Append ``- `<glob>`: <why>`` to Protected areas; a glob already listed is refused"""
+    document, rubric = _editable(root, file, create=True)
+    if any(p.glob == glob for p in rubric.protected):
+        raise ReleaseError(f"`{glob}` is already in {file}'s Protected areas; nothing was written")
+    return _append(document, file, PROTECTED, f"- `{glob}`: {why}")
+
+
+def set_cap(root: Path, file: PurePosixPath, cap: int) -> Edited:
+    """Rewrite Nits' `cap:` line, or write one at the top of Nits"""
+    if cap < 0:
+        raise ReleaseError(f"the Nits cap is a whole number from 0; got {cap}")
+    document, _ = _editable(root, file, create=True)
+    line = f"cap: {cap}"
+    section = _section(document, NITS)
+    if section is None:
+        return _create(document, file, NITS, line)
+    for number, text in section.body:
+        if _CAP.fullmatch(text) is not None:
+            document.replace(number - 1, line)
+            document.write()
+            return Edited(file, number, line)
+    index = document.insert(document.section_start(section.line - 1), [line], pad=True)
+    document.write()
+    return Edited(file, index + 1, line)
+
+
+def retire(root: Path, file: PurePosixPath, target: str) -> Edited:
+    """Remove an Important rule by its id (I-n) or a Protected areas item by its glob; a rule's
+    id is never handed out again"""
+    document, _ = _editable(root, file, create=False)
+    if _RULE_ID.fullmatch(target) is not None:
+        name, pattern, key = IMPORTANT, _IMPORTANT_ITEM, str(RuleId.parse(target))
+    else:
+        name, pattern, key = PROTECTED, _PROTECTED_ITEM, str(Glob(target))
+    section = _section(document, name)
+    for number, line in section.body if section is not None else ():
+        item = pattern.fullmatch(line)
+        if item is not None and item.group(1) == key:
+            document.delete(number - 1)
+            document.write()
+            return Edited(file, number, line)
+    raise ReleaseError(f"no {target} in {file}'s {name}; nothing was written")
+
+
+def _editable(root: Path, file: PurePosixPath, create: bool) -> tuple[Document, Rubric]:
+    """The file's lines and rubric; refused (exit 2) when `check` refuses it, so nothing is
+    written over a broken file. A missing file is a new, empty one when create is set"""
+    path = root / file
+    if not path.resolve().is_relative_to(root.resolve()):  # a dangling symlink too, before it is written through
+        raise ReleaseError(f"{file} resolves to {path.resolve()}, outside the repository {root}; refusing to edit it")
+    if not path.exists():
+        if not create:
+            raise ReleaseError(f"no {file} in {root}; nothing to retire")
+        return Document.new(path), Rubric((), None, (), ())
+    document = Document.read(path)
+    rubric, problems = parse(document.text(), file)
+    if problems:
+        listed = "\n".join(f"  {p}" for p in problems)
+        raise ReleaseError(
+            f"{file} doesn't pass `{cli_command()} review check`, so nothing was written; fix it first:\n{listed}"
+        )
+    return document, rubric
+
+
+def _section(document: Document, name: str) -> _Section | None:
+    return next((s for s in _sections(document.text()) if s.heading == name), None)
+
+
+def _append(document: Document, file: PurePosixPath, name: str, line: str) -> Edited:
+    """The line after the section's last one, or the section, written in its place"""
+    section = _section(document, name)
+    if section is None:
+        return _create(document, file, name, line)
+    filled = [number for number, text in section.body if text.strip()]
+    if filled:
+        index = document.insert(filled[-1], [line])
+    else:
+        index = document.insert(document.section_start(section.line - 1), [line], pad=True)
+    document.write()
+    return Edited(file, index + 1, line)
+
+
+def _create(document: Document, file: PurePosixPath, name: str, line: str) -> Edited:
+    """Write `## <name>` holding the line in its fixed place: before the first structured section
+    that comes after it, else after the last that comes before it, else at the end"""
+    sections = _sections(document.text())
+    rank = STRUCTURED.index(name)
+    later = [s for s in sections if s.heading in STRUCTURED and STRUCTURED.index(s.heading) > rank]
+    earlier = [i for i, s in enumerate(sections) if s.heading in STRUCTURED and STRUCTURED.index(s.heading) < rank]
+    if later:
+        index = later[0].line - 1
+    elif earlier and earlier[-1] + 1 < len(sections):
+        index = sections[earlier[-1] + 1].line - 1  # the heading of the section after it
+    else:
+        index = len(document.lines)
+    first = document.insert(index, [f"## {name}", "", line], pad=True)
+    document.write()
+    return Edited(file, first + 3, line)
