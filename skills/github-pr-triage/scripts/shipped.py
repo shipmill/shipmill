@@ -7,8 +7,9 @@ Walks `git log <prev-tag>..<tag>` in the local checkout and collects issue numbe
   - closing trailers in commit messages ("Fixes #N" at the start of a line)
   - the merged PRs those commits belong to (merge, squash, or rebase merges): GitHub's
     closingIssuesReferences in the repo, a closing keyword in the title, or one that starts
-    a line of the body outside a code fence, the trailer rule triage_state.py reads a
-    closing commit with. A keyword quoted mid-line or in backticks names nothing (#368)
+    a line of the body outside a code fence: github-issue-triage's triage_state.py
+    keyword_closes, the one rule triage links a PR to an issue by (#416). A keyword quoted
+    mid-line or in backticks names nothing (#368)
 A stable tag also reads the range from the newest stable tag below it (or, when only
 pre-release tags are below it, its whole history), so a stable release that promotes an
 rc tells every issue the rc held even when <prev-tag> is a later rc and <prev-tag>..<tag> holds only the stamp
@@ -72,11 +73,10 @@ PLACEHOLDERS = ("name", "tag", "version")
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 NOTICES_ANYWHERE = re.compile(r"^\s*[\"']?notices[\"']?\s*[.=]", re.MULTILINE)  # a dotted key or inline table
 PLAIN_KEY = re.compile(r"^\s*(\w+)\s*=\s*(\"[^\"\\]*\"|'[^']*')\s*(?:#.*)?$")
+# github-issue-triage's triage_state.py: one reading of a PR's closing keywords for both (#416)
+TRIAGE_STATE = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "triage_state.py"
 KEYWORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
 TRAILER = re.compile(rf"^\s*(?:[-*]\s*)?{KEYWORDS}:?\s+#(\d+)\b", re.IGNORECASE | re.MULTILINE)
-ANYWHERE = re.compile(rf"\b{KEYWORDS}:?\s+#(\d+)\b", re.IGNORECASE)
-CODE_SPAN = re.compile(r"`+[^`]*`+")
-FENCE = re.compile(r"^[ \t]*(?:```|~~~)")
 # gh's answer for a number with no issue or pull request behind it, and only that (#368)
 NOT_FOUND = re.compile(r"Could not resolve to an issue or pull request with the number of (\d+)\b")
 PULLS = """query($owner: String!, $name: String!, $oid: GitObjectID!) {
@@ -157,25 +157,26 @@ def pr_closes(repo: str, pr: dict[str, Any]) -> set[int]:
         for n in pr["closingIssuesReferences"]["nodes"]
         if n["repository"]["nameWithOwner"].lower() == repo.lower()
     }
-    found |= {int(n) for n in ANYWHERE.findall(CODE_SPAN.sub("", pr.get("title") or ""))}
-    fenced = False
-    for line in (pr.get("body") or "").splitlines():
-        if FENCE.match(line):
-            fenced = not fenced
-        elif not fenced:
-            found |= {int(n) for n in TRAILER.findall(line)}
-    return found
+    keywords: set[int] = TRIAGE.keyword_closes(pr.get("title") or "", pr.get("body") or "")
+    return found | keywords
 
 
-def watch_module() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("shipmill_watch_state", WATCH_STATE)
+def load(name: str, path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        sys.stderr.write(f"error: can't load {WATCH_STATE}\n")
+        sys.stderr.write(f"error: can't load {path}\n")
         raise SystemExit(2)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module  # its dataclasses look their module up by name
     spec.loader.exec_module(module)
     return module
+
+
+def watch_module() -> ModuleType:
+    return load("shipmill_watch_state", WATCH_STATE)
+
+
+TRIAGE = load("shipmill_triage_state", TRIAGE_STATE)
 
 
 def writer(repo_dir: Path, ws: ModuleType) -> list[str]:
