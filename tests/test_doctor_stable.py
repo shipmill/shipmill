@@ -56,8 +56,9 @@ def test_s029_7_one_warning_per_job_when_a_stage_proposes_too(repo: Repo) -> Non
     prepare, land = permissions(repo, POLICY, RELEASE_PROPOSES)
     assert prepare.startswith("the config sets a stage to propose, so a run opens a proposal issue")
     assert land.startswith("release autonomy is propose, so a release closes its lane's proposal issue, but")
-    # a pending upgrade under propose joins the same land warning (spec 014)
-    [_, land] = permissions(repo, POLICY, "")
+    # a pending upgrade under propose joins the same land warning (spec 014); without
+    # min_soak_days, changelog-fragments is the one pending upgrade
+    [_, land] = permissions(repo, POLICY.replace("min_soak_days = 3\n", ""), "")
     assert land == (
         f"{BREAKING}, so a release closes its lane's proposal issue; upgrade autonomy is propose and 1"
         f" upgrade(s) pending, but the land job in {CALLER}, whose grant proposes them, grants no"
