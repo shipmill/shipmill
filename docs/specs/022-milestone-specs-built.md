@@ -1,6 +1,6 @@
 # S-022: A milestone is done when its specs are built
 
-status: draft
+status: approved
 
 ## Problem
 

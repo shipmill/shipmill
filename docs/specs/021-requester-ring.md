@@ -1,6 +1,6 @@
 # S-021: The requester ring
 
-status: draft
+status: approved
 
 ## Problem
 
