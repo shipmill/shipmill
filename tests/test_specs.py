@@ -390,6 +390,25 @@ def test_split_proposes_only_the_criteria_no_issue_has(tmp_path: Path) -> None:
     assert "already in o/r#21" in specs(root, "split", "7", "--group", "1", "--group", "3,4").stderr
 
 
+def test_s022_11_split_puts_every_build_issue_in_the_milestone_given(tmp_path: Path) -> None:
+    root = repo(tmp_path, **{"007-dry-run.md": spec("007", criteria=FOUR, issues="")})
+    groups = ("--group", "1,2", "--group", "3,4", "--after", "2:1")
+    out = specs(root, "split", "--json", "--milestone", "1.5.0", *groups, "7")
+    assert out.returncode == 0, out.stderr
+    assert [i["milestone"] for i in json.loads(out.stdout)["issues"]] == ["1.5.0", "1.5.0"]
+    text = specs(root, "split", "--milestone", "1.5.0", *groups, "7")
+    assert text.returncode == 0, text.stderr
+    assert "title: Dry run (S-007-1, S-007-2)\nmilestone: 1.5.0\n\nBuilds part" in text.stdout
+    assert text.stdout.count("\nmilestone: 1.5.0\n") == 2
+    # Without the flag, no build issue has a milestone
+    plain = specs(root, "split", "--json", *groups, "7")
+    assert all("milestone" not in i for i in json.loads(plain.stdout)["issues"])
+    assert "milestone" not in specs(root, "split", *groups, "7").stdout
+    for bad in ("", " 1.5.0", "1.5\n0"):
+        out = specs(root, "split", "--milestone", bad, "7")
+        assert (out.returncode, "--milestone must be" in out.stderr) == (2, True), (bad, out.stderr)
+
+
 def test_split_refuses_a_bad_graph(tmp_path: Path) -> None:
     approved = spec("007", criteria=FOUR, issues="")
     root = repo(tmp_path, **{"007-dry-run.md": approved, "008-draft.md": spec("008", status="draft")})
