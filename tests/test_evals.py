@@ -103,7 +103,39 @@ def test_s025_1_graders_in_files_and_block_lists_are_read(repo: Path, capsys: py
 
 
 def test_s025_1_no_evals_directory_is_an_empty_suite(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert _check(tmp_path, capsys) == (0, ["no evals/ suite: nothing to check"])
+    assert _check(tmp_path, capsys) == (0, ["no case under evals/: nothing to check"])
+
+
+def _shared_tools(root: Path) -> None:
+    """evals/ as the gh stub's build leaves it (S-025-3 to S-025-6): tools, no case yet"""
+    _write(root, "evals/bin/gh", "#!/usr/bin/env python3\n")
+    _write(root, "evals/graders/no-miss.yaml", "name: no-miss\ntype: regex\n")
+    _write(root, "evals/scaffold.sh", "#!/bin/sh\n")
+
+
+def test_s025_1_shared_tools_without_cases_are_an_empty_suite(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _shared_tools(tmp_path)
+    assert _check(tmp_path, capsys) == (0, ["no case under evals/: nothing to check"])
+
+
+def test_s025_1_a_case_without_the_manifest_still_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _shared_tools(tmp_path)
+    _write(tmp_path, f"evals/{CASE}/prompt.md", PROMPT)
+    code, lines = _check(tmp_path, capsys)
+    assert code == 1
+    assert lines == [
+        "evals/cases.toml: missing; it lists every case under evals/",
+        f"evals/{CASE}: a case directory not listed in evals/cases.toml",
+    ]
+
+
+def test_s025_1_a_graders_directory_is_never_a_case(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _shared_tools(repo)
+    _write(repo, "evals/graders/shared/prompt.md", PROMPT)
+    _write(repo, f"evals/{SKILL}/graders/shared/prompt.md", PROMPT)
+    assert _check(repo, capsys)[0] == 0
 
 
 def test_s025_1_case_directory_missing_from_manifest(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:

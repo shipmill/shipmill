@@ -44,7 +44,7 @@
                   or one section (--section, --json), list its ids; add, edit, and retire an item,
                   printing its line, an added one with an id its history never held
   evals           the agents' eval suite, evals/ (spec 025): check exits 1 naming each case and the
-                  rule it breaks, without a model; a repository with no evals/ passes
+                  rule it breaks, without a model; a repository with no case under evals/ passes
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
 action, app-create or app-install left a repo without the App, product check found a broken
@@ -472,9 +472,7 @@ def _parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("evals", help="check the agents' eval suite, evals/ (spec 025)")
     evaluating = p.add_subparsers(dest="evals", required=True)
-    q = evaluating.add_parser(
-        "check", help="exit 1 naming each case of evals/ and the rule it breaks; no evals/ passes"
-    )
+    q = evaluating.add_parser("check", help="exit 1 naming each case of evals/ and the rule it breaks; no case passes")
     q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
 
     p = sub.add_parser("launchd", help="run the gate for a dedicated checkout every few minutes (macOS)")
@@ -1082,7 +1080,7 @@ def _evals(root: Path, resolves: evals.Resolves | None = None) -> int:
     so CI runs the check before the suite exists"""
     report = evals.check(root, resolves)
     if report is None:
-        print(f"no {evals.SUITE}/ suite: nothing to check")
+        print(f"no case under {evals.SUITE}/: nothing to check")
         return 0
     for violation in report.violations:
         print(violation)

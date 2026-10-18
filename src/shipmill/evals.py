@@ -92,15 +92,18 @@ def git_resolves(root: Path) -> Resolves:
 
 
 def check(root: Path, resolves: Resolves | None = None) -> Report | None:
-    """The suite's violations, or None when the repository has no evals/ yet (an empty
-    suite). Raises ReleaseError on a malformed cases.toml"""
+    """The suite's violations, or None for an empty suite: no evals/ yet, or an evals/ with
+    only the shared tools (bin/, graders/, scaffold.sh) and neither a case directory nor a
+    cases.toml. Raises ReleaseError on a malformed cases.toml"""
     suite = root / SUITE
     if not suite.is_dir():
         return None
-    resolve = resolves if resolves is not None else git_resolves(root)
     found = set(_case_dirs(suite, PurePosixPath()))
-    violations: list[Violation] = []
     manifest = root / MANIFEST
+    if not found and not manifest.exists():
+        return None
+    resolve = resolves if resolves is not None else git_resolves(root)
+    violations: list[Violation] = []
     if manifest.is_file():
         entries = read_manifest(manifest)
     else:
@@ -171,6 +174,8 @@ def _case_dirs(folder: Path, at: PurePosixPath) -> Iterator[PurePosixPath]:
         if not child.is_dir() or child.is_symlink() or child.name.startswith("."):
             continue
         if at == PurePosixPath() and child.name in NOT_CASES:
+            continue
+        if child.name == GRADERS:  # shared graders, evals/graders/ or a skill's: never a case
             continue
         path = at / child.name
         if (child / PROMPT).is_file() or (child / CASE).is_file():
