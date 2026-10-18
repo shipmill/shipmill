@@ -13,7 +13,8 @@
   doctor          check that the repository is ready for the bot
   review          REVIEW.md, the review rubric (spec 024): check exits 1 naming the file, line, and rule
                   a structured section breaks; show prints the rubric for the files given with --path,
-                  the root's and their directories' merged, as Markdown or --json
+                  the root's and their directories' merged, as Markdown or --json; add-rule, protect,
+                  set-cap, and retire edit one line (--dir DIR: DIR/REVIEW.md) and print it
   status          say whether the factory works or is stuck: a verdict, then a short summary with
                   a line per reason and a direct link per item; --rows for github-ship-watch's
                   table, --json for its JSON lines
@@ -40,11 +41,13 @@
                   repos holding .github/shipmill.toml, the key saved with mode 0600
   app-install     guide installing the App on more repos: the App's Install App page and what to pick
   product         read the product's direction, docs/product.md (spec 024): check its grammar, show it
-                  or one section (--section, --json), list its ids
+                  or one section (--section, --json), list its ids; add, edit, and retire an item,
+                  printing its line, an added one with an id its history never held
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
 action, app-create or app-install left a repo without the App, product check found a broken
-rule, or review check found a malformed REVIEW.md; 2 bad input or a refused state.
+rule, or review check found a malformed REVIEW.md; 2 bad input or a refused state, such as an
+edit of a file its check refuses.
 """
 
 import argparse
@@ -62,7 +65,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TextIO
 
-from shipmill import agent_as_person, cli_command, fragments, review, status
+from shipmill import agent_as_person, cli_command, fragments, product, review, status
 from shipmill.agents import AgentsConfig, app_id_of
 from shipmill.app import (
     CACHE,
@@ -126,11 +129,12 @@ from shipmill.gitrepo import Git
 from shipmill.init import RunsOn, init, init_caller, init_operate
 from shipmill.land import ActionsRun, Prepared, Stop, cleanup, land, prepare, work_branch
 from shipmill.launchd import DEFAULT_TOOL, build, install, remove
+from shipmill.lineedit import LineText
 from shipmill.notify import Desktop
 from shipmill.operate import Http, UrllibHttp, approve, approve_rollback, operate, summary
 from shipmill.planner import Event, Hotfix, Planner, Proposal
 from shipmill.policy import Lane, Policy
-from shipmill.product import DIRECTION, Section
+from shipmill.product import DIRECTION, ItemId, Section
 from shipmill.product import check as check_product
 from shipmill.product import read as read_product
 from shipmill.propose import close_released, propose, run_url
@@ -263,17 +267,37 @@ def _parser() -> argparse.ArgumentParser:
 
     sub.add_parser("doctor", help="check that the repository is ready for the bot")
 
-    p = sub.add_parser("review", help="check or show REVIEW.md, the review rubric (spec 024)")
+    p = sub.add_parser("review", help="check, show, or edit REVIEW.md, the review rubric (spec 024)")
     reviews = p.add_subparsers(dest="review_command", required=True)
     for name, about in (
         ("check", "exit 1 naming the file, line, and rule when a REVIEW.md's structured sections break"),
         ("show", "print the rubric that applies to the changed files: the root's and their directories' merged"),
+        ("add-rule", "append `- I-n: <text>` to Important, n one above any id the file's history held"),
+        ("protect", "append a Protected areas item, ``- `<glob>`: <why>``; refuses a glob already listed"),
+        ("set-cap", "set Nits' `cap: N` line, the most nits a review raises"),
+        ("retire", "remove an Important rule by its id (I-n) or a Protected areas item by its glob"),
     ):
         q = reviews.add_parser(name, help=about)
         q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
         if name == "show":
             q.add_argument("--path", action="append", default=[], metavar="FILE", help="a changed file (repeatable)")
             q.add_argument("--json", action="store_true", help="print the rubric as JSON")
+        if name in ("check", "show"):
+            continue
+        q.add_argument(
+            "--dir",
+            metavar="DIR",
+            help="edit DIR/REVIEW.md instead of the root's, creating it with only the touched section",
+        )
+        if name == "add-rule":
+            q.add_argument("text", help="the rule, one line")
+        elif name == "protect":
+            q.add_argument("glob", help="the path pattern, such as src/shipmill/land.py or skills/**")
+            q.add_argument("--why", required=True, help="why a change to it needs the maintainer, one line")
+        elif name == "set-cap":
+            q.add_argument("cap", type=int, metavar="N", help="the cap, a whole number from 0")
+        else:
+            q.add_argument("target", metavar="I-n|GLOB", help="the rule's id or the protected glob")
 
     p = sub.add_parser("status", help="say whether the factory works or is stuck (specs 008, 009)")
     p.add_argument(
@@ -416,7 +440,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--no-browser", action="store_true", help="print the page instead of opening it")
     p.add_argument("--json", action="store_true", help="print the result as one JSON object")
 
-    p = sub.add_parser("product", help=f"read the product's direction, {DIRECTION} (spec 024)")
+    p = sub.add_parser("product", help=f"read or edit the product's direction, {DIRECTION} (spec 024)")
     acting = p.add_subparsers(dest="product", required=True)
     checking = acting.add_parser("check", help=f"exit 1 naming the file, line, and rule {DIRECTION} breaks")
     showing = acting.add_parser("show", help="print the direction, or some sections, moved ones resolved")
@@ -429,7 +453,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     showing.add_argument("--json", action="store_true", help="print it as one JSON object")
     listing = acting.add_parser("ids", help="list every item's id with its text, one per line")
-    for each in (checking, showing, listing):  # also after it: `product check --repo DIR`
+    adding = acting.add_parser(
+        "add", help="append an item with the next id, one above any the direction's history held; print it"
+    )
+    adding.add_argument("section", choices=[s.option for s in Section if s.prefix is not None])
+    adding.add_argument("text", help="the item's text, one line")
+    editing = acting.add_parser("edit", help="rewrite one item's text; its id stays")
+    editing.add_argument("id", help="the item's id, such as G-3")
+    editing.add_argument("text", help="the item's new text, one line")
+    retiring = acting.add_parser("retire", help="remove one item; its id is never handed out again")
+    retiring.add_argument("id", help="the item's id, such as G-3")
+    for each in (checking, showing, listing, adding, editing, retiring):  # also after it: `product check --repo DIR`
         each.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
 
     p = sub.add_parser("launchd", help="run the gate for a dedicated checkout every few minutes (macOS)")
@@ -1012,6 +1046,18 @@ def _review(root: Path, args: argparse.Namespace) -> int:
         for problem in problems:
             print(problem)
         return 1 if problems else 0
+    if args.review_command != "show":
+        file = review.review_file(root, args.dir)
+        if args.review_command == "add-rule":
+            edited = review.add_rule(root, file, LineText(args.text))
+        elif args.review_command == "protect":
+            edited = review.protect(root, file, review.Glob(args.glob), LineText(args.why))
+        elif args.review_command == "set-cap":
+            edited = review.set_cap(root, file, args.cap)
+        else:
+            edited = review.retire(root, file, args.target)
+        print(edited.text)  # the line written, or removed
+        return 0
     rubric = review.show(root, args.path)
     sys.stdout.write(json.dumps(rubric.to_json(), indent=2) + "\n" if args.json else rubric.render())
     return 0
@@ -1085,6 +1131,15 @@ def _product(root: Path, args: argparse.Namespace) -> int:
             return 1
         direction = read_product(root)
         print(f"{DIRECTION}: well formed, {len(direction.all_items())} items")
+        return 0
+    if args.product in ("add", "edit", "retire"):
+        if args.product == "add":
+            edited = product.add(root, Section.named(args.section), LineText(args.text))
+        elif args.product == "edit":
+            edited = product.edit(root, ItemId.parse(args.id), LineText(args.text))
+        else:
+            edited = product.retire(root, ItemId.parse(args.id))
+        print(edited.text)  # the line written, or removed
         return 0
     direction = read_product(root)
     if args.product == "ids":

@@ -3,17 +3,19 @@ and quality bar the agents work toward. Its grammar is fixed so code reads it wi
 a level-one heading naming the product, then the five sections in order, the four list
 sections holding only `- <prefix>-<n>: <text>` items. A section may move to its own file
 under docs/product/ through a single `See [<section>](product/<file>.md).` line. Only the
-maintainer changes it (D-34); this module only reads it"""
+maintainer merges a change to it (D-34); the edit commands at the end write one item line in
+the working tree, never a commit"""
 
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from shipmill import cli_command
 from shipmill.errors import ReleaseError
+from shipmill.lineedit import Document, LineText, history_numbers
 
 DIRECTION = Path("docs/product.md")
 _MOVED_DIR = "product"  # moved sections live in docs/product/, linked relative to docs/
@@ -228,6 +230,7 @@ class _Parser:
         self.root = root
         self.problems: list[Problem] = []
         self.seen: dict[ItemId, str] = {}  # the file:line each id first appears on, for a duplicate's message
+        self.bodies: dict[Section, _Body] = {}  # each section's lines, in the file a moved one moved to
 
     def fail(self, path: Path, line: int, rule: str) -> None:
         self.problems.append(Problem(path, line, rule))
@@ -245,6 +248,7 @@ class _Parser:
         for section in Section:
             body = self._resolve(section, bodies[section]) if section in bodies else None
             if body is not None:
+                self.bodies[section] = body
                 parts[section] = self._section(section, body)
         if self.problems or name is None:
             return None
@@ -459,3 +463,100 @@ def _section_named(title: str | None) -> Section | None:
 
 def _quote(line: str) -> str:
     return f"`{line}`" if "`" not in line else repr(line)
+
+
+# The edit commands (spec 024): an agent changes an item only through them, so an id is never
+# reused and a line never breaks the grammar. Each refuses a direction `check` refuses, writes
+# only the item's line, in the file a moved section moved to, and leaves every other line as it was
+
+
+@dataclass(frozen=True, slots=True)
+class Edited:
+    """The line an edit wrote, or removed, and where: the file relative to the repo, and its line"""
+
+    path: Path
+    line: int
+    text: str
+
+
+_SECTION_OF = {prefix: section for section, prefix in _PREFIXES.items()}
+
+
+def add(root: Path, section: Section, text: LineText) -> Edited:
+    """Append `- <id>: <text>` to the section with the next id"""
+    prefix = section.prefix
+    if prefix is None:
+        raise ReleaseError(f"`## {section.value}` is prose, not items; edit it in {DIRECTION} by hand")
+    direction, bodies = _editable(root)
+    body = bodies[section]
+    line = f"- {Item(_next(root, prefix, direction), str(text))}"
+    document = Document.read(root / body.path)
+    filled = body.filled()
+    if filled:
+        index = document.insert(filled[-1][0], [line])  # right after the last item
+    else:
+        index = document.insert(document.section_start(body.heading - 1), [line], pad=True)
+    document.write()
+    return Edited(body.path, index + 1, line)
+
+
+def edit(root: Path, id: ItemId, text: LineText) -> Edited:
+    """Rewrite one item's text; its id stays"""
+    _, bodies = _editable(root)
+    body, number = _located(bodies, id)
+    line = f"- {Item(id, str(text))}"
+    document = Document.read(root / body.path)
+    document.replace(number - 1, line)
+    document.write()
+    return Edited(body.path, number, line)
+
+
+def retire(root: Path, id: ItemId) -> Edited:
+    """Remove one item; its id is never handed out again. The last item of a section that needs
+    one is refused"""
+    direction, bodies = _editable(root)
+    section = _SECTION_OF[id.prefix]
+    body, number = _located(bodies, id)
+    if section.required and len(direction.items(section)) == 1:
+        raise ReleaseError(
+            f"{id} is the only item of `## {section.value}`, which needs at least one; add the item that"
+            f" replaces it with `{cli_command()} product add {section.option}`, then retire {id}"
+        )
+    document = Document.read(root / body.path)
+    removed = document.content(number - 1)
+    document.delete(number - 1)
+    document.write()
+    return Edited(body.path, number, removed)
+
+
+def _editable(root: Path) -> tuple[Direction, dict[Section, _Body]]:
+    """The direction and each section's lines; refused (exit 2) when `check` refuses it, so
+    nothing is written over a broken file"""
+    parser = _Parser(root)
+    direction = parser.direction()
+    if parser.problems:
+        listed = "\n".join(f"  {p}" for p in parser.problems)
+        raise ReleaseError(
+            f"{DIRECTION} doesn't pass `{cli_command()} product check`, so nothing was written; fix it first:\n{listed}"
+        )
+    assert direction is not None  # no problems means every part parsed
+    return direction, parser.bodies
+
+
+def _next(root: Path, prefix: Prefix, direction: Direction) -> ItemId:
+    """One above the highest id of the prefix that docs/product.md, or a file under
+    docs/product/, ever held on the current branch or holds now"""
+    paths = (PurePosixPath(DIRECTION.as_posix()), PurePosixPath((DIRECTION.parent / _MOVED_DIR).as_posix()))
+    held = history_numbers(root, paths, prefix.value)
+    held |= {item.id.number for item in direction.all_items() if item.id.prefix is prefix}
+    return ItemId(prefix, max(held, default=0) + 1)
+
+
+def _located(bodies: dict[Section, _Body], id: ItemId) -> tuple[_Body, int]:
+    """The body holding the item and the item's line number in its file"""
+    body = bodies[_SECTION_OF[id.prefix]]
+    for number, line in body.filled():
+        m = _ITEM.match(line)
+        if m is not None and int(m["number"]) == id.number:
+            return body, number
+    raise ReleaseError(f"no {id} in {DIRECTION}; `{cli_command()} product ids` lists its ids")
