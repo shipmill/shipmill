@@ -435,6 +435,16 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    again once a person runs it. The setup checklist's `PLUGIN_OUTDATED` rows name that
    install with a `gate:` row
 
+   The delivery hooks come with the plugin (spec 026), and need `uv` on PATH. In a repo
+   whose config has `[agents]`, they refuse with exit 2 a plain `gh` write while `app_id`
+   is set, a push to the default branch, a rebase merge, a force push without a lease
+   pinned to a commit, and a copy of a `[hooks] private` path out of the repo. Ask whether
+   the repo has paths whose files must never leave it (an `owner/` folder, for example),
+   and list them as globs in `[hooks] private` in the same PR; `[hooks] default_branch =
+   false` switches off the default-branch rule. Before you report the agent side
+   connected, run `$CR doctor` and read its `hooks` block: one line per rule, on or off,
+   and a passing self-test
+
    Every time you set up the gate, ask two questions together, before writing the
    section: who should own the gate's GitHub App (step 3), and whether anyone watches
    this machine, which picks `mode` (step 4). Write both answers into `[agents]`: `app_id`

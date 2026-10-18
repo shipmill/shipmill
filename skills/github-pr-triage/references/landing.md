@@ -16,7 +16,7 @@ gh pr view <n> -R <repo> --json state,mergeable,headRefOid,baseRefName
 Pick the first option that applies:
 
 1. **The fix commit's parent is the PR head** (`git rev-parse <fix>^` equals `headRefOid`): a plain push, `git push origin <fix>:refs/heads/<branch>`. It's non-destructive and needs no extra permission when the user asked to land fixes.
-2. **The PR needs a rebase:** a force-push with lease, pinned to the head you reviewed: `git -C <worktree> push --force-with-lease=<branch>:<reviewed-head> origin <sha>:<branch>`. Only with the user's explicit OK. If a permission check blocks it, stop and ask.
+2. **The PR needs a rebase:** a force-push with lease, pinned to the head you reviewed: `git -C <worktree> push --force-with-lease=<branch>:<reviewed-head> origin <sha>:<branch>`. Only with the user's explicit OK. If a permission check blocks it, stop and ask. In a repo with `[agents]`, the plugin's delivery hook refuses a force push without a lease pinned to a commit (`--force`, `-f`, a `+` refspec, a bare `--force-with-lease`, or `--force-with-lease=<branch>` with no `:<sha>`) with exit 2 (spec 026).
 3. **You can't force-push:** push a new branch and open a PR titled like the old one whose body starts "Replaces #N, rebased onto main, with the review fixes: ...". Once the user agrees, comment "Replaced by #M" on the old PR and close it.
 
 Before pushing to a branch, `git merge-base --is-ancestor origin/<default> <sha>` confirms you're still on top of the current default branch.
@@ -38,6 +38,7 @@ test "$(git rev-list --count origin/<default>.."$sha")" -gt 0
 ## Merge style
 
 - **Squash by default** (D-33): `gh pr merge <n> --squash`, so main reads one commit per pull request with its number in the subject. Where the repo's settings don't allow a squash merge, use a merge commit. Never a rebase merge: it rewrites the PR's SHAs and keeps none of the squash's single-commit history.
+- In a repo with `[agents]`, the plugin's delivery hook refuses a rebase merge (`gh pr merge --rebase` or `-r`, or a `gh api` call with `merge_method=rebase`) with exit 2 and the `--squash` command to run instead (spec 026)
 - **Stacked PRs:** merge the base with a merge commit, then `gh pr edit <next> --base <default>`, check the gate again, and merge. A rebase-merge of the base rewrites its SHAs, so the next PR shows duplicate commits. Don't rely on branch deletion to retarget.
   - If the retarget restarts CI, the gate waits for the new run.
   - If the base PR changed after the child was cut (review fixes), rebase the child onto it before merging.
