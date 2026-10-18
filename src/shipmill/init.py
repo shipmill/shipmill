@@ -182,7 +182,7 @@ github_release = true
 # `{UVX} init --operate`:
 # its workflow checks health every 10 minutes and promotes after the bake.
 # [environments.staging]
-# lane = "rc"                       # deploy every release of this lane when it lands
+# lane = "stable"                   # deploy every release of this lane when it lands
 # workflow = "deploy.yml"
 # health = "https://staging.example.com/health"
 #
