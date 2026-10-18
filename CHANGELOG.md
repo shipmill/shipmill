@@ -7,6 +7,19 @@ bot.
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-18
+
+### Added
+
+- Evals: `shipmill evals check [--repo DIR]` validates the agents' eval suite, `evals/`, without a model, exiting 1 with one line per case naming the rule it breaks (an unlisted case or a listed one with no directory, a skill not under `skills/`, tags not naming it, a malformed source, an unknown kind, a commit that does not resolve, no deterministic grader outside a finding case, `max_turns` above 40 or `timeout_seconds` above 900); a repository with no case under `evals/` passes, and CI runs it on every pull request (#437)
+- Evals: eval cases run offline with no token: `evals/bin/gh` answers reads from a case's recorded fixture, logs every read, write, and miss to `.eval/gh.jsonl` without contacting GitHub, and records reads with `EVAL_GH_RECORD=1`; `evals/scaffold.sh` sets a case's workspace at its commit with its fixture at `.eval/`, and the shared `no-miss` grader fails a run that read anything unrecorded (#438)
+- The policy reads an optional `[hooks]` section in `.github/shipmill.toml`: `default_branch` (true or false, default true) and `private` (a list of globs, default none), refusing any other key or a wrong type with exit 2 naming the key (#440)
+- Plugin hooks: in a repo whose `.github/shipmill.toml` has `[agents]`, a PreToolUse hook refuses a plain `gh` write while `app_id` is set, a rebase merge, and a force push without a lease pinned to a commit, each with the command to run instead (#441)
+
+### Changed
+
+- Every skill's "Improve the skill" section says a lesson comes with a case under `evals/` that fails without it, in the same pull request; the postmortem template gains an `## Eval case` section; and github-pr-triage never counts a red `evals` check as unrelated: it blocks the merge unless the maintainer accepts that run (#439)
+
 ## [0.51.0] - 2026-10-18
 
 ### Added
@@ -1519,7 +1532,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.51.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.52.0...HEAD
+[0.52.0]: https://github.com/shipmill/shipmill/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/shipmill/shipmill/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/shipmill/shipmill/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/shipmill/shipmill/compare/v0.48.0...v0.49.0
