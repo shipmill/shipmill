@@ -196,6 +196,35 @@ are dropped. `pr_gate.py` matches the diff's files against Protected areas throu
 naming the glob and its reason. Without a `REVIEW.md` the brief is as today.
 `shipmill-setup` offers a starter rubric; it is optional.
 
+### Agents edit the structured parts through commands
+
+A hand edit of a strict format breaks on details: a reused id, a glob without backticks, a
+second `cap:` line. So an agent changes a structured item only through a command, which
+writes the line, and edits free text (Mission, free `REVIEW.md` sections) directly:
+
+- `shipmill product add <users|goals|non-goals|quality> "<text>"` appends the item with
+  the next id and prints it; `shipmill product edit <id> "<text>"` rewrites one item's
+  text; `shipmill product retire <id>` removes it
+- `shipmill review add-rule "<text>"` appends `- I-n: <text>`; `shipmill review protect
+  <glob> --why "<reason>"` appends a Protected areas item, refusing a glob that is already
+  there; `shipmill review set-cap N`; `shipmill review retire <id|glob>`. `--dir DIR` edits
+  the `REVIEW.md` of a subdirectory, creating it with only the touched section
+- The next id is one above the highest the file ever held, read from its history on the
+  current branch (`git log -p`), including sections moved to `docs/product/`, so a retired
+  id is never handed out again
+- Each command writes the section a file lacks in its fixed place, edits the file a moved
+  section points to, leaves every other line byte for byte as it was, and exits 2 without
+  writing when the file doesn't pass `check` before the edit
+
+The commands edit the working tree only; the change still goes through a pull request, and
+for the direction only the maintainer merges it. A retired goal that a spec still serves
+makes `specs.py check` fail for that spec unless it is built, which lists the specs to
+revisit. The skills that edit these files (`skills/shipmill-setup/SKILL.md`, the
+github-pr-triage step that records a rule a review settled) say to use the commands, and
+the hooks of #381 run `shipmill product check` and `shipmill review check` after any edit
+of `docs/product.md`, `docs/product/`, or a `REVIEW.md`, so a broken line shows with its
+number before the commit; CI runs both checks too.
+
 ## Acceptance criteria
 
 - S-024-1: `shipmill product check` exits 0 on a well-formed `docs/product.md` and 1 naming the file, line, and rule for each of: a missing, extra, or out-of-order heading, a list item not of the form `- <prefix>-<n>: <text>`, a wrong prefix for its section, a duplicate id, an empty Users, Goals, or Quality bar
@@ -212,6 +241,9 @@ naming the glob and its reason. Without a `REVIEW.md` the brief is as today.
 - S-024-12: shipmill-setup asks the maintainer for the direction's content when it connects `[agents]` and commits it through its pull request, without inventing goals
 - S-024-13: `shipmill review check` exits 0 on a `REVIEW.md` whose Important, Nits, and Protected areas are well formed, whatever free sections it has, and 1 naming the file, line, and rule for an Important item without an id, a duplicate id, a missing or second `cap:` line in Nits, or a Protected areas item that isn't `- <glob>: <why>`; a repo without `REVIEW.md` passes
 - S-024-14: `shipmill review show --path FILE --json` merges the root `REVIEW.md` with those of the directories holding the files, giving Important items, the smallest cap, Protected areas, and free sections, each with the file it came from
+- S-024-15: `shipmill product add` and `shipmill review add-rule` give the next id above any the file's history held, so an id retired in an earlier commit is not reused, and print the line they wrote
+- S-024-16: Every edit command leaves all other lines of the file unchanged, writes a missing section in its fixed place, edits the linked file of a moved section, and exits 2 without writing on a file that fails `check`
+- S-024-17: `shipmill review protect` refuses a glob already listed, and `--dir DIR` creates a subdirectory `REVIEW.md` holding only the touched section
 
 ## Out of scope
 
