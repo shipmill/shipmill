@@ -1,6 +1,6 @@
 # S-022: A milestone is done when its specs are built
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -138,3 +138,21 @@ close the hand-off:
 - shipmill/shipmill#400: S-022-12
 
 ## Verification
+
+Checked on main at f8c08ec plus #398's PR: each criterion's code read against its text, and
+the tests `specs.py coverage --spec 022` lists for it run there and passing.
+
+- S-022-1: `Planner._due` asks for the goal only when the milestone has no open issues and one closed; test_s022_1 passes, reading no build issue
+- S-022-2: `milestones.verdict` reads the specs at main's head and holds a draft or approved one, naming it and its status; the test_s022_2 tests pass, a spec built only on a branch counting as approved
+- S-022-3: `_holdup` holds a completed close with neither a fix in the base nor a trusted close-confirmed marker (D-29); the test_s022_3 tests pass, an outsider's, a stale, a second-line, and another App's marker confirming nothing
+- S-022-4: `milestone_verdict` looks for fixes in the rc's base and names the rc; test_s022_4 passes with `is not in v1.1.0rc1`
+- S-022-5: a close as not planned returns no holdup; test_s022_5 passes
+- S-022-6: with every spec built and every fix in the base the lane is due and the reason names the specs; test_s022_6 passes, another repository's issue ignored and the closes read in one batch
+- S-022-7: a milestone no spec names, or a repository with no spec, plans as before; the test_s022_7 tests pass, reading nothing more without specs
+- S-022-8: `Planner.milestone_findings` reads each milestone lane's milestone with `milestone_verdict`, and `status.read_milestones` turns a goal not done into a MILESTONE_WAITING row with its reasons, shown on the milestone line with no verdict; the test_s022_8 tests pass, with no row while the milestone has open issues, is done, or doesn't exist, and nothing read without a milestone lane
+- S-022-9: `belonging` takes a spec whose file an issue in the milestone links; test_s022_9 passes
+- S-022-10: `milestone_findings` reports an open milestone with open issues whose stable tag exists with the version the first milestone lane cuts next, its candidate's or `target`'s, and the row's fix renames it; the plan never reads open milestones. A milestone with no open issue is not overtaken: its own release shipped it and GitHub leaves it open, and renamed it would make the next version's milestone due at once. The test_s022_10 tests pass: 1.1.0 overtaken names 1.1.1 with a fix pending and 1.2.0 with an rc of it to promote, a 1.1.0 its milestone released reads nothing, and with an overtaken and a closed higher milestone the rc is 1.1.1rc1 and stable promotes 1.1.1
+
+Not verified, left to a follow-up issue as the maintainer decided on #398's pull request: the rows are `shipmill status`'s summary only, not `--rows` or `--json`, so github-ship-watch, which reads `watch_state.py`, doesn't see MILESTONE_OVERTAKEN yet and renames nothing under "watch"
+- S-022-11: `specs.py split --milestone` puts the milestone in each proposal's text and `--json`, and none without it; test_s022_11 passes
+- S-022-12: `triage_state.py` reads OFF_MILESTONE for an open build issue outside its parent's milestone and its usual state otherwise; the test_s022_12 tests pass

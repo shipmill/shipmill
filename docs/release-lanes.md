@@ -130,6 +130,12 @@ then the plan names what holds it, the first reason per spec, such as
 `milestone 1.5.0: S-021's #40 is not in v1.5.0rc3`; once done, its reason names the specs,
 `milestone 1.5.0 built: S-021, S-023`. A milestone no spec belongs to is done as before.
 
+`shipmill status` shows the same reasons as a MILESTONE_WAITING line. A stable release made
+by another trigger ships what is merged and keeps its bump, so it can take an unfinished
+goal's version: the open milestone, with issues still open, is then overtaken, and status reports
+MILESTONE_OVERTAKEN with the version the lane cuts next and the `gh api` command that
+renames the milestone to it.
+
 ### The schedule in `release.yml`
 
 `shipmill init` derives `release.yml`'s cron from the policy it writes, and
