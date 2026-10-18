@@ -275,4 +275,11 @@ that exists.
 
 ## Issues
 
+- shipmill/shipmill#440: S-026-14
+- shipmill/shipmill#441: S-026-1, S-026-2, S-026-3, S-026-5, S-026-6, S-026-8, S-026-9, S-026-10, S-026-11, S-026-12
+- shipmill/shipmill#444: S-026-4, S-026-7, S-026-17
+- shipmill/shipmill#445: S-026-13
+- shipmill/shipmill#446: S-026-15, S-026-16
+- shipmill/shipmill#447: S-026-18
+
 ## Verification
