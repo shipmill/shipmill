@@ -4,7 +4,7 @@ The file stays Markdown that Claude's Code Review reads too. Three level-two sec
 fixed line format that code extracts, and a line that breaks it is an error, never skipped:
 
 - `## Important`: `- I-n: <rule>`, ids from 1 and unique in the file
-- `## Nits`: `- <nit>` items and exactly one `cap: N` line; without the section the cap is 5
+- `## Nits`: `- <nit>` items and at most one `cap: N` line; without the line the cap is 5
 - `## Protected areas`: `` - `<glob>`: <why> ``
 
 Every other section, and any text before the first heading, is free: passed to the reviewer
@@ -241,7 +241,7 @@ def parse(text: str, file: PurePosixPath) -> tuple[Rubric, tuple[Problem, ...]]:
                 capped = _CAP.fullmatch(line)
                 if capped is not None:
                     if cap_line is not None:
-                        problem(number, f"a second `cap:` line; Nits holds exactly one, on line {cap_line}")
+                        problem(number, f"a second `cap:` line; Nits holds at most one, on line {cap_line}")
                         continue
                     cap_line = number
                     value = capped.group(1).strip()
@@ -250,7 +250,7 @@ def parse(text: str, file: PurePosixPath) -> tuple[Rubric, tuple[Problem, ...]]:
                         continue
                     cap = int(value)
                 elif _NIT.fullmatch(line) is None:
-                    problem(number, "Nits holds `- <nit>` items and one `cap: N` line")
+                    problem(number, "Nits holds `- <nit>` items and at most one `cap: N` line")
             else:
                 item = _PROTECTED_ITEM.fullmatch(line)
                 if item is None:
@@ -266,8 +266,6 @@ def parse(text: str, file: PurePosixPath) -> tuple[Rubric, tuple[Problem, ...]]:
                     continue
                 seen_globs[glob] = number
                 protected.append(Protected(glob, item.group(2).strip(), file))
-        if name == NITS and cap_line is None:
-            problem(section.line, "Nits holds exactly one `cap: N` line; none found")
     rubric = Rubric(tuple(important), cap, tuple(protected), tuple(free))
     return rubric, tuple(problems)
 

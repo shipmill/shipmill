@@ -115,10 +115,11 @@ def test_s024_13_code_review_only_file_passes() -> None:
         ("## Important\n\n- I-x: letters\n", "REVIEW.md:3: an Important id is I-n with n from 1"),
         ("## Important\n\nplain text\n", "REVIEW.md:3: an Important item is one line"),
         ("## Important\n\n- I-1: one\n- I-1: again\n", "REVIEW.md:4: I-1 is already used on line 3"),
-        ("## Nits\n\n- Wording\n", "REVIEW.md:1: Nits holds exactly one `cap: N` line; none found"),
-        ("## Nits\n\ncap: 3\ncap: 4\n", "REVIEW.md:4: a second `cap:` line; Nits holds exactly one, on line 3"),
+        ("## Nits\n\ncap 3\n", "REVIEW.md:3: Nits holds `- <nit>` items and at most one `cap: N` line"),
+        ("## Nits\n\ncap: -1\n", "REVIEW.md:3: the Nits cap is a whole number, as `cap: 5`; got '-1'"),
+        ("## Nits\n\ncap: 3\ncap: 4\n", "REVIEW.md:4: a second `cap:` line; Nits holds at most one, on line 3"),
         ("## Nits\n\ncap: three\n", "REVIEW.md:3: the Nits cap is a whole number, as `cap: 5`; got 'three'"),
-        ("## Nits\n\ncap: 3\nsome prose\n", "REVIEW.md:4: Nits holds `- <nit>` items and one `cap: N` line"),
+        ("## Nits\n\ncap: 3\nsome prose\n", "REVIEW.md:4: Nits holds `- <nit>` items and at most one `cap: N` line"),
         ("## Protected areas\n\n- src/land.py: no backticks\n", "REVIEW.md:3: a Protected areas item is one line"),
         ("## Protected areas\n\n- `src/land.py`\n", "REVIEW.md:3: a Protected areas item is one line"),
         ("## Protected areas\n\n- ``: empty\n", "REVIEW.md:3: a protected glob is a non-empty path pattern"),
@@ -139,7 +140,7 @@ def test_s024_13_check_exits_1_naming_subdirectory_file(tmp_path: Path, capsys: 
     assert main(["--repo", str(root), "review", "check"]) == 1
     assert capsys.readouterr().out.splitlines() == [
         "skills/REVIEW.md:4: I-1 is already used on line 3; ids are unique",
-        "skills/REVIEW.md:9: a second `cap:` line; Nits holds exactly one, on line 8",
+        "skills/REVIEW.md:9: a second `cap:` line; Nits holds at most one, on line 8",
     ]
 
 
@@ -148,6 +149,13 @@ def test_check_skips_ignored_review_md(tmp_path: Path) -> None:
     _write(root, ".gitignore", "vendor/\n")
     _write(root, "vendor/REVIEW.md", "## Important\n\nbroken\n")
     assert check(root) == []
+
+
+def test_s024_13_nits_without_cap_line_is_well_formed_and_caps_at_five() -> None:
+    rubric, problems = parse("## Nits\n\n- Wording\n", PurePosixPath("REVIEW.md"))
+    assert problems == ()
+    assert rubric.cap is None
+    assert rubric.to_json()["cap"] == DEFAULT_CAP == 5
 
 
 def test_without_nits_section_the_cap_is_five() -> None:
