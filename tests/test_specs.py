@@ -569,3 +569,10 @@ def test_s024_6_reads_the_same_goals_as_shipmill_product(tmp_path: Path) -> None
     beyond = max(int(g.split("-")[1]) for g in goals) + 1
     (root / "docs" / "specs" / "001-g.md").write_text(serving(spec("001"), f"G-{beyond}"))
     assert f"serves G-{beyond}, which docs/product.md doesn't list" in specs(root, "check").stdout
+
+
+def test_s024_6_a_heading_after_a_tab_is_read_as_shipmill_product_reads_it(tmp_path: Path) -> None:
+    tabbed = DIRECTION.replace("## Goals\n", "##\tGoals\n")
+    root = direction(repo(tmp_path, **{"001-tab.md": serving(spec("001"), "G-3")}), tabbed)
+    assert [str(item.id) for item in product.read(root).goals] == ["G-1", "G-3"]
+    assert specs(root, "check").stdout == ""

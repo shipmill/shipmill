@@ -113,6 +113,7 @@ GOAL_ID = re.compile(r"^G-[1-9][0-9]*$")
 # through its one `See [<section>](product/<file>.md).` line read from that file
 DIRECTION = Path("docs/product.md")
 DIRECTION_PREFIXES = {"Users": "U", "Goals": "G", "Non-goals": "N", "Quality bar": "Q"}
+DIRECTION_HEADING = re.compile(r"^(#{1,6})(?:[ \t]+(.*))?$")
 DIRECTION_ITEM = re.compile(r"^- ([A-Za-z]+)-([1-9][0-9]*): \S")
 DIRECTION_MOVED = re.compile(r"^See \[([^\]]+)\]\(product/([A-Za-z0-9][A-Za-z0-9_-]*\.md)\)\.$")
 # The sections an approved spec must have filled in past the template's placeholders; a
@@ -507,8 +508,9 @@ def direction_ids(root: Path) -> set[str] | None:
     section: str | None = None
     for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = line.rstrip()
-        if line.startswith("#"):
-            section = line[3:].strip() if line.startswith("## ") else None
+        heading = DIRECTION_HEADING.match(line)
+        if heading:
+            section = (heading.group(2) or "").strip() if len(heading.group(1)) == 2 else None
             continue
         if section is None or section not in DIRECTION_PREFIXES:
             continue
