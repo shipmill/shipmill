@@ -135,26 +135,65 @@ that turns out wrong is updated in the body before the push that departs from it
 ### Review reads the rubric, the plan, and the direction
 
 `REVIEW.md` is the repo's review rubric, at the repository's root, where Claude's managed
-Code Review reads it too, so one file serves both reviewers. It is free Markdown, and the
-reviewer brief reads these level-two sections when present:
+Code Review reads it too, so one file serves both reviewers. It stays Markdown a person
+reads, and it holds two kinds of section side by side:
 
-- `## Passes`: the reviews every pull request gets (for example bugs, security,
-  compliance with the spec)
-- `## Important`: what blocks a merge in this repo
-- `## Nits`: what doesn't, and the most a review raises (a line `cap: N`, 5 by default)
-- `## Protected areas`: paths a change to which needs the maintainer, one glob per list
-  item
+- **Structured sections**, which `src/shipmill/review.py` extracts without a model. Each
+  has a fixed level-two heading and a fixed line format, and a line that breaks it is an
+  error, never skipped, since the gate acts on them:
+  - `## Important`: what blocks a merge, as `- I-n: <rule>`, ids numbered from 1, unique,
+    and never reused, so a finding cites the rule it breaks
+  - `## Nits`: what doesn't block, as free list items, and exactly one line `cap: N`, the
+    most a review raises (5 when the section or the line is absent)
+  - `## Protected areas`: paths a change to which needs the maintainer, as
+    `- <glob>: <why>`, the glob in backticks
+- **Free sections**: any other heading, such as `## Passes` or a team's own, and any text
+  before the first heading. Code passes them to the reviewer as they are and never fails on
+  them, so a `REVIEW.md` written for Code Review alone is valid as it stands
+
+For example:
+
+    # Review
+
+    ## Passes
+
+    Bugs first, then security, then compliance with the spec.
+
+    ## Important
+
+    - I-1: A change to the release planner has a test for each lane it touches
+
+    ## Nits
+
+    cap: 3
+
+    - Wording in comments
+
+    ## Protected areas
+
+    - `src/shipmill/land.py`: it pushes tags and releases
+
+`shipmill review check [--repo DIR]` exits 0 when the structured sections are well formed,
+and 1 naming the file, line, and rule broken; a repo with no `REVIEW.md` passes.
+`shipmill review show [--repo DIR] [--path FILE ...] [--json]` prints the rubric that
+applies to the given changed files, the root's and the subdirectories' merged, as text, or
+as JSON (`{"important": [{"id", "text", "file"}], "cap", "protected": [{"glob", "why",
+"file"}], "free": [{"heading", "text", "file"}]}`).
 
 A `REVIEW.md` in a subdirectory adds rules for changes under it, on top of the root's, as
-in Code Review. Both are read from the default branch, never from the pull request.
+in Code Review, with the same sections and formats; its Important ids are its own, cited
+with its directory (`skills/I-2`), and the smallest cap applies. All are read from the
+default branch, never from the pull request.
 
 `skills/github-pr-triage/references/reviewer-brief.md` adds to every brief: the root
 `REVIEW.md` and those of the directories the diff touches, the direction's Goals,
-Non-goals, and Quality bar, and the pull request's plan. A reviewer reports as findings: a
-diff that departs from its plan without the plan saying why, a change that hits a
-non-goal, a change that breaks a quality-bar item (citing `Q-n`). Nits beyond the cap are
-dropped. `pr_gate.py` matches the diff's files against Protected areas and asks the
-maintainer through needs-decision for a match. Without a `REVIEW.md` the brief is as today.
+Non-goals, and Quality bar, and the pull request's plan, all from `shipmill review show`
+and `shipmill product show`. A reviewer reports as findings: a diff that departs from its
+plan without the plan saying why, a change that hits a non-goal, a change that breaks a
+quality-bar item (citing `Q-n`) or an Important rule (citing `I-n`). Nits beyond the cap
+are dropped. `pr_gate.py` matches the diff's files against Protected areas through
+`shipmill review show --json` and asks the maintainer through needs-decision for a match,
+naming the glob and its reason. Without a `REVIEW.md` the brief is as today.
 `shipmill-setup` offers a starter rubric; it is optional.
 
 ## Acceptance criteria
@@ -171,6 +210,8 @@ maintainer through needs-decision for a match. Without a `REVIEW.md` the brief i
 - S-024-10: The reviewer brief includes the root `REVIEW.md` and those of the touched directories, the direction's Goals, Non-goals, and Quality bar, and the plan, and asks for findings on a departure from the plan, a non-goal, and a quality-bar item, with nits capped
 - S-024-11: github-pr-triage never merges a pull request that edits `docs/product.md` or `docs/product/` on its own judgment, and asks through needs-decision instead
 - S-024-12: shipmill-setup asks the maintainer for the direction's content when it connects `[agents]` and commits it through its pull request, without inventing goals
+- S-024-13: `shipmill review check` exits 0 on a `REVIEW.md` whose Important, Nits, and Protected areas are well formed, whatever free sections it has, and 1 naming the file, line, and rule for an Important item without an id, a duplicate id, a missing or second `cap:` line in Nits, or a Protected areas item that isn't `- <glob>: <why>`; a repo without `REVIEW.md` passes
+- S-024-14: `shipmill review show --path FILE --json` merges the root `REVIEW.md` with those of the directories holding the files, giving Important items, the smallest cap, Protected areas, and free sections, each with the file it came from
 
 ## Out of scope
 
@@ -180,7 +221,8 @@ maintainer through needs-decision for a match. Without a `REVIEW.md` the brief i
 - A plan file per change in the repo: the pull request's body holds it, next to the change
 - Grading whether a change really advances a goal: the reviewer judges, and evals (#380)
   can measure the judging
-- A fixed grammar for `REVIEW.md`: it is shared with Code Review, which reads free Markdown
+- A fixed grammar for the whole `REVIEW.md`: it is shared with Code Review, which reads free
+  Markdown, so only the sections code acts on are structured
 
 ## Decisions relied on
 
