@@ -36,9 +36,12 @@
   app-create      create the gate's GitHub App in one click: owner and visibility planned from the
                   repos holding .github/shipmill.toml, the key saved with mode 0600
   app-install     guide installing the App on more repos: the App's Install App page and what to pick
+  product         read the product's direction, docs/product.md (spec 024): check its grammar, show it
+                  or one section (--section, --json), list its ids
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
-action, or app-create or app-install left a repo without the App; 2 bad input or a refused state.
+action, app-create or app-install left a repo without the App, or product check found a broken
+rule; 2 bad input or a refused state.
 """
 
 import argparse
@@ -124,6 +127,9 @@ from shipmill.notify import Desktop
 from shipmill.operate import Http, UrllibHttp, approve, approve_rollback, operate, summary
 from shipmill.planner import Event, Hotfix, Planner, Proposal
 from shipmill.policy import Lane, Policy
+from shipmill.product import DIRECTION, Section
+from shipmill.product import check as check_product
+from shipmill.product import read as read_product
 from shipmill.propose import close_released, propose, run_url
 from shipmill.stamp import notes, sync
 from shipmill.upgrades import UpgradeId, apply, find, offers, pending
@@ -395,6 +401,22 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--no-browser", action="store_true", help="print the page instead of opening it")
     p.add_argument("--json", action="store_true", help="print the result as one JSON object")
 
+    p = sub.add_parser("product", help=f"read the product's direction, {DIRECTION} (spec 024)")
+    acting = p.add_subparsers(dest="product", required=True)
+    checking = acting.add_parser("check", help=f"exit 1 naming the file, line, and rule {DIRECTION} breaks")
+    showing = acting.add_parser("show", help="print the direction, or some sections, moved ones resolved")
+    showing.add_argument(
+        "--section",
+        action="append",
+        default=[],
+        choices=[s.option for s in Section],
+        help="print only this section (repeatable)",
+    )
+    showing.add_argument("--json", action="store_true", help="print it as one JSON object")
+    listing = acting.add_parser("ids", help="list every item's id with its text, one per line")
+    for each in (checking, showing, listing):  # also after it: `product check --repo DIR`
+        each.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+
     p = sub.add_parser("launchd", help="run the gate for a dedicated checkout every few minutes (macOS)")
     p.add_argument("slug", metavar="owner/name", help="the GitHub repo; --repo is its gate checkout")
     p.add_argument("--every", type=int, default=15, help="minutes between runs (default: 15)")
@@ -452,6 +474,8 @@ def main(
         return _status(root, args, state or run_state, api or UrllibApi(), signer or Openssl())
     if args.command == "upgrade":
         return _upgrade(root, args, github or GhCli(root))
+    if args.command == "product":
+        return _product(root, args)
     hub = github or GhCli(root)
     if args.command == "init":
         # checked before any write, on every path (spec 015)
@@ -1020,6 +1044,30 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
         if offer.issue is not None:
             print(f"  proposed: #{offer.issue}")
         print(f"  apply: `{cli_command()} upgrade --apply {upgrade.id}`")
+    return 0
+
+
+def _product(root: Path, args: argparse.Namespace) -> int:
+    """Spec 024: check exits 1 naming each broken rule; show and ids refuse a broken direction"""
+    if args.product == "check":
+        problems = check_product(root)
+        for problem in problems:
+            print(problem)
+        if problems:
+            return 1
+        direction = read_product(root)
+        print(f"{DIRECTION}: well formed, {len(direction.all_items())} items")
+        return 0
+    direction = read_product(root)
+    if args.product == "ids":
+        for item in direction.all_items():
+            print(item)
+        return 0
+    sections = [Section.named(option) for option in args.section]
+    if args.json:
+        print(json.dumps(direction.record(sections), indent=2, ensure_ascii=False))
+    else:
+        sys.stdout.write(direction.render(sections))
     return 0
 
 
