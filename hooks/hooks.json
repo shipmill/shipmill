@@ -3,11 +3,11 @@
   "hooks": {
     "PreToolUse": [
       {"matcher": "Bash", "hooks": [{"type": "command", "timeout": 10,
-        "command": "uv run --no-project --python '>=3.11' python \"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\" pre"}]}
+        "command": "d=\"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\"; if ! command -v uv >/dev/null 2>&1; then w='uv is not on PATH'; elif [ ! -f \"$d\" ]; then w=\"no file $d\"; elif ! { p=$(uv python find --no-project '>=3.11' 2>/dev/null </dev/null) && [ -x \"$p\" ]; } && ! { p=$(uv python install '>=3.11' >/dev/null 2>&1 </dev/null && uv python find --no-project '>=3.11' 2>/dev/null </dev/null) && [ -x \"$p\" ]; }; then w='uv can find or install no Python 3.11 or newer'; else exec \"$p\" \"$d\" pre; fi; echo \"shipmill hook: can't start hooks/delivery.py ($w); this command runs unchecked, see shipmill doctor\" >&2; exit 1"}]}
     ],
     "PostToolUse": [
       {"matcher": "Edit|Write|MultiEdit", "hooks": [{"type": "command", "timeout": 60,
-        "command": "uv run --no-project --python '>=3.11' python \"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\" post"}]}
+        "command": "d=\"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\"; if ! command -v uv >/dev/null 2>&1; then w='uv is not on PATH'; elif [ ! -f \"$d\" ]; then w=\"no file $d\"; elif ! { p=$(uv python find --no-project '>=3.11' 2>/dev/null </dev/null) && [ -x \"$p\" ]; } && ! { p=$(uv python install '>=3.11' >/dev/null 2>&1 </dev/null && uv python find --no-project '>=3.11' 2>/dev/null </dev/null) && [ -x \"$p\" ]; }; then w='uv can find or install no Python 3.11 or newer'; else exec \"$p\" \"$d\" post; fi; echo \"shipmill hook: can't start hooks/delivery.py ($w); this command runs unchecked, see shipmill doctor\" >&2; exit 1"}]}
     ]
   }
 }

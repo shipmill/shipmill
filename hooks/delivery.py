@@ -4,7 +4,8 @@
 forbid, in a repo whose .github/shipmill.toml has an [agents] section: exit 2 with three lines
 on stderr, the refused command, the rule, and the command to run instead. `delivery.py post`
 reads a PostToolUse input for Edit, Write, and MultiEdit. Exit 0 allows; exit 1 means the
-input wasn't the hook JSON. hooks/hooks.json runs it through `uv run --no-project`.
+input wasn't the hook JSON. hooks/hooks.json runs it with a Python 3.11+ that uv finds or
+installs, and exits 1 itself, letting the command run, when it can't start it (D-40).
 
 Stdlib only and Python 3.11+ (tomllib), since the plugin can't import the installed shipmill.
 The hooks catch an agent's mistake: a command shlex can't split, and `bash -c`, `eval`,
