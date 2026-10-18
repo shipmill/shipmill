@@ -2,7 +2,7 @@
 
 Write each body to a file and post it with `gh issue comment <n> --body-file <file>`. Keep the files in the repo's `tmp/` folder. Start every triage comment with `Triage:` followed by the bolded verdict, because `triage_state.py` finds triage comments by that prefix. Follow the user's writing rules: no trailing periods on list items, and em dashes only rarely.
 
-**The goal, in the verdict line.** When the repo has `docs/product.md`, a verdict on new behaviour names the goal it serves right after the bolded verdict, `Serves: G-n.` (several as `Serves: G-2, G-3.`), from the direction's Goals; a non-goal it hits gets the Won't fix (non-goal) template, and one that serves no goal the Postpone (no goal) template ([triage-rubric.md](triage-rubric.md), The direction). A bug fix or a contract tweak serves the quality bar and names no goal, and a repo without `docs/product.md` leaves the `{ Serves: G-n.}` slots out.
+**The goal, in the verdict line.** When the repo has `docs/product.md`, a verdict on new behaviour names the goal it serves right after the bolded verdict, `Serves: G-n.` (several as `Serves: G-2, G-3.`), from the direction's Goals; a non-goal it hits gets the Won't fix (non-goal) template, and a feature that serves no goal the Postpone (no goal) template; a user's request that serves no goal keeps the Opportunity template with `Serves no goal.` in its slot ([triage-rubric.md](triage-rubric.md), The direction). A bug fix or a contract tweak serves the quality bar and names no goal, and a repo without `docs/product.md` leaves the `{ Serves: G-n.}` slots out.
 
 ## Implement
 
@@ -93,7 +93,7 @@ Then add the label: `gh issue edit <n> --add-label postponed`.
 
 ### Postpone (no goal)
 
-New behaviour, a feature or an opportunity, that serves no goal of `docs/product.md`. Add the `postponed` label as above. Don't use the word "implement" in this comment, and name no issue right after a hold phrase: `triage_state.py` would read NEEDS_PR or BLOCKED.
+A feature, new behaviour the maintainer already wants, that serves no goal of `docs/product.md`; a user's request that serves none goes to product intake instead (Opportunity). Add the `postponed` label as above. Don't use the word "implement" in this comment, and name no issue right after a hold phrase: `triage_state.py` would read NEEDS_PR or BLOCKED.
 
 ```markdown
 Triage: **postponed**: it serves no goal of the direction. {What it asks for, in one sentence}: new behaviour, and none of the goals in `docs/product.md` ({G-n: its words, for the nearest one}) covers it.

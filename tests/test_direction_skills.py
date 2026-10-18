@@ -46,12 +46,14 @@ def test_s024_8_the_rubric_gives_each_case_its_verdict() -> None:
     direction = flat(section(rubric, "## The direction: the goal it serves"))
     assert "names the goal it serves in the comment's verdict line, `Serves: G-n`" in direction
     assert "**It hits a non-goal:** **won't fix**, citing `N-n`" in direction
-    assert "**It serves no goal:** **postpone**, saying which goal it would need" in direction
+    assert "a **feature** (new behaviour the maintainer already wants) gets **postpone**" in direction
+    assert "**A user's request that serves no goal** still gets **opportunity** and goes to product intake" in direction
+    assert "not handed to product intake" not in direction
     assert "**A bug fix or a contract tweak** serves the quality bar and needs no goal" in direction
     assert "A repo without `docs/product.md` keeps the verdicts above as they are" in direction
     verdicts = section(rubric, "## Verdicts")
     assert "it hits a non-goal of the direction (`N-n`)" in verdicts
-    assert "new behaviour that serves no goal of the direction" in verdicts
+    assert "a feature that serves no goal of the direction" in verdicts
 
 
 def test_s024_8_the_comment_templates_name_the_goal_or_the_non_goal() -> None:
@@ -81,6 +83,8 @@ def test_s024_8_the_skill_names_the_rule() -> None:
     skill = flat(read(TRIAGE / "SKILL.md"))
     assert "13. **New behaviour names the goal it serves.**" in skill
     assert "one that hits a non-goal is **won't fix**, citing `N-n`" in skill
+    assert "a **feature** that serves no goal is **postpone**" in skill
+    assert "a user's request that serves no goal still goes to product intake as an **opportunity**" in skill
     assert "Bug fixes and contract tweaks serve the quality bar and need no goal" in skill
 
 
