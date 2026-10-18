@@ -7,6 +7,45 @@ bot.
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-18
+
+### Added
+
+- The notices on fixed issues name their stage: a dev or rc tag posts `Released in <tag> (pre-release).` with the pin command and that a plain install gets it with the next stable release, a stable promotion of an rc tells every issue the rc fixed, and each notice starts with a `<!-- shipmill:available: <stage> <tag> -->` marker so a rerun posts nothing; a new optional `[notices]` section in `.github/shipmill.toml` sets the `pin` and `install` commands, with `{version}`, `{tag}`, and `{name}` (spec 021) (#392)
+- `specs.py split NNN --milestone <title>` puts every proposed build issue in the feature issue's milestone, as a `milestone:` line and a `milestone` key in `--json`, and the spec gate files each with `gh issue create --milestone` (#399)
+- `triage_state.py` reports OFF_MILESTONE, an action, for an open build issue whose feature issue (its sub-issue parent in the repo) is in a milestone the build issue isn't in, so a goal's milestone holds every build issue the release lane reads (spec 022) (#400)
+- `shipmill product add|edit|retire` and `shipmill review add-rule|protect|set-cap|retire`
+  (`--dir DIR` for a subdirectory's `REVIEW.md`) edit one structured line of
+  `docs/product.md` or a `REVIEW.md` and print it: an added id is one above any the file's
+  git history held, a missing section is written in its fixed place, a moved section's file
+  is edited, every other line stays byte for byte, and a file its check refuses exits 2
+  without a write (#404)
+- `shipmill doctor` fails a repo whose config has `[agents]` and no `docs/product.md`, or one
+  `shipmill product check` refuses, naming the fix; a repo without `[agents]` gets no direction
+  line (#405)
+- `specs.py check` refuses a spec that isn't built without a `serves:` line naming the goals of `docs/product.md` it serves (or `quality bar`), or naming a goal the direction doesn't list, sections moved to `docs/product/` included; a repo without a direction is checked as before (#406)
+- PR triage: `pr_gate.py` reads the direction and `REVIEW.md` from the default branch (spec 024). It refuses an agent's pull request (authored by `--bot-login`, or any named with `--agent`) whose body has no `## Plan` with `Serves:`, `Files:`, `Order:`, and `Proof:`, or whose `Serves:` names a goal `docs/product.md` doesn't list (exit 6, REFUSED); a repo without `docs/product.md` and a person's pull request skip the check. A pull request whose files match a `REVIEW.md` Protected areas glob, or that edits `docs/product.md` or `docs/product/`, waits on the maintainer (exit 5, NEEDS_DECISION) until `--maintainer-accepted`. It reads them at the checkout's `origin/HEAD`, or at `origin/<base branch>` when that isn't set; outside a checkout, or when the default branch holds neither file, it gates exactly as before (#407)
+
+### Changed
+
+- `milestone = true` makes a lane due only once the milestone's goal is built: every spec whose Issues section names one of its issues, or whose file one of its issues links, says `status: built` at main's head, and each of their build issues closed by a merged pull request in the candidate's base (the rc's base, for a promotion), closed as not planned, or confirmed by a trusted close-confirmed comment; the plan names what holds it, and a milestone no spec belongs to is due as before (spec 022) (#397)
+- `shipmill gate` starts no session while the `shipmill@shipmill` install a session in its
+  checkout would load is older than the latest release (D-35, superseding D-23's "the
+  session still starts"). It reads that install at any scope, user scope included, as
+  Claude Code picks it (the most specific scope installed for the checkout's project: local,
+  project, user, then managed; a linked worktree's project is its main checkout), after the
+  daily `plugin_update` when that is on. The tick reads `PLUGIN_STALE: ...` with the
+  install's version and scope, the latest release, and the command that updates it, stops
+  and starts no session, and the next tick with a current install launches; a failed read
+  is printed and the session starts. `gate --json` adds `loaded`. `shipmill status` shows a
+  paused gate as waiting on you with that command, and github-ship-watch's
+  `SHIPMILL_VERSION` (so `status`, `doctor`, and the setup checklist) names the install a
+  session loads, warning when it is behind (#417)
+
+### Fixed
+
+- `triage_state.py` links a PR to an issue by a closing keyword only in the PR's title outside backticks or at the start of a body line outside a code fence, the rule `shipped.py` reads, so a PR that quotes "Closes #N" mid-line no longer reads as the issue's fix or makes DONE_NOT_CLOSED close it (#416)
+
 ## [0.50.0] - 2026-10-18
 
 ### Fixed
@@ -1480,7 +1519,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.50.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.51.0...HEAD
+[0.51.0]: https://github.com/shipmill/shipmill/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/shipmill/shipmill/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/shipmill/shipmill/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/shipmill/shipmill/compare/v0.47.0...v0.48.0
