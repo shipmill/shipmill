@@ -1,6 +1,7 @@
 """Spec 024: doctor fails a repo whose agents implement ([agents]) without a well-formed
 docs/product.md, naming the fix; a repo that only cuts releases gets no direction line"""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from shipmill.doctor import Check, direction_check, doctor
 from shipmill.policy import Policy
 
 from .conftest import Repo
-from .test_product import WELL_FORMED
+from .test_product import GOALS, MOVED, WELL_FORMED
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,3 +64,38 @@ def test_s024_5_this_repo_has_agents_and_its_direction_passes() -> None:
     """shipmill's own config has [agents], so its doctor reads its docs/product.md"""
     assert Policy.load(config_path(ROOT)).agents is not None
     assert direction_check(ROOT).status == "PASS"
+
+
+def test_s024_5_a_moved_section_is_followed(repo: Repo) -> None:
+    add_agents(repo)
+    repo.write("docs/product.md", MOVED)
+    (found,) = direction(repo)
+    assert found.status == "FAIL"
+    assert "docs/product/goals.md, which doesn't exist" in found.detail
+    repo.write("docs/product/goals.md", GOALS)
+    assert direction(repo) == [Check("PASS", "direction", "docs/product.md is well formed")]
+
+
+def test_s024_5_a_direction_that_isnt_utf8_fails_naming_the_fix(repo: Repo) -> None:
+    add_agents(repo)
+    (repo.root / "docs").mkdir(exist_ok=True)
+    (repo.root / "docs/product.md").write_bytes(b"# Acme\n\xff\n")
+    (found,) = direction(repo)
+    assert found.status == "FAIL"
+    assert "is not UTF-8 text" in found.detail
+    assert found.detail.endswith(f"then run `{cli_command()} product check`")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_s024_5_an_unreadable_direction_fails_naming_the_fix(repo: Repo) -> None:
+    add_agents(repo)
+    repo.write("docs/product.md", WELL_FORMED)
+    path = repo.root / "docs/product.md"
+    path.chmod(0)
+    try:
+        (found,) = direction(repo)
+    finally:
+        path.chmod(0o644)
+    assert found.status == "FAIL"
+    assert "Permission denied" in found.detail
+    assert found.detail.endswith(f"then run `{cli_command()} product check`")

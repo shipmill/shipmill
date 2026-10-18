@@ -274,7 +274,7 @@ def direction_check(root: Path) -> Check:
         return Check("FAIL", "direction", detail)
     try:
         problems = check_product(root)
-    except ReleaseError as exc:  # a file that isn't UTF-8 text
+    except (ReleaseError, OSError) as exc:  # a file that isn't UTF-8 text, or one it can't read
         return Check("FAIL", "direction", f"{exc}: fix it, then run {check_command}")
     if problems:
         more = "" if len(problems) == 1 else f" (and {len(problems) - 1} more)"
