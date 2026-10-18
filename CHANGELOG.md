@@ -7,6 +7,27 @@ bot.
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-10-18
+
+### Fixed
+
+- Shipped notices: a PR's closing keyword counts only at the start of a body line, in its title, or as GitHub's closing link, never quoted mid-line or in backticks, and a number with no issue behind it is skipped with a note instead of stopping the watch and the gate with exit 2 (#368)
+- github-issue-triage: post the close-confirmed comment once the issue is closed, never with `gh issue close --comment`, which posts it before the close so it never counts (D-29); specs 005 and 014 note D-30's trusted upgrade issues (#369)
+
+### Deprecated
+
+- Config: `[roadmap]` is deprecated (D-32). A config with it still loads and the policy validates it, but nothing reads it, and `doctor` warns that the work-in-progress limit is now `[agents] wip`; the next minor release refuses `[roadmap]` (#377)
+
+### Added
+
+- Config: `[agents] wip = N` (1..100) is the work-in-progress limit github-issue-triage reads (`triage_state.py --wip N`): at most N issues in progress at once; without it there is no limit (D-32) (#377)
+- `shipmill product check|show|ids` reads the product's direction, `docs/product.md` (spec 024): check exits 1 naming the file, line, and rule each broken heading, item, id, or moved section breaks; show prints it, or only `--section` sections, as Markdown or `--json`; ids lists every id with its text, moved sections in `docs/product/` resolved (#402)
+- `shipmill review check` exits 1 naming the file, line, and rule when a `REVIEW.md`'s Important, Nits, or Protected areas section breaks its format, at the root or in a subdirectory, and passes free sections and a repo without one; `shipmill review show [--path FILE ...] [--json]` prints the rubric for the changed files, the root's and their directories' merged, each item with its file and the smallest cap (#403)
+
+### Removed
+
+- Product intake: the roadmap plan is gone (D-32). The skill no longer proposes, ranks, or creates milestones; `roadmap_state.py` and the milestone-proposal template are removed, and a milestone is the maintainer's own list of what a version must hold. Grouping requests into opportunities stays (#377)
+
 ## [0.49.0] - 2026-10-17
 
 ### Changed
@@ -1459,7 +1480,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.49.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.50.0...HEAD
+[0.50.0]: https://github.com/shipmill/shipmill/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/shipmill/shipmill/compare/v0.48.0...v0.49.0
 [0.48.0]: https://github.com/shipmill/shipmill/compare/v0.47.0...v0.48.0
 [0.47.0]: https://github.com/shipmill/shipmill/compare/v0.46.0...v0.47.0
