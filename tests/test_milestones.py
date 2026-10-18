@@ -224,6 +224,15 @@ def test_s022_7_without_specs_the_milestone_reads_nothing_more(repo: Repo) -> No
     assert repo.github.milestone_reads == []
 
 
+def test_s022_7_a_file_in_docs_specs_that_is_no_spec_changes_nothing(repo: Repo) -> None:
+    """A repository may keep other notes in docs/specs; they are the spec checker's to report"""
+    rc_cut(repo, {"api-notes.md": "# API notes\n", "021-goal.md": spec(21, "draft", "#30")})
+    in_milestone(repo, (11, "Fix A"))
+    decision = plan_stable(repo)
+    assert decision.lane is Lane.STABLE, decision.reason
+    assert "; milestone 1.1.0 has no open issues" in decision.reason
+
+
 def test_s022_9_an_issue_linking_a_spec_holds_the_milestone(repo: Repo) -> None:
     rc_cut(repo, {"021-goal.md": spec(21, "approved", "#11")})
     in_milestone(repo, (5, "Feature\n\nSpec: https://github.com/o/demo/blob/main/docs/specs/021-goal.md\n"))

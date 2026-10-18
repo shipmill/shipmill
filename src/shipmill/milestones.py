@@ -92,11 +92,13 @@ def parse_spec(name: str, text: str) -> Spec:
 
 
 def specs_at(git: Git, rev: str) -> list[Spec]:
-    """The specs in docs/specs at rev, by number; none when rev has no such folder"""
+    """The specs in docs/specs at rev, by number; none when rev has no such folder. A file
+    not named NNN-<slug>.md is no spec: the spec checker reports it, and a repository that
+    keeps other notes there plans as before (S-022-7)"""
     source = AtRevision(git, rev)
     if not source.has(SPECS):
         return []
-    names = sorted(n for n in source.files(SPECS) if "/" not in n and n not in NOT_SPECS and n.endswith(".md"))
+    names = sorted(n for n in source.files(SPECS) if n not in NOT_SPECS and SPEC_FILE.match(n))
     specs = [parse_spec(n, source.text(f"{SPECS}/{n}")) for n in names]
     return sorted(specs, key=lambda s: s.id)
 
