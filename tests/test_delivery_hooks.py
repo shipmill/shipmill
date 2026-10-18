@@ -159,6 +159,8 @@ def test_s026_1_script_runs_under_python_311(box: Sandbox) -> None:
     """The hook needs only Python 3.11 (tomllib), whatever the package needs"""
     uv = shutil.which("uv")
     assert uv is not None, "uv runs the hooks"
+    # uv reports a download on stderr; install 3.11 first so the measured run's stderr is the hook's
+    subprocess.run([uv, "python", "install", "3.11"], capture_output=True, check=True)
     data = json.dumps(fixture("bash-force-push-refused.json", box.agents))
     command = [uv, "run", "--no-project", "--python", "3.11", "python", str(SCRIPT), "pre"]
     result = subprocess.run(command, input=data, cwd=box.agents, capture_output=True, text=True, check=False)
