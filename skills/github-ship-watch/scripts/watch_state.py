@@ -971,7 +971,9 @@ def pre_release_notice(number: int, view: dict[str, Any]) -> Notice | None:
     found = None
     for at, comment in enumerate(comments):
         marker = AVAILABLE.match(comment["body"].partition("\n")[0])
-        if marker is not None and marker.group(1) == "pre-release":
+        # anyone can write a marker: one whose tag is no pre-release tag is no notice, so its
+        # text never reaches the row (D-16)
+        if marker is not None and marker.group(1) == "pre-release" and pre_release(marker.group(2)):
             found = at, marker.group(2)
     if found is None:
         return None
