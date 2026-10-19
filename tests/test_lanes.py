@@ -84,6 +84,10 @@ def test_rc_lane_cuts_a_detached_release(repo: Repo) -> None:
 
 
 def test_next_rc_and_dev_build_follow_the_series(repo: Repo) -> None:
+    # stable by hand only: with its window due, it would promote rc1 at once (spec 029)
+    repo.write(repo.policy_file, repo.read(repo.policy_file).replace('schedule = ["Mon 07:00 UTC"]\n', ""))
+    repo.git.run("commit", "-q", "-am", "stable by hand only")
+    repo.git.run("push", "-q", "origin", "main")
     repo.merge(1, "Added", "Feature A")
     release(repo, plan(repo, at_day(1)))
     repo.at(at_day(1, 8) + dt.timedelta(minutes=30))
@@ -92,13 +96,9 @@ def test_next_rc_and_dev_build_follow_the_series(repo: Repo) -> None:
     decision = plan(repo, at_day(1, 9) + dt.timedelta(minutes=5))
     assert decision.lane is Lane.DEV
     assert str(decision.version).startswith("1.1.0rc2.dev")  # sorts after rc1, before rc2
-    # tomorrow's window cuts rc2; rc1 has not soaked 3 days, so stable passes
+    # tomorrow's window cuts rc2; stable's Monday window isn't due
     decision = plan(repo, at_day(2))
     assert str(decision.version) == "1.1.0rc2"
-    assert (
-        "stable: no rc has soaked 3 day(s)"
-        in Planner(repo.git, repo.policy, repo.github, at_day(2)).plan(Event.MANUAL, Lane.STABLE).reason
-    )
 
 
 def test_blocker_and_freeze_hold_the_rc(repo: Repo) -> None:
@@ -117,18 +117,16 @@ def test_blocker_and_freeze_hold_the_rc(repo: Repo) -> None:
     assert "frozen" in decision.reason and decision.action == "skip"
 
 
-def test_stable_promotes_a_soaked_rc_and_syncs_main(repo: Repo) -> None:
+def test_stable_promotes_the_rc_and_syncs_main(repo: Repo) -> None:
     repo.merge(1, "Added", "Feature A", "src/a.py", "A = 1\n")
     release(repo, plan(repo, at_day(1)))
     rc_base = repo.git.remote_branch("main")
     repo.at(at_day(1, 9))
     repo.merge(2, "Fixed", "Fix B, after the rc")  # main moves on after the rc
 
-    not_ripe = plan(repo, at_day(1, 9), event=Event.MANUAL, lane=Lane.STABLE)
-    assert "soaked 3 day(s)" in not_ripe.reason
-
-    decision = plan(repo, at_day(4), event=Event.MANUAL, lane=Lane.STABLE)
+    decision = plan(repo, at_day(1, 9), event=Event.MANUAL, lane=Lane.STABLE)
     assert (str(decision.version), decision.base) == ("1.1.0", rc_base)
+    assert "promotes v1.1.0rc1, cut 0 day(s) ago" in decision.reason
     sha = release(repo, decision)
 
     # the release commit is the rc's code with the stable version, and only Feature A
@@ -320,19 +318,19 @@ def test_changed_ci_skips_stable_and_cuts_the_next_rc(repo: Repo) -> None:  # #3
     repo.merge(2, "Fixed", "Pin ruff 0.7 in CI", CI, "uses: ruff 0.7\n")  # main's CI moves on after the rc
     skip = "stable: the CI workflows (.github/workflows/) changed since v1.1.0rc1; the next rc carries them"
 
-    # rc1 has soaked, but its tree would run main's CI: stable skips, and the same run cuts rc2
+    # stable's window is due, but rc1's tree would run main's CI: stable skips, by hand too,
+    # and the same run cuts rc2
+    by_hand = plan(repo, at_day(7), event=Event.MANUAL, lane=Lane.STABLE)
+    assert by_hand.action == "skip" and skip in by_hand.reason
     decision = plan(repo, at_day(7))
     assert (decision.action, decision.lane, str(decision.version)) == ("release", Lane.RC, "1.1.0rc2")
     assert skip in decision.reason
     release(repo, decision)
 
-    # until rc2, with the new CI, has soaked, the ripe rc is still rc1: stable skips, by hand too
-    by_hand = plan(repo, at_day(9), event=Event.MANUAL, lane=Lane.STABLE)
-    assert by_hand.action == "skip" and skip in by_hand.reason
-
-    # rc2 carries main's CI: once soaked, it promotes
-    decision = plan(repo, at_day(10), event=Event.MANUAL, lane=Lane.STABLE)
+    # rc2 carries main's CI: it promotes, whatever its age (spec 029)
+    decision = plan(repo, at_day(7, 9), event=Event.MANUAL, lane=Lane.STABLE)
     assert (decision.action, str(decision.version)) == ("release", "1.1.0")
+    assert "promotes v1.1.0rc2" in decision.reason
 
 
 def test_a_new_workflow_file_skips_stable(repo: Repo) -> None:  # #317, D-28
@@ -344,7 +342,7 @@ def test_a_new_workflow_file_skips_stable(repo: Repo) -> None:  # #317, D-28
     assert decision.action == "skip"
     assert decision.reason == (
         "stable: the CI workflows (.github/workflows/) changed since v1.1.0rc1; the next rc carries them"
-        " and soaks before it's promoted"
+        " before it's promoted"
     )
 
 
@@ -742,7 +740,7 @@ def test_s013_1_without_fragments_plan_stamp_and_notes_are_unchanged(
     assert capsys.readouterr().out == notes
 
     stable = plan(repo, at_day(4), event=Event.MANUAL, lane=Lane.STABLE)
-    assert stable.reason == "stable 1.1.0: promotes v1.1.0rc1, soaked 3 day(s); started by hand"
+    assert stable.reason == "stable 1.1.0: promotes v1.1.0rc1, cut 3 day(s) ago; started by hand"
     assert stable.version is not None
     prepared = prepare(
         repo.git, repo.policy, Lane.STABLE, stable.version, stable.base, at_day(4).date(), commit=True, push=True

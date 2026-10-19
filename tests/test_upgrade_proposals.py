@@ -22,12 +22,8 @@ from shipmill.status import read_upgrades
 from shipmill.upgrades import Offer, UpgradeId, asked, body, find, marker, renewed
 from shipmill.version import Version
 
-from .conftest import POLICY as WITH_SOAK
-from .conftest import FakeGitHub, Repo
+from .conftest import POLICY, FakeGitHub, Repo
 from .test_status_picture import REPO, facts, lines
-
-# conftest's policy without the deprecated min_soak_days: spec 029's stable-every-batch stays out of these tests
-POLICY = WITH_SOAK.replace("min_soak_days = 3\n", "")
 
 ROOT = Path(__file__).parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -42,14 +38,6 @@ def write_config(root: Path, text: str) -> None:
     path = root / CONFIG_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-
-
-@pytest.fixture
-def repo(repo: Repo) -> Repo:
-    """conftest's repo, with POLICY committed as its config"""
-    write_config(repo.root, POLICY)
-    repo.git.run("commit", "-q", "-am", "no min_soak_days")
-    return repo
 
 
 def propose(root: Path, github: FakeGitHub, capsys: pytest.CaptureFixture[str]) -> list[str]:

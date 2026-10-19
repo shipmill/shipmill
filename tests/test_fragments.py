@@ -159,7 +159,6 @@ def test_doctor_reports_a_fragment_that_fails_to_read(repo: Repo) -> None:
 STABLE_ONLY = """\
 [lanes.stable]
 promote_from = "rc"
-min_soak_days = 3
 """
 
 

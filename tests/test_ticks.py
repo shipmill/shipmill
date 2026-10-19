@@ -107,7 +107,7 @@ def test_s015_6_two_lanes_whose_windows_share_a_utc_time_give_one_line(repo: Rep
         repo,
         "[lanes.dev]\nquiet_minutes = 30\n\n"
         '[lanes.rc]\nschedule = ["Mon-Fri 07:00 Europe/Kyiv"]\n\n'
-        '[lanes.stable]\npromote_from = "rc"\nmin_soak_days = 3\nschedule = ["Mon 04:00 UTC"]\n\n'
+        '[lanes.stable]\npromote_from = "rc"\nschedule = ["Mon 04:00 UTC"]\n\n'
         "[lanes.hotfix]\n",
     )
     assert list(crons(_written(repo))) == ["0 4 * * 1,2,3,4,5", "0 5 * * 1,2,3,4,5"]

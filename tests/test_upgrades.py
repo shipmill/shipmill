@@ -16,11 +16,8 @@ from shipmill.errors import ReleaseError
 from shipmill.policy import Style
 from shipmill.upgrades import CATALOGUE, FRAGMENTS_README, UpgradeId, find, fragments_readme_text
 
-from .conftest import POLICY as WITH_SOAK
-from .conftest import FakeGitHub, Repo
+from .conftest import POLICY, FakeGitHub, Repo
 
-# conftest's policy without the deprecated min_soak_days: spec 029's stable-every-batch stays out of these tests
-POLICY = WITH_SOAK.replace("min_soak_days = 3\n", "")
 AGENTS = '\n[agents]\nprompt = "triage {repo}"\n'
 HELD = Hold(("#7 Investigating",))
 
@@ -35,14 +32,6 @@ def write_config(root: Path, text: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text.encode("utf-8"))
     return path
-
-
-@pytest.fixture
-def repo(repo: Repo) -> Repo:
-    """conftest's repo, with POLICY committed as its config"""
-    write_config(repo.root, POLICY)
-    repo.git.run("commit", "-q", "-am", "no min_soak_days")
-    return repo
 
 
 def shipmill(root: Path, *args: str) -> subprocess.CompletedProcess[str]:

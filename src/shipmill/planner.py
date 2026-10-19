@@ -14,7 +14,7 @@ from shipmill.changelog import Changelog, Entry
 from shipmill.errors import ReleaseError
 from shipmill.github import GitHub, OpenMilestone
 from shipmill.gitrepo import WORKFLOWS, Git, Tag
-from shipmill.policy import PRIORITY, BumpFrom, Lane, LaneRule, Mode, Policy
+from shipmill.policy import PRIORITY, BumpFrom, Lane, Mode, Policy
 from shipmill.version import PATTERN, ZERO, Part, Version
 
 BREAKING = "a breaking change waits for the maintainer's decision"  # a breaking stable candidate's cause
@@ -225,7 +225,7 @@ class Planner:
         found = self.fragments_at(head)
         pending = changelog.pending(found)
         if lane is Lane.STABLE and rule.promote:
-            return self._promotion(rule, head)
+            return self._promotion(head)
         if lane is Lane.DEV:
             covered = [t for t in self._tags if self.git.is_ancestor(head, t.commit)]
             if covered:
@@ -253,18 +253,14 @@ class Planner:
         breaking = self._breaking(changelog.promoted(target, found))
         return _Candidate(target, head, f"{len(pending)} pending entries", breaking=breaking)
 
-    def _promotion(self, rule: LaneRule, head: str) -> _Candidate | _Deferred | str:
+    def _promotion(self, head: str) -> _Candidate | _Deferred | str:
         last = self.last_stable()
         floor = last.version if last else ZERO
-        soak = dt.timedelta(days=rule.min_soak_days)
         rcs = [t for t in self._lane_tags(Lane.RC) if t.version.release > floor]
         if not rcs:
             return f"no rc after {floor} to promote"
-        ripe = [t for t in rcs if self.now - t.date >= soak]
-        if not ripe:
-            youngest = min(self.now - t.date for t in rcs)
-            return f"no rc has soaked {rule.min_soak_days} day(s); the oldest candidate is {youngest.days} day(s) old"
-        rc = max(ripe, key=lambda t: t.version)
+        # whatever its age: a time soak checks nothing (spec 029)
+        rc = max(rcs, key=lambda t: t.version)
         version = rc.version.release
         if self._has_tag(version):
             return f"{version.tag} exists already"
@@ -284,16 +280,15 @@ class Planner:
             )
             return f"{rc.name}'s base has nothing pending under {fragments.where(self.policy)}, and {found}"
         # the run's CI is a local reusable workflow, read at the run's commit, not at the rc's:
-        # once main's CI moved on, it would test the rc's tree with CI the rc never soaked with (D-28)
+        # once main's CI moved on, it would test the rc's tree with CI the rc never ran with (D-28)
         if self.git.differs(rc.commit, head, WORKFLOWS):
             return _Deferred(
-                f"the CI workflows ({WORKFLOWS}) changed since {rc.name}; the next rc carries them"
-                " and soaks before it's promoted"
+                f"the CI workflows ({WORKFLOWS}) changed since {rc.name}; the next rc carries them before it's promoted"
             )
         return _Candidate(
             version,
             base,
-            f"promotes {rc.name}, soaked {(self.now - rc.date).days} day(s)",
+            f"promotes {rc.name}, cut {(self.now - rc.date).days} day(s) ago",
             source=rc.name,
             breaking=self._breaking(promoted),
         )

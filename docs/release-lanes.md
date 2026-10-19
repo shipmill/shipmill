@@ -91,7 +91,6 @@ github_release = true             # a GitHub release, marked pre-release
 
 [lanes.stable]
 promote_from = "rc"               # omit to release main's head directly
-min_soak_days = 3
 schedule = ["Mon 07:00 Europe/Kyiv"]
 milestone = true                  # due once the milestone named "1.5.0" is done (below)
 github_release = true

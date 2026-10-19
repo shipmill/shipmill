@@ -50,7 +50,6 @@ github_release = true
 
 [lanes.stable]
 promote_from = "rc"
-min_soak_days = 3
 schedule = ["Mon 07:00 UTC"]
 github_release = true
 dispatch = ["publish.yml"]
