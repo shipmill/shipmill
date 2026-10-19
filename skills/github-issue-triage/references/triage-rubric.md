@@ -47,7 +47,7 @@ Bugs, contract tweaks, and small additive features keep their verdicts. For a re
 Read it from the tags and the manifest version.
 
 - **Pre-1.0 or active development:** implement most confirmed requests.
-- **Release candidate or soak:** implement bugs, broken promises, security or privacy fixes, and small additive features a consumer port needs now. Postpone new wire contracts, new commands, and designs spanning several issues. A behaviour change is acceptable only if it's small and is listed under Breaking.
+- **A release candidate, or a breaking release waiting for the maintainer:** implement bugs, broken promises, security or privacy fixes, and small additive features a consumer port needs now. Postpone new wire contracts, new commands, and designs spanning several issues. A behaviour change is acceptable only if it's small and is listed under Breaking.
 - **Stable:** anything breaking waits for a major version. Implement it behind a new option, or postpone it.
 
 ## Verify before deciding

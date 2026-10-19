@@ -1,0 +1,3 @@
+### Changed
+
+- Docs: no stable release is described as a soaked rc. `docs/release-lanes.md` shows a stable lane that releases main's head after every green batch, the fix-forward, revert, hotfix, and rollback order for a bad batch, and a "Stable releases" section on the breaking hold, `promote_from = "rc"` with no age, and `min_soak_days`, deprecated in 0.53.0 and refused from the next minor, with `shipmill upgrade --apply stable-every-batch` as the migration; `README.md`, the site, shipmill-setup's lane table, and the triage rubric's "a breaking release waiting for the maintainer" row follow (#463)

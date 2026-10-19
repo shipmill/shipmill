@@ -7,7 +7,8 @@ description: Set up shipmill in a repository so releases are cut by policy on la
 
 shipmill cuts releases from a hand-written CHANGELOG on lanes the project's policy
 defines. Read [How a release works](https://github.com/shipmill/shipmill/blob/main/docs/release-lanes.md#how-a-release-works) once before starting:
-pre-releases are tagged off main, and stable releases promote a soaked rc.
+pre-releases are tagged off main, stable releases ship every batch of merges whose CI
+passed, and a breaking change waits for the maintainer's hand start.
 
 Run the tool with:
 
@@ -154,17 +155,17 @@ recommendation:
 
 | Decision | Default | Notes |
 |---|---|---|
-| Lanes | `rc`, `stable`, `hotfix` | add `dev` when users install builds between rcs |
-| rc cadence | `schedule = ["Mon-Fri 07:00 <their zone>"]` | the zone is an IANA name |
-| Stable | `promote_from = "rc"`, `min_soak_days = 3`, a weekly window | without `promote_from`, stable releases main's head |
+| Lanes | `stable`, `hotfix` | add `rc` (and `dev`) only for people who try pre-releases |
+| rc cadence | by hand, or `schedule = ["Mon-Fri 07:00 <their zone>"]` | the zone is an IANA name |
+| Stable | `quiet_minutes = 30`, no `promote_from`, no soak | releases main's head after every batch of merges; a breaking change waits for the maintainer's hand start. `promote_from = "rc"` only when every stable release must be a pre-release people installed; it promotes the newest rc at any age |
 | Milestones | `milestone = true` on stable | due once the milestone titled with the version has no open issues |
 | Bump rule | `from = "headings"` for keep-a-changelog | `from = "paths"` when headings are topics, such as a spec |
 | Where releases go | `github_release = true`; `dispatch = ["publish.yml"]` | per lane; pre-releases are marked pre-release |
 | Holds | `release-blocker` holding `rc` and `stable` | create the label; add `freeze` ranges for holidays |
 | Changelog fragments | on: `[changelog] fragments = "changelog.d"` | each PR adds its entry as a file `changelog.d/<issue>-<slug>.md` instead of editing `CHANGELOG.md`, so PRs stop conflicting on it; a stable release writes them into its section and deletes them. Off (`init --no-fragments`): each PR edits Unreleased |
 
-A project that only wants "release after merges stop" uses a single
-`[lanes.stable]` with `quiet_minutes = 30` and no `promote_from`.
+This is what `shipmill init` writes. A policy whose `[lanes.stable]` sets the deprecated
+`min_soak_days` migrates with `shipmill upgrade --apply stable-every-batch`.
 
 ### Environments
 
