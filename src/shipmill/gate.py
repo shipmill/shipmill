@@ -1042,7 +1042,8 @@ def gate(
     true (D-23), a real LAUNCH first checks, at most once per 24 hours (plugin-check.json in
     the state directory), whether any shipmill@shipmill install keyed on the checkout, at
     project or local scope, is behind the latest release, and updates each one that is
-    (`claude plugin update --scope <its scope>` run in the checkout). With false, the
+    (`claude plugin marketplace update shipmill` once, then `claude plugin update --scope <its
+    scope>` run in the checkout). With false, the
     default, the gate changes no install. Then a LAUNCH, dry run or not, reads the install a
     session in the checkout would load (D-35, plugin.loaded): when it is older than the latest
     release the tick is PLUGIN_STALE, naming the install, its scope, and the command that
