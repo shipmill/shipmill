@@ -8,6 +8,7 @@ TRIAGE = SKILLS / "github-issue-triage"
 RESOLVE = SKILLS / "github-issue-resolve" / "SKILL.md"
 PR_TRIAGE = SKILLS / "github-pr-triage"
 SETUP = SKILLS / "shipmill-setup" / "SKILL.md"
+INTAKE = SKILLS / "product-intake"
 
 
 def read(path: Path) -> str:
@@ -157,3 +158,63 @@ def test_s024_12_setup_asks_for_the_direction_and_never_invents_it() -> None:
     assert "is a question for them, not a guess" in part
     assert "$CR product check" in part
     assert "A repo without `[agents]`, where shipmill only cuts releases, needs none" in part
+
+
+def _intake_rule() -> str:
+    skill = flat(read(INTAKE / "SKILL.md"))
+    rule = skill.split("8. **An opportunity names the goal it serves (D-34, spec 024).**", 1)[1]
+    return rule.split("## The script", 1)[0]
+
+
+def test_s024_18_intake_reads_goals_and_non_goals() -> None:
+    skill = read(INTAKE / "SKILL.md")
+    stock = skill.split("### 1. Take stock", 1)[1].split("### 2. Group", 1)[0]
+    assert "shipmill product show --section mission --section users --section goals --section non-goals" in stock
+    assert "uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill product show" in stock
+    assert "open and update no opportunity that pass, and name the problem in the report" in flat(stock)
+    assert "read its Mission, Users, Goals, and Non-goals" in _intake_rule()
+
+
+def test_s024_18_an_opportunity_names_the_goal_it_serves_or_none() -> None:
+    rule = _intake_rule()
+    assert "body says `Serves: G-n` (several as `Serves: G-2, G-3`) or `Serves no goal`" in rule
+    assert "Every opportunity issue's body says" in rule
+    assert "One that hits a non-goal says `Serves no goal; hits N-n`" in rule
+    assert "A repo without `docs/product.md` groups and recommends as before, with no `Serves` line" in rule
+    reference = read(INTAKE / "references" / "opportunity.md")
+    template = fenced(reference)[0]  # the opportunity issue's body, the file's first template
+    assert template.startswith("Serves: {G-n}\n\n## Problem")
+    prose = flat(reference)
+    assert "`Serves: G-n`, several as `Serves: G-2, G-3`, or `Serves no goal`" in prose
+    assert "`; hits N-n: {the non-goal's words}` when it hits a non-goal" in prose
+
+
+def test_s024_18_the_accept_question_says_the_goal() -> None:
+    rule = _intake_rule()
+    assert "the accept question to the maintainer, intake's triage line on the opportunity" in rule
+    assert "and its line in the report, says the same" in rule
+    lines = section(read(INTAKE / "references" / "opportunity.md"), "## Intake's triage line on the opportunity")
+    served, unserved = fenced(lines)[:2]
+    assert served.startswith("Triage: **opportunity**.{ Serves: G-n.} ")
+    assert unserved.startswith("Triage: **opportunity**. Serves no goal{; hits N-n:")
+    report = flat(read(INTAKE / "SKILL.md")).split("## Report", 1)[1]
+    assert "the goal it serves or that it serves none (rule 8)" in report
+
+
+def test_s024_18_no_goal_is_never_proposed_for_acceptance_on_demand_alone() -> None:
+    rule = _intake_rule()
+    assert "an opportunity that serves no goal is never proposed for acceptance on demand alone" in rule
+    assert "the maintainer adds the goal it would need to the direction, or declines it" in rule
+    assert "intake still files it and never declines it itself (rule 4)" in rule
+    unserved = fenced(section(read(INTAKE / "references" / "opportunity.md"), "## Intake's triage line"))[1]
+    assert "demand alone doesn't make it a candidate" in unserved
+    report = flat(read(INTAKE / "SKILL.md")).split("## Report", 1)[1]
+    assert "never accept on its demand alone" in report
+
+
+def test_s024_18_intake_comments_keep_triage_state_reading_them_right() -> None:
+    """triage_state.py reads "implement" as NEEDS_PR and a hold phrase before #N as BLOCKED"""
+    lines = section(read(INTAKE / "references" / "opportunity.md"), "## Intake's triage line on the opportunity")
+    for block in fenced(lines):
+        assert not re.search(r"\bimplement\b", block, re.I), block
+        assert not re.search(r"(waits on|on hold|blocked)", block, re.I), block
