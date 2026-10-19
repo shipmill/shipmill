@@ -882,6 +882,8 @@ REPORT_ROWS = [
     "WORKTREE_STALE",
     "NEEDS_DECISION",
     "UNTRUSTED",
+    "MILESTONE_WAITING",
+    "MILESTONE_OVERTAKEN",
 ]
 
 
@@ -1452,6 +1454,18 @@ def shadowed_copy(home: Path) -> Path:
     return copy
 
 
+RENAME = "shipmill gh api -X PATCH repos/o/r/milestones/3 -f title=1.1.1"
+# `shipmill milestones --json`'s overtaken row (spec 022, #475)
+OVERTAKEN = {
+    "state": "MILESTONE_OVERTAKEN",
+    "milestone": "1.1.0",
+    "detail": "v1.1.0 exists; the stable lane cuts 1.1.1 next",
+    "number": 3,
+    "next": "1.1.1",
+    "fix": RENAME,
+}
+
+
 def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
     """A row of every FIXED state, each built by the script's own row code, from titles that
     hold MARKER"""
@@ -1495,6 +1509,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         *ws.hold_rows([issue(ws, 7, ("shipmill-hold",), title=TITLE)], NOW, REPO),
         *ws.stale_rows(stale, CHECKOUT, "main"),
         *ws.upgrade_rows([upgrade_issue(ws, 11, TITLE)], "propose", False, lambda n: [], lambda name: [], REPO).rows,
+        *ws.milestone_rows(json.dumps({"milestones": [OVERTAKEN], "error": None})),
     ]
     found: dict[str, list[Any]] = {}
     for row in rows:
@@ -1544,6 +1559,7 @@ FIXES = {
         " /shipmill:github-pr-triage o/r for pull requests"
     ],
     "UPGRADE_PENDING": ["/shipmill:github-ship-watch o/r"],
+    "MILESTONE_OVERTAKEN": [RENAME],
 }
 
 
@@ -1685,7 +1701,9 @@ def test_s011_8_every_fix_names_its_target_and_quotes_no_title(ws: ModuleType, t
         assert MARKER not in row.fix, row.state
         for command in re.findall(r"\bgh [^;,]*", row.fix):
             gh_fixes += 1
-            assert "-R o/r" in command or command.startswith("gh repo edit o/r "), command
+            # gh api takes no -R: its path names the repo (#475's milestone rename)
+            named = command.startswith(("gh repo edit o/r ", "gh api -X PATCH repos/o/r/"))
+            assert "-R o/r" in command or named, command
         for flag in re.findall(r"\bgit (\S+)", row.fix):
             git_fixes += 1
             assert flag == "-C", row.fix
