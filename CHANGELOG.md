@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-10-19
+
+### Changed
+
+- Docs: no stable release is described as a soaked rc. `docs/release-lanes.md` shows a stable lane that releases main's head after every green batch, the fix-forward, revert, hotfix, and rollback order for a bad batch, and a "Stable releases" section on the breaking hold, `promote_from = "rc"` with no age, and `min_soak_days`, deprecated in 0.53.0 and refused from the next minor, with `shipmill upgrade --apply stable-every-batch` as the migration; `README.md`, the site, shipmill-setup's lane table, and the triage rubric's "a breaking release waiting for the maintainer" row follow (#463)
+
+### Fixed
+
+- Plugin: the fix printed for a stale shipmill@shipmill install (the gate's `PLUGIN_STALE` tick, `doctor`, `status`, the setup checklist, and github-ship-watch's `SHIPMILL_OUTDATED`) runs `claude plugin marketplace update shipmill` before the update or reinstall, and the gate's daily update with `plugin_update = true` refreshes the marketplace once before updating its checkout's installs, reporting a failed refresh and still trying the update; `claude plugin update` alone left an install behind when Claude Code's copy of the marketplace predated the release (#477)
+
 ## [0.53.0] - 2026-10-18
 
 ### Added
@@ -1555,7 +1565,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.53.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.54.0...HEAD
+[0.54.0]: https://github.com/shipmill/shipmill/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/shipmill/shipmill/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/shipmill/shipmill/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/shipmill/shipmill/compare/v0.50.0...v0.51.0
