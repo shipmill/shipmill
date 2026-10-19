@@ -176,7 +176,9 @@ above; it is a warning, not part of setup's done states.
   `${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}`,
   the settle job's concurrency group is unchanged, and actionlint accepts both workflows
 - S-015-2: `shipmill init` on a repo with no `--runs-on` writes a `release.yml` byte for byte
-  equal to the one written before this spec, with no `runs-on` line and `cron: "7 * * * *"`
+  equal to the one written before this spec, with no `runs-on` line and `cron: "7 * * * *"`;
+  since spec 029 (S-029-11) init's starting policy needs no tick, so the file is that one
+  without its `schedule:` block
 - S-015-3: `shipmill init --runs-on self-hosted` writes `runs-on: self-hosted` under `with:`
   in both the `prepare` and the `land` job, and `--runs-on '["self-hosted", "linux"]'`
   writes `runs-on: '["self-hosted","linux"]'` there; actionlint accepts each written
@@ -253,10 +255,10 @@ above; it is a warning, not part of setup's done states.
 ## Verification
 
 - S-015-1: ran the `test_s015_1` tests in `tests/test_runs_on.py` and read both workflows: each declares the `runs-on` string input defaulting to `ubuntu-latest`, all seven jobs set the `startsWith(...) && fromJSON(...) || inputs.runs-on` expression, the settle job's concurrency group is the one D-1 names, and actionlint passes on `.github/workflows/*.yml`
-- S-015-2: ran `test_s015_2_init_without_runs_on_writes_the_release_workflow_it_wrote_before`, the written `release.yml` equals the pinned pre-spec file byte for byte, with no `runs-on` line and `cron: "7 * * * *"`
+- S-015-2: ran `test_s015_2_init_without_runs_on_writes_the_release_workflow_it_wrote_before`, the written `release.yml` equals the pinned pre-spec file byte for byte, with no `runs-on` line and `cron: "7 * * * *"`; since spec 029 it equals that file without its `schedule:` block
 - S-015-3: ran the `test_s015_3` tests, `--runs-on self-hosted` writes `runs-on: self-hosted` and the list writes `runs-on: '["self-hosted","linux"]'` under `with:` in `prepare` and `land`, and actionlint accepts each file
 - S-015-4: ran the `test_s015_4` tests, `init --runs-on` exits 2 naming the value for each malformed form and writes no file
-- S-015-5: ran the `test_s015_5` tests in `tests/test_ticks.py`, a `milestone` lane or a promoting stable lane on `quiet_minutes` gets exactly `7 * * * *`, and the starting policy keeps today's `release.yml`
+- S-015-5: ran the `test_s015_5` tests in `tests/test_ticks.py`, a `milestone` lane or a promoting stable lane on `quiet_minutes` gets exactly `7 * * * *`; since spec 029 the starting policy needs no tick, which `test_s015_7_the_starting_policy_needs_no_tick_so_init_writes_none` proves
 - S-015-6: ran the `test_s015_6` tests, `Mon-Fri 07:00 UTC` gives `0 7 * * 1,2,3,4,5`, `Europe/Kyiv` both offsets, `Mon 01:00 Asia/Tokyo` gives `0 16 * * 0`, and two windows at one UTC time give one line
 - S-015-7: ran `test_s015_7_a_push_driven_policy_gets_no_schedule_key`, no `schedule:` key, `push` on the branch and `workflow_dispatch` with its inputs kept
 - S-015-8: ran the `test_s015_8` tests, `init --caller` writes only `release.yml` with `--runs-on`, refuses an existing file without `--force`, and exits 2 without a policy, with a policy that doesn't load, and with `--operate` or `--no-fragments`

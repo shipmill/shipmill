@@ -22,6 +22,7 @@ from shipmill.errors import ReleaseError
 from shipmill.gate import skills_dir
 from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.gitrepo import REMOTE, Git
+from shipmill.hooks import HookTest
 from shipmill.land import BLOCKING_BRANCH, WORK_PREFIX, blocked
 from shipmill.policy import BumpFrom, Lane, Policy, VersionFiles
 from shipmill.product import DIRECTION
@@ -36,6 +37,11 @@ _ROADMAP_DEPRECATED = (
     "[roadmap] is deprecated (D-32) and read by nothing: the work-in-progress limit is [agents] wip;"
     " move wip there and delete [roadmap], which the next minor release refuses"
 )
+_SOAK_DEPRECATED = (
+    "[lanes.stable] min_soak_days is deprecated (spec 029): a time soak checks nothing;"
+    " run shipmill upgrade --apply stable-every-batch, which the next minor release requires"
+)
+_BREAKING = "the stable lane can hold a breaking change ([bump] major), which waits for the maintainer"
 _LOCAL_USES = re.compile(r"uses:\s*\./\.github/workflows/(?P<file>[\w.-]+\.ya?ml)")
 
 
@@ -58,6 +64,7 @@ class PluginRow:
 PAUSED = "the gate starts no session (D-35)"  # SHIPMILL_VERSION's words when a session's install is behind
 PluginRows = Callable[[], list[PluginRow]]  # the rows, or ReleaseError when they can't be read
 PeopleReader = Callable[[], Flagged]  # spec 012's flagged items, or ReleaseError when they can't be read
+HookTester = Callable[[], HookTest]  # the delivery hooks' self-test (spec 026)
 
 
 def read_plugin_rows(repo: str, root: Path) -> list[PluginRow]:
@@ -119,12 +126,14 @@ def doctor(
     people: PeopleReader | None = None,
     repo: str | None = None,
     today: dt.date | None = None,
+    hooks: HookTester | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
     people reads spec 012's AGENT_AS_PERSON items, only when [agents] app_id is set; None
     checks none. repo, owner/name, links an upgrade's issue; None names it by number. today
-    starts the year of window starts the schedule check reads; None takes the UTC date"""
+    starts the year of window starts the schedule check reads; None takes the UTC date.
+    hooks runs the delivery hooks' self-test, only with [agents] (spec 026); None runs none"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -140,11 +149,18 @@ def doctor(
     add(True, "policy", f"{read}, mode {policy.mode}, lanes {', '.join(policy.lanes)}")
     if policy.roadmap is not None:
         add(False, "roadmap", _ROADMAP_DEPRECATED, warn=True)
+    raw = read_config(found)
+    if _sets_soak(raw):
+        add(False, "min_soak_days", _SOAK_DEPRECATED, warn=True)
     if policy.agents is not None:
         checks.append(direction_check(root))
+        checks.extend(hooks_checks(policy, Git(root), hooks))
     autonomy, hold = _autonomy(policy, github, root / CALLER)
     checks.extend(autonomy)
-    checks.extend(_upgrades(policy, read_config(found), github, root / CALLER, repo))
+    upgrades, proposed = _upgrades(policy, raw, github, repo)
+    checks.extend(upgrades)
+    if (land_grant := _land_grant(policy, proposed, root / CALLER)) is not None:
+        checks.append(land_grant)
     if (operated := _operate(policy, hold, root, _operate_caller(root))) is not None:
         checks.append(operated)
 
@@ -286,6 +302,35 @@ def direction_check(root: Path) -> Check:
     return Check("PASS", "direction", f"{DIRECTION} is well formed")
 
 
+def hooks_checks(policy: Policy, git: Git, test: HookTester | None) -> list[Check]:
+    """S-026-15: the delivery hooks' block, for a repo with [agents]: one line per rule the hook
+    holds, on or off and why; the self-test against the install a session would load, a FAIL
+    naming the fix when it fails (a WARN when nothing here runs a session, or when the test
+    couldn't read what a session loads); and a WARN when
+    origin/HEAD is unset, as a hook can't tell the default branch then"""
+    agents = policy.agents
+    if agents is None:
+        return []
+    app = (
+        f"on: [agents] app_id {agents.app_id} is set, so a gh write must go as the App through shipmill gh (D-14)"
+        if agents.app_id is not None
+        else "off: no [agents] app_id, so gh writes go as your own login"
+    )
+    checks = [
+        Check("PASS", "hooks", f"app-writes {app}"),
+        Check("PASS", "hooks", "rebase-merge on: always, a pull request lands with a squash or a merge commit (D-33)"),
+        Check("PASS", "hooks", "force-push on: always, a force push needs a lease pinned to a commit"),
+    ]
+    if test is not None:
+        found = test()
+        status = "PASS" if found.ok else ("FAIL" if found.failed else "WARN")
+        checks.append(Check(status, "hooks", found.line()))
+    if not git.ok("symbolic-ref", "-q", "refs/remotes/origin/HEAD"):
+        detail = "origin/HEAD is unset, so a hook can't tell the default branch: git remote set-head origin --auto"
+        checks.append(Check("WARN", "hooks", detail))
+    return checks
+
+
 def _schedule(policy: Policy, caller: str, today: dt.date) -> Check:
     """Spec 015: a WARN naming each cron the policy's triggers need that the caller lacks,
     with the fix; an extra tick costs minutes, not releases, so it is never warned about (D-9)"""
@@ -425,45 +470,63 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
     detail += f"; upgrade {policy.autonomy.upgrades(hold)} for config upgrades"
     checks.append(Check("PASS", "autonomy", detail))
     proposes = any(policy.autonomy.configured(stage) is Autonomy.PROPOSE for stage in policy.autonomy.stages())
+    breaks = policy.can_break  # S-029-7: a breaking stable candidate is proposed, whatever the autonomy
     if (
-        (proposes or hold.on)
+        (proposes or hold.on or breaks)
         and caller.is_file()
         and _job_grants(caller.read_text("utf-8"), "prepare.yml", "issues") is False
     ):
-        why = hold.reason if hold.on else "the config sets a stage to propose"
+        why = hold.reason if hold.on else "the config sets a stage to propose" if proposes else _BREAKING
         detail = (
             f"{why}, so a run opens a proposal issue, but the prepare job in {CALLER} grants no"
             " `issues: write`: change its `issues: read` to `issues: write`"
         )
         checks.append(Check("WARN", "permissions", detail))
-    if (
-        policy.autonomy.release is Autonomy.PROPOSE
-        and caller.is_file()
-        and _job_grants(caller.read_text("utf-8"), "land.yml", "issues") is False
-    ):
-        detail = (
-            "release autonomy is propose, so a release closes its lane's proposal issue, but the land job in"
-            f" {CALLER} grants no `issues: write`: add it"
-        )
-        checks.append(Check("WARN", "permissions", detail))
     return checks, hold
 
 
+def _land_grant(policy: Policy, upgrades: int, caller: Path) -> Check | None:
+    """One WARN naming every reason the caller's land job needs `issues: write` and lacks it
+    (D-9): closing a proposal issue, under release = "propose" or for a breaking stable
+    candidate (spec 029), and proposing the upgrades pending under propose or act (spec 014)"""
+    # None, no land job at all, is the workflow check's failure, not this one's
+    if not caller.is_file() or _job_grants(caller.read_text("utf-8"), "land.yml", "issues") is not False:
+        return None
+    reasons = []
+    if policy.autonomy.release is Autonomy.PROPOSE:
+        reasons.append("release autonomy is propose, so a release closes its lane's proposal issue")
+    elif policy.can_break:
+        reasons.append(f"{_BREAKING}, so a release closes its lane's proposal issue")
+    if upgrades:
+        reasons.append(f"upgrade autonomy is {policy.autonomy.upgrade} and {upgrades} upgrade(s) pending")
+    if not reasons:
+        return None
+    job = f"the land job in {CALLER}" + (", whose grant proposes them," if upgrades else "")
+    return Check("WARN", "permissions", f"{'; '.join(reasons)}, but {job} grants no `issues: write`: add it")
+
+
+def _sets_soak(raw: Mapping[str, Any]) -> bool:
+    """Whether [lanes.stable] sets the deprecated min_soak_days, whatever its value (spec 029)"""
+    lanes = raw.get("lanes")
+    stable = lanes.get("stable") if isinstance(lanes, Mapping) else None
+    return isinstance(stable, Mapping) and "min_soak_days" in stable
+
+
 def _upgrades(
-    policy: Policy, raw: Mapping[str, Any], github: GitHub | None, caller: Path, repo: str | None
-) -> list[Check]:
+    policy: Policy, raw: Mapping[str, Any], github: GitHub | None, repo: str | None
+) -> tuple[list[Check], int]:
     """Spec 014: each pending upgrade with its fix, the open issue's link or the --apply
-    command, as a PASS: an upgrade is an offer, never a failure. When `upgrade` is propose or
-    act and one is pending, a WARN when the caller's land job, whose grant land.yml's upgrade
-    job runs with, has no `issues: write` (D-9); a WARN when the issues can't be read"""
+    command, as a PASS: an upgrade is an offer, never a failure; a WARN when the issues can't
+    be read. With the count of pending upgrades land.yml's upgrade job proposes, under
+    `upgrade` propose or act, whose grant _land_grant checks"""
     if not pending(raw):
-        return []
+        return [], 0
     if github is None:
-        return [Check("WARN", "upgrades", f"can't read the {UPGRADE_LABEL} issues: gh isn't installed")]
+        return [Check("WARN", "upgrades", f"can't read the {UPGRADE_LABEL} issues: gh isn't installed")], 0
     try:
         found = offers(raw, github.labelled_issues(UPGRADE_LABEL))
     except ReleaseError as exc:
-        return [Check("WARN", "upgrades", f"can't read the {UPGRADE_LABEL} issues: {exc}")]
+        return [Check("WARN", "upgrades", f"can't read the {UPGRADE_LABEL} issues: {exc}")], 0
     checks = []
     for offer in found:
         upgrade = offer.upgrade
@@ -473,16 +536,7 @@ def _upgrades(
             fix = f"https://github.com/{repo}/issues/{offer.issue}" if repo else f"#{offer.issue}"
         detail = f"{upgrade.id} pending (shipmill {upgrade.version}): {upgrade.changes}; fix: {fix}"
         checks.append(Check("PASS", "upgrade", detail))
-    if not found or policy.autonomy.upgrade is Autonomy.OBSERVE or not caller.is_file():
-        return checks
-    # None, no land job at all, is the workflow check's failure, not this one's
-    if _job_grants(caller.read_text("utf-8"), "land.yml", "issues") is False:
-        detail = (
-            f"upgrade autonomy is {policy.autonomy.upgrade} and {len(found)} upgrade(s) pending, but the land"
-            f" job in {CALLER}, whose grant proposes them, grants no `issues: write`: add it"
-        )
-        checks.append(Check("WARN", "permissions", detail))
-    return checks
+    return checks, 0 if policy.autonomy.upgrade is Autonomy.OBSERVE else len(found)
 
 
 def _operate_caller(root: Path) -> Path:

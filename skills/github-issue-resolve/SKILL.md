@@ -78,6 +78,19 @@ A gate session (its prompt carries the `Gate session:` or `Headless:` paragraph)
 
 ## Phase 4: Implement
 
+**The plan comes first.** When the default branch has `docs/product.md` (D-34, spec 024), write the pull request's `## Plan` section before any code, in the PR body file you will open it with (`tmp/pr-<n>.md`). Read the direction's Goals and Quality bar for it (`shipmill product show --section goals` and `--section quality`):
+
+```markdown
+## Plan
+
+- Serves: {G-n, or several as G-2, G-3; quality bar, as two plain words, for a bug fix or a contract tweak}
+- Files: {the files you expect to change}
+- Order: {the steps; for a bug fix the failing test first}
+- Proof: {the tests or checks that show it works; a spec's criterion ids}
+```
+
+Each of the four lines appears once, with its label exactly as above: github-pr-triage's `pr_gate.py` refuses an agent's pull request without the section or whose `Serves:` names an id the direction doesn't list. A spec's build issue may point to its spec's Behaviour in `Order:` instead of repeating it. A plan that turns out wrong is updated in the body before the push that departs from it: edit the file, then `gh pr edit <pr> --body-file <file>` (through `shipmill gh` with `[agents] app_id` set), then push. A repo without `docs/product.md` needs no plan.
+
 1. Make the smallest change that fixes the root cause; match surrounding style
 2. If a dependency floor must rise, update the manifest and lockfile (`uv lock`)
 3. Add a regression test that fails before the fix and passes after, using the issue's repro shape (e.g. both the old-behaviour and new-behaviour cases)
@@ -100,7 +113,7 @@ Report pre-existing failures as such; never claim a green suite you didn't see. 
 
 1. Commit only the relevant paths. Message: imperative summary, a why-focused body, `Fixes #<n>`, plus any attribution lines the environment requires
 2. `git push -u origin <branch>`
-3. `gh pr create` with a Summary (what and why), `Fixes #<n>`, and a Test plan that lists pre-existing failures honestly
+3. `gh pr create --body-file <file>` with a Summary (what and why), the Phase 4 `## Plan` when the repo has `docs/product.md`, `Fixes #<n>`, and a Test plan that lists pre-existing failures honestly. Before a later push that departs from the plan, update the plan in the body first (Phase 4)
 4. Before opening, check the PR diff contains only the intended files: `gh pr diff <pr> --name-only`
 5. Comment the triage on the issue: root cause, why it was missed (if notable), and a link to the PR. Post with `--body-file`: in zsh, backticks inside a double-quoted `--body` run as commands and a glob error aborts the whole command line, so the comment silently never posts
 6. Keep the worktree while the PR is open: a review round or a rebase reuses it. Tell the user its path
@@ -134,3 +147,7 @@ A worktree this session leaves behind once it exits (it ended before the merge, 
 - Links: issue comment, PR (and merge commit if merged)
 - Verification results, separating new tests from pre-existing failures
 - Anything left for the user: unpushed commits, divergent branches, decisions needed, and the worktree path while the PR is open
+
+## Improve the skill
+
+When a run goes wrong (a verdict the code contradicted, unpushed commits riding along in a PR, a fix on the user's checkout), add the lesson to the matching phase, so the skill doesn't repeat it. When a lesson goes into the skill, add a case under `evals/` that fails without it, in the same pull request.

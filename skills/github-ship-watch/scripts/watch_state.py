@@ -169,7 +169,9 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
                   marketplace's source when it isn't shipmill/shipmill (reported, never an
                   action)
   SHIPMILL_OUTDATED  one row per install of those older than the latest release, with the
-                  command that updates it, run in its folder. When an install at the same
+                  command that updates it, run in its folder, after `claude plugin
+                  marketplace update shipmill` (Claude Code updates from its local copy of
+                  the marketplace, which may predate the release). When an install at the same
                   scope is keyed on a folder nested in it (the gate's checkout in the repo),
                   `claude plugin update` picks the nested one (a Claude Code bug), so the
                   fix reinstalls the folder's own instead: an action for a person, never an
@@ -2005,15 +2007,21 @@ def plugin_fix(scope: str, where: str | None, keyed: list[tuple[str, Path]]) -> 
     """The command that updates one install, run in its folder. Claude Code's `plugin update
     --scope project` picks an install at the same scope keyed on a folder nested in the cwd,
     such as the gate's tmp/shipmill-gate, over the cwd's own (#233, a Claude Code bug); with
-    one nested, the fix reinstalls the folder's own at that scope instead"""
-    update = f"claude plugin update {PLUGIN} --scope {scope}"
+    one nested, the fix reinstalls the folder's own at that scope instead. Either way it
+    refreshes the marketplace first: Claude Code updates from its local copy of it, which may
+    predate the release (#477); the refresh isn't folder-specific, so it runs there too"""
+    refresh = f"claude plugin marketplace update {PLUGIN.partition('@')[2]}"
+    update = f"{refresh} && claude plugin update {PLUGIN} --scope {scope}"
     if where is None:
         return update
     folder = Path(where)
     nested = sorted(p for s, p in keyed if s == scope and folder in p.parents)
     if not nested:
         return f"in {where}: {update}"
-    again = f"claude plugin uninstall {PLUGIN} --scope {scope} && claude plugin install {PLUGIN} --scope {scope}"
+    again = (
+        f"{refresh} && claude plugin uninstall {PLUGIN} --scope {scope}"
+        f" && claude plugin install {PLUGIN} --scope {scope}"
+    )
     return f"in {where}: {again} (`update` picks the nested install in {nested[0]}, a Claude Code bug)"
 
 

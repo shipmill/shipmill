@@ -98,6 +98,20 @@ _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 
 
 @dataclass(frozen=True, slots=True)
+class HooksConfig:
+    """[hooks]: the switches of the plugin's delivery hooks (spec 026, D-36); validated here,
+    read by hooks/delivery.py with tomllib, since the plugin can't import shipmill"""
+
+    default_branch: bool = True  # default-branch-push: refuse a push to the default branch
+    private: tuple[str, ...] = ()  # private-paths: globs, relative to the repo root, whose files never leave it
+
+    @classmethod
+    def parse(cls, t: Table) -> HooksConfig:
+        t.allow("default_branch", "private")
+        return cls(t.boolean("default_branch", default=True), t.strings("private", default=()))
+
+
+@dataclass(frozen=True, slots=True)
 class Policy:
     name: str
     mode: Mode
@@ -126,6 +140,7 @@ class Policy:
     roadmap: RoadmapConfig | None = None  # the deprecated [roadmap] section (D-32): validated, read by nothing
     fragments: str | None = None  # [changelog] fragments: the changelog fragments folder, or None (spec 013)
     notices: NoticesConfig = NoticesConfig()  # [notices]: validated here, read by shipped.py (spec 021)
+    hooks: HooksConfig = HooksConfig()  # [hooks]: validated here, read by the plugin's hook (spec 026)
 
     @property
     def incident_label(self) -> str | None:
@@ -163,6 +178,7 @@ class Policy:
             "operate",
             "roadmap",
             "notices",
+            "hooks",
         )
         changelog = top.table("changelog")
         changelog.allow("path", "style", "fragments")
@@ -206,6 +222,7 @@ class Policy:
         agents = AgentsConfig.parse(top.table("agents")) if "agents" in raw else None
         roadmap = RoadmapConfig.parse(top.table("roadmap")) if "roadmap" in raw else None
         notices = NoticesConfig.parse(top.table("notices", optional=True))
+        hooks = HooksConfig.parse(top.table("hooks", optional=True))
         return cls(
             name=top.string("name"),
             mode=top.enum("mode", Mode),
@@ -234,12 +251,27 @@ class Policy:
             roadmap=roadmap,
             fragments=fragments,
             notices=notices,
+            hooks=hooks,
         )
 
     def rule(self, lane: Lane) -> LaneRule:
         if lane not in self.lanes:
             raise ReleaseError(f"lane {lane} is not enabled in the policy's [lanes]")
         return self.lanes[lane]
+
+    @property
+    def major_headings(self) -> frozenset[str]:
+        """The headings whose entries bump the major part: a stable candidate holding one is
+        breaking and waits for the maintainer (spec 029); none under from = 'paths'"""
+        if self.bump_from is not BumpFrom.HEADINGS:
+            return frozenset()
+        return frozenset(h for h, part in self.bump_headings.items() if part is Part.MAJOR)
+
+    @property
+    def can_break(self) -> bool:
+        """Whether the stable lane can have a breaking candidate, which a proposal issue holds
+        until a person releases it"""
+        return Lane.STABLE in self.lanes and bool(self.major_headings)
 
     @property
     def quiet_minutes(self) -> int:

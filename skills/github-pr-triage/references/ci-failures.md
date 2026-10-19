@@ -24,6 +24,8 @@ A history of the same test failing on the default branch or on unrelated PRs (se
 
 Classify each failed job separately: two red jobs can have two different causes.
 
+A red `evals` check is always caused by the PR: it measures the change to the agents' instructions itself, so it is never proven unrelated, and only the maintainer accepting that run lets the PR land (D-37). On a fork's pull request the check fails until the maintainer dispatches the run it names (`gh workflow run evals.yml -f pr=<N>`); the PR lands only after that run is green.
+
 ## Act
 
 - **Caused by the PR:** it's a finding. Fix it or send it back to the author, and don't merge.

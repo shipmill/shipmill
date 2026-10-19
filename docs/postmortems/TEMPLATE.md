@@ -41,6 +41,11 @@ The check, alert, or person that noticed first, and how long after the fault shi
 The earliest point the fault was detectable (a test, a review rule, a health check, a bake
 time), and why it wasn't there.
 
+## Eval case
+
+The path of the case under `evals/` that would have caught the fault, or `none:` and why no
+agent's instructions were involved.
+
 ## Actions
 
 Each action is either a rule or a piece of work, never both:

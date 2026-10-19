@@ -112,4 +112,4 @@ Lead with what needs the maintainer: the OPPORTUNITY_OPEN issues, strongest evid
 
 ## Improve the skill
 
-When a pass groups badly (two outcomes in one issue, a request proposed again after a decline), add the lesson to step 2. When a script misreads a state, fix `intake_state.py` and add a case to shipmill's `tests/test_intake_state.py`.
+When a pass groups badly (two outcomes in one issue, a request proposed again after a decline), add the lesson to step 2. When a script misreads a state, fix `intake_state.py` and add a case to shipmill's `tests/test_intake_state.py`. When a lesson goes into the skill, add a case under `evals/` that fails without it, in the same pull request.

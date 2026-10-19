@@ -2,10 +2,12 @@
 
 Write each body to a file and post it with `gh issue comment <n> --body-file <file>`. Keep the files in the repo's `tmp/` folder. Start every triage comment with `Triage:` followed by the bolded verdict, because `triage_state.py` finds triage comments by that prefix. Follow the user's writing rules: no trailing periods on list items, and em dashes only rarely.
 
+**The goal, in the verdict line.** When the repo has `docs/product.md`, a verdict on new behaviour names the goal it serves right after the bolded verdict, `Serves: G-n.` (several as `Serves: G-2, G-3.`), from the direction's Goals; a non-goal it hits gets the Won't fix (non-goal) template, and a feature that serves no goal the Postpone (no goal) template; a user's request that serves no goal keeps the Opportunity template with `Serves no goal.` in its slot ([triage-rubric.md](triage-rubric.md), The direction). A bug fix or a contract tweak serves the quality bar and names no goal, and a repo without `docs/product.md` leaves the `{ Serves: G-n.}` slots out.
+
 ## Implement
 
 ```markdown
-Triage: **implement**{, for the next release candidate | after rcN}.{ Waits on your decision below.}
+Triage: **implement**{, for the next release candidate | after rcN}.{ Serves: G-n.}{ Waits on your decision below.}
 
 {Only while a design question is open (design-gate.md, step 3), and only in a session the user started by hand; the block goes first, before the plan. A gate session posts the block as its own needs-decision comment instead, right after this one:}
 **Decision needed:** {the question in one sentence, in words a user of the tool knows}
@@ -49,7 +51,7 @@ The fix is in #{PR}: {what it does, in one or two sentences}. {Any trade-off or 
 A request for a new capability that no accepted opportunity covers goes to product intake (triage-rubric.md, A new capability). The verdict is the marker intake uses itself, so `triage_state.py` reads the issue TRIAGED and `intake_state.py` reads it NEW_FEEDBACK until an opportunity's Evidence section lists it. Don't use the word "implement" in this comment, and don't put an issue number right after a hold phrase ("waits on #40"): `triage_state.py` would read NEEDS_PR or BLOCKED.
 
 ```markdown
-Triage: **opportunity**. {What the request asks for, in one sentence}: a new capability, not a bug fix or a contract tweak. It goes to product intake, which groups it with the requests for the same outcome into one opportunity issue{, likely #{open opportunity}}; the maintainer accepts or declines that opportunity, and an accepted one gets a spec before anything is built. Follow this issue for the link to the opportunity.
+Triage: **opportunity**.{ Serves: G-n.} {What the request asks for, in one sentence}: a new capability, not a bug fix or a contract tweak. It goes to product intake, which groups it with the requests for the same outcome into one opportunity issue{, likely #{open opportunity}}; the maintainer accepts or declines that opportunity, and an accepted one gets a spec before anything is built. Follow this issue for the link to the opportunity.
 ```
 
 ## Feature
@@ -57,7 +59,7 @@ Triage: **opportunity**. {What the request asks for, in one sentence}: a new cap
 A feature waits for its spec ([spec-gate.md](spec-gate.md)). Keep "On hold" and the spec PR's `owner/repo#N` in one sentence of one line, so `triage_state.py` reports BLOCKED until the spec merges and UNBLOCKED after. Don't use the word "implement" in this comment: the script reads the latest triage comment's verdict from it.
 
 ```markdown
-Triage: **feature**. {What the new behaviour is, in one or two sentences, and why it isn't a bug fix or a contract tweak.}
+Triage: **feature**.{ Serves: G-n.} {What the new behaviour is, in one or two sentences, and why it isn't a bug fix or a contract tweak.}
 
 The spec is in #{spec PR} (`docs/specs/{NNN}-{slug}.md`), with its acceptance criteria. Merging it is the approval; the build starts after that.
 
@@ -67,7 +69,7 @@ On hold: the build waits on {owner/repo}#{spec PR}, the spec
 A request an accepted opportunity covers is built under that opportunity: its spec is the opportunity's, so the request holds on the opportunity issue, which closes when the build does. Add the request to the opportunity's Evidence section too.
 
 ```markdown
-Triage: **feature**. This asks for the outcome of #{opportunity}, which the maintainer accepted; it's built under that issue{, whose spec is in #{spec PR}}, and this one closes with it.
+Triage: **feature**.{ Serves: G-n.} This asks for the outcome of #{opportunity}, which the maintainer accepted; it's built under that issue{, whose spec is in #{spec PR}}, and this one closes with it.
 
 On hold: built under {owner/repo}#{opportunity}, the accepted opportunity
 ```
@@ -88,6 +90,26 @@ The plan:
 ```
 
 Then add the label: `gh issue edit <n> --add-label postponed`.
+
+### Postpone (no goal)
+
+A feature, new behaviour the maintainer already wants, that serves no goal of `docs/product.md`; a user's request that serves none goes to product intake instead (Opportunity). Add the `postponed` label as above. Don't use the word "implement" in this comment, and name no issue right after a hold phrase: `triage_state.py` would read NEEDS_PR or BLOCKED.
+
+```markdown
+Triage: **postponed**: it serves no goal of the direction. {What it asks for, in one sentence}: new behaviour, and none of the goals in `docs/product.md` ({G-n: its words, for the nearest one}) covers it.
+
+It would need a goal such as "{the outcome it would serve}". The maintainer adds that goal to the direction, and this is decided again, or lets it wait.
+```
+
+## Won't fix (non-goal)
+
+New behaviour that hits a non-goal of `docs/product.md`. Close the issue as not planned (`gh issue close <n> --reason "not planned"`) after posting.
+
+```markdown
+Triage: **won't fix**: it hits {N-n}, "{the non-goal's words}". {Why the request falls under it, in one or two sentences.}
+
+The direction is the maintainer's to change; if it changes, this can be reopened.
+```
 
 ## Clarify
 
