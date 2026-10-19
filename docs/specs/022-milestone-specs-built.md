@@ -75,7 +75,7 @@ versions, and the milestone marks the one that completes it.
 When a stable tag named like an open milestone exists, the milestone is **overtaken**:
 `shipmill status` reports MILESTONE_OVERTAKEN with the milestone and the version the lane
 would cut next, and its fix renames the milestone to that version
-(`gh api -X PATCH repos/<owner>/<repo>/milestones/<n> -f title=<next>`). Under "watch",
+(`shipmill gh api -X PATCH repos/<owner>/<repo>/milestones/<n> -f title=<next>`, #475). Under "watch",
 github-ship-watch renames it and says so on the tracking issue the user names, since the
 policy already decided the version; the goal and its issues stay as they were.
 
@@ -153,6 +153,6 @@ the tests `specs.py coverage --spec 022` lists for it run there and passing.
 - S-022-9: `belonging` takes a spec whose file an issue in the milestone links; test_s022_9 passes
 - S-022-10: `milestone_findings` reports an open milestone with open issues whose stable tag exists with the version the first milestone lane cuts next, its candidate's or `target`'s, and the row's fix renames it; the plan never reads open milestones. A milestone with no open issue is not overtaken: its own release shipped it and GitHub leaves it open, and renamed it would make the next version's milestone due at once. The test_s022_10 tests pass: 1.1.0 overtaken names 1.1.1 with a fix pending and 1.2.0 with an rc of it to promote, a 1.1.0 its milestone released reads nothing, and with an overtaken and a closed higher milestone the rc is 1.1.1rc1 and stable promotes 1.1.1
 
-Not verified, left to a follow-up issue as the maintainer decided on #398's pull request: the rows are `shipmill status`'s summary only, not `--rows` or `--json`, so github-ship-watch, which reads `watch_state.py`, doesn't see MILESTONE_OVERTAKEN yet and renames nothing under "watch"
+Left to a follow-up issue as the maintainer decided on #398's pull request, and done in #475: `shipmill milestones` prints the two rows from `status.read_milestones`, `watch_state.py` runs it when a lane sets `milestone = true`, and `shipmill status` reads them from `watch_state.py`, so `--rows`, `--json`, and github-ship-watch see MILESTONE_OVERTAKEN, whose fix is now `shipmill gh api ...` (a write as the App, D-14), and rename it under "watch"
 - S-022-11: `specs.py split --milestone` puts the milestone in each proposal's text and `--json`, and none without it; test_s022_11 passes
 - S-022-12: `triage_state.py` reads OFF_MILESTONE for an open build issue outside its parent's milestone and its usual state otherwise; the test_s022_12 tests pass

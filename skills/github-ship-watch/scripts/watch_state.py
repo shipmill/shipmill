@@ -27,6 +27,17 @@ Release bot (a repo with .github/shipmill.toml):
                   the work; the main checkout, the --repo-dir checkout, and worktrees that
                   aren't shipmill's are never reported)
 
+Milestones (spec 022; for a shipmill bot whose config has a lane with milestone = true, from
+`uvx --from <tool> shipmill --repo <repo-dir> milestones --json`, never run without one):
+  MILESTONE_WAITING   a goal's milestone with no open issues whose specs aren't built or
+                  shipped, with what holds it (reported, never an action: the build work is
+                  the factory's)
+  MILESTONE_OVERTAKEN an open milestone with open issues whose version a stable tag already
+                  took: the version the lane cuts next, and the fix, the rename to it
+                  through `shipmill gh api -X PATCH` (an action, never an agent's by itself)
+  A milestones read the planner failed is a warning on stderr with no row; a failing
+  `shipmill milestones`, or JSON it can't read, stops the watch (exit 2)
+
 Each of the --releases newest version tags (default 3):
   NOT_PUBLISHED   the package is on PyPI but this version isn't, --grace minutes after
                   the tag
@@ -202,10 +213,11 @@ Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when an
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
 ISSUES, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, SKILL_SHADOWED,
-UPGRADE_PENDING, CHAIN_NO_GATE, or CHAIN_UNREADABLE row is present, 2 on bad input or a
-git, gh, or uvx failure (a failing `shipmill worktrees`; a `shipmill plan` failing
-with its own `shipmill: ` error is the BOT_PLAN_FAILED row instead).
-Needs git, an authenticated gh, and uvx (for a shipmill bot's plan and worktrees; `shipmill
+UPGRADE_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, or MILESTONE_OVERTAKEN row is present, 2
+on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
+milestones`; a `shipmill plan` failing with its own `shipmill: ` error is the BOT_PLAN_FAILED
+row instead).
+Needs git, an authenticated gh, and uvx (for a shipmill bot's plan, worktrees, and milestones; `shipmill
 worktrees` needs claude on PATH too, to see the live sessions). Python 3.10+,
 standard library only.
 """
@@ -313,6 +325,7 @@ ACTION = {
     "UPGRADE_PENDING",
     "CHAIN_NO_GATE",
     "CHAIN_UNREADABLE",
+    "MILESTONE_OVERTAKEN",
 }
 # the states whose row needs an agent: --json marks each row's "agent" from this, and
 # shipmill gate starts a session on those rows (SKILL.md's repair table says what it does)
@@ -753,6 +766,103 @@ def stale_worktrees(repo_dir: Path, tool: str, branch: str) -> list[Row]:
     """The kept shipmill worktrees of the checkout's repository created over STALE ago"""
     out = run(["uvx", "--from", tool, "shipmill", "--repo", str(repo_dir), "worktrees", "--json"])
     return stale_rows(out, project_folder(repo_dir), branch)
+
+
+def milestone_lanes(text: str, policy: Path) -> bool:
+    """Whether a lane of the config sets milestone = true (spec 022): only then is `shipmill
+    milestones` run. Read as shipmill reads it, with tomllib on 3.11+, the regex fallback on
+    3.10; a milestone that isn't a boolean is refused"""
+    if tomllib is None:
+        return milestone_lanes_310(text, policy)
+    try:
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise Refused(f"error: {policy}: {exc}") from None
+    lanes = raw.get("lanes", {})
+    if not isinstance(lanes, dict):
+        raise Refused(f"error: {policy}: lanes is not a table")
+    found = False
+    for name, table in lanes.items():
+        value = table.get("milestone", False) if isinstance(table, dict) else None
+        if not isinstance(value, bool):
+            raise Refused(f"error: {policy}: lanes.{name} is not a table with a boolean milestone")
+        found = found or value
+    return found
+
+
+def milestone_lanes_310(text: str, policy: Path) -> bool:
+    """milestone_lanes on Python 3.10: plain [lanes.<name>] tables, each with milestone = true
+    or false; any other form of [lanes] is refused rather than misread"""
+    unreadable = Refused(
+        f"error: {policy}: can't read [lanes] on Python 3.10: use 3.11+ or plain [lanes.<name>] tables"
+    )
+    tables = toml_tables(text)
+    if not blank(tables.get("lanes", "")) or re.search(
+        r"^\s*[\"']?lanes[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE
+    ):
+        raise unreadable
+    found = False
+    for name, body in tables.items():
+        if name.split(".")[0] != "lanes" or len(name.split(".")) != 2:
+            continue
+        for line in body.splitlines():
+            if not re.match(r"^\s*[\"']?milestone[\"']?\s*=", line):
+                continue
+            value = re.match(r"^\s*[\"']?milestone[\"']?\s*=\s*(true|false)\s*(?:#.*)?$", line)
+            if value is None:
+                raise unreadable
+            found = found or value.group(1) == "true"
+    return found
+
+
+MILESTONE_STATES = ("MILESTONE_WAITING", "MILESTONE_OVERTAKEN")
+
+
+def milestone_rows(text: str) -> list[Row]:
+    """`shipmill milestones --json`'s rows (#475, spec 022): MILESTONE_WAITING, report only,
+    and MILESTONE_OVERTAKEN, an action whose fix is the rename. Anything else it prints stops
+    the watch (exit 2); a read the planner failed goes to stderr as a warning, with no row,
+    since the release's own plan reports its errors as BOT_PLAN_FAILED"""
+    try:
+        report = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: shipmill milestones --json printed no JSON: {exc}") from None
+    if not isinstance(report, dict) or not {"milestones", "error"} <= set(report):
+        raise Refused(f"error: shipmill milestones --json printed {text[:200]!r}, not milestones and an error")
+    found, error = report["milestones"], report["error"]
+    if not isinstance(found, list) or not (error is None or isinstance(error, str) and error):
+        raise Refused(f"error: shipmill milestones --json printed {text[:200]!r}, not milestones and an error")
+    if error is not None and found:
+        raise Refused(f"error: shipmill milestones --json printed rows and an error: {text[:200]!r}")
+    if error is not None:
+        sys.stderr.write(f"warning: shipmill milestones: not read: {' '.join(error.split())}\n")
+    rows = []
+    for item in found:
+        if not isinstance(item, dict) or not milestone_item(item):
+            raise Refused(f"error: shipmill milestones --json printed a malformed row: {item!r}")
+        rows.append(Row(item["state"], item["milestone"], item["detail"], item["fix"]))
+    return rows
+
+
+def milestone_item(item: dict[str, Any]) -> bool:
+    """A well-formed row: a waiting one names no number, version, or fix; an overtaken one its
+    milestone's number, the version next, and the rename"""
+    texts = all(isinstance(item.get(k), str) and item[k] for k in ("milestone", "detail"))
+    if not texts or item.get("state") not in MILESTONE_STATES:
+        return False
+    if item["state"] == "MILESTONE_WAITING":
+        return all(item.get(k) is None for k in ("number", "next", "fix"))
+    number = item.get("number")
+    numbered = isinstance(number, int) and not isinstance(number, bool) and number > 0
+    return numbered and all(isinstance(item.get(k), str) and item[k] for k in ("next", "fix"))
+
+
+def milestones(repo_dir: Path, policy: Path, tool: str, execute: Callable[[list[str]], str] = run) -> list[Row]:
+    """Spec 022's milestone rows of the checkout's repository, from `shipmill milestones`, run
+    only when a lane of its config sets milestone = true; none and nothing run otherwise"""
+    if not milestone_lanes((repo_dir / policy).read_text(encoding="utf-8"), policy):
+        return []
+    return milestone_rows(execute(["uvx", "--from", tool, "shipmill", "--repo", str(repo_dir), "milestones", "--json"]))
 
 
 # -- releases ------------------------------------------------------------------------------
@@ -2236,6 +2346,7 @@ def main() -> int:
         rows += work_branch_rows(branches, owners, workflow, args.repo)
         if shipmill:  # after the plan, whose own worktree is gone by then
             rows += stale_worktrees(repo_dir, args.tool, branch)
+            rows += milestones(repo_dir, policy, args.tool)
 
     tags = version_tags(repo_dir)
     package = package_name(repo_dir)

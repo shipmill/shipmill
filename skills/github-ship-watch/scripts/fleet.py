@@ -96,6 +96,7 @@ ACTION = frozenset(
         "UPGRADE_PENDING",
         "CHAIN_NO_GATE",
         "CHAIN_UNREADABLE",
+        "MILESTONE_OVERTAKEN",
     }
 )
 REPO_ERROR = "REPO_ERROR"
