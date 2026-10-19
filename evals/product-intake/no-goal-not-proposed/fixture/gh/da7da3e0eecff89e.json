@@ -1,0 +1,17 @@
+{
+  "args": [
+    "api",
+    "graphql",
+    "-f",
+    "query=\nquery($owner: String!, $name: String!, $label: String!, $cursor: String) {\n  repository(owner: $owner, name: $name) {\n    issues(labels: [$label], first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {\n      pageInfo { hasNextPage endCursor }\n      nodes {\n        number title url state stateReason closedAt body milestone { title }\n        labels(first: 100) { pageInfo { hasNextPage } nodes { name } }\n        reactions(content: THUMBS_UP) { totalCount }\n        comments(last: 50) { pageInfo { hasPreviousPage startCursor } nodes { body createdAt } }\n      }\n    }\n  }\n}\n",
+    "-f",
+    "owner=shipmill",
+    "-f",
+    "name=shipmill",
+    "-f",
+    "label=opportunity"
+  ],
+  "stdout": "{\"data\": {\"repository\": {\"issues\": {\"pageInfo\": {\"hasNextPage\": false, \"endCursor\": null}, \"nodes\": []}}}}\n",
+  "stderr": "",
+  "exit": 0
+}

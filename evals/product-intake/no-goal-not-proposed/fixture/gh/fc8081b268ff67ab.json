@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "901",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "title,body,comments"
+  ],
+  "stdout": "{\"title\": \"Add a download-count badge for each release to the README\", \"body\": \"Every project I maintain shows a badge with how many times the latest release was downloaded. Could shipmill add one to the README when it cuts a release? My users love seeing the number go up.\", \"comments\": []}\n",
+  "stderr": "",
+  "exit": 0
+}

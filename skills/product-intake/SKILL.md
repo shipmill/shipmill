@@ -35,6 +35,7 @@ There is no `act`: shipmill refuses it, since an opportunity is a proposal by na
 5. **Bugs and contract changes aren't feedback.** The script already leaves out issues triage gave an implement, feature, duplicate, or won't fix verdict. If an untriaged issue is a bug, leave it to github-issue-triage rather than grouping it. A request triage handed over with its **opportunity** verdict is feedback: group it like any other
 6. **GitHub data only** (D-6's spirit): issues, discussions, and reactions. No external tracker, survey, or analytics source
 7. **Write as the App when the repo has one.** When `.github/shipmill.toml` sets `[agents] app_id`, every `gh` call that writes (an issue, a comment, a label, a pull request, a review, a merge, a release) runs as `shipmill gh <the same arguments>` from the repo's checkout, in every session, gated or started by hand, so its author is the App's bot, not the maintainer (spec 012, D-14). When `shipmill` isn't on PATH, and in a headless gate session, whose allowlist has `Bash(uvx *)` and no bare `shipmill`, run `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill gh ...`. Reads may keep plain `gh`. A `shipmill gh` that exits 2 is a stop: report its message and never retry the write with plain `gh`
+8. **An opportunity names the goal it serves (D-34, spec 024).** When the default branch has `docs/product.md`, read its Mission, Users, Goals, and Non-goals (step 1). Every opportunity issue's body says `Serves: G-n` (several as `Serves: G-2, G-3`) or `Serves no goal`, and the accept question to the maintainer, intake's triage line on the opportunity and its line in the report, says the same. Demand still counts, but an opportunity that serves no goal is never proposed for acceptance on demand alone: its recommendation is that the maintainer adds the goal it would need to the direction, or declines it. One that hits a non-goal says `Serves no goal; hits N-n` with the non-goal's words, and its recommendation is to decline it citing `N-n`; intake still files it and never declines it itself (rule 4). A repo without `docs/product.md` groups and recommends as before, with no `Serves` line
 
 ## The script
 
@@ -74,6 +75,14 @@ uv run --no-project python <skill>/scripts/intake_state.py <owner/repo>
 gh label list -R <owner/repo>
 ```
 
+When the default branch has `docs/product.md`, read the parts of the direction intake uses (rule 8), from the checkout after `git fetch`; where `shipmill` isn't on PATH, and in a headless session, run `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill product show ...`:
+
+```bash
+shipmill product show --section mission --section users --section goals --section non-goals
+```
+
+It exits 2 on a direction that breaks its grammar: open and update no opportunity that pass, and name the problem in the report.
+
 Read each NEW_FEEDBACK item in full (`gh issue view <n> --json title,body,comments`, or the discussion page), and the body of every opportunity the script lists, closed ones included. Run `decisions.py find` (github-issue-triage's script) with the areas the requests touch: a request that breaks a settled `D-n` rule is still an opportunity, but its Problem section says which rule it runs into.
 
 ### 2. Group
@@ -88,7 +97,7 @@ Two requests belong together when they want the **same outcome** for the user, e
 
 ### 3. Write
 
-Under `propose`, write each group with the templates in [references/opportunity.md](references/opportunity.md), every body through `--body-file` in the repo's `tmp/`. Create the `opportunity` and `planned` labels once if they're missing. Then:
+Under `propose`, write each group with the templates in [references/opportunity.md](references/opportunity.md), every body through `--body-file` in the repo's `tmp/`. Its `Serves` line (rule 8) names a goal only when the outcome reaches it in the goal's own words; never stretch a goal to fit the demand, and never invent one. Create the `opportunity` and `planned` labels once if they're missing. Then:
 
 - Open the opportunity issue with the `opportunity` label, and comment intake's triage line on it
 - Comment on each request it groups, linking the opportunity
@@ -108,7 +117,7 @@ An ACCEPTED opportunity is a **feature**: under "intake and triage", run github-
 
 ## Report
 
-Lead with what needs the maintainer: the OPPORTUNITY_OPEN issues, strongest evidence first, each with its request count, thumbs-up, and a one-line recommendation (accept or decline, and why). Then what the pass wrote (opportunities opened and updated, requests linked), the NO_REASON issues, the ACCEPTED ones waiting for triage, and the feedback left ungrouped with the reason. On a quiet pass, one line: "No new feedback; N opportunities wait for your call."
+Lead with what needs the maintainer: the OPPORTUNITY_OPEN issues, strongest evidence first, each with its request count, thumbs-up, the goal it serves or that it serves none (rule 8), and a one-line recommendation (accept or decline, and why; for one serving no goal, add the goal it would need or decline, never accept on its demand alone). Then what the pass wrote (opportunities opened and updated, requests linked), the NO_REASON issues, the ACCEPTED ones waiting for triage, and the feedback left ungrouped with the reason. On a quiet pass, one line: "No new feedback; N opportunities wait for your call."
 
 ## Improve the skill
 
