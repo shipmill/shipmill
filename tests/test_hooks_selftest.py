@@ -168,7 +168,8 @@ def test_s026_15_an_install_without_hooks_json_fails_naming_the_update(agents_re
     assert found.problem == (
         f"shipmill@shipmill 0.51.0 (user scope) has no hooks/hooks.json in {files}, an install older than the hooks"
     )
-    assert found.fix == "claude plugin update shipmill@shipmill --scope user"
+    refresh = "claude plugin marketplace update shipmill"  # #477: before the update
+    assert found.fix == f"{refresh} && claude plugin update shipmill@shipmill --scope user"
 
 
 def test_s026_15_without_install_path_the_cache_folder_is_read(agents_repo: Repo, tmp_path: Path) -> None:
