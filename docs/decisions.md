@@ -293,6 +293,7 @@ entry that supersedes it, never by editing an old one.
 - Applies to: src/shipmill/gate.py, src/shipmill/plugin.py, src/shipmill/agents.py, src/shipmill/doctor.py, skills/github-ship-watch/scripts/watch_state.py, skills/shipmill-setup/scripts/setup_state.py, [agents] plugin_update, shipmill status
 - Enforced by: the gate and plugin tests (with the implementing PR)
 - Supersedes: D-23
+- Superseded by: D-41
 
 ## D-36: Delivery rules that guard irreversible writes are enforced by plugin hooks in repos with [agents]
 
@@ -335,3 +336,12 @@ entry that supersedes it, never by editing an old one.
 - Applies to: hooks/hooks.json, hooks/delivery.py, src/shipmill/policy.py, src/shipmill/doctor.py, src/shipmill/gate.py, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md, skills/shipmill-setup/SKILL.md, [hooks], [agents] app_id, shipmill gh
 - Enforced by: tests/test_delivery_hooks.py and the doctor and gate tests (with the implementing PR)
 - Supersedes: D-36
+
+## D-41: The plugin pins its release; the gate loads the latest release per session and never pauses on a stale install
+
+- Decided: 2026-10-19, in shipmill/shipmill#477
+- Rule: Skills, their scripts, and the plugin's hooks run the CLI as `uvx shipmill==<version>`, the version in the plugin's own .claude-plugin/plugin.json, from PyPI, never from the @v0 tag's source or a bare shipmill on PATH; the @v0 tag may stay for outside users. The marketplace entry names the release tag, moved by the release workflow together with plugin.json, so the marketplace never serves unreleased commits, and its ref is the latest release every comparison uses. .github/shipmill.toml may set `requires = ">=X.Y"`; a CLI or script that doesn't meet it exits 2 saying which version to update to and the command. Before each session shipmill gate reads the latest version from the marketplace, materializes it once into an immutable cache (~/.cache/shipmill/plugin/<version>/, written to a temporary folder and renamed), and starts the session with --plugin-dir on that folder and settings that disable shipmill@shipmill; it changes no install, a running session keeps its folder, and a new release is picked up on the next tick. doctor, status, and the tick report each install at user, project, or local scope that lags the latest release, an install keyed on a gate checkout that no session loads, the gate's own CLI when it lags, and a config whose requires isn't met, each with its fix, plus one desktop notification per release under notify = true; only a failed materialization of the needed version, with no usable cached version, stops the gate's sessions. [agents] plugin_update is deprecated for one minor release and ignored, then refused (spec 031)
+- Why: Every release paused every gate on a host until the maintainer updated the user-scope install by hand (four releases on 2026-10-18 left four gates paused overnight), and plugin_update reported success while an install keyed on a worktree checkout never moved (#485). The pause treated drift between the plugin a session loads, the CLI it runs from @v0 or PATH, and a marketplace serving main; pinning the CLI to the plugin's version, serving releases only, and loading the release per session removes the drift instead of pausing on it
+- Applies to: src/shipmill/gate.py, src/shipmill/plugin.py, src/shipmill/agents.py, src/shipmill/doctor.py, src/shipmill/status.py, src/shipmill/policy.py, src/shipmill/launchd.py, src/shipmill/init.py, src/shipmill/upgrades.py, src/shipmill/__init__.py, .claude-plugin/marketplace.json, .claude-plugin/plugin.json, .github/shipmill.toml, hooks/delivery.py, skills/*/SKILL.md, skills/github-ship-watch/scripts/watch_state.py, skills/shipmill-setup/scripts/setup_state.py, skills/github-pr-triage/scripts/shipped.py, [agents] plugin_update, requires, shipmill status
+- Enforced by: review, until spec 031 is built
+- Supersedes: D-35
