@@ -31,8 +31,8 @@ shipmill does that rest, end to end, on any GitHub repository.
 - **No server, no state of its own.** GitHub is the database: issues, labels, pull requests,
   tags, deployments; nothing lives outside your repository
 - **Releases you can trust.** CI runs on the exact release commit before it is tagged; a
-  stable release ships the code a pre-release already soaked; a failing deploy rolls back
-  and opens an incident
+  breaking change reaches a stable release only after your decision; a failing deploy rolls
+  back and opens an incident
 
 ## How it works
 
@@ -85,13 +85,14 @@ Prefer to set it up by hand, or want only the release lanes without agents? Foll
 |---|---|---|---|
 | `dev` | `1.5.0.dev412` | main's head | after every batch of merges |
 | `rc` | `1.5.0rc2` | main's head | each workday morning |
-| `stable` | `1.5.0` | an rc that soaked without a blocker | weekly, a milestone, or by hand |
+| `stable` | `1.5.0` | main's head after every green batch, or an rc | after every batch of merges, a milestone, or by hand |
 | `hotfix` | `1.4.1` | `release/1.4` plus the pull requests you name | by hand only |
 
 Every pull request adds its own CHANGELOG entry, as a fragment file by default so pull
 requests don't conflict on it; the entries decide the next version.
-Installers skip `dev` and `rc` unless asked, so a user who needs a fix today pins the
-pre-release while everyone else gets stable releases that real users already ran.
+Installers skip `dev` and `rc` unless asked, so a user who wants to try a change first pins
+the pre-release while everyone else gets each stable release; a breaking change waits for
+you.
 
 ## Documentation
 

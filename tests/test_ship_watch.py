@@ -882,6 +882,8 @@ REPORT_ROWS = [
     "WORKTREE_STALE",
     "NEEDS_DECISION",
     "UNTRUSTED",
+    "MILESTONE_WAITING",
+    "MILESTONE_OVERTAKEN",
 ]
 
 
@@ -1245,7 +1247,7 @@ def test_an_install_behind_the_latest_release_needs_an_update(ws: ModuleType) ->
             "SHIPMILL_OUTDATED",
             "plugin local",
             "0.14.0, latest v0.24.0; in /work/r/tmp/shipmill-gate: "
-            "claude plugin update shipmill@shipmill --scope local",
+            "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope local",
         ),
     ]
     assert "SHIPMILL_OUTDATED" in ws.ACTION and "SHIPMILL_OUTDATED" not in ws.AGENT
@@ -1315,14 +1317,15 @@ def test_the_repos_install_and_the_gate_checkouts_are_separate_rows(ws: ModuleTy
     assert [(r.state, r.detail) for r in rows if r.state == "SHIPMILL_OUTDATED"] == [
         (
             "SHIPMILL_OUTDATED",
-            "0.31.1, latest v0.32.1; in /work/r: claude plugin uninstall shipmill@shipmill --scope project"
+            "0.31.1, latest v0.32.1; in /work/r: claude plugin marketplace update shipmill"
+            " && claude plugin uninstall shipmill@shipmill --scope project"
             " && claude plugin install shipmill@shipmill --scope project"
             " (`update` picks the nested install in /work/r/tmp/shipmill-gate, a Claude Code bug)",
         ),
         (
             "SHIPMILL_OUTDATED",
-            "0.25.0, latest v0.32.1; in /work/r/tmp/shipmill-gate:"
-            " claude plugin update shipmill@shipmill --scope project",
+            "0.25.0, latest v0.32.1; in /work/r/tmp/shipmill-gate: claude plugin marketplace update shipmill"
+            " && claude plugin update shipmill@shipmill --scope project",
         ),
     ]
 
@@ -1335,14 +1338,15 @@ def test_the_repos_and_the_gate_checkouts_local_installs_are_separate_rows(ws: M
     assert [(r.subject, r.detail) for r in rows if r.state == "SHIPMILL_OUTDATED"] == [
         (
             "plugin local",
-            "0.33.1, latest v0.33.2; in /work/r: claude plugin uninstall shipmill@shipmill --scope local"
+            "0.33.1, latest v0.33.2; in /work/r: claude plugin marketplace update shipmill"
+            " && claude plugin uninstall shipmill@shipmill --scope local"
             " && claude plugin install shipmill@shipmill --scope local"
             " (`update` picks the nested install in /work/r/tmp/shipmill-gate, a Claude Code bug)",
         ),
         (
             "plugin local",
-            "0.25.0, latest v0.33.2; in /work/r/tmp/shipmill-gate:"
-            " claude plugin update shipmill@shipmill --scope local",
+            "0.25.0, latest v0.33.2; in /work/r/tmp/shipmill-gate: claude plugin marketplace update shipmill"
+            " && claude plugin update shipmill@shipmill --scope local",
         ),
     ]
 
@@ -1351,7 +1355,18 @@ def test_a_nested_install_at_another_scope_keeps_the_update(ws: ModuleType) -> N
     installed = registry(install("project", "0.31.1", "/work/r"), install("local", "0.32.1", str(GATE)))
     rows = ws.plugin_rows(installed, MARKETPLACE, "v0.32.1", [Path("/work/r")], [GATE])
     assert [r.detail for r in rows if r.state == "SHIPMILL_OUTDATED"] == [
-        "0.31.1, latest v0.32.1; in /work/r: claude plugin update shipmill@shipmill --scope project"
+        "0.31.1, latest v0.32.1; in /work/r: claude plugin marketplace update shipmill"
+        " && claude plugin update shipmill@shipmill --scope project"
+    ]
+
+
+def test_a_user_installs_fix_refreshes_the_marketplace_first(ws: ModuleType) -> None:
+    # #477: `claude plugin update` alone left a user install at 0.51.0; the fix refreshes the
+    # marketplace first, the same command shipmill's plugin.update_command prints
+    rows = ws.plugin_rows(registry(install("user", "0.51.0")), MARKETPLACE, "v0.53.0", FOLDERS)
+    assert [r.detail for r in rows if r.state == "SHIPMILL_OUTDATED"] == [
+        "0.51.0, latest v0.53.0; claude plugin marketplace update shipmill"
+        " && claude plugin update shipmill@shipmill --scope user"
     ]
 
 
@@ -1439,6 +1454,18 @@ def shadowed_copy(home: Path) -> Path:
     return copy
 
 
+RENAME = "shipmill gh api -X PATCH repos/o/r/milestones/3 -f title=1.1.1"
+# `shipmill milestones --json`'s overtaken row (spec 022, #475)
+OVERTAKEN = {
+    "state": "MILESTONE_OVERTAKEN",
+    "milestone": "1.1.0",
+    "detail": "v1.1.0 exists; the stable lane cuts 1.1.1 next",
+    "number": 3,
+    "next": "1.1.1",
+    "fix": RENAME,
+}
+
+
 def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
     """A row of every FIXED state, each built by the script's own row code, from titles that
     hold MARKER"""
@@ -1482,6 +1509,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         *ws.hold_rows([issue(ws, 7, ("shipmill-hold",), title=TITLE)], NOW, REPO),
         *ws.stale_rows(stale, CHECKOUT, "main"),
         *ws.upgrade_rows([upgrade_issue(ws, 11, TITLE)], "propose", False, lambda n: [], lambda name: [], REPO).rows,
+        *ws.milestone_rows(json.dumps({"milestones": [OVERTAKEN], "error": None})),
     ]
     found: dict[str, list[Any]] = {}
     for row in rows:
@@ -1513,7 +1541,10 @@ FIXES = {
     "POSTMORTEM_DUE": ["/shipmill:github-ship-watch o/r (drafts the postmortem with its Incident: o/r#5 line)"],
     "NEEDS_DECISION": ["answer the needs-decision question on o/r #4"],
     "BRANCH_DELETE_OFF": ["gh repo edit o/r --delete-branch-on-merge"],
-    "SHIPMILL_OUTDATED": ["in /work/r: claude plugin update shipmill@shipmill --scope project"],
+    "SHIPMILL_OUTDATED": [
+        "in /work/r: claude plugin marketplace update shipmill"
+        " && claude plugin update shipmill@shipmill --scope project"
+    ],
     "GATE_NO_APP": ["run shipmill-setup's step 3 (app-create), then set app_id in [agents]"],
     "CHAIN_NO_GATE": ["set up a gate on x/b (/shipmill:shipmill-setup x/b), or do x/b#2 by hand"],
     "CHAIN_UNREADABLE": ["see why: uv run --no-project python {chains} show --trusted-only x/b#2"],
@@ -1528,6 +1559,7 @@ FIXES = {
         " /shipmill:github-pr-triage o/r for pull requests"
     ],
     "UPGRADE_PENDING": ["/shipmill:github-ship-watch o/r"],
+    "MILESTONE_OVERTAKEN": [RENAME],
 }
 
 
@@ -1669,7 +1701,9 @@ def test_s011_8_every_fix_names_its_target_and_quotes_no_title(ws: ModuleType, t
         assert MARKER not in row.fix, row.state
         for command in re.findall(r"\bgh [^;,]*", row.fix):
             gh_fixes += 1
-            assert "-R o/r" in command or command.startswith("gh repo edit o/r "), command
+            # gh api takes no -R: its path names the repo (#475's milestone rename)
+            named = command.startswith(("gh repo edit o/r ", "gh api -X PATCH repos/o/r/"))
+            assert "-R o/r" in command or named, command
         for flag in re.findall(r"\bgit (\S+)", row.fix):
             git_fixes += 1
             assert flag == "-C", row.fix

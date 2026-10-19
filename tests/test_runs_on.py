@@ -54,11 +54,20 @@ def test_s015_1_the_repos_own_release_workflow_keeps_the_default() -> None:
     assert "runs-on" not in (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
 
 
+def _unscheduled() -> str:
+    """The pinned file without its hourly tick: since spec 029 the policy init writes needs no
+    tick (S-029-11), so init writes no schedule; every other byte is the one written before"""
+    golden = GOLDEN.read_text(encoding="utf-8")
+    tick = '  schedule:\n    - cron: "7 * * * *" # hourly: the policy decides whether a lane\'s window is open\n'
+    assert tick in golden
+    return golden.replace(tick, "")
+
+
 def test_s015_2_init_without_runs_on_writes_the_release_workflow_it_wrote_before(repo: Repo) -> None:
     assert main(["--repo", str(repo.root), "init", "--force"]) == 0
     written = (repo.root / CALLER).read_bytes()
-    assert written == GOLDEN.read_bytes()
-    assert b"runs-on" not in written and b'    - cron: "7 * * * *"' in written
+    assert written == _unscheduled().encode("utf-8")
+    assert b"runs-on" not in written and b"schedule:" not in written
 
 
 @pytest.mark.parametrize(
@@ -74,7 +83,7 @@ def test_s015_3_init_runs_on_passes_the_runner_to_prepare_and_land(repo: Repo, g
     assert "runs-on" not in jobs["ci"]
     # apart from the two lines, the file is the one written without the flag
     text = (repo.root / CALLER).read_text(encoding="utf-8")
-    assert text.replace(f"      {line}\n", "") == GOLDEN.read_text(encoding="utf-8")
+    assert text.replace(f"      {line}\n", "") == _unscheduled()
 
 
 def test_s015_3_a_list_reaches_the_input_as_the_json_it_names() -> None:

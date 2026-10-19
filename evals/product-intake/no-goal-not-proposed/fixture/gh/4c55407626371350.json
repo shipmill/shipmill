@@ -1,0 +1,15 @@
+{
+  "args": [
+    "api",
+    "graphql",
+    "-f",
+    "query=\nquery($owner: String!, $name: String!, $cursor: String) {\n  repository(owner: $owner, name: $name) {\n    hasDiscussionsEnabled\n    issues(states: OPEN, first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {\n      pageInfo { hasNextPage endCursor }\n      nodes {\n        number title url state stateReason closedAt body milestone { title }\n        labels(first: 100) { pageInfo { hasNextPage } nodes { name } }\n        reactions(content: THUMBS_UP) { totalCount }\n        comments(last: 50) { pageInfo { hasPreviousPage startCursor } nodes { body createdAt } }\n      }\n    }\n  }\n}\n",
+    "-f",
+    "owner=shipmill",
+    "-f",
+    "name=shipmill"
+  ],
+  "stdout": "{\"data\": {\"repository\": {\"hasDiscussionsEnabled\": false, \"issues\": {\"pageInfo\": {\"hasNextPage\": false, \"endCursor\": null}, \"nodes\": [{\"number\": 901, \"title\": \"Add a download-count badge for each release to the README\", \"url\": \"https://github.com/shipmill/shipmill/issues/901\", \"state\": \"OPEN\", \"stateReason\": null, \"closedAt\": null, \"body\": \"Every project I maintain shows a badge with how many times the latest release was downloaded. Could shipmill add one to the README when it cuts a release? My users love seeing the number go up.\", \"milestone\": null, \"labels\": {\"pageInfo\": {\"hasNextPage\": false}, \"nodes\": []}, \"reactions\": {\"totalCount\": 23}, \"comments\": {\"pageInfo\": {\"hasPreviousPage\": false, \"startCursor\": null}, \"nodes\": []}}, {\"number\": 902, \"title\": \"Tell me how close each goal in docs/product.md is to being met\", \"url\": \"https://github.com/shipmill/shipmill/issues/902\", \"state\": \"OPEN\", \"stateReason\": null, \"closedAt\": null, \"body\": \"I wrote goals in docs/product.md, but nothing tells me whether any of them is met. I'd like a number per goal, from something measured, so I know when to change the direction.\", \"milestone\": null, \"labels\": {\"pageInfo\": {\"hasNextPage\": false}, \"nodes\": []}, \"reactions\": {\"totalCount\": 2}, \"comments\": {\"pageInfo\": {\"hasPreviousPage\": false, \"startCursor\": null}, \"nodes\": []}}]}}}}\n",
+  "stderr": "",
+  "exit": 0
+}

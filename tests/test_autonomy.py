@@ -39,8 +39,12 @@ def autonomy(text: str, environments: str = ENVIRONMENTS) -> AutonomyPolicy:
     return Policy.parse(tomllib.loads(POLICY + environments + "\n[autonomy]\n" + text), "shipmill.toml").autonomy
 
 
-def set_autonomy(repo: Repo, text: str) -> None:
-    repo.write(repo.policy_file, POLICY + ENVIRONMENTS + "\n[autonomy]\n" + text)
+def set_autonomy(repo: Repo, text: str, policy: str = POLICY) -> None:
+    repo.write(repo.policy_file, policy + ENVIRONMENTS + "\n[autonomy]\n" + text)
+
+
+# no [bump] major: no breaking stable candidate, which needs `issues: write` whatever the autonomy (spec 029)
+NO_MAJOR = POLICY.replace('major = ["Breaking"]\n', "")
 
 
 # -- the config ------------------------------------------------------------------------------
@@ -373,13 +377,13 @@ jobs:
 def test_doctor_warns_on_a_caller_that_cannot_open_the_proposal_only_when_needed(repo: Repo) -> None:
     caller = ".github/workflows/release.yml"
     repo.write(caller, CALLER_TEXT.format(prepare="read", other="write"))
-    set_autonomy(repo, 'upgrade = "observe"\n')  # spec 014's own warning stays out of this test
+    set_autonomy(repo, 'upgrade = "observe"\n', NO_MAJOR)  # spec 014's own warning stays out of this test
     assert "permissions" not in checks(repo, repo.github)  # no propose, no hold: nothing opens an issue
-    set_autonomy(repo, 'rollback = "propose"\nupgrade = "observe"\n')
+    set_autonomy(repo, 'rollback = "propose"\nupgrade = "observe"\n', NO_MAJOR)
     status, detail = checks(repo, repo.github)["permissions"]
     assert status == "WARN" and detail.startswith("the config sets a stage to propose")
     assert detail.endswith("change its `issues: read` to `issues: write`")  # another job's write doesn't count
-    set_autonomy(repo, 'upgrade = "observe"\n')
+    set_autonomy(repo, 'upgrade = "observe"\n', NO_MAJOR)
     repo.github.holds = ["#7 Investigating"]
     assert checks(repo, repo.github)["permissions"][1].startswith(f"held by {HOLD_LABEL} #7")
     repo.write(caller, CALLER_TEXT.format(prepare="write", other="read"))
@@ -398,7 +402,35 @@ def test_prepare_yml_never_asks_a_caller_for_issues_write() -> None:
     assert "\npermissions:" not in text
     propose_job = text.split("\n  propose:\n", 1)[1]
     assert "\n    permissions:" not in propose_job
-    assert "needs.prepare.outputs.action == 'propose' && needs.prepare.outputs.mode == 'release'" in propose_job
+    # proves: S-029-4 (a release run proposes a breaking stable candidate beside it)
+    assert "needs.prepare.outputs.proposals != '' && needs.prepare.outputs.mode == 'release'" in propose_job
+    assert "continue-on-error: ${{ needs.prepare.outputs.action == 'release' }}" in propose_job
+    plan_step = text.split("      - name: Plan\n", 1)[1].split("      - name: ", 1)[0]
+    assert "ACTOR: ${{ github.triggering_actor }}" in plan_step
+    assert '[ -n "$ACTOR" ] && args+=(--actor "$ACTOR")' in plan_step
+
+
+def test_the_propose_job_has_a_concurrency_group_apart_from_the_release_jobs() -> None:
+    # A group holds one running and one pending job and cancels an older pending one: a
+    # propose job in a run that releases rc or dev shares no group with prepare or land, so it
+    # never cancels theirs, and theirs never cancel it (a cancelled job fails the caller's call)
+    workflows = Path(__file__).parent.parent / ".github" / "workflows"
+
+    def groups(name: str) -> dict[str, str]:
+        found = re.findall(
+            r"^  ([\w-]+):\n(?:    .*\n)*?    concurrency:\n      group: (.+)\n      cancel-in-progress: (\w+)$",
+            (workflows / name).read_text(),
+            re.MULTILINE,
+        )
+        return {job: f"{group} {cancel}" for job, group, cancel in found}
+
+    settle = "${{ github.event_name == 'push' && 'shipmill-settle' || format('shipmill-settle-{0}', github.run_id) }}"
+    assert groups("prepare.yml") == {
+        "settle": f"{settle} true",
+        "prepare": "shipmill false",
+        "propose": "shipmill-propose false",
+    }
+    assert groups("land.yml") == {"land": "shipmill false", "upgrade": "shipmill-upgrade false"}
 
 
 def test_a_held_proposal_says_to_close_the_hold_under_propose_too(repo: Repo) -> None:
@@ -492,9 +524,9 @@ def test_doctor_warns_on_a_land_job_that_cannot_close_the_proposal_only_under_pr
         found = doctor(repo.root, repo.github)
         return [c.detail for c in found if c.name == "permissions" and "land job" in c.detail]
 
-    set_autonomy(repo, 'upgrade = "observe"\n')  # spec 014's own land warning stays out of this test
+    set_autonomy(repo, 'upgrade = "observe"\n', NO_MAJOR)  # spec 014's own land warning stays out of this test
     assert land_warnings() == []
-    set_autonomy(repo, 'release = "propose"\nupgrade = "observe"\n')
+    set_autonomy(repo, 'release = "propose"\nupgrade = "observe"\n', NO_MAJOR)
     [detail] = land_warnings()
     assert detail.startswith("release autonomy is propose") and detail.endswith("grants no `issues: write`: add it")
     repo.write(".github/workflows/release.yml", LAND_CALLER.format(issues="      issues: write\n"))

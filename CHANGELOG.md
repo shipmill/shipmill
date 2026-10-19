@@ -7,6 +7,52 @@ bot.
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-10-19
+
+### Changed
+
+- Docs: no stable release is described as a soaked rc. `docs/release-lanes.md` shows a stable lane that releases main's head after every green batch, the fix-forward, revert, hotfix, and rollback order for a bad batch, and a "Stable releases" section on the breaking hold, `promote_from = "rc"` with no age, and `min_soak_days`, deprecated in 0.53.0 and refused from the next minor, with `shipmill upgrade --apply stable-every-batch` as the migration; `README.md`, the site, shipmill-setup's lane table, and the triage rubric's "a breaking release waiting for the maintainer" row follow (#463)
+
+### Fixed
+
+- Plugin: the fix printed for a stale shipmill@shipmill install (the gate's `PLUGIN_STALE` tick, `doctor`, `status`, the setup checklist, and github-ship-watch's `SHIPMILL_OUTDATED`) runs `claude plugin marketplace update shipmill` before the update or reinstall, and the gate's daily update with `plugin_update = true` refreshes the marketplace once before updating its checkout's installs, reporting a failed refresh and still trying the update; `claude plugin update` alone left an install behind when Claude Code's copy of the marketplace predated the release (#477)
+
+## [0.53.0] - 2026-10-18
+
+### Added
+
+- `shipmill status` reports MILESTONE_WAITING, with its reasons, while a lane with `milestone = true` has a milestone with no open issues whose specs aren't built or shipped, and MILESTONE_OVERTAKEN, with the rename to the version the lane cuts next, when a stable tag of an open milestone's version exists while the milestone has open issues; both are read with the release's own planner, which no milestone changes the bump of (spec 022) (#398)
+- Skills: the agents work toward `docs/product.md` (spec 024, D-34). github-issue-triage's verdict on new behaviour names the goal it serves (`Serves: G-n`), gives won't fix for a non-goal and postpone for a feature serving no goal, still hands a user's request serving none to product intake, and leaves bug fixes alone; github-issue-resolve writes the pull request's `## Plan` (Serves, Files, Order, Proof) before the code and updates it before a push that departs from it; the reviewer brief carries the `REVIEW.md` rubric, the direction's Goals, Non-goals, and Quality bar, and the plan, with nits capped; github-pr-triage never merges an edit to the direction on its own judgment; shipmill-setup asks the maintainer for the direction when it connects `[agents]`, never inventing a goal. A repo without `docs/product.md` triages, plans, and reviews as before (#408)
+- Delivery hooks: after an edit of `docs/product.md`, a file under `docs/product/`, or a `REVIEW.md`, the PostToolUse hook runs `shipmill product check` or `shipmill review check` and shows a failed check's output to the model (#445)
+- Hooks: `shipmill doctor`, for a repo with `[agents]`, prints a line per delivery-hook rule, on or off and why, and self-tests the hook of the plugin install a session would load on a refused `gh pr merge 1 --rebase`, failing with the fix when it doesn't refuse, the install has no `hooks/hooks.json`, `uv` isn't on PATH, or a settings file sets `disableAllHooks`; it warns when it can't read what a session loads (the plugin listing, a settings file) and when `origin/HEAD` is unset. A headless gate runs the same self-test before a launch and, when it fails, starts no session and reads `HOOKS_FAILED`; an interactive gate reports it and starts the session (#446)
+- A breaking stable candidate gets its `Ready to release` issue, with the breaking entries listed first, even in a run that releases rc or dev, and only a person's hand start releases it: `shipmill plan --actor` (from `$GITHUB_TRIGGERING_ACTOR`) skips stable for a `[bot]` login or a run naming no actor, and land closes the issue once the release is tagged (#462)
+
+### Fixed
+
+- Hooks: when uv is missing, can't find or install a Python 3.11 or newer, or `hooks/delivery.py` is missing, the hook prints one line naming `shipmill doctor` and exits 1, so the command runs unchecked instead of every shell command being refused (#458)
+
+### Changed
+
+- A trigger never releases a breaking change on stable: when quiet time, a window, or a milestone makes the stable lane due and its pending entries (at the rc's base, for a promotion) sit under a `major` heading, `shipmill plan` proposes it with the cause "a breaking change waits for the maintainer's decision" under `act` too; starting the stable lane by hand still releases it (#459)
+- `shipmill init` writes a stable lane that releases after every batch of merges (`quiet_minutes = 30`), with no `promote_from`, `min_soak_days`, `schedule`, or `milestone`, and the rc lane only as comments, so the `release.yml` it derives has no schedule; `shipmill upgrade --apply stable-every-batch` takes `min_soak_days` out of `[lanes.stable]`, keeps `promote_from`, and adds `quiet_minutes = 30` only to a table with no trigger, every other byte left as it was (#461)
+
+### Deprecated
+
+- `[lanes.stable] min_soak_days`: still honoured for this minor release, with a `shipmill doctor` WARN naming spec 029 and `shipmill upgrade --apply stable-every-batch`; the next minor release refuses it. `shipmill doctor` also warns about a prepare or land job lacking `issues: write` for a config whose stable lane can hold a breaking change (`[bump] major`), in the one warning per job it already gives (#460)
+
+## [0.52.0] - 2026-10-18
+
+### Added
+
+- Evals: `shipmill evals check [--repo DIR]` validates the agents' eval suite, `evals/`, without a model, exiting 1 with one line per case naming the rule it breaks (an unlisted case or a listed one with no directory, a skill not under `skills/`, tags not naming it, a malformed source, an unknown kind, a commit that does not resolve, no deterministic grader outside a finding case, `max_turns` above 40 or `timeout_seconds` above 900); a repository with no case under `evals/` passes, and CI runs it on every pull request (#437)
+- Evals: eval cases run offline with no token: `evals/bin/gh` answers reads from a case's recorded fixture, logs every read, write, and miss to `.eval/gh.jsonl` without contacting GitHub, and records reads with `EVAL_GH_RECORD=1`; `evals/scaffold.sh` sets a case's workspace at its commit with its fixture at `.eval/`, and the shared `no-miss` grader fails a run that read anything unrecorded (#438)
+- The policy reads an optional `[hooks]` section in `.github/shipmill.toml`: `default_branch` (true or false, default true) and `private` (a list of globs, default none), refusing any other key or a wrong type with exit 2 naming the key (#440)
+- Plugin hooks: in a repo whose `.github/shipmill.toml` has `[agents]`, a PreToolUse hook refuses a plain `gh` write while `app_id` is set, a rebase merge, and a force push without a lease pinned to a commit, each with the command to run instead (#441)
+
+### Changed
+
+- Every skill's "Improve the skill" section says a lesson comes with a case under `evals/` that fails without it, in the same pull request; the postmortem template gains an `## Eval case` section; and github-pr-triage never counts a red `evals` check as unrelated: it blocks the merge unless the maintainer accepts that run (#439)
+
 ## [0.51.0] - 2026-10-18
 
 ### Added
@@ -1519,7 +1565,10 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.51.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.54.0...HEAD
+[0.54.0]: https://github.com/shipmill/shipmill/compare/v0.53.0...v0.54.0
+[0.53.0]: https://github.com/shipmill/shipmill/compare/v0.52.0...v0.53.0
+[0.52.0]: https://github.com/shipmill/shipmill/compare/v0.51.0...v0.52.0
 [0.51.0]: https://github.com/shipmill/shipmill/compare/v0.50.0...v0.51.0
 [0.50.0]: https://github.com/shipmill/shipmill/compare/v0.49.0...v0.50.0
 [0.49.0]: https://github.com/shipmill/shipmill/compare/v0.48.0...v0.49.0

@@ -1,0 +1,13 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000000",
+  "transcript_path": "/home/user/.claude/projects/-home-user-project/00000000-0000-4000-8000-000000000000.jsonl",
+  "cwd": "/home/user/project",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill gh pr comment 412 --body \"Reviewed: green, merging\"",
+    "description": "Comment on PR 412 as the App"
+  },
+  "tool_use_id": "toolu_00000000000000000000000000"
+}

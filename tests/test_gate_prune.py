@@ -37,6 +37,7 @@ KEYS = {
     "plugin",
     "loaded",
     "detached",
+    "hooks",
 }
 
 Tick = tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]

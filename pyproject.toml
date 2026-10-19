@@ -1,6 +1,6 @@
 [project]
 name = "shipmill"
-version = "0.51.0"
+version = "0.54.0"
 description = "The open-source AI software factory for GitHub: agents triage issues and land pull requests, and release lanes publish, deploy, and roll back by policy"
 readme = "README.md"
 license = "MIT"
@@ -54,7 +54,7 @@ dev = ["mypy>=1.18", "pytest>=8.4", "ruff>=0.13"]
 
 [tool.mypy]
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "hooks"]
 
 [tool.ruff]
 line-length = 120

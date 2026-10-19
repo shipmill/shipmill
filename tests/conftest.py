@@ -19,6 +19,7 @@ from shipmill.github import (
     MergedPull,
     Milestone,
     MilestoneIssues,
+    OpenMilestone,
     PullRequest,
     WorkflowRun,
 )
@@ -115,6 +116,8 @@ class FakeGitHub:
     milestone_error: str = ""  # when set, reading a milestone fails with it, as gh would
     milestone_lists: dict[str, MilestoneIssues] = field(default_factory=dict)  # by title
     milestone_reads: list[str] = field(default_factory=list)  # the titles milestone_issues read
+    open: list[OpenMilestone] = field(default_factory=list)  # the open milestones
+    open_reads: int = 0  # open_milestones calls
     closes: dict[int, IssueClose] = field(default_factory=dict)  # how issues closed, by number
     close_reads: list[tuple[int, ...]] = field(default_factory=list)  # the numbers of each issue_closes call
     apps: dict[str, int] = field(default_factory=dict)  # App ids by slug
@@ -162,6 +165,10 @@ class FakeGitHub:
         if self.milestone_error:
             raise ReleaseError(self.milestone_error)
         return self.milestones.get(title)
+
+    def open_milestones(self) -> list[OpenMilestone]:
+        self.open_reads += 1
+        return sorted(self.open, key=lambda m: m.number)
 
     def milestone_issues(self, title: str) -> MilestoneIssues:
         self.milestone_reads.append(title)

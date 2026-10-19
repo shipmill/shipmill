@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""The offline gh for eval cases (spec 025): reads replay a recording, writes never leave.
+
+Put this directory first on PATH. The stub finds the case's `.eval/` by walking up from its
+working directory, where `evals/scaffold.sh` copied the case's `fixture/`:
+
+    .eval/
+      case            the case's directory, one absolute path (written by scaffold.sh)
+      gh/<key>.json   one recorded read: {"args": [...], "stdout": "...", "stderr": "...", "exit": 0}
+      gh.jsonl        every call, one JSON line: {"kind": "read" | "write" | "miss", "args": [...]}
+                      plus "body" (a --body-file's or a `body=@file` field's content) and
+                      "input" (an `api --input` file's content) where the call has them
+
+<key> is the first 16 hex digits of the sha256 of the normalised argv as JSON. Normalising
+splits `--flag=value` into `--flag value` and spells `-R` as `--repo`; nothing else changes,
+so a read is keyed by exactly the arguments the skill passed, which the file's "args" shows.
+
+- A read with a recording prints its stdout and stderr and exits with its exit code
+- A read with none is a miss: it exits 1 with `gh: no recording for <args>`
+- A write (issue comment, label, pr create, pr merge, release, a non-GET `gh api`, a
+  `gh api graphql` mutation, ...) prints a plausible success and never contacts GitHub
+
+EVAL_GH_RECORD=1 records instead: a known read goes to the real gh, the first one on PATH
+after this directory, and its answer is saved into the case's fixture/gh/ (from .eval/case)
+and .eval/gh/. A write is still never forwarded, and a call that is neither a known read nor
+a write fails rather than reach GitHub.
+
+Python 3.10 compatible, standard library only, like the skills' scripts.
+"""
+
+import hashlib
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+WRITES = {
+    "issue": {
+        "create",
+        "comment",
+        "edit",
+        "close",
+        "reopen",
+        "delete",
+        "lock",
+        "unlock",
+        "pin",
+        "unpin",
+        "transfer",
+        "develop",
+    },
+    "pr": {
+        "create",
+        "comment",
+        "edit",
+        "close",
+        "reopen",
+        "merge",
+        "review",
+        "ready",
+        "lock",
+        "unlock",
+        "update-branch",
+    },
+    "label": {"create", "edit", "delete", "clone"},
+    "release": {"create", "edit", "delete", "delete-asset", "upload"},
+    "repo": {"create", "edit", "delete", "fork", "rename", "archive", "unarchive", "sync", "deploy-key"},
+    "workflow": {"run", "enable", "disable"},
+    "run": {"rerun", "cancel", "delete"},
+    "secret": {"set", "delete"},
+    "variable": {"set", "delete"},
+    "milestone": {"create", "edit", "delete"},
+}
+READS = {
+    "issue": {"view", "list", "status"},
+    "pr": {"view", "list", "diff", "checks", "status"},
+    "label": {"list"},
+    "release": {"view", "list"},
+    "repo": {"view", "list"},
+    "workflow": {"view", "list"},
+    "run": {"view", "list"},
+    "search": {"issues", "prs", "repos", "code", "commits"},
+    "auth": {"status"},
+}
+API_FIELDS = {"-f", "-F", "--field", "--raw-field"}
+
+
+def normalise(argv: list[str]) -> list[str]:
+    out: list[str] = []
+    for arg in argv:
+        if arg.startswith("--") and "=" in arg:
+            flag, value = arg.split("=", 1)
+            out.extend([flag, value])
+        elif arg == "-R":
+            out.append("--repo")
+        else:
+            out.append(arg)
+    return out
+
+
+def key(args: list[str]) -> str:
+    return hashlib.sha256(json.dumps(args).encode("utf-8")).hexdigest()[:16]
+
+
+def find_eval(start: Path) -> Path:
+    for directory in (start, *start.parents):
+        candidate = directory / ".eval"
+        if candidate.is_dir():
+            return candidate
+    sys.exit(f"gh: no .eval/ in {start} or above it; run the case through evals/scaffold.sh")
+
+
+def values(args: list[str], flags: set[str]) -> list[str]:
+    """Every value given to one of `flags`, as `-X v` or `-Xv` (a short flag)."""
+    found: list[str] = []
+    for i, arg in enumerate(args):
+        if arg in flags:
+            if i + 1 >= len(args):
+                sys.exit(f"gh: {arg} needs a value")
+            found.append(args[i + 1])
+        else:
+            found.extend(arg[2:] for flag in flags if len(flag) == 2 and arg.startswith(flag) and len(arg) > 2)
+    return found
+
+
+def read_file(name: str) -> str:
+    if name == "-":
+        return sys.stdin.read()
+    try:
+        return Path(name).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        sys.exit(f"gh: no such file {name}")
+
+
+def field(args: list[str], name: str) -> str | None:
+    """The value of an `api` field `name=value` (`name=@file` reads the file)."""
+    for item in values(args, API_FIELDS):
+        if item.startswith(name + "="):
+            value = item[len(name) + 1 :]
+            return read_file(value[1:]) if value.startswith("@") else value
+    return None
+
+
+def classify(args: list[str]) -> str:
+    """`write`, `read` (a read the stub may forward when recording), or `unknown`."""
+    if not args:
+        return "unknown"
+    group = args[0]
+    if group == "api":
+        rest = args[1:]
+        methods = [m.upper() for m in values(rest, {"-X", "--method"})]
+        if methods:
+            return "read" if methods[-1] == "GET" else "write"
+        if "graphql" in rest:
+            query = field(rest, "query") or ""
+            inputs = values(rest, {"--input"})
+            if inputs:
+                query += read_file(inputs[-1])  # the request body, query and all
+            return "write" if "mutation" in query else "read"
+        if values(rest, API_FIELDS) or "--input" in rest:
+            return "write"  # gh api defaults to POST once a field or an input is given
+        return "read"
+    sub = args[1] if len(args) > 1 else ""
+    if group == "auth" and ("-t" in args or "--show-token" in args):
+        return "unknown"  # never recorded: it prints the token
+    if sub in WRITES.get(group, set()):
+        return "write"
+    if sub in READS.get(group, set()):
+        return "read"
+    return "unknown"
+
+
+def logged(kind: str, args: list[str]) -> dict[str, object]:
+    line: dict[str, object] = {"kind": kind, "args": args}
+    if args and args[0] == "api":
+        body = field(args[1:], "body")
+        inputs = values(args[1:], {"--input"})
+        if inputs:
+            line["input"] = read_file(inputs[-1])
+    else:
+        # -F is a body or notes file for issue, pr, and release, a key=value field elsewhere
+        files = values(args, {"--body-file", "-F"} if args[0] in {"issue", "pr", "release"} else {"--body-file"})
+        body = read_file(files[-1]) if files else None
+    if body is not None:
+        line["body"] = body
+    return line
+
+
+def append(log: Path, line: dict[str, object]) -> None:
+    with log.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+
+def write_answer(args: list[str], log: Path) -> str:
+    """A plausible success for a write: a URL where gh prints one, JSON for the API."""
+    if args[0] == "api":
+        return '{"data": {}}\n' if "graphql" in args else "{}\n"
+    repos = values(args, {"--repo"})
+    repo = repos[-1] if repos else os.environ.get("GH_REPO", "eval/repo")
+    number = 9000 + (len(log.read_text(encoding="utf-8").splitlines()) if log.exists() else 0)
+    if args[:2] == ["issue", "create"]:
+        return f"https://github.com/{repo}/issues/{number}\n"
+    if args[:2] == ["pr", "create"]:
+        return f"https://github.com/{repo}/pull/{number}\n"
+    if args[1] == "comment" and len(args) > 2:
+        kind = "pull" if args[0] == "pr" else "issues"
+        return f"https://github.com/{repo}/{kind}/{args[2]}#issuecomment-{number}\n"
+    return ""
+
+
+def real_gh() -> str:
+    """The first gh on PATH after the stub's own entry that isn't the stub, linked or not."""
+    me = Path(__file__).resolve()
+    entries = [e for e in os.environ.get("PATH", "").split(os.pathsep) if e]
+    found = [shutil.which("gh", path=e) for e in entries]
+    mine = [i for i, f in enumerate(found) if f is not None and Path(f).resolve() == me]
+    for candidate in found[mine[0] + 1 if mine else 0 :]:
+        if candidate is not None and Path(candidate).resolve() != me:
+            return candidate
+    sys.exit(f"gh: EVAL_GH_RECORD=1 but no real gh on PATH after {me.parent}")
+
+
+def record(args: list[str], argv: list[str], eval_dir: Path) -> dict[str, object]:
+    case_file = eval_dir / "case"
+    if not case_file.is_file():
+        sys.exit(f"gh: EVAL_GH_RECORD=1 needs {case_file}, the case's directory, which scaffold.sh writes")
+    fixture = Path(case_file.read_text(encoding="utf-8").strip()) / "fixture" / "gh"
+    done = subprocess.run([real_gh(), *argv], capture_output=True, text=True, check=False)
+    answer: dict[str, object] = {"args": args, "stdout": done.stdout, "stderr": done.stderr, "exit": done.returncode}
+    for directory in (fixture, eval_dir / "gh"):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{key(args)}.json").write_text(json.dumps(answer, indent=2) + "\n", encoding="utf-8")
+    return answer
+
+
+def main(argv: list[str]) -> int:
+    eval_dir = find_eval(Path.cwd())
+    log = eval_dir / "gh.jsonl"
+    args = normalise(argv)
+    kind = classify(args)
+    if kind == "write":
+        out = write_answer(args, log)
+        append(log, logged("write", args))
+        sys.stdout.write(out)
+        return 0
+    recording = eval_dir / "gh" / f"{key(args)}.json"
+    if os.environ.get("EVAL_GH_RECORD") == "1":
+        if kind != "read":
+            sys.exit(f"gh: EVAL_GH_RECORD=1 forwards only known reads, not: gh {shlex.join(argv)}")
+        answer = record(args, argv, eval_dir)
+    elif recording.is_file():
+        answer = json.loads(recording.read_text(encoding="utf-8"))
+        if answer["args"] != args:
+            sys.exit(f"gh: {recording} records {answer['args']}, not {args}")
+    else:
+        append(log, logged("miss", args))
+        sys.stderr.write(f"gh: no recording for {shlex.join(argv)}\n")
+        return 1
+    append(log, logged("read", args))
+    sys.stdout.write(str(answer["stdout"]))
+    sys.stderr.write(str(answer.get("stderr", "")))
+    return int(answer["exit"])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

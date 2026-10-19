@@ -1,6 +1,6 @@
 # S-024: Agents work toward the product's direction
 
-status: approved
+status: built
 serves: G-5
 
 ## Problem
@@ -245,6 +245,7 @@ number before the commit; CI runs both checks too.
 - S-024-15: `shipmill product add` and `shipmill review add-rule` give the next id above any the file's history held, so an id retired in an earlier commit is not reused, and print the line they wrote
 - S-024-16: Every edit command leaves all other lines of the file unchanged, writes a missing section in its fixed place, edits the linked file of a moved section, and exits 2 without writing on a file that fails `check`
 - S-024-17: `shipmill review protect` refuses a glob already listed, and `--dir DIR` creates a subdirectory `REVIEW.md` holding only the touched section
+- S-024-18: product intake reads the direction's Goals and Non-goals (`shipmill product show --section`), each opportunity issue's body names the goal it serves or says it serves none, and the accept question to the maintainer says so; an opportunity serving no goal is never proposed for acceptance on demand alone
 
 ## Out of scope
 
@@ -273,5 +274,25 @@ number before the commit; CI runs both checks too.
 - shipmill/shipmill#406: S-024-6
 - shipmill/shipmill#407: S-024-7
 - shipmill/shipmill#408: S-024-8, S-024-9, S-024-10, S-024-11, S-024-12
+- shipmill/shipmill#488: S-024-18
 
 ## Verification
+
+- S-024-1: ran `shipmill product check` on this repo (exit 0, "docs/product.md: well formed, 22 items") and the `test_s024_1_*` cases in `tests/test_product.py`, which feed each broken heading, item, prefix, duplicate id, and empty section; all pass, each failure naming file, line, and rule
+- S-024-2: ran `shipmill product show --section goals --json`, which printed only `goals` with each id and text, and `test_s024_2_*` for the full JSON with name and mission; pass
+- S-024-3: `test_s024_3_*` in `tests/test_product.py` move a section to `docs/product/` and read it through `check`, `show`, and `ids`, and fail `check` for a missing file or a different heading; pass
+- S-024-4: ran `shipmill product ids`, which listed all 22 ids of this repo's direction with their text; `test_s024_4_*` cover a moved section; pass
+- S-024-5: read `src/shipmill/doctor.py`'s direction line and ran `tests/test_doctor_direction.py` (no direction, a refused one, a well-formed one, no `[agents]`, this repo); pass
+- S-024-6: ran `specs.py check` on this repo (every spec passes, this one with `serves: G-5`) and `test_s024_6_*` in `tests/test_specs.py` for a missing or unknown `serves:`, a built spec without one, and no direction; pass
+- S-024-7: `test_s024_7_*` in `tests/test_pr_gate.py` refuse a PR without `## Plan` or with an unknown `Serves:`, accept a valid plan, and ask through needs-decision for a Protected areas match; pass
+- S-024-8: opened `skills/github-issue-triage/references/triage-rubric.md` ("The direction: the goal it serves") and `comments.md`; `test_s024_8_*` check the sections read, the won't fix, postpone, and quality-bar rules, and the templates; pass
+- S-024-9: opened `skills/github-issue-resolve/SKILL.md` Phase 4 (the `## Plan` before the code, updated before a departing push); `test_s024_9_*` pass
+- S-024-10: opened `skills/github-pr-triage/references/reviewer-brief.md` (rubric, direction, and plan in the brief; findings on a departure, a non-goal, and `Q-n`; nits capped); `test_s024_10_*` pass
+- S-024-11: opened `skills/github-pr-triage/SKILL.md` hard rule 9 (never merges a direction edit on its own judgment, asks through needs-decision); `test_s024_11_*` passes
+- S-024-12: opened `skills/shipmill-setup/SKILL.md` (asks for the mission, users, goals, non-goals, and quality bar, commits the file with `[agents]`, never invents a goal); `test_s024_12_*` passes
+- S-024-13: ran `shipmill review check` on this repo, which has no `REVIEW.md` (exit 0), and `test_s024_13_*` in `tests/test_review.py` for each malformed Important, Nits, and Protected areas line; pass
+- S-024-14: ran `shipmill review show --path skills/product-intake/SKILL.md --json` (the empty rubric, cap 5) and `test_s024_14_*` for a root and subdirectory merge with each item's file; pass
+- S-024-15: `test_s024_15_*` in `tests/test_direction_edit.py` retire an id in an earlier commit and check `product add` and `review add-rule` skip it and print the line; pass
+- S-024-16: `test_s024_16_*` in `tests/test_direction_edit.py` (byte-for-byte other lines, missing sections in their fixed place, the moved section's file, exit 2 without writing on a refused file); pass
+- S-024-17: `test_s024_17_*` in `tests/test_direction_edit.py` refuse a listed glob and create a subdirectory `REVIEW.md` holding only the touched section; pass
+- S-024-18: opened `skills/product-intake/SKILL.md` (rule 8, step 1's `shipmill product show --section mission --section users --section goals --section non-goals`, the report line) and `references/opportunity.md` (the `Serves:` line, both accept questions); `test_s024_18_*` in `tests/test_direction_skills.py` pass, and the eval case `evals/product-intake/no-goal-not-proposed` passes `shipmill evals check`
