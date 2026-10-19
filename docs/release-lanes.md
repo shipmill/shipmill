@@ -520,6 +520,11 @@ Once a release is out, `github-ship-watch` tells each closed issue it fixed, thr
 |---|---|---|
 | `pre-release` | the first dev or rc tag holding the fix | `Released in v1.5.0rc2 (pre-release).`, the `pin` command, that a plain install gets it with the next stable release, and that the person who filed the issue can react 👍 once it works or reply if it doesn't |
 | `stable` | the first stable tag holding the fix | `Released in v1.5.0.` and the `install` command |
+| `<environment>` | the first successful deployment to an environment of the config's `[environments]` of a tag holding the fix, read from GitHub deployments | `Deployed to production in v1.5.0.` |
+
+An environment's notices cover what its current deployment holds that the release tag it
+ran before didn't (or, on its first deployment, the release below it), so an issue fixed
+long before an environment existed isn't told of it.
 
 A stable release that promotes an rc tells every issue that rc fixed, even when the newest
 tag before it is a later rc. Each comment's first line is a hidden marker,
