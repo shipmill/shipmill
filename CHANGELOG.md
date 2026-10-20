@@ -7,6 +7,22 @@ bot.
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-10-20
+
+### Added
+
+- An `evals` workflow that runs the agents' eval suite with `claude plugin eval` on a pull request touching the skills, the plugin, `evals/`, or the gate's session paragraphs, weekly, and by hand, and compares a pull request's run against the default branch's baseline (or its merge base's when the baseline is missing, stale, or another model's); a fork's pull request fails naming `gh workflow run evals.yml -f pr=<N>`, and `shipmill evals check --gate` names the kinds short of the first suite's counts; until the suite holds them, the pull request job reports and exits 0 (#448)
+- `shipmill product measure <G-n> "<metric> <comparison> <target>"` writes or replaces a goal's measure line and `--clear` removes it, leaving every other line as it was, also in a Goals section moved to `docs/product/`; shipmill-setup offers each goal a measure from the registry and writes only the ones the maintainer gives (#506)
+- `shipmill downstream start` writes a `downstream: <name>` check per `[downstream]` repository on a pull request's head and dispatches each one's workflow with a token minted for the App and limited to that repository, then dispatches the collect run; a fork's pull request waits for a person's `workflow_dispatch`, and the reusable `.github/workflows/downstream.yml` runs it from the default branch's checkout, never the pull request's code (#508)
+- `retro.py gather --goals` reports per goal of `docs/product.md`: the issues and pull requests that served it this week and the week before (by the latest trusted verdict's `Serves:`, a spec's `serves:`, or a plan's `Serves:`), whether its measure is met with the weeks in a row, and whether it stalled; then the `quality bar` row, the verdicts postponed for no goal or declined for a non-goal with the most-cited one, and the agent pull requests whose plan names no goal; a checkout off `origin/HEAD` or a direction `shipmill product show` refuses exits 2 (spec 027) (#509)
+- product-intake's `intake_state.py --plans` reports PLAN_DUE for a goal with no open plan: `no-work` when no draft or approved spec, triaged issue, pull request plan, open opportunity, or plan item serves it and its newest plan wasn't declined, and `requested in #N` for a trusted `goal-plan` request; with `--wip N` a `no-work` plan waits for room (PLAN_WAITS) and a request never does (#510)
+- `shipmill init --downstream` writes `.github/workflows/downstream.yml`, the workflow that runs the `[downstream]` repositories' tests on each pull request through shipmill's reusable `downstream.yml`; it refuses a policy without `[downstream]` and an existing file without `--force` (#513)
+
+### Fixed
+
+- An interactive gate session (`claude --bg`) that `claude agents` lists as `failed`, or as `done` within 60 seconds of its launch, no longer counts as an attempt toward `retry_hours`: the next tick reads `SESSION_DEAD`, names the session and its state with `claude logs <id>` as the fix, starts another, and holds the same findings for `retry_hours` after 3 dead in a row, as a headless one does (#500)
+- github-issue-triage's `chains.py link` writes as the App: run from a checkout whose `.github/shipmill.toml` sets `[agents] app_id`, the native blocked-by or sub-issue relation and the `Depends on` line it adds to the body go through `shipmill gh` (from PATH, else through uvx), and a `shipmill gh` exit 2 stops the link with its message, never retried with plain `gh`; reads stay on plain `gh`, and without app_id nothing changes. Before, both writes ran as the maintainer's gh login (D-14) (#526)
+
 ## [0.56.0] - 2026-10-20
 
 ### Added
@@ -1606,7 +1622,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.56.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.57.0...HEAD
+[0.57.0]: https://github.com/shipmill/shipmill/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/shipmill/shipmill/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/shipmill/shipmill/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/shipmill/shipmill/compare/v0.53.0...v0.54.0
