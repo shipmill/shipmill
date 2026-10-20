@@ -225,8 +225,8 @@ def test_s024_2_show_json_prints_name_mission_and_items(tmp_path: Path, capsys: 
         "mission": "Acme ships widgets.\n\nIt ships them fast.",
         "users": [{"id": "U-1", "text": "A widget buyer"}],
         "goals": [
-            {"id": "G-1", "text": "Widgets reach buyers in a day"},
-            {"id": "G-3", "text": "Buyers can track a widget"},
+            {"id": "G-1", "text": "Widgets reach buyers in a day", "measure": None},
+            {"id": "G-3", "text": "Buyers can track a widget", "measure": None},
         ],
         "non_goals": [],
         "quality": [{"id": "Q-1", "text": "Every widget is tested"}],
@@ -238,8 +238,8 @@ def test_s024_2_section_prints_only_that_section(tmp_path: Path, capsys: pytest.
     assert run(root, "show", "--section", "goals", "--json") == 0
     assert json.loads(capsys.readouterr().out) == {
         "goals": [
-            {"id": "G-1", "text": "Widgets reach buyers in a day"},
-            {"id": "G-3", "text": "Buyers can track a widget"},
+            {"id": "G-1", "text": "Widgets reach buyers in a day", "measure": None},
+            {"id": "G-3", "text": "Buyers can track a widget", "measure": None},
         ]
     }
     assert run(root, "show", "--section", "quality", "--section", "non-goals", "--json") == 0
