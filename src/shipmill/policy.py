@@ -22,7 +22,7 @@ from shipmill.schedule import Freeze, Window
 from shipmill.version import Part
 
 _MAX_QUIET = 300  # a GitHub job runs at most 6 hours; leave room for the rest of the run
-# deprecated in 0.53.0, refused from 0.54.0 (spec 029, as D-32 set for [roadmap])
+# deprecated in 0.53.0, honoured through 0.55.0, refused since (S-029-9, as D-32 set for [roadmap])
 _SOAK_KEY = "min_soak_days"
 SOAK_REMOVED = (
     f"[lanes.stable] {_SOAK_KEY} was removed (spec 029); delete it, or run shipmill upgrade --apply stable-every-batch"

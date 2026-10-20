@@ -41,4 +41,7 @@ def test_s029_13_release_lanes_documents_the_breaking_hold_promote_from_and_the_
     assert 'promote_from = "rc"' in text and "whatever its age" in text
     # the deprecation, and the upgrade that migrates
     assert "`min_soak_days` was deprecated in 0.53.0" in text
+    # and the refusal that followed, not a "next minor" that already shipped (S-029-9)
+    assert "later releases refuse a `[lanes.stable]` that sets it, with exit 2" in text
+    assert "next minor release refuses" not in text
     assert "shipmill upgrade --apply stable-every-batch" in text

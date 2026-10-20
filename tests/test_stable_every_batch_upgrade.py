@@ -129,8 +129,8 @@ def test_s029_12_the_text_for_people_and_the_decline(repo: Repo, capsys: pytest.
     assert "the table sets none of `quiet_minutes`, `schedule`, `milestone`" in text
     assert "```toml\n[lanes.stable]\nquiet_minutes = 30\n```" in text
     assert (
-        "close this issue: shipmill won't propose stable-every-batch again. The next minor release refuses"
-        " `min_soak_days`, so a decline means deleting it from `[lanes.stable]` by hand before then."
+        "close this issue: shipmill won't propose stable-every-batch again. shipmill refuses"
+        " `min_soak_days`, so a decline means deleting it from `[lanes.stable]` by hand."
     ) in text
     assert "closes it once `[lanes.stable]` no longer sets `min_soak_days`." in text
 

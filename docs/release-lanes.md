@@ -76,9 +76,9 @@ same run cuts the next rc, which carries the new CI, and the stable lane promote
 (D-28). A breaking promotion waits for the maintainer like any breaking candidate.
 
 **`min_soak_days` was deprecated in 0.53.0**: a time soak checks nothing, since nobody runs
-the rc in those days and shipmill reads no telemetry. 0.53.0 still honours it, with a
-`doctor` warning, and the next minor release refuses a `[lanes.stable]` that sets it, with
-exit 2. `shipmill upgrade --apply stable-every-batch` migrates: it removes the line, keeps
+the rc in those days and shipmill reads no telemetry. 0.53.0 to 0.55.0 still honour it,
+with a `doctor` warning; later releases refuse a `[lanes.stable]` that sets it, with exit 2,
+and `doctor` fails its policy check. `shipmill upgrade --apply stable-every-batch` migrates: it removes the line, keeps
 `promote_from`, and adds `quiet_minutes = 30` only to a table with no trigger. A soak stays
 only where something is observed during it, as `bake_minutes` does for
 [environments](#environments).
