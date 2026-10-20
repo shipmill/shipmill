@@ -233,6 +233,44 @@ def test_outside_a_checkout_the_gate_is_as_before_spec_024(tmp_path: Path) -> No
     assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
 
 
+# S-032-14: a downstream check is read like any check
+
+
+def downstream(status: str, conclusion: str | None, name: str = "downstream: acme/app") -> dict[str, Any]:
+    return {"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion}
+
+
+def with_checks(*extra: dict[str, Any]) -> dict[str, Any]:
+    data = pr(body="Fixes #7", login="amy")
+    data["statusCheckRollup"] = [*data["statusCheckRollup"], *extra]
+    return data
+
+
+@pytest.mark.parametrize("conclusion", ["FAILURE", "TIMED_OUT", "ACTION_REQUIRED"])
+def test_s032_14_a_failing_downstream_check_fails_the_gate(tmp_path: Path, conclusion: str) -> None:
+    proc = run_gate(tmp_path, None, {7: with_checks(downstream("COMPLETED", conclusion))})
+    assert proc.returncode == gate.FAILED == 1, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[0].startswith("#7 FAILED ")
+    assert proc.stdout.splitlines()[0].endswith(" checks=2 green=1 pending=0 failed=1")
+    assert f"  failed: downstream: acme/app ({conclusion})" in proc.stdout.splitlines()
+
+
+def test_s032_14_a_running_downstream_check_keeps_the_gate_pending(tmp_path: Path) -> None:
+    proc = run_gate(tmp_path, None, {7: with_checks(downstream("IN_PROGRESS", None))})
+    assert proc.returncode == gate.PENDING == 3, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == [
+        "#7 PENDING state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=2 green=1 pending=1 failed=0",
+        "  pending: downstream: acme/app",
+    ]
+
+
+def test_s032_14_neutral_and_success_downstream_checks_are_green(tmp_path: Path) -> None:
+    checks = (downstream("COMPLETED", "NEUTRAL"), downstream("COMPLETED", "SUCCESS", "downstream: acme/cli"))
+    proc = run_gate(tmp_path, None, {7: with_checks(*checks)})
+    assert (proc.returncode, proc.stderr) == (0, "")
+    assert proc.stdout == MAIN_READY.replace("checks=1 green=1", "checks=3 green=3")
+
+
 def test_without_origin_head_the_prs_base_branch_is_read(tmp_path: Path, directed: Path) -> None:
     git(directed, "remote", "set-head", "origin", "--delete")
     proc = run_gate(tmp_path, directed, {7: pr(body="Fixes #7")}, "--bot-login", BOT)
