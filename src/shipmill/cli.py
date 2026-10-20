@@ -27,6 +27,7 @@
                   one shipmill-upgrade issue per pending upgrade, as land.yml runs it after a release
   init            write a starting policy, the calling workflow, and changelog.d/README.md for changelog
                   fragments (--no-fragments: no fragments; --operate: only the operate workflow;
+                  --downstream: only the downstream tests workflow, for a policy with [downstream];
                   --caller: only the calling workflow, from the existing policy; --runs-on: the
                   release jobs' runner, a label or a JSON list of labels); the calling workflow's
                   schedule is the one the policy's triggers need
@@ -113,7 +114,7 @@ from shipmill.autonomy import Autonomy, AutonomyPolicy, Hold
 from shipmill.claude_auth import ClaudeAuth, claude_auth, run_auth
 from shipmill.config import CONFIG_PATH, Table, config_path
 from shipmill.config import read as read_config
-from shipmill.doctor import CALLER, OPERATE_CALLER, doctor, read_plugin_rows
+from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER, doctor, read_plugin_rows
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
     ClaudeCli,
@@ -136,7 +137,7 @@ from shipmill.gate import (
 from shipmill.github import UPGRADE_LABEL, GhCli, GitHub
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest, run_hook, self_test
-from shipmill.init import RunsOn, init, init_caller, init_operate
+from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
 from shipmill.land import ActionsRun, Prepared, Stop, cleanup, land, prepare, work_branch
 from shipmill.launchd import DEFAULT_TOOL, build, install, remove
 from shipmill.lineedit import LineText
@@ -360,6 +361,11 @@ def _parser() -> argparse.ArgumentParser:
         help=f"write only {OPERATE_CALLER}, which runs shipmill operate every 10 minutes",
     )
     p.add_argument(
+        "--downstream",
+        action="store_true",
+        help=f"write only {DOWNSTREAM_CALLER}, which runs the [downstream] repositories' tests on each pull request",
+    )
+    p.add_argument(
         "--caller",
         action="store_true",
         help=f"write only {CALLER}, from the existing {CONFIG_PATH}: its schedule follows the policy's triggers",
@@ -563,6 +569,19 @@ def main(
     if args.command == "init":
         # checked before any write, on every path (spec 015)
         runs_on = None if args.runs_on is None else RunsOn.parse(args.runs_on)
+        if args.downstream:
+            others = (
+                ("--caller", args.caller),
+                ("--operate", args.operate),
+                ("--no-fragments", args.no_fragments),
+                ("--runs-on", runs_on is not None),
+            )
+            for flag, given in others:
+                if given:
+                    raise ReleaseError(f"--downstream writes only {DOWNSTREAM_CALLER}; drop {flag}")
+            print(f"wrote {init_downstream(root, args.force).relative_to(root)}")
+            print(f"next: add the App's key as the SHIPMILL_DOWNSTREAM_KEY secret, then run `{cli_command()} doctor`")
+            return 0
         if args.caller:
             for flag, given in (("--operate", args.operate), ("--no-fragments", args.no_fragments)):
                 if given:
