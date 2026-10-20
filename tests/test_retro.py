@@ -462,3 +462,26 @@ def test_s027_11_off_direction_verdicts_and_unlinked_agent_pulls(rt: ModuleType,
     assert found["quality_bar"] == {"issues": [], "pulls": [53], "previous": {"issues": 0, "pulls": 0}}
     text = "\n".join(rt.goals_text(found))
     assert "most cited N-2" in text and "#50 PR 50" in text
+
+
+def test_s027_12_the_weekly_retro_reports_goals_and_proposes_but_never_edits_the_direction() -> None:
+    skill = (SCRIPTS.parent / "SKILL.md").read_text(encoding="utf-8")
+    retro = " ".join(skill.split("## Weekly retro\n", 1)[1].split("\n## ", 1)[0].split())
+    flags = subprocess.run(
+        [sys.executable, str(SCRIPT), "gather", "--help"], capture_output=True, text=True, check=True
+    ).stdout
+    for flag in ("--goals", "--checkout", "--met-weeks", "--stalled-weeks", "--bot"):
+        assert f"{flag} " in flags and flag in retro, flag  # the skill names only flags gather has
+    assert "Always pass `--goals --checkout <dir>`, a checkout of the repo fetched and at `origin/<default>`" in retro
+    assert "with `[agents] app_id` also pass `--bot <slug>[bot]`, the App that posts triage's verdicts" in retro
+    assert "a section **Goals**: a row per goal (id, served this week and the week before, measure status" in retro
+    assert "the quality-bar row, the off-direction counts with the most-cited non-goal, and the unlinked" in retro
+    assert "Without a direction it says so in one line" in retro
+    assert "`met_weeks` reached `--met-weeks`: `Direction: G-n met for N weeks`" in retro
+    assert "`stalled` is true: `Direction: G-n stalled for N weeks`" in retro
+    assert "`scripts/retro.py dedupe <owner/repo> --title" in retro
+    assert "At most one is open per goal: dedupe passes both of the goal's titles" in retro
+    assert (
+        "It never edits `docs/product.md` or `docs/product/`, never runs a `shipmill product` edit command"
+        " (`add`, `edit`, `retire`, `measure`), and never opens a pull request that changes the direction"
+    ) in retro

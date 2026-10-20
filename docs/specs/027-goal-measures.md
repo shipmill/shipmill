@@ -1,6 +1,6 @@
 # S-027: A measure per goal, and the retro per goal
 
-status: approved
+status: built
 serves: G-7
 
 ## Problem
@@ -255,3 +255,17 @@ maintainer changes it (D-34, N-3).
 - shipmill/shipmill#512: S-027-12
 
 ## Verification
+
+- S-027-1: `shipmill product check` on a scratch direction with `issue_to_release_median < 1d`, `human_touch <= 20%`, and a goal without a measure, reads "well formed"; the tests cover a moved Goals section
+- S-027-2: `shipmill product check` on a direction with a measure under a user, an unknown metric, `120%`, and `==` exits 1 naming the line and rule of each, listing the nine known metrics
+- S-027-3: `shipmill product show --json` gives `target` 24.0 `hours` for `1d`, 0.2 `ratio` for `20%`, and `null` for a goal without a measure; users, non-goals, and quality-bar items carry no `measure` key
+- S-027-4: `shipmill product measure G-3 "agent_share >= 50%"` wrote the line under G-3 alone; `measure N-1 ...` exits 2 and writes nothing
+- S-027-5: `product edit G-1` kept its measure line, `product retire G-2` removed G-2 with its measure, and `product add goals` appended G-4 after G-3's measure line
+- S-027-6: `pr_gate.direction_ids` on that direction returns its ids, measures skipped; `specs.py check` passes on this repo's specs, which serve goals
+- S-027-7: `retro.py gather --goals` exits 2 for a missing checkout, naming `git fetch` and `git checkout`, and for a direction `shipmill product show` refuses, naming `shipmill product check`; the tests cover the no-direction case
+- S-027-8: `retro.py gather shipmill/shipmill --goals --bot "shipmill-romamo[bot]"` counts #505, #506, #509 and #523, #537, #540 under G-7, and quality-bar pulls on their own row; without `--bot` the App's verdicts (author association CONTRIBUTOR) count under no goal
+- S-027-9: a gather with measures reads `met (median 6.1 h), met 3 weeks in a row` for `issue_to_release_median < 1d` and `no measure` for a goal without one
+- S-027-10: the tests cover a goal unserved for the weeks, and one whose id is younger; this repo's G-4 served nothing in the gathered weeks and is not stalled, its id having entered `docs/product.md` on 2026-10-18 (`git log -G`)
+- S-027-11: the gather lists the agent-made merged pull requests whose plan names no listed goal (#370 and on, from before plans) and reads "postponed for no goal none; won't fix none" for this repo's week
+- S-027-12: `skills/github-ship-watch/SKILL.md`, Weekly retro, passes `--goals --checkout`, adds the Goals section, proposes the two `Direction:` titles through `retro.py dedupe` at most one per goal, and says the retro never edits the direction; `test_s027_12_...` checks the text and the flags against `retro.py gather --help`
+- S-027-13: `skills/shipmill-setup/SKILL.md` offers a registry measure per goal and writes only the maintainer's with `shipmill product measure`, checked by `test_s027_13_...`
