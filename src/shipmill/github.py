@@ -301,9 +301,10 @@ def fit(text: str, limit: int, link: str) -> str:
 
 
 def cut_from(stored: str, wanted: str, limit: int) -> bool:
-    """Whether stored is wanted as fit cut it to limit, whatever link its last line gives"""
-    head, mark, _ = stored.partition(f"\n\n{CUT_MARK}\n")
-    return bool(mark) and len(wanted) > limit and wanted.startswith(head)
+    """Whether stored is wanted as fit cut it to limit, with the link its last line gives"""
+    _, mark, line = stored.partition(f"\n\n{CUT_MARK}\n")
+    link = line.rpartition(" the full text is at ")[2].removesuffix("_")
+    return bool(mark) and len(wanted) > limit and stored == fit(wanted, limit, link).strip()
 
 
 def labelled_command(label: str) -> tuple[str, ...]:
@@ -340,7 +341,10 @@ class GhCli:
         self._url: str | None = None
 
     def _run(self, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([self.gh, *args], capture_output=True, text=True, cwd=self.root, input=stdin)
+        # gh reads and writes UTF-8, whatever the locale says
+        return subprocess.run(
+            [self.gh, *args], capture_output=True, text=True, encoding="utf-8", cwd=self.root, input=stdin
+        )
 
     def _changelog_at(self, ref: str) -> str:
         """The changelog's URL at the ref; the repository's URL is asked of gh once"""

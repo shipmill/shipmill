@@ -1,5 +1,8 @@
 import datetime as dt
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -501,6 +504,27 @@ class TestLongBodies:
         changed = mark + "\n- changed\n" + self.big(BODY_LIMIT * 2)
         assert upsert(self.gh(tmp_path, stored), mark, "t", changed, "fix") == (7, Outcome.UPDATED)
         assert self.sent(tmp_path).startswith(mark + "\n- changed\n")
+
+    def test_a_line_break_now_inside_the_cut_updates(self, tmp_path: Path) -> None:
+        link = f"{self.URL}/blob/HEAD/CHANGELOG.md"
+        mark = marker(Lane.STABLE)
+        head = mark + "\n" + "- a\n" * (BODY_LIMIT // 8)
+        stored = fit(head + "x" * BODY_LIMIT, BODY_LIMIT, link)  # cut before the long last line
+        changed = head + "x" * 100 + "\n" + "x" * BODY_LIMIT  # its start now fits as a line
+        assert fit(changed, BODY_LIMIT, link) != stored
+        assert upsert(self.gh(tmp_path, stored.strip()), mark, "t", changed, "fix") == (7, Outcome.UPDATED)
+
+    def test_stdin_is_utf8_whatever_the_locale(self, tmp_path: Path) -> None:
+        gh = tmp_path / "gh"
+        gh.write_text(f'#!/bin/sh\ncat > "{tmp_path / "stdin"}"\n', encoding="utf-8")
+        gh.chmod(0o755)
+        code = "import sys; from pathlib import Path; from shipmill.github import GhCli; "
+        code += "GhCli(Path(sys.argv[1]), gh=sys.argv[2]).comment_issue(1, 'caf\\u00e9 \\u2713')"
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONUTF8"}
+        env |= {"LC_ALL": "en_US.ISO8859-1", "LANG": "en_US.ISO8859-1"}
+        proc = subprocess.run([sys.executable, "-c", code, str(tmp_path), str(gh)], env=env, capture_output=True)
+        assert proc.returncode == 0, proc.stderr
+        assert (tmp_path / "stdin").read_bytes() == "café ✓".encode()
 
     @pytest.mark.parametrize("limit", [BODY_LIMIT, NOTES_LIMIT])
     def test_a_text_at_the_limit_is_whole(self, limit: int) -> None:
