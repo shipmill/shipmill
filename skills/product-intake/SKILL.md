@@ -1,11 +1,13 @@
 ---
 name: product-intake
-description: Turn a GitHub repo's product feedback into opportunity issues the maintainer accepts or declines. Groups feature requests, ideas, and discussions that ask for the same outcome (with thumbs-up reactions as demand) into one opportunity issue each, keeps it updated instead of opening a second, records a decline so the same request is never proposed again, takes the requests triage hands over, and hands an accepted opportunity back to github-issue-triage's spec gate. Use when the user asks to "group the feature requests", "run product intake", "what are users asking for", "turn feedback into opportunities", or "what should we build next". Not for bugs or contract changes (github-issue-triage) or for releases (github-ship-watch).
+description: Turn a GitHub repo's product feedback into opportunity issues the maintainer accepts or declines. Groups feature requests, ideas, and discussions that ask for the same outcome (with thumbs-up reactions as demand) into one opportunity issue each, keeps it updated instead of opening a second, records a decline so the same request is never proposed again, takes the requests triage hands over, and hands an accepted opportunity back to github-issue-triage's spec gate. Also proposes a plan of work for a goal of the repo's direction and, once the maintainer accepts it, files its items. Use when the user asks to "group the feature requests", "run product intake", "what are users asking for", "turn feedback into opportunities", or "what should we build next". Not for bugs or contract changes (github-issue-triage) or for releases (github-ship-watch).
 ---
 
 # Product Intake
 
-Feedback in, opportunities out. Many requests ask for one outcome in different words; intake groups them into one **opportunity issue** that states the problem in the users' words, who it affects, the evidence, and what success looks like. The maintainer decides on the opportunity, not on each request: accept (label `planned`) or decline (close as not planned, with the reason in a comment). Nothing is built from an opportunity until it is accepted and its spec merges. Milestones are the maintainer's own list of what a version must hold (D-32): intake never proposes, ranks, or creates one.
+Feedback in, opportunities out. Many requests ask for one outcome in different words; intake groups them into one **opportunity issue** that states the problem in the users' words, who it affects, the evidence, and what success looks like. The maintainer decides on the opportunity, not on each request: accept (label `planned`) or decline (close as not planned, with the reason in a comment). Nothing is built from an opportunity until it is accepted and its spec merges. Milestones are the maintainer's own list of what a version must hold (D-32): intake never proposes, ranks, or creates one, save the milestone an accepted goal plan names (D-38).
+
+A goal of `docs/product.md` that nothing serves gets a **plan issue**: the work that reaches it, which the maintainer accepts, declines, or asks to edit in a reply ([Plan a goal](#6-plan-a-goal)).
 
 ## Inputs
 
@@ -21,8 +23,8 @@ Feedback in, opportunities out. Many requests ask for one outcome in different w
 
 | Level | A pass |
 |---|---|
-| `observe` | Reports the groups it would make and writes nothing |
-| `propose` (the default) | Opens and updates opportunity issues, comments on the requests it groups, and labels pure duplicates |
+| `observe` | Reports the groups it would make, and each PLAN_DUE goal with the plan's proposed text, and writes nothing: no plan issue, no comment, no filed item |
+| `propose` (the default) | Opens and updates opportunity issues, comments on the requests it groups, and labels pure duplicates; opens plan issues and, once the maintainer accepts one, files its items |
 
 There is no `act`: shipmill refuses it, since an opportunity is a proposal by nature and only the maintainer accepts or declines one. An open `shipmill-hold` changes nothing here, as intake never acts.
 
@@ -36,6 +38,7 @@ There is no `act`: shipmill refuses it, since an opportunity is a proposal by na
 6. **GitHub data only** (D-6's spirit): issues, discussions, and reactions. No external tracker, survey, or analytics source
 7. **Write as the App when the repo has one.** When `.github/shipmill.toml` sets `[agents] app_id`, every `gh` call that writes (an issue, a comment, a label, a pull request, a review, a merge, a release) runs as `shipmill gh <the same arguments>` from the repo's checkout, in every session, gated or started by hand, so its author is the App's bot, not the maintainer (spec 012, D-14). Run it as `uvx shipmill==0.79.0 gh ...`, the release this plugin pins (spec 031), in every session, a headless gate's included, whose allowlist has `Bash(uvx *)`. Reads may keep plain `gh`. A `shipmill gh` that exits 2 is a stop: report its message and never retry the write with plain `gh`
 8. **An opportunity names the goal it serves (D-34, spec 024).** When the default branch has `docs/product.md`, read its Mission, Users, Goals, and Non-goals (step 1). Every opportunity issue's body says `Serves: G-n` (several as `Serves: G-2, G-3`) or `Serves no goal`, and the accept question to the maintainer, intake's triage line on the opportunity and its line in the report, says the same. Demand still counts, but an opportunity that serves no goal is never proposed for acceptance on demand alone: its recommendation is that the maintainer adds the goal it would need to the direction, or declines it. One that hits a non-goal says `Serves no goal; hits N-n` with the non-goal's words, and its recommendation is to decline it citing `N-n`; intake still files it and never declines it itself (rule 4). A repo without `docs/product.md` groups and recommends as before, with no `Serves` line
+9. **A plan changes only on the maintainer's answer (D-10, D-34).** Never accept, decline, or edit a plan without a trusted answer: a reply from an OWNER, MEMBER, or COLLABORATOR other than the `--bot-login`, newer than the plan's newest revision, as the script reads it. A reaction, a label, an untrusted comment, or your own judgment is no answer. Never add a goal or edit `docs/product.md` for a plan, not even when a plan shows the direction is missing one: only the maintainer changes the direction; say so in the report
 
 ## The script
 
@@ -62,6 +65,21 @@ What the script decides for you, so the pass doesn't re-derive it:
 
 `--label`, `--accepted-label`, and `--marker` rename `opportunity`, `planned`, and `Triage:` for a repo that uses other names. `--json` prints JSON lines, the first one `{"autonomy": ...}`.
 
+`--plans` adds the goal plans (spec 028) after the opportunity rows: a row per goal a plan is due for, then a row per issue labelled `goal-plan`. Pass `--wip N` with `[agents] wip`, and `--bot-login '<slug>[bot]'` when `[agents] app_id` is set (quoted, as zsh globs the brackets; a gate session's prompt names it). Without the App's login a revision never counts, so a plan only the maintainer's own login writes can't be edited ([plan.md](references/plan.md), A revision).
+
+| State | Means | Do |
+|---|---|---|
+| PLAN_DUE | A goal with no open plan, and a trigger holds; the note is `no-work`, `stalled`, or `requested in #N` | Propose a plan (step 6) |
+| PLAN_WAITS | A `no-work` or `stalled` goal while `[agents] wip` has no room | Nothing; list it as waiting for room |
+| PLAN_OPEN | Waiting for the maintainer's answer, or an accept older than the body's last edit (`edited after accept`) | Nothing; list it in the report |
+| PLAN_ANSWERED | A trusted answer, noted `decline` or `edit` | Close it as not planned, or revise it (step 6) |
+| PLAN_ACCEPTED | Accepted, and an item isn't filed or isn't in the named milestone; the note names them | File the work (step 6) |
+| PLAN_FILED | Accepted, every item filed and in the milestone | Nothing: triage owns the items, and closes the plan once they close |
+| PLAN_MALFORMED | Open, and `plans.py check` refuses the body; the note names the line | Fix the App's own body; when the maintainer's edit broke it, ask through github-issue-triage's [needs-decision](../github-issue-triage/references/needs-decision.md) protocol |
+| PLAN_DECLINED | Closed as not planned; the note is the reason | Nothing: a `no-work` plan for the goal is never proposed again |
+
+`scripts/plans.py check FILE` checks a plan body against the grammar in [references/plan.md](references/plan.md) (exit 0, or 2 naming each line and rule), reading the goal ids from `docs/product.md`. `scripts/plans.py items <owner/repo>#P [--bot-login '<slug>[bot]'] --json` lists plan #P's items, one JSON line each with its `id`, `kind`, `text`, `after`, and the `issue` carrying its plan-item marker, or `null`.
+
 ## Workflow
 
 ### From triage
@@ -81,7 +99,7 @@ When the default branch has `docs/product.md`, read the parts of the direction i
 shipmill product show --section mission --section users --section goals --section non-goals
 ```
 
-It exits 2 on a direction that breaks its grammar: open and update no opportunity that pass, and name the problem in the report.
+It exits 2 on a direction that breaks its grammar: open and update no opportunity that pass, and name the problem in the report. With a direction, run the script with `--plans` (and its `--wip` and `--bot-login`) instead, so the plan rows come too.
 
 Read each NEW_FEEDBACK item in full (`gh issue view <n> --json title,body,comments`, or the discussion page), and the body of every opportunity the script lists, closed ones included. Run `decisions.py find` (github-issue-triage's script) with the areas the requests touch: a request that breaks a settled `D-n` rule is still an opportunity, but its Problem section says which rule it runs into.
 
@@ -115,9 +133,33 @@ Accepting is the `planned` label, declining is closing the opportunity as not pl
 
 An ACCEPTED opportunity is a **feature**: under "intake and triage", run github-issue-triage on it, which runs the spec gate. The opportunity issue becomes the feature issue: the spec PR's body says "Spec for #N" with the opportunity's number, and triage's **feature** comment with its hold line makes the script read it HANDED_OFF. The spec's Problem section starts from the opportunity's Problem and Evidence. Without "and triage", list it in the report as waiting for triage.
 
+### 6. Plan a goal
+
+A plan is the work that reaches one goal of the direction, proposed as its own issue for the maintainer to answer (spec 028). Its template, grammar, and comments are in [references/plan.md](references/plan.md). Act on the plan rows of `intake_state.py --plans`, in the order it prints them.
+
+**PLAN_DUE: propose.** Read the goal, its measure when spec 027 gives one, the code, the specs (`specs.py find`), and the open issues and opportunities, and write the work that reaches the goal: `existing` for an open issue that already serves it, `feature` for an outcome a user gets, `fix` for what is wrong today, in the order the work should start, `(after W-k)` where one needs another. Don't design the features: each gets its own spec after the accept. Write the body to `tmp/`, run `plans.py check` on it until it exits 0, then:
+
+- Under `propose`, open it as the plan issue, labelled `goal-plan`, and comment intake's triage line on it. For `requested in #N`, comment the plan's link on #N and close #N as completed; the request's own text is never overwritten
+- Under `observe`, open nothing and comment nothing: put the goal, its trigger, and the plan's full proposed body in the report
+
+**PLAN_ANSWERED: do what the answer says**, and only that (rule 9):
+
+- `decline`: close the plan as not planned (`shipmill gh issue close <P> --reason "not planned"`); the maintainer's reply is the recorded reason
+- `edit`: rewrite the body as the reply asks, raising `rev`, check it, edit the issue (`shipmill gh issue edit <P> --body-file ...`), and post the `plan-revised` comment; the plan waits again. A reply that asks for more than the plan can say (a new goal, a change to the direction) is reported, not done
+
+**PLAN_ACCEPTED: file the work.** The accept chose the work, not its design. First `plans.py items <owner/repo>#P --bot-login '<slug>[bot]' --json`: an item whose `issue` isn't `null` is filed already, so a resumed pass never files one twice. Then, for each `feature` and `fix` item still `null`, in Work order:
+
+1. Open its issue from plan.md's filed item template: the first line is the plan-item marker `<!-- shipmill:plan-item #P W-n -->`, then the item, `Serves: G-n`, the plan's link, and a `Depends on owner/repo#M` line per `(after W-k)`, M being W-k's issue (the one filed for it, or an `existing` item's own number). With a Milestone title, open it in that milestone
+2. Make it a sub-issue of the plan: read its id with `gh api repos/<owner/repo>/issues/<item> --jq .id`, then `shipmill gh api -X POST repos/<owner/repo>/issues/<P>/sub_issues -F sub_issue_id=<id>`. Not `chains.py link --child`: that appends a `Depends on` line to the plan's body, an edit after the accept that reads PLAN_OPEN and can break the Milestone section
+3. For each `(after W-k)`, run `chains.py link <owner/repo>#<item> --blocked-by <owner/repo>#M` (github-issue-triage's script) from the checkout: it adds GitHub's relation and finds the `Depends on` line already there
+
+When the Milestone names a title, put every filed item and every `existing` item of this repository in it (`shipmill gh issue edit <n> --milestone "<title>"`), creating the milestone first when `gh api 'repos/<owner/repo>/milestones?state=all' --jq '.[].title'` doesn't list it (`shipmill gh api repos/<owner/repo>/milestones -f title="<title>"`, D-38). A plan naming `none` touches no milestone. Leave `existing` items otherwise as they are. Re-run the script: the plan reads PLAN_FILED. Comment the filed line on the plan.
+
+Filing starts no work: dispatch no implementer and write no spec. A `feature` item goes through github-issue-triage's [spec gate](../github-issue-triage/references/spec-gate.md) like any feature, its own spec approved by its own merge; a `fix` item gets its own triage verdict. Triage takes them up on its next pass, within `[agents] wip`, oldest first, so Work order is build order.
+
 ## Report
 
-Lead with what needs the maintainer: the OPPORTUNITY_OPEN issues, strongest evidence first, each with its request count, thumbs-up, the goal it serves or that it serves none (rule 8), and a one-line recommendation (accept or decline, and why; for one serving no goal, add the goal it would need or decline, never accept on its demand alone). Then what the pass wrote (opportunities opened and updated, requests linked), the NO_REASON issues, the ACCEPTED ones waiting for triage, and the feedback left ungrouped with the reason. On a quiet pass, one line: "No new feedback; N opportunities wait for your call."
+Lead with what needs the maintainer: the OPPORTUNITY_OPEN issues, strongest evidence first, each with its request count, thumbs-up, the goal it serves or that it serves none (rule 8), and a one-line recommendation (accept or decline, and why; for one serving no goal, add the goal it would need or decline, never accept on its demand alone). Then what the pass wrote (opportunities opened and updated, requests linked), the NO_REASON issues, the ACCEPTED ones waiting for triage, and the feedback left ungrouped with the reason. Plans come next: each PLAN_OPEN plan waiting for an answer, the plans proposed, revised, declined, and filed this pass (with the filed issues), the goals PLAN_WAITS holds, and under `observe` each due plan's proposed text. On a quiet pass, one line: "No new feedback; N opportunities wait for your call."
 
 ## Improve the skill
 

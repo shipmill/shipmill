@@ -20,6 +20,7 @@ A spec is written only for work the maintainer has chosen, so a review of the sp
 - **An accepted opportunity:** an issue labelled `opportunity` and `planned`. Product intake grouped the users' requests into it and the maintainer accepted it (D-10); `intake_state.py` reads it ACCEPTED until triage's **feature** comment, then HANDED_OFF. The opportunity issue is the feature issue, and the spec's Problem starts from its Problem and Evidence
 - **A request an accepted opportunity covers:** the spec is the opportunity's. Run this gate on the opportunity issue, or extend its spec when it has one; the request holds on the opportunity (comments.md, Feature)
 - **An issue the maintainer filed** (author association owner, member, or collaborator): the filing is the decision
+- **A feature item of an accepted plan:** an issue product intake filed whose first line is the plan-item marker `<!-- shipmill:plan-item #P W-n -->`, under a goal plan #P that `intake_state.py --plans` reads PLAN_ACCEPTED or PLAN_FILED (spec 028). The maintainer's accept chose the work, not its design: it still needs its own spec, merged with `status: approved` before its build, like any feature here. The spec's Problem starts from the item and the plan's Goal and Order
 
 Any other request for new behaviour is an **opportunity**: triage comments the hand-off (comments.md, Opportunity) and leaves the grouping to product intake. A request whose outcome was declined goes there too, where intake records it against the decline.
 
