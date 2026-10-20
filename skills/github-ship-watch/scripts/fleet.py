@@ -83,6 +83,7 @@ ACTION = frozenset(
         "NOT_PUBLISHED",
         "UNANNOUNCED",
         "ISSUES",
+        "PLANS",
         "OPERATE_FAILED",
         "UNHEALTHY",
         "PROMOTION_DUE",

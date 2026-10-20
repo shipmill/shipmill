@@ -8,7 +8,8 @@ Usage: intake_state.py <owner/repo> [--config PATH] [--label opportunity]
                        [--plans [--wip N] [--bot-login LOGIN] [--tool SPEC]]
 
 Feedback is an open issue, or an open discussion when the repo enables Discussions, that:
-  - carries none of SKIP_LABELS (bug, roadmap, and shipmill's own labels), no --skip-label
+  - carries none of SKIP_LABELS (bug, roadmap, and shipmill's own labels, goal-plan among
+    them, so a plan issue or a request for one is never feedback), no --skip-label
     (repeatable, added to SKIP_LABELS), and not --label
   - has no triage verdict of implement, feature, duplicate, or won't fix: the verdict is
     the first bold word of the newest comment starting with --marker
@@ -96,7 +97,10 @@ and no other comment, reaction, or label is read:
   PLAN_DECLINED     closed as not planned; the note is the reason: the rest of the newest
                     answer starting with `decline`, else the first comment from an hour
                     before the close on, as for an opportunity
-A plan closed as completed or as a duplicate reads nothing.
+A plan closed as completed or as a duplicate reads nothing. With --json, each plan row has
+goal, kind (goal for a goal's row, plan for a plan issue's), number, state, title, note, and
+author: the plan issue's opener, a Bot's login ending [bot] as --bot-login spells it, or
+null on a goal's row (watch_state.py's trust filter reads it, D-16).
 
 Exit 0 when nothing needs action, 1 when any row is NEW_FEEDBACK, ACCEPTED, NO_REASON,
 OVERLAP, PLAN_DUE, PLAN_ANSWERED, PLAN_ACCEPTED, or PLAN_MALFORMED, 2 on bad input (an
@@ -137,6 +141,7 @@ SKIP_LABELS = (
     "incident",
     "release-blocker",
     "milestone-proposal",
+    "goal-plan",  # a goal's plan, or the maintainer's request for one (spec 028): never a request for a feature
 )
 SKIP_CATEGORIES = ("Announcements",)
 CLOSING_VERDICTS = ("implement", "feature", "duplicate", "won't fix", "won’t fix", "wont fix")
@@ -621,6 +626,7 @@ class PlanRow:
     note: str
     number: int | None = None  # the request issue for a requested plan, the plan issue for a plan's row
     kind: str = "goal"  # goal: a row per goal (PLAN_DUE, PLAN_WAITS); plan: a row per plan issue
+    author: str | None = None  # a plan issue's opener, as --bot-login spells a login; None for a goal's row
 
 
 # Reads the direction's goals, in the direction's order
@@ -957,7 +963,7 @@ def plan_issue_rows(
         if is_plan(issue, bot_login):
             row = plan_state(issue, goals=goals, marker=marker, bot_login=bot_login, filing=filing)
             if row is not None:
-                found.append(row)
+                found.append(replace(row, author=PLANS.login(issue.get("author"))))
     return found
 
 
@@ -1234,7 +1240,7 @@ def main() -> int:
             )
         for p in planned:
             row = {"goal": p.goal, "kind": p.kind, "number": p.number, "state": p.state, "title": p.title}
-            print(json.dumps({**row, "note": p.note}, sort_keys=True))
+            print(json.dumps({**row, "note": p.note, "author": p.author}, sort_keys=True))
     else:
         print(f"intake autonomy: {autonomy}")
         for r in found:

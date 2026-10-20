@@ -47,7 +47,10 @@ For each open issue:
   POSTPONED        has the postponed label
   REVISIT          postponed before the newest stable tag: decide again. Stable means
                    the tag matches --stable-tag-regex (default: vX.Y.Z, no pre-release)
-  TRIAGED          triaged, nothing pending (clarify, waiting on the reporter, ...)
+  TRIAGED          triaged, nothing pending (clarify, waiting on the reporter, ...). A
+                   goal's plan (labelled goal-plan, spec 028) whose newest triage comment
+                   is product intake's own, "Triage: **plan**", reads TRIAGED whatever the
+                   rest of that comment says: the maintainer's answer moves it, not triage
   NEEDS_DECISION   labelled needs-decision and its question has no reply: a headless
                    session asked the user and left it (references/needs-decision.md).
                    The question is the newest comment whose first line is the marker
@@ -456,6 +459,10 @@ TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 UPGRADE_LABEL = "shipmill-upgrade"
 UPGRADE_MARKER = re.compile(r"^<!-- shipmill-upgrade: ([a-z][a-z0-9]*(?:-[a-z0-9]+)*) (\S+) -->\s*$")
 WORKFLOW_BOT = "github-actions[bot]"  # who the release workflow writes as
+# A goal's plan (spec 028): product-intake's intake_state.py PLAN_LABEL, and the verdict its
+# triage comment on a plan starts with, "Triage: **plan**. ..."
+PLAN_LABEL = "goal-plan"
+PLAN_VERDICT = "**plan**"
 # A person's item (spec 017): its assignees do it, a hand-off comment tells them it is
 # their turn, and a verified comment records that a session checked a close by hand
 HUMAN_LABEL = "human"
@@ -1047,6 +1054,8 @@ def classify_open(
         return person_state(issue["comments"]["nodes"], people, bot_login, max(ends, default=None), shown)
     if not triage:
         return "NEW", note
+    if PLAN_LABEL in labels and triage[-1].lstrip()[len(marker) :].lstrip().lower().startswith(PLAN_VERDICT):
+        return "TRIAGED", note  # product intake's comment on a goal's plan (S-028-14), never an implement
     if re.search(r"\bimplement\b", triage[-1], re.IGNORECASE):
         return "NEEDS_PR", note
     return "TRIAGED", note
