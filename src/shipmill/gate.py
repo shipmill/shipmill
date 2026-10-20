@@ -46,6 +46,7 @@ WAITING = "waiting.json"  # one entry per blocked gate session (spec 003)
 DECISIONS = "needs-decision.json"  # one entry per item that waits on a decision (spec 005)
 NEEDS_DECISION = "NEEDS_DECISION"  # watch_state.py's items waiting on a reply, `#N` only (S-005-9)
 PRS_OPEN = "PRS_OPEN"  # watch_state.py's open pull requests: work only with [agents] prs = true
+HEAD_SHA = re.compile(r"[0-9a-f]{40}")  # a PRS_OPEN row's head SHA, as --json prints it (#546)
 SESSIONS = "sessions"  # a headless session's log, <uuid>.log, under the state directory (D-17)
 AUTH = "claude-auth.json"  # the failing Claude Code login's episode: since, and its one notification (#500)
 # a headless session that ended this soon after its launch, by its log's last write, with no
@@ -86,12 +87,15 @@ HEADLESS_REFUSED = (
 
 @dataclass(frozen=True, slots=True)
 class Finding:
-    """One watch_state.py row; agent is its own verdict that the row needs an agent"""
+    """One watch_state.py row; agent is its own verdict that the row needs an agent. heads,
+    on a PRS_OPEN row only, is each listed pull request's head SHA by number (#546), so a
+    push to one is new work; () for every other row and for a watch_state.py before it"""
 
     state: str
     subject: str
     detail: str
     agent: bool
+    heads: tuple[tuple[int, str], ...] = ()
 
     def line(self) -> str:
         return f"{self.state} {self.subject}: {self.detail}" if self.detail else f"{self.state} {self.subject}"
@@ -217,8 +221,14 @@ class Decision:
 
 
 def fingerprint(work: Iterable[Finding]) -> str:
-    lines = sorted(f"{f.state}\x00{f.subject}\x00{f.detail}" for f in work)
+    """A finding's heads join its line only when it has some (#546), so a row without them
+    hashes as it did before"""
+    lines = sorted(f"{f.state}\x00{f.subject}\x00{f.detail}{heads_part(f.heads)}" for f in work)
     return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16]
+
+
+def heads_part(heads: tuple[tuple[int, str], ...]) -> str:
+    return "".join(f"\x00#{number}={sha}" for number, sha in heads)
 
 
 def held(hold: Hold, sessions: Sequence[Session]) -> Decision | None:
@@ -396,8 +406,30 @@ def parse_findings(text: str) -> list[Finding]:
                 f"watch_state.py printed {line[:200]!r}: a row needs string state, subject, and detail,"
                 " and a boolean agent"
             )
-        findings.append(Finding(row["state"], row["subject"], row["detail"], row["agent"]))
+        heads = parse_heads(row, line) if "heads" in row else ()
+        findings.append(Finding(row["state"], row["subject"], row["detail"], row["agent"], heads))
     return findings
+
+
+def parse_heads(row: Mapping[str, object], line: str) -> tuple[tuple[int, str], ...]:
+    """A PRS_OPEN row's heads (#546): an object mapping each pull request its detail lists, as
+    a number string, to its 40-hex head SHA, and nothing else; anything else is refused"""
+    found = row["heads"]
+    shown = f"watch_state.py printed {line[:200]!r}"
+    if row["state"] != PRS_OPEN:
+        raise ReleaseError(f"{shown}: only a {PRS_OPEN} row has heads")
+    if not isinstance(found, dict):
+        raise ReleaseError(f"{shown}: heads must be an object of pull request numbers to head SHAs")
+    heads = []
+    for key, sha in found.items():
+        if re.fullmatch(r"[1-9][0-9]*", key) is None or not isinstance(sha, str) or HEAD_SHA.fullmatch(sha) is None:
+            raise ReleaseError(f"{shown}: heads maps {key[:50]!r} to {str(sha)[:50]!r}, not a number to a head SHA")
+        heads.append((int(key), sha))
+    listed = re.fullmatch(r"#[0-9]+(?: #[0-9]+)*", str(row["detail"]))
+    numbers = {int(n) for n in re.findall(r"#([0-9]+)", str(row["detail"]))} if listed else None
+    if numbers != {number for number, _ in heads}:
+        raise ReleaseError(f"{shown}: heads must name exactly the pull requests its detail lists")
+    return tuple(sorted(heads))
 
 
 class Claude(Protocol):

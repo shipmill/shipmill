@@ -78,8 +78,8 @@ and any checkout with tracked changes, naming the files. Each run:
    run, an open incident), plus open PRs when `prs = true`. A promotion waiting on a
    person, an unhealthy environment (operate's rollback owns it), and a postmortem due
    start nothing. None: **QUIET**, stop. No model call has happened
-7. Compares the rows with the last launch's fingerprint. The same rows within
-   `retry_hours`: **UNCHANGED**, stop. A session that left an item alone on purpose
+7. Compares the rows with the last launch's fingerprint, which counts each open PR's head
+   commit (#546). The same rows within `retry_hours`: **UNCHANGED**, stop. A session that left an item alone on purpose
    doesn't wake a new one every tick
 8. With `plugin_update = true`, updates the checkout's own plugin installs once a day
    (D-23). Then reads the `shipmill@shipmill` install a session in the checkout would load
@@ -327,9 +327,10 @@ from `claude agents`.
 
 ## Next
 
-1. **Pull requests in the fingerprint:** `prs = true` counts open PRs by number, so a new
-   push to an open PR waits for `retry_hours`. A `pr_state` that lists heads, reviews, and CI
-   fixes that
+1. **Pull requests in the fingerprint:** `prs = true` counts open PRs by number and head
+   commit (#546), so a push to an open PR starts a session at once, but a new review or a
+   finished CI run on the same head waits for `retry_hours`. A `pr_state` that lists reviews
+   and CI fixes that
 2. **Trust filter for mode 1:** headless mode has it (D-16); an interactive session still
    works on every author's items, since a person can watch it
 3. **Approving an untrusted item for headless work:** ephemeral mode's `shipmill:go`

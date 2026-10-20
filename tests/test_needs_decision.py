@@ -308,8 +308,9 @@ def test_d30_only_the_github_actions_bot_counts(ts: ModuleType, author: dict[str
 
 
 def pr(number: int, *, draft: bool = False, fork: bool = False, labels: tuple[str, ...] = ()) -> dict[str, Any]:
-    """One `gh pr list --json number,isDraft,isCrossRepository,labels` row"""
-    return {"number": number, "isDraft": draft, "isCrossRepository": fork, "labels": [{"name": n} for n in labels]}
+    """One `gh pr list --json number,isDraft,isCrossRepository,labels,headRefOid` row"""
+    found = {"number": number, "isDraft": draft, "isCrossRepository": fork, "labels": [{"name": n} for n in labels]}
+    return {**found, "headRefOid": f"{number:040x}"}
 
 
 def triage(*rows: tuple[int, str]) -> str:
@@ -415,8 +416,8 @@ def test_s005_10_trusted_only_lists_fork_prs_as_untrusted(ws: ModuleType) -> Non
 
 def test_existing_intake_rows_keep_their_shape(ws: ModuleType) -> None:
     found = ws.intake("o/r", 1, triage((12, "NEW"), (9, "NEEDS_PR"), (5, "TRIAGED")), [pr(3), pr(4)], comments({}))
-    # S-011-1: the fix is added beside the four keys, which keep their values
-    assert [{k: v for k, v in r.json().items() if k != "fix"} for r in found] == [
+    # S-011-1: the fix is added beside the four keys, which keep their values; so are PRS_OPEN's heads (#546)
+    assert [{k: v for k, v in r.json().items() if k not in ("fix", "heads")} for r in found] == [
         {"state": "ISSUES", "subject": "o/r", "detail": "NEEDS_PR #9; NEW #12", "agent": True},
         {"state": "ISSUES_OPEN", "subject": "o/r", "detail": "TRIAGED #5", "agent": False},  # #182
         {"state": "PRS_OPEN", "subject": "o/r", "detail": "#3 #4", "agent": False},

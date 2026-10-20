@@ -1,6 +1,7 @@
 """The gate decides with code whether a repo needs a Claude Code session"""
 
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import re
@@ -315,6 +316,64 @@ def test_s011_20_quiet_with_no_pull_request_waiting_reads_as_before() -> None:
 def test_an_unreadable_open_prs_row_is_refused_not_counted() -> None:
     with pytest.raises(ReleaseError, match="PRS_OPEN row is unreadable"):
         decide([Finding("PRS_OPEN", "romamo/demo", "#3 and more", False)], [], None, NOW, DAY)
+
+
+HEAD_A = "a" * 40
+HEAD_B = "0123456789abcdef0123456789abcdef01234567"
+
+
+def prs_line(heads: object = None, detail: str = "#3 #5") -> str:
+    row = {"state": "PRS_OPEN", "subject": "romamo/demo", "detail": detail, "agent": False, "fix": None}
+    return json.dumps(row if heads is None else {**row, "heads": heads}, sort_keys=True)
+
+
+def test_546_a_push_to_an_open_pr_launches_within_retry() -> None:
+    # the same pull requests, one with a new head: the fixes a session asked for were pushed
+    before = parse_findings(prs_line({"3": HEAD_A, "5": HEAD_A}))
+    last = Launch(fingerprint(decide(before, [], None, NOW, DAY, prs=True).work), "s1", NOW - dt.timedelta(hours=1))
+    pushed = parse_findings(prs_line({"3": HEAD_A, "5": HEAD_B}))
+    assert decide(pushed, [], last, NOW, DAY, prs=True).action is Action.LAUNCH
+    # the same heads within retry_hours: nothing changed
+    same = parse_findings(prs_line({"5": HEAD_A, "3": HEAD_A}))
+    assert decide(same, [], last, NOW, DAY, prs=True).action is Action.UNCHANGED
+
+
+def test_546_heads_change_neither_the_prompt_nor_the_line() -> None:
+    (bare,) = parse_findings(prs_line())
+    (headed,) = parse_findings(prs_line({"3": HEAD_A, "5": HEAD_B}))
+    assert headed.heads == ((3, HEAD_A), (5, HEAD_B)) and bare.heads == ()
+    assert (headed.line(), headed.brief()) == (bare.line(), bare.brief())
+    assert prompt("/t {repo}", "romamo/demo", [headed], NOW) == prompt("/t {repo}", "romamo/demo", [bare], NOW)
+
+
+def test_546_a_row_without_heads_fingerprints_as_before() -> None:
+    (bare,) = parse_findings(prs_line())
+    line = "PRS_OPEN\x00romamo/demo\x00#3 #5"  # the line hashed before #546
+    assert fingerprint([bare]) == hashlib.sha256(line.encode()).hexdigest()[:16]
+    assert fingerprint([bare]) == fingerprint([Finding("PRS_OPEN", "romamo/demo", "#3 #5", False)])
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        prs_line([["3", HEAD_A]]),  # not a mapping
+        prs_line("3:" + HEAD_A),
+        prs_line({}),  # no head for #3 and #5
+        prs_line({"3": HEAD_A}),  # no head for #5
+        prs_line({"3": HEAD_A, "5": HEAD_A, "7": HEAD_A}),  # #7 isn't listed
+        prs_line({"#3": HEAD_A, "5": HEAD_A}),
+        prs_line({"03": HEAD_A, "5": HEAD_A}),
+        prs_line({"3": HEAD_A.upper(), "5": HEAD_A}),
+        prs_line({"3": HEAD_A[:39], "5": HEAD_A}),
+        prs_line({"3": "g" * 40, "5": HEAD_A}),
+        prs_line({"3": None, "5": HEAD_A}),
+        prs_line({"3": HEAD_A, "5": HEAD_A}, detail="#3 and #5"),
+        watch_line("ISSUES", detail="NEW #3", agent=True, heads={"3": HEAD_A}),  # only PRS_OPEN has heads
+    ],
+)
+def test_546_malformed_heads_are_refused(line: str) -> None:
+    with pytest.raises(ReleaseError, match="heads"):
+        parse_findings(line)
 
 
 @pytest.mark.parametrize("prs", [False, True])
