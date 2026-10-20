@@ -2,7 +2,8 @@
 workflows shipmill starts on a pull request and reads back as checks. This module holds the
 [downstream] section of .github/shipmill.toml (D-4) and `downstream start`, which writes one
 check per downstream on the pull request's head and dispatches each downstream's workflow
-with a token minted for the App and limited to that downstream's repository.
+with a token minted for the App and limited to that downstream's repository, and `downstream
+collect`, which finds each run start dispatched by its shipmill-id and concludes its check.
 
 It never reads, checks out, or runs the pull request's code: it reads the pull request's
 head SHA and repository through the API, and a fork's head is dispatched only when a person
@@ -19,7 +20,20 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 
-from shipmill.app import Access, Api, Lacks, NotInstalled, Permission, Signer, app_slug, check_key, jwt, mint
+from shipmill.app import (
+    Access,
+    Answer,
+    Api,
+    Lacks,
+    NotInstalled,
+    Permission,
+    Signer,
+    Token,
+    app_slug,
+    check_key,
+    jwt,
+    mint,
+)
 from shipmill.config import Table
 from shipmill.errors import ReleaseError
 
@@ -102,6 +116,8 @@ DISPATCH_PERMISSIONS = (
     Permission("metadata", "Metadata", Access.READ),
 )
 FORK_TITLE = "a fork's pull request runs downstream tests only by hand"
+RUNNING = "running"  # a required check's title until collect concludes it
+REPORT_RUNNING = "report-only: running"  # a report-only check is completed from the start: its title says it waits
 _SHA = re.compile(r"[0-9a-f]{40}")
 
 
@@ -120,17 +136,38 @@ def external_id(sid: str, dispatched: dt.datetime) -> str:
     return f"{sid} {dispatched.astimezone(dt.UTC).isoformat(timespec='seconds')}"
 
 
+def parse_external_id(value: str, name: str) -> tuple[str, dt.datetime]:
+    """external_id's inverse: the shipmill-id and the dispatch time start recorded on a check"""
+    sid, _, when = value.rpartition(" ")
+    try:
+        dispatched = dt.datetime.fromisoformat(when)
+    except ValueError:
+        dispatched = None
+    if not sid or dispatched is None or dispatched.tzinfo is None:
+        raise ReleaseError(
+            f"the check {check_name(name)} has external_id {value!r}, not the shipmill-id and dispatch time "
+            "`downstream start` writes; rerun start"
+        )
+    return sid, dispatched
+
+
 class Status(StrEnum):
+    QUEUED = "queued"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
 
 
 class Conclusion(StrEnum):
+    """A check run's conclusion, as GitHub accepts and reports it"""
+
     SUCCESS = "success"
     FAILURE = "failure"
     NEUTRAL = "neutral"
     TIMED_OUT = "timed_out"
     ACTION_REQUIRED = "action_required"
+    CANCELLED = "cancelled"
+    SKIPPED = "skipped"
+    STALE = "stale"
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +196,51 @@ class Check:
         if self.details_url:
             body["details_url"] = self.details_url
         return body
+
+
+@dataclass(frozen=True, slots=True)
+class Written:
+    """A check as GitHub holds it on a commit: its id and what it says"""
+
+    id: int
+    check: Check
+
+
+def parse_check(found: Any) -> Written:
+    """A check run from GitHub's API; anything else is refused"""
+    if not isinstance(found, dict) or not isinstance(found.get("id"), int) or not isinstance(found.get("name"), str):
+        raise ReleaseError("GitHub's answer has a check run without an id or a name")
+    name = str(found["name"])
+
+    def text(value: object, what: str) -> str:
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            raise ReleaseError(f"GitHub's check run {name} has a {what} that isn't a string")
+        return value
+
+    output = found.get("output")
+    if output is not None and not isinstance(output, dict):
+        raise ReleaseError(f"GitHub's check run {name} has an output that isn't an object")
+    shown = output or {}
+    try:
+        status = Status(str(found.get("status")))
+        raw = found.get("conclusion")
+        conclusion = None if raw is None else Conclusion(str(raw))
+    except ValueError:
+        raise ReleaseError(
+            f"GitHub's check run {name} has status {found.get('status')!r} and conclusion {found.get('conclusion')!r}"
+        ) from None
+    check = Check(
+        name,
+        status,
+        conclusion,
+        text(shown.get("title"), "title"),
+        text(shown.get("summary"), "summary"),
+        text(found.get("external_id"), "external_id"),
+        text(found.get("details_url"), "details_url"),
+    )
+    return Written(int(found["id"]), check)
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +302,10 @@ class Library(Protocol):
         newest when there are several; None when there is none"""
         ...
 
+    def read_check(self, sha: str, name: str) -> Written | None:
+        """The check find_check names, as GitHub holds it; None when there is none"""
+        ...
+
     def create_check(self, sha: str, check: Check) -> int: ...
 
     def update_check(self, check_id: int, check: Check) -> None: ...
@@ -255,7 +341,8 @@ class GhLibrary:
     def pull(self, number: int) -> Pull:
         return parse_pull(self._json("api", f"repos/{{owner}}/{{repo}}/pulls/{number}"), number)
 
-    def find_check(self, sha: str, name: str) -> int | None:
+    def _newest(self, sha: str, name: str) -> dict[str, Any] | None:
+        """The newest check run with the name this workflow's App wrote on the commit"""
         found = self._json(
             "api", "-X", "GET", f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs",
             "-f", f"check_name={name}", "-f", "filter=all", "-f", "per_page=100",
@@ -263,14 +350,22 @@ class GhLibrary:
         runs = found.get("check_runs") if isinstance(found, dict) else None
         if not isinstance(runs, list):
             raise ReleaseError(f"gh api printed no check_runs for {sha}")
-        ids = []
+        ours: list[dict[str, Any]] = []
         for run in runs:
             app = run.get("app") if isinstance(run, dict) else None
             if not isinstance(app, dict) or not isinstance(run.get("id"), int):
                 raise ReleaseError(f"gh api printed a check run without an id or an app for {sha}")
             if run.get("name") == name and app.get("slug") == CHECKS_APP:
-                ids.append(int(run["id"]))
-        return max(ids) if ids else None
+                ours.append(run)
+        return max(ours, key=lambda run: int(run["id"])) if ours else None
+
+    def find_check(self, sha: str, name: str) -> int | None:
+        newest = self._newest(sha, name)
+        return None if newest is None else int(newest["id"])
+
+    def read_check(self, sha: str, name: str) -> Written | None:
+        newest = self._newest(sha, name)
+        return None if newest is None else parse_check(newest)
 
     def create_check(self, sha: str, check: Check) -> int:
         body = {**check.payload(), "head_sha": sha}
@@ -454,9 +549,9 @@ def start(
         )
         if d.report_only:
             summary += "\n\nThis downstream is report-only: its result never holds the merge."
-            running = Check(check_name(d.name), Status.COMPLETED, Conclusion.NEUTRAL, "report-only: running", summary)
+            running = Check(check_name(d.name), Status.COMPLETED, Conclusion.NEUTRAL, REPORT_RUNNING, summary)
         else:
-            running = Check(check_name(d.name), Status.IN_PROGRESS, None, "running", summary)
+            running = Check(check_name(d.name), Status.IN_PROGRESS, None, RUNNING, summary)
         when = clock()
         check_id = _write(library, sha, replace(running, external_id=external_id(sid, when)))
         inputs = {"library-repo": pull.repo, "library-ref": sha, "shipmill-id": sid}
@@ -498,4 +593,299 @@ def _hold_fork(config: DownstreamConfig, library: Library, pull: Pull) -> list[s
     for d in config.downstreams:
         _write(library, pull.head_sha, _ended(d, Conclusion.ACTION_REQUIRED, FORK_TITLE, summary, page, mark=False))
         lines.append(f"{check_name(d.name)}: waits for a person: {command}")
+    return lines
+
+
+NO_RUN_WITHIN = dt.timedelta(minutes=2)  # a dispatched run shows within this, or its run-name lacks the id
+POLL_SECONDS = 30
+RUN_NAME_RULE = "its run-name must contain inputs.shipmill-id"
+# what collect needs on a downstream: read its workflow runs and their jobs, never write
+READ_PERMISSIONS = (
+    Permission("actions", "Actions", Access.READ),
+    Permission("metadata", "Metadata", Access.READ),
+)
+_JOB_NAME = 100  # characters of a job's name a summary shows
+_UNSAFE = re.compile(r"[`\x00-\x1f\x7f]+")  # a job's name is the downstream's text: no code span break, no newline
+
+
+class RunConclusion(StrEnum):
+    """A workflow run's or a job's conclusion, as GitHub reports it"""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    NEUTRAL = "neutral"
+    CANCELLED = "cancelled"
+    SKIPPED = "skipped"
+    TIMED_OUT = "timed_out"
+    ACTION_REQUIRED = "action_required"
+    STALE = "stale"
+    STARTUP_FAILURE = "startup_failure"
+
+    @property
+    def failed(self) -> bool:
+        """A job that failed; a run passes only on success"""
+        return self not in {RunConclusion.SUCCESS, RunConclusion.NEUTRAL, RunConclusion.SKIPPED}
+
+
+@dataclass(frozen=True, slots=True)
+class Run:
+    """A downstream workflow run as collect reads it: its id, its page, and its conclusion,
+    never its run-name beyond the shipmill-id nor its logs"""
+
+    id: int
+    url: str
+    conclusion: RunConclusion | None  # None until it completes
+
+
+class Runs(Protocol):
+    """The downstream repositories' workflow runs, as the App reads them"""
+
+    def find(self, downstream: Downstream, sid: str, since: dt.datetime) -> Run | Refusal | None:
+        """The newest workflow_dispatch run of the downstream's workflow created at or after
+        since whose run-name carries sid; None while there is none; a Refusal when GitHub
+        refuses the read for the App's installation or the workflow"""
+        ...
+
+    def failed_jobs(self, downstream: Downstream, run: Run) -> tuple[str, ...]:
+        """The names of the run's failed jobs, made safe to show"""
+        ...
+
+
+def _object(answer: Answer, path: str) -> dict[str, Any]:
+    if answer.status != 200:
+        raise ReleaseError(f"GET {path} answered {answer.status}: {answer.body.strip()[:300]}")
+    try:
+        found = json.loads(answer.body)
+    except json.JSONDecodeError:
+        raise ReleaseError(f"GET {path} answered without JSON") from None
+    if not isinstance(found, dict):
+        raise ReleaseError(f"GET {path} answered with JSON that is not an object")
+    return found
+
+
+def _instant(value: object, path: str) -> dt.datetime:
+    if isinstance(value, str):
+        try:
+            found = dt.datetime.fromisoformat(value)
+        except ValueError:
+            found = None
+        if found is not None and found.tzinfo is not None:
+            return found
+    raise ReleaseError(f"GET {path} gave a run with created_at {value!r}, not a time with an offset")
+
+
+def _conclusion(value: object, path: str) -> RunConclusion:
+    try:
+        return RunConclusion(str(value))
+    except ValueError:
+        raise ReleaseError(f"GET {path} gave the conclusion {value!r}, which shipmill doesn't know") from None
+
+
+def job_name(name: str) -> str:
+    """A job's name as a summary shows it: one line, no backtick, at most _JOB_NAME characters"""
+    shown = " ".join(_UNSAFE.sub(" ", name).split())
+    return shown if len(shown) <= _JOB_NAME else shown[: _JOB_NAME - 1] + "…"
+
+
+class AppRuns:
+    """Reads the downstream runs as the App: a token per downstream repository, minted for
+    app_id, limited to that repository and to READ_PERMISSIONS, and minted again before it
+    expires. A token is never printed, stored, or quoted in a message"""
+
+    def __init__(self, app_id: int, key: Path, signer: Signer, api: Api, clock: Callable[[], dt.datetime]) -> None:
+        self.app_id = app_id
+        self.key = key
+        self.signer = signer
+        self.api = api
+        self.clock = clock
+        self._tokens: dict[str, Token] = {}
+
+    def _token(self, repo: str) -> Token | Refusal:
+        now = self.clock()
+        held = self._tokens.get(repo)
+        if held is not None and held.reusable(repo, self.app_id, now):
+            return held
+        try:
+            token = mint(self.app_id, repo, self.key, now, self.signer, self.api, READ_PERMISSIONS)
+        except NotInstalled:
+            return Refusal(404, not_installed(self.app_id, repo))
+        except Lacks:
+            return Refusal(403, not_installed(self.app_id, repo))
+        self._tokens[repo] = token
+        return token
+
+    def find(self, downstream: Downstream, sid: str, since: dt.datetime) -> Run | Refusal | None:
+        d = downstream
+        token = self._token(d.repo)
+        if isinstance(token, Refusal):
+            return token
+        created = since.astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        query = urllib.parse.urlencode({"event": "workflow_dispatch", "created": f">={created}", "per_page": "100"})
+        path = f"/repos/{d.repo}/actions/workflows/{urllib.parse.quote(d.workflow)}/runs?{query}"
+        answer = self.api.get(path, token.value)
+        if answer.status == 403:
+            return Refusal(403, not_installed(self.app_id, d.repo))
+        if answer.status == 404:
+            return Refusal(404, no_workflow(d, _ref_text(d)))
+        runs = _object(answer, path).get("workflow_runs")
+        if not isinstance(runs, list):
+            raise ReleaseError(f"GET {path} gave no workflow_runs")
+        carries = re.compile(re.escape(sid) + r"(?![a-z0-9-])")  # not the id of a downstream named longer
+        matched: list[dict[str, Any]] = []
+        for run in runs:
+            if not isinstance(run, dict) or not isinstance(run.get("id"), int):
+                raise ReleaseError(f"GET {path} gave a run without an id")
+            title = run.get("display_title")
+            if not isinstance(title, str):
+                raise ReleaseError(f"GET {path} gave run {run['id']} without a display_title")
+            if carries.search(title) and _instant(run.get("created_at"), path) >= since:
+                matched.append(run)
+        if not matched:
+            return None
+        newest = max(matched, key=lambda run: int(run["id"]))
+        run_id = int(newest["id"])
+        status = newest.get("status")
+        if not isinstance(status, str):
+            raise ReleaseError(f"GET {path} gave run {run_id} without a status")
+        conclusion = _conclusion(newest.get("conclusion"), path) if status == "completed" else None
+        return Run(run_id, f"{SERVER}/{d.repo}/actions/runs/{run_id}", conclusion)
+
+    def failed_jobs(self, downstream: Downstream, run: Run) -> tuple[str, ...]:
+        d = downstream
+        token = self._token(d.repo)
+        if isinstance(token, Refusal):
+            raise ReleaseError(f"shipmill can't read the jobs of {run.url}: {token.fix}")
+        path = f"/repos/{d.repo}/actions/runs/{run.id}/jobs?filter=latest&per_page=100"
+        jobs = _object(self.api.get(path, token.value), path).get("jobs")
+        if not isinstance(jobs, list):
+            raise ReleaseError(f"GET {path} gave no jobs")
+        failed = []
+        for job in jobs:
+            if not isinstance(job, dict) or not isinstance(job.get("name"), str):
+                raise ReleaseError(f"GET {path} gave a job without a name")
+            raw = job.get("conclusion")
+            if raw is not None and _conclusion(raw, path).failed:
+                failed.append(job_name(str(job["name"])))
+        return tuple(failed)
+
+
+@dataclass(frozen=True, slots=True)
+class _Watch:
+    """A check collect waits on: as it last wrote it, and what start recorded in it"""
+
+    downstream: Downstream
+    check_id: int
+    check: Check
+    sid: str
+    dispatched: dt.datetime
+
+
+def waiting(check: Check) -> bool:
+    """A check without a result yet: a required one still in progress, or a report-only one,
+    completed from the start, still titled running"""
+    return check.status is not Status.COMPLETED or check.title == REPORT_RUNNING
+
+
+def _result(library: str, sha: str, d: Downstream, run: Run, jobs: tuple[str, ...], how: str) -> str:
+    """S-032-10: the SHA tested, the run's link, and its failed jobs' names; no line of its logs"""
+    lines = [f"Tested {library} at {sha} with {d.workflow} in {d.repo}{how}.", "", f"Downstream run: {run.url}", ""]
+    if jobs:
+        lines += ["Failed jobs:", *(f"- `{name}`" for name in jobs)]
+    else:
+        lines.append("Failed jobs: none")
+    lines += ["", f"The run's logs stay in {d.repo}; this check copies none of them."]
+    return "\n".join(lines)
+
+
+def _conclude(library: Library, w: _Watch, check: Check) -> str:
+    """Write the check's result, once: collect stops watching it"""
+    library.update_check(w.check_id, replace(check, external_id=w.check.external_id))
+    return f"{check.name}: {check.title}"
+
+
+def _look(library: Library, runs: Runs, repo: str, sha: str, w: _Watch, now: dt.datetime) -> _Watch | str:
+    """One look at a check's downstream run: the watch while it waits, else the line saying
+    how its check was concluded"""
+    d = w.downstream
+    found = runs.find(d, w.sid, w.dispatched)
+    if isinstance(found, Refusal):
+        refused = (
+            f"Testing {repo} at {sha}: GitHub answered {found.status} to reading the runs of {d.workflow} "
+            f"in {d.repo}.\n\nFix: {found.fix}."
+        )
+        return _conclude(library, w, _ended(d, Conclusion.FAILURE, f"couldn't read: {found.status}", refused))
+    if found is None:
+        if now - w.dispatched < NO_RUN_WITHIN:
+            return w
+        missing = (
+            f"Testing {repo} at {sha}: no run of {d.workflow} in {d.repo} has {w.sid} in its run-name within "
+            f"2 minutes of the dispatch; {RUN_NAME_RULE}."
+        )
+        return _conclude(library, w, _ended(d, Conclusion.FAILURE, "couldn't start: no run", missing))
+    if w.check.details_url != found.url:
+        linked = replace(
+            w.check,
+            details_url=found.url,
+            summary=f"Testing {repo} at {sha} with {d.workflow} in {d.repo}.\n\nDownstream run: {found.url}",
+        )
+        library.update_check(w.check_id, linked)
+        w = replace(w, check=linked)
+    if found.conclusion is RunConclusion.SUCCESS:
+        summary = _result(repo, sha, d, found, runs.failed_jobs(d, found), "")
+        return _conclude(library, w, _ended(d, Conclusion.SUCCESS, "passed", summary, found.url))
+    if found.conclusion is not None:
+        summary = _result(repo, sha, d, found, runs.failed_jobs(d, found), "")
+        return _conclude(library, w, _ended(d, Conclusion.FAILURE, f"failed: {found.conclusion}", summary, found.url))
+    if now - w.dispatched < dt.timedelta(minutes=d.timeout_minutes):
+        return w
+    how = f"; the run didn't complete within {d.timeout_minutes} minutes of the dispatch and is left running"
+    summary = _result(repo, sha, d, found, runs.failed_jobs(d, found), how)
+    title = f"timed out after {d.timeout_minutes} minutes"
+    return _conclude(library, w, _ended(d, Conclusion.TIMED_OUT, title, summary, found.url))
+
+
+def collect(
+    config: DownstreamConfig,
+    library: Library,
+    runs: Runs,
+    pr: int,
+    sha: str,
+    clock: Callable[[], dt.datetime],
+    sleep: Callable[[float], None],
+) -> list[str]:
+    """Spec 032, `downstream collect`: each `downstream: <name>` check on sha still without a
+    result is linked to the downstream run start dispatched, found by its shipmill-id, and
+    concluded once that run completes, its timeout passes, or no run shows within 2 minutes.
+    It looks every POLL_SECONDS. The lines it returns say what it did; a ReleaseError is exit 2"""
+    if not _SHA.fullmatch(sha):
+        raise ReleaseError(f"--head is the full 40-character head SHA, got {sha!r}")
+    pull = library.pull(pr)
+    lines = []
+    watching = []
+    for d in config.downstreams:
+        name = check_name(d.name)
+        written = library.read_check(sha, name)
+        if written is None:
+            lines.append(f"{name}: no check on {sha}; nothing to collect")
+            continue
+        if not waiting(written.check):
+            lines.append(f"{name}: already concluded: {written.check.title}")
+            continue
+        sid, dispatched = parse_external_id(written.check.external_id, d.name)
+        expected = shipmill_id(pull.repo, pr, sha, d.name)
+        if sid != expected:
+            raise ReleaseError(f"the check {name} on {sha} records the shipmill-id {sid}, not {expected}; rerun start")
+        watching.append(_Watch(d, written.id, written.check, sid, dispatched))
+    while watching:
+        now = clock()
+        still = []
+        for w in watching:
+            looked = _look(library, runs, pull.repo, sha, w, now)
+            if isinstance(looked, str):
+                lines.append(looked)
+            else:
+                still.append(looked)
+        watching = still
+        if watching:
+            sleep(POLL_SECONDS)
     return lines

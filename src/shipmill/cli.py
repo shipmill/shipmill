@@ -56,7 +56,8 @@
                   a pull request's run against the default branch's (D-37)
   downstream      the downstream repositories' tests on a pull request (spec 032): start writes a
                   check per [downstream] repository on the head and dispatches each one's workflow
-                  as the App; a fork's pull request waits for a person's workflow_dispatch
+                  as the App; a fork's pull request waits for a person's workflow_dispatch;
+                  collect finds each run by its shipmill-id and concludes its check
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
 action, app-create or app-install left a repo without the App, product check found a broken
@@ -124,7 +125,7 @@ from shipmill.claude_auth import ClaudeAuth, claude_auth, run_auth
 from shipmill.config import CONFIG_PATH, Table, config_path
 from shipmill.config import read as read_config
 from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER, doctor, read_plugin_rows
-from shipmill.downstream import AppDispatcher, GhLibrary, Library, key_problem, start
+from shipmill.downstream import AppDispatcher, AppRuns, GhLibrary, Library, collect, key_problem, start
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
     ClaudeCli,
@@ -561,6 +562,13 @@ def _parser() -> argparse.ArgumentParser:
         "--actor",
         help="who started a workflow_dispatch run ($GITHUB_TRIGGERING_ACTOR); omitted on pull_request_target",
     )
+    q = acting.add_parser(
+        "collect", help="read each downstream run start dispatched back into its check, once it ends or times out"
+    )
+    q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    q.add_argument("--pr", required=True, type=int, help="the library's pull request")
+    q.add_argument("--head", required=True, help="the full head SHA start wrote the checks on")
+    q.add_argument("--app-key", required=True, type=Path, help="the private key of the App in [downstream] app_id")
 
     p = sub.add_parser("launchd", help="run the gate for a dedicated checkout every few minutes (macOS)")
     p.add_argument("slug", metavar="owner/name", help="the GitHub repo; --repo is its gate checkout")
@@ -600,7 +608,7 @@ def main(
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
     watch_state.py (and doctor's AGENT_AS_PERSON read), environ for this process's env, home
     for the user's home, gh_runner for running `shipmill gh`'s gh, and library for the
-    library's repository `downstream start` writes checks on, as tests pass fakes"""
+    library's repository `downstream start` and `collect` write checks on, as tests pass fakes"""
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
     root: Path = args.repo.resolve()
@@ -632,6 +640,8 @@ def main(
             return _evals_compare(args.base, args.head, frozenset(args.changed), args.tolerance)
         return _evals(root, gate=args.gate)
     if args.command == "downstream":
+        if args.downstream == "collect":
+            return _downstream_collect(root, args, library or GhLibrary(root), api or UrllibApi(), signer or Openssl())
         return _downstream_start(root, args, library or GhLibrary(root), api or UrllibApi(), signer or Openssl())
     hub = github or GhCli(root)
     if args.command == "init":
@@ -1183,6 +1193,24 @@ def _downstream_start(root: Path, args: argparse.Namespace, library: Library, ap
     key = key_problem(config.app_id, args.app_key, signer, api, clock)
     for line in start(config, library, dispatcher, key, args.pr, actor, _doctor_repo(root), clock):
         print(line)
+    return 0
+
+
+def _downstream_collect(root: Path, args: argparse.Namespace, library: Library, api: Api, signer: Signer) -> int:
+    """Spec 032: `downstream collect`, run by the reusable downstream.yml on the default
+    branch's checkout once start has dispatched the downstream runs"""
+    if args.pr < 1:
+        raise ReleaseError(f"--pr is a pull request's number, got {args.pr}")
+    config = Policy.load(config_path(root)).downstream
+    if config is None:
+        raise ReleaseError(f"{CONFIG_PATH} has no [downstream] section, so no downstream run to collect")
+
+    def clock() -> dt.datetime:
+        return dt.datetime.now(dt.UTC)
+
+    runs = AppRuns(config.app_id, args.app_key, signer, api, clock)
+    for line in collect(config, library, runs, args.pr, args.head, clock, time.sleep):
+        print(line, flush=True)
     return 0
 
 
