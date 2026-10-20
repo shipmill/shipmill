@@ -7,6 +7,25 @@ bot.
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-10-20
+
+### Added
+
+- `shipmill downstream collect` finds each downstream run `downstream start` dispatched by the `shipmill-id` in its run-name, links it as the check's details URL, and concludes the check: `success`, `failure` naming the run's conclusion, or `timed_out` for a required downstream, always `neutral` with the result in the title for a report-only one, and a failure naming the run-name rule when no run shows within 2 minutes; the summary names the tested SHA, links the run, and lists its failed jobs, never a log line (#511)
+- The weekly retro passes `--goals`, adds a Goals section to its tracking comment, and proposes `Direction: G-n met for N weeks` and `Direction: G-n stalled for N weeks` issues, at most one open per goal; it never edits the direction itself (#512)
+- `intake_state.py --plans` reads each goal plan issue's state from the maintainer's reply: PLAN_OPEN, PLAN_ANSWERED (`decline` or `edit`), PLAN_ACCEPTED until every `feature` and `fix` item is filed (and in the named milestone), PLAN_FILED, PLAN_MALFORMED naming the line, and PLAN_DECLINED with the reason; only an OWNER, MEMBER, or COLLABORATOR other than the `--bot-login` answers, a `plan-revised` comment makes an earlier answer stale, and an accept older than the body's last edit reads PLAN_OPEN (#514)
+- `watch_state.py` reports a PLANS row, from `intake_state.py --plans`, listing the goals whose plan is due and the plan issues that are malformed, answered, or accepted, and `shipmill gate` starts a session for it; with `--trusted-only` a plan issue the `--bot-login` didn't open is UNTRUSTED and starts none. Intake never reads a `goal-plan` issue as feedback, and triage reads a plan carrying intake's `Triage: **plan**` comment as TRIAGED (#515)
+- `shipmill doctor` checks downstream tests for a policy with `[downstream]`: a FAIL naming `shipmill init --downstream --force` for a caller workflow missing a trigger, the reusable call, `actions: write`, or `checks: write`, a FAIL for a missing `SHIPMILL_DOWNSTREAM_KEY` secret, a line per downstream on its workflow's inputs and run-name (a WARN when your login can't read it), and, with the App's key on the host (`--app-key`), a FAIL for a downstream the App isn't installed on; `docs/release-lanes.md` gains a "Downstream tests" section, and the setup and landing skills cover them (#516)
+- `requires = ">=X.Y"` at the top of `.github/shipmill.toml` names the oldest shipmill the config is written for: an older CLI, `watch_state.py`, or `setup_state.py` exits 2 with the bound, its version, and how to update, before it refuses a key it doesn't know; `shipmill init` writes it, and `shipmill upgrade --apply` raises a lower one (#549)
+
+### Fixed
+
+- `shipmill gate` with `[agents] prs = true` starts a session when a push lands on an open pull request a session already looked at, instead of waiting out `retry_hours`: `watch_state.py --json` adds each listed pull request's head SHA to its `PRS_OPEN` row, and the gate's fingerprint counts it (#546)
+
+### Changed
+
+- The plugin pins its CLI: the skills, their scripts, and the hooks run `uvx shipmill==<the version in the plugin's plugin.json>` from PyPI instead of the `@v0` tag's source or a `shipmill` on PATH, and a missing or malformed `plugin.json` exits 2 naming it; the wheel ships `shipmill/.claude-plugin/plugin.json`. The marketplace entry names the release tag, which each release's stamp moves with `plugin.json` and every pinned line, and the gate, `doctor`, `status`, and `watch_state.py` read the latest release from that ref instead of `gh release view` (spec 031) (#548)
+
 ## [0.57.0] - 2026-10-20
 
 ### Added
@@ -1622,7 +1641,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.57.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.58.0...HEAD
+[0.58.0]: https://github.com/shipmill/shipmill/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/shipmill/shipmill/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/shipmill/shipmill/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/shipmill/shipmill/compare/v0.54.0...v0.55.0

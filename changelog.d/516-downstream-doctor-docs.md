@@ -1,3 +1,0 @@
-### Added
-
-- `shipmill doctor` checks downstream tests for a policy with `[downstream]`: a FAIL naming `shipmill init --downstream --force` for a caller workflow missing a trigger, the reusable call, `actions: write`, or `checks: write`, a FAIL for a missing `SHIPMILL_DOWNSTREAM_KEY` secret, a line per downstream on its workflow's inputs and run-name (a WARN when your login can't read it), and, with the App's key on the host (`--app-key`), a FAIL for a downstream the App isn't installed on; `docs/release-lanes.md` gains a "Downstream tests" section, and the setup and landing skills cover them (#516)
