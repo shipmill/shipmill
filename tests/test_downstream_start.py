@@ -23,6 +23,7 @@ from shipmill.downstream import (
     GhLibrary,
     Pull,
     Status,
+    Written,
     key_problem,
     parse_pull,
     start,
@@ -74,6 +75,10 @@ class FakeLibrary:
     def find_check(self, sha: str, name: str) -> int | None:
         ids = [i for i, (s, c) in self.checks.items() if s == sha and c.name == name]
         return max(ids) if ids else None
+
+    def read_check(self, sha: str, name: str) -> Written | None:
+        found = self.find_check(sha, name)
+        return None if found is None else Written(found, self.checks[found][1])
 
     def create_check(self, sha: str, check: Check) -> int:
         if self.refuse_writes:
