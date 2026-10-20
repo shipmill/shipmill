@@ -1,4 +1,8 @@
 import datetime as dt
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -6,8 +10,9 @@ import pytest
 from shipmill.changelog import Changelog, Entry
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
-from shipmill.github import PROPOSAL_LABEL, Forbidden, GhCli
+from shipmill.github import BODY_LIMIT, CUT_MARK, NOTES_LIMIT, PROPOSAL_LABEL, Forbidden, GhCli, fit
 from shipmill.policy import Lane, Policy, Style
+from shipmill.propose import Outcome, marker, upsert
 from shipmill.schedule import Freeze, Window
 from shipmill.version import Part, Version
 
@@ -439,6 +444,134 @@ class TestLabelCreation:
     def test_another_failure_still_fails(self, tmp_path: Path) -> None:
         with pytest.raises(ReleaseError, match=f"gh label create {PROPOSAL_LABEL} failed: HTTP 403"):
             self.gh(tmp_path, "HTTP 403: Resource not accessible").create_issue("t", "b", (PROPOSAL_LABEL,))
+
+
+class TestLongBodies:
+    """A body reaches gh on stdin, never in argv (Linux caps an argument at 128 KiB), and one
+    over GitHub's limit is cut to fit with a line linking the full text (#499)"""
+
+    URL = "https://github.com/o/demo"
+
+    @staticmethod
+    def gh(tmp_path: Path, stored: str = "") -> GhCli:
+        """A gh that logs its arguments to `args` and its stdin to `stdin`; `issue list` prints
+        the stored body as an open labelled issue when one is given"""
+        issues = tmp_path / "issues.json"
+        found = [{"number": 7, "title": "t", "body": stored}] if stored else []
+        issues.write_text(json.dumps(found), encoding="utf-8")
+        script = tmp_path / "gh"
+        script.write_text(
+            "#!/bin/sh\n"
+            f'printf "%s\\n" "$*" >> "{tmp_path / "args"}"\n'
+            'case "$1 $2" in\n'
+            f"  'repo view') echo {TestLongBodies.URL} ;;\n"
+            f"  'issue list') cat \"{issues}\" ;;\n"
+            f"  'label list') echo '[{{\"name\": \"{PROPOSAL_LABEL}\"}}]' ;;\n"
+            f"  'issue create') cat > \"{tmp_path / 'stdin'}\"; echo {TestLongBodies.URL}/issues/7 ;;\n"
+            f"  'issue edit'|'issue comment'|'release create') cat > \"{tmp_path / 'stdin'}\" ;;\n"
+            "  'issue close') ;;\n"
+            "  *) exit 2 ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        return GhCli(tmp_path, gh=str(script))
+
+    @staticmethod
+    def big(chars: int) -> str:
+        return "".join(f"- change {n}\n" for n in range(chars // 10 + 1))[:chars]
+
+    def sent(self, tmp_path: Path) -> str:
+        return (tmp_path / "stdin").read_text(encoding="utf-8")
+
+    def test_a_proposal_over_128_kib_opens_its_issue(self, tmp_path: Path) -> None:
+        body = marker(Lane.STABLE) + "\n" + self.big(140 * 1024)
+        assert len(body.encode()) > 128 * 1024
+        assert upsert(self.gh(tmp_path), marker(Lane.STABLE), "t", body, "fix") == (7, Outcome.OPENED)
+        sent = self.sent(tmp_path)
+        assert len(sent) <= BODY_LIMIT
+        assert sent.startswith(marker(Lane.STABLE) + "\n- change 0\n")
+        assert sent.endswith(f"the full text is at {self.URL}/blob/HEAD/CHANGELOG.md_\n")
+        args = (tmp_path / "args").read_text(encoding="utf-8")
+        assert "- change 0" not in args
+        assert "issue create --title t --body-file - --label shipmill-proposal" in args
+
+    def test_a_cut_proposal_left_as_it_is_is_unchanged(self, tmp_path: Path) -> None:
+        mark = marker(Lane.STABLE)
+        body = mark + "\n" + self.big(BODY_LIMIT * 2)
+        stored = fit(body, BODY_LIMIT, f"{self.URL}/blob/HEAD/CHANGELOG.md")
+        assert upsert(self.gh(tmp_path, stored), mark, "t", body, "fix") == (7, Outcome.UNCHANGED)
+        changed = mark + "\n- changed\n" + self.big(BODY_LIMIT * 2)
+        assert upsert(self.gh(tmp_path, stored), mark, "t", changed, "fix") == (7, Outcome.UPDATED)
+        assert self.sent(tmp_path).startswith(mark + "\n- changed\n")
+
+    def test_a_line_break_now_inside_the_cut_updates(self, tmp_path: Path) -> None:
+        link = f"{self.URL}/blob/HEAD/CHANGELOG.md"
+        mark = marker(Lane.STABLE)
+        head = mark + "\n" + "- a\n" * (BODY_LIMIT // 8)
+        stored = fit(head + "x" * BODY_LIMIT, BODY_LIMIT, link)  # cut before the long last line
+        changed = head + "x" * 100 + "\n" + "x" * BODY_LIMIT  # its start now fits as a line
+        assert fit(changed, BODY_LIMIT, link) != stored
+        assert upsert(self.gh(tmp_path, stored.strip()), mark, "t", changed, "fix") == (7, Outcome.UPDATED)
+
+    def test_stdin_is_utf8_whatever_the_locale(self, tmp_path: Path) -> None:
+        gh = tmp_path / "gh"
+        gh.write_text(f'#!/bin/sh\ncat > "{tmp_path / "stdin"}"\n', encoding="utf-8")
+        gh.chmod(0o755)
+        code = "import sys; from pathlib import Path; from shipmill.github import GhCli; "
+        code += "GhCli(Path(sys.argv[1]), gh=sys.argv[2]).comment_issue(1, 'caf\\u00e9 \\u2713')"
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONUTF8"}
+        env |= {"LC_ALL": "en_US.ISO8859-1", "LANG": "en_US.ISO8859-1"}
+        proc = subprocess.run([sys.executable, "-c", code, str(tmp_path), str(gh)], env=env, capture_output=True)
+        assert proc.returncode == 0, proc.stderr
+        assert (tmp_path / "stdin").read_bytes() == "café ✓".encode()
+
+    @pytest.mark.parametrize("limit", [BODY_LIMIT, NOTES_LIMIT])
+    def test_a_text_at_the_limit_is_whole(self, limit: int) -> None:
+        text = self.big(limit)
+        assert fit(text, limit, "L") == text
+
+    def test_one_character_over_is_cut_counting_characters(self) -> None:
+        text = "é" * (BODY_LIMIT + 1)  # two bytes each: the limit counts characters
+        cut = fit(text, BODY_LIMIT, "L")
+        assert len(cut) == BODY_LIMIT
+        assert cut.endswith(f"_Cut to fit GitHub's limit of {BODY_LIMIT:,} characters: the full text is at L_\n")
+
+    def test_an_issue_body_is_cut_on_edit(self, tmp_path: Path) -> None:
+        self.gh(tmp_path).update_issue(7, "t", self.big(BODY_LIMIT + 1), (PROPOSAL_LABEL,))
+        sent = self.sent(tmp_path)
+        assert len(sent) <= BODY_LIMIT
+        assert sent.endswith(f"{self.URL}/blob/HEAD/CHANGELOG.md_\n")
+        edit = f"issue edit 7 --title t --body-file - --add-label {PROPOSAL_LABEL}"
+        assert edit in (tmp_path / "args").read_text(encoding="utf-8")
+
+    def test_a_comment_is_cut(self, tmp_path: Path) -> None:
+        self.gh(tmp_path).comment_issue(7, self.big(BODY_LIMIT + 100))
+        sent = self.sent(tmp_path)
+        assert len(sent) <= BODY_LIMIT
+        assert CUT_MARK in sent
+
+    def test_a_closing_comment_goes_on_stdin(self, tmp_path: Path) -> None:
+        self.gh(tmp_path).close_issue(7, "Released v1.0.0.")
+        assert self.sent(tmp_path) == "Released v1.0.0."
+        args = (tmp_path / "args").read_text(encoding="utf-8").splitlines()
+        assert args == ["issue comment 7 --body-file -", "issue close 7"]
+
+    def test_release_notes_are_cut_linking_the_changelog_at_the_tag(self, tmp_path: Path) -> None:
+        gh = self.gh(tmp_path)
+        gh.changelog = "docs/CHANGES.md"
+        gh.create_release("v1.0.0", "demo 1.0.0", self.big(NOTES_LIMIT + 1), prerelease=False)
+        sent = self.sent(tmp_path)
+        assert BODY_LIMIT < len(sent) <= NOTES_LIMIT
+        assert sent.endswith(f"the full text is at {self.URL}/blob/v1.0.0/docs/CHANGES.md_\n")
+        args = (tmp_path / "args").read_text(encoding="utf-8").splitlines()
+        assert args[-1] == "release create v1.0.0 --verify-tag --title demo 1.0.0 --notes-file -"
+
+    def test_short_notes_are_sent_whole_without_asking_for_the_url(self, tmp_path: Path) -> None:
+        self.gh(tmp_path).create_release("v1.0.0-rc.1", "demo", "- a\n", prerelease=True)
+        assert self.sent(tmp_path) == "- a\n"
+        args = (tmp_path / "args").read_text(encoding="utf-8").splitlines()
+        assert args == ["release create v1.0.0-rc.1 --verify-tag --title demo --notes-file - --prerelease"]
 
 
 class TestActiveRuns:
