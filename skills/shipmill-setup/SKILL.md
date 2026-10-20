@@ -257,6 +257,30 @@ operate.yml -f approve=production -f dry-run=false`), and the same for rollbacks
 `.github/workflows/operate.yml` as an extra scheduled workflow, and skip it for a
 library with no environments.
 
+### Downstream tests
+
+For a library, ask whether other repositories depend on it and which of them the maintainer
+promises not to break; skip this when none do. For each one, ask for its `owner/name`, the
+workflow file in it that tests against the library, and whether it is report-only (private,
+so contributors can't read why it failed, or slower than the library's own CI). Then:
+
+1. Write `[downstream]` into the policy: `app_id` (the App below), and one
+   `[downstream.<name>]` table per repository with `repo`, `workflow`, and, as needed,
+   `ref`, `report_only = true`, and `timeout_minutes`; the keys are in
+   [release-lanes.md](https://github.com/shipmill/shipmill/blob/main/docs/release-lanes.md#downstream-tests)
+2. Point the maintainer at the interface the downstream's workflow must offer: a
+   `workflow_dispatch` with the inputs `library-repo`, `library-ref`, and `shipmill-id`,
+   and a `run-name` containing `${{ inputs.shipmill-id }}`. The downstream's workflow is its
+   maintainer's; never edit it
+3. Have the maintainer install the App on each downstream with Actions: read and write, and
+   add its private key to the library as the repository secret `SHIPMILL_DOWNSTREAM_KEY`
+   (`gh secret set SHIPMILL_DOWNSTREAM_KEY < <key file>`); the key never passes through you
+4. Run `$CR init --downstream` in step 4, which writes only `.github/workflows/downstream.yml`
+5. In step 5, read every `downstream` line of `$CR doctor` (with `--app-key <key file>` when
+   the key is on this host) before reporting done: a FAIL names its fix, and a WARN that the
+   maintainer's login can't read a downstream means the first pull request's check
+   `downstream: <name>` shows the result
+
 ## 4. Write the files
 
 ```bash

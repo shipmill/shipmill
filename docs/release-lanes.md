@@ -499,6 +499,104 @@ prints the effective autonomy per stage and warns while a hold is open. Each `de
 must name an environment in `[environments]`. `deploy` and `rollback` take effect in
 `shipmill operate` (see Operate above).
 
+## Downstream tests
+
+A library's change can break the repositories that depend on it. With `[downstream]`,
+shipmill starts each named downstream's own test workflow, in the downstream's repository
+and on its runners, against a pull request's head, and reads the result back as a check on
+the pull request, before it merges (spec 032). shipmill never runs a downstream's tests
+itself and never updates a downstream's dependency (D-31). A repo without the section sees
+no change anywhere: no workflow, no check, no `doctor` line.
+
+```toml
+[downstream]
+app_id = 123456           # the App installed on each downstream with Actions: read and write
+timeout_minutes = 30      # how long a downstream run may take, for every downstream (default 30)
+
+[downstream.consumer-app]                   # the check is named "downstream: consumer-app"
+repo = "example-org/consumer-app"           # owner/name
+workflow = "library-tests.yml"              # a file in that repo's .github/workflows/
+ref = "main"                                # the branch to run on (default: its default branch)
+report_only = false                         # true: report the result, never hold the merge (default false)
+timeout_minutes = 45                        # overrides the section's (optional)
+```
+
+`app_id` is required; `timeout_minutes` is 1 to 300. A downstream's name matches
+`[a-z0-9][a-z0-9-]{0,38}`, since it becomes a check's name. `repo` and `workflow` are
+required, `workflow` is a file name ending in `.yml` or `.yaml`, and the same `repo` and
+`workflow` may be named once. Any other key, a wrong type, or a section with no downstream
+fails with exit 2, naming the key.
+
+### What a downstream offers
+
+A downstream takes part by keeping one workflow with this interface; how it installs the
+library and which tests it runs are its own:
+
+```yaml
+name: Tests against the library
+run-name: library ${{ inputs.library-ref }} (${{ inputs.shipmill-id }})
+on:
+  workflow_dispatch:
+    inputs:
+      library-repo: {required: true, type: string}   # owner/name of the library
+      library-ref: {required: true, type: string}    # the full commit SHA to test
+      shipmill-id: {required: true, type: string}    # the id shipmill finds the run by
+```
+
+`library-ref` is the pull request's head commit, installed as any git dependency (for a
+Python downstream, `uv add git+https://github.com/<library-repo>@<library-ref>`); a fork's
+head is reachable through the library's `refs/pull/<N>/head`. The `run-name` must contain
+`inputs.shipmill-id`: GitHub's dispatch returns no run, so shipmill finds the run it started
+by that id. The run's conclusion is the result: `success` passes, anything else fails.
+
+### The check
+
+One check per downstream, `downstream: <name>`, on the pull request's head:
+
+| Downstream | While it runs | Passed | Failed | Timed out | Couldn't start |
+|---|---|---|---|---|---|
+| Required (default) | `in_progress` | `success` | `failure` | `timed_out` | `failure` |
+| Report-only | `completed`, `neutral` | `neutral` | `neutral` | `neutral` | `neutral` |
+
+The title says what happened (`passed`, `failed: <conclusion>`, `timed out after <M>
+minutes`, `report-only: running`); the summary names the library SHA tested, links the
+downstream run, and lists its failed jobs' names, never a line of its logs. A run that
+couldn't start names the HTTP status and the fix: the App missing on the repo, the workflow
+missing on the ref, or a run-name without the id. At the timeout the downstream run is left
+running.
+
+`report_only = true` is for a private downstream, whose failure the library's contributors
+can't read, or a slow one: its check is `neutral` from the start, and its title carries the
+result, so it shows on the pull request and holds nothing. The merge gate reads a required
+downstream's check like any other check: red holds the merge, `in_progress` is pending.
+
+### Forks
+
+A fork's head is code no maintainer has read, and a downstream's workflow would run it with
+the downstream's secrets. On a fork's pull request shipmill dispatches nothing: a required
+check is `action_required` (a report-only one `neutral`), titled `a fork's pull request runs
+downstream tests only by hand`, with the command a maintainer runs once they have read the
+change: `gh workflow run downstream.yml -f pr=<N>`. A bot can't start a fork's run.
+
+### The App, the secret, and the workflow
+
+1. Create or reuse a GitHub App with Actions: read and write, install it on each downstream
+   repository, and set its id as `[downstream] app_id`
+2. Add its private key to the library as the repository secret `SHIPMILL_DOWNSTREAM_KEY`:
+   `gh secret set SHIPMILL_DOWNSTREAM_KEY < app.pem`
+3. Run `shipmill init --downstream`, which writes `.github/workflows/downstream.yml` (only
+   that file; `--force` overwrites it). It runs on `pull_request_target` and
+   `workflow_dispatch` with `actions: write` and `checks: write`, and calls shipmill's
+   reusable `downstream.yml`, which checks out the default branch, never the pull request's
+   code, so a pull request can't switch off its own downstream run
+4. Run `shipmill doctor`. Its `downstream` lines FAIL on a caller missing a trigger, the
+   call, or a permission (the fix is `shipmill init --downstream --force`), and on a missing
+   secret; per downstream, they check through your own `gh` that the workflow is on its ref
+   with the three inputs and the run-name, and WARN when your login can't read the repo.
+   With the App's key on the host (`--app-key`, or `~/.config/shipmill/app-<app_id>.pem`)
+   they FAIL for a downstream the App isn't installed on or lacks Actions: read and write;
+   without it one WARN says the installation is unchecked
+
 ## Work in progress
 
 `[agents] wip` caps how many issues the agents have in progress at once (an open PR or a
@@ -590,9 +688,10 @@ The workflows call these; you can run them locally too.
 
 | Command | What it does |
 |---|---|
-| `init` | Write the policy and the calling workflow; `--caller` rewrites the calling workflow alone from the policy, `--runs-on` names the runner, `--operate` writes the operate one |
+| `init` | Write the policy and the calling workflow; `--caller` rewrites the calling workflow alone from the policy, `--runs-on` names the runner, `--operate` writes the operate one, `init --downstream` the downstream tests one |
 | `operate` | Check environment health, promote after the bake, roll back; `--approve <env>`, `--approve-rollback <env>`, `--dry-run` |
-| `doctor` | Check the repository is ready; exit 1 on a failure |
+| `doctor` | Check the repository is ready; exit 1 on a failure; `--app-key` checks the `[downstream]` App's installations |
+| `downstream start`, `downstream collect` | Start each downstream's tests on a pull request and write their checks; run by the reusable `downstream.yml` |
 | `plan` | Decide whether a lane releases now; JSON on stdout |
 | `propose` | Open or update the issue for each release a plan proposed |
 | `prepare` | Stamp a planned release; `--commit`, `--push` |
