@@ -207,6 +207,19 @@ def config_file(repo_dir: Path) -> Path | None:
     return path if path.is_file() else None
 
 
+def check_requires(repo_dir: Path, ws: ModuleType) -> None:
+    """The config's requires against the plugin's version, as watch_state.py checks it and with
+    its words (spec 031): a plugin too old for the config exits 2 saying how to update"""
+    config = config_file(repo_dir)
+    if config is None:
+        return
+    try:
+        ws.check_requires(config.read_text(encoding="utf-8"), CONFIG)
+    except ws.Refused as refused:
+        sys.stderr.write(f"{refused}\n")
+        raise SystemExit(2) from None
+
+
 def policy_value(text: str, key: str) -> str | None:
     found = re.search(rf'^{key}\s*=\s*"([^"]*)"', text, re.MULTILINE)
     return found.group(1) if found else None
@@ -799,6 +812,7 @@ def main() -> int:
     repo_dir: Path = args.repo_dir.resolve()
     check_checkout(args.repo, repo_dir)
     ws = watch_module()
+    check_requires(repo_dir, ws)  # first, as shipmill checks it before the config's other keys
     # before any change, so a config that can't be read stops --fix with nothing made
     write = gh_writer(repo_dir, ws) if args.fix else ["gh"]
 

@@ -4,7 +4,8 @@ repo's .github/shipmill.toml, which shipmill never turns on by itself (D-10, D-2
 An upgrade is decided once the config holds its key, whatever the value: `plugin_update =
 false` written by hand ends the proposal as surely as accepting it. Applying one edits the
 config's text, adding its line at the end of its table and keeping every other byte (comments
-included), and creates the files it owns; it commits nothing.
+included), and creates the files it owns; it commits nothing. A top-level `requires` lower than
+the upgrade's version is raised to it, in place (spec 031); a higher one stays.
 
 An upgrade that retires a deprecated key (spec 029) works the other way round: it applies
 while its table sets that key, whatever the value, and is decided once the key is gone, so a
@@ -29,12 +30,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from shipmill import UVX
+from shipmill import UVX, requires
 from shipmill.autonomy import Autonomy
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.github import UPGRADE_LABEL, UPGRADE_LATER_LABEL, GitHub, Issue
 from shipmill.policy import Style
+from shipmill.requires import Requires
 from shipmill.version import Version
 
 _ID = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
@@ -475,6 +477,7 @@ def apply(root: Path, upgrade: Upgrade) -> Applied:
         raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ReleaseError(f"{path}: {exc}") from None
+    bound = requires.check(raw)
     if not upgrade.applies(raw):
         if upgrade.removes is not None:
             raise ReleaseError(
@@ -506,6 +509,10 @@ def apply(root: Path, upgrade: Upgrade) -> Applied:
         )
     if adds:
         table[upgrade.key] = upgrade.value
+    needed = Requires.at(upgrade.version)
+    if bound is not None and bound.floor < needed.floor:  # a higher or equal bound stays (S-031-7)
+        edited = _set_requires(edited, needed, upgrade)
+        expected[requires.KEY] = str(needed)
     try:
         meant = tomllib.loads(edited)
     except tomllib.TOMLDecodeError:
@@ -524,6 +531,24 @@ def apply(root: Path, upgrade: Upgrade) -> Applied:
         created.append(owned.path)
     path.write_bytes(edited.encode("utf-8"))
     return Applied(upgrade, tuple(created), tuple(kept), adds)
+
+
+_REQUIRES_LINE = re.compile(rf"^(\s*{requires.KEY}\s*=\s*)(\"[^\"\n]*\"|'[^'\n]*')")
+
+
+def _set_requires(text: str, bound: Requires, upgrade: Upgrade) -> str:
+    """The text with its top-level requires line set to bound, its comment and line ending kept"""
+    lines = _LINE.findall(text)
+    outside = _outside_strings(lines)
+    first = next((i for i, line in enumerate(lines) if outside[i] and _ANY_HEADER.match(line)), len(lines))
+    found = [i for i in range(first) if outside[i] and _REQUIRES_LINE.match(lines[i])]
+    if len(found) != 1:
+        raise ReleaseError(
+            f"upgrade {upgrade.id}: can't raise {requires.KEY} in {CONFIG_PATH} to {bound}; edit it by hand"
+        )
+    at = found[0]
+    lines[at] = _REQUIRES_LINE.sub(lambda m: m[1] + json.dumps(str(bound)), lines[at], count=1)
+    return "".join(lines)
 
 
 def _body(text: str, upgrade: Upgrade, key: str) -> tuple[list[str], list[bool], int, int]:
