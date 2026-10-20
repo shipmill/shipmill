@@ -208,4 +208,11 @@ A new entry in the spec 014 catalogue (`src/shipmill/upgrades.py`), id
 
 ## Issues
 
+- shipmill/shipmill#459: S-029-1, S-029-2, S-029-3, S-029-10
+- shipmill/shipmill#462: S-029-4, S-029-5, S-029-6
+- shipmill/shipmill#460: S-029-7, S-029-8
+- shipmill/shipmill#461: S-029-11, S-029-12
+- shipmill/shipmill#463: S-029-13
+- shipmill/shipmill#464: S-029-9
+
 ## Verification

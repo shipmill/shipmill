@@ -91,8 +91,16 @@ land.yml a runs-on other than ubuntu-latest and a lane sets quiet_minutes above 
                  whose runs-on is an expression (${{ ... }}) or a runner group's mapping
                  isn't compared. --fix leaves it
 
+Contributor rules (a warning, read only when the config's [changelog] sets fragments):
+  CHANGELOG_RULES  a line of CLAUDE.md, AGENTS.md, CONTRIBUTING.md, .github/CONTRIBUTING.md,
+                   or docs/CONTRIBUTING.md that mentions Unreleased, one row each, as
+                   <file>:<line>: with fragments on, each pull request adds a fragment and
+                   leaves CHANGELOG.md alone, so a rule to edit Unreleased is stale. The
+                   repo's own docs are the maintainer's (D-42): --fix leaves them
+
 Exit 0 when every row is RELEASE_READY, AGENTS_OK, PLUGIN_OK, SKILLS_OK, LABELS_OK,
-BRANCH_DELETE_ON, or LANDING_OK (RUNNER_SHARED, a warning, leaves the exit code alone), 1
+BRANCH_DELETE_ON, or LANDING_OK (RUNNER_SHARED and CHANGELOG_RULES, warnings, leave the
+exit code alone), 1
 otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, PLUGIN_OUTDATED,
 SKILL_SHADOWED, and LANDING_OFF included), 2 on bad input, a malformed settings.json or
 config (its [agents] read as github-ship-watch reads it; its [lanes] and [environments]
@@ -157,7 +165,10 @@ NO_MODE = (
 )
 DONE = {"RELEASE_READY", "AGENTS_OK", "PLUGIN_OK", "SKILLS_OK", "LABELS_OK", "BRANCH_DELETE_ON", "LANDING_OK"}
 # rows that warn without being part of setup's done states: they leave the exit code alone
-WARNINGS = {"RUNNER_SHARED"}
+WARNINGS = {"RUNNER_SHARED", "CHANGELOG_RULES"}
+# the repo's own contributor rules, read for a stale rule to edit Unreleased and never written (D-42)
+RULES_FILES = ("CLAUDE.md", "AGENTS.md", "CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md")
+UNRELEASED = re.compile(r"\bUnreleased\b")
 # the runner prepare.yml's and land.yml's runs-on input defaults to (spec 015)
 DEFAULT_RUNNER = "ubuntu-latest"
 # a job of release.yml that calls shipmill's prepare.yml or land.yml, from a repo or locally
@@ -728,6 +739,40 @@ def runner_rows(repo_dir: Path, ws: ModuleType) -> list[Row]:
     return rows
 
 
+# -- contributor rules ---------------------------------------------------------------------
+
+
+def changelog_rule_rows(repo_dir: Path, ws: ModuleType) -> list[Row]:
+    """CHANGELOG_RULES for each line of the repo's contributor rules that mentions Unreleased,
+    once the config's [changelog] sets fragments; read only, as the files are the maintainer's
+    (D-42)"""
+    config = config_file(repo_dir)
+    if config is None:
+        return []
+    folder = ws.toml_string(ws.toml_tables(config.read_text(encoding="utf-8")).get("changelog", ""), "fragments")
+    if not folder:
+        return []
+    rows = []
+    for name in RULES_FILES:
+        path = repo_dir / name
+        if not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError as exc:
+            fail(f"{path}: not UTF-8: {exc}")
+        for number, line in enumerate(lines, start=1):
+            if UNRELEASED.search(line):
+                rows.append(
+                    Row(
+                        "CHANGELOG_RULES",
+                        f"{name}:{number} mentions Unreleased: with fragments on, each pull request adds"
+                        f" {folder}/<issue>-<slug>.md and leaves CHANGELOG.md alone; the change is yours (D-42)",
+                    )
+                )
+    return rows
+
+
 # -- main ----------------------------------------------------------------------------------
 
 
@@ -781,6 +826,7 @@ def main() -> int:
         branch_delete_row(args.repo, args.fix),
         landing_row(args.repo, repo_dir),
         *runner_rows(repo_dir, ws),
+        *changelog_rule_rows(repo_dir, ws),
     ]
     for row in rows:
         print(json.dumps({"state": row.state, "detail": row.detail}) if args.json else row.text())

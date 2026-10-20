@@ -779,3 +779,94 @@ def test_s015_12_runner_shared_runs_under_python_310(tmp_path: Path) -> None:
     done = subprocess.run(command, capture_output=True, text=True, check=False)
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == "(3, 10) ['RUNNER_SHARED']"
+
+
+# -- #496, D-42: CHANGELOG_RULES ------------------------------------------------------------
+
+FRAGMENTS_CONFIG = 'name = "demo"\nmode = "release"\n\n[changelog]\nfragments = "changelog.d"\n'
+CONTRIBUTING = "# Contributing\n\nRun the tests.\nAdd your entry under `## [Unreleased]` in CHANGELOG.md.\n"
+
+
+def rules_repo(root: Path, config: str = FRAGMENTS_CONFIG) -> Path:
+    write(root, ".github/shipmill.toml", config)
+    write(root, "CONTRIBUTING.md", CONTRIBUTING)
+    write(root, "CLAUDE.md", "# Rules\n\n- Every PR edits Unreleased\n- Never edit unreleased tags\n")
+    write(root, ".github/CONTRIBUTING.md", "Unreleased first.\n")
+    write(root, "README.md", "## Unreleased features\n")  # not a contributor rules file
+    return root
+
+
+def test_496_fragments_on_reports_each_unreleased_line_as_file_and_line(ss: ModuleType, tmp_path: Path) -> None:
+    rows = ss.changelog_rule_rows(rules_repo(tmp_path), ss.watch_module())
+    assert [row.state for row in rows] == ["CHANGELOG_RULES"] * 3
+    where = ["CLAUDE.md:3", "CONTRIBUTING.md:4", ".github/CONTRIBUTING.md:1"]
+    assert [row.detail.split(" ", 1)[0] for row in rows] == where
+    assert rows[1].detail == (
+        "CONTRIBUTING.md:4 mentions Unreleased: with fragments on, each pull request adds"
+        " changelog.d/<issue>-<slug>.md and leaves CHANGELOG.md alone; the change is yours (D-42)"
+    )
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        'name = "demo"\nmode = "release"\n',  # fragments off (init --no-fragments)
+        'name = "demo"\n\n[changelog]\nstyle = "keep-a-changelog"\n',
+        'name = "demo"\n\n[agents]\nfragments = "changelog.d"\n',  # the key in another table
+    ],
+)
+def test_496_no_row_without_fragments(ss: ModuleType, tmp_path: Path, config: str) -> None:
+    assert ss.changelog_rule_rows(rules_repo(tmp_path, config), ss.watch_module()) == []
+
+
+def test_496_no_row_without_a_config(ss: ModuleType, tmp_path: Path) -> None:
+    write(tmp_path, "CONTRIBUTING.md", CONTRIBUTING)
+    assert ss.changelog_rule_rows(tmp_path, ss.watch_module()) == []
+
+
+def test_496_the_rules_files_are_read_never_written(ss: ModuleType, tmp_path: Path) -> None:
+    rules_repo(tmp_path)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*.md")}
+    ss.changelog_rule_rows(tmp_path, ss.watch_module())
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*.md")} == before
+    doc = ss.__doc__ or ""
+    assert "CHANGELOG_RULES" in doc and "--fix leaves them" in doc
+
+
+def test_496_the_skill_names_every_rules_file_the_script_reads(ss: ModuleType) -> None:
+    skill = " ".join((SCRIPT.parents[1] / "SKILL.md").read_text(encoding="utf-8").split())
+    paths = [name for name in ss.RULES_FILES if "/" in name]
+    assert paths == [".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md"]
+    assert all(f"`{name}`" in skill for name in paths)
+    assert "in the root's CLAUDE.md, AGENTS.md, or CONTRIBUTING.md" in skill
+
+
+def test_496_changelog_rules_is_a_warning_not_a_done_state(ss: ModuleType) -> None:
+    done = [ss.Row(state, "") for state in sorted(ss.DONE)]
+    assert ss.exit_code([*done, ss.Row("CHANGELOG_RULES", "CONTRIBUTING.md:4")]) == 0
+    assert "CHANGELOG_RULES" not in ss.DONE
+
+
+def test_496_a_rules_file_that_isnt_utf8_fails(ss: ModuleType, tmp_path: Path) -> None:
+    write(tmp_path, ".github/shipmill.toml", FRAGMENTS_CONFIG)
+    (tmp_path / "AGENTS.md").write_bytes(b"\xff\xfe Unreleased")
+    with pytest.raises(SystemExit) as exc:
+        ss.changelog_rule_rows(tmp_path, ss.watch_module())
+    assert exc.value.code == 2
+
+
+def test_496_changelog_rules_runs_under_python_310(tmp_path: Path) -> None:
+    rules_repo(tmp_path)
+    uv = shutil.which("uv")
+    assert uv is not None, "uv runs the skill scripts"
+    code = (
+        "import importlib.util, sys; from pathlib import Path\n"
+        "spec = importlib.util.spec_from_file_location('setup_state', sys.argv[1])\n"
+        "ss = importlib.util.module_from_spec(spec); sys.modules['setup_state'] = ss; spec.loader.exec_module(ss)\n"
+        "print(sys.version_info[:2], [r.detail.split(' ')[0] for r in ss.changelog_rule_rows(Path(sys.argv[2]),"
+        " ss.watch_module())])\n"
+    )
+    command = [uv, "run", "--no-project", "--python", "3.10", "python", "-c", code, str(SCRIPT), str(tmp_path)]
+    done = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "(3, 10) ['CLAUDE.md:3', 'CONTRIBUTING.md:4', '.github/CONTRIBUTING.md:1']"

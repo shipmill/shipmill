@@ -3,23 +3,29 @@
 `delivery.py pre` reads a PreToolUse input for Bash and refuses a command the delivery rules
 forbid, in a repo whose .github/shipmill.toml has an [agents] section: exit 2 with three lines
 on stderr, the refused command, the rule, and the command to run instead. `delivery.py post`
-reads a PostToolUse input for Edit, Write, and MultiEdit. Exit 0 allows; exit 1 means the
-input wasn't the hook JSON. hooks/hooks.json runs it through `uv run --no-project`.
+reads a PostToolUse input for Edit, Write, and MultiEdit, and after an edit of the direction
+(docs/product.md, docs/product/) or a REVIEW.md runs `shipmill product check` or `shipmill
+review check`: exit 2 shows a failed check's output to the model. Exit 0 allows; exit 1 means
+the input wasn't the hook JSON, or a check couldn't run. hooks/hooks.json runs it with a
+Python 3.11+ that uv finds or installs, and exits 1 itself, letting the command run, when it
+can't start it (D-40).
 
 Stdlib only and Python 3.11+ (tomllib), since the plugin can't import the installed shipmill.
 The hooks catch an agent's mistake: a command shlex can't split, and `bash -c`, `eval`,
 `$(...)`, and here-documents, pass; the trust filter (D-16) is the control against hostile
-text. No command but a `git push` may start a process, and each call reads a repo's config at
-most once.
+text. No command but a `git push`, and no edit but of the direction or a REVIEW.md, may start
+a process, and each call reads a repo's config at most once.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import io
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -584,7 +590,7 @@ def is_gh_write(args: Sequence[str]) -> bool:
 
 @dataclass(frozen=True)
 class Context:
-    runner: Runner  # for the git push rules that read the remote's default branch
+    runner: Runner  # for the git push rules that read the remote's default branch, and the checks
     configs: Configs
 
 
@@ -594,7 +600,8 @@ class Rule:
     text: str  # the Rule line
     source: str  # where it is written
     guards: Callable[[Simple], bool]  # the rule judges this command, so a broken config refuses it
-    check: Callable[[Simple, Config, Context], Simple | None]  # the command to run instead; None allows
+    # the command to run instead, or what to do when no command is left; None allows
+    check: Callable[[Simple, Config, Context], Simple | str | None]
 
 
 def _with_args(cmd: Simple, call: GhCall, args: Sequence[str]) -> Simple:
@@ -735,6 +742,265 @@ def _force_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
     return replace(cmd, words=tuple(out))
 
 
+ORIGIN_HEAD = "refs/remotes/origin/HEAD"
+BRANCH = "<branch>"  # the work branch to push instead, which only the session knows
+
+
+def _git_out(ctx: Context, where: Path, *args: str) -> str | None:
+    """A git query's one line of output; None when it fails, which the rule reads as unknown"""
+    try:
+        result = ctx.runner(("git", *args), where)
+    except OSError:
+        return None
+    out = result.stdout.strip()
+    return out if result.returncode == 0 and out else None
+
+
+def _push_positionals(words: Sequence[str], start: int) -> tuple[list[int], set[str]]:
+    """The indexes of a git push's positional arguments (the remote, then the refspecs), and
+    its options"""
+    positionals: list[int] = []
+    options: set[str] = set()
+    options_end = False
+    i = start
+    while i < len(words):
+        word = words[i]
+        if options_end or not word.startswith("-") or word == "-":
+            positionals.append(i)
+        elif word == "--":
+            options_end = True
+        elif word in PUSH_VALUE_OPTIONS:
+            i += 1
+        elif re.fullmatch(r"-[A-Za-z]+", word):
+            letters = word[1:]
+            options.update(f"-{ch}" for ch in letters.partition("o")[0])
+            if letters.endswith("o"):  # -o takes the next word as its value
+                i += 1
+        else:
+            options.add(word.partition("=")[0])
+        i += 1
+    return positionals, options
+
+
+def _destination(refspec: str) -> str:
+    """The branch a refspec writes, without +, refs/heads/, and with HEAD left for the caller"""
+    src, colon, dst = refspec.removeprefix("+").partition(":")
+    ref = dst if colon and dst else src
+    return ref.removeprefix("refs/heads/")
+
+
+EVERY_BRANCH = frozenset({"--all", "--branches", "--mirror"})
+
+
+def _lease_to_branch(words: Sequence[str], default: str) -> list[str]:
+    """force-push's lease on the default branch, moved to <branch> with the push"""
+    prefix = f"--force-with-lease={default}:"
+    return [f"--force-with-lease={BRANCH}:{w.removeprefix(prefix)}" if w.startswith(prefix) else w for w in words]
+
+
+def _default_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
+    """A push to the default branch, the target of origin/HEAD: a refspec naming it, a glob
+    refspec matching it, --all, --branches, or --mirror, or no refspec while the current
+    branch's push target is it; instead, the same push to <branch>. Unknown (origin/HEAD
+    unset, no upstream) allows; doctor reports an unset origin/HEAD"""
+    call = git_call(cmd)
+    if not config.default_branch or call is None or cmd.words[call.sub] != "push":
+        return None
+    positionals, options = _push_positionals(cmd.words, call.sub + 1)
+    refspecs = positionals[1:]
+    if not refspecs and "--tags" in options and not options & EVERY_BRANCH:
+        return None  # tags only: not the current branch's push
+    target = _git_out(ctx, call.where, "symbolic-ref", "--quiet", ORIGIN_HEAD)
+    if target is None or not target.startswith("refs/remotes/origin/"):
+        return None
+    default = target.removeprefix("refs/remotes/origin/")
+    if not refspecs and options & EVERY_BRANCH:  # every branch, the default one too
+        words = [w for w in cmd.words if w.partition("=")[0] not in EVERY_BRANCH]
+        words += [] if positionals else ["origin"]
+        return replace(cmd, words=(*words, f"HEAD:{BRANCH}"))
+    if not refspecs:
+        if _git_out(ctx, call.where, "rev-parse", "--symbolic-full-name", "@{push}") != target:
+            return None
+        words = [*cmd.words] if positionals else [*cmd.words, "origin"]
+        return replace(cmd, words=(*words, f"HEAD:{BRANCH}"))
+    head: str | None = None
+    out = list(cmd.words)
+    hit = False
+    for at in refspecs:
+        word = out[at]
+        dst = _destination(word)
+        if dst in ("HEAD", "@"):
+            if head is None:
+                head = _git_out(ctx, call.where, "rev-parse", "--symbolic-full-name", "HEAD") or ""
+            dst = head.removeprefix("refs/heads/")
+        if dst == default or ("*" in dst and fnmatch.fnmatchcase(default, dst)):
+            hit = True
+            plus = "+" if word.startswith("+") else ""
+            src = word.removeprefix("+").partition(":")[0]
+            out[at] = f"{plus}{src}:{BRANCH}"
+    return replace(cmd, words=tuple(_lease_to_branch(out, default))) if hit else None
+
+
+COPIES = frozenset({"cp", "mv", "rsync"})
+CP_VALUE_OPTIONS = frozenset({"-S", "--suffix"})
+RSYNC_VALUE_OPTIONS = frozenset(
+    {"-e", "--rsh", "-f", "--filter", "--exclude", "--include", "--exclude-from", "--include-from"}
+    | {"--files-from", "--rsync-path", "-B", "--block-size", "-T", "--temp-dir", "--partial-dir"}
+    | {"--backup-dir", "--compare-dest", "--copy-dest", "--link-dest", "--timeout", "--contimeout", "--port"}
+    | {"--bwlimit", "-M", "--remote-option", "--info", "--debug", "--max-size", "--min-size", "--suffix"}
+    | {"--password-file", "--out-format", "--log-file", "--log-file-format", "--sockopts", "--iconv"}
+    | {"--chmod", "--chown", "--usermap", "--groupmap", "--checksum-choice", "--compress-choice"}
+    | {"--compress-level", "--skip-compress", "--protocol", "--modify-window", "--max-delete", "--outbuf"}
+    | {"--stop-after", "--stop-at", "--max-alloc", "--address", "--write-batch", "--only-write-batch"}
+    | {"--read-batch", "--early-input"}
+)
+RSYNC_VALUE_SHORTS = "efBTM"
+
+
+def _copy_args(cmd: Simple) -> tuple[list[str], str | None, list[int]]:
+    """A cp, mv, or rsync's sources, its destination, and the sources' indexes in the words"""
+    rsync = cmd.program == "rsync"
+    values = RSYNC_VALUE_OPTIONS if rsync else CP_VALUE_OPTIONS
+    shorts = RSYNC_VALUE_SHORTS if rsync else "St"
+    target: str | None = None
+    at: list[int] = []
+    words = cmd.words
+    options_end = False
+    i = 1
+    while i < len(words):
+        word = words[i]
+        long, eq, attached = word.partition("=")
+        if options_end or not word.startswith("-") or word == "-":
+            at.append(i)
+        elif word == "--":
+            options_end = True
+        elif not rsync and word in ("-t", "--target-directory"):
+            target = words[i + 1] if i + 1 < len(words) else None
+            i += 1
+        elif not rsync and eq and long == "--target-directory":
+            target = attached
+        elif word in values:
+            i += 1
+        elif re.fullmatch(r"-[A-Za-z]+", word):
+            letters = word[1:]
+            cut = next((k for k, ch in enumerate(letters) if ch in shorts), len(letters))
+            if cut < len(letters):
+                value = letters[cut + 1 :] or (words[i + 1] if i + 1 < len(words) else "")
+                if letters[cut] == "t" and not rsync:
+                    target = value
+                if not letters[cut + 1 :]:
+                    i += 1
+        i += 1
+    if target is None and at:
+        target, at = words[at[-1]], at[:-1]
+    return [words[k] for k in at], target, at
+
+
+def _remote(path: str) -> bool:
+    """rsync's host:path, user@host:path, or rsync://"""
+    head = path.split("/", 1)[0]
+    return "://" in path or (":" in head and not path.startswith(("./", "/")))
+
+
+def _local(path: str, cwd: Path) -> Path:
+    return Path(os.path.realpath(os.path.join(cwd, os.path.expandvars(os.path.expanduser(path)))))
+
+
+def _glob_regex(glob: str) -> re.Pattern[str]:
+    """A [hooks] private glob, relative to the repo root: ** crosses folders, * and ? don't, and
+    a glob ending in /** matches its folder too"""
+    out: list[str] = []
+    i = 0
+    while i < len(glob):
+        if glob.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif glob.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif glob[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif glob[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(glob[i]))
+            i += 1
+    pattern = "".join(out)
+    if glob.endswith("/**"):
+        pattern = f"{pattern[: -len('/.*')]}(?:/.*)?"
+    return re.compile(pattern)
+
+
+WILDCARDS = "*?["
+
+
+def _may_hold(parts: Sequence[str], glob: str, folder: bool) -> bool:
+    """A source at parts may be, or hold, a path matching glob: compared folder by folder, a
+    source's own shell wildcard matches any name (the shell expands it, the hook doesn't), a
+    glob's ** matches whatever is below, and a folder holds what the glob names deeper"""
+    segments = glob.strip("/").split("/")
+    wild = False
+    for k, part in enumerate(parts):
+        if k >= len(segments):
+            return False
+        if "**" in segments[k]:
+            return folder or wild or any(c in part for c in WILDCARDS)
+        if any(c in part for c in WILDCARDS):
+            wild = True
+            if not any(c in segments[k] for c in WILDCARDS) and not fnmatch.fnmatchcase(segments[k], part):
+                return False
+        elif not _glob_regex(segments[k]).fullmatch(part):
+            return False
+    return len(parts) < len(segments) and (folder or wild) or (wild and len(parts) == len(segments))
+
+
+def _private(path: Path, root: Path, globs: Sequence[str]) -> bool:
+    """path, inside root, matches a glob or may hold one's files; a folder holding the repo
+    holds them all"""
+    if path != root and path in root.parents:
+        return True
+    rel = path.relative_to(root)
+    text = "" if rel.as_posix() == "." else rel.as_posix()
+    parts = rel.parts if text else ()
+    folder = os.path.isdir(path)
+    return any(_glob_regex(glob.strip("/")).fullmatch(text) or _may_hold(parts, glob, folder) for glob in globs)
+
+
+def _inside(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def _private_check(cmd: Simple, config: Config, ctx: Context) -> Simple | str | None:
+    """A cp, mv, or rsync of a [hooks] private path to a destination outside the repo; instead,
+    the same copy without the private sources, or, when every source is private, to leave them"""
+    if not config.private or cmd.program not in COPIES:
+        return None
+    root_at = repo_root(cmd.cwd)
+    if root_at is None:
+        return None
+    root = Path(os.path.realpath(root_at))
+    sources, target, at = _copy_args(cmd)
+    if target is None or not sources:
+        return None
+    rsync = cmd.program == "rsync"
+    if not (rsync and _remote(target)) and _inside(_local(target, cmd.cwd), root):
+        return None
+    leaks: set[int] = set()
+    for k, source in zip(at, sources, strict=True):
+        if rsync and _remote(source):
+            continue
+        path = _local(source, cmd.cwd)
+        if (_inside(path, root) or path in root.parents) and _private(path, root, config.private):
+            leaks.add(k)
+    if not leaks:
+        return None
+    if len(leaks) == len(sources):  # nothing is left to copy: no command to run instead
+        return f"leave {shlex.join(cmd.words[k] for k in sorted(leaks))} in the repo"
+    return replace(cmd, words=tuple(word for k, word in enumerate(cmd.words) if k not in leaks))
+
+
 TOKEN_VARIABLES = frozenset({"GH_TOKEN", "GITHUB_TOKEN"})
 
 
@@ -761,6 +1027,8 @@ RULES = (
         _rebase_guards,
         _rebase_check,
     ),
+    # force-push before default-branch-push: a force push to main names force-push, which has
+    # no switch (S-026-6, the maintainer's answer on #470)
     Rule(
         "force-push",
         f"force-push only with a lease pinned to a commit, --force-with-lease=<ref>:{SHA}, where {SHA}"
@@ -770,12 +1038,26 @@ RULES = (
         _force_check,
     ),
     Rule(
+        "default-branch-push",
+        "work lands on the default branch through a pull request; push a work branch and open one",
+        "D-36",
+        is_push,
+        _default_check,
+    ),
+    Rule(
         "app-writes",
         "with [agents] app_id set, every GitHub write goes as the App through shipmill gh,"
         " never plain gh or an inline GH_TOKEN",
         "D-14",
         _app_guards,
         _app_check,
+    ),
+    Rule(
+        "private-paths",
+        "a file matching a [hooks] private glob never leaves the repo",
+        "D-36",
+        lambda cmd: cmd.program in COPIES,
+        _private_check,
     ),
 )
 
@@ -812,15 +1094,18 @@ def judge(cmd: Simple, ctx: Context) -> Refusal | None:
         fix = f"fix {CONFIG}, then run: {cmd.text()}"
         return Refusal("config", cmd.text(), config.message, str(CONFIG), fix)
     first: Rule | None = None
-    instead = cmd
+    instead: Simple | str = cmd
     for rule in rules:
+        if isinstance(instead, str):  # no command is left for a later rule to fix
+            break
         fixed = rule.check(instead, config, ctx)
         if fixed is not None:
             first = first or rule
             instead = fixed
     if first is None:
         return None
-    return Refusal(first.name, cmd.text(), first.text, first.source, instead.text())
+    text = instead if isinstance(instead, str) else instead.text()
+    return Refusal(first.name, cmd.text(), first.text, first.source, text)
 
 
 # --- The modes -------------------------------------------------------------------------------
@@ -842,11 +1127,63 @@ def pre(hook: HookInput, stderr: TextIO, ctx: Context) -> int:
     return 0
 
 
-def post(hook: HookInput) -> int:
-    """After an Edit, Write, or MultiEdit; no path has a check yet"""
-    if hook.tool in EDITS:
-        hook.text("file_path")
-    return 0
+DIRECTION = "docs/product.md"
+DIRECTION_DIR = "docs/product/"
+RUBRIC = "REVIEW.md"
+
+
+def check_for(path: Path) -> tuple[Path, str] | None:
+    """The repo root and the check (product or review) an edit of path calls for; no subprocess"""
+    root = repo_root(path.parent)
+    if root is None:
+        return None
+    rel = path.relative_to(root).as_posix()
+    if rel == DIRECTION or rel.startswith(DIRECTION_DIR):
+        return root, "product"
+    if path.name == RUBRIC:
+        return root, "review"
+    return None
+
+
+def shipmill_command() -> tuple[str, ...]:
+    """shipmill from PATH, else through uvx, as the skills run it"""
+    found = shutil.which("shipmill")
+    return (found,) if found is not None else SHIPMILL
+
+
+def post(hook: HookInput, stderr: TextIO, ctx: Context) -> int:
+    """After an Edit, Write, or MultiEdit of the direction or a REVIEW.md in a repo with
+    [agents]: its check exiting 1 gives exit 2 with the check's output, so the model fixes the
+    line; a check exiting 2, or one that can't start, gives exit 1, a non-blocking error"""
+    if hook.tool not in EDITS:
+        return 0
+    path = Path(os.path.normpath(os.path.join(hook.cwd, hook.text("file_path"))))
+    found = check_for(path)
+    if found is None:
+        return 0
+    root, check = found
+    config = ctx.configs.at(root)
+    if config is None:
+        return 0
+    if isinstance(config, Broken):
+        stderr.write(f"shipmill hook: {check} check didn't run: {config.message} ({CONFIG})\n")
+        return 1
+    command = (*shipmill_command(), check, "check", "--repo", str(root))
+    try:
+        result = ctx.runner(command, root)
+    except OSError as exc:
+        stderr.write(f"shipmill hook: {shlex.join(command)} didn't start: {exc}\n")
+        return 1
+    if result.returncode == 0:
+        return 0
+    output = f"{result.stdout}{result.stderr}"
+    stderr.write(output if not output or output.endswith("\n") else f"{output}\n")
+    # A check that fails prints a line per problem to stdout; uvx that can't fetch shipmill
+    # (offline) and a traceback exit 1 with stdout empty, so they didn't run, not a finding
+    if result.returncode == 1 and result.stdout.strip():
+        return 2
+    stderr.write(f"shipmill hook: {shlex.join(command)} exited {result.returncode}\n")
+    return 1
 
 
 def main(
@@ -863,9 +1200,10 @@ def main(
         hook = parse_input(stdin.read())
         if hook.event != EVENTS[argv[0]]:
             raise BadInput(f"`{argv[0]}` reads a {EVENTS[argv[0]]} input, got {hook.event}")
+        ctx = Context(runner, Configs(read_config))
         if argv[0] == "post":
-            return post(hook)
-        return pre(hook, stderr, Context(runner, Configs(read_config)))
+            return post(hook, stderr, ctx)
+        return pre(hook, stderr, ctx)
     except BadInput as exc:
         stderr.write(f"shipmill hook: {exc}\n")
         return 1

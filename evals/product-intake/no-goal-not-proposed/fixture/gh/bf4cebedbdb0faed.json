@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "902",
+    "--json",
+    "title,body,comments",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"title\": \"Tell me how close each goal in docs/product.md is to being met\", \"body\": \"I wrote goals in docs/product.md, but nothing tells me whether any of them is met. I'd like a number per goal, from something measured, so I know when to change the direction.\", \"comments\": []}\n",
+  "stderr": "",
+  "exit": 0
+}

@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""The eval run's `shipmill` and `uvx` (spec 025, #494): `shipmill gh` goes to the gh stub.
+
+A skill in a repository whose config sets `[agents] app_id` writes through `shipmill gh`,
+headless as `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill gh ...`. The
+real `shipmill gh` needs the App's token and refuses without one, so in an offline run no
+write would reach the stub. This shim, on PATH as `shipmill` and (linked) as `uvx`, sends
+
+    shipmill [--repo PATH] gh <args>
+    uvx [options] shipmill[==V | @V] [--repo PATH] gh <args>
+
+to the sibling `gh` stub with <args>, which logs the call with `"via": "shipmill"`; a plain
+`gh` call lacks it, so a grader still tells a write through `shipmill gh` from a write as a
+person. Every other command (`uvx --from actionlint-py actionlint`, `shipmill product show`)
+runs the real program unchanged: the first one on PATH that isn't this shim.
+
+Python 3.10 compatible, standard library only, like the skills' scripts.
+"""
+
+import os
+import shutil
+import sys
+from pathlib import Path
+
+# uvx options that take a value as the next argument; any other option is a flag
+UVX_VALUES = {
+    "--from",
+    "-w",
+    "--with",
+    "--with-editable",
+    "--with-requirements",
+    "-c",
+    "--constraints",
+    "-b",
+    "--build-constraints",
+    "--overrides",
+    "--env-file",
+    "--python-platform",
+    "--torch-backend",
+    "--index",
+    "--default-index",
+    "-i",
+    "--index-url",
+    "--extra-index-url",
+    "-f",
+    "--find-links",
+    "--index-strategy",
+    "--keyring-provider",
+    "-P",
+    "--upgrade-package",
+    "--upgrade-group",
+    "--resolution",
+    "--prerelease",
+    "--prerelease-package",
+    "--fork-strategy",
+    "--exclude-newer",
+    "--exclude-newer-package",
+    "--no-sources-package",
+    "--reinstall-package",
+    "--link-mode",
+    "-C",
+    "--config-setting",
+    "--config-settings-package",
+    "--no-build-isolation-package",
+    "--no-build-package",
+    "--no-binary-package",
+    "--cache-dir",
+    "--refresh-package",
+    "-p",
+    "--python",
+    "--color",
+    "--allow-insecure-host",
+    "--directory",
+    "--project",
+    "--config-file",
+}
+
+
+def gh_args(argv: list[str]) -> list[str] | None:
+    """The arguments after `gh` in a shipmill command line, as shipmill's CLI splits it:
+    only `--repo PATH` (or an abbreviation, or `--repo=PATH`) may come before gh"""
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == "gh":
+            return argv[index + 1 :]
+        if not arg.startswith("-") or arg == "--":
+            return None
+        index += 2 if len(arg) > 2 and "--repo".startswith(arg) else 1
+    return None
+
+
+def uvx_command(argv: list[str]) -> int | None:
+    """The index of the command uvx would run, past its options; None when there is none"""
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if not arg.startswith("-"):
+            return index
+        index += 2 if arg in UVX_VALUES else 1
+    return None
+
+
+def is_shipmill(command: str) -> bool:
+    return command == "shipmill" or command.startswith(("shipmill==", "shipmill@"))
+
+
+def stubbed(name: str, argv: list[str]) -> list[str] | None:
+    if name == "uvx":
+        at = uvx_command(argv)
+        if at is None or not is_shipmill(argv[at]):
+            return None
+        return gh_args(argv[at + 1 :])
+    return gh_args(argv)
+
+
+def real(name: str) -> str:
+    """The first `name` on PATH after this shim's own entry that isn't this shim, linked or not"""
+    me = Path(__file__).resolve()
+    entries = [e for e in os.environ.get("PATH", "").split(os.pathsep) if e]
+    found = [shutil.which(name, path=e) for e in entries]
+    mine = [i for i, f in enumerate(found) if f is not None and Path(f).resolve() == me]
+    for candidate in found[mine[0] + 1 if mine else 0 :]:
+        if candidate is not None and Path(candidate).resolve() != me:
+            return candidate
+    sys.stderr.write(f"{name}: no real {name} on PATH after {me.parent}\n")
+    sys.exit(127)
+
+
+def main(argv: list[str]) -> None:
+    name = Path(argv[0]).name
+    if name not in ("shipmill", "uvx"):
+        sys.exit(f"shim: run as shipmill or uvx, not {name}")
+    args = stubbed(name, argv[1:])
+    if args is None:
+        program = real(name)
+        os.execv(program, [program, *argv[1:]])
+    stub = Path(__file__).resolve().parent / "gh"
+    os.environ["EVAL_GH_VIA"] = "shipmill"
+    os.execv(sys.executable, [sys.executable, str(stub), *args])
+
+
+if __name__ == "__main__":
+    main(sys.argv)

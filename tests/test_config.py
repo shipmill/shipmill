@@ -94,7 +94,7 @@ CASES: dict[str, list[Change]] = {
     "lane quiet range": [("quiet_minutes = 30", "quiet_minutes = 301")],
     "lane quiet not a bool": [("quiet_minutes = 30", "quiet_minutes = true")],
     "lane promote_from": [('promote_from = "rc"', 'promote_from = "dev"')],
-    "lane soak without promote": [('promote_from = "rc"\n', "")],
+    "lane soak removed": [('promote_from = "rc"\n', 'promote_from = "rc"\nmin_soak_days = 3\n')],
     "lane marker": [("[lanes.rc]\n", "[lanes.rc]\nmarker = 'c'\n")],
     "lane dispatch": [('dispatch = ["publish.yml"]', 'dispatch = ["../x.yml"]')],
     "lane milestone a bool": [("quiet_minutes = 30", "quiet_minutes = 30\nmilestone = 1")],
@@ -153,7 +153,7 @@ CASES: dict[str, list[Change]] = {
 
 
 MESSAGES: dict[str, str] = {
-    "top unknown key": "shipmill.toml: unknown keys ['colour']; allowed: ['after_stamp', 'agents', 'autonomy', 'bot', 'branch', 'bump', 'changelog', 'environments', 'gates', 'hooks', 'lanes', 'mode', 'name', 'notices', 'operate', 'publish', 'roadmap', 'version_files', 'version_lines']",
+    "top unknown key": "shipmill.toml: unknown keys ['colour']; allowed: ['after_stamp', 'agents', 'autonomy', 'bot', 'branch', 'bump', 'changelog', 'downstream', 'environments', 'gates', 'hooks', 'lanes', 'mode', 'name', 'notices', 'operate', 'publish', 'roadmap', 'version_files', 'version_lines']",
     "top name required": "shipmill.toml: name is required",
     "top name a string": "shipmill.toml: name must be a string, got 1",
     "top mode enum": "shipmill.toml: mode must be one of ['off', 'dry-run', 'release'], got 'on'",
@@ -195,7 +195,10 @@ MESSAGES: dict[str, str] = {
     "lane quiet range": "shipmill.toml [lanes] [dev]: quiet_minutes must be in 0..300, got 301",
     "lane quiet not a bool": "shipmill.toml [lanes] [dev]: quiet_minutes must be an integer, got True",
     "lane promote_from": "shipmill.toml [lanes] [stable]: promote_from is 'rc' or absent, got 'dev'",
-    "lane soak without promote": "shipmill.toml [lanes] [stable]: min_soak_days needs promote_from = 'rc'",
+    "lane soak removed": (
+        "[lanes.stable] min_soak_days was removed (spec 029); delete it, or run shipmill upgrade --apply"
+        " stable-every-batch"
+    ),
     "lane marker": "shipmill.toml [lanes] [rc]: marker is a, b, or rc, got 'c'",
     "lane dispatch": "shipmill.toml [lanes] [stable]: dispatch names a file in .github/workflows, got '../x.yml'",
     "lane milestone a bool": "shipmill.toml [lanes] [dev]: milestone must be true or false, got 1",

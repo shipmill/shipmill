@@ -7,7 +7,8 @@ description: Set up shipmill in a repository so releases are cut by policy on la
 
 shipmill cuts releases from a hand-written CHANGELOG on lanes the project's policy
 defines. Read [How a release works](https://github.com/shipmill/shipmill/blob/main/docs/release-lanes.md#how-a-release-works) once before starting:
-pre-releases are tagged off main, and stable releases promote a soaked rc.
+pre-releases are tagged off main, stable releases ship every batch of merges whose CI
+passed, and a breaking change waits for the maintainer's hand start.
 
 Run the tool with:
 
@@ -87,7 +88,8 @@ have that checkout. Fix the rest by hand:
   `[project.urls]` with `Repository` and `Issues` from `git remote get-url origin`. Take
   the author and license from the user's memory or earlier packages; never write a
   placeholder
-- `LICENSE` and `README.md` exist; a typed package ships `src/<pkg>/py.typed`
+- `LICENSE` and `README.md` exist; a typed package ships `src/<pkg>/py.typed`. A missing
+  `README.md` is the user's to write (D-42): report it, never draft one
 - `.gitignore` covers `.env`, `__pycache__`, `*.pyc`, and `.DS_Store`, and `git ls-files`
   lists none of them
 - The sdist leaves out tooling: with hatchling, an explicit
@@ -154,17 +156,17 @@ recommendation:
 
 | Decision | Default | Notes |
 |---|---|---|
-| Lanes | `rc`, `stable`, `hotfix` | add `dev` when users install builds between rcs |
-| rc cadence | `schedule = ["Mon-Fri 07:00 <their zone>"]` | the zone is an IANA name |
-| Stable | `promote_from = "rc"`, `min_soak_days = 3`, a weekly window | without `promote_from`, stable releases main's head |
+| Lanes | `stable`, `hotfix` | add `rc` (and `dev`) only for people who try pre-releases |
+| rc cadence | by hand, or `schedule = ["Mon-Fri 07:00 <their zone>"]` | the zone is an IANA name |
+| Stable | `quiet_minutes = 30`, no `promote_from`, no soak | releases main's head after every batch of merges; a breaking change waits for the maintainer's hand start. `promote_from = "rc"` only when every stable release must be a pre-release people installed; it promotes the newest rc at any age |
 | Milestones | `milestone = true` on stable | due once the milestone titled with the version has no open issues |
 | Bump rule | `from = "headings"` for keep-a-changelog | `from = "paths"` when headings are topics, such as a spec |
 | Where releases go | `github_release = true`; `dispatch = ["publish.yml"]` | per lane; pre-releases are marked pre-release |
 | Holds | `release-blocker` holding `rc` and `stable` | create the label; add `freeze` ranges for holidays |
 | Changelog fragments | on: `[changelog] fragments = "changelog.d"` | each PR adds its entry as a file `changelog.d/<issue>-<slug>.md` instead of editing `CHANGELOG.md`, so PRs stop conflicting on it; a stable release writes them into its section and deletes them. Off (`init --no-fragments`): each PR edits Unreleased |
 
-A project that only wants "release after merges stop" uses a single
-`[lanes.stable]` with `quiet_minutes = 30` and no `promote_from`.
+This is what `shipmill init` writes. A policy whose `[lanes.stable]` sets the removed
+`min_soak_days`, which shipmill refuses, migrates with `shipmill upgrade --apply stable-every-batch`.
 
 ### Environments
 
@@ -271,8 +273,11 @@ for changelog fragments, `fragments = "changelog.d"` in the policy's `[changelog
 and `changelog.d/README.md`, which keeps the folder in git and is never read as a fragment.
 When the user turned fragments off, run `$CR init --ci <ci-file>.yml --no-fragments`, which
 writes neither. Tell the user that once fragments are on, every PR adds its entry as a new
-fragment and leaves `CHANGELOG.md` alone, and update the repo's own contributor rules
-(CLAUDE.md, AGENTS.md, CONTRIBUTING.md) that say to edit Unreleased. Edit the policy to the user's choices from step 3, then add `version_lines` and
+fragment and leaves `CHANGELOG.md` alone. The repo's own docs are the maintainer's (D-42):
+never edit CLAUDE.md, AGENTS.md, or CONTRIBUTING.md, nor draft text for them. Pass on each
+`CHANGELOG_RULES` row of `scripts/setup_state.py` as its file and line
+(`CONTRIBUTING.md:42 mentions Unreleased`), and leave the change to the user. Edit the
+policy to the user's choices from step 3, then add `version_lines` and
 `after_stamp` (for uv projects `["uv lock --check"]`; for a project with a docs check that
 reads the version, that command too).
 
@@ -355,6 +360,12 @@ or the tags are wrong; fix those, not the version.
    labels (the same set, a subset, or a superset). It names the workflow and the fixes from
    step 3; it doesn't change the exit code, and `--fix` leaves it. Tell the user and let
    them choose
+
+   Another warning row, `CHANGELOG_RULES`, follows once `[changelog]` sets `fragments`:
+   one per line that mentions Unreleased in the root's CLAUDE.md, AGENTS.md, or
+   CONTRIBUTING.md, or in `.github/CONTRIBUTING.md` or `docs/CONTRIBUTING.md`, as file and
+   line. It doesn't change the exit code, and `--fix` leaves it: those files are the
+   maintainer's (D-42). Pass each one on to the user
 
    The checklist reads the setup, not the factory. When checking an existing setup, also
    run `$CR status <owner/repo>` in the repo's checkout and report the verdict on its first
@@ -453,6 +464,26 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    after 15 minutes. Ask whether the user answers questions sooner or later than that; set
    `max_wait_minutes` (0..10080) to match, or 0 to never stop one. `app_id` is a
    placeholder until step 3 replaces it; never merge `123456` itself
+
+   **The product's direction (D-34, spec 024).** A repo whose agents implement keeps its
+   direction in `docs/product.md`, and the agents work toward it: triage names the goal an
+   issue serves, implementers plan against it, and reviewers check the diff against it.
+   When you connect `[agents]` and the default branch has no `docs/product.md`, ask the
+   maintainer for its content, section by section: the mission (what the product is for),
+   its users, the goals it works toward now, its non-goals, and its quality bar (what
+   every change must hold). Point them to
+   https://github.com/shipmill/shipmill/blob/main/docs/direction.md, which explains the
+   file for people. Write their words into the file's fixed structure, each item
+   one line with its id from 1 (`- U-1: ...`, `- G-1: ...`, `- N-1: ...`, `- Q-1: ...`),
+   run `$CR product check` until it exits 0, and commit the file in the same pull request
+   as the `[agents]` section. Never invent a goal, a user, a non-goal, or a quality-bar
+   item, and never fill one in from the README: what the maintainer didn't say stays out,
+   and a section they can't answer yet (Users, Goals, and Quality bar each need at least
+   one item; Non-goals may stay empty) is a question for them, not a guess. Show them the
+   file before the pull request opens. Only the maintainer changes it later: the agents
+   never merge an edit to it on their own. A repo without `[agents]`, where shipmill only
+   cuts releases, needs none. Offer a starter `REVIEW.md` at the root too (Important
+   rules, a `cap:` under Nits, Protected areas; `$CR review check`); it is optional
 3. **Its own identity (required for the gate, D-19).** Every gate gets a GitHub App, so its
    sessions' pull requests, comments, merges, and commits are made by the App's bot
    (D-14). Without `app_id`, a session writes as the host's `gh` login: its work reads as
