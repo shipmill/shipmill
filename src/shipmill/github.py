@@ -30,10 +30,11 @@ CLOSED_LIMIT = 1000  # issues read by closed_since; a range closing more is refu
 VOTES_PER_QUERY = 20  # issues read per GraphQL query by requester_votes
 VOTE_COMMENTS = 100  # an issue's newest comments read for a pre-release notice (spec 021)
 VOTE_REACTIONS = 100  # a comment's 👍 reactions read
+GHOST = "ghost"  # the login GitHub shows for a deleted account, as the watch reads it
 _VOTES_FRAGMENT = (
     "fragment votes on Issue { number author { __typename login } "
-    f"comments(last: {VOTE_COMMENTS}) {{ nodes {{ body "
-    f"reactions(content: THUMBS_UP, first: {VOTE_REACTIONS}) {{ nodes {{ user {{ login }} }} }} }} }} }}"
+    f"comments(last: {VOTE_COMMENTS}) {{ totalCount nodes {{ body "
+    f"reactions(content: THUMBS_UP, first: {VOTE_REACTIONS}) {{ totalCount nodes {{ user {{ login }} }} }} }} }} }}"
 )
 _CLOSE_FRAGMENT = (
     "fragment closed on Issue { number state stateReason "
@@ -131,6 +132,7 @@ class Voted:
 
     first_line: str
     thumbs_up: frozenset[str]
+    more: bool = False  # 👍s past the first VOTE_REACTIONS, not read
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +143,7 @@ class RequesterVotes:
     number: int
     requester: str | None
     comments: tuple[Voted, ...]  # the newest VOTE_COMMENTS, oldest first
+    earlier: bool = False  # comments before the newest VOTE_COMMENTS, not read
 
 
 @dataclass(frozen=True, slots=True)
@@ -916,21 +919,33 @@ def parse_requester_votes(found: Any, numbers: Sequence[int]) -> list[RequesterV
     return votes
 
 
+def _total(holder: dict[str, Any], key: str, number: int) -> int:
+    """A connection's totalCount, which says whether its nodes are all of it"""
+    total = holder[key].get("totalCount")
+    if not isinstance(total, int) or isinstance(total, bool):
+        raise ReleaseError(f"gh api graphql printed no {key} totalCount for #{number}")
+    return total
+
+
 def _requester_votes(node: dict[str, Any], number: int) -> RequesterVotes:
-    author = node.get("author")  # null for a deleted account
+    author = node.get("author")  # null, or the ghost user, for a deleted account
     if author is not None and (not isinstance(author, dict) or not isinstance(author.get("login"), str)):
         raise ReleaseError(f"gh api graphql printed {author!r} for #{number}: an author needs a login")
-    requester = str(author["login"]) if author and author.get("__typename") != "Bot" else None
+    person = author is not None and author.get("__typename") != "Bot" and author["login"] != GHOST
+    requester = str(author["login"]) if author is not None and person else None
     comments = []
-    for c in _nodes(node, "comments", number):
+    nodes = _nodes(node, "comments", number)
+    for c in nodes:
         if not isinstance(c, dict) or not isinstance(c.get("body"), str):
             raise ReleaseError(f"gh api graphql printed {c!r} for #{number}: a comment needs a body")
         logins = set()
-        for r in _nodes(c, "reactions", number):
+        reactions = _nodes(c, "reactions", number)
+        for r in reactions:
             user = r.get("user") if isinstance(r, dict) else None  # null for a deleted account
             if user is not None and (not isinstance(user, dict) or not isinstance(user.get("login"), str)):
                 raise ReleaseError(f"gh api graphql printed {r!r} for #{number}: a reaction's user needs a login")
             if user is not None:
                 logins.add(str(user["login"]))
-        comments.append(Voted(c["body"].partition("\n")[0], frozenset(logins)))
-    return RequesterVotes(number, requester, tuple(comments))
+        more = _total(c, "reactions", number) > len(reactions)
+        comments.append(Voted(c["body"].partition("\n")[0], frozenset(logins), more))
+    return RequesterVotes(number, requester, tuple(comments), _total(node, "comments", number) > len(nodes))

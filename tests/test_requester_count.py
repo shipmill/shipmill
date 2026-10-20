@@ -115,10 +115,25 @@ def test_s021_8_a_confirmation_is_the_requester_s_thumbs_up_on_the_newest_pre_re
     assert not confirmed(RequesterVotes(1, "alice", (Voted("Released in v1.1.0rc1.", frozenset({"alice"})),)))
 
 
+def test_s021_8_an_answer_past_what_was_read_is_refused_not_counted_as_none() -> None:
+    rc1 = notice("v1.1.0rc1", "alice")
+    many = Voted(notice("v1.1.0rc1").first_line, frozenset({"bob"}), more=True)
+    # the requester's 👍 among those read, or every 👍 read: the answer is known
+    assert confirmed(RequesterVotes(1, "alice", (Voted(rc1.first_line, rc1.thumbs_up, more=True),), earlier=True))
+    assert not confirmed(RequesterVotes(1, "alice", (notice("v1.1.0rc1", "bob"),), earlier=True))
+    assert not confirmed(RequesterVotes(1, None, (), earlier=True))  # no requester: nothing to miss
+    # the notice may sit before the newest comments read, or the 👍 past the first read
+    with pytest.raises(ReleaseError, match="#1 has more than 100 comments"):
+        confirmed(RequesterVotes(1, "alice", (), earlier=True))
+    with pytest.raises(ReleaseError, match="#1's pre-release notice has more than 100"):
+        confirmed(RequesterVotes(1, "alice", (many,)))
+
+
 def test_s021_8_requester_votes_parse_github_s_answer() -> None:
     def comment(body: str, *users: object) -> dict[str, object]:
-        return {"body": body, "reactions": {"nodes": [{"user": u} for u in users]}}
+        return {"body": body, "reactions": {"totalCount": len(users), "nodes": [{"user": u} for u in users]}}
 
+    empty = {"totalCount": 0, "nodes": []}
     found: dict[str, Any] = {
         "data": {
             "repository": {
@@ -126,26 +141,38 @@ def test_s021_8_requester_votes_parse_github_s_answer() -> None:
                     "number": 5,
                     "author": {"__typename": "User", "login": "alice"},
                     "comments": {
+                        "totalCount": 1,
                         "nodes": [
                             comment(
                                 "<!-- shipmill:available: pre-release v1.1.0rc1 -->\nReleased", {"login": "alice"}, None
                             )
-                        ]
+                        ],
                     },
                 },
-                "i6": {"number": 6, "author": {"__typename": "Bot", "login": "renovate"}, "comments": {"nodes": []}},
-                "i7": {"number": 7, "author": None, "comments": {"nodes": []}},
+                "i6": {"number": 6, "author": {"__typename": "Bot", "login": "renovate"}, "comments": empty},
+                "i7": {"number": 7, "author": None, "comments": empty},
+                # the watch's rule: GitHub names every deleted account ghost, so it is nobody's requester
+                "i8": {"number": 8, "author": {"__typename": "User", "login": "ghost"}, "comments": empty},
             }
         }
     }
-    votes = parse_requester_votes(found, [5, 6, 7])
+    votes = parse_requester_votes(found, [5, 6, 7, 8])
     assert votes == [
         RequesterVotes(5, "alice", (notice("v1.1.0rc1", "alice"),)),
         RequesterVotes(6, None, ()),
         RequesterVotes(7, None, ()),
+        RequesterVotes(8, None, ()),
     ]
-    with pytest.raises(ReleaseError, match="no issue #8"):
-        parse_requester_votes(found, [8])
+    # more comments or 👍s than were read are marked, so a missed answer is never counted as none
+    i5 = found["data"]["repository"]["i5"]
+    cut = {**i5, "comments": {"totalCount": 101, "nodes": [{**i5["comments"]["nodes"][0], "reactions": {
+        "totalCount": 101, "nodes": [{"user": {"login": "bob"}}]}}]}}  # fmt: skip
+    [truncated] = parse_requester_votes({"data": {"repository": {"i5": cut}}}, [5])
+    assert truncated == RequesterVotes(
+        5, "alice", (Voted(notice("v1.1.0rc1").first_line, frozenset({"bob"}), True),), True
+    )
+    with pytest.raises(ReleaseError, match="no issue #9"):
+        parse_requester_votes(found, [9])
     with pytest.raises(ReleaseError, match="errors"):
         parse_requester_votes({"errors": [{"message": "boom"}]}, [5])
     with pytest.raises(ReleaseError, match="a reaction's user needs a login"):

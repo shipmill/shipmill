@@ -5,7 +5,8 @@ import datetime as dt
 import re
 from dataclasses import dataclass
 
-from shipmill.github import GitHub, RequesterVotes
+from shipmill.errors import ReleaseError
+from shipmill.github import VOTE_COMMENTS, VOTE_REACTIONS, GitHub, RequesterVotes
 from shipmill.gitrepo import Git
 from shipmill.version import PATTERN, Version
 
@@ -32,13 +33,24 @@ def pre_release(tag: str) -> bool:
 def confirmed(votes: RequesterVotes) -> bool:
     """Whether the requester reacted 👍 to the issue's newest pre-release notice, as the
     watch's REQUESTER_CONFIRMED reads it (S-021-6); a marker naming no pre-release tag is no
-    notice, since anyone can write one"""
+    notice, since anyone can write one. An answer that may lie past what was read is refused
+    rather than counted as none"""
+    if votes.requester is None:
+        return False
     newest = None
     for comment in votes.comments:
         marker = MARKER.match(comment.first_line)
         if marker is not None and marker.group(1) == PRE_RELEASE and pre_release(marker.group(2)):
             newest = comment
-    return votes.requester is not None and newest is not None and votes.requester in newest.thumbs_up
+    if newest is None:
+        if votes.earlier:
+            raise ReleaseError(f"#{votes.number} has more than {VOTE_COMMENTS} comments and none read is a notice")
+        return False
+    if votes.requester in newest.thumbs_up:
+        return True
+    if newest.more:
+        raise ReleaseError(f"#{votes.number}'s pre-release notice has more than {VOTE_REACTIONS} 👍s")
+    return False
 
 
 def count(git: Git, github: GitHub, since: str | None, base: str) -> Count:
