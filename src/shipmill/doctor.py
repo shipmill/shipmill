@@ -326,10 +326,24 @@ def hooks_checks(policy: Policy, git: Git, test: HookTester | None) -> list[Chec
         if agents.app_id is not None
         else "off: no [agents] app_id, so gh writes go as your own login"
     )
+    hooks = policy.hooks
+    default_branch = (
+        "on: [hooks] default_branch is not false, so work reaches the default branch through a pull request"
+        if hooks.default_branch
+        else "off: [hooks] default_branch = false, so a push to the default branch goes through"
+    )
+    private = (
+        f"on: [hooks] private holds {', '.join(hooks.private)},"
+        " so a cp, mv, or rsync of those out of the repo is refused"
+        if hooks.private
+        else "off: no [hooks] private globs"
+    )
     checks = [
         Check("PASS", "hooks", f"app-writes {app}"),
+        Check("PASS", "hooks", f"default-branch-push {default_branch}"),
         Check("PASS", "hooks", "rebase-merge on: always, a pull request lands with a squash or a merge commit (D-33)"),
         Check("PASS", "hooks", "force-push on: always, a force push needs a lease pinned to a commit"),
+        Check("PASS", "hooks", f"private-paths {private}"),
     ]
     if test is not None:
         found = test()

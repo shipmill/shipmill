@@ -24,7 +24,7 @@ HOOKS_JSON = ROOT / "hooks" / "hooks.json"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hooks"
 SHIPMILL = ["uvx", "--from", "git+https://github.com/shipmill/shipmill@v0", "shipmill"]
 
-APP = "[agents]\nprs = true\napp_id = 5209412\n"
+APP = '[agents]\nprs = true\napp_id = 5209412\n[hooks]\nprivate = ["owner/**"]\n'
 AGENTS = "[agents]\nprs = true\n"
 RELEASE_ONLY = 'name = "demo"\nmode = "release"\n'
 
@@ -58,7 +58,7 @@ def git_repo(root: Path, config: str | None, origin: bool = False) -> Path:
 
 @dataclass(frozen=True)
 class Sandbox:
-    app: Path  # [agents] with app_id, an origin remote, origin/HEAD set
+    app: Path  # [agents] with app_id and [hooks] private, an origin remote, origin/HEAD set
     agents: Path  # [agents] without app_id
     release: Path  # a config with no [agents]
     bare: Path  # a repo with no config
@@ -311,13 +311,32 @@ def test_s026_19_script_runs_under_python_311(box: Sandbox) -> None:
 REFUSED_FIXTURES = sorted(p.name for p in FIXTURES.glob("bash-*-refused.json"))
 
 
-def test_fixtures_hold_a_refused_and_an_allowed_case_per_rule() -> None:
-    rules = {"app-writes", "rebase-merge", "force-push"}
+SOURCES = {
+    "app-writes": "D-14",
+    "default-branch-push": "D-36",
+    "rebase-merge": "D-33",
+    "force-push": "D-36",
+    "private-paths": "D-36",
+}
+
+
+def test_s026_17_fixtures_hold_a_refused_and_an_allowed_case_per_rule() -> None:
     names = {p.name for p in FIXTURES.glob("bash-*.json")}
-    assert {f"bash-{rule}-{case}.json" for rule in rules for case in ("refused", "allowed")} <= names
+    assert {f"bash-{rule}-{case}.json" for rule in SOURCES for case in ("refused", "allowed")} <= names
+    for name in names:
+        data = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+        assert set(data) >= {"session_id", "transcript_path", "cwd", "permission_mode", "hook_event_name"}
+        assert (data["hook_event_name"], data["tool_name"], list(data["tool_input"])[0]) == (
+            "PreToolUse",
+            "Bash",
+            "command",
+        )
 
 
-SOURCES = {"app-writes": "D-14", "rebase-merge": "D-33", "force-push": "D-36"}
+@pytest.mark.parametrize("rule", sorted(SOURCES))
+def test_s026_17_each_rules_fixtures_refuse_and_allow(box: Sandbox, rule: str) -> None:
+    refused(hook(fixture(f"bash-{rule}-refused.json", box.app)), rule, SOURCES[rule])
+    allowed(hook(fixture(f"bash-{rule}-allowed.json", box.app if rule != "rebase-merge" else box.agents)))
 
 
 @pytest.mark.parametrize("name", REFUSED_FIXTURES)
@@ -482,6 +501,7 @@ def test_s026_5_squash_and_merge_commit_pass(box: Sandbox, command: str) -> None
 )
 def test_s026_6_force_push_refused(box: Sandbox, command: str, lease: str) -> None:
     assert refused(bash(command, box.agents), "force-push", "D-36") == shlex.split(lease)
+    # force-push runs first, so a force push to main names it where origin/HEAD is main too
     refused(bash(command, box.app), "force-push", "D-36")
 
 
@@ -499,8 +519,221 @@ def test_s026_6_force_push_refused(box: Sandbox, command: str, lease: str) -> No
 )
 def test_s026_6_pinned_lease_and_plain_push_pass(box: Sandbox, command: str) -> None:
     allowed(bash(command, box.agents))
-    allowed(bash(command, box.app))
+    if command != "git push":  # box.app is on main, whose push target is the default branch (S-026-4)
+        allowed(bash(command, box.app))
     allowed(hook(fixture("bash-force-push-allowed.json", box.app)))
+
+
+# --- S-026-4: default-branch-push ------------------------------------------------------------
+
+TO_MAIN = [
+    ("git push origin main", "git push origin main:<branch>"),
+    ("git push origin HEAD:main", "git push origin HEAD:<branch>"),
+    ("git push origin refs/heads/main", "git push origin refs/heads/main:<branch>"),
+    ("git push origin :main", "git push origin :<branch>"),
+    ("git push -u origin HEAD:refs/heads/main", "git push -u origin HEAD:<branch>"),
+    ("git push origin HEAD", "git push origin HEAD:<branch>"),
+    ("git push -o ci.skip origin feat/x main", "git push -o ci.skip origin feat/x main:<branch>"),
+    ("git push", "git push origin HEAD:<branch>"),
+    ("git push origin", "git push origin HEAD:<branch>"),
+]
+PLUS_MAIN = "git push origin +main"
+
+
+def pushing_repo(root: Path, config: str = AGENTS) -> Path:
+    """A clone on main whose upstream is origin/main, with origin/HEAD at main"""
+    git_repo(root, config, origin=True)
+    _git("branch", "-q", "--set-upstream-to=origin/main", cwd=root)
+    return root
+
+
+@pytest.mark.parametrize(("command", "instead"), TO_MAIN)
+def test_s026_4_push_to_the_default_branch_refused(tmp_path: Path, command: str, instead: str) -> None:
+    root = pushing_repo(tmp_path / "repo")
+    assert refused(bash(command, root), "default-branch-push", "D-36") == shlex.split(instead)
+    refused(bash(f"git -C {root} {command.removeprefix('git ')}", tmp_path), "default-branch-push", "D-36")
+    refused(bash(f"cd {root} && {command}", tmp_path), "default-branch-push", "D-36")
+
+
+def test_s026_6_force_push_to_main_names_force_push_with_a_lease_on_a_branch(tmp_path: Path) -> None:
+    """force-push runs before default-branch-push (the maintainer's answer on #470); the
+    Instead line takes both fixes, the lease moved to <branch> with the push"""
+    root = pushing_repo(tmp_path / "repo")
+    instead = refused(bash(PLUS_MAIN, root), "force-push", "D-36")
+    assert instead == shlex.split("git push --force-with-lease=<branch>:<sha> origin main:<branch>")
+    instead = refused(bash("git push --force", root), "force-push", "D-36")
+    assert instead == shlex.split("git push --force-with-lease=<branch>:<sha> origin HEAD:<branch>")
+    instead = refused(bash("git push -f origin main", root), "force-push", "D-36")
+    assert instead == shlex.split("git push --force-with-lease=<branch>:<sha> origin main:<branch>")
+
+
+@pytest.mark.parametrize(
+    ("command", "instead"),
+    [
+        ("git push --all", "git push origin HEAD:<branch>"),
+        ("git push --all origin", "git push origin HEAD:<branch>"),
+        ("git push --branches origin", "git push origin HEAD:<branch>"),
+        ("git push --mirror origin", "git push origin HEAD:<branch>"),
+        ("git push origin 'refs/heads/*:refs/heads/*'", "git push origin 'refs/heads/*:<branch>'"),
+    ],
+)
+def test_s026_4_every_branch_push_includes_the_default_branch(tmp_path: Path, command: str, instead: str) -> None:
+    """--all, --branches, --mirror, and a glob refspec push the default branch too"""
+    root = pushing_repo(tmp_path / "repo")
+    assert refused(bash(command, root), "default-branch-push", "D-36") == shlex.split(instead)
+    off = pushing_repo(tmp_path / "off", AGENTS + "[hooks]\ndefault_branch = false\n")
+    allowed(bash(command, off))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git push origin feat/x",
+        "git push origin HEAD:feat/x",
+        "git push origin main:feat/x",
+        "git push origin refs/heads/main:refs/heads/feat/x",
+        "git push origin v1.2.0",
+        "git push --tags",
+        "git push upstream-less-remote feat/main",
+    ],
+)
+def test_s026_4_push_of_another_branch_passes(tmp_path: Path, command: str) -> None:
+    allowed(bash(command, pushing_repo(tmp_path / "repo")))
+
+
+def test_s026_4_bare_push_on_another_branch_passes(tmp_path: Path) -> None:
+    root = pushing_repo(tmp_path / "repo")
+    _git("checkout", "-q", "-b", "feat/x", cwd=root)
+    _git("push", "-q", "-u", "origin", "feat/x", cwd=root)
+    allowed(bash("git push", root))
+    allowed(bash("git push origin HEAD", root))
+    refused(bash("git push origin main", root), "default-branch-push", "D-36")
+
+
+def test_s026_4_bare_push_without_an_upstream_passes(tmp_path: Path) -> None:
+    root = pushing_repo(tmp_path / "repo")
+    _git("checkout", "-q", "-b", "feat/new", cwd=root)
+    allowed(bash("git push", root))
+
+
+@pytest.mark.parametrize("command", [command for command, _ in TO_MAIN])
+def test_s026_4_every_push_passes_when_switched_off_or_origin_head_unset(tmp_path: Path, command: str) -> None:
+    off = pushing_repo(tmp_path / "off", AGENTS + "[hooks]\ndefault_branch = false\n")
+    allowed(bash(command, off))
+    unset = pushing_repo(tmp_path / "unset")
+    _git("remote", "set-head", "origin", "--delete", cwd=unset)
+    allowed(bash(command, unset))
+
+
+def test_s026_4_plus_main_is_still_a_force_push_when_switched_off(tmp_path: Path) -> None:
+    """force-push has no switch (S-026-6): a + refspec needs a pinned lease wherever it points"""
+    off = pushing_repo(tmp_path / "off", AGENTS + "[hooks]\ndefault_branch = false\n")
+    refused(bash(PLUS_MAIN, off), "force-push", "D-36")
+    unset = pushing_repo(tmp_path / "unset")
+    _git("remote", "set-head", "origin", "--delete", cwd=unset)
+    refused(bash(PLUS_MAIN, unset), "force-push", "D-36")
+
+
+def test_s026_4_fixtures(box: Sandbox) -> None:
+    instead = refused(hook(fixture("bash-default-branch-push-refused.json", box.app)), "default-branch-push", "D-36")
+    assert instead == shlex.split("git push origin main:<branch>")
+    allowed(hook(fixture("bash-default-branch-push-allowed.json", box.app)))
+
+
+# --- S-026-7: private-paths ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "instead"),
+    [
+        ("cp owner/notes.md {out}/notes.md", "leave owner/notes.md in the repo"),
+        ("mv owner/notes.md {out}/", "leave owner/notes.md in the repo"),
+        ("rsync -av owner/ {out}/", "leave owner/ in the repo"),
+        ("rsync -a --exclude .git -e ssh owner/notes.md host:backup/", "leave owner/notes.md in the repo"),
+        ("cp -r owner {out}", "leave owner in the repo"),
+        ("cp -R ./owner/plans/q4.md ../elsewhere/", "leave ./owner/plans/q4.md in the repo"),
+        ("cp -t {out} owner/notes.md", "leave owner/notes.md in the repo"),
+        ("cp --target-directory={out} owner/notes.md", "leave owner/notes.md in the repo"),
+        ("cp owner/* {out}", "leave 'owner/*' in the repo"),
+        ("cp -r . {out}/copy", "leave . in the repo"),
+        ("cp README.md owner/notes.md {out}", "cp README.md {out}"),
+        ("rsync -a docs owner {out}", "rsync -a docs {out}"),
+        ("cd owner && cp notes.md {out}", "leave notes.md in the repo"),
+        ("cd docs && cp ../owner/notes.md /tmp/notes.md", "leave ../owner/notes.md in the repo"),
+    ],
+)
+def test_s026_7_copy_of_a_private_path_out_of_the_repo_refused(box: Sandbox, command: str, instead: str) -> None:
+    run = command.format(out=box.outside)
+    words = refused(bash(run, box.app), "private-paths", "D-36")
+    assert words == shlex.split(instead.format(out=box.outside))
+    allowed(bash(run, box.agents))  # no private key: every copy passes
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cp owner/notes.md tmp/notes.md",
+        "cp -r owner docs/owner-copy",
+        "mv owner/notes.md owner/old/notes.md",
+        "rsync -a owner/ {app}/tmp/owner/",
+        "cd owner && cp notes.md ../tmp/",
+        "cp README.md {out}",
+        "rsync -av docs/ host:site/",
+        "cp ownership.md {out}",
+        "cp -t docs owner/notes.md",
+        "cp {out}/a.md {out}/b.md",
+        "cat owner/notes.md",
+    ],
+)
+def test_s026_7_copy_inside_the_repo_or_of_another_path_passes(box: Sandbox, command: str) -> None:
+    allowed(bash(command.format(out=box.outside, app=box.app), box.app))
+
+
+@pytest.mark.parametrize(
+    ("command", "instead"),
+    [
+        ("cp -r * {out}", "leave '*' in the repo"),
+        ("rsync -a ./* host:backup/", "leave './*' in the repo"),
+        ("cp -r own* {out}", "leave 'own*' in the repo"),
+        ("cp -r .. {out}/copy", "leave .. in the repo"),
+        ("cd docs && cp -r ../.. {out}/copy", "leave ../.. in the repo"),
+    ],
+)
+def test_s026_7_a_shell_glob_or_a_folder_holding_the_repo_is_refused(box: Sandbox, command: str, instead: str) -> None:
+    """The shell expands a source's wildcard after the hook reads it, and a folder holding the
+    repo holds its private paths"""
+    words = refused(bash(command.format(out=box.outside), box.app), "private-paths", "D-36")
+    assert words == shlex.split(instead.format(out=box.outside))
+
+
+@pytest.mark.parametrize(
+    ("command", "outcome"),
+    [
+        ("cp -r . {out}", "refused"),
+        ("cp k.key {out}", "refused"),
+        ("cp *.key {out}", "refused"),
+        ("cp docs/a.md {out}", "allowed"),
+        ("cp -r docs {out}", "allowed"),
+        ("cp -r docs/* {out}", "allowed"),
+    ],
+)
+def test_s026_7_a_root_level_wildcard_glob(tmp_path: Path, command: str, outcome: str) -> None:
+    root = git_repo(tmp_path / "repo", AGENTS + '[hooks]\nprivate = ["*.key"]\n')
+    (root / "docs").mkdir()
+    (root / "docs" / "a.md").write_text("a\n", encoding="utf-8")
+    (root / "k.key").write_text("k\n", encoding="utf-8")
+    out = tmp_path / "out"
+    result = bash(command.format(out=out), root)
+    if outcome == "refused":
+        refused(result, "private-paths", "D-36")
+    else:
+        allowed(result)
+
+
+def test_s026_7_fixtures(box: Sandbox) -> None:
+    refused(hook(fixture("bash-private-paths-refused.json", box.app)), "private-paths", "D-36")
+    allowed(hook(fixture("bash-private-paths-allowed.json", box.app)))
+    allowed(hook(fixture("bash-private-paths-refused.json", box.agents)))
 
 
 # --- The gate's own commands -----------------------------------------------------------------
@@ -697,6 +930,8 @@ def in_process(delivery: ModuleType, data: dict[str, Any], mode: str = "pre") ->
         "gh pr merge 7 --squash && gh pr comment 7 -b merged && gh issue close 8",
         "shipmill gh pr merge 7 --squash; uvx --from x shipmill gh issue close 8",
         "cd .github && gh api -X POST repos/o/r/issues -f title=x",
+        "cp owner/notes.md /tmp/notes.md",
+        "mv README.md docs/ && rsync -a owner/ host:backup/ && cp -r . /tmp/copy",
     ],
 )
 def test_s026_10_no_subprocess_and_one_config_read(delivery: ModuleType, box: Sandbox, command: str) -> None:
@@ -704,6 +939,20 @@ def test_s026_10_no_subprocess_and_one_config_read(delivery: ModuleType, box: Sa
     assert code in (0, 2)
     assert counted.runs == 0
     assert counted.reads <= 1
+
+
+def test_s026_10_only_git_push_starts_git(delivery: ModuleType, box: Sandbox, tmp_path: Path) -> None:
+    """A push asks git for origin/HEAD (the counting runner answers nothing, so no more);
+    switched off, or in a repo without [agents], it asks nothing"""
+    _, counted = in_process(delivery, fixture("bash-read.json", box.app, "git push origin feat/x"))
+    assert (counted.runs, counted.reads) == (1, 1)
+    _, counted = in_process(delivery, fixture("bash-read.json", box.app, "git push && git push origin HEAD"))
+    assert (counted.runs, counted.reads) == (2, 1)
+    off = git_repo(tmp_path / "off", AGENTS + "[hooks]\ndefault_branch = false\n")
+    _, counted = in_process(delivery, fixture("bash-read.json", off, "git push origin main"))
+    assert (counted.runs, counted.reads) == (0, 1)
+    _, counted = in_process(delivery, fixture("bash-read.json", box.release, "git push origin main"))
+    assert counted.runs == 0
 
 
 def test_s026_10_unguarded_command_reads_no_config(delivery: ModuleType, box: Sandbox) -> None:
