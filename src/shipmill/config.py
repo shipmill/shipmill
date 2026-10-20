@@ -7,9 +7,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from shipmill import requires
 from shipmill.errors import ReleaseError
 
-CONFIG_PATH = Path(".github") / "shipmill.toml"
+CONFIG_PATH = Path(requires.FILE)
 
 
 def config_path(root: Path) -> Path:
@@ -26,11 +27,15 @@ def read(path: Path) -> Mapping[str, Any]:
 
 
 def loads(text: str, where: str) -> Mapping[str, Any]:
-    """text's TOML; a syntax error names where it was read from"""
+    """text's TOML; a syntax error names where it was read from. Its requires is checked
+    first (spec 031): a CLI too old for the config says so before any reader of a section
+    refuses a key it doesn't know"""
     try:
-        return tomllib.loads(text)
+        raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ReleaseError(f"{where}: {exc}") from None
+    requires.check(raw)
+    return raw
 
 
 class Table:

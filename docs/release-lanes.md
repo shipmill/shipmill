@@ -93,6 +93,7 @@ shipmill means setting both the `uses:` refs and `tool:`.
 The keys:
 
 ```toml
+requires = ">=0.57"               # optional: the oldest shipmill this file is written for (spec 031)
 name = "demo"
 mode = "release"                  # off | dry-run | release
 branch = "main"
@@ -144,6 +145,12 @@ replace = "demo v{version}"       # also {name}, {semver}, {minor} (X.Y), {date}
 pin = "uv add 'demo=={version}'"  # a pre-release notice's; also {tag} and {name}
 install = "uv add demo"           # a stable notice's
 ```
+
+`requires` takes `">=X.Y"` or `">=X.Y.Z"`. A shipmill older than it exits 2 before it reads
+any other key, naming the bound, its own version, and the commands that update the plugin and
+the CLI, so a config that uses a newer key says "update" rather than "unknown keys".
+`shipmill init` writes it at its own `X.Y`; `shipmill upgrade --apply <id>` raises a lower
+one to the upgrade's version.
 
 A lane releases when one of its **triggers** is due (quiet time, a schedule window that
 opened after its last release, a finished milestone) and no **gate** holds it. Any lane can

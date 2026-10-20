@@ -9,12 +9,13 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from shipmill import UVX
+from shipmill import UVX, requires
 from shipmill.config import CONFIG_PATH, config_path, loads
 from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER
 from shipmill.errors import ReleaseError
 from shipmill.gitrepo import Git
 from shipmill.policy import Policy, Style, VersionFiles
+from shipmill.requires import Requires
 from shipmill.ticks import HOURLY_TICKS, Ticks, needed
 from shipmill.upgrades import FRAGMENTS, fragments_readme_text
 
@@ -136,6 +137,8 @@ def policy_text(d: Detected, fragments: bool = True) -> str:
             'after_stamp = ["uv lock --check"]\n'
         )
     return f'''# shipmill reads this file on every run: https://github.com/{BOT_REPO}
+# The oldest shipmill this file is written for; an older one stops and says how to update
+requires = "{Requires.series(requires.running())}"
 name = "{d.name}"
 
 # off: do nothing; dry-run: show the release commit it would make; release: release

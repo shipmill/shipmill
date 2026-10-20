@@ -10,7 +10,7 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from shipmill import environments
+from shipmill import environments, requires
 from shipmill.agents import AgentsConfig
 from shipmill.autonomy import AutonomyPolicy
 from shipmill.config import Table, read
@@ -164,8 +164,10 @@ class Policy:
 
     @classmethod
     def parse(cls, raw: Mapping[str, Any], where: str) -> Policy:
+        requires.check(raw)  # first: a config newer than this CLI says so, not "unknown keys" (spec 031)
         top = Table(raw, where)
         top.allow(
+            requires.KEY,
             "name",
             "mode",
             "branch",

@@ -1257,6 +1257,86 @@ def config(text: str, policy: Path, incident_label: str | None = None) -> Config
     return Config(deployed, incident_label or label, upgrade)
 
 
+# -- requires (spec 031): the oldest shipmill the config is written for, checked against the
+# plugin's own version with shipmill's requires.py text, since a script can't import shipmill
+
+PLUGIN_JSON = Path(__file__).resolve().parents[3] / ".claude-plugin" / "plugin.json"
+REQUIRES_KEY = "requires"
+REQUIRES_BOUND = re.compile(r">=(\d+)\.(\d+)(?:\.(\d+))?")
+PLUGIN_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
+def requires_invalid(value: object) -> str:
+    return (
+        f'{POLICY.as_posix()}: {REQUIRES_KEY} must be ">=X.Y" or ">=X.Y.Z", the oldest shipmill it needs; got {value!r}'
+    )
+
+
+def requires_unmet(bound: str, version: str) -> str:
+    return (
+        f"{POLICY.as_posix()} requires shipmill {bound}; this is {version}\n"
+        "update the plugin: claude plugin marketplace update shipmill"
+        " && claude plugin update shipmill@shipmill --scope <scope>\n"
+        "or the CLI: uv tool upgrade shipmill"
+    )
+
+
+def requires_value(text: str, policy: Path) -> object:
+    """The config's top-level requires, None without one: tomllib on 3.11+, a plain string
+    line before the first table on 3.10"""
+    if tomllib is None:
+        return requires_value_310(text, policy)
+    try:
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise Refused(f"error: {policy}: {exc}") from None
+    return raw.get(REQUIRES_KEY)
+
+
+def requires_value_310(text: str, policy: Path) -> str | None:
+    """requires on Python 3.10: one plain string line before the first table, or refused"""
+    top = toml_tables(text).get("", "")
+    lines = [line for line in top.splitlines() if re.match(rf"^\s*[\"']?{REQUIRES_KEY}[\"']?\s*=", line)]
+    if not lines:
+        return None
+    found = re.match(rf"^\s*{REQUIRES_KEY}\s*=\s*(?:\"([^\"]*)\"|'([^']*)')\s*(?:#.*)?$", lines[0])
+    if found is None or len(lines) > 1:
+        raise Refused(f'error: {policy}: can\'t read {REQUIRES_KEY} on Python 3.10: write it as requires = ">=X.Y"')
+    return found.group(1) if found.group(1) is not None else found.group(2)
+
+
+def plugin_version(path: Path = PLUGIN_JSON) -> str:
+    """The version in the plugin's .claude-plugin/plugin.json, X.Y.Z"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise Refused(f"error: {path}: missing; the plugin's version is read from it") from None
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: {path}: not JSON: {exc}") from None
+    version = data.get("version") if isinstance(data, dict) else None
+    if not isinstance(version, str) or PLUGIN_VERSION.fullmatch(version) is None:
+        raise Refused(f"error: {path}: version must be X.Y.Z, got {version!r}")
+    return version
+
+
+def check_requires(text: str, policy: Path, version: Callable[[], str] = plugin_version) -> None:
+    """Refuse a malformed requires, and one the plugin's version doesn't meet, with shipmill's
+    words; the version is read only when the config sets one"""
+    value = requires_value(text, policy)
+    if value is None:
+        return
+    bound = REQUIRES_BOUND.fullmatch(value) if isinstance(value, str) else None
+    if bound is None:
+        raise Refused(f"error: {requires_invalid(value)}")
+    have = version()
+    found = PLUGIN_VERSION.match(have)
+    if found is None:
+        raise Refused(f"error: not an X.Y.Z version: {have!r}")
+    parts = [int(n) for n in bound.groups() if n is not None]
+    if tuple(int(n) for n in found.groups()) < tuple(parts + [0] * (3 - len(parts))):
+        raise Refused(requires_unmet(">=" + ".".join(str(n) for n in parts), have))
+
+
 def autonomy_level(value: object, name: str, policy: Path) -> str:
     if not isinstance(value, str) or value not in AUTONOMY:
         raise Refused(f"error: {policy}: [autonomy] deploy.{name} must be one of {list(AUTONOMY)}, got {value!r}")
@@ -2568,6 +2648,8 @@ def main() -> int:
     if not 1 <= args.releases <= 20:
         parser.error("--releases must be 1..20")
     repo_dir = Path(args.repo_dir).resolve()
+    if policy_file(repo_dir) is not None:  # first, as shipmill checks it before the config's other keys
+        check_requires((repo_dir / POLICY).read_text(encoding="utf-8"), POLICY)
     now = dt.datetime.now(dt.timezone.utc)  # noqa: UP017 (dt.UTC needs 3.11)
     grace = dt.timedelta(minutes=args.grace)
 
