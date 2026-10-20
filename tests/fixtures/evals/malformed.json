@@ -1,7 +1,12 @@
 {
-  "runs_planned": 1,
-  "budget_reached": false,
+  "schemaVersion": 1,
+  "partial": false,
   "cases": [
-    {"path": "github-issue-triage/steady", "runs": [{"graders": [{"name": "verdict", "passed": "yes"}]}]}
+    {
+      "name": "steady",
+      "dir": "evals/github-issue-triage/steady",
+      "runsPerCase": 3,
+      "arms": {"with": [{"error": null, "graders": [{"name": "verdict", "passed": "yes", "scored": true}]}]}
+    }
   ]
 }

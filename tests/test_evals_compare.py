@@ -14,19 +14,26 @@ HEAD = FIXTURES / "head.json"
 PAD = "github-issue-triage/pad"  # a large steady case, so one case's move barely shifts the suite
 
 
-def _result(tmp_path: Path, name: str, cases: dict[str, tuple[int, int]]) -> Path:
-    """A runner result whose cases pass the first `passed` of their `runs` runs"""
-    body = {
-        "runs_planned": sum(runs for _, runs in cases.values()),
-        "budget_reached": False,
-        "cases": [
-            {"path": path, "runs": [{"graders": [{"name": "verdict", "passed": n < passed}]} for n in range(runs)]}
-            for path, (passed, runs) in cases.items()
-        ],
-    }
+def _run(passed: bool, **extra: object) -> dict[str, object]:
+    grader = {"name": "verdict", "passed": passed, "weight": 1, "scored": True}
+    return {"error": None, "skippedPaidGraders": False, "graders": [grader], **extra}
+
+
+def _case(path: str, runs: list[dict[str, object]], per_case: int = 3) -> dict[str, object]:
+    return {"name": path.rsplit("/", 1)[-1], "dir": f"evals/{path}", "runsPerCase": per_case, "arms": {"with": runs}}
+
+
+def _write(tmp_path: Path, name: str, cases: list[dict[str, object]], **top: object) -> Path:
     file = tmp_path / f"{name}.json"
-    file.write_text(json.dumps(body), encoding="utf-8")
+    file.write_text(json.dumps({"schemaVersion": 1, "partial": False, "cases": cases, **top}), encoding="utf-8")
     return file
+
+
+def _result(tmp_path: Path, name: str, cases: dict[str, tuple[int, int]]) -> Path:
+    """A runner result, in the runner's format, whose cases pass the first `passed` of their `runs` runs"""
+    return _write(
+        tmp_path, name, [_case(p, [_run(n < passed) for n in range(runs)]) for p, (passed, runs) in cases.items()]
+    )
 
 
 def _compare(base: Path, head: Path, *extra: str) -> int:
@@ -61,7 +68,8 @@ def test_s025_8_suite_drop_of_exactly_the_tolerance_passes(
     head = _result(tmp_path, "head", {PAD: (head_passed, 20)})
     assert _compare(base, head) == code
     worse = "suite got worse: the head's pass rate is more than 0.05 below the base's"
-    assert (worse in capsys.readouterr().out.splitlines()) is bool(code)
+    rates = ["base pass rate: 1.000 (20/20 runs)", f"head pass rate: {head_passed / 20:.3f} ({head_passed}/20 runs)"]
+    assert capsys.readouterr().out.splitlines() == ([worse] if code else []) + rates  # the verdict, then both rates
 
 
 def test_s025_8_tolerance_flag_changes_the_suite_rule(tmp_path: Path) -> None:
@@ -131,24 +139,64 @@ def test_s025_9_a_run_passes_only_when_every_scored_grader_passed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """base.json's steady case passes 3 of 3 despite a failing unscored grader; its heals case
-    passes 1 of 3, each failing run having one scored grader pass and the other fail"""
+    passes 1 of 3: one run had a scored grader fail, one ended on an API error"""
     assert _compare(BASE, BASE) == 0
     assert "base pass rate: 0.833 (10/12 runs)" in capsys.readouterr().out.splitlines()
-    run = {"graders": [{"name": "verdict", "passed": True}, {"name": "note", "passed": True, "scored": False}]}
-    body = {"runs_planned": 1, "budget_reached": False, "cases": [{"path": PAD, "runs": [run]}]}
-    file = tmp_path / "one.json"
-    file.write_text(json.dumps(body), encoding="utf-8")
+    verdict = {"name": "verdict", "passed": True, "weight": 1, "scored": True}
+    unscored = {"name": "note", "passed": False, "weight": 1, "scored": False}
+    run = _run(True, graders=[verdict, unscored])
+    file = _write(tmp_path, "one", [_case(PAD, [run])])
     assert _compare(file, file) == 0
     assert "head pass rate: 1.000 (1/1 runs)" in capsys.readouterr().out.splitlines()
 
 
+def test_s025_9_a_real_runner_result_compares_against_itself(capsys: pytest.CaptureFixture[str]) -> None:
+    """A result one `claude plugin eval` run wrote (shipmill/shipmill#443), whose runsPerCase
+    says 3 though it ran one: the runs present are the runs made"""
+    real = FIXTURES / "runner-result.json"
+    assert _compare(real, real) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "base pass rate: 1.000 (1/1 runs)",
+        "head pass rate: 1.000 (1/1 runs)",
+    ]
+
+
+@pytest.mark.parametrize(
+    "failed",
+    [
+        _run(True, error="API error: overloaded", graders=[]),
+        {"error": "API error: rate limited", "skippedPaidGraders": False},  # no grader results at all
+        _run(True, aborted=True),
+        _run(True, skippedPaidGraders=True),
+    ],
+    ids=["error", "error-without-graders", "aborted", "skipped-paid-graders"],
+)
+def test_s025_9_an_errored_aborted_or_half_graded_run_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], failed: dict[str, object]
+) -> None:
+    base = _result(tmp_path, "base", {PAD: (3, 3)})
+    head = _write(tmp_path, "head", [_case(PAD, [_run(True), failed, failed])])
+    assert _compare(base, head) == 1
+    assert f"regressed {PAD}: 3/3 -> 1/3" in capsys.readouterr().out.splitlines()
+
+
+def test_s025_9_cases_of_one_name_in_two_skills_stay_apart(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    one, two = "github-issue-triage/same", "github-pr-triage/same"
+    base = _result(tmp_path, "base", {one: (3, 3), two: (3, 3)})
+    head = _result(tmp_path, "head", {one: (3, 3), two: (0, 3)})
+    assert _compare(base, head) == 1
+    assert capsys.readouterr().out.splitlines()[0] == f"regressed {two}: 3/3 -> 0/3"
+
+
 def test_s025_9_a_run_without_a_scored_grader_is_malformed(tmp_path: Path) -> None:
-    run = {"graders": [{"name": "note", "passed": True, "scored": False}]}
-    body = {"runs_planned": 1, "budget_reached": False, "cases": [{"path": PAD, "runs": [run]}]}
-    file = tmp_path / "unscored.json"
-    file.write_text(json.dumps(body), encoding="utf-8")
+    run = _run(True, graders=[{"name": "note", "passed": True, "scored": False}])
+    file = _write(tmp_path, "unscored", [_case(PAD, [run])])
     with pytest.raises(ReleaseError, match="unscored.json: github-issue-triage/pad: run 1: no scored grader"):
         _compare(file, file)
+
+
+_CASE = '{"name": "b", "dir": "evals/a/b", "runsPerCase": 3, "arms": {"with": %s}}'
+_TOP = '{"schemaVersion": 1, "partial": false, "cases": [%s]}'
 
 
 @pytest.mark.parametrize(
@@ -156,22 +204,20 @@ def test_s025_9_a_run_without_a_scored_grader_is_malformed(tmp_path: Path) -> No
     [
         ("[]", "the result is a JSON object"),
         ("{", "not valid JSON"),
-        ('{"budget_reached": false, "cases": []}', "runs_planned is a whole number from 1"),
-        ('{"runs_planned": 3, "budget_reached": 0, "cases": []}', "budget_reached is true or false"),
-        ('{"runs_planned": 3, "budget_reached": false}', "cases is a list of cases"),
-        ('{"runs_planned": 3, "budget_reached": false, "cases": [{"path": "../x", "runs": []}]}', "path is relative"),
-        ('{"runs_planned": 3, "budget_reached": false, "cases": [{"path": "a/b", "runs": []}]}', "at least one run"),
-        ('{"runs_planned": 3, "budget_reached": false, "cases": [{"path": "a/b", "runs": [{}]}]}', "graders is a list"),
-        (
-            '{"runs_planned": 3, "budget_reached": false, "cases": [{"path": "a/b", "runs": '
-            '[{"graders": [{"passed": true}]}]}]}',
-            "name is a non-empty string",
-        ),
-        (
-            '{"runs_planned": 3, "budget_reached": false, "cases": [{"path": "a/b", "runs": '
-            '[{"graders": [{"name": "v", "passed": true}]}]}]}',
-            "holds 1 of 3 planned runs, yet budget_reached is false",
-        ),
+        ('{"partial": false, "cases": []}', "schemaVersion is 1"),
+        ('{"schemaVersion": 2, "partial": false, "cases": []}', "schemaVersion is 1"),
+        ('{"schemaVersion": 1, "partial": 0, "cases": []}', "partial is true or false"),
+        ('{"schemaVersion": 1, "partial": false}', "cases is a list of cases"),
+        (_TOP % "", "cases holds no case"),
+        (_TOP % '{"dir": "evals/a/b"}', "name is a non-empty string"),
+        (_TOP % '{"name": "b", "dir": "a/b"}', "dir is the case's directory under evals/"),
+        (_TOP % '{"name": "b", "dir": "evals/../x"}', "dir is the case's directory under evals/"),
+        (_TOP % '{"name": "b", "dir": "evals/a/b", "arms": {"with": []}}', "runsPerCase is a whole number"),
+        (_TOP % '{"name": "b", "dir": "evals/a/b", "runsPerCase": 3, "runs": []}', "arms.with is a list"),
+        (_TOP % (_CASE % "[]"), "at least one run"),
+        (_TOP % (_CASE % '[{"error": null}]'), "graders is a list"),
+        (_TOP % (_CASE % '[{"error": null, "aborted": "no", "graders": []}]'), "aborted is true or false"),
+        (_TOP % (_CASE % '[{"error": null, "graders": [{"passed": true}]}]'), "name is a non-empty string"),
     ],
 )
 def test_s025_9_malformed_result_names_the_file_and_the_fault(tmp_path: Path, body: str, fault: str) -> None:
@@ -179,6 +225,14 @@ def test_s025_9_malformed_result_names_the_file_and_the_fault(tmp_path: Path, bo
     file.write_text(body, encoding="utf-8")
     with pytest.raises(ReleaseError, match=f"aggregate-result.json: .*{fault}"):
         _compare(file, HEAD)
+
+
+def test_s025_9_a_case_listed_twice_is_malformed(tmp_path: Path) -> None:
+    file = _write(tmp_path, "twice", [_case(PAD, [_run(True)]), _case(PAD, [_run(True)])])
+    with pytest.raises(
+        ReleaseError, match="twice.json: case 'pad': dir 'evals/github-issue-triage/pad' is listed twice"
+    ):
+        _compare(file, file)
 
 
 def test_s025_9_missing_or_malformed_fixture_exits_2(tmp_path: Path) -> None:
@@ -196,3 +250,27 @@ def test_s025_14_budget_reached_fails_and_compares_nothing(capsys: pytest.Captur
 def test_s025_14_a_base_stopped_at_its_budget_is_never_compared(capsys: pytest.CaptureFixture[str]) -> None:
     assert _compare(FIXTURES / "head-budget.json", BASE) == 1
     assert capsys.readouterr().out.splitlines() == ["evals: budget reached after 5 of 12 runs"]
+
+
+def test_s025_14_the_planned_runs_are_each_cases_runs_per_case(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The result names no planned run count; a case not reached yet still counts its runsPerCase"""
+    head = _write(
+        tmp_path,
+        "head",
+        [_case(PAD, [_run(True)], per_case=5), _case("a/b", [])],
+        partial=True,
+        partialReason="cost_ceiling",
+    )
+    assert _compare(BASE, head) == 1
+    assert capsys.readouterr().out.splitlines() == ["evals: budget reached after 1 of 8 runs"]
+
+
+@pytest.mark.parametrize("reason", [None, "interrupted"])
+def test_s025_14_a_run_stopped_for_another_reason_is_never_compared(tmp_path: Path, reason: str | None) -> None:
+    head = _write(tmp_path, "head", [_case(PAD, [_run(True)])], partial=True, partialReason=reason)
+    with pytest.raises(
+        ReleaseError, match=f"head.json: partial: the run stopped early \\({reason!r}\\), not at its budget"
+    ):
+        _compare(BASE, head)

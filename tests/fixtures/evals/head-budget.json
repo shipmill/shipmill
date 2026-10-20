@@ -1,22 +1,29 @@
 {
-  "runs_planned": 12,
-  "budget_reached": true,
+  "schemaVersion": 1,
+  "partial": true,
+  "partialReason": "cost_ceiling",
+  "costUsd": 15.02,
   "cases": [
     {
-      "path": "github-issue-triage/steady",
-      "runs": [
-        {"graders": [{"name": "verdict", "passed": true}]},
-        {"graders": [{"name": "verdict", "passed": true}]},
-        {"graders": [{"name": "verdict", "passed": true}]}
-      ]
+      "name": "steady",
+      "dir": "evals/github-issue-triage/steady",
+      "runsPerCase": 3,
+      "arms": {"with": [
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]},
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]},
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]}
+      ]}
     },
     {
-      "path": "github-issue-triage/breaks",
-      "runs": [
-        {"graders": [{"name": "verdict", "passed": false}]},
-        {"graders": [{"name": "verdict", "passed": false}]}
-      ]
+      "name": "breaks",
+      "dir": "evals/github-issue-triage/breaks",
+      "runsPerCase": 3,
+      "arms": {"with": [
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": false, "scored": true}]},
+        {"error": null, "skippedPaidGraders": true, "graders": []}
+      ]}
     },
-    {"path": "github-pr-triage/heals", "runs": []}
+    {"name": "heals", "dir": "evals/github-pr-triage/heals", "runsPerCase": 3, "arms": {"with": []}},
+    {"name": "added", "dir": "evals/github-issue-resolve/added", "runsPerCase": 3, "arms": {"with": []}}
   ]
 }

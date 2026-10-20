@@ -1229,11 +1229,11 @@ def _evals_compare(base_file: Path, head_file: Path, changed: frozenset[PurePosi
     result = evals.compare(base, head, changed, tolerance)
     for moved in result.moved:
         print(moved)
+    if result.suite_worse:
+        print(f"suite got worse: the head's pass rate is more than {float(tolerance):g} below the base's")
     for side, rate in (("base", result.base), ("head", result.head)):
         shown = f"{float(rate.value):.3f}" if rate.runs else "none"
         print(f"{side} pass rate: {shown} ({rate} runs)")
-    if result.suite_worse:
-        print(f"suite got worse: the head's pass rate is more than {float(tolerance):g} below the base's")
     return 1 if result.failed else 0
 
 

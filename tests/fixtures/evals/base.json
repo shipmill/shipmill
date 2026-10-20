@@ -1,39 +1,60 @@
 {
-  "model": "a recorded field the gate ignores",
-  "runs_planned": 12,
-  "budget_reached": false,
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.296",
+  "costUsd": 0.65,
+  "partial": false,
+  "suite": {"root": "<checkout>", "ablation": "none", "threshold": 1},
   "cases": [
     {
-      "path": "github-issue-triage/steady",
-      "runs": [
-        {"graders": [{"name": "verdict", "passed": true}, {"name": "note", "passed": false, "scored": false}]},
-        {"graders": [{"name": "verdict", "passed": true}]},
-        {"graders": [{"name": "verdict", "passed": true}]}
-      ]
+      "name": "steady",
+      "dir": "evals/github-issue-triage/steady",
+      "source": "case_yaml",
+      "runsPerCase": 3,
+      "arms": {"with": [
+        {"score": 0.5, "passed": false, "error": null, "skippedPaidGraders": false, "graders": [
+          {"name": "verdict", "passed": true, "weight": 1, "scored": true},
+          {"name": "note", "passed": false, "weight": 1, "scored": false}]},
+        {"score": 1, "passed": true, "error": null, "skippedPaidGraders": false, "graders": [
+          {"name": "verdict", "passed": true, "weight": 1, "scored": true}]},
+        {"score": 1, "passed": true, "error": null, "skippedPaidGraders": false, "graders": [
+          {"name": "verdict", "passed": true, "weight": 1, "scored": true}]}
+      ]},
+      "aggregates": {"score": 0.83, "passRate": 0.67}
     },
     {
-      "path": "github-issue-triage/breaks",
-      "runs": [
-        {"graders": [{"name": "verdict", "passed": true}]},
-        {"graders": [{"name": "verdict", "passed": true}]},
-        {"graders": [{"name": "verdict", "passed": true}]}
-      ]
+      "name": "breaks",
+      "dir": "evals/github-issue-triage/breaks",
+      "runsPerCase": 3,
+      "arms": {"with": [
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]},
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]},
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]}
+      ]}
     },
     {
-      "path": "github-pr-triage/heals",
-      "runs": [
-        {"graders": [{"name": "verdict", "passed": true}, {"name": "no-miss", "passed": false}]},
-        {"graders": [{"name": "verdict", "passed": false}, {"name": "no-miss", "passed": true}]},
-        {"graders": [{"name": "verdict", "passed": true}, {"name": "no-miss", "passed": true}]}
-      ]
+      "name": "heals",
+      "dir": "evals/github-pr-triage/heals",
+      "runsPerCase": 3,
+      "arms": {"with": [
+        {"error": null, "skippedPaidGraders": false, "graders": [
+          {"name": "verdict", "passed": true, "scored": true},
+          {"name": "no-miss", "passed": false, "scored": true}]},
+        {"error": "API error: overloaded", "skippedPaidGraders": false, "graders": []},
+        {"error": null, "skippedPaidGraders": false, "graders": [
+          {"name": "verdict", "passed": true, "scored": true},
+          {"name": "no-miss", "passed": true, "scored": true}]}
+      ]}
     },
     {
-      "path": "github-pr-triage/dropped",
-      "runs": [
-        {"graders": [{"name": "verdict", "passed": true}]},
-        {"graders": [{"name": "verdict", "passed": true}]},
-        {"graders": [{"name": "verdict", "passed": true}]}
-      ]
+      "name": "dropped",
+      "dir": "evals/github-pr-triage/dropped",
+      "runsPerCase": 3,
+      "arms": {"with": [
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]},
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]},
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]}
+      ]}
     }
-  ]
+  ],
+  "aggregates": {"casesTotal": 4, "casesPassed": 2, "overallScore": 0.8, "overallPassRate": 0.5}
 }
