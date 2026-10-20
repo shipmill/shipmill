@@ -292,4 +292,11 @@ fork's `action_required` downstream check is the maintainer's to start.
 
 ## Issues
 
+- shipmill/shipmill#503: S-032-1, S-032-2
+- shipmill/shipmill#504: S-032-14
+- shipmill/shipmill#508: S-032-4, S-032-5, S-032-6, S-032-7, S-032-11, S-032-12, S-032-13
+- shipmill/shipmill#511: S-032-8, S-032-9, S-032-10
+- shipmill/shipmill#513: S-032-3
+- shipmill/shipmill#516: S-032-15, S-032-16
+
 ## Verification

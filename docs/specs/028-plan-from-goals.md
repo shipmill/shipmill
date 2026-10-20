@@ -261,4 +261,10 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 
 ## Issues
 
+- shipmill/shipmill#507: S-028-6, S-028-7
+- shipmill/shipmill#510: S-028-1, S-028-2, S-028-3, S-028-4, S-028-5
+- shipmill/shipmill#514: S-028-8, S-028-9, S-028-10, S-028-11, S-028-12
+- shipmill/shipmill#515: S-028-13, S-028-14
+- shipmill/shipmill#517: S-028-15, S-028-16, S-028-17
+
 ## Verification
