@@ -229,6 +229,16 @@ def test_s032_8_only_a_dispatch_run_created_after_the_dispatch_with_the_id_count
     assert asked and urllib.parse.parse_qs(asked[0].partition("?")[2])["created"] == [">=2026-10-20T09:30:00Z"]
 
 
+def test_s032_8_a_run_of_a_library_whose_name_ends_with_this_ones_is_not_this_ones(tmp_path: Path) -> None:
+    library, api, key = started(tmp_path)
+    other = a_run(102, f"the-{CONSUMER_ID}", conclusion="failure")  # the-example-org/library, same SHA and PR
+    api.timelines[CONSUMER_RUNS] = [(dt.timedelta(), [a_run(101, CONSUMER_ID), other])]
+    api.timelines[PRIVATE_RUNS] = [(dt.timedelta(), [a_run(202, PRIVATE_ID)])]
+    collected(library, api, key)
+    assert library.check("consumer-app").title == "passed"
+    assert library.check("consumer-app").details_url == CONSUMER_RUN
+
+
 def test_s032_8_each_read_uses_a_token_limited_to_its_downstream_and_to_reading(tmp_path: Path) -> None:
     library, api, key = started(tmp_path)
     api.timelines[CONSUMER_RUNS] = [(dt.timedelta(), [a_run(101, CONSUMER_ID)])]

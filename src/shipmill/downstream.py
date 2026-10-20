@@ -730,7 +730,8 @@ class AppRuns:
         runs = _object(answer, path).get("workflow_runs")
         if not isinstance(runs, list):
             raise ReleaseError(f"GET {path} gave no workflow_runs")
-        carries = re.compile(re.escape(sid) + r"(?![a-z0-9-])")  # not the id of a downstream named longer
+        # not the id of a downstream named longer, nor of a library whose owner's name ends with this one's
+        carries = re.compile(r"(?<![A-Za-z0-9-])" + re.escape(sid) + r"(?![a-z0-9-])")
         matched: list[dict[str, Any]] = []
         for run in runs:
             if not isinstance(run, dict) or not isinstance(run.get("id"), int):
