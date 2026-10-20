@@ -63,9 +63,9 @@ STUCK_ROWS = (
 # chain's item in a repo without a gate, or a chain walk that fails, waits on a person too
 # (spec 017): neither stops this repo's releases, and no session can clear it
 CHAIN_ROWS = ("CHAIN_NO_GATE", "CHAIN_UNREADABLE")
-# spec 022's rows, read here with the planner, never by watch_state.py: a goal's milestone
-# waiting on its specs (no verdict: the build work is the factory's), and one a stable tag
-# overtook, which a person renames to the version the lane cuts next
+# spec 022's rows, which watch_state.py reads from `shipmill milestones` (#475): a goal's
+# milestone waiting on its specs (no verdict: the build work is the factory's), and one a
+# stable tag overtook, renamed to the version the lane cuts next
 MILESTONE_WAITING = "MILESTONE_WAITING"
 MILESTONE_OVERTAKEN = "MILESTONE_OVERTAKEN"
 YOURS_ROWS = (
@@ -284,7 +284,6 @@ class Facts:
     command: str  # how a fix names the CLI: cli_command()'s form
     agent_as_person: Flagged | None = None  # spec 012's check, read only with [agents] app_id
     upgrades: Sequence[Offer] = ()  # spec 014's pending upgrades, each with its open issue
-    milestone_error: str | None = None  # spec 022: why the milestones weren't read, when they weren't
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,17 +424,54 @@ def read_upgrades(
     return offers(raw, parse_labelled(gh_read(cmd, run, "gh issue list", pause)))
 
 
-def milestone_rows(repo: str, findings: Sequence[MilestoneWaiting | MilestoneOvertaken]) -> list[Row]:
+@dataclass(frozen=True, slots=True)
+class MilestoneRow:
+    """A spec 022 row as `shipmill milestones` prints it: MILESTONE_WAITING, a goal's milestone
+    waiting on its specs (report only, no fix), or MILESTONE_OVERTAKEN, an open milestone a
+    stable tag took, with its number, the version to rename it to, and the rename"""
+
+    state: str
+    milestone: str
+    detail: str
+    number: int | None = None
+    next: str | None = None
+    fix: str | None = None
+
+    def row(self) -> Row:
+        """As one of watch_state.py's rows, which the summary reads"""
+        return Row(self.state, self.milestone, self.detail, False, self.fix)
+
+    def record(self) -> dict[str, object]:
+        return {
+            "state": self.state,
+            "milestone": self.milestone,
+            "detail": self.detail,
+            "number": self.number,
+            "next": self.next,
+            "fix": self.fix,
+        }
+
+    def text(self) -> str:
+        line = f"{self.state} {self.milestone}: {self.detail}"
+        return line if self.fix is None else f"{line}\n  fix: {self.fix}"
+
+
+def milestone_rows(
+    repo: str, findings: Sequence[MilestoneWaiting | MilestoneOvertaken], command: str
+) -> list[MilestoneRow]:
     """S-022-8, S-022-10: the planner's milestone findings as rows, the milestone the subject:
-    a waiting goal's reasons, or the tag that overtook it, the version next, and the rename"""
+    a waiting goal's reasons, or the tag that overtook it, the version next, and the rename,
+    a write, so through `shipmill gh` (command is cli_command()'s form): as the App when
+    [agents] app_id is set (D-14)"""
     rows = []
     for f in findings:
         if isinstance(f, MilestoneWaiting):
-            rows.append(Row(MILESTONE_WAITING, f.verdict.milestone, f.verdict.reason, False))
+            rows.append(MilestoneRow(MILESTONE_WAITING, f.verdict.milestone, f.verdict.reason))
         else:
             detail = f"{f.version.tag} exists; the {f.lane} lane cuts {f.next} next"
-            rename = f"gh api -X PATCH repos/{repo}/milestones/{f.milestone.number} -f title={f.next}"
-            rows.append(Row(MILESTONE_OVERTAKEN, f.milestone.title, detail, False, rename))
+            number, title = f.milestone.number, str(f.next)
+            rename = f"{command} gh api -X PATCH repos/{repo}/milestones/{number} -f title={title}"
+            rows.append(MilestoneRow(MILESTONE_OVERTAKEN, f.milestone.title, detail, number, title, rename))
     return rows
 
 
@@ -447,12 +483,15 @@ def wants_milestones(root: Path) -> bool:
     )
 
 
-def read_milestones(repo: str, root: Path, head: str, github: GitHub, now: dt.datetime) -> tuple[list[Row], str | None]:
+def read_milestones(
+    repo: str, root: Path, head: str, github: GitHub, now: dt.datetime, command: str
+) -> tuple[list[MilestoneRow], str | None]:
     """Spec 022's rows for the lanes with milestone = true, from the planner the release runs,
-    at head (GitHub's default branch, after watch_state.py's fetch); none and nothing read
-    without such a lane. A read that fails (a policy, a changelog, or a goal the plan can't
-    read, or GitHub) is the second value, shown on the milestone line: the plan's own error
-    is BOT_PLAN_FAILED's already"""
+    at head (GitHub's default branch, fetched); none and nothing read without such a lane.
+    The one source of the rows: `shipmill milestones` prints them, watch_state.py reads that,
+    and `shipmill status` reads watch_state.py (#475). A read that fails (a policy, a
+    changelog, or a goal the plan can't read, or GitHub) is the second value: the plan's own
+    error is BOT_PLAN_FAILED's already"""
     if not wants_milestones(root):
         return [], None
     try:
@@ -460,7 +499,7 @@ def read_milestones(repo: str, root: Path, head: str, github: GitHub, now: dt.da
         findings = Planner(Git(root, policy.bot_name, policy.bot_email), policy, github, now).milestone_findings(head)
     except ReleaseError as error:
         return [], str(error)
-    return milestone_rows(repo, findings), None
+    return milestone_rows(repo, findings, command), None
 
 
 def read_branch(repo: str, run: StateRunner, pause: Callable[[float], None] = time.sleep) -> str:
@@ -1027,9 +1066,7 @@ def item_lines(facts: Facts) -> list[str]:
     untrusted = [(r, int(n)) for r in of("UNTRUSTED") for n in re.findall(r"#(\d+)", r.detail)]
     lines += _fixed("untrusted", [(item(repo, n, n in pulls), fixed(r)) for r, n in untrusted])
     lines += _fixed("chain", [(chain_value(r), fixed(r)) for r in of(*CHAIN_ROWS)])
-    goals = [(milestone_value(r), fixed(r)) for r in of(MILESTONE_WAITING, MILESTONE_OVERTAKEN)]
-    unread = [] if facts.milestone_error is None else [(f"not read: {facts.milestone_error}", None)]
-    lines += _fixed("milestone", [*goals, *unread])
+    lines += _fixed("milestone", [(milestone_value(r), fixed(r)) for r in of(MILESTONE_WAITING, MILESTONE_OVERTAKEN)])
     for name, state, check in CLOSED_LINES:
         closed = sorted((i.number for i in facts.issues if i.state == state), reverse=True)
         lines += _group(name, [f"{item(repo, n, False)}{check}" for n in closed])

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Find the issues a release fixed, and optionally tell each one it shipped.
 
-Usage: shipped.py <owner/repo> <prev-tag> <tag> [--repo-dir PATH] [--install TEXT] [--post]
+Usage: shipped.py <owner/repo> <prev-tag> <tag> [--repo-dir PATH] [--install TEXT]
+                  [--environment NAME] [--post]
 
 Walks `git log <prev-tag>..<tag>` in the local checkout and collects issue numbers from:
   - closing trailers in commit messages ("Fixes #N" at the start of a line)
@@ -24,6 +25,14 @@ Each notice is for one stage (spec 021): `pre-release` for a dev, a, b, or rc ta
 pre-release stage by a pre-release notice no stable notice followed, so a fix is told once
 per stage; a comment that starts "Released in <tag>" (the form before spec 021) counts as
 told at its tag's stage.
+
+With --environment NAME the notices are for that environment's stage instead (S-021-4):
+<tag> succeeded deploying there, and <prev-tag> is what the environment ran before it, so
+only <prev-tag>..<tag> is read. The notice is the marker `<!-- shipmill:available: NAME
+<tag> -->` then "Deployed to NAME in <tag>.", with no command, and an issue with any NAME
+notice is told, so each issue hears of an environment once. NAME is an environment's name
+from the config's [environments]; "pre-release" and "stable" are refused (exit 2), since
+their notices are the release stages'.
 
 Without --post it prints the plan (one line per issue) and posts nothing. With --post it
 posts the notices; the command a notice carries comes from the config's [notices]: `pin`
@@ -58,6 +67,7 @@ from typing import Any, NoReturn
 # github-ship-watch's watch_state.py: one reading of the config's [agents] for every skill script
 WATCH_STATE = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "watch_state.py"
 PRE_RELEASE, STABLE = "pre-release", "stable"
+ENVIRONMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # shipmill's environments._NAME
 # a version tag as shipmill cuts it: X.Y.Z with an optional a, b, or rc pre-release and .devN
 VERSION_TAG = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?(?:\.dev(\d+))?$")
 PRE_RANK = {"a": 1, "b": 2, "rc": 3}
@@ -237,6 +247,25 @@ def told(comments: list[dict[str, Any]], tag: str) -> bool:
     return since_stable
 
 
+def told_in(comments: list[dict[str, Any]], environment: str) -> bool:
+    """Whether the issue was told of the environment, by a notice for it at any tag: an
+    issue hears of each environment once (S-021-4)"""
+    return any(stage == environment for stage, _ in notices_on(comments))
+
+
+def deployed_notice(environment: str, tag: str) -> str:
+    """The comment for the environment's stage: the marker line, then "Deployed to" (S-021-4)"""
+    return f"<!-- shipmill:available: {environment} {tag} -->\nDeployed to {environment} in {tag}."
+
+
+def environment_name(value: str) -> str:
+    """--environment: an environment's name as shipmill's config allows it, and not a release
+    stage's, whose notices would read as told by it"""
+    if ENVIRONMENT.fullmatch(value) is None or value in (PRE_RELEASE, STABLE):
+        raise argparse.ArgumentTypeError(f"not an environment's name: {value!r}")
+    return value
+
+
 def notice(tag: str, command: str) -> str:
     """The comment for tag's stage: the marker line, then "Released in", then for a
     pre-release what a plain install does and what the requester may answer"""
@@ -255,10 +284,12 @@ def tell(
     command: str,
     write: list[str] | None,
     gh: Callable[[list[str]], str] = run,
+    environment: str | None = None,
 ) -> None:
     """One line per issue; with write (the --post gh), comment on each closed one not yet told
-    at tag's stage, with command after its "Released in" sentence. Reads are plain gh; a
-    failed write stops the run, never retried another way"""
+    at tag's stage, with command after its "Released in" sentence, or with environment, each
+    one not yet told of that environment, "Deployed to" it. Reads are plain gh; a failed
+    write stops the run, never retried another way"""
     for number in sorted(issues):
         source = ", ".join(sorted(issues[number]))
         try:
@@ -273,11 +304,13 @@ def tell(
         if view["state"] != "CLOSED":
             print(f"#{number:<5} SKIP open         {view['title'][:60]}  [{source}]")
             continue
-        if told(view["comments"], tag):
+        already = told(view["comments"], tag) if environment is None else told_in(view["comments"], environment)
+        if already:
             print(f"#{number:<5} SKIP notified     {view['title'][:60]}")
             continue
         if write is not None:
-            gh([*write, "issue", "comment", str(number), "-R", repo, "--body", notice(tag, command)])
+            body = notice(tag, command) if environment is None else deployed_notice(environment, tag)
+            gh([*write, "issue", "comment", str(number), "-R", repo, "--body", body])
             print(f"#{number:<5} POSTED            {view['title'][:60]}  [{source}]")
         else:
             print(f"#{number:<5} WOULD POST        {view['title'][:60]}  [{source}]")
@@ -436,6 +469,11 @@ def main() -> int:
     parser.add_argument(
         "--install", default="", help='appended to the notice without [notices] install, e.g. "`uv add pkg==X`"'
     )
+    parser.add_argument(
+        "--environment",
+        type=environment_name,
+        help="tell of a successful deployment of <tag> to this environment, which ran <prev-tag> before",
+    )
     parser.add_argument("--post", action="store_true", help="post the comments (default: print the plan)")
     args = parser.parse_args()
     if "/" not in args.repo:
@@ -445,8 +483,15 @@ def main() -> int:
     write, notices = None, Notices()
     if args.post:
         ws = watch_module()
-        write, notices = writer(Path(args.repo_dir), ws), notices_config(Path(args.repo_dir), ws)
+        write = writer(Path(args.repo_dir), ws)
+        if args.environment is None:  # a deployment's notice carries no command
+            notices = notices_config(Path(args.repo_dir), ws)
     run(["git", "fetch", "-q", "--force", "--tags", "origin"], cwd=args.repo_dir)  # a bot moves major tags such as v0
+    if args.environment is not None:
+        # only what the environment didn't run before: a fix the earlier tag held was told then
+        issues = collect(args.repo, commits(args.repo_dir, args.prev_tag, args.tag))
+        tell(args.repo, issues, args.tag, "", write, environment=args.environment)
+        return 0
     issues = collect(args.repo, release_commits(args.repo_dir, args.prev_tag, args.tag))
     tell(args.repo, issues, args.tag, command_for(args.tag, notices, args.install), write)
     return 0

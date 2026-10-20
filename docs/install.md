@@ -259,11 +259,12 @@ the details.
    The gate's checkout has shipmill plugin installs of its own, apart from the repo's
    (Claude Code keys a project or local install on the folder). With `plugin_update = true`,
    a tick about to start a session checks at most once per 24 hours whether any of them is
-   behind the latest release and, for each one that is, runs `claude plugin update
-   shipmill@shipmill --scope <its scope>` in the checkout first, then reads the installs
-   again: an install still behind, or one in another folder that the update changed, is
-   printed as a failure. A user-scope install is never updated. A failed update is printed
-   on the tick (D-23).
+   behind the latest release and, when one is, refreshes the marketplace once (`claude
+   plugin marketplace update shipmill`: Claude Code updates from its local copy of it), then
+   runs `claude plugin update shipmill@shipmill --scope <its scope>` in the checkout for
+   each, then reads the installs again: an install still behind, or one in another folder
+   that the update changed, is printed as a failure. A user-scope install is never updated.
+   A failed refresh or update is printed on the tick (D-23).
 
    Either way, before it starts a session the gate reads the install a session in its
    checkout would load: the most specific scope the plugin is installed at for the

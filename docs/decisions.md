@@ -335,3 +335,19 @@ entry that supersedes it, never by editing an old one.
 - Applies to: hooks/hooks.json, hooks/delivery.py, src/shipmill/policy.py, src/shipmill/doctor.py, src/shipmill/gate.py, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md, skills/shipmill-setup/SKILL.md, [hooks], [agents] app_id, shipmill gh
 - Enforced by: tests/test_delivery_hooks.py and the doctor and gate tests (with the implementing PR)
 - Supersedes: D-36
+
+## D-41: An environment hears of the fixes since the release it ran before
+
+- Decided: 2026-10-19, in shipmill/shipmill#434
+- Rule: An environment's deployment notice (S-021-4) tells the closed issues fixed from the release tag of the newest earlier successful deployment there (else the release tag just below) up to the deployed tag, so fixes released before an environment's first deployment are never told for it; an environment may not be named pre-release or stable, the notice stages' names (shipped.py --environment exits 2)
+- Why: Read literally, S-021-4 would tell every closed issue the project ever fixed on the first deployment to a new environment, flooding old threads; the maintainer (@romamo, on #434) chose the range, whose cost is that fixes released before an environment's first deployment are never told for it. An environment named like a notice stage would read as told by the release notices, so the name is refused
+- Applies to: skills/github-pr-triage/scripts/shipped.py, skills/github-ship-watch/scripts/watch_state.py, docs/specs/021-requester-ring.md
+- Enforced by: tests/test_shipped.py and tests/test_ship_watch.py (S-021-4)
+
+## D-42: A client repo's own docs are the maintainer's
+
+- Decided: 2026-10-20, in shipmill/shipmill#496
+- Rule: shipmill never writes to, appends to, or drafts text for a client repo's own docs (README.md, CONTRIBUTING.md, CLAUDE.md, AGENTS.md, and the like): not in shipmill-setup, init, upgrades, or any agent session. It may read them, for check commands and repo rules, and report what it found as file and line, leaving the change to the maintainer. Files in folders shipmill owns, such as changelog.d/README.md, are not client docs
+- Why: Those files speak for the maintainer to their contributors; text shipmill writes there reads as the maintainer's and goes stale when shipmill changes. Set by @romamo in chat, relayed in #496 and #495
+- Applies to: skills/shipmill-setup, src/shipmill/init.py, src/shipmill/upgrades.py, docs/install.md
+- Enforced by: Review; setup_state.py reports such lines without fixing them

@@ -4,10 +4,12 @@ Claude Code keys a project- or local-scope plugin install on a folder, so the ga
 (`tmp/shipmill-gate`) can have installs of its own, apart from the repo's. With [agents]
 plugin_update = true, a tick that is about to start a session checks at most once per 24
 hours whether any install keyed on the checkout, at project or local scope, is behind
-shipmill's latest release and, when one is, updates it with `claude plugin update --scope
-<its scope>` run in the checkout. Claude Code documents no way to name the project an update
-acts on, so the check reads the installs again afterwards: an install still behind, or an
-install keyed on another folder that the update changed, is reported as a failure. The last
+shipmill's latest release and, when one is, refreshes the marketplace once (`claude plugin
+marketplace update shipmill`; a failure is reported and the update still tried) and updates
+it with `claude plugin update --scope <its scope>` run in the checkout. Claude Code
+documents no way to name the project an update acts on, so the check reads the installs
+again afterwards: an install still behind, or an install keyed on another folder that the
+update changed, is reported as a failure. The last
 check is recorded under the repo's git directory, beside the gate's other state. A failed
 check or update is reported on the tick. A user-scope install is never updated.
 
@@ -26,6 +28,10 @@ from shipmill.errors import ReleaseError
 from shipmill.version import Version
 
 PLUGIN = "shipmill@shipmill"  # the Claude Code plugin, in its marketplace
+MARKETPLACE = PLUGIN.partition("@")[2]  # the marketplace Claude Code installs the plugin from
+# Claude Code updates a plugin from its local copy of the marketplace, which it may not have
+# refreshed since the release: `claude plugin update` alone then leaves the install behind (#477)
+REFRESH = ["claude", "plugin", "marketplace", "update", MARKETPLACE]
 SHIPMILL_REPO = "shipmill/shipmill"  # where shipmill releases
 CHECKED = "plugin-check.json"  # the last check's time, under the gate's state directory
 EVERY = dt.timedelta(hours=24)
@@ -136,8 +142,9 @@ def checkout_installs(installs: list[Install], checkout: Path) -> tuple[Install,
 
 
 def check(checkout: Path, run: Runner) -> PluginUpdate:
-    """Read the checkout's installs and the latest release; update each install that's behind,
-    then read the installs again to confirm the update reached it and no other folder's"""
+    """Read the checkout's installs and the latest release; refresh the marketplace once and
+    update each install that's behind, then read the installs again to confirm the update
+    reached it and no other folder's"""
     listing = ["claude", "plugin", "list", "--json"]
     before = keyed_installs(run(listing, checkout))
     own = checkout_installs(before, checkout)
@@ -149,6 +156,10 @@ def check(checkout: Path, run: Runner) -> PluginUpdate:
     if not behind:
         return PluginUpdate(own, str(latest), ())
     errors = []
+    try:  # a failed refresh is reported; the update may still find the release
+        run(REFRESH, checkout)
+    except ReleaseError as exc:
+        errors.append(str(exc))
     tried = []
     for install in behind:
         try:
@@ -302,8 +313,10 @@ def update_command(install: Listed, installs: list[Listed]) -> str:
     """The command that updates one install, run in its folder: github-ship-watch's fix for
     the same install (watch_state.py's plugin_fix). `claude plugin update` run in a folder picks
     an install at the same scope keyed on a folder nested in it (#233, a Claude Code bug), so
-    with one nested the fix reinstalls the folder's own at that scope instead"""
-    update = f"claude plugin update {PLUGIN} --scope {install.scope}"
+    with one nested the fix reinstalls the folder's own at that scope instead. Either way it
+    refreshes the marketplace first (#477); that isn't folder-specific, so it runs there too"""
+    refresh = " ".join(REFRESH)
+    update = f"{refresh} && claude plugin update {PLUGIN} --scope {install.scope}"
     if install.folder is None:
         return update
     top = install.folder
@@ -313,7 +326,10 @@ def update_command(install: Listed, installs: list[Listed]) -> str:
     if not nested:
         return f"in {top}: {update}"
     scope = install.scope
-    again = f"claude plugin uninstall {PLUGIN} --scope {scope} && claude plugin install {PLUGIN} --scope {scope}"
+    again = (
+        f"{refresh} && claude plugin uninstall {PLUGIN} --scope {scope}"
+        f" && claude plugin install {PLUGIN} --scope {scope}"
+    )
     return f"in {top}: {again} (`update` picks the nested install in {nested[0]}, a Claude Code bug)"
 
 
