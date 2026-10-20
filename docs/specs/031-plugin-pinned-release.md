@@ -305,4 +305,11 @@ It follows the path D-32 set for `[roadmap]`:
 
 ## Issues
 
+- shipmill/shipmill#548: S-031-1, S-031-2, S-031-3, S-031-4, S-031-5
+- shipmill/shipmill#549: S-031-6, S-031-7
+- shipmill/shipmill#550: S-031-8, S-031-9, S-031-10, S-031-11, S-031-12, S-031-14
+- shipmill/shipmill#551: S-031-13, S-031-15, S-031-16, S-031-17, S-031-18, S-031-19, S-031-20
+- shipmill/shipmill#552: S-031-21, S-031-23
+- shipmill/shipmill#553: S-031-22
+
 ## Verification
