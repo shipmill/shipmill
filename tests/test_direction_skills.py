@@ -170,7 +170,7 @@ def test_s024_18_intake_reads_goals_and_non_goals() -> None:
     skill = read(INTAKE / "SKILL.md")
     stock = skill.split("### 1. Take stock", 1)[1].split("### 2. Group", 1)[0]
     assert "shipmill product show --section mission --section users --section goals --section non-goals" in stock
-    assert "uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill product show" in stock
+    assert re.search(r"uvx shipmill==\d+\.\d+\.\d+ product show", stock)  # the plugin's pinned CLI (spec 031)
     assert "open and update no opportunity that pass, and name the problem in the report" in flat(stock)
     assert "read its Mission, Users, Goals, and Non-goals" in _intake_rule()
 

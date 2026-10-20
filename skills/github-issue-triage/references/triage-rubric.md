@@ -14,7 +14,7 @@
 
 ## The direction: the goal it serves
 
-When the default branch has `docs/product.md` (D-34, spec 024), new behaviour is judged against it. Read only the sections each step needs, from the checkout after `git fetch`; where `shipmill` isn't on PATH, and in a headless session, run `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill product show ...`:
+When the default branch has `docs/product.md` (D-34, spec 024), new behaviour is judged against it. Read only the sections each step needs, from the checkout after `git fetch`, each as `uvx shipmill==0.57.0 product show ...`, the release this plugin pins, in every session:
 
 | Step | Sections | Read them with |
 |---|---|---|

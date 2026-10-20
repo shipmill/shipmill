@@ -11,7 +11,9 @@ from typing import Any
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-pr-triage" / "scripts" / "shipped.py"
-APP_GH = ["uvx", "--from", "git+https://github.com/shipmill/shipmill@v0", "shipmill", "--repo"]
+# the plugin's pinned CLI (spec 031): the version in .claude-plugin/plugin.json
+PINNED = json.loads((SCRIPT.parents[3] / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+APP_GH = ["uvx", f"shipmill=={PINNED}", "--repo"]
 CLOSED = json.dumps({"state": "CLOSED", "title": "a fix", "comments": [], "url": "https://github.com/me/demo/issues/5"})
 MARK = "<!-- shipmill:available: stable v1.2.0 -->\n"  # every notice's first line (spec 021)
 

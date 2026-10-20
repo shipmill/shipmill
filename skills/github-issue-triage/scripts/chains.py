@@ -30,8 +30,8 @@ link  writes a link in both forms triage_state.py reads:
 
       Its writes (the relation and the body edit) run as the App when the checkout it runs
       from (the current folder's) sets [agents] app_id in .github/shipmill.toml: through
-      `shipmill gh` with the same arguments, from PATH or else `uvx --from
-      git+https://github.com/shipmill/shipmill@v0 shipmill gh` (spec 012, D-14, #526).
+      `shipmill gh` with the same arguments, as `uvx shipmill==<version> gh`, the version in
+      the plugin's .claude-plugin/plugin.json (spec 012, D-14, #526, spec 031).
       A `shipmill gh` that fails (exit 2: no App identity) stops the link with its message
       and exit 2, never retried with plain gh. Without app_id, plain gh writes as the host's
       login. Reads always use plain gh.
@@ -75,7 +75,7 @@ show prints the chain an issue belongs to, one row per item, each once (by owner
       are never read), a config that can't be parsed, or any gh failure other than an
       unreadable item, a missing config, or a 404 from the collaborator check.
 
-Needs the gh CLI, authenticated, and for link with app_id set shipmill or uvx. Python
+Needs the gh CLI, authenticated, and for link with app_id set uvx. Python
 3.10+, standard library only.
 """
 
@@ -86,7 +86,6 @@ import base64
 import importlib.util
 import json
 import re
-import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -279,25 +278,19 @@ def gh_runner(gh: Sequence[str], execute: Execute = capture) -> Runner:
     return lambda query, variables: gh_graphql(query, variables, gh, execute)
 
 
-def writer(checkout: Path, which: Callable[[str], str | None] = shutil.which) -> list[str]:
+def writer(checkout: Path) -> list[str]:
     """The gh command link's writes go through (#526, D-14): with [agents] app_id set in the
-    checkout's .github/shipmill.toml, `shipmill gh`, from PATH or else through uvx, so the
-    relation and the body edit are the App's; without it, plain gh, the host's login. It is
-    watch_state.py's gh_writer, the one reading every skill script's writes share; a config
-    it refuses exits 2 before any write"""
+    checkout's .github/shipmill.toml, `shipmill gh` as `uvx shipmill==<the plugin's version>`
+    (spec 031), so the relation and the body edit are the App's; without it, plain gh, the
+    host's login. It is watch_state.py's gh_writer, the one reading every skill script's
+    writes share; a config it refuses, or a broken plugin.json, exits 2 before any write"""
     ws = watch_module()
     try:
         command: list[str] = ws.gh_writer(checkout)
     except ws.Refused as refused:
         sys.stderr.write(f"{refused}\n")
         raise SystemExit(2) from None
-    if command == ["gh"]:
-        return command
-    uvx = ["uvx", "--from", ws.SHIPMILL_SOURCE, "shipmill"]
-    if command[: len(uvx)] != uvx:
-        fail(f"watch_state.py's gh_writer gave {command!r}, not `shipmill gh` through uvx")
-    found = which("shipmill")
-    return command if found is None else [found, *command[len(uvx) :]]
+    return command
 
 
 def parse_ref(text: str) -> Ref:

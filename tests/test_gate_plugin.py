@@ -18,6 +18,7 @@ from shipmill.gate import Action, Decision, Waiting, gate, state_dir, tick_lines
 from shipmill.gitrepo import Git
 from shipmill.plugin import (
     CHECKED,
+    READ_MARKETPLACE,
     Install,
     Listed,
     PluginUpdate,
@@ -39,9 +40,15 @@ UPDATE = ["claude", "plugin", "update", "shipmill@shipmill", "--scope"]
 REFRESH = ["claude", "plugin", "marketplace", "update", "shipmill"]
 
 
+def marketplace(ref: str) -> str:
+    """shipmill/shipmill's marketplace.json, as the gh api read gives it raw, naming ref"""
+    entry = {"name": "shipmill", "source": {"source": "github", "repo": "shipmill/shipmill", "ref": ref}}
+    return json.dumps({"name": "shipmill", "plugins": [entry]}) + "\n"
+
+
 @dataclass
 class FakeRunner:
-    """claude plugin list, gh release view, claude plugin marketplace update, and claude plugin
+    """claude plugin list, the marketplace's gh api read, claude plugin marketplace update, and claude plugin
     update, without either tool.
     installs maps (scope, folder) to a version; an update at a scope run in cwd sets the
     install keyed on `acts_on(cwd)` (the cwd itself by default) to the latest release"""
@@ -71,8 +78,8 @@ class FakeRunner:
                 for (scope, folder), version in self.installs.items()
             ]
             return json.dumps(listed)
-        if cmd[:3] == ["gh", "release", "view"]:
-            return self.latest + "\n"
+        if cmd == READ_MARKETPLACE:
+            return marketplace(self.latest)
         if cmd == REFRESH:
             if self.fail_refresh:
                 raise ReleaseError("claude plugin marketplace update failed: offline")

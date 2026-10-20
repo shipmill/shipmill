@@ -62,10 +62,11 @@ Labels (the triage skills and shipmill read them):
                    section in either mode, needs-decision, human (a person's item,
                    spec 017), and shipmill-upgrade-later (a config upgrade's "not
                    now", spec 014) don't exist; --fix creates
-                   them on GitHub, as the App through `uvx --from
-                   git+https://github.com/shipmill/shipmill@v0 shipmill gh` when [agents]
-                   sets app_id (spec 012), else with plain gh; a `shipmill gh` exit 2
-                   stops --fix, never retried with plain gh
+                   them on GitHub, as the App through `uvx shipmill==<version> gh`
+                   (the version in the plugin's .claude-plugin/plugin.json, spec 031) when
+                   [agents] sets app_id (spec 012), else with plain gh; a `shipmill gh`
+                   exit 2 stops --fix, never retried with plain gh, and a missing or
+                   malformed plugin.json exits 2 naming it
   LABELS_OK        all exist
 
 Branches (the repo setting delete_branch_on_merge; github-pr-triage's stacked merges rely

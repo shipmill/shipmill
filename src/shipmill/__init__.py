@@ -1,13 +1,15 @@
 """Release lanes driven by a hand-written CHANGELOG"""
 
+import importlib.metadata
 import os
 import shutil
 import sys
 from pathlib import Path
 
-# The CLI from git with nothing installed: what a hint names when no `shipmill` on PATH is the
-# running one (#223), and what a file init writes names, since anyone may read it
-UVX = "uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill"
+# The CLI from PyPI with nothing installed, pinned to the running release (spec 031): what a
+# hint names when no `shipmill` on PATH is the running one (#223), and what a file init writes
+# names, since anyone may read it
+UVX = f"uvx shipmill=={importlib.metadata.version('shipmill')}"
 
 
 def cli_command(path: str | None = None, prefix: str = sys.prefix) -> str:

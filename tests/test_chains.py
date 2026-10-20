@@ -10,7 +10,8 @@ from typing import Any
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "github-issue-triage" / "scripts"
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS = ROOT / "skills" / "github-issue-triage" / "scripts"
 
 
 @pytest.fixture(scope="module")
@@ -336,7 +337,11 @@ def test_the_script_runs_from_its_folder_and_refuses_a_malformed_reference_befor
 # -- #526: with [agents] app_id set, link writes as the App (D-14)
 
 APP_CONFIG = '[agents]\nprompt = "Triage the repo"\napp_id = 123\n'
-UVX = ["uvx", "--from", "git+https://github.com/shipmill/shipmill@v0", "shipmill"]
+# the plugin's pinned CLI, never a shipmill from PATH (spec 031, D-43)
+UVX = [
+    "uvx",
+    f"shipmill=={json.loads((ROOT / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))['version']}",
+]
 
 
 def checkout(root: Path, config: str | None) -> Path:
@@ -378,11 +383,10 @@ def test_526_the_writer_is_shipmill_gh_with_app_id_and_plain_gh_without(ch: Modu
     app = checkout(tmp_path / "app", APP_CONFIG)
     plain = checkout(tmp_path / "plain", '[agents]\nprompt = "Triage the repo"\n')
     bare = checkout(tmp_path / "bare", None)
-    assert ch.writer(app, which=lambda name: None) == [*UVX, "--repo", str(app.resolve()), "gh"]
-    on_path = ch.writer(app / ".github", which=lambda name: f"/opt/bin/{name}")  # from a subfolder too
-    assert on_path == ["/opt/bin/shipmill", "--repo", str(app.resolve()), "gh"]
-    assert ch.writer(plain, which=lambda name: "/opt/bin/shipmill") == ["gh"]
-    assert ch.writer(bare, which=lambda name: "/opt/bin/shipmill") == ["gh"]
+    assert ch.writer(app) == [*UVX, "--repo", str(app.resolve()), "gh"]
+    assert ch.writer(app / ".github") == [*UVX, "--repo", str(app.resolve()), "gh"]  # from a subfolder too
+    assert ch.writer(plain) == ["gh"]
+    assert ch.writer(bare) == ["gh"]
 
 
 def test_526_a_config_with_app_id_it_cannot_read_exits_2(
@@ -390,7 +394,7 @@ def test_526_a_config_with_app_id_it_cannot_read_exits_2(
 ) -> None:
     broken = checkout(tmp_path, "[agents]\napp_id = \n")
     with pytest.raises(SystemExit) as exit_:
-        ch.writer(broken, which=lambda name: None)
+        ch.writer(broken)
     assert exit_.value.code == 2
     assert "error:" in capsys.readouterr().err
 
@@ -401,7 +405,7 @@ def test_526_with_app_id_the_relation_and_the_body_edit_go_through_shipmill_gh(
 ) -> None:
     a = forge.add("o/r#5", "Build the page.\r\n")
     b = forge.add("o/r#4")
-    prefix = ch.writer(checkout(tmp_path, APP_CONFIG), which=lambda name: None)
+    prefix = ch.writer(checkout(tmp_path, APP_CONFIG))
     app = AppGh(forge, prefix)
     how = "--child" if child else "--blocked-by"
     assert ch.main(["link", "o/r#5", how, "o/r#4"], run=forge, write=ch.gh_runner(prefix, app)) == 0
@@ -422,7 +426,7 @@ def test_526_a_refused_relation_still_writes_the_line_as_the_app(
     forge.refuse_write = "Issues must belong to the same owner"
     forge.add("o/r#1")
     forge.add("someone/else#2")
-    prefix = ch.writer(checkout(tmp_path, APP_CONFIG), which=lambda name: "/opt/bin/shipmill")
+    prefix = ch.writer(checkout(tmp_path, APP_CONFIG))
     app = AppGh(forge, prefix)
     assert ch.main(["link", "o/r#1", "--child", "someone/else#2"], run=forge, write=ch.gh_runner(prefix, app)) == 0
     assert forge.body("o/r#1") == "Depends on someone/else#2"
@@ -435,7 +439,7 @@ def test_526_an_exit_2_from_shipmill_gh_stops_the_link_with_no_fallback(
 ) -> None:
     forge.add("o/r#5", "Body")
     forge.add("o/r#4")
-    prefix = ch.writer(checkout(tmp_path, APP_CONFIG), which=lambda name: None)
+    prefix = ch.writer(checkout(tmp_path, APP_CONFIG))
     app = AppGh(forge, prefix, code=2)
     with pytest.raises(SystemExit) as exit_:
         ch.main(["link", "o/r#5", "--blocked-by", "o/r#4"], run=forge, write=ch.gh_runner(prefix, app))
@@ -462,20 +466,20 @@ else:
     print(json.dumps({{"data": {{"node": {{"blockedBy": {{
         "pageInfo": {{"hasNextPage": False, "endCursor": None}}, "nodes": []}}}}}}}}))
 """
-FAKE_SHIPMILL = """#!{python}
+FAKE_UVX = """#!{python}
 import json, os, sys
 with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as log:
-    log.write(json.dumps(["shipmill", *sys.argv[1:]]) + "\\n")
+    log.write(json.dumps(["uvx", *sys.argv[1:]]) + "\\n")
 sys.stderr.write("error: the App's private key is missing\\n")
 sys.exit({code})
 """
 
 
 def run_script(tmp_path: Path, config: str | None, code: int = 2) -> tuple[subprocess.CompletedProcess[str], list[Any]]:
-    """chains.py link run from a checkout, with a stand-in gh and shipmill on PATH"""
+    """chains.py link run from a checkout, with a stand-in gh and uvx on PATH"""
     bin_dir, log = tmp_path / "bin", tmp_path / "log.jsonl"
     bin_dir.mkdir()
-    for name, text in (("gh", FAKE_GH), ("shipmill", FAKE_SHIPMILL)):
+    for name, text in (("gh", FAKE_GH), ("uvx", FAKE_UVX)):
         (bin_dir / name).write_text(text.format(python=sys.executable, code=code), encoding="utf-8")
         (bin_dir / name).chmod(0o700)
     repo = checkout(tmp_path / "repo", config)
@@ -495,10 +499,10 @@ def test_526_run_from_a_checkout_with_app_id_the_script_writes_through_shipmill_
     proc, calls = run_script(tmp_path, APP_CONFIG)
     assert proc.returncode == 2
     assert "the App's private key is missing" in proc.stderr
-    shipmill = [c for c in calls if c[0] == "shipmill"]
+    shipmill = [c for c in calls if c[0] == "uvx"]
     top = str((tmp_path / "repo").resolve())
-    assert len(shipmill) == 1 and shipmill[0][1:6] == ["--repo", top, "gh", "api", "graphql"]
-    assert "addBlockedBy" in shipmill[0][7]
+    assert len(shipmill) == 1 and shipmill[0][1:7] == [UVX[1], "--repo", top, "gh", "api", "graphql"]
+    assert "addBlockedBy" in shipmill[0][8]
     assert all("mutation" not in c[4] for c in calls if c[0] == "gh")  # reads only, never a plain-gh write
 
 

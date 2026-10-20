@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "shipmill",
-      "source": "./",
+      "source": {"source": "github", "repo": "shipmill/shipmill", "ref": "v0.57.0"},
       "description": "The open-source AI software factory for GitHub: triage issues, land pull requests, and release, deploy, and roll back by policy"
     }
   ]

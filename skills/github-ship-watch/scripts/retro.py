@@ -12,7 +12,8 @@ gather   runs metrics.py over the --days to now and over the --days before that,
          changes). Read-only
          --goals adds the report per goal of the direction (spec 027), read from DIR, a
          checkout whose HEAD is origin/HEAD's commit (else exit 2), through `shipmill product
-         show --json` (shipmill on PATH, else uvx; a direction it refuses exits 2); without
+         show --json` (as `uvx shipmill==<version>`, the version in the plugin's
+         .claude-plugin/plugin.json, spec 031; a direction it refuses exits 2); without
          docs/product.md it says so and exits 0. "A week" is one --days window. Per goal: the
          issues closed as completed and the pull requests merged that served it, this week
          and the week before (an issue by its latest trusted verdict comment's `Serves:`, or
@@ -32,7 +33,7 @@ dedupe   each proposed issue title against the repo's open issues: DUPLICATE wit
 
 Exit 0 on success (dedupe: every title is new), 1 when dedupe finds a duplicate, 2 on bad
 input or a gh, git, shipmill, or metrics.py failure. Needs the gh CLI, authenticated, and for
---goals git and shipmill or uvx. Python 3.10+, standard library only.
+--goals git and uvx. Python 3.10+, standard library only.
 """
 
 from __future__ import annotations
@@ -41,7 +42,6 @@ import argparse
 import datetime as dt
 import json
 import re
-import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -54,8 +54,6 @@ from metrics import PULL_COMMITS, Runner, Variables, agent_made, gh_graphql, pag
 METRICS = Path(__file__).resolve().parent / "metrics.py"
 PR_LIMIT = 500  # closed pull requests in one window; more is refused, not truncated
 ISSUE_LIMIT = 1000
-# Where uvx gets shipmill when it isn't on PATH, the form the skills use
-SHIPMILL_SOURCE = "git+https://github.com/shipmill/shipmill@v0"
 
 
 @dataclass(frozen=True)
@@ -158,9 +156,19 @@ class Sources:
 def sources_for(args: argparse.Namespace) -> Sources:
     extra = [f"--environment={e}" for e in args.environment] + [f"--bot={b}" for b in args.bot]
     extra.append(f"--incident-label={args.incident_label}")
-    on_path = shutil.which("shipmill")
-    shipmill = (on_path,) if on_path else ("uvx", "--from", SHIPMILL_SOURCE, "shipmill")
+    shipmill = pinned_shipmill() if args.goals else ()
     return Sources(gh, lambda until: metrics(args.repo, args.days, until, extra), shipmill=shipmill)
+
+
+def pinned_shipmill(plugin: Path | None = None) -> tuple[str, ...]:
+    """`uvx shipmill==<version>`, the version in the plugin's .claude-plugin/plugin.json, as
+    every skill runs the CLI (spec 031); a missing or malformed one exits 2 naming it"""
+    import watch_state  # beside this script; loaded only for --goals, the one read that runs shipmill
+
+    try:
+        return tuple(watch_state.shipmill_cli(None, plugin or watch_state.PLUGIN_JSON))
+    except watch_state.Refused as refused:
+        raise fail(str(refused).removeprefix("error: ")) from None
 
 
 def gather(args: argparse.Namespace, sources: Sources) -> int:

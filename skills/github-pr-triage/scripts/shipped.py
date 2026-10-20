@@ -40,11 +40,13 @@ for a pre-release, `install` for a stable release, each taking {version}, {tag},
 {name}. Without the policy's command, --install text is used, as before spec 021, except
 that a pre-release gets no command when the policy sets only `install`. When the
 checkout's .github/shipmill.toml sets [agents] app_id, each comment posts through
-`uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill gh`, as the App (spec 012);
-without it, plain gh posts as the host's login. Reads always use plain gh.
+`uvx shipmill==<version> gh`, as the App (spec 012), the version in the plugin's own
+.claude-plugin/plugin.json (spec 031); without it, plain gh posts as the host's login. Reads
+always use plain gh.
 
 Exit 0 on success (including nothing to do), 2 on bad input, a config github-ship-watch's
-watch_state.py refuses or a [notices] section with --post that isn't the one the policy
+watch_state.py refuses, a missing or malformed plugin.json with app_id set, or a [notices]
+section with --post that isn't the one the policy
 accepts, or a git/gh failure (a `shipmill gh` exit 2 among them: the comment
 is never retried with plain gh). Needs git and an authenticated gh CLI, and uvx with app_id
 set. Python 3.10+, standard library only.
