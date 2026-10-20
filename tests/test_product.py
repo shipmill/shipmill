@@ -59,6 +59,14 @@ def test_s024_1_the_repos_own_direction_is_well_formed(capsys: pytest.CaptureFix
     assert capsys.readouterr().out.startswith(f"{DIRECTION}: well formed")
 
 
+def test_ci_runs_product_and_review_check() -> None:
+    # spec 024's Behaviour: "CI runs both checks too"; no criterion covers that sentence (#493)
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    lines = [line.strip().removeprefix("- ").removeprefix("run: ").strip() for line in text.splitlines()]
+    assert "uv run shipmill product check" in lines
+    assert "uv run shipmill review check" in lines
+
+
 def test_s024_1_a_synthetic_direction_is_well_formed_with_gaps_and_an_empty_non_goals(tmp_path: Path) -> None:
     direction = read(write(tmp_path, WELL_FORMED))
     assert direction.name == "Acme"
@@ -217,8 +225,8 @@ def test_s024_2_show_json_prints_name_mission_and_items(tmp_path: Path, capsys: 
         "mission": "Acme ships widgets.\n\nIt ships them fast.",
         "users": [{"id": "U-1", "text": "A widget buyer"}],
         "goals": [
-            {"id": "G-1", "text": "Widgets reach buyers in a day"},
-            {"id": "G-3", "text": "Buyers can track a widget"},
+            {"id": "G-1", "text": "Widgets reach buyers in a day", "measure": None},
+            {"id": "G-3", "text": "Buyers can track a widget", "measure": None},
         ],
         "non_goals": [],
         "quality": [{"id": "Q-1", "text": "Every widget is tested"}],
@@ -230,8 +238,8 @@ def test_s024_2_section_prints_only_that_section(tmp_path: Path, capsys: pytest.
     assert run(root, "show", "--section", "goals", "--json") == 0
     assert json.loads(capsys.readouterr().out) == {
         "goals": [
-            {"id": "G-1", "text": "Widgets reach buyers in a day"},
-            {"id": "G-3", "text": "Buyers can track a widget"},
+            {"id": "G-1", "text": "Widgets reach buyers in a day", "measure": None},
+            {"id": "G-3", "text": "Buyers can track a widget", "measure": None},
         ]
     }
     assert run(root, "show", "--section", "quality", "--section", "non-goals", "--json") == 0

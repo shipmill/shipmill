@@ -66,12 +66,14 @@ def test_s015_5_a_trigger_that_needs_polling_gets_the_hourly_tick(repo: Repo, la
     assert needed(repo.policy, TODAY) == Ticks(hourly=True)
 
 
-def test_s015_5_the_starting_policy_keeps_the_release_workflow_init_wrote(repo: Repo) -> None:
-    """init derives the cron from the policy it writes, whose stable lane sets milestone"""
+def test_s015_7_the_starting_policy_needs_no_tick_so_init_writes_none(repo: Repo) -> None:
+    """init derives the schedule from the policy it writes, whose lanes since spec 029 are a
+    stable lane on quiet_minutes and the hotfix lane: no schedule, else the file init always wrote"""
+    unscheduled = re.sub(r"  schedule:\n    - cron: .*\n", "", GOLDEN.read_text(encoding="utf-8"))
     assert main(["--repo", str(repo.root), "init", "--force"]) == 0
-    assert (repo.root / CALLER).read_bytes() == GOLDEN.read_bytes()
+    assert (repo.root / CALLER).read_text(encoding="utf-8") == unscheduled
     assert main(["--repo", str(repo.root), "init", "--caller", "--force"]) == 0
-    assert (repo.root / CALLER).read_bytes() == GOLDEN.read_bytes()
+    assert (repo.root / CALLER).read_text(encoding="utf-8") == unscheduled
 
 
 WINDOWS = [
@@ -105,7 +107,7 @@ def test_s015_6_two_lanes_whose_windows_share_a_utc_time_give_one_line(repo: Rep
         repo,
         "[lanes.dev]\nquiet_minutes = 30\n\n"
         '[lanes.rc]\nschedule = ["Mon-Fri 07:00 Europe/Kyiv"]\n\n'
-        '[lanes.stable]\npromote_from = "rc"\nmin_soak_days = 3\nschedule = ["Mon 04:00 UTC"]\n\n'
+        '[lanes.stable]\npromote_from = "rc"\nschedule = ["Mon 04:00 UTC"]\n\n'
         "[lanes.hotfix]\n",
     )
     assert list(crons(_written(repo))) == ["0 4 * * 1,2,3,4,5", "0 5 * * 1,2,3,4,5"]

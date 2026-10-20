@@ -312,13 +312,13 @@ footer nav { display: flex; flex-wrap: wrap; gap: 6px 18px }
     <div class="two">
       <div>
         <p class="kicker">Release lanes</p>
-        <h2>Most users get releases that real users already ran</h2>
-        <p>Each pull request adds its own CHANGELOG entry, and the entries decide the next version. Installers skip <code>dev</code> and <code>rc</code> unless asked, so someone who needs a fix today pins the pre-release while everyone else waits for a stable one that soaked.</p>
+        <h2>A stable release after every green batch</h2>
+        <p>Each pull request adds its own CHANGELOG entry, and the entries decide the next version. CI runs on the exact release commit before it is tagged, and a breaking change waits for your decision. Installers skip <code>dev</code> and <code>rc</code> unless asked, so someone who wants to try a change first pins the pre-release.</p>
       </div>
       <div class="lanes">
         <div class="lane"><b>dev</b><div class="track"><span>1.5.0.dev410</span><span>.dev411</span><span class="hot">.dev412</span></div><p>From main after every batch of merges</p></div>
         <div class="lane"><b>rc</b><div class="track"><span>1.5.0rc1</span><span class="hot">1.5.0rc2</span></div><p>From main each workday morning</p></div>
-        <div class="lane"><b>stable</b><div class="track"><span>1.4.0</span><span class="hot">1.5.0</span></div><p>An rc that soaked without a blocker</p></div>
+        <div class="lane"><b>stable</b><div class="track"><span>1.4.0</span><span class="hot">1.5.0</span></div><p>From main after every green batch; a breaking change waits for you</p></div>
         <div class="lane"><b>hotfix</b><div class="track"><span>release/1.4</span><span class="hot">1.4.1</span></div><p>The pull requests you name, by hand only</p></div>
       </div>
     </div>

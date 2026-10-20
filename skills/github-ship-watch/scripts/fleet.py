@@ -92,10 +92,12 @@ ACTION = frozenset(
         "BRANCH_DELETE_OFF",
         "SHIPMILL_OUTDATED",
         "GATE_NO_APP",
+        "GATE_SESSIONS_DEAD",
         "SKILL_SHADOWED",
         "UPGRADE_PENDING",
         "CHAIN_NO_GATE",
         "CHAIN_UNREADABLE",
+        "MILESTONE_OVERTAKEN",
     }
 )
 REPO_ERROR = "REPO_ERROR"

@@ -2,6 +2,15 @@
 
 Fill in the `{...}` fields and send one brief per PR, all in one message so the agents run in parallel (`subagent_type: general-purpose`, `isolation: "worktree"`). Don't hand the reviewer a verdict; hand it the PR's specific risks.
 
+**The rubric, the direction, and the plan (spec 024).** Read them in a checkout at `origin/<default>` after `git fetch`, never on the PR's branch, which could rewrite its own rules; where `shipmill` isn't on PATH, and in a headless session, run each as `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill <command>`:
+
+- `{review_rubric}`: `shipmill review show --path <file> ...` with every file of `gh pr diff <N> --name-only`, which merges the root `REVIEW.md` with those of the directories the diff touches: Important rules (`I-n`, a subdirectory's cited as `skills/I-2`), the nit cap, Protected areas, and the free sections as they are. Without a `REVIEW.md`, drop the field
+- `{direction}`: `shipmill product show --section goals --section non-goals --section quality`. Without `docs/product.md`, drop the field
+- `{cap}`: the most nits a review raises, the merged rubric's `cap:` (5 when its files set none); without a `REVIEW.md`, drop the clauses that name it
+- `{plan}`: the PR body's `## Plan` section as written (`gh pr view <N> --json body`); without one, drop the field
+
+Without a `REVIEW.md`, a `docs/product.md`, and a plan, the brief is as before: drop the lines that hold the dropped fields.
+
 ## Open PR
 
 ```text
@@ -9,6 +18,15 @@ Review GitHub PR #{N} of {owner/repo} ("{title}", fixes #{issue}). The repo is a
 {In a headless gate session:} Run one allowlisted command per Bash call: `git -C <dir>`, not `cd <dir> &&`; no variable assignments, `;` or `&&` chains, or pipes into tools not on the list. A chained call is denied whole when any part isn't on the list; rerun its commands as separate calls. A command that isn't on the list at all is a finding: stop that step and report it (github-issue-triage's needs-decision.md, A denied tool call is a decision).
 
 {context: what the PR claims, what it's stacked on, whether the default branch has moved, and any peer session working near it (don't touch its worktree)}
+
+{When the repo has a REVIEW.md:} The repo's review rubric, from the default branch (root and the touched directories):
+{review_rubric}
+
+{When the repo has docs/product.md:} The product's direction, its Goals, Non-goals, and Quality bar:
+{direction}
+
+{When the PR body has a ## Plan section:} The PR's plan:
+{plan}
 
 1. `git fetch origin`, `git fetch origin pull/{N}/head:review-{N}`, then `git checkout review-{N}`. Rebase onto origin/{default} locally and report which files conflicted and how you resolved each:
    - CHANGELOG: keep every entry from both sides, and check that new entries sit under Unreleased, not inside a released section. {When `.github/shipmill.toml` sets `[changelog] fragments`: the PR adds its entry as a new fragment in that folder and leaves `CHANGELOG.md` alone; `changelog_guard.py check --base origin/{default}` must exit 0, and on a line added under Unreleased move the entry into the fragment it names}
@@ -23,8 +41,11 @@ Review GitHub PR #{N} of {owner/repo} ("{title}", fixes #{issue}). The repo is a
    - Whether the code matches the design in the issue's triage comment, for a contract change
    - For a PR that builds a spec (its issue links `docs/specs/NNN-<slug>.md`): run `{specs_script} coverage --spec NNN` and read each test it lists. Check the test really asserts its criterion: the script finds names, you judge substance. A criterion this PR delivers with no test, or a test whose assertions don't match its criterion's statement, is a finding. If the PR moves the spec to `status: built`, check that its Verification section says how each criterion was checked on the code, not just that the tests pass, and run `{specs_script} check`
    - Whether CHANGELOG, README, and docs agree with the code
+   - {When the brief holds a plan:} Whether the diff departs from the plan (files it didn't name, steps it skipped, proof it doesn't hold) without the plan saying why: a finding
+   - {When the brief holds the direction:} A change that hits a non-goal (cite `N-n`), or breaks a quality-bar item (cite `Q-n`): a finding
+   - {When the brief holds a rubric:} A change that breaks an Important rule: a finding citing its id (`I-n`, or `skills/I-2` for a subdirectory's). A nit never blocks the verdict: report at most {cap} nits, the rubric's `cap:`, and drop the rest
 4. Reproduce each real bug before fixing it. Commit each small fix with a regression test that fails on the old code, on review-{N}, and rerun the affected checks. Leave larger problems as findings.
-5. Final report, under 250 words: verdict (MERGE / MERGE AFTER SMALL FIX / REFUSE), rebase status, test results, findings with file:line (fixed or not), and the HEAD SHA of review-{N}.
+5. Final report, under 250 words: verdict (MERGE / MERGE AFTER SMALL FIX / REFUSE), rebase status, test results, findings with file:line (fixed or not){ and the `I-n`, `N-n`, or `Q-n` each cites}{, at most {cap} nits}, and the HEAD SHA of review-{N}.
 ```
 
 ## Post-merge review

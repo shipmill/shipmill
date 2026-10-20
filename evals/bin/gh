@@ -9,7 +9,10 @@ working directory, where `evals/scaffold.sh` copied the case's `fixture/`:
       gh/<key>.json   one recorded read: {"args": [...], "stdout": "...", "stderr": "...", "exit": 0}
       gh.jsonl        every call, one JSON line: {"kind": "read" | "write" | "miss", "args": [...]}
                       plus "body" (a --body-file's or a `body=@file` field's content) and
-                      "input" (an `api --input` file's content) where the call has them
+                      "input" (an `api --input` file's content) where the call has them,
+                      and "via": "shipmill" after "kind" when it came through `shipmill gh`
+                      (the sibling `shipmill` and `uvx` shims), so a plain gh write logs
+                      `{"kind": "write", "args": ...` and a grader can refuse it
 
 <key> is the first 16 hex digits of the sha256 of the normalised argv as JSON. Normalising
 splits `--flag=value` into `--flag value` and spells `-R` as `--repo`; nothing else changes,
@@ -174,7 +177,10 @@ def classify(args: list[str]) -> str:
 
 
 def logged(kind: str, args: list[str]) -> dict[str, object]:
-    line: dict[str, object] = {"kind": kind, "args": args}
+    line: dict[str, object] = {"kind": kind}
+    if os.environ.get("EVAL_GH_VIA") == "shipmill":  # set by the shipmill and uvx shims
+        line["via"] = "shipmill"
+    line["args"] = args
     if args and args[0] == "api":
         body = field(args[1:], "body")
         inputs = values(args[1:], {"--input"})

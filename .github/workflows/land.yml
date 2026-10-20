@@ -5,8 +5,9 @@ name: shipmill land
 # alone (a pre-release, or a stable release promoted while main moved on, which then gets a
 # sync commit on main). It tags, publishes, and starts the lane's dispatch workflows.
 # Whatever happened, the work branch is deleted: a failed release is planned again. Under
-# release = "propose" it then closes the lane's proposal issue, and it proposes the config
-# upgrades the repo hasn't decided (spec 014).
+# release = "propose", or for a stable lane that can hold a breaking change (spec 029), it
+# then closes the lane's proposal issue, and it proposes the config upgrades the repo hasn't
+# decided (spec 014).
 
 on:
   workflow_call:
@@ -70,9 +71,10 @@ jobs:
             | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Closes the lane's "Ready to release" issue, with the tag and this run. It sets no
-  # permissions, so it runs with the caller's grant: under release = "propose" closing needs
-  # `issues: write` on the caller's land job; without it this job fails, after the release
-  # landed. Under any other release autonomy it reads nothing from GitHub
+  # permissions, so it runs with the caller's grant: under release = "propose", or on a stable
+  # lane whose [bump] has `major` headings, closing needs `issues: write` on the caller's land
+  # job; without it this job fails, after the release landed. Otherwise it reads nothing from
+  # GitHub
   close-proposal:
     needs: land
     runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}

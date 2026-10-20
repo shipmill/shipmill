@@ -5,7 +5,8 @@ name: shipmill prepare
 # the release commit and pushes it to a work branch for the caller's CI. In dry-run it shows
 # the release commit in the run summary and pushes nothing. When [autonomy] release is
 # propose, or an open shipmill-hold issue stops automatic releases, it opens or updates one
-# issue per due lane instead.
+# issue per due lane instead; a breaking stable candidate gets one too, which a person
+# releases by starting the stable lane by hand (spec 029).
 
 on:
   workflow_call:
@@ -110,8 +111,10 @@ jobs:
           DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
           HOTFIX_PRS: ${{ inputs.hotfix-prs }}
           HOTFIX_FROM: ${{ inputs.hotfix-from }}
+          ACTOR: ${{ github.triggering_actor }} # a breaking stable release started by hand needs a person
         run: |
           args=(plan --github-output "$GITHUB_OUTPUT")
+          [ -n "$ACTOR" ] && args+=(--actor "$ACTOR")
           [ -n "$LANE" ] && args+=(--lane "$LANE")
           [ -n "$DRY_RUN" ] && args+=(--dry-run)
           [ -n "$HOTFIX_PRS" ] && args+=(--hotfix-prs "$HOTFIX_PRS")
@@ -161,12 +164,16 @@ jobs:
 
   # Opens or updates the issue for each lane the plan proposed. It sets no permissions, so
   # it runs with the caller's grant: proposing needs `issues: write` on the caller's prepare
-  # job, and a caller without it fails here, after nothing was released
+  # job, and a caller without it fails here. A run that releases rc or dev proposes a breaking
+  # stable candidate beside it (spec 029); its failure then doesn't stop that release's CI.
+  # Its group is its own: proposals still go one at a time across runs, but a propose job
+  # never waits behind, or cancels a pending, prepare or land in the `shipmill` group
   propose:
     needs: prepare
-    if: needs.prepare.outputs.action == 'propose' && needs.prepare.outputs.mode == 'release'
+    if: needs.prepare.outputs.proposals != '' && needs.prepare.outputs.mode == 'release'
+    continue-on-error: ${{ needs.prepare.outputs.action == 'release' }}
     concurrency:
-      group: shipmill
+      group: shipmill-propose
       cancel-in-progress: false
     runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     steps:

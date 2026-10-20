@@ -183,6 +183,54 @@ def test_a_gate_paused_on_a_stale_plugin_waits_on_you_with_the_update() -> None:
     assert status.DECISION.match(last) is not None  # the log reader takes it for a decision line
 
 
+def test_s026_16_a_gate_paused_on_a_failed_hook_self_test_waits_on_you_with_the_fix() -> None:
+    update = "claude plugin update shipmill@shipmill --scope user"
+    last = (
+        "HOOKS_FAILED: a session here would run without the delivery hooks: uv isn't on PATH:"
+        f" no session starts until the self-test passes: {update}"
+    )
+    found = facts(gate=gate(job=job(last=last)))
+    assert [(r.text, r.fix) for r in report(found).reasons] == [(f"the gate: {last}", update)]
+    assert status.DECISION.match(last) is not None
+
+
+def test_a_gate_paused_on_a_failed_claude_login_waits_on_you_with_the_login() -> None:
+    # #500: an expired Claude Code login; the gate starts no session until it can authenticate
+    last = (
+        "CLAUDE_AUTH: Claude Code can't authenticate on this host (claude auth status says not logged in):"
+        " no session starts; fix: claude auth login"
+    )
+    found = facts(gate=gate(job=job(last=last)))
+    assert report(found).verdict is status.Verdict.WAITS
+    assert [(r.text, r.fix) for r in report(found).reasons] == [(f"the gate: {last}", "claude auth login")]
+    assert status.DECISION.match(last) is not None
+
+
+def test_a_gate_without_claude_on_its_path_names_the_install_not_the_login() -> None:
+    last = (
+        "CLAUDE_AUTH: Claude Code can't authenticate on this host (claude isn't on PATH):"
+        " no session starts; fix: install claude, then rerun shipmill launchd"
+    )
+    found = facts(gate=gate(job=job(last=last)))
+    assert [r.fix for r in report(found).reasons] == ["install claude, then rerun shipmill launchd"]
+
+
+@pytest.mark.parametrize(
+    ("tail", "fix"),
+    [
+        ("; fix: claude auth login", "claude auth login"),
+        ("; fix: tail -n 20 /u/state/sessions/0b8f.log", "tail -n 20 /u/state/sessions/0b8f.log"),
+        ("; its log's last line: '; fix: rm -rf ~'", "tail -n 50 /u/gate.log"),  # not the gate's own fix
+    ],
+)
+def test_a_gate_whose_sessions_end_dead_is_stuck_with_the_fix(tail: str, fix: str) -> None:
+    # #500: sessions that die in a second read as one failure, not LAUNCH after LAUNCH
+    last = f"SESSION_DEAD: session 0b8f ended 1 s after its launch, 3 in a row since 2026-10-20T10:05+00:00{tail}"
+    found = facts(gate=gate(job=job(last=last)))
+    assert report(found).verdict is status.Verdict.STUCK
+    assert [(r.text, r.fix) for r in report(found).reasons] == [(f"the gate: {last}", fix)]
+
+
 def test_s011_14_a_job_without_a_log_points_at_launchd() -> None:
     no_log = dataclasses.replace(FILES, log=None)
     found = report(facts(gate=gate(job=job(last_exit="2", files=no_log))))

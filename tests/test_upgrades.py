@@ -45,7 +45,7 @@ def shipmill(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 def test_catalogue_ids_are_unique_and_found() -> None:
     ids = [u.id for u in CATALOGUE]
-    assert [str(i) for i in ids] == ["changelog-fragments", "plugin-update"]
+    assert [str(i) for i in ids] == ["changelog-fragments", "plugin-update", "stable-every-batch"]
     assert len(set(ids)) == len(ids)
     assert find(UpgradeId("plugin-update")).line == "plugin_update = true"
     assert find(UpgradeId("changelog-fragments")).line == 'fragments = "changelog.d"'
@@ -245,7 +245,11 @@ def test_apply_refuses_a_table_without_a_header_line_it_can_edit(tmp_path: Path,
 @pytest.mark.parametrize(
     ("config", "upgrade", "error"),
     [
-        (POLICY, "nightly-builds", "unknown upgrade nightly-builds; known: changelog-fragments, plugin-update"),
+        (
+            POLICY,
+            "nightly-builds",
+            "unknown upgrade nightly-builds; known: changelog-fragments, plugin-update, stable-every-batch",
+        ),
         (POLICY, "plugin-update", "upgrade plugin-update doesn't apply: .github/shipmill.toml has no [agents]"),
         (
             POLICY.replace("[changelog]\n", '[changelog]\nfragments = "changelog.d"\n'),

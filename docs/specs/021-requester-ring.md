@@ -138,6 +138,8 @@ It is reported, never a gate.
 - D-25: a stable promotion stamps its rc's base, which the holding rule follows
 - D-29: notices are found by a first-line marker
 - D-31: shipmill reports where a change is available; delivering it is the platform's
+- D-41: an environment's notices count from the release it ran before, and an environment
+  can't be named after a notice stage
 
 ## Issues
 

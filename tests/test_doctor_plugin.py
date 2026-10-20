@@ -48,13 +48,13 @@ def test_a_behind_install_in_the_repo_and_the_gate_checkout_warns_with_statuss_f
     assert found[1] == Check(
         "WARN",
         "plugin",
-        "plugin project 0.31.1, latest v0.32.1; in /work/r: claude plugin uninstall shipmill@shipmill --scope"
-        " project && claude plugin install shipmill@shipmill --scope project (`update` picks the nested install"
-        " in /work/r/tmp/shipmill-gate, a Claude Code bug)",
+        "plugin project 0.31.1, latest v0.32.1; in /work/r: claude plugin marketplace update shipmill"
+        " && claude plugin uninstall shipmill@shipmill --scope project && claude plugin install shipmill@shipmill"
+        " --scope project (`update` picks the nested install in /work/r/tmp/shipmill-gate, a Claude Code bug)",
     )
     assert found[2].detail == (
         "plugin project 0.25.0, latest v0.32.1; in /work/r/tmp/shipmill-gate:"
-        " claude plugin update shipmill@shipmill --scope project"
+        " claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope project"
     )
 
 

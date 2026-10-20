@@ -43,19 +43,37 @@ The plugin gains `hooks/hooks.json` at its root, which Claude Code loads with th
   "hooks": {
     "PreToolUse": [
       {"matcher": "Bash", "hooks": [{"type": "command", "timeout": 10,
-        "command": "uv run --no-project --python '>=3.11' python \"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\" pre"}]}
+        "command": "d=\"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\"; ... else exec \"$p\" \"$d\" pre; fi; ...; exit 1"}]}
     ],
     "PostToolUse": [
       {"matcher": "Edit|Write|MultiEdit", "hooks": [{"type": "command", "timeout": 60,
-        "command": "uv run --no-project --python '>=3.11' python \"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\" post"}]}
+        "command": "d=\"${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py\"; ... else exec \"$p\" \"$d\" post; fi; ...; exit 1"}]}
     ]
   }
 }
 ```
 
-`uv run` picks a Python with `tomllib` (3.11+) whatever `python3` is on PATH; a probe on
-the maintainer's machine, whose `python3` is 3.8, measured its startup at 20 to 30 ms. The
-script reads Claude Code's hook input from stdin, the JSON object every hook gets:
+Each command is a POSIX sh snippet (the `...` parts are in `hooks/hooks.json` itself):
+it checks that `uv` is on PATH and the script exists, takes the interpreter from `uv python
+find --no-project '>=3.11'`, or from `uv python install '>=3.11'` and then `find`, and
+`exec`s the script with it, so the script's own exit code is the hook's. uv picks a Python
+with `tomllib` (3.11+) whatever `python3` is on PATH; a probe on the maintainer's machine,
+whose `python3` is 3.8, measured `uv run`'s startup at 20 to 30 ms.
+
+**When the hook can't start the script, the command runs** (D-40, shipmill/shipmill#458).
+uv exits 2 when it can't get a Python 3.11 or newer (offline, or `python-downloads =
+"never"`), and Claude Code reads a PreToolUse exit 2 as a refusal, so the command above
+would block every shell command in such a session. Each hook command therefore first gets
+the interpreter (one uv already has, else one uv installs) and checks that
+`hooks/delivery.py` exists, and only then runs the script with it. When uv is missing, no
+Python 3.11 or newer can be found or installed, or the script is missing, the hook prints
+one stderr line, `shipmill hook: can't start hooks/delivery.py (<the reason>); this
+command runs unchecked, see shipmill doctor`, and exits 1. Only the script's own refusal
+exits 2. `shipmill doctor`'s self-test (S-026-15) still FAILs on that case, and a headless
+gate whose self-test fails starts no session (S-026-16), so only a person's session runs
+unchecked.
+
+The script reads Claude Code's hook input from stdin, the JSON object every hook gets:
 `session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, `tool_name`,
 `tool_input` (for Bash, `command`; for Edit, Write, and MultiEdit, `file_path`), and for
 PostToolUse `tool_response`. It answers with its exit code:
@@ -64,7 +82,7 @@ PostToolUse `tool_response`. It answers with its exit code:
 |---|---|---|
 | 0 | Allowed, or nothing to check | Runs the tool (pre), goes on (post); no output |
 | 2 | Refused (pre), or a check failed (post) | Blocks the tool call (pre), and shows stderr to the model either way |
-| 1 | The input wasn't the JSON object above | Runs the tool, and shows stderr in the transcript |
+| 1 | The input wasn't the JSON object above, or the hook couldn't start the script | Runs the tool, and shows stderr in the transcript |
 
 A hook runs before the permission check, so it applies under `--permission-prompts none`
 and `--allowedTools` too: headless gate sessions (D-17) are covered with no gate change.
@@ -228,7 +246,7 @@ that exists.
 
 ## Acceptance criteria
 
-- S-026-1: `hooks/hooks.json` declares a PreToolUse hook matching `Bash` and a PostToolUse hook matching `Edit|Write|MultiEdit`, each running `hooks/delivery.py` under `${CLAUDE_PLUGIN_ROOT}` through `uv run --no-project`, and the file each names exists
+- S-026-1: dropped in #458, see S-026-19
 - S-026-2: In a folder outside a git repo, in a repo with no `.github/shipmill.toml`, and in one whose config has no `[agents]` section, every fixture the other criteria refuse exits 0 with no output
 - S-026-3: With `[agents] app_id` set, each `gh` write the Behaviour lists, plain or after `GH_TOKEN=... `, exits 2 naming `app-writes` and D-14 with an `Instead:` line using `shipmill gh` and the same arguments; a `gh` read, a `gh api` GET, a `gh api graphql` query without `mutation`, `shipmill gh <write>`, and `uvx --from <spec> shipmill gh <write>` exit 0; without `app_id` every one exits 0
 - S-026-4: `git push origin main`, `git push origin HEAD:main`, `git push origin +main`, `git push origin refs/heads/main`, `git push origin :main`, and a bare `git push` on `main` with its upstream on `origin/main` exit 2 naming `default-branch-push`, where `origin/HEAD` points at `main`; a push of another branch exits 0, and every one exits 0 with `[hooks] default_branch = false` or with `origin/HEAD` unset
@@ -246,6 +264,7 @@ that exists.
 - S-026-16: A headless gate whose hook self-test fails starts no session and reports the failure on the tick; an interactive gate reports it and starts the session
 - S-026-17: `tests/fixtures/hooks/` holds the inputs the hook tests use, each in the shape Claude Code sends, with a refused and an allowed case for each rule and a PostToolUse case for each check
 - S-026-18: `skills/github-pr-triage/SKILL.md` rule 8, `skills/github-pr-triage/references/landing.md`, `skills/shipmill-setup/SKILL.md`, `docs/release-lanes.md`, and `docs/install.md` name the hooks as the Behaviour's Docs list says, and a comment above `HEADLESS_TOOLS` in `src/shipmill/gate.py` points to `hooks/delivery.py`
+- S-026-19: `hooks/hooks.json` declares a PreToolUse hook matching `Bash` and a PostToolUse hook matching `Edit|Write|MultiEdit`, each running `hooks/delivery.py` under `${CLAUDE_PLUGIN_ROOT}` with a Python 3.11 or newer that uv finds or installs, and the file each names exists; run with no such Python (uv offline with none installed, or `python-downloads = "never"`), with no `uv` on PATH, or with the script missing, each hook command exits 1 with one stderr line naming `shipmill doctor`, never 2, and a refused fixture through the same command still exits 2
 
 ## Out of scope
 
@@ -271,7 +290,7 @@ that exists.
 - D-33: no rebase merge, which `rebase-merge` enforces
 - D-34: a repo with `[agents]` keeps a direction and an optional rubric, which the PostToolUse hook checks
 - D-35: the gate starts no session when a session would load stale skills, the model for the self-test pause
-- D-36: delivery rules that guard irreversible writes are enforced by plugin hooks in repos with `[agents]`; it settles the inline `GH_TOKEN=$T gh` refusal, the switches, and the headless pause
+- D-40 (superseding D-36): delivery rules that guard irreversible writes are enforced by plugin hooks in repos with `[agents]`; it settles the inline `GH_TOKEN=$T gh` refusal, the switches, the headless pause, and that a hook which can't start its script exits 1 and lets the command run
 
 ## Issues
 
@@ -281,5 +300,6 @@ that exists.
 - shipmill/shipmill#445: S-026-13
 - shipmill/shipmill#446: S-026-15, S-026-16
 - shipmill/shipmill#447: S-026-18
+- shipmill/shipmill#458: S-026-19
 
 ## Verification

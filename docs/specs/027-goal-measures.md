@@ -249,4 +249,9 @@ maintainer changes it (D-34, N-3).
 
 ## Issues
 
+- shipmill/shipmill#505: S-027-1, S-027-2, S-027-3, S-027-6
+- shipmill/shipmill#506: S-027-4, S-027-5, S-027-13
+- shipmill/shipmill#509: S-027-7, S-027-8, S-027-9, S-027-10, S-027-11
+- shipmill/shipmill#512: S-027-12
+
 ## Verification
