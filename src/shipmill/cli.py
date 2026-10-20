@@ -48,13 +48,15 @@
                   or one section (--section, --json), list its ids; add, edit, and retire an item,
                   printing its line, an added one with an id its history never held
   evals           the agents' eval suite, evals/ (spec 025): check exits 1 naming each case and the
-                  rule it breaks, without a model; a repository with no case under evals/ passes
+                  rule it breaks, without a model; a repository with no case under evals/ passes;
+                  compare judges a pull request's run against the default branch's (D-37)
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
 action, app-create or app-install left a repo without the App, product check found a broken
-rule, review check found a malformed REVIEW.md, or evals check found a malformed case; 2 bad
-input or a refused state, such as an edit of a file its check refuses or a malformed
-evals/cases.toml.
+rule, review check found a malformed REVIEW.md, evals check found a malformed case, or evals
+compare found a regression or a run stopped at its budget; 2 bad input or a refused state,
+such as an edit of a file its check refuses, a malformed evals/cases.toml, or a missing or
+malformed aggregate-result.json.
 """
 
 import argparse
@@ -69,7 +71,8 @@ import sys
 import time
 import webbrowser
 from collections.abc import Callable, Mapping
-from pathlib import Path
+from fractions import Fraction
+from pathlib import Path, PurePosixPath
 from typing import TextIO
 
 from shipmill import agent_as_person, cli_command, evals, fragments, product, review, status
@@ -489,10 +492,29 @@ def _parser() -> argparse.ArgumentParser:
     for each in (checking, showing, listing, adding, editing, retiring):  # also after it: `product check --repo DIR`
         each.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
 
-    p = sub.add_parser("evals", help="check the agents' eval suite, evals/ (spec 025)")
+    p = sub.add_parser("evals", help="check the agents' eval suite, evals/, and compare its runs (spec 025)")
     evaluating = p.add_subparsers(dest="evals", required=True)
     q = evaluating.add_parser("check", help="exit 1 naming each case of evals/ and the rule it breaks; no case passes")
     q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    q = evaluating.add_parser(
+        "compare", help="exit 1 when the head's eval results regress against the base's (D-37), naming the cases"
+    )
+    q.add_argument("--base", type=Path, required=True, help="the default branch run's aggregate-result.json")
+    q.add_argument("--head", type=Path, required=True, help="the pull request run's aggregate-result.json")
+    q.add_argument(
+        "--tolerance",
+        type=_tolerance,
+        default=evals.TOLERANCE,
+        help="how far the suite's pass rate may drop, from 0 to 1 (default: 0.05); a dispatched run's only",
+    )
+    q.add_argument(
+        "--changed",
+        type=_case_path,
+        action="append",
+        default=[],
+        metavar="CASE",
+        help="a case whose directory the pull request changed, relative to evals/; judged on its own (repeatable)",
+    )
 
     p = sub.add_parser("launchd", help="run the gate for a dedicated checkout every few minutes (macOS)")
     p.add_argument("slug", metavar="owner/name", help="the GitHub repo; --repo is its gate checkout")
@@ -558,6 +580,8 @@ def main(
     if args.command == "review":
         return _review(root, args)
     if args.command == "evals":
+        if args.evals == "compare":
+            return _evals_compare(args.base, args.head, frozenset(args.changed), args.tolerance)
         return _evals(root)
     hub = github or GhCli(root)
     if args.command == "init":
@@ -1176,6 +1200,41 @@ def _evals(root: Path, resolves: evals.Resolves | None = None) -> int:
         return 1
     print(f"{evals.MANIFEST}: well formed, {report.cases} cases")
     return 0
+
+
+def _tolerance(text: str) -> Fraction:
+    if not re.fullmatch(r"0(\.[0-9]+)?|1(\.0+)?", text):
+        raise argparse.ArgumentTypeError(f"a decimal from 0 to 1, such as 0.05; got {text!r}")
+    return Fraction(text)
+
+
+def _case_path(text: str) -> PurePosixPath:
+    if not evals.case_path_ok(text):
+        raise argparse.ArgumentTypeError(f"a case's path relative to evals/, such as <skill>/<case>; got {text!r}")
+    return PurePosixPath(text)
+
+
+def _evals_compare(base_file: Path, head_file: Path, changed: frozenset[PurePosixPath], tolerance: Fraction) -> int:
+    """Spec 025, D-37: one line per case that moved, then both pass rates; exit 1 on a
+    regression or on a run stopped at its budget, 2 on a missing or malformed result"""
+    base, head = evals.read_result(base_file), evals.read_result(head_file)
+    unknown = sorted(changed - set(head.cases))
+    if unknown:
+        named = ", ".join(str(p) for p in unknown)
+        raise ReleaseError(f"--changed {named}: {head_file} holds no such case")
+    stopped = evals.budget_reached(base, head)
+    if stopped is not None:
+        print(stopped)
+        return 1
+    result = evals.compare(base, head, changed, tolerance)
+    for moved in result.moved:
+        print(moved)
+    if result.suite_worse:
+        print(f"suite got worse: the head's pass rate is more than {float(tolerance):g} below the base's")
+    for side, rate in (("base", result.base), ("head", result.head)):
+        shown = f"{float(rate.value):.3f}" if rate.runs else "none"
+        print(f"{side} pass rate: {shown} ({rate} runs)")
+    return 1 if result.failed else 0
 
 
 def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:

@@ -16,13 +16,36 @@ A malformed `cases.toml` is bad input (ReleaseError, exit 2); every other fault 
 Violation naming the case and the rule it breaks (exit 1). The case files are YAML; the
 package has no YAML library, so `_Yaml` reads the block subset the runner's cases use and
 refuses, as a violation, anything outside it.
+
+`compare` is the gate against the default branch: it reads two runner results,
+`aggregate-result.json`, and judges the head's against the base's from the per-run grader
+results alone. Of each result (`schemaVersion` 1) it reads only these keys, and ignores the
+rest:
+
+    {"schemaVersion": 1, "partial": false,
+     "cases": [{"name": "feature-maintainer-filed",
+                "dir": "evals/github-issue-triage/feature-maintainer-filed",
+                "runsPerCase": 3,
+                "arms": {"with": [{"error": null, "skippedPaidGraders": false,
+                                   "graders": [{"name": "verdict", "passed": true},
+                                               {"name": "note", "passed": false, "scored": false}]}]}}]}
+
+A case is keyed by its `dir` relative to `evals/`, so two skills' cases of one `name` stay
+apart. A run is one entry of `arms.with`; it fails when it carries an `error`, is `aborted`,
+or skipped its paid graders, and otherwise passes only when every scored grader passed. A run
+stopped at its budget sets `partial: true` with `partialReason: "cost_ceiling"`; the file
+names no planned run count, so the budget line's planned count is each case's `runsPerCase`,
+summed. A run stopped for another reason is never compared either (exit 2). A missing or
+malformed result is bad input (ReleaseError, exit 2) naming the file and the fault.
 """
 
+import json
 import re
 import tomllib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from fractions import Fraction
 from pathlib import Path, PurePosixPath
 
 from shipmill.errors import ReleaseError
@@ -156,8 +179,7 @@ def read_manifest(path: Path) -> tuple[Entry, ...]:
             if not isinstance(item[field], str) or not item[field]:
                 raise ReleaseError(f"{where}: {field} is a non-empty string; got {item[field]!r}")
         text: str = item["path"]
-        parts = text.split("/")
-        if any(p in ("", ".", "..") or not _NAME.fullmatch(p) for p in parts):
+        if not case_path_ok(text):
             raise ReleaseError(f"{where}: path is relative to evals/, such as <skill>/<case>; got {text!r}")
         case_path = PurePosixPath(text)
         if case_path in seen:
@@ -470,3 +492,221 @@ def _unquote(text: str, error: Callable[[str], _Unread]) -> str:
         inner = text[1:-1]
         return inner.replace("''", "'") if text[0] == "'" else inner
     return text
+
+
+TOLERANCE = Fraction(1, 20)  # the suite's pass rate may drop by 0.05, no more
+BUDGET_STOP = "cost_ceiling"  # the partialReason of a run stopped at --max-cost-usd
+REGRESSED_AT = Fraction(1, 3)  # a case that passed every base run regresses at 1 of 3 or fewer
+OWN_PASS = Fraction(2, 3)  # a new or changed case passes 2 of 3 runs on its own
+
+
+@dataclass(frozen=True, slots=True)
+class Rate:
+    """Passing runs over runs"""
+
+    passed: int
+    runs: int
+
+    @property
+    def value(self) -> Fraction:
+        return Fraction(self.passed, self.runs)
+
+    @property
+    def perfect(self) -> bool:
+        return self.passed == self.runs
+
+    def __str__(self) -> str:
+        return f"{self.passed}/{self.runs}"
+
+
+@dataclass(frozen=True, slots=True)
+class Result:
+    """One runner result: each case's passing runs, and whether the run stopped at its budget"""
+
+    cases: Mapping[PurePosixPath, Rate]  # by path, relative to evals/
+    runs_planned: int  # each case's runsPerCase, summed: the file names no other planned count
+    budget_reached: bool  # partial, with partialReason "cost_ceiling"
+
+    @property
+    def runs_done(self) -> int:
+        return sum(r.runs for r in self.cases.values())
+
+
+class Move(StrEnum):
+    REGRESSED = "regressed"
+    NEW_FAILING = "new failing"
+    IMPROVED = "improved"
+    REMOVED = "removed"
+
+
+@dataclass(frozen=True, slots=True)
+class Moved:
+    """A case that moved between the base and the head"""
+
+    move: Move
+    path: PurePosixPath
+    base: Rate | None
+    head: Rate | None
+
+    def __str__(self) -> str:
+        if self.base is not None and self.head is not None and self.move is not Move.NEW_FAILING:
+            return f"{self.move} {self.path}: {self.base} -> {self.head}"
+        if self.head is not None:
+            return f"{self.move} {self.path}: {self.head}"
+        return f"{self.move} {self.path}"
+
+
+@dataclass(frozen=True, slots=True)
+class Comparison:
+    moved: tuple[Moved, ...]
+    base: Rate  # the suite's, over the cases both hold that the head didn't change
+    head: Rate
+    tolerance: Fraction
+
+    @property
+    def suite_worse(self) -> bool:
+        if not self.base.runs or not self.head.runs:
+            return False
+        return self.head.value < self.base.value - self.tolerance
+
+    @property
+    def failed(self) -> bool:
+        return self.suite_worse or any(m.move in (Move.REGRESSED, Move.NEW_FAILING) for m in self.moved)
+
+
+def budget_reached(base: Result, head: Result) -> str | None:
+    """The line that fails the gate when either run stopped at its budget, so partial results
+    are never compared (S-025-14); None when both ran in full"""
+    for result in (head, base):
+        if result.budget_reached:
+            return f"evals: budget reached after {result.runs_done} of {result.runs_planned} runs"
+    return None
+
+
+def compare(
+    base: Result, head: Result, changed: frozenset[PurePosixPath] = frozenset(), tolerance: Fraction = TOLERANCE
+) -> Comparison:
+    """The head judged against the base (S-025-8). A case the head changed, or the base lacks,
+    is judged on its own; the suite's pass rates count the other cases both hold"""
+    moved: list[Moved] = []
+    base_passed = base_runs = head_passed = head_runs = 0
+    for path in sorted(head.cases):
+        now = head.cases[path]
+        before = base.cases.get(path)
+        if before is None or path in changed:
+            if now.value < OWN_PASS:
+                moved.append(Moved(Move.NEW_FAILING, path, before, now))
+            continue
+        base_passed, base_runs = base_passed + before.passed, base_runs + before.runs
+        head_passed, head_runs = head_passed + now.passed, head_runs + now.runs
+        if before.perfect and now.value <= REGRESSED_AT:
+            moved.append(Moved(Move.REGRESSED, path, before, now))
+        elif before.value <= REGRESSED_AT and now.perfect:
+            moved.append(Moved(Move.IMPROVED, path, before, now))
+    moved.extend(Moved(Move.REMOVED, p, base.cases[p], None) for p in sorted(set(base.cases) - set(head.cases)))
+    order = list(Move)
+    moved.sort(key=lambda m: order.index(m.move))  # stable: by path within each move
+    return Comparison(tuple(moved), Rate(base_passed, base_runs), Rate(head_passed, head_runs), tolerance)
+
+
+def read_result(path: Path) -> Result:
+    """A runner's aggregate-result.json; ReleaseError naming the file and the fault when it is
+    missing or malformed"""
+    name = str(path)
+
+    def fail(why: str) -> ReleaseError:
+        return ReleaseError(f"{name}: {why}")
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise fail("no such file") from None
+    except IsADirectoryError:
+        raise fail("a directory, not a runner's aggregate-result.json") from None
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise fail(f"not valid JSON: {exc}") from None
+    if not isinstance(raw, dict):
+        raise fail("the result is a JSON object")
+    version = raw.get("schemaVersion")
+    if version != 1 or isinstance(version, bool):
+        raise fail(f"schemaVersion is 1, the runner format this reads; got {version!r}")
+    stopped = raw.get("partial")
+    if not isinstance(stopped, bool):
+        raise fail(f"partial is true or false; got {stopped!r}")
+    if stopped:
+        reason = raw.get("partialReason")
+        if reason != BUDGET_STOP:
+            raise fail(f"partial: the run stopped early ({reason!r}), not at its budget, so it is never compared")
+    cases = raw.get("cases")
+    if not isinstance(cases, list):
+        raise fail(f"cases is a list of cases; got {cases!r}")
+    rates: dict[PurePosixPath, Rate] = {}
+    planned = 0
+    for number, case in enumerate(cases, 1):
+        where = f"case {number}"
+        if not isinstance(case, dict):
+            raise fail(f"{where} is an object with a name, a dir, and its runs")
+        if not isinstance(case.get("name"), str) or not case["name"]:
+            raise fail(f"{where}: name is a non-empty string; got {case.get('name')!r}")
+        where = f"case {case['name']!r}"
+        text = case.get("dir")
+        inside = text.removeprefix(f"{SUITE}/") if isinstance(text, str) else None
+        if inside is None or inside == text or not case_path_ok(inside):
+            raise fail(f"{where}: dir is the case's directory under evals/, such as evals/<skill>/<case>; got {text!r}")
+        case_path = PurePosixPath(inside)
+        if case_path in rates:
+            raise fail(f"{where}: dir {text!r} is listed twice")
+        per_case = case.get("runsPerCase")
+        if not isinstance(per_case, int) or isinstance(per_case, bool) or per_case < 1:
+            raise fail(f"{inside}: runsPerCase is a whole number from 1; got {per_case!r}")
+        planned += per_case
+        arms = case.get("arms")
+        runs = arms.get("with") if isinstance(arms, dict) else None
+        if not isinstance(runs, list) or (not runs and not stopped):
+            raise fail(f"{inside}: arms.with is a list of at least one run; got {runs!r}")
+        if runs:
+            passed = sum(_run_passed(run, f"{inside}: run {n}", fail) for n, run in enumerate(runs, 1))
+            rates[case_path] = Rate(passed, len(runs))
+    if not rates and not stopped:
+        raise fail("cases holds no case, so there is nothing to compare")
+    return Result(rates, planned, stopped)
+
+
+def case_path_ok(text: str) -> bool:
+    """A case's path as cases.toml writes it: relative to evals/, such as <skill>/<case>"""
+    return all(p not in ("", ".", "..") and _NAME.fullmatch(p) for p in text.split("/"))
+
+
+def _run_passed(run: object, where: str, fail: Callable[[str], ReleaseError]) -> bool:
+    """Whether a run passed: every scored grader passed (S-025-9). A run that carries an `error`
+    (an API error leaves no grader results), was `aborted`, or skipped its paid graders failed.
+    A grader is scored unless it says `"scored": false`; a run with no scored grader is
+    malformed, never a pass"""
+    if not isinstance(run, dict):
+        raise fail(f"{where} is an object with its grader results")
+    for flag in ("aborted", "skippedPaidGraders"):
+        if not isinstance(run.get(flag, False), bool):
+            raise fail(f"{where}: {flag} is true or false; got {run[flag]!r}")
+    if run.get("error") is not None or run.get("aborted", False) or run.get("skippedPaidGraders", False):
+        return False
+    graders = run.get("graders")
+    if not isinstance(graders, list):
+        raise fail(f"{where}: graders is a list of grader results; got {graders!r}")
+    scored: list[bool] = []
+    for number, grader in enumerate(graders, 1):
+        at = f"{where}: grader {number}"
+        if not isinstance(grader, dict):
+            raise fail(f"{at} is an object with a name and passed")
+        if not isinstance(grader.get("name"), str) or not grader["name"]:
+            raise fail(f"{at}: name is a non-empty string; got {grader.get('name')!r}")
+        passed = grader.get("passed")
+        if not isinstance(passed, bool):
+            raise fail(f"{at}: passed is true or false; got {passed!r}")
+        counts = grader.get("scored", True)
+        if not isinstance(counts, bool):
+            raise fail(f"{at}: scored is true or false; got {counts!r}")
+        if counts:
+            scored.append(passed)
+    if not scored:
+        raise fail(f"{where}: no scored grader, so the run neither passed nor failed")
+    return all(scored)

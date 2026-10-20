@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "partial": false,
+  "cases": [
+    {
+      "name": "steady",
+      "dir": "evals/github-issue-triage/steady",
+      "runsPerCase": 3,
+      "arms": {"with": [{"error": null, "graders": [{"name": "verdict", "passed": "yes", "scored": true}]}]}
+    }
+  ]
+}

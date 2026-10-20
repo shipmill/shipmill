@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "partial": false,
+  "cases": [
+    {
+      "name": "steady",
+      "dir": "evals/github-issue-triage/steady",
+      "runsPerCase": 3,
+      "arms": {"with": [
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]},
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]},
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]}
+      ]}
+    },
+    {
+      "name": "breaks",
+      "dir": "evals/github-issue-triage/breaks",
+      "runsPerCase": 3,
+      "arms": {"with": [
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": true, "scored": true}]},
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "verdict", "passed": false, "scored": true}]},
+        {"error": null, "skippedPaidGraders": true, "graders": [{"name": "verdict", "passed": true, "scored": true}]}
+      ]}
+    },
+    {
+      "name": "heals",
+      "dir": "evals/github-pr-triage/heals",
+      "runsPerCase": 3,
+      "arms": {"with": [
+        {"error": null, "skippedPaidGraders": false, "graders": [
+          {"name": "verdict", "passed": true, "scored": true}, {"name": "no-miss", "passed": true, "scored": true}]},
+        {"error": null, "skippedPaidGraders": false, "graders": [
+          {"name": "verdict", "passed": true, "scored": true}, {"name": "no-miss", "passed": true, "scored": true}]},
+        {"error": null, "skippedPaidGraders": false, "graders": [
+          {"name": "verdict", "passed": true, "scored": true}, {"name": "no-miss", "passed": true, "scored": true}]}
+      ]}
+    },
+    {
+      "name": "added",
+      "dir": "evals/github-issue-resolve/added",
+      "runsPerCase": 3,
+      "arms": {"with": [
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "plan", "passed": true, "scored": true}]},
+        {"error": null, "aborted": true, "skippedPaidGraders": false, "graders": []},
+        {"error": null, "skippedPaidGraders": false, "graders": [{"name": "plan", "passed": false, "scored": true}]}
+      ]}
+    }
+  ],
+  "aggregates": {"casesTotal": 4, "casesPassed": 2}
+}
