@@ -63,7 +63,9 @@ def test_s021_8_the_promotion_s_reason_counts_the_rc_s_confirmed_requesters(prom
     decision = plan(promoting, at_day(4))
     assert (decision.action, str(decision.version)) == ("release", "1.1.0")
     # rc1 was cut at day 0's time
-    assert decision.reason.startswith("stable 1.1.0: promotes v1.1.0rc1, soaked 4 day(s); 1 of 3 requesters confirmed;")
+    assert decision.reason.startswith(
+        "stable 1.1.0: promotes v1.1.0rc1, cut 4 day(s) ago; 1 of 3 requesters confirmed;"
+    )
     # only the issues rc1's base holds a fix for, past v1.0.0, had their votes read
     assert promoting.github.vote_reads == [(11, 12, 16)]
     # closed issues are read from the day before the range's oldest commit
@@ -87,17 +89,17 @@ def test_s021_8_the_count_never_changes_whether_the_lane_is_due(promoting: Repo)
 
 def test_s021_8_the_votes_are_read_only_once_the_lane_releases(promoting: Repo) -> None:
     policy = promoting.read(promoting.policy_file)
-    stable = 'min_soak_days = 3\nschedule = ["Mon 07:00 UTC"]'
-    assert stable in policy
+    stable = 'schedule = ["Mon 07:00 UTC"]'
+    assert policy.count(stable) == 1
     # no milestone named 1.1.0: never due; main has been quiet for 3 days: due with 60 quiet minutes
-    promoting.write(promoting.policy_file, policy.replace(stable, "min_soak_days = 3\nmilestone = true"))
+    promoting.write(promoting.policy_file, policy.replace(stable, "milestone = true"))
     waiting = plan(promoting, at_day(4))
     # stable waits for its milestone, so the rc lane releases instead
     assert waiting.lane is not None and waiting.lane.value == "rc" and str(waiting.version) == "1.1.0rc2"
     assert promoting.github.vote_reads == [] and promoting.github.closed_reads == []
     promoting.github.votes = {}
     assert plan(promoting, at_day(4)) == waiting
-    promoting.write(promoting.policy_file, policy.replace(stable, "min_soak_days = 3\nquiet_minutes = 60"))
+    promoting.write(promoting.policy_file, policy.replace(stable, "quiet_minutes = 60"))
     due = plan(promoting, at_day(4))
     assert due.lane is not None and due.lane.value == "stable" and "0 of 3 requesters confirmed" in due.reason
 
