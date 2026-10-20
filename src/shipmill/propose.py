@@ -11,7 +11,7 @@ from shipmill.autonomy import HOLD_LABEL, Autonomy
 from shipmill.changelog import Changelog, Entry
 from shipmill.doctor import CALLER
 from shipmill.errors import ReleaseError
-from shipmill.github import OPEN_LIMIT, PROPOSAL_LABEL, GitHub, Issue
+from shipmill.github import BODY_LIMIT, OPEN_LIMIT, PROPOSAL_LABEL, GitHub, Issue, cut_from
 from shipmill.gitrepo import Git
 from shipmill.planner import BREAKING, Proposal
 from shipmill.policy import Lane, Policy
@@ -139,7 +139,10 @@ def upsert(github: GitHub, mark: str, title: str, body: str, fix: str) -> tuple[
         if found is None:
             return github.create_issue(title, body, (PROPOSAL_LABEL,)), Outcome.OPENED
         issue, labelled = found
-        if labelled and (issue.title, issue.body.replace("\r\n", "\n").strip()) == (title, body.strip()):
+        stored = issue.body.replace("\r\n", "\n").strip()
+        # a body over GitHub's limit is stored cut (#499): unchanged while what it shows is
+        same = stored == body.strip() or cut_from(stored, body, BODY_LIMIT)
+        if labelled and issue.title == title and same:
             return issue.number, Outcome.UNCHANGED
         github.update_issue(issue.number, title, body, () if labelled else (PROPOSAL_LABEL,))
         return issue.number, Outcome.UPDATED

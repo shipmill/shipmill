@@ -45,6 +45,10 @@ _LABEL_DESCRIPTIONS = {
     PROPOSAL_LABEL: "Opened by shipmill: a release or deploy waiting for a person",
     UPGRADE_LABEL: "Opened by shipmill: a config upgrade waiting for the maintainer's decision",
 }
+# GitHub's limits, in characters: an issue's body or a comment, and a release's notes (#499)
+BODY_LIMIT = 65_536
+NOTES_LIMIT = 125_000
+CUT_MARK = "<!-- shipmill:cut -->"  # opens the line ending a text cut to fit
 # the statuses of a run not finished yet, each listed with its own query: GitHub filters runs
 # by one status at a time
 ACTIVE_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
@@ -283,6 +287,25 @@ def _time(text: str) -> dt.datetime:
     return when
 
 
+def fit(text: str, limit: int, link: str) -> str:
+    """The text whole when it is within limit characters; else cut at a line's end where one
+    is near, and ended with a line saying so that links the full text, the two within limit"""
+    if len(text) <= limit:
+        return text
+    tail = f"\n\n{CUT_MARK}\n_Cut to fit GitHub's limit of {limit:,} characters: the full text is at {link}_\n"
+    room = limit - len(tail)
+    if room <= 0:
+        raise ReleaseError(f"the line ending a cut text is {len(tail)} characters, over the limit of {limit}")
+    end = text.rfind("\n", 0, room)
+    return text[: end if end > room // 2 else room] + tail
+
+
+def cut_from(stored: str, wanted: str, limit: int) -> bool:
+    """Whether stored is wanted as fit cut it to limit, whatever link its last line gives"""
+    head, mark, _ = stored.partition(f"\n\n{CUT_MARK}\n")
+    return bool(mark) and len(wanted) > limit and wanted.startswith(head)
+
+
 def labelled_command(label: str) -> tuple[str, ...]:
     """gh's arguments that list the issues with the label, open and closed, the newest 100"""
     fields = "number,title,body,state,closedAt,labels"
@@ -306,17 +329,33 @@ def parse_labelled(text: str) -> list[Issue]:
 
 
 class GhCli:
-    """GitHub through the gh CLI, authenticated by GH_TOKEN in Actions"""
+    """GitHub through the gh CLI, authenticated by GH_TOKEN in Actions. A body or release
+    notes go on stdin, never in argv, which Linux caps at 128 KiB an argument (#499); one
+    over GitHub's limit is cut to fit, linking the changelog that holds the full text"""
 
-    def __init__(self, root: Path, gh: str = "gh") -> None:
+    def __init__(self, root: Path, gh: str = "gh", changelog: str = "CHANGELOG.md") -> None:
         self.root = root
         self.gh = gh
+        self.changelog = changelog
+        self._url: str | None = None
 
-    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run([self.gh, *args], capture_output=True, text=True, cwd=self.root)
+    def _run(self, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([self.gh, *args], capture_output=True, text=True, cwd=self.root, input=stdin)
 
-    def _gh(self, *args: str) -> str:
-        proc = self._run(*args)
+    def _changelog_at(self, ref: str) -> str:
+        """The changelog's URL at the ref; the repository's URL is asked of gh once"""
+        if self._url is None:
+            url = self._gh("repo", "view", "--json", "url", "--jq", ".url").strip()
+            if not url.startswith("https://"):
+                raise ReleaseError(f"gh repo view printed {url!r}, not the repository's URL")
+            self._url = url
+        return f"{self._url}/blob/{ref}/{self.changelog}"
+
+    def _fit(self, text: str, limit: int, ref: str = "HEAD") -> str:
+        return text if len(text) <= limit else fit(text, limit, self._changelog_at(ref))
+
+    def _gh(self, *args: str, stdin: str | None = None) -> str:
+        proc = self._run(*args, stdin=stdin)
         if proc.returncode != 0:
             error = proc.stderr.strip()
             message = f"gh {' '.join(args[:3])} failed: {error}"
@@ -392,10 +431,10 @@ class GhCli:
         return str(found["mergeCommit"]["oid"])
 
     def create_release(self, tag: str, title: str, notes: str, prerelease: bool) -> None:
-        args = ["release", "create", tag, "--verify-tag", "--title", title, "--notes", notes]
+        args = ["release", "create", tag, "--verify-tag", "--title", title, "--notes-file", "-"]
         if prerelease:
             args.append("--prerelease")
-        self._gh(*args)
+        self._gh(*args, stdin=self._fit(notes, NOTES_LIMIT, tag))
 
     def dispatch(self, workflow: str, ref: str, tag: str, inputs: Mapping[str, str] | None = None) -> str | None:
         fields = [f"tag={tag}", *(f"{k}={v}" for k, v in (inputs or {}).items())]
@@ -428,7 +467,10 @@ class GhCli:
     def create_issue(self, title: str, body: str, labels: Sequence[str] = ()) -> int:
         self._create_labels(labels)
         args = [a for label in labels for a in ("--label", label)]
-        url = self._gh("issue", "create", "--title", title, "--body", body, *args).strip()
+        url = self._gh(
+            "issue", "create", "--title", title, "--body-file", "-", *args, stdin=self._fit(body, BODY_LIMIT)
+        )
+        url = url.strip()
         number = url.rsplit("/", 1)[-1]
         if not number.isdigit():
             raise ReleaseError(f"gh issue create printed {url!r}, not an issue URL")
@@ -437,13 +479,17 @@ class GhCli:
     def update_issue(self, number: int, title: str, body: str, labels: Sequence[str] = ()) -> None:
         self._create_labels(labels)
         args = [a for label in labels for a in ("--add-label", label)]
-        self._gh("issue", "edit", str(number), "--title", title, "--body", body, *args)
+        self._gh(
+            "issue", "edit", str(number), "--title", title, "--body-file", "-", *args, stdin=self._fit(body, BODY_LIMIT)
+        )
 
     def close_issue(self, number: int, comment: str) -> None:
-        self._gh("issue", "close", str(number), "--comment", comment)
+        # `gh issue close --comment` takes the text in argv only: comment first, as it does
+        self.comment_issue(number, comment)
+        self._gh("issue", "close", str(number))
 
     def comment_issue(self, number: int, body: str) -> None:
-        self._gh("issue", "comment", str(number), "--body", body)
+        self._gh("issue", "comment", str(number), "--body-file", "-", stdin=self._fit(body, BODY_LIMIT))
 
     def remove_label(self, number: int, label: str) -> None:
         self._gh("issue", "edit", str(number), "--remove-label", label)
