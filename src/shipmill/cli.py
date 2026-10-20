@@ -18,6 +18,10 @@
   status          say whether the factory works or is stuck: a verdict, then a short summary with
                   a line per reason and a direct link per item; --rows for github-ship-watch's
                   table, --json for its JSON lines
+  milestones      read-only: with a lane that sets milestone = true, print MILESTONE_WAITING for a goal's
+                  milestone waiting on its specs and MILESTONE_OVERTAKEN for an open milestone a stable
+                  tag took, with the version to rename it to and the `gh api` rename, run through
+                  shipmill gh; --json for one JSON object (spec 022)
   upgrade         list the config upgrades this repo hasn't decided or declined (spec 014); --apply <id>
                   makes one's edit in the checkout and commits nothing; --propose opens or updates
                   one shipmill-upgrade issue per pending upgrade, as land.yml runs it after a release
@@ -318,6 +322,13 @@ def _parser() -> argparse.ArgumentParser:
     shown.add_argument("--rows", action="store_true", help="print github-ship-watch's table instead")
     shown.add_argument("--json", action="store_true", help="print github-ship-watch's JSON lines instead")
 
+    p = sub.add_parser(
+        "milestones",
+        help="print the milestones a lane with milestone = true waits on or a stable tag overtook (spec 022)",
+    )
+    p.add_argument("--json", action="store_true", help="print the rows and the read's error as one JSON object")
+    p.add_argument("--now", help="ISO time with offset (default: now)")
+
     p = sub.add_parser("upgrade", help=f"list the config upgrades {CONFIG_PATH} hasn't decided (spec 014)")
     acts = p.add_mutually_exclusive_group()
     acts.add_argument(
@@ -536,7 +547,9 @@ def main(
         ask = input if sys.stdin.isatty() and not args.owner else None
         return _app_create(root, args, api or UrllibApi(), signer or Openssl(), ask=ask)
     if args.command == "status":
-        return _status(root, args, state or run_state, api or UrllibApi(), signer or Openssl(), github=github)
+        return _status(root, args, state or run_state, api or UrllibApi(), signer or Openssl())
+    if args.command == "milestones":
+        return _milestones(root, args, github)
     if args.command == "upgrade":
         return _upgrade(root, args, github or GhCli(root))
     if args.command == "product":
@@ -942,12 +955,10 @@ def _status(
     home: Path | None = None,
     platform: str = sys.platform,
     now: dt.datetime | None = None,
-    github: GitHub | None = None,
 ) -> int:
     """Specs 008 and 009: the factory's picture for the checkout's repo, or with --rows or
     --json github-ship-watch's report passed through; exit 1 when a row needs action, 2 when
-    the script failed rather than reported. github answers the picture's milestone reads
-    (spec 022), gh in the checkout by default"""
+    the script failed rather than reported"""
     git = Git(root)
     if not git.ok("rev-parse", "--show-toplevel"):  # S-008-9: first, before any other git call
         raise ReleaseError(f"{root} is not a git checkout; run status in a checkout of the repo, or pass --repo PATH")
@@ -994,11 +1005,9 @@ def _status(
     people = agent_as_person.read(slug, run, when) if gate.agents is not None and gate.agents.app_id else None
     git = Git(top)
     main = status.read_main(git, status.read_branch(slug, run))
-    # spec 022: the milestone rows of the lanes with milestone = true, from the release's planner
-    goals, goals_error = status.read_milestones(slug, top, main.remote, github or GhCli(top), when)
     facts = status.Facts(
         repo=slug,
-        rows=[*status.parse_rows(proc.stdout), *goals],
+        rows=status.parse_rows(proc.stdout),  # spec 022's milestone rows among them (#475)
         issues=status.read_issues(slug, run, login),
         pulls=status.read_pulls(slug, run),
         main=main,
@@ -1010,10 +1019,46 @@ def _status(
         command=cli_command(),
         agent_as_person=people,
         upgrades=status.read_upgrades(slug, top, run),
-        milestone_error=goals_error,
     )
     sys.stdout.write(status.report(facts).text(slug))
     return proc.returncode  # S-009-14: spec 008's code, whatever the verdict
+
+
+def _milestones(root: Path, args: argparse.Namespace, github: GitHub | None) -> int:
+    """#475, spec 022: the milestone rows of the lanes with milestone = true, read with the
+    release's planner at origin's default branch, fetched first; without such a lane nothing
+    is fetched or read. It never writes GitHub: an overtaken milestone's rename is its row's
+    fix. A read the planner fails (a goal, a policy, or GitHub) is printed as the error, and
+    exits 0 as a report does; a checkout without a GitHub origin exits 2"""
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(
+            f"{root} is not a git checkout; run milestones in a checkout of the repo, or pass --repo PATH"
+        )
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    slug = _origin_repo(top)
+    if slug is None:
+        raise ReleaseError(f"{top}'s origin isn't a GitHub repo")
+    rows: list[status.MilestoneRow] = []
+    error = None
+    if status.wants_milestones(top):
+        checkout = Git(top)
+        branch = checkout.default_branch()
+        # --force, as watch_state.py fetches: a moving major tag (v0) would refuse the fetch otherwise
+        checkout.run("fetch", "-q", "--force", "--tags", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+        head = checkout.sha(f"refs/remotes/origin/{branch}")
+        hub = github or GhCli(top)
+        rows, error = status.read_milestones(slug, top, head, hub, _now(args.now), cli_command())
+    if args.json:
+        print(json.dumps({"milestones": [r.record() for r in rows], "error": error}, indent=2))
+        return 0
+    for row in rows:
+        print(row.text())
+    if error is not None:
+        print(f"not read: {error}")
+    elif not rows:
+        print("no milestone waits or was overtaken")
+    return 0
 
 
 def _doctor_repo(root: Path) -> str | None:

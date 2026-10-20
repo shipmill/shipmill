@@ -165,11 +165,15 @@ then the plan names what holds it, the first reason per spec, such as
 `milestone 1.5.0: S-021's #40 is not in v1.5.0rc3`; once done, its reason names the specs,
 `milestone 1.5.0 built: S-021, S-023`. A milestone no spec belongs to is done as before.
 
-`shipmill status` shows the same reasons as a MILESTONE_WAITING line. A stable release made
-by another trigger ships what is merged and keeps its bump, so it can take an unfinished
-goal's version: the open milestone, with issues still open, is then overtaken, and status reports
-MILESTONE_OVERTAKEN with the version the lane cuts next and the `gh api` command that
-renames the milestone to it.
+`shipmill milestones` prints the same reasons as a MILESTONE_WAITING row. A stable release
+made by another trigger ships what is merged and keeps its bump, so it can take an
+unfinished goal's version: the open milestone, with issues still open, is then overtaken, and
+`shipmill milestones` prints MILESTONE_OVERTAKEN with the milestone's number, the version the
+lane cuts next, and the `shipmill gh api` command that renames the milestone to it. The
+command only reads (`--json` prints one object, `{"milestones": [...], "error": null}`) and
+reads nothing without a lane that sets `milestone = true`. github-ship-watch's
+`watch_state.py` runs it, so `shipmill status`, its `--rows` and `--json`, and a watch pass
+show both rows, and under "watch" the pass renames an overtaken milestone.
 
 ### The schedule in `release.yml`
 
@@ -516,11 +520,21 @@ Once a release is out, `github-ship-watch` tells each closed issue it fixed, thr
 |---|---|---|
 | `pre-release` | the first dev or rc tag holding the fix | `Released in v1.5.0rc2 (pre-release).`, the `pin` command, that a plain install gets it with the next stable release, and that the person who filed the issue can react 👍 once it works or reply if it doesn't |
 | `stable` | the first stable tag holding the fix | `Released in v1.5.0.` and the `install` command |
+| `<environment>` | the first successful deployment to an environment of the config's `[environments]` of a tag holding the fix, read from GitHub deployments | `Deployed to production in v1.5.0.` |
+
+An environment's notices cover what its current deployment holds that the release tag it
+ran before didn't (or, on its first deployment, the release below it), so an issue fixed
+long before an environment existed isn't told of it.
 
 A stable release that promotes an rc tells every issue that rc fixed, even when the newest
 tag before it is a later rc. Each comment's first line is a hidden marker,
 `<!-- shipmill:available: <stage> <tag> -->`, so a rerun posts nothing, and a "Released in
 <tag>" comment from before the stages counts as told for its tag's stage.
+
+The person who filed the issue answers on the pre-release notice: their 👍 reads as
+REQUESTER_CONFIRMED in the watch, and a reply after it or a 👎 as REQUESTER_REPORT, which a
+watch session hands to triage as a possible regression. Only the issue's author counts, and
+neither row labels, holds, or reopens anything by itself.
 
 `[notices]` is optional. `pin` and `install` take `{version}`, `{tag}`, and `{name}` (the
 policy's `name`), and a notice shows the command as code. Without `install`, the

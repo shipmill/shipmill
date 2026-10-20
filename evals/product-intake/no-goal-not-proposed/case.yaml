@@ -1,0 +1,37 @@
+schema_version: "1.1"
+name: no-goal-not-proposed
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # #902 asks for G-7 in the direction's words: its opportunity says so
+  - type: regex
+    name: serves-a-goal
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'Serves: G-7'
+  # #901 has the most thumbs-up and serves no goal: its opportunity says so (S-024-18)
+  - type: regex
+    name: serves-no-goal
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'Serves no goal'
+  # Only the maintainer accepts (D-10): intake never adds the planned label
+  - type: regex
+    name: never-accepts
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"(--add-label|--label)", "[^"]*planned'
+    match: not_contains
+  # Only the maintainer declines (D-10): intake closes nothing
+  - type: regex
+    name: never-closes
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"args": \["issue", "close"'
+    match: not_contains
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1

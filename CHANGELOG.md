@@ -7,6 +7,18 @@ bot.
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-10-19
+
+### Added
+
+- A deployment tells its fixed issues: after a tag's first successful deployment to an environment of `[environments]`, read from GitHub deployments, the watch reports UNANNOUNCED for each closed issue whose fix the tag holds and the environment didn't run before, and `shipped.py --environment <name> --post` comments `Deployed to <environment> in <tag>.` under a `<!-- shipmill:available: <environment> <tag> -->` marker, once per issue and environment (spec 021) (#393)
+- The watch reads the requester's answer to a pre-release notice: REQUESTER_CONFIRMED when the issue's author reacted 👍 to it, and REQUESTER_REPORT when they commented after it or reacted 👎, for a session to hand to triage as a possible regression; anyone else's reaction gives no row, an issue a bot opened has no requester, and neither row is an action or labels, holds, or reopens anything (spec 021) (#394)
+- `shipmill milestones` (`--json` for one object) prints spec 022's MILESTONE_WAITING and MILESTONE_OVERTAKEN rows, the overtaken one with its number, the version to rename it to, and the rename through `shipmill gh api`; github-ship-watch's `watch_state.py` runs it when a lane sets `milestone = true`, so `shipmill status --rows` and `--json` show both rows, MILESTONE_OVERTAKEN is an action (exit 1), and under "watch" a pass renames an overtaken milestone (#475)
+
+### Changed
+
+- Product intake reads the direction's Goals and Non-goals: each opportunity issue says `Serves: G-n` or `Serves no goal`, the accept question to the maintainer says the same, and an opportunity serving no goal is never proposed for acceptance on demand alone (#488)
+
 ## [0.54.0] - 2026-10-19
 
 ### Changed
@@ -1565,7 +1577,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.54.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.55.0...HEAD
+[0.55.0]: https://github.com/shipmill/shipmill/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/shipmill/shipmill/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/shipmill/shipmill/compare/v0.52.0...v0.53.0
 [0.52.0]: https://github.com/shipmill/shipmill/compare/v0.51.0...v0.52.0

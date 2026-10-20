@@ -47,7 +47,7 @@ The maintainer decided on #477 to remove the drift instead of pausing on it:
    each with its fix, plus one desktop notification per release. Only a failed
    materialization of the needed version stops the gate's sessions
 
-This supersedes D-35's "starts no session" and D-23's updates (D-41).
+This supersedes D-35's "starts no session" and D-23's updates (D-43).
 
 ## Behaviour
 
@@ -301,7 +301,7 @@ It follows the path D-32 set for `[roadmap]`:
 - D-31: the one delivery shipmill performs itself is moving its own references, which the marketplace `ref` is, like the floating major tag
 - D-32: a deprecated key is accepted with a doctor warning for one minor release, then refused
 - D-40: the headless gate's hook self-test still pauses a session; it now tests the cache folder
-- D-41 (superseding D-35, which superseded D-23): the plugin pins its CLI from PyPI, the marketplace serves releases, the gate loads the latest release per session from a versioned cache, and stale installs are reported, never paused on
+- D-43 (superseding D-35, which superseded D-23): the plugin pins its CLI from PyPI, the marketplace serves releases, the gate loads the latest release per session from a versioned cache, and stale installs are reported, never paused on
 
 ## Issues
 

@@ -293,7 +293,7 @@ entry that supersedes it, never by editing an old one.
 - Applies to: src/shipmill/gate.py, src/shipmill/plugin.py, src/shipmill/agents.py, src/shipmill/doctor.py, skills/github-ship-watch/scripts/watch_state.py, skills/shipmill-setup/scripts/setup_state.py, [agents] plugin_update, shipmill status
 - Enforced by: the gate and plugin tests (with the implementing PR)
 - Supersedes: D-23
-- Superseded by: D-41
+- Superseded by: D-43
 
 ## D-36: Delivery rules that guard irreversible writes are enforced by plugin hooks in repos with [agents]
 
@@ -337,7 +337,23 @@ entry that supersedes it, never by editing an old one.
 - Enforced by: tests/test_delivery_hooks.py and the doctor and gate tests (with the implementing PR)
 - Supersedes: D-36
 
-## D-41: The plugin pins its release; the gate loads the latest release per session and never pauses on a stale install
+## D-41: An environment hears of the fixes since the release it ran before
+
+- Decided: 2026-10-19, in shipmill/shipmill#434
+- Rule: An environment's deployment notice (S-021-4) tells the closed issues fixed from the release tag of the newest earlier successful deployment there (else the release tag just below) up to the deployed tag, so fixes released before an environment's first deployment are never told for it; an environment may not be named pre-release or stable, the notice stages' names (shipped.py --environment exits 2)
+- Why: Read literally, S-021-4 would tell every closed issue the project ever fixed on the first deployment to a new environment, flooding old threads; the maintainer (@romamo, on #434) chose the range, whose cost is that fixes released before an environment's first deployment are never told for it. An environment named like a notice stage would read as told by the release notices, so the name is refused
+- Applies to: skills/github-pr-triage/scripts/shipped.py, skills/github-ship-watch/scripts/watch_state.py, docs/specs/021-requester-ring.md
+- Enforced by: tests/test_shipped.py and tests/test_ship_watch.py (S-021-4)
+
+## D-42: A client repo's own docs are the maintainer's
+
+- Decided: 2026-10-20, in shipmill/shipmill#496
+- Rule: shipmill never writes to, appends to, or drafts text for a client repo's own docs (README.md, CONTRIBUTING.md, CLAUDE.md, AGENTS.md, and the like): not in shipmill-setup, init, upgrades, or any agent session. It may read them, for check commands and repo rules, and report what it found as file and line, leaving the change to the maintainer. Files in folders shipmill owns, such as changelog.d/README.md, are not client docs
+- Why: Those files speak for the maintainer to their contributors; text shipmill writes there reads as the maintainer's and goes stale when shipmill changes. Set by @romamo in chat, relayed in #496 and #495
+- Applies to: skills/shipmill-setup, src/shipmill/init.py, src/shipmill/upgrades.py, docs/install.md
+- Enforced by: Review; setup_state.py reports such lines without fixing them
+
+## D-43: The plugin pins its release; the gate loads the latest release per session and never pauses on a stale install
 
 - Decided: 2026-10-19, in shipmill/shipmill#477
 - Rule: Skills, their scripts, and the plugin's hooks run the CLI as `uvx shipmill==<version>`, the version in the plugin's own .claude-plugin/plugin.json, from PyPI, never from the @v0 tag's source or a bare shipmill on PATH; the @v0 tag may stay for outside users. The marketplace entry names the release tag, moved by the release workflow together with plugin.json, so the marketplace never serves unreleased commits, and its ref is the latest release every comparison uses. .github/shipmill.toml may set `requires = ">=X.Y"`; a CLI or script that doesn't meet it exits 2 saying which version to update to and the command. Before each session shipmill gate reads the latest version from the marketplace, materializes it once into an immutable cache (~/.cache/shipmill/plugin/<version>/, written to a temporary folder and renamed), and starts the session with --plugin-dir on that folder and settings that disable shipmill@shipmill; it changes no install, a running session keeps its folder, and a new release is picked up on the next tick. doctor, status, and the tick report each install at user, project, or local scope that lags the latest release, an install keyed on a gate checkout that no session loads, the gate's own CLI when it lags, and a config whose requires isn't met, each with its fix, plus one desktop notification per release under notify = true; only a failed materialization of the needed version, with no usable cached version, stops the gate's sessions. [agents] plugin_update is deprecated for one minor release and ignored, then refused (spec 031)

@@ -27,6 +27,17 @@ Release bot (a repo with .github/shipmill.toml):
                   the work; the main checkout, the --repo-dir checkout, and worktrees that
                   aren't shipmill's are never reported)
 
+Milestones (spec 022; for a shipmill bot whose config has a lane with milestone = true, from
+`uvx --from <tool> shipmill --repo <repo-dir> milestones --json`, never run without one):
+  MILESTONE_WAITING   a goal's milestone with no open issues whose specs aren't built or
+                  shipped, with what holds it (reported, never an action: the build work is
+                  the factory's)
+  MILESTONE_OVERTAKEN an open milestone with open issues whose version a stable tag already
+                  took: the version the lane cuts next, and the fix, the rename to it
+                  through `shipmill gh api -X PATCH` (an action, never an agent's by itself)
+  A milestones read the planner failed is a warning on stderr with no row; a failing
+  `shipmill milestones`, or JSON it can't read, stops the watch (exit 2)
+
 Each of the --releases newest version tags (default 3):
   NOT_PUBLISHED   the package is on PyPI but this version isn't, --grace minutes after
                   the tag
@@ -37,6 +48,19 @@ Each of the --releases newest version tags (default 3):
   PUBLISHED       PyPI lists it; NO_REGISTRY when the package isn't on PyPI at all
   UNANNOUNCED     closed issues it fixed that have no notice for the tag's stage,
                   pre-release or stable (github-pr-triage's shipped.py, in plan mode)
+
+The requester's answer (spec 021), for each closed issue that a published pre-release tag
+among those has told (read on its newest comment with the `<!-- shipmill:available:
+pre-release <tag> -->` marker, the notice); the
+requester is the issue's author, compared by login exactly, and an issue a bot or a deleted
+account opened has none. Both are reported, never an action by itself: no label, hold, or
+reopen follows from either (D-16):
+  REQUESTER_CONFIRMED  the requester reacted 👍 to the notice: the issue, the tag, when, and
+                  the notice's link. A 👍 by anyone else gives no row
+  REQUESTER_REPORT  the requester commented after the notice (a shipmill notice is no
+                  comment of theirs), or reacted 👎 to it: the issue, the tag, and the
+                  comment's or the notice's link, for triage to read as a possible regression
+  The notice's reactions are read (one more gh call) only when it has a 👍 or 👎 at all
 
 Hold and postmortems (a repo with a shipmill config):
   HOLD            an open shipmill-hold issue, with who opened it and when (reported, never
@@ -81,6 +105,13 @@ deployments and issues shipmill operate writes):
                   for those few minutes
   INCIDENT_OPEN   an open issue labelled [operate] incident_label (default "incident"),
                   with its age and the pull requests linked to close it
+  UNANNOUNCED     per environment, the closed issues its current deployment (the newest that
+                  reached success; a failed or unfinished one never counts) of a release tag
+                  fixed that have no notice of the environment, as "<tag> #N ... deployed to
+                  <environment> (since <prev>)": prev is the release tag of the newest
+                  earlier successful deployment there, else the release tag below the
+                  current one (github-pr-triage's shipped.py --environment, in plan mode;
+                  S-021-4)
 
 Intake (github-issue-triage's triage_state.py):
   ISSUES          issues needing triage action, counted by state
@@ -202,10 +233,11 @@ Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when an
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
 ISSUES, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, SKILL_SHADOWED,
-UPGRADE_PENDING, CHAIN_NO_GATE, or CHAIN_UNREADABLE row is present, 2 on bad input or a
-git, gh, or uvx failure (a failing `shipmill worktrees`; a `shipmill plan` failing
-with its own `shipmill: ` error is the BOT_PLAN_FAILED row instead).
-Needs git, an authenticated gh, and uvx (for a shipmill bot's plan and worktrees; `shipmill
+UPGRADE_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, or MILESTONE_OVERTAKEN row is present, 2
+on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
+milestones`; a `shipmill plan` failing with its own `shipmill: ` error is the BOT_PLAN_FAILED
+row instead).
+Needs git, an authenticated gh, and uvx (for a shipmill bot's plan, worktrees, and milestones; `shipmill
 worktrees` needs claude on PATH too, to see the live sessions). Python 3.10+,
 standard library only.
 """
@@ -313,6 +345,7 @@ ACTION = {
     "UPGRADE_PENDING",
     "CHAIN_NO_GATE",
     "CHAIN_UNREADABLE",
+    "MILESTONE_OVERTAKEN",
 }
 # the states whose row needs an agent: --json marks each row's "agent" from this, and
 # shipmill gate starts a session on those rows (SKILL.md's repair table says what it does)
@@ -361,6 +394,10 @@ PROPOSAL_LABEL = "shipmill-proposal"  # shipmill's github.PROPOSAL_LABEL
 PROPOSAL_SEARCH = 'in:title "Ready to"'  # proposals opened before the label; the marker in the body decides
 PROPOSAL = re.compile(r"<!-- shipmill:propose deploy=(?P<env>\S+) -->")  # shipmill's operate.deploy_marker
 PROPOSED_TAG = re.compile(r"<!-- shipmill:tag=(?P<tag>\S+) -->")
+# a notice's first line: shipped.py's MARKER (spec 021; tests/test_ship_watch.py keeps the two equal)
+AVAILABLE = re.compile(r"^<!-- shipmill:available: (\S+) (\S+) -->\s*$")
+COMMENT_ID = re.compile(r"#issuecomment-(\d+)$")  # an issue comment's URL names its id
+GHOST = "ghost"  # the login GitHub shows for every deleted account
 ENV_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # shipmill's environments._NAME
 # a gh read that fails on one of these on its stderr is run once more (S-011-11): a server
 # error, a timeout, a reset or refused connection, or a cut-off response. shipmill's
@@ -755,6 +792,103 @@ def stale_worktrees(repo_dir: Path, tool: str, branch: str) -> list[Row]:
     return stale_rows(out, project_folder(repo_dir), branch)
 
 
+def milestone_lanes(text: str, policy: Path) -> bool:
+    """Whether a lane of the config sets milestone = true (spec 022): only then is `shipmill
+    milestones` run. Read as shipmill reads it, with tomllib on 3.11+, the regex fallback on
+    3.10; a milestone that isn't a boolean is refused"""
+    if tomllib is None:
+        return milestone_lanes_310(text, policy)
+    try:
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise Refused(f"error: {policy}: {exc}") from None
+    lanes = raw.get("lanes", {})
+    if not isinstance(lanes, dict):
+        raise Refused(f"error: {policy}: lanes is not a table")
+    found = False
+    for name, table in lanes.items():
+        value = table.get("milestone", False) if isinstance(table, dict) else None
+        if not isinstance(value, bool):
+            raise Refused(f"error: {policy}: lanes.{name} is not a table with a boolean milestone")
+        found = found or value
+    return found
+
+
+def milestone_lanes_310(text: str, policy: Path) -> bool:
+    """milestone_lanes on Python 3.10: plain [lanes.<name>] tables, each with milestone = true
+    or false; any other form of [lanes] is refused rather than misread"""
+    unreadable = Refused(
+        f"error: {policy}: can't read [lanes] on Python 3.10: use 3.11+ or plain [lanes.<name>] tables"
+    )
+    tables = toml_tables(text)
+    if not blank(tables.get("lanes", "")) or re.search(
+        r"^\s*[\"']?lanes[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE
+    ):
+        raise unreadable
+    found = False
+    for name, body in tables.items():
+        if name.split(".")[0] != "lanes" or len(name.split(".")) != 2:
+            continue
+        for line in body.splitlines():
+            if not re.match(r"^\s*[\"']?milestone[\"']?\s*=", line):
+                continue
+            value = re.match(r"^\s*[\"']?milestone[\"']?\s*=\s*(true|false)\s*(?:#.*)?$", line)
+            if value is None:
+                raise unreadable
+            found = found or value.group(1) == "true"
+    return found
+
+
+MILESTONE_STATES = ("MILESTONE_WAITING", "MILESTONE_OVERTAKEN")
+
+
+def milestone_rows(text: str) -> list[Row]:
+    """`shipmill milestones --json`'s rows (#475, spec 022): MILESTONE_WAITING, report only,
+    and MILESTONE_OVERTAKEN, an action whose fix is the rename. Anything else it prints stops
+    the watch (exit 2); a read the planner failed goes to stderr as a warning, with no row,
+    since the release's own plan reports its errors as BOT_PLAN_FAILED"""
+    try:
+        report = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: shipmill milestones --json printed no JSON: {exc}") from None
+    if not isinstance(report, dict) or not {"milestones", "error"} <= set(report):
+        raise Refused(f"error: shipmill milestones --json printed {text[:200]!r}, not milestones and an error")
+    found, error = report["milestones"], report["error"]
+    if not isinstance(found, list) or not (error is None or isinstance(error, str) and error):
+        raise Refused(f"error: shipmill milestones --json printed {text[:200]!r}, not milestones and an error")
+    if error is not None and found:
+        raise Refused(f"error: shipmill milestones --json printed rows and an error: {text[:200]!r}")
+    if error is not None:
+        sys.stderr.write(f"warning: shipmill milestones: not read: {' '.join(error.split())}\n")
+    rows = []
+    for item in found:
+        if not isinstance(item, dict) or not milestone_item(item):
+            raise Refused(f"error: shipmill milestones --json printed a malformed row: {item!r}")
+        rows.append(Row(item["state"], item["milestone"], item["detail"], item["fix"]))
+    return rows
+
+
+def milestone_item(item: dict[str, Any]) -> bool:
+    """A well-formed row: a waiting one names no number, version, or fix; an overtaken one its
+    milestone's number, the version next, and the rename"""
+    texts = all(isinstance(item.get(k), str) and item[k] for k in ("milestone", "detail"))
+    if not texts or item.get("state") not in MILESTONE_STATES:
+        return False
+    if item["state"] == "MILESTONE_WAITING":
+        return all(item.get(k) is None for k in ("number", "next", "fix"))
+    number = item.get("number")
+    numbered = isinstance(number, int) and not isinstance(number, bool) and number > 0
+    return numbered and all(isinstance(item.get(k), str) and item[k] for k in ("next", "fix"))
+
+
+def milestones(repo_dir: Path, policy: Path, tool: str, execute: Callable[[list[str]], str] = run) -> list[Row]:
+    """Spec 022's milestone rows of the checkout's repository, from `shipmill milestones`, run
+    only when a lane of its config sets milestone = true; none and nothing run otherwise"""
+    if not milestone_lanes((repo_dir / policy).read_text(encoding="utf-8"), policy):
+        return []
+    return milestone_rows(execute(["uvx", "--from", tool, "shipmill", "--repo", str(repo_dir), "milestones", "--json"]))
+
+
 # -- releases ------------------------------------------------------------------------------
 
 
@@ -867,15 +1001,161 @@ def fetch_tag_runs(repo: str, tag: str) -> list[Run]:
     return sorted(found, key=lambda r: r.created, reverse=True)
 
 
-def unannounced(repo: str, repo_dir: Path, prev: str, tag: str, env: dict[str, str] | None = None) -> list[str]:
-    """The issues shipped.py would tell in plan mode; ``env`` is the environment it runs in"""
-    out = run([sys.executable, str(SHIPPED), repo, prev, tag, "--repo-dir", str(repo_dir)], env=env)
-    return [line.split()[0] for line in out.splitlines() if "WOULD POST" in line]
+def shipped_plan(
+    repo: str,
+    repo_dir: Path,
+    prev: str,
+    tag: str,
+    env: dict[str, str] | None = None,
+    environment: str | None = None,
+) -> tuple[list[str], list[str]]:
+    """The issues shipped.py in plan mode would tell, of the release, or with environment, of
+    tag's deployment there, and the ones it finds told already; ``env`` is the process
+    environment it runs in"""
+    cmd = [sys.executable, str(SHIPPED), repo, prev, tag, "--repo-dir", str(repo_dir)]
+    out = run(cmd if environment is None else [*cmd, "--environment", environment], env=env)
+    # "#N     <WHAT>  <title>  [source]": read by position, so a title never reads as what it does
+    lines = [line.split() for line in out.splitlines()]
+    return [w[0] for w in lines if w[1:3] == ["WOULD", "POST"]], [w[0] for w in lines if w[1:3] == ["SKIP", "notified"]]
+
+
+def unannounced(
+    repo: str,
+    repo_dir: Path,
+    prev: str,
+    tag: str,
+    env: dict[str, str] | None = None,
+    environment: str | None = None,
+) -> list[str]:
+    """The issues shipped.py would tell in plan mode"""
+    return shipped_plan(repo, repo_dir, prev, tag, env, environment)[0]
 
 
 def unannounced_row(repo: str, tag: str, prev: str, issues: list[str]) -> Row:
     """The issues the tag fixed that no notice for its stage tells; the watch posts them"""
     return Row("UNANNOUNCED", tag, f"{' '.join(issues)} (since {prev})", skill_fix("github-ship-watch", repo))
+
+
+def deployed_row(repo: str, environment: str, tag: str, prev: str, issues: list[str]) -> Row:
+    """The issues tag's deployment to the environment fixed that no notice of it tells (S-021-4)"""
+    detail = f"{' '.join(issues)} deployed to {environment} (since {prev})"
+    return Row("UNANNOUNCED", tag, detail, skill_fix("github-ship-watch", repo))
+
+
+# -- the requester's answer (spec 021) -----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Notice:
+    """An issue's newest pre-release notice, and what its requester (the issue's author) did
+    after it: the comments they wrote, and whether anyone reacted 👍 or 👎 to it at all"""
+
+    number: int
+    tag: str
+    url: str  # the notice comment's, ending #issuecomment-<id>
+    requester: str
+    voted: bool  # a 👍 or 👎 by anyone: only then are its reactions read
+    after: tuple[str, ...]  # the URLs of the requester's comments after the notice, oldest first
+
+
+@dataclass(frozen=True)
+class Reaction:
+    login: str
+    content: str  # the REST API's: +1, -1, laugh, ...
+    created: dt.datetime
+
+
+def pre_release(tag: str) -> bool:
+    """A dev, a, b, or rc release tag, whose notice asks the requester to answer"""
+    key = version_key(tag)
+    return key is not None and (key[3] < 4 or key[5] != 2**62)
+
+
+def pre_release_notice(number: int, view: dict[str, Any]) -> Notice | None:
+    """The issue's newest pre-release notice, from `gh issue view --json author,comments`;
+    None without one, or when the author is a bot or a deleted account: a requester is a
+    person, compared by login exactly (gh names an App author app/<slug>, its comments <slug>)"""
+    author = view.get("author") or {}
+    login = author.get("login")
+    if not isinstance(login, str) or not login or author.get("is_bot") or login == GHOST:
+        return None
+    comments = view["comments"]
+    found = None
+    for at, comment in enumerate(comments):
+        marker = AVAILABLE.match(comment["body"].partition("\n")[0])
+        # anyone can write a marker: one whose tag is no pre-release tag is no notice, so its
+        # text never reaches the row (D-16)
+        if marker is not None and marker.group(1) == "pre-release" and pre_release(marker.group(2)):
+            found = at, marker.group(2)
+    if found is None:
+        return None
+    at, tag = found
+    notice = comments[at]
+    after = tuple(
+        c["url"]
+        for c in comments[at + 1 :]
+        if (c.get("author") or {}).get("login") == login and AVAILABLE.match(c["body"].partition("\n")[0]) is None
+    )
+    groups = {g["content"] for g in notice.get("reactionGroups") or [] if g["users"]["totalCount"] > 0}
+    return Notice(number, tag, notice["url"], login, bool(groups & {"THUMBS_UP", "THUMBS_DOWN"}), after)
+
+
+def requester_rows(notice: Notice, reactions: list[Reaction], now: dt.datetime) -> list[Row]:
+    """REQUESTER_CONFIRMED when the requester reacted 👍 to the notice (S-021-6); REQUESTER_REPORT
+    when they commented after it or reacted 👎 (S-021-7). Anyone else's reaction or comment is
+    triage's, as before; both rows are reported only, and nothing follows from them by itself"""
+    mine = sorted((r for r in reactions if r.login == notice.requester), key=lambda r: r.created)
+    up = [r for r in mine if r.content == "+1"]
+    down = [r for r in mine if r.content == "-1"]
+    subject = f"#{notice.number}"
+    rows = []
+    if up:
+        detail = f"{notice.tag}: the requester reacted 👍 {ago(now - up[0].created)} ago, {notice.url}"
+        rows.append(Row("REQUESTER_CONFIRMED", subject, detail))
+    said = []
+    if notice.after:
+        more = f" (+{len(notice.after) - 1} more)" if len(notice.after) > 1 else ""
+        said.append(f"commented after the notice, {notice.after[0]}{more}")
+    if down:
+        said.append(f"reacted 👎 {ago(now - down[0].created)} ago, {notice.url}")
+    if said:
+        rows.append(Row("REQUESTER_REPORT", subject, f"{notice.tag}: the requester {'; '.join(said)}"))
+    return rows
+
+
+def fetch_view(repo: str, number: int) -> dict[str, Any]:
+    view: dict[str, Any] = json.loads(
+        run(["gh", "issue", "view", str(number), "-R", repo, "--json", "author,comments"])
+    )
+    return view
+
+
+def fetch_reactions(repo: str, url: str) -> list[Reaction]:
+    """The reactions to an issue comment, by its URL, through the REST API"""
+    found = COMMENT_ID.search(url)
+    if found is None:
+        raise Refused(f"error: {url} names no issue comment")
+    jq = '.[] | [(.user.login // ""), .content, .created_at]'
+    cmd = ["gh", "api", "-X", "GET", "--paginate", f"repos/{repo}/issues/comments/{found.group(1)}/reactions"]
+    out = run([*cmd, "--jq", jq])
+    return [Reaction(str(r[0]), str(r[1]), parse_time(str(r[2]))) for r in map(json.loads, out.splitlines())]
+
+
+def answers_rows(
+    repo: str,
+    numbers: list[int],
+    now: dt.datetime,
+    view_of: Callable[[int], dict[str, Any]],
+    reactions_of: Callable[[str], list[Reaction]],
+) -> list[Row]:
+    """The requester rows of the issues a pre-release told: each issue read once, and its
+    notice's reactions only when someone reacted 👍 or 👎 to it"""
+    rows = []
+    for number in numbers:
+        notice = pre_release_notice(number, view_of(number))
+        if notice is not None:
+            rows += requester_rows(notice, reactions_of(notice.url) if notice.voted else [], now)
+    return rows
 
 
 # -- holds and operations ------------------------------------------------------------------
@@ -1165,6 +1445,26 @@ def current_deployment(deployments: list[Deployment], statuses_of: Callable[[int
     return None
 
 
+def deployed_since(
+    deployments: list[Deployment], current: Current, statuses_of: Callable[[int], list[Status]], tags: list[str]
+) -> str | None:
+    """The tag an environment ran before current's, which its notices count from (S-021-4):
+    the newest earlier deployment, newest first, of another of the release tags that reached
+    success, else the release tag just below current's. None when current's ref is no release
+    tag of the checkout, or no tag is below it. A failed or unfinished deployment never counts"""
+    key = version_key(current.tag)
+    if key is None or current.tag not in tags:
+        return None
+    for deployment in deployments:
+        earlier = deployment.ref.removeprefix("refs/tags/")
+        if deployment.id >= current.deployment.id or earlier == current.tag or earlier not in tags:
+            continue
+        if any(s.state == "success" for s in statuses_of(deployment.id)):
+            return earlier
+    below = sorted((k, t) for k, t in ((version_key(t), t) for t in tags) if k is not None and k < key)
+    return below[-1][1] if below else None
+
+
 def operate_rows(runs: list[Run], caller: str, repo: str) -> list[Row]:
     failed = failed_run(runs)
     if failed is not None:
@@ -1430,18 +1730,44 @@ def operate_start(caller: tuple[str, bool] | None, repo: str, repo_dir: Path) ->
     return "write one with `shipmill init --operate`, then run it once", fix
 
 
+def deployed_rows(
+    repo: str,
+    repo_dir: Path,
+    environment: str,
+    deployments: list[Deployment],
+    current: Current | None,
+    statuses_of: Callable[[int], list[Status]],
+    tags: list[str],
+) -> list[Row]:
+    """UNANNOUNCED for the issues the environment's current deployment fixed that no notice of
+    the environment tells yet (S-021-4); none without a successful deployment of a release tag"""
+    if current is None:
+        return []
+    prev = deployed_since(deployments, current, statuses_of, tags)
+    if prev is None:
+        return []
+    issues = unannounced(repo, repo_dir, prev, current.tag, environment=environment)
+    return [deployed_row(repo, environment, current.tag, prev, issues)] if issues else []
+
+
 def operations_rows(
-    repo: str, repo_dir: Path, envs: list[Environment], held: bool, label: str, now: dt.datetime
+    repo: str, repo_dir: Path, envs: list[Environment], held: bool, label: str, now: dt.datetime, tags: list[str]
 ) -> list[Row]:
     caller = operate_caller(repo_dir)
     runs = fetch_runs(repo, caller[0]) if caller else []
     rows = operate_rows(runs, caller[0], repo) if caller else []
     deployments = {e.name: fetch_deployments(repo, e.name) for e in envs}
-    current = {e.name: current_deployment(deployments[e.name], lambda i: fetch_statuses(repo, i)) for e in envs}
+
+    def statuses_of(deployment: int) -> list[Status]:
+        return fetch_statuses(repo, deployment)
+
+    current = {e.name: current_deployment(deployments[e.name], statuses_of) for e in envs}
     for env in envs:
         row = unhealthy_row(env.name, current[env.name], now)
         if row is not None:
             rows.append(row)
+    for env in envs:
+        rows += deployed_rows(repo, repo_dir, env.name, deployments[env.name], current[env.name], statuses_of, tags)
     issues = proposal_issues(
         fetch_issues(repo, "--label", PROPOSAL_LABEL), lambda: fetch_issues(repo, "--search", PROPOSAL_SEARCH)
     )
@@ -2236,12 +2562,14 @@ def main() -> int:
         rows += work_branch_rows(branches, owners, workflow, args.repo)
         if shipmill:  # after the plan, whose own worktree is gone by then
             rows += stale_worktrees(repo_dir, args.tool, branch)
+            rows += milestones(repo_dir, policy, args.tool)
 
     tags = version_tags(repo_dir)
     package = package_name(repo_dir)
     project = pypi_json(package) if package is not None else None
     registered = project is not None
     first = first_upload(project, package) if package is not None and project is not None else None
+    asked: dict[int, None] = {}  # the issues a pre-release told, whose requester may have answered
     for i, tag in enumerate(tags[: args.releases]):
         listed = on_pypi(f"{package}/{tag.name[1:]}") if registered else None
         row = publish_row(
@@ -2256,9 +2584,14 @@ def main() -> int:
         )
         rows.append(row)
         if row.state in {"PUBLISHED", "NO_REGISTRY"} and i + 1 < len(tags):
-            issues = unannounced(args.repo, repo_dir, tags[i + 1].name, tag.name)
+            issues, told = shipped_plan(args.repo, repo_dir, tags[i + 1].name, tag.name)
             if issues:
                 rows.append(unannounced_row(args.repo, tag.name, tags[i + 1].name, issues))
+            if pre_release(tag.name):
+                asked.update((int(n.lstrip("#")), None) for n in told)
+    rows += answers_rows(
+        args.repo, list(asked), now, lambda n: fetch_view(args.repo, n), lambda url: fetch_reactions(args.repo, url)
+    )
 
     table = None
     upgrades = None
@@ -2275,7 +2608,8 @@ def main() -> int:
             texts = postmortem_texts(args.repo, branch)
             rows += postmortem_rows(closed, read.incident_label, texts, args.repo, now)
         if read.environments:
-            rows += operations_rows(args.repo, repo_dir, read.environments, bool(holds), read.incident_label, now)
+            names, label = [t.name for t in tags], read.incident_label
+            rows += operations_rows(args.repo, repo_dir, read.environments, bool(holds), label, now, names)
         upgrades = upgrade_rows(
             fetch_issues(args.repo, "--label", UPGRADE_LABEL),
             read.upgrade,
