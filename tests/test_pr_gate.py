@@ -203,6 +203,60 @@ def test_s024_7_a_moved_goals_section_lists_its_ids(tmp_path: Path) -> None:
     assert refused.returncode == 6, refused.stdout
 
 
+MEASURED = DIRECTION.replace(
+    "- G-1: Ship\n- G-3: Ship faster\n",
+    "- G-1: Ship\n  measure: deploy_frequency >= 5/week\n- G-3: Ship faster\n  measure: lead_time_median < 2.5d\n",
+)
+
+
+def ids_of(files: dict[str, str]) -> frozenset[str]:
+    ids: frozenset[str] = gate.direction_ids(files.get)
+    return ids
+
+
+def test_s027_6_the_gate_reads_the_goal_ids_of_a_direction_whose_goals_carry_measures(tmp_path: Path) -> None:
+    expected = {"U-1", "G-1", "G-3", "Q-1"}
+    assert ids_of({"docs/product.md": MEASURED}) == expected
+    moved = DIRECTION.replace("- G-1: Ship\n- G-3: Ship faster\n", "See [Goals](product/goals.md).\n")
+    goals = "## Goals\n\n- G-1: Ship\n  measure: human_touch <= 20%\n- G-3: Ship faster\n"
+    assert ids_of({"docs/product.md": moved, "docs/product/goals.md": goals}) == expected
+    work = checkout(tmp_path, {"docs/product.md": MEASURED})
+    proc = run_gate(tmp_path, work, {7: pr()}, "--bot-login", BOT)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        pytest.param(
+            MEASURED.replace("- U-1: A maintainer\n", "- U-1: A maintainer\n  measure: human_touch < 5%\n"),
+            10,
+            id="under a user",
+        ),
+        pytest.param(
+            MEASURED.replace("- Q-1: Fail fast\n", "- Q-1: Fail fast\n  measure: human_touch < 5%\n"),
+            23,
+            id="under the quality bar",
+        ),
+        pytest.param(MEASURED.replace("- G-1: Ship\n", "- G-1: Ship\n\n"), 15, id="after a blank line"),
+        pytest.param(
+            MEASURED.replace("  measure: deploy_frequency >= 5/week\n", "  measure: a\n  measure: b\n"),
+            15,
+            id="a second measure",
+        ),
+        pytest.param(
+            MEASURED.replace("- G-3: Ship faster\n", "- G-3: Ship faster\n  wrapped text\n"),
+            16,
+            id="another indented line",
+        ),
+        pytest.param(MEASURED.replace("  measure: deploy", "   measure: deploy"), 14, id="indented by three"),
+    ],
+)
+def test_s027_6_the_gate_still_stops_on_any_other_non_item_line(text: str, line: int) -> None:
+    with pytest.raises(gate.GateError, match=rf"^docs/product.md:{line}: not a `- [UGQ]-<n>: <text>` item"):
+        ids_of({"docs/product.md": text})
+
+
 def test_s024_7_a_person_s_pr_is_never_refused_for_its_plan(tmp_path: Path, directed: Path) -> None:
     proc = run_gate(tmp_path, directed, {7: pr(body="Fixes #7", login="amy")}, "--bot-login", BOT)
     assert proc.returncode == 0, proc.stdout + proc.stderr

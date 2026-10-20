@@ -60,6 +60,7 @@ QUALITY_BAR = "quality bar"
 _HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$")
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 _ITEM = re.compile(r"^- ([A-Za-z]+)-([1-9][0-9]*): \S.*$")
+_MEASURE = re.compile(r"^  measure: \S.*$")  # a goal's measure line (spec 027)
 _MOVED = re.compile(r"^See \[([^\]]+)\]\(product/([A-Za-z0-9][A-Za-z0-9_-]*\.md)\)\.$")
 _PROTECTED_ITEM = re.compile(r"- `([^`]*)`: (\S.*)")
 _PLAN_FIELD = re.compile(r"^\s*(?:[-*]\s+)?(" + "|".join(PLAN_FIELDS) + r"):(.*)$")
@@ -194,7 +195,8 @@ def matches(glob: str, path: str) -> bool:
 
 def direction_ids(read: Callable[[str], str | None]) -> frozenset[str]:
     """Every item id docs/product.md lists, moved sections followed; a list line that isn't
-    `- <prefix>-<n>: <text>` with its section's prefix, or a broken link, stops the gate.
+    `- <prefix>-<n>: <text>` with its section's prefix, or a broken link, stops the gate; a
+    goal's `  measure: ...` line right under its item line is skipped (spec 027).
     `shipmill product check` holds the full grammar"""
     text = read(DIRECTION)
     if text is None:
@@ -209,7 +211,7 @@ def direction_ids(read: Callable[[str], str | None]) -> frozenset[str]:
         if prefix is None:
             continue
         lines = [(n, line.rstrip()) for n, line in body if line.strip()]
-        file = DIRECTION
+        file, listed = DIRECTION, body
         if len(lines) == 1 and lines[0][1].startswith("See ["):
             moved = _MOVED.match(lines[0][1])
             if moved is None or moved.group(1) != heading:
@@ -222,12 +224,21 @@ def direction_ids(read: Callable[[str], str | None]) -> frozenset[str]:
             heads = [(lv, h) for lv, h, _ in parts[1:]]
             if heads != [(2, heading)] or any(line.strip() for _, line in parts[0][2]):
                 raise GateError(f"{file} holds only `## {heading}`; run `shipmill product check`")
-            lines = [(n, line.rstrip()) for n, line in parts[1][2] if line.strip()]
-        for number, line in lines:
+            listed = parts[1][2]
+        after_goal = False  # the line before was a goal's item line, which a measure line may follow
+        for number, raw in listed:
+            line = raw.rstrip()
+            if not line.strip():
+                after_goal = False
+                continue
+            if after_goal and _MEASURE.match(line):  # spec 027: read no more from it
+                after_goal = False
+                continue
             item = _ITEM.match(line)
             if item is None or item.group(1) != prefix:
                 raise GateError(f"{file}:{number}: not a `- {prefix}-<n>: <text>` item; run `shipmill product check`")
             ids.add(f"{prefix}-{item.group(2)}")
+            after_goal = prefix == "G"
     return frozenset(ids)
 
 

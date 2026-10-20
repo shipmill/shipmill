@@ -111,7 +111,8 @@ QUALITY_BAR = "quality bar"
 GOAL_ID = re.compile(r"^G-[1-9][0-9]*$")
 # The direction (spec 024), read the way `shipmill product ids` reads it: each list
 # section's `- <prefix>-<n>: <text>` items, a section moved to docs/product/<file>.md
-# through its one `See [<section>](product/<file>.md).` line read from that file
+# through its one `See [<section>](product/<file>.md).` line read from that file; any other
+# line, such as a goal's `  measure: ...` line (spec 027), holds no id and is skipped
 DIRECTION = Path("docs/product.md")
 DIRECTION_PREFIXES = {"Users": "U", "Goals": "G", "Non-goals": "N", "Quality bar": "Q"}
 DIRECTION_HEADING = re.compile(r"^(#{1,6})(?:[ \t]+(.*))?$")

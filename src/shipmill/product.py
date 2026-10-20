@@ -2,13 +2,14 @@
 and quality bar the agents work toward. Its grammar is fixed so code reads it without a model:
 a level-one heading naming the product, then the five sections in order, the four list
 sections holding only `- <prefix>-<n>: <text>` items. A section may move to its own file
-under docs/product/ through a single `See [<section>](product/<file>.md).` line. Only the
-maintainer merges a change to it (D-34); the edit commands at the end write one item line in
-the working tree, never a commit"""
+under docs/product/ through a single `See [<section>](product/<file>.md).` line. A goal may
+carry one measure on the line right after it, `  measure: <metric> <comparison> <target>`
+(spec 027). Only the maintainer merges a change to it (D-34); the edit commands at the end
+write one item line in the working tree, never a commit"""
 
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -25,6 +26,129 @@ _ITEM = re.compile(r"^- (?P<prefix>[A-Za-z]+)-(?P<number>[1-9][0-9]*): (?P<text>
 _ID = re.compile(r"^(?P<prefix>[A-Z])-(?P<number>[1-9][0-9]*)$")
 _SEE = re.compile(r"^See \[")
 _MOVED = re.compile(r"^See \[(?P<label>[^\]]+)\]\(product/(?P<file>[A-Za-z0-9][A-Za-z0-9_-]*\.md)\)\.$")
+_MEASURE_LIKE = re.compile(r"^\s*measure:")  # any line that tries to be a measure line
+_MEASURE_LINE = re.compile(r"^  measure: (?P<text>\S.*)$")
+_MEASURE_PARTS = re.compile(r"^(?P<metric>\S+) (?P<comparison>\S+) (?P<target>\S+)$")
+_TARGET = re.compile(r"^(?P<number>[0-9]+(?:\.[0-9]+)?)(?P<unit>/week|h|d|%)$")
+_MEASURE_FORM = "`  measure: <metric> <comparison> <target>`"
+
+
+class Unit(StrEnum):
+    """The unit a measure's target is held in, the one metrics.py reports its value in"""
+
+    HOURS = "hours"
+    RATIO = "ratio"
+    PER_WEEK = "per week"
+
+    @property
+    def forms(self) -> str:
+        """How a target in this unit is written"""
+        return _UNIT_FORMS[self]
+
+
+_UNIT_FORMS = {Unit.HOURS: "`<n>h` or `<n>d`", Unit.RATIO: "`<n>%`", Unit.PER_WEEK: "`<n>/week`"}
+_SUFFIX_UNITS = {"h": Unit.HOURS, "d": Unit.HOURS, "%": Unit.RATIO, "/week": Unit.PER_WEEK}
+
+
+class Metric(StrEnum):
+    """The fixed registry of spec 027: each a value skills/github-ship-watch/scripts/metrics.py
+    computes. A metric joins only together with the metrics.py code that computes it"""
+
+    DEPLOY_FREQUENCY = "deploy_frequency"  # Deploy frequency
+    LEAD_TIME_MEDIAN = "lead_time_median"  # Lead time for changes, median
+    LEAD_TIME_P90 = "lead_time_p90"  # Lead time for changes, p90
+    CHANGE_FAILURE_RATE = "change_failure_rate"  # Change failure rate
+    TIME_TO_RESTORE_MEDIAN = "time_to_restore_median"  # Time to restore, median
+    ISSUE_TO_RELEASE_MEDIAN = "issue_to_release_median"  # Issue to release, median
+    ISSUE_TO_RELEASE_P90 = "issue_to_release_p90"  # Issue to release, p90
+    HUMAN_TOUCH = "human_touch"  # Human touch
+    AGENT_SHARE = "agent_share"  # Agent share
+
+    @property
+    def unit(self) -> Unit:
+        return _METRIC_UNITS[self]
+
+
+_METRIC_UNITS = {
+    Metric.DEPLOY_FREQUENCY: Unit.PER_WEEK,
+    Metric.LEAD_TIME_MEDIAN: Unit.HOURS,
+    Metric.LEAD_TIME_P90: Unit.HOURS,
+    Metric.CHANGE_FAILURE_RATE: Unit.RATIO,
+    Metric.TIME_TO_RESTORE_MEDIAN: Unit.HOURS,
+    Metric.ISSUE_TO_RELEASE_MEDIAN: Unit.HOURS,
+    Metric.ISSUE_TO_RELEASE_P90: Unit.HOURS,
+    Metric.HUMAN_TOUCH: Unit.RATIO,
+    Metric.AGENT_SHARE: Unit.RATIO,
+}
+
+
+class Comparison(StrEnum):
+    LESS = "<"
+    AT_MOST = "<="
+    MORE = ">"
+    AT_LEAST = ">="
+
+
+@dataclass(frozen=True, slots=True)
+class Measure:
+    """A goal's measure: its metric, the comparison, and the target in the metric's unit
+    (`1d` is 24 hours, `20%` a ratio of 0.2); `text` is the line as written after `measure: `"""
+
+    metric: Metric
+    comparison: Comparison
+    target: float
+    text: str
+
+    @property
+    def unit(self) -> Unit:
+        return self.metric.unit
+
+    @classmethod
+    def parse(cls, text: str) -> Measure:
+        """`<metric> <comparison> <target>`, single spaces between; refused naming the rule"""
+        parts = _MEASURE_PARTS.match(text)
+        if parts is None:
+            raise ReleaseError(f"a measure is `<metric> <comparison> <target>`, single spaces between; got {text!r}")
+        known = {m.value for m in Metric}
+        if parts["metric"] not in known:
+            names = ", ".join(m.value for m in Metric)
+            raise ReleaseError(f"`{parts['metric']}` is not a known metric; they are {names}")
+        metric = Metric(parts["metric"])
+        if parts["comparison"] not in {c.value for c in Comparison}:
+            listed = ", ".join(f"`{c.value}`" for c in Comparison)
+            raise ReleaseError(f"`{parts['comparison']}` is not a comparison; it is one of {listed}")
+        target = _TARGET.match(parts["target"])
+        if target is None or _SUFFIX_UNITS[target["unit"]] is not metric.unit:
+            raise ReleaseError(
+                f"`{metric}` takes a target in {metric.unit.forms}, a non-negative number; got `{parts['target']}`"
+            )
+        number = float(target["number"])
+        if metric.unit is Unit.RATIO and number > 100:
+            raise ReleaseError(f"a percentage lies between 0 and 100; got `{parts['target']}`")
+        return cls(metric, Comparison(parts["comparison"]), _in_unit(number, target["unit"]), text)
+
+    def record(self) -> dict[str, str | float]:
+        return {
+            "metric": self.metric.value,
+            "comparison": self.comparison.value,
+            "target": self.target,
+            "unit": self.unit.value,
+            "text": self.text,
+        }
+
+    def __str__(self) -> str:
+        return f"  measure: {self.text}"
+
+
+def _in_unit(number: float, suffix: str) -> float:
+    """A target as written, in its metric's unit: days in hours, a percentage as a ratio"""
+    match suffix:
+        case "d":
+            return number * 24
+        case "%":
+            return number / 100
+        case _:
+            return number
 
 
 class Prefix(StrEnum):
@@ -117,9 +241,19 @@ class ItemId:
 class Item:
     id: ItemId
     text: str
+    measure: Measure | None = None  # only a goal carries one (spec 027)
 
-    def record(self) -> dict[str, str]:
-        return {"id": str(self.id), "text": self.text}
+    def record(self) -> dict[str, Any]:
+        """A goal's record has a `measure` key, null without one; other items have none"""
+        record: dict[str, Any] = {"id": str(self.id), "text": self.text}
+        if self.id.prefix is Prefix.GOAL:
+            record["measure"] = None if self.measure is None else self.measure.record()
+        return record
+
+    def lines(self) -> str:
+        """The item as the file writes it: its line, and its measure line under it"""
+        line = f"- {self}"
+        return line if self.measure is None else f"{line}\n{self.measure}"
 
     def __str__(self) -> str:
         return f"{self.id}: {self.text}"
@@ -184,7 +318,7 @@ class Direction:
             if section is Section.MISSION:
                 body = self.mission
             else:
-                body = "\n".join(f"- {item}" for item in self.items(section))
+                body = "\n".join(item.lines() for item in self.items(section))
             blocks.append(f"## {section.value}\n\n{body}" if body else f"## {section.value}")
         return "\n\n".join(blocks) + "\n"
 
@@ -415,7 +549,15 @@ class _Parser:
             return "\n".join(line for _, line in body.lines).strip("\n")
         items: list[Item] = []
         broken = False  # a line failed, so an empty section says nothing more
-        for number, line in body.filled():
+        previous = _Previous.START
+        for number, line in body.lines:
+            if not line:
+                previous = _Previous.BLANK
+                continue
+            if _MEASURE_LIKE.match(line):
+                previous = self._measure(section, body, number, line, previous, items)
+                continue
+            previous = _Previous.BROKEN
             m = _ITEM.match(line)
             broken = broken or m is None or m["prefix"] != prefix.value
             if m is None:
@@ -435,9 +577,51 @@ class _Parser:
                 continue
             self.seen[item.id] = f"{body.path}:{number}"
             items.append(item)
+            previous = _Previous.ITEM
         if section.required and not items and not broken:
             self.fail(body.path, body.heading, f"`## {section.value}` holds no item; it needs at least one")
         return tuple(items)
+
+    def _measure(
+        self, section: Section, body: _Body, number: int, line: str, previous: _Previous, items: list[Item]
+    ) -> _Previous:
+        """A measure line (spec 027): only right under a goal's item line, one per goal; the
+        goal it measures gets it. Returns what the next line follows"""
+        if section is not Section.GOALS:
+            self.fail(body.path, number, f"a measure line sits only under a goal; `## {section.value}` holds none")
+            return _Previous.BROKEN
+        if previous is _Previous.BROKEN:  # under a line already reported
+            return _Previous.BROKEN
+        if previous is _Previous.MEASURED:
+            self.fail(body.path, number, f"a second measure line under {items[-1].id}; a goal carries at most one")
+            return _Previous.BROKEN
+        if previous is not _Previous.ITEM:
+            where = "after a blank line" if previous is _Previous.BLANK else "before any goal"
+            self.fail(body.path, number, f"a measure line sits right under its goal's item line; this one is {where}")
+            return _Previous.BROKEN
+        written = _MEASURE_LINE.match(line)
+        if written is None:
+            self.fail(
+                body.path, number, f"a measure line is {_MEASURE_FORM}, indented by two spaces; got {_quote(line)}"
+            )
+            return _Previous.MEASURED
+        try:
+            measure = Measure.parse(written["text"])
+        except ReleaseError as exc:
+            self.fail(body.path, number, str(exc))
+            return _Previous.MEASURED
+        items[-1] = replace(items[-1], measure=measure)
+        return _Previous.MEASURED
+
+
+class _Previous(StrEnum):
+    """What the line before a list section's line was, for where a measure line may sit"""
+
+    START = "start"
+    BLANK = "blank"
+    ITEM = "item"
+    MEASURED = "measured"  # a measure line, well formed or not
+    BROKEN = "broken"  # a line already reported, or one no measure may follow
 
 
 def _parse(root: Path) -> tuple[Direction | None, tuple[Problem, ...]]:
