@@ -210,9 +210,9 @@ class Installation:
         return f"{self.slug}[bot]"
 
 
-def missing(granted: Mapping[str, Access]) -> list[Permission]:
+def missing(granted: Mapping[str, Access], table: tuple[Permission, ...] = PERMISSIONS) -> list[Permission]:
     """The table's permissions the installation lacks, or grants only read where write is needed"""
-    return [p for p in PERMISSIONS if (have := granted.get(p.key)) is None or not have.covers(p.access)]
+    return [p for p in table if (have := granted.get(p.key)) is None or not have.covers(p.access)]
 
 
 _ACCESS = {"read": Access.READ, "write": Access.WRITE, "admin": Access.WRITE}  # admin covers write
@@ -235,6 +235,10 @@ class NotInstalled(ReleaseError):
     """The App has no installation on the repo; the message is spec 004's, S-004-5"""
 
 
+class Lacks(ReleaseError):
+    """The App's installation on the repo lacks a permission the table asks for"""
+
+
 def app_slug(app_id: int, token: str, api: Api) -> str:
     """The App's slug, from GET /app with its JWT"""
     app = _ok(api.get("/app", token), "/app", app_id)
@@ -244,9 +248,11 @@ def app_slug(app_id: int, token: str, api: Api) -> str:
     return slug
 
 
-def installation(app_id: int, repo: str, token: str, api: Api) -> Installation:
+def installation(
+    app_id: int, repo: str, token: str, api: Api, table: tuple[Permission, ...] = PERMISSIONS
+) -> Installation:
     """Spec 004, At launch step 3: the App's slug, then its installation on repo, which must
-    grant every permission in the table"""
+    grant every permission in the table (a session's, unless another is given)"""
     slug = app_slug(app_id, token, api)
     path = f"/repos/{repo}/installation"
     answer = api.get(path, token)
@@ -257,9 +263,9 @@ def installation(app_id: int, repo: str, token: str, api: Api) -> Installation:
     if not isinstance(number, int) or isinstance(number, bool):
         raise ReleaseError(f"GET {path} gave no installation id")
     granted = _permissions(found.get("permissions"), path)
-    if lacking := missing(granted):
+    if lacking := missing(granted, table):
         names = ", ".join(f"{p.label}: {p.access}" for p in lacking)
-        raise ReleaseError(
+        raise Lacks(
             f"app {slug} on {repo} lacks these permissions: {names}; grant them in the App's settings, "
             "then accept them on the installation"
         )
@@ -460,13 +466,22 @@ def _scope(data: Mapping[str, object], repo: str, path: str) -> None:
         raise ReleaseError(f"POST {path} gave a token for another repository than {repo}; refusing it")
 
 
-def mint(app_id: int, repo: str, key: Path, now: dt.datetime, signer: Signer, api: Api) -> Token:
-    """Spec 004, Tokens: an installation token limited to repo and the table's permissions"""
+def mint(
+    app_id: int,
+    repo: str,
+    key: Path,
+    now: dt.datetime,
+    signer: Signer,
+    api: Api,
+    table: tuple[Permission, ...] = PERMISSIONS,
+) -> Token:
+    """Spec 004, Tokens: an installation token limited to repo and the table's permissions (a
+    session's, unless another is given)"""
     name = repo_name(repo)
     bearer = jwt(app_id, check_key(key), now, signer)
-    found = installation(app_id, repo, bearer, api)
+    found = installation(app_id, repo, bearer, api, table)
     path = f"/app/installations/{found.id}/access_tokens"
-    body = {"repositories": [name], "permissions": {p.key: str(p.access) for p in PERMISSIONS}}
+    body = {"repositories": [name], "permissions": {p.key: str(p.access) for p in table}}
     data = _ok(api.post(path, bearer, body), path, app_id, "POST", 201)
     value = data.get("token")
     if not isinstance(value, str) or not value or any(c.isspace() for c in value):

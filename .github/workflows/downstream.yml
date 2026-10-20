@@ -1,0 +1,120 @@
+name: shipmill downstream
+
+# Called by a library's .github/workflows/downstream.yml (see `shipmill init --downstream`) on
+# pull_request_target and workflow_dispatch (spec 032). With an empty `collect` it runs
+# `shipmill downstream start`: a `downstream: <name>` check per [downstream] repository on the
+# pull request's head, each downstream's own workflow dispatched as the App, then this caller
+# dispatched again with `collect` set to the head SHA. With `collect` set it runs
+# `shipmill downstream collect`, which reads each downstream run back into its check.
+#
+# Every job checks out the library's default branch and never a ref from the pull request:
+# under pull_request_target the token can write checks on a fork's pull request, so the
+# pull request's code is never checked out or run, and the config read is the default
+# branch's, which a pull request can't switch off. shipmill itself comes from `tool`.
+
+on:
+  workflow_call:
+    inputs:
+      pr:
+        description: "The library's pull request"
+        type: number
+        required: true
+      collect:
+        description: "Set by shipmill: the head SHA to collect results for; empty starts the downstream runs"
+        type: string
+        default: ""
+      tool:
+        description: "Where uvx installs shipmill from"
+        type: string
+        default: "git+https://github.com/shipmill/shipmill@v0"
+    secrets:
+      downstream-key:
+        description: "The private key of the App in [downstream] app_id"
+        # not required: start writes every check with the reason when it is missing or empty
+        required: false
+
+# No permissions here or on the jobs: they run with the caller's grant, as a reusable job that
+# asks for more than its caller grants fails to start. They need actions: write (dispatch the
+# collect run), checks: write, contents: read, and pull-requests: read
+
+jobs:
+  start:
+    if: inputs.collect == ''
+    concurrency:
+      group: downstream-${{ inputs.pr }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Start the downstream runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOL: ${{ inputs.tool }}
+          PR: ${{ inputs.pr }}
+          KEY: ${{ secrets.downstream-key }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          key="$RUNNER_TEMP/shipmill-downstream-key.pem"
+          (umask 077; if [ -n "$KEY" ]; then printf '%s\n' "$KEY"; fi > "$key")
+          args=(downstream start --pr "$PR" --app-key "$key")
+          # a person's start: shipmill refuses a fork's head when a bot started the run
+          [ "$EVENT" = workflow_dispatch ] && args+=(--actor "$GITHUB_TRIGGERING_ACTOR")
+          uvx --from "$TOOL" shipmill "${args[@]}"
+
+  limit:
+    if: inputs.collect != ''
+    runs-on: ubuntu-latest
+    outputs:
+      minutes: ${{ steps.limit.outputs.minutes }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github/shipmill.toml
+          sparse-checkout-cone-mode: false
+
+      - name: The collect job's timeout, the longest downstream timeout plus 10 minutes
+        id: limit
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'EOF'
+          import tomllib
+          with open(".github/shipmill.toml", "rb") as f:
+              section = tomllib.load(f)["downstream"]
+          default = section.get("timeout_minutes", 30)
+          longest = max(v.get("timeout_minutes", default) for v in section.values() if isinstance(v, dict))
+          print(f"minutes={longest + 10}")
+          EOF
+
+  collect:
+    needs: limit
+    concurrency:
+      group: downstream-collect-${{ inputs.pr }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.limit.outputs.minutes) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Collect the downstream results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOL: ${{ inputs.tool }}
+          PR: ${{ inputs.pr }}
+          HEAD_SHA: ${{ inputs.collect }}
+          KEY: ${{ secrets.downstream-key }}
+        run: |
+          key="$RUNNER_TEMP/shipmill-downstream-key.pem"
+          (umask 077; if [ -n "$KEY" ]; then printf '%s\n' "$KEY"; fi > "$key")
+          uvx --from "$TOOL" shipmill downstream collect --pr "$PR" --head "$HEAD_SHA" --app-key "$key"
