@@ -88,7 +88,8 @@ have that checkout. Fix the rest by hand:
   `[project.urls]` with `Repository` and `Issues` from `git remote get-url origin`. Take
   the author and license from the user's memory or earlier packages; never write a
   placeholder
-- `LICENSE` and `README.md` exist; a typed package ships `src/<pkg>/py.typed`
+- `LICENSE` and `README.md` exist; a typed package ships `src/<pkg>/py.typed`. A missing
+  `README.md` is the user's to write (D-42): report it, never draft one
 - `.gitignore` covers `.env`, `__pycache__`, `*.pyc`, and `.DS_Store`, and `git ls-files`
   lists none of them
 - The sdist leaves out tooling: with hatchling, an explicit
@@ -272,8 +273,11 @@ for changelog fragments, `fragments = "changelog.d"` in the policy's `[changelog
 and `changelog.d/README.md`, which keeps the folder in git and is never read as a fragment.
 When the user turned fragments off, run `$CR init --ci <ci-file>.yml --no-fragments`, which
 writes neither. Tell the user that once fragments are on, every PR adds its entry as a new
-fragment and leaves `CHANGELOG.md` alone, and update the repo's own contributor rules
-(CLAUDE.md, AGENTS.md, CONTRIBUTING.md) that say to edit Unreleased. Edit the policy to the user's choices from step 3, then add `version_lines` and
+fragment and leaves `CHANGELOG.md` alone. The repo's own docs are the maintainer's (D-42):
+never edit CLAUDE.md, AGENTS.md, or CONTRIBUTING.md, nor draft text for them. Pass on each
+`CHANGELOG_RULES` row of `scripts/setup_state.py` as its file and line
+(`CONTRIBUTING.md:42 mentions Unreleased`), and leave the change to the user. Edit the
+policy to the user's choices from step 3, then add `version_lines` and
 `after_stamp` (for uv projects `["uv lock --check"]`; for a project with a docs check that
 reads the version, that command too).
 
@@ -356,6 +360,12 @@ or the tags are wrong; fix those, not the version.
    labels (the same set, a subset, or a superset). It names the workflow and the fixes from
    step 3; it doesn't change the exit code, and `--fix` leaves it. Tell the user and let
    them choose
+
+   Another warning row, `CHANGELOG_RULES`, follows once `[changelog]` sets `fragments`:
+   one per line that mentions Unreleased in the root's CLAUDE.md, AGENTS.md, or
+   CONTRIBUTING.md, or in `.github/CONTRIBUTING.md` or `docs/CONTRIBUTING.md`, as file and
+   line. It doesn't change the exit code, and `--fix` leaves it: those files are the
+   maintainer's (D-42). Pass each one on to the user
 
    The checklist reads the setup, not the factory. When checking an existing setup, also
    run `$CR status <owner/repo>` in the repo's checkout and report the verdict on its first
