@@ -362,9 +362,10 @@ or the tags are wrong; fix those, not the version.
    them choose
 
    Another warning row, `CHANGELOG_RULES`, follows once `[changelog]` sets `fragments`:
-   one per line of CLAUDE.md, AGENTS.md, or CONTRIBUTING.md (at the root, in `.github/`, or
-   in `docs/`) that mentions Unreleased, as file and line. It doesn't change the exit code,
-   and `--fix` leaves it: those files are the maintainer's (D-42). Pass each one on
+   one per line that mentions Unreleased in the root's CLAUDE.md, AGENTS.md, or
+   CONTRIBUTING.md, or in `.github/CONTRIBUTING.md` or `docs/CONTRIBUTING.md`, as file and
+   line. It doesn't change the exit code, and `--fix` leaves it: those files are the
+   maintainer's (D-42). Pass each one on to the user
 
    The checklist reads the setup, not the factory. When checking an existing setup, also
    run `$CR status <owner/repo>` in the repo's checkout and report the verdict on its first

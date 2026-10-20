@@ -833,6 +833,14 @@ def test_496_the_rules_files_are_read_never_written(ss: ModuleType, tmp_path: Pa
     assert "CHANGELOG_RULES" in doc and "--fix leaves them" in doc
 
 
+def test_496_the_skill_names_every_rules_file_the_script_reads(ss: ModuleType) -> None:
+    skill = " ".join((SCRIPT.parents[1] / "SKILL.md").read_text(encoding="utf-8").split())
+    paths = [name for name in ss.RULES_FILES if "/" in name]
+    assert paths == [".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md"]
+    assert all(f"`{name}`" in skill for name in paths)
+    assert "in the root's CLAUDE.md, AGENTS.md, or CONTRIBUTING.md" in skill
+
+
 def test_496_changelog_rules_is_a_warning_not_a_done_state(ss: ModuleType) -> None:
     done = [ss.Row(state, "") for state in sorted(ss.DONE)]
     assert ss.exit_code([*done, ss.Row("CHANGELOG_RULES", "CONTRIBUTING.md:4")]) == 0
