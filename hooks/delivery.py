@@ -19,6 +19,7 @@ a process, and each call reads a repo's config at most once.
 
 from __future__ import annotations
 
+import fnmatch
 import io
 import json
 import os
@@ -788,21 +789,35 @@ def _destination(refspec: str) -> str:
     return ref.removeprefix("refs/heads/")
 
 
+EVERY_BRANCH = frozenset({"--all", "--branches", "--mirror"})
+
+
+def _lease_to_branch(words: Sequence[str], default: str) -> list[str]:
+    """force-push's lease on the default branch, moved to <branch> with the push"""
+    prefix = f"--force-with-lease={default}:"
+    return [f"--force-with-lease={BRANCH}:{w.removeprefix(prefix)}" if w.startswith(prefix) else w for w in words]
+
+
 def _default_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
-    """A push to the default branch, the target of origin/HEAD: a refspec naming it, or no
-    refspec while the current branch's push target is it; instead, the same push to <branch>.
-    Unknown (origin/HEAD unset, no upstream) allows; doctor reports an unset origin/HEAD"""
+    """A push to the default branch, the target of origin/HEAD: a refspec naming it, a glob
+    refspec matching it, --all, --branches, or --mirror, or no refspec while the current
+    branch's push target is it; instead, the same push to <branch>. Unknown (origin/HEAD
+    unset, no upstream) allows; doctor reports an unset origin/HEAD"""
     call = git_call(cmd)
     if not config.default_branch or call is None or cmd.words[call.sub] != "push":
         return None
     positionals, options = _push_positionals(cmd.words, call.sub + 1)
     refspecs = positionals[1:]
-    if not refspecs and options & {"--tags", "--all", "--branches", "--mirror"}:
-        return None  # not the current branch's push; --all and --mirror are out of this rule
+    if not refspecs and "--tags" in options and not options & EVERY_BRANCH:
+        return None  # tags only: not the current branch's push
     target = _git_out(ctx, call.where, "symbolic-ref", "--quiet", ORIGIN_HEAD)
     if target is None or not target.startswith("refs/remotes/origin/"):
         return None
     default = target.removeprefix("refs/remotes/origin/")
+    if not refspecs and options & EVERY_BRANCH:  # every branch, the default one too
+        words = [w for w in cmd.words if w.partition("=")[0] not in EVERY_BRANCH]
+        words += [] if positionals else ["origin"]
+        return replace(cmd, words=(*words, f"HEAD:{BRANCH}"))
     if not refspecs:
         if _git_out(ctx, call.where, "rev-parse", "--symbolic-full-name", "@{push}") != target:
             return None
@@ -818,12 +833,12 @@ def _default_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
             if head is None:
                 head = _git_out(ctx, call.where, "rev-parse", "--symbolic-full-name", "HEAD") or ""
             dst = head.removeprefix("refs/heads/")
-        if dst == default:
+        if dst == default or ("*" in dst and fnmatch.fnmatchcase(default, dst)):
             hit = True
             plus = "+" if word.startswith("+") else ""
             src = word.removeprefix("+").partition(":")[0]
             out[at] = f"{plus}{src}:{BRANCH}"
-    return replace(cmd, words=tuple(out)) if hit else None
+    return replace(cmd, words=tuple(_lease_to_branch(out, default))) if hit else None
 
 
 COPIES = frozenset({"cp", "mv", "rsync"})
@@ -918,24 +933,39 @@ def _glob_regex(glob: str) -> re.Pattern[str]:
     return re.compile(pattern)
 
 
-def _prefix(glob: str) -> tuple[str, ...]:
-    """The glob's folders before its first wildcard"""
-    parts = glob.strip("/").split("/")
-    return tuple(next((parts[:k] for k, part in enumerate(parts) if any(c in part for c in "*?[")), parts))
+WILDCARDS = "*?["
 
 
-def _private(rel: Path, globs: Sequence[str]) -> bool:
-    """rel, relative to the repo root, matches a glob or is a folder holding one's files"""
-    text = rel.as_posix()
-    text = "" if text == "." else text
-    parts = () if not text else rel.parts
-    for glob in globs:
-        if _glob_regex(glob.strip("/")).fullmatch(text):
-            return True
-        prefix = _prefix(glob)
-        if prefix and prefix[: len(parts)] == parts:
-            return True
-    return False
+def _may_hold(parts: Sequence[str], glob: str, folder: bool) -> bool:
+    """A source at parts may be, or hold, a path matching glob: compared folder by folder, a
+    source's own shell wildcard matches any name (the shell expands it, the hook doesn't), a
+    glob's ** matches whatever is below, and a folder holds what the glob names deeper"""
+    segments = glob.strip("/").split("/")
+    wild = False
+    for k, part in enumerate(parts):
+        if k >= len(segments):
+            return False
+        if "**" in segments[k]:
+            return folder or wild or any(c in part for c in WILDCARDS)
+        if any(c in part for c in WILDCARDS):
+            wild = True
+            if not any(c in segments[k] for c in WILDCARDS) and not fnmatch.fnmatchcase(segments[k], part):
+                return False
+        elif not _glob_regex(segments[k]).fullmatch(part):
+            return False
+    return len(parts) < len(segments) and (folder or wild) or (wild and len(parts) == len(segments))
+
+
+def _private(path: Path, root: Path, globs: Sequence[str]) -> bool:
+    """path, inside root, matches a glob or may hold one's files; a folder holding the repo
+    holds them all"""
+    if path != root and path in root.parents:
+        return True
+    rel = path.relative_to(root)
+    text = "" if rel.as_posix() == "." else rel.as_posix()
+    parts = rel.parts if text else ()
+    folder = os.path.isdir(path)
+    return any(_glob_regex(glob.strip("/")).fullmatch(text) or _may_hold(parts, glob, folder) for glob in globs)
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -962,7 +992,7 @@ def _private_check(cmd: Simple, config: Config, ctx: Context) -> Simple | str | 
         if rsync and _remote(source):
             continue
         path = _local(source, cmd.cwd)
-        if _inside(path, root) and _private(path.relative_to(root), config.private):
+        if (_inside(path, root) or path in root.parents) and _private(path, root, config.private):
             leaks.add(k)
     if not leaks:
         return None
@@ -997,13 +1027,8 @@ RULES = (
         _rebase_guards,
         _rebase_check,
     ),
-    Rule(
-        "default-branch-push",
-        "work lands on the default branch through a pull request; push a work branch and open one",
-        "D-36",
-        is_push,
-        _default_check,
-    ),
+    # force-push before default-branch-push: a force push to main names force-push, which has
+    # no switch (S-026-6, the maintainer's answer on #470)
     Rule(
         "force-push",
         f"force-push only with a lease pinned to a commit, --force-with-lease=<ref>:{SHA}, where {SHA}"
@@ -1011,6 +1036,13 @@ RULES = (
         "D-36",
         is_push,
         _force_check,
+    ),
+    Rule(
+        "default-branch-push",
+        "work lands on the default branch through a pull request; push a work branch and open one",
+        "D-36",
+        is_push,
+        _default_check,
     ),
     Rule(
         "app-writes",

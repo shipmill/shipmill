@@ -501,9 +501,8 @@ def test_s026_5_squash_and_merge_commit_pass(box: Sandbox, command: str) -> None
 )
 def test_s026_6_force_push_refused(box: Sandbox, command: str, lease: str) -> None:
     assert refused(bash(command, box.agents), "force-push", "D-36") == shlex.split(lease)
-    # where origin/HEAD is main, a push to main is default-branch-push's first (S-026-4)
-    rule = "default-branch-push" if command in ("git push origin +main", "git push --force") else "force-push"
-    refused(bash(command, box.app), rule, "D-36")
+    # force-push runs first, so a force push to main names it where origin/HEAD is main too
+    refused(bash(command, box.app), "force-push", "D-36")
 
 
 @pytest.mark.parametrize(
@@ -556,12 +555,34 @@ def test_s026_4_push_to_the_default_branch_refused(tmp_path: Path, command: str,
     refused(bash(f"cd {root} && {command}", tmp_path), "default-branch-push", "D-36")
 
 
-def test_s026_4_plus_refspec_to_main_refused_with_a_lease_on_a_branch(tmp_path: Path) -> None:
+def test_s026_6_force_push_to_main_names_force_push_with_a_lease_on_a_branch(tmp_path: Path) -> None:
+    """force-push runs before default-branch-push (the maintainer's answer on #470); the
+    Instead line takes both fixes, the lease moved to <branch> with the push"""
     root = pushing_repo(tmp_path / "repo")
-    instead = refused(bash(PLUS_MAIN, root), "default-branch-push", "D-36")
+    instead = refused(bash(PLUS_MAIN, root), "force-push", "D-36")
     assert instead == shlex.split("git push --force-with-lease=<branch>:<sha> origin main:<branch>")
-    instead = refused(bash("git push --force", root), "default-branch-push", "D-36")
+    instead = refused(bash("git push --force", root), "force-push", "D-36")
     assert instead == shlex.split("git push --force-with-lease=<branch>:<sha> origin HEAD:<branch>")
+    instead = refused(bash("git push -f origin main", root), "force-push", "D-36")
+    assert instead == shlex.split("git push --force-with-lease=<branch>:<sha> origin main:<branch>")
+
+
+@pytest.mark.parametrize(
+    ("command", "instead"),
+    [
+        ("git push --all", "git push origin HEAD:<branch>"),
+        ("git push --all origin", "git push origin HEAD:<branch>"),
+        ("git push --branches origin", "git push origin HEAD:<branch>"),
+        ("git push --mirror origin", "git push origin HEAD:<branch>"),
+        ("git push origin 'refs/heads/*:refs/heads/*'", "git push origin 'refs/heads/*:<branch>'"),
+    ],
+)
+def test_s026_4_every_branch_push_includes_the_default_branch(tmp_path: Path, command: str, instead: str) -> None:
+    """--all, --branches, --mirror, and a glob refspec push the default branch too"""
+    root = pushing_repo(tmp_path / "repo")
+    assert refused(bash(command, root), "default-branch-push", "D-36") == shlex.split(instead)
+    off = pushing_repo(tmp_path / "off", AGENTS + "[hooks]\ndefault_branch = false\n")
+    allowed(bash(command, off))
 
 
 @pytest.mark.parametrize(
@@ -666,6 +687,47 @@ def test_s026_7_copy_of_a_private_path_out_of_the_repo_refused(box: Sandbox, com
 )
 def test_s026_7_copy_inside_the_repo_or_of_another_path_passes(box: Sandbox, command: str) -> None:
     allowed(bash(command.format(out=box.outside, app=box.app), box.app))
+
+
+@pytest.mark.parametrize(
+    ("command", "instead"),
+    [
+        ("cp -r * {out}", "leave '*' in the repo"),
+        ("rsync -a ./* host:backup/", "leave './*' in the repo"),
+        ("cp -r own* {out}", "leave 'own*' in the repo"),
+        ("cp -r .. {out}/copy", "leave .. in the repo"),
+        ("cd docs && cp -r ../.. {out}/copy", "leave ../.. in the repo"),
+    ],
+)
+def test_s026_7_a_shell_glob_or_a_folder_holding_the_repo_is_refused(box: Sandbox, command: str, instead: str) -> None:
+    """The shell expands a source's wildcard after the hook reads it, and a folder holding the
+    repo holds its private paths"""
+    words = refused(bash(command.format(out=box.outside), box.app), "private-paths", "D-36")
+    assert words == shlex.split(instead.format(out=box.outside))
+
+
+@pytest.mark.parametrize(
+    ("command", "outcome"),
+    [
+        ("cp -r . {out}", "refused"),
+        ("cp k.key {out}", "refused"),
+        ("cp *.key {out}", "refused"),
+        ("cp docs/a.md {out}", "allowed"),
+        ("cp -r docs {out}", "allowed"),
+        ("cp -r docs/* {out}", "allowed"),
+    ],
+)
+def test_s026_7_a_root_level_wildcard_glob(tmp_path: Path, command: str, outcome: str) -> None:
+    root = git_repo(tmp_path / "repo", AGENTS + '[hooks]\nprivate = ["*.key"]\n')
+    (root / "docs").mkdir()
+    (root / "docs" / "a.md").write_text("a\n", encoding="utf-8")
+    (root / "k.key").write_text("k\n", encoding="utf-8")
+    out = tmp_path / "out"
+    result = bash(command.format(out=out), root)
+    if outcome == "refused":
+        refused(result, "private-paths", "D-36")
+    else:
+        allowed(result)
 
 
 def test_s026_7_fixtures(box: Sandbox) -> None:
