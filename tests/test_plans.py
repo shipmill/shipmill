@@ -309,6 +309,48 @@ def test_items_on_a_malformed_plan_stops(plans: ModuleType, capsys: pytest.Captu
     assert "o/r#300:12: W-1 is a duplicate item id" in capsys.readouterr().err
 
 
+class Paged(Fake):
+    """GitHub answering with more sub-issues or marker matches than one page holds"""
+
+    def __init__(self, more_subs: bool, count: int) -> None:
+        super().__init__(PLAN, [], [])
+        self.more_subs, self.count = more_subs, count
+
+    def __call__(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        response = super().__call__(query, variables)
+        response["data"]["repository"]["issue"]["subIssues"]["pageInfo"]["hasNextPage"] = self.more_subs
+        response["data"]["search"]["issueCount"] = self.count
+        return response
+
+
+@pytest.mark.parametrize(("more_subs", "count"), [(True, 0), (False, 101)], ids=["sub-issues", "search"])
+def test_s028_7_items_past_one_page_stops_rather_than_truncating(
+    plans: ModuleType, capsys: pytest.CaptureFixture[str], more_subs: bool, count: int
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        plans.main(["items", "o/r#300", "--json"], run=Paged(more_subs, count))
+    assert stopped.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "more than 100 sub-issues or marker matches" in captured.err
+
+
+def test_items_on_a_missing_issue_or_graphql_errors_stops(
+    plans: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def missing(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        return {"data": {"repository": {"issue": None}, "search": {"issueCount": 0, "nodes": []}}}
+
+    def errors(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        return {"data": None, "errors": [{"message": "Could not resolve to a Repository"}]}
+
+    for run, shown in ((missing, "no issue o/r#300"), (errors, "Could not resolve to a Repository")):
+        with pytest.raises(SystemExit) as stopped:
+            plans.main(["items", "o/r#300"], run=run)
+        assert stopped.value.code == 2
+        assert shown in capsys.readouterr().err
+
+
 def test_items_names_a_plan_as_owner_repo_number(plans: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as stopped:
         plans.main(["items", "#300"], run=Fake(PLAN, [], []))
