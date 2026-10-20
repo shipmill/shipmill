@@ -188,7 +188,7 @@ def test_a_lost_login_starts_no_session_and_notifies_once_per_episode(checkout: 
     assert notifier.sent == [
         (
             "shipmill romamo/demo",
-            "Claude Code can't authenticate on this host: run claude auth login; the gate starts no session until then",
+            "Claude Code can't authenticate on this host: claude auth login; the gate starts no session until then",
         )
     ]
     action, _, lines = tick(checkout, agents, claude, auth, notifier, NOW + dt.timedelta(minutes=5))
@@ -200,6 +200,17 @@ def test_a_lost_login_starts_no_session_and_notifies_once_per_episode(checkout: 
     (state_dir(checkout) / RECORD).unlink()  # new findings, not UNCHANGED
     assert tick(checkout, agents, claude, auth, notifier, NOW + dt.timedelta(hours=1))[0] is Action.CLAUDE_AUTH
     assert len(notifier.sent) == 2  # a new episode notifies again
+
+
+def test_claude_missing_from_the_gate_path_starts_nothing_and_names_the_install(checkout: Git) -> None:
+    # not a silent skip, and not `claude auth login`, which can't run without claude
+    claude, missing = FakeClaude(), claude_auth(program=None)
+    action, launched, lines = tick(checkout, headless(), claude, lambda: missing, FakeNotifier())
+    assert (action, launched, claude.started) == (Action.CLAUDE_AUTH, None, [])
+    assert lines[0] == (
+        "CLAUDE_AUTH: Claude Code can't authenticate on this host (claude isn't on PATH):"
+        " no session starts; fix: install claude, then rerun shipmill launchd"
+    )
 
 
 def test_a_failed_notification_is_reported_and_tried_again(checkout: Git) -> None:

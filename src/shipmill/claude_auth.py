@@ -14,6 +14,9 @@ from dataclasses import dataclass
 
 COMMAND = ["claude", "auth", "status", "--json"]
 FIX = "claude auth login"
+MISSING = "claude isn't on PATH"
+# with claude missing, logging in can't help: the gate's PATH needs it (launchd builds that PATH)
+MISSING_FIX = "install claude, then rerun shipmill launchd"
 
 AuthRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]  # the command -> its result
 
@@ -30,6 +33,10 @@ class ClaudeAuth:
     def ok(self) -> bool:
         return self.problem is None
 
+    @property
+    def fix(self) -> str:
+        return MISSING_FIX if self.missing else FIX
+
     def line(self) -> str:
         """doctor's detail: the pass, or the problem and its fix"""
         if self.problem is None:
@@ -40,10 +47,10 @@ class ClaudeAuth:
 
     def reason(self) -> str:
         """A CLAUDE_AUTH tick's reason, ending with the fix after "fix: " """
-        return f"Claude Code can't authenticate on this host ({self.problem}): no session starts; fix: {FIX}"
+        return f"Claude Code can't authenticate on this host ({self.problem}): no session starts; fix: {self.fix}"
 
     def record(self) -> dict[str, object]:
-        return {"ok": self.ok, "problem": self.problem, "fix": None if self.ok else FIX}
+        return {"ok": self.ok, "problem": self.problem, "fix": None if self.ok else self.fix}
 
 
 def parse_auth(proc: subprocess.CompletedProcess[str]) -> ClaudeAuth:
@@ -72,11 +79,11 @@ def claude_auth(run: AuthRunner = run_auth, program: str | None = "claude") -> C
     """The preflight: `claude auth status --json`, read by parse_auth; program is claude's path
     on the PATH a session gets, None when it isn't there"""
     if program is None:
-        return ClaudeAuth("claude isn't on PATH", missing=True)
+        return ClaudeAuth(MISSING, missing=True)
     try:
         proc = run([program, *COMMAND[1:]])
     except FileNotFoundError:
-        return ClaudeAuth("claude isn't on PATH", missing=True)
+        return ClaudeAuth(MISSING, missing=True)
     except subprocess.TimeoutExpired:
         return ClaudeAuth("claude auth status didn't answer in 60 s")
     return parse_auth(proc)

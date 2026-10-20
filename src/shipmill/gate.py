@@ -1139,7 +1139,7 @@ def preflight(
     episode = load_waiting(path).get("claude") or Wait(now, None)
     notice = None
     if agents.notify and episode.notified is None:
-        body = f"Claude Code can't authenticate on this host: run {AUTH_FIX}; the gate starts no session until then"
+        body = f"Claude Code can't authenticate on this host: {found.fix}; the gate starts no session until then"
         episode, error = send(notifier, f"shipmill {repo}", body, episode, now, dry_run)
         notice = f"notify failed: {error}" if error is not None else ("would notify" if dry_run else "notified")
     if not dry_run:

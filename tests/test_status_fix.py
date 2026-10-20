@@ -206,6 +206,15 @@ def test_a_gate_paused_on_a_failed_claude_login_waits_on_you_with_the_login() ->
     assert status.DECISION.match(last) is not None
 
 
+def test_a_gate_without_claude_on_its_path_names_the_install_not_the_login() -> None:
+    last = (
+        "CLAUDE_AUTH: Claude Code can't authenticate on this host (claude isn't on PATH):"
+        " no session starts; fix: install claude, then rerun shipmill launchd"
+    )
+    found = facts(gate=gate(job=job(last=last)))
+    assert [r.fix for r in report(found).reasons] == ["install claude, then rerun shipmill launchd"]
+
+
 @pytest.mark.parametrize(
     ("tail", "fix"),
     [

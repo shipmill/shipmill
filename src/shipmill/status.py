@@ -23,6 +23,7 @@ from shipmill.agent_as_person import Flagged
 from shipmill.agents import AgentsConfig, Mode
 from shipmill.app import Identity, default_key
 from shipmill.claude_auth import FIX as AUTH_FIX
+from shipmill.claude_auth import MISSING_FIX
 from shipmill.config import CONFIG_PATH, config_path, read
 from shipmill.errors import ReleaseError
 from shipmill.gate import StateRunner, skills_dir
@@ -766,7 +767,8 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
         found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", "paused: the hooks' self-test failed", fix))
     elif last.startswith("CLAUDE_AUTH"):  # #500: no session starts until Claude Code can authenticate
         shown = "paused: Claude Code can't authenticate"
-        found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", shown, AUTH_FIX))
+        fix = MISSING_FIX if last.endswith(f"; fix: {MISSING_FIX}") else AUTH_FIX
+        found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", shown, fix))
     elif last.startswith("SESSION_DEAD"):  # #500: the gate's sessions end right after they start
         named = last.rpartition("; fix: ")[2]  # the gate writes its fix last, after the log's line
         fix = named if named == AUTH_FIX or re.fullmatch(r"tail -n 20 \S+\.log", named) else _log_fix(job, repo)
