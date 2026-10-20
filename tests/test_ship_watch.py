@@ -856,6 +856,7 @@ AGENT_ROWS = [
     "NOT_PUBLISHED",
     "UNANNOUNCED",
     "ISSUES",
+    "PLANS",
     "OPERATE_FAILED",
     "INCIDENT_OPEN",
     "UPGRADE_PENDING",
@@ -1553,6 +1554,9 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         *ws.stale_rows(stale, CHECKOUT, "main"),
         *ws.upgrade_rows([upgrade_issue(ws, 11, TITLE)], "propose", False, lambda n: [], lambda name: [], REPO).rows,
         *ws.milestone_rows(json.dumps({"milestones": [OVERTAKEN], "error": None})),
+        *ws.plans_rows(
+            json.dumps({"goal": "G-1", "kind": "goal", "number": None, "state": "PLAN_DUE", "title": TITLE}), REPO
+        ).rows,
     ]
     found: dict[str, list[Any]] = {}
     for row in rows:
@@ -1570,6 +1574,7 @@ FIXES = {
     "NOT_PUBLISHED": ["gh run rerun 5 --failed -R o/r"],
     "UNANNOUNCED": ["/shipmill:github-ship-watch o/r"],
     "ISSUES": ["/shipmill:github-issue-triage o/r"],
+    "PLANS": ["/shipmill:product-intake o/r"],
     "OPERATE_FAILED": ["gh run rerun 5 --failed -R o/r"],
     "UNHEALTHY": [
         "operate rolls staging back after [operate] rollback_after failures; check its health check if it persists"

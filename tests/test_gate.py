@@ -272,6 +272,7 @@ def test_the_gate_reads_the_rows_watch_state_prints() -> None:
         "NOT_PUBLISHED",
         "UNANNOUNCED",
         "ISSUES",
+        "PLANS",  # S-028-13: a goal's plan starts a session as ISSUES does
         "OPERATE_FAILED",
         "INCIDENT_OPEN",
         "UPGRADE_PENDING",

@@ -125,9 +125,18 @@ Intake (github-issue-triage's triage_state.py):
                   reply, as #N only (triage_state.py's rule, applied to pull requests'
                   comments too): a person owes the answer, so an action, but never an
                   agent's
-  UNTRUSTED       with --trusted-only, the issues triage_state.py reads as UNTRUSTED and
-                  the pull requests whose head is in a fork, as #N only (reported, never an
+  UNTRUSTED       with --trusted-only, the issues triage_state.py reads as UNTRUSTED, the
+                  open plan issues the --bot-login didn't open (PLANS), and the pull
+                  requests whose head is in a fork, as #N only (reported, never an
                   action: an interactive session takes them up, D-16)
+  PLANS           goals' plans that need a session (spec 028), from product-intake's
+                  `intake_state.py --plans --json` (run in the checkout, with --tool when given, the
+                  --bot-login, and [agents] wip as --wip; only when the checkout has
+                  docs/product.md): PLAN_DUE with its goals (G-n), PLAN_MALFORMED,
+                  PLAN_ANSWERED, and PLAN_ACCEPTED with their plan issues (#N); the session
+                  runs product intake. With --trusted-only, an open plan issue the
+                  --bot-login didn't open is in none of these and in UNTRUSTED, and in no
+                  other row (D-16)
   CHAIN_NO_GATE   an item of a chain one of the repo's open issues belongs to (spec 017,
                   github-issue-triage's chains.py show --trusted-only, run once over the open
                   issues but the ones read as UNTRUSTED or closed, and never reading or
@@ -227,7 +236,7 @@ API error: rerun". An auth, not-found, or any other failure stops it at once.
 
 --json prints one JSON object per row: state, subject, detail, and agent, true when the
 row needs an agent (BOT_FAILED, BOT_STALLED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
-ISSUES, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING): the rows shipmill gate starts a
+ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING): the rows shipmill gate starts a
 session for. A waiting
 item is in no agent row, so it neither starts a session nor changes the gate's fingerprint.
 Each line has a fix too (spec 011): the one line that clears the row, an exact command where
@@ -242,13 +251,15 @@ push to one changes the gate's fingerprint (#546); the table never prints it.
 
 Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when any
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
-ISSUES, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
+ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, GATE_SESSIONS_DEAD, SKILL_SHADOWED,
 UPGRADE_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, or MILESTONE_OVERTAKEN row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
-milestones`; a `shipmill plan` failing with its own `shipmill: ` error is the BOT_PLAN_FAILED
-row instead), and on a missing or malformed .claude-plugin/plugin.json (spec 031).
-Needs git, an authenticated gh, and uvx (for a shipmill bot's plan, worktrees, and milestones; `shipmill
+milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
+`shipmill: ` error is the BOT_PLAN_FAILED row instead), and on a missing or malformed
+.claude-plugin/plugin.json (spec 031).
+Needs git, an authenticated gh, and uvx (for a shipmill bot's plan, worktrees, and milestones,
+and a direction's plans; `shipmill
 worktrees` needs claude on PATH too, to see the live sessions). Python 3.10+,
 standard library only.
 
@@ -288,6 +299,12 @@ SKILLS = Path(__file__).resolve().parents[2]
 SHIPPED = SKILLS / "github-pr-triage" / "scripts" / "shipped.py"
 TRIAGE_STATE = SKILLS / "github-issue-triage" / "scripts" / "triage_state.py"
 CHAINS = SKILLS / "github-issue-triage" / "scripts" / "chains.py"
+INTAKE_STATE = SKILLS / "product-intake" / "scripts" / "intake_state.py"
+DIRECTION = Path("docs/product.md")  # the product's direction (spec 024), whose goals a plan serves
+# intake_state.py's plan states (spec 028): the ones that make it exit 1, in its order, and the rest
+PLAN_ACTION = ("PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED")
+PLAN_STATES = frozenset({*PLAN_ACTION, "PLAN_WAITS", "PLAN_OPEN", "PLAN_FILED", "PLAN_DECLINED"})
+GOAL_ID = re.compile(r"G-[1-9]\d*")
 # triage_state.py's ACTION: the issue states that make it exit 1
 TRIAGE_ACTION = {
     "NEW",
@@ -361,6 +378,7 @@ ACTION = {
     "NOT_PUBLISHED",
     "UNANNOUNCED",
     "ISSUES",
+    "PLANS",
     "OPERATE_FAILED",
     "UNHEALTHY",
     "PROMOTION_DUE",
@@ -386,6 +404,7 @@ AGENT = {
     "NOT_PUBLISHED",
     "UNANNOUNCED",
     "ISSUES",
+    "PLANS",
     "OPERATE_FAILED",
     "INCIDENT_OPEN",
     "UPGRADE_PENDING",
@@ -2042,6 +2061,7 @@ def intake(
     trusted_only: bool = False,
     lands_prs: bool = False,
     upgrades: Upgrades | None = None,
+    untrusted_plans: frozenset[int] = frozenset(),
 ) -> list[Row]:
     """The intake rows from triage_state.py's exit code and --json lines, and the open pull
     requests (number, isDraft, isCrossRepository, labels, headRefOid). Each pull request is UNTRUSTED
@@ -2053,7 +2073,8 @@ def intake(
     reads as UNTRUSTED (with trusted_only, an author who is neither trusted nor the
     --bot-login; the release workflow's github-actions[bot] upgrade issue, label and marker
     both, is trusted, D-30) stays UNTRUSTED and nothing else: an unattended session never
-    starts for it (D-16)"""
+    starts for it (D-16). So does each of untrusted_plans, the open plan issues plans_rows
+    left out (spec 028), whatever triage_state.py reads it as"""
     owned = upgrades.owned if upgrades is not None else frozenset()
     counts: dict[str, list[int]] = {}
     waits_on: dict[int, list[str]] = {}  # a WITH_PERSON issue's assignees (spec 017)
@@ -2061,6 +2082,8 @@ def intake(
     for line in triage.splitlines():
         row = json.loads(line)
         number = int(row["number"])
+        if number in untrusted_plans:
+            continue  # in UNTRUSTED below, and nothing else
         if number in owned and row["state"] == "UNTRUSTED":
             untrusted_upgrades.add(number)
         elif number in owned:
@@ -2083,7 +2106,8 @@ def intake(
     )
     if rest:
         rows.append(Row("ISSUES_OPEN", repo, rest))
-    waiting, untrusted = list(counts.get("NEEDS_DECISION", [])), list(counts.get("UNTRUSTED", []))
+    waiting = list(counts.get("NEEDS_DECISION", []))
+    untrusted = [*counts.get("UNTRUSTED", []), *untrusted_plans]
     waiting += [n for n in (upgrades.waiting if upgrades is not None else []) if n not in untrusted_upgrades]
     ready: list[tuple[int, str]] = []
     for pr in prs:
@@ -2159,6 +2183,7 @@ def intake_rows(
     trusted_only: bool = False,
     lands: bool = False,
     upgrades: Upgrades | None = None,
+    untrusted_plans: frozenset[int] = frozenset(),
 ) -> list[Row]:
     """The intake rows from triage_run's exit code and lines, and the open pull requests"""
     fields = "number,isDraft,isCrossRepository,labels,headRefOid"
@@ -2167,7 +2192,96 @@ def intake_rows(
     def comments_of(number: int) -> Comments:
         return pr_comments(repo, number)
 
-    return intake(repo, code, triage, prs, comments_of, bot_login, trusted_only, lands, upgrades)
+    return intake(repo, code, triage, prs, comments_of, bot_login, trusted_only, lands, upgrades, untrusted_plans)
+
+
+# -- goal plans (spec 028) ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Plans:
+    """What intake_state.py --plans adds to the report"""
+
+    rows: list[Row]  # PLANS, one row for every plan state that needs a session
+    untrusted: frozenset[int]  # with trusted_only, the open plan issues the --bot-login didn't open
+
+
+def plan_wip(table: dict[str, str] | None, policy: Path) -> int | None:
+    """[agents] wip (agents_table's), the limit no-work plans wait under; None without it"""
+    value = None if table is None else table.get("wip")
+    if value is None:
+        return None
+    if re.fullmatch(r"[1-9]\d*", value) is None:
+        raise Refused(f"error: {policy}: [agents] wip must be a whole number from 1, got {value}")
+    return int(value)
+
+
+def plans_run(
+    repo: str,
+    repo_dir: Path,
+    tool: str | None = None,
+    bot_login: str | None = None,
+    wip: int | None = None,
+    execute: Spawn = spawn,
+) -> str:
+    """intake_state.py --plans --json's lines, run in the checkout, where it reads the
+    direction with `shipmill product show` (the plugin's pinned version, or --tool's when a
+    person passed one) and the config; a failure (exit 2) stops the watch"""
+    cmd = [sys.executable, str(INTAKE_STATE), repo, "--plans", "--json"]
+    cmd += ["--tool", tool] if tool is not None else []
+    cmd += ["--wip", str(wip)] if wip is not None else []
+    cmd += ["--bot-login", bot_login] if bot_login is not None else []
+    proc = execute(cmd, repo_dir, None)
+    if proc.returncode not in (0, 1):  # 1 is "something needs action", not a failure
+        raise Refused(f"error: intake_state.py --plans failed with exit {proc.returncode}: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+def plan_line(line: str) -> dict[str, Any] | None:
+    """One of intake_state.py's --json lines when it is a plan row, checked; None for the
+    autonomy line and the feedback rows"""
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: intake_state.py printed {line[:200]!r}, not JSON: {exc}") from None
+    if not isinstance(row, dict) or row.get("kind") not in ("goal", "plan"):
+        return None
+    number, author = row.get("number"), row.get("author")
+    well_formed = row.get("state") in PLAN_STATES
+    if row["kind"] == "goal":
+        well_formed &= isinstance(row.get("goal"), str) and GOAL_ID.fullmatch(row["goal"]) is not None
+    else:
+        well_formed &= isinstance(number, int) and not isinstance(number, bool) and number > 0
+        well_formed &= isinstance(author, str) and bool(author)
+    if not well_formed:
+        raise Refused(f"error: intake_state.py printed a malformed plan row: {line[:200]!r}")
+    return row
+
+
+def plans_rows(text: str, repo: str, bot_login: str | None = None, trusted_only: bool = False) -> Plans:
+    """PLANS from intake_state.py --plans --json's lines: each plan state that needs a session
+    (PLAN_DUE, PLAN_MALFORMED, PLAN_ANSWERED, PLAN_ACCEPTED) with its goals (G-n) and plan
+    issues (#N). With trusted_only, an open plan issue the --bot-login didn't open is in none
+    and in untrusted instead (D-16): an unattended session never starts for it. A goal's row
+    (no-work, or a request intake_state.py read from a trusted author only) is the direction's.
+    Goal ids and numbers only, never an issue's text (D-16)"""
+    listed: dict[str, list[str]] = {}
+    untrusted: set[int] = set()
+    for line in text.splitlines():
+        row = plan_line(line)
+        if row is None:
+            continue
+        if row["kind"] == "plan" and trusted_only and row["state"] != "PLAN_DECLINED":
+            ours = bot_login is not None and row["author"].lower() == bot_login.lower()
+            if not ours:
+                untrusted.add(row["number"])
+                continue
+        if row["state"] in PLAN_ACTION:
+            token = row["goal"] if row["kind"] == "goal" else f"#{row['number']}"
+            listed.setdefault(row["state"], []).append(token)
+    detail = "; ".join(f"{s} {' '.join(listed[s])}" for s in PLAN_ACTION if s in listed)
+    rows = [Row("PLANS", repo, detail, skill_fix("product-intake", repo))] if detail else []
+    return Plans(rows, frozenset(untrusted))
 
 
 # triage_state.py's states of an issue that isn't open (SUSPECT_CLOSE, VERIFY_CLOSED), or
@@ -2818,8 +2932,14 @@ def main() -> int:
             args.bot_login,
         )  # its rows come with the intake's, which knows which issues triage_state.py trusts
 
+    plans = Plans([], frozenset())
+    if (repo_dir / DIRECTION).is_file():  # a goal's plan needs goals (spec 028)
+        lines = plans_run(args.repo, repo_dir, args.tool, args.bot_login, plan_wip(table, POLICY))
+        plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only)
+    rows += plans.rows
     code, triage = triage_run(args.repo, args.bot_login, args.trusted_only)
-    rows += intake_rows(args.repo, code, triage, args.bot_login, args.trusted_only, lands_prs(table), upgrades)
+    lands = lands_prs(table)
+    rows += intake_rows(args.repo, code, triage, args.bot_login, args.trusted_only, lands, upgrades, plans.untrusted)
     rows += chain_rows(args.repo, triage, args.bot_login)
     rows += active_rows(fetch_active(args.repo), now)
     rows += agent_rows(args.repo, repo_dir, now)
