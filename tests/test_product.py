@@ -59,6 +59,14 @@ def test_s024_1_the_repos_own_direction_is_well_formed(capsys: pytest.CaptureFix
     assert capsys.readouterr().out.startswith(f"{DIRECTION}: well formed")
 
 
+def test_ci_runs_product_and_review_check() -> None:
+    # spec 024's Behaviour: "CI runs both checks too"; no criterion covers that sentence (#493)
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    lines = [line.strip().removeprefix("- ").removeprefix("run: ").strip() for line in text.splitlines()]
+    assert "uv run shipmill product check" in lines
+    assert "uv run shipmill review check" in lines
+
+
 def test_s024_1_a_synthetic_direction_is_well_formed_with_gaps_and_an_empty_non_goals(tmp_path: Path) -> None:
     direction = read(write(tmp_path, WELL_FORMED))
     assert direction.name == "Acme"
