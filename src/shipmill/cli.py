@@ -46,7 +46,8 @@
   app-install     guide installing the App on more repos: the App's Install App page and what to pick
   product         read the product's direction, docs/product.md (spec 024): check its grammar, show it
                   or one section (--section, --json), list its ids; add, edit, and retire an item,
-                  printing its line, an added one with an id its history never held
+                  printing its line, an added one with an id its history never held; write,
+                  replace, or clear a goal's measure line (measure, spec 027)
   evals           the agents' eval suite, evals/ (spec 025): check exits 1 naming each case and the
                   rule it breaks, without a model; a repository with no case under evals/ passes
 
@@ -144,7 +145,7 @@ from shipmill.notify import Desktop
 from shipmill.operate import Http, UrllibHttp, approve, approve_rollback, operate, summary
 from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
 from shipmill.policy import Lane, Policy
-from shipmill.product import DIRECTION, ItemId, Section
+from shipmill.product import DIRECTION, ItemId, Measure, Section
 from shipmill.product import check as check_product
 from shipmill.product import read as read_product
 from shipmill.propose import close_released, propose, run_url
@@ -486,7 +487,22 @@ def _parser() -> argparse.ArgumentParser:
     editing.add_argument("text", help="the item's new text, one line")
     retiring = acting.add_parser("retire", help="remove one item; its id is never handed out again")
     retiring.add_argument("id", help="the item's id, such as G-3")
-    for each in (checking, showing, listing, adding, editing, retiring):  # also after it: `product check --repo DIR`
+    measuring = acting.add_parser(
+        "measure", help="write or replace a goal's measure line, or remove it with --clear (spec 027); print it"
+    )
+    measuring.add_argument("id", help="the goal's id, such as G-3")
+    measured = measuring.add_mutually_exclusive_group(required=True)
+    measured.add_argument("measure", nargs="?", help='"<metric> <comparison> <target>", such as "human_touch <= 20%%"')
+    measured.add_argument("--clear", action="store_true", help="remove the goal's measure line")
+    for each in (
+        checking,
+        showing,
+        listing,
+        adding,
+        editing,
+        retiring,
+        measuring,
+    ):  # also after it: `product check --repo DIR`
         each.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
 
     p = sub.add_parser("evals", help="check the agents' eval suite, evals/ (spec 025)")
@@ -1262,6 +1278,12 @@ def _product(root: Path, args: argparse.Namespace) -> int:
         else:
             edited = product.retire(root, ItemId.parse(args.id))
         print(edited.text)  # the line written, or removed
+        return 0
+    if args.product == "measure":
+        goal = ItemId.parse(args.id)
+        written = None if args.clear else Measure.parse(str(LineText(args.measure)))
+        measured = product.measure(root, goal, written)
+        print(f"{goal} has no measure line; nothing written" if measured is None else measured.text)
         return 0
     direction = read_product(root)
     if args.product == "ids":
