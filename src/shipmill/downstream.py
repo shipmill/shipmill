@@ -992,12 +992,15 @@ def app_on_host(
     """doctor's look at the App on each downstream: given [downstream] app_id, a check of its
     installation on a repo, or None when the key isn't on the host (no key passed and none at
     the default path app.py names). The check asks for DISPATCH_PERMISSIONS, which cover the
-    reads collect makes; the key's bytes are never read"""
+    reads collect makes; the key's bytes are never read. A key passed that isn't a file only
+    its owner can read raises ReleaseError at once, never a WARN per downstream"""
 
     def probe(app_id: int) -> Installed | None:
         path = key if key is not None else default_key(app_id, home)
         if key is None and not path.exists():
             return None
+        if key is not None:
+            check_key(key)
 
         def installed(repo: str) -> None:
             installation(app_id, repo, jwt(app_id, check_key(path), clock(), signer), api, DISPATCH_PERMISSIONS)

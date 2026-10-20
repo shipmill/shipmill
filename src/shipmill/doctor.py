@@ -350,7 +350,11 @@ def downstream_checks(root: Path, config: DownstreamConfig, reader: Reader | Non
     else:
         checks.append(_downstream_secret(reader, config.app_id))
         checks.extend(_downstream_workflow(reader, d) for d in config.downstreams)
-    installed = None if app is None else app(config.app_id)
+    try:
+        installed = None if app is None else app(config.app_id)
+    except ReleaseError as exc:  # --app-key names no usable key: the check asked for can't run
+        checks.append(Check("FAIL", "downstream", f"--app-key: {exc}"))
+        return checks
     if installed is None:
         detail = (
             f"the App {config.app_id}'s installation on each downstream is unchecked: its private key isn't on"

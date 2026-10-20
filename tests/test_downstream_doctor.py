@@ -292,6 +292,25 @@ def test_s032_15_a_key_that_github_refuses_warns_per_downstream(repo: Repo, tmp_
     assert required[1].startswith(f"consumer-app: can't check the App {APP}'s installation on example-org/consumer-app")
 
 
+def test_s032_15_an_app_key_passed_that_isnt_a_key_file_fails_once(repo: Repo, tmp_path: Path) -> None:
+    library(repo, downstream_caller_text())
+    api = DownstreamApi()
+    missing = tmp_path / "missing.pem"
+    lines = block(repo, FakeReader(), api, missing)
+    assert lines[-1] == (
+        "FAIL",
+        f"--app-key: no App private key at {missing}; download it from the App's settings to that path",
+    )
+    assert len(lines) == 5  # the caller, the secret, two workflows, and that one FAIL: no line per downstream
+    readable = key_file(tmp_path)
+    readable.chmod(0o644)
+    status, detail = block(repo, FakeReader(), api, readable)[-1]
+    assert (status, detail.split(";")[0]) == (
+        "FAIL",
+        f"--app-key: the App private key {readable} is readable by group or others",
+    )
+
+
 def test_s032_15_through_the_cli_doctor_exits_1_and_prints_no_secret(
     repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
