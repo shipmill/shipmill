@@ -235,15 +235,119 @@ def test_s025_5_gh_from_path_records_through_the_real_gh_never_itself(tmp_path: 
     assert calls.read_text(encoding="utf-8") == " ".join(VIEW) + "\n"
 
 
+def fake_programs(tmp_path: Path) -> tuple[Path, Path]:
+    """A real `shipmill` and `uvx` after the stub's directory, each logging `<name> <args>`"""
+    bin_dir = tmp_path / "realbin"
+    bin_dir.mkdir()
+    calls = tmp_path / "real-calls.log"
+    for name in ("shipmill", "uvx"):
+        script = bin_dir / name
+        script.write_text(f'#!/bin/sh\necho "{name} $*" >> "{calls}"\necho real {name}\n', encoding="utf-8")
+        script.chmod(0o755)
+    return bin_dir, calls
+
+
+def python_bin(tmp_path: Path) -> Path:
+    """python3 alone, for the shims' shebang: the venv's bin/ also holds the real shipmill"""
+    folder = tmp_path / "pybin"
+    folder.mkdir()
+    (folder / "python3").symlink_to(sys.executable)
+    return folder
+
+
+def shim(cwd: Path, *argv: str, path: list[Path]) -> subprocess.CompletedProcess[str]:
+    """Run argv from PATH, as a session would: `shipmill ...` or `uvx ...`"""
+    env = {"PATH": os.pathsep.join(str(p) for p in path), "HOME": os.environ.get("HOME", "")}
+    return subprocess.run(list(argv), cwd=cwd, env=env, capture_output=True, text=True)
+
+
+SHIPMILL_GH_FORMS = [
+    ["shipmill", "gh"],
+    ["shipmill", "--repo", ".", "gh"],
+    ["uvx", "--from", "git+https://github.com/shipmill/shipmill@v0", "shipmill", "gh"],
+    ["uvx", "-q", "--from=git+https://github.com/shipmill/shipmill@v0", "shipmill", "--repo=.", "gh"],
+    ["uvx", "shipmill==0.55.0", "gh"],
+    ["uvx", "--python", "3.14", "shipmill@0.55.0", "gh"],
+]
+
+
+def test_494_a_write_through_each_shipmill_gh_form_reaches_the_stub_marked_via_shipmill(tmp_path: Path) -> None:
+    ws = workspace(tmp_path)
+    (ws / "body.md").write_text("Triage: **implement**.\n", encoding="utf-8")
+    real_bin, calls = fake_programs(tmp_path)
+    path = [STUB.parent, python_bin(tmp_path), real_bin]
+    for form in SHIPMILL_GH_FORMS:
+        done = shim(ws, *form, "issue", "comment", "5", "--repo", "me/demo", "--body-file", "body.md", path=path)
+        assert done.returncode == 0, (form, done.stderr)
+        assert done.stdout.startswith("https://github.com/me/demo/issues/5#issuecomment-"), form
+    assert not calls.exists()  # neither the real shipmill nor the real uvx ran
+    args = ["issue", "comment", "5", "--repo", "me/demo", "--body-file", "body.md"]
+    expected = {"kind": "write", "via": "shipmill", "args": args, "body": "Triage: **implement**.\n"}
+    assert lines(ws) == [expected] * len(SHIPMILL_GH_FORMS)
+
+
+def test_494_a_plain_gh_write_is_logged_without_via_so_a_grader_tells_them_apart(tmp_path: Path) -> None:
+    ws = workspace(tmp_path)
+    real_bin, _ = fake_programs(tmp_path)
+    path = [STUB.parent, python_bin(tmp_path), real_bin]
+    assert shim(ws, "gh", "issue", "edit", "5", "--add-label", "bug", path=path).returncode == 0
+    assert shim(ws, "shipmill", "gh", "issue", "edit", "5", "--add-label", "bug", path=path).returncode == 0
+    text = (ws / ".eval" / "gh.jsonl").read_text(encoding="utf-8").splitlines()
+    assert text[0].startswith('{"kind": "write", "args": ')  # what a not_contains grader matches
+    assert text[1].startswith('{"kind": "write", "via": "shipmill", "args": ')
+
+
+def test_494_a_read_through_shipmill_gh_replays_the_recording(tmp_path: Path) -> None:
+    ws = workspace(tmp_path, {"view": (VIEW, ANSWER)})
+    real_bin, _ = fake_programs(tmp_path)
+    done = shim(ws, "uvx", "shipmill==0.55.0", "gh", *VIEW, path=[STUB.parent, python_bin(tmp_path), real_bin])
+    assert (done.returncode, done.stdout) == (0, ANSWER), done.stderr
+    assert lines(ws) == [{"kind": "read", "via": "shipmill", "args": VIEW}]
+
+
+def test_494_every_other_command_passes_through_to_the_real_program_unchanged(tmp_path: Path) -> None:
+    ws = workspace(tmp_path)
+    real_bin, calls = fake_programs(tmp_path)
+    path = [STUB.parent, python_bin(tmp_path), real_bin]
+    passed = [
+        ["uvx", "--from", "actionlint-py", "actionlint", ".github/workflows/ci.yml"],
+        ["uvx", "shipmill==0.55.0", "product", "show"],
+        ["uvx", "--from", "git+https://github.com/shipmill/shipmill@v0", "shipmill", "status"],
+        ["uvx", "--with", "shipmill", "ruff", "gh"],
+        ["uvx", "ghost", "gh"],
+        ["shipmill", "product", "show", "--repo", "."],
+        ["shipmill", "--repo", "gh", "status"],
+        ["shipmill", "--", "gh", "pr", "list"],
+    ]
+    for argv in passed:
+        done = shim(ws, *argv, path=path)
+        assert (done.returncode, done.stdout) == (0, f"real {argv[0]}\n"), (argv, done.stderr)
+    assert calls.read_text(encoding="utf-8").splitlines() == [" ".join(argv) for argv in passed]
+    assert not (ws / ".eval" / "gh.jsonl").exists()  # the stub never ran
+
+
+def test_494_with_no_real_program_after_the_stub_the_shim_fails_rather_than_recurse(tmp_path: Path) -> None:
+    ws = workspace(tmp_path)
+    linked = tmp_path / "linkbin"
+    linked.mkdir()
+    (linked / "uvx").symlink_to(STUB.parent / "uvx")
+    path = [STUB.parent, python_bin(tmp_path), linked, STUB.parent]
+    for argv in (["uvx", "--from", "actionlint-py", "actionlint"], ["shipmill", "status"]):
+        done = shim(ws, *argv, path=path)
+        assert done.returncode == 127, (argv, done.stderr)
+        assert f"{argv[0]}: no real {argv[0]} on PATH after {STUB.parent.resolve()}" in done.stderr
+
+
 def test_stub_and_scaffold_are_executable_in_git() -> None:
     staged = subprocess.run(
-        ["git", "-C", str(ROOT), "ls-files", "-s", "evals/bin/gh", "evals/scaffold.sh"],
+        ["git", "-C", str(ROOT), "ls-files", "-s", "evals/bin/gh", "evals/bin/shipmill", "evals/scaffold.sh"],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    assert [line.split()[0] for line in staged.splitlines()] == ["100755", "100755"]
+    assert [line.split()[0] for line in staged.splitlines()] == ["100755", "100755", "100755"]
     assert STUB.read_text(encoding="utf-8").startswith("#!/usr/bin/env python3\n")
+    assert (STUB.parent / "uvx").readlink() == Path("shipmill")  # one shim, two names
 
 
 def git(cwd: Path, *args: str) -> str:
