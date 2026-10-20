@@ -284,7 +284,7 @@ def item_marker(plan: int, ident: str) -> str:
     return f"<!-- shipmill:plan-item #{plan} {ident} -->"
 
 
-ISSUE_NODE = "number body " + "author { __typename login } authorAssociation"
+ISSUE_NODE = "number body milestone { title } " + "author { __typename login } authorAssociation"
 ITEMS_QUERY = (
     """
 query($owner: String!, $name: String!, $number: Int!, $search: String!) {
@@ -347,8 +347,25 @@ def split_ref(ref: str) -> tuple[str, str, int]:
     return found.group(1), found.group(2), int(found.group(3))
 
 
+@dataclass(frozen=True)
+class Carrier:
+    """The issue carrying an item's plan-item marker, and the milestone it is in"""
+
+    number: int
+    milestone: str | None
+
+
 def plan_items(ref: str, bot_login: str | None, run: Runner = gh_graphql) -> list[tuple[Item, int | None]]:
     """Each item of plan `ref`, with the issue of the plan's repository carrying its marker"""
+    _, filed = plan_carriers(ref, bot_login, run)
+    return [(item, None if carrier is None else carrier.number) for item, carrier in filed]
+
+
+def plan_carriers(
+    ref: str, bot_login: str | None, run: Runner = gh_graphql
+) -> tuple[Plan, list[tuple[Item, Carrier | None]]]:
+    """Plan `ref` and each of its items, with the issue of the plan's repository carrying its
+    marker and that issue's milestone"""
     owner, name, number = split_ref(ref)
     search = f'repo:{owner}/{name} is:issue in:body "shipmill:plan-item #{number}"'
     response = run(ITEMS_QUERY, {"owner": owner, "name": name, "number": number, "search": search})
@@ -366,7 +383,7 @@ def plan_items(ref: str, bot_login: str | None, run: Runner = gh_graphql) -> lis
     if subs["pageInfo"]["hasNextPage"] or int(found.get("issueCount") or 0) > 100:
         raise PlanError(f"{ref} has more than 100 sub-issues or marker matches, which plans.py does not page")
     here = f"{owner}/{name}".lower()
-    carriers: dict[str, int] = {}
+    carriers: dict[str, Carrier] = {}
     for node in [*subs["nodes"], *(found.get("nodes") or [])]:
         if not node or str((node.get("repository") or {}).get("nameWithOwner", "")).lower() != here:
             continue
@@ -376,8 +393,10 @@ def plan_items(ref: str, bot_login: str | None, run: Runner = gh_graphql) -> lis
         for item in plan.items:
             if line == item_marker(number, item.id):
                 known = carriers.get(item.id)
-                carriers[item.id] = node["number"] if known is None else min(known, node["number"])
-    return [(item, carriers.get(item.id)) for item in plan.items]
+                if known is None or node["number"] < known.number:
+                    milestone = (node.get("milestone") or {}).get("title")
+                    carriers[item.id] = Carrier(node["number"], None if milestone is None else str(milestone))
+    return plan, [(item, carriers.get(item.id)) for item in plan.items]
 
 
 # -- the command line
