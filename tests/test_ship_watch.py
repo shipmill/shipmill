@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from shipmill import status as shipmill_status
+from shipmill.gate import parse_findings
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-ship-watch" / "scripts" / "watch_state.py"
 NOW = dt.datetime(2026, 10, 3, 12, 0, tzinfo=dt.timezone.utc)  # noqa: UP017 (runs under 3.10 too, as the script does)
@@ -1474,9 +1475,10 @@ REPO = "o/r"
 CHECKOUT = Path("/work/r")
 
 
-def pull(number: int, fork: bool = False) -> dict[str, object]:
-    """One open pull request as `gh pr list --json number,isDraft,isCrossRepository,labels` prints it"""
-    return {"number": number, "isDraft": False, "isCrossRepository": fork, "labels": []}
+def pull(number: int, fork: bool = False, head: str = "c" * 40) -> dict[str, object]:
+    """One open pull request as `gh pr list --json number,isDraft,isCrossRepository,labels,headRefOid`
+    prints it"""
+    return {"number": number, "isDraft": False, "isCrossRepository": fork, "labels": [], "headRefOid": head}
 
 
 def upgrade_issue(
@@ -1610,10 +1612,11 @@ def test_s011_1_every_json_line_adds_a_fix_and_keeps_the_rest(ws: ModuleType, tm
     rows += [ws.Row("BOT_OK", "release.yml", ""), publish_row(ws, ws.Tag("v1.0.0", NOW), "pkg", True, NOW, GRACE)]
     for row in rows:
         line = json.loads(json.dumps(row.json(), sort_keys=True))
-        assert set(line) == {"state", "subject", "detail", "agent", "fix"}
+        heads = {"heads"} if row.state == "PRS_OPEN" else set()  # #546: PRS_OPEN's heads, in --json only
+        assert set(line) == {"state", "subject", "detail", "agent", "fix"} | heads
         assert line["fix"] is None or isinstance(line["fix"], str)
         before = {"state": row.state, "subject": row.subject, "detail": row.detail, "agent": row.state in ws.AGENT}
-        assert {k: v for k, v in line.items() if k != "fix"} == before
+        assert {k: v for k, v in line.items() if k not in ("fix", "heads")} == before
     # the details read as they did before the fix: the same inputs, the same text
     found = fixed_rows(ws, tmp_path / "again")
     assert found["BOT_FAILED"][0].detail == "failure: https://github.com/o/r/actions/runs/5"
@@ -1731,6 +1734,24 @@ def test_s011_7_open_prs_carry_a_fix_only_while_no_gate_lands_them(
                 "set prs = true under [agents] in .github/shipmill.toml, or land them by hand:"
                 " /shipmill:github-pr-triage o/r"
             )
+
+
+def test_546_the_prs_open_row_carries_each_heads_sha_in_json_only(ws: ModuleType) -> None:
+    prs = [pull(3, head="a" * 40), pull(8, head="b" * 40), {**pull(9), "isDraft": True}, pull(11, fork=True)]
+    found = ws.intake("o/r", 0, "", prs, lambda n: [], None, True)
+    row = next(r for r in found if r.state == "PRS_OPEN")
+    assert row.json()["heads"] == {"3": "a" * 40, "8": "b" * 40}  # neither the draft nor the fork's
+    assert (row.detail, row.text()) == ("#3 #8", ws.Row("PRS_OPEN", "o/r", "#3 #8", row.fix).text())
+    assert all("heads" not in r.json() for r in found if r.state != "PRS_OPEN")
+    # the gate reads the row it prints; the next push to #8 is new work
+    (finding,) = parse_findings(json.dumps(row.json(), sort_keys=True))
+    assert finding.heads == ((3, "a" * 40), (8, "b" * 40))
+
+
+@pytest.mark.parametrize("head", [None, "A" * 40, "a" * 39, 7])
+def test_546_an_unreadable_head_sha_is_refused(ws: ModuleType, head: object) -> None:
+    with pytest.raises(ws.Refused, match="headRefOid"):
+        ws.intake("o/r", 0, "", [{**pull(3), "headRefOid": head}], lambda n: [])
 
 
 def test_s011_8_every_fix_names_its_target_and_quotes_no_title(ws: ModuleType, tmp_path: Path) -> None:

@@ -234,7 +234,9 @@ make; null for a row with nothing to clear. Every action row, HOLD, WORKTREE_STA
 UNTRUSTED carry one, and PRS_OPEN while no gate lands pull requests ([agents] prs not true).
 A fix is built from the repo, numbers, run ids, tags, paths, and config keys, never from an
 issue's or a pull request's text (D-16). The table prints it on an indented "fix:" line
-after its row, unless the row's detail already ends with it.
+after its row, unless the row's detail already ends with it. The PRS_OPEN line also has
+heads, each listed pull request's number (a string) mapped to its head commit's SHA, so a
+push to one changes the gate's fingerprint (#546); the table never prints it.
 
 Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when any
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
@@ -376,6 +378,7 @@ AGENT = {
 FIXED = ACTION | {"HOLD", "WORKTREE_STALE", "UNTRUSTED"}
 FIX_INDENT = " " * 15  # the table's fix line starts under the subject column
 RUN_ID = re.compile(r"/actions/runs/(\d+)(?:/|$)")  # a workflow run's URL names its id
+HEAD_SHA = re.compile(r"[0-9a-f]{40}")  # a pull request's headRefOid (#546)
 STALE = dt.timedelta(days=7)  # a kept shipmill worktree older than this is reported
 # the reasons `shipmill worktrees` keeps a worktree that isn't a shipmill worktree at all
 NOT_SHIPMILL = {"main checkout", "current checkout", "not a shipmill worktree"}
@@ -446,16 +449,21 @@ class Refused(SystemExit):
 class Row:
     """One finding. fix is the one line that clears it, built from trusted values only (the
     repo, numbers, run ids, tags, paths, config keys), never an issue's or a pull request's
-    text (D-16); a FIXED state without one is a programming error"""
+    text (D-16); a FIXED state without one is a programming error. heads, on a PRS_OPEN row
+    only, is each listed pull request's head SHA by number: in --json only, so the gate sees
+    a push to one (#546)"""
 
     state: str
     subject: str
     detail: str
     fix: str | None = None
+    heads: tuple[tuple[int, str], ...] = ()
 
     def __post_init__(self) -> None:
         if self.state in FIXED and not self.fix:
             raise ValueError(f"a {self.state} row needs a fix: {self.subject} {self.detail}")
+        if self.heads and self.state != "PRS_OPEN":
+            raise ValueError(f"only a PRS_OPEN row has heads, not {self.state}")
 
     def text(self) -> str:
         line = f"{self.state:<14} {self.subject:<16} {self.detail}"
@@ -463,14 +471,17 @@ class Row:
             return line
         return f"{line}\n{FIX_INDENT}fix: {self.fix}"
 
-    def json(self) -> dict[str, str | bool | None]:
-        return {
+    def json(self) -> dict[str, Any]:
+        found: dict[str, Any] = {
             "state": self.state,
             "subject": self.subject,
             "detail": self.detail,
             "agent": self.state in AGENT,
             "fix": self.fix,
         }
+        if self.heads:
+            found["heads"] = {str(number): sha for number, sha in self.heads}
+        return found
 
 
 def rerun_fix(repo: str, url: str) -> str:
@@ -1899,7 +1910,7 @@ def intake(
     upgrades: Upgrades | None = None,
 ) -> list[Row]:
     """The intake rows from triage_state.py's exit code and --json lines, and the open pull
-    requests (number, isDraft, isCrossRepository, labels). Each pull request is UNTRUSTED
+    requests (number, isDraft, isCrossRepository, labels, headRefOid). Each pull request is UNTRUSTED
     (with trusted_only, a head in a fork), else waiting on a decision (labelled, no reply;
     its comments are read only then), else in PRS_OPEN unless a draft. lands_prs is the
     config's [agents] prs = true: a gate lands them, so PRS_OPEN carries no fix. upgrades
@@ -1940,7 +1951,7 @@ def intake(
         rows.append(Row("ISSUES_OPEN", repo, rest))
     waiting, untrusted = list(counts.get("NEEDS_DECISION", [])), list(counts.get("UNTRUSTED", []))
     waiting += [n for n in (upgrades.waiting if upgrades is not None else []) if n not in untrusted_upgrades]
-    ready = []
+    ready: list[tuple[int, str]] = []
     for pr in prs:
         number = int(pr["number"])
         labels = {label["name"] for label in pr["labels"]}
@@ -1949,10 +1960,11 @@ def intake(
         elif TRIAGE.DECISION_LABEL in labels and TRIAGE.waits_on_decision(comments_of(number), bot_login):
             waiting.append(number)
         elif not pr["isDraft"]:
-            ready.append(f"#{number}")
+            ready.append((number, head_sha(pr)))
     if ready:
         land = f"set prs = true under [agents] in {POLICY}, or land them by hand: {skill_fix('github-pr-triage', repo)}"
-        rows.append(Row("PRS_OPEN", repo, " ".join(ready), None if lands_prs else land))
+        listed = " ".join(f"#{n}" for n, _ in ready)
+        rows.append(Row("PRS_OPEN", repo, listed, None if lands_prs else land, tuple(sorted(ready))))
     if waiting:
         named = " ".join(f"#{n}" for n in sorted(set(waiting)))
         rows.append(Row("NEEDS_DECISION", repo, named, f"answer the needs-decision question on {repo} {named}"))
@@ -1963,6 +1975,14 @@ def intake(
         )
         rows.append(Row("UNTRUSTED", repo, " ".join(f"#{n}" for n in sorted(set(untrusted))), review))
     return rows
+
+
+def head_sha(pr: dict[str, Any]) -> str:
+    """An open pull request's headRefOid, 40 lowercase hex characters, or refused (#546)"""
+    sha = pr.get("headRefOid")
+    if not isinstance(sha, str) or HEAD_SHA.fullmatch(sha) is None:
+        raise Refused(f"error: gh pr list printed #{pr['number']} with headRefOid {sha!r}, not a commit SHA")
+    return sha
 
 
 def person_logins(row: dict[str, Any]) -> list[str]:
@@ -2007,7 +2027,7 @@ def intake_rows(
     upgrades: Upgrades | None = None,
 ) -> list[Row]:
     """The intake rows from triage_run's exit code and lines, and the open pull requests"""
-    fields = "number,isDraft,isCrossRepository,labels"
+    fields = "number,isDraft,isCrossRepository,labels,headRefOid"
     prs = json.loads(run(["gh", "pr", "list", "-R", repo, "--json", fields, "-L", "100"]))
 
     def comments_of(number: int) -> Comments:
