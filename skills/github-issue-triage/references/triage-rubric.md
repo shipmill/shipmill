@@ -7,10 +7,28 @@
 | **implement** | A confirmed bug; or behaviour the docs already promise but the code breaks; or a small additive feature that fits the release phase | The plan in 2 to 4 bullets; "I'll link the PR here" |
 | **opportunity** | A user's request for a new capability (a new command, layer, or workflow) that no accepted opportunity covers yet. Product intake groups it with the requests for the same outcome, and the maintainer accepts or declines the group (D-10); triage doesn't group or write a spec for it | That it goes to product intake, and what happens there ([comments.md](comments.md), Opportunity) |
 | **feature** | New behaviour beyond a bug fix or a contract tweak (a new command, layer, or workflow) that fits the release phase, and that the maintainer already wants: an accepted opportunity (labelled `planned`), a request an accepted opportunity covers, or an issue the maintainer filed. A small additive feature such as a new flag stays **implement**, through the design gate | The spec PR's link and a hold line naming it; implementers start once it merges ([spec-gate.md](spec-gate.md)) |
-| **postpone** | A new capability, a new wire contract, or a design that must land with sibling issues | Why now is the wrong time, the plan, and what it waits on. Add the `postponed` label |
+| **postpone** | A new capability, a new wire contract, or a design that must land with sibling issues; or a feature that serves no goal of the direction ([below](#the-direction-the-goal-it-serves)) | Why now is the wrong time, the plan, and what it waits on; for no goal, the goal it would need. Add the `postponed` label |
 | **clarify** | You can't reproduce it, or it needs a product or spec decision | The exact question, with options and your recommendation |
 | **duplicate** | Same root cause as another issue | A link; close it |
-| **won't fix** | It works as intended, or it conflicts with the project's principles | Evidence from the code or docs; close it |
+| **won't fix** | It works as intended, or it conflicts with the project's principles, or it hits a non-goal of the direction (`N-n`) | Evidence from the code or docs, or the non-goal it hits; close it |
+
+## The direction: the goal it serves
+
+When the default branch has `docs/product.md` (D-34, spec 024), new behaviour is judged against it. Read only the sections each step needs, from the checkout after `git fetch`; where `shipmill` isn't on PATH, and in a headless session, run `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill product show ...`:
+
+| Step | Sections | Read them with |
+|---|---|---|
+| Verdicts | Goals, Non-goals | `shipmill product show --section goals` and `--section non-goals` |
+| The spec gate | Users, Goals | `shipmill product show --section users` and `--section goals` |
+
+Every verdict on an issue that asks for new behaviour (a small additive feature under **implement**, a **feature**, an **opportunity**) names the goal it serves in the comment's verdict line, `Serves: G-n` ([comments.md](comments.md)), or the non-goal it hits:
+
+- **It hits a non-goal:** **won't fix**, citing `N-n` and the non-goal's words. A request the maintainer wants anyway changes the direction first, which only the maintainer does
+- **It serves no goal:** a **feature** (new behaviour the maintainer already wants) gets **postpone**, saying which goal it would need; the maintainer adds the goal to the direction or lets it wait
+- **A user's request that serves no goal** still gets **opportunity** and goes to product intake: its verdict line says it serves no goal, the opportunity issue says so too, and the maintainer accepts or declines it there (D-10)
+- **A bug fix or a contract tweak** serves the quality bar and needs no goal: its verdict names none, and nothing here holds it
+
+A repo without `docs/product.md` keeps the verdicts above as they are, with no `Serves:` line. `shipmill product show` exits 2 on a direction that breaks its grammar: give no verdict on new behaviour until the maintainer fixes it, name the problem in the report, and go on with the bug fixes.
 
 A reporter's open questions get answers in the comment. If the code can settle one, investigate: "does a library WARNING bypass redaction via `logging.lastResort`?" was answerable with a probe, and the answer was yes.
 
@@ -29,7 +47,7 @@ Bugs, contract tweaks, and small additive features keep their verdicts. For a re
 Read it from the tags and the manifest version.
 
 - **Pre-1.0 or active development:** implement most confirmed requests.
-- **Release candidate or soak:** implement bugs, broken promises, security or privacy fixes, and small additive features a consumer port needs now. Postpone new wire contracts, new commands, and designs spanning several issues. A behaviour change is acceptable only if it's small and is listed under Breaking.
+- **A release candidate, or a breaking release waiting for the maintainer:** implement bugs, broken promises, security or privacy fixes, and small additive features a consumer port needs now. Postpone new wire contracts, new commands, and designs spanning several issues. A behaviour change is acceptable only if it's small and is listed under Breaking.
 - **Stable:** anything breaking waits for a major version. Implement it behind a new option, or postpone it.
 
 ## Verify before deciding

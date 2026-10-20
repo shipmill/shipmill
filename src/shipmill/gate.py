@@ -34,6 +34,7 @@ from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.github import GitHub
 from shipmill.gitrepo import Git
+from shipmill.hooks import HookTest
 from shipmill.notify import Notifier, NotifyFailed
 from shipmill.plugin import CHECKED, Loaded, PluginUpdate, daily_update, loaded, session_project
 from shipmill.worktrees import Judged, Sessions, Verdict, judge, prune
@@ -140,6 +141,7 @@ class Action(enum.Enum):
     WAITING = "WAITING"  # a session waits on the user
     UNCHANGED = "UNCHANGED"  # the same findings already got a session
     PLUGIN_STALE = "PLUGIN_STALE"  # a session would load a plugin older than the latest release (D-35)
+    HOOKS_FAILED = "HOOKS_FAILED"  # headless: the delivery hooks' self-test failed (spec 026, S-026-16)
     LAUNCH = "LAUNCH"
 
 
@@ -172,6 +174,7 @@ class Decision:
     plugin: PluginUpdate | None = None  # the daily plugin check before a launch (D-23); None: none ran
     loaded: Loaded | None = None  # the plugin a session would load, read before a launch (D-35); None: not read
     detached: Detached | None = None  # the branch --refresh detached the gate's worktree from (#247)
+    hooks: HookTest | None = None  # the delivery hooks' self-test before a launch (spec 026); None: none ran
 
 
 def fingerprint(work: Iterable[Finding]) -> str:
@@ -962,6 +965,22 @@ def stale(decision: Decision, git: Git, plugins: Runner | None) -> Decision:
     )
 
 
+def self_tested(decision: Decision, hooks: Callable[[], HookTest] | None, headless: bool) -> Decision:
+    """S-026-16: a LAUNCH runs the delivery hooks' self-test once. A failure makes a headless
+    tick HOOKS_FAILED, stopping no session and starting none, as D-35 does for stale skills: an
+    unattended session is where a miss goes unseen. An interactive tick reports it and launches.
+    A test that couldn't read what a session loads is reported and launches, as D-35 does on a
+    failed read; no claude on PATH pauses a headless tick, naming it. hooks None runs no test"""
+    if hooks is None or decision.action is not Action.LAUNCH:
+        return decision
+    found = hooks()
+    if not headless or not (found.failed or found.skipped):
+        return replace(decision, hooks=found)
+    return replace(
+        decision, action=Action.HOOKS_FAILED, reason=found.reason(), stop=(), identity=None, asks_as=None, hooks=found
+    )
+
+
 def gate(
     git: Git,
     repo: str,
@@ -981,6 +1000,7 @@ def gate(
     started: StartTime = start_time,
     new_session: Callable[[], uuid.UUID] = uuid.uuid4,
     plugins: Runner | None = None,
+    hooks: Callable[[], HookTest] | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -1022,13 +1042,19 @@ def gate(
     true (D-23), a real LAUNCH first checks, at most once per 24 hours (plugin-check.json in
     the state directory), whether any shipmill@shipmill install keyed on the checkout, at
     project or local scope, is behind the latest release, and updates each one that is
-    (`claude plugin update --scope <its scope>` run in the checkout). With false, the
+    (`claude plugin marketplace update shipmill` once, then `claude plugin update --scope <its
+    scope>` run in the checkout). With false, the
     default, the gate changes no install. Then a LAUNCH, dry run or not, reads the install a
     session in the checkout would load (D-35, plugin.loaded): when it is older than the latest
     release the tick is PLUGIN_STALE, naming the install, its scope, and the command that
     updates it, and stops no session and starts none; the next tick with a current install
     launches. A failed read is reported and the session starts (as a failed D-23 check did),
-    and so does a checkout no install applies to. The decision carries both"""
+    and so does a checkout no install applies to. The decision carries both.
+
+    hooks runs the delivery hooks' self-test (spec 026); None, as in tests that don't exercise
+    it, runs none. A LAUNCH still standing after the plugin read, dry run or not, runs it once:
+    a failure makes a headless tick HOOKS_FAILED, naming the problem and its fix, stopping no
+    session and starting none; an interactive tick reports it and starts the session"""
     check_checkout(git, repo)
     config = checked(config, claude.args)
     state = state_dir(git)
@@ -1077,7 +1103,7 @@ def gate(
     else:
         text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login)
     if dry_run:
-        return stale(decision, git, plugins), None, waiting, pruned
+        return self_tested(stale(decision, git, plugins), hooks, headless), None, waiting, pruned
     env = None
     if identity is not None:
         if app_env is None:
@@ -1088,7 +1114,8 @@ def gate(
             raise ReleaseError("[agents] plugin_update = true, but no plugin command runner was given")
         decision = replace(decision, plugin=daily_update(state / CHECKED, git.root, now, plugins))
     decision = stale(decision, git, plugins)  # after the update, so a current install launches (D-35)
-    if decision.action is Action.PLUGIN_STALE:
+    decision = self_tested(decision, hooks, headless)  # of the install the session loads, so after the update too
+    if decision.action in (Action.PLUGIN_STALE, Action.HOOKS_FAILED):
         return decision, None, waiting, pruned
     for session in decision.stop:
         claude.stop(session)
@@ -1124,6 +1151,7 @@ def tick_record(
         "plugin": None if decision.plugin is None else decision.plugin.record(),
         "loaded": None if decision.loaded is None else decision.loaded.record(),
         "detached": None if decision.detached is None else decision.detached.record(),
+        "hooks": None if decision.hooks is None else decision.hooks.record(),
     }
 
 
@@ -1148,6 +1176,9 @@ def tick_lines(
         lines += [f"  {line}" for line in decision.plugin.lines()]
     if decision.loaded is not None:
         lines += [f"  {line}" for line in decision.loaded.lines()]
+    if decision.hooks is not None and not decision.hooks.ok and decision.action is not Action.HOOKS_FAILED:
+        verb = "couldn't run" if decision.hooks.unread else "failed"
+        lines.append(f"  hooks self-test {verb}, the session starts anyway: {decision.hooks.line()}")
     verb = "would prune" if dry_run else "pruned"
     lines += [f"  {verb} {j.path} ({j.worktree.branch})" for j in pruned]
     lines += [f"  {f.line()}" for f in decision.work]

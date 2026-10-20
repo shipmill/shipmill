@@ -1,0 +1,6 @@
+[[case]]
+path = "product-intake/no-goal-not-proposed"
+skill = "product-intake"
+kind = "verdict"
+source = "shipmill/shipmill#488"
+commit = "744ffee"

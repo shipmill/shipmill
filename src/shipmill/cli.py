@@ -18,6 +18,10 @@
   status          say whether the factory works or is stuck: a verdict, then a short summary with
                   a line per reason and a direct link per item; --rows for github-ship-watch's
                   table, --json for its JSON lines
+  milestones      read-only: with a lane that sets milestone = true, print MILESTONE_WAITING for a goal's
+                  milestone waiting on its specs and MILESTONE_OVERTAKEN for an open milestone a stable
+                  tag took, with the version to rename it to and the `gh api` rename, run through
+                  shipmill gh; --json for one JSON object (spec 022)
   upgrade         list the config upgrades this repo hasn't decided or declined (spec 014); --apply <id>
                   makes one's edit in the checkout and commits nothing; --propose opens or updates
                   one shipmill-upgrade issue per pending upgrade, as land.yml runs it after a release
@@ -130,13 +134,14 @@ from shipmill.gate import (
 )
 from shipmill.github import UPGRADE_LABEL, GhCli, GitHub
 from shipmill.gitrepo import Git
+from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_operate
 from shipmill.land import ActionsRun, Prepared, Stop, cleanup, land, prepare, work_branch
 from shipmill.launchd import DEFAULT_TOOL, build, install, remove
 from shipmill.lineedit import LineText
 from shipmill.notify import Desktop
 from shipmill.operate import Http, UrllibHttp, approve, approve_rollback, operate, summary
-from shipmill.planner import Event, Hotfix, Planner, Proposal
+from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
 from shipmill.policy import Lane, Policy
 from shipmill.product import DIRECTION, ItemId, Section
 from shipmill.product import check as check_product
@@ -202,6 +207,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--hotfix-prs", default="", help="hotfix: merged pull requests, such as 12,15")
     p.add_argument("--hotfix-from", default="", help="hotfix: the stable tag to fix (default: the latest)")
     p.add_argument("--now", help="ISO time with offset (default: now)")
+    p.add_argument(
+        "--actor",
+        default=os.environ.get("GITHUB_TRIGGERING_ACTOR", ""),
+        help="who started the run; a breaking stable release started by hand needs a person"
+        " (default: $GITHUB_TRIGGERING_ACTOR)",
+    )
     p.add_argument("--github-output", type=Path)
 
     p = sub.add_parser("propose", help="open or update the issue for each release a plan proposed")
@@ -310,6 +321,13 @@ def _parser() -> argparse.ArgumentParser:
     shown = p.add_mutually_exclusive_group()
     shown.add_argument("--rows", action="store_true", help="print github-ship-watch's table instead")
     shown.add_argument("--json", action="store_true", help="print github-ship-watch's JSON lines instead")
+
+    p = sub.add_parser(
+        "milestones",
+        help="print the milestones a lane with milestone = true waits on or a stable tag overtook (spec 022)",
+    )
+    p.add_argument("--json", action="store_true", help="print the rows and the read's error as one JSON object")
+    p.add_argument("--now", help="ISO time with offset (default: now)")
 
     p = sub.add_parser("upgrade", help=f"list the config upgrades {CONFIG_PATH} hasn't decided (spec 014)")
     acts = p.add_mutually_exclusive_group()
@@ -530,6 +548,8 @@ def main(
         return _app_create(root, args, api or UrllibApi(), signer or Openssl(), ask=ask)
     if args.command == "status":
         return _status(root, args, state or run_state, api or UrllibApi(), signer or Openssl())
+    if args.command == "milestones":
+        return _milestones(root, args, github)
     if args.command == "upgrade":
         return _upgrade(root, args, github or GhCli(root))
     if args.command == "product":
@@ -566,7 +586,10 @@ def main(
         people = (
             None if slug is None else (lambda: agent_as_person.read(slug, state or run_state, dt.datetime.now(dt.UTC)))
         )
-        checks = doctor(root, github or (GhCli(root) if shutil.which("gh") else None), plugins, people, slug)
+        hooks = _hook_test(root, env, user_home)
+        checks = doctor(
+            root, github or (GhCli(root) if shutil.which("gh") else None), plugins, people, slug, hooks=hooks
+        )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")
         return 1 if any(c.status == "FAIL" for c in checks) else 0
@@ -595,7 +618,8 @@ def main(
         hotfix = Hotfix(_ints(args.hotfix_prs), args.hotfix_from or None) if lane is Lane.HOTFIX else None
         if hotfix is None and (args.hotfix_prs or args.hotfix_from):
             raise ReleaseError("--hotfix-prs and --hotfix-from go with --lane hotfix")
-        decision = Planner(git, policy, hub, _now(args.now)).plan(event, lane, args.dry_run, hotfix)
+        actor = Actor(args.actor) if args.actor else None
+        decision = Planner(git, policy, hub, _now(args.now)).plan(event, lane, args.dry_run, hotfix, actor)
         outputs = decision.outputs()
         print(json.dumps(outputs, indent=2))
         _outputs(args.github_output, outputs)
@@ -703,6 +727,16 @@ def _report_work_branch(prepared: Prepared, work: str, workflow_ref: str, step_s
             out.write(f"{title}: {text}\n\n")
 
 
+def _hook_test(root: Path, environ: Mapping[str, str], home: Path) -> Callable[[], HookTest]:
+    """Spec 026's self-test for a session in root, looking programs up on environ's PATH"""
+    path = environ.get("PATH", "")
+
+    def which(name: str) -> str | None:
+        return shutil.which(name, path=path)
+
+    return lambda: self_test(root, run_command, run_hook, which, home, environ)
+
+
 def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessions) -> int:
     git = Git(root)
     path = os.environ.get("PATH", "")
@@ -728,6 +762,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         session_env,
         lambda: host_login(root),
         plugins=run_command,
+        hooks=_hook_test(root, os.environ, Path.home()),
     )
     if args.json:
         print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))
@@ -972,7 +1007,7 @@ def _status(
     main = status.read_main(git, status.read_branch(slug, run))
     facts = status.Facts(
         repo=slug,
-        rows=status.parse_rows(proc.stdout),
+        rows=status.parse_rows(proc.stdout),  # spec 022's milestone rows among them (#475)
         issues=status.read_issues(slug, run, login),
         pulls=status.read_pulls(slug, run),
         main=main,
@@ -987,6 +1022,43 @@ def _status(
     )
     sys.stdout.write(status.report(facts).text(slug))
     return proc.returncode  # S-009-14: spec 008's code, whatever the verdict
+
+
+def _milestones(root: Path, args: argparse.Namespace, github: GitHub | None) -> int:
+    """#475, spec 022: the milestone rows of the lanes with milestone = true, read with the
+    release's planner at origin's default branch, fetched first; without such a lane nothing
+    is fetched or read. It never writes GitHub: an overtaken milestone's rename is its row's
+    fix. A read the planner fails (a goal, a policy, or GitHub) is printed as the error, and
+    exits 0 as a report does; a checkout without a GitHub origin exits 2"""
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(
+            f"{root} is not a git checkout; run milestones in a checkout of the repo, or pass --repo PATH"
+        )
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    slug = _origin_repo(top)
+    if slug is None:
+        raise ReleaseError(f"{top}'s origin isn't a GitHub repo")
+    rows: list[status.MilestoneRow] = []
+    error = None
+    if status.wants_milestones(top):
+        checkout = Git(top)
+        branch = checkout.default_branch()
+        # --force, as watch_state.py fetches: a moving major tag (v0) would refuse the fetch otherwise
+        checkout.run("fetch", "-q", "--force", "--tags", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+        head = checkout.sha(f"refs/remotes/origin/{branch}")
+        hub = github or GhCli(top)
+        rows, error = status.read_milestones(slug, top, head, hub, _now(args.now), cli_command())
+    if args.json:
+        print(json.dumps({"milestones": [r.record() for r in rows], "error": error}, indent=2))
+        return 0
+    for row in rows:
+        print(row.text())
+    if error is not None:
+        print(f"not read: {error}")
+    elif not rows:
+        print("no milestone waits or was overtaken")
+    return 0
 
 
 def _doctor_repo(root: Path) -> str | None:
@@ -1100,13 +1172,17 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
             record = {
                 "id": str(upgrade.id),
                 "config": CONFIG_PATH.as_posix(),
-                "line": upgrade.line,
+                "line": upgrade.line if applied.added else None,
+                "removed": upgrade.removes,
                 "created": [p.as_posix() for p in applied.created],
                 "kept": [p.as_posix() for p in applied.kept],
             }
             print(json.dumps(record, indent=2))
             return 0
-        print(f"added {upgrade.line} to [{upgrade.table}] in {CONFIG_PATH}")
+        if upgrade.removes is not None:
+            print(f"removed {upgrade.removes} from [{upgrade.table}] in {CONFIG_PATH}")
+        if applied.added:
+            print(f"added {upgrade.line} to [{upgrade.table}] in {CONFIG_PATH}")
         for path in applied.created:
             print(f"wrote {path.as_posix()}")
         for path in applied.kept:
@@ -1140,7 +1216,10 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
     for offer in found:
         upgrade = offer.upgrade
         print(f"{upgrade.id} (shipmill {upgrade.version}): {upgrade.changes}")
-        print(f"  adds: [{upgrade.table}] {upgrade.line}")
+        if upgrade.removes is not None:
+            print(f"  removes: [{upgrade.table}] {upgrade.removes}")
+        if upgrade.adds(raw):
+            print(f"  adds: [{upgrade.table}] {upgrade.line}")
         print(f"  off: {upgrade.off}")
         if offer.issue is not None:
             print(f"  proposed: #{offer.issue}")

@@ -13,11 +13,12 @@ it.
 |---|---|---|---|
 | `dev` | `1.5.0.dev412` | main's head | after every batch of merges |
 | `rc` | `1.5.0rc2` | main's head | each workday morning |
-| `stable` | `1.5.0` | the base of an rc that soaked without a blocker | weekly, a milestone, or by hand |
+| `stable` | `1.5.0` | main's head after every green batch, or an rc with `promote_from` | after every batch of merges, a milestone, or by hand |
 | `hotfix` | `1.4.1` | `release/1.4` plus the pull requests you name | by hand only |
 
-Installers skip `dev` and `rc` versions unless asked, so a client who needs a feature today
-pins the pre-release, and everyone else gets stable releases that real users already ran.
+Installers skip `dev` and `rc` versions unless asked, so a client who wants to try a change
+first pins the pre-release, and everyone else gets each stable release, whose CI passed on
+the exact release commit. A breaking change waits for the maintainer.
 
 ## How a release works
 
@@ -27,25 +28,60 @@ before anything is tagged.
 
 - **Pre-releases (`dev`, `rc`) never touch main.** Their commit is reachable only from the
   tag, and their entries stay under Unreleased until a stable release
-- **A stable release promotes a soaked rc.** It stamps the commit the rc was built from, so
-  it ships exactly the code the rc did. If main has not moved, main fast-forwards to the
+- **A stable release ships every green batch.** Once its trigger is due (`quiet_minutes =
+  30` after the last merge, say), it stamps main's head, and the release is tagged only
+  after CI passes on that commit. With `promote_from = "rc"` it stamps the commit the newest
+  rc was built from instead, so it ships exactly the code the rc did (see
+  [Stable releases](#stable-releases)). If main has not moved, main fast-forwards to the
   release; otherwise the release is tagged and a sync commit on main moves the released
-  entries into the new section and points main's version at it. When `.github/workflows/`
-  changed between the rc and main, stable skips, since the release's CI would run main's
-  workflows on the rc's code; the same run cuts the next rc, which carries the new CI and
-  soaks before it is promoted (D-28)
+  entries into the new section and points main's version at it
+- **A breaking change waits for the maintainer.** A stable candidate with an entry under a
+  `major` heading is proposed, never released by a trigger (below)
 - **A hotfix** starts from `release/X.Y` (or the last `X.Y.Z` tag), applies each named pull
   request's change, takes their CHANGELOG entries, releases `X.Y.(Z+1)`, and syncs main the
   same way
 
 ### When something is wrong in a batch
 
-Escalate in this order:
+The proof goes before the merge: CI, the review, and the evals. After a release, escalate
+in this order:
 
-1. **Channel**: the client who needs feature A pins the `dev` or `rc` build that has it
+1. **Fix forward**: merge the fix; the next batch releases it
 2. **Revert**: someone files a `release-blocker` issue, which holds `rc` and `stable`; the
-   revert pull request removes the bad change and its CHANGELOG entry, and the next rc soaks
-3. **Hotfix**: when only a stable release will do, ship feature A alone from `release/X.Y`
+   revert pull request removes the bad change and its CHANGELOG entry, and the next batch
+   releases without it
+3. **Hotfix**: when the fix can't wait for main, ship it alone from `release/X.Y`
+4. **Rollback**: a deploy that fails its health checks rolls back to the previous release
+   (see [Operate](#operate-health-bake-promotion-and-rollback))
+
+## Stable releases
+
+**A breaking change waits for the maintainer** (spec 029). A stable candidate is breaking
+when its pending entries (at the rc's base, for a promotion) hold one under a `major`
+heading in `[bump]`, `Breaking` by default; before 1.0 it moves the minor and is still
+breaking. When a trigger makes the stable lane due, shipmill proposes it under `act` too,
+with the cause "a breaking change waits for the maintainer's decision", in one "Ready to
+release" issue that lists the breaking entries first. rc and dev still release beside it,
+so the people who asked for the change can try it. The maintainer releases it by starting
+the lane by hand, `gh workflow run release.yml -f lane=stable -f dry-run=false`; a run
+started by a bot login skips it. A fix that can't wait goes out as a hotfix.
+
+**`promote_from = "rc"`** makes the stable lane promote the newest rc after the last stable
+release, whatever its age, once a stable trigger is due, stamped on the rc's base. It is the
+choice for a repository that wants every stable release to be bit for bit a pre-release
+people already installed (an app store build, say); it adds lead time without adding a
+check unless someone runs the rc. When `.github/workflows/` changed between the rc and
+main, stable skips, since the release's CI would run main's workflows on the rc's code; the
+same run cuts the next rc, which carries the new CI, and the stable lane promotes that one
+(D-28). A breaking promotion waits for the maintainer like any breaking candidate.
+
+**`min_soak_days` was deprecated in 0.53.0**: a time soak checks nothing, since nobody runs
+the rc in those days and shipmill reads no telemetry. 0.53.0 still honours it, with a
+`doctor` warning, and the next minor release refuses a `[lanes.stable]` that sets it, with
+exit 2. `shipmill upgrade --apply stable-every-batch` migrates: it removes the line, keeps
+`promote_from`, and adds `quiet_minutes = 30` only to a table with no trigger. A soak stays
+only where something is observed during it, as `bake_minutes` does for
+[environments](#environments).
 
 ## The policy
 
@@ -90,10 +126,9 @@ schedule = ["Mon-Fri 07:00 Europe/Kyiv"]
 github_release = true             # a GitHub release, marked pre-release
 
 [lanes.stable]
-promote_from = "rc"               # omit to release main's head directly
-min_soak_days = 3
-schedule = ["Mon 07:00 Europe/Kyiv"]
-milestone = true                  # due once the milestone named "1.5.0" is done (below)
+quiet_minutes = 30                # main's head after every batch of merges
+# promote_from = "rc"             # or: the newest rc's code, whatever its age
+# milestone = true                # or: due once the milestone named "1.5.0" is done (below)
 github_release = true
 dispatch = ["publish.yml"]
 
@@ -130,6 +165,16 @@ then the plan names what holds it, the first reason per spec, such as
 `milestone 1.5.0: S-021's #40 is not in v1.5.0rc3`; once done, its reason names the specs,
 `milestone 1.5.0 built: S-021, S-023`. A milestone no spec belongs to is done as before.
 
+`shipmill milestones` prints the same reasons as a MILESTONE_WAITING row. A stable release
+made by another trigger ships what is merged and keeps its bump, so it can take an
+unfinished goal's version: the open milestone, with issues still open, is then overtaken, and
+`shipmill milestones` prints MILESTONE_OVERTAKEN with the milestone's number, the version the
+lane cuts next, and the `shipmill gh api` command that renames the milestone to it. The
+command only reads (`--json` prints one object, `{"milestones": [...], "error": null}`) and
+reads nothing without a lane that sets `milestone = true`. github-ship-watch's
+`watch_state.py` runs it, so `shipmill status`, its `--rows` and `--json`, and a watch pass
+show both rows, and under "watch" the pass renames an overtaken milestone.
+
 ### The schedule in `release.yml`
 
 `shipmill init` derives `release.yml`'s cron from the policy it writes, and
@@ -139,7 +184,7 @@ then the plan names what holds it, the first reason per spec, such as
 
 - **The hourly tick** (`7 * * * *`) when any lane sets `milestone = true`, or the stable
   lane sets both `promote_from` and `quiet_minutes`: a milestone empties when an issue
-  closes, and an rc finishes its soak while main is quiet, and neither starts a run
+  closes, and an rc to promote is tagged off main, and neither starts a run
 - **One cron per window time** when the lanes trigger on `schedule` (and on `quiet_minutes`
   without a promoting stable lane): each window's starts over the next year, in UTC, so a
   time zone with daylight saving time gets a line for each of its offsets
@@ -390,6 +435,13 @@ upgrade = "propose"               # observe | propose | act: config upgrades
   `observe` and `propose`; `lane=policy` follows the policy like a scheduled run. Once the
   release is tagged, the land workflow closes the lane's issue with a comment naming the tag
   and the run, and says so when the issue proposed another version
+- **A breaking stable candidate** (an entry under a `major` heading, spec 029) is proposed
+  this way under `act` too, and the run that releases rc or dev beside it opens or updates
+  the same issue, which lists the breaking entries first. Only a person's hand start of the
+  stable lane releases it: the workflow passes `$GITHUB_TRIGGERING_ACTOR` to `shipmill plan
+  --actor`, a `<name>[bot]` login skips stable with "a breaking release is started by a
+  person", and so does a run that names no actor. The land workflow closes the issue
+  once the release is tagged
 - **`intake`** (the product-intake skill) defaults to `propose`: it opens and updates
   opportunity issues, and only the maintainer accepts or declines one, so `act` is refused.
   `observe` reports the groups it would make
@@ -468,11 +520,21 @@ Once a release is out, `github-ship-watch` tells each closed issue it fixed, thr
 |---|---|---|
 | `pre-release` | the first dev or rc tag holding the fix | `Released in v1.5.0rc2 (pre-release).`, the `pin` command, that a plain install gets it with the next stable release, and that the person who filed the issue can react 👍 once it works or reply if it doesn't |
 | `stable` | the first stable tag holding the fix | `Released in v1.5.0.` and the `install` command |
+| `<environment>` | the first successful deployment to an environment of the config's `[environments]` of a tag holding the fix, read from GitHub deployments | `Deployed to production in v1.5.0.` |
+
+An environment's notices cover what its current deployment holds that the release tag it
+ran before didn't (or, on its first deployment, the release below it), so an issue fixed
+long before an environment existed isn't told of it.
 
 A stable release that promotes an rc tells every issue that rc fixed, even when the newest
 tag before it is a later rc. Each comment's first line is a hidden marker,
 `<!-- shipmill:available: <stage> <tag> -->`, so a rerun posts nothing, and a "Released in
 <tag>" comment from before the stages counts as told for its tag's stage.
+
+The person who filed the issue answers on the pre-release notice: their 👍 reads as
+REQUESTER_CONFIRMED in the watch, and a reply after it or a 👎 as REQUESTER_REPORT, which a
+watch session hands to triage as a possible regression. Only the issue's author counts, and
+neither row labels, holds, or reopens anything by itself.
 
 `[notices]` is optional. `pin` and `install` take `{version}`, `{tag}`, and `{name}` (the
 policy's `name`), and a notice shows the command as code. Without `install`, the
@@ -502,7 +564,7 @@ The workflows call these; you can run them locally too.
 | `propose` | Open or update the issue for each release a plan proposed |
 | `prepare` | Stamp a planned release; `--commit`, `--push` |
 | `land` | Push, tag, sync main, and publish a release commit that passed CI |
-| `close-proposal` | Close the lane's proposal issue once its release landed, under `release = "propose"` |
+| `close-proposal` | Close the lane's proposal issue once its release landed, under `release = "propose"` or on a stable lane that can hold a breaking change |
 | `cleanup` | Delete a release commit's work branch |
 | `sync` | Bring a stable release made off main into main, to recover a failed sync |
 | `notes` | Print a release's notes |

@@ -28,6 +28,7 @@ from shipmill.plugin import (
     listed_installs,
     load_checked,
     session_project,
+    update_command,
 )
 from shipmill.worktrees import Judged
 
@@ -35,11 +36,13 @@ from .test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier, bg, host
 
 Tick = tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]
 UPDATE = ["claude", "plugin", "update", "shipmill@shipmill", "--scope"]
+REFRESH = ["claude", "plugin", "marketplace", "update", "shipmill"]
 
 
 @dataclass
 class FakeRunner:
-    """claude plugin list, gh release view, and claude plugin update, without either tool.
+    """claude plugin list, gh release view, claude plugin marketplace update, and claude plugin
+    update, without either tool.
     installs maps (scope, folder) to a version; an update at a scope run in cwd sets the
     install keyed on `acts_on(cwd)` (the cwd itself by default) to the latest release"""
 
@@ -47,6 +50,7 @@ class FakeRunner:
     version: str | None = "0.25.0"  # the checkout's project install; None: none
     latest: str = "v0.32.2"
     fail_update: bool = False
+    fail_refresh: bool = False
     user: str | None = "0.32.2"  # the user-scope install's version; None: none
     installs: dict[tuple[str, Path], str] = field(default_factory=dict)
     acts_on: dict[Path, Path] = field(default_factory=dict)  # cwd -> the folder an update keys on
@@ -69,6 +73,10 @@ class FakeRunner:
             return json.dumps(listed)
         if cmd[:3] == ["gh", "release", "view"]:
             return self.latest + "\n"
+        if cmd == REFRESH:
+            if self.fail_refresh:
+                raise ReleaseError("claude plugin marketplace update failed: offline")
+            return "refreshed\n"
         if cmd[:5] == UPDATE and len(cmd) == 6:
             if self.fail_update:
                 raise ReleaseError("claude plugin update failed: network down")
@@ -214,6 +222,70 @@ def test_a_failed_update_is_reported_and_no_session_starts_on_the_stale_install(
     lines = tick_lines(decision, launched, (), (), dry_run=False)
     assert "  plugin update failed: claude plugin update failed: network down" in lines
     assert load_checked(state_dir(checkout) / CHECKED) == NOW  # retried the next day, not every tick
+
+
+def test_the_daily_update_refreshes_the_marketplace_once_before_updating(checkout: Git) -> None:
+    # #477: `claude plugin update` alone left an install behind; Claude Code updates from its
+    # local copy of the marketplace, so it is refreshed first, once for every behind install
+    installs = {("local", checkout.root): "0.25.0", ("project", checkout.root): "0.30.0"}
+    runner = FakeRunner(checkout.root, installs=installs)
+    decision, _, _, _ = tick(checkout, runner)
+    claude = [cmd for cmd, _ in runner.calls if cmd[:3] != ["claude", "plugin", "list"] and cmd[0] == "claude"]
+    assert claude == [REFRESH, [*UPDATE, "project"], [*UPDATE, "local"]]
+    assert decision.plugin is not None and decision.plugin.error is None
+
+
+def test_a_failed_marketplace_refresh_is_reported_and_the_update_still_runs(checkout: Git) -> None:
+    runner = FakeRunner(checkout.root, fail_refresh=True)
+    decision, launched, _, _ = tick(checkout, runner)
+    assert runner.scopes == ["project"] and launched == "s1"  # the update ran and reached the install
+    own = (Install("project", checkout.root.resolve(), "0.25.0"),)
+    error = "claude plugin marketplace update failed: offline"
+    assert decision.plugin == PluginUpdate(own, "0.32.2", ("project",), error)
+    assert f"  plugin update failed: {error}" in tick_lines(decision, launched, (), (), dry_run=False)
+
+
+def test_no_install_behind_refreshes_no_marketplace(checkout: Git) -> None:
+    runner = FakeRunner(checkout.root, version="0.32.2")
+    tick(checkout, runner)
+    assert REFRESH not in [cmd for cmd, _ in runner.calls]
+
+
+@pytest.mark.parametrize(
+    ("entry", "fix"),
+    [
+        (
+            {"scope": "user", "version": "0.1.0"},
+            "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user",
+        ),
+        (
+            {"scope": "project", "version": "0.1.0", "projectPath": "/w/r"},
+            "in /w/r: claude plugin marketplace update shipmill"
+            " && claude plugin update shipmill@shipmill --scope project",
+        ),
+        (
+            {"scope": "local", "version": "0.1.0", "projectPath": "/w/r"},
+            "in /w/r: claude plugin marketplace update shipmill"
+            " && claude plugin update shipmill@shipmill --scope local",
+        ),
+    ],
+)
+def test_a_stale_installs_fix_refreshes_the_marketplace_first(entry: dict[str, str], fix: str) -> None:
+    # #477: the marketplace refresh, then the update, in that order, at each scope
+    installs = listing(entry)
+    assert update_command(installs[0], installs) == fix
+
+
+def test_the_nested_install_fix_refreshes_the_marketplace_before_the_reinstall() -> None:
+    installs = listing(
+        {"scope": "project", "version": "0.1.0", "projectPath": "/w/r"},
+        {"scope": "project", "version": "0.1.0", "projectPath": "/w/r/tmp/shipmill-gate"},
+    )
+    assert update_command(installs[0], installs) == (
+        "in /w/r: claude plugin marketplace update shipmill && claude plugin uninstall shipmill@shipmill"
+        " --scope project && claude plugin install shipmill@shipmill --scope project"
+        " (`update` picks the nested install in /w/r/tmp/shipmill-gate, a Claude Code bug)"
+    )
 
 
 def test_a_failed_read_is_reported_and_retried_on_the_next_launch(checkout: Git) -> None:
@@ -390,8 +462,9 @@ def test_the_gate_checkouts_stale_install_on_its_main_checkout_starts_no_session
     assert (decision.action, launched) == (Action.PLUGIN_STALE, None)
     assert claude.launched == [] and claude.stopped == []  # no session stops or starts
     fix = (
-        f"in {main}: claude plugin uninstall shipmill@shipmill --scope local && claude plugin install"
-        f" shipmill@shipmill --scope local (`update` picks the nested install in {gate_dir}, a Claude Code bug)"
+        f"in {main}: claude plugin marketplace update shipmill && claude plugin uninstall shipmill@shipmill"
+        " --scope local && claude plugin install shipmill@shipmill --scope local"
+        f" (`update` picks the nested install in {gate_dir}, a Claude Code bug)"
     )
     assert decision.reason == (
         f"a session here would load shipmill@shipmill 0.31.1 (local scope, keyed on {main}), older than the"
@@ -435,7 +508,7 @@ def test_a_stale_user_install_starts_no_session_in_either_mode(checkout: Git, mo
     assert claude.launched == [] and claude.started == [] and claude.stopped == []
     assert decision.reason.endswith(
         "(user scope), older than the latest release 0.32.2: no session starts until it is updated:"
-        " claude plugin update shipmill@shipmill --scope user"
+        " claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user"
     )
     assert runner.updates == []  # the gate never updates a user-scope install
 

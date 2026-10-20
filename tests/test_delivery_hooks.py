@@ -118,44 +118,183 @@ def refused(result: subprocess.CompletedProcess[str], rule: str, source: str) ->
     return shlex.split(lines[2].removeprefix("Instead: "))
 
 
-# --- S-026-1: the hooks file -----------------------------------------------------------------
+# --- S-026-19: the hooks file, and a hook that can't start its script ------------------------
+
+MODES = {"PreToolUse": "pre", "PostToolUse": "post"}
+CANT_START = re.compile(
+    r"shipmill hook: can't start hooks/delivery\.py \(.+\); this command runs unchecked, see shipmill doctor\n"
+)
 
 
-def test_s026_1_hooks_json_declares_both_hooks_through_uv() -> None:
-    data = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
-    hooks = data["hooks"]
-    assert set(hooks) == {"PreToolUse", "PostToolUse"}
-    assert [entry["matcher"] for entry in hooks["PreToolUse"]] == ["Bash"]
-    assert [entry["matcher"] for entry in hooks["PostToolUse"]] == ["Edit|Write|MultiEdit"]
-    for event, mode in (("PreToolUse", "pre"), ("PostToolUse", "post")):
-        (command,) = [h["command"] for entry in hooks[event] for h in entry["hooks"]]
-        assert command.startswith("uv run --no-project ")
-        named = re.search(r'"\$\{CLAUDE_PLUGIN_ROOT\}/([^"]+)" (\w+)$', command)
-        assert named is not None, command
-        assert named.group(1) == "hooks/delivery.py" and named.group(2) == mode
-        assert (ROOT / named.group(1)).is_file()
+def hook_command(event: str) -> str:
+    """The one command hooks/hooks.json runs for event"""
+    hooks = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
+    (command,) = [h["command"] for entry in hooks[event] for h in entry["hooks"]]
+    assert isinstance(command, str)
+    return command
 
 
-def test_s026_1_hooks_json_command_runs_the_script(box: Sandbox) -> None:
-    """The pre command, as Claude Code runs it through a shell with CLAUDE_PLUGIN_ROOT set"""
-    if shutil.which("uv") is None:
-        pytest.fail("uv runs the hooks")
-    (pre,) = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
-    data = json.dumps(fixture("bash-rebase-merge-refused.json", box.agents))
-    env = {**os.environ, "CLAUDE_PLUGIN_ROOT": str(ROOT)}
-    result = subprocess.run(
-        ["/bin/sh", "-c", pre["hooks"][0]["command"]],
-        input=data,
-        cwd=box.agents,
-        env=env,
+def through_shell(
+    event: str, data: dict[str, Any], env: dict[str, str], plugin_root: Path = ROOT, shell: str = "/bin/sh"
+) -> subprocess.CompletedProcess[str]:
+    """hooks.json's command for event as Claude Code runs it: through a shell, with
+    CLAUDE_PLUGIN_ROOT set and the hook input on stdin"""
+    return subprocess.run(
+        [shell, "-c", hook_command(event)],
+        input=json.dumps(data),
+        cwd=data["cwd"],
+        env={**env, "CLAUDE_PLUGIN_ROOT": str(plugin_root)},
         capture_output=True,
         text=True,
         check=False,
+        timeout=60,
     )
-    refused(result, "rebase-merge", "D-33")
 
 
-def test_s026_1_script_runs_under_python_311(box: Sandbox) -> None:
+def clean_env(path: Path) -> dict[str, str]:
+    """The test's environment with PATH set to path alone and no uv settings or virtualenv
+    that would let uv find a Python the case means it not to"""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("UV_") and k != "VIRTUAL_ENV"}
+    return {**env, "PATH": str(path), "UV_NO_CONFIG": "1"}
+
+
+def only_uv(folder: Path) -> Path:
+    """A PATH folder holding uv and nothing else"""
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.fail("uv runs the hooks")
+    folder.mkdir()
+    (folder / "uv").symlink_to(Path(uv).resolve())
+    return folder
+
+
+def event_input(event: str, cwd: Path) -> dict[str, Any]:
+    """A refused Bash command for the pre hook, an edit for the post hook"""
+    return fixture("bash-rebase-merge-refused.json" if event == "PreToolUse" else "post-edit.json", cwd)
+
+
+def cant_start(result: subprocess.CompletedProcess[str]) -> None:
+    """Exit 1, never 2, and one stderr line naming shipmill doctor"""
+    assert (result.returncode, result.stdout) == (1, ""), result.stderr
+    assert CANT_START.fullmatch(result.stderr), result.stderr
+
+
+def test_s026_19_hooks_json_declares_both_hooks() -> None:
+    hooks = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
+    assert set(hooks) == set(MODES)
+    assert [entry["matcher"] for entry in hooks["PreToolUse"]] == ["Bash"]
+    assert [entry["matcher"] for entry in hooks["PostToolUse"]] == ["Edit|Write|MultiEdit"]
+    for event, mode in MODES.items():
+        command = hook_command(event)
+        named = re.match(r'd="\$\{CLAUDE_PLUGIN_ROOT\}/([^"]+)"; ', command)
+        assert named is not None, command
+        assert named.group(1) == "hooks/delivery.py"
+        assert (ROOT / named.group(1)).is_file()
+        assert "uv python find --no-project '>=3.11'" in command
+        assert "uv python install '>=3.11'" in command
+        assert command.count(f'exec "$p" "$d" {mode};') == 1
+
+
+def test_s026_19_hook_command_runs_the_script(box: Sandbox) -> None:
+    """The pre command refuses a refused fixture with the script's own exit 2"""
+    if shutil.which("uv") is None:
+        pytest.fail("uv runs the hooks")
+    data = fixture("bash-rebase-merge-refused.json", box.agents)
+    refused(through_shell("PreToolUse", data, dict(os.environ)), "rebase-merge", "D-33")
+
+
+SHELLS = [s for s in ("/bin/sh", "/bin/bash", "/bin/dash", "/bin/zsh") if Path(s).is_file()]
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_s026_19_hook_command_runs_under_each_shell(box: Sandbox, tmp_path: Path, shell: str) -> None:
+    """A refused fixture still exits 2, and a missing uv exits 1, under every shell present"""
+    data = fixture("bash-rebase-merge-refused.json", box.agents)
+    refused(through_shell("PreToolUse", data, dict(os.environ), shell=shell), "rebase-merge", "D-33")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    cant_start(through_shell("PreToolUse", data, clean_env(empty), shell=shell))
+
+
+def test_s026_19_hook_command_quotes_a_plugin_root_with_spaces(box: Sandbox, tmp_path: Path) -> None:
+    if shutil.which("uv") is None:
+        pytest.fail("uv runs the hooks")
+    plugin = tmp_path / "plugin root"
+    shutil.copytree(ROOT / "hooks", plugin / "hooks")
+    data = fixture("bash-rebase-merge-refused.json", box.agents)
+    refused(through_shell("PreToolUse", data, dict(os.environ), plugin), "rebase-merge", "D-33")
+
+
+def test_s026_19_allowed_command_through_the_hook_exits_0(box: Sandbox) -> None:
+    if shutil.which("uv") is None:
+        pytest.fail("uv runs the hooks")
+    allowed(through_shell("PreToolUse", fixture("bash-read.json", box.app), dict(os.environ)))
+
+
+@pytest.mark.parametrize("event", sorted(MODES))
+def test_s026_19_no_uv_on_path_exits_1(box: Sandbox, tmp_path: Path, event: str) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    result = through_shell(event, event_input(event, box.agents), clean_env(empty))
+    cant_start(result)
+    assert "(uv is not on PATH)" in result.stderr
+
+
+@pytest.mark.parametrize("event", sorted(MODES))
+def test_s026_19_failing_uv_exits_1(box: Sandbox, tmp_path: Path, event: str) -> None:
+    """A uv that exits 2 for every call, as uv does when it can't get a Python"""
+    fake = tmp_path / "fake"
+    fake.mkdir()
+    (fake / "uv").write_text("#!/bin/sh\necho 'error: no Python' >&2\nexit 2\n", encoding="utf-8")
+    (fake / "uv").chmod(0o755)
+    result = through_shell(event, event_input(event, box.agents), clean_env(fake))
+    cant_start(result)
+    assert "(uv can find or install no Python 3.11 or newer)" in result.stderr
+
+
+@pytest.mark.parametrize("event", sorted(MODES))
+def test_s026_19_uv_printing_no_path_exits_1(box: Sandbox, tmp_path: Path, event: str) -> None:
+    """A uv whose python find exits 0 but prints no path: the hook still exits 1, not 127"""
+    fake = tmp_path / "fake"
+    fake.mkdir()
+    (fake / "uv").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (fake / "uv").chmod(0o755)
+    result = through_shell(event, event_input(event, box.agents), clean_env(fake))
+    cant_start(result)
+    assert "(uv can find or install no Python 3.11 or newer)" in result.stderr
+
+
+@pytest.mark.parametrize("setting", [{"UV_OFFLINE": "1"}, {"UV_PYTHON_DOWNLOADS": "never"}], ids=["offline", "never"])
+@pytest.mark.parametrize("event", sorted(MODES))
+def test_s026_19_no_python_uv_can_get_exits_1(
+    box: Sandbox, tmp_path: Path, event: str, setting: dict[str, str]
+) -> None:
+    """The real uv, limited to its own Pythons in an empty folder, offline or with downloads
+    off: it can neither find nor install a Python 3.11"""
+    installs = tmp_path / "pythons"
+    installs.mkdir()
+    env = {
+        **clean_env(only_uv(tmp_path / "bin")),
+        "UV_MANAGED_PYTHON": "1",
+        "UV_PYTHON_INSTALL_DIR": str(installs),
+        **setting,
+    }
+    result = through_shell(event, event_input(event, box.agents), env)
+    cant_start(result)
+    assert "(uv can find or install no Python 3.11 or newer)" in result.stderr
+    assert [p.name for p in installs.iterdir() if not p.name.startswith(".")] == []  # nothing downloaded
+
+
+@pytest.mark.parametrize("event", sorted(MODES))
+def test_s026_19_missing_script_exits_1(box: Sandbox, tmp_path: Path, event: str) -> None:
+    result = through_shell(
+        event, event_input(event, box.agents), clean_env(only_uv(tmp_path / "bin")), tmp_path / "no-plugin"
+    )
+    cant_start(result)
+    assert f"(no file {tmp_path / 'no-plugin' / 'hooks' / 'delivery.py'})" in result.stderr
+
+
+def test_s026_19_script_runs_under_python_311(box: Sandbox) -> None:
     """The hook needs only Python 3.11 (tomllib), whatever the package needs"""
     uv = shutil.which("uv")
     assert uv is not None, "uv runs the hooks"
@@ -765,6 +904,189 @@ def test_s026_10_edit_starts_no_subprocess(delivery: ModuleType, box: Sandbox, n
     data["tool_input"]["file_path"] = str(box.app / "src" / "app.py")
     assert in_process(delivery, data, "post") == (0, Counted(0, 0))
     allowed(hook(data, "post"))
+
+
+def test_s026_10_edit_of_a_checked_path_outside_agents_starts_no_subprocess(delivery: ModuleType, box: Sandbox) -> None:
+    for root in (box.release, box.bare):
+        data = edit("post-product-check.json", root, "docs/product.md")
+        assert in_process(delivery, data, "post")[0] == 0
+        assert in_process(delivery, data, "post")[1].runs == 0
+
+
+# --- S-026-13: the checks after an edit ------------------------------------------------------
+
+STUB = """#!{python}
+import json, os, sys
+with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+sys.stdout.write(os.environ.get("STUB_OUT", ""))
+sys.stderr.write(os.environ.get("STUB_ERR", ""))
+sys.exit(int(os.environ["STUB_EXIT"]))
+"""
+
+
+def edit(name: str, root: Path, rel: str) -> dict[str, Any]:
+    """A PostToolUse fixture's input for an edit of rel in root"""
+    data = fixture(name, root)
+    data["tool_input"]["file_path"] = str(root / rel)
+    return data
+
+
+@dataclass(frozen=True)
+class Stub:
+    """A shipmill first on PATH that records its arguments and exits as the test sets"""
+
+    bin: Path
+    log: Path
+
+    def run(
+        self, data: dict[str, Any], code: int = 0, out: str = "", err: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        env = {"PATH": str(self.bin), "STUB_LOG": str(self.log), "STUB_EXIT": str(code)}
+        env |= {"STUB_OUT": out, "STUB_ERR": err}
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), "post"],
+            input=json.dumps(data),
+            cwd=data["cwd"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def calls(self) -> list[list[str]]:
+        if not self.log.exists():
+            return []
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+
+def stub_on_path(tmp_path: Path, program: str) -> Stub:
+    """A PATH holding only program, a stub"""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / program
+    script.write_text(STUB.format(python=sys.executable), encoding="utf-8")
+    script.chmod(0o755)
+    return Stub(bin_dir, tmp_path / "calls.jsonl")
+
+
+@pytest.fixture
+def stub(tmp_path: Path) -> Stub:
+    return stub_on_path(tmp_path, "shipmill")
+
+
+EDIT_FIXTURES = ["post-edit.json", "post-write.json", "post-multiedit.json"]
+CHECKED = [
+    ("docs/product.md", "product"),
+    ("docs/product/goals.md", "product"),
+    ("docs/product/areas/release.md", "product"),
+    ("REVIEW.md", "review"),
+    ("src/shipmill/REVIEW.md", "review"),
+]
+
+
+@pytest.mark.parametrize("name", EDIT_FIXTURES)
+@pytest.mark.parametrize(("rel", "check"), CHECKED)
+def test_s026_13_edit_runs_its_check_and_a_pass_is_silent(
+    box: Sandbox, stub: Stub, name: str, rel: str, check: str
+) -> None:
+    allowed(stub.run(edit(name, box.agents, rel), 0, out="ok\n"))
+    assert stub.calls() == [[check, "check", "--repo", str(box.agents)]]
+
+
+@pytest.mark.parametrize(("rel", "check"), CHECKED)
+def test_s026_13_a_failed_check_exits_2_with_its_output(box: Sandbox, stub: Stub, rel: str, check: str) -> None:
+    report = f"{rel}:5: a line the {check} check refuses\n"
+    result = stub.run(edit("post-edit.json", box.agents, rel), 1, out=report, err="1 problem\n")
+    assert (result.returncode, result.stdout, result.stderr) == (2, "", f"{report}1 problem\n")
+
+
+@pytest.mark.parametrize(("rel", "check"), CHECKED)
+def test_s026_13_a_check_exiting_2_exits_1(box: Sandbox, stub: Stub, rel: str, check: str) -> None:
+    result = stub.run(edit("post-write.json", box.agents, rel), 2, err="error: bad input")
+    assert result.returncode == 1
+    assert result.stderr.startswith("error: bad input\n")
+    assert f"{check} check --repo {box.agents}" in result.stderr and "exited 2" in result.stderr
+
+
+def test_s026_13_a_check_that_cant_start_exits_1(box: Sandbox, tmp_path: Path) -> None:
+    """Neither shipmill nor uvx on PATH: a visible error, not a crash"""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    result = Stub(empty, tmp_path / "calls.jsonl").run(edit("post-product-check.json", box.agents, "docs/product.md"))
+    assert result.returncode == 1
+    lines = result.stderr.splitlines()
+    assert len(lines) == 1 and lines[0].startswith("shipmill hook: uvx --from ") and "didn't start" in lines[0]
+
+
+def test_s026_13_without_shipmill_on_path_it_runs_through_uvx(box: Sandbox, tmp_path: Path) -> None:
+    uvx = stub_on_path(tmp_path, "uvx")
+    result = uvx.run(edit("post-review-check.json", box.agents, "REVIEW.md"), 1, out="REVIEW.md:3: no rule\n")
+    assert (result.returncode, result.stderr) == (2, "REVIEW.md:3: no rule\n")
+    assert uvx.calls() == [[*SHIPMILL[1:], "review", "check", "--repo", str(box.agents)]]
+
+
+@pytest.mark.parametrize("program", ["uvx", "shipmill"])
+def test_s026_13_exit_1_with_no_report_is_a_check_that_didnt_run(box: Sandbox, tmp_path: Path, program: str) -> None:
+    """uvx exits 1 when it can't fetch shipmill (offline), and a traceback exits 1; the checks
+    print a line per problem to stdout, so exit 1 with no stdout is an error, not a finding"""
+    failing = stub_on_path(tmp_path, program)
+    err = "error: Failed to resolve `--with` requirement\n"
+    result = failing.run(edit("post-review-check.json", box.agents, "REVIEW.md"), 1, err=err)
+    assert result.returncode == 1
+    assert result.stderr.startswith(err) and "exited 1" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "src/app.py",
+        "docs/productivity.md",
+        "docs/product.md.bak",
+        "docs/specs/024-intent.md",
+        "REVIEW.md.orig",
+        "README.md",
+    ],
+)
+def test_s026_13_other_paths_run_no_check(box: Sandbox, stub: Stub, rel: str) -> None:
+    for name in EDIT_FIXTURES:
+        allowed(stub.run(edit(name, box.agents, rel), 1, out="must not run\n"))
+    assert stub.calls() == []
+
+
+def test_s026_13_no_check_outside_a_repo_with_agents(box: Sandbox, stub: Stub) -> None:
+    for root in (box.release, box.bare):
+        allowed(stub.run(edit("post-product-check.json", root, "docs/product.md"), 1, out="must not run\n"))
+        allowed(stub.run(edit("post-review-check.json", root, "REVIEW.md"), 1, out="must not run\n"))
+    outside = fixture("post-review-check.json", box.outside)
+    outside["tool_input"]["file_path"] = str(box.outside / "REVIEW.md")
+    allowed(stub.run(outside, 1, out="must not run\n"))
+    assert stub.calls() == []
+
+
+def test_s026_13_a_relative_file_path_is_read_against_the_cwd(box: Sandbox, stub: Stub) -> None:
+    data = fixture("post-product-check.json", box.agents / ".github")
+    data["tool_input"]["file_path"] = "../docs/product.md"
+    allowed(stub.run(data))
+    assert stub.calls() == [["product", "check", "--repo", str(box.agents)]]
+
+
+def test_s026_13_a_broken_config_exits_1_naming_it(tmp_path: Path, stub: Stub) -> None:
+    root = git_repo(tmp_path / "broken", "[agents\n")
+    result = stub.run(edit("post-product-check.json", root, "docs/product.md"))
+    assert result.returncode == 1 and "doesn't parse" in result.stderr
+    assert stub.calls() == []
+
+
+def test_s026_17_post_fixtures_hold_a_case_for_each_check(box: Sandbox, stub: Stub) -> None:
+    for name, check in (("post-product-check.json", "product"), ("post-review-check.json", "review")):
+        data = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+        assert data["hook_event_name"] == "PostToolUse" and data["tool_name"] in ("Edit", "Write", "MultiEdit")
+        assert "tool_response" in data
+        rel = Path(data["tool_input"]["file_path"]).relative_to(data["cwd"]).as_posix()
+        stub.log.unlink(missing_ok=True)
+        allowed(stub.run(edit(name, box.agents, rel)))
+        assert stub.calls() == [[check, "check", "--repo", str(box.agents)]]
 
 
 # --- S-026-11: the input ---------------------------------------------------------------------

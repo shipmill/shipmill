@@ -35,7 +35,7 @@ def test_s024_5_agents_without_a_direction_fail_naming_the_file_and_the_check(
     assert "there is no docs/product.md" in found.detail
     assert "ask the maintainer for the mission, users, goals, non-goals, and quality bar" in found.detail
     assert found.detail.endswith(f"then run `{cli_command()} product check`")
-    assert main(["--repo", str(repo.root), "doctor"]) == 1
+    assert main(["--repo", str(repo.root), "doctor"], environ={"PATH": ""}) == 1  # no claude: no hook self-test
     assert "FAIL direction: [agents] is set" in capsys.readouterr().out
 
 

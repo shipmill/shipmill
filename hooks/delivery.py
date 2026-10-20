@@ -3,14 +3,18 @@
 `delivery.py pre` reads a PreToolUse input for Bash and refuses a command the delivery rules
 forbid, in a repo whose .github/shipmill.toml has an [agents] section: exit 2 with three lines
 on stderr, the refused command, the rule, and the command to run instead. `delivery.py post`
-reads a PostToolUse input for Edit, Write, and MultiEdit. Exit 0 allows; exit 1 means the
-input wasn't the hook JSON. hooks/hooks.json runs it through `uv run --no-project`.
+reads a PostToolUse input for Edit, Write, and MultiEdit, and after an edit of the direction
+(docs/product.md, docs/product/) or a REVIEW.md runs `shipmill product check` or `shipmill
+review check`: exit 2 shows a failed check's output to the model. Exit 0 allows; exit 1 means
+the input wasn't the hook JSON, or a check couldn't run. hooks/hooks.json runs it with a
+Python 3.11+ that uv finds or installs, and exits 1 itself, letting the command run, when it
+can't start it (D-40).
 
 Stdlib only and Python 3.11+ (tomllib), since the plugin can't import the installed shipmill.
 The hooks catch an agent's mistake: a command shlex can't split, and `bash -c`, `eval`,
 `$(...)`, and here-documents, pass; the trust filter (D-16) is the control against hostile
-text. No command but a `git push` may start a process, and each call reads a repo's config at
-most once.
+text. No command but a `git push`, and no edit but of the direction or a REVIEW.md, may start
+a process, and each call reads a repo's config at most once.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -584,7 +589,7 @@ def is_gh_write(args: Sequence[str]) -> bool:
 
 @dataclass(frozen=True)
 class Context:
-    runner: Runner  # for the git push rules that read the remote's default branch
+    runner: Runner  # for the git push rules that read the remote's default branch, and the checks
     configs: Configs
 
 
@@ -1090,11 +1095,63 @@ def pre(hook: HookInput, stderr: TextIO, ctx: Context) -> int:
     return 0
 
 
-def post(hook: HookInput) -> int:
-    """After an Edit, Write, or MultiEdit; no path has a check yet"""
-    if hook.tool in EDITS:
-        hook.text("file_path")
-    return 0
+DIRECTION = "docs/product.md"
+DIRECTION_DIR = "docs/product/"
+RUBRIC = "REVIEW.md"
+
+
+def check_for(path: Path) -> tuple[Path, str] | None:
+    """The repo root and the check (product or review) an edit of path calls for; no subprocess"""
+    root = repo_root(path.parent)
+    if root is None:
+        return None
+    rel = path.relative_to(root).as_posix()
+    if rel == DIRECTION or rel.startswith(DIRECTION_DIR):
+        return root, "product"
+    if path.name == RUBRIC:
+        return root, "review"
+    return None
+
+
+def shipmill_command() -> tuple[str, ...]:
+    """shipmill from PATH, else through uvx, as the skills run it"""
+    found = shutil.which("shipmill")
+    return (found,) if found is not None else SHIPMILL
+
+
+def post(hook: HookInput, stderr: TextIO, ctx: Context) -> int:
+    """After an Edit, Write, or MultiEdit of the direction or a REVIEW.md in a repo with
+    [agents]: its check exiting 1 gives exit 2 with the check's output, so the model fixes the
+    line; a check exiting 2, or one that can't start, gives exit 1, a non-blocking error"""
+    if hook.tool not in EDITS:
+        return 0
+    path = Path(os.path.normpath(os.path.join(hook.cwd, hook.text("file_path"))))
+    found = check_for(path)
+    if found is None:
+        return 0
+    root, check = found
+    config = ctx.configs.at(root)
+    if config is None:
+        return 0
+    if isinstance(config, Broken):
+        stderr.write(f"shipmill hook: {check} check didn't run: {config.message} ({CONFIG})\n")
+        return 1
+    command = (*shipmill_command(), check, "check", "--repo", str(root))
+    try:
+        result = ctx.runner(command, root)
+    except OSError as exc:
+        stderr.write(f"shipmill hook: {shlex.join(command)} didn't start: {exc}\n")
+        return 1
+    if result.returncode == 0:
+        return 0
+    output = f"{result.stdout}{result.stderr}"
+    stderr.write(output if not output or output.endswith("\n") else f"{output}\n")
+    # A check that fails prints a line per problem to stdout; uvx that can't fetch shipmill
+    # (offline) and a traceback exit 1 with stdout empty, so they didn't run, not a finding
+    if result.returncode == 1 and result.stdout.strip():
+        return 2
+    stderr.write(f"shipmill hook: {shlex.join(command)} exited {result.returncode}\n")
+    return 1
 
 
 def main(
@@ -1111,9 +1168,10 @@ def main(
         hook = parse_input(stdin.read())
         if hook.event != EVENTS[argv[0]]:
             raise BadInput(f"`{argv[0]}` reads a {EVENTS[argv[0]]} input, got {hook.event}")
+        ctx = Context(runner, Configs(read_config))
         if argv[0] == "post":
-            return post(hook)
-        return pre(hook, stderr, Context(runner, Configs(read_config)))
+            return post(hook, stderr, ctx)
+        return pre(hook, stderr, ctx)
     except BadInput as exc:
         stderr.write(f"shipmill hook: {exc}\n")
         return 1

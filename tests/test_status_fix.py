@@ -183,6 +183,17 @@ def test_a_gate_paused_on_a_stale_plugin_waits_on_you_with_the_update() -> None:
     assert status.DECISION.match(last) is not None  # the log reader takes it for a decision line
 
 
+def test_s026_16_a_gate_paused_on_a_failed_hook_self_test_waits_on_you_with_the_fix() -> None:
+    update = "claude plugin update shipmill@shipmill --scope user"
+    last = (
+        "HOOKS_FAILED: a session here would run without the delivery hooks: uv isn't on PATH:"
+        f" no session starts until the self-test passes: {update}"
+    )
+    found = facts(gate=gate(job=job(last=last)))
+    assert [(r.text, r.fix) for r in report(found).reasons] == [(f"the gate: {last}", update)]
+    assert status.DECISION.match(last) is not None
+
+
 def test_s011_14_a_job_without_a_log_points_at_launchd() -> None:
     no_log = dataclasses.replace(FILES, log=None)
     found = report(facts(gate=gate(job=job(last_exit="2", files=no_log))))

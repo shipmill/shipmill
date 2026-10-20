@@ -4,6 +4,7 @@
 import datetime as dt
 import fnmatch
 import json
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -11,16 +12,41 @@ from shipmill import fragments, milestones
 from shipmill.autonomy import Autonomy, Hold, Stage
 from shipmill.changelog import Changelog, Entry
 from shipmill.errors import ReleaseError
-from shipmill.github import GitHub
+from shipmill.github import GitHub, OpenMilestone
 from shipmill.gitrepo import WORKFLOWS, Git, Tag
 from shipmill.policy import PRIORITY, BumpFrom, Lane, LaneRule, Mode, Policy
-from shipmill.version import ZERO, Part, Version
+from shipmill.version import PATTERN, ZERO, Part, Version
+
+BREAKING = "a breaking change waits for the maintainer's decision"  # a breaking stable candidate's cause
+
+# a GitHub login, or a bot's `<name>[bot]`: up to 39 letters, digits, hyphens, and underscores
+# (an Enterprise Managed User's `<handle>_<shortcode>`), not led by a hyphen
+_LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,38}(?:\[bot\])?")
 
 
 class Event(StrEnum):
     PUSH = "push"
     SCHEDULE = "schedule"
     MANUAL = "workflow_dispatch"
+
+
+@dataclass(frozen=True, slots=True)
+class Actor:
+    """Who started the run ($GITHUB_TRIGGERING_ACTOR): a person, or a bot such as the App
+    an agent writes as, whose login ends in `[bot]` (spec 029)"""
+
+    login: str
+
+    def __post_init__(self) -> None:
+        if not _LOGIN.fullmatch(self.login):
+            raise ReleaseError(f"--actor is a GitHub login, such as octocat or shipmill[bot]; got {self.login!r}")
+
+    @property
+    def is_bot(self) -> bool:
+        return self.login.endswith("[bot]")
+
+    def __str__(self) -> str:
+        return self.login
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +62,7 @@ class Proposal:
     lane: Lane
     version: Version
     base: str
-    cause: str  # "release autonomy is propose", or "held by shipmill-hold #N"
+    cause: str  # "release autonomy is propose", "held by shipmill-hold #N", or BREAKING
 
     def as_dict(self) -> dict[str, str]:
         return {"lane": self.lane.value, "version": str(self.version), "base": self.base, "cause": self.cause}
@@ -62,7 +88,7 @@ class Decision:
     base: str = ""
     merges: tuple[str, ...] = ()  # a hotfix's merge commits, in PR order
     prs: tuple[int, ...] = ()
-    proposals: tuple[Proposal, ...] = ()  # with action "propose"
+    proposals: tuple[Proposal, ...] = ()  # with action "propose", or a breaking stable one beside a release
 
     def outputs(self) -> dict[str, str]:
         return {
@@ -86,6 +112,7 @@ class _Candidate:
     merges: tuple[str, ...] = ()
     prs: tuple[int, ...] = ()
     source: str = ""  # what the base is, when not main's head: the rc a promotion's base is
+    breaking: bool = False  # a stable candidate whose pending entries bump the major part (spec 029)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +120,25 @@ class _Deferred:
     """Why a lane skips this run, named in the reason of the lane that releases instead"""
 
     why: str
+
+
+@dataclass(frozen=True, slots=True)
+class MilestoneWaiting:
+    """A lane's milestone with no open issues whose goal isn't done: what holds it (spec 022)"""
+
+    lane: Lane
+    verdict: milestones.Verdict
+
+
+@dataclass(frozen=True, slots=True)
+class MilestoneOvertaken:
+    """An open milestone whose version a stable tag already took, and the version the lane
+    would cut next, which the milestone is renamed to (spec 022)"""
+
+    lane: Lane
+    milestone: OpenMilestone
+    version: Version  # the milestone's own, tagged already
+    next: Version
 
 
 @dataclass
@@ -164,13 +210,20 @@ class Planner:
         hits = [p for p in changed if any(fnmatch.fnmatch(p, g) for g in self.policy.minor_paths)]
         return Part.MINOR if hits else Part.PATCH
 
+    def _breaking(self, pending: list[Entry]) -> bool:
+        """Whether the entries hold one under a `major` heading: read from the headings, not
+        the version, since before 1.0 a major bump moves the minor. Paths never bump the major"""
+        major = self.policy.major_headings
+        return any(entry.heading in major for entry in pending)
+
     # -- candidates ------------------------------------------------------------------------
 
     def _candidate(self, lane: Lane, head: str) -> _Candidate | _Deferred | str:
         """What the lane would release from main's head, or why there is nothing to"""
         rule = self.policy.rule(lane)
         changelog = self.changelog_at(head)
-        pending = changelog.pending(self.fragments_at(head))
+        found = self.fragments_at(head)
+        pending = changelog.pending(found)
         if lane is Lane.STABLE and rule.promote:
             return self._promotion(rule, head)
         if lane is Lane.DEV:
@@ -196,7 +249,9 @@ class Planner:
                 return f"an rc of {target} already holds main's head"
             n = max((t.version.pre_n or 0 for t in same), default=0) + 1
             return _Candidate(target.with_pre(rule.marker, n), head, f"{len(pending)} pending entries")
-        return _Candidate(target, head, f"{len(pending)} pending entries")
+        # the release folds target's rc sections, so their entries are its own too (D-25)
+        breaking = self._breaking(changelog.promoted(target, found))
+        return _Candidate(target, head, f"{len(pending)} pending entries", breaking=breaking)
 
     def _promotion(self, rule: LaneRule, head: str) -> _Candidate | _Deferred | str:
         last = self.last_stable()
@@ -215,11 +270,12 @@ class Planner:
             return f"{version.tag} exists already"
         # an rc cut by the bot is a stamp commit off main whose first parent is main's commit;
         # an rc tagged on main itself (a release commit) is its own base
-        on_main = self.git.is_ancestor(rc.commit, "HEAD")
+        on_main = self.git.is_ancestor(rc.commit, head)
         base = rc.commit if on_main else self.git.first_parent(rc.commit)
         # the rc sections of version an earlier release bot wrote are pending too (D-25)
         changelog = self.changelog_at(base)
-        if not changelog.promoted(version, self.fragments_at(base)):
+        promoted = changelog.promoted(version, self.fragments_at(base))
+        if not promoted:
             sections = changelog.rc_sections(version)
             found = (
                 f"its rc sections {', '.join(f'[{v}]' for v in sections)} hold no entries"
@@ -235,7 +291,11 @@ class Planner:
                 " and soaks before it's promoted"
             )
         return _Candidate(
-            version, base, f"promotes {rc.name}, soaked {(self.now - rc.date).days} day(s)", source=rc.name
+            version,
+            base,
+            f"promotes {rc.name}, soaked {(self.now - rc.date).days} day(s)",
+            source=rc.name,
+            breaking=self._breaking(promoted),
         )
 
     def _hotfix(self, hotfix: Hotfix) -> _Candidate:
@@ -296,6 +356,54 @@ class Planner:
         title = str(candidate.version.release)
         return milestones.verdict(self.git, self.github, title, head, candidate.base, where, app_id)
 
+    def milestone_findings(self, head: str) -> list[MilestoneWaiting | MilestoneOvertaken]:
+        """What `shipmill status` says of the milestones of the lanes with milestone = true
+        (spec 022), read with head as main's head: each milestone with no open issues and at
+        least one closed whose goal isn't done, then each open milestone with open issues a
+        stable tag of its version took already, with the version the first such lane cuts next. Nothing is read
+        when no lane sets milestone; nothing here changes what a plan decides"""
+        lanes = [ln for ln in PRIORITY if ln in self.policy.lanes and self.policy.lanes[ln].milestone]
+        if not lanes:
+            return []
+        candidates = {lane: self._candidate(lane, head) for lane in lanes}
+        found: list[MilestoneWaiting | MilestoneOvertaken] = []
+        titles = set()
+        for lane, candidate in candidates.items():
+            if not isinstance(candidate, _Candidate) or self._has_tag(candidate.version):
+                continue
+            title = str(candidate.version.release)
+            if title in titles:  # an rc and a stable lane on one milestone: the first lane's
+                continue
+            titles.add(title)
+            milestone = self.github.milestone(title)
+            if milestone is None or milestone.open_issues or not milestone.closed_issues:
+                continue  # open issues are the ordinary wait; an empty milestone is no goal
+            verdict = self.milestone_verdict(candidate, head)
+            if not verdict.done:
+                found.append(MilestoneWaiting(lane, verdict))
+        taken = []
+        for m in self.github.open_milestones():
+            # with no open issue its own release shipped it (GitHub leaves it open) or it holds
+            # nothing: renamed, it would make the next version's milestone due at once
+            if not m.open_issues:
+                continue
+            # named after a version as the lane names it (str of the release, D-32), else no goal's
+            version = Version.parse(m.title) if PATTERN.fullmatch(m.title) else None
+            if version is not None and str(version) == m.title and version.is_stable and self._has_tag(version):
+                taken.append((m, version))
+        if taken:
+            lane = lanes[0]
+            upcoming = self._next_release(candidates[lane], head)
+            found += [MilestoneOvertaken(lane, m, version, upcoming) for m, version in taken]
+        return found
+
+    def _next_release(self, candidate: _Candidate | _Deferred | str, head: str) -> Version:
+        """The stable version a lane cuts next: its candidate's, else the one main's head
+        leads to, as target works it out for a release"""
+        if isinstance(candidate, _Candidate) and not self._has_tag(candidate.version):
+            return candidate.version.release
+        return self.target(self.changelog_at(head).pending(self.fragments_at(head)), head)
+
     def hold(self) -> Hold:
         """The stop switch, read once per plan and only once a lane is due"""
         if self._hold is None:
@@ -315,11 +423,29 @@ class Planner:
                     return f"open '{label}' issues: {', '.join(blockers)}"
         return None
 
+    def _autonomy(self, lane: Lane, candidate: _Candidate) -> tuple[Autonomy, str]:
+        """How far a trigger releases the candidate by itself, and why not further. A breaking
+        stable candidate is at most propose, as the hold makes every stage (D-8, D-39); a
+        person starting the lane by hand doesn't come here, and plan checks it was a person"""
+        level = self.policy.autonomy.effective(Stage.release(), self.hold())
+        cause = self.policy.autonomy.cause(Stage.release(), self.hold())
+        if lane is Lane.STABLE and candidate.breaking and level is not Autonomy.OBSERVE:
+            # the hold names itself first: it stops the hand start that releases a breaking change
+            return Autonomy.PROPOSE, cause if self.hold().on else BREAKING
+        return level, cause
+
     # -- the decision --------------------------------------------------------------------------
 
     def plan(
-        self, event: Event, lane: Lane | None = None, dry_run: bool = False, hotfix: Hotfix | None = None
+        self,
+        event: Event,
+        lane: Lane | None = None,
+        dry_run: bool = False,
+        hotfix: Hotfix | None = None,
+        actor: Actor | None = None,
     ) -> Decision:
+        """actor is who started the run; a breaking stable candidate started by hand releases
+        only when it names a person (spec 029)"""
         mode = Mode.DRY_RUN if dry_run and self.policy.mode is not Mode.OFF else self.policy.mode
         if mode is Mode.OFF:
             return Decision(mode, "skip", "the policy's mode is off")
@@ -395,22 +521,43 @@ class Planner:
                         " (a hotfix can still be started by hand)"
                     )
                     continue
-            elif (level := self.policy.autonomy.effective(Stage.release(), self.hold())) is not Autonomy.ACT:
-                cause = self.policy.autonomy.cause(Stage.release(), self.hold())
+                if current is Lane.STABLE and candidate.breaking:
+                    # the maintainer's decision is a person's hand start: not an agent writing
+                    # as the App, and not a run that doesn't say who started it (spec 029)
+                    if actor is None:
+                        skipped.append(
+                            f"{current}: {candidate.version} waits, a breaking release is started by a person,"
+                            " and this run names none (shipmill plan --actor)"
+                        )
+                        continue
+                    if actor.is_bot:
+                        skipped.append(
+                            f"{current}: {candidate.version} waits, a breaking release is started by a person,"
+                            f" not {actor}"
+                        )
+                        continue
+                    due = f"breaking, started by @{actor}"
+            elif (gate := self._autonomy(current, candidate))[0] is not Autonomy.ACT:
+                level, cause = gate
                 if level is Autonomy.OBSERVE:
                     skipped.append(f"{current}: {candidate.version} is due ({due}), but {cause}")
                 else:
                     proposals.append(Proposal(current, candidate.version, candidate.base, cause))
                 continue
+            # a breaking stable proposal is opened or kept up to date while rc or dev release
+            # its pre-releases (spec 029); only acting autonomy gets here with a proposal
+            waiting = tuple(p for p in proposals if p.lane is Lane.STABLE and p.cause == BREAKING)
+            proposed = [f"{p.lane}: {p.version} is due, proposed instead of released: {p.cause}" for p in waiting]
             return Decision(
                 mode,
                 "release",
-                "; ".join([f"{current} {candidate.version}: {candidate.why}", due, *notes]),
+                "; ".join([f"{current} {candidate.version}: {candidate.why}", due, *proposed, *notes]),
                 current,
                 candidate.version,
                 candidate.base,
                 candidate.merges,
                 candidate.prs,
+                proposals=waiting,
             )
         if proposals:
             proposed = [f"{p.lane}: {p.version} is due, proposed instead of released: {p.cause}" for p in proposals]
