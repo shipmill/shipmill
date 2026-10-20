@@ -14,6 +14,7 @@ from shipmill import environments
 from shipmill.agents import AgentsConfig
 from shipmill.autonomy import AutonomyPolicy
 from shipmill.config import Table, read
+from shipmill.downstream import DownstreamConfig
 from shipmill.environments import Environment, OperateConfig
 from shipmill.errors import ReleaseError
 from shipmill.lanes import Lane as Lane  # re-exported: most modules name a lane through the policy
@@ -141,6 +142,7 @@ class Policy:
     fragments: str | None = None  # [changelog] fragments: the changelog fragments folder, or None (spec 013)
     notices: NoticesConfig = NoticesConfig()  # [notices]: validated here, read by shipped.py (spec 021)
     hooks: HooksConfig = HooksConfig()  # [hooks]: validated here, read by the plugin's hook (spec 026)
+    downstream: DownstreamConfig | None = None  # [downstream]: the repos tested on a pull request (spec 032)
 
     @property
     def incident_label(self) -> str | None:
@@ -179,6 +181,7 @@ class Policy:
             "roadmap",
             "notices",
             "hooks",
+            "downstream",
         )
         changelog = top.table("changelog")
         changelog.allow("path", "style", "fragments")
@@ -223,6 +226,7 @@ class Policy:
         roadmap = RoadmapConfig.parse(top.table("roadmap")) if "roadmap" in raw else None
         notices = NoticesConfig.parse(top.table("notices", optional=True))
         hooks = HooksConfig.parse(top.table("hooks", optional=True))
+        downstream = DownstreamConfig.parse(top.table("downstream")) if "downstream" in raw else None
         return cls(
             name=top.string("name"),
             mode=top.enum("mode", Mode),
@@ -252,6 +256,7 @@ class Policy:
             fragments=fragments,
             notices=notices,
             hooks=hooks,
+            downstream=downstream,
         )
 
     def rule(self, lane: Lane) -> LaneRule:
