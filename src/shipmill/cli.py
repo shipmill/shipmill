@@ -140,6 +140,7 @@ from shipmill.downstream import (
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
     ClaudeCli,
+    HookTester,
     StateRead,
     StateRunner,
     check_checkout,
@@ -166,6 +167,7 @@ from shipmill.lineedit import LineText
 from shipmill.notify import Desktop
 from shipmill.operate import Http, UrllibHttp, approve, approve_rollback, operate, summary
 from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
+from shipmill.plugin_cache import cache_root, pypi_status, resolve
 from shipmill.policy import Lane, Policy
 from shipmill.product import DIRECTION, ItemId, Measure, Section
 from shipmill.product import check as check_product
@@ -866,6 +868,16 @@ def _hook_test(root: Path, environ: Mapping[str, str], home: Path) -> Callable[[
     return lambda: self_test(root, run_command, run_hook, which, home, environ)
 
 
+def _gate_hook_test(root: Path, environ: Mapping[str, str], home: Path) -> HookTester:
+    """The gate's self-test: of the cache folder its session loads, or with None of the install"""
+    path = environ.get("PATH", "")
+
+    def which(name: str) -> str | None:
+        return shutil.which(name, path=path)
+
+    return lambda folder: self_test(root, run_command, run_hook, which, home, environ, folder)
+
+
 def _claude_auth(environ: Mapping[str, str]) -> Callable[[], ClaudeAuth]:
     """#500's preflight, with claude looked up on environ's PATH"""
     program = shutil.which("claude", path=environ.get("PATH", ""))
@@ -897,8 +909,9 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         session_env,
         lambda: host_login(root),
         plugins=run_command,
-        hooks=_hook_test(root, os.environ, Path.home()),
+        hooks=_gate_hook_test(root, os.environ, Path.home()),
         auth=_claude_auth(os.environ),
+        cache=lambda: resolve(cache_root(os.environ, Path.home()), run_command, root, pypi_status),
     )
     if args.json:
         print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))

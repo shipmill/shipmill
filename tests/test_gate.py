@@ -92,20 +92,37 @@ class FakeClaude:
     args: tuple[str, ...] = ()  # the --claude-arg flags
     started: list[tuple[str, str, uuid.UUID, Path]] = field(default_factory=list)  # headless: name, text, id, log
     pid: int = 4242  # each headless start's pid
+    plugin_dirs: list[Path | None] = field(default_factory=list)  # each launch's --plugin-dir (spec 031)
 
     def sessions(self, workspace: Path, repo: str) -> list[Session]:
         return list(self.listed)
 
-    def launch(self, workspace: Path, name: str, text: str, env: Mapping[str, str] | None = None) -> str:
+    def launch(
+        self,
+        workspace: Path,
+        name: str,
+        text: str,
+        env: Mapping[str, str] | None = None,
+        plugin_dir: Path | None = None,
+    ) -> str:
         self.launched.append((name, text))
         self.envs.append(env)
+        self.plugin_dirs.append(plugin_dir)
         return f"s{len(self.launched)}"
 
     def start(
-        self, workspace: Path, name: str, text: str, session: uuid.UUID, log: Path, env: Mapping[str, str] | None = None
+        self,
+        workspace: Path,
+        name: str,
+        text: str,
+        session: uuid.UUID,
+        log: Path,
+        env: Mapping[str, str] | None = None,
+        plugin_dir: Path | None = None,
     ) -> int:
         self.started.append((name, text, session, log))
         self.envs.append(env)
+        self.plugin_dirs.append(plugin_dir)
         return self.pid
 
     def stop(self, session: str) -> None:

@@ -38,7 +38,8 @@ from shipmill.github import GitHub
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
 from shipmill.notify import Notifier, NotifyFailed
-from shipmill.plugin import CHECKED, Loaded, PluginUpdate, daily_update, loaded, session_project
+from shipmill.plugin import CHECKED, PLUGIN, Loaded, PluginUpdate, daily_update, loaded, session_project
+from shipmill.plugin_cache import PluginDir
 from shipmill.worktrees import Judged, Sessions, Verdict, judge, prune
 
 RECORD = "gate.json"
@@ -83,6 +84,9 @@ HEADLESS_REFUSED = (
     "--background",
     "--session-id",
 )
+# --claude-arg flags every gate refuses, alone or as --flag=value: the gate loads the plugin
+# itself, from its cache, with --plugin-dir (spec 031, S-031-11)
+PLUGIN_REFUSED = ("--plugin-dir", "--plugin-url")
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +183,7 @@ class Action(enum.Enum):
     WAITING = "WAITING"  # a session waits on the user
     UNCHANGED = "UNCHANGED"  # the same findings already got a session
     PLUGIN_STALE = "PLUGIN_STALE"  # a session would load a plugin older than the latest release (D-35)
+    PLUGIN_FAILED = "PLUGIN_FAILED"  # no usable plugin version in the cache: no session starts (spec 031)
     HOOKS_FAILED = "HOOKS_FAILED"  # headless: the delivery hooks' self-test failed (spec 026, S-026-16)
     CLAUDE_AUTH = "CLAUDE_AUTH"  # Claude Code can't authenticate on this host: no session starts (#500)
     SESSION_DEAD = "SESSION_DEAD"  # the last session ended dead, and another starts (#500)
@@ -218,6 +223,7 @@ class Decision:
     auth: ClaudeAuth | None = None  # the Claude Code login preflight before a launch (#500); None: none ran
     auth_notice: str | None = None  # what a CLAUDE_AUTH tick did about notifying: once per episode
     dead: Dead | None = None  # the last session, when it ended dead (#500)
+    plugin_dir: PluginDir | None = None  # the cache folder a session loads (spec 031); None: none was read
 
 
 def fingerprint(work: Iterable[Finding]) -> str:
@@ -361,6 +367,28 @@ def refuse_headless_args(args: Sequence[str]) -> None:
             )
 
 
+def refuse_plugin_args(args: Sequence[str]) -> None:
+    """Spec 031: every gate refuses PLUGIN_REFUSED's flags, alone or as --flag=value"""
+    for arg in args:
+        flag = arg.split("=", 1)[0]
+        if flag in PLUGIN_REFUSED:
+            raise ReleaseError(
+                f"--claude-arg {flag} is refused: the gate loads the latest shipmill plugin itself,"
+                " from its cache, with --plugin-dir (spec 031)"
+            )
+
+
+def session_settings(env: Mapping[str, str] | None, plugin_dir: Path | None) -> list[str]:
+    """A session's `--settings` and `--plugin-dir`: the App's env (D-14), and with a cache folder
+    enabledPlugins turning off the shipmill@shipmill install beside it, so a session loads one
+    copy of the plugin, the folder's (spec 031)"""
+    settings: dict[str, object] = {} if env is None else {"env": dict(env)}
+    if plugin_dir is not None:
+        settings["enabledPlugins"] = {PLUGIN: False}
+    flags = ["--settings", json.dumps(settings)] if settings else []
+    return flags if plugin_dir is None else [*flags, "--plugin-dir", str(plugin_dir)]
+
+
 def session_name(repo: str) -> str:
     return f"shipmill {repo}"
 
@@ -439,12 +467,27 @@ class Claude(Protocol):
         ...
 
     def sessions(self, workspace: Path, repo: str) -> list[Session]: ...
-    def launch(self, workspace: Path, name: str, text: str, env: Mapping[str, str] | None = None) -> str:
-        """Start a background session; env, when given, is its `--settings` env (spec 004)"""
+    def launch(
+        self,
+        workspace: Path,
+        name: str,
+        text: str,
+        env: Mapping[str, str] | None = None,
+        plugin_dir: Path | None = None,
+    ) -> str:
+        """Start a background session; env, when given, is its `--settings` env (spec 004), and
+        plugin_dir the cache folder it loads the plugin from (spec 031)"""
         ...
 
     def start(
-        self, workspace: Path, name: str, text: str, session: uuid.UUID, log: Path, env: Mapping[str, str] | None = None
+        self,
+        workspace: Path,
+        name: str,
+        text: str,
+        session: uuid.UUID,
+        log: Path,
+        env: Mapping[str, str] | None = None,
+        plugin_dir: Path | None = None,
     ) -> int:
         """Start a headless `claude -p` session detached from the tick (D-17); its pid"""
         ...
@@ -536,19 +579,34 @@ class ClaudeCli:
     def sessions(self, workspace: Path, repo: str) -> list[Session]:
         return parse_sessions(self._run(["claude", "agents", "--json", "--cwd", str(workspace)], workspace), repo)
 
-    def launch(self, workspace: Path, name: str, text: str, env: Mapping[str, str] | None = None) -> str:
-        """`claude --bg`; with env, `--settings` follows the name. The settings JSON is a
-        process argument `ps` shows, so env never holds a token (spec 004)"""
-        settings = [] if env is None else ["--settings", json.dumps({"env": dict(env)})]
+    def launch(
+        self,
+        workspace: Path,
+        name: str,
+        text: str,
+        env: Mapping[str, str] | None = None,
+        plugin_dir: Path | None = None,
+    ) -> str:
+        """`claude --bg`; with env or plugin_dir, `--settings` (and `--plugin-dir`) follow the
+        name. The settings JSON is a process argument `ps` shows, so env never holds a token
+        (spec 004)"""
+        settings = session_settings(env, plugin_dir)
         return parse_launched(self._run(["claude", "--bg", "-n", name, *settings, *self.args, text], workspace))
 
     def start(
-        self, workspace: Path, name: str, text: str, session: uuid.UUID, log: Path, env: Mapping[str, str] | None = None
+        self,
+        workspace: Path,
+        name: str,
+        text: str,
+        session: uuid.UUID,
+        log: Path,
+        env: Mapping[str, str] | None = None,
+        plugin_dir: Path | None = None,
     ) -> int:
         """`claude -p` (spec 005): no prompt can block it and AskUserQuestion is gone; the tool
         lists come before --session-id, and `--` ends the options before the prompt, so a
         --claude-arg tool list that widens the allowlist never reads the prompt as a tool name"""
-        settings = [] if env is None else ["--settings", json.dumps({"env": dict(env)})]
+        settings = session_settings(env, plugin_dir)
         tools = ["--allowedTools", HEADLESS_TOOLS, "--disallowedTools", "AskUserQuestion"]
         head = ["claude", "-p", "--permission-prompts", "none", *tools, "--session-id", str(session)]
         cmd = [*head, *settings, "-n", name, *self.args, "--", text]
@@ -1130,10 +1188,12 @@ def as_app(app_id: int, now: dt.datetime, app: AppCheck | None) -> Identity:
 
 
 def checked(config: Callable[[], AgentsConfig], args: Sequence[str]) -> Callable[[], AgentsConfig]:
-    """The config as the tick reads it, refusing a headless mode's forbidden --claude-arg
-    flags at every read, before the read can lead to stopping or starting a session"""
+    """The config as the tick reads it, refusing the --claude-arg flags that load a plugin
+    (spec 031) and a headless mode's forbidden ones at every read, before the read can lead to
+    stopping or starting a session"""
 
     def read() -> AgentsConfig:
+        refuse_plugin_args(args)
         agents = config()
         if agents.mode is Mode.HEADLESS:
             refuse_headless_args(args)
@@ -1163,15 +1223,62 @@ def stale(decision: Decision, git: Git, plugins: Runner | None) -> Decision:
     )
 
 
-def self_tested(decision: Decision, hooks: Callable[[], HookTest] | None, headless: bool) -> Decision:
-    """S-026-16: a LAUNCH runs the delivery hooks' self-test once. A failure makes a headless
+HookTester = Callable[[Path | None], HookTest]  # the self-test of a cache folder, or with None of the install
+
+
+def loading(decision: Decision, cache: Callable[[], PluginDir] | None) -> Decision:
+    """Spec 031 (S-031-8..10): a LAUNCH reads the folder its session loads the plugin from,
+    materializing the latest release into the cache when it isn't there. With no usable
+    version the tick is PLUGIN_FAILED, naming the step, its error, and its fix, and stops no
+    session and starts none. cache None reads nothing, and the session loads the installs"""
+    if cache is None or decision.action is not Action.LAUNCH:
+        return decision
+    found = cache()
+    if found.folder is not None:
+        return replace(decision, plugin_dir=found)
+    return replace(
+        decision,
+        action=Action.PLUGIN_FAILED,
+        reason=found.reason(),
+        stop=(),
+        identity=None,
+        asks_as=None,
+        plugin_dir=found,
+    )
+
+
+def folder_of(decision: Decision) -> Path | None:
+    return None if decision.plugin_dir is None else decision.plugin_dir.folder
+
+
+def prepared(
+    decision: Decision,
+    git: Git,
+    plugins: Runner | None,
+    cache: Callable[[], PluginDir] | None,
+    hooks: HookTester | None,
+    headless: bool,
+) -> Decision:
+    """A LAUNCH's checks of the plugin its session loads: the cache folder (loading), or with
+    none the install (stale, D-35), whose pause can't apply to a session that loads the folder;
+    then the hooks' self-test of that folder or install (S-031-14)"""
+    decision = loading(decision, cache)
+    folder = folder_of(decision)
+    if folder is None and decision.action is Action.LAUNCH:
+        decision = stale(decision, git, plugins)
+    return self_tested(decision, hooks, headless, folder)
+
+
+def self_tested(decision: Decision, hooks: HookTester | None, headless: bool, folder: Path | None = None) -> Decision:
+    """S-026-16: a LAUNCH runs the delivery hooks' self-test once, of the cache folder its
+    session loads when there is one (S-031-14). A failure makes a headless
     tick HOOKS_FAILED, stopping no session and starting none, as D-35 does for stale skills: an
     unattended session is where a miss goes unseen. An interactive tick reports it and launches.
     A test that couldn't read what a session loads is reported and launches, as D-35 does on a
     failed read; no claude on PATH pauses a headless tick, naming it. hooks None runs no test"""
     if hooks is None or decision.action is not Action.LAUNCH:
         return decision
-    found = hooks()
+    found = hooks(folder)
     if not headless or not (found.failed or found.skipped):
         return replace(decision, hooks=found)
     return replace(
@@ -1251,8 +1358,9 @@ def gate(
     started: StartTime = start_time,
     new_session: Callable[[], uuid.UUID] = uuid.uuid4,
     plugins: Runner | None = None,
-    hooks: Callable[[], HookTest] | None = None,
+    hooks: HookTester | None = None,
     auth: Callable[[], ClaudeAuth] | None = None,
+    cache: Callable[[], PluginDir] | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -1304,7 +1412,17 @@ def gate(
     launches. A failed read is reported and the session starts (as a failed D-23 check did),
     and so does a checkout no install applies to. The decision carries both.
 
-    hooks runs the delivery hooks' self-test (spec 026); None, as in tests that don't exercise
+    cache reads the folder a session loads the plugin from (spec 031, plugin_cache.resolve):
+    the latest release, materialized once into the host's cache; None, as in tests that don't
+    exercise it, reads none, and the session loads the installs as above. A LAUNCH, dry run or
+    not, reads it before the self-test: with a folder, both `claude --bg` and `claude -p` get
+    `--plugin-dir <folder>` and `enabledPlugins` turning the shipmill@shipmill install off in
+    their `--settings`, and the install read above doesn't run, since no session loads the
+    install; with no usable version the tick is PLUGIN_FAILED, stopping no session and starting
+    none. Every config read refuses the --claude-arg flags in PLUGIN_REFUSED.
+
+    hooks runs the delivery hooks' self-test (spec 026), of the cache folder when there is one
+    (S-031-14); None, as in tests that don't exercise
     it, runs none. A LAUNCH still standing after the plugin read, dry run or not, runs it once:
     a failure makes a headless tick HOOKS_FAILED, naming the problem and its fix, stopping no
     session and starting none; an interactive tick reports it and starts the session.
@@ -1379,7 +1497,7 @@ def gate(
     else:
         text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login)
     if dry_run:
-        return relaunching(self_tested(stale(decision, git, plugins), hooks, headless)), None, waiting, pruned
+        return relaunching(prepared(decision, git, plugins, cache, hooks, headless)), None, waiting, pruned
     env = None
     if identity is not None:
         if app_env is None:
@@ -1389,22 +1507,23 @@ def gate(
         if plugins is None:
             raise ReleaseError("[agents] plugin_update = true, but no plugin command runner was given")
         decision = replace(decision, plugin=daily_update(state / CHECKED, git.root, now, plugins))
-    decision = stale(decision, git, plugins)  # after the update, so a current install launches (D-35)
-    decision = self_tested(decision, hooks, headless)  # of the install the session loads, so after the update too
-    if decision.action in (Action.PLUGIN_STALE, Action.HOOKS_FAILED):
+    # after the update, so a current install launches (D-35); the self-test of what the session loads
+    decision = prepared(decision, git, plugins, cache, hooks, headless)
+    if decision.action is not Action.LAUNCH:  # PLUGIN_FAILED, PLUGIN_STALE, HOOKS_FAILED
         return decision, None, waiting, pruned
+    folder = folder_of(decision)
     decision = relaunching(decision)
     for session in decision.stop:
         claude.stop(session)
     name = f"{session_name(repo)} {now:%Y-%m-%d %H:%M}"
     deaths = None if dead is None else dead.deaths
     if not headless:
-        launched = claude.launch(git.root, name, text, env)
+        launched = claude.launch(git.root, name, text, env, folder)
         save_launch(record, Launch(fingerprint(decision.work), launched, now, None, deaths))
         return decision, launched, waiting, pruned
     session_id = new_session()
     log = session_log(state, str(session_id))
-    pid = claude.start(git.root, name, text, session_id, log, env)
+    pid = claude.start(git.root, name, text, session_id, log, env, folder)
     save_launch(record, Launch(fingerprint(decision.work), str(session_id), now, Process(pid, started(pid)), deaths))
     return replace(decision, follow=f"tail -f {log}"), str(session_id), waiting, pruned
 
@@ -1432,6 +1551,7 @@ def tick_record(
         "hooks": None if decision.hooks is None else decision.hooks.record(),
         "auth": None if decision.auth is None else decision.auth.record(),
         "dead": None if decision.dead is None else decision.dead.record(),
+        "plugin_dir": None if decision.plugin_dir is None else decision.plugin_dir.record(),
     }
 
 
@@ -1461,6 +1581,8 @@ def tick_lines(
         lines += [f"  {line}" for line in decision.plugin.lines()]
     if decision.loaded is not None:
         lines += [f"  {line}" for line in decision.loaded.lines()]
+    if decision.plugin_dir is not None and decision.action is not Action.PLUGIN_FAILED:
+        lines += [f"  {line}" for line in decision.plugin_dir.lines()]
     if decision.hooks is not None and not decision.hooks.ok and decision.action is not Action.HOOKS_FAILED:
         verb = "couldn't run" if decision.hooks.unread else "failed"
         lines.append(f"  hooks self-test {verb}, the session starts anyway: {decision.hooks.line()}")

@@ -82,12 +82,17 @@ and any checkout with tracked changes, naming the files. Each run:
    commit (#546). The same rows within `retry_hours`: **UNCHANGED**, stop. A session that left an item alone on purpose
    doesn't wake a new one every tick
 8. With `plugin_update = true`, updates the checkout's own plugin installs once a day
-   (D-23). Then reads the `shipmill@shipmill` install a session in the checkout would load
-   (the most specific scope installed for its project, user scope included). Older than
-   the latest release: **PLUGIN_STALE**, stop, naming the install and the command that
-   updates it; no session stops or starts until it is current (D-35)
+   (D-23). Then reads the folder a session loads the plugin from (spec 031, D-43): the
+   latest release from the marketplace, once PyPI serves it, materialized once into
+   `~/.cache/shipmill/plugin/<version>/`; while PyPI doesn't serve it yet, or a step
+   fails, the newest cached version. No usable version: **PLUGIN_FAILED**, stop, naming
+   the step, its error, and its fix; no session stops or starts. The session's
+   `--settings` JSON carries `enabledPlugins` turning `shipmill@shipmill` off, beside the
+   App's `env`, so no install loads a second copy; `--claude-arg` `--plugin-dir` and
+   `--plugin-url` are refused
 9. **LAUNCH**: stops this repo's finished sessions (`claude stop` keeps their
-   conversation), starts `claude --bg -n "shipmill <repo> <time>" "<prompt>"` in the
+   conversation), starts `claude --bg -n "shipmill <repo> <time>" [--settings <json>]
+   --plugin-dir <folder> "<prompt>"` in the
    checkout with the rows appended to the prompt, each by state and subject only (an
    issue title in a row's detail is text anyone who edits the issue controls; the session
    reruns watch_state.py and reads it as data, not instructions), and records the launch.
@@ -112,7 +117,7 @@ With `mode = "headless"` (spec 005, D-17) the steps change in four places:
   nothing), appends a paragraph to the prompt that sends a decision for `@<login>` to
   github-issue-triage's `references/needs-decision.md`, and starts `claude -p
   --permission-prompts none --allowedTools "<HEADLESS_TOOLS>" --disallowedTools
-  AskUserQuestion --session-id <uuid> [--settings <env>] -n <name> [--claude-arg flags]
+  AskUserQuestion --session-id <uuid> --settings <json> --plugin-dir <folder> -n <name> [--claude-arg flags]
   -- <prompt>` in a new process session (`--` ends the options, so a `--claude-arg`
   `--allowedTools` list that widens the allowlist never reads the prompt as a tool), stdin from `/dev/null`, output appended to
   `sessions/<uuid>.log` in the state directory. It doesn't wait for it, and records the

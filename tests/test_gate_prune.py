@@ -40,6 +40,7 @@ KEYS = {
     "hooks",
     "auth",  # #500's Claude Code login preflight
     "dead",  # #500's dead session
+    "plugin_dir",  # spec 031's cache folder a session loads
 }
 
 Tick = tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]

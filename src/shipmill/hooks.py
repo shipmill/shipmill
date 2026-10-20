@@ -1,6 +1,7 @@
 """The delivery hooks' self-test (spec 026, S-026-15, S-026-16): run the PreToolUse hook of the
 shipmill@shipmill install a session in a checkout would load (D-35, plugin.effective) on a
-refused input, and expect its refusal.
+refused input, and expect its refusal. The gate tests the cache folder its session loads with
+--plugin-dir instead (spec 031, S-031-14).
 
 The test reads that install's hooks/hooks.json, runs the command it declares for Bash through
 a shell, as Claude Code does, with CLAUDE_PLUGIN_ROOT set to the install's folder and a
@@ -186,10 +187,18 @@ def hook_input(cwd: Path) -> str:
 
 
 def self_test(
-    checkout: Path, run: Runner, hook: HookRunner, which: Which, home: Path, environ: Mapping[str, str]
+    checkout: Path,
+    run: Runner,
+    hook: HookRunner,
+    which: Which,
+    home: Path,
+    environ: Mapping[str, str],
+    plugin: Path | None = None,
 ) -> HookTest:
     """Run the self-test for a session in checkout. run reads git and `claude plugin list
-    --json`; hook runs the hook command; which looks programs up on the session's PATH"""
+    --json`; hook runs the hook command; which looks programs up on the session's PATH.
+    plugin, the gate's cache folder a session loads with --plugin-dir (S-031-14), is tested
+    instead of the install; None tests the install a session in checkout loads"""
     if which("claude") is None:
         return NO_CLAUDE
     try:
@@ -208,20 +217,26 @@ def self_test(
     shell = which("sh")
     if shell is None:
         return unread("sh isn't on PATH, and Claude Code runs a hook through it", "put a POSIX sh on PATH")
-    try:
-        installs = listed_installs(run(["claude", "plugin", "list", "--json"], checkout))
-        install = effective(installs, project)
-    except ReleaseError as exc:
-        return unread(f"can't read the {PLUGIN} install a session loads: {exc}", "fix the read, then run doctor again")
-    if install is None:
-        return failed(
-            f"no {PLUGIN} install applies to {project}, so a session loads no hooks",
-            f"in {project}: claude plugin install {PLUGIN} --scope project",
-        )
-    root = install.files(home)
+    if plugin is not None:
+        root = plugin
+        named = f"{PLUGIN} {plugin.name} (the gate's cache, {plugin})"
+        update = f"rm -rf {plugin}, so the next tick clones it again"
+    else:
+        try:
+            installs = listed_installs(run(["claude", "plugin", "list", "--json"], checkout))
+            install = effective(installs, project)
+        except ReleaseError as exc:
+            problem = f"can't read the {PLUGIN} install a session loads: {exc}"
+            return unread(problem, "fix the read, then run doctor again")
+        if install is None:
+            return failed(
+                f"no {PLUGIN} install applies to {project}, so a session loads no hooks",
+                f"in {project}: claude plugin install {PLUGIN} --scope project",
+            )
+        root = install.files(home)
+        named = f"{PLUGIN} {install.version} ({install.where()})"
+        update = update_command(install, installs)
     hooks_json = root / "hooks" / "hooks.json"
-    named = f"{PLUGIN} {install.version} ({install.where()})"
-    update = update_command(install, installs)
     if not hooks_json.is_file():
         return failed(f"{named} has no hooks/hooks.json in {root}, an install older than the hooks", update)
     try:

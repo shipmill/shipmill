@@ -211,6 +211,19 @@ def test_s026_15_disable_all_hooks_in_a_settings_file_fails(agents_repo: Repo, t
     assert run_test(agents_repo.root, Host(files), home).problem != found.problem
 
 
+def test_s031_14_the_self_test_runs_the_cache_folders_hooks_not_the_installs(agents_repo: Repo, tmp_path: Path) -> None:
+    """The gate's cache folder's real hooks refuse; no install is read, and none need apply"""
+    folder = install_copy(tmp_path / "cache" / "0.59.0")
+    host_ = Host(None, installed=False)
+    found = self_test(agents_repo.root, host_, run_hook, which(), tmp_path / "home", os.environ, folder)
+    assert found.ok, found.line()
+    assert found.detail.startswith(f"self-test: shipmill@shipmill 0.59.0 (the gate's cache, {folder}) refused")
+    assert not any(c[:3] == ["claude", "plugin", "list"] for c in host_.calls)
+    (folder / "hooks" / "hooks.json").unlink()
+    gone = self_test(agents_repo.root, host_, run_hook, which(), tmp_path / "home", os.environ, folder)
+    assert gone.failed and gone.fix == f"rm -rf {folder}, so the next tick clones it again"
+
+
 def test_s026_15_no_install_applies_fails(agents_repo: Repo, tmp_path: Path) -> None:
     found = run_test(agents_repo.root, Host(None, installed=False), tmp_path / "home")
     assert found.problem is not None and found.problem.startswith("no shipmill@shipmill install applies to")
@@ -327,9 +340,11 @@ class FakeSelfTest:
 
     result: HookTest
     runs: int = 0
+    folders: list[Path | None] = field(default_factory=list)  # the cache folder each run tested
 
-    def __call__(self) -> HookTest:
+    def __call__(self, folder: Path | None = None) -> HookTest:
         self.runs += 1
+        self.folders.append(folder)
         return self.result
 
 

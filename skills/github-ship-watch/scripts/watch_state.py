@@ -365,7 +365,7 @@ USER_SKILLS = (Path(".claude/skills"), Path(".agents/skills"))
 PLUGIN_CACHE = Path(".claude/plugins/cache") / PLUGIN.partition("@")[2]  # the plugin's own copies, by version
 GATE_CHECKOUT = Path("tmp/shipmill-gate")  # where shipmill-setup puts the gate's checkout
 # the gate log's decision lines: QUIET, LAUNCH, RUNNING, WAITING, UNCHANGED, HELD,
-# PLUGIN_STALE, HOOKS_FAILED, CLAUDE_AUTH, SESSION_DEAD, or an error
+# PLUGIN_STALE, PLUGIN_FAILED, HOOKS_FAILED, CLAUDE_AUTH, SESSION_DEAD, or an error
 GATE_DECISION = re.compile(r"^(?:[A-Z][A-Z_]*|error): ")
 SESSION_DEAD = "SESSION_DEAD: "  # the gate's last session ended dead and it starts another (#500)
 AUTH_FIX = "claude auth login"  # shipmill's claude_auth.FIX

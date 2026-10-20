@@ -280,16 +280,20 @@ the details.
    that the update changed, is printed as a failure. A user-scope install is never updated.
    A failed refresh or update is printed on the tick (D-23).
 
-   Either way, before it starts a session the gate reads the install a session in its
-   checkout would load: the most specific scope the plugin is installed at for the
-   checkout's project (local, then project, then user, then managed; a linked worktree's
-   project is its main checkout, so an install keyed on the worktree itself is never
-   loaded). While that install is older than the latest release the gate starts no
-   session: the tick prints `PLUGIN_STALE: ...` with the install, its scope, and the
-   command that updates it, and the next tick after you run it starts sessions again
-   (D-35). A failed read is printed and the session starts. `status`, `doctor`, and the
-   setup checklist report every install that is behind, in the repo's folder and in the
-   gate's checkout, each with its own fix, and name the one a session loads
+   Either way, a gate session doesn't load an install (spec 031, D-43). Before it starts
+   one, the gate reads the latest release from the marketplace, checks PyPI serves it, and
+   materializes it once into `~/.cache/shipmill/plugin/<version>/`
+   (`$XDG_CACHE_HOME/shipmill/plugin/` when that is set): a shallow clone of the tag into
+   a temporary folder beside it, checked, then renamed, so gates on one host share it. The
+   session starts with `--plugin-dir` on that folder, and its `--settings` sets
+   `enabledPlugins` to turn `shipmill@shipmill` off, so an install at any scope loads no
+   second copy. While PyPI doesn't serve the latest yet, the tick prints `plugin: <latest>
+   waits for PyPI; sessions load <cached>`. A failed step with an older version cached
+   starts the session on it and prints the failure; with none cached the tick is
+   `PLUGIN_FAILED: ...`, naming the step, its error, and its fix, and starts no session
+   until a later tick succeeds. The gate refuses `--claude-arg` `--plugin-dir` and
+   `--plugin-url`. `status`, `doctor`, and the setup checklist report every install that
+   is behind, in the repo's folder and in the gate's checkout, each with its own fix
 
    Without `app_id`, a session writes as your `gh` login, so its pull requests, merges,
    and commits read as yours. Set it before you schedule the gate, to have them made by a
@@ -519,9 +523,11 @@ the gate's own environment to choose another ceiling.
    a launch with `plugin_update = true` (`latest`, `installs`, each with `scope`,
    `installed`, and `updated`, and `error`), null when none ran; releases up to 0.40.0
    reported it as `installed`, `latest`, `updated`, and `error`, for the project-scope
-   install alone. `loaded` is the install a launch's session would load (D-35: `project`,
-   `scope`, `folder`, `version`, `latest`, `stale`, `fix`, and `error`; `action` is
-   `PLUGIN_STALE` when it is behind), null on a tick that reached no launch
+   install alone. `plugin_dir` is the cache folder a launch's session loads (spec 031:
+   `latest`, `version`, `folder`, `cloned`, `waits_for_pypi`, and `failure`, with its
+   `step`, `error`, and `fix`; `action` is `PLUGIN_FAILED` when no version is usable),
+   null on a tick that reached no launch. `loaded`, the install a session would load
+   before spec 031, is null whenever `plugin_dir` is set
 
 ## Pause or remove it
 

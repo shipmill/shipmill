@@ -194,6 +194,17 @@ def test_s026_16_a_gate_paused_on_a_failed_hook_self_test_waits_on_you_with_the_
     assert status.DECISION.match(last) is not None
 
 
+def test_s031_10_a_gate_with_no_usable_plugin_version_waits_on_you_with_the_fix() -> None:
+    fix = "check that this host reaches https://github.com/shipmill/shipmill and the tag v0.59.0 exists"
+    last = (
+        "PLUGIN_FAILED: the clone failed: git clone --quiet failed: timed out; the cache"
+        f" /Users/amy/.cache/shipmill/plugin holds no version PyPI serves, so no session starts: {fix}"
+    )
+    found = facts(gate=gate(job=job(last=last)))
+    assert [(r.text, r.fix) for r in report(found).reasons] == [(f"the gate: {last}", fix)]
+    assert status.DECISION.match(last) is not None
+
+
 def test_a_gate_paused_on_a_failed_claude_login_waits_on_you_with_the_login() -> None:
     # #500: an expired Claude Code login; the gate starts no session until it can authenticate
     last = (

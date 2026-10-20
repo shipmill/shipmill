@@ -459,11 +459,11 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    and local scope; never user scope), at most once a day, before it starts a session, so
    gate sessions run the released skills; a failed update is printed on the tick (D-23). Ask
    the user before setting it: it is the policy's permission to change an install. Either
-   way, the gate starts no session while the install a session in its checkout would load,
-   at any scope, is older than the latest release (D-35): the tick reads `PLUGIN_STALE` with
-   the install, its scope, and the command that updates it, and the gate starts sessions
-   again once a person runs it. The setup checklist's `PLUGIN_OUTDATED` rows name that
-   install with a `gate:` row
+   way, gate sessions load no install (spec 031): each starts with `--plugin-dir` on the
+   latest release, which the gate materializes once into `~/.cache/shipmill/plugin/<version>/`,
+   and turns `shipmill@shipmill` off in its `--settings`. A tick with no usable version
+   reads `PLUGIN_FAILED` with the step, its error, and its fix. The setup checklist's
+   `PLUGIN_OUTDATED` rows still name each install that is behind
 
    The delivery hooks come with the plugin (spec 026), and need `uv` on PATH. In a repo
    whose config has `[agents]`, they refuse with exit 2 a plain `gh` write while `app_id`
