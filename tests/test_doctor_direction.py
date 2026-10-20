@@ -9,7 +9,7 @@ import pytest
 from shipmill import cli_command
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH, config_path
-from shipmill.doctor import Check, direction_check, doctor
+from shipmill.doctor import DIRECTION_GUIDE, Check, direction_check, doctor
 from shipmill.policy import Policy
 
 from .conftest import Repo
@@ -34,6 +34,9 @@ def test_s024_5_agents_without_a_direction_fail_naming_the_file_and_the_check(
     assert found.status == "FAIL"
     assert "there is no docs/product.md" in found.detail
     assert "ask the maintainer for the mission, users, goals, non-goals, and quality bar" in found.detail
+    guide = "https://github.com/shipmill/shipmill/blob/main/docs/direction.md"  # main, so the link never rots
+    assert f"write docs/product.md as {guide} describes" in found.detail
+    assert (ROOT / "docs/direction.md").is_file()  # the guide the line links to
     assert found.detail.endswith(f"then run `{cli_command()} product check`")
     assert main(["--repo", str(repo.root), "doctor"], environ={"PATH": ""}) == 1  # no claude: no hook self-test
     assert "FAIL direction: [agents] is set" in capsys.readouterr().out
@@ -45,6 +48,7 @@ def test_s024_5_agents_with_a_direction_product_check_refuses_fail_with_its_firs
     (found,) = direction(repo)
     assert found.status == "FAIL"
     assert found.detail.startswith("docs/product.md is not well formed: docs/product.md:11: `## Users` holds U-n")
+    assert f"its structure is in {DIRECTION_GUIDE}" in found.detail
     assert found.detail.endswith(f"run `{cli_command()} product check` for each line, fix them")
 
 

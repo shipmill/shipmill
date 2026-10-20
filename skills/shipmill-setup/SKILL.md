@@ -451,7 +451,9 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    When you connect `[agents]` and the default branch has no `docs/product.md`, ask the
    maintainer for its content, section by section: the mission (what the product is for),
    its users, the goals it works toward now, its non-goals, and its quality bar (what
-   every change must hold). Write their words into the file's fixed structure, each item
+   every change must hold). Point them to
+   https://github.com/shipmill/shipmill/blob/main/docs/direction.md, which explains the
+   file for people. Write their words into the file's fixed structure, each item
    one line with its id from 1 (`- U-1: ...`, `- G-1: ...`, `- N-1: ...`, `- Q-1: ...`),
    run `$CR product check` until it exits 0, and commit the file in the same pull request
    as the `[agents]` section. Never invent a goal, a user, a non-goal, or a quality-bar

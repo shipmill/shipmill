@@ -32,6 +32,7 @@ from shipmill.stamp import project_version
 from shipmill.upgrades import offers, pending
 
 CALLER = Path(".github") / "workflows" / "release.yml"
+DIRECTION_GUIDE = "https://github.com/shipmill/shipmill/blob/main/docs/direction.md"  # the direction, for people
 OPERATE_CALLER = Path(".github") / "workflows" / "operate.yml"  # calls shipmill's operate.yml on a schedule
 _BOT_WORKFLOWS = ("prepare.yml", "land.yml")
 _ROADMAP_DEPRECATED = (
@@ -287,7 +288,7 @@ def direction_check(root: Path) -> Check:
         detail = (
             f"[agents] is set, so the agents work toward the product's direction, but there is no {DIRECTION}:"
             " ask the maintainer for the mission, users, goals, non-goals, and quality bar and write"
-            f" {DIRECTION} in the grammar of spec 024 (the shipmill-setup skill does), then run {check_command}"
+            f" {DIRECTION} as {DIRECTION_GUIDE} describes (the shipmill-setup skill does), then run {check_command}"
         )
         return Check("FAIL", "direction", detail)
     try:
@@ -296,7 +297,10 @@ def direction_check(root: Path) -> Check:
         return Check("FAIL", "direction", f"{exc}: fix it, then run {check_command}")
     if problems:
         more = "" if len(problems) == 1 else f" (and {len(problems) - 1} more)"
-        detail = f"{DIRECTION} is not well formed: {problems[0]}{more}; run {check_command} for each line, fix them"
+        detail = (
+            f"{DIRECTION} is not well formed: {problems[0]}{more}; its structure is in {DIRECTION_GUIDE};"
+            f" run {check_command} for each line, fix them"
+        )
         return Check("FAIL", "direction", detail)
     return Check("PASS", "direction", f"{DIRECTION} is well formed")
 

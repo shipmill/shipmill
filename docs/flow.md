@@ -78,6 +78,7 @@ the maintainer ──lists───► milestone "1.5.0" ◄── feature issue
 - **The due date doesn't release anything.** Only the lane's triggers and gates cut a release
 - **Only the milestone lane waits on the plan.** Other triggers (`quiet_minutes`, `schedule`, by hand) release what is merged, so `dev`, `rc`, and fixes never wait for a goal; a stable release cut by them can take a milestone's version before its goal is done
 - **Today a milestone is done when it has no open issues** and at least one closed (`planner.py`), which says nothing about whether its spec is built
+- **Above all three sits the product's direction**, `docs/product.md`: its goals (`G-n`) decide whether new behaviour is built at all, and its non-goals what is declined. [direction.md](direction.md) explains it for the maintainer who writes it
 
 ## Issue states
 
