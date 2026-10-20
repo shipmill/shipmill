@@ -171,9 +171,11 @@ Agents (all reported, never an action by itself):
                   session or the cloud, where no script reads it
   HOST_UNKNOWN    the agent sessions weren't read: claude isn't on PATH (a cloud session)
   GATE_SESSIONS_DEAD  on a Mac, the gate log's last decision is SESSION_DEAD: its last
-                  session ended within 60 s of its launch or on an authentication failure,
-                  with how many did so in a row and the session log's last line. A person
-                  clears it (`claude auth login`, or reading the session's log), so an action
+                  session ended within 60 s of its launch or on an authentication failure
+                  (an interactive one: claude agents lists it failed, or done within 60 s),
+                  with how many did so
+                  in a row and the session log's last line. A person clears it (`claude auth
+                  login`, or reading the session's log or `claude logs <id>`), so an action
                   but never an agent's
 
 Gate setup (the config's [agents] table):
@@ -2273,14 +2275,16 @@ def agent_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
 def dead_rows(label: str, log: str | None, log_path: str | None) -> list[Row]:
     """#500: GATE_SESSIONS_DEAD when the gate log's last decision is SESSION_DEAD, the gate's
     sessions ending right after they start (a run of them in a row when it says so). The fix is
-    the one the gate wrote last on the line when it is `claude auth login` or a `tail` of the
-    session's log, else a tail of the gate's own log"""
+    the one the gate wrote last on the line when it is `claude auth login`, a `tail` of the
+    session's log, or an interactive session's `claude logs <id>`, else a tail of the gate's
+    own log"""
     decisions = [line for line in (log or "").splitlines() if GATE_DECISION.match(line)]
     if not decisions or not decisions[-1].startswith(SESSION_DEAD):
         return []
     line = decisions[-1]
     named = line.rpartition("; fix: ")[2]  # the gate writes its fix last, after the session log's line
-    if named == AUTH_FIX or re.fullmatch(r"tail -n 20 \S+\.log", named):
+    # claude logs <id>: an interactive session's, which leaves no log of the gate's
+    if named == AUTH_FIX or re.fullmatch(r"tail -n 20 \S+\.log|claude logs [\w-]+", named):
         fix = named
     elif log_path is not None:
         fix = f"tail -n 50 {shlex.quote(log_path)}"

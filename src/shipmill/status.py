@@ -771,7 +771,8 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
         found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", shown, fix))
     elif last.startswith("SESSION_DEAD"):  # #500: the gate's sessions end right after they start
         named = last.rpartition("; fix: ")[2]  # the gate writes its fix last, after the log's line
-        fix = named if named == AUTH_FIX or re.fullmatch(r"tail -n 20 \S+\.log", named) else _log_fix(job, repo)
+        gates = named == AUTH_FIX or re.fullmatch(r"tail -n 20 \S+\.log|claude logs [\w-]+", named)
+        fix = named if gates else _log_fix(job, repo)  # claude logs: an interactive session leaves no log
         found.append(JobProblem(Verdict.STUCK, f"the gate: {last}", "sessions end dead", fix))
     elif last.startswith("HELD"):  # the HOLD row brings the verdict, its own line, and the fix
         held = [item(repo, int(n), False) for n in re.findall(r"#(\d+)", last.partition(": no session")[0])]

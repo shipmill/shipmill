@@ -140,7 +140,7 @@ class Process:
 
 @dataclass(frozen=True, slots=True)
 class Deaths:
-    """A run of headless sessions in a row that ended dead (#500): how many, and the launch of
+    """A run of sessions in a row that ended dead (#500): how many, and the launch of
     the first"""
 
     count: int
@@ -648,27 +648,36 @@ def still_working(last: Launch | None, state: Path, started: StartTime) -> Decis
 
 @dataclass(frozen=True, slots=True)
 class Dead:
-    """A headless session that ended dead (#500): its log's last write came within DEAD_WITHIN
-    of its launch, or its log holds an authentication failure. It doesn't count toward
-    retry_hours. last_line is the log's last line, cut short, the only text of it ever shown"""
+    """A session that ended dead (#500); it doesn't count toward retry_hours. A headless one:
+    its log's last write came within DEAD_WITHIN of its launch, or its log holds an
+    authentication failure; last_line is the log's last line, cut short, the only text of it
+    ever shown. An interactive one leaves no log, so state is how `claude agents` lists it
+    (listed_dead), log is None and last_line "", and seconds is None when it can't tell"""
 
     session: str
-    log: Path
-    seconds: int  # from the launch to the log's last write
+    log: Path | None  # None: an interactive session
+    seconds: int | None  # from the launch to the log's last write, or to the tick that saw it done
     auth: bool
     last_line: str  # "" for an empty log
     deaths: Deaths  # this session and the dead ones right before it
+    state: str | None = None  # an interactive session's state in `claude agents`: failed | done
 
     @property
     def fix(self) -> str:
-        return AUTH_FIX if self.auth else f"tail -n 20 {self.log}"
+        if self.auth:
+            return AUTH_FIX
+        return f"claude logs {self.session}" if self.log is None else f"tail -n 20 {self.log}"
 
     def summary(self) -> str:
-        why = ", its log shows an authentication failure" if self.auth else ""
         run = f", {self.deaths.count} in a row since {self.deaths.since.isoformat(timespec='minutes')}"
+        streak = run if self.deaths.count > 1 else ""
+        if self.state is not None:
+            within = "" if self.seconds is None else f", within {self.seconds} s of its launch"
+            return f"session {self.session} ended {self.state} in claude agents{within}{streak}"
+        why = ", its log shows an authentication failure" if self.auth else ""
         said = f"its log's last line: {self.last_line!r}" if self.last_line else "its log is empty"
         lead = f"session {self.session} ended {self.seconds} s after its launch{why}"
-        return f"{lead}{run if self.deaths.count > 1 else ''}; {said}"
+        return f"{lead}{streak}; {said}"
 
     def line(self) -> str:
         return f"{self.summary()}; fix: {self.fix}"
@@ -676,12 +685,13 @@ class Dead:
     def record(self) -> dict[str, object]:
         return {
             "session": self.session,
-            "log": str(self.log),
+            "log": None if self.log is None else str(self.log),
             "seconds": self.seconds,
             "auth": self.auth,
             "last_line": self.last_line,
             "count": self.deaths.count,
             "since": self.deaths.since.isoformat(),
+            "state": self.state,
         }
 
 
@@ -713,7 +723,7 @@ def ended_dead(last: Launch | None, state: Path) -> Dead | None:
     dead: its log holds an authentication failure, or it ended within DEAD_WITHIN of its launch
     with no result in its log, so a healthy session that finishes fast still counts. Its end is
     its log's modification time, the log's last write; a launch without a log reads as one that
-    ran. An interactive launch has no log and never reads dead"""
+    ran. An interactive launch has no log: listed_dead reads it"""
     if last is None or last.process is None:
         return None
     log = session_log(state, last.session)
@@ -725,9 +735,31 @@ def ended_dead(last: Launch | None, state: Path) -> Dead | None:
     seconds = max(0, int((written - last.at).total_seconds()))
     if not auth and (seconds > DEAD_WITHIN.total_seconds() or not no_result(tail)):
         return None
+    return Dead(last.session, log, seconds, auth, last_line(tail), counted(last))
+
+
+def counted(last: Launch) -> Deaths:
+    """The run of dead sessions the last launch ends: one, or one more than before it"""
     before = last.deaths
-    deaths = Deaths(1, last.at) if before is None else Deaths(before.count + 1, before.since)
-    return Dead(last.session, log, seconds, auth, last_line(tail), deaths)
+    return Deaths(1, last.at) if before is None else Deaths(before.count + 1, before.since)
+
+
+def listed_dead(last: Launch | None, sessions: Sequence[Session], now: dt.datetime) -> Dead | None:
+    """#500: the last interactive launch, when `claude agents` lists it finished and it ended
+    dead: its state is failed, or done by a tick within DEAD_WITHIN of its launch. Claude Code
+    shows no time a session became done, so a later tick can't tell a quick death from a long
+    run, and reads it as one that ran; so does a session `claude agents` no longer lists"""
+    if last is None or last.process is not None:
+        return None
+    found = next((s for s in sessions if s.id == last.session), None)
+    if found is None or not found.finished:
+        return None
+    seconds = max(0, int((now - last.at).total_seconds()))
+    if found.state == "failed":
+        return Dead(last.session, None, None, False, "", counted(last), found.state)
+    if seconds > DEAD_WITHIN.total_seconds():
+        return None
+    return Dead(last.session, None, seconds, False, "", counted(last), found.state)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1248,7 +1280,9 @@ def gate(
     it, asks nothing. A LAUNCH, in either mode and dry run or not, asks it right after the
     decision (preflight): a failure is CLAUDE_AUTH, with one notification per episode. A last
     headless launch whose process is gone and that ended dead (ended_dead) doesn't count toward
-    retry_hours, so its findings launch again; the decision names it, and a launch after it
+    retry_hours, so its findings launch again, and so does a last interactive launch that
+    `claude agents` lists failed, or done within DEAD_WITHIN of it (listed_dead); the decision
+    names it, and a launch after it
     reads SESSION_DEAD and records the run of dead sessions in gate.json's dead. After
     DEAD_STREAK dead sessions in a row, the same findings wait for retry_hours again: the tick
     reads SESSION_DEAD with the run, starts nothing, and names when they are retried"""
@@ -1271,7 +1305,8 @@ def gate(
     working = still_working(last, state, started)
     if working is not None:
         return working, None, waiting, pruned
-    dead = ended_dead(last, state)  # a dead session was no attempt: its findings aren't handled (#500)
+    # a dead session was no attempt: its findings aren't handled (#500)
+    dead = ended_dead(last, state) or listed_dead(last, sessions, now)
     detached = refresh(git, detach=True) if refresh_checkout and not dry_run else None
     agents = config()
     if app_key_named and agents.app_id is None:  # read after the refresh, so a stale checkout can't stall it
@@ -1329,14 +1364,14 @@ def gate(
     for session in decision.stop:
         claude.stop(session)
     name = f"{session_name(repo)} {now:%Y-%m-%d %H:%M}"
+    deaths = None if dead is None else dead.deaths
     if not headless:
         launched = claude.launch(git.root, name, text, env)
-        save_launch(record, Launch(fingerprint(decision.work), launched, now))
+        save_launch(record, Launch(fingerprint(decision.work), launched, now, None, deaths))
         return decision, launched, waiting, pruned
     session_id = new_session()
     log = session_log(state, str(session_id))
     pid = claude.start(git.root, name, text, session_id, log, env)
-    deaths = None if dead is None else dead.deaths
     save_launch(record, Launch(fingerprint(decision.work), str(session_id), now, Process(pid, started(pid)), deaths))
     return replace(decision, follow=f"tail -f {log}"), str(session_id), waiting, pruned
 
