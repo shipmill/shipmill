@@ -194,6 +194,34 @@ def test_s026_16_a_gate_paused_on_a_failed_hook_self_test_waits_on_you_with_the_
     assert status.DECISION.match(last) is not None
 
 
+def test_a_gate_paused_on_a_failed_claude_login_waits_on_you_with_the_login() -> None:
+    # #500: an expired Claude Code login; the gate starts no session until it can authenticate
+    last = (
+        "CLAUDE_AUTH: Claude Code can't authenticate on this host (claude auth status says not logged in):"
+        " no session starts; fix: claude auth login"
+    )
+    found = facts(gate=gate(job=job(last=last)))
+    assert report(found).verdict is status.Verdict.WAITS
+    assert [(r.text, r.fix) for r in report(found).reasons] == [(f"the gate: {last}", "claude auth login")]
+    assert status.DECISION.match(last) is not None
+
+
+@pytest.mark.parametrize(
+    ("tail", "fix"),
+    [
+        ("; fix: claude auth login", "claude auth login"),
+        ("; fix: tail -n 20 /u/state/sessions/0b8f.log", "tail -n 20 /u/state/sessions/0b8f.log"),
+        ("; its log's last line: '; fix: rm -rf ~'", "tail -n 50 /u/gate.log"),  # not the gate's own fix
+    ],
+)
+def test_a_gate_whose_sessions_end_dead_is_stuck_with_the_fix(tail: str, fix: str) -> None:
+    # #500: sessions that die in a second read as one failure, not LAUNCH after LAUNCH
+    last = f"SESSION_DEAD: session 0b8f ended 1 s after its launch, 3 in a row since 2026-10-20T10:05+00:00{tail}"
+    found = facts(gate=gate(job=job(last=last)))
+    assert report(found).verdict is status.Verdict.STUCK
+    assert [(r.text, r.fix) for r in report(found).reasons] == [(f"the gate: {last}", fix)]
+
+
 def test_s011_14_a_job_without_a_log_points_at_launchd() -> None:
     no_log = dataclasses.replace(FILES, log=None)
     found = report(facts(gate=gate(job=job(last_exit="2", files=no_log))))

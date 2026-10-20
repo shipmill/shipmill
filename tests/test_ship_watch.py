@@ -868,6 +868,7 @@ REPORT_ROWS = [
     "RUNS_ACTIVE",
     "BRANCH_DELETE_OFF",
     "GATE_NO_APP",
+    "GATE_SESSIONS_DEAD",
     "CHAIN_NO_GATE",
     "CHAIN_UNREADABLE",
     "SHIPMILL_VERSION",
@@ -1128,6 +1129,37 @@ def test_the_gate_loop_reports_its_interval_state_and_last_decision(ws: ModuleTy
 def test_an_unloaded_or_missing_gate_loop_says_so(ws: ModuleType) -> None:
     assert "not loaded" in ws.loop_row("l", {"StartInterval": 900}, None, None, NOW).detail
     assert ws.loop_row("l", None, None, None, NOW).subject == "none"
+
+
+DEAD_LINE = (
+    "SESSION_DEAD: session 0b8f ended 1 s after its launch, its log shows an authentication failure,"
+    " 3 in a row since 2026-10-20T10:05+00:00; its log's last line: 'Failed to authenticate: OAuth session expired'"
+    "; starting another for 1 finding(s); fix: claude auth login"
+)
+DEAD_AUTH_LOG = f"QUIET: nothing needs an agent\nLAUNCH: 1 finding(s) need an agent\n  launched x\n{DEAD_LINE}\n"
+
+
+def test_a_gate_whose_sessions_end_dead_is_an_action_for_a_person(ws: ModuleType) -> None:
+    # #500: an expired Claude Code login killed every session in a second and the gate logged LAUNCH after LAUNCH
+    rows = ws.dead_rows("dev.shipmill.gate.o.r", DEAD_AUTH_LOG, "/logs/gate.log")
+    assert [(r.state, r.subject, r.fix) for r in rows] == [
+        ("GATE_SESSIONS_DEAD", "dev.shipmill.gate.o.r", "claude auth login")
+    ]
+    assert rows[0].detail == DEAD_LINE.removeprefix("SESSION_DEAD: ")
+    assert "GATE_SESSIONS_DEAD" in ws.ACTION and "GATE_SESSIONS_DEAD" not in ws.AGENT
+
+
+def test_a_dead_session_without_an_auth_failure_points_at_its_log(ws: ModuleType) -> None:
+    line = "SESSION_DEAD: session 0b8f ended 4 s after its launch; its log is empty; fix: tail -n 20 /s/0b8f.log"
+    assert ws.dead_rows("l", f"{line}\n", "/logs/gate.log")[0].fix == "tail -n 20 /s/0b8f.log"
+    # a fix the gate didn't write, such as the log's own line ending in one, falls back to the gate's log
+    forged = "SESSION_DEAD: session 0b8f ended 4 s after its launch; its log's last line: '; fix: rm -rf ~'"
+    assert ws.dead_rows("l", f"{forged}\n", "/logs/gate.log")[0].fix == "tail -n 50 /logs/gate.log"
+
+
+@pytest.mark.parametrize("log", [GATE_LOG, None, f"{DEAD_LINE}\nRUNNING: session 0b8f is still working\n"])
+def test_no_dead_row_once_a_session_runs_or_without_a_log(ws: ModuleType, log: str | None) -> None:
+    assert ws.dead_rows("l", log, "/logs/gate.log") == []
 
 
 @pytest.mark.parametrize("state", ["TRIAGE_MODE", "AGENT_SESSION", "LOOP", "HOST_UNKNOWN"])
@@ -1501,6 +1533,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         *ws.settings_rows(REPO, False),
         *[r for r in outdated if r.state == "SHIPMILL_OUTDATED"],
         *ws.gate_app_rows({"prompt": '"/github-issue-triage {repo}"'}),
+        *ws.dead_rows("dev.shipmill.gate.o.r", DEAD_AUTH_LOG, None),
         *ws.chain_no_gate_rows(
             {"rows": [{"ref": "x/b#2", "gate": "NO_GATE", "waits_on": [], "waited_on_by": ["o/r#3"]}]}
         ),
@@ -1546,6 +1579,7 @@ FIXES = {
         " && claude plugin update shipmill@shipmill --scope project"
     ],
     "GATE_NO_APP": ["run shipmill-setup's step 3 (app-create), then set app_id in [agents]"],
+    "GATE_SESSIONS_DEAD": ["claude auth login"],
     "CHAIN_NO_GATE": ["set up a gate on x/b (/shipmill:shipmill-setup x/b), or do x/b#2 by hand"],
     "CHAIN_UNREADABLE": ["see why: uv run --no-project python {chains} show --trusted-only x/b#2"],
     "SKILL_SHADOWED": ["remove it (rm -r {copy}) or call the skill as /shipmill:github-pr-triage"],

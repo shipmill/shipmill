@@ -38,6 +38,8 @@ KEYS = {
     "loaded",
     "detached",
     "hooks",
+    "auth",  # #500's Claude Code login preflight
+    "dead",  # #500's dead session
 }
 
 Tick = tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]

@@ -22,6 +22,7 @@ from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
 from shipmill.agents import AgentsConfig, Mode
 from shipmill.app import Identity, default_key
+from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.config import CONFIG_PATH, config_path, read
 from shipmill.errors import ReleaseError
 from shipmill.gate import StateRunner, skills_dir
@@ -96,6 +97,7 @@ PLACED = {
     "TRIAGE_MODE",
     "SHIPMILL_VERSION",
     "GATE_NO_APP",  # D-19's row; the github app line says the same
+    "GATE_SESSIONS_DEAD",  # #500: the gate line says it, from the same SESSION_DEAD decision
     "HOST_UNKNOWN",  # the sessions line says it
     "UPGRADE_PENDING",  # spec 014: the upgrade lines say it, each with its issue (S-014-15)
     MILESTONE_WAITING,  # spec 022: the milestone lines say both
@@ -762,6 +764,13 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
     elif last.startswith("HOOKS_FAILED"):  # spec 026: no headless session starts until the hooks' self-test passes
         fix = last.partition("until the self-test passes: ")[2] or _log_fix(job, repo)
         found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", "paused: the hooks' self-test failed", fix))
+    elif last.startswith("CLAUDE_AUTH"):  # #500: no session starts until Claude Code can authenticate
+        shown = "paused: Claude Code can't authenticate"
+        found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", shown, AUTH_FIX))
+    elif last.startswith("SESSION_DEAD"):  # #500: the gate's sessions end right after they start
+        named = last.rpartition("; fix: ")[2]  # the gate writes its fix last, after the log's line
+        fix = named if named == AUTH_FIX or re.fullmatch(r"tail -n 20 \S+\.log", named) else _log_fix(job, repo)
+        found.append(JobProblem(Verdict.STUCK, f"the gate: {last}", "sessions end dead", fix))
     elif last.startswith("HELD"):  # the HOLD row brings the verdict, its own line, and the fix
         held = [item(repo, int(n), False) for n in re.findall(r"#(\d+)", last.partition(": no session")[0])]
         found.append(JobProblem(None, "", f"held by {', '.join(held) or last}", None))

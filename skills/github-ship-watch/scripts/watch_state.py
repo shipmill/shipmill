@@ -170,6 +170,11 @@ Agents (all reported, never an action by itself):
                   decision; "none" without one. A /loop or a /schedule routine lives in a
                   session or the cloud, where no script reads it
   HOST_UNKNOWN    the agent sessions weren't read: claude isn't on PATH (a cloud session)
+  GATE_SESSIONS_DEAD  on a Mac, the gate log's last decision is SESSION_DEAD: its last
+                  session ended within 60 s of its launch or on an authentication failure,
+                  with how many did so in a row and the session log's last line. A person
+                  clears it (`claude auth login`, or reading the session's log), so an action
+                  but never an agent's
 
 Gate setup (the config's [agents] table):
   GATE_NO_APP     an [agents] prompt with no app_id: no GitHub App is connected, so the
@@ -232,7 +237,7 @@ after its row, unless the row's detail already ends with it.
 Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when any
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
 ISSUES, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
-NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, SKILL_SHADOWED,
+NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, GATE_SESSIONS_DEAD, SKILL_SHADOWED,
 UPGRADE_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, or MILESTONE_OVERTAKEN row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
 milestones`; a `shipmill plan` failing with its own `shipmill: ` error is the BOT_PLAN_FAILED
@@ -321,8 +326,10 @@ USER_SKILLS = (Path(".claude/skills"), Path(".agents/skills"))
 PLUGIN_CACHE = Path(".claude/plugins/cache") / PLUGIN.partition("@")[2]  # the plugin's own copies, by version
 GATE_CHECKOUT = Path("tmp/shipmill-gate")  # where shipmill-setup puts the gate's checkout
 # the gate log's decision lines: QUIET, LAUNCH, RUNNING, WAITING, UNCHANGED, HELD,
-# PLUGIN_STALE, or an error
+# PLUGIN_STALE, HOOKS_FAILED, CLAUDE_AUTH, SESSION_DEAD, or an error
 GATE_DECISION = re.compile(r"^(?:[A-Z][A-Z_]*|error): ")
+SESSION_DEAD = "SESSION_DEAD: "  # the gate's last session ended dead and it starts another (#500)
+AUTH_FIX = "claude auth login"  # shipmill's claude_auth.FIX
 VERSION_TAG = re.compile(r"^v\d+\.\d+")  # skips moving major tags such as v0
 ACTION = {
     "BOT_FAILED",
@@ -341,6 +348,7 @@ ACTION = {
     "BRANCH_DELETE_OFF",
     "SHIPMILL_OUTDATED",
     "GATE_NO_APP",
+    "GATE_SESSIONS_DEAD",
     "SKILL_SHADOWED",
     "UPGRADE_PENDING",
     "CHAIN_NO_GATE",
@@ -2258,7 +2266,27 @@ def agent_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
     printed = proc.stdout if proc.returncode == 0 else None
     log_path = plist.get("StandardOutPath")
     log = Path(log_path).read_text(errors="replace") if isinstance(log_path, str) and Path(log_path).is_file() else None
-    return [*rows, loop_row(label, plist, printed, log, now)]
+    dead = dead_rows(label, log, log_path if isinstance(log_path, str) else None)
+    return [*rows, loop_row(label, plist, printed, log, now), *dead]
+
+
+def dead_rows(label: str, log: str | None, log_path: str | None) -> list[Row]:
+    """#500: GATE_SESSIONS_DEAD when the gate log's last decision is SESSION_DEAD, the gate's
+    sessions ending right after they start (a run of them in a row when it says so). The fix is
+    the one the gate wrote last on the line when it is `claude auth login` or a `tail` of the
+    session's log, else a tail of the gate's own log"""
+    decisions = [line for line in (log or "").splitlines() if GATE_DECISION.match(line)]
+    if not decisions or not decisions[-1].startswith(SESSION_DEAD):
+        return []
+    line = decisions[-1]
+    named = line.rpartition("; fix: ")[2]  # the gate writes its fix last, after the session log's line
+    if named == AUTH_FIX or re.fullmatch(r"tail -n 20 \S+\.log", named):
+        fix = named
+    elif log_path is not None:
+        fix = f"tail -n 50 {shlex.quote(log_path)}"
+    else:
+        fix = f"launchctl print gui/{os.getuid()}/{label}"
+    return [Row("GATE_SESSIONS_DEAD", label, line[len(SESSION_DEAD) :], fix)]
 
 
 def plugin_fix(scope: str, where: str | None, keyed: list[tuple[str, Path]]) -> str:
