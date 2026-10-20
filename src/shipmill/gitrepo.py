@@ -79,6 +79,12 @@ class Git:
     def commit_time(self, rev: str = "HEAD") -> dt.datetime:
         return dt.datetime.fromisoformat(self.run("show", "-s", "--format=%cI", rev).strip())
 
+    def oldest_commit_time(self, since: str | None, rev: str) -> dt.datetime | None:
+        """The earliest committer time of the commits rev holds and since doesn't (all of
+        rev's history without since); None when there are none"""
+        out = self.run("log", "--format=%cI", rev if since is None else f"{since}..{rev}")
+        return min((dt.datetime.fromisoformat(line) for line in out.split()), default=None)
+
     def changed_paths(self, since: str, rev: str = "HEAD") -> list[str]:
         return [p for p in self.run("diff", "--name-only", f"{since}..{rev}").splitlines() if p]
 

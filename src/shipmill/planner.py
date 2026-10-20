@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from shipmill import fragments, milestones
+from shipmill import fragments, milestones, requesters
 from shipmill.autonomy import Autonomy, Hold, Stage
 from shipmill.changelog import Changelog, Entry
 from shipmill.errors import ReleaseError
@@ -429,6 +429,16 @@ class Planner:
             return Autonomy.PROPOSE, cause if self.hold().on else BREAKING
         return level, cause
 
+    def _confirmations(self, candidate: _Candidate) -> str:
+        """How many of the issues the promoted rc fixed have a confirmed requester, read only
+        once the lane releases, so the count never changes whether it is due (S-021-8). It is
+        reported, never a gate: a count GitHub can't give is named in the reason instead"""
+        last = self.last_stable()
+        try:
+            return str(requesters.count(self.git, self.github, last.commit if last else None, candidate.base))
+        except ReleaseError as error:
+            return f"requesters not counted: {error}"
+
     # -- the decision --------------------------------------------------------------------------
 
     def plan(
@@ -543,10 +553,13 @@ class Planner:
             # its pre-releases (spec 029); only acting autonomy gets here with a proposal
             waiting = tuple(p for p in proposals if p.lane is Lane.STABLE and p.cause == BREAKING)
             proposed = [f"{p.lane}: {p.version} is due, proposed instead of released: {p.cause}" for p in waiting]
+            why = candidate.why
+            if current is Lane.STABLE and candidate.source:
+                why = f"{why}; {self._confirmations(candidate)}"
             return Decision(
                 mode,
                 "release",
-                "; ".join([f"{current} {candidate.version}: {candidate.why}", due, *proposed, *notes]),
+                "; ".join([f"{current} {candidate.version}: {why}", due, *proposed, *notes]),
                 current,
                 candidate.version,
                 candidate.base,
