@@ -39,6 +39,7 @@ directory, grouped by the skill it exercises:
       cases.toml                       the manifest
       scaffold.sh                      materialises a case's fixture
       bin/gh                           the offline gh stub
+      bin/shipmill, bin/uvx            send `shipmill gh` to the stub, else the real program
       github-issue-triage/feature-maintainer-filed/
         prompt.md                      the task, as a gate session would get it
         case.yaml                      schema_version "1.1", scaffold_script: ../../scaffold.sh
@@ -227,7 +228,7 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 
 ### Where it lives
 
-- `evals/`: the cases, `cases.toml`, `scaffold.sh`, `bin/gh`
+- `evals/`: the cases, `cases.toml`, `scaffold.sh`, `bin/gh`, and its `bin/shipmill` and `bin/uvx` shims
 - `src/shipmill/evals.py` and `src/shipmill/cli.py`: `shipmill evals check` and
   `shipmill evals compare`
 - `.github/workflows/evals.yml`: the runs; `.github/workflows/ci.yml`: `shipmill evals check`
