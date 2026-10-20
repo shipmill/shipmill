@@ -290,7 +290,7 @@ that exists.
 - D-33: no rebase merge, which `rebase-merge` enforces
 - D-34: a repo with `[agents]` keeps a direction and an optional rubric, which the PostToolUse hook checks
 - D-35: the gate starts no session when a session would load stale skills, the model for the self-test pause
-- D-40 (superseding D-36): delivery rules that guard irreversible writes are enforced by plugin hooks in repos with `[agents]`; it settles the inline `GH_TOKEN=$T gh` refusal, the switches, the headless pause, and that a hook which can't start its script exits 1 and lets the command run
+- D-42 (superseding D-40, which superseded D-36): delivery rules that guard irreversible writes are enforced by plugin hooks in repos with `[agents]`, and the `app-writes` rule applies only where the App is available, a gate session or a host with the App's key (spec 033); it settles the inline `GH_TOKEN=$T gh` refusal, the switches, the headless pause, and that a hook which can't start its script exits 1 and lets the command run
 
 ## Issues
 

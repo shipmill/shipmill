@@ -335,6 +335,7 @@ entry that supersedes it, never by editing an old one.
 - Applies to: hooks/hooks.json, hooks/delivery.py, src/shipmill/policy.py, src/shipmill/doctor.py, src/shipmill/gate.py, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md, skills/shipmill-setup/SKILL.md, [hooks], [agents] app_id, shipmill gh
 - Enforced by: tests/test_delivery_hooks.py and the doctor and gate tests (with the implementing PR)
 - Supersedes: D-36
+- Superseded by: D-42
 
 ## D-41: An environment hears of the fixes since the release it ran before
 
@@ -343,3 +344,12 @@ entry that supersedes it, never by editing an old one.
 - Why: Read literally, S-021-4 would tell every closed issue the project ever fixed on the first deployment to a new environment, flooding old threads; the maintainer (@romamo, on #434) chose the range, whose cost is that fixes released before an environment's first deployment are never told for it. An environment named like a notice stage would read as told by the release notices, so the name is refused
 - Applies to: skills/github-pr-triage/scripts/shipped.py, skills/github-ship-watch/scripts/watch_state.py, docs/specs/021-requester-ring.md
 - Enforced by: tests/test_shipped.py and tests/test_ship_watch.py (S-021-4)
+
+## D-42: The app-writes hook rule applies only where the App is available
+
+- Decided: 2026-10-20, in shipmill/shipmill#495
+- Rule: In a repo whose .github/shipmill.toml has an [agents] section, the shipmill plugin's PreToolUse hook refuses, with exit 2 and the command to run instead: a gh write while [agents] app_id is set and the App is available to the session, unless it runs as shipmill gh (an inline GH_TOKEN=$T gh is refused too, since an empty $T falls back to the maintainer's login; shipmill gh is the way to write), a push to the default branch unless [hooks] default_branch = false, a rebase merge, a force push without --force-with-lease=<ref>:<sha>, and a cp, mv, or rsync of a [hooks] private path out of the repo. The App is available when the hook's own environment has a non-empty SHIPMILL_APP_KEY, which shipmill gate sets on every session it starts, or when the App's key file ~/.config/shipmill/app-<app_id>.pem exists on the host; anywhere else a gh write runs as the person at the keyboard, and the other rules apply as before. Availability is read from the host alone: the variable can only turn the rule on, a command's own NAME=value assignments are never read for it, and nothing in the repo but removing app_id turns it off. The app-writes, rebase-merge, and force-push rules have no switch, and no session can turn a rule off for itself. Only hooks/delivery.py's own refusal exits 2: when the hook can't start the script (uv missing, no Python 3.11 or newer that uv can find or install, the script missing), it exits 1 with one stderr line naming shipmill doctor, and the command runs unchecked. shipmill doctor FAILs on that case, and a headless gate whose hook self-test fails starts no session (specs 026 and 033)
+- Why: A contributor whose Claude Code loads the plugin, from the repo's committed settings or their own install, has no App key: the rule refused every plain gh write and pointed at shipmill gh, which exits 2 without the key, so their Claude couldn't open a pull request (#495). The maintainer (@romamo, on #495) chose to apply the rule only where the App can write. Reading availability from the host, never the repo, keeps a contributor's change from turning the rule off in the maintainer's sessions, and Q-2 still holds in every gate session and in the maintainer's own sessions wherever the key sits at its default path
+- Applies to: hooks/hooks.json, hooks/delivery.py, src/shipmill/policy.py, src/shipmill/doctor.py, src/shipmill/gate.py, src/shipmill/app.py, src/shipmill/cli.py, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md, skills/shipmill-setup/SKILL.md, docs/install.md, [hooks], [agents] app_id, shipmill gh, SHIPMILL_APP_KEY
+- Enforced by: tests/test_delivery_hooks.py and the doctor and gate tests (with the implementing PR); review until spec 033 is built
+- Supersedes: D-40
