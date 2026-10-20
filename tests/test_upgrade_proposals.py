@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from shipmill import UVX
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH
 from shipmill.doctor import CALLER, Check, doctor
@@ -365,7 +366,8 @@ def test_s014_9_pending_upgrades_alone_never_make_doctor_exit_1(repo: Repo, caps
     shown = [c for c in checks if c.name == "upgrade"]
     assert [c.status for c in shown] == ["PASS", "PASS"]
     assert shown[0].detail.startswith(f"changelog-fragments pending (shipmill 0.37.0): {FRAGMENTS.changes}; fix: ")
-    assert shown[0].detail.endswith("shipmill upgrade --apply changelog-fragments")  # bare or the uvx form
+    fixes = (f"{form} upgrade --apply changelog-fragments" for form in ("shipmill", UVX))
+    assert shown[0].detail.endswith(tuple(fixes))  # bare or the uvx form
     number = repo.github.create_issue("t", f"{marker(PLUGIN)}\n", (UPGRADE_LABEL,))
     shown = [c for c in doctor(repo.root, repo.github, repo=REPO) if c.name == "upgrade"]
     assert shown[1].detail.endswith(f"fix: https://github.com/{REPO}/issues/{number}")

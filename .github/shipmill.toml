@@ -35,6 +35,69 @@ file = ".claude-plugin/plugin.json"
 pattern = '"version": "[^"]+"'
 replace = '"version": "{version}"'
 
+# The marketplace serves the release's tag, never main's unreleased commits (spec 031)
+[[version_lines]]
+file = ".claude-plugin/marketplace.json"
+pattern = '"ref": "v[^"]+"'
+replace = '"ref": "v{version}"'
+
+# The skills run the CLI the plugin pins, `uvx shipmill==<plugin.json's version>` (spec 031):
+# one entry per place the prose writes it out, each matching exactly once
+[[version_lines]]
+file = "skills/github-issue-triage/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-issue-triage/references/triage-rubric.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-issue-resolve/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-pr-triage/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-pr-triage/references/landing.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-pr-triage/references/reviewer-brief.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-ship-watch/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= <command>)'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-ship-watch/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= gh )'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/product-intake/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= gh )'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/product-intake/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= product show )'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/shipmill-setup/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
 # shipmill's own GitHub Pages site: each stable release deploys there, and operate checks that
 # its health.json names the deployed release (#53)
 [environments.github-pages]

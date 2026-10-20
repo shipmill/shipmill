@@ -45,8 +45,9 @@ level from the shipmill config (.github/shipmill.toml in the current directory; 
 means the default, propose).
 
 With --plans (spec 028), the goals of the direction come next, read with
-`uvx --from <--tool> shipmill product show --section goals --json` in the current
-directory, and a goal with no open plan issue (an issue labelled goal-plan whose body's
+`uvx shipmill==<version> product show --section goals --json` in the current directory
+(the version in the plugin's .claude-plugin/plugin.json, spec 031; --tool runs `uvx --from
+<tool> shipmill` instead), and a goal with no open plan issue (an issue labelled goal-plan whose body's
 first line is the plan marker <!-- shipmill:plan goal=G-n rev=k -->) reads:
   PLAN_DUE          a trigger holds; the note is the trigger:
                     requested in #N  an open issue labelled goal-plan without the plan
@@ -222,7 +223,7 @@ Runner = Callable[[str, Variables], dict[str, Any]]
 
 # -- goal plans (spec 028)
 PLAN_LABEL = "goal-plan"
-SHIPMILL_SOURCE = "git+https://github.com/shipmill/shipmill@v0"
+WATCH_STATE = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "watch_state.py"
 TRIAGE_STATE = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "triage_state.py"
 PLAN_ITEM = re.compile(r"^<!-- shipmill:plan-item #([1-9][0-9]*) W-[1-9][0-9]* -->$")
 GOAL_ID = re.compile(r"(?<![\w-])G-[1-9][0-9]*(?![\w-])")
@@ -647,11 +648,28 @@ def parse_goals(text: str) -> list[Goal]:
     return goals
 
 
-def uvx_goals(tool: str) -> GoalsReader:
+def shipmill_command(tool: str | None, plugin: Path | None = None) -> list[str]:
+    """How the CLI runs: `uvx shipmill==<version>`, the version in the plugin's own
+    .claude-plugin/plugin.json (spec 031), or `uvx --from <tool> shipmill` with --tool. It is
+    github-ship-watch's watch_state.py's shipmill_cli; a broken plugin.json exits 2 naming it"""
+    spec = importlib.util.spec_from_file_location("shipmill_watch_state", WATCH_STATE)
+    if spec is None or spec.loader is None:
+        fail(f"can't load {WATCH_STATE}")
+    ws = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ws  # its dataclasses look their module up by name
+    spec.loader.exec_module(ws)
+    try:
+        found: list[str] = ws.shipmill_cli(tool, plugin or ws.PLUGIN_JSON)
+    except ws.Refused as refused:
+        fail(str(refused).removeprefix("error: "))
+    return found
+
+
+def uvx_goals(tool: str | None) -> GoalsReader:
     """The default goals reader: the direction of the checkout in the current directory"""
 
     def read() -> list[Goal]:
-        cmd = ["uvx", "--from", tool, "shipmill", "product", "show", "--section", "goals", "--json"]
+        cmd = [*shipmill_command(tool), "product", "show", "--section", "goals", "--json"]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         except FileNotFoundError:
@@ -1164,7 +1182,9 @@ def main() -> int:
     parser.add_argument("--plans", action="store_true", help="also report the goals a plan is due for (spec 028)")
     parser.add_argument("--wip", type=int, help="with --plans: no-work plans wait while N issues are in progress")
     parser.add_argument("--bot-login", help="with --plans: the login shipmill's sessions write as (<slug>[bot])")
-    parser.add_argument("--tool", default=SHIPMILL_SOURCE, help="with --plans: where uvx gets shipmill")
+    parser.add_argument(
+        "--tool", help="with --plans: where uvx gets shipmill (default: shipmill==<the plugin.json version>)"
+    )
     args = parser.parse_args()
     if not args.plans and (args.wip is not None or args.bot_login is not None):
         parser.error("--wip and --bot-login go with --plans")

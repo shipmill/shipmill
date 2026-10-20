@@ -4,8 +4,9 @@ Claude Code keys a project- or local-scope plugin install on a folder, so the ga
 (`tmp/shipmill-gate`) can have installs of its own, apart from the repo's. With [agents]
 plugin_update = true, a tick that is about to start a session checks at most once per 24
 hours whether any install keyed on the checkout, at project or local scope, is behind
-shipmill's latest release and, when one is, refreshes the marketplace once (`claude plugin
-marketplace update shipmill`; a failure is reported and the update still tried) and updates
+shipmill's latest release (the marketplace entry's ref, spec 031) and, when one is, refreshes
+the marketplace once (`claude plugin marketplace update shipmill`; a failure is reported and
+the update still tried) and updates
 it with `claude plugin update --scope <its scope>` run in the checkout. Claude Code
 documents no way to name the project an update acts on, so the check reads the installs
 again afterwards: an install still behind, or an install keyed on another folder that the
@@ -20,6 +21,7 @@ load (loaded()) and starts no session while that install is older than the lates
 import datetime as dt
 import enum
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +35,17 @@ MARKETPLACE = PLUGIN.partition("@")[2]  # the marketplace Claude Code installs t
 # refreshed since the release: `claude plugin update` alone then leaves the install behind (#477)
 REFRESH = ["claude", "plugin", "marketplace", "update", MARKETPLACE]
 SHIPMILL_REPO = "shipmill/shipmill"  # where shipmill releases
+# The latest release is the marketplace's (spec 031): the ref its entry names on the default
+# branch, which the release's stamp moves with plugin.json; never `gh release view`
+MARKETPLACE_FILE = ".claude-plugin/marketplace.json"
+READ_MARKETPLACE = [
+    "gh",
+    "api",
+    "-H",
+    "Accept: application/vnd.github.raw+json",
+    f"repos/{SHIPMILL_REPO}/contents/{MARKETPLACE_FILE}",
+]
+RELEASE_REF = re.compile(r"^v\d+\.\d+\.\d+$")
 CHECKED = "plugin-check.json"  # the last check's time, under the gate's state directory
 EVERY = dt.timedelta(hours=24)
 SCOPES = ("project", "local")  # the scopes Claude Code keys on a folder, in the order they're updated
@@ -78,6 +91,37 @@ class PluginUpdate:
             {"scope": i.scope, "installed": i.version, "updated": i.scope in self.updated} for i in self.installs
         ]
         return {"latest": self.latest, "installs": installs, "error": self.error}
+
+
+def marketplace_release(text: str) -> Version:
+    """The latest release: the ref of the marketplace entry for the plugin, from the text of
+    shipmill/shipmill's .claude-plugin/marketplace.json. An entry whose source isn't a github
+    object with a ref vX.Y.Z is refused, naming the file and the entry (S-031-2)"""
+    where = f"{SHIPMILL_REPO}:{MARKETPLACE_FILE}"
+    name = PLUGIN.partition("@")[0]
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ReleaseError(f"{where} is not JSON: {exc}") from None
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, list):
+        raise ReleaseError(f"{where} has no plugins list")
+    found = [p for p in plugins if isinstance(p, dict) and p.get("name") == name]
+    if len(found) != 1:
+        raise ReleaseError(f"{where} lists the plugin {name!r} {len(found)} times, want exactly 1")
+    source = found[0].get("source")
+    ref = source.get("ref") if isinstance(source, dict) and source.get("source") == "github" else None
+    if not isinstance(ref, str) or not RELEASE_REF.match(ref):
+        raise ReleaseError(
+            f"{where}: the plugins entry {name!r} has source {json.dumps(source)},"
+            ' not {"source": "github", "repo": ..., "ref": "vX.Y.Z"}'
+        )
+    return Version.of_tag(ref)
+
+
+def latest_release(run: Runner, cwd: Path) -> Version:
+    """The latest release, read from the marketplace on shipmill/shipmill's default branch"""
+    return marketplace_release(run(READ_MARKETPLACE, cwd))
 
 
 def load_checked(path: Path) -> dt.datetime | None:
@@ -150,8 +194,7 @@ def check(checkout: Path, run: Runner) -> PluginUpdate:
     own = checkout_installs(before, checkout)
     if not own:
         return PluginUpdate((), None, ())
-    tag = run(["gh", "release", "view", "-R", SHIPMILL_REPO, "--json", "tagName", "-q", ".tagName"], checkout).strip()
-    latest = Version.of_tag(tag)
+    latest = latest_release(run, checkout)
     behind = [i for i in own if Version.parse(i.version) < latest]
     if not behind:
         return PluginUpdate(own, str(latest), ())
@@ -390,8 +433,7 @@ def loaded(checkout: Path, project: Path, run: Runner) -> Loaded:
         found = effective(installs, project)
         if found is None:
             return Loaded(project, None, None)
-        tag = run(["gh", "release", "view", "-R", SHIPMILL_REPO, "--json", "tagName", "-q", ".tagName"], checkout)
-        latest = Version.of_tag(tag.strip())
+        latest = latest_release(run, checkout)
     except ReleaseError as exc:
         return Loaded(project, None, None, error=str(exc))
     return Loaded(project, found, latest, update_command(found, installs) if found.version < latest else None)

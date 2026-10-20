@@ -347,7 +347,9 @@ def test_s017_21_human_is_wanted_wherever_needs_decision_is(ss: ModuleType, tmp_
     ]
 
 
-APP_GH = ["uvx", "--from", "git+https://github.com/shipmill/shipmill@v0", "shipmill", "--repo"]
+# the plugin's pinned CLI (spec 031): the version in .claude-plugin/plugin.json
+PINNED = json.loads((SCRIPT.parents[3] / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+APP_GH = ["uvx", f"shipmill=={PINNED}", "--repo"]
 
 
 def test_290_fix_creates_labels_through_shipmill_gh_with_app_id(ss: ModuleType, tmp_path: Path) -> None:

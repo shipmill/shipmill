@@ -1289,7 +1289,8 @@ def gate(
     needs-decision.json and, without app_id, notifies for them (spec 005); the decision
     carries the mode it read and what it did for each item.
 
-    plugins runs the plugin's commands (`claude plugin ...`, `gh release view`); None, as in
+    plugins runs the plugin's commands (`claude plugin ...`, and `gh api` for the marketplace's
+    latest release, spec 031); None, as in
     tests that don't exercise it, reads and updates no plugin. With [agents] plugin_update =
     true (D-23), a real LAUNCH first checks, at most once per 24 hours (plugin-check.json in
     the state directory), whether any shipmill@shipmill install keyed on the checkout, at

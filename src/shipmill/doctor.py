@@ -68,7 +68,7 @@ HookTester = Callable[[], HookTest]  # the delivery hooks' self-test (spec 026)
 
 def read_plugin_rows(repo: str, root: Path) -> list[PluginRow]:
     """watch_state.py's shipmill_rows for the checkout (D-23): the same installs, latest
-    release (`gh release view`), and fix text as `shipmill status`, read in this process"""
+    release (the marketplace entry's ref, spec 031), and fix text as `shipmill status`, read in this process"""
     script = skills_dir() / "github-ship-watch" / "scripts" / "watch_state.py"
     spec = importlib.util.spec_from_file_location("shipmill_watch_state", script)
     if spec is None or spec.loader is None:

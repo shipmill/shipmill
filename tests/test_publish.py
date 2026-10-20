@@ -117,7 +117,7 @@ def test_s010_4_stable_and_hotfix_dispatch_publish_and_doctor_passes(tmp_path: P
     dispatched = {lane: rule.dispatch for lane, rule in policy.lanes.items()}
     assert dispatched == {Lane.STABLE: ("move-major-tag.yml", "publish.yml"), Lane.HOTFIX: ("publish.yml",)}
     # doctor on a copy of the repo's release files: no origin to ask, no tags to count from
-    for name in (".github", ".claude-plugin", "changelog.d"):
+    for name in (".github", ".claude-plugin", "changelog.d", "skills"):  # skills: their pinned CLI lines
         shutil.copytree(ROOT / name, tmp_path / name)
     # the config has [agents], so doctor reads the direction too (S-024-5)
     (tmp_path / "docs").mkdir()

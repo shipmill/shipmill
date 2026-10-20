@@ -1,6 +1,7 @@
 """Spec 012, Skills, Relayed decisions, and Docs: the skills route every write through
 `shipmill gh`, a relayed answer names who decided, and the setup docs document it"""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -45,9 +46,12 @@ def test_s012_5_each_skill_writes_through_shipmill_gh_in_every_session(skill: st
 
 @pytest.mark.parametrize("skill", [s for s in WRITING_SKILLS if s != "shipmill-setup"])
 def test_s012_5_a_headless_session_gets_a_form_its_allowlist_allows(skill: str) -> None:
-    # the headless gate allows Bash(uvx *) and no bare shipmill, so the rule names the uvx form
+    # the headless gate allows Bash(uvx *) and no bare shipmill, so the rule names the uvx form,
+    # pinned to the plugin's own release (spec 031)
     text = folded("skills", skill, "SKILL.md")
-    assert "`uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill gh ...`" in text
+    version = json.loads(ROOT.joinpath(".claude-plugin", "plugin.json").read_text(encoding="utf-8"))["version"]
+    assert f"`uvx shipmill=={version} gh ...`" in text
+    assert "Bash(uvx *)" in text
 
 
 @pytest.mark.parametrize("name", ["needs-decision.md", "comments.md"])

@@ -13,20 +13,15 @@ passed, and a breaking change waits for the maintainer's hand start.
 Run the tool with:
 
 ```bash
-CR=shipmill
+CR="uvx shipmill==0.57.0"
 ```
 
-when `command -v shipmill` finds it (the user installed it with `uv tool install shipmill`,
-upgraded with `uv tool upgrade shipmill`). When it doesn't, or in a headless gate session,
-whose allowlist has `Bash(uvx *)` and no bare `shipmill`, run it from git:
-
-```bash
-CR="uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill"
-```
-
-Recommend the install to the user: each uvx call resolves `@v0` again, which is slow and
-leaves a build in uv's cache ([install.md](https://github.com/shipmill/shipmill/blob/main/docs/install.md#clean-up-old-builds)
-says how to clean those up).
+the release this plugin pins, from PyPI (spec 031), in every session, a headless gate's
+included, whose allowlist has `Bash(uvx *)`: the commands below are the ones this release
+runs. uv keeps the release in its cache ([install.md](https://github.com/shipmill/shipmill/blob/main/docs/install.md#clean-up-old-builds)
+says how to clean up old ones). For the user's own shell, recommend
+`uv tool install shipmill` (upgraded with `uv tool upgrade shipmill`), which puts a bare
+`shipmill` on PATH.
 
 Work on a branch and finish with a pull request. Never set `mode = "release"` in the
 first change: the bot starts in `dry-run`.
@@ -329,7 +324,7 @@ or the tags are wrong; fix those, not the version.
    enables the plugin, keeping every other key, creates the missing labels, and turns the
    setting on, all on GitHub at once; commit the settings change in a follow-up PR. With
    `[agents] app_id` set it creates the labels as the App, through `shipmill gh` run by
-   uvx (spec 012); the setting stays on the host's `gh`, since the App has no
+   uvx at the version in the plugin's `plugin.json` (spec 012, spec 031); the setting stays on the host's `gh`, since the App has no
    Administration permission. A `shipmill gh` exit 2 stops `--fix`: report it, and never
    create the labels with plain `gh` instead. A
    plugin turned off on purpose

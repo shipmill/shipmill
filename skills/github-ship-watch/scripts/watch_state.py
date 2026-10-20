@@ -28,7 +28,7 @@ Release bot (a repo with .github/shipmill.toml):
                   aren't shipmill's are never reported)
 
 Milestones (spec 022; for a shipmill bot whose config has a lane with milestone = true, from
-`uvx --from <tool> shipmill --repo <repo-dir> milestones --json`, never run without one):
+`uvx shipmill==<version> --repo <repo-dir> milestones --json`, never run without one):
   MILESTONE_WAITING   a goal's milestone with no open issues whose specs aren't built or
                   shipped, with what holds it (reported, never an action: the build work is
                   the factory's)
@@ -187,7 +187,9 @@ Gate setup (the config's [agents] table):
                   row without a prompt or with app_id
 
 shipmill on this host (from `claude plugin list --json` and `claude plugin marketplace list --json`):
-  SHIPMILL_VERSION   the latest shipmill release, the shipmill@shipmill plugin's installs
+  SHIPMILL_VERSION   the latest shipmill release (the ref of the marketplace entry on
+                  shipmill/shipmill's default branch, spec 031; an entry without a github
+                  source and a vX.Y.Z ref exits 2), the shipmill@shipmill plugin's installs
                   that apply to the repo (user scope, and local or project scope in the
                   checkout or the gate's launchd working directory, each taken as the project
                   Claude Code loads it as: a linked worktree's main checkout), the gate's
@@ -245,10 +247,14 @@ NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, GATE_SESSIONS
 UPGRADE_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, or MILESTONE_OVERTAKEN row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
 milestones`; a `shipmill plan` failing with its own `shipmill: ` error is the BOT_PLAN_FAILED
-row instead).
+row instead), and on a missing or malformed .claude-plugin/plugin.json (spec 031).
 Needs git, an authenticated gh, and uvx (for a shipmill bot's plan, worktrees, and milestones; `shipmill
 worktrees` needs claude on PATH too, to see the live sessions). Python 3.10+,
 standard library only.
+
+Every shipmill command runs as `uvx shipmill==<version>`, the version in the plugin's own
+.claude-plugin/plugin.json three folders above scripts/ (spec 031), or as `uvx --from <tool>
+shipmill` with --tool.
 """
 
 from __future__ import annotations
@@ -302,8 +308,20 @@ TRIAGE_ACTION = {
 POLICY = Path(".github/shipmill.toml")
 # a GitHub login, as a WITH_PERSON line's assignees name them: the row shows nothing else (D-16)
 LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$")
-# Where uvx gets shipmill for a skill script's writes as the App, the form the skills use (#286)
-SHIPMILL_SOURCE = "git+https://github.com/shipmill/shipmill@v0"
+# The plugin's own plugin.json, three folders above scripts/: the repo's root in a checkout,
+# the package's folder in the wheel, which force-includes it there (spec 031)
+PLUGIN_JSON = Path(__file__).resolve().parents[3] / ".claude-plugin" / "plugin.json"
+PLUGIN_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")  # X.Y.Z, matched whole (fullmatch)
+# The latest release is the marketplace's: the ref its shipmill entry names on the default branch
+MARKETPLACE_FILE = ".claude-plugin/marketplace.json"
+RELEASE_REF = re.compile(r"^v\d+\.\d+\.\d+$")
+READ_MARKETPLACE = [
+    "gh",
+    "api",
+    "-H",
+    "Accept: application/vnd.github.raw+json",
+    f"repos/shipmill/shipmill/contents/{MARKETPLACE_FILE}",
+]
 # an app_id key anywhere in the config, bare or as agents.app_id: only [agents] has one
 APP_ID_KEY = re.compile(r"^\s*(?:[\"']?agents[\"']?\s*\.\s*)?[\"']?app_id[\"']?\s*=", re.MULTILINE)
 
@@ -482,6 +500,56 @@ class Row:
         if self.heads:
             found["heads"] = {str(number): sha for number, sha in self.heads}
         return found
+
+
+def plugin_version(path: Path = PLUGIN_JSON) -> str:
+    """The version in the plugin's plugin.json, X.Y.Z: the CLI release the plugin pins (spec
+    031, D-43). A missing file, one that isn't JSON, or another version is refused, naming it"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise Refused(f"error: {path} is missing: the plugin's version names the shipmill it runs") from None
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: {path} is not JSON: {exc}") from None
+    version = data.get("version") if isinstance(data, dict) else None
+    if not isinstance(version, str) or PLUGIN_VERSION.fullmatch(version) is None:
+        raise Refused(f"error: {path}: version must be X.Y.Z, got {version!r}")
+    return version
+
+
+def shipmill_cli(tool: str | None = None, path: Path = PLUGIN_JSON) -> list[str]:
+    """How a skill script runs the CLI: `uvx shipmill==<the plugin's version>` from PyPI, the
+    release the skills were written against (spec 031); `uvx --from <tool> shipmill` when a
+    person passes --tool"""
+    if tool is not None:
+        return ["uvx", "--from", tool, "shipmill"]
+    return ["uvx", f"shipmill=={plugin_version(path)}"]
+
+
+def marketplace_release(text: str) -> str:
+    """The latest release's tag: the ref of the marketplace entry named shipmill, from the text
+    of shipmill/shipmill's .claude-plugin/marketplace.json. An entry whose source isn't a
+    github object with a ref vX.Y.Z is refused, naming the file and the entry (S-031-2)"""
+    where = f"{SHIPMILL_REPO}:{MARKETPLACE_FILE}"
+    name = PLUGIN.partition("@")[0]
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: {where} is not JSON: {exc}") from None
+    plugins = data.get("plugins") if isinstance(data, dict) else None
+    if not isinstance(plugins, list):
+        raise Refused(f"error: {where} has no plugins list")
+    found = [p for p in plugins if isinstance(p, dict) and p.get("name") == name]
+    if len(found) != 1:
+        raise Refused(f"error: {where} lists the plugin {name!r} {len(found)} times, want exactly 1")
+    source = found[0].get("source")
+    ref = source.get("ref") if isinstance(source, dict) and source.get("source") == "github" else None
+    if not isinstance(ref, str) or not RELEASE_REF.match(ref):
+        raise Refused(
+            f"error: {where}: the plugins entry {name!r} has source {json.dumps(source)},"
+            ' not {"source": "github", "repo": ..., "ref": "vX.Y.Z"}'
+        )
+    return ref
 
 
 def rerun_fix(repo: str, url: str) -> str:
@@ -719,18 +787,19 @@ Spawn = Callable[[list[str], Path | None, dict[str, str] | None], subprocess.Com
 
 
 def planned_release(
-    repo: str, repo_dir: Path, policy: Path, branch: str, tool: str, execute: Spawn = spawn
+    repo: str, repo_dir: Path, policy: Path, branch: str, tool: str | None, execute: Spawn = spawn
 ) -> Due | None:
     """What the shipmill planner would release now on the default branch, or None. The plan's
     own failure (its `shipmill: ` error line) raises PlanFailed (#276); a failed worktree add
     or remove, any other failure (uvx unable to fetch the tool, say), or a plan that prints no
     JSON stops the watch as any failed command does"""
+    shipmill = shipmill_cli(tool)  # before the worktree: a broken plugin.json leaves none behind
     work = repo_dir / "tmp" / f"ship-watch-{os.getpid()}"
     add = ["git", "worktree", "add", "-q", "--detach", str(work), f"origin/{branch}"]
     checked(add, execute(add, repo_dir, None))
     try:
         env = {**os.environ, "GITHUB_REPOSITORY": repo}
-        proc = execute(["uvx", "--from", tool, "shipmill", "plan", "--event", "schedule", "--dry-run"], work, env)
+        proc = execute([*shipmill, "plan", "--event", "schedule", "--dry-run"], work, env)
     finally:
         remove = ["git", "worktree", "remove", "--force", str(work)]
         checked(remove, execute(remove, repo_dir, None))
@@ -738,7 +807,7 @@ def planned_release(
         lines = [line.strip() for line in proc.stderr.splitlines() if line.strip()]
         if lines and lines[-1].startswith("shipmill: "):  # the planner's own error, not uvx's
             raise PlanFailed(lines[-1])
-    out = checked(["uvx", "--from", tool], proc)
+    out = checked(shipmill, proc)
     decision = json.loads(out)
     policy_mode = re.search(r'^mode\s*=\s*"(\w[\w-]*)"', (repo_dir / policy).read_text(), re.MULTILINE)
     if decision["action"] != "release" or policy_mode is None or policy_mode.group(1) != "release":
@@ -749,16 +818,16 @@ def planned_release(
     return Due(str(decision["reason"]), lane)
 
 
-def plan_failed_row(failed: PlanFailed, workflow: str, repo_dir: Path, branch: str, tool: str) -> Row:
+def plan_failed_row(failed: PlanFailed, workflow: str, repo_dir: Path, branch: str, tool: str | None) -> Row:
     """The plan's failure as the bot's row: its error line, and the same plan run in the
     checkout, which shows the error once the checkout is at origin's default branch"""
     checkout = shlex.quote(str(repo_dir))
-    plan = f"uvx --from {shlex.quote(tool)} shipmill --repo {checkout} plan --event schedule --dry-run"
+    plan = f"{shlex.join(shipmill_cli(tool))} --repo {checkout} plan --event schedule --dry-run"
     return Row("BOT_PLAN_FAILED", workflow, f"shipmill plan failed: {failed}", f"on an up-to-date {branch}: {plan}")
 
 
 def bot_plan(
-    repo: str, repo_dir: Path, policy: Path, branch: str, tool: str, workflow: str, execute: Spawn = spawn
+    repo: str, repo_dir: Path, policy: Path, branch: str, tool: str | None, workflow: str, execute: Spawn = spawn
 ) -> tuple[Due | None, list[Row]]:
     """The planned release, or the plan's failure as a row read as no release due, so the
     watch goes on to the issues and pull requests (#276)"""
@@ -807,9 +876,9 @@ def stale_fix(main: Path, path: str, branch: str) -> str:
     return f"see the work not landed: {see}; then push it and open a pull request, or remove it: {remove}"
 
 
-def stale_worktrees(repo_dir: Path, tool: str, branch: str) -> list[Row]:
+def stale_worktrees(repo_dir: Path, tool: str | None, branch: str) -> list[Row]:
     """The kept shipmill worktrees of the checkout's repository created over STALE ago"""
-    out = run(["uvx", "--from", tool, "shipmill", "--repo", str(repo_dir), "worktrees", "--json"])
+    out = run([*shipmill_cli(tool), "--repo", str(repo_dir), "worktrees", "--json"])
     return stale_rows(out, project_folder(repo_dir), branch)
 
 
@@ -902,12 +971,12 @@ def milestone_item(item: dict[str, Any]) -> bool:
     return numbered and all(isinstance(item.get(k), str) and item[k] for k in ("next", "fix"))
 
 
-def milestones(repo_dir: Path, policy: Path, tool: str, execute: Callable[[list[str]], str] = run) -> list[Row]:
+def milestones(repo_dir: Path, policy: Path, tool: str | None, execute: Callable[[list[str]], str] = run) -> list[Row]:
     """Spec 022's milestone rows of the checkout's repository, from `shipmill milestones`, run
     only when a lane of its config sets milestone = true; none and nothing run otherwise"""
     if not milestone_lanes((repo_dir / policy).read_text(encoding="utf-8"), policy):
         return []
-    return milestone_rows(execute(["uvx", "--from", tool, "shipmill", "--repo", str(repo_dir), "milestones", "--json"]))
+    return milestone_rows(execute([*shipmill_cli(tool), "--repo", str(repo_dir), "milestones", "--json"]))
 
 
 # -- releases ------------------------------------------------------------------------------
@@ -1269,12 +1338,11 @@ def config(text: str, policy: Path, incident_label: str | None = None) -> Config
 
 
 # -- requires (spec 031): the oldest shipmill the config is written for, checked against the
-# plugin's own version with shipmill's requires.py text, since a script can't import shipmill
+# plugin's own version (plugin_version, above) with shipmill's requires.py text, since a
+# script can't import shipmill
 
-PLUGIN_JSON = Path(__file__).resolve().parents[3] / ".claude-plugin" / "plugin.json"
 REQUIRES_KEY = "requires"
 REQUIRES_BOUND = re.compile(r">=(\d+)\.(\d+)(?:\.(\d+))?")
-PLUGIN_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
 def requires_invalid(value: object) -> str:
@@ -1314,20 +1382,6 @@ def requires_value_310(text: str, policy: Path) -> str | None:
     if found is None or len(lines) > 1:
         raise Refused(f'error: {policy}: can\'t read {REQUIRES_KEY} on Python 3.10: write it as requires = ">=X.Y"')
     return found.group(1) if found.group(1) is not None else found.group(2)
-
-
-def plugin_version(path: Path = PLUGIN_JSON) -> str:
-    """The version in the plugin's .claude-plugin/plugin.json, X.Y.Z"""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise Refused(f"error: {path}: missing; the plugin's version is read from it") from None
-    except json.JSONDecodeError as exc:
-        raise Refused(f"error: {path}: not JSON: {exc}") from None
-    version = data.get("version") if isinstance(data, dict) else None
-    if not isinstance(version, str) or PLUGIN_VERSION.fullmatch(version) is None:
-        raise Refused(f"error: {path}: version must be X.Y.Z, got {version!r}")
-    return version
 
 
 def check_requires(text: str, policy: Path, version: Callable[[], str] = plugin_version) -> None:
@@ -2265,7 +2319,8 @@ def agents_table_310(text: str, policy: Path) -> dict[str, str] | None:
 
 def gh_writer(repo_dir: Path) -> list[str]:
     """The command a skill script's writing gh call starts with (spec 012, #290): with [agents]
-    app_id set in the checkout's config, `shipmill gh` run through uvx as the skills run it, so
+    app_id set in the checkout's config, `shipmill gh` run as `uvx shipmill==<the plugin's
+    version>`, as the skills run it (spec 031), so
     the write posts as the App; else plain gh, the host's login. A config this reader refuses
     raises Refused rather than reading as no App, and so does an app_id key the reader didn't
     find in [agents] (Python 3.10's fallback skips a header it can't parse). Reads keep plain gh.
@@ -2279,7 +2334,7 @@ def gh_writer(repo_dir: Path) -> list[str]:
         if APP_ID_KEY.search(text):
             raise Refused(f"error: {path}: app_id is set but not read from a plain [agents] table; fix the file")
         return ["gh"]
-    return ["uvx", "--from", SHIPMILL_SOURCE, "shipmill", "--repo", str(top), "gh"]
+    return [*shipmill_cli(), "--repo", str(top), "gh"]
 
 
 def session_rows(text: str, repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
@@ -2551,9 +2606,16 @@ def plugin_folders(repo_dir: Path, workdir: Path | None) -> tuple[list[Path], li
     return folders, gates
 
 
+def latest_release(execute: Callable[[list[str]], str] = run) -> str:
+    """shipmill's latest release tag: the ref of the marketplace entry on shipmill/shipmill's
+    default branch (S-031-2), never `gh release view`: an install can only be updated to what
+    the marketplace serves"""
+    return marketplace_release(execute(READ_MARKETPLACE))
+
+
 def shipmill_rows(repo: str, repo_dir: Path) -> list[Row]:
-    """The host's shipmill plugin against shipmill's latest release"""
-    latest = run(["gh", "release", "view", "-R", SHIPMILL_REPO, "--json", "tagName", "-q", ".tagName"]).strip()
+    """The host's shipmill plugin against shipmill's latest release, the marketplace's (S-031-2)"""
+    latest = latest_release()
     plist = gate_plist(repo)
     workdir = plist.get("WorkingDirectory") if plist else None
     folders, gates = plugin_folders(repo_dir, Path(workdir) if isinstance(workdir, str) else None)
@@ -2646,7 +2708,9 @@ def arguments() -> argparse.ArgumentParser:
     parser.add_argument("--repo-dir", default=".", help="local checkout (default: cwd)")
     parser.add_argument("--releases", type=int, default=3, help="newest version tags to check")
     parser.add_argument("--grace", type=int, default=20, help="minutes a run or an upload may take")
-    parser.add_argument("--tool", default="git+https://github.com/shipmill/shipmill@v0", help="where uvx gets shipmill")
+    parser.add_argument(
+        "--tool", help="where uvx gets shipmill (default: shipmill==<the version in the plugin's plugin.json>)"
+    )
     parser.add_argument("--incident-label", help="the label incidents carry (default: the config's)")
     parser.add_argument("--json", action="store_true", help="JSON lines instead of a table")
     parser.add_argument("--bot-login", help="the login shipmill's sessions write as, such as <slug>[bot]")

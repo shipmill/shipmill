@@ -25,7 +25,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tomllib
@@ -35,9 +34,12 @@ from pathlib import Path
 from typing import TextIO
 
 CONFIG = Path(".github") / "shipmill.toml"
-# Runs anywhere the hook does: the hook itself needs uv, and a headless session's allowlist
-# has `Bash(uvx *)` but no bare shipmill
-SHIPMILL = ("uvx", "--from", "git+https://github.com/shipmill/shipmill@v0", "shipmill")
+# The CLI runs as `uvx shipmill==<version>`, the version in the plugin's own plugin.json one
+# folder above hooks/ (spec 031, D-43): the release the plugin was written against, never a
+# bare shipmill from PATH. It runs anywhere the hook does: the hook itself needs uv, and a
+# headless session's allowlist has `Bash(uvx *)`
+PLUGIN_JSON = Path(__file__).resolve().parents[1] / ".claude-plugin" / "plugin.json"
+PLUGIN_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 EVENTS = {"pre": "PreToolUse", "post": "PostToolUse"}
 EDITS = frozenset({"Edit", "Write", "MultiEdit"})
 CUT = 200  # the refused command, as the first line shows it
@@ -65,6 +67,24 @@ class BadInput(ValueError):
 
 class ConfigError(ValueError):
     """The config doesn't parse, or a key the hooks read is malformed"""
+
+
+class PluginError(ValueError):
+    """The plugin's plugin.json is missing, isn't JSON, or holds no X.Y.Z version: exit 2"""
+
+
+def shipmill(path: Path = PLUGIN_JSON) -> tuple[str, ...]:
+    """`uvx shipmill==<version>`, the version in the plugin's plugin.json (spec 031)"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise PluginError(f"{path} is missing: the plugin's version names the shipmill it runs") from None
+    except json.JSONDecodeError as exc:
+        raise PluginError(f"{path} is not JSON: {exc}") from None
+    version = data.get("version") if isinstance(data, dict) else None
+    if not isinstance(version, str) or not PLUGIN_VERSION.match(version):
+        raise PluginError(f"{path}: version is {version!r}, not X.Y.Z")
+    return ("uvx", f"shipmill=={version}")
 
 
 # --- The hook input --------------------------------------------------------------------------
@@ -480,6 +500,12 @@ def _shipmill_gh(words: Sequence[str], at: int) -> int | None:
     return i + 1 if i < len(words) and words[i] == "gh" else None
 
 
+# The shipmill package as uvx runs it: bare, with extras, or with any version specifier, such as
+# shipmill==0.57.0, shipmill@latest, shipmill>=0.57, or shipmill[x]==0.57.0; each runs shipmill
+# from PyPI, so its gh is shipmill gh, which the rebase-merge rule still checks
+SHIPMILL_SPEC = re.compile(r"^shipmill(?:\[[^\]]*\])?(?:\s*[=<>!~@].*)?$")
+
+
 def gh_call(cmd: Simple) -> GhCall | None:
     program = cmd.program
     if program == "gh":
@@ -487,9 +513,11 @@ def gh_call(cmd: Simple) -> GhCall | None:
     if program == "shipmill":
         start = _shipmill_gh(cmd.words, 0)
         return None if start is None else GhCall(True, start)
-    if program in ("uvx", "uv"):  # uvx --from <spec> shipmill gh ...
+    if program in ("uvx", "uv"):  # uvx shipmill==<version> gh ..., uvx --from <spec> shipmill gh ...
         for at in range(1, len(cmd.words)):
-            start = _shipmill_gh(cmd.words, at) if os.path.basename(cmd.words[at]) == "shipmill" else None
+            word = cmd.words[at]
+            pinned = SHIPMILL_SPEC.match(word) is not None or os.path.basename(word) == "shipmill"
+            start = _shipmill_gh(cmd.words, at) if pinned else None
             if start is not None:
                 return GhCall(True, start)
     return None
@@ -592,6 +620,7 @@ def is_gh_write(args: Sequence[str]) -> bool:
 class Context:
     runner: Runner  # for the git push rules that read the remote's default branch, and the checks
     configs: Configs
+    plugin: Path = PLUGIN_JSON  # the plugin.json whose version the CLI runs at (spec 031)
 
 
 @dataclass(frozen=True)
@@ -1015,7 +1044,7 @@ def _app_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
     call = gh_call(cmd)
     assert call is not None
     kept = tuple(a for a in cmd.assignments if a.partition("=")[0] not in TOKEN_VARIABLES)
-    return Simple(kept, (*SHIPMILL, "gh", *call.args(cmd)), cmd.cwd)
+    return Simple(kept, (*shipmill(ctx.plugin), "gh", *call.args(cmd)), cmd.cwd)
 
 
 # In order: a refusal names the first rule that refuses, and its Instead line takes every rule's fix
@@ -1145,12 +1174,6 @@ def check_for(path: Path) -> tuple[Path, str] | None:
     return None
 
 
-def shipmill_command() -> tuple[str, ...]:
-    """shipmill from PATH, else through uvx, as the skills run it"""
-    found = shutil.which("shipmill")
-    return (found,) if found is not None else SHIPMILL
-
-
 def post(hook: HookInput, stderr: TextIO, ctx: Context) -> int:
     """After an Edit, Write, or MultiEdit of the direction or a REVIEW.md in a repo with
     [agents]: its check exiting 1 gives exit 2 with the check's output, so the model fixes the
@@ -1168,7 +1191,7 @@ def post(hook: HookInput, stderr: TextIO, ctx: Context) -> int:
     if isinstance(config, Broken):
         stderr.write(f"shipmill hook: {check} check didn't run: {config.message} ({CONFIG})\n")
         return 1
-    command = (*shipmill_command(), check, "check", "--repo", str(root))
+    command = (*shipmill(ctx.plugin), check, "check", "--repo", str(root))
     try:
         result = ctx.runner(command, root)
     except OSError as exc:
@@ -1192,6 +1215,7 @@ def main(
     stderr: TextIO,
     runner: Runner = run,
     read_config: ReadConfig = read_text,
+    plugin: Path = PLUGIN_JSON,
 ) -> int:
     if len(argv) != 1 or argv[0] not in EVENTS:
         stderr.write("usage: delivery.py pre|post, with Claude Code's hook input on stdin (spec 026)\n")
@@ -1200,13 +1224,16 @@ def main(
         hook = parse_input(stdin.read())
         if hook.event != EVENTS[argv[0]]:
             raise BadInput(f"`{argv[0]}` reads a {EVENTS[argv[0]]} input, got {hook.event}")
-        ctx = Context(runner, Configs(read_config))
+        ctx = Context(runner, Configs(read_config), plugin)
         if argv[0] == "post":
             return post(hook, stderr, ctx)
         return pre(hook, stderr, ctx)
     except BadInput as exc:
         stderr.write(f"shipmill hook: {exc}\n")
         return 1
+    except PluginError as exc:  # read only when the CLI runs or a refusal names it (spec 031)
+        stderr.write(f"shipmill hook: {exc}\n")
+        return 2
 
 
 if __name__ == "__main__":

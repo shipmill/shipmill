@@ -33,8 +33,10 @@ APP = '\n[agents]\nprompt = "/t"\napp_id = 5209412\n'
 
 
 def install_copy(folder: Path, hooks_json: str | None = None) -> Path:
-    """A plugin install's folder holding this repo's hooks/, or a hooks.json of its own"""
+    """A plugin install's folder holding this repo's hooks/ and .claude-plugin/ (whose
+    plugin.json names the CLI the hooks run, spec 031), or a hooks.json of its own"""
     shutil.copytree(ROOT / "hooks", folder / "hooks")
+    shutil.copytree(ROOT / ".claude-plugin", folder / ".claude-plugin")
     if hooks_json is not None:
         (folder / "hooks" / "hooks.json").write_text(hooks_json, encoding="utf-8")
     return folder

@@ -15,7 +15,9 @@ from shipmill import UVX, cli_command
 from shipmill.cli import _parser
 
 ROOT = Path(__file__).resolve().parents[1]
-LONG = UVX
+LONG = UVX  # `uvx shipmill==<the running release>`, the form the skills write out (spec 031)
+# the docs' form for a reader without the install, until spec 031's docs issue moves them (S-031-23)
+LEGACY = "uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill"
 
 
 def subcommands() -> set[str]:
@@ -158,13 +160,15 @@ def test_the_string_scan_skips_docstrings_and_reads_f_strings() -> None:
 
 def test_a_doc_that_runs_a_bare_shipmill_gives_the_uvx_form_too() -> None:
     """#236: a bare `shipmill <command>` needs `uv tool install shipmill`; the page or skill that
-    shows one also names the uvx form, or defines $CR, for a reader without the install"""
+    shows one also names the uvx form, or defines $CR, for a reader without the install. A
+    skill names the pinned form (spec 031); a doc may still name the @v0 one"""
     subs = subcommands()
+    skills = ROOT / "skills"
     offenders = {
         str(path.relative_to(ROOT)): hits
         for path in scanned()
         if (hits := bare_commands(text := path.read_text(encoding="utf-8"), subs))
-        and LONG not in " ".join(text.split())
+        and not any(form in " ".join(text.split()) for form in ((LONG,) if skills in path.parents else (LONG, LEGACY)))
     }
     assert offenders == {}
 
@@ -226,7 +230,7 @@ def test_install_md_recommends_the_tool_install_with_the_uvx_fallback() -> None:
     install = (ROOT / "docs" / "install.md").read_text(encoding="utf-8")
     first = install.index("$CR ")
     assert install.index("uv tool install shipmill") < install.index("CR=shipmill\n") < first
-    assert install.index(f'CR="{LONG}"') < first
+    assert install.index(f'CR="{LEGACY}"') < first
     assert "uv tool upgrade shipmill" in install
     assert "Don't `uv tool install`" not in install and "alias shipmill=" not in install
 
@@ -238,11 +242,12 @@ def test_install_md_says_how_to_clean_up_old_builds() -> None:
     assert "~/.claude/plugins/cache/shipmill/shipmill/<version>/" in cleanup and ".orphaned_at" in cleanup
 
 
-def test_setup_defines_both_forms_of_cr() -> None:
+def test_setup_defines_cr_as_the_pinned_cli() -> None:
+    """Spec 031: the pinned form is the one form, in a person's session and a headless one"""
     skill = (ROOT / "skills" / "shipmill-setup" / "SKILL.md").read_text(encoding="utf-8")
     first = skill.index("$CR ")
-    assert skill.index("CR=shipmill\n") < first and skill.index(f'CR="{LONG}"') < first
-    assert "uv tool install shipmill" in skill and "headless" in skill[:first]
+    assert skill.index(f'CR="{LONG}"') < first and "CR=shipmill\n" not in skill
+    assert "uv tool install shipmill" in skill and "headless" in skill[:first] and "Bash(uvx *)" in skill[:first]
 
 
 def test_ship_watch_description_tells_an_agent_how_to_run_the_cli() -> None:
@@ -250,7 +255,7 @@ def test_ship_watch_description_tells_an_agent_how_to_run_the_cli() -> None:
     front = skill.split("---\n", 2)[1]
     (line,) = [x for x in front.splitlines() if x.startswith("description: ")]
     description = line.removeprefix("description: ")
-    assert "Run `shipmill <command>`" in description
-    assert "isn't on PATH" in description and "headless" in description and f"`{LONG} <command>`" in description
+    assert f"Run the CLI as `{LONG} <command>`" in description
+    assert "isn't on PATH" not in description and "headless" in description
     assert ": " not in description, "a colon and a space would break the plain YAML scalar"
     assert len(description) <= 1024, len(description)

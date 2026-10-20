@@ -22,7 +22,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "hooks" / "delivery.py"
 HOOKS_JSON = ROOT / "hooks" / "hooks.json"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "hooks"
-SHIPMILL = ["uvx", "--from", "git+https://github.com/shipmill/shipmill@v0", "shipmill"]
+# the CLI as the hooks run it: pinned to the plugin's own plugin.json (spec 031)
+PINNED = f"shipmill=={json.loads((ROOT / '.claude-plugin' / 'plugin.json').read_text(encoding='utf-8'))['version']}"
+SHIPMILL = ["uvx", PINNED]
 
 APP = '[agents]\nprs = true\napp_id = 5209412\n[hooks]\nprivate = ["owner/**"]\n'
 AGENTS = "[agents]\nprs = true\n"
@@ -413,6 +415,7 @@ def test_s026_3_gh_write_refused_with_app_id(box: Sandbox, command: str) -> None
 def test_s026_3_gh_write_passes_as_shipmill_gh_or_without_app_id(box: Sandbox, command: str) -> None:
     args = shlex.join(gh_args(command))
     allowed(bash(f"shipmill gh {args}", box.app))
+    allowed(bash(f"uvx {PINNED} gh {args}", box.app))  # the form the skills run (spec 031)
     allowed(bash(f"uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill gh {args}", box.app))
     allowed(bash(f"uvx --from ./shipmill shipmill gh {args}", box.app))
     allowed(bash(command, box.agents))
@@ -460,6 +463,18 @@ def test_s026_5_rebase_merge_takes_the_app_fix_too(box: Sandbox) -> None:
     result = hook(fixture("bash-rebase-merge-refused.json", box.app))
     assert refused(result, "rebase-merge", "D-33") == [*SHIPMILL, "gh", "pr", "merge", "412", "--squash"]
     refused(bash("shipmill gh pr merge 412 -r", box.app), "rebase-merge", "D-33")
+    # the pinned form is shipmill gh too (spec 031): its rebase merge is refused, kept pinned
+    pinned = refused(bash(f"uvx {PINNED} gh pr merge 412 -r", box.app), "rebase-merge", "D-33")
+    assert pinned == [*SHIPMILL, "gh", "pr", "merge", "412", "--squash"]
+
+
+@pytest.mark.parametrize("spec", ["shipmill>=0.57", "shipmill[x]==0.57.0", "shipmill~=0.57.0", "shipmill@latest"])
+def test_s031_4_any_shipmill_spec_uvx_runs_is_shipmill_gh_and_its_rebase_merge_is_refused(
+    box: Sandbox, spec: str
+) -> None:
+    """uvx runs shipmill's gh from any requirement on the package, so none skips the rebase-merge rule"""
+    refused(bash(f"uvx '{spec}' gh pr merge 412 -r", box.app), "rebase-merge", "D-33")
+    allowed(bash(f"uvx '{spec}' gh pr comment 7 --body hi", box.app))
 
 
 def test_s026_9_rebase_merge_refusal_reads_as_the_spec_shows(box: Sandbox) -> None:
@@ -1034,7 +1049,7 @@ def stub_on_path(tmp_path: Path, program: str) -> Stub:
 
 @pytest.fixture
 def stub(tmp_path: Path) -> Stub:
-    return stub_on_path(tmp_path, "shipmill")
+    return stub_on_path(tmp_path, "uvx")  # the hooks run `uvx shipmill==<version>` (spec 031)
 
 
 EDIT_FIXTURES = ["post-edit.json", "post-write.json", "post-multiedit.json"]
@@ -1053,7 +1068,7 @@ def test_s026_13_edit_runs_its_check_and_a_pass_is_silent(
     box: Sandbox, stub: Stub, name: str, rel: str, check: str
 ) -> None:
     allowed(stub.run(edit(name, box.agents, rel), 0, out="ok\n"))
-    assert stub.calls() == [[check, "check", "--repo", str(box.agents)]]
+    assert stub.calls() == [[PINNED, check, "check", "--repo", str(box.agents)]]
 
 
 @pytest.mark.parametrize(("rel", "check"), CHECKED)
@@ -1072,27 +1087,34 @@ def test_s026_13_a_check_exiting_2_exits_1(box: Sandbox, stub: Stub, rel: str, c
 
 
 def test_s026_13_a_check_that_cant_start_exits_1(box: Sandbox, tmp_path: Path) -> None:
-    """Neither shipmill nor uvx on PATH: a visible error, not a crash"""
+    """No uvx on PATH: a visible error, not a crash"""
     empty = tmp_path / "empty"
     empty.mkdir()
     result = Stub(empty, tmp_path / "calls.jsonl").run(edit("post-product-check.json", box.agents, "docs/product.md"))
     assert result.returncode == 1
     lines = result.stderr.splitlines()
-    assert len(lines) == 1 and lines[0].startswith("shipmill hook: uvx --from ") and "didn't start" in lines[0]
+    assert len(lines) == 1 and lines[0].startswith(f"shipmill hook: uvx {PINNED} ") and "didn't start" in lines[0]
 
 
-def test_s026_13_without_shipmill_on_path_it_runs_through_uvx(box: Sandbox, tmp_path: Path) -> None:
+def test_s031_4_the_check_runs_the_pinned_cli_even_with_shipmill_on_path(box: Sandbox, tmp_path: Path) -> None:
+    """D-43: never a bare shipmill from PATH; the version is the plugin.json one folder above hooks/"""
     uvx = stub_on_path(tmp_path, "uvx")
+    shipped = uvx.bin / "shipmill"
+    shipped.write_text((uvx.bin / "uvx").read_text(encoding="utf-8"), encoding="utf-8")
+    shipped.chmod(0o755)
     result = uvx.run(edit("post-review-check.json", box.agents, "REVIEW.md"), 1, out="REVIEW.md:3: no rule\n")
     assert (result.returncode, result.stderr) == (2, "REVIEW.md:3: no rule\n")
     assert uvx.calls() == [[*SHIPMILL[1:], "review", "check", "--repo", str(box.agents)]]
+    assert (
+        PINNED.removeprefix("shipmill==")
+        == json.loads((SCRIPT.parents[1] / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+    )
 
 
-@pytest.mark.parametrize("program", ["uvx", "shipmill"])
-def test_s026_13_exit_1_with_no_report_is_a_check_that_didnt_run(box: Sandbox, tmp_path: Path, program: str) -> None:
+def test_s026_13_exit_1_with_no_report_is_a_check_that_didnt_run(box: Sandbox, tmp_path: Path) -> None:
     """uvx exits 1 when it can't fetch shipmill (offline), and a traceback exits 1; the checks
     print a line per problem to stdout, so exit 1 with no stdout is an error, not a finding"""
-    failing = stub_on_path(tmp_path, program)
+    failing = stub_on_path(tmp_path, "uvx")
     err = "error: Failed to resolve `--with` requirement\n"
     result = failing.run(edit("post-review-check.json", box.agents, "REVIEW.md"), 1, err=err)
     assert result.returncode == 1
@@ -1130,7 +1152,7 @@ def test_s026_13_a_relative_file_path_is_read_against_the_cwd(box: Sandbox, stub
     data = fixture("post-product-check.json", box.agents / ".github")
     data["tool_input"]["file_path"] = "../docs/product.md"
     allowed(stub.run(data))
-    assert stub.calls() == [["product", "check", "--repo", str(box.agents)]]
+    assert stub.calls() == [[PINNED, "product", "check", "--repo", str(box.agents)]]
 
 
 def test_s026_13_a_broken_config_exits_1_naming_it(tmp_path: Path, stub: Stub) -> None:
@@ -1148,7 +1170,62 @@ def test_s026_17_post_fixtures_hold_a_case_for_each_check(box: Sandbox, stub: St
         rel = Path(data["tool_input"]["file_path"]).relative_to(data["cwd"]).as_posix()
         stub.log.unlink(missing_ok=True)
         allowed(stub.run(edit(name, box.agents, rel)))
-        assert stub.calls() == [[check, "check", "--repo", str(box.agents)]]
+        assert stub.calls() == [[PINNED, check, "check", "--repo", str(box.agents)]]
+
+
+# --- S-031-4: the CLI the hooks run is the plugin's own release -----------------------------
+
+BROKEN_PLUGIN = [
+    (None, "is missing"),
+    ("{not json", "is not JSON"),
+    ('{"name": "shipmill"}', "version is None, not X.Y.Z"),
+    ('{"version": "0.57"}', "version is '0.57', not X.Y.Z"),
+    ('{"version": "v0.57.0"}', "version is 'v0.57.0', not X.Y.Z"),
+    ('["0.57.0"]', "version is None, not X.Y.Z"),
+]
+
+
+def plugin_json(folder: Path, text: str | None) -> Path:
+    path = folder / ".claude-plugin" / "plugin.json"
+    if text is not None:
+        path.parent.mkdir(parents=True)
+        path.write_text(text, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(("text", "said"), BROKEN_PLUGIN)
+def test_s031_4_a_broken_plugin_json_exits_2_naming_it(
+    delivery: ModuleType, box: Sandbox, tmp_path: Path, text: str | None, said: str
+) -> None:
+    path = plugin_json(tmp_path, text)
+    for mode, data in (
+        ("post", edit("post-review-check.json", box.agents, "REVIEW.md")),
+        ("pre", fixture("bash-read.json", box.app, "gh pr comment 7 --body hi")),  # its Instead names the CLI
+    ):
+        counted, stderr = Counted(), io.StringIO()
+        code = delivery.main([mode], io.StringIO(json.dumps(data)), stderr, counted.runner, counted.read, path)
+        assert (code, counted.runs) == (2, 0), stderr.getvalue()
+        assert stderr.getvalue().startswith(f"shipmill hook: {path}") and said in stderr.getvalue()
+
+
+def test_s031_4_the_hooks_read_the_version_of_their_own_plugin(
+    delivery: ModuleType, box: Sandbox, tmp_path: Path
+) -> None:
+    path = plugin_json(tmp_path, '{"name": "shipmill", "version": "9.8.7"}')
+    seen: list[list[str]] = []
+
+    def runner(cmd: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        seen.append(list(cmd))
+        return subprocess.CompletedProcess(list(cmd), 0, "", "")
+
+    data = edit("post-review-check.json", box.agents, "REVIEW.md")
+    assert delivery.main(["post"], io.StringIO(json.dumps(data)), io.StringIO(), runner, Counted().read, path) == 0
+    assert seen == [["uvx", "shipmill==9.8.7", "review", "check", "--repo", str(box.agents)]]
+    stderr = io.StringIO()
+    pre = fixture("bash-read.json", box.app, "gh pr comment 7 --body hi")
+    assert delivery.main(["pre"], io.StringIO(json.dumps(pre)), stderr, runner, Counted().read, path) == 2
+    assert stderr.getvalue().splitlines()[2] == "Instead: uvx shipmill==9.8.7 gh pr comment 7 --body hi"
+    assert delivery.PLUGIN_JSON == ROOT / ".claude-plugin" / "plugin.json"  # one folder above hooks/
 
 
 # --- S-026-11: the input ---------------------------------------------------------------------

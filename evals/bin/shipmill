@@ -2,7 +2,7 @@
 """The eval run's `shipmill` and `uvx` (spec 025, #494): `shipmill gh` goes to the gh stub.
 
 A skill in a repository whose config sets `[agents] app_id` writes through `shipmill gh`,
-headless as `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill gh ...`. The
+as `uvx shipmill==<the plugin's version> gh ...` (spec 031), or another uvx form. The
 real `shipmill gh` needs the App's token and refuses without one, so in an offline run no
 write would reach the stub. This shim, on PATH as `shipmill` and (linked) as `uvx`, sends
 
