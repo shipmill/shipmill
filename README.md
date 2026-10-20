@@ -100,6 +100,7 @@ you.
 |---|---|
 | [Install](https://github.com/shipmill/shipmill/blob/main/docs/install.md) | Prerequisites, every setup step, and how to pause or remove shipmill |
 | [Flow](https://github.com/shipmill/shipmill/blob/main/docs/flow.md) | What to say to run each stage, alone or all at once |
+| [Direction](https://github.com/shipmill/shipmill/blob/main/docs/direction.md) | The `docs/product.md` you write when agents implement: what it holds, what the agents do with it, and how you change it |
 | [Release lanes](https://github.com/shipmill/shipmill/blob/main/docs/release-lanes.md) | The policy file, environments, operate, autonomy, versions, the CLI, and limits |
 | [Decisions](https://github.com/shipmill/shipmill/blob/main/docs/decisions.md) | The rules shipmill follows and why |
 | [Changelog](https://github.com/shipmill/shipmill/blob/main/CHANGELOG.md) | What changed in each release |
