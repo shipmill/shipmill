@@ -1233,14 +1233,16 @@ def _evals_compare(base_file: Path, head_file: Path, changed: frozenset[PurePosi
     """Spec 025, D-37: one line per case that moved, then both pass rates; exit 1 on a
     regression or on a run stopped at its budget, 2 on a missing or malformed result"""
     base, head = evals.read_result(base_file), evals.read_result(head_file)
-    unknown = sorted(changed - set(head.cases))
-    if unknown:
-        named = ", ".join(str(p) for p in unknown)
-        raise ReleaseError(f"--changed {named}: {head_file} holds no such case")
+    # the budget first: a run it stopped compares nothing, and a changed case it never
+    # reached holds no runs, so naming that case would hide the budget line (S-025-14)
     stopped = evals.budget_reached(base, head)
     if stopped is not None:
         print(stopped)
         return 1
+    unknown = sorted(changed - set(head.cases))
+    if unknown:
+        named = ", ".join(str(p) for p in unknown)
+        raise ReleaseError(f"--changed {named}: {head_file} holds no such case")
     result = evals.compare(base, head, changed, tolerance)
     for moved in result.moved:
         print(moved)

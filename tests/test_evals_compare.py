@@ -267,6 +267,22 @@ def test_s025_14_the_planned_runs_are_each_cases_runs_per_case(
     assert capsys.readouterr().out.splitlines() == ["evals: budget reached after 1 of 8 runs"]
 
 
+def test_s025_14_a_changed_case_the_budget_left_unrun_still_names_the_budget(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """evals.yml passes --changed for every case the head lists; one stopped before its first run
+    holds no runs, and the budget line, not a bad-input error, is what fails the gate"""
+    head = _write(
+        tmp_path,
+        "head",
+        [_case(PAD, [_run(True)], per_case=5), _case("a/b", [])],
+        partial=True,
+        partialReason="cost_ceiling",
+    )
+    assert _compare(BASE, head, "--changed", "a/b") == 1
+    assert capsys.readouterr().out.splitlines() == ["evals: budget reached after 1 of 8 runs"]
+
+
 @pytest.mark.parametrize("reason", [None, "interrupted"])
 def test_s025_14_a_run_stopped_for_another_reason_is_never_compared(tmp_path: Path, reason: str | None) -> None:
     head = _write(tmp_path, "head", [_case(PAD, [_run(True)])], partial=True, partialReason=reason)
