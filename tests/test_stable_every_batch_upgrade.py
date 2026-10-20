@@ -17,8 +17,12 @@ from shipmill.policy import Lane, Policy
 from shipmill.ticks import crons
 from shipmill.upgrades import UpgradeId, body, find, marker
 
-from .conftest import POLICY, FakeGitHub, Repo
+from .conftest import POLICY as NO_SOAK
+from .conftest import FakeGitHub, Repo
 
+# conftest's policy on the time soak this upgrade removes; shipmill refuses it since 0.54.0 (S-029-9),
+# and the upgrade reads the raw TOML, so it still lists and fixes it
+POLICY = NO_SOAK.replace('promote_from = "rc"\n', 'promote_from = "rc"\nmin_soak_days = 3\n')
 UPGRADE = find(UpgradeId("stable-every-batch"))
 FRAGMENTS = '[changelog]\nfragments = "changelog.d"\n'  # changelog-fragments decided, so it stays out of the lists
 
@@ -125,8 +129,8 @@ def test_s029_12_the_text_for_people_and_the_decline(repo: Repo, capsys: pytest.
     assert "the table sets none of `quiet_minutes`, `schedule`, `milestone`" in text
     assert "```toml\n[lanes.stable]\nquiet_minutes = 30\n```" in text
     assert (
-        "close this issue: shipmill won't propose stable-every-batch again. The next minor release refuses"
-        " `min_soak_days`, so a decline means deleting it from `[lanes.stable]` by hand before then."
+        "close this issue: shipmill won't propose stable-every-batch again. shipmill refuses"
+        " `min_soak_days`, so a decline means deleting it from `[lanes.stable]` by hand."
     ) in text
     assert "closes it once `[lanes.stable]` no longer sets `min_soak_days`." in text
 
@@ -168,7 +172,7 @@ def test_s029_12_apply_removes_the_line_and_keeps_promote_from_and_the_schedule(
     assert after == before.replace(b"min_soak_days = 3\n", b"")
     stable = tomllib.loads(after.decode())["lanes"]["stable"]
     assert stable["promote_from"] == "rc" and stable["schedule"] == ["Mon 07:00 UTC"] and "quiet_minutes" not in stable
-    assert Policy.load(path).rule(Lane.STABLE).min_soak_days == 0
+    assert Policy.load(path).rule(Lane.STABLE).promote  # loads again: the refused key is gone (S-029-9)
 
 
 SOAKED = """\

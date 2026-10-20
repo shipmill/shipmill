@@ -42,9 +42,9 @@ def milestone_policy(repo: Repo) -> None:
     """The stable lane promotes by its milestone only; no schedule makes it due"""
     repo.git.run("checkout", "-q", "main")
     text = repo.read(repo.policy_file)
-    lines = 'min_soak_days = 3\nschedule = ["Mon 07:00 UTC"]\n'
+    lines = 'schedule = ["Mon 07:00 UTC"]\n'
     assert lines in text
-    land_on_main(repo, "milestone", {repo.policy_file: text.replace(lines, "min_soak_days = 3\nmilestone = true\n")})
+    land_on_main(repo, "milestone", {repo.policy_file: text.replace(lines, "milestone = true\n")})
 
 
 def spec(number: int, status: str, *issues: str) -> str:

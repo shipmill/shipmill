@@ -37,10 +37,6 @@ _ROADMAP_DEPRECATED = (
     "[roadmap] is deprecated (D-32) and read by nothing: the work-in-progress limit is [agents] wip;"
     " move wip there and delete [roadmap], which the next minor release refuses"
 )
-_SOAK_DEPRECATED = (
-    "[lanes.stable] min_soak_days is deprecated (spec 029): a time soak checks nothing;"
-    " run shipmill upgrade --apply stable-every-batch, which the next minor release requires"
-)
 _BREAKING = "the stable lane can hold a breaking change ([bump] major), which waits for the maintainer"
 _LOCAL_USES = re.compile(r"uses:\s*\./\.github/workflows/(?P<file>[\w.-]+\.ya?ml)")
 
@@ -150,8 +146,6 @@ def doctor(
     if policy.roadmap is not None:
         add(False, "roadmap", _ROADMAP_DEPRECATED, warn=True)
     raw = read_config(found)
-    if _sets_soak(raw):
-        add(False, "min_soak_days", _SOAK_DEPRECATED, warn=True)
     if policy.agents is not None:
         checks.append(direction_check(root))
         checks.extend(hooks_checks(policy, Git(root), hooks))
@@ -503,13 +497,6 @@ def _land_grant(policy: Policy, upgrades: int, caller: Path) -> Check | None:
         return None
     job = f"the land job in {CALLER}" + (", whose grant proposes them," if upgrades else "")
     return Check("WARN", "permissions", f"{'; '.join(reasons)}, but {job} grants no `issues: write`: add it")
-
-
-def _sets_soak(raw: Mapping[str, Any]) -> bool:
-    """Whether [lanes.stable] sets the deprecated min_soak_days, whatever its value (spec 029)"""
-    lanes = raw.get("lanes")
-    stable = lanes.get("stable") if isinstance(lanes, Mapping) else None
-    return isinstance(stable, Mapping) and "min_soak_days" in stable
 
 
 def _upgrades(

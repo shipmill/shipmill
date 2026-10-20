@@ -23,6 +23,11 @@ from shipmill.schedule import Freeze, Window
 from shipmill.version import Part
 
 _MAX_QUIET = 300  # a GitHub job runs at most 6 hours; leave room for the rest of the run
+# deprecated in 0.53.0, honoured through 0.55.0, refused since (S-029-9, as D-32 set for [roadmap])
+_SOAK_KEY = "min_soak_days"
+SOAK_REMOVED = (
+    f"[lanes.stable] {_SOAK_KEY} was removed (spec 029); delete it, or run shipmill upgrade --apply stable-every-batch"
+)
 
 # When several lanes are due in one run, the first one here releases; the next run takes the rest
 PRIORITY = (Lane.HOTFIX, Lane.STABLE, Lane.RC, Lane.DEV)
@@ -62,8 +67,7 @@ class LaneRule:
     quiet_minutes: int | None  # due once main has been quiet this long
     schedule: tuple[Window, ...]  # due once a window opened after the lane's last release
     milestone: bool  # due once the milestone named after the version is done: no open issues, its specs built
-    promote: bool  # stable only: promote a soaked rc instead of releasing main's head
-    min_soak_days: int  # stable only, with promote
+    promote: bool  # stable only: promote the newest rc instead of releasing main's head
     marker: str  # rc only: a, b, or rc
     github_release: bool
     dispatch: tuple[str, ...]  # workflows started with -f tag=v<version>
@@ -291,7 +295,9 @@ class Policy:
 
 def _lane(lane: Lane, t: Table) -> LaneRule:
     triggers = ("quiet_minutes", "schedule", "milestone")
-    extra = {Lane.RC: ("marker",), Lane.STABLE: ("promote_from", "min_soak_days")}.get(lane, ())
+    extra = {Lane.RC: ("marker",), Lane.STABLE: ("promote_from",)}.get(lane, ())
+    if lane is Lane.STABLE and _SOAK_KEY in t.raw:
+        raise ReleaseError(SOAK_REMOVED)
     if lane is Lane.HOTFIX:
         t.allow("github_release", "dispatch")  # a hotfix is cut by hand only
     else:
@@ -300,9 +306,6 @@ def _lane(lane: Lane, t: Table) -> LaneRule:
     promote_from = t.string("promote_from", default="") if lane is Lane.STABLE else ""
     if promote_from not in ("", "rc"):
         raise ReleaseError(f"{t.where}: promote_from is 'rc' or absent, got {promote_from!r}")
-    soak = t.integer("min_soak_days", default=0, low=0, high=365) or 0
-    if soak and not promote_from:
-        raise ReleaseError(f"{t.where}: min_soak_days needs promote_from = 'rc'")
     marker = t.string("marker", default="rc")
     if marker not in ("a", "b", "rc"):
         raise ReleaseError(f"{t.where}: marker is a, b, or rc, got {marker!r}")
@@ -316,7 +319,6 @@ def _lane(lane: Lane, t: Table) -> LaneRule:
         schedule=tuple(Window.parse(w) for w in t.strings("schedule", default=())),
         milestone=t.boolean("milestone", default=False),
         promote=bool(promote_from),
-        min_soak_days=soak,
         marker=marker,
         github_release=t.boolean("github_release", default=False),
         dispatch=dispatch,

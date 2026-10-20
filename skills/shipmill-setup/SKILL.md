@@ -164,8 +164,8 @@ recommendation:
 | Holds | `release-blocker` holding `rc` and `stable` | create the label; add `freeze` ranges for holidays |
 | Changelog fragments | on: `[changelog] fragments = "changelog.d"` | each PR adds its entry as a file `changelog.d/<issue>-<slug>.md` instead of editing `CHANGELOG.md`, so PRs stop conflicting on it; a stable release writes them into its section and deletes them. Off (`init --no-fragments`): each PR edits Unreleased |
 
-This is what `shipmill init` writes. A policy whose `[lanes.stable]` sets the deprecated
-`min_soak_days` migrates with `shipmill upgrade --apply stable-every-batch`.
+This is what `shipmill init` writes. A policy whose `[lanes.stable]` sets the removed
+`min_soak_days`, which shipmill refuses, migrates with `shipmill upgrade --apply stable-every-batch`.
 
 ### Environments
 

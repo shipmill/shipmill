@@ -234,14 +234,11 @@ CATALOGUE: tuple[Upgrade, ...] = (
             " the stable lane"
         ),
         why="a time soak checks nothing: in those days nobody runs the rc and shipmill reads no telemetry (spec 029)",
-        off="none: the next minor release refuses min_soak_days",
+        off="none: shipmill refuses min_soak_days (S-029-9)",
         removes="min_soak_days",
         # a trigger beside milestone would release before the milestone is done
         unless=("schedule", "milestone"),
-        declined=(
-            "The next minor release refuses `min_soak_days`, so a decline means deleting it from"
-            " `[lanes.stable]` by hand before then."
-        ),
+        declined=("shipmill refuses `min_soak_days`, so a decline means deleting it from `[lanes.stable]` by hand."),
     ),
 )
 
