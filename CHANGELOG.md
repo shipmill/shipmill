@@ -7,6 +7,35 @@ bot.
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-10-20
+
+### Added
+
+- A stable release that promotes an rc names in its plan reason how many of the issues the rc fixed have a requester who confirmed its pre-release notice, such as `2 of 3 requesters confirmed`; the count is reported only and never makes a lane due or holds one (S-021-8) (#395)
+- `shipmill evals compare --base <main.json> --head <pr.json>` gates a pull request's eval run against the default branch's (spec 025, D-37): it reads the runner's `aggregate-result.json` (`schemaVersion` 1), counts a run as passed only when every scored grader passed and a run that errored, aborted, or skipped its paid graders as failed, exits 1 when the suite's pass rate drops more than 0.05 (`--tolerance`), a case falls from 3 of 3 to at most 1 of 3, or a new or `--changed` case passes fewer than 2 of 3, prints each regressed, new failing, improved, and removed case and both pass rates, fails with `evals: budget reached after <n> of <m> runs` on a run stopped at its budget, and exits 2 on a missing or malformed `aggregate-result.json` (#443)
+- Delivery hooks: the PreToolUse hook refuses a `git push` to the default branch (`default-branch-push`, off with `[hooks] default_branch = false`) and a `cp`, `mv`, or `rsync` of a `[hooks] private` path out of the repo (`private-paths`) (#444)
+- The docs name the delivery hooks: github-pr-triage's rule 8 and landing reference say which forms a hook refuses, shipmill-setup asks for `[hooks] private` paths and reads `doctor`'s hooks block, `docs/release-lanes.md` documents the `[hooks]` keys, and `docs/install.md` says the hooks come with the plugin, need `uv`, and what happens when one can't start (#447)
+- `docs/direction.md`, a guide for the maintainer to the product's direction (`docs/product.md`): what it holds, what the agents do with it, its structure, and the `shipmill product` commands that change it; linked from the README, `docs/flow.md`, shipmill-setup, and `shipmill doctor`'s direction FAIL line (#498)
+- The policy reads an optional `[downstream]` section: the App id, a run timeout, and one table per downstream repository (`repo`, `workflow`, `ref`, `report_only`, `timeout_minutes`), refusing a malformed one with exit 2 naming the key; nothing runs on it yet (#503)
+- Tests prove the PR gate reads a `downstream: <name>` check like any check: `FAILURE`, `TIMED_OUT`, and `ACTION_REQUIRED` fail it, a running one keeps it pending, and `NEUTRAL` and `SUCCESS` count as green (#504)
+- A goal in `docs/product.md` may carry one measure on the line under it, `  measure: <metric> <comparison> <target>`, naming a metric from a fixed registry (`deploy_frequency`, `lead_time_median`, `human_touch`, ...) and a target in its unit: `shipmill product check` refuses an unknown metric or comparison, a target in the wrong unit, and a misplaced or second measure line with its file, line, and rule; `shipmill product show --json` gives every goal a `measure` key, and the PR gate and `specs.py check` accept the line (spec 027) (#505)
+- product-intake's `plans.py`: `check` holds a goal plan's body to its grammar (marker, goal, headings, Work items, Milestone), naming the line and rule for each problem, and `items` lists a plan's items with the issue filed for each (#507)
+
+### Removed
+
+- `[lanes.stable] min_soak_days`, deprecated in 0.53.0: a policy that sets it, whatever its value, exits 2 with `[lanes.stable] min_soak_days was removed (spec 029); delete it, or run shipmill upgrade --apply stable-every-batch`, and `shipmill doctor` reports that as its policy failure. `shipmill upgrade --apply stable-every-batch` still reads and fixes such a config. `promote_from = "rc"` promotes the newest rc once a stable trigger is due, whatever its age, and its reason says how old the rc is, `promotes v1.5.0rc2, cut 1 day(s) ago`, instead of `soaked 1 day(s)` (#464)
+
+### Fixed
+
+- CI now runs `shipmill product check` and `shipmill review check`, as spec 024 says, so a malformed `docs/product.md` or `REVIEW.md` can no longer reach main (#493)
+- An eval case's write through `shipmill gh`, or `uvx ... shipmill gh` headless, now reaches the offline `gh` stub instead of failing for want of the App's token: `evals/bin` gains `shipmill` and `uvx` shims that send `shipmill gh` to the stub, logged with `"via": "shipmill"` so a grader still catches a plain `gh` write, and pass every other command to the real program (#494)
+- A release proposal, an issue, a comment, or release notes too long for one command-line argument no longer fails with `Argument list too long`: shipmill passes every body to `gh` on stdin, and one over GitHub's limit (65,536 characters for an issue or comment, 125,000 for release notes) is cut to fit and ends with a line linking the changelog that holds the full text (#499)
+- Gate: a lost Claude Code login no longer burns the retry window. Before a launch the gate runs `claude auth status --json`, and when Claude Code isn't logged in it starts no session and reports `CLAUDE_AUTH` with the fix (`claude auth login`), sending one desktop notification per failure episode with `[agents] notify = true`; `doctor` checks the login too. A headless session whose log holds an authentication failure, or that ended within 60 seconds of its launch (by its log's last write) with no result in its log, doesn't count toward `retry_hours`: the next tick launches again and reads `SESSION_DEAD`, naming the dead session, how many died in a row, and its log's last line; after 3 dead sessions in a row the same findings wait for `retry_hours` again. `shipmill status` reports both, and github-ship-watch's `watch_state.py` reports a gate whose sessions end dead as `GATE_SESSIONS_DEAD` (#500)
+
+### Changed
+
+- shipmill-setup no longer edits a repo's CLAUDE.md, AGENTS.md, or CONTRIBUTING.md when it turns changelog fragments on: `setup_state.py`'s new `CHANGELOG_RULES` warning names each line there that mentions Unreleased as file and line, and leaves the change to the maintainer (D-42) (#496)
+
 ## [0.55.0] - 2026-10-19
 
 ### Added
@@ -1577,7 +1606,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.55.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.56.0...HEAD
+[0.56.0]: https://github.com/shipmill/shipmill/compare/v0.55.0...v0.56.0
 [0.55.0]: https://github.com/shipmill/shipmill/compare/v0.54.0...v0.55.0
 [0.54.0]: https://github.com/shipmill/shipmill/compare/v0.53.0...v0.54.0
 [0.53.0]: https://github.com/shipmill/shipmill/compare/v0.52.0...v0.53.0
