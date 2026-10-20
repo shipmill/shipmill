@@ -1,6 +1,6 @@
 # S-021: The requester ring
 
-status: approved
+status: built
 serves: G-3
 
 ## Problem
@@ -149,3 +149,12 @@ It is reported, never a gate.
 - shipmill/shipmill#395: S-021-8
 
 ## Verification
+
+- S-021-1: ran `tests/test_shipped.py::test_s021_1_*` and read `notice` and `command_for` in `shipped.py`: a pre-release tag's notice opens with the `pre-release <tag>` marker line, then `Released in <tag> (pre-release).` and the rendered `pin`, passes
+- S-021-2: ran `test_s021_2_*` and read `release_commits` and `own_range`: a stable tag reads its range from the newest stable tag below it (its whole history before the first), so a promotion whose previous rc range holds only the stamp still tells every fix its rc held, passes
+- S-021-3: ran `test_s021_3_*` in `test_shipped.py` and `test_metrics.py` and read `told`: a second run prints SKIP notified for each issue, and a `Released in <tag>` comment counts at its tag's stage, passes
+- S-021-4: ran `test_s021_4_*` in `test_shipped.py` and `test_ship_watch.py`: a successful deployment reports UNANNOUNCED for fixes counted from the tag the environment ran before (D-41), and posting writes `Deployed to <environment> in <tag>.` once per environment, passes
+- S-021-5: ran `test_s021_5_*` in `test_config.py` and `test_shipped.py` and read `render`: `{version}`, `{tag}`, and `{name}` are substituted, an unknown `[notices]` key exits 2, and without `install` the `--install` text is used, passes
+- S-021-6: ran `tests/test_ship_watch.py::test_s021_6_*` and read `requester_rows`: the author's 👍 on the newest pre-release notice reports REQUESTER_CONFIRMED and anyone else's gives no row, passes
+- S-021-7: ran `test_s021_7_*` and read `requester_rows`: the author's comment after the notice or 👎 reports REQUESTER_REPORT, a report-only row that is no action and no agent's, passes
+- S-021-8: ran `tests/test_requester_count.py`: a releasing promotion's reason names `1 of 3 requesters confirmed` from the fixes rc1's base holds past v1.0.0, a count of 1, of 0, and one GitHub fails to give produce the same decision, and the votes are never read when the stable lane isn't due, passes

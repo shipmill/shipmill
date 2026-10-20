@@ -534,7 +534,12 @@ tag before it is a later rc. Each comment's first line is a hidden marker,
 The person who filed the issue answers on the pre-release notice: their 👍 reads as
 REQUESTER_CONFIRMED in the watch, and a reply after it or a 👎 as REQUESTER_REPORT, which a
 watch session hands to triage as a possible regression. Only the issue's author counts, and
-neither row labels, holds, or reopens anything by itself.
+neither row labels, holds, or reopens anything by itself. A stable release that promotes an
+rc names the answers in its plan reason, such as `promotes v1.5.0rc3, soaked 1 day(s); 2 of
+3 requesters confirmed`: the closed issues with a fix the rc holds and the last stable
+release doesn't, and how many of their requesters reacted 👍 to the newest pre-release
+notice. The count is read only once the lane releases, so it never makes a lane due or holds
+one; when GitHub can't give it, the reason says `requesters not counted` and why.
 
 `[notices]` is optional. `pin` and `install` take `{version}`, `{tag}`, and `{name}` (the
 policy's `name`), and a notice shows the command as code. Without `install`, the
