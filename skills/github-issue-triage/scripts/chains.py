@@ -26,7 +26,15 @@ link  writes a link in both forms triage_state.py reads:
       Exit 0 when the link is in place (or text only), 2 on a malformed reference, an
       issue that doesn't exist or is a pull request, an issue linked to itself (each
       named, before any write), or any other gh failure, including a rate limit, a
-      timeout, or an internal error. In a gate session gh already writes as the App (D-14).
+      timeout, or an internal error.
+
+      Its writes (the relation and the body edit) run as the App when the checkout it runs
+      from (the current folder's) sets [agents] app_id in .github/shipmill.toml: through
+      `shipmill gh` with the same arguments, from PATH or else `uvx --from
+      git+https://github.com/shipmill/shipmill@v0 shipmill gh` (spec 012, D-14, #526).
+      A `shipmill gh` that fails (exit 2: no App identity) stops the link with its message
+      and exit 2, never retried with plain gh. Without app_id, plain gh writes as the host's
+      login. Reads always use plain gh.
 
 show prints the chain an issue belongs to, one row per item, each once (by owner/repo#N,
       whatever case it is spelled in), so a cycle ends where it closes:
@@ -67,7 +75,8 @@ show prints the chain an issue belongs to, one row per item, each once (by owner
       are never read), a config that can't be parsed, or any gh failure other than an
       unreadable item, a missing config, or a 404 from the collaborator check.
 
-Needs the gh CLI, authenticated. Python 3.10+, standard library only.
+Needs the gh CLI, authenticated, and for link with app_id set shipmill or uvx. Python
+3.10+, standard library only.
 """
 
 from __future__ import annotations
@@ -77,6 +86,7 @@ import base64
 import importlib.util
 import json
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -239,21 +249,55 @@ def fail(message: str) -> NoReturn:
     raise SystemExit(2)
 
 
-def gh_graphql(query: str, variables: Variables) -> dict[str, Any]:
-    """The default runner: one ``gh api graphql`` call. gh exits 1 on GraphQL errors with
-    the response on stdout: that response comes back for the caller to classify"""
-    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
+def capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def gh_graphql(
+    query: str, variables: Variables, gh: Sequence[str] = ("gh",), execute: Execute = capture
+) -> dict[str, Any]:
+    """The default runner: one ``gh api graphql`` call, through the gh command gh names
+    (plain gh, or `shipmill gh` for a write as the App). gh exits 1 on GraphQL errors with
+    the response on stdout: that response comes back for the caller to classify. Any other
+    failure, a `shipmill gh` exit 2 among them, prints its message and exits 2"""
+    cmd = [*gh, "api", "graphql", "-f", f"query={query}"]
     for key, value in variables.items():
         cmd += ["-F" if isinstance(value, int) else "-f", f"{key}={value}"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = execute(cmd)
     try:
         response = json.loads(proc.stdout)
     except ValueError:
         response = None
     if isinstance(response, dict) and (proc.returncode == 0 or response.get("errors")):
         return response
-    sys.stderr.write(proc.stderr or f"error: gh api graphql exited {proc.returncode}\n")
+    sys.stderr.write(proc.stderr or f"error: {' '.join(gh)} api graphql exited {proc.returncode}\n")
     raise SystemExit(2)
+
+
+def gh_runner(gh: Sequence[str], execute: Execute = capture) -> Runner:
+    """A runner whose every call goes through the gh command gh names"""
+    return lambda query, variables: gh_graphql(query, variables, gh, execute)
+
+
+def writer(checkout: Path, which: Callable[[str], str | None] = shutil.which) -> list[str]:
+    """The gh command link's writes go through (#526, D-14): with [agents] app_id set in the
+    checkout's .github/shipmill.toml, `shipmill gh`, from PATH or else through uvx, so the
+    relation and the body edit are the App's; without it, plain gh, the host's login. It is
+    watch_state.py's gh_writer, the one reading every skill script's writes share; a config
+    it refuses exits 2 before any write"""
+    ws = watch_module()
+    try:
+        command: list[str] = ws.gh_writer(checkout)
+    except ws.Refused as refused:
+        sys.stderr.write(f"{refused}\n")
+        raise SystemExit(2) from None
+    if command == ["gh"]:
+        return command
+    uvx = ["uvx", "--from", ws.SHIPMILL_SOURCE, "shipmill"]
+    if command[: len(uvx)] != uvx:
+        fail(f"watch_state.py's gh_writer gave {command!r}, not `shipmill gh` through uvx")
+    found = which("shipmill")
+    return command if found is None else [found, *command[len(uvx) :]]
 
 
 def parse_ref(text: str) -> Ref:
@@ -368,7 +412,8 @@ def appended(body: str, line: str) -> str:
     return text + line
 
 
-def link(run: Runner, target: Ref, other: Ref, child: bool) -> int:
+def link(run: Runner, target: Ref, other: Ref, child: bool, write: Runner) -> int:
+    """Reads go through run, the relation's mutation and the body edit through write"""
     if target.same(other):
         fail(f"{target} can't be linked to itself")
     issue, upstream = resolve(run, target), resolve(run, other)
@@ -384,14 +429,14 @@ def link(run: Runner, target: Ref, other: Ref, child: bool) -> int:
             relation = f"{target} is blocked by {other}"
             mutation, variables = ADD_BLOCKED_BY, {"issue": issue.id, "blocking": upstream.id}
         if not have_native:
-            native(run, mutation, dict(variables))
+            native(write, mutation, dict(variables))
             lines.append(f"linked: {relation}")
     except Refused as exc:
         have_native, refused = False, str(exc)
     have_text = names(issue.body, target, other)
     if not have_text:
         line = f"Depends on {other}"
-        response = run(UPDATE_BODY, {"id": issue.id, "body": appended(issue.body, line)})
+        response = write(UPDATE_BODY, {"id": issue.id, "body": appended(issue.body, line)})
         errors = errors_of(response)
         if errors:
             fail(f"editing the body of {target}: {first_line(errors)}")
@@ -623,10 +668,6 @@ def walk(reader: Reader, starts: list[Ref]) -> tuple[list[Item], dict[Key, Item]
     return list(chain.values()), items
 
 
-def capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, check=False)
-
-
 def gh_contents(repo: str, execute: Execute = capture) -> str | None:
     """The repo's shipmill config on its default branch, through the contents API; None when
     GitHub answers 404 (no such file), exit 2 on any other failure"""
@@ -762,7 +803,10 @@ def main(
     run: Runner = gh_graphql,
     contents: Contents = gh_contents,
     standing: Standing = gh_collaborator,
+    write: Runner | None = None,
 ) -> int:
+    """write is link's runner for its writes; None reads the current folder's checkout for
+    it (see writer)"""
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     link_parser = commands.add_parser("link", help="write a link as a native relation and a Depends on line")
@@ -791,7 +835,9 @@ def main(
         return show(reader, contents, starts, args.json)
     target = parse_ref(args.issue)
     other = parse_ref(args.child if args.child is not None else args.blocked_by)
-    return link(run, target, other, child=args.child is not None)
+    if write is None:
+        write = gh_runner(writer(Path.cwd()))
+    return link(run, target, other, args.child is not None, write)
 
 
 if __name__ == "__main__":

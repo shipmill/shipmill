@@ -5,6 +5,7 @@ where each opportunity issue is in the maintainer's accept or decline.
 Usage: intake_state.py <owner/repo> [--config PATH] [--label opportunity]
                        [--accepted-label planned] [--marker "Triage:"] [--skip-label L]...
                        [--category C]... [--json]
+                       [--plans [--wip N] [--bot-login LOGIN] [--tool SPEC]]
 
 Feedback is an open issue, or an open discussion when the repo enables Discussions, that:
   - carries none of SKIP_LABELS (bug, roadmap, and shipmill's own labels), no --skip-label
@@ -43,15 +44,45 @@ opportunity itself. The first line (text) or the first JSON line is the [autonom
 level from the shipmill config (.github/shipmill.toml in the current directory; none
 means the default, propose).
 
-Exit 0 when nothing needs action, 1 when any row is NEW_FEEDBACK, ACCEPTED, NO_REASON, or
-OVERLAP, 2 on bad input (an issue with more than 100 labels, a malformed config) or a gh
-failure. Needs the gh CLI, authenticated. Python 3.10+, standard library only.
+With --plans (spec 028), the goals of the direction come next, read with
+`uvx --from <--tool> shipmill product show --section goals --json` in the current
+directory, and a goal with no open plan issue (an issue labelled goal-plan whose body's
+first line is the plan marker <!-- shipmill:plan goal=G-n rev=k -->) reads:
+  PLAN_DUE          a trigger holds; the note is the trigger:
+                    requested in #N  an open issue labelled goal-plan without the plan
+                                     marker, opened by an OWNER, MEMBER, or COLLABORATOR,
+                                     whose title names one goal id, a listed one; an
+                                     issue opened by anyone else is never a request
+                    no-work          nothing open serves the goal: no spec in docs/specs/
+                                     at the default branch's head with status draft or
+                                     approved whose serves: line names it, no open issue
+                                     whose newest triage comment names it in `Serves:`,
+                                     no open pull request whose `## Plan` names it in
+                                     `Serves:`, no open opportunity whose body names it in
+                                     `Serves:`, and no open plan item (an issue whose
+                                     body's first line is <!-- shipmill:plan-item #P W-n -->,
+                                     opened by an OWNER, MEMBER, or COLLABORATOR or the
+                                     --bot-login, under plan #P of the goal); never for a
+                                     goal whose newest plan was closed as not planned
+                    stalled          spec 027's report says the goal is stalled; spec 027
+                                     isn't built yet, so this trigger never fires
+  PLAN_WAITS        with --wip N, a no-work or stalled trigger holds while
+                    `triage_state.py --wip N` reports no room left; the note is the
+                    trigger and "waits for room". A request never waits
+A goal with an open plan issue reads nothing, whatever its trigger; nor does a goal no
+trigger holds for.
+
+Exit 0 when nothing needs action, 1 when any row is NEW_FEEDBACK, ACCEPTED, NO_REASON,
+OVERLAP, or PLAN_DUE, 2 on bad input (an issue with more than 100 labels, a malformed
+config or goals) or a gh failure. Needs the gh CLI, authenticated, and with --plans uvx.
+Python 3.10+, standard library only.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib.util
 import json
 import re
 import subprocess
@@ -59,6 +90,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import ModuleType
 from typing import Any, NoReturn
 
 try:
@@ -99,6 +131,7 @@ LIVE = {"OPPORTUNITY_OPEN", "ACCEPTED", "HANDED_OFF", "DECLINED", "NO_REASON"}  
 
 ISSUE_FIELDS = """
         number title url state stateReason closedAt body milestone { title }
+        author { __typename login } authorAssociation
         labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
         reactions(content: THUMBS_UP) { totalCount }
         comments(last: 50) { pageInfo { hasPreviousPage startCursor } nodes { body createdAt } }
@@ -161,10 +194,52 @@ Variables = dict[str, Any]
 # Runs one GraphQL query with its variables and returns the parsed JSON response
 Runner = Callable[[str, Variables], dict[str, Any]]
 
+# -- goal plans (spec 028)
+PLAN_LABEL = "goal-plan"
+SHIPMILL_SOURCE = "git+https://github.com/shipmill/shipmill@v0"
+TRIAGE_STATE = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "triage_state.py"
+PLAN_ITEM = re.compile(r"^<!-- shipmill:plan-item #([1-9][0-9]*) W-[1-9][0-9]* -->$")
+GOAL_ID = re.compile(r"(?<![\w-])G-[1-9][0-9]*(?![\w-])")
+SERVES = re.compile(r"(?<![\w-])Serves:[ \t]*(G-[1-9][0-9]*(?:[ \t]*,[ \t]*G-[1-9][0-9]*)*)")
+PLAN_FIELD_SERVES = re.compile(r"^\s*(?:[-*]\s+)?Serves:(.*)$")  # as pr_gate.py reads a plan's line
+SPEC_STATUS = re.compile(r"^status:[ \t]*(\S+)[ \t]*$")
+SPEC_SERVES = re.compile(r"^serves:(.*)$")
+NOT_SPECS = ("TEMPLATE.md", "README.md")  # as specs.py skips them
+SERVING_STATUSES = ("draft", "approved")
+AUTOMATIC = ("no-work", "stalled")  # the triggers that wait for room under --wip
+PLAN_ACTION = {"PLAN_DUE"}
+PLAN_ORDER = ("PLAN_DUE", "PLAN_WAITS")
+PULLS = """
+query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    specs: object(expression: "HEAD:docs/specs") { ... on Tree { entries { name object { ... on Blob { text } } } } }
+    pullRequests(states: OPEN, first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number body }
+    }
+  }
+}
+"""
+
 
 def fail(message: str) -> NoReturn:
     sys.stderr.write(f"error: {message}\n")
     raise SystemExit(2)
+
+
+def load_plans() -> ModuleType:
+    """plans.py beside this script: the plan marker, the body's sections, and D-29's trust"""
+    path = Path(__file__).resolve().parent / "plans.py"
+    spec = importlib.util.spec_from_file_location("shipmill_plans", path)
+    if spec is None or spec.loader is None:
+        fail(f"can't load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up by name
+    spec.loader.exec_module(module)
+    return module
+
+
+PLANS = load_plans()
 
 
 def gh_graphql(query: str, variables: Variables) -> dict[str, Any]:
@@ -237,12 +312,18 @@ def verdict(body: str, marker: str) -> str | None:
     return rest.split(maxsplit=1)[0].lower() if rest else ""
 
 
-def newest_verdict(issue: dict[str, Any], marker: str) -> str | None:
+def newest_triage(issue: dict[str, Any], marker: str) -> str | None:
+    """The body of the issue's newest triage comment, None without one"""
     for comment in reversed(issue["comments"]["nodes"]):
-        found = verdict(comment["body"], marker)
-        if found is not None:
-            return found
+        if verdict(comment["body"], marker) is not None:
+            body: str = comment["body"]
+            return body
     return None
+
+
+def newest_verdict(issue: dict[str, Any], marker: str) -> str | None:
+    body = newest_triage(issue, marker)
+    return None if body is None else verdict(body, marker)
 
 
 def complete_comments(run: Runner, owner: str, name: str, issue: dict[str, Any], marker: str) -> None:
@@ -355,6 +436,10 @@ class Intake:
     opportunities: list[Item]
     feedback: list[Item]
     thumbs: dict[int, int]  # every issue and discussion number with a known thumbs-up count
+    # as GitHub returned them, comments paged back to the newest triage comment: the open
+    # issues but opportunities, and every opportunity; --plans reads them again
+    open_issues: list[dict[str, Any]] = field(default_factory=list)
+    opportunity_issues: list[dict[str, Any]] = field(default_factory=list)
 
 
 def fetch(
@@ -398,7 +483,7 @@ def fetch(
         opportunities.append(item)
     missing = sorted({m for o in opportunities for m in o.members} - set(thumbs))
     thumbs.update(member_thumbs(run, owner, name, missing))
-    return Intake(autonomy, opportunities, feedback, thumbs)
+    return Intake(autonomy, opportunities, feedback, thumbs, opened, opps)
 
 
 def member_thumbs(run: Runner, owner: str, name: str, numbers: list[int]) -> dict[int, int]:
@@ -441,6 +526,256 @@ def rows(intake: Intake) -> list[Item]:
             found.append(Item(number, kind, title, intake.thumbs.get(number, 0), state="OVERLAP", note=shown))
     found.sort(key=lambda r: (ORDER.index(r.state), -r.number))
     return found
+
+
+# -- goal plans (spec 028): which goals a plan is due for
+
+
+@dataclass(frozen=True)
+class Goal:
+    id: str  # G-<n>
+    text: str
+
+
+@dataclass
+class PlanRow:
+    goal: str
+    state: str
+    title: str  # the goal's text
+    note: str
+    number: int | None = None  # the request issue, for a requested plan
+
+
+# Reads the direction's goals, in the direction's order
+GoalsReader = Callable[[], list[Goal]]
+# The room `triage_state.py --wip N` reports under the limit N
+RoomReader = Callable[[int], int]
+
+
+def parse_goals(text: str) -> list[Goal]:
+    """`shipmill product show --section goals --json`'s output, strictly"""
+    try:
+        record = json.loads(text)
+    except json.JSONDecodeError as exc:
+        fail(f"shipmill product show printed no JSON: {exc}")
+    listed = record.get("goals") if isinstance(record, dict) else None
+    if not isinstance(listed, list):
+        fail("shipmill product show --json printed no `goals` list")
+    goals: list[Goal] = []
+    for entry in listed:
+        ident = entry.get("id") if isinstance(entry, dict) else None
+        text_ = entry.get("text") if isinstance(entry, dict) else None
+        if not isinstance(ident, str) or not GOAL_ID.fullmatch(ident) or not isinstance(text_, str):
+            fail(f"shipmill product show --json listed a goal that isn't an id and a text: {entry!r}")
+        goals.append(Goal(ident, text_))
+    return goals
+
+
+def uvx_goals(tool: str) -> GoalsReader:
+    """The default goals reader: the direction of the checkout in the current directory"""
+
+    def read() -> list[Goal]:
+        cmd = ["uvx", "--from", tool, "shipmill", "product", "show", "--section", "goals", "--json"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            fail("uvx is not on PATH: --plans reads the goals with `shipmill product show`")
+        if proc.returncode != 0:
+            fail(f"shipmill product show failed with exit {proc.returncode}: {proc.stderr.strip()}")
+        return parse_goals(proc.stdout)
+
+    return read
+
+
+def triage_room(repo: str, bot_login: str | None, script: Path = TRIAGE_STATE) -> RoomReader:
+    """The default room reader: `triage_state.py <repo> --wip N --json`'s last line"""
+
+    def read(wip: int) -> int:
+        cmd = [sys.executable, str(script), repo, "--wip", str(wip), "--json"]
+        cmd += ["--bot-login", bot_login] if bot_login else []
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode not in (0, 1):  # 1 is "an issue needs action", not a failure
+            fail(f"triage_state.py --wip failed with exit {proc.returncode}: {proc.stderr.strip()}")
+        lines = proc.stdout.strip().splitlines()
+        try:
+            room = json.loads(lines[-1])["room"] if lines else None
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            fail(f"triage_state.py --wip --json printed no room line: {exc}")
+        if not isinstance(room, int):
+            fail(f"triage_state.py --wip --json printed no room line: {lines[-1:]!r}")
+        return room
+
+    return read
+
+
+def goal_ids(text: str) -> set[str]:
+    return set(GOAL_ID.findall(text))
+
+
+def serves(text: str) -> set[str]:
+    """The goal ids every `Serves: G-n[, G-m]` in the text names"""
+    return {g for m in SERVES.finditer(text) for g in goal_ids(m.group(1))}
+
+
+def spec_serves(text: str) -> set[str]:
+    """The goals a spec serves while its status is draft or approved: its serves: line, read
+    from its header (the lines before the first `## ` heading)"""
+    status: str | None = None
+    named: set[str] = set()
+    for line in text.splitlines():
+        if line.startswith("## "):
+            break
+        found = SPEC_STATUS.match(line)
+        if found and status is None:
+            status = found.group(1)
+            continue
+        listed = SPEC_SERVES.match(line)
+        if listed:
+            named |= goal_ids(listed.group(1))
+    return named if status in SERVING_STATUSES else set()
+
+
+def plan_serves(body: str) -> set[str]:
+    """The goals a pull request's `## Plan` names in its `Serves:` line"""
+    named: set[str] = set()
+    for _, level, heading, lines in PLANS.sections(body or ""):
+        if level == 2 and heading == "Plan":
+            for _, line in lines:
+                field_ = PLAN_FIELD_SERVES.match(line)
+                if field_:
+                    named |= goal_ids(field_.group(1))
+    return named
+
+
+def plan_goal(issue: dict[str, Any]) -> str | None:
+    """The goal a plan issue's first-line marker names, None without the marker"""
+    found = PLANS.MARKER.match(PLANS.first_line(issue.get("body") or ""))
+    return found.group(1) if found else None
+
+
+def plan_rows(
+    goals: list[Goal],
+    *,
+    open_issues: list[dict[str, Any]],
+    opportunities: list[dict[str, Any]],
+    plan_issues: list[dict[str, Any]],
+    pulls: list[dict[str, Any]],
+    specs: list[str],
+    marker: str,
+    bot_login: str | None,
+    wip: int | None,
+    room: RoomReader,
+) -> list[PlanRow]:
+    """One PLAN_DUE or PLAN_WAITS row per goal a trigger holds for and no open plan has"""
+    listed = {g.id for g in goals}
+    plans_of: dict[int, str] = {}  # each plan issue's goal
+    newest: dict[str, dict[str, Any]] = {}  # each goal's newest plan issue
+    planned: set[str] = set()  # goals with an open plan issue
+    for issue in plan_issues:
+        goal = plan_goal(issue)
+        if goal is None:
+            continue
+        plans_of[issue["number"]] = goal
+        if issue["state"] == "OPEN":
+            planned.add(goal)
+        if goal not in newest or issue["number"] > newest[goal]["number"]:
+            newest[goal] = issue
+    declined = {g for g, i in newest.items() if i["state"] == "CLOSED" and i["stateReason"] == "NOT_PLANNED"}
+
+    served: set[str] = set()
+    for text in specs:
+        served |= spec_serves(text)
+    for pull in pulls:
+        served |= plan_serves(pull.get("body") or "")
+    for opp in opportunities:
+        if opp["state"] == "OPEN":
+            served |= serves(opp.get("body") or "")
+    requests: dict[str, int] = {}
+    for issue in open_issues:
+        served |= serves(newest_triage(issue, marker) or "")
+        first = PLANS.first_line(issue.get("body") or "")
+        item = PLAN_ITEM.match(first)
+        if item and PLANS.trusted(issue, bot_login) and int(item.group(1)) in plans_of:
+            served.add(plans_of[int(item.group(1))])
+        if PLAN_LABEL not in labels(issue) or PLANS.MARKER.match(first):
+            continue
+        if str(issue.get("authorAssociation") or "NONE") not in PLANS.TRUSTED:
+            continue  # D-16: only the maintainer's side requests a plan
+        named = goal_ids(issue.get("title") or "")
+        if len(named) == 1 and named <= listed:
+            (goal,) = named
+            requests[goal] = min(requests.get(goal, issue["number"]), issue["number"])
+
+    found: list[PlanRow] = []
+    left: int | None = None  # the room under --wip, read once and only when a goal waits on it
+    for goal in goals:
+        if goal.id in planned:
+            continue
+        if goal.id in requests:
+            number = requests[goal.id]
+            found.append(PlanRow(goal.id, "PLAN_DUE", goal.text, f"requested in #{number}", number))
+            continue
+        # `stalled` reads spec 027's report, which isn't built: until it is, it never fires
+        if goal.id in served or goal.id in declined:
+            continue
+        trigger = "no-work"
+        if wip is not None:
+            left = room(wip) if left is None else left
+            if left <= 0:
+                found.append(PlanRow(goal.id, "PLAN_WAITS", goal.text, f"{trigger}; waits for room"))
+                continue
+        found.append(PlanRow(goal.id, "PLAN_DUE", goal.text, trigger))
+    found.sort(key=lambda r: PLAN_ORDER.index(r.state))
+    return found
+
+
+def spec_texts(tree: dict[str, Any] | None) -> list[str]:
+    """The text of each spec in docs/specs/ at the default branch's head"""
+    entries = (tree or {}).get("entries") or []
+    texts = []
+    for entry in entries:
+        name = str(entry.get("name") or "")
+        if name.endswith(".md") and name not in NOT_SPECS:
+            texts.append(str((entry.get("object") or {}).get("text") or ""))
+    return texts
+
+
+def fetch_plans(
+    repo: str,
+    intake: Intake,
+    *,
+    goals: GoalsReader,
+    marker: str,
+    bot_login: str | None,
+    wip: int | None,
+    room: RoomReader,
+    run: Runner = gh_graphql,
+) -> list[PlanRow]:
+    """The plan rows: two queries more than fetch, the open pull requests with the specs at the
+    default branch's head, and the plan issues; triage_state.py only when a goal waits on --wip"""
+    owner, name = split_repo(repo)
+    base: Variables = {"owner": owner, "name": name}
+    direction = goals()
+    if not direction:
+        return []
+    pulls, first = paged(run, PULLS, base, "pullRequests")
+    plan_issues, _ = paged(run, OPPORTUNITIES, {**base, "label": PLAN_LABEL}, "issues")
+    return plan_rows(
+        direction,
+        open_issues=intake.open_issues,
+        opportunities=intake.opportunity_issues,
+        plan_issues=plan_issues,
+        pulls=pulls,
+        specs=spec_texts(first.get("specs")),
+        marker=marker,
+        bot_login=bot_login,
+        wip=wip,
+        room=room,
+    )
+
+
+def show_plan(row: PlanRow) -> str:
+    return f"{row.goal:<6} {row.state:<16} {row.title[:70]}  [{row.note}]"
 
 
 # -- the config: [autonomy] intake, read with tomllib on 3.11+, with regexes on 3.10, where any
@@ -540,7 +875,17 @@ def main() -> int:
     )
     parser.add_argument("--category", action="append", help="discussion categories that count (repeatable)")
     parser.add_argument("--json", action="store_true", help="JSON lines instead of a table")
+    parser.add_argument("--plans", action="store_true", help="also report the goals a plan is due for (spec 028)")
+    parser.add_argument("--wip", type=int, help="with --plans: no-work plans wait while N issues are in progress")
+    parser.add_argument("--bot-login", help="with --plans: the login shipmill's sessions write as (<slug>[bot])")
+    parser.add_argument("--tool", default=SHIPMILL_SOURCE, help="with --plans: where uvx gets shipmill")
     args = parser.parse_args()
+    if not args.plans and (args.wip is not None or args.bot_login is not None):
+        parser.error("--wip and --bot-login go with --plans")
+    if args.wip is not None and args.wip < 1:
+        parser.error("--wip must be at least 1")
+    if args.bot_login is not None and not args.bot_login.strip():
+        parser.error("--bot-login must not be empty")
 
     autonomy = intake_autonomy(config_file(args.config))
     intake = fetch(
@@ -553,6 +898,17 @@ def main() -> int:
         autonomy=autonomy,
     )
     found = rows(intake)
+    planned: list[PlanRow] = []
+    if args.plans:
+        planned = fetch_plans(
+            args.repo,
+            intake,
+            goals=uvx_goals(args.tool),
+            marker=args.marker,
+            bot_login=args.bot_login,
+            wip=args.wip,
+            room=triage_room(args.repo, args.bot_login),
+        )
     if args.json:
         print(json.dumps({"autonomy": autonomy}))
         for r in found:
@@ -570,11 +926,17 @@ def main() -> int:
                     sort_keys=True,
                 )
             )
+        for p in planned:
+            row = {"goal": p.goal, "kind": "goal", "number": p.number, "state": p.state, "title": p.title}
+            print(json.dumps({**row, "note": p.note}, sort_keys=True))
     else:
         print(f"intake autonomy: {autonomy}")
         for r in found:
             print(show(r))
-    return 1 if any(r.state in ACTION for r in found) else 0
+        for p in planned:
+            print(show_plan(p))
+    actions = any(r.state in ACTION for r in found) or any(p.state in PLAN_ACTION for p in planned)
+    return 1 if actions else 0
 
 
 if __name__ == "__main__":

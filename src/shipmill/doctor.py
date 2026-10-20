@@ -34,6 +34,7 @@ from shipmill.upgrades import offers, pending
 CALLER = Path(".github") / "workflows" / "release.yml"
 DIRECTION_GUIDE = "https://github.com/shipmill/shipmill/blob/main/docs/direction.md"  # the direction, for people
 OPERATE_CALLER = Path(".github") / "workflows" / "operate.yml"  # calls shipmill's operate.yml on a schedule
+DOWNSTREAM_CALLER = Path(".github") / "workflows" / "downstream.yml"  # calls shipmill's downstream.yml (spec 032)
 _BOT_WORKFLOWS = ("prepare.yml", "land.yml")
 _ROADMAP_DEPRECATED = (
     "[roadmap] is deprecated (D-32) and read by nothing: the work-in-progress limit is [agents] wip;"
