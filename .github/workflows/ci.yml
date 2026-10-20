@@ -36,6 +36,10 @@ jobs:
         run: |
           uv run --no-project python skills/github-issue-triage/scripts/specs.py check
           uv run --no-project python skills/github-issue-triage/scripts/specs.py coverage
+      - name: Check the product direction and the review rubric (spec 024)
+        run: |
+          uv run shipmill product check
+          uv run shipmill review check
       - name: Check the agents' eval suite without a model (spec 025)
         run: uv run shipmill evals check
       - name: Lint the workflows, including the template init writes
