@@ -375,11 +375,12 @@ def owner(body: str, hour: int, association: str = "OWNER") -> dict[str, Any]:
     return comment(body, hour, association=association, author="maintainer")
 
 
-def revised(rev: int, hour: int, *, by_bot: bool = True) -> dict[str, Any]:
+def revised(rev: int, hour: int, *, association: str | None = None) -> dict[str, Any]:
+    """A plan-revised comment by the --bot-login, or with an association by a person"""
     body = f"<!-- shipmill:plan-revised rev={rev} -->\nRevised as asked."
-    if by_bot:
+    if association is None:
         return comment(body, hour, author="shipmill-app", bot=True)
-    return comment(body, hour, author="drive-by", association="CONTRIBUTOR")
+    return comment(body, hour, author="maintainer", association=association)
 
 
 def plan_states(
@@ -488,9 +489,10 @@ def test_s028_9_a_higher_revision_makes_an_earlier_answer_stale(ist: ModuleType)
     assert state_of(ist, third) == ("PLAN_OPEN", "")
 
 
-def test_s028_9_only_a_trusted_author_revises(ist: ModuleType) -> None:
-    forged = open_plan(20, owner("accept", 10), revised(2, 11, by_bot=False))
-    assert state_of(ist, forged) == ("PLAN_ACCEPTED", "unfiled")
+@pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE"])
+def test_s028_9_only_the_bot_login_revises(ist: ModuleType, association: str) -> None:
+    by_person = open_plan(20, owner("accept", 10), revised(2, 11, association=association))
+    assert state_of(ist, by_person) == ("PLAN_ACCEPTED", "unfiled")  # no revision, and no answer either
     no_login = open_plan(20, owner("Split W-2", 10), revised(2, 11))
     assert state_of(ist, no_login, bot_login=None) == ("PLAN_ANSWERED", "edit")  # the App's comment, unknown
 

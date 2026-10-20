@@ -75,8 +75,8 @@ trigger holds for.
 Then one row per plan issue: an issue labelled goal-plan whose first line opens the plan
 marker, well-formed or not, or that the --bot-login opened. Its answer is the newest
 comment newer than its newest revision (the opening body, or the newest comment whose
-first line is <!-- shipmill:plan-revised rev=<k> -->, by the --bot-login or an OWNER,
-MEMBER, or COLLABORATOR, with a rev higher than the revision before it) from an OWNER,
+first line is <!-- shipmill:plan-revised rev=<k> -->, by the --bot-login, with a rev
+higher than the revision before it) from an OWNER,
 MEMBER, or COLLABORATOR other than the --bot-login; a triage comment (--marker) and a
 comment whose first line is a shipmill marker are the sessions' own and never an answer,
 and no other comment, reaction, or label is read:
@@ -838,8 +838,9 @@ def answerer(comment: dict[str, Any], bot_login: str | None, marker: str) -> boo
 
 def plan_answer(issue: dict[str, Any], bot_login: str | None, marker: str) -> Answer | None:
     """The newest trusted answer newer than the plan's newest revision: the opening body, or
-    the newest `plan-revised` comment, by the --bot-login or a trusted author (D-29), whose
-    rev is higher than the revision before it. None while there is none"""
+    the newest `plan-revised` comment by the --bot-login whose rev is higher than the
+    revision before it. Anyone else's `plan-revised` comment revises nothing, and, starting
+    with a shipmill marker, is no answer either. None while there is none"""
     since = timestamp(issue["createdAt"])
     rev = 0
     found: Answer | None = None
@@ -848,7 +849,8 @@ def plan_answer(issue: dict[str, Any], bot_login: str | None, marker: str) -> An
         at = timestamp(comment["createdAt"])
         revised = REVISED.match(PLANS.first_line(body))
         if revised is not None:
-            if PLANS.trusted(comment, bot_login) and int(revised.group(1)) > rev and at >= since:
+            by_bot = bot_login is not None and PLANS.login(comment.get("author")).lower() == bot_login.lower()
+            if by_bot and int(revised.group(1)) > rev and at >= since:
                 rev, since, found = int(revised.group(1)), at, None
             continue
         if at <= since or not answerer(comment, bot_login, marker):
