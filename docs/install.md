@@ -87,6 +87,20 @@ opens the repo, commit this to its `.claude/settings.json`:
 }
 ```
 
+The delivery hooks come with the plugin (spec 026): in a repo whose `.github/shipmill.toml`
+has an `[agents]` section, they refuse with exit 2 a `gh` write without `shipmill gh` while
+`app_id` is set, a push to the default branch, a rebase merge, a force push without a lease
+pinned to a commit, and a copy of a `[hooks] private` path out of the repo, each with the
+command to run instead. Everywhere else they allow every command. They need `uv` on your
+`PATH`, which runs them on a Python 3.11 or newer it finds or installs. When a hook can't
+start its script (no `uv`, no such Python to be had, offline or with `python-downloads =
+"never"`, or the script missing), it prints `shipmill hook: can't start hooks/delivery.py
+(<the reason>); this command runs unchecked, see shipmill doctor` and exits 1, so the
+command runs unchecked rather than every command being blocked. `$CR doctor` tests them:
+for a repo with `[agents]` it prints one line per rule, on or off, and runs a self-test
+that FAILs naming the fix when the hook doesn't refuse, which keeps a headless gate from
+starting a session. The switches are in [the policy](release-lanes.md#delivery-hooks).
+
 For a checkout of shipmill you edit, or for Codex, link the skill folders instead:
 
 ```bash

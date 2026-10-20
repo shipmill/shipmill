@@ -65,6 +65,8 @@ LOG_TAIL = 64 * 1024  # how much of a session's log the gate reads, from its end
 
 # The tools a headless session may use without a prompt (spec 005): the file tools, skills and
 # subagents, peer messages, and gh, git, and uv. Not a sandbox: the trust filter is (D-16)
+# An allow list only: the deny rules on these tools' arguments (a plain gh write, a push to the
+# default branch, a rebase merge, a force push) live in hooks/delivery.py alone (spec 026)
 HEADLESS_TOOLS = (
     "Read Edit Write Glob Grep Skill Agent SendMessage ListAgents TodoWrite"
     " Bash(gh *) Bash(git *) Bash(uv *) Bash(uvx *)"
