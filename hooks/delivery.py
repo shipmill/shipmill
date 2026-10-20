@@ -500,6 +500,12 @@ def _shipmill_gh(words: Sequence[str], at: int) -> int | None:
     return i + 1 if i < len(words) and words[i] == "gh" else None
 
 
+# The shipmill package as uvx runs it: bare, with extras, or with any version specifier, such as
+# shipmill==0.57.0, shipmill@latest, shipmill>=0.57, or shipmill[x]==0.57.0; each runs shipmill
+# from PyPI, so its gh is shipmill gh, which the rebase-merge rule still checks
+SHIPMILL_SPEC = re.compile(r"^shipmill(?:\[[^\]]*\])?(?:\s*[=<>!~@].*)?$")
+
+
 def gh_call(cmd: Simple) -> GhCall | None:
     program = cmd.program
     if program == "gh":
@@ -509,8 +515,8 @@ def gh_call(cmd: Simple) -> GhCall | None:
         return None if start is None else GhCall(True, start)
     if program in ("uvx", "uv"):  # uvx shipmill==<version> gh ..., uvx --from <spec> shipmill gh ...
         for at in range(1, len(cmd.words)):
-            name = os.path.basename(cmd.words[at])
-            pinned = name == "shipmill" or name.startswith(("shipmill==", "shipmill@"))
+            word = cmd.words[at]
+            pinned = SHIPMILL_SPEC.match(word) is not None or os.path.basename(word) == "shipmill"
             start = _shipmill_gh(cmd.words, at) if pinned else None
             if start is not None:
                 return GhCall(True, start)

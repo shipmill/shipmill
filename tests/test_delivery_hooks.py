@@ -468,6 +468,15 @@ def test_s026_5_rebase_merge_takes_the_app_fix_too(box: Sandbox) -> None:
     assert pinned == [*SHIPMILL, "gh", "pr", "merge", "412", "--squash"]
 
 
+@pytest.mark.parametrize("spec", ["shipmill>=0.57", "shipmill[x]==0.57.0", "shipmill~=0.57.0", "shipmill@latest"])
+def test_s031_4_any_shipmill_spec_uvx_runs_is_shipmill_gh_and_its_rebase_merge_is_refused(
+    box: Sandbox, spec: str
+) -> None:
+    """uvx runs shipmill's gh from any requirement on the package, so none skips the rebase-merge rule"""
+    refused(bash(f"uvx '{spec}' gh pr merge 412 -r", box.app), "rebase-merge", "D-33")
+    allowed(bash(f"uvx '{spec}' gh pr comment 7 --body hi", box.app))
+
+
 def test_s026_9_rebase_merge_refusal_reads_as_the_spec_shows(box: Sandbox) -> None:
     result = hook(fixture("bash-rebase-merge-refused.json", box.agents))
     assert result.returncode == 2
