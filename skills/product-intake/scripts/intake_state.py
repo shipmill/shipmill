@@ -72,9 +72,35 @@ first line is the plan marker <!-- shipmill:plan goal=G-n rev=k -->) reads:
 A goal with an open plan issue reads nothing, whatever its trigger; nor does a goal no
 trigger holds for.
 
+Then one row per plan issue: an issue labelled goal-plan whose first line opens the plan
+marker, well-formed or not, or that the --bot-login opened. Its answer is the newest
+comment newer than its newest revision (the opening body, or the newest comment whose
+first line is <!-- shipmill:plan-revised rev=<k> -->, by the --bot-login, with a rev
+higher than the revision before it) from an OWNER,
+MEMBER, or COLLABORATOR other than the --bot-login; a triage comment (--marker) and a
+comment whose first line is a shipmill marker are the sessions' own and never an answer,
+and no other comment, reaction, or label is read:
+  PLAN_OPEN         open, with no answer; or its answer is an accept older than the
+                    body's last edit, noted "edited after accept"
+  PLAN_ANSWERED     open, and the answer's first line starts with `decline` (any case;
+                    noted "decline") or is anything but an accept (noted "edit")
+  PLAN_ACCEPTED     open, the answer's first line is `accept` (any case, an optional
+                    final period), and a feature or fix item has no issue carrying its
+                    plan-item marker (as `plans.py items` reads it), or the Milestone names
+                    a title and a filed item or an existing item of this repo isn't in it;
+                    the note names them
+  PLAN_FILED        accepted, and neither holds
+  PLAN_MALFORMED    open, and `plans.py check` refuses the body; the note names the first
+                    line and rule
+  PLAN_DECLINED     closed as not planned; the note is the reason: the rest of the newest
+                    answer starting with `decline`, else the first comment from an hour
+                    before the close on, as for an opportunity
+A plan closed as completed or as a duplicate reads nothing.
+
 Exit 0 when nothing needs action, 1 when any row is NEW_FEEDBACK, ACCEPTED, NO_REASON,
-OVERLAP, or PLAN_DUE, 2 on bad input (an issue with more than 100 labels, a malformed
-config or goals) or a gh failure. Needs the gh CLI, authenticated, and with --plans uvx.
+OVERLAP, PLAN_DUE, PLAN_ANSWERED, PLAN_ACCEPTED, or PLAN_MALFORMED, 2 on bad input (an
+issue with more than 100 labels, a malformed config or goals, an existing item naming no
+issue) or a gh failure. Needs the gh CLI, authenticated, and with --plans uvx.
 Python 3.10+, standard library only.
 """
 
@@ -207,8 +233,57 @@ SPEC_SERVES = re.compile(r"^serves:(.*)$")
 NOT_SPECS = ("TEMPLATE.md", "README.md")  # as specs.py skips them
 SERVING_STATUSES = ("draft", "approved")
 AUTOMATIC = ("no-work", "stalled")  # the triggers that wait for room under --wip
-PLAN_ACTION = {"PLAN_DUE"}
-PLAN_ORDER = ("PLAN_DUE", "PLAN_WAITS")
+PLAN_ACTION = {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED"}
+PLAN_ORDER = (
+    "PLAN_DUE",
+    "PLAN_MALFORMED",
+    "PLAN_ANSWERED",
+    "PLAN_ACCEPTED",
+    "PLAN_WAITS",
+    "PLAN_OPEN",
+    "PLAN_FILED",
+    "PLAN_DECLINED",
+)
+PLAN_OPENER = "<!-- shipmill:plan "  # a first line that means to be the plan marker, well-formed or not
+SHIPMILL_MARKER = "<!-- shipmill:"  # a session's own marked comment, never an answer
+REVISED = re.compile(r"^<!-- shipmill:plan-revised rev=([1-9][0-9]*) -->$")
+ACCEPT = re.compile(r"^accept\.?$", re.IGNORECASE)
+DECLINE = re.compile(r"^decline", re.IGNORECASE)
+FILED_KINDS = ("feature", "fix")
+EXISTING_REF = re.compile(r"^(?:([\w.-]+)/([\w.-]+))?#([1-9][0-9]*)$")
+PLAN_COMMENT = "body createdAt author { __typename login } authorAssociation"
+PLAN_ISSUES = (
+    """
+query($owner: String!, $name: String!, $label: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    issues(labels: [$label], first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number title url state stateReason closedAt createdAt lastEditedAt body
+        author { __typename login } authorAssociation
+        labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
+        comments(last: 50) { pageInfo { hasPreviousPage startCursor } nodes { """
+    + PLAN_COMMENT
+    + """ } }
+      }
+    }
+  }
+}
+"""
+)
+OLDER_PLAN_COMMENTS = (
+    """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      comments(last: 50, before: $cursor) { pageInfo { hasPreviousPage startCursor } nodes { """
+    + PLAN_COMMENT
+    + """ } }
+    }
+  }
+}
+"""
+)
 PULLS = """
 query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
@@ -539,11 +614,12 @@ class Goal:
 
 @dataclass
 class PlanRow:
-    goal: str
+    goal: str | None  # None for a plan whose marker names no goal
     state: str
-    title: str  # the goal's text
+    title: str  # the goal's text, or the plan issue's title
     note: str
-    number: int | None = None  # the request issue, for a requested plan
+    number: int | None = None  # the request issue for a requested plan, the plan issue for a plan's row
+    kind: str = "goal"  # goal: a row per goal (PLAN_DUE, PLAN_WAITS); plan: a row per plan issue
 
 
 # Reads the direction's goals, in the direction's order
@@ -697,7 +773,7 @@ def plan_rows(
         item = PLAN_ITEM.match(first)
         if item and PLANS.trusted(issue, bot_login) and int(item.group(1)) in plans_of:
             served.add(plans_of[int(item.group(1))])
-        if PLAN_LABEL not in labels(issue) or PLANS.MARKER.match(first):
+        if PLAN_LABEL not in labels(issue) or is_plan(issue, bot_login):
             continue
         if str(issue.get("authorAssociation") or "NONE") not in PLANS.TRUSTED:
             continue  # D-16: only the maintainer's side requests a plan
@@ -729,6 +805,197 @@ def plan_rows(
     return found
 
 
+# -- goal plans (spec 028): where each plan issue stands
+
+
+def is_plan(issue: dict[str, Any], bot_login: str | None) -> bool:
+    """A goal-plan issue meant as a plan: its first line opens the plan marker, well-formed
+    or not, or the --bot-login opened it. Any other goal-plan issue is a request"""
+    if PLAN_LABEL not in labels(issue):
+        return False
+    if PLANS.first_line(issue.get("body") or "").startswith(PLAN_OPENER):
+        return True
+    return bot_login is not None and PLANS.login(issue.get("author")).lower() == bot_login.lower()
+
+
+@dataclass(frozen=True)
+class Answer:
+    kind: str  # accept, decline, or edit
+    at: dt.datetime
+    body: str
+
+
+def answerer(comment: dict[str, Any], bot_login: str | None, marker: str) -> bool:
+    """D-16: an OWNER, MEMBER, or COLLABORATOR other than the --bot-login; a triage comment
+    or a shipmill-marked comment is a session's own, never an answer"""
+    if str(comment.get("authorAssociation") or "NONE") not in PLANS.TRUSTED:
+        return False
+    if bot_login is not None and PLANS.login(comment.get("author")).lower() == bot_login.lower():
+        return False
+    body = comment.get("body") or ""
+    return verdict(body, marker) is None and not PLANS.first_line(body).startswith(SHIPMILL_MARKER)
+
+
+def plan_answer(issue: dict[str, Any], bot_login: str | None, marker: str) -> Answer | None:
+    """The newest trusted answer newer than the plan's newest revision: the opening body, or
+    the newest `plan-revised` comment by the --bot-login whose rev is higher than the
+    revision before it. Anyone else's `plan-revised` comment revises nothing, and, starting
+    with a shipmill marker, is no answer either. None while there is none"""
+    since = timestamp(issue["createdAt"])
+    rev = 0
+    found: Answer | None = None
+    for comment in sorted(issue["comments"]["nodes"], key=lambda c: timestamp(c["createdAt"])):
+        body = comment.get("body") or ""
+        at = timestamp(comment["createdAt"])
+        revised = REVISED.match(PLANS.first_line(body))
+        if revised is not None:
+            by_bot = bot_login is not None and PLANS.login(comment.get("author")).lower() == bot_login.lower()
+            if by_bot and int(revised.group(1)) > rev and at >= since:
+                rev, since, found = int(revised.group(1)), at, None
+            continue
+        if at <= since or not answerer(comment, bot_login, marker):
+            continue
+        if found is None or at >= found.at:
+            first = PLANS.first_line(body)
+            kind = "accept" if ACCEPT.match(first) else "decline" if DECLINE.match(first) else "edit"
+            found = Answer(kind, at, body)
+    return found
+
+
+def decline_text(answer: Answer) -> str:
+    """A decline's reason: the rest of the comment after `decline`, its first line with text"""
+    rest = DECLINE.sub("", answer.body.strip(), count=1).lstrip(" \t:.,;-—–")
+    lines = [line.strip() for line in rest.splitlines() if line.strip()]
+    return lines[0] if lines else ""
+
+
+def complete_plan_comments(run: Runner, owner: str, name: str, issue: dict[str, Any]) -> None:
+    """Page a plan issue's comments back to its first: an answer is read against every revision"""
+    comments = issue["comments"]
+    seen: set[str] = set()
+    while comments["pageInfo"]["hasPreviousPage"]:
+        cursor = comments["pageInfo"]["startCursor"]
+        if not cursor or cursor in seen:
+            fail(f"GitHub reported more comments on #{issue['number']}, but the page cursor did not advance")
+        seen.add(cursor)
+        variables: Variables = {"owner": owner, "name": name, "number": issue["number"], "cursor": cursor}
+        page = (repository(run, OLDER_PLAN_COMMENTS, variables).get("issue") or {}).get("comments")
+        if page is None:
+            fail(f"issue #{issue['number']} vanished while paging its comments")
+        comments["nodes"] = page["nodes"] + comments["nodes"]
+        comments["pageInfo"] = page["pageInfo"]
+
+
+# Where an accepted plan's filing stands: (PLAN_ACCEPTED or PLAN_FILED, the note)
+FilingReader = Callable[[dict[str, Any], Any], tuple[str, str]]
+
+
+def plan_state(
+    issue: dict[str, Any],
+    *,
+    goals: frozenset[str],
+    marker: str,
+    bot_login: str | None,
+    filing: FilingReader,
+) -> PlanRow | None:
+    """A plan issue's row; None for a plan closed but not as not planned"""
+    goal = plan_goal(issue)
+    title = issue.get("title") or ""
+    number = issue["number"]
+    if issue["state"] == "CLOSED":
+        if issue["stateReason"] != "NOT_PLANNED":
+            return None
+        answer = plan_answer(issue, bot_login, marker)
+        reason = decline_text(answer) if answer is not None and answer.kind == "decline" else ""
+        reason = reason or decline_reason(issue, marker) or "closed as not planned with no reason"
+        return PlanRow(goal, "PLAN_DECLINED", title, reason, number, "plan")
+    plan, problems = PLANS.parse(issue.get("body") or "", goals)
+    if plan is None:
+        line, rule = problems[0]
+        more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
+        return PlanRow(goal, "PLAN_MALFORMED", title, f"line {line}: {rule}{more}", number, "plan")
+    answer = plan_answer(issue, bot_login, marker)
+    if answer is None:
+        return PlanRow(goal, "PLAN_OPEN", title, "", number, "plan")
+    if answer.kind != "accept":
+        return PlanRow(goal, "PLAN_ANSWERED", title, answer.kind, number, "plan")
+    edited = issue.get("lastEditedAt")
+    if edited and timestamp(edited) > answer.at:
+        return PlanRow(goal, "PLAN_OPEN", title, "edited after accept", number, "plan")
+    state, note = filing(issue, plan)
+    return PlanRow(goal, state, title, note, number, "plan")
+
+
+def plan_issue_rows(
+    plan_issues: list[dict[str, Any]],
+    *,
+    goals: frozenset[str],
+    marker: str,
+    bot_login: str | None,
+    filing: FilingReader,
+) -> list[PlanRow]:
+    found: list[PlanRow] = []
+    for issue in plan_issues:
+        if is_plan(issue, bot_login):
+            row = plan_state(issue, goals=goals, marker=marker, bot_login=bot_login, filing=filing)
+            if row is not None:
+                found.append(row)
+    return found
+
+
+def existing_milestones(run: Runner, owner: str, name: str, numbers: list[int]) -> dict[int, str | None]:
+    """The milestone title of each issue of this repo, 50 to a query"""
+    found: dict[int, str | None] = {}
+    for start in range(0, len(numbers), 50):
+        chunk = numbers[start : start + 50]
+        parts = " ".join(f"e{n}: issue(number: {n}) {{ milestone {{ title }} }}" for n in chunk)
+        query = f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {parts} }} }}"
+        data = repository(run, query, {"owner": owner, "name": name})
+        for n in chunk:
+            node = data.get(f"e{n}")
+            if node is None:
+                fail(f"no issue #{n} in {owner}/{name}, which a plan names as an existing item")
+            title = (node.get("milestone") or {}).get("title")
+            found[n] = None if title is None else str(title)
+    return found
+
+
+def gh_filing(repo: str, bot_login: str | None, run: Runner) -> FilingReader:
+    """The default filing reader: plans.py's items query, and the existing items' milestones"""
+    owner, name = split_repo(repo)
+
+    def read(issue: dict[str, Any], plan: Any) -> tuple[str, str]:
+        try:
+            _, filed = PLANS.plan_carriers(f"{owner}/{name}#{issue['number']}", bot_login, run)
+        except PLANS.PlanError as exc:
+            fail(str(exc))
+        unfiled = [item.id for item, carrier in filed if item.kind in FILED_KINDS and carrier is None]
+        carried = [carrier for item, carrier in filed if item.kind in FILED_KINDS and carrier is not None]
+        outside: list[int] = []
+        if plan.milestone is not None:
+            outside += [c.number for c in carried if c.milestone != plan.milestone]
+            here: list[int] = []
+            for item, _ in filed:
+                ref = EXISTING_REF.match(item.text) if item.kind == "existing" else None
+                if ref is None:
+                    continue
+                named = (ref.group(1) or owner, ref.group(2) or name)
+                if (named[0].lower(), named[1].lower()) == (owner.lower(), name.lower()):
+                    here.append(int(ref.group(3)))
+            titles = existing_milestones(run, owner, name, sorted(set(here)))
+            outside += [n for n in sorted(set(here)) if titles[n] != plan.milestone]
+        notes = []
+        if unfiled:
+            notes.append(f"not filed: {', '.join(unfiled)}")
+        if outside:
+            notes.append(f"not in milestone {plan.milestone}: {', '.join(f'#{n}' for n in sorted(set(outside)))}")
+        if notes:
+            return "PLAN_ACCEPTED", "; ".join(notes)
+        return "PLAN_FILED", f"filed: {', '.join(f'#{c.number}' for c in carried)}" if carried else "nothing to file"
+
+    return read
+
+
 def spec_texts(tree: dict[str, Any] | None) -> list[str]:
     """The text of each spec in docs/specs/ at the default branch's head"""
     entries = (tree or {}).get("entries") or []
@@ -750,17 +1017,30 @@ def fetch_plans(
     wip: int | None,
     room: RoomReader,
     run: Runner = gh_graphql,
+    filing: FilingReader | None = None,
 ) -> list[PlanRow]:
     """The plan rows: two queries more than fetch, the open pull requests with the specs at the
-    default branch's head, and the plan issues; triage_state.py only when a goal waits on --wip"""
+    default branch's head, and the plan issues; then a plan's older comments when it has more
+    than 50, and for each accepted plan its items' issues; triage_state.py only when a goal
+    waits on --wip"""
     owner, name = split_repo(repo)
     base: Variables = {"owner": owner, "name": name}
     direction = goals()
     if not direction:
         return []
     pulls, first = paged(run, PULLS, base, "pullRequests")
-    plan_issues, _ = paged(run, OPPORTUNITIES, {**base, "label": PLAN_LABEL}, "issues")
-    return plan_rows(
+    plan_issues, _ = paged(run, PLAN_ISSUES, {**base, "label": PLAN_LABEL}, "issues")
+    for issue in plan_issues:
+        if is_plan(issue, bot_login) and (issue["state"] == "OPEN" or issue["stateReason"] == "NOT_PLANNED"):
+            complete_plan_comments(run, owner, name, issue)
+    by_issue = plan_issue_rows(
+        plan_issues,
+        goals=frozenset(g.id for g in direction),
+        marker=marker,
+        bot_login=bot_login,
+        filing=filing or gh_filing(repo, bot_login, run),
+    )
+    by_goal = plan_rows(
         direction,
         open_issues=intake.open_issues,
         opportunities=intake.opportunity_issues,
@@ -772,9 +1052,15 @@ def fetch_plans(
         wip=wip,
         room=room,
     )
+    found = by_goal + by_issue
+    found.sort(key=lambda r: PLAN_ORDER.index(r.state))
+    return found
 
 
 def show_plan(row: PlanRow) -> str:
+    if row.kind == "plan":
+        note = "; ".join(part for part in (row.goal, row.note) if part)
+        return f"#{row.number:<5} {row.state:<16} {row.title[:70]}  [{note}]"
     return f"{row.goal:<6} {row.state:<16} {row.title[:70]}  [{row.note}]"
 
 
@@ -927,7 +1213,7 @@ def main() -> int:
                 )
             )
         for p in planned:
-            row = {"goal": p.goal, "kind": "goal", "number": p.number, "state": p.state, "title": p.title}
+            row = {"goal": p.goal, "kind": p.kind, "number": p.number, "state": p.state, "title": p.title}
             print(json.dumps({**row, "note": p.note}, sort_keys=True))
     else:
         print(f"intake autonomy: {autonomy}")

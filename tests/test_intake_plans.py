@@ -1,6 +1,7 @@
 """intake_state.py --plans: the goals a plan is due for (spec 028, #510), without gh or the network"""
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -22,9 +23,24 @@ def ist() -> ModuleType:
     return module
 
 
+def at(hour: int) -> str:
+    return f"2026-10-01T{hour:02d}:00:00Z"
+
+
+def comment(
+    body: str, hour: int = 10, *, association: str = "NONE", author: str = "someone", bot: bool = False
+) -> dict[str, Any]:
+    return {
+        "body": body,
+        "createdAt": at(hour),
+        "author": {"__typename": "Bot" if bot else "User", "login": author},
+        "authorAssociation": association,
+    }
+
+
 def issue(
     number: int,
-    *comments: str,
+    *comments: str | dict[str, Any],
     title: str = "",
     body: str = "",
     labels: tuple[str, ...] = (),
@@ -33,6 +49,8 @@ def issue(
     association: str = "NONE",
     author: str = "someone",
     bot: bool = False,
+    edited: str | None = None,
+    thumbs: int = 0,
 ) -> dict[str, Any]:
     return {
         "number": number,
@@ -40,15 +58,17 @@ def issue(
         "url": f"https://github.com/o/r/issues/{number}",
         "state": state,
         "stateReason": reason,
+        "createdAt": at(9),
+        "lastEditedAt": edited,
         "closedAt": None if state == "OPEN" else "2026-10-02T10:00:00Z",
         "body": body,
         "author": {"__typename": "Bot" if bot else "User", "login": author},
         "authorAssociation": association,
         "labels": {"pageInfo": {"hasNextPage": False}, "nodes": [{"name": n} for n in labels]},
-        "reactions": {"totalCount": 0},
+        "reactions": {"totalCount": thumbs},
         "comments": {
             "pageInfo": {"hasPreviousPage": False, "startCursor": None},
-            "nodes": [{"body": c, "createdAt": "2026-10-01T10:00:00Z"} for c in comments],
+            "nodes": [comment(c) if isinstance(c, str) else c for c in comments],
         },
     }
 
@@ -73,12 +93,16 @@ class Fake:
         plans: list[dict[str, Any]] | None = None,
         pulls: list[str] | None = None,
         specs: dict[str, str] | None = None,
+        carriers: list[dict[str, Any]] | None = None,
+        milestones: dict[int, str | None] | None = None,
     ) -> None:
         self.opened = opened or []
         self.opportunities = opportunities or []
         self.plans = plans or []
         self.pulls = pulls or []
         self.specs = specs or {}
+        self.carriers = carriers or []  # the issues the plan-item marker search finds
+        self.milestones = milestones or {}  # each existing item's milestone
         self.asked: list[str] = []
 
     @staticmethod
@@ -87,6 +111,17 @@ class Fake:
 
     def __call__(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         self.asked.append(query)
+        if "search(type: ISSUE" in query:
+            (plan_issue,) = [p for p in self.plans if p["number"] == variables["number"]]
+            subs = {"pageInfo": {"hasNextPage": False}, "nodes": []}
+            found = {"issueCount": len(self.carriers), "nodes": self.carriers}
+            repo_issue = {"number": plan_issue["number"], "body": plan_issue["body"], "subIssues": subs}
+            return {"data": {"repository": {"issue": repo_issue}, "search": found}}
+        numbers = [int(n) for n in re.findall(r"\be(\d+): issue\(", query)]
+        if numbers:
+            titles = {n: self.milestones[n] for n in numbers}
+            aliased = {f"e{n}": {"milestone": {"title": t} if t else None} for n, t in titles.items()}
+            return {"data": {"repository": aliased}}
         if "labels: [$label]" in query:
             chosen = self.plans if variables["label"] == "goal-plan" else self.opportunities
             repo: dict[str, Any] = {"issues": self.page(chosen)}
@@ -141,7 +176,7 @@ def due(
         run=fake,
     )
     assert len(asked) <= 1  # the room is read once at most
-    return {r.goal: (r.state, r.note) for r in found}
+    return {r.goal: (r.state, r.note) for r in found if r.kind == "goal"}
 
 
 def test_s028_1_a_goal_nothing_serves_reads_no_work(ist: ModuleType) -> None:
@@ -315,3 +350,266 @@ def test_the_goals_are_read_strictly(ist: ModuleType) -> None:
 def test_the_plan_rows_print_after_the_opportunity_rows(ist: ModuleType) -> None:
     row = ist.PlanRow("G-1", "PLAN_DUE", "Releases go out on their own", "requested in #25", 25)
     assert ist.show_plan(row) == "G-1    PLAN_DUE         Releases go out on their own  [requested in #25]"
+    plan_row = ist.PlanRow("G-1", "PLAN_ANSWERED", "Plan for G-1", "edit", 20, "plan")
+    assert ist.show_plan(plan_row) == "#20    PLAN_ANSWERED    Plan for G-1  [G-1; edit]"
+
+
+# -- a plan issue's states (#514)
+
+
+def full_plan(goal: str = "G-1", milestone: str = "none", rev: int = 1) -> str:
+    return (
+        f"<!-- shipmill:plan goal={goal} rev={rev} -->\n## Goal\n\n{goal}: Releases go out on their own\n\n"
+        "Trigger: no-work\nMeasure: none yet\n\n## Work\n\n- W-1 existing: #212\n- W-2 feature: A release cut\n"
+        "- W-3 fix: The lane stalls (after W-2)\n- W-4 existing: other/x#5\n\n## Order\n\nThe feature first.\n\n"
+        f"## Milestone\n\n{milestone}\n"
+    )
+
+
+def open_plan(number: int, *comments: str | dict[str, Any], body: str = "", **kwargs: Any) -> dict[str, Any]:
+    opener: dict[str, Any] = {"author": "shipmill-app", "bot": True, **kwargs}
+    return issue(number, *comments, title=f"Plan {number}", body=body or full_plan(), labels=("goal-plan",), **opener)
+
+
+def owner(body: str, hour: int, association: str = "OWNER") -> dict[str, Any]:
+    return comment(body, hour, association=association, author="maintainer")
+
+
+def revised(rev: int, hour: int, *, association: str | None = None) -> dict[str, Any]:
+    """A plan-revised comment by the --bot-login, or with an association by a person"""
+    body = f"<!-- shipmill:plan-revised rev={rev} -->\nRevised as asked."
+    if association is None:
+        return comment(body, hour, author="shipmill-app", bot=True)
+    return comment(body, hour, author="maintainer", association=association)
+
+
+def plan_states(
+    ist: ModuleType,
+    fake: Fake,
+    *,
+    bot_login: str | None = BOT,
+    filing: Any = None,
+) -> dict[int, tuple[str, str]]:
+    """Each plan issue's row as (state, note); without a filing reader, every accepted plan
+    reads PLAN_ACCEPTED with the note `unfiled`"""
+    intake = ist.fetch(
+        "o/r",
+        label="opportunity",
+        accepted="planned",
+        marker="Triage:",
+        skip=set(ist.SKIP_LABELS),
+        categories=None,
+        autonomy="propose",
+        run=fake,
+    )
+    found = ist.fetch_plans(
+        "o/r",
+        intake,
+        goals=lambda: [ist.Goal(i, t) for i, t in GOALS],
+        marker="Triage:",
+        bot_login=bot_login,
+        wip=None,
+        room=lambda limit: 1,
+        run=fake,
+        filing=filing if filing is not None else (lambda issue, plan: ("PLAN_ACCEPTED", "unfiled")),
+    )
+    return {r.number: (r.state, r.note) for r in found if r.kind == "plan"}
+
+
+def state_of(ist: ModuleType, plan_issue: dict[str, Any], **kwargs: Any) -> tuple[str, str]:
+    return plan_states(ist, Fake(plans=[plan_issue]), **kwargs)[plan_issue["number"]]
+
+
+def test_s028_8_a_plan_with_no_trusted_answer_reads_open(ist: ModuleType) -> None:
+    assert state_of(ist, open_plan(20)) == ("PLAN_OPEN", "")
+    others = open_plan(
+        20,
+        comment("accept", 10, association="CONTRIBUTOR", author="drive-by"),
+        comment("decline", 11, association="NONE", author="stranger"),
+        comment("accept", 12, association="FIRST_TIME_CONTRIBUTOR", author="new"),
+        comment("accept", 13, association="MEMBER", author="shipmill-app", bot=True),  # the --bot-login
+        thumbs=7,  # a reaction is never read
+    )
+    assert state_of(ist, others) == ("PLAN_OPEN", "")
+
+
+def test_s028_8_the_sessions_own_comments_are_never_an_answer(ist: ModuleType) -> None:
+    own = open_plan(
+        20,
+        owner("Triage: **plan**. Serves: G-1.", 10),
+        owner("<!-- shipmill:needs-decision -->\n@maintainer which way?", 11),
+    )
+    assert state_of(ist, own) == ("PLAN_OPEN", "")
+
+
+def test_s028_8_a_trusted_comment_older_than_the_newest_revision_is_stale(ist: ModuleType) -> None:
+    assert state_of(ist, open_plan(20, owner("Split W-2", 10), revised(2, 11))) == ("PLAN_OPEN", "")
+    before_opening = open_plan(20, owner("accept", 9))  # not newer than the opening body
+    assert state_of(ist, before_opening) == ("PLAN_OPEN", "")
+
+
+@pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR"])
+@pytest.mark.parametrize("first", ["accept", "Accept.", "ACCEPT", "  accept  "])
+def test_s028_9_an_accept_reads_accepted(ist: ModuleType, association: str, first: str) -> None:
+    accepted = open_plan(20, owner(f"{first}\nThanks.", 10, association))
+    assert state_of(ist, accepted) == ("PLAN_ACCEPTED", "unfiled")
+
+
+@pytest.mark.parametrize(
+    ("first", "note"),
+    [
+        ("decline", "decline"),
+        ("Decline: not this quarter", "decline"),
+        ("declined, too broad", "decline"),
+        ("accept.. but split W-2", "edit"),
+        ("accepted", "edit"),
+        ("accept W-2 only", "edit"),
+        ("Please split W-2 in two", "edit"),
+        ("I don't accept this", "edit"),
+    ],
+)
+def test_s028_9_a_decline_or_any_other_answer_reads_answered(ist: ModuleType, first: str, note: str) -> None:
+    assert state_of(ist, open_plan(20, owner(first, 10))) == ("PLAN_ANSWERED", note)
+
+
+def test_s028_9_the_newest_trusted_answer_decides(ist: ModuleType) -> None:
+    assert state_of(ist, open_plan(20, owner("accept", 10), owner("decline", 11))) == ("PLAN_ANSWERED", "decline")
+    later = open_plan(20, owner("Split W-2", 10), owner("accept", 11), comment("decline", 12))
+    assert state_of(ist, later) == ("PLAN_ACCEPTED", "unfiled")
+
+
+def test_s028_9_a_higher_revision_makes_an_earlier_answer_stale(ist: ModuleType) -> None:
+    edited = open_plan(20, owner("Split W-2", 10), revised(2, 11))
+    assert state_of(ist, edited) == ("PLAN_OPEN", "")
+    answered_again = open_plan(20, owner("Split W-2", 10), revised(2, 11), owner("accept", 12))
+    assert state_of(ist, answered_again) == ("PLAN_ACCEPTED", "unfiled")
+    replayed = open_plan(20, owner("Split W-2", 10), revised(2, 11), owner("Drop W-3", 12), revised(2, 13))
+    assert state_of(ist, replayed) == ("PLAN_ANSWERED", "edit")  # rev 2 again is not a higher rev
+    third = open_plan(20, revised(2, 10), owner("Drop W-3", 12), revised(3, 13))
+    assert state_of(ist, third) == ("PLAN_OPEN", "")
+
+
+@pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "NONE"])
+def test_s028_9_only_the_bot_login_revises(ist: ModuleType, association: str) -> None:
+    by_person = open_plan(20, owner("accept", 10), revised(2, 11, association=association))
+    assert state_of(ist, by_person) == ("PLAN_ACCEPTED", "unfiled")  # no revision, and no answer either
+    no_login = open_plan(20, owner("Split W-2", 10), revised(2, 11))
+    assert state_of(ist, no_login, bot_login=None) == ("PLAN_ANSWERED", "edit")  # the App's comment, unknown
+
+
+def test_s028_10_an_accept_older_than_the_last_edit_reads_open(ist: ModuleType) -> None:
+    stale = open_plan(20, owner("accept", 10), edited="2026-10-01T10:00:01Z")
+    assert state_of(ist, stale) == ("PLAN_OPEN", "edited after accept")
+    for edited in ("2026-10-01T10:00:00Z", "2026-10-01T09:59:59Z", None):  # not after the accept
+        assert state_of(ist, open_plan(20, owner("accept", 10), edited=edited)) == ("PLAN_ACCEPTED", "unfiled")
+    reaccepted = open_plan(20, owner("accept", 10), owner("accept", 12), edited=at(11))
+    assert state_of(ist, reaccepted) == ("PLAN_ACCEPTED", "unfiled")
+
+
+def test_s028_10_an_edit_after_an_edit_or_decline_answer_changes_nothing(ist: ModuleType) -> None:
+    assert state_of(ist, open_plan(20, owner("decline", 10), edited=at(11))) == ("PLAN_ANSWERED", "decline")
+
+
+def carrier(number: int, item: str, *, milestone: str | None = None, trusted: bool = True) -> dict[str, Any]:
+    author = {"__typename": "Bot", "login": "shipmill-app"} if trusted else {"__typename": "User", "login": "x"}
+    return {
+        "number": number,
+        "body": f"<!-- shipmill:plan-item #20 {item} -->\nThe item.",
+        "milestone": {"title": milestone} if milestone else None,
+        "author": author,
+        "authorAssociation": "NONE",
+        "repository": {"nameWithOwner": "o/r"},
+    }
+
+
+def filed(ist: ModuleType, milestone: str, carriers: list[dict[str, Any]], existing: str | None = None) -> Any:
+    accepted = open_plan(20, owner("accept", 10), body=full_plan(milestone=milestone))
+    fake = Fake(plans=[accepted], carriers=carriers, milestones={212: existing})
+    return plan_states(ist, fake, filing=ist.gh_filing("o/r", BOT, fake))[20], fake
+
+
+def test_s028_11_an_accepted_plan_reads_accepted_until_every_item_is_filed(ist: ModuleType) -> None:
+    assert filed(ist, "none", [])[0] == ("PLAN_ACCEPTED", "not filed: W-2, W-3")
+    assert filed(ist, "none", [carrier(301, "W-2")])[0] == ("PLAN_ACCEPTED", "not filed: W-3")
+    outsider = [carrier(301, "W-2"), carrier(302, "W-3", trusted=False)]  # D-29: not its marker
+    assert filed(ist, "none", outsider)[0] == ("PLAN_ACCEPTED", "not filed: W-3")
+    done, fake = filed(ist, "none", [carrier(301, "W-2"), carrier(302, "W-3")])
+    assert done == ("PLAN_FILED", "filed: #301, #302")
+    assert not any(re.search(r"\be\d+: issue\(", q) for q in fake.asked)  # `none` reads no milestone
+
+
+def test_s028_11_a_named_milestone_holds_every_item_of_this_repo(ist: ModuleType) -> None:
+    both = [carrier(301, "W-2", milestone="v1"), carrier(302, "W-3", milestone="v1")]
+    assert filed(ist, "v1", both, existing="v1")[0] == ("PLAN_FILED", "filed: #301, #302")
+    assert filed(ist, "v1", both, existing=None)[0] == ("PLAN_ACCEPTED", "not in milestone v1: #212")
+    outside = [carrier(301, "W-2", milestone="v0"), carrier(302, "W-3", milestone="v1")]
+    assert filed(ist, "v1", outside, existing="v1")[0] == ("PLAN_ACCEPTED", "not in milestone v1: #301")
+    unfiled = [carrier(301, "W-2")]
+    expected = ("PLAN_ACCEPTED", "not filed: W-3; not in milestone v1: #212, #301")
+    assert filed(ist, "v1", unfiled, existing="v2")[0] == expected
+    _, fake = filed(ist, "v1", both, existing="v1")
+    asked = [q for q in fake.asked if re.search(r"\be\d+: issue\(", q)]
+    assert len(asked) == 1 and "e212: issue(" in asked[0] and "e5:" not in asked[0]  # other/x#5 isn't this repo's
+
+
+def test_s028_12_an_open_plan_check_refuses_reads_malformed(ist: ModuleType) -> None:
+    no_kind = full_plan().replace("- W-4 existing:", "- W-4 chore:")
+    assert state_of(ist, open_plan(20, body=no_kind)) == (
+        "PLAN_MALFORMED",
+        "line 14: a Work line is an item `- W-<n> <feature|fix|existing>: <text>`",
+    )
+    unlisted = open_plan(20, owner("accept", 10), body=full_plan(goal="G-9"))  # an accept doesn't help
+    assert state_of(ist, unlisted) == (
+        "PLAN_MALFORMED",
+        "line 1: the marker names G-9, which docs/product.md doesn't list as a goal",
+    )
+    two = full_plan().replace("## Order", "## Plan")
+    state, note = state_of(ist, open_plan(20, body=two))
+    assert state == "PLAN_MALFORMED" and note.startswith("line 16: `## Plan` is not a plan heading")
+    assert note.endswith(" more)")
+
+
+def test_s028_12_a_plan_with_a_broken_marker_is_still_a_plan(ist: ModuleType) -> None:
+    broken = open_plan(20, body=full_plan().replace(" rev=1", ""))
+    assert state_of(ist, broken)[0] == "PLAN_MALFORMED"
+    by_maintainer = open_plan(21, body=full_plan().replace(" rev=1", ""), author="maintainer", bot=False)
+    assert state_of(ist, by_maintainer)[0] == "PLAN_MALFORMED"  # its first line opens the marker
+    unmarked = open_plan(22, body="Please plan G-1")  # the App's own issue with no marker
+    state, note = state_of(ist, unmarked)
+    assert state == "PLAN_MALFORMED"
+    assert note.startswith("line 1: the first line is the marker `<!-- shipmill:plan goal=G-<n> rev=<k> -->`")
+    request = issue(23, title="Plan G-1", labels=("goal-plan",), association="OWNER", body="Please plan G-1")
+    assert plan_states(ist, Fake([request], plans=[request])) == {}  # a request, not a plan
+
+
+def test_s028_12_a_plan_closed_as_not_planned_reads_declined_with_the_reason(ist: ModuleType) -> None:
+    declined = open_plan(20, owner("Decline: not this quarter\nMore later.", 10), state="CLOSED", reason="NOT_PLANNED")
+    assert state_of(ist, declined) == ("PLAN_DECLINED", "not this quarter")
+    closing = {**comment("Closing as declined.", author="shipmill-app", bot=True), "createdAt": "2026-10-02T09:59:00Z"}
+    bare = open_plan(20, owner("decline", 10), closing, state="CLOSED", reason="NOT_PLANNED")
+    assert state_of(ist, bare) == ("PLAN_DECLINED", "Closing as declined.")
+    silent = open_plan(20, state="CLOSED", reason="NOT_PLANNED")
+    assert state_of(ist, silent) == ("PLAN_DECLINED", "closed as not planned with no reason")
+    malformed = open_plan(20, body="broken", state="CLOSED", reason="NOT_PLANNED")
+    assert state_of(ist, malformed) == ("PLAN_DECLINED", "closed as not planned with no reason")
+    done = open_plan(20, state="CLOSED", reason="COMPLETED")
+    assert plan_states(ist, Fake(plans=[done])) == {}
+
+
+def test_plan_rows_needing_action_exit_1(ist: ModuleType) -> None:
+    assert {"PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED"} == ist.PLAN_ACTION
+
+
+def test_a_plans_older_comments_are_paged_back(ist: ModuleType) -> None:
+    paged = open_plan(20, comment("+1", 12))
+    paged["comments"]["pageInfo"] = {"hasPreviousPage": True, "startCursor": "c1"}
+    older = {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": [owner("accept", 10)]}
+
+    class Older(Fake):
+        def __call__(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+            if "before: $cursor" in query:
+                assert variables["cursor"] == "c1" and variables["number"] == 20
+                return {"data": {"repository": {"issue": {"comments": older}}}}
+            return super().__call__(query, variables)
+
+    assert plan_states(ist, Older(plans=[paged]))[20] == ("PLAN_ACCEPTED", "unfiled")
