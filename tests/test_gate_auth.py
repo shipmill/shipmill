@@ -282,19 +282,52 @@ def test_a_session_that_died_in_a_second_is_no_attempt_and_the_next_tick_launche
 
 def test_sessions_dying_one_after_another_read_as_one_run(checkout: Git) -> None:
     first_at = NOW - dt.timedelta(minutes=10)
-    launched_at(checkout, SECOND, NOW - dt.timedelta(minutes=5), Deaths(2, first_at))
+    launched_at(checkout, SECOND, NOW - dt.timedelta(minutes=5), Deaths(1, first_at))
     died(checkout, SECOND, NOW - dt.timedelta(minutes=5), dt.timedelta(seconds=3), "")
     action, _, lines = tick(checkout, headless(), FakeClaude(), FakeAuth([LOGGED_IN]), FakeNotifier())
     assert action is Action.SESSION_DEAD
     log = log_of(checkout, SECOND)
     since = first_at.isoformat(timespec="minutes")
     assert lines[0] == (
-        f"SESSION_DEAD: session {SECOND} ended 3 s after its launch, 3 in a row since {since};"
+        f"SESSION_DEAD: session {SECOND} ended 3 s after its launch, 2 in a row since {since};"
         f" its log is empty; starting another for 1 finding(s); fix: tail -n 20 {log}"
     )
     assert load_launch(state_dir(checkout) / RECORD) == Launch(
-        fingerprint([ISSUES]), str(FIRST), NOW, Process(PID, None), Deaths(3, first_at)
+        fingerprint([ISSUES]), str(FIRST), NOW, Process(PID, None), Deaths(2, first_at)
     )
+
+
+def test_a_third_dead_session_in_a_row_holds_the_same_findings_for_retry_hours(checkout: Git) -> None:
+    # without a cap, every tick started a real `claude -p` that died the same way
+    first_at, at = NOW - dt.timedelta(minutes=10), NOW - dt.timedelta(minutes=5)
+    launched_at(checkout, SECOND, at, Deaths(2, first_at))
+    died(checkout, SECOND, at, dt.timedelta(seconds=3), "")
+    claude, auth = FakeClaude(), FakeAuth([])
+    action, launched, lines = tick(checkout, headless(), claude, auth, FakeNotifier())
+    assert (action, launched, claude.started, auth.asked) == (Action.SESSION_DEAD, None, [], 0)
+    since, again = first_at.isoformat(timespec="minutes"), (at + dt.timedelta(hours=24)).isoformat(timespec="minutes")
+    assert lines[0] == (
+        f"SESSION_DEAD: session {SECOND} ended 3 s after its launch, 3 in a row since {since}; its log is empty;"
+        f" no session starts for the same findings until {again}; fix: tail -n 20 {log_of(checkout, SECOND)}"
+    )
+    after = NOW + dt.timedelta(hours=24)  # past retry_hours, it tries once more and counts on
+    action, launched, _ = tick(checkout, headless(), claude, FakeAuth([LOGGED_IN]), FakeNotifier(), after)
+    assert (action, launched) == (Action.SESSION_DEAD, str(FIRST))
+    assert load_launch(state_dir(checkout) / RECORD) == Launch(
+        fingerprint([ISSUES]), str(FIRST), after, Process(PID, None), Deaths(3, first_at)
+    )
+
+
+def test_a_healthy_session_that_finished_in_seconds_is_an_attempt(checkout: Git) -> None:
+    launched_at(checkout, FIRST, NOW - dt.timedelta(minutes=5))
+    died(checkout, FIRST, NOW - dt.timedelta(minutes=5), dt.timedelta(seconds=20), "Nothing needed a change.\n")
+    assert tick(checkout, headless(), FakeClaude(), None, FakeNotifier())[0] is Action.UNCHANGED
+
+
+def test_a_quick_session_whose_only_line_is_an_error_ended_dead(checkout: Git) -> None:
+    launched_at(checkout, FIRST, NOW - dt.timedelta(minutes=5))
+    died(checkout, FIRST, NOW - dt.timedelta(minutes=5), dt.timedelta(seconds=2), "API Error: 529 Overloaded\n")
+    assert tick(checkout, headless(), FakeClaude(), FakeAuth([LOGGED_IN]), FakeNotifier())[0] is Action.SESSION_DEAD
 
 
 def test_a_long_session_whose_log_shows_an_auth_failure_ended_dead(checkout: Git) -> None:

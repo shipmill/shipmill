@@ -48,8 +48,13 @@ NEEDS_DECISION = "NEEDS_DECISION"  # watch_state.py's items waiting on a reply, 
 PRS_OPEN = "PRS_OPEN"  # watch_state.py's open pull requests: work only with [agents] prs = true
 SESSIONS = "sessions"  # a headless session's log, <uuid>.log, under the state directory (D-17)
 AUTH = "claude-auth.json"  # the failing Claude Code login's episode: since, and its one notification (#500)
-# a headless session that ended this soon after its launch, by its log's last write, ran no work (#500)
+# a headless session that ended this soon after its launch, by its log's last write, with no
+# result in its log, ran no work (#500)
 DEAD_WITHIN = dt.timedelta(seconds=60)
+# `claude -p` prints its result when it ends; a log whose only line is one of these holds none
+NO_RESULT = re.compile(r"(?:API )?Error\b")
+# after this many dead sessions in a row, the same findings wait for retry_hours again (#500)
+DEAD_STREAK = 3
 # what Claude Code prints when it can't authenticate; a session whose log holds one ended dead (#500)
 AUTH_FAILURE = re.compile(
     r"Failed to authenticate|OAuth (?:session|token) (?:has )?expired|Invalid API key|authentication_error"
@@ -695,10 +700,18 @@ def last_line(text: str) -> str:
     return shown if len(shown) <= 200 else shown[:199] + "…"
 
 
+def no_result(text: str) -> bool:
+    """A session's log holds no result: it is blank, or its only line is an error"""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return not lines or (len(lines) == 1 and NO_RESULT.match(lines[0]) is not None)
+
+
 def ended_dead(last: Launch | None, state: Path) -> Dead | None:
     """#500: the last headless launch, once still_working found its process gone, when it ended
-    dead. Its end is its log's modification time, the log's last write; a launch without a log
-    reads as one that ran. An interactive launch has no log and never reads dead"""
+    dead: its log holds an authentication failure, or it ended within DEAD_WITHIN of its launch
+    with no result in its log, so a healthy session that finishes fast still counts. Its end is
+    its log's modification time, the log's last write; a launch without a log reads as one that
+    ran. An interactive launch has no log and never reads dead"""
     if last is None or last.process is None:
         return None
     log = session_log(state, last.session)
@@ -708,7 +721,7 @@ def ended_dead(last: Launch | None, state: Path) -> Dead | None:
     tail = log_tail(log)
     auth = AUTH_FAILURE.search(tail) is not None
     seconds = max(0, int((written - last.at).total_seconds()))
-    if not auth and seconds > DEAD_WITHIN.total_seconds():
+    if not auth and (seconds > DEAD_WITHIN.total_seconds() or not no_result(tail)):
         return None
     before = last.deaths
     deaths = Deaths(1, last.at) if before is None else Deaths(before.count + 1, before.since)
@@ -1234,7 +1247,9 @@ def gate(
     decision (preflight): a failure is CLAUDE_AUTH, with one notification per episode. A last
     headless launch whose process is gone and that ended dead (ended_dead) doesn't count toward
     retry_hours, so its findings launch again; the decision names it, and a launch after it
-    reads SESSION_DEAD and records the run of dead sessions in gate.json's dead"""
+    reads SESSION_DEAD and records the run of dead sessions in gate.json's dead. After
+    DEAD_STREAK dead sessions in a row, the same findings wait for retry_hours again: the tick
+    reads SESSION_DEAD with the run, starts nothing, and names when they are retried"""
     check_checkout(git, repo)
     config = checked(config, claude.args)
     state = state_dir(git)
@@ -1267,13 +1282,18 @@ def gate(
     retry = dt.timedelta(hours=agents.retry_hours)
     rows = findings(read)
     asked = ask(state / DECISIONS, repo, rows, agents, notifier, now, dry_run) if headless else ()
+    capped = dead is not None and dead.deaths.count >= DEAD_STREAK  # retry_hours holds the findings again
     decision = replace(
-        decide(rows, sessions, None if dead is not None else last, now, retry, agents.prs),
+        decide(rows, sessions, last if dead is None or capped else None, now, retry, agents.prs),
         mode=agents.mode,
         decisions=asked,
         detached=detached,
         dead=dead,
     )
+    if dead is not None and last is not None and decision.action is Action.UNCHANGED:
+        again = (last.at + retry).isoformat(timespec="minutes")
+        reason = f"{dead.summary()}; no session starts for the same findings until {again}; fix: {dead.fix}"
+        decision = replace(decision, action=Action.SESSION_DEAD, reason=reason)
     decision = preflight(decision, auth, state / AUTH, repo, agents, notifier, now, dry_run)
     if decision.action is not Action.LAUNCH:
         return decision, None, waiting, pruned
