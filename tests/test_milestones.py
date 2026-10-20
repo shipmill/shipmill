@@ -203,7 +203,8 @@ def test_s022_6_built_specs_in_the_base_make_the_lane_due(repo: Repo) -> None:
     decision = plan_stable(repo)
     assert (decision.action, decision.lane, str(decision.version)) == ("release", Lane.STABLE, "1.1.0")
     assert "milestone 1.1.0 built: S-021, S-023" in decision.reason
-    assert repo.github.close_reads == [(11, 12)]  # one batched read
+    # one batched read for the goal, then the promotion's requester count reads the closed issues (S-021-8)
+    assert repo.github.close_reads == [(11, 12), (11, 12)]
 
 
 def test_s022_7_a_milestone_no_spec_names_is_due_as_today(repo: Repo) -> None:
