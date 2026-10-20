@@ -21,6 +21,7 @@ from shipmill.github import (
     MilestoneIssues,
     OpenMilestone,
     PullRequest,
+    RequesterVotes,
     WorkflowRun,
 )
 from shipmill.gitrepo import Git
@@ -119,6 +120,10 @@ class FakeGitHub:
     open_reads: int = 0  # open_milestones calls
     closes: dict[int, IssueClose] = field(default_factory=dict)  # how issues closed, by number
     close_reads: list[tuple[int, ...]] = field(default_factory=list)  # the numbers of each issue_closes call
+    closed_reads: list[dt.date | None] = field(default_factory=list)  # the day of each closed_since call
+    votes: dict[int, RequesterVotes] = field(default_factory=dict)  # requesters' votes, by issue
+    votes_error: str = ""  # when set, reading the votes fails with it, as gh would
+    vote_reads: list[tuple[int, ...]] = field(default_factory=list)  # the numbers of each requester_votes call
     apps: dict[str, int] = field(default_factory=dict)  # App ids by slug
     merges: dict[int, str] = field(default_factory=dict)
     releases: list[tuple[str, str, str, bool]] = field(default_factory=list)
@@ -179,6 +184,20 @@ class FakeGitHub:
         if missing:
             raise ReleaseError(f"gh api graphql failed: Could not resolve to an Issue with the number of {missing[0]}")
         return [self.closes[n] for n in sorted(set(numbers))]
+
+    def closed_since(self, day: dt.date | None) -> list[int]:
+        """The issues of closes closed on day or later"""
+        self.closed_reads.append(day)
+        return sorted(
+            n for n, c in self.closes.items() if c.closed_at is not None and (day is None or c.closed_at.date() >= day)
+        )
+
+    def requester_votes(self, numbers: Sequence[int]) -> list[RequesterVotes]:
+        """An issue without votes has no requester's answer"""
+        self.vote_reads.append(tuple(numbers))
+        if self.votes_error:
+            raise ReleaseError(f"gh api graphql failed: {self.votes_error}")
+        return [self.votes.get(n, RequesterVotes(n, None, ())) for n in sorted(set(numbers))]
 
     def app_id(self, slug: str) -> int:
         return self.apps[slug]

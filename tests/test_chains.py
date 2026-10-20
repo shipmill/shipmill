@@ -1,6 +1,7 @@
 """chains.py link: a dependency written as GitHub's native relation and as a Depends on line"""
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -117,7 +118,7 @@ def forge(ch: ModuleType) -> Forge:
 
 
 def link(ch: ModuleType, forge: Forge, *argv: str) -> int:
-    result: int = ch.main(["link", *argv], run=forge)
+    result: int = ch.main(["link", *argv], run=forge, write=forge)
     return result
 
 
@@ -330,3 +331,179 @@ def test_the_script_runs_from_its_folder_and_refuses_a_malformed_reference_befor
     )
     assert proc.returncode == 2
     assert "malformed reference 'nope'" in proc.stderr
+
+
+# -- #526: with [agents] app_id set, link writes as the App (D-14)
+
+APP_CONFIG = '[agents]\nprompt = "Triage the repo"\napp_id = 123\n'
+UVX = ["uvx", "--from", "git+https://github.com/shipmill/shipmill@v0", "shipmill"]
+
+
+def checkout(root: Path, config: str | None) -> Path:
+    (root / ".git").mkdir(parents=True)
+    if config is not None:
+        (root / ".github").mkdir()
+        (root / ".github" / "shipmill.toml").write_text(config, encoding="utf-8")
+    return root
+
+
+def gh_call(cmd: list[str]) -> tuple[str, dict[str, Any]]:
+    """The query and variables of a `gh api graphql` command line as chains.py builds it"""
+    assert cmd[:3] == ["api", "graphql", "-f"] and cmd[3].startswith("query="), cmd
+    query, variables = cmd[3].removeprefix("query="), {}
+    for flag, pair in zip(cmd[4::2], cmd[5::2], strict=True):
+        key, _, value = pair.partition("=")
+        variables[key] = int(value) if flag == "-F" else value
+    return query, variables
+
+
+class AppGh:
+    """`shipmill gh` in front of the fake forge: each command it is given, and its exit code
+    (gh's on success, 2 when the App's identity can't be had)"""
+
+    def __init__(self, forge: Forge, prefix: list[str], code: int = 0) -> None:
+        self.forge, self.prefix, self.code = forge, prefix, code
+        self.ran: list[list[str]] = []
+
+    def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        self.ran.append(cmd)
+        assert cmd[: len(self.prefix)] == self.prefix, cmd
+        if self.code == 2:
+            return subprocess.CompletedProcess(cmd, 2, "", "error: the App's private key is missing\n")
+        response = self.forge(*gh_call(cmd[len(self.prefix) :]))
+        return subprocess.CompletedProcess(cmd, 1 if response.get("errors") else 0, json.dumps(response), "")
+
+
+def test_526_the_writer_is_shipmill_gh_with_app_id_and_plain_gh_without(ch: ModuleType, tmp_path: Path) -> None:
+    app = checkout(tmp_path / "app", APP_CONFIG)
+    plain = checkout(tmp_path / "plain", '[agents]\nprompt = "Triage the repo"\n')
+    bare = checkout(tmp_path / "bare", None)
+    assert ch.writer(app, which=lambda name: None) == [*UVX, "--repo", str(app.resolve()), "gh"]
+    on_path = ch.writer(app / ".github", which=lambda name: f"/opt/bin/{name}")  # from a subfolder too
+    assert on_path == ["/opt/bin/shipmill", "--repo", str(app.resolve()), "gh"]
+    assert ch.writer(plain, which=lambda name: "/opt/bin/shipmill") == ["gh"]
+    assert ch.writer(bare, which=lambda name: "/opt/bin/shipmill") == ["gh"]
+
+
+def test_526_a_config_with_app_id_it_cannot_read_exits_2(
+    ch: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    broken = checkout(tmp_path, "[agents]\napp_id = \n")
+    with pytest.raises(SystemExit) as exit_:
+        ch.writer(broken, which=lambda name: None)
+    assert exit_.value.code == 2
+    assert "error:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("child", [False, True])
+def test_526_with_app_id_the_relation_and_the_body_edit_go_through_shipmill_gh(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str], child: bool
+) -> None:
+    a = forge.add("o/r#5", "Build the page.\r\n")
+    b = forge.add("o/r#4")
+    prefix = ch.writer(checkout(tmp_path, APP_CONFIG), which=lambda name: None)
+    app = AppGh(forge, prefix)
+    how = "--child" if child else "--blocked-by"
+    assert ch.main(["link", "o/r#5", how, "o/r#4"], run=forge, write=ch.gh_runner(prefix, app)) == 0
+    assert (forge.parents[b] == a) if child else ((a, b) in forge.blocked)
+    assert forge.body("o/r#5") == "Build the page.\r\n\r\nDepends on o/r#4"  # byte for byte, then the line
+    mutation = "addSubIssue" if child else "addBlockedBy"
+    written = [gh_call(cmd[len(prefix) :])[0] for cmd in app.ran]
+    assert written == [ch.ADD_SUB_ISSUE if child else ch.ADD_BLOCKED_BY, ch.UPDATE_BODY]
+    assert forge.writes() == [mutation, "updateIssue"]
+    reads = [q for q, _ in forge.calls if q not in written]
+    assert reads and len(forge.calls) == len(reads) + 2  # the reads stayed on the plain runner
+    assert "added to o/r#5: Depends on o/r#4" in capsys.readouterr().out
+
+
+def test_526_a_refused_relation_still_writes_the_line_as_the_app(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forge.refuse_write = "Issues must belong to the same owner"
+    forge.add("o/r#1")
+    forge.add("someone/else#2")
+    prefix = ch.writer(checkout(tmp_path, APP_CONFIG), which=lambda name: "/opt/bin/shipmill")
+    app = AppGh(forge, prefix)
+    assert ch.main(["link", "o/r#1", "--child", "someone/else#2"], run=forge, write=ch.gh_runner(prefix, app)) == 0
+    assert forge.body("o/r#1") == "Depends on someone/else#2"
+    assert len(app.ran) == 2
+    assert "text only: Issues must belong to the same owner" in capsys.readouterr().out
+
+
+def test_526_an_exit_2_from_shipmill_gh_stops_the_link_with_no_fallback(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forge.add("o/r#5", "Body")
+    forge.add("o/r#4")
+    prefix = ch.writer(checkout(tmp_path, APP_CONFIG), which=lambda name: None)
+    app = AppGh(forge, prefix, code=2)
+    with pytest.raises(SystemExit) as exit_:
+        ch.main(["link", "o/r#5", "--blocked-by", "o/r#4"], run=forge, write=ch.gh_runner(prefix, app))
+    assert exit_.value.code == 2
+    assert "the App's private key is missing" in capsys.readouterr().err
+    assert len(app.ran) == 1  # the relation's mutation, not retried, and no body edit after it
+    assert forge.writes() == []
+    assert forge.body("o/r#5") == "Body"
+
+
+FAKE_GH = """#!{python}
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(["gh", *args]) + "\\n")
+query = args[3]
+if "mutation" in query:
+    print(json.dumps({{"data": {{"wrote": True}}}}))
+elif "issueOrPullRequest" in query:
+    number = next(a for a in args if a.startswith("number=")).partition("=")[2]
+    print(json.dumps({{"data": {{"repository": {{"issueOrPullRequest": {{
+        "__typename": "Issue", "id": "I_" + number, "body": "Body"}}}}}}}}))
+else:
+    print(json.dumps({{"data": {{"node": {{"blockedBy": {{
+        "pageInfo": {{"hasNextPage": False, "endCursor": None}}, "nodes": []}}}}}}}}))
+"""
+FAKE_SHIPMILL = """#!{python}
+import json, os, sys
+with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as log:
+    log.write(json.dumps(["shipmill", *sys.argv[1:]]) + "\\n")
+sys.stderr.write("error: the App's private key is missing\\n")
+sys.exit({code})
+"""
+
+
+def run_script(tmp_path: Path, config: str | None, code: int = 2) -> tuple[subprocess.CompletedProcess[str], list[Any]]:
+    """chains.py link run from a checkout, with a stand-in gh and shipmill on PATH"""
+    bin_dir, log = tmp_path / "bin", tmp_path / "log.jsonl"
+    bin_dir.mkdir()
+    for name, text in (("gh", FAKE_GH), ("shipmill", FAKE_SHIPMILL)):
+        (bin_dir / name).write_text(text.format(python=sys.executable, code=code), encoding="utf-8")
+        (bin_dir / name).chmod(0o700)
+    repo = checkout(tmp_path / "repo", config)
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPTS / "chains.py"), "link", "o/r#5", "--blocked-by", "o/r#4"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=repo,
+        env={"PATH": str(bin_dir), "FAKE_LOG": str(log)},
+    )
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+    return proc, calls
+
+
+def test_526_run_from_a_checkout_with_app_id_the_script_writes_through_shipmill_gh(tmp_path: Path) -> None:
+    proc, calls = run_script(tmp_path, APP_CONFIG)
+    assert proc.returncode == 2
+    assert "the App's private key is missing" in proc.stderr
+    shipmill = [c for c in calls if c[0] == "shipmill"]
+    top = str((tmp_path / "repo").resolve())
+    assert len(shipmill) == 1 and shipmill[0][1:6] == ["--repo", top, "gh", "api", "graphql"]
+    assert "addBlockedBy" in shipmill[0][7]
+    assert all("mutation" not in c[4] for c in calls if c[0] == "gh")  # reads only, never a plain-gh write
+
+
+def test_526_run_from_a_checkout_without_app_id_the_script_writes_with_plain_gh(tmp_path: Path) -> None:
+    proc, calls = run_script(tmp_path, '[agents]\nprompt = "Triage the repo"\n')
+    assert proc.returncode == 0, proc.stderr
+    assert [c[0] for c in calls] == ["gh"] * len(calls)
+    assert sum("mutation" in c[4] for c in calls) == 2  # the relation and the body edit

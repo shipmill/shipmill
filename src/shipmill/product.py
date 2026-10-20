@@ -5,7 +5,7 @@ sections holding only `- <prefix>-<n>: <text>` items. A section may move to its 
 under docs/product/ through a single `See [<section>](product/<file>.md).` line. A goal may
 carry one measure on the line right after it, `  measure: <metric> <comparison> <target>`
 (spec 027). Only the maintainer merges a change to it (D-34); the edit commands at the end
-write one item line in the working tree, never a commit"""
+write one item line, or a goal's measure line, in the working tree, never a commit"""
 
 import re
 from collections.abc import Iterable, Sequence
@@ -106,7 +106,7 @@ class Measure:
     @classmethod
     def parse(cls, text: str) -> Measure:
         """`<metric> <comparison> <target>`, single spaces between; refused naming the rule"""
-        parts = _MEASURE_PARTS.match(text)
+        parts = _MEASURE_PARTS.fullmatch(text)  # `$` alone would let a trailing newline through
         if parts is None:
             raise ReleaseError(f"a measure is `<metric> <comparison> <target>`, single spaces between; got {text!r}")
         known = {m.value for m in Metric}
@@ -713,6 +713,31 @@ def retire(root: Path, id: ItemId) -> Edited:
     document.delete(number - 1)
     document.write()
     return Edited(body.path, number, removed)
+
+
+def measure(root: Path, id: ItemId, written: Measure | None) -> Edited | None:
+    """Write a goal's measure line right under its item line, replacing the one it has, or
+    remove it when `written` is None (spec 027). None when there was nothing to remove"""
+    if id.prefix is not Prefix.GOAL:
+        raise ReleaseError(f"only a goal carries a measure; {id} is not a G-n id")
+    direction, bodies = _editable(root)
+    body, number = _located(bodies, id)
+    had = next(item.measure for item in direction.goals if item.id == id) is not None
+    document = Document.read(root / body.path)
+    if written is None:
+        if not had:
+            return None
+        removed = document.content(number)
+        document.delete(number)
+        document.write()
+        return Edited(body.path, number + 1, removed)
+    line = str(written)
+    if had:
+        document.replace(number, line)  # the measure line, right under the item line
+    else:
+        document.insert(number, [line])
+    document.write()
+    return Edited(body.path, number + 1, line)
 
 
 def _editable(root: Path) -> tuple[Direction, dict[Section, _Body]]:

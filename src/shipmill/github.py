@@ -26,6 +26,16 @@ OPEN_MILESTONE_LIMIT = 100  # open milestones read at once, one page; a reposito
 COMMENTS_READ = 30  # an issue's newest comments read for a close-confirmed marker (D-29)
 CLOSERS_READ = 20  # the pull requests read that close an issue
 CLOSES_PER_QUERY = 40  # issues read per GraphQL query by issue_closes
+CLOSED_LIMIT = 1000  # issues read by closed_since; a range closing more is refused
+VOTES_PER_QUERY = 20  # issues read per GraphQL query by requester_votes
+VOTE_COMMENTS = 100  # an issue's newest comments read for a pre-release notice (spec 021)
+VOTE_REACTIONS = 100  # a comment's 👍 reactions read
+GHOST = "ghost"  # the login GitHub shows for a deleted account, as the watch reads it
+_VOTES_FRAGMENT = (
+    "fragment votes on Issue { number author { __typename login } "
+    f"comments(last: {VOTE_COMMENTS}) {{ totalCount nodes {{ body "
+    f"reactions(content: THUMBS_UP, first: {VOTE_REACTIONS}) {{ totalCount nodes {{ user {{ login }} }} }} }} }} }}"
+)
 _CLOSE_FRAGMENT = (
     "fragment closed on Issue { number state stateReason "
     "timelineItems(itemTypes: [CLOSED_EVENT], last: 1) { nodes { ... on ClosedEvent { createdAt "
@@ -117,6 +127,26 @@ class IssueClose:
 
 
 @dataclass(frozen=True, slots=True)
+class Voted:
+    """An issue comment's first line and the logins that reacted 👍 to it"""
+
+    first_line: str
+    thumbs_up: frozenset[str]
+    more: bool = False  # 👍s past the first VOTE_REACTIONS, not read
+
+
+@dataclass(frozen=True, slots=True)
+class RequesterVotes:
+    """An issue's author, its requester (spec 021), and its newest comments with their 👍s;
+    the requester is None for a bot's issue or a deleted account's"""
+
+    number: int
+    requester: str | None
+    comments: tuple[Voted, ...]  # the newest VOTE_COMMENTS, oldest first
+    earlier: bool = False  # comments before the newest VOTE_COMMENTS, not read
+
+
+@dataclass(frozen=True, slots=True)
 class Issue:
     number: int
     title: str
@@ -203,6 +233,16 @@ class GitHub(Protocol):
 
     def issue_closes(self, numbers: Sequence[int]) -> list[IssueClose]:
         """How each of the repository's issues closed, by number; batched, none for no number"""
+        ...
+
+    def closed_since(self, day: dt.date | None) -> list[int]:
+        """The numbers of the issues closed on day or later (every closed issue for None), by
+        number; more than CLOSED_LIMIT is refused"""
+        ...
+
+    def requester_votes(self, numbers: Sequence[int]) -> list[RequesterVotes]:
+        """Each issue's author and newest comments with their 👍s, by number; batched, none
+        for no number"""
         ...
 
     def app_id(self, slug: str) -> int:
@@ -421,6 +461,31 @@ class GhCli:
             )
             closes.extend(parse_issue_closes(found, chunk))
         return closes
+
+    def closed_since(self, day: dt.date | None) -> list[int]:
+        search = ["--search", f"closed:>={day.isoformat()}"] if day is not None else []
+        found = json.loads(
+            self._gh(
+                "issue", "list", "--state", "closed", *search, "--json", "number", "--limit", str(CLOSED_LIMIT),
+            )
+        )  # fmt: skip
+        return parse_closed(found, day)
+
+    def requester_votes(self, numbers: Sequence[int]) -> list[RequesterVotes]:
+        wanted = sorted(set(numbers))
+        votes: list[RequesterVotes] = []
+        for start in range(0, len(wanted), VOTES_PER_QUERY):
+            chunk = wanted[start : start + VOTES_PER_QUERY]
+            aliases = " ".join(f"i{n}: issue(number: {n}) {{ ...votes }}" for n in chunk)
+            query = (
+                "query($owner: String!, $name: String!) "
+                f"{{ repository(owner: $owner, name: $name) {{ {aliases} }} }} {_VOTES_FRAGMENT}"
+            )
+            found = json.loads(
+                self._gh("api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", f"query={query}")
+            )
+            votes.extend(parse_requester_votes(found, chunk))
+        return votes
 
     def app_id(self, slug: str) -> int:
         found = self._api(f"apps/{slug}")
@@ -814,3 +879,73 @@ def _issue_close(node: dict[str, Any]) -> IssueClose:
         bot = isinstance(author, dict) and author.get("__typename") == "Bot"
         comments.append(IssueComment(login, bot, c["authorAssociation"], _time(c["createdAt"]), c["body"]))
     return IssueClose(number, CloseReason(reason), closed_at, tuple(fixes), tuple(comments))
+
+
+def parse_closed(found: Any, day: dt.date | None) -> list[int]:
+    """`gh issue list --state closed --json number`'s output, by number; a full page is
+    refused, since an issue past it would read as fixed by nothing"""
+    since = f" closed since {day}" if day is not None else " closed"
+    if not isinstance(found, list):
+        raise ReleaseError(f"gh issue list printed {type(found).__name__}, not a JSON array")
+    if len(found) >= CLOSED_LIMIT:
+        raise ReleaseError(f"the repository has {CLOSED_LIMIT} issues{since} or more; shipmill reads fewer")
+    numbers = []
+    for i in found:
+        number = i.get("number") if isinstance(i, dict) else None
+        if not isinstance(number, int) or isinstance(number, bool):
+            raise ReleaseError(f"gh issue list printed {i!r}: an issue needs a number")
+        numbers.append(number)
+    return sorted(numbers)
+
+
+def parse_requester_votes(found: Any, numbers: Sequence[int]) -> list[RequesterVotes]:
+    """The `i<N>` issues of requester_votes' GraphQL answer; anything else is refused"""
+
+    def refuse(what: str) -> ReleaseError:
+        return ReleaseError(f"gh api graphql printed {what} for the requesters' votes: {str(found)[:300]}")
+
+    if not isinstance(found, dict) or found.get("errors"):
+        raise refuse("errors or no object")
+    data = found.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
+    if not isinstance(repository, dict):
+        raise refuse("no repository")
+    votes = []
+    for n in numbers:
+        node = repository.get(f"i{n}")
+        if not isinstance(node, dict) or node.get("number") != n:
+            raise refuse(f"no issue #{n}")
+        votes.append(_requester_votes(node, n))
+    return votes
+
+
+def _total(holder: dict[str, Any], key: str, number: int) -> int:
+    """A connection's totalCount, which says whether its nodes are all of it"""
+    total = holder[key].get("totalCount")
+    if not isinstance(total, int) or isinstance(total, bool):
+        raise ReleaseError(f"gh api graphql printed no {key} totalCount for #{number}")
+    return total
+
+
+def _requester_votes(node: dict[str, Any], number: int) -> RequesterVotes:
+    author = node.get("author")  # null, or the ghost user, for a deleted account
+    if author is not None and (not isinstance(author, dict) or not isinstance(author.get("login"), str)):
+        raise ReleaseError(f"gh api graphql printed {author!r} for #{number}: an author needs a login")
+    person = author is not None and author.get("__typename") != "Bot" and author["login"] != GHOST
+    requester = str(author["login"]) if author is not None and person else None
+    comments = []
+    nodes = _nodes(node, "comments", number)
+    for c in nodes:
+        if not isinstance(c, dict) or not isinstance(c.get("body"), str):
+            raise ReleaseError(f"gh api graphql printed {c!r} for #{number}: a comment needs a body")
+        logins = set()
+        reactions = _nodes(c, "reactions", number)
+        for r in reactions:
+            user = r.get("user") if isinstance(r, dict) else None  # null for a deleted account
+            if user is not None and (not isinstance(user, dict) or not isinstance(user.get("login"), str)):
+                raise ReleaseError(f"gh api graphql printed {r!r} for #{number}: a reaction's user needs a login")
+            if user is not None:
+                logins.add(str(user["login"]))
+        more = _total(c, "reactions", number) > len(reactions)
+        comments.append(Voted(c["body"].partition("\n")[0], frozenset(logins), more))
+    return RequesterVotes(number, requester, tuple(comments), _total(node, "comments", number) > len(nodes))

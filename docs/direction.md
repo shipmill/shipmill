@@ -112,6 +112,7 @@ still lands through a pull request:
 | `shipmill product add <users\|goals\|non-goals\|quality> "<text>"` | Appends an item with the next id, one above any the file's history held, and prints it |
 | `shipmill product edit <id> "<text>"` | Rewrites one item's text; its id stays |
 | `shipmill product retire <id>` | Removes one item; its id is never handed out again |
+| `shipmill product measure <G-n> "<metric> <comparison> <target>"` | Writes the goal's measure line, or replaces the one it has (spec 027); `--clear` removes it |
 
 Each takes `--repo DIR` (default: the current directory). An edit command exits 2 without
 writing when the file doesn't pass `check` first. In a session with the shipmill plugin,

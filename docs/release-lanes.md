@@ -511,6 +511,27 @@ wip`; move `wip` there and delete the section, since the next minor refuses it. 
 is the maintainer's own list of what a version must hold, and `milestone = true` keeps
 making a lane due by it.
 
+## Delivery hooks
+
+In a repo whose config has `[agents]`, the shipmill plugin's delivery hooks
+(`hooks/delivery.py`, spec 026) refuse with exit 2 the writes the delivery rules forbid: a
+`gh` write without `shipmill gh` while `[agents] app_id` is set (D-14), a push to the
+default branch, a rebase merge (D-33), a force push without a lease pinned to a commit,
+and a copy of a private path out of the repo. `[hooks]` holds the two rules a repo may
+change; the other three have no switch:
+
+```toml
+[hooks]
+default_branch = true      # refuse a push to the default branch (the default)
+private = ["owner/**"]     # globs, relative to the repo root, whose files never leave it (default: none)
+```
+
+`default_branch` is a boolean, default true; `false` lets a session push the default
+branch. `private` is a list of globs, default empty, and the copy rule is on only when it
+lists one. An unknown key or a wrong type fails with exit 2, naming the key. No
+environment variable or session setting turns a rule off: change the config through a
+pull request, or run the command in your own terminal.
+
 ## Notices on fixed issues
 
 Once a release is out, `github-ship-watch` tells each closed issue it fixed, through
@@ -534,7 +555,12 @@ tag before it is a later rc. Each comment's first line is a hidden marker,
 The person who filed the issue answers on the pre-release notice: their 👍 reads as
 REQUESTER_CONFIRMED in the watch, and a reply after it or a 👎 as REQUESTER_REPORT, which a
 watch session hands to triage as a possible regression. Only the issue's author counts, and
-neither row labels, holds, or reopens anything by itself.
+neither row labels, holds, or reopens anything by itself. A stable release that promotes an
+rc names the answers in its plan reason, after the rc it promotes, such as `2 of 3
+requesters confirmed`: the closed issues with a fix the rc holds and the last stable
+release doesn't, and how many of their requesters reacted 👍 to the newest pre-release
+notice. The count is read only once the lane releases, so it never makes a lane due or holds
+one; when GitHub can't give it, the reason says `requesters not counted` and why.
 
 `[notices]` is optional. `pin` and `install` take `{version}`, `{tag}`, and `{name}` (the
 policy's `name`), and a notice shows the command as code. Without `install`, the

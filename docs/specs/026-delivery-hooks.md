@@ -1,6 +1,6 @@
 # S-026: Hooks that enforce the delivery rules
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -303,3 +303,23 @@ that exists.
 - shipmill/shipmill#458: S-026-19
 
 ## Verification
+
+- S-026-1: dropped in #458
+- S-026-2: `hooks/delivery.py pre` on `gh pr merge 5 --rebase && git push --force origin main` with cwd `/private/tmp`, outside any repo, and `test_s026_2_*`, which runs every refused fixture outside a repo, without a config, and without `[agents]`: exit 0 with no output
+- S-026-3: `hooks/delivery.py pre` on `cd . && GH_TOKEN=x gh pr merge 5 --rebase` in a scratch repo with `app_id = 123` gave an `Instead:` line of `uvx ... shipmill gh pr merge 5 --squash` with the token dropped, and `test_s026_3_*` pass: writes refused naming `app-writes` and D-14, reads and `shipmill gh` allowed, all allowed without `app_id`
+- S-026-4: `git push origin HEAD:main` in a scratch repo whose `origin/HEAD` is `main` exits 2 naming `default-branch-push` with `Instead: git push origin 'HEAD:<branch>'`, and `test_s026_4_*` pass for each listed form, another branch, `default_branch = false`, and `origin/HEAD` unset
+- S-026-5: `gh pr merge 5 --rebase` in the scratch repo exits 2 naming `rebase-merge` and D-33 with `--squash` on the `Instead:` line, and `test_s026_5_*` pass for `-r`, `merge_method=rebase`, `--squash`, and `--merge`
+- S-026-6: `git push --force origin feat:feat` in the scratch repo exits 2 naming `force-push` with `Instead: git push '--force-with-lease=feat:<sha>' origin feat:feat`, and `test_s026_6_*` pass for `-f`, `+`, a bare or unpinned lease, and the pinned lease that passes
+- S-026-7: `cp owner/notes.md /tmp/notes.md` in the scratch repo with `private = ["owner/**"]` exits 2 naming `private-paths`, and `test_s026_7_*` pass for `cp`, `mv`, `rsync`, a copy inside the repo, another path, and no `private` key
+- S-026-8: `cd . && GH_TOKEN=x gh pr merge 5 --rebase` was found after `cd` and an assignment, and `test_s026_8_*` pass for `&&`, `||`, `;`, `|`, newlines, `git -C`, and the `bash -c`, `eval`, and `$(...)` cases that exit 0
+- S-026-9: each refusal above printed exactly three stderr lines, `shipmill hook <rule>: ...`, `Rule: ... (<source>)`, and `Instead: ...`, and `test_s026_9_*` pass for the 200-character cut and a multiline argument
+- S-026-10: `test_s026_10_*` pass: only `git push` starts git, an unguarded command reads no config, an edit of another path starts no subprocess, and each call reads the config at most once
+- S-026-11: `hooks/delivery.py pre` on an input without `tool_name` exits 1 with `the input has no tool_name`, and `test_s026_11_*` pass for a non-object, wrong shapes, and an unchecked tool exiting 0
+- S-026-12: with `bogus = 1` under `[hooks]`, `git push --force origin feat:feat` exits 2 with `Rule: [hooks] has an unknown key: bogus`, while `git status && gh pr view 5` exits 0, and `test_s026_12_*` pass
+- S-026-13: `test_s026_13_*` pass: an edit of `docs/product.md` or a `REVIEW.md` runs its check, a pass is silent, exit 1 gives exit 2 with the output, and exit 2 or a check that can't start gives exit 1
+- S-026-14: `shipmill --repo <scratch> plan` with `bogus = 1` under `[hooks]` exits 2 naming `bogus`, and `test_s026_14_*` pass for the defaults and a wrong type
+- S-026-15: `shipmill --repo <scratch> doctor` printed one line each for app-writes, default-branch-push, rebase-merge, force-push, and private-paths, on and why, and `self-test: ... refused gh pr merge 1 --rebase (exit 2)`; `test_s026_15_*` pass for the FAIL, WARN, and no-`[agents]` cases
+- S-026-16: `test_s026_16_*` pass: a headless gate whose self-test fails starts no session and reports it, an interactive gate reports it and starts the session
+- S-026-17: `tests/fixtures/hooks/` holds a refused and an allowed Bash fixture for each of the five rules and `post-product-check.json` and `post-review-check.json`, and `test_s026_17_*` pass
+- S-026-18: read the five files and the comment above `HEADLESS_TOOLS` in `src/shipmill/gate.py`; each names the hooks as the Docs list says, and `test_s026_18_*` in `tests/test_hooks_docs.py` pass
+- S-026-19: read `hooks/hooks.json`: a PreToolUse `Bash` and a PostToolUse `Edit|Write|MultiEdit` hook each run `${CLAUDE_PLUGIN_ROOT}/hooks/delivery.py` with a Python 3.11 or newer from uv, and otherwise print `shipmill hook: can't start hooks/delivery.py (...); this command runs unchecked, see shipmill doctor` and exit 1; `test_s026_19_*` pass

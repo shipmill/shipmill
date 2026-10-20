@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.296",
+  "startedAt": "2026-10-19T12:40:53.057Z",
+  "durationSeconds": 6,
+  "costUsd": 0.054281800000000005,
+  "partial": false,
+  "suite": {
+    "root": "<checkout>",
+    "ablation": "none",
+    "threshold": 1,
+    "concurrency": 1,
+    "plugins": [
+      {
+        "name": "shipmill",
+        "version": "0.54.0",
+        "path": "<checkout>"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "smoke",
+      "dir": "evals/smoke",
+      "source": "case_yaml",
+      "promptMarkdown": "Which skill in this plugin turns users' feature requests into opportunity issues? Answer with the skill's name only.\n",
+      "runsPerCase": 3,
+      "timeoutSeconds": 180,
+      "maxTurns": 5,
+      "graders": [
+        {
+          "name": "names-intake",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": "last_message",
+            "pattern": "product-intake",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "answers-only-name",
+          "type": "llm",
+          "weight": 1,
+          "graderMarkdown": "Pass if the answer is just the skill's name, product-intake, with no extra explanation.",
+          "config": {
+            "criteria": "Pass if the answer is just the skill's name, product-intake, with no extra explanation.",
+            "focus": "last_message"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 1,
+            "costUsd": 0.054281800000000005,
+            "judgeCostUsd": 5.160000000000001e-05,
+            "durationSeconds": 6,
+            "startedAt": "2026-10-19T12:40:53.090Z",
+            "error": null,
+            "tracePath": "<tmp>/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "names-intake",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched product-intake",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "answers-only-name",
+                "passed": true,
+                "weight": 1,
+                "explanation": "judge votes: PASS PASS PASS",
+                "withOnly": false,
+                "scored": true,
+                "judgeVotes": [
+                  true,
+                  true,
+                  true
+                ],
+                "evidence": "product-intake"
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    }
+  ],
+  "aggregates": {
+    "casesTotal": 1,
+    "casesPassed": 1,
+    "overallScore": 1,
+    "overallPassRate": 1
+  }
+}

@@ -305,7 +305,9 @@ class World:
         """chains.py on this forge, every repo gated: its exit and what it printed"""
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code: int = self.ch.main(list(argv), run=self, contents=lambda repo: GATED, standing=self.standing)
+            code: int = self.ch.main(
+                list(argv), run=self, contents=lambda repo: GATED, standing=self.standing, write=self
+            )
         return code, out.getvalue()
 
     @staticmethod

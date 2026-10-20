@@ -1,6 +1,6 @@
 # S-029: Stable on every green batch; a breaking change waits for the maintainer
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -216,3 +216,17 @@ A new entry in the spec 014 catalogue (`src/shipmill/upgrades.py`), id
 - shipmill/shipmill#464: S-029-9
 
 ## Verification
+
+- S-029-1: ran the `test_s029_1` tests in `tests/test_breaking_hold.py` and read `src/shipmill/planner.py`, whose `BREAKING` cause turns a due breaking stable candidate under `act` into a proposal; `shipmill plan` proposes `2.0.0` from `1.4.0` and `0.5.0` from `0.4.2` with that cause and releases nothing on stable, `observe` stays `observe`; all pass
+- S-029-2: ran the `test_s029_2` tests, a promotion whose rc's base holds a pending `### Breaking` entry is proposed with the same cause when its trigger is due, and a breaking entry merged after the rc doesn't hold it; all pass
+- S-029-3: ran the `test_s029_3` tests, a candidate with no `major` entry and every candidate under `[bump] from = "paths"` release on their trigger under `act`; all pass
+- S-029-4: ran the `test_s029_4` tests and the one in `tests/test_autonomy.py` naming it, and read the planner's release branch, which carries the waiting breaking stable proposal in the `Decision`; a run whose rc releases reports the release and opens or updates the stable proposal issue, and a non-breaking stable carries none; all pass
+- S-029-5: ran `test_s029_5_the_breaking_proposal_issue_lists_the_breaking_entries_first` and read `src/shipmill/propose.py`, the issue is titled `Ready to release v2.0.0 on stable`, its body says it waits for the maintainer's decision, sorts the `major` headings first, and gives `gh workflow run release.yml -f lane=stable -f dry-run=false`; passes
+- S-029-6: ran the `test_s029_6` tests and read the planner's hand-start branch, a `lane=stable` start with `--actor <person>` releases with `breaking, started by @<person>`, a `<name>[bot]` actor skips with `a breaking release is started by a person, not <name>[bot]`, `lane=policy` proposes, an open `shipmill-hold` issue skips the hand start, and `land` closes the proposal; all pass
+- S-029-7: ran the `test_s029_7` tests in `tests/test_doctor_stable.py`, `doctor` WARNs about the prepare and land jobs lacking `issues: write` for `from = "headings"` with `major = ["Breaking"]`, and is silent for `major = []` and `from = "paths"`; all pass
+- S-029-8: held in 0.53.0, the release that shipped it: at `v0.53.0`, `src/shipmill/planner.py` still skips a promotion with `no rc has soaked N day(s)`, `doctor` WARNs `[lanes.stable] min_soak_days is deprecated (spec 029) ... run shipmill upgrade --apply stable-every-batch`, and `test_s029_8_a_deprecated_soak_still_holds_a_promotion_and_doctor_warns` and `test_s029_8_doctor_warns_whatever_the_value_and_not_without_the_key` assert both; the window is over on main (S-029-9), where `test_s029_9_doctor_fails_the_policy_with_the_refusal_and_the_upgrade_fixes_it` proves the WARN became the policy FAIL; passes
+- S-029-9: ran the `test_s029_9` tests, and `shipmill plan --dry-run` on a scratch repo whose `[lanes.stable]` sets `min_soak_days = 3` exits 2 with `[lanes.stable] min_soak_days was removed (spec 029); delete it, or run shipmill upgrade --apply stable-every-batch`; 0.53.0 to 0.55.0 honoured the key with the warning, and the refusal (#481, a `### Removed` entry) ships in the next minor release; all pass
+- S-029-10: ran the `test_s029_10` tests, `promote_from = "rc"` without `min_soak_days` promotes an rc cut 0 days ago once a stable trigger is due, and still defers when `.github/workflows/` changed since the rc; all pass
+- S-029-11: ran `shipmill init` in a scratch repo, `[lanes.stable]` holds only `quiet_minutes = 30` and `github_release = true`, the rc lane is comments only, and `release.yml` triggers on `push` and `workflow_dispatch` with no `schedule`; the `test_s029_11` tests pass
+- S-029-12: ran `shipmill upgrade --apply stable-every-batch` on a scratch config with `promote_from = "rc"` and `min_soak_days = 3` and no trigger, it removed the `min_soak_days` line, kept `promote_from`, the comment, and the rc lane, and added `quiet_minutes = 30`; the `test_s029_12` tests (listing only while the key is set, no trigger beside `schedule` or `milestone`, every other byte unchanged, CRLF kept) pass
+- S-029-13: searched the five files for "soak": only `skills/shipmill-setup/SKILL.md` ("no soak", the refused key) and `docs/release-lanes.md`'s deprecation paragraph mention it; `docs/release-lanes.md` documents the breaking hold, `promote_from` "whatever its age", and the deprecation; the `test_s029_13` tests pass

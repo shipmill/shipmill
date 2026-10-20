@@ -11,7 +11,7 @@ from pathlib import Path
 
 from shipmill import UVX
 from shipmill.config import CONFIG_PATH, config_path, loads
-from shipmill.doctor import CALLER, OPERATE_CALLER
+from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER
 from shipmill.errors import ReleaseError
 from shipmill.gitrepo import Git
 from shipmill.policy import Policy, Style, VersionFiles
@@ -336,6 +336,40 @@ jobs:
 """
 
 
+def downstream_caller_text() -> str:
+    """The Downstream tests workflow, which runs each [downstream] repository's tests on a
+    pull request through shipmill's downstream.yml (spec 032)"""
+    uses = f"{BOT_REPO}/.github/workflows"
+    return f"""name: Downstream tests
+
+# shipmill: https://github.com/{BOT_REPO}. On each pull request shipmill starts the test
+# workflow of every repository in .github/shipmill.toml's [downstream] and writes its result
+# as a check named "downstream: <name>". A fork's pull request waits for a person: gh
+# workflow run downstream.yml -f pr=<N>
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr: {{description: "pull request to test", required: true, type: number}}
+      collect: {{description: "set by shipmill: the head SHA to collect results for", type: string, default: ""}}
+permissions:
+  actions: write          # start this workflow's collect run
+  checks: write           # write one check per downstream on the pull request's head
+  contents: read
+  pull-requests: read
+jobs:
+  downstream:
+    uses: {uses}/downstream.yml@{BOT_REF}
+    with:
+      pr: ${{{{ github.event.pull_request.number || inputs.pr }}}}
+      collect: ${{{{ inputs.collect }}}}
+    secrets:
+      downstream-key: ${{{{ secrets.SHIPMILL_DOWNSTREAM_KEY }}}}
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class Initialized:
     written: tuple[Path, ...]
@@ -397,4 +431,22 @@ def init_operate(root: Path, force: bool) -> Path:
         raise ReleaseError(f"{OPERATE_CALLER} exists; pass --force to overwrite")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(operate_caller_text(), encoding="utf-8")
+    return path
+
+
+def init_downstream(root: Path, force: bool) -> Path:
+    """Write only the downstream caller (spec 032), for a policy that has [downstream]; a
+    policy that isn't there, doesn't load, or has no [downstream] refuses, and so does a
+    caller already there without force"""
+    policy = Policy.load(config_path(root))
+    if policy.downstream is None:
+        raise ReleaseError(
+            f"{CONFIG_PATH} has no [downstream] section naming the repositories to test; add it before"
+            f" writing {DOWNSTREAM_CALLER}"
+        )
+    path = root / DOWNSTREAM_CALLER
+    if path.exists() and not force:
+        raise ReleaseError(f"{DOWNSTREAM_CALLER} exists; pass --force to overwrite")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(downstream_caller_text(), encoding="utf-8")
     return path

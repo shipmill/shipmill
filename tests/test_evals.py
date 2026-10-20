@@ -356,3 +356,60 @@ def test_s025_2_ci_runs_evals_check_on_every_pull_request() -> None:
     assert re.search(r"^\s+run: uv run shipmill evals check$", text, re.MULTILINE)
     # the check resolves each case's commit, so the checkout holds the whole history
     assert re.search(r"^\s+fetch-depth: 0\b", text, re.MULTILINE)
+
+
+def _suite(repo: Path, kinds: dict[str, int]) -> None:
+    """Replace the suite with well-formed cases, so many of each kind"""
+    manifest = ""
+    for kind, count in kinds.items():
+        for n in range(count):
+            path = f"{SKILL}/{kind}-{n}"
+            _write(repo, f"evals/{path}/prompt.md", PROMPT)
+            _write(repo, f"evals/{path}/case.yaml", CASE_YAML)
+            manifest += _manifest(_sha(repo), path=path, kind=kind)
+    (repo / f"evals/{CASE}/prompt.md").unlink()
+    (repo / f"evals/{CASE}/case.yaml").unlink()
+    _write(repo, "evals/cases.toml", manifest)
+
+
+def _gate(root: Path, capsys: pytest.CaptureFixture[str]) -> tuple[int, list[str]]:
+    code = main(["evals", "check", "--gate", "--repo", str(root)])
+    return code, capsys.readouterr().out.splitlines()
+
+
+def test_s025_16_gate_names_the_kinds_short_of_the_first_suite(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _suite(repo, {"verdict": 8, "decision": 2, "fix": 5})
+    assert _gate(repo, capsys) == (
+        1,
+        [
+            "evals/cases.toml: well formed, 15 cases",
+            "gate off: short of the first suite's counts, decision: 2 of 4, finding: 0 of 4",
+        ],
+    )
+
+
+def test_s025_16_gate_is_on_at_the_first_suite_counts(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _suite(repo, {"verdict": 8, "decision": 4, "finding": 4, "fix": 4})
+    assert _gate(repo, capsys) == (
+        0,
+        ["evals/cases.toml: well formed, 20 cases", "gate on: 8 verdict, 4 decision, 4 finding, 4 fix cases at least"],
+    )
+
+
+def test_s025_16_gate_off_without_a_suite(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code, lines = _gate(tmp_path, capsys)
+    assert code == 1
+    assert lines[-1] == (
+        "gate off: short of the first suite's counts, verdict: 0 of 8, decision: 0 of 4, finding: 0 of 4, fix: 0 of 4"
+    )
+
+
+def test_s025_16_gate_reports_violations_before_counts(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write(repo, "evals/cases.toml", _manifest(_sha(repo), kind="nope"))
+    code, lines = _gate(repo, capsys)
+    assert code == 1
+    assert lines == [f"evals/{CASE}: kind 'nope' is not one of verdict, decision, finding, fix"]
+
+
+def test_s025_16_check_without_gate_ignores_the_counts(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert _check(repo, capsys) == (0, ["evals/cases.toml: well formed, 1 cases"])

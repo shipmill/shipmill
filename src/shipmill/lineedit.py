@@ -3,7 +3,9 @@ docs/product.md and REVIEW.md. An edit inserts, rewrites, or removes whole lines
 every other line byte for byte as it was, line endings included. The ids an edit hands out
 come from the file's git history, so a retired id is never handed out again"""
 
+import os
 import re
+import stat
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -81,6 +83,10 @@ class Document:
         self.lines[index] = line + _ending(self.lines[index])
 
     def delete(self, index: int) -> None:
+        """Remove line `index`; removing a last line without a line ending takes the new last
+        line's ending too, so the file still ends as it did"""
+        if index == len(self.lines) - 1 and index > 0 and not _ending(self.lines[index]):
+            self.lines[index - 1] = self.content(index - 1)
         del self.lines[index]
 
     def section_start(self, heading: int) -> int:
@@ -90,8 +96,19 @@ class Document:
         return under + 1 if under < len(self.lines) and self.blank(under) else under
 
     def write(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_bytes(self.text().encode("utf-8"))
+        """Write atomically: a temporary file beside the target, renamed over it, so a reader
+        never sees half a file. A symlink keeps pointing at the file it names, which gets the
+        new text with its permissions kept"""
+        target = self.path.resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.shipmill-{os.getpid()}.tmp")
+        try:
+            temporary.write_bytes(self.text().encode("utf-8"))
+            if target.exists():
+                os.chmod(temporary, stat.S_IMODE(target.stat().st_mode))
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _ending(line: str) -> str:

@@ -446,6 +446,16 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    again once a person runs it. The setup checklist's `PLUGIN_OUTDATED` rows name that
    install with a `gate:` row
 
+   The delivery hooks come with the plugin (spec 026), and need `uv` on PATH. In a repo
+   whose config has `[agents]`, they refuse with exit 2 a plain `gh` write while `app_id`
+   is set, a push to the default branch, a rebase merge, a force push without a lease
+   pinned to a commit, and a copy of a `[hooks] private` path out of the repo. Ask whether
+   the repo has paths whose files must never leave it (an `owner/` folder, for example),
+   and list them as globs in `[hooks] private` in the same PR; `[hooks] default_branch =
+   false` switches off the default-branch rule. Before you report the agent side
+   connected, run `$CR doctor` and read its `hooks` block: one line per rule, on or off,
+   and a passing self-test
+
    Every time you set up the gate, ask two questions together, before writing the
    section: who should own the gate's GitHub App (step 3), and whether anyone watches
    this machine, which picks `mode` (step 4). Write both answers into `[agents]`: `app_id`
@@ -466,7 +476,14 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    file for people. Write their words into the file's fixed structure, each item
    one line with its id from 1 (`- U-1: ...`, `- G-1: ...`, `- N-1: ...`, `- Q-1: ...`),
    run `$CR product check` until it exits 0, and commit the file in the same pull request
-   as the `[agents]` section. Never invent a goal, a user, a non-goal, or a quality-bar
+   as the `[agents]` section. For each goal you write, offer a measure from the registry
+   of spec 027, `<metric> <comparison> <target>` with a comparison of `<`, `<=`, `>`, or
+   `>=`: `deploy_frequency` (`<n>/week`), `lead_time_median`, `lead_time_p90`,
+   `time_to_restore_median`, `issue_to_release_median`, `issue_to_release_p90` (`<n>h` or
+   `<n>d`), `change_failure_rate`, `human_touch`, `agent_share` (`<n>%`), such as
+   `issue_to_release_median < 2d`. Write only the measures the maintainer gives, each with
+   `$CR product measure G-n "<metric> <comparison> <target>"`, never by hand; a goal they
+   give no measure gets none, and you never pick the metric or the target for them. Never invent a goal, a user, a non-goal, or a quality-bar
    item, and never fill one in from the README: what the maintainer didn't say stays out,
    and a section they can't answer yet (Users, Goals, and Quality bar each need at least
    one item; Non-goals may stay empty) is a question for them, not a guess. Show them the
