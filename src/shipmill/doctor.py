@@ -14,11 +14,23 @@ from typing import Any
 from shipmill import cli_command, fragments, ticks
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
+from shipmill.app import Lacks, NotInstalled
 from shipmill.autonomy import HOLD_LABEL, Autonomy, Hold
 from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
 from shipmill.config import config_path
 from shipmill.config import read as read_config
+from shipmill.downstream import (
+    INPUTS,
+    RUN_NAME_RULE,
+    SECRET,
+    Downstream,
+    DownstreamConfig,
+    Installed,
+    Reader,
+    Unreadable,
+    not_installed,
+)
 from shipmill.errors import ReleaseError
 from shipmill.gate import skills_dir
 from shipmill.github import UPGRADE_LABEL, GitHub
@@ -64,6 +76,7 @@ PAUSED = "the gate starts no session (D-35)"  # SHIPMILL_VERSION's words when a 
 PluginRows = Callable[[], list[PluginRow]]  # the rows, or ReleaseError when they can't be read
 PeopleReader = Callable[[], Flagged]  # spec 012's flagged items, or ReleaseError when they can't be read
 HookTester = Callable[[], HookTest]  # the delivery hooks' self-test (spec 026)
+AppProbe = Callable[[int], Installed | None]  # [downstream] app_id's installation check; None: no key on the host
 
 
 def read_plugin_rows(repo: str, root: Path) -> list[PluginRow]:
@@ -127,6 +140,8 @@ def doctor(
     today: dt.date | None = None,
     hooks: HookTester | None = None,
     auth: Callable[[], ClaudeAuth] | None = None,
+    downstream: Reader | None = None,
+    app: AppProbe | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -134,7 +149,10 @@ def doctor(
     checks none. repo, owner/name, links an upgrade's issue; None names it by number. today
     starts the year of window starts the schedule check reads; None takes the UTC date.
     hooks runs the delivery hooks' self-test, only with [agents] (spec 026); None runs none.
-    auth asks whether Claude Code can authenticate, only with [agents] (#500); None asks nothing"""
+    auth asks whether Claude Code can authenticate, only with [agents] (#500); None asks nothing.
+    downstream reads the library's secrets and the downstream workflows, only with [downstream]
+    (spec 032); None (no gh) reports that it can't. app checks the App's installation on each
+    downstream; None, or a probe without the key, warns once that it is unchecked"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -273,6 +291,8 @@ def doctor(
     for env in policy.environments.values():
         watched = env.source is not None or bool(env.health)  # D-9: only these need operate
         checks.append(_deploy(root / ".github" / "workflows" / env.workflow, env.name, operate_caller, watched))
+    if policy.downstream is not None:  # D-9: no downstream line without [downstream]
+        checks.extend(downstream_checks(root, policy.downstream, downstream, app))
     if plugins is not None:
         checks.extend(plugin_checks(plugins))
     if people is not None and policy.agents is not None and policy.agents.app_id is not None:
@@ -311,6 +331,133 @@ def auth_check(found: ClaudeAuth) -> Check:
     FAIL with its fix; a WARN when claude isn't on PATH, as nothing here runs a session then"""
     status = "PASS" if found.ok else ("WARN" if found.missing else "FAIL")
     return Check(status, "claude auth", found.line())
+
+
+_DOWNSTREAM_USES = "shipmill/shipmill/.github/workflows/downstream.yml"  # the reusable workflow the caller calls
+_RUN_NAME = re.compile(r"^run-name:.*\binputs\.shipmill-id\b", re.MULTILINE)
+
+
+def downstream_checks(root: Path, config: DownstreamConfig, reader: Reader | None, app: AppProbe | None) -> list[Check]:
+    """S-032-15: the downstream block, for a policy with [downstream]: the library's caller
+    workflow and its permissions, the SHIPMILL_DOWNSTREAM_KEY repository secret, each
+    downstream's workflow as the maintainer's gh reads it, and the App's installation on each
+    downstream when its key is on this host. A read that fails is a WARN, never a crash; no
+    line holds a secret's value or a token"""
+    checks = [_downstream_caller(root)]
+    if reader is None:
+        detail = "can't read the repository secrets or the downstream workflows: gh isn't installed"
+        checks.append(Check("WARN", "downstream", detail))
+    else:
+        checks.append(_downstream_secret(reader, config.app_id))
+        checks.extend(_downstream_workflow(reader, d) for d in config.downstreams)
+    try:
+        installed = None if app is None else app(config.app_id)
+    except ReleaseError as exc:  # --app-key names no usable key: the check asked for can't run
+        checks.append(Check("FAIL", "downstream", f"--app-key: {exc}"))
+        return checks
+    if installed is None:
+        detail = (
+            f"the App {config.app_id}'s installation on each downstream is unchecked: its private key isn't on"
+            f" this host; pass --app-key, or save it at ~/.config/shipmill/app-{config.app_id}.pem"
+        )
+        checks.append(Check("WARN", "downstream", detail))
+    else:
+        checks.extend(_downstream_app(config.app_id, d, installed) for d in config.downstreams)
+    return checks
+
+
+def _downstream_caller(root: Path) -> Check:
+    fix = f"`{cli_command()} init --downstream --force`"
+    path = root / DOWNSTREAM_CALLER
+    if not path.is_file():
+        return Check("FAIL", "downstream", f"[downstream] is set, but there is no {DOWNSTREAM_CALLER}: {fix} writes it")
+    text = _uncommented(path.read_text(encoding="utf-8"))
+    missing = [
+        f"the {t} trigger" for t in ("pull_request_target", "workflow_dispatch") if not re.search(rf"\b{t}\b", text)
+    ]
+    if not re.search(rf"^\s+uses:\s*{re.escape(_DOWNSTREAM_USES)}@", text, re.MULTILINE):
+        missing.append(f"the call to {_DOWNSTREAM_USES}")
+    for permission in ("actions", "checks"):
+        if not re.search(rf"^\s*(?:{permission}:\s*write|permissions:\s*write-all)\b", text, re.MULTILINE):
+            missing.append(f"{permission}: write")
+    if missing:
+        return Check("FAIL", "downstream", f"{DOWNSTREAM_CALLER} lacks {', '.join(missing)}: rewrite it with {fix}")
+    detail = (
+        f"{DOWNSTREAM_CALLER} calls shipmill's downstream.yml on pull_request_target and workflow_dispatch"
+        " with actions: write and checks: write"
+    )
+    return Check("PASS", "downstream", detail)
+
+
+def _downstream_secret(reader: Reader, app_id: int) -> Check:
+    try:
+        names = reader.secrets()
+    except ReleaseError as exc:
+        return Check("WARN", "downstream", f"can't read the repository secrets for {SECRET}: {exc}")
+    if SECRET in names:
+        return Check("PASS", "downstream", f"the repository secret {SECRET} is set")
+    detail = (
+        f"no repository secret {SECRET}, so the workflow can't start a downstream run:"
+        f" add App {app_id}'s private key with `gh secret set {SECRET} < <the key file>`"
+    )
+    return Check("FAIL", "downstream", detail)
+
+
+def _downstream_workflow(reader: Reader, d: Downstream) -> Check:
+    try:
+        found = reader.workflow(d)
+    except Unreadable as exc:
+        detail = (
+            f"{d.name}: {exc}, so {d.workflow} there is unchecked; the first pull request's"
+            f" check `downstream: {d.name}` will show whether it starts"
+        )
+        return Check("WARN", "downstream", detail)
+    except ReleaseError as exc:
+        return Check("WARN", "downstream", f"{d.name}: can't read {d.workflow} in {d.repo}: {exc}")
+    where = f"{d.workflow} on {found.ref} in {d.repo}"
+    if found.text is None:
+        return Check("FAIL", "downstream", f"{d.name}: {d.workflow} doesn't exist on {found.ref} in {d.repo}")
+    missing = downstream_lacks(found.text)
+    if missing:
+        return Check("FAIL", "downstream", f"{d.name}: {where} lacks {'; '.join(missing)}")
+    detail = (
+        f"{d.name}: {where} runs on workflow_dispatch with {', '.join(INPUTS)}, and its run-name"
+        " carries inputs.shipmill-id"
+    )
+    return Check("PASS", "downstream", detail)
+
+
+def downstream_lacks(text: str) -> list[str]:
+    """What a downstream's workflow lacks of the interface `downstream start` and `collect`
+    need: the workflow_dispatch trigger, its three inputs, and a run-name carrying
+    inputs.shipmill-id. A text check, not a YAML parse"""
+    body = _uncommented(text)
+    missing = []
+    if not re.search(r"\bworkflow_dispatch\b", body):
+        missing.append("the workflow_dispatch trigger")
+    absent = [name for name in INPUTS if not _takes_input(body, "workflow_dispatch", re.escape(name))]
+    if absent:
+        missing.append(f"the workflow_dispatch input{'' if len(absent) == 1 else 's'} {', '.join(absent)}")
+    if not _RUN_NAME.search(body):
+        missing.append(f"a run-name containing inputs.shipmill-id ({RUN_NAME_RULE.removeprefix('its ')})")
+    return missing
+
+
+def _downstream_app(app_id: int, d: Downstream, installed: Installed) -> Check:
+    try:
+        installed(d.repo)
+    except (NotInstalled, Lacks) as exc:
+        return Check("FAIL", "downstream", f"{d.name}: {not_installed(app_id, d.repo)}: {exc}")
+    except ReleaseError as exc:
+        return Check("WARN", "downstream", f"{d.name}: can't check the App {app_id}'s installation on {d.repo}: {exc}")
+    return Check(
+        "PASS", "downstream", f"{d.name}: the App {app_id} is installed on {d.repo} with Actions: read and write"
+    )
+
+
+def _uncommented(text: str) -> str:
+    """The text with each line's comment cut: a # at the line's start or after a space"""
+    return "\n".join(re.sub(r"(?:^|\s)#.*$", "", line) for line in text.splitlines())
 
 
 def hooks_checks(policy: Policy, git: Git, test: HookTester | None) -> list[Check]:

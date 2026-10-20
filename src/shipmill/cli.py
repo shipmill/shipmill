@@ -125,7 +125,18 @@ from shipmill.claude_auth import ClaudeAuth, claude_auth, run_auth
 from shipmill.config import CONFIG_PATH, Table, config_path
 from shipmill.config import read as read_config
 from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER, doctor, read_plugin_rows
-from shipmill.downstream import AppDispatcher, AppRuns, GhLibrary, Library, collect, key_problem, start
+from shipmill.downstream import (
+    AppDispatcher,
+    AppRuns,
+    GhLibrary,
+    GhReader,
+    Library,
+    Reader,
+    app_on_host,
+    collect,
+    key_problem,
+    start,
+)
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
     ClaudeCli,
@@ -293,7 +304,13 @@ def _parser() -> argparse.ArgumentParser:
         help="also append the report here (default: $GITHUB_STEP_SUMMARY)",
     )
 
-    sub.add_parser("doctor", help="check that the repository is ready for the bot")
+    p = sub.add_parser("doctor", help="check that the repository is ready for the bot")
+    p.add_argument(
+        "--app-key",
+        type=Path,
+        help="with [downstream]: the App's private key, to check its installation on each downstream"
+        " (default: ~/.config/shipmill/app-<app_id>.pem when it exists)",
+    )
 
     p = sub.add_parser("review", help="check, show, or edit REVIEW.md, the review rubric (spec 024)")
     reviews = p.add_subparsers(dest="review_command", required=True)
@@ -603,12 +620,14 @@ def main(
     home: Path | None = None,
     gh_runner: GhRunner | None = None,
     library: Library | None = None,
+    downstream_reader: Reader | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
     watch_state.py (and doctor's AGENT_AS_PERSON read), environ for this process's env, home
-    for the user's home, gh_runner for running `shipmill gh`'s gh, and library for the
-    library's repository `downstream start` and `collect` write checks on, as tests pass fakes"""
+    for the user's home, gh_runner for running `shipmill gh`'s gh, library for the library's
+    repository `downstream start` and `collect` write checks on, and downstream_reader for
+    what doctor reads of the secrets and the downstream workflows, as tests pass fakes"""
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
     root: Path = args.repo.resolve()
@@ -685,14 +704,18 @@ def main(
             None if slug is None else (lambda: agent_as_person.read(slug, state or run_state, dt.datetime.now(dt.UTC)))
         )
         hooks = _hook_test(root, env, user_home)
+        has_gh = shutil.which("gh") is not None
+        key: Path | None = None if args.app_key is None else args.app_key.expanduser()
         checks = doctor(
             root,
-            github or (GhCli(root) if shutil.which("gh") else None),
+            github or (GhCli(root) if has_gh else None),
             plugins,
             people,
             slug,
             hooks=hooks,
             auth=_claude_auth(env),
+            downstream=downstream_reader or (GhReader(root) if has_gh else None),
+            app=app_on_host(key, user_home, signer or Openssl(), api or UrllibApi(), lambda: dt.datetime.now(dt.UTC)),
         )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")

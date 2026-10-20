@@ -31,6 +31,8 @@ from shipmill.app import (
     Token,
     app_slug,
     check_key,
+    default_key,
+    installation,
     jwt,
     mint,
 )
@@ -315,6 +317,29 @@ class Library(Protocol):
         ...
 
 
+class GhFailed(ReleaseError):
+    """A gh call that exited non-zero; status is the HTTP status gh named, None when it named none"""
+
+    def __init__(self, message: str, status: int | None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+_HTTP = re.compile(r"\bHTTP (\d{3})\b")  # gh api says "(HTTP 404)", gh secret list "HTTP 403:"
+
+
+def _run_gh(gh: str, root: Path, args: tuple[str, ...], stdin: str | None) -> str:
+    """gh's stdout; a failure is a GhFailed quoting its first arguments and stderr, which is
+    only ever gh's or GitHub's message"""
+    proc = subprocess.run([gh, *args], capture_output=True, text=True, encoding="utf-8", cwd=root, input=stdin)
+    if proc.returncode != 0:
+        status = _HTTP.search(proc.stderr)
+        raise GhFailed(
+            f"gh {' '.join(args[:4])} failed: {proc.stderr.strip()[:500]}", None if status is None else int(status[1])
+        )
+    return proc.stdout
+
+
 class GhLibrary:
     """Library through the gh CLI, authenticated by GH_TOKEN in Actions; {owner}/{repo} is the
     checkout's origin. A body goes on stdin, never in argv"""
@@ -324,12 +349,7 @@ class GhLibrary:
         self.gh = gh
 
     def _gh(self, *args: str, stdin: str | None = None) -> str:
-        proc = subprocess.run(
-            [self.gh, *args], capture_output=True, text=True, encoding="utf-8", cwd=self.root, input=stdin
-        )
-        if proc.returncode != 0:
-            raise ReleaseError(f"gh {' '.join(args[:4])} failed: {proc.stderr.strip()[:500]}")
-        return proc.stdout
+        return _run_gh(self.gh, self.root, args, stdin)
 
     def _json(self, *args: str, stdin: str | None = None) -> Any:
         out = self._gh(*args, stdin=stdin)
@@ -890,3 +910,101 @@ def collect(
         if watching:
             sleep(POLL_SECONDS)
     return lines
+
+
+SECRET = "SHIPMILL_DOWNSTREAM_KEY"  # the library's repository secret holding the App's private key
+INPUTS = ("library-repo", "library-ref", "shipmill-id")  # what a downstream's workflow_dispatch declares
+
+
+class Unreadable(ReleaseError):
+    """The maintainer's login can't read a downstream repository"""
+
+
+@dataclass(frozen=True, slots=True)
+class Found:
+    """A downstream's workflow file as doctor read it: the ref read, and its text, None when
+    the file isn't on that ref"""
+
+    ref: str
+    text: str | None
+
+
+class Reader(Protocol):
+    """What doctor reads through the maintainer's own gh"""
+
+    def secrets(self) -> frozenset[str]:
+        """The names of the library's repository secrets; never their values"""
+        ...
+
+    def workflow(self, downstream: Downstream) -> Found:
+        """The downstream's workflow file on its ref, or its default branch; Unreadable when
+        the login can't read the repository"""
+        ...
+
+
+class GhReader:
+    """Reader through the maintainer's gh; {owner}/{repo} is the checkout's origin"""
+
+    def __init__(self, root: Path, gh: str = "gh") -> None:
+        self.root = root
+        self.gh = gh
+
+    def secrets(self) -> frozenset[str]:
+        out = _run_gh(self.gh, self.root, ("secret", "list", "--app", "actions", "--json", "name"), None)
+        try:
+            found = json.loads(out)
+        except json.JSONDecodeError:
+            raise ReleaseError("gh secret list printed no JSON") from None
+        if not isinstance(found, list) or not all(
+            isinstance(s, dict) and isinstance(s.get("name"), str) for s in found
+        ):
+            raise ReleaseError("gh secret list printed something other than a list of names")
+        return frozenset(str(s["name"]) for s in found)
+
+    def workflow(self, downstream: Downstream) -> Found:
+        d = downstream
+        try:
+            meta = _run_gh(self.gh, self.root, ("api", f"repos/{d.repo}"), None)
+        except GhFailed as exc:
+            if exc.status in {403, 404}:
+                raise Unreadable(f"your gh login can't read {d.repo}") from None
+            raise
+        ref = d.ref if d.ref is not None else _default_branch(200, meta, f"/repos/{d.repo}")
+        path = f"repos/{d.repo}/contents/.github/workflows/{urllib.parse.quote(d.workflow)}"
+        query = urllib.parse.urlencode({"ref": ref})
+        try:
+            text = _run_gh(
+                self.gh, self.root, ("api", "-H", "Accept: application/vnd.github.raw", f"{path}?{query}"), None
+            )
+        except GhFailed as exc:
+            if exc.status == 404:
+                return Found(ref, None)
+            raise
+        return Found(ref, text)
+
+
+Installed = Callable[[str], None]  # raises NotInstalled or Lacks when the App can't start a run on the repo
+
+
+def app_on_host(
+    key: Path | None, home: Path, signer: Signer, api: Api, clock: Callable[[], dt.datetime]
+) -> Callable[[int], Installed | None]:
+    """doctor's look at the App on each downstream: given [downstream] app_id, a check of its
+    installation on a repo, or None when the key isn't on the host (no key passed and none at
+    the default path app.py names). The check asks for DISPATCH_PERMISSIONS, which cover the
+    reads collect makes; the key's bytes are never read. A key passed that isn't a file only
+    its owner can read raises ReleaseError at once, never a WARN per downstream"""
+
+    def probe(app_id: int) -> Installed | None:
+        path = key if key is not None else default_key(app_id, home)
+        if key is None and not path.exists():
+            return None
+        if key is not None:
+            check_key(key)
+
+        def installed(repo: str) -> None:
+            installation(app_id, repo, jwt(app_id, check_key(path), clock(), signer), api, DISPATCH_PERMISSIONS)
+
+        return installed
+
+    return probe

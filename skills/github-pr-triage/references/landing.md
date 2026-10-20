@@ -54,6 +54,15 @@ test "$(git rev-list --count origin/<default>.."$sha")" -gt 0
 - Merge only on `scripts/pr_gate.py <n>` exit 0, or on a documented exception (see ci-failures.md). No exception covers exit 5 (a Protected areas glob or the direction, which waits on the maintainer) or exit 6 (an agent's PR without a valid `## Plan`).
 - **Cancelled jobs from a superseded run** (adding a label such as `full-ci` restarts CI and cancels the run in flight) make `pr_gate.py` report FAILED. Find the newest run for the head (`gh run list --branch <b> --json databaseId,headSha,conclusion,createdAt`), and merge on it if every job there is green and the run has the full job set the PR needs (a `full-ci` label adds Windows and macOS: the label's run and the push's run start together, and the one that survives may be the short Ubuntu-only run). Count the jobs; say so in the report. Adding the label before the first push avoids it.
 
+## Downstream checks
+
+In a library whose `.github/shipmill.toml` has `[downstream]` (spec 032), each pull request carries one check per dependent repository, `downstream: <name>`, the result of that repository's own tests against the PR's head. `pr_gate.py` reads it like any other check, with no special case:
+
+- A red `downstream: <name>` (`FAILURE` or `TIMED_OUT`) is treated like any red job: the gate exits 1 and the PR doesn't land. Read the check's summary, which links the downstream run and names its failed jobs; a break the PR caused is the PR's to fix, never the downstream's to absorb
+- A downstream's flaky test is rerun like a flaky job, but from the library: start the downstream tests again for the PR's head with `gh workflow run downstream.yml -f pr=<N>`, through `shipmill gh` when `[agents] app_id` is set, then wait on the gate. A rerun of the downstream's own run doesn't update the library's check
+- A fork's PR gets `action_required` downstream checks, titled `a fork's pull request runs downstream tests only by hand`: no downstream run starts until the maintainer has read the change and starts it with that same command themselves. It is the maintainer's to start, never an agent's: a run started as the App on a fork's PR is refused. Report the PR as waiting on the maintainer
+- A report-only downstream's check is `NEUTRAL` and counts green; its title still says whether it passed, so mention a `report-only: failed` in the report without holding the merge. One still `IN_PROGRESS` is pending (exit 3)
+
 ## Conflicts
 
 **Changelog fragments:** when `.github/shipmill.toml` sets `[changelog] fragments` (such as `fragments = "changelog.d"`), a PR adds its entry as a new file in that folder and leaves `CHANGELOG.md` alone, so PRs don't conflict on the CHANGELOG, and the union, `move`, and released-section repairs below don't come up for new PRs. `changelog_guard.py check --base origin/<default>` then also exits 1 on a line the PR added under Unreleased, naming the fragment to write instead, and on a fragment the PR added or changed that fails to read; move such an entry into that fragment by hand. A PR opened before the switch that still edits Unreleased fails `check` the same way.

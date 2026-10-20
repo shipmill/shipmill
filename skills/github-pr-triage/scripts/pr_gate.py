@@ -18,6 +18,10 @@ glob matches as decisions.py's scopes do: fnmatch, where `*` also matches `/`, o
 sits under it (`skills/**`, `docs/product`), relative to the repo's root, and for a
 subdirectory's REVIEW.md relative to its folder too.
 
+A downstream check (spec 032), `downstream: <name>`, is a CheckRun in the rollup read like any
+check, with no logic of its own: FAILURE, TIMED_OUT, or ACTION_REQUIRED fails, IN_PROGRESS is
+pending, and a report-only one's NEUTRAL counts green.
+
 Exit codes: 0 every PR is ready; 1 a check failed, or gh failed; 3 a check is still
 pending (or --wait timed out); 4 a PR is not open or conflicts; 5 a PR needs the
 maintainer's decision; 6 an agent's PR is refused for its plan; 2 bad arguments, a base

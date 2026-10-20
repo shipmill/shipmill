@@ -1,6 +1,6 @@
 # S-032: Run downstream repositories' tests on a library's pull request
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -300,3 +300,20 @@ fork's `action_required` downstream check is the maintainer's to start.
 - shipmill/shipmill#516: S-032-15, S-032-16
 
 ## Verification
+
+- S-032-1: read `DownstreamConfig.parse` in `src/shipmill/downstream.py` and its call in `policy.py`, and ran `tests/test_downstream_policy.py`: the keys, the defaults (30, false, the section's timeout), config order, and no downstreams without the section hold
+- S-032-2: ran `tests/test_downstream_policy.py`'s refusal table through `Policy.load` and the CLI: each bad key exits 2 naming it, `[downstream] names no downstream repository`, and a repeated `repo` and `workflow` names both tables
+- S-032-3: ran `tests/test_downstream_init.py` and actionlint on the file `downstream_caller_text()` writes: only `.github/workflows/downstream.yml`, both triggers, `pr` and `collect`, the four permissions, the `@v0` call with `SHIPMILL_DOWNSTREAM_KEY`, refused without `--force`, exit 2 without `[downstream]`; actionlint printed nothing
+- S-032-4: read `.github/workflows/downstream.yml` (`workflow_call`; every checkout is `github.event.repository.default_branch` with no pull request ref; `start` when `collect == ''`, `collect` otherwise) and ran actionlint on `.github/workflows/*.yml`: clean
+- S-032-5: ran `tests/test_downstream_start.py`'s S-032-5 tests: one check per downstream (`in_progress`, or `completed`/`neutral` titled `report-only: running`), each dispatch with the full SHA and `<owner>/<name>#<N>@<SHA>/<downstream>`, a token per downstream limited to its repo, the id in `external_id`, the collect dispatch, exit 0
+- S-032-6: ran `test_s032_6_a_second_start_updates_the_checks_it_wrote`: the second start updates the two checks and creates none
+- S-032-7: ran the S-032-7 tests: a 404 or 403 dispatch, a missing installation, and one without Actions: write conclude `failure` (report-only `neutral`) naming the status and the fix, and the other downstream still starts
+- S-032-8: ran `tests/test_downstream_collect.py`'s S-032-8 tests: the run is found by its id among `workflow_dispatch` runs created after the dispatch, linked as the details URL, and concluded `success`, `failure` titled `failed: <conclusion>`, or `timed_out`; a report-only check stays `neutral` with the result in its title
+- S-032-9: ran the S-032-9 tests: no run within 2 minutes concludes `failure` (report-only `neutral`) naming the run-name rule, and a run found inside 2 minutes doesn't
+- S-032-10: ran the S-032-10 tests and read `_result`: the summary names the SHA, links the run, lists failed jobs on one line each without a backtick, and copies no log
+- S-032-11: ran the S-032-11 tests: a fork's (or a deleted fork's) pull request dispatches nothing, required checks `action_required`, report-only `neutral`, with the title and `gh workflow run downstream.yml -f pr=<N>`
+- S-032-12: ran the S-032-12 tests: a person's `--actor` dispatches a fork's head and updates its checks, a `[bot]` actor on a fork writes nothing and exits 2 with the message, and a bot starts a same-repository head
+- S-032-13: ran the S-032-13 tests for `start` and `collect`: exit 2 on a bad config, an unreadable pull request, and a check that can't be written; an empty, malformed, or refused key writes every check with the reason and exits 2
+- S-032-14: ran `tests/test_pr_gate.py`'s S-032-14 tests: exit 1 printing `failed: downstream: <name> (FAILURE)`, likewise `TIMED_OUT` and `ACTION_REQUIRED`, exit 3 for `IN_PROGRESS`, `NEUTRAL` and `SUCCESS` green
+- S-032-15: ran `tests/test_downstream_doctor.py`'s S-032-15 tests against fake readers and GitHub, and `GhReader` read only against GitHub (a workflow on its default branch, a missing file, a repo the login can't read): the caller and secret FAILs, the per-downstream PASS, FAIL, and WARN, the App's FAIL with the key and one WARN without it, and no block without `[downstream]`
+- S-032-16: read the "Downstream tests" section of `docs/release-lanes.md`, setup's "Downstream tests", landing's "Downstream checks", and `pr_gate.py`'s docstring, and ran the S-032-16 tests: each covers what the Docs list names
