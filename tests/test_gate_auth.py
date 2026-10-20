@@ -25,6 +25,7 @@ from shipmill.gate import (
     Deaths,
     Launch,
     Process,
+    Session,
     fingerprint,
     gate,
     load_launch,
@@ -374,9 +375,112 @@ def test_a_session_that_still_runs_is_never_read_dead(checkout: Git) -> None:
     assert action is Action.RUNNING
 
 
-def test_an_interactive_launch_never_reads_dead(checkout: Git) -> None:
+def test_an_interactive_launch_claude_agents_no_longer_lists_is_an_attempt(checkout: Git) -> None:
     save_launch(state_dir(checkout) / RECORD, Launch(fingerprint([ISSUES]), "s1", NOW - dt.timedelta(minutes=5)))
     assert tick(checkout, interactive(), FakeClaude(), None, FakeNotifier())[0] is Action.UNCHANGED
+
+
+# point 2 for an interactive session: `claude agents` shows how it ended, as it leaves no log
+
+OLD = "0b8f"  # the last interactive session's id, as `claude --bg` printed it
+
+
+def listed(state: str | None, status: str | None = "idle") -> FakeClaude:
+    """`claude agents --json` listing the last interactive gate session with this state"""
+    return FakeClaude(listed=[Session(OLD, "shipmill romamo/demo 2026-10-04 11:55", status, state)])
+
+
+def launched_interactive(git: Git, at: dt.datetime, deaths: Deaths | None = None) -> None:
+    """gate.json as an interactive launch records it: no mode, pid, or log"""
+    save_launch(state_dir(git) / RECORD, Launch(fingerprint([ISSUES]), OLD, at, None, deaths))
+
+
+def test_an_interactive_session_that_failed_is_no_attempt_and_the_next_tick_launches(checkout: Git) -> None:
+    # #500: a `claude --bg` session that died still held its findings for retry_hours
+    launched_interactive(checkout, NOW - dt.timedelta(minutes=5))
+    claude = listed("failed")
+    action, launched, lines = tick(checkout, interactive(), claude, FakeAuth([LOGGED_IN]), FakeNotifier())
+    assert (action, launched, claude.stopped) == (Action.SESSION_DEAD, "s1", [OLD])
+    assert lines[0] == (
+        f"SESSION_DEAD: session {OLD} ended failed in claude agents; starting another for 1 finding(s);"
+        f" fix: claude logs {OLD}"
+    )
+    record = json.loads((state_dir(checkout) / RECORD).read_text(encoding="utf-8"))
+    assert record["session"] == "s1" and "mode" not in record and "pid" not in record
+    assert record["dead"] == {"count": 1, "since": (NOW - dt.timedelta(minutes=5)).isoformat()}
+
+
+def test_an_interactive_session_done_within_a_minute_of_its_launch_ended_dead(checkout: Git) -> None:
+    launched_interactive(checkout, NOW - dt.timedelta(seconds=40))
+    action, _, lines = tick(checkout, interactive(), listed("done"), FakeAuth([LOGGED_IN]), FakeNotifier())
+    assert action is Action.SESSION_DEAD
+    assert lines[0].startswith(f"SESSION_DEAD: session {OLD} ended done in claude agents, within 40 s of its launch;")
+
+
+def test_an_interactive_session_done_after_a_long_run_is_an_attempt(checkout: Git) -> None:
+    # the gate can't tell when a session became done, only that it was by this tick: never dead then
+    launched_interactive(checkout, NOW - dt.timedelta(seconds=61))
+    claude = listed("done")
+    action, launched, lines = tick(checkout, interactive(), claude, None, FakeNotifier())
+    assert (action, launched, claude.stopped) == (Action.UNCHANGED, None, [])
+    assert not any("ended" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    ("state", "status", "action"), [("blocked", "idle", Action.WAITING), ("working", "busy", Action.RUNNING)]
+)
+def test_an_interactive_session_that_waits_or_works_is_not_dead(
+    checkout: Git, state: str, status: str, action: Action
+) -> None:
+    launched_interactive(checkout, NOW - dt.timedelta(seconds=10))
+    assert tick(checkout, interactive(), listed(state, status), None, FakeNotifier())[0] is action
+
+
+def test_a_third_dead_interactive_session_in_a_row_holds_the_same_findings_for_retry_hours(checkout: Git) -> None:
+    first_at, at = NOW - dt.timedelta(minutes=30), NOW - dt.timedelta(minutes=5)
+    launched_interactive(checkout, at, Deaths(2, first_at))
+    claude, auth = listed("failed"), FakeAuth([])
+    action, launched, lines = tick(checkout, interactive(), claude, auth, FakeNotifier())
+    assert (action, launched, claude.launched, claude.stopped, auth.asked) == (Action.SESSION_DEAD, None, [], [], 0)
+    since, again = first_at.isoformat(timespec="minutes"), (at + dt.timedelta(hours=24)).isoformat(timespec="minutes")
+    assert lines[0] == (
+        f"SESSION_DEAD: session {OLD} ended failed in claude agents, 3 in a row since {since};"
+        f" no session starts for the same findings until {again}; fix: claude logs {OLD}"
+    )
+    after = NOW + dt.timedelta(hours=24)  # past retry_hours, it tries once more and counts on
+    action, launched, _ = tick(checkout, interactive(), claude, FakeAuth([LOGGED_IN]), FakeNotifier(), after)
+    assert (action, launched) == (Action.SESSION_DEAD, "s1")
+    assert load_launch(state_dir(checkout) / RECORD) == Launch(
+        fingerprint([ISSUES]), "s1", after, None, Deaths(3, first_at)
+    )
+
+
+def test_the_tick_record_names_a_dead_interactive_session_by_its_state(checkout: Git) -> None:
+    launched_interactive(checkout, NOW - dt.timedelta(minutes=5))
+    decision, launched, waiting, pruned = gate(
+        checkout,
+        "romamo/demo",
+        interactive,
+        listed("failed"),
+        Reads(),
+        NOW,
+        Hold,
+        FakeNotifier(),
+        NO_PRUNE,
+        login=lambda: LOGIN,
+        started=gone,
+        auth=FakeAuth([LOGGED_IN]),
+    )
+    assert tick_record(decision, launched, waiting, pruned, False)["dead"] == {
+        "session": OLD,
+        "log": None,
+        "seconds": None,
+        "auth": False,
+        "last_line": "",
+        "count": 1,
+        "since": (NOW - dt.timedelta(minutes=5)).isoformat(),
+        "state": "failed",
+    }
 
 
 def test_a_gate_json_from_before_500_still_reads(checkout: Git) -> None:

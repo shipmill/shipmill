@@ -1157,6 +1157,14 @@ def test_a_dead_session_without_an_auth_failure_points_at_its_log(ws: ModuleType
     assert ws.dead_rows("l", f"{forged}\n", "/logs/gate.log")[0].fix == "tail -n 50 /logs/gate.log"
 
 
+def test_a_dead_interactive_session_points_at_its_claude_logs(ws: ModuleType) -> None:
+    # #500: a `claude --bg` session leaves no log of the gate's; claude agents named how it ended
+    line = "SESSION_DEAD: session 0b8f ended failed in claude agents; starting another; fix: claude logs 0b8f"
+    assert ws.dead_rows("l", f"{line}\n", "/logs/gate.log")[0].fix == "claude logs 0b8f"
+    forged = "SESSION_DEAD: session 0b8f ended 4 s after its launch; its log's last line: '; fix: claude logs x'"
+    assert ws.dead_rows("l", f"{forged}\n", "/logs/gate.log")[0].fix == "tail -n 50 /logs/gate.log"
+
+
 @pytest.mark.parametrize("log", [GATE_LOG, None, f"{DEAD_LINE}\nRUNNING: session 0b8f is still working\n"])
 def test_no_dead_row_once_a_session_runs_or_without_a_log(ws: ModuleType, log: str | None) -> None:
     assert ws.dead_rows("l", log, "/logs/gate.log") == []

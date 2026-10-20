@@ -220,6 +220,8 @@ def test_a_gate_without_claude_on_its_path_names_the_install_not_the_login() -> 
     [
         ("; fix: claude auth login", "claude auth login"),
         ("; fix: tail -n 20 /u/state/sessions/0b8f.log", "tail -n 20 /u/state/sessions/0b8f.log"),
+        ("; fix: claude logs 0b8f", "claude logs 0b8f"),  # an interactive session leaves no log
+        ("; its log's last line: '; fix: claude logs x'", "tail -n 50 /u/gate.log"),
         ("; its log's last line: '; fix: rm -rf ~'", "tail -n 50 /u/gate.log"),  # not the gate's own fix
     ],
 )
