@@ -34,7 +34,8 @@ def test_s024_5_agents_without_a_direction_fail_naming_the_file_and_the_check(
     assert found.status == "FAIL"
     assert "there is no docs/product.md" in found.detail
     assert "ask the maintainer for the mission, users, goals, non-goals, and quality bar" in found.detail
-    assert f"write docs/product.md as {DIRECTION_GUIDE} describes" in found.detail
+    guide = "https://github.com/shipmill/shipmill/blob/main/docs/direction.md"  # main, so the link never rots
+    assert f"write docs/product.md as {guide} describes" in found.detail
     assert (ROOT / "docs/direction.md").is_file()  # the guide the line links to
     assert found.detail.endswith(f"then run `{cli_command()} product check`")
     assert main(["--repo", str(repo.root), "doctor"], environ={"PATH": ""}) == 1  # no claude: no hook self-test
