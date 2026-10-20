@@ -1,0 +1,343 @@
+# The agents' evals (spec 025, D-37): `claude plugin eval` runs the suite in evals/, offline,
+# and `shipmill evals compare` gates a pull request's run against the default branch's.
+# A scheduled or plain dispatched run on the default branch is the baseline; a pull request's
+# run, or a dispatched run with `pr`, is compared against it. Until the suite holds the first
+# suite's counts (`shipmill evals check --gate`), the pull request job reports and exits 0.
+name: evals
+
+on:
+  pull_request:
+    paths:
+      - "skills/**"
+      - ".claude-plugin/**"
+      - "evals/**"
+      - "src/shipmill/gate.py" # the gate's session paragraphs are every session's instructions
+  schedule:
+    - cron: "0 6 * * 1" # weekly, on the default branch: a model update shows with no change here
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "A pull request's number to evaluate; a fork's pull request runs only this way"
+        type: string
+        default: ""
+      model:
+        description: "Another model to run; its result never becomes the baseline"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  EVALS_MODEL: claude-opus-5-5 # the gate sessions' model, the one place it is written (spec 025)
+
+concurrency:
+  group: evals-${{ github.event.pull_request.number || inputs.pr || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: read # the baseline: the default branch's runs and their artifacts
+    steps:
+      - name: Refuse a fork's pull request, which runs only by hand (D-16)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          line="evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f pr=$PR"
+          echo "$line" >>"$GITHUB_STEP_SUMMARY"
+          echo "::error::$line"
+          exit 1
+
+      - name: Choose what this run is
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_EVENT: ${{ github.event.pull_request.number }}
+          PR_INPUT: ${{ inputs.pr }}
+          MODEL_INPUT: ${{ inputs.model }}
+          REF: ${{ github.ref }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+        run: |
+          model=${MODEL_INPUT:-$EVALS_MODEL}
+          ref=""
+          case "$EVENT" in
+            pull_request)
+              mode="pr"
+              pr=$PR_EVENT
+              ;;
+            schedule)
+              mode=baseline
+              pr=""
+              ;;
+            workflow_dispatch)
+              if [ "$REF" != "refs/heads/$DEFAULT" ]; then
+                echo "::error::evals: dispatch the run on the default branch, $DEFAULT; got $REF"
+                exit 1
+              fi
+              pr=$PR_INPUT
+              if [ -n "$pr" ]; then
+                if ! [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then
+                  echo "::error::evals: pr is a pull request's number; got $pr"
+                  exit 1
+                fi
+                mode="pr"
+                ref="refs/pull/$pr/merge"
+              elif [ "$model" = "$EVALS_MODEL" ]; then
+                mode=baseline
+              else
+                mode=model
+              fi
+              ;;
+            *)
+              echo "::error::evals: no run for the $EVENT event"
+              exit 1
+              ;;
+          esac
+          {
+            echo "mode=$mode"
+            echo "pr=$pr"
+            echo "ref=$ref"
+            echo "model=$model"
+          } >>"$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.plan.outputs.ref }} # empty: the event's commit, a pull request's merge
+          fetch-depth: 0 # each case's commit, and the merge base
+          persist-credentials: false # no GitHub token in the checkout the cases clone
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.14"
+
+      - run: uv sync --locked
+
+      - name: Check the suite, and whether the gate is on (S-025-16)
+        id: gate
+        run: |
+          uv run shipmill evals check
+          if uv run shipmill evals check --gate >"$RUNNER_TEMP/gate.txt"; then
+            echo "on=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "on=false" >>"$GITHUB_OUTPUT"
+          fi
+          tail -n 1 "$RUNNER_TEMP/gate.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Check the API key
+        id: key
+        env:
+          KEY_SET: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          MODE: ${{ steps.plan.outputs.mode }}
+          GATE_ON: ${{ steps.gate.outputs.on }}
+        run: |
+          if [ "$KEY_SET" = true ]; then
+            echo "set=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "set=false" >>"$GITHUB_OUTPUT"
+          line="evals: the repository secret ANTHROPIC_API_KEY is not set, so no case ran"
+          echo "$line" >>"$GITHUB_STEP_SUMMARY"
+          if [ "$MODE" = pr ] && [ "$GATE_ON" != true ]; then
+            echo "::warning::$line; the gate is off, so the pull request job exits 0"
+            exit 0
+          fi
+          echo "::error::$line"
+          exit 1
+
+      - name: Install Claude Code
+        if: steps.key.outputs.set == 'true'
+        run: |
+          npm install --global @anthropic-ai/claude-code
+          claude --version
+
+      - name: Find the default branch's baseline (S-025-12)
+        id: base
+        if: steps.key.outputs.set == 'true' && steps.plan.outputs.mode == 'pr'
+        env:
+          GH_TOKEN: ${{ github.token }} # this step's only; the eval run has none
+          REPO: ${{ github.repository }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+          MODEL: ${{ steps.plan.outputs.model }}
+        run: |
+          dir="$RUNNER_TEMP/evals/base"
+          runs=$(gh run list -R "$REPO" --workflow evals.yml --branch "$DEFAULT" --status success --limit 50 \
+            --json databaseId,event --jq '.[] | select(.event == "schedule" or .event == "workflow_dispatch") | .databaseId')
+          reason="no successful run on $DEFAULT left a baseline"
+          for id in $runs; do
+            created=$(gh api "repos/$REPO/actions/runs/$id/artifacts" \
+              --jq '[.artifacts[] | select(.name == "evals-baseline" and (.expired | not))][0].created_at // ""')
+            [ -n "$created" ] || continue
+            gh run download "$id" -R "$REPO" -n evals-baseline -D "$dir"
+            age=$(( $(date +%s) - $(date -d "$created" +%s) ))
+            base_model=$(jq -r '.model' "$dir/meta.json")
+            if [ "$age" -gt $(( 14 * 86400 )) ]; then
+              reason="the baseline, run $id, is older than 14 days"
+            elif [ "$base_model" != "$MODEL" ]; then
+              reason="the baseline, run $id, ran $base_model, not $MODEL"
+            else
+              echo "fresh=true" >>"$GITHUB_OUTPUT"
+              echo "base: the baseline of run $id ($created, $base_model)" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            rm -rf "$dir"
+            break
+          done
+          echo "fresh=false" >>"$GITHUB_OUTPUT"
+          echo "base: $reason, so the suite runs on the merge base first" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the suite
+        id: run
+        if: steps.key.outputs.set == 'true'
+        # while the gate is off, a pull request's run reports and never fails the job (S-025-16)
+        continue-on-error: ${{ steps.plan.outputs.mode == 'pr' && steps.gate.outputs.on != 'true' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MODEL: ${{ steps.plan.outputs.model }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+          ON_MERGE_BASE: ${{ steps.plan.outputs.mode == 'pr' && steps.base.outputs.fresh != 'true' }}
+        run: |
+          # The tools the suite's cases allow, from their prompt.md frontmatter
+          tools() {
+            python3 - "$1" <<'PY'
+          import re, sys
+          from pathlib import Path
+          found = set()
+          for prompt in Path(sys.argv[1], "evals").rglob("prompt.md"):
+              listed = re.search(r"^allowed_tools:\s*\[(.*)\]\s*$", prompt.read_text(encoding="utf-8"), re.M)
+              if listed:
+                  found.update(t.strip() for t in listed.group(1).split(",") if t.strip())
+          print(",".join(sorted(found)))
+          PY
+          }
+          # One run of the suite in a tree, its result in an output directory; no GitHub
+          # token in its environment, and the tree's offline gh stub first on PATH
+          suite() {
+            local tree=$1 out=$2 allowed code=0
+            allowed=$(tools "$tree")
+            [ -n "$allowed" ] || { echo "::error::evals: no case in $tree names its allowed_tools"; return 1; }
+            mkdir -p "$out"
+            (cd "$tree" && env -u GH_TOKEN -u GITHUB_TOKEN PATH="$tree/evals/bin:$PATH" \
+              claude plugin eval . --trust-plugin --scaffold --allow-tools "$allowed" \
+                --ablation none --no-publish --model "$MODEL" --runs 3 -j 4 --max-cost-usd 15 \
+                --json "$out/aggregate-result.json") || code=$?
+            # 2 is the budget, with partial results; compare names it, never compares them
+            if [ ! -s "$out/aggregate-result.json" ]; then
+              echo "::error::evals: claude plugin eval exited $code and wrote no result in $tree"
+              return 1
+            fi
+            jq -n --arg model "$MODEL" --arg commit "$(git -C "$tree" rev-parse HEAD)" \
+              --arg claude "$(claude --version)" --argjson code "$code" \
+              '{model: $model, commit: $commit, claude: $claude, exit: $code}' >"$out/meta.json"
+          }
+          if [ "$ON_MERGE_BASE" = true ]; then
+            merge_base=$(git merge-base "origin/$DEFAULT" HEAD)
+            git worktree add --detach "$RUNNER_TEMP/evals/base-tree" "$merge_base"
+            suite "$RUNNER_TEMP/evals/base-tree" "$RUNNER_TEMP/evals/base"
+          fi
+          suite "$GITHUB_WORKSPACE" "$RUNNER_TEMP/evals/head"
+
+      - name: Upload the result and the report
+        if: always() && steps.run.outcome != 'skipped'
+        uses: actions/upload-artifact@v5
+        with:
+          name: evals-result
+          path: |
+            ${{ runner.temp }}/evals/head/
+            ${{ runner.temp }}/evals/base/
+            evals/results/
+          if-no-files-found: warn
+
+      - name: Keep the run as the baseline
+        id: baseline
+        if: steps.plan.outputs.mode == 'baseline' && steps.run.outcome == 'success'
+        run: |
+          partial=$(jq -r '.partial' "$RUNNER_TEMP/evals/head/aggregate-result.json")
+          if [ "$partial" != false ]; then
+            echo "::error::evals: the run stopped early (partial), so it is no baseline"
+            exit 1
+          fi
+
+      - name: Upload the baseline
+        if: steps.baseline.outcome == 'success'
+        uses: actions/upload-artifact@v5
+        with:
+          name: evals-baseline
+          path: |
+            ${{ runner.temp }}/evals/head/aggregate-result.json
+            ${{ runner.temp }}/evals/head/meta.json
+          if-no-files-found: error
+
+      - name: Compare against the default branch (D-37)
+        if: steps.plan.outputs.mode == 'pr' && steps.run.outcome != 'skipped'
+        env:
+          GATE_ON: ${{ steps.gate.outputs.on }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+        run: |
+          base="$RUNNER_TEMP/evals/base/aggregate-result.json"
+          head="$RUNNER_TEMP/evals/head/aggregate-result.json"
+          if [ ! -s "$base" ] || [ ! -s "$head" ]; then
+            line="evals: no result to compare; the run failed before writing one"
+            echo "$line" >>"$GITHUB_STEP_SUMMARY"
+            if [ "$GATE_ON" = true ]; then
+              echo "::error::$line"
+              exit 1
+            fi
+            echo "::warning::$line; the gate is off, so the pull request job exits 0"
+            exit 0
+          fi
+          # A case whose directory the pull request changed is judged on its own
+          merge_base=$(git merge-base "origin/$DEFAULT" HEAD)
+          changed=()
+          for case_path in $(jq -r '.cases[].dir | sub("^evals/"; "")' "$head"); do
+            git diff --quiet "$merge_base" HEAD -- "evals/$case_path" || changed+=(--changed "$case_path")
+          done
+          code=0
+          uv run shipmill evals compare --base "$base" --head "$head" "${changed[@]}" \
+            >"$RUNNER_TEMP/compare.txt" || code=$?
+          # The moved cases, then both pass rates, as compare prints them
+          {
+            echo "### evals: compared against the default branch"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/compare.txt"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$code" -eq 0 ]; then
+            exit 0
+          fi
+          if [ "$GATE_ON" = true ]; then
+            exit "$code"
+          fi
+          echo "::warning::evals: compare exited $code, but the gate is off until the suite holds the first suite's counts, so the pull request job exits 0"
+
+      - name: Report the spend
+        if: always() && steps.run.outcome != 'skipped'
+        env:
+          ON_MERGE_BASE: ${{ steps.plan.outputs.mode == 'pr' && steps.base.outputs.fresh != 'true' }}
+        run: |
+          head="$RUNNER_TEMP/evals/head/aggregate-result.json"
+          base="$RUNNER_TEMP/evals/base/aggregate-result.json"
+          if [ ! -s "$head" ]; then
+            echo "evals: the run wrote no result, so no spend to report" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo
+            echo "### evals: spend"
+            echo
+            jq -r '"Spend: $\(.costUsd) over \(.durationSeconds)s"' "$head"
+            if [ "$ON_MERGE_BASE" = true ] && [ -s "$base" ]; then
+              jq -r '"Spend on the merge base: $\(.costUsd) over \(.durationSeconds)s"' "$base"
+            fi
+            echo
+            echo "| Skill | Runs | Turns | Spend (USD) | Wall time (s) |"
+            echo "|---|---|---|---|---|"
+            jq -r '.cases | group_by(.dir | split("/")[1])[] | [.[].arms.with[]] as $runs
+              | "| \(.[0].dir | split("/")[1]) | \($runs | length) | \([$runs[].turns // 0] | add)"
+              + " | \([$runs[].costUsd // 0] | add) | \([$runs[].durationSeconds // 0] | add) |"' "$head"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
