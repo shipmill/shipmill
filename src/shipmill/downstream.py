@@ -465,6 +465,8 @@ def start(
         except ReleaseError as exc:  # recorded on the check before the exit 2
             failed = f"Testing {pull.repo} at {sha}: shipmill couldn't start {d.workflow} in {d.repo}: {exc}"
             library.update_check(check_id, _ended(d, Conclusion.FAILURE, "couldn't start", failed))
+            if started:  # the runs already started still get a collector, or their checks never end
+                library.dispatch_collect(pull.default_branch, pr, sha)
             raise
         if refusal is None:
             started += 1

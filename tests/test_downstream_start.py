@@ -495,6 +495,17 @@ def test_start_records_an_unexpected_dispatch_error_on_the_check_before_exit_2(t
     assert (required.conclusion, required.title) == (Conclusion.FAILURE, "couldn't start")
 
 
+def test_start_still_collects_the_runs_it_started_before_an_unexpected_dispatch_error(tmp_path: Path) -> None:
+    """A downstream already dispatched keeps a collector when a later one ends start with exit 2,
+    so its in-progress check doesn't hold the pull request with nothing to conclude it"""
+    library = FakeLibrary()
+    api = DownstreamApi(statuses={REPORT_ONLY.repo: 500})
+    with pytest.raises(ReleaseError, match="answered 500"):
+        run(library, api, key_file(tmp_path))
+    assert library.check("consumer-app").status is Status.IN_PROGRESS
+    assert library.collects == [("main", 12, SHA)]
+
+
 def test_the_cli_refuses_an_empty_actor(tmp_path: Path) -> None:
     argv = ["--repo", str(tmp_path), "downstream", "start", "--pr", "12", "--app-key", "k", "--actor", ""]
     with pytest.raises(ReleaseError, match="--actor names who started the run"):
