@@ -708,6 +708,8 @@ def retire(root: Path, id: ItemId) -> Edited:
         )
     document = Document.read(root / body.path)
     removed = document.content(number - 1)
+    if any(item.id == id and item.measure is not None for item in direction.items(section)):
+        document.delete(number)  # its measure line, right under its item line (spec 027)
     document.delete(number - 1)
     document.write()
     return Edited(body.path, number, removed)

@@ -285,6 +285,20 @@ def test_s027_3_the_text_output_prints_each_measure_line_under_its_goal(
     assert capsys.readouterr().out == GOALS.rstrip("\n") + "\n"
 
 
+def test_s027_5_retire_removes_the_goals_measure_line_with_its_item(tmp_path: Path) -> None:
+    g1 = "- G-1: Widgets reach buyers in a day\n" + G1_MEASURE
+    root = write(tmp_path, WELL_FORMED)
+    assert run(root, "retire", "G-1") == 0
+    assert (root / DIRECTION).read_text() == WELL_FORMED.replace(g1, "")
+    assert check(root) == ()
+    assert run(root, "retire", "G-2") == 0  # no measure: only its line goes; G-3 keeps its own
+    assert [(g.id.number, g.measure is not None) for g in read(root).goals] == [(3, True)]
+    root = moved(tmp_path / "moved")
+    assert run(root, "retire", "G-1") == 0
+    assert (root / "docs/product/goals.md").read_text() == GOALS.replace(g1, "")
+    assert check(root) == ()
+
+
 def test_s027_3_ids_stays_one_line_per_id(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert run(write(tmp_path, WELL_FORMED), "ids") == 0
     assert capsys.readouterr().out.splitlines() == [
