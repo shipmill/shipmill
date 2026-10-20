@@ -110,6 +110,7 @@ from shipmill.app_create import (
 from shipmill.app_gh import GhRunner, as_app, as_host, find_gh, named_repo, run_gh
 from shipmill.app_install import WAIT_SECONDS, guide
 from shipmill.autonomy import Autonomy, AutonomyPolicy, Hold
+from shipmill.claude_auth import ClaudeAuth, claude_auth, run_auth
 from shipmill.config import CONFIG_PATH, Table, config_path
 from shipmill.config import read as read_config
 from shipmill.doctor import CALLER, OPERATE_CALLER, doctor, read_plugin_rows
@@ -588,7 +589,13 @@ def main(
         )
         hooks = _hook_test(root, env, user_home)
         checks = doctor(
-            root, github or (GhCli(root) if shutil.which("gh") else None), plugins, people, slug, hooks=hooks
+            root,
+            github or (GhCli(root) if shutil.which("gh") else None),
+            plugins,
+            people,
+            slug,
+            hooks=hooks,
+            auth=_claude_auth(env),
         )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")
@@ -739,6 +746,12 @@ def _hook_test(root: Path, environ: Mapping[str, str], home: Path) -> Callable[[
     return lambda: self_test(root, run_command, run_hook, which, home, environ)
 
 
+def _claude_auth(environ: Mapping[str, str]) -> Callable[[], ClaudeAuth]:
+    """#500's preflight, with claude looked up on environ's PATH"""
+    program = shutil.which("claude", path=environ.get("PATH", ""))
+    return lambda: claude_auth(run_auth, program)
+
+
 def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessions) -> int:
     git = Git(root)
     path = os.environ.get("PATH", "")
@@ -765,6 +778,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         lambda: host_login(root),
         plugins=run_command,
         hooks=_hook_test(root, os.environ, Path.home()),
+        auth=_claude_auth(os.environ),
     )
     if args.json:
         print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))

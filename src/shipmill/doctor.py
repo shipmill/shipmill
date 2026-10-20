@@ -16,6 +16,7 @@ from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
 from shipmill.autonomy import HOLD_LABEL, Autonomy, Hold
 from shipmill.changelog import Changelog
+from shipmill.claude_auth import ClaudeAuth
 from shipmill.config import config_path
 from shipmill.config import read as read_config
 from shipmill.errors import ReleaseError
@@ -123,13 +124,15 @@ def doctor(
     repo: str | None = None,
     today: dt.date | None = None,
     hooks: HookTester | None = None,
+    auth: Callable[[], ClaudeAuth] | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
     people reads spec 012's AGENT_AS_PERSON items, only when [agents] app_id is set; None
     checks none. repo, owner/name, links an upgrade's issue; None names it by number. today
     starts the year of window starts the schedule check reads; None takes the UTC date.
-    hooks runs the delivery hooks' self-test, only with [agents] (spec 026); None runs none"""
+    hooks runs the delivery hooks' self-test, only with [agents] (spec 026); None runs none.
+    auth asks whether Claude Code can authenticate, only with [agents] (#500); None asks nothing"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -149,6 +152,8 @@ def doctor(
     if policy.agents is not None:
         checks.append(direction_check(root))
         checks.extend(hooks_checks(policy, Git(root), hooks))
+        if auth is not None:
+            checks.append(auth_check(auth()))
     autonomy, hold = _autonomy(policy, github, root / CALLER)
     checks.extend(autonomy)
     upgrades, proposed = _upgrades(policy, raw, github, repo)
@@ -294,6 +299,13 @@ def direction_check(root: Path) -> Check:
         detail = f"{DIRECTION} is not well formed: {problems[0]}{more}; run {check_command} for each line, fix them"
         return Check("FAIL", "direction", detail)
     return Check("PASS", "direction", f"{DIRECTION} is well formed")
+
+
+def auth_check(found: ClaudeAuth) -> Check:
+    """#500: the gate starts no session while Claude Code can't authenticate here, so that is a
+    FAIL with its fix; a WARN when claude isn't on PATH, as nothing here runs a session then"""
+    status = "PASS" if found.ok else ("WARN" if found.missing else "FAIL")
+    return Check(status, "claude auth", found.line())
 
 
 def hooks_checks(policy: Policy, git: Git, test: HookTester | None) -> list[Check]:

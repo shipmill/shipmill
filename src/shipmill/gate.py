@@ -30,6 +30,8 @@ from typing import Protocol
 from shipmill.agents import AgentsConfig, Mode
 from shipmill.app import AppCheck, Identity
 from shipmill.autonomy import Hold
+from shipmill.claude_auth import FIX as AUTH_FIX
+from shipmill.claude_auth import ClaudeAuth
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.github import GitHub
@@ -45,6 +47,21 @@ DECISIONS = "needs-decision.json"  # one entry per item that waits on a decision
 NEEDS_DECISION = "NEEDS_DECISION"  # watch_state.py's items waiting on a reply, `#N` only (S-005-9)
 PRS_OPEN = "PRS_OPEN"  # watch_state.py's open pull requests: work only with [agents] prs = true
 SESSIONS = "sessions"  # a headless session's log, <uuid>.log, under the state directory (D-17)
+AUTH = "claude-auth.json"  # the failing Claude Code login's episode: since, and its one notification (#500)
+# a headless session that ended this soon after its launch, by its log's last write, with no
+# result in its log, ran no work (#500)
+DEAD_WITHIN = dt.timedelta(seconds=60)
+# `claude -p` prints its result when it ends; a log whose only line is one of these holds none
+NO_RESULT = re.compile(r"(?:API )?Error\b")
+# after this many dead sessions in a row, the same findings wait for retry_hours again (#500)
+DEAD_STREAK = 3
+# what Claude Code prints when it can't authenticate; a session whose log holds one ended dead (#500)
+AUTH_FAILURE = re.compile(
+    r"Failed to authenticate|OAuth (?:session|token) (?:has )?expired|Invalid API key|authentication_error"
+    r"|Please run /login",
+    re.IGNORECASE,
+)
+LOG_TAIL = 64 * 1024  # how much of a session's log the gate reads, from its end
 
 # The tools a headless session may use without a prompt (spec 005): the file tools, skills and
 # subagents, peer messages, and gh, git, and uv. Not a sandbox: the trust filter is (D-16)
@@ -120,14 +137,29 @@ class Process:
 
 
 @dataclass(frozen=True, slots=True)
+class Deaths:
+    """A run of headless sessions in a row that ended dead (#500): how many, and the launch of
+    the first"""
+
+    count: int
+    since: dt.datetime
+
+    def __post_init__(self) -> None:
+        if isinstance(self.count, bool) or not isinstance(self.count, int) or self.count < 1:
+            raise ValueError(f"dead count must be a positive integer, got {self.count!r}")
+
+
+@dataclass(frozen=True, slots=True)
 class Launch:
     """The last session the gate started, and the findings it started it for; process is set
-    for a headless launch (D-17) and None for an interactive one"""
+    for a headless launch (D-17) and None for an interactive one; deaths, the dead sessions in
+    a row right before it (#500), None when the one before it ran"""
 
     fingerprint: str
     session: str
     at: dt.datetime
     process: Process | None = None
+    deaths: Deaths | None = None
 
     @property
     def mode(self) -> Mode:
@@ -142,6 +174,8 @@ class Action(enum.Enum):
     UNCHANGED = "UNCHANGED"  # the same findings already got a session
     PLUGIN_STALE = "PLUGIN_STALE"  # a session would load a plugin older than the latest release (D-35)
     HOOKS_FAILED = "HOOKS_FAILED"  # headless: the delivery hooks' self-test failed (spec 026, S-026-16)
+    CLAUDE_AUTH = "CLAUDE_AUTH"  # Claude Code can't authenticate on this host: no session starts (#500)
+    SESSION_DEAD = "SESSION_DEAD"  # the last session ended dead, and another starts (#500)
     LAUNCH = "LAUNCH"
 
 
@@ -175,6 +209,9 @@ class Decision:
     loaded: Loaded | None = None  # the plugin a session would load, read before a launch (D-35); None: not read
     detached: Detached | None = None  # the branch --refresh detached the gate's worktree from (#247)
     hooks: HookTest | None = None  # the delivery hooks' self-test before a launch (spec 026); None: none ran
+    auth: ClaudeAuth | None = None  # the Claude Code login preflight before a launch (#500); None: none ran
+    auth_notice: str | None = None  # what a CLAUDE_AUTH tick did about notifying: once per episode
+    dead: Dead | None = None  # the last session, when it ended dead (#500)
 
 
 def fingerprint(work: Iterable[Finding]) -> str:
@@ -552,7 +589,8 @@ def state_dir(git: Git) -> Path:
 
 
 def load_launch(path: Path) -> Launch | None:
-    """gate.json; one without mode, as written before headless mode, is an interactive launch"""
+    """gate.json; one without mode, as written before headless mode, is an interactive launch,
+    and one without dead, as written before #500, follows a session that ran"""
     if not path.is_file():
         return None
     try:
@@ -565,18 +603,28 @@ def load_launch(path: Path) -> Launch | None:
                 raise TypeError(f"session must be a string, got {data['session']!r}")
             uuid.UUID(data["session"])
             process = Process(data["pid"], data["started"])
-        return Launch(str(data["fingerprint"]), str(data["session"]), dt.datetime.fromisoformat(data["at"]), process)
+        deaths = None
+        if "dead" in data:
+            dead = data["dead"]
+            if not isinstance(dead, dict) or set(dead) != {"count", "since"}:
+                raise ValueError("dead: expected exactly count and since")
+            deaths = Deaths(dead["count"], _moment(dead["since"], "dead.since"))
+        at = dt.datetime.fromisoformat(data["at"])
+        return Launch(str(data["fingerprint"]), str(data["session"]), at, process, deaths)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise ReleaseError(f"{path} is malformed ({exc}); delete it to start over") from None
 
 
 def save_launch(path: Path, launch: Launch) -> None:
-    """An interactive launch's record is the one written before headless mode"""
+    """An interactive launch's record is the one written before headless mode; dead is written
+    only after a run of dead sessions (#500)"""
     path.parent.mkdir(parents=True, exist_ok=True)
     record: dict[str, object] = {"fingerprint": launch.fingerprint, "session": launch.session}
     record["at"] = launch.at.isoformat()
     if launch.process is not None:
         record |= {"mode": launch.mode.value, "pid": launch.process.pid, "started": launch.process.started}
+    if launch.deaths is not None:
+        record["dead"] = {"count": launch.deaths.count, "since": launch.deaths.since.isoformat()}
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
 
@@ -594,6 +642,90 @@ def still_working(last: Launch | None, state: Path, started: StartTime) -> Decis
         return None
     log = session_log(state, last.session)
     return Decision(Action.RUNNING, f"session {last.session} is still working: tail -f {log}", ())
+
+
+@dataclass(frozen=True, slots=True)
+class Dead:
+    """A headless session that ended dead (#500): its log's last write came within DEAD_WITHIN
+    of its launch, or its log holds an authentication failure. It doesn't count toward
+    retry_hours. last_line is the log's last line, cut short, the only text of it ever shown"""
+
+    session: str
+    log: Path
+    seconds: int  # from the launch to the log's last write
+    auth: bool
+    last_line: str  # "" for an empty log
+    deaths: Deaths  # this session and the dead ones right before it
+
+    @property
+    def fix(self) -> str:
+        return AUTH_FIX if self.auth else f"tail -n 20 {self.log}"
+
+    def summary(self) -> str:
+        why = ", its log shows an authentication failure" if self.auth else ""
+        run = f", {self.deaths.count} in a row since {self.deaths.since.isoformat(timespec='minutes')}"
+        said = f"its log's last line: {self.last_line!r}" if self.last_line else "its log is empty"
+        lead = f"session {self.session} ended {self.seconds} s after its launch{why}"
+        return f"{lead}{run if self.deaths.count > 1 else ''}; {said}"
+
+    def line(self) -> str:
+        return f"{self.summary()}; fix: {self.fix}"
+
+    def record(self) -> dict[str, object]:
+        return {
+            "session": self.session,
+            "log": str(self.log),
+            "seconds": self.seconds,
+            "auth": self.auth,
+            "last_line": self.last_line,
+            "count": self.deaths.count,
+            "since": self.deaths.since.isoformat(),
+        }
+
+
+def log_tail(log: Path) -> str:
+    """The end of a session's log, LOG_TAIL bytes at most, as text"""
+    with log.open("rb") as handle:
+        size = handle.seek(0, os.SEEK_END)
+        handle.seek(max(0, size - LOG_TAIL))
+        return handle.read().decode("utf-8", errors="replace")
+
+
+def last_line(text: str) -> str:
+    """The last non-blank line, its control characters as spaces, cut to 200 characters"""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    shown = re.sub(r"[\x00-\x1f\x7f]", " ", lines[-1]).strip()
+    return shown if len(shown) <= 200 else shown[:199] + "…"
+
+
+def no_result(text: str) -> bool:
+    """A session's log holds no result: it is blank, or its only line is an error"""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return not lines or (len(lines) == 1 and NO_RESULT.match(lines[0]) is not None)
+
+
+def ended_dead(last: Launch | None, state: Path) -> Dead | None:
+    """#500: the last headless launch, once still_working found its process gone, when it ended
+    dead: its log holds an authentication failure, or it ended within DEAD_WITHIN of its launch
+    with no result in its log, so a healthy session that finishes fast still counts. Its end is
+    its log's modification time, the log's last write; a launch without a log reads as one that
+    ran. An interactive launch has no log and never reads dead"""
+    if last is None or last.process is None:
+        return None
+    log = session_log(state, last.session)
+    if not log.is_file():
+        return None
+    written = dt.datetime.fromtimestamp(log.stat().st_mtime, tz=dt.UTC)
+    tail = log_tail(log)
+    auth = AUTH_FAILURE.search(tail) is not None
+    seconds = max(0, int((written - last.at).total_seconds()))
+    if not auth and (seconds > DEAD_WITHIN.total_seconds() or not no_result(tail)):
+        return None
+    before = last.deaths
+    deaths = Deaths(1, last.at) if before is None else Deaths(before.count + 1, before.since)
+    return Dead(last.session, log, seconds, auth, last_line(tail), deaths)
 
 
 @dataclass(frozen=True, slots=True)
@@ -981,6 +1113,59 @@ def self_tested(decision: Decision, hooks: Callable[[], HookTest] | None, headle
     )
 
 
+def preflight(
+    decision: Decision,
+    auth: Callable[[], ClaudeAuth] | None,
+    path: Path,
+    repo: str,
+    agents: AgentsConfig,
+    notifier: Notifier,
+    now: dt.datetime,
+    dry_run: bool,
+) -> Decision:
+    """#500: a LAUNCH, in either mode, first asks whether Claude Code can authenticate here. A
+    failure makes the tick CLAUDE_AUTH, stopping no session and starting none, with the fix. A
+    failing login is one episode, recorded in claude-auth.json (waiting.json's shape, one
+    entry): with notify on, its first tick sends one desktop notification and no later tick
+    sends another; a failed send is tried again next tick. A real tick whose preflight passes
+    ends the episode. A dry run writes and sends nothing. auth None runs no preflight"""
+    if auth is None or decision.action is not Action.LAUNCH:
+        return decision
+    found = auth()
+    if found.ok:
+        if path.exists() and not dry_run:
+            path.unlink()
+        return replace(decision, auth=found)
+    episode = load_waiting(path).get("claude") or Wait(now, None)
+    notice = None
+    if agents.notify and episode.notified is None:
+        body = f"Claude Code can't authenticate on this host: {found.fix}; the gate starts no session until then"
+        episode, error = send(notifier, f"shipmill {repo}", body, episode, now, dry_run)
+        notice = f"notify failed: {error}" if error is not None else ("would notify" if dry_run else "notified")
+    if not dry_run:
+        save_waiting(path, {"claude": episode})
+    return replace(
+        decision,
+        action=Action.CLAUDE_AUTH,
+        reason=found.reason(),
+        stop=(),
+        identity=None,
+        asks_as=None,
+        auth=found,
+        auth_notice=notice,
+    )
+
+
+def relaunching(decision: Decision) -> Decision:
+    """#500: a LAUNCH after a session that ended dead reads SESSION_DEAD, naming the dead one,
+    so sessions that die one after another read as one failure, not LAUNCH after LAUNCH"""
+    dead = decision.dead
+    if dead is None or decision.action is not Action.LAUNCH:
+        return decision
+    again = f"starting another for {len(decision.work)} finding(s)"
+    return replace(decision, action=Action.SESSION_DEAD, reason=f"{dead.summary()}; {again}; fix: {dead.fix}")
+
+
 def gate(
     git: Git,
     repo: str,
@@ -1001,6 +1186,7 @@ def gate(
     new_session: Callable[[], uuid.UUID] = uuid.uuid4,
     plugins: Runner | None = None,
     hooks: Callable[[], HookTest] | None = None,
+    auth: Callable[[], ClaudeAuth] | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -1054,7 +1240,16 @@ def gate(
     hooks runs the delivery hooks' self-test (spec 026); None, as in tests that don't exercise
     it, runs none. A LAUNCH still standing after the plugin read, dry run or not, runs it once:
     a failure makes a headless tick HOOKS_FAILED, naming the problem and its fix, stopping no
-    session and starting none; an interactive tick reports it and starts the session"""
+    session and starting none; an interactive tick reports it and starts the session.
+
+    auth asks whether Claude Code can authenticate (#500); None, as in tests that don't exercise
+    it, asks nothing. A LAUNCH, in either mode and dry run or not, asks it right after the
+    decision (preflight): a failure is CLAUDE_AUTH, with one notification per episode. A last
+    headless launch whose process is gone and that ended dead (ended_dead) doesn't count toward
+    retry_hours, so its findings launch again; the decision names it, and a launch after it
+    reads SESSION_DEAD and records the run of dead sessions in gate.json's dead. After
+    DEAD_STREAK dead sessions in a row, the same findings wait for retry_hours again: the tick
+    reads SESSION_DEAD with the run, starts nothing, and names when they are retried"""
     check_checkout(git, repo)
     config = checked(config, claude.args)
     state = state_dir(git)
@@ -1074,6 +1269,7 @@ def gate(
     working = still_working(last, state, started)
     if working is not None:
         return working, None, waiting, pruned
+    dead = ended_dead(last, state)  # a dead session was no attempt: its findings aren't handled (#500)
     detached = refresh(git, detach=True) if refresh_checkout and not dry_run else None
     agents = config()
     if app_key_named and agents.app_id is None:  # read after the refresh, so a stale checkout can't stall it
@@ -1086,9 +1282,19 @@ def gate(
     retry = dt.timedelta(hours=agents.retry_hours)
     rows = findings(read)
     asked = ask(state / DECISIONS, repo, rows, agents, notifier, now, dry_run) if headless else ()
+    capped = dead is not None and dead.deaths.count >= DEAD_STREAK  # retry_hours holds the findings again
     decision = replace(
-        decide(rows, sessions, last, now, retry, agents.prs), mode=agents.mode, decisions=asked, detached=detached
+        decide(rows, sessions, last if dead is None or capped else None, now, retry, agents.prs),
+        mode=agents.mode,
+        decisions=asked,
+        detached=detached,
+        dead=dead,
     )
+    if dead is not None and last is not None and decision.action is Action.UNCHANGED:
+        again = (last.at + retry).isoformat(timespec="minutes")
+        reason = f"{dead.summary()}; no session starts for the same findings until {again}; fix: {dead.fix}"
+        decision = replace(decision, action=Action.SESSION_DEAD, reason=reason)
+    decision = preflight(decision, auth, state / AUTH, repo, agents, notifier, now, dry_run)
     if decision.action is not Action.LAUNCH:
         return decision, None, waiting, pruned
     if identity is not None:
@@ -1103,7 +1309,7 @@ def gate(
     else:
         text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login)
     if dry_run:
-        return self_tested(stale(decision, git, plugins), hooks, headless), None, waiting, pruned
+        return relaunching(self_tested(stale(decision, git, plugins), hooks, headless)), None, waiting, pruned
     env = None
     if identity is not None:
         if app_env is None:
@@ -1117,6 +1323,7 @@ def gate(
     decision = self_tested(decision, hooks, headless)  # of the install the session loads, so after the update too
     if decision.action in (Action.PLUGIN_STALE, Action.HOOKS_FAILED):
         return decision, None, waiting, pruned
+    decision = relaunching(decision)
     for session in decision.stop:
         claude.stop(session)
     name = f"{session_name(repo)} {now:%Y-%m-%d %H:%M}"
@@ -1127,7 +1334,8 @@ def gate(
     session_id = new_session()
     log = session_log(state, str(session_id))
     pid = claude.start(git.root, name, text, session_id, log, env)
-    save_launch(record, Launch(fingerprint(decision.work), str(session_id), now, Process(pid, started(pid))))
+    deaths = None if dead is None else dead.deaths
+    save_launch(record, Launch(fingerprint(decision.work), str(session_id), now, Process(pid, started(pid)), deaths))
     return replace(decision, follow=f"tail -f {log}"), str(session_id), waiting, pruned
 
 
@@ -1152,6 +1360,8 @@ def tick_record(
         "loaded": None if decision.loaded is None else decision.loaded.record(),
         "detached": None if decision.detached is None else decision.detached.record(),
         "hooks": None if decision.hooks is None else decision.hooks.record(),
+        "auth": None if decision.auth is None else decision.auth.record(),
+        "dead": None if decision.dead is None else decision.dead.record(),
     }
 
 
@@ -1163,6 +1373,11 @@ def tick_lines(
     per pruned worktree"""
     who = f" as {decision.identity}" if decision.identity is not None else ""
     lines = [f"{decision.action.value}: {decision.reason}{who}"]
+    if decision.auth_notice is not None:
+        lines.append(f"  {decision.auth_notice}")
+    # a launch that didn't start names the dead session; SESSION_DEAD's reason does, and QUIET has no work for one
+    if decision.dead is not None and decision.action not in (Action.SESSION_DEAD, Action.QUIET):
+        lines.append(f"  {decision.dead.line()}")
     if decision.detached is not None:
         lines.append(f"  {decision.detached.line()}")
     if decision.asks_as is not None:
