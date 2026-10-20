@@ -51,14 +51,16 @@
                   replace, or clear a goal's measure line (measure, spec 027)
   evals           the agents' eval suite, evals/ (spec 025): check exits 1 naming each case and the
                   rule it breaks, without a model; a repository with no case under evals/ passes;
-                  compare judges a pull request's run against the default branch's (D-37)
+                  check --gate also exits 1 while the suite is short of 8 verdict, 4 decision,
+                  4 finding, and 4 fix cases, the counts the gate turns on at; compare judges
+                  a pull request's run against the default branch's (D-37)
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
 action, app-create or app-install left a repo without the App, product check found a broken
-rule, review check found a malformed REVIEW.md, evals check found a malformed case, or evals
-compare found a regression or a run stopped at its budget; 2 bad input or a refused state,
-such as an edit of a file its check refuses, a malformed evals/cases.toml, or a missing or
-malformed aggregate-result.json.
+rule, review check found a malformed REVIEW.md, evals check found a malformed case (or, with
+--gate, a suite short of the gate's counts), or evals compare found a regression or a run
+stopped at its budget; 2 bad input or a refused state, such as an edit of a file its check
+refuses, a malformed evals/cases.toml, or a missing or malformed aggregate-result.json.
 """
 
 import argparse
@@ -518,6 +520,11 @@ def _parser() -> argparse.ArgumentParser:
     evaluating = p.add_subparsers(dest="evals", required=True)
     q = evaluating.add_parser("check", help="exit 1 naming each case of evals/ and the rule it breaks; no case passes")
     q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    q.add_argument(
+        "--gate",
+        action="store_true",
+        help="also exit 1 naming each kind short of the first suite's counts (8 verdict, 4 decision, 4 finding, 4 fix)",
+    )
     q = evaluating.add_parser(
         "compare", help="exit 1 when the head's eval results regress against the base's (D-37), naming the cases"
     )
@@ -604,7 +611,7 @@ def main(
     if args.command == "evals":
         if args.evals == "compare":
             return _evals_compare(args.base, args.head, frozenset(args.changed), args.tolerance)
-        return _evals(root)
+        return _evals(root, gate=args.gate)
     hub = github or GhCli(root)
     if args.command == "init":
         # checked before any write, on every path (spec 015)
@@ -1222,18 +1229,26 @@ def _review(root: Path, args: argparse.Namespace) -> int:
     return 0
 
 
-def _evals(root: Path, resolves: evals.Resolves | None = None) -> int:
+def _evals(root: Path, resolves: evals.Resolves | None = None, gate: bool = False) -> int:
     """Spec 025: one line per violation, exit 1 when any; a repository without evals/ passes,
-    so CI runs the check before the suite exists"""
+    so CI runs the check before the suite exists. With gate, also exit 1 naming each kind
+    short of the first suite's counts (S-025-16), an empty suite short of all"""
     report = evals.check(root, resolves)
     if report is None:
         print(f"no case under {evals.SUITE}/: nothing to check")
+    else:
+        for violation in report.violations:
+            print(violation)
+        if report.violations:
+            return 1
+        print(f"{evals.MANIFEST}: well formed, {report.cases} cases")
+    if not gate:
         return 0
-    for violation in report.violations:
-        print(violation)
-    if report.violations:
+    short = evals.gate_short(report.entries if report is not None else ())
+    if short:
+        print(f"gate off: short of the first suite's counts, {', '.join(str(s) for s in short)}")
         return 1
-    print(f"{evals.MANIFEST}: well formed, {report.cases} cases")
+    print("gate on: " + ", ".join(f"{need} {kind}" for kind, need in evals.GATE.items()) + " cases at least")
     return 0
 
 
@@ -1253,14 +1268,16 @@ def _evals_compare(base_file: Path, head_file: Path, changed: frozenset[PurePosi
     """Spec 025, D-37: one line per case that moved, then both pass rates; exit 1 on a
     regression or on a run stopped at its budget, 2 on a missing or malformed result"""
     base, head = evals.read_result(base_file), evals.read_result(head_file)
-    unknown = sorted(changed - set(head.cases))
-    if unknown:
-        named = ", ".join(str(p) for p in unknown)
-        raise ReleaseError(f"--changed {named}: {head_file} holds no such case")
+    # the budget first: a run it stopped compares nothing, and a changed case it never
+    # reached holds no runs, so naming that case would hide the budget line (S-025-14)
     stopped = evals.budget_reached(base, head)
     if stopped is not None:
         print(stopped)
         return 1
+    unknown = sorted(changed - set(head.cases))
+    if unknown:
+        named = ", ".join(str(p) for p in unknown)
+        raise ReleaseError(f"--changed {named}: {head_file} holds no such case")
     result = evals.compare(base, head, changed, tolerance)
     for moved in result.moved:
         print(moved)

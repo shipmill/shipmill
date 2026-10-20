@@ -15,7 +15,8 @@ one with what shipmill needs beyond the runner's format:
 A malformed `cases.toml` is bad input (ReleaseError, exit 2); every other fault is a
 Violation naming the case and the rule it breaks (exit 1). The case files are YAML; the
 package has no YAML library, so `_Yaml` reads the block subset the runner's cases use and
-refuses, as a violation, anything outside it.
+refuses, as a violation, anything outside it. `gate_short` names the kinds the suite holds
+fewer cases of than `GATE`, the first suite's counts; the gate turns on once it names none.
 
 `compare` is the gate against the default branch: it reads two runner results,
 `aggregate-result.json`, and judges the head's against the base's from the per-run grader
@@ -107,6 +108,31 @@ class Entry:
 class Report:
     cases: int
     violations: tuple[Violation, ...]
+    entries: tuple[Entry, ...]
+
+
+# The first suite's counts (spec 025): until the suite holds them, the gate is off and the
+# evals pull request job reports its comparison and exits 0 (S-025-16)
+GATE: Mapping[Kind, int] = {Kind.VERDICT: 8, Kind.DECISION: 4, Kind.FINDING: 4, Kind.FIX: 4}
+
+
+@dataclass(frozen=True, slots=True)
+class Short:
+    """A kind the suite holds fewer cases of than the gate asks"""
+
+    kind: Kind
+    has: int
+    needs: int
+
+    def __str__(self) -> str:
+        return f"{self.kind}: {self.has} of {self.needs}"
+
+
+def gate_short(entries: tuple[Entry, ...]) -> tuple[Short, ...]:
+    """The kinds short of the gate's counts, in the table's order; empty once the gate is on.
+    An entry of an unknown kind counts for none"""
+    counts = {kind: sum(1 for e in entries if e.kind == kind.value) for kind in GATE}
+    return tuple(Short(kind, counts[kind], need) for kind, need in GATE.items() if counts[kind] < need)
 
 
 def git_resolves(root: Path) -> Resolves:
@@ -141,7 +167,7 @@ def check(root: Path, resolves: Resolves | None = None) -> Report | None:
             violations.append(Violation(SUITE / entry.path, rule))
             continue
         violations.extend(Violation(SUITE / entry.path, r) for r in _case_rules(root, entry, resolve))
-    return Report(len(entries), tuple(violations))
+    return Report(len(entries), tuple(violations), entries)
 
 
 def read_manifest(path: Path) -> tuple[Entry, ...]:
