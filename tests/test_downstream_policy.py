@@ -63,6 +63,17 @@ def test_s032_1_the_policy_reads_every_downstream_key_in_config_order() -> None:
     )
 
 
+def test_s032_1_the_timeout_bounds_are_inclusive() -> None:
+    text = (
+        "\n[downstream]\napp_id = 1\ntimeout_minutes = 300\n"
+        '\n[downstream.low]\nrepo = "o/low"\nworkflow = "t.yml"\ntimeout_minutes = 1\n'
+        '\n[downstream.high]\nrepo = "o/high"\nworkflow = "t.yml"\n'
+    )
+    config = downstream(text)
+    assert config is not None
+    assert [d.timeout_minutes for d in config.downstreams] == [1, 300]
+
+
 def test_s032_1_a_name_may_be_39_characters() -> None:
     name = "a" + "-" * 37 + "z"
     config = downstream(APP + CONSUMER.replace("consumer-app]", f"{name}]"))
@@ -84,6 +95,15 @@ REFUSALS: dict[str, tuple[str, str]] = {
     "missing app_id": ("\n[downstream]\n" + CONSUMER, f"{WHERE}: app_id is required"),
     "app_id zero": ("\n[downstream]\napp_id = 0\n" + CONSUMER, f"{WHERE}: app_id must be 1 or more, got 0"),
     "app_id a string": ('\n[downstream]\napp_id = "1"\n' + CONSUMER, f"{WHERE}: app_id must be an integer, got '1'"),
+    "app_id a bool": ("\n[downstream]\napp_id = true\n" + CONSUMER, f"{WHERE}: app_id must be an integer, got True"),
+    "section timeout a bool": (
+        table("section", "timeout_minutes = true"),
+        f"{WHERE}: timeout_minutes must be an integer, got True",
+    ),
+    "table timeout a bool": (
+        table("table", "timeout_minutes = true"),
+        f"{WHERE} [consumer-app]: timeout_minutes must be an integer, got True",
+    ),
     "section timeout zero": (
         table("section", "timeout_minutes = 0"),
         f"{WHERE}: timeout_minutes must be in 1..300, got 0",
