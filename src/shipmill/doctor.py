@@ -115,7 +115,7 @@ def plugin_checks(
     row, which names the install a session loads, passes. The gate's own CLI behind the latest
     release is a WARN with its fix (S-031-17), and so is a config whose requires the version
     sessions load doesn't meet (S-031-19). None of them holds the gate. The one that does
-    (S-031-24, D-44): pypi asks PyPI for the version sessions load, and a 404 is a FAIL with
+    (S-031-24, D-44): pypi asks PyPI for the version sessions load, and a 404 is a WARN with
     the publish fix (#569); None asks nothing. A failed read is a WARN, never a crash"""
     try:
         rows = read()
@@ -153,14 +153,14 @@ def plugin_checks(
 
 
 def pypi_check(answer: PyPI) -> Check:
-    """#569: a 404 holds the gate, so it is a FAIL with the fix; no answer, or another, is a
-    WARN, as the tick starts the session then"""
+    """#569, spec 031's "Report, don't pause": a 404 holds the gate's sessions, a WARN with
+    the publish fix; no answer, or another, is a WARN, as the tick starts the session then"""
     if answer.waits:
         detail = (
             f"plugin {answer.version} waits for PyPI: {answer.url} answers 404, so the gate starts no session"
             f" until it serves it; fix: {publish_fix(answer.version)}"
         )
-        return Check("FAIL", "pypi", detail)
+        return Check("WARN", "pypi", detail)
     if answer.status == 200:
         return Check("PASS", "pypi", f"PyPI serves shipmill {answer.version}, the version sessions load")
     return Check("WARN", "pypi", answer.lines()[0])

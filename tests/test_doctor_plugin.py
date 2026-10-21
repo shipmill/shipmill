@@ -212,7 +212,7 @@ def answers(status: int | None) -> Fetch:
         (
             404,
             Check(
-                "FAIL",
+                "WARN",
                 "pypi",
                 "plugin 0.32.1 waits for PyPI: https://pypi.org/pypi/shipmill/0.32.1/json answers 404, so the gate"
                 f" starts no session until it serves it; fix: {PUBLISH}",
@@ -232,7 +232,8 @@ def answers(status: int | None) -> Fetch:
     ],
 )
 def test_doctor_asks_pypi_for_the_version_sessions_load(ws: ModuleType, answer: int | None, expected: Check) -> None:
-    # #569: the one plugin check that holds the gate is a FAIL with the publish fix; a failed read warns
+    # #569, spec 031's "Report, don't pause": the one plugin check that holds the gate is a WARN
+    # with the publish fix, never a FAIL; a failed read warns too
     found = [c for c in plugin_checks(session_rows(ws, "0.32.1"), pypi=answers(answer)) if c.name == "pypi"]
     assert found == [expected]
 
