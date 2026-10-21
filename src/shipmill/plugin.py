@@ -555,6 +555,15 @@ class PyPI:
         return {"version": str(self.version), "status": self.status, "error": self.error}
 
 
+def publish_fix(version: Version) -> str:
+    """#569: the fix for a version PyPI doesn't serve: its publish run, else a new one"""
+    tag = f"v{version}"
+    return (
+        f"check the publish.yml run for {tag}: gh run list --repo {SHIPMILL_REPO} --workflow publish.yml;"
+        f" if none passed, publish it: gh workflow run publish.yml --repo {SHIPMILL_REPO} -f tag={tag}"
+    )
+
+
 def pypi(version: Version, fetch: Fetch) -> PyPI:
     try:
         return PyPI(version, fetch(PYPI.format(version=version)))
