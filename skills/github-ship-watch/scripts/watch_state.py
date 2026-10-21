@@ -206,18 +206,21 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
                   or the checkout itself when it is a linked worktree: Claude Code keys an
                   install on each), the install a session in the gate's folder loads
                   ("a session loads <scope> <version> (<project>)": the most specific scope
-                  installed for its project, local, project, user, then managed; when it is
-                  older than the latest release the gate starts no session, D-35), and the
-                  marketplace's source when it isn't shipmill/shipmill (reported, never an
-                  action)
+                  installed for its project, local, project, user, then managed; ", older
+                  than <latest>" when it lags, which the gate reports and still starts
+                  sessions on, spec 031), and the marketplace's source when it isn't
+                  shipmill/shipmill (reported, never an action)
   SHIPMILL_OUTDATED  one row per install of those older than the latest release, with the
                   command that updates it, run in its folder, after `claude plugin
                   marketplace update shipmill` (Claude Code updates from its local copy of
                   the marketplace, which may predate the release). When an install at the same
                   scope is keyed on a folder nested in it (the gate's checkout in the repo),
                   `claude plugin update` picks the nested one (a Claude Code bug), so the
-                  fix reinstalls the folder's own instead: an action for a person, never an
-                  agent's
+                  fix reinstalls the folder's own instead. An install keyed on a gate
+                  checkout that is a linked worktree is a row at any version: no session
+                  loads it and no `claude plugin` command reaches it, so the fix deletes its
+                  entry in ~/.claude/plugins/installed_plugins.json by hand (#485). An action
+                  for a person, never an agent's
   SKILL_SHADOWED  one row per link or copy of a shipmill skill (a folder name under skills/)
                   in ~/.claude/skills or ~/.agents/skills, a folder with a SKILL.md (a broken
                   link or a plain file loads as nothing), that doesn't resolve into the
@@ -365,7 +368,7 @@ USER_SKILLS = (Path(".claude/skills"), Path(".agents/skills"))
 PLUGIN_CACHE = Path(".claude/plugins/cache") / PLUGIN.partition("@")[2]  # the plugin's own copies, by version
 GATE_CHECKOUT = Path("tmp/shipmill-gate")  # where shipmill-setup puts the gate's checkout
 # the gate log's decision lines: QUIET, LAUNCH, RUNNING, WAITING, UNCHANGED, HELD,
-# PLUGIN_STALE, HOOKS_FAILED, CLAUDE_AUTH, SESSION_DEAD, or an error
+# PYPI_WAIT, HOOKS_FAILED, CLAUDE_AUTH, SESSION_DEAD, or an error
 GATE_DECISION = re.compile(r"^(?:[A-Z][A-Z_]*|error): ")
 SESSION_DEAD = "SESSION_DEAD: "  # the gate's last session ended dead and it starts another (#500)
 AUTH_FIX = "claude auth login"  # shipmill's claude_auth.FIX
@@ -2584,6 +2587,15 @@ def plugin_fix(scope: str, where: str | None, keyed: list[tuple[str, Path]]) -> 
     return f"in {where}: {again} (`update` picks the nested install in {nested[0]}, a Claude Code bug)"
 
 
+INSTALLED = "~/.claude/plugins/installed_plugins.json"  # Claude Code's record of installs, never written
+
+
+def unloaded_fix(where: str) -> str:
+    """S-031-16: an install keyed on a linked worktree is reached by no `claude plugin` command
+    run there, so its entry is deleted by hand; shipmill's plugin.unloaded_fix, the same text"""
+    return f'delete the entry with "projectPath": "{where}" under "{PLUGIN}" in {INSTALLED}'
+
+
 SESSION_PRECEDENCE = ("local", "project", "user", "managed")
 
 
@@ -2614,11 +2626,14 @@ def plugin_rows(
     """The plugin's installs that apply to the repo, against the latest release: from `claude
     plugin list --json` and `claude plugin marketplace list --json`, parsed (None when claude
     isn't on PATH). An install applies at user scope, or at local or project scope in one of
-    the folders (the projects Claude Code loads) or one of the gates (the gate's checkouts,
-    which Claude Code keys installs of their own on, #233). Each install behind the release is
-    its own SHIPMILL_OUTDATED row, with the fix to run in its folder. session, the project a
-    session in the gate's folder loads as, adds the install that session would load to
-    SHIPMILL_VERSION, and says when it is behind: the gate then starts no session (D-35)"""
+    the folders (the projects Claude Code loads). Each install behind the release is its own
+    SHIPMILL_OUTDATED row, with the fix to run in its folder (S-031-15). An install keyed on
+    one of the gates that isn't one of the folders (a gate checkout that is a linked worktree,
+    which Claude Code keys installs of their own on, #233, but never loads, #485) is its own
+    SHIPMILL_OUTDATED row too, at any version, whose fix deletes its entry by hand (S-031-16).
+    session, the project a session in the gate's folder loads as, adds the install that
+    session would load to SHIPMILL_VERSION, and says when it is behind; the gate reports it
+    and still starts sessions (spec 031)"""
     newest = version_key(latest)
     if newest is None:
         raise Refused(f"error: {SHIPMILL_REPO}'s latest release {latest!r} is not a version tag")
@@ -2650,7 +2665,11 @@ def plugin_rows(
         key = version_key(f"v{version}")
         if key is None:
             raise Refused(f"error: {PLUGIN} {scope} install has version {version!r}")
-        if key < newest:
+        if where is not None and Path(where) not in folders:  # keyed on a gate checkout no session loads
+            fix = unloaded_fix(where)
+            detail = f"{version}, keyed on the gate's linked worktree {where}, which no session loads; {fix}"
+            rows.append(Row("SHIPMILL_OUTDATED", f"plugin {scope}", detail, fix))
+        elif key < newest:
             fix = plugin_fix(scope, where, keyed)
             rows.append(Row("SHIPMILL_OUTDATED", f"plugin {scope}", f"{version}, latest {latest}; {fix}", fix))
     found = ", ".join(f"{scope} {version}" + (f" ({where})" if where else "") for scope, version, where in installs)
@@ -2663,7 +2682,7 @@ def plugin_rows(
             key = version_key(f"v{loads[1]}")
             if key is None:
                 raise Refused(f"error: {PLUGIN} {loads[0]} install has version {loads[1]!r}")
-            behind = f", older than {latest}: the gate starts no session (D-35)" if key < newest else ""
+            behind = f", older than {latest}" if key < newest else ""
             detail += f"; a session loads {loads[0]} {loads[1]} ({session}){behind}"
     market = PLUGIN.partition("@")[2]
     for m in marketplaces if isinstance(marketplaces, list) else []:
@@ -2708,9 +2727,14 @@ def project_folder(folder: Path) -> Path:
 def plugin_folders(repo_dir: Path, workdir: Path | None) -> tuple[list[Path], list[Path]]:
     """The projects Claude Code loads for the checkout and the gate's working directory, and
     the gate's checkouts, keyed apart from them (#233): the conventional tmp/shipmill-gate,
-    the working directory, and the checkout itself when either is a linked worktree"""
+    the working directory, and the checkout itself when either is a linked worktree. A
+    tmp/shipmill-gate that is a clone of its own is a project too, whose installs its sessions
+    load"""
     main = project_folder(repo_dir)
     folders, gates = [main], [main / GATE_CHECKOUT]
+    conventional = main / GATE_CHECKOUT
+    if conventional.is_dir() and project_folder(conventional) == conventional:  # a clone of its own, not a worktree
+        folders.append(conventional)
     for folder in [repo_dir] if workdir is None else [repo_dir, workdir]:
         project = project_folder(folder)
         if project not in folders:

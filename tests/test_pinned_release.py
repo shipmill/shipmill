@@ -150,8 +150,8 @@ def test_s031_2_the_cli_reads_the_marketplace_from_the_default_branch_not_gh_rel
         raise AssertionError(f"unexpected command {cmd}")
 
     assert latest_release(run, ROOT) == Version.parse("0.60.1")
-    found = loaded(ROOT, ROOT, run)  # the gate's read of the install a session loads
-    assert (found.latest, found.stale, found.error) == (Version.parse("0.60.1"), True, None)
+    found = loaded(ROOT, ROOT, run, None, None)  # the gate's read of the install a session loads
+    assert (found.latest, len(found.lags), found.error) == (Version.parse("0.60.1"), 1, None)
     assert not any(cmd[:2] == ["gh", "release"] for cmd in seen)
 
 

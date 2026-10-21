@@ -8,6 +8,7 @@ shims there (cmux puts claude in one) vanish when the app restarts."""
 import os
 import plistlib
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,12 @@ from shipmill.errors import ReleaseError
 
 TOOLS = ("claude", "gh", "git", "uvx")
 BASE_PATH = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
-DEFAULT_TOOL = "git+https://github.com/shipmill/shipmill@v0"
+# where the job's uvx gets shipmill: the latest release on PyPI, which uvx looks up on each run
+# (spec 031); a job written before it runs the floating major tag, which can lag a release
+DEFAULT_TOOL = "shipmill@latest"
+OLD_TOOL = "git+https://github.com/shipmill/shipmill@v0"
+UPGRADE = "uv tool upgrade shipmill"  # the fix for a lagging `uv tool install shipmill`
+DEFAULT_EVERY = 15  # minutes between runs, `shipmill launchd --every`'s default
 _TEMP_ROOTS = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
 
 
@@ -138,3 +144,49 @@ def remove(repo: str, home: Path) -> Path | None:
         return None
     plist.unlink()
     return plist
+
+
+def read_job(repo: str, home: Path) -> dict[str, object] | None:
+    """The repo's job as its plist holds it; None without one"""
+    plist = home / "Library" / "LaunchAgents" / f"{label(repo)}.plist"
+    if not plist.is_file():
+        return None
+    with plist.open("rb") as handle:
+        found = plistlib.load(handle)
+    if not isinstance(found, dict):
+        raise ReleaseError(f"{plist} is not a launchd job")
+    return found
+
+
+def job_arguments(job: dict[str, object]) -> list[str]:
+    args = job.get("ProgramArguments")
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise ReleaseError(f"the launchd job {job.get('Label')!r} has no ProgramArguments list of strings")
+    return args
+
+
+def job_tool(job: dict[str, object]) -> str | None:
+    """Where the job's uvx gets shipmill: the value after --from; None without one"""
+    args = job_arguments(job)
+    return args[args.index("--from") + 1] if "--from" in args[:-1] else None
+
+
+def cli_fix(job: dict[str, object] | None, repo: str) -> str:
+    """S-031-17: how to bring a lagging gate CLI up to the latest release. A launchd job on the
+    old floating-tag source is written again by the latest shipmill, whose job runs
+    shipmill@latest, keeping its checkout, interval, App key, and Claude Code flags; anything
+    else is a tool install, which uv upgrades"""
+    if job is None or job_tool(job) != OLD_TOOL:
+        return UPGRADE
+    args = job_arguments(job)
+    checkout = job.get("WorkingDirectory")
+    if not isinstance(checkout, str):
+        raise ReleaseError(f"the launchd job for {repo} has no WorkingDirectory")
+    command = ["uvx", DEFAULT_TOOL, "--repo", checkout, "launchd", repo]
+    interval = job.get("StartInterval")
+    if isinstance(interval, int) and interval // 60 != DEFAULT_EVERY:
+        command += ["--every", str(interval // 60)]
+    if "--app-key" in args[:-1]:
+        command += ["--app-key", args[args.index("--app-key") + 1]]
+    command += [a for a in args if a.startswith("--claude-arg=")]
+    return shlex.join(command)

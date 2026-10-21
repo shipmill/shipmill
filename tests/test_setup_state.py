@@ -116,7 +116,7 @@ def test_installs_are_read_only_with_the_plugin_enabled(ss: ModuleType, settings
 
 
 def test_the_stale_install_a_session_loads_adds_a_gate_row(ss: ModuleType) -> None:
-    # #417, D-35: setup names the install the gate's sessions load when it holds the gate
+    # #417: setup names the install the gate's sessions load when it lags; spec 031: no pause
     ws = ss.watch_module()
     plugins = [
         {"id": "shipmill@shipmill", "scope": "user", "version": "0.48.0"},
@@ -125,9 +125,8 @@ def test_the_stale_install_a_session_loads_adds_a_gate_row(ss: ModuleType) -> No
     rows = ws.plugin_rows(plugins, None, "v0.50.0", [Path("/w/r")], [Path("/w/r/tmp/shipmill-gate")], Path("/w/r"))
     fake = type("Ws", (), {"Refused": ws.Refused, "shipmill_rows": staticmethod(lambda repo, root: rows)})
     found = ss.outdated_installs("o/r", Path("/w/r"), fake)
-    assert found[-1] == (
-        "gate: a session loads user 0.48.0 (/w/r), older than v0.50.0: the gate starts no session (D-35)"
-    )
+    assert found[-1] == "gate: a session loads user 0.48.0 (/w/r), older than v0.50.0"
+    assert not any("starts no session" in line for line in found)
     assert [r.state for r in ss.plugin_rows(ENABLED, lambda: found)] == ["PLUGIN_OUTDATED"] * 3
 
 
