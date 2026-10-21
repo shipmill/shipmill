@@ -116,7 +116,8 @@ jobs:
 
   # Spec 014: after a release landed, one shipmill-upgrade issue per config upgrade this repo
   # hasn't decided ([autonomy] upgrade; none under observe), and the issue of each upgrade the
-  # config now sets closed. It sets no permissions, so it runs with the caller's land grant,
+  # config now sets closed, as is the open issue of an upgrade shipmill no longer offers
+  # (`withdrawn`, S-031-21). It sets no permissions, so it runs with the caller's land grant,
   # whose `issues: write` also closes the proposal issue; no job needs it, so a failure here
   # fails this job only, naming the upgrade, after the release landed
   upgrade:

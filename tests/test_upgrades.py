@@ -68,7 +68,7 @@ def test_s014_1_lists_fragments_until_the_config_sets_it(repo: Repo, capsys: pyt
 
 def test_s031_21_upgrade_no_longer_lists_plugin_update(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
     fragments = POLICY.replace("[changelog]\n", '[changelog]\nfragments = "changelog.d"\n')
-    write_config(repo.root, fragments + AGENTS)  # [agents] without the key, which 0.37.0 to 0.59.0 offered
+    write_config(repo.root, fragments + AGENTS)  # [agents] without the key, which 0.37.0 to 0.59.1 offered
     assert listed(repo.root, capsys) == []
     write_config(repo.root, POLICY + AGENTS)
     assert listed(repo.root, capsys) == ["changelog-fragments"]
