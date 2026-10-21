@@ -196,8 +196,13 @@ report, each as one line with its fix:
   `~/.claude/plugins/installed_plugins.json`. shipmill doesn't edit that file
 - **The gate's own CLI when it lags**: `shipmill <version>` older than the latest, with
   `uv tool upgrade shipmill` for a tool install, and for a launchd job on the old
-  `git+https://github.com/shipmill/shipmill@v0` source, `shipmill launchd install <repo>`
-  again, which now writes `shipmill@latest` (`src/shipmill/launchd.py`)
+  `git+https://github.com/shipmill/shipmill@v0` source, `shipmill launchd <repo>` again,
+  which now writes `shipmill@latest` (`src/shipmill/launchd.py`); the printed fix runs it
+  as `uvx shipmill@latest --repo <checkout> launchd <repo>`, keeping the job's `--every`,
+  `--app-key`, and `--claude-arg`, since the old CLI would write `@v0` again. Every tick
+  writes the gate's CLI version to `cli.json` in the gate's state folder, which `doctor`
+  and `status` read; until a gate on this release has ticked once, they can't report its
+  CLI
 - **A config whose `requires` the version sessions load doesn't meet**: the config's
   bound, the version, and the fix (release, or lower `requires`). It starts the session:
   its CLI calls then refuse with the message above
@@ -249,8 +254,8 @@ It follows the path D-32 set for `[roadmap]`:
 - S-031-14: dropped in #564, see shipmill/shipmill#564: gate sessions load the installed plugin, no shipmill cache
 - S-031-15: `doctor` and `shipmill status` report each lagging install at user, project, and local scope as a WARN or row with the fix `claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope <scope>` (run in its folder when keyed), and no row or check says a gate starts no session
 - S-031-16: An install keyed on a linked git worktree that is a gate checkout is reported by `doctor`, `status`, and the tick as one no session loads, with the fix to delete its entry under `shipmill@shipmill` in `~/.claude/plugins/installed_plugins.json`; shipmill writes nothing to that file
-- S-031-17: When the gate's own CLI version is older than the latest, `doctor`, `status`, and the tick report it with `uv tool upgrade shipmill` for a tool install, and with `shipmill launchd install <repo>` for a launchd job whose tool is the `@v0` git source
-- S-031-18: `shipmill launchd install` writes a job running shipmill from `shipmill@latest` unless `--tool` names another source
+- S-031-17: When the gate's own CLI version is older than the latest, `doctor`, `status`, and the tick report it with `uv tool upgrade shipmill` for a tool install, and with `shipmill launchd <repo>` for a launchd job whose tool is the `@v0` git source
+- S-031-18: `shipmill launchd <repo>` writes a job running shipmill from `shipmill@latest` unless `--tool` names another source
 - S-031-19: When the config's `requires` isn't met by the version sessions load, `doctor` WARNs and the tick reports the bound, the version, and the fix, and the session still starts
 - S-031-20: With `[agents] notify = true`, the first tick on a host to find an install lagging a new release sends one desktop notification naming each lagging install and its fix and creates `~/.cache/shipmill/plugin/<version>.notified`; a tick of any gate on the host that finds the marker sends none; with `notify = false` none is sent and no marker is written
 - S-031-21: In the minor release that ships this spec, `[agents] plugin_update = true` changes no install and runs no `claude plugin update`, `doctor` WARNs naming the key, spec 031, and that the next minor release refuses it, and `shipmill upgrade` no longer lists `plugin-update`
