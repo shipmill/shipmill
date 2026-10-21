@@ -139,10 +139,34 @@ def test_s031_17_a_default_job_keeps_its_flags_short(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("tool", ["shipmill@latest", "shipmill==0.50.0", None])
-def test_s031_17_any_other_gate_is_a_tool_install_uv_upgrades(tmp_path: Path, tool: str | None) -> None:
-    if tool is not None:
-        written(tmp_path, tool)
+@pytest.mark.parametrize(
+    "tool", ["shipmill==0.50.0", "git+https://github.com/romamo/shipmill@v0", "git+https://example.com/fork@main"]
+)
+def test_s031_17_a_job_on_any_source_but_latest_is_written_again(tmp_path: Path, tool: str) -> None:
+    """#570: `uv tool upgrade shipmill` never changes a launchd job, whatever its source"""
+    gate = written(tmp_path, tool, key=Path("/k/app.pem"))
+    assert cli_fix(read_job("romamo/treaty", tmp_path), "romamo/treaty") == (
+        f"uvx shipmill@latest --repo {gate} launchd romamo/treaty --app-key /k/app.pem"
+    )
+
+
+def test_s031_17_the_rewrite_quotes_paths_with_spaces(tmp_path: Path) -> None:
+    home = tmp_path / "my home"
+    gate = written(home, "shipmill==0.50.0", key=home / "app key.pem")
+    assert cli_fix(read_job("romamo/treaty", home), "romamo/treaty") == (
+        f"uvx shipmill@latest --repo '{gate}' launchd romamo/treaty --app-key '{home / 'app key.pem'}'"
+    )
+
+
+def test_s031_17_a_job_on_latest_is_run_again_now(tmp_path: Path) -> None:
+    """Its uvx looks shipmill@latest up on every run, so the next run catches up; the fix runs it now"""
+    written(tmp_path, DEFAULT_TOOL)
+    assert cli_fix(read_job("romamo/treaty", tmp_path), "romamo/treaty") == (
+        f"launchctl kickstart gui/{os.getuid()}/dev.shipmill.gate.romamo.treaty"
+    )
+
+
+def test_s031_17_a_gate_without_a_job_is_a_tool_install_uv_upgrades(tmp_path: Path) -> None:
     assert cli_fix(read_job("romamo/treaty", tmp_path), "romamo/treaty") == "uv tool upgrade shipmill"
 
 

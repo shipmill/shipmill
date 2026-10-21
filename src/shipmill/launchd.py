@@ -172,13 +172,16 @@ def job_tool(job: dict[str, object]) -> str | None:
 
 
 def cli_fix(job: dict[str, object] | None, repo: str) -> str:
-    """S-031-17: how to bring a lagging gate CLI up to the latest release. A launchd job on the
-    old floating-tag source is written again by the latest shipmill, whose job runs
-    shipmill@latest, keeping its checkout, interval, App key, and Claude Code flags; anything
-    else is a tool install, which uv upgrades"""
-    if job is None or job_tool(job) != OLD_TOOL:
+    """S-031-17: how to bring a lagging gate CLI up to the latest release. Without a launchd
+    job the gate is a tool install, which uv upgrades. A job on shipmill@latest looks the
+    release up on each run, so it is run again now. A job on any other source (the old
+    floating tag, a pinned --tool) is written again by the latest shipmill, whose job runs
+    shipmill@latest, keeping its checkout, interval, App key, and Claude Code flags (#570)"""
+    if job is None:
         return UPGRADE
     args = job_arguments(job)
+    if job_tool(job) == DEFAULT_TOOL:
+        return shlex.join(["launchctl", "kickstart", f"gui/{os.getuid()}/{label(repo)}"])
     checkout = job.get("WorkingDirectory")
     if not isinstance(checkout, str):
         raise ReleaseError(f"the launchd job for {repo} has no WorkingDirectory")

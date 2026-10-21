@@ -199,7 +199,10 @@ report, each as one line with its fix:
   `git+https://github.com/shipmill/shipmill@v0` source, `shipmill launchd <repo>` again,
   which now writes `shipmill@latest` (`src/shipmill/launchd.py`); the printed fix runs it
   as `uvx shipmill@latest --repo <checkout> launchd <repo>`, keeping the job's `--every`,
-  `--app-key`, and `--claude-arg`, since the old CLI would write `@v0` again. Every tick
+  `--app-key`, and `--claude-arg`, since the old CLI would write `@v0` again. A job on any
+  other source but `shipmill@latest` (a pinned `--tool`, the pre-org `@v0` URL) gets the
+  same fix (#570); a job on `shipmill@latest` gets `launchctl kickstart gui/<uid>/<label>`,
+  since its uvx looks the release up on each run. Every tick
   writes the gate's CLI version to `cli.json` in the gate's state folder, which `doctor`
   and `status` read; until a gate on this release has ticked once, they can't report its
   CLI
