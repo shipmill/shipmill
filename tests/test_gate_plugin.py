@@ -2,8 +2,8 @@
 
 Spec 031, D-44: the gate reports, never pauses on, an install that lags the latest release, an
 install keyed on its linked worktree, its own lagging CLI, and an unmet `requires`; the one hold
-is PyPI answering 404 for the version sessions load. It changes no install: [agents]
-plugin_update is deprecated and ignored (S-031-21)"""
+is PyPI answering 404 for the version sessions load. It changes no install (S-031-21), and the
+config refuses [agents] plugin_update (S-031-22)"""
 
 import json
 import subprocess
@@ -36,7 +36,7 @@ from shipmill.requires import Requires
 from shipmill.version import Version
 from shipmill.worktrees import Judged
 
-from .test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier, bg, host, write_config
+from .test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier, bg, host
 
 Tick = tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]
 READS = {("claude", "plugin", "list"), ("gh", "api", "-H")}  # the only commands the gate runs on the plugin
@@ -128,15 +128,15 @@ def markers_of(git: Git) -> Path:
     return git.root.parent / "cache" / "shipmill" / "plugin"
 
 
-def agents(plugin_update: bool | None = None, notify: bool = True, mode: Mode = Mode.INTERACTIVE) -> AgentsConfig:
-    return AgentsConfig(prompt="/t", prs=False, retry_hours=24, notify=notify, mode=mode, plugin_update=plugin_update)
+def agents(notify: bool = True, mode: Mode = Mode.INTERACTIVE) -> AgentsConfig:
+    return AgentsConfig(prompt="/t", prs=False, retry_hours=24, notify=notify, mode=mode)
 
 
-def tick(git: Git, runner: FakeRunner, plugin_update: bool | None = None, dry: bool = False) -> Tick:
+def tick(git: Git, runner: FakeRunner, dry: bool = False) -> Tick:
     return gate(
         git,
         "romamo/demo",
-        lambda: agents(plugin_update),
+        lambda: agents(),
         FakeClaude([bg("old", "idle", "done")]),
         lambda _: [ISSUES],
         NOW,
@@ -205,19 +205,17 @@ def test_a_tick_that_launches_nothing_checks_nothing(checkout: Git) -> None:
     assert decision.action is Action.QUIET and runner.calls == [] and pypi.asked == []
 
 
-# -- S-031-21: [agents] plugin_update is deprecated and ignored --------------------------------
+# -- S-031-21: the gate's update path is gone; S-031-22 refuses [agents] plugin_update ----------
 
 
-@pytest.mark.parametrize("value", [True, False, None])
 @pytest.mark.parametrize("dry", [False, True])
-def test_s031_21_plugin_update_changes_no_install_and_runs_no_plugin_update(
-    checkout: Git, value: bool | None, dry: bool
-) -> None:
-    # behind installs keyed on the checkout, at both scopes, as D-23's daily update once updated
+def test_s031_21_the_gate_changes_no_install_and_runs_no_plugin_update(checkout: Git, dry: bool) -> None:
+    # behind installs keyed on the checkout, at both scopes, as D-23's daily update once updated;
+    # the key that asked for it is refused since (S-031-22, tests/test_plugin_update_removed.py)
     root = checkout.root.resolve()
     installs = {("project", root): "0.25.0", ("local", root): "0.30.0"}
     runner = FakeRunner(checkout.root, installs=installs, user="0.31.0")
-    decision, launched, _, _ = tick(checkout, runner, plugin_update=value, dry=dry)
+    decision, launched, _, _ = tick(checkout, runner, dry=dry)
     assert decision.action is Action.LAUNCH and (launched is None) is dry
     assert runner.ran == READS  # read only: no `claude plugin update`, no marketplace refresh
     assert runner.installs == {("project", root): "0.25.0", ("local", root): "0.30.0"}
@@ -227,25 +225,6 @@ def test_s031_21_plugin_update_changes_no_install_and_runs_no_plugin_update(
     lines = tick_lines(decision, launched, (), (), dry_run=dry)
     assert not any(line.startswith(("  plugin updated", "  plugin update failed")) for line in lines)
     assert any("0.25.0 (project scope" in line and "lags" in line for line in lines)
-
-
-@pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False)])
-def test_s031_21_the_config_still_accepts_the_key_this_release(tmp_path: Path, value: str, expected: bool) -> None:
-    write_config(tmp_path, f'[agents]\nprompt = "/t"\nplugin_update = {value}\n')
-    assert AgentsConfig.load(tmp_path).plugin_update is expected  # read, for doctor's warning; S-031-22 refuses it
-
-
-def test_s031_21_an_unset_key_reads_none_and_a_wrong_type_is_still_refused(tmp_path: Path) -> None:
-    write_config(tmp_path, '[agents]\nprompt = "/t"\n')
-    assert AgentsConfig.load(tmp_path).plugin_update is None
-    write_config(tmp_path, '[agents]\nprompt = "/t"\nplugin_update = "yes"\n')
-    with pytest.raises(ReleaseError, match="plugin_update"):
-        AgentsConfig.load(tmp_path)
-
-
-def test_s031_21_shipmills_own_config_sets_no_plugin_update() -> None:
-    # so doctor doesn't warn on shipmill itself
-    assert AgentsConfig.load(Path(__file__).resolve().parents[1]).plugin_update is None
 
 
 # -- spec 031: the gate reports what lags and starts the session ------------------------------

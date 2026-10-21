@@ -194,8 +194,8 @@ def test_init_writes_an_environments_example_that_parses(repo: Repo) -> None:
 
 
 def test_s031_21_init_writes_an_agents_example_without_plugin_update(repo: Repo) -> None:
-    """The template's [agents] example, commented; plugin_update is deprecated (spec 031), so
-    it is no longer in it"""
+    """The template's [agents] example, commented; plugin_update was removed (spec 031), so
+    it is not in it, and the uncommented example loads (S-031-22 would refuse the key)"""
     written = init(repo.root, "ci.yml", force=True).written
     text = written[0].read_text(encoding="utf-8")
     assert Policy.load(written[0]).agents is None  # commented out
@@ -206,7 +206,7 @@ def test_s031_21_init_writes_an_agents_example_without_plugin_update(repo: Repo)
     example = "\n".join(line.removeprefix("#").removeprefix(" ") for line in block.splitlines())
     repo.write(".github/shipmill.toml", text[:start] + example + "\n")
     agents = Policy.load(written[0]).agents
-    assert agents is not None and agents.plugin_update is None
+    assert agents is not None
     assert agents.prompt.startswith("/shipmill:github-issue-triage {repo} ")
 
 

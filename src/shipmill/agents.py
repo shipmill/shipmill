@@ -14,6 +14,9 @@ _MAX_HOURS = 7 * 24  # a week
 _REMIND_HOURS = 4
 _MAX_WAIT_MINUTES = 15
 _MAX_WIP = 100
+# deprecated and ignored in 0.60.0 (S-031-21), refused since (S-031-22, as D-32 set for [roadmap])
+_PLUGIN_UPDATE = "plugin_update"
+PLUGIN_UPDATE_REMOVED = f"[agents] {_PLUGIN_UPDATE} was removed (spec 031); delete it"
 
 
 class Mode(StrEnum):
@@ -33,13 +36,12 @@ class AgentsConfig:
     max_wait_minutes: int = _MAX_WAIT_MINUTES  # stop a session that waited this long; 0: never
     app_id: int | None = None  # sessions write as this GitHub App (spec 004, D-14); None: the host's gh login
     mode: Mode = Mode.INTERACTIVE  # headless: `claude -p` (spec 005); either mode asks via needs-decision (D-21)
-    # deprecated (spec 031, D-44): read and ignored, the gate changes no install whatever its
-    # value, and doctor warns; None: unset. The next minor release refuses it (S-031-22)
-    plugin_update: bool | None = None
     wip: int | None = None  # at most this many issues in progress at once, read by triage (D-32); None: no limit
 
     @classmethod
     def parse(cls, table: Table) -> AgentsConfig:
+        if _PLUGIN_UPDATE in table.raw:  # whatever its value, before the unknown-keys error
+            raise ReleaseError(PLUGIN_UPDATE_REMOVED)
         table.allow(
             "prompt",
             "prs",
@@ -49,7 +51,6 @@ class AgentsConfig:
             "max_wait_minutes",
             "app_id",
             "mode",
-            "plugin_update",
             "wip",
         )
         prompt = table.string("prompt").strip()
@@ -68,7 +69,6 @@ class AgentsConfig:
             max_wait_minutes=max_wait,
             app_id=table.integer("app_id", default=None, low=1, high=None),
             mode=table.enum("mode", Mode, default=Mode.INTERACTIVE),
-            plugin_update=table.boolean("plugin_update", default=False) if "plugin_update" in table.raw else None,
             wip=table.integer("wip", default=None, low=1, high=_MAX_WIP),
         )
 

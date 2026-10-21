@@ -5,7 +5,7 @@ and reports, never pauses on, each install that lags the latest release (the mar
 entry's ref), an install keyed on its linked worktree that no session loads, its own CLI when
 it lags, and a config whose `requires` the version sessions load doesn't meet, each with its
 fix. The one hold is PyPI answering 404 for the version sessions load (pypi()). The gate never
-changes an install: `[agents] plugin_update` is deprecated and ignored (S-031-21).
+changes an install: the config refuses `[agents] plugin_update` (S-031-22).
 """
 
 import enum
