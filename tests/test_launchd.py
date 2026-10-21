@@ -8,7 +8,18 @@ import pytest
 
 from shipmill.cli import _parser
 from shipmill.errors import ReleaseError
-from shipmill.launchd import BASE_PATH, build, find_tool, is_temporary, label
+from shipmill.launchd import (
+    BASE_PATH,
+    DEFAULT_TOOL,
+    OLD_TOOL,
+    build,
+    cli_fix,
+    find_tool,
+    is_temporary,
+    job_tool,
+    label,
+    read_job,
+)
 
 
 def tools(folder: Path, *names: str) -> Path:
@@ -87,3 +98,60 @@ def test_launchd_claude_args_parse_back_as_the_gates(tmp_path: Path, extra: list
 def test_the_interval_is_bounded(tmp_path: Path) -> None:
     with pytest.raises(ReleaseError, match="5..1440"):
         build("romamo/treaty", tmp_path, 1, "x", [], tmp_path, "", nothing)
+
+
+def test_s031_18_the_job_runs_shipmill_at_latest_unless_tool_names_another(tmp_path: Path) -> None:
+    assert DEFAULT_TOOL == "shipmill@latest"
+    parser = _parser()
+    assert parser.parse_args(["launchd", "romamo/treaty"]).tool == "shipmill@latest"
+    assert parser.parse_args(["launchd", "romamo/treaty", "--tool", "shipmill==0.50.0"]).tool == "shipmill==0.50.0"
+    path = tools(tmp_path / "bin", "claude", "uvx", "gh", "git")
+    job = build("romamo/treaty", tmp_path / "gate", 15, DEFAULT_TOOL, [], tmp_path, str(path), nothing)
+    args = plistlib.loads(job.document)["ProgramArguments"]
+    assert args[1:4] == ["--from", "shipmill@latest", "shipmill"]
+    assert job_tool(plistlib.loads(job.document)) == "shipmill@latest"
+
+
+def written(
+    tmp_path: Path, tool: str, every: int = 15, extra: list[str] | None = None, key: Path | None = None
+) -> Path:
+    """The repo's job, written where launchd reads it under tmp_path as home"""
+    path = tools(tmp_path / "bin", "claude", "uvx", "gh", "git")
+    job = build("romamo/treaty", tmp_path / "gate", every, tool, extra or [], tmp_path, str(path), nothing, key)
+    job.plist.parent.mkdir(parents=True)
+    job.plist.write_bytes(job.document)
+    return tmp_path / "gate"
+
+
+def test_s031_17_a_job_on_the_old_v0_source_is_written_again_by_the_latest(tmp_path: Path) -> None:
+    gate = written(tmp_path, OLD_TOOL, every=30, extra=["--model", "opus"], key=Path("/k/app.pem"))
+    assert OLD_TOOL == "git+https://github.com/shipmill/shipmill@v0"
+    assert cli_fix(read_job("romamo/treaty", tmp_path), "romamo/treaty") == (
+        f"uvx shipmill@latest --repo {gate} launchd romamo/treaty --every 30 --app-key /k/app.pem"
+        " --claude-arg=--model --claude-arg=opus"
+    )
+
+
+def test_s031_17_a_default_job_keeps_its_flags_short(tmp_path: Path) -> None:
+    gate = written(tmp_path, OLD_TOOL)
+    assert cli_fix(read_job("romamo/treaty", tmp_path), "romamo/treaty") == (
+        f"uvx shipmill@latest --repo {gate} launchd romamo/treaty"
+    )
+
+
+@pytest.mark.parametrize("tool", ["shipmill@latest", "shipmill==0.50.0", None])
+def test_s031_17_any_other_gate_is_a_tool_install_uv_upgrades(tmp_path: Path, tool: str | None) -> None:
+    if tool is not None:
+        written(tmp_path, tool)
+    assert cli_fix(read_job("romamo/treaty", tmp_path), "romamo/treaty") == "uv tool upgrade shipmill"
+
+
+def test_a_plist_that_is_not_a_job_is_refused(tmp_path: Path) -> None:
+    plist = tmp_path / "Library" / "LaunchAgents" / "dev.shipmill.gate.romamo.treaty.plist"
+    plist.parent.mkdir(parents=True)
+    plist.write_bytes(plistlib.dumps(["not", "a", "job"]))
+    with pytest.raises(ReleaseError, match="not a launchd job"):
+        read_job("romamo/treaty", tmp_path)
+    plist.write_bytes(plistlib.dumps({"Label": "x", "ProgramArguments": "uvx"}))
+    with pytest.raises(ReleaseError, match="ProgramArguments"):
+        cli_fix(read_job("romamo/treaty", tmp_path), "romamo/treaty")

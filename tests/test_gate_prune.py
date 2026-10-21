@@ -36,6 +36,8 @@ KEYS = {
     "decisions",
     "plugin",
     "loaded",
+    "pypi",  # spec 031's PyPI answer for the version sessions load
+    "plugin_notice",  # spec 031's once-per-release notification
     "detached",
     "hooks",
     "auth",  # #500's Claude Code login preflight

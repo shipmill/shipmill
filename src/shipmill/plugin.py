@@ -14,8 +14,11 @@ update changed, is reported as a failure. The last
 check is recorded under the repo's git directory, beside the gate's other state. A failed
 check or update is reported on the tick. A user-scope install is never updated.
 
-Then, on every launch (D-35), the gate reads the install a session in its checkout would
-load (loaded()) and starts no session while that install is older than the latest release.
+Then, on every launch (spec 031, D-44), the gate reads the install a session in its checkout
+would load (loaded()) and reports, never pauses on, each install that lags the latest release,
+an install keyed on its linked worktree that no session loads, its own CLI when it lags, and a
+config whose `requires` the version sessions load doesn't meet, each with its fix. The one hold
+is PyPI answering 404 for the version sessions load (pypi()).
 """
 
 import datetime as dt
@@ -27,6 +30,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from shipmill.errors import ReleaseError
+from shipmill.notify import Notifier, NotifyFailed
+from shipmill.requires import FILE as CONFIG_FILE
+from shipmill.requires import Requires
 from shipmill.version import Version
 
 PLUGIN = "shipmill@shipmill"  # the Claude Code plugin, in its marketplace
@@ -51,8 +57,15 @@ EVERY = dt.timedelta(hours=24)
 SCOPES = ("project", "local")  # the scopes Claude Code keys on a folder, in the order they're updated
 # where Claude Code keeps each version of the plugin's files, under the home folder (docs/install.md)
 CACHE = Path(".claude") / "plugins" / "cache" / "shipmill" / "shipmill"
+# Claude Code's record of every install, which shipmill reads through `claude plugin list` and
+# never writes (spec 031): an install keyed on a linked worktree is removed there by hand
+INSTALLED = "~/.claude/plugins/installed_plugins.json"
+PYPI = "https://pypi.org/pypi/shipmill/{version}/json"  # a release's JSON on PyPI, 404 until it is uploaded
+CLI_RECORD = "cli.json"  # the gate's own CLI version, under its state directory, for doctor and status
+MARKERS = Path(".cache") / "shipmill" / "plugin"  # one <version>.notified per release, under the home folder
 
 Runner = Callable[[list[str], Path], str]  # (command, cwd) -> its stdout; ReleaseError when it fails
+Fetch = Callable[[str], int]  # GET a URL -> its HTTP status; ReleaseError when no answer comes back
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,39 +389,92 @@ def update_command(install: Listed, installs: list[Listed]) -> str:
     return f"in {top}: {again} (`update` picks the nested install in {nested[0]}, a Claude Code bug)"
 
 
+REPORTED = (Scope.LOCAL, Scope.PROJECT, Scope.USER)  # the scopes a person updates an install at
+
+
+def unloaded_fix(folder: Path) -> str:
+    """S-031-16: the fix for an install keyed on a linked worktree: no `claude plugin` command
+    run there reaches it, and shipmill never edits Claude Code's file"""
+    return f'delete the entry with "projectPath": "{folder}" under "{PLUGIN}" in {INSTALLED}'
+
+
+def install_record(install: Listed, fix: str) -> dict[str, object]:
+    folder = None if install.folder is None else str(install.folder)
+    return {"scope": str(install.scope), "folder": folder, "version": str(install.version), "fix": fix}
+
+
+@dataclass(frozen=True, slots=True)
+class Lag:
+    """S-031-13: an install that applies to the gate's checkout, older than the latest release,
+    with the command that updates it"""
+
+    install: Listed
+    latest: Version
+    fix: str
+
+    def line(self) -> str:
+        return (
+            f"plugin: {PLUGIN} {self.install.version} ({self.install.where()}) lags the latest release"
+            f" {self.latest}; the session starts; update it: {self.fix}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GateCli:
+    """S-031-17: the gate's own shipmill and how to bring it to the latest release"""
+
+    version: Version
+    fix: str
+
+    def lags(self, latest: Version) -> bool:
+        return self.version < latest
+
+    def line(self, latest: Version) -> str:
+        return f"the gate's CLI, shipmill {self.version}, lags the latest release {latest}: {self.fix}"
+
+
 @dataclass(frozen=True, slots=True)
 class Loaded:
-    """D-35: the install a session in the gate's checkout would load (None: none applies)
-    against the latest release (None when it wasn't read), with the command that updates it
-    when it is behind, or the failure that stopped the check"""
+    """Spec 031: the install a session in the gate's checkout would load (None: none applies)
+    against the latest release (None when it wasn't read); each install that applies and lags
+    it, each install keyed on the gate's linked worktree, which no session loads, the gate's
+    CLI when it lags, and the config's requires when the version sessions load doesn't meet
+    it, with its fix; or the failure that stopped the read. None of them holds a session"""
 
     project: Path
     install: Listed | None
     latest: Version | None
-    fix: str | None = None
+    lags: tuple[Lag, ...] = ()
+    unloaded: tuple[Listed, ...] = ()
+    cli: GateCli | None = None
+    bound: Requires | None = None
+    bound_fix: str | None = None
     error: str | None = None
 
-    @property
-    def stale(self) -> bool:
-        return self.install is not None and self.latest is not None and self.install.version < self.latest
-
-    def reason(self) -> str:
-        """A PLUGIN_STALE tick's reason: the install, its scope, the latest, and the fix"""
-        if self.install is None or self.latest is None or self.fix is None:
-            raise ReleaseError(f"{PLUGIN} isn't behind the latest release, so no session is held for it")
-        return (
-            f"a session here would load {PLUGIN} {self.install.version} ({self.install.where()}),"
-            f" older than the latest release {self.latest}: no session starts until it is updated: {self.fix}"
-        )
-
     def lines(self) -> list[str]:
-        """The tick's lines when a session starts: a failed check, or no install that applies;
-        a current install says nothing"""
+        """The tick's lines: a failed read, no install that applies, then each finding with its
+        fix; a current install says nothing"""
         if self.error is not None:
             return [f"plugin check failed, the session starts anyway: {self.error}"]
+        lines = []
         if self.install is None:
-            return [f"plugin: no {PLUGIN} install applies to {self.project}; the session loads no shipmill skills"]
-        return []
+            lines.append(f"plugin: no {PLUGIN} install applies to {self.project}; the session loads no shipmill skills")
+        lines += [lag.line() for lag in self.lags]
+        lines += [
+            f"plugin: {PLUGIN} {i.version} ({i.where()}) is keyed on the gate's linked worktree, which no session"
+            f" loads; {unloaded_fix(i.folder)}"
+            for i in self.unloaded
+            if i.folder is not None
+        ]
+        if self.cli is not None and self.latest is not None:
+            lines.append(self.cli.line(self.latest))
+        if self.bound is not None and self.install is not None:
+            lines.append(
+                f"plugin: {CONFIG_FILE} requires shipmill {self.bound}, but sessions here load {PLUGIN}"
+                f" {self.install.version} ({self.install.where()}), whose shipmill commands refuse the config;"
+                f" the session starts; fix: {self.bound_fix}"
+            )
+        return lines
 
     def record(self) -> dict[str, object]:
         install = self.install
@@ -418,22 +484,135 @@ class Loaded:
             "folder": None if install is None or install.folder is None else str(install.folder),
             "version": None if install is None else str(install.version),
             "latest": None if self.latest is None else str(self.latest),
-            "stale": self.stale,
-            "fix": self.fix,
+            "lags": [install_record(lag.install, lag.fix) for lag in self.lags],
+            "unloaded": [install_record(i, unloaded_fix(i.folder)) for i in self.unloaded if i.folder is not None],
+            "cli": None if self.cli is None else {"version": str(self.cli.version), "fix": self.cli.fix},
+            "requires": None if self.bound is None else {"bound": str(self.bound), "fix": self.bound_fix},
             "error": self.error,
         }
 
 
-def loaded(checkout: Path, project: Path, run: Runner) -> Loaded:
-    """D-35: read the install a session in the checkout (Claude Code's project `project`)
-    would load, and the latest release when there is one. A failed read is returned as the
-    error, for the tick to report"""
+def requires_fix(bound: Requires, install: Listed, installs: list[Listed], latest: Version) -> str:
+    """S-031-19: update the install sessions load when the latest release meets the bound, else
+    release one that does; or lower the bound"""
+    lower = f"or lower requires in {CONFIG_FILE}"
+    if bound.met(latest):
+        return f"{update_command(install, installs)}; {lower}"
+    return f"release shipmill {bound.floor[0]}.{bound.floor[1]}.{bound.floor[2]} or later, {lower}"
+
+
+def loaded(checkout: Path, project: Path, run: Runner, cli: GateCli | None, bound: Requires | None) -> Loaded:
+    """Spec 031: read the installs, the one a session in the checkout (Claude Code's project
+    `project`) would load, and the latest release, and find what lags it. A failed read is
+    returned as the error, for the tick to report"""
     try:
         installs = listed_installs(run(["claude", "plugin", "list", "--json"], checkout))
         found = effective(installs, project)
-        if found is None:
-            return Loaded(project, None, None)
         latest = latest_release(run, checkout)
     except ReleaseError as exc:
         return Loaded(project, None, None, error=str(exc))
-    return Loaded(project, found, latest, update_command(found, installs) if found.version < latest else None)
+    applies = sorted(
+        (i for i in installs if i.scope in REPORTED and (i.folder is None or i.folder == project)),
+        key=lambda i: PRECEDENCE.index(i.scope),
+    )
+    lags = tuple(Lag(i, latest, update_command(i, installs)) for i in applies if i.version < latest)
+    here = checkout.resolve()  # the gate's --repo may be relative; Claude Code records an absolute path
+    unloaded = () if here == project else tuple(i for i in installs if i.folder == here)
+    unmet = bound if bound is not None and found is not None and not bound.met(found.version) else None
+    fix = None if unmet is None or found is None else requires_fix(unmet, found, installs, latest)
+    lagging = cli if cli is not None and cli.lags(latest) else None
+    return Loaded(project, found, latest, lags, unloaded, lagging, unmet, fix)
+
+
+@dataclass(frozen=True, slots=True)
+class PyPI:
+    """S-031-24: PyPI's answer for the version sessions load: its HTTP status, or why none came"""
+
+    version: Version
+    status: int | None
+    error: str | None = None
+
+    @property
+    def url(self) -> str:
+        return PYPI.format(version=self.version)
+
+    @property
+    def waits(self) -> bool:
+        """404: the release's tag moved before publish uploaded it, so its pinned CLI can't run yet"""
+        return self.status == 404
+
+    def reason(self) -> str:
+        return f"plugin {self.version} waits for PyPI: {self.url} answers 404; no session starts, the next tick retries"
+
+    def lines(self) -> list[str]:
+        if self.status == 200 or self.waits:
+            return []
+        if self.status is None:
+            return [f"plugin {self.version}: PyPI didn't answer ({self.error}); the session starts anyway"]
+        return [f"plugin {self.version}: PyPI answered {self.status} for {self.url}; the session starts anyway"]
+
+    def record(self) -> dict[str, object]:
+        return {"version": str(self.version), "status": self.status, "error": self.error}
+
+
+def pypi(version: Version, fetch: Fetch) -> PyPI:
+    try:
+        return PyPI(version, fetch(PYPI.format(version=version)))
+    except ReleaseError as exc:
+        return PyPI(version, None, str(exc))
+
+
+def notify_lags(found: Loaded, markers: Path, notifier: Notifier, dry_run: bool) -> str | None:
+    """S-031-20: one desktop notification per release on the host, naming each lagging install
+    and its fix: the first tick to create <markers>/<latest>.notified, an exclusive create, sends
+    it, so several gates send one. None when nothing lags or the marker was there; a dry run
+    creates and sends nothing"""
+    if not found.lags or found.latest is None:
+        return None
+    marker = markers / f"{found.latest}.notified"
+    if dry_run:
+        return None if marker.exists() else f"would notify: {PLUGIN} lags {found.latest}"
+    markers.mkdir(parents=True, exist_ok=True)
+    try:
+        with marker.open("x", encoding="utf-8"):
+            pass
+    except FileExistsError:
+        return None
+    body = "; ".join(f"{lag.install.version} ({lag.install.where()}): {lag.fix}" for lag in found.lags)
+    try:
+        notifier.send(f"shipmill {found.latest} is out", f"update {PLUGIN}: {body}")
+    except NotifyFailed as exc:
+        return f"notify failed: {exc}"
+    return f"notified: {PLUGIN} lags {found.latest}"
+
+
+def save_cli(path: Path, version: Version) -> None:
+    """The gate's own CLI version, for doctor and status to compare with the latest release"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": str(version)}) + "\n", encoding="utf-8")
+
+
+def load_cli(path: Path) -> Version | None:
+    """The version the gate last ran as; None before a gate wrote one. A malformed file fails"""
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ReleaseError(f"{path} is malformed: {exc}") from None
+    if not isinstance(data, dict) or set(data) != {"version"} or not isinstance(data["version"], str):
+        raise ReleaseError(f'{path} is malformed: expected {{"version": "X.Y.Z"}}')
+    return Version.parse(data["version"])
+
+
+@dataclass(frozen=True, slots=True)
+class PluginHost:
+    """What the gate reads the plugin with: the commands (`claude plugin`, the marketplace's `gh
+    api` read), its own CLI, PyPI, the folder of the notification markers, and the config's
+    requires"""
+
+    run: Runner
+    cli: GateCli
+    fetch: Fetch
+    markers: Path
+    bound: Callable[[], Requires | None]

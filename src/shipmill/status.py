@@ -31,6 +31,7 @@ from shipmill.github import UPGRADE_LABEL, GitHub, labelled_command, parse_label
 from shipmill.gitrepo import Git
 from shipmill.launchd import label
 from shipmill.planner import MilestoneOvertaken, MilestoneWaiting, Planner
+from shipmill.plugin import GateCli
 from shipmill.policy import Policy
 from shipmill.upgrades import Offer, offers, pending
 from shipmill.version import Version
@@ -265,6 +266,7 @@ class Gate:
     app: Identity | None  # the App check's identity, with [agents] app_id
     app_error: str | None  # the App check's error, when it failed
     app_key: Path | None  # the key the App check would use, when it isn't on this host
+    cli: GateCli | None = None  # the version the gate last ran as, with its fix (S-031-17); None: none recorded
 
     @property
     def login(self) -> str | None:
@@ -759,9 +761,6 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
         found.append(
             JobProblem(Verdict.WAITS, f"the gate: {last}", shown, attach.group() if attach else _log_fix(job, repo))
         )
-    elif last.startswith("PLUGIN_STALE"):  # D-35: no session starts until a person updates the plugin
-        fix = last.partition("until it is updated: ")[2] or _log_fix(job, repo)
-        found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", "paused: the plugin a session loads is stale", fix))
     elif last.startswith("HOOKS_FAILED"):  # spec 026: no headless session starts until the hooks' self-test passes
         fix = last.partition("until the self-test passes: ")[2] or _log_fix(job, repo)
         found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", "paused: the hooks' self-test failed", fix))
@@ -879,6 +878,9 @@ def verdict(facts: Facts) -> tuple[Verdict, list[Reason], list[str]]:
     latest, _ = latest_shipmill(rows)
     if cli_outdated(facts.cli, latest):
         yours.append(Reason(f"the shipmill CLI {facts.cli} is older than {latest}", cli_update(facts.command)))
+    gate_cli = facts.gate.cli
+    if latest is not None and gate_cli is not None and gate_cli.lags(Version.of_tag(latest)):  # S-031-17
+        yours.append(Reason(gate_cli.line(Version.of_tag(latest)), gate_cli.fix))
     land_yours, land_working = landing_reasons(facts)
     yours += land_yours
     working = [r.text() for r in rows if r.agent and r.state not in STUCK_ROWS]
@@ -1155,7 +1157,8 @@ def gate_lines(facts: Facts) -> list[str]:
 
 def shipmill_lines(facts: Facts) -> list[str]:
     """S-009-22: the CLI's version, the plugin's when it differs, and the updates, each the
-    fix for its install (S-011-15)"""
+    fix for its install (S-011-15): each SHIPMILL_OUTDATED row's (S-031-15, S-031-16), this
+    CLI's, and the gate's own CLI's when it lags (S-031-17)"""
     latest, plugin = latest_shipmill(facts.rows)
     parts = [facts.cli]
     if any(v != facts.cli for v in re.findall(r"\d+\.\d+\.\d+[^\s,;]*", plugin)):
@@ -1164,11 +1167,18 @@ def shipmill_lines(facts: Facts) -> list[str]:
     fixes = [r.detail.partition("; ")[2] for r in outdated]
     if cli_outdated(facts.cli, latest):
         fixes.append(cli_update(facts.command))
+    after = [row_fix(facts.repo, r) for r in outdated]
+    gate_cli = facts.gate.cli
+    if latest is not None and gate_cli is not None and gate_cli.lags(Version.of_tag(latest)):
+        parts.append(f"gate {gate_cli.version}")
+        if gate_cli.fix not in fixes:
+            fixes.append(gate_cli.fix)
+            after.append(gate_cli.fix)
     if fixes:
         parts.append(f"update available: {'; '.join(fixes)}")
     else:
         parts.append("up to date" if latest is not None else "latest not read")
-    return _after(_line("shipmill", ", ".join(parts)), [row_fix(facts.repo, r) for r in outdated])
+    return _after(_line("shipmill", ", ".join(parts)), after)
 
 
 def agent_as_person_lines(facts: Facts) -> list[str]:

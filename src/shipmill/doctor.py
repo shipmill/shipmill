@@ -37,11 +37,16 @@ from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.gitrepo import REMOTE, Git
 from shipmill.hooks import HookTest
 from shipmill.land import BLOCKING_BRANCH, WORK_PREFIX, blocked
+from shipmill.plugin import PLUGIN, GateCli
 from shipmill.policy import BumpFrom, Lane, Policy, VersionFiles
 from shipmill.product import DIRECTION
 from shipmill.product import check as check_product
+from shipmill.requires import FILE as CONFIG_FILE
+from shipmill.requires import Requires
+from shipmill.requires import check as check_requires
 from shipmill.stamp import project_version
 from shipmill.upgrades import offers, pending
+from shipmill.version import Version
 
 CALLER = Path(".github") / "workflows" / "release.yml"
 DIRECTION_GUIDE = "https://github.com/shipmill/shipmill/blob/main/docs/direction.md"  # the direction, for people
@@ -72,7 +77,9 @@ class PluginRow:
     detail: str
 
 
-PAUSED = "the gate starts no session (D-35)"  # SHIPMILL_VERSION's words when a session's install is behind
+# SHIPMILL_VERSION's latest release and the install a session in the gate's folder loads
+LATEST = re.compile(r"^latest (v\d+\.\d+\.\d+);")
+SESSION_LOADS = re.compile(r"; a session loads (\w+) (\d+\.\d+\.\d+\S*) \(")
 PluginRows = Callable[[], list[PluginRow]]  # the rows, or ReleaseError when they can't be read
 PeopleReader = Callable[[], Flagged]  # spec 012's flagged items, or ReleaseError when they can't be read
 HookTester = Callable[[], HookTest]  # the delivery hooks' self-test (spec 026)
@@ -98,24 +105,44 @@ def read_plugin_rows(repo: str, root: Path) -> list[PluginRow]:
     return [PluginRow(r.state, r.subject, r.detail) for r in rows]
 
 
-def plugin_checks(read: PluginRows) -> list[Check]:
+def plugin_checks(read: PluginRows, gate_cli: GateCli | None = None, bound: Requires | None = None) -> list[Check]:
     """The shipmill@shipmill installs on this host that apply to the repo, as `status` reads
-    them: each one behind the latest release is a WARN with the fix to run in its folder (the
-    repo's, the gate checkout's, or user scope); the versions row, which names the install a
-    session loads, is a WARN too when that install is behind, as the gate then starts no
-    session (D-35); a failed read is a WARN, never a crash"""
+    them (spec 031): each one behind the latest release, and each keyed on the gate's linked
+    worktree, which no session loads, is a WARN with its fix (S-031-15, S-031-16); the versions
+    row, which names the install a session loads, passes. The gate's own CLI behind the latest
+    release is a WARN with its fix (S-031-17), and so is a config whose requires the version
+    sessions load doesn't meet (S-031-19). None of them holds the gate. A failed read is a
+    WARN, never a crash"""
     try:
         rows = read()
     except ReleaseError as exc:
         return [Check("WARN", "plugin", f"can't read the shipmill plugin's installs: {exc}")]
     checks = []
+    latest, loads = None, None
     for row in rows:
         if row.state == "SHIPMILL_VERSION":
-            checks.append(Check("WARN" if PAUSED in row.detail else "PASS", "plugin", row.detail))
+            checks.append(Check("PASS", "plugin", row.detail))
+            found = LATEST.match(row.detail)
+            latest = None if found is None else Version.of_tag(found.group(1))
+            loads = SESSION_LOADS.search(row.detail)
         elif row.state == "SHIPMILL_OUTDATED":
             checks.append(Check("WARN", "plugin", f"{row.subject} {row.detail}"))
         else:
             raise ReleaseError(f"watch_state.py's shipmill_rows returned a {row.state} row")
+    if gate_cli is not None and latest is not None and gate_cli.lags(latest):
+        checks.append(Check("WARN", "gate cli", gate_cli.line(latest)))
+    if bound is not None and loads is not None and not bound.met(Version.parse(loads.group(2))):
+        scope, version = loads.group(1), loads.group(2)
+        lower = f"or lower requires in {CONFIG_FILE}"
+        if latest is not None and bound.met(latest):
+            fix = f"claude plugin marketplace update shipmill && claude plugin update {PLUGIN} --scope {scope}; {lower}"
+        else:
+            fix = f"release shipmill {bound.floor[0]}.{bound.floor[1]}.{bound.floor[2]} or later, {lower}"
+        detail = (
+            f"{CONFIG_FILE} requires shipmill {bound}, but sessions in the gate's folder load {PLUGIN} {version}"
+            f" ({scope} scope), whose shipmill commands refuse the config; fix: {fix}"
+        )
+        checks.append(Check("WARN", "requires", detail))
     return checks
 
 
@@ -142,6 +169,7 @@ def doctor(
     auth: Callable[[], ClaudeAuth] | None = None,
     downstream: Reader | None = None,
     app: AppProbe | None = None,
+    gate_cli: Callable[[], GateCli | None] | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -152,7 +180,9 @@ def doctor(
     auth asks whether Claude Code can authenticate, only with [agents] (#500); None asks nothing.
     downstream reads the library's secrets and the downstream workflows, only with [downstream]
     (spec 032); None (no gh) reports that it can't. app checks the App's installation on each
-    downstream; None, or a probe without the key, warns once that it is unchecked"""
+    downstream; None, or a probe without the key, warns once that it is unchecked. gate_cli
+    reads the version the repo's gate last ran as, with its fix, checked with the plugin
+    (S-031-17); None checks none"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -294,7 +324,7 @@ def doctor(
     if policy.downstream is not None:  # D-9: no downstream line without [downstream]
         checks.extend(downstream_checks(root, policy.downstream, downstream, app))
     if plugins is not None:
-        checks.extend(plugin_checks(plugins))
+        checks.extend(plugin_checks(plugins, None if gate_cli is None else gate_cli(), check_requires(raw)))
     if people is not None and policy.agents is not None and policy.agents.app_id is not None:
         checks.append(agent_as_person_check(people))
     return checks

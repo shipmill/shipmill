@@ -38,7 +38,20 @@ from shipmill.github import GitHub
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
 from shipmill.notify import Notifier, NotifyFailed
-from shipmill.plugin import CHECKED, Loaded, PluginUpdate, daily_update, loaded, session_project
+from shipmill.plugin import (
+    CHECKED,
+    CLI_RECORD,
+    Loaded,
+    PluginHost,
+    PluginUpdate,
+    PyPI,
+    daily_update,
+    loaded,
+    notify_lags,
+    pypi,
+    save_cli,
+    session_project,
+)
 from shipmill.worktrees import Judged, Sessions, Verdict, judge, prune
 
 RECORD = "gate.json"
@@ -178,7 +191,7 @@ class Action(enum.Enum):
     RUNNING = "RUNNING"  # a session is still working
     WAITING = "WAITING"  # a session waits on the user
     UNCHANGED = "UNCHANGED"  # the same findings already got a session
-    PLUGIN_STALE = "PLUGIN_STALE"  # a session would load a plugin older than the latest release (D-35)
+    PYPI_WAIT = "PYPI_WAIT"  # PyPI answers 404 for the plugin version a session would load (S-031-24)
     HOOKS_FAILED = "HOOKS_FAILED"  # headless: the delivery hooks' self-test failed (spec 026, S-026-16)
     CLAUDE_AUTH = "CLAUDE_AUTH"  # Claude Code can't authenticate on this host: no session starts (#500)
     SESSION_DEAD = "SESSION_DEAD"  # the last session ended dead, and another starts (#500)
@@ -212,7 +225,9 @@ class Decision:
     decisions: tuple[Asked, ...] = ()  # what the tick did for each item waiting on a decision (spec 005)
     asks_as: str | None = None  # a headless launch without an App: the login its questions post as
     plugin: PluginUpdate | None = None  # the daily plugin check before a launch (D-23); None: none ran
-    loaded: Loaded | None = None  # the plugin a session would load, read before a launch (D-35); None: not read
+    loaded: Loaded | None = None  # the plugin a session would load, read before a launch (spec 031); None: not read
+    pypi: PyPI | None = None  # PyPI's answer for that plugin's version (S-031-24); None: not asked
+    plugin_notice: str | None = None  # the once-per-release notification of a lagging install (S-031-20)
     detached: Detached | None = None  # the branch --refresh detached the gate's worktree from (#247)
     hooks: HookTest | None = None  # the delivery hooks' self-test before a launch (spec 026); None: none ran
     auth: ClaudeAuth | None = None  # the Claude Code login preflight before a launch (#500); None: none ran
@@ -1142,33 +1157,37 @@ def checked(config: Callable[[], AgentsConfig], args: Sequence[str]) -> Callable
     return read
 
 
-def stale(decision: Decision, git: Git, plugins: Runner | None) -> Decision:
-    """D-35: a LAUNCH whose session would load a shipmill plugin older than the latest release
-    becomes PLUGIN_STALE: no session stops or starts, and the reason names the install and its
-    fix. Otherwise the LAUNCH stands, carrying what the read found. plugins None reads nothing"""
-    if plugins is None:
+def plugin_read(
+    decision: Decision, git: Git, plugin: PluginHost | None, notify: bool, notifier: Notifier, dry_run: bool
+) -> Decision:
+    """Spec 031, D-44: a LAUNCH reads the plugin a session would load and reports, never pauses
+    on, what lags the latest release (plugin.loaded), sending one notification per release on
+    the host under notify (S-031-20). The one hold is PyPI answering 404 for the version
+    sessions load (S-031-24): the tick is PYPI_WAIT, stopping no session and starting none, and
+    the next tick asks again; any other answer is reported and the LAUNCH stands. plugin None
+    reads nothing"""
+    if plugin is None or decision.action is not Action.LAUNCH:
         return decision
     common = git.run("rev-parse", "--path-format=absolute", "--git-common-dir")
-    found = loaded(git.root, session_project(git.root, common), plugins)
-    if not found.stale:
-        return replace(decision, loaded=found)
+    found = loaded(git.root, session_project(git.root, common), plugin.run, plugin.cli, plugin.bound())
+    notice = notify_lags(found, plugin.markers, notifier, dry_run) if notify else None
+    decision = replace(decision, loaded=found, plugin_notice=notice)
+    if found.install is None:
+        return decision
+    answer = pypi(found.install.version, plugin.fetch)
+    if not answer.waits:
+        return replace(decision, pypi=answer)
     return replace(
-        decision,
-        action=Action.PLUGIN_STALE,
-        reason=found.reason(),
-        stop=(),
-        identity=None,
-        asks_as=None,
-        loaded=found,
+        decision, action=Action.PYPI_WAIT, reason=answer.reason(), stop=(), identity=None, asks_as=None, pypi=answer
     )
 
 
 def self_tested(decision: Decision, hooks: Callable[[], HookTest] | None, headless: bool) -> Decision:
     """S-026-16: a LAUNCH runs the delivery hooks' self-test once. A failure makes a headless
-    tick HOOKS_FAILED, stopping no session and starting none, as D-35 does for stale skills: an
-    unattended session is where a miss goes unseen. An interactive tick reports it and launches.
-    A test that couldn't read what a session loads is reported and launches, as D-35 does on a
-    failed read; no claude on PATH pauses a headless tick, naming it. hooks None runs no test"""
+    tick HOOKS_FAILED, stopping no session and starting none (D-40): an unattended session is
+    where a miss goes unseen. An interactive tick reports it and launches. A test that couldn't
+    read what a session loads is reported and launches, as a failed plugin read does; no claude
+    on PATH pauses a headless tick, naming it. hooks None runs no test"""
     if hooks is None or decision.action is not Action.LAUNCH:
         return decision
     found = hooks()
@@ -1250,7 +1269,7 @@ def gate(
     login: Callable[[], str] | None = None,
     started: StartTime = start_time,
     new_session: Callable[[], uuid.UUID] = uuid.uuid4,
-    plugins: Runner | None = None,
+    plugin: PluginHost | None = None,
     hooks: Callable[[], HookTest] | None = None,
     auth: Callable[[], ClaudeAuth] | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
@@ -1289,20 +1308,21 @@ def gate(
     needs-decision.json and, without app_id, notifies for them (spec 005); the decision
     carries the mode it read and what it did for each item.
 
-    plugins runs the plugin's commands (`claude plugin ...`, and `gh api` for the marketplace's
-    latest release, spec 031); None, as in
-    tests that don't exercise it, reads and updates no plugin. With [agents] plugin_update =
-    true (D-23), a real LAUNCH first checks, at most once per 24 hours (plugin-check.json in
-    the state directory), whether any shipmill@shipmill install keyed on the checkout, at
-    project or local scope, is behind the latest release, and updates each one that is
-    (`claude plugin marketplace update shipmill` once, then `claude plugin update --scope <its
-    scope>` run in the checkout). With false, the
-    default, the gate changes no install. Then a LAUNCH, dry run or not, reads the install a
-    session in the checkout would load (D-35, plugin.loaded): when it is older than the latest
-    release the tick is PLUGIN_STALE, naming the install, its scope, and the command that
-    updates it, and stops no session and starts none; the next tick with a current install
-    launches. A failed read is reported and the session starts (as a failed D-23 check did),
-    and so does a checkout no install applies to. The decision carries both.
+    plugin reads the plugin (`claude plugin ...`, and `gh api` for the marketplace's latest
+    release, spec 031), PyPI, and the config's requires, and knows the gate's own CLI; None, as
+    in tests that don't exercise it, reads and updates no plugin. A real tick with it records
+    the gate's CLI version (cli.json in the state directory) for doctor and status. With [agents]
+    plugin_update = true (D-23), a real LAUNCH first checks, at most once per 24 hours
+    (plugin-check.json in the state directory), whether any shipmill@shipmill install keyed on
+    the checkout, at project or local scope, is behind the latest release, and updates each one
+    that is (`claude plugin marketplace update shipmill` once, then `claude plugin update
+    --scope <its scope>` run in the checkout). With false, the default, the gate changes no
+    install. Then a LAUNCH, dry run or not, reads the install a session in the checkout would
+    load and reports each install that lags, an install keyed on its linked worktree, its own
+    lagging CLI, and an unmet requires, each with its fix, and starts the session (spec 031,
+    D-44, plugin_read); only PyPI answering 404 for the version sessions load makes it
+    PYPI_WAIT. A failed read is reported and the session starts, and so does a checkout no
+    install applies to. The decision carries what it found.
 
     hooks runs the delivery hooks' self-test (spec 026); None, as in tests that don't exercise
     it, runs none. A LAUNCH still standing after the plugin read, dry run or not, runs it once:
@@ -1323,6 +1343,8 @@ def gate(
     config = checked(config, claude.args)
     state = state_dir(git)
     record = state / RECORD
+    if plugin is not None and not dry_run:  # S-031-17: doctor and status compare it with the latest
+        save_cli(state / CLI_RECORD, plugin.cli.version)
     sessions = claude.sessions(git.root, repo)
     waiting = attend(state_dir(git) / WAITING, repo, sessions, config, notifier, now, dry_run, claude.stop)
     gone = {w.session for w in waiting if w.stopped}  # on a dry run, the ones a real tick would stop
@@ -1379,19 +1401,22 @@ def gate(
     else:
         text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login)
     if dry_run:
-        return relaunching(self_tested(stale(decision, git, plugins), hooks, headless)), None, waiting, pruned
+        checked_plugin = plugin_read(decision, git, plugin, agents.notify, notifier, dry_run)
+        return relaunching(self_tested(checked_plugin, hooks, headless)), None, waiting, pruned
     env = None
     if identity is not None:
         if app_env is None:
             raise ReleaseError(f"app_id {agents.app_id} is set, but no session env was given; no session starts")
         env = app_env(identity)
     if agents.plugin_update:  # before the session starts, so it loads the updated skills
-        if plugins is None:
+        if plugin is None:
             raise ReleaseError("[agents] plugin_update = true, but no plugin command runner was given")
-        decision = replace(decision, plugin=daily_update(state / CHECKED, git.root, now, plugins))
-    decision = stale(decision, git, plugins)  # after the update, so a current install launches (D-35)
+        decision = replace(decision, plugin=daily_update(state / CHECKED, git.root, now, plugin.run))
+    decision = plugin_read(
+        decision, git, plugin, agents.notify, notifier, dry_run
+    )  # after the update, which it reports
     decision = self_tested(decision, hooks, headless)  # of the install the session loads, so after the update too
-    if decision.action in (Action.PLUGIN_STALE, Action.HOOKS_FAILED):
+    if decision.action in (Action.PYPI_WAIT, Action.HOOKS_FAILED):
         return decision, None, waiting, pruned
     decision = relaunching(decision)
     for session in decision.stop:
@@ -1428,6 +1453,8 @@ def tick_record(
         "decisions": [a.record() for a in decision.decisions],
         "plugin": None if decision.plugin is None else decision.plugin.record(),
         "loaded": None if decision.loaded is None else decision.loaded.record(),
+        "pypi": None if decision.pypi is None else decision.pypi.record(),
+        "plugin_notice": decision.plugin_notice,
         "detached": None if decision.detached is None else decision.detached.record(),
         "hooks": None if decision.hooks is None else decision.hooks.record(),
         "auth": None if decision.auth is None else decision.auth.record(),
@@ -1461,6 +1488,10 @@ def tick_lines(
         lines += [f"  {line}" for line in decision.plugin.lines()]
     if decision.loaded is not None:
         lines += [f"  {line}" for line in decision.loaded.lines()]
+    if decision.pypi is not None:
+        lines += [f"  {line}" for line in decision.pypi.lines()]
+    if decision.plugin_notice is not None:
+        lines.append(f"  {decision.plugin_notice}")
     if decision.hooks is not None and not decision.hooks.ok and decision.action is not Action.HOOKS_FAILED:
         verb = "couldn't run" if decision.hooks.unread else "failed"
         lines.append(f"  hooks self-test {verb}, the session starts anyway: {decision.hooks.line()}")

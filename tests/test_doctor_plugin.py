@@ -9,8 +9,11 @@ from types import ModuleType
 import pytest
 
 from shipmill.cli import _doctor_repo
-from shipmill.doctor import Check, PluginRow, doctor, plugin_checks
+from shipmill.doctor import Check, PluginRow, PluginRows, doctor, plugin_checks
 from shipmill.errors import ReleaseError
+from shipmill.plugin import GateCli
+from shipmill.requires import Requires
+from shipmill.version import Version
 from tests.conftest import Repo
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-ship-watch" / "scripts" / "watch_state.py"
@@ -41,8 +44,15 @@ def checked(ws: ModuleType, plugins: object) -> list[Check]:
     return plugin_checks(lambda: [PluginRow(r.state, r.subject, r.detail) for r in rows])
 
 
-def test_a_behind_install_in_the_repo_and_the_gate_checkout_warns_with_statuss_fix(ws: ModuleType) -> None:
-    """D-22: separate rows for the repo's folder and the gate's checkout, each with its fix"""
+UNLOADED = (
+    f'delete the entry with "projectPath": "{GATE}" under "shipmill@shipmill"'
+    " in ~/.claude/plugins/installed_plugins.json"
+)
+
+
+def test_s031_16_the_repos_install_and_one_keyed_on_the_gates_worktree_warn_with_statuss_fix(ws: ModuleType) -> None:
+    """D-22: separate rows for the repo's folder and the gate's checkout, each with its fix;
+    the gate's linked worktree is no session's project, so its install is deleted by hand"""
     found = checked(ws, [install("project", "0.31.1", REPO), install("project", "0.25.0", GATE)])
     assert [c.status for c in found] == ["PASS", "WARN", "WARN"]
     assert found[1] == Check(
@@ -53,14 +63,49 @@ def test_a_behind_install_in_the_repo_and_the_gate_checkout_warns_with_statuss_f
         " --scope project (`update` picks the nested install in /work/r/tmp/shipmill-gate, a Claude Code bug)",
     )
     assert found[2].detail == (
-        "plugin project 0.25.0, latest v0.32.1; in /work/r/tmp/shipmill-gate:"
-        " claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope project"
+        f"plugin project 0.25.0, keyed on the gate's linked worktree {GATE}, which no session loads; {UNLOADED}"
     )
 
 
+def test_s031_16_a_current_install_keyed_on_the_gates_worktree_still_warns(ws: ModuleType) -> None:
+    found = checked(ws, [install("user", "0.32.1"), install("local", "0.32.1", GATE)])
+    assert [c.status for c in found] == ["PASS", "WARN"] and found[1].detail.endswith(UNLOADED)
+
+
 def test_a_current_install_passes(ws: ModuleType) -> None:
-    found = checked(ws, [install("user", "0.32.1"), install("project", "0.32.1", GATE)])
-    assert found == [Check("PASS", "plugin", f"latest v0.32.1; plugin: user 0.32.1, project 0.32.1 ({GATE})")]
+    found = checked(ws, [install("user", "0.32.1"), install("project", "0.32.1", REPO)])
+    assert found == [Check("PASS", "plugin", f"latest v0.32.1; plugin: user 0.32.1, project 0.32.1 ({REPO})")]
+
+
+@pytest.mark.parametrize(
+    ("scope", "where", "fix"),
+    [
+        (
+            "user",
+            None,
+            "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user",
+        ),
+        (
+            "project",
+            REPO,
+            "in /work/r: claude plugin marketplace update shipmill"
+            " && claude plugin update shipmill@shipmill --scope project",
+        ),
+        (
+            "local",
+            REPO,
+            "in /work/r: claude plugin marketplace update shipmill"
+            " && claude plugin update shipmill@shipmill --scope local",
+        ),
+    ],
+)
+def test_s031_15_each_lagging_install_warns_with_its_fix_and_none_says_the_gate_pauses(
+    ws: ModuleType, scope: str, where: Path | None, fix: str
+) -> None:
+    rows = ws.plugin_rows([install(scope, "0.31.0", where)], None, "v0.32.1", [REPO], [GATE], REPO)
+    found = plugin_checks(lambda: [PluginRow(r.state, r.subject, r.detail) for r in rows])
+    assert found[1] == Check("WARN", "plugin", f"plugin {scope} 0.31.0, latest v0.32.1; {fix}")
+    assert not any("starts no session" in c.detail or "D-35" in c.detail for c in found)
 
 
 def test_nothing_installed_is_an_info_row(ws: ModuleType) -> None:
@@ -73,22 +118,76 @@ def test_without_claude_the_installs_are_skipped_not_failed(ws: ModuleType) -> N
     assert found == [Check("PASS", "plugin", "latest v0.32.1; plugin: claude isn't on PATH, not read")]
 
 
-def test_the_install_a_session_loads_is_named_and_warns_when_behind(ws: ModuleType) -> None:
-    # #417, D-35: the gate's linked checkout loads the main checkout's local install, not the
-    # leftover keyed on the worktree; when it is behind, the gate starts no session
+def test_s031_15_the_install_a_session_loads_is_named_and_its_lag_is_reported_not_a_pause(ws: ModuleType) -> None:
+    # #417: the gate's linked checkout loads the main checkout's local install, not the leftover
+    # keyed on the worktree; spec 031: when it is behind, its own row warns and the gate still runs
     plugins = [install("user", "0.32.1"), install("local", "0.31.0", REPO), install("local", "0.25.0", GATE)]
     rows = ws.plugin_rows(plugins, None, "v0.32.1", [REPO], [GATE], REPO)
     found = plugin_checks(lambda: [PluginRow(r.state, r.subject, r.detail) for r in rows])
     assert found[0] == Check(
-        "WARN",
+        "PASS",
         "plugin",
         f"latest v0.32.1; plugin: user 0.32.1, local 0.31.0 ({REPO}), local 0.25.0 ({GATE}); a session loads"
-        f" local 0.31.0 ({REPO}), older than v0.32.1: the gate starts no session (D-35)",
+        f" local 0.31.0 ({REPO}), older than v0.32.1",
     )
+    assert [c.status for c in found] == ["PASS", "WARN", "WARN"]  # the lagging install, the unloaded one
     current = [install("user", "0.31.0"), install("local", "0.32.1", REPO)]
     rows = ws.plugin_rows(current, None, "v0.32.1", [REPO], [GATE], REPO)
     assert rows[0].detail.endswith(f"; a session loads local 0.32.1 ({REPO})")
     assert plugin_checks(lambda: [PluginRow(r.state, r.subject, r.detail) for r in rows])[0].status == "PASS"
+
+
+def session_rows(ws: ModuleType, version: str) -> PluginRows:
+    rows = ws.plugin_rows([install("user", version)], None, "v0.32.1", [REPO], [GATE], REPO)
+    return lambda: [PluginRow(r.state, r.subject, r.detail) for r in rows]
+
+
+@pytest.mark.parametrize(
+    ("cli", "warned"),
+    [
+        (GateCli(Version.parse("0.30.0"), "uv tool upgrade shipmill"), True),
+        (GateCli(Version.parse("0.30.0"), "uvx shipmill@latest --repo /g launchd o/r"), True),
+        (GateCli(Version.parse("0.32.1"), "uv tool upgrade shipmill"), False),
+        (None, False),
+    ],
+)
+def test_s031_17_the_gates_lagging_cli_warns_with_its_fix(ws: ModuleType, cli: GateCli | None, warned: bool) -> None:
+    found = [c for c in plugin_checks(session_rows(ws, "0.32.1"), cli) if c.name == "gate cli"]
+    if not warned:
+        assert found == []
+        return
+    assert cli is not None
+    assert found == [
+        Check("WARN", "gate cli", f"the gate's CLI, shipmill 0.30.0, lags the latest release 0.32.1: {cli.fix}")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("version", "bound", "fix"),
+    [
+        (
+            "0.31.0",
+            ">=0.32",
+            "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user;"
+            " or lower requires in .github/shipmill.toml",
+        ),
+        ("0.32.1", ">=0.33", "release shipmill 0.33.0 or later, or lower requires in .github/shipmill.toml"),
+    ],
+)
+def test_s031_19_doctor_warns_when_the_version_sessions_load_misses_requires(
+    ws: ModuleType, version: str, bound: str, fix: str
+) -> None:
+    found = [c for c in plugin_checks(session_rows(ws, version), None, Requires.parse(bound)) if c.name == "requires"]
+    assert found == [
+        Check(
+            "WARN",
+            "requires",
+            f".github/shipmill.toml requires shipmill {bound}, but sessions in the gate's folder load"
+            f" shipmill@shipmill {version} (user scope), whose shipmill commands refuse the config; fix: {fix}",
+        )
+    ]
+    met = plugin_checks(session_rows(ws, "0.32.1"), None, Requires.parse(">=0.32"))
+    assert "requires" not in {c.name for c in met}
 
 
 def test_a_failed_read_warns_and_doctor_goes_on(repo: Repo) -> None:

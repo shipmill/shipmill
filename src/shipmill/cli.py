@@ -83,7 +83,7 @@ from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import TextIO
 
-from shipmill import agent_as_person, cli_command, evals, fragments, product, review, status
+from shipmill import agent_as_person, cli_command, evals, fragments, product, requires, review, status
 from shipmill.agents import AgentsConfig, app_id_of
 from shipmill.app import (
     CACHE,
@@ -161,11 +161,12 @@ from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
 from shipmill.land import ActionsRun, Prepared, Stop, cleanup, land, prepare, work_branch
-from shipmill.launchd import DEFAULT_TOOL, build, install, remove
+from shipmill.launchd import DEFAULT_EVERY, DEFAULT_TOOL, build, cli_fix, install, read_job, remove
 from shipmill.lineedit import LineText
 from shipmill.notify import Desktop
-from shipmill.operate import Http, UrllibHttp, approve, approve_rollback, operate, summary
+from shipmill.operate import Http, Unreachable, UrllibHttp, approve, approve_rollback, operate, summary
 from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
+from shipmill.plugin import CLI_RECORD, MARKERS, GateCli, PluginHost, load_cli
 from shipmill.policy import Lane, Policy
 from shipmill.product import DIRECTION, ItemId, Measure, Section
 from shipmill.product import check as check_product
@@ -589,7 +590,7 @@ def _parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("launchd", help="run the gate for a dedicated checkout every few minutes (macOS)")
     p.add_argument("slug", metavar="owner/name", help="the GitHub repo; --repo is its gate checkout")
-    p.add_argument("--every", type=int, default=15, help="minutes between runs (default: 15)")
+    p.add_argument("--every", type=int, default=DEFAULT_EVERY, help="minutes between runs (default: 15)")
     p.add_argument("--tool", default=DEFAULT_TOOL, help=f"where uvx gets shipmill (default: {DEFAULT_TOOL})")
     p.add_argument("--claude-arg", action="append", default=[], help="extra flag for the session (repeatable)")
     p.add_argument(
@@ -716,6 +717,7 @@ def main(
             auth=_claude_auth(env),
             downstream=downstream_reader or (GhReader(root) if has_gh else None),
             app=app_on_host(key, user_home, signer or Openssl(), api or UrllibApi(), lambda: dt.datetime.now(dt.UTC)),
+            gate_cli=None if slug is None else (lambda: _gate_cli(root, slug, user_home)),
         )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")
@@ -872,6 +874,27 @@ def _claude_auth(environ: Mapping[str, str]) -> Callable[[], ClaudeAuth]:
     return lambda: claude_auth(run_auth, program)
 
 
+PYPI_TIMEOUT = 15.0  # seconds the gate waits for PyPI's answer (S-031-24)
+
+
+def _pypi_status(url: str, http: Http | None = None) -> int:
+    """PyPI's HTTP status for url; ReleaseError when no answer comes back"""
+    try:
+        return (http or UrllibHttp()).get(url, PYPI_TIMEOUT).status
+    except Unreachable as exc:
+        raise ReleaseError(f"{url}: {exc}") from None
+
+
+def _gate_cli(root: Path, repo: str, home: Path) -> GateCli | None:
+    """S-031-17: the version the repo's gate last ran as (None before one recorded it), with the
+    fix for its install: its launchd job's, else uv's"""
+    git = Git(root)
+    if not git.ok("rev-parse", "--git-common-dir"):
+        return None
+    version = load_cli(state_dir(git) / CLI_RECORD)
+    return None if version is None else GateCli(version, cli_fix(read_job(repo, home), repo))
+
+
 def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessions) -> int:
     git = Git(root)
     path = os.environ.get("PATH", "")
@@ -896,7 +919,13 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         args.app_key is not None,
         session_env,
         lambda: host_login(root),
-        plugins=run_command,
+        plugin=PluginHost(
+            run_command,
+            GateCli(requires.running(), cli_fix(read_job(args.slug, Path.home()), args.slug)),
+            _pypi_status,
+            Path.home() / MARKERS,
+            lambda: requires.check(read_config(config_path(root))),
+        ),
         hooks=_hook_test(root, os.environ, Path.home()),
         auth=_claude_auth(os.environ),
     )
@@ -1126,6 +1155,8 @@ def _status(
 
     # the picture reads as the gate's App, whose needs-decision questions are its own (spec 005)
     gate = status.read_gate(slug, top, home, platform, run, check, os.getuid()) if picture else None
+    if gate is not None:  # S-031-17: the gate's own CLI against the latest release
+        gate = dataclasses.replace(gate, cli=_gate_cli(top, slug, home))
     login = None if gate is None else gate.login
     if login is None:  # #311: --rows, --json, or a failed check still count the App's questions
         login = status.read_login(slug, top, home, platform, bot_login)

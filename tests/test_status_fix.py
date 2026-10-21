@@ -14,6 +14,7 @@ from shipmill import UVX, status
 from shipmill.errors import ReleaseError
 from shipmill.gitrepo import Git
 from shipmill.launchd import label
+from shipmill.plugin import GateCli
 from shipmill.status import (
     GH_PAUSE,
     STUCK_ROWS,
@@ -33,6 +34,7 @@ from shipmill.status import (
     read_pulls,
     report,
 )
+from shipmill.version import Version
 from tests.test_status_picture import AGENTS, FILES, NO_PRS, NOW, REPO, URL, facts, gate, job, lines
 
 FIX = "                 fix: "
@@ -171,16 +173,45 @@ def test_s011_14_each_gate_problem_has_its_fix(changed: object, fix: str) -> Non
     assert any(fix in line for line in lines(found))
 
 
-def test_a_gate_paused_on_a_stale_plugin_waits_on_you_with_the_update() -> None:
-    # #417, D-35: the gate starts no session while the plugin a session loads is behind
-    update = "claude plugin update shipmill@shipmill --scope user"
-    last = (
-        "PLUGIN_STALE: a session here would load shipmill@shipmill 0.48.0 (user scope), older than the latest"
-        f" release 0.50.0: no session starts until it is updated: {update}"
+USER_FIX = "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user"
+
+
+def test_s031_15_a_lagging_install_is_a_row_with_its_fix_and_no_gate_pause() -> None:
+    # spec 031: the install a session loads lags, which the gate reports and starts sessions on
+    outdated = Row("SHIPMILL_OUTDATED", "plugin user", f"0.25.0, latest v0.26.0; {USER_FIX}", False, USER_FIX)
+    found = facts(outdated)
+    assert [(r.text, r.fix) for r in report(found).reasons] == [(outdated.text(), USER_FIX)]
+    text = lines(found)
+    assert text[-1] == f"  shipmill       0.26.0, update available: {USER_FIX}"
+    assert not any("no session" in line or "paused" in line for line in text)
+    # an older gate's last PLUGIN_STALE line no longer reads as a pause
+    stale = "PLUGIN_STALE: a session here would load shipmill@shipmill 0.48.0 (user scope)"
+    assert not any("paused" in line for line in lines(facts(gate=gate(job=job(last=stale)))))
+
+
+def test_s031_16_status_names_the_unloaded_install_with_the_entry_to_delete() -> None:
+    fix = (
+        'delete the entry with "projectPath": "/w/r/tmp/shipmill-gate" under "shipmill@shipmill"'
+        " in ~/.claude/plugins/installed_plugins.json"
     )
-    found = facts(gate=gate(job=job(last=last)))
-    assert [(r.text, r.fix) for r in report(found).reasons] == [(f"the gate: {last}", update)]
-    assert status.DECISION.match(last) is not None  # the log reader takes it for a decision line
+    detail = f"0.25.0, keyed on the gate's linked worktree /w/r/tmp/shipmill-gate, which no session loads; {fix}"
+    found = facts(Row("SHIPMILL_OUTDATED", "plugin local", detail, False, fix))
+    assert fix in [r.fix for r in report(found).reasons]
+    assert lines(found)[-1] == f"  shipmill       0.26.0, update available: {fix}"
+
+
+@pytest.mark.parametrize(
+    "fix", ["uv tool upgrade shipmill", "uvx shipmill@latest --repo /w/r/tmp/shipmill-gate launchd acme/web"]
+)
+def test_s031_17_status_reports_the_gates_lagging_cli_with_its_fix(fix: str) -> None:
+    lagging = facts(gate=gate(cli=GateCli(Version.parse("0.25.0"), fix)))
+    reasons = report(lagging).reasons
+    assert [(r.text, r.fix) for r in reasons] == [
+        (f"the gate's CLI, shipmill 0.25.0, lags the latest release 0.26.0: {fix}", fix)
+    ]
+    assert lines(lagging)[-1] == f"  shipmill       0.26.0, gate 0.25.0, update available: {fix}"
+    current = facts(gate=gate(cli=GateCli(Version.parse("0.26.0"), fix)))
+    assert report(current).reasons == [] and lines(current)[-1].endswith("up to date")
 
 
 def test_s026_16_a_gate_paused_on_a_failed_hook_self_test_waits_on_you_with_the_fix() -> None:
