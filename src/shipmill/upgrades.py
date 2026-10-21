@@ -238,10 +238,10 @@ CATALOGUE: tuple[Upgrade, ...] = (
 # Upgrades shipmill no longer offers, each with why: a run closes the open issue that proposes
 # one, since its id names nothing `upgrade --apply` knows
 WITHDRAWN: Mapping[UpgradeId, str] = {
-    # S-031-21: the key it added is deprecated, and the gate changes no install whatever its value
+    # S-031-21: withdrawn; the key it added is refused since (S-031-22)
     UpgradeId("plugin-update"): (
         "gate sessions load the installed plugin and report its lag (spec 031), so `[agents] plugin_update`"
-        " is deprecated and the gate changes no install"
+        " was removed and the gate changes no install"
     ),
 }
 

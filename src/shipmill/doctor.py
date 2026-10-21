@@ -58,11 +58,6 @@ _ROADMAP_DEPRECATED = (
     "[roadmap] is deprecated (D-32) and read by nothing: the work-in-progress limit is [agents] wip;"
     " move wip there and delete [roadmap], which the next minor release refuses"
 )
-# S-031-21: the spec's text; the next minor release refuses the key (S-031-22)
-PLUGIN_UPDATE_DEPRECATED = (
-    "[agents] plugin_update is deprecated (spec 031): gate sessions load the installed plugin and report its"
-    " lag; delete the key, which the next minor release refuses"
-)
 _BREAKING = "the stable lane can hold a breaking change ([bump] major), which waits for the maintainer"
 _LOCAL_USES = re.compile(r"uses:\s*\./\.github/workflows/(?P<file>[\w.-]+\.ya?ml)")
 
@@ -226,8 +221,6 @@ def doctor(
     if policy.roadmap is not None:
         add(False, "roadmap", _ROADMAP_DEPRECATED, warn=True)
     raw = read_config(found)
-    if policy.agents is not None and policy.agents.plugin_update is not None:
-        add(False, "plugin_update", PLUGIN_UPDATE_DEPRECATED, warn=True)
     if policy.agents is not None:
         checks.append(direction_check(root))
         checks.extend(hooks_checks(policy, Git(root), hooks))

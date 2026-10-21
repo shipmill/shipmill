@@ -458,8 +458,8 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    D-44); the gate never changes an install. When an install a session in its checkout
    would load is older than the latest release, the tick reports it with its fix and the
    session still starts. The setup checklist's `PLUGIN_OUTDATED` rows name that install
-   with a `gate:` row. `[agents] plugin_update` is deprecated: never write it; in a config
-   that has it, delete it, since `doctor` warns and the next minor release refuses it
+   with a `gate:` row. `[agents] plugin_update` was removed: never write it; in a config
+   that has it, delete it, since each shipmill command that reads the config refuses it with exit 2
 
    The delivery hooks come with the plugin (spec 026), and need `uv` on PATH. In a repo
    whose config has `[agents]`, they refuse with exit 2 a plain `gh` write while `app_id`

@@ -1308,7 +1308,7 @@ def gate(
     release, spec 031), PyPI, and the config's requires, and knows the gate's own CLI; None, as
     in tests that don't exercise it, reads no plugin. A real tick with it records the gate's CLI
     version (cli.json in the state directory) for doctor and status. The gate changes no
-    install: [agents] plugin_update is deprecated and ignored, whatever its value (S-031-21).
+    install, and the config refuses [agents] plugin_update (S-031-22).
     A LAUNCH, dry run or not, reads the install a session in the checkout would
     load and reports each install that lags, an install keyed on its linked worktree, its own
     lagging CLI, and an unmet requires, each with its fix, and starts the session (spec 031,

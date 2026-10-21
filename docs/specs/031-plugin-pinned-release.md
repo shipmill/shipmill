@@ -1,6 +1,6 @@
 # S-031: The plugin pins its release; gate sessions load the installed plugin
 
-status: approved
+status: built
 serves: G-1, G-2
 
 ## Problem
@@ -302,3 +302,30 @@ It follows the path D-32 set for `[roadmap]`:
 - shipmill/shipmill#553: S-031-22
 
 ## Verification
+
+Checked on main at v0.60.0 plus #553's pull request, on 2026-10-21.
+
+- S-031-1: read `.claude-plugin/marketplace.json` and `plugin.json`: the source is `{"source": "github", "repo": "shipmill/shipmill", "ref": "v0.60.0"}` beside `"version": "0.60.0"`, and `.github/shipmill.toml`'s `[[version_lines]]` move both (`doctor` passes each line, one match), held
+- S-031-2: `shipmill doctor` on this checkout reads `latest v0.60.0` from the marketplace `ref`, and `watch_state.py` and `src/shipmill/plugin.py` read `.claude-plugin/marketplace.json` from the default branch; the refusal of a non-`github` source or a bad `ref` read in `plugin.py` and `watch_state.py`, held
+- S-031-3: no `git+https://github.com/shipmill/shipmill@v0` under `skills/` or `hooks/` (grep, 0 matches); all 11 `uvx shipmill==` under `skills/` read `0.60.0`, each one a `[[version_lines]]` entry, held
+- S-031-4: `watch_state.py` and `hooks/delivery.py` read `plugin.json` at `parents[3]` and `parents[1]`, and `watch_state.py --help` names `shipmill==<the version in the plugin's plugin.json>`; `setup_state.py` and `shipped.py` share it; the wheel holds `plugin.json` at the same relative path (S-031-5), held
+- S-031-5: `uv build --wheel`, then read `shipmill/.claude-plugin/plugin.json` from the wheel: `"version": "0.60.0"`, the package's version, held
+- S-031-6: a config with `requires = ">=99.0"` and an unknown top-level key: `shipmill plan`, `watch_state.py`, and `setup_state.py` each exit 2 with the bound, `this is 0.60.0`, and both update commands, before the unknown key, held
+- S-031-7: `init` in a fresh repo writes `requires = ">=0.60"`; `upgrades.py` raises a lower bound to the upgrade's version and keeps a higher or equal one (`bound.floor < needed.floor`), held
+- S-031-8: dropped in #564
+- S-031-9: dropped in #564
+- S-031-10: dropped in #564
+- S-031-11: dropped in #564
+- S-031-12: dropped in #564
+- S-031-13: no `PLUGIN_STALE` in `src/`, `skills/`, or `hooks/` (grep); the tick's launch reports a lagging install with its fix and starts the session (`gate.py`, `plugin_read`), held
+- S-031-14: dropped in #564
+- S-031-15: `shipmill doctor` on this host WARNs the user install 0.59.1 and the local install 0.58.0 behind v0.60.0, each with `claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope <scope>` (the keyed one run in its folder), and no line says a gate starts no session, held
+- S-031-16: the same run WARNs the local install keyed on the gate's linked worktree `tmp/shipmill-gate` as one no session loads, with the entry to delete in `~/.claude/plugins/installed_plugins.json`; nothing in `src/` writes that file, held
+- S-031-17: `doctor.plugin_checks` and the tick add the gate's lagging CLI with `GateCli.line`; `launchd.py`'s fix rewrites a job on `@v0` or any source but `shipmill@latest` and kickstarts one on it, held
+- S-031-18: `src/shipmill/launchd.py` sets `DEFAULT_TOOL = "shipmill@latest"`, used unless `--tool` names another, held
+- S-031-19: `doctor.plugin_checks` WARNs `requires` with the bound, the version sessions load, and the fix, and the tick reports it and launches, held
+- S-031-20: `plugin.py` creates `~/.cache/shipmill/plugin/<version>.notified` with an exclusive create before it notifies, only under `notify`, held
+- S-031-21: shipped in 0.60.0 (CHANGELOG): no `daily_update`, `check`, or `plugin-check.json` left in `src/` (grep), `upgrade` lists no `plugin-update`, and `WITHDRAWN` closes its open issue; the doctor WARN and the accepted key it describes were that release's, replaced by S-031-22's refusal, held for 0.60.0
+- S-031-22: `shipmill plan` on a config with `[agents] plugin_update = false` exits 2 with `shipmill: [agents] plugin_update was removed (spec 031); delete it`, and `shipmill doctor` FAILs the policy with that line; `true` and a non-bool are refused the same way, held
+- S-031-23: the four docs carry the pinned command, the marketplace serving release tags, gate sessions loading the installed plugin, `requires`, and `plugin_update` removed, and none matches a gate paused on a stale plugin, held
+- S-031-24: `doctor` on this host asks PyPI for 0.58.0, the version sessions load, and passes on its answer; a 404 makes the tick `PYPI_WAIT` with `plugin <version> waits for PyPI` (`plugin.py`, `status.py`), and no `--plugin-dir` in `src/` (grep), held

@@ -294,8 +294,9 @@ the details.
    repo's folder and in the gate's checkout, each with its own fix, and name the one a
    session loads.
 
-   `[agents] plugin_update` is deprecated (spec 031): the gate ignores it, whatever its
-   value, and `doctor` warns until you delete it; the next minor release refuses it. To bring
+   `[agents] plugin_update` was removed (spec 031): 0.60.0 ignored it, and since 0.61.0 a
+   config with the key, whatever its value, exits 2 with `[agents] plugin_update was removed
+   (spec 031); delete it`, and `doctor` fails the policy with that line. To bring
    an install up to date, run the fix `doctor` or `status` prints, `claude plugin
    marketplace update shipmill && claude plugin update shipmill@shipmill --scope <scope>`
 
