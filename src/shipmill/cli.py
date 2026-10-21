@@ -718,6 +718,7 @@ def main(
             downstream=downstream_reader or (GhReader(root) if has_gh else None),
             app=app_on_host(key, user_home, signer or Openssl(), api or UrllibApi(), lambda: dt.datetime.now(dt.UTC)),
             gate_cli=None if slug is None else (lambda: _gate_cli(root, slug, user_home)),
+            pypi=lambda url: _pypi_status(url, http),
         )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")

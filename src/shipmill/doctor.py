@@ -37,7 +37,8 @@ from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.gitrepo import REMOTE, Git
 from shipmill.hooks import HookTest
 from shipmill.land import BLOCKING_BRANCH, WORK_PREFIX, blocked
-from shipmill.plugin import PLUGIN, GateCli
+from shipmill.plugin import PLUGIN, Fetch, GateCli, PyPI, publish_fix
+from shipmill.plugin import pypi as ask_pypi
 from shipmill.policy import BumpFrom, Lane, Policy, VersionFiles
 from shipmill.product import DIRECTION
 from shipmill.product import check as check_product
@@ -105,14 +106,17 @@ def read_plugin_rows(repo: str, root: Path) -> list[PluginRow]:
     return [PluginRow(r.state, r.subject, r.detail) for r in rows]
 
 
-def plugin_checks(read: PluginRows, gate_cli: GateCli | None = None, bound: Requires | None = None) -> list[Check]:
+def plugin_checks(
+    read: PluginRows, gate_cli: GateCli | None = None, bound: Requires | None = None, pypi: Fetch | None = None
+) -> list[Check]:
     """The shipmill@shipmill installs on this host that apply to the repo, as `status` reads
     them (spec 031): each one behind the latest release, and each keyed on the gate's linked
     worktree, which no session loads, is a WARN with its fix (S-031-15, S-031-16); the versions
     row, which names the install a session loads, passes. The gate's own CLI behind the latest
     release is a WARN with its fix (S-031-17), and so is a config whose requires the version
-    sessions load doesn't meet (S-031-19). None of them holds the gate. A failed read is a
-    WARN, never a crash"""
+    sessions load doesn't meet (S-031-19). None of them holds the gate. The one that does
+    (S-031-24, D-44): pypi asks PyPI for the version sessions load, and a 404 is a WARN with
+    the publish fix (#569); None asks nothing. A failed read is a WARN, never a crash"""
     try:
         rows = read()
     except ReleaseError as exc:
@@ -143,7 +147,23 @@ def plugin_checks(read: PluginRows, gate_cli: GateCli | None = None, bound: Requ
             f" ({scope} scope), whose shipmill commands refuse the config; fix: {fix}"
         )
         checks.append(Check("WARN", "requires", detail))
+    if pypi is not None and loads is not None:
+        checks.append(pypi_check(ask_pypi(Version.parse(loads.group(2)), pypi)))
     return checks
+
+
+def pypi_check(answer: PyPI) -> Check:
+    """#569, spec 031's "Report, don't pause": a 404 holds the gate's sessions, a WARN with
+    the publish fix; no answer, or another, is a WARN, as the tick starts the session then"""
+    if answer.waits:
+        detail = (
+            f"plugin {answer.version} waits for PyPI: {answer.url} answers 404, so the gate starts no session"
+            f" until it serves it; fix: {publish_fix(answer.version)}"
+        )
+        return Check("WARN", "pypi", detail)
+    if answer.status == 200:
+        return Check("PASS", "pypi", f"PyPI serves shipmill {answer.version}, the version sessions load")
+    return Check("WARN", "pypi", answer.lines()[0])
 
 
 def agent_as_person_check(read: PeopleReader) -> Check:
@@ -170,6 +190,7 @@ def doctor(
     downstream: Reader | None = None,
     app: AppProbe | None = None,
     gate_cli: Callable[[], GateCli | None] | None = None,
+    pypi: Fetch | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -182,7 +203,8 @@ def doctor(
     (spec 032); None (no gh) reports that it can't. app checks the App's installation on each
     downstream; None, or a probe without the key, warns once that it is unchecked. gate_cli
     reads the version the repo's gate last ran as, with its fix, checked with the plugin
-    (S-031-17); None checks none"""
+    (S-031-17); None checks none. pypi asks PyPI for the version sessions load, with the
+    plugin (#569); None asks nothing"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -324,7 +346,7 @@ def doctor(
     if policy.downstream is not None:  # D-9: no downstream line without [downstream]
         checks.extend(downstream_checks(root, policy.downstream, downstream, app))
     if plugins is not None:
-        checks.extend(plugin_checks(plugins, None if gate_cli is None else gate_cli(), check_requires(raw)))
+        checks.extend(plugin_checks(plugins, None if gate_cli is None else gate_cli(), check_requires(raw), pypi))
     if people is not None and policy.agents is not None and policy.agents.app_id is not None:
         checks.append(agent_as_person_check(people))
     return checks

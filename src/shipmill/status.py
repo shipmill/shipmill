@@ -31,7 +31,7 @@ from shipmill.github import UPGRADE_LABEL, GitHub, labelled_command, parse_label
 from shipmill.gitrepo import Git
 from shipmill.launchd import label
 from shipmill.planner import MilestoneOvertaken, MilestoneWaiting, Planner
-from shipmill.plugin import GateCli
+from shipmill.plugin import GateCli, publish_fix
 from shipmill.policy import Policy
 from shipmill.upgrades import Offer, offers, pending
 from shipmill.version import Version
@@ -40,6 +40,7 @@ from shipmill.version import Version
 # cli.run's "shipmill: <error>", uvx's "error: ...", or a traceback
 DECISION = re.compile(r"^[A-Z][A-Z_]*: ")
 FAILURE = re.compile(r"^(?:shipmill: |error: |Traceback )")
+PYPI_WAIT = re.compile(r"^PYPI_WAIT: plugin (\d+\.\d+\.\d+\S*) waits for PyPI\b")  # gate.Action.PYPI_WAIT's line
 NEVER_EXITED = "(never exited)"  # launchctl's last exit code before a job's first run
 # a gh read failing on one of these is run once more (S-011-11): watch_state.py's
 # GH_TRANSIENT and GH_CLIENT_ERROR (tests/test_ship_watch.py keeps them equal)
@@ -764,6 +765,10 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
     elif last.startswith("HOOKS_FAILED"):  # spec 026: no headless session starts until the hooks' self-test passes
         fix = last.partition("until the self-test passes: ")[2] or _log_fix(job, repo)
         found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", "paused: the hooks' self-test failed", fix))
+    elif waits := PYPI_WAIT.match(last):  # #569: no session starts until PyPI serves the version sessions load
+        version = waits.group(1)
+        shown = f"paused: plugin {version} waits for PyPI"
+        found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", shown, publish_fix(Version.parse(version))))
     elif last.startswith("CLAUDE_AUTH"):  # #500: no session starts until Claude Code can authenticate
         shown = "paused: Claude Code can't authenticate"
         fix = MISSING_FIX if last.endswith(f"; fix: {MISSING_FIX}") else AUTH_FIX

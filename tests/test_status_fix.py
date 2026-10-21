@@ -57,6 +57,7 @@ EVERY_REASON = [
     facts(gate=gate(job=job(last="shipmill: the gate needs a clean checkout", failed=True))),
     facts(gate=gate(job=job(last="UNCHANGED: same findings as session s1; retried after 2026-10-08T09:00"))),
     facts(gate=gate(job=job(last="WAITING: session s1 waits on you: claude attach s1"))),
+    facts(gate=gate(job=job(last="PYPI_WAIT: plugin 0.32.2 waits for PyPI: the url answers 404"))),
     facts(gate=gate(job=None)),
     facts(gate=gate(app=None, app_error="the App isn't installed")),
     facts(gate=gate(agents=dataclasses.replace(AGENTS, app_id=None), app=None)),
@@ -235,6 +236,27 @@ def test_a_gate_paused_on_a_failed_claude_login_waits_on_you_with_the_login() ->
     assert report(found).verdict is status.Verdict.WAITS
     assert [(r.text, r.fix) for r in report(found).reasons] == [(f"the gate: {last}", "claude auth login")]
     assert status.DECISION.match(last) is not None
+
+
+def test_a_gate_held_until_pypi_serves_the_plugin_waits_on_you_with_the_publish_fix() -> None:
+    # #569: a PYPI_WAIT tick starts no session; status reads it from the gate's last tick line
+    last = (
+        "PYPI_WAIT: plugin 0.32.2 waits for PyPI: https://pypi.org/pypi/shipmill/0.32.2/json answers 404;"
+        " no session starts, the next tick retries"
+    )
+    fix = (
+        "check the publish.yml run for v0.32.2: gh run list --repo shipmill/shipmill --workflow publish.yml;"
+        " if none passed, publish it: gh workflow run publish.yml --repo shipmill/shipmill -f tag=v0.32.2"
+    )
+    found = facts(gate=gate(job=job(last=last)))
+    assert status.DECISION.match(last) is not None
+    assert report(found).verdict is Verdict.WAITS
+    assert [(r.text, r.fix) for r in report(found).reasons] == [(f"the gate: {last}", fix)]
+    assert any("paused: plugin 0.32.2 waits for PyPI" in line for line in lines(found))
+    assert f"{FIX}{fix}" in lines(found)
+    # a launching tick after PyPI catches up is the last line: the hold is gone
+    launched = facts(gate=gate(job=job(last="LAUNCH: work found; session s2 started")))
+    assert report(launched).reasons == []
 
 
 def test_a_gate_without_claude_on_its_path_names_the_install_not_the_login() -> None:

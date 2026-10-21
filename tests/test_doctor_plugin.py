@@ -11,7 +11,7 @@ import pytest
 from shipmill.cli import _doctor_repo
 from shipmill.doctor import Check, PluginRow, PluginRows, doctor, plugin_checks
 from shipmill.errors import ReleaseError
-from shipmill.plugin import GateCli
+from shipmill.plugin import Fetch, GateCli
 from shipmill.requires import Requires
 from shipmill.version import Version
 from tests.conftest import Repo
@@ -188,6 +188,64 @@ def test_s031_19_doctor_warns_when_the_version_sessions_load_misses_requires(
     ]
     met = plugin_checks(session_rows(ws, "0.32.1"), None, Requires.parse(">=0.32"))
     assert "requires" not in {c.name for c in met}
+
+
+PUBLISH = (
+    "check the publish.yml run for v0.32.1: gh run list --repo shipmill/shipmill --workflow publish.yml;"
+    " if none passed, publish it: gh workflow run publish.yml --repo shipmill/shipmill -f tag=v0.32.1"
+)
+
+
+def answers(status: int | None) -> Fetch:
+    def fetch(url: str) -> int:
+        assert url == "https://pypi.org/pypi/shipmill/0.32.1/json"
+        if status is None:
+            raise ReleaseError("timed out")
+        return status
+
+    return fetch
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        (
+            404,
+            Check(
+                "WARN",
+                "pypi",
+                "plugin 0.32.1 waits for PyPI: https://pypi.org/pypi/shipmill/0.32.1/json answers 404, so the gate"
+                f" starts no session until it serves it; fix: {PUBLISH}",
+            ),
+        ),
+        (200, Check("PASS", "pypi", "PyPI serves shipmill 0.32.1, the version sessions load")),
+        (
+            503,
+            Check(
+                "WARN",
+                "pypi",
+                "plugin 0.32.1: PyPI answered 503 for https://pypi.org/pypi/shipmill/0.32.1/json;"
+                " the session starts anyway",
+            ),
+        ),
+        (None, Check("WARN", "pypi", "plugin 0.32.1: PyPI didn't answer (timed out); the session starts anyway")),
+    ],
+)
+def test_doctor_asks_pypi_for_the_version_sessions_load(ws: ModuleType, answer: int | None, expected: Check) -> None:
+    # #569, spec 031's "Report, don't pause": the one plugin check that holds the gate is a WARN
+    # with the publish fix, never a FAIL; a failed read warns too
+    found = [c for c in plugin_checks(session_rows(ws, "0.32.1"), pypi=answers(answer)) if c.name == "pypi"]
+    assert found == [expected]
+
+
+def test_doctor_asks_pypi_nothing_when_no_install_is_loaded(ws: ModuleType) -> None:
+    def never(url: str) -> int:
+        raise AssertionError(url)
+
+    rows = ws.plugin_rows([], None, "v0.32.1", [REPO], [GATE], REPO)
+    found = plugin_checks(lambda: [PluginRow(r.state, r.subject, r.detail) for r in rows], pypi=never)
+    assert "pypi" not in {c.name for c in found}
+    assert "pypi" not in {c.name for c in plugin_checks(session_rows(ws, "0.32.1"))}
 
 
 def test_a_failed_read_warns_and_doctor_goes_on(repo: Repo) -> None:
