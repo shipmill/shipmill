@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-10-21
+
+### Deprecated
+
+- `[agents] plugin_update` (spec 031): gate sessions load the installed plugin and report its lag, so the gate ignores the key whatever its value and runs no `claude plugin update`; `doctor` warns naming it, and the next minor release refuses it. `shipmill upgrade` no longer offers `plugin-update`, `shipmill init` no longer writes it, and a release closes an open `plugin-update` upgrade issue as withdrawn; `gate --json` drops the `plugin` field of the daily update (#552)
+
+### Changed
+
+- The install guide, the policy reference, and the shipmill-setup and github-ship-watch skills describe the pinned CLI, the marketplace serving release tags, gate sessions loading the installed plugin, `requires`, and the `plugin_update` deprecation, and no longer describe a gate paused on a stale plugin (#552)
+
 ## [0.59.1] - 2026-10-21
 
 ### Fixed
@@ -1654,7 +1664,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.59.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.60.0...HEAD
+[0.60.0]: https://github.com/shipmill/shipmill/compare/v0.59.1...v0.60.0
 [0.59.1]: https://github.com/shipmill/shipmill/compare/v0.59.0...v0.59.1
 [0.59.0]: https://github.com/shipmill/shipmill/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/shipmill/shipmill/compare/v0.57.0...v0.58.0
