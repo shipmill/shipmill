@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-10-21
+
+### Removed
+
+- `[agents] plugin_update` (spec 031): a config that sets it, whatever its value, now exits 2 with `[agents] plugin_update was removed (spec 031); delete it`, and `doctor` fails the policy with that line instead of warning; delete the key (#553)
+
 ## [0.60.0] - 2026-10-21
 
 ### Deprecated
@@ -1664,7 +1670,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.60.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.61.0...HEAD
+[0.61.0]: https://github.com/shipmill/shipmill/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/shipmill/shipmill/compare/v0.59.1...v0.60.0
 [0.59.1]: https://github.com/shipmill/shipmill/compare/v0.59.0...v0.59.1
 [0.59.0]: https://github.com/shipmill/shipmill/compare/v0.58.0...v0.59.0
