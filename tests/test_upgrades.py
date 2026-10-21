@@ -45,9 +45,8 @@ def shipmill(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 def test_catalogue_ids_are_unique_and_found() -> None:
     ids = [u.id for u in CATALOGUE]
-    assert [str(i) for i in ids] == ["changelog-fragments", "plugin-update", "stable-every-batch"]
+    assert [str(i) for i in ids] == ["changelog-fragments", "stable-every-batch"]
     assert len(set(ids)) == len(ids)
-    assert find(UpgradeId("plugin-update")).line == "plugin_update = true"
     assert find(UpgradeId("changelog-fragments")).line == 'fragments = "changelog.d"'
 
 
@@ -67,14 +66,15 @@ def test_s014_1_lists_fragments_until_the_config_sets_it(repo: Repo, capsys: pyt
         assert listed(repo.root, capsys) == [], value
 
 
-def test_s014_1_lists_plugin_update_only_with_agents_and_no_key(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
+def test_s031_21_upgrade_no_longer_lists_plugin_update(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
     fragments = POLICY.replace("[changelog]\n", '[changelog]\nfragments = "changelog.d"\n')
-    assert listed(repo.root, capsys) == ["changelog-fragments"]  # no [agents]: plugin-update doesn't apply
-    write_config(repo.root, fragments + AGENTS)
-    assert listed(repo.root, capsys) == ["plugin-update"]
-    for value in ("true", "false"):  # a key written by hand, either way, is a decision
-        write_config(repo.root, fragments + AGENTS + f"plugin_update = {value}\n")
-        assert listed(repo.root, capsys) == []
+    write_config(repo.root, fragments + AGENTS)  # [agents] without the key, which 0.37.0 to 0.58.0 offered
+    assert listed(repo.root, capsys) == []
+    write_config(repo.root, POLICY + AGENTS)
+    assert listed(repo.root, capsys) == ["changelog-fragments"]
+    assert main(["--repo", str(repo.root), "upgrade"], github=FakeGitHub()) == 0
+    assert "plugin-update" not in capsys.readouterr().out
+    assert "plugin-update" not in [str(u.id) for u in CATALOGUE]
 
 
 def test_s014_1_lists_for_people_with_the_apply_command(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
@@ -84,7 +84,6 @@ def test_s014_1_lists_for_people_with_the_apply_command(repo: Repo, capsys: pyte
     assert out.startswith("changelog-fragments (shipmill ")
     assert '  adds: [changelog] fragments = "changelog.d"\n' in out
     assert "upgrade --apply changelog-fragments`" in out
-    assert "plugin-update (shipmill " in out and "upgrade --apply plugin-update`" in out
     write_config(repo.root, POLICY.replace("[changelog]\n", '[changelog]\nfragments = "x"\n'))
     assert main(["--repo", str(repo.root), "upgrade"], github=FakeGitHub()) == 0
     assert capsys.readouterr().out == "no pending upgrades\n"
@@ -100,8 +99,8 @@ def test_listing_json_carries_the_proposal_text(repo: Repo, capsys: pytest.Captu
 
 
 def test_listing_refuses_a_table_that_is_not_one(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    write_config(tmp_path, 'agents = "yes"\n')
-    with pytest.raises(ReleaseError, match=r"agents must be a table"):
+    write_config(tmp_path, 'lanes = "yes"\n')
+    with pytest.raises(ReleaseError, match=r"lanes must be a table"):
         listed(tmp_path, capsys)
 
 
@@ -153,10 +152,10 @@ def test_s014_2_apply_keeps_every_other_byte(tmp_path: Path) -> None:
 
 
 def test_s014_2_apply_keeps_crlf_and_a_missing_last_newline(tmp_path: Path) -> None:
-    text = 'name = "demo"\r\n\r\n[agents]\r\nprompt = "triage {repo}"'
+    text = 'name = "demo"\r\n\r\n[changelog]\r\npath = "CHANGELOG.md"'
     path = write_config(tmp_path, text)
-    assert main(["--repo", str(tmp_path), "upgrade", "--apply", "plugin-update"]) == 0
-    assert path.read_bytes() == (text + "\r\nplugin_update = true\r\n").encode()
+    assert main(["--repo", str(tmp_path), "upgrade", "--apply", "changelog-fragments"]) == 0
+    assert path.read_bytes() == (text + '\r\nfragments = "changelog.d"\r\n').encode()
 
 
 @pytest.mark.parametrize("separator", [" ", " ", "\x85"])
@@ -171,10 +170,9 @@ def test_s014_2_apply_splits_lines_only_on_toml_newlines(tmp_path: Path, separat
 def test_apply_reads_past_a_multiline_string_that_looks_like_a_table(tmp_path: Path) -> None:
     text = '[agents]\nprompt = """\ntriage\n[changelog]\n"""\n\n[changelog]\npath = "CHANGELOG.md"\n'
     path = write_config(tmp_path, text)
-    assert main(["--repo", str(tmp_path), "upgrade", "--apply", "plugin-update"]) == 0
     assert main(["--repo", str(tmp_path), "upgrade", "--apply", "changelog-fragments"]) == 0
     assert path.read_text(encoding="utf-8") == (
-        '[agents]\nprompt = """\ntriage\n[changelog]\n"""\nplugin_update = true\n\n'
+        '[agents]\nprompt = """\ntriage\n[changelog]\n"""\n\n'
         '[changelog]\npath = "CHANGELOG.md"\nfragments = "changelog.d"\n'
     )
 
@@ -248,18 +246,17 @@ def test_apply_refuses_a_table_without_a_header_line_it_can_edit(tmp_path: Path,
         (
             POLICY,
             "nightly-builds",
-            "unknown upgrade nightly-builds; known: changelog-fragments, plugin-update, stable-every-batch",
+            "unknown upgrade nightly-builds; known: changelog-fragments, stable-every-batch",
         ),
-        (POLICY, "plugin-update", "upgrade plugin-update doesn't apply: .github/shipmill.toml has no [agents]"),
+        (  # S-031-21: withdrawn
+            POLICY + AGENTS,
+            "plugin-update",
+            "unknown upgrade plugin-update; known: changelog-fragments, stable-every-batch",
+        ),
         (
             POLICY.replace("[changelog]\n", '[changelog]\nfragments = "changelog.d"\n'),
             "changelog-fragments",
             "upgrade changelog-fragments is already decided: [changelog] fragments is set",
-        ),
-        (
-            POLICY + AGENTS + "plugin_update = false\n",
-            "plugin-update",
-            "upgrade plugin-update is already decided: [agents] plugin_update is set",
         ),
         ('name = "demo"\n', "changelog-fragments", "upgrade changelog-fragments: .github/shipmill.toml has no"),
     ],

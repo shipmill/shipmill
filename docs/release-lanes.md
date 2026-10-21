@@ -616,6 +616,12 @@ wip`; move `wip` there and delete the section, since the next minor refuses it. 
 is the maintainer's own list of what a version must hold, and `milestone = true` keeps
 making a lane due by it.
 
+`[agents] plugin_update` is deprecated (spec 031, D-44): gate sessions load the installed
+plugin, which runs the CLI release it pins, and the gate reports an install that lags the
+latest release instead of updating it. For one minor release a config with the key still
+loads, the gate ignores it whatever its value, and `doctor` warns; delete it before the next
+minor release, which refuses it. `shipmill upgrade` no longer offers `plugin-update`.
+
 ## Delivery hooks
 
 In a repo whose config has `[agents]`, the shipmill plugin's delivery hooks

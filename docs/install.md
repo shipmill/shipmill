@@ -50,9 +50,17 @@ can take minutes, and leaves a build in uv's cache:
 CR="uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill"
 ```
 
-The skills run `shipmill` when it's on `PATH` and this uvx form when it isn't. A headless
-gate session always runs the uvx form: its allowlist has `Bash(uvx *)` and no bare
-`shipmill`.
+The plugin pins its CLI (spec 031): its skills, their scripts, and its hooks run `uvx
+shipmill==<version>`, the version in the plugin's own `.claude-plugin/plugin.json`, in every
+session, a headless gate's included (its allowlist has `Bash(uvx *)`). Whatever release of
+the plugin a session loads, the CLI it runs is the same release, so an older install is an
+older release that is consistent with itself.
+
+The marketplace serves releases, not `main`: its entry names the latest release tag
+(`"source": {"source": "github", "repo": "shipmill/shipmill", "ref": "vX.Y.Z"}`), which each
+release's stamp moves with `plugin.json`. Installing or updating the plugin gets that
+release; the commits merged since wait for the next one. `doctor`, `status`, and the gate
+compare an install against that ref.
 
 shipmill is published to PyPI on each stable and hotfix release, as `shipmill`, the same
 releases `@v0` follows. It needs Python 3.14: `uv tool install` and `uvx` fetch that
@@ -266,30 +274,35 @@ the details.
    max_wait_minutes = 15 # stop a session that waited this long; 0: never
    # app_id = 123456  # sessions write as this GitHub App; unset: as your gh login
    # mode = "headless" # interactive (default): sessions ask you; headless: `claude -p`, they ask on GitHub
-   # plugin_update = true # false (default): the gate changes no plugin install; true: it updates its checkout's, once a day
    # wip = 3          # at most 3 issues in progress at once (1..100); unset: no limit
    ```
 
-   The gate's checkout has shipmill plugin installs of its own, apart from the repo's
-   (Claude Code keys a project or local install on the folder). With `plugin_update = true`,
-   a tick about to start a session checks at most once per 24 hours whether any of them is
-   behind the latest release and, when one is, refreshes the marketplace once (`claude
-   plugin marketplace update shipmill`: Claude Code updates from its local copy of it), then
-   runs `claude plugin update shipmill@shipmill --scope <its scope>` in the checkout for
-   each, then reads the installs again: an install still behind, or one in another folder
-   that the update changed, is printed as a failure. A user-scope install is never updated.
-   A failed refresh or update is printed on the tick (D-23).
+   Gate sessions load the installed plugin (spec 031, D-44), as any session on the host
+   does: the gate passes no `--plugin-dir` and never changes an install. A session loads the
+   most specific scope the plugin is installed at for the checkout's project (local, then
+   project, then user, then managed; a linked worktree's project is its main checkout, so an
+   install keyed on the worktree itself is never loaded). Before it starts a session the
+   gate reads that install and the latest release, and the tick prints one line, with its
+   fix, for each install that lags it, an install keyed on the gate's linked worktree, the
+   gate's own CLI when it lags, and a config whose `requires` the version sessions load
+   doesn't meet; the session starts all the same. With `notify = true` the first gate on
+   the host to find a lagging install sends one desktop notification per release. The one
+   hold is PyPI: while it answers 404 for the version sessions load (the release tag moves a
+   few minutes before the package is uploaded), the tick prints `plugin <version> waits for
+   PyPI` and the next tick tries again. A failed read is printed and the session starts.
+   `status`, `doctor`, and the setup checklist report every install that is behind, in the
+   repo's folder and in the gate's checkout, each with its own fix, and name the one a
+   session loads.
 
-   Either way, before it starts a session the gate reads the install a session in its
-   checkout would load: the most specific scope the plugin is installed at for the
-   checkout's project (local, then project, then user, then managed; a linked worktree's
-   project is its main checkout, so an install keyed on the worktree itself is never
-   loaded). While that install is older than the latest release the gate starts no
-   session: the tick prints `PLUGIN_STALE: ...` with the install, its scope, and the
-   command that updates it, and the next tick after you run it starts sessions again
-   (D-35). A failed read is printed and the session starts. `status`, `doctor`, and the
-   setup checklist report every install that is behind, in the repo's folder and in the
-   gate's checkout, each with its own fix, and name the one a session loads
+   `[agents] plugin_update` is deprecated (spec 031): the gate ignores it, whatever its
+   value, and `doctor` warns until you delete it; the next minor release refuses it. To bring
+   an install up to date, run the fix `doctor` or `status` prints, `claude plugin
+   marketplace update shipmill && claude plugin update shipmill@shipmill --scope <scope>`
+
+   A config may name the oldest shipmill it is written for with a top-level `requires =
+   ">=X.Y"` ([the policy](release-lanes.md#the-policy)): an older CLI exits 2 naming the
+   bound and the commands that update the plugin and the CLI, instead of failing on a key it
+   doesn't know
 
    Without `app_id`, a session writes as your `gh` login, so its pull requests, merges,
    and commits read as yours. Set it before you schedule the gate, to have them made by a
@@ -515,13 +528,11 @@ the gate's own environment to choose another ceiling.
    Either way a tick that reads the state records the waiting items in
    `shipmill/needs-decision.json`, and `gate --json` reports `mode` and a `decisions` list
    (`item`, `since`, `waited_hours`, `notified`, `error`). `mode` is null on a HELD,
-   WAITING, or RUNNING tick, which reads no config. `plugin` is the daily plugin check of
-   a launch with `plugin_update = true` (`latest`, `installs`, each with `scope`,
-   `installed`, and `updated`, and `error`), null when none ran; releases up to 0.40.0
-   reported it as `installed`, `latest`, `updated`, and `error`, for the project-scope
-   install alone. `loaded` is the install a launch's session would load (D-35: `project`,
-   `scope`, `folder`, `version`, `latest`, `stale`, `fix`, and `error`; `action` is
-   `PLUGIN_STALE` when it is behind), null on a tick that reached no launch
+   WAITING, or RUNNING tick, which reads no config. `loaded` is the install a launch's
+   session would load (spec 031: `project`, `scope`, `folder`, `version`, `latest`, `lags`,
+   `unloaded`, `cli`, `requires`, and `error`), and `pypi` PyPI's answer for its version
+   (`version`, `status`, `error`), each null on a tick that reached no launch. Releases up
+   to 0.58.0 also gave `plugin`, the daily update of `plugin_update = true`, which is gone
 
 ## Pause or remove it
 
@@ -538,8 +549,8 @@ tags, releases, issues, and CHANGELOG as they are.
 
 ## Clean up old builds
 
-Each uvx run from git can leave a build of shipmill in uv's cache, and each plugin update
-leaves the previous version on disk:
+Each uvx run can leave a build of shipmill in uv's cache, and each plugin update leaves the
+previous version on disk:
 
 - **uv's cache:** `uv cache prune` removes dangling entries and the environments uvx
   cached; `uv cache dir` says where the cache is. A `uv tool install` lives outside the

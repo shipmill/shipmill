@@ -1,15 +1,11 @@
 """The gate and the shipmill@shipmill plugin its sessions load.
 
-#233, #240, D-23: with [agents] plugin_update = true the gate updates every plugin install keyed
-on its checkout, at project or local scope, at most once a day, before it starts a session.
-
 Spec 031, D-44: the gate reports, never pauses on, an install that lags the latest release, an
 install keyed on its linked worktree, its own lagging CLI, and an unmet `requires`; the one hold
-is PyPI answering 404 for the version sessions load"""
+is PyPI answering 404 for the version sessions load. It changes no install: [agents]
+plugin_update is deprecated and ignored (S-031-21)"""
 
-import datetime as dt
 import json
-import os
 import subprocess
 import uuid
 from collections.abc import Mapping
@@ -24,21 +20,14 @@ from shipmill.errors import ReleaseError
 from shipmill.gate import Action, ClaudeCli, Decision, Waiting, gate, state_dir, tick_lines, tick_record
 from shipmill.gitrepo import Git
 from shipmill.plugin import (
-    CHECKED,
     CLI_RECORD,
     INSTALLED,
     READ_MARKETPLACE,
     GateCli,
-    Install,
     Listed,
     PluginHost,
-    PluginUpdate,
-    checkout_installs,
-    daily_update,
     effective,
-    keyed_installs,
     listed_installs,
-    load_checked,
     load_cli,
     session_project,
     update_command,
@@ -50,8 +39,7 @@ from shipmill.worktrees import Judged
 from .test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier, bg, host, write_config
 
 Tick = tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]
-UPDATE = ["claude", "plugin", "update", "shipmill@shipmill", "--scope"]
-REFRESH = ["claude", "plugin", "marketplace", "update", "shipmill"]
+READS = {("claude", "plugin", "list"), ("gh", "api", "-H")}  # the only commands the gate runs on the plugin
 PYPI_URL = "https://pypi.org/pypi/shipmill/{}/json"
 
 
@@ -63,19 +51,15 @@ def marketplace(ref: str) -> str:
 
 @dataclass
 class FakeRunner:
-    """claude plugin list, the marketplace's gh api read, claude plugin marketplace update, and claude plugin
-    update, without either tool.
-    installs maps (scope, folder) to a version; an update at a scope run in cwd sets the
-    install keyed on `acts_on(cwd)` (the cwd itself by default) to the latest release"""
+    """claude plugin list and the marketplace's gh api read, without either tool; any other
+    command, such as `claude plugin update`, fails the test. installs maps (scope, folder) to a
+    version"""
 
     checkout: Path
     version: str | None = "0.25.0"  # the checkout's project install; None: none
     latest: str = "v0.32.2"
-    fail_update: bool = False
-    fail_refresh: bool = False
     user: str | None = "0.32.2"  # the user-scope install's version; None: none
     installs: dict[tuple[str, Path], str] = field(default_factory=dict)
-    acts_on: dict[Path, Path] = field(default_factory=dict)  # cwd -> the folder an update keys on
     calls: list[tuple[list[str], Path]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -95,26 +79,12 @@ class FakeRunner:
             return json.dumps(listed)
         if cmd == READ_MARKETPLACE:
             return marketplace(self.latest)
-        if cmd == REFRESH:
-            if self.fail_refresh:
-                raise ReleaseError("claude plugin marketplace update failed: offline")
-            return "refreshed\n"
-        if cmd[:5] == UPDATE and len(cmd) == 6:
-            if self.fail_update:
-                raise ReleaseError("claude plugin update failed: network down")
-            key = (cmd[5], self.acts_on.get(cwd, cwd))
-            if key in self.installs:
-                self.installs[key] = self.latest.removeprefix("v")
-            return "updated\n"
         raise AssertionError(f"unexpected command {cmd}")
 
     @property
-    def updates(self) -> list[Path]:
-        return [cwd for cmd, cwd in self.calls if cmd[:5] == UPDATE]
-
-    @property
-    def scopes(self) -> list[str]:
-        return [cmd[5] for cmd, _ in self.calls if cmd[:5] == UPDATE]
+    def ran(self) -> set[tuple[str, ...]]:
+        """Each command's first three words"""
+        return {tuple(cmd[:3]) for cmd, _ in self.calls}
 
 
 @dataclass
@@ -158,18 +128,18 @@ def markers_of(git: Git) -> Path:
     return git.root.parent / "cache" / "shipmill" / "plugin"
 
 
-def agents(plugin_update: bool, notify: bool = True, mode: Mode = Mode.INTERACTIVE) -> AgentsConfig:
+def agents(plugin_update: bool | None = None, notify: bool = True, mode: Mode = Mode.INTERACTIVE) -> AgentsConfig:
     return AgentsConfig(prompt="/t", prs=False, retry_hours=24, notify=notify, mode=mode, plugin_update=plugin_update)
 
 
-def tick(git: Git, runner: FakeRunner, plugin_update: bool = True, now: dt.datetime = NOW, dry: bool = False) -> Tick:
+def tick(git: Git, runner: FakeRunner, plugin_update: bool | None = None, dry: bool = False) -> Tick:
     return gate(
         git,
         "romamo/demo",
         lambda: agents(plugin_update),
         FakeClaude([bg("old", "idle", "done")]),
         lambda _: [ISSUES],
-        now,
+        NOW,
         Hold,
         FakeNotifier(),
         NO_PRUNE,
@@ -177,131 +147,6 @@ def tick(git: Git, runner: FakeRunner, plugin_update: bool = True, now: dt.datet
         login=host,
         plugin=plugin_host(runner, markers_of(git)),
     )
-
-
-def test_a_behind_install_is_updated_in_the_checkout_before_the_launch(checkout: Git) -> None:
-    runner = FakeRunner(checkout.root)
-    decision, launched, _, _ = tick(checkout, runner)
-    assert (decision.action, launched) == (Action.LAUNCH, "s1")
-    assert runner.updates == [checkout.root] and runner.scopes == ["project"]
-    own = (Install("project", checkout.root.resolve(), "0.25.0"),)
-    assert decision.plugin == PluginUpdate(own, "0.32.2", ("project",))
-    lines = tick_lines(decision, launched, (), (), dry_run=False)
-    assert "  plugin updated: shipmill@shipmill 0.25.0 -> 0.32.2 in this checkout (project scope)" in lines
-    assert tick_record(decision, launched, (), (), dry_run=False)["plugin"] == {
-        "latest": "0.32.2",
-        "installs": [{"scope": "project", "installed": "0.25.0", "updated": True}],
-        "error": None,
-    }
-    assert load_checked(state_dir(checkout) / CHECKED) == NOW
-
-
-def test_a_behind_local_install_in_the_checkout_is_updated_at_local_scope(checkout: Git) -> None:
-    # #240: shipmill's own gate checkout has a local-scope install, which D-22 left at 0.25.0
-    main = checkout.root.parent
-    installs = {("local", checkout.root): "0.25.0", ("local", main): "0.31.1"}
-    runner = FakeRunner(checkout.root, installs=installs)
-    decision, launched, _, _ = tick(checkout, runner)
-    assert launched == "s1" and runner.scopes == ["local"] and runner.updates == [checkout.root]
-    assert decision.plugin == PluginUpdate((Install("local", checkout.root.resolve(), "0.25.0"),), "0.32.2", ("local",))
-    assert runner.installs == {("local", checkout.root): "0.32.2", ("local", main): "0.31.1"}
-    lines = tick_lines(decision, launched, (), (), dry_run=False)
-    assert "  plugin updated: shipmill@shipmill 0.25.0 -> 0.32.2 in this checkout (local scope)" in lines
-
-
-def test_both_scopes_in_the_checkout_are_updated_project_first(checkout: Git) -> None:
-    installs = {("local", checkout.root): "0.25.0", ("project", checkout.root): "0.30.0"}
-    runner = FakeRunner(checkout.root, installs=installs)
-    decision, _, _, _ = tick(checkout, runner)
-    assert runner.scopes == ["project", "local"]
-    assert decision.plugin is not None and decision.plugin.updated == ("project", "local")
-    assert decision.plugin.error is None
-    assert tick_record(decision, "s1", (), (), dry_run=False)["plugin"] == {
-        "latest": "0.32.2",
-        "installs": [
-            {"scope": "project", "installed": "0.30.0", "updated": True},
-            {"scope": "local", "installed": "0.25.0", "updated": True},
-        ],
-        "error": None,
-    }
-
-
-def test_an_update_that_reaches_another_folder_is_reported_and_the_session_starts(checkout: Git) -> None:
-    # Claude Code documents no way to name the project an update acts on; were a linked
-    # worktree's update to key on its main checkout (#198), the tick says so, not "updated".
-    # Spec 031: the install the session loads is still behind, which is reported, not a pause
-    main = checkout.root.parent
-    installs = {("local", checkout.root): "0.25.0", ("local", main): "0.31.1"}
-    runner = FakeRunner(checkout.root, installs=installs, acts_on={checkout.root: main})
-    decision, launched, _, _ = tick(checkout, runner)
-    assert (decision.action, launched) == (Action.LAUNCH, "s1")
-    assert decision.plugin is not None and decision.plugin.updated == ()
-    assert decision.plugin.error == (
-        f"`claude plugin update --scope local` in {checkout.root} left its install at 0.25.0;"
-        f" the update changed the local install in {main.resolve()}"
-    )
-    lines = tick_lines(decision, launched, (), (), dry_run=False)
-    assert not any("plugin updated" in line for line in lines)
-    assert any("shipmill@shipmill 0.25.0 (local scope" in line and "lags" in line for line in lines)
-    assert load_checked(state_dir(checkout) / CHECKED) == NOW  # retried the next day, not every tick
-
-
-def test_a_user_install_is_never_updated(checkout: Git) -> None:
-    runner = FakeRunner(checkout.root, version=None, user="0.20.0")  # a behind user install only
-    decision, launched, _, _ = tick(checkout, runner)
-    assert runner.updates == [] and decision.plugin == PluginUpdate((), None, ())
-    assert (decision.action, launched) == (Action.LAUNCH, "s1")  # spec 031: reported, the session starts
-
-
-def test_the_check_runs_at_most_once_a_day(checkout: Git) -> None:
-    runner = FakeRunner(checkout.root)
-    tick(checkout, runner)
-    runner.calls.clear()
-    (state_dir(checkout) / "gate.json").unlink()  # a new launch, not UNCHANGED
-    decision, _, _, _ = tick(checkout, runner, now=NOW + dt.timedelta(hours=23))
-    assert decision.action is Action.LAUNCH and decision.plugin is None and runner.updates == []
-    (state_dir(checkout) / "gate.json").unlink()
-    runner.calls.clear()
-    decision, _, _, _ = tick(checkout, runner, now=NOW + dt.timedelta(hours=24))
-    assert decision.plugin is not None and len(runner.calls) > 2  # checked again; the install is current now
-
-
-def test_a_failed_update_is_reported_and_the_session_starts_on_the_lagging_install(checkout: Git) -> None:
-    runner = FakeRunner(checkout.root, fail_update=True)
-    decision, launched, _, _ = tick(checkout, runner)
-    assert (decision.action, launched) == (Action.LAUNCH, "s1")
-    own = (Install("project", checkout.root.resolve(), "0.25.0"),)
-    assert decision.plugin == PluginUpdate(own, "0.32.2", (), "claude plugin update failed: network down")
-    lines = tick_lines(decision, launched, (), (), dry_run=False)
-    assert "  plugin update failed: claude plugin update failed: network down" in lines
-    assert load_checked(state_dir(checkout) / CHECKED) == NOW  # retried the next day, not every tick
-
-
-def test_the_daily_update_refreshes_the_marketplace_once_before_updating(checkout: Git) -> None:
-    # #477: `claude plugin update` alone left an install behind; Claude Code updates from its
-    # local copy of the marketplace, so it is refreshed first, once for every behind install
-    installs = {("local", checkout.root): "0.25.0", ("project", checkout.root): "0.30.0"}
-    runner = FakeRunner(checkout.root, installs=installs)
-    decision, _, _, _ = tick(checkout, runner)
-    claude = [cmd for cmd, _ in runner.calls if cmd[:3] != ["claude", "plugin", "list"] and cmd[0] == "claude"]
-    assert claude == [REFRESH, [*UPDATE, "project"], [*UPDATE, "local"]]
-    assert decision.plugin is not None and decision.plugin.error is None
-
-
-def test_a_failed_marketplace_refresh_is_reported_and_the_update_still_runs(checkout: Git) -> None:
-    runner = FakeRunner(checkout.root, fail_refresh=True)
-    decision, launched, _, _ = tick(checkout, runner)
-    assert runner.scopes == ["project"] and launched == "s1"  # the update ran and reached the install
-    own = (Install("project", checkout.root.resolve(), "0.25.0"),)
-    error = "claude plugin marketplace update failed: offline"
-    assert decision.plugin == PluginUpdate(own, "0.32.2", ("project",), error)
-    assert f"  plugin update failed: {error}" in tick_lines(decision, launched, (), (), dry_run=False)
-
-
-def test_no_install_behind_refreshes_no_marketplace(checkout: Git) -> None:
-    runner = FakeRunner(checkout.root, version="0.32.2")
-    tick(checkout, runner)
-    assert REFRESH not in [cmd for cmd, _ in runner.calls]
 
 
 @pytest.mark.parametrize(
@@ -341,47 +186,13 @@ def test_the_nested_install_fix_refreshes_the_marketplace_before_the_reinstall()
     )
 
 
-def test_a_failed_read_is_reported_and_retried_on_the_next_launch(checkout: Git) -> None:
-    runner = FakeRunner(checkout.root, latest="latest")
-    decision, launched, _, _ = tick(checkout, runner)
-    assert launched == "s1" and decision.plugin is not None and decision.plugin.error is not None
-    assert not (state_dir(checkout) / CHECKED).exists()
-
-
-def test_a_current_install_is_left_alone_and_says_nothing(checkout: Git) -> None:
-    runner = FakeRunner(checkout.root, version="0.32.2")
-    decision, launched, _, _ = tick(checkout, runner)
-    own = (Install("project", checkout.root.resolve(), "0.32.2"),)
-    assert runner.updates == [] and decision.plugin == PluginUpdate(own, "0.32.2", ())
-    assert not any("plugin" in line for line in tick_lines(decision, launched, (), (), dry_run=False))
-
-
-def test_without_an_install_in_the_checkout_nothing_is_updated(checkout: Git) -> None:
-    runner = FakeRunner(checkout.root, installs={("local", checkout.root.parent): "0.20.0"})
-    decision, _, _, _ = tick(checkout, runner)
-    assert runner.updates == [] and decision.plugin == PluginUpdate((), None, ())
-
-
-def test_by_default_the_gate_changes_no_install(checkout: Git) -> None:
-    runner = FakeRunner(checkout.root, version="0.32.2")
-    decision, launched, _, _ = tick(checkout, runner, plugin_update=False)
-    assert launched == "s1" and runner.updates == [] and decision.plugin is None
-    assert tick_record(decision, launched, (), (), dry_run=False)["plugin"] is None
-
-
-def test_a_dry_run_updates_nothing(checkout: Git) -> None:
-    runner = FakeRunner(checkout.root, version="0.32.2")
-    decision, _, _, _ = tick(checkout, runner, dry=True)
-    assert decision.action is Action.LAUNCH and runner.updates == []
-
-
 def test_a_tick_that_launches_nothing_checks_nothing(checkout: Git) -> None:
     runner = FakeRunner(checkout.root)
     pypi = FakePyPI()
     decision, _, _, _ = gate(
         checkout,
         "romamo/demo",
-        lambda: agents(True),
+        lambda: agents(),
         FakeClaude(),
         lambda _: [],
         NOW,
@@ -394,78 +205,47 @@ def test_a_tick_that_launches_nothing_checks_nothing(checkout: Git) -> None:
     assert decision.action is Action.QUIET and runner.calls == [] and pypi.asked == []
 
 
-def own(text: str, checkout: Path) -> tuple[Install, ...]:
-    return checkout_installs(keyed_installs(text), checkout)
+# -- S-031-21: [agents] plugin_update is deprecated and ignored --------------------------------
 
 
-def test_only_the_checkouts_own_project_and_local_installs_count() -> None:
-    root = Path("/work/r/tmp/shipmill-gate")
-    installs = [
-        {"id": "shipmill@shipmill", "scope": "project", "version": "0.31.1", "projectPath": "/work/r"},
-        {"id": "shipmill@shipmill", "scope": "local", "version": "0.30.0", "projectPath": "/work/r"},
-        {"id": "shipmill@shipmill", "scope": "user", "version": "0.20.0"},
-        {"id": "other@x", "scope": "project", "version": "1.0.0", "projectPath": str(root)},
-    ]
-    assert own(json.dumps(installs), root) == ()
-    installs.append({"id": "shipmill@shipmill", "scope": "local", "version": "0.20.0", "projectPath": str(root)})
-    installs.append({"id": "shipmill@shipmill", "scope": "project", "version": "0.25.0", "projectPath": str(root)})
-    assert own(json.dumps(installs), root) == (
-        Install("project", root.resolve(), "0.25.0"),
-        Install("local", root.resolve(), "0.20.0"),
-    )
-
-
-def test_a_relative_checkout_matches_its_absolute_install(tmp_path: Path) -> None:
-    # launchd runs `shipmill --repo tmp/shipmill-gate gate ...`; Claude Code records the full path
-    gate = tmp_path / "r" / "tmp" / "shipmill-gate"
-    gate.mkdir(parents=True)
-    install = {"id": "shipmill@shipmill", "scope": "local", "version": "0.25.0", "projectPath": str(gate.resolve())}
-    relative = Path(os.path.relpath(gate))
-    assert not relative.is_absolute()
-    assert own(json.dumps([install]), relative) == (Install("local", gate.resolve(), "0.25.0"),)
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "not json",
-        "{}",
-        '["x"]',
-        '[{"id": "shipmill@shipmill", "scope": "project"}]',
-        '[{"id": "shipmill@shipmill", "scope": "local", "version": "0.25.0"}]',
-        '[{"id": "shipmill@shipmill", "scope": "local", "version": "0.25.0", "projectPath": "/w"},'
-        ' {"id": "shipmill@shipmill", "scope": "local", "version": "0.26.0", "projectPath": "/w"}]',
-    ],
-)
-def test_a_malformed_plugin_list_is_refused(text: str) -> None:
-    with pytest.raises(ReleaseError):
-        own(text, Path("/w"))
-
-
-@pytest.mark.parametrize("text", ["{", '{"checked": 1}', '{"checked": "2026-10-04T12:00:00"}', '{"checked": "x"}'])
-def test_a_malformed_check_record_fails(tmp_path: Path, text: str) -> None:
-    path = tmp_path / CHECKED
-    path.write_text(text, encoding="utf-8")
-    with pytest.raises(ReleaseError, match="malformed"):
-        daily_update(path, tmp_path, NOW, FakeRunner(tmp_path))
+@pytest.mark.parametrize("value", [True, False, None])
+@pytest.mark.parametrize("dry", [False, True])
+def test_s031_21_plugin_update_changes_no_install_and_runs_no_plugin_update(
+    checkout: Git, value: bool | None, dry: bool
+) -> None:
+    # behind installs keyed on the checkout, at both scopes, as D-23's daily update once updated
+    root = checkout.root.resolve()
+    installs = {("project", root): "0.25.0", ("local", root): "0.30.0"}
+    runner = FakeRunner(checkout.root, installs=installs, user="0.31.0")
+    decision, launched, _, _ = tick(checkout, runner, plugin_update=value, dry=dry)
+    assert decision.action is Action.LAUNCH and (launched is None) is dry
+    assert runner.ran == READS  # read only: no `claude plugin update`, no marketplace refresh
+    assert runner.installs == {("project", root): "0.25.0", ("local", root): "0.30.0"}
+    assert not (state_dir(checkout) / "plugin-check.json").exists()  # no daily check is recorded
+    record = tick_record(decision, launched, (), (), dry_run=dry)
+    assert "plugin" not in record  # the daily update's record is gone with it
+    lines = tick_lines(decision, launched, (), (), dry_run=dry)
+    assert not any(line.startswith(("  plugin updated", "  plugin update failed")) for line in lines)
+    assert any("0.25.0 (project scope" in line and "lags" in line for line in lines)
 
 
 @pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False)])
-def test_the_key_is_read_from_the_config(tmp_path: Path, value: str, expected: bool) -> None:
+def test_s031_21_the_config_still_accepts_the_key_this_release(tmp_path: Path, value: str, expected: bool) -> None:
     write_config(tmp_path, f'[agents]\nprompt = "/t"\nplugin_update = {value}\n')
-    assert AgentsConfig.load(tmp_path).plugin_update is expected
+    assert AgentsConfig.load(tmp_path).plugin_update is expected  # read, for doctor's warning; S-031-22 refuses it
 
 
-def test_the_key_defaults_to_false_and_must_be_a_boolean(tmp_path: Path) -> None:
+def test_s031_21_an_unset_key_reads_none_and_a_wrong_type_is_still_refused(tmp_path: Path) -> None:
     write_config(tmp_path, '[agents]\nprompt = "/t"\n')
-    assert AgentsConfig.load(tmp_path).plugin_update is False
+    assert AgentsConfig.load(tmp_path).plugin_update is None
     write_config(tmp_path, '[agents]\nprompt = "/t"\nplugin_update = "yes"\n')
     with pytest.raises(ReleaseError, match="plugin_update"):
         AgentsConfig.load(tmp_path)
 
 
-def test_shipmills_own_gate_updates_its_plugin() -> None:
-    assert AgentsConfig.load(Path(__file__).resolve().parents[1]).plugin_update is True
+def test_s031_21_shipmills_own_config_sets_no_plugin_update() -> None:
+    # so doctor doesn't warn on shipmill itself
+    assert AgentsConfig.load(Path(__file__).resolve().parents[1]).plugin_update is None
 
 
 # -- spec 031: the gate reports what lags and starts the session ------------------------------
@@ -536,7 +316,7 @@ def test_s031_13_a_lagging_install_at_any_scope_starts_the_session_with_one_line
         where = f"{scope} scope, keyed on {root}"
     claude = FakeClaude([bg("old", "idle", "done")])
     decision, launched, _, _ = report_tick(
-        checkout, plugin_host(runner, markers_of(checkout)), agents(False, mode=mode), claude
+        checkout, plugin_host(runner, markers_of(checkout)), agents(mode=mode), claude
     )
     assert not hasattr(Action, "PLUGIN_STALE")  # no tick reads it
     assert decision.action is Action.LAUNCH
@@ -545,7 +325,7 @@ def test_s031_13_a_lagging_install_at_any_scope_starts_the_session_with_one_line
         f"  plugin: shipmill@shipmill 0.31.0 ({where}) lags the latest release 0.32.2; the session starts;"
         f" update it: {fix}"
     ]
-    assert runner.updates == []  # reported, never updated
+    assert runner.ran == READS  # reported, never updated
     record = tick_record(decision, launched, (), (), dry_run=False)["loaded"]
     assert isinstance(record, dict) and record["lags"] == [
         {"scope": scope, "folder": None if scope == "user" else str(root), "version": "0.31.0", "fix": fix}
@@ -555,7 +335,7 @@ def test_s031_13_a_lagging_install_at_any_scope_starts_the_session_with_one_line
 def test_s031_13_every_lagging_install_that_applies_gets_its_line(linked: tuple[Git, Path]) -> None:
     git, main = linked
     runner = FakeRunner(git.root, installs={("local", main): "0.31.1", ("project", main): "0.30.0"}, user="0.29.0")
-    decision, launched, _, _ = report_tick(git, plugin_host(runner, git.root.parent / "m"), agents(False))
+    decision, launched, _, _ = report_tick(git, plugin_host(runner, git.root.parent / "m"), agents())
     assert (decision.action, launched) == (Action.LAUNCH, "s1")
     assert [line.split(" lags ")[0] for line in plugin_lines(decision, launched)] == [
         f"  plugin: shipmill@shipmill 0.31.1 (local scope, keyed on {main})",
@@ -573,7 +353,7 @@ def test_s031_16_an_install_keyed_on_the_gates_linked_worktree_is_reported_as_un
     gate_dir = git.root.resolve()
     installs = {("local", main): "0.32.2", ("local", gate_dir): "0.25.0"}
     runner = FakeRunner(git.root, installs=installs, user="0.32.2")
-    decision, launched, _, _ = report_tick(git, plugin_host(runner, tmp_path / "m"), agents(False))
+    decision, launched, _, _ = report_tick(git, plugin_host(runner, tmp_path / "m"), agents())
     assert (decision.action, launched) == (Action.LAUNCH, "s1")
     fix = f'delete the entry with "projectPath": "{gate_dir}" under "shipmill@shipmill" in {INSTALLED}'
     assert INSTALLED == "~/.claude/plugins/installed_plugins.json"
@@ -586,12 +366,12 @@ def test_s031_16_an_install_keyed_on_the_gates_linked_worktree_is_reported_as_un
     assert record["unloaded"] == [{"scope": "local", "folder": str(gate_dir), "version": "0.25.0", "fix": fix}]
     assert record["lags"] == []  # the session's install is current: no session loads the worktree's
     # shipmill only reads the installs: a list and the marketplace, no command that changes one
-    assert {tuple(cmd[:3]) for cmd, _ in runner.calls} == {("claude", "plugin", "list"), ("gh", "api", "-H")}
+    assert runner.ran == READS
 
 
 def test_s031_16_a_main_checkouts_own_install_is_never_unloaded(checkout: Git) -> None:
     runner = FakeRunner(checkout.root, installs={("local", checkout.root.resolve()): "0.32.2"}, user=None)
-    decision, launched, _, _ = report_tick(checkout, plugin_host(runner, markers_of(checkout)), agents(False))
+    decision, launched, _, _ = report_tick(checkout, plugin_host(runner, markers_of(checkout)), agents())
     assert decision.loaded is not None and decision.loaded.unloaded == ()
     assert plugin_lines(decision, launched) == []
 
@@ -599,7 +379,7 @@ def test_s031_16_a_main_checkouts_own_install_is_never_unloaded(checkout: Git) -
 def test_s031_17_the_gates_own_lagging_cli_is_reported_with_its_fix_and_the_session_starts(checkout: Git) -> None:
     runner = FakeRunner(checkout.root, version=None, user="0.32.2")
     plugin = plugin_host(runner, markers_of(checkout), cli="0.30.0")
-    decision, launched, _, _ = report_tick(checkout, plugin, agents(False))
+    decision, launched, _, _ = report_tick(checkout, plugin, agents())
     assert (decision.action, launched) == (Action.LAUNCH, "s1")
     lines = tick_lines(decision, launched, (), (), dry_run=False)
     assert "  the gate's CLI, shipmill 0.30.0, lags the latest release 0.32.2: uv tool upgrade shipmill" in lines
@@ -608,13 +388,13 @@ def test_s031_17_the_gates_own_lagging_cli_is_reported_with_its_fix_and_the_sess
     assert load_cli(state_dir(checkout) / CLI_RECORD) == Version.parse("0.30.0")  # for doctor and status
     current = plugin_host(runner, markers_of(checkout), cli="0.32.2")
     (state_dir(checkout) / "gate.json").unlink()
-    decision, launched, _, _ = report_tick(checkout, current, agents(False))
+    decision, launched, _, _ = report_tick(checkout, current, agents())
     assert not any("gate's CLI" in line for line in tick_lines(decision, launched, (), (), dry_run=False))
 
 
 def test_s031_17_a_dry_run_records_no_cli_version(checkout: Git) -> None:
     runner = FakeRunner(checkout.root, version=None)
-    report_tick(checkout, plugin_host(runner, markers_of(checkout), cli="0.30.0"), agents(False), dry=True)
+    report_tick(checkout, plugin_host(runner, markers_of(checkout), cli="0.30.0"), agents(), dry=True)
     assert load_cli(state_dir(checkout) / CLI_RECORD) is None
 
 
@@ -630,7 +410,7 @@ def test_s031_19_an_unmet_requires_is_reported_and_the_session_starts(
 ) -> None:
     runner = FakeRunner(checkout.root, version=None, user=user)
     plugin = plugin_host(runner, markers_of(checkout), bound=Requires.parse(bound))
-    decision, launched, _, _ = report_tick(checkout, plugin, agents(False))
+    decision, launched, _, _ = report_tick(checkout, plugin, agents())
     assert (decision.action, launched) == (Action.LAUNCH, "s1")
     line = (
         f"  plugin: .github/shipmill.toml requires shipmill {bound}, but sessions here load shipmill@shipmill"
@@ -644,7 +424,7 @@ def test_s031_19_an_unmet_requires_is_reported_and_the_session_starts(
 def test_s031_19_a_met_requires_says_nothing(checkout: Git) -> None:
     runner = FakeRunner(checkout.root, version=None, user="0.32.2")
     plugin = plugin_host(runner, markers_of(checkout), bound=Requires.parse(">=0.32"))
-    decision, launched, _, _ = report_tick(checkout, plugin, agents(False))
+    decision, launched, _, _ = report_tick(checkout, plugin, agents())
     assert plugin_lines(decision, launched) == []
 
 
@@ -662,16 +442,16 @@ def test_s031_20_the_first_tick_on_a_host_notifies_once_per_release(tmp_path: Pa
         git.run("remote", "add", "origin", "https://github.com/romamo/demo.git")
         gates.append(git)
     notifier = FakeNotifier()
-    decision, _, _, _ = report_tick(gates[0], lagging(gates[0], markers), agents(False), notifier=notifier)
+    decision, _, _, _ = report_tick(gates[0], lagging(gates[0], markers), agents(), notifier=notifier)
     assert notifier.sent == [
         ("shipmill 0.32.2 is out", f"update shipmill@shipmill: 0.31.0 (user scope): {USER_FIX}"),
     ]
     assert (markers / "0.32.2.notified").is_file()
     assert "  notified: shipmill@shipmill lags 0.32.2" in tick_lines(decision, "s1", (), (), dry_run=False)
-    decision, launched, _, _ = report_tick(gates[1], lagging(gates[1], markers), agents(False), notifier=notifier)
+    decision, launched, _, _ = report_tick(gates[1], lagging(gates[1], markers), agents(), notifier=notifier)
     assert len(notifier.sent) == 1 and decision.plugin_notice is None and launched == "s1"
     (state_dir(gates[0]) / "gate.json").unlink()  # a new launch, not UNCHANGED
-    report_tick(gates[0], lagging(gates[0], markers), agents(False), notifier=notifier)
+    report_tick(gates[0], lagging(gates[0], markers), agents(), notifier=notifier)
     assert len(notifier.sent) == 1  # the marker holds for every later tick of any gate
 
 
@@ -679,7 +459,7 @@ def test_s031_20_notify_false_sends_none_and_writes_no_marker(checkout: Git) -> 
     notifier = FakeNotifier()
     markers = markers_of(checkout)
     decision, launched, _, _ = report_tick(
-        checkout, lagging(checkout, markers), agents(False, notify=False), notifier=notifier
+        checkout, lagging(checkout, markers), agents(notify=False), notifier=notifier
     )
     assert notifier.sent == [] and not markers.exists() and decision.plugin_notice is None
     assert launched == "s1"
@@ -688,7 +468,7 @@ def test_s031_20_notify_false_sends_none_and_writes_no_marker(checkout: Git) -> 
 def test_s031_20_a_dry_run_sends_none_and_writes_no_marker(checkout: Git) -> None:
     notifier = FakeNotifier()
     markers = markers_of(checkout)
-    decision, _, _, _ = report_tick(checkout, lagging(checkout, markers), agents(False), notifier=notifier, dry=True)
+    decision, _, _, _ = report_tick(checkout, lagging(checkout, markers), agents(), notifier=notifier, dry=True)
     assert notifier.sent == [] and not markers.exists()
     assert decision.plugin_notice == "would notify: shipmill@shipmill lags 0.32.2"
 
@@ -696,7 +476,7 @@ def test_s031_20_a_dry_run_sends_none_and_writes_no_marker(checkout: Git) -> Non
 def test_s031_20_a_failed_send_is_reported_and_the_marker_stays(checkout: Git) -> None:
     notifier = FakeNotifier(fail="osascript exited 1")
     markers = markers_of(checkout)
-    decision, launched, _, _ = report_tick(checkout, lagging(checkout, markers), agents(False), notifier=notifier)
+    decision, launched, _, _ = report_tick(checkout, lagging(checkout, markers), agents(), notifier=notifier)
     assert decision.plugin_notice == "notify failed: osascript exited 1" and launched == "s1"
     assert (markers / "0.32.2.notified").is_file()  # one try per release on the host
 
@@ -705,7 +485,7 @@ def test_s031_20_no_lag_sends_none(checkout: Git) -> None:
     notifier = FakeNotifier()
     markers = markers_of(checkout)
     plugin = plugin_host(FakeRunner(checkout.root, version=None), markers)
-    report_tick(checkout, plugin, agents(False), notifier=notifier)
+    report_tick(checkout, plugin, agents(), notifier=notifier)
     assert notifier.sent == [] and not markers.exists()
 
 
@@ -715,7 +495,7 @@ def test_s031_24_a_version_pypi_doesnt_serve_yet_holds_the_tick_and_the_next_ret
     pypi = FakePyPI(status=404)
     claude = FakeClaude([bg("old", "idle", "done")])
     decision, launched, _, _ = report_tick(
-        checkout, plugin_host(runner, markers_of(checkout), pypi=pypi), agents(False, mode=mode), claude
+        checkout, plugin_host(runner, markers_of(checkout), pypi=pypi), agents(mode=mode), claude
     )
     assert pypi.asked == [PYPI_URL.format("0.32.2")]
     assert (decision.action, launched) == (Action.PYPI_WAIT, None)
@@ -727,7 +507,7 @@ def test_s031_24_a_version_pypi_doesnt_serve_yet_holds_the_tick_and_the_next_ret
     assert not (state_dir(checkout) / "gate.json").exists()  # no launch recorded: the next tick tries again
     pypi.status = 200  # publish uploaded it
     decision, launched, _, _ = report_tick(
-        checkout, plugin_host(runner, markers_of(checkout), pypi=pypi), agents(False, mode=mode), claude
+        checkout, plugin_host(runner, markers_of(checkout), pypi=pypi), agents(mode=mode), claude
     )
     assert decision.action is Action.LAUNCH and launched is not None and len(pypi.asked) == 2
 
@@ -746,9 +526,7 @@ def test_s031_24_any_other_pypi_answer_is_reported_and_the_session_starts(
     checkout: Git, pypi: FakePyPI, line: str
 ) -> None:
     runner = FakeRunner(checkout.root, version=None, user="0.32.2")
-    decision, launched, _, _ = report_tick(
-        checkout, plugin_host(runner, markers_of(checkout), pypi=pypi), agents(False)
-    )
+    decision, launched, _, _ = report_tick(checkout, plugin_host(runner, markers_of(checkout), pypi=pypi), agents())
     assert (decision.action, launched) == (Action.LAUNCH, "s1")
     assert line in tick_lines(decision, launched, (), (), dry_run=False)
 
@@ -756,14 +534,12 @@ def test_s031_24_any_other_pypi_answer_is_reported_and_the_session_starts(
 def test_s031_24_a_served_version_says_nothing_and_no_install_asks_nothing(checkout: Git) -> None:
     pypi = FakePyPI()
     runner = FakeRunner(checkout.root, version=None, user="0.32.2")
-    decision, launched, _, _ = report_tick(
-        checkout, plugin_host(runner, markers_of(checkout), pypi=pypi), agents(False)
-    )
+    decision, launched, _, _ = report_tick(checkout, plugin_host(runner, markers_of(checkout), pypi=pypi), agents())
     assert plugin_lines(decision, launched) == [] and len(pypi.asked) == 1
     none = FakePyPI(status=404)
     (state_dir(checkout) / "gate.json").unlink()
     bare = FakeRunner(checkout.root, version=None, user=None)
-    decision, _, _, _ = report_tick(checkout, plugin_host(bare, markers_of(checkout), pypi=none), agents(False))
+    decision, _, _, _ = report_tick(checkout, plugin_host(bare, markers_of(checkout), pypi=none), agents())
     assert decision.action is Action.LAUNCH and none.asked == []  # no version sessions load: nothing to wait for
 
 
@@ -791,7 +567,7 @@ def test_s031_24_the_gates_claude_commands_carry_no_plugin_dir(tmp_path: Path) -
 
 def test_a_failed_latest_release_read_is_reported_and_the_session_starts(checkout: Git) -> None:
     runner = FakeRunner(checkout.root, latest="latest")  # not a version tag: the read fails
-    decision, launched, _, _ = report_tick(checkout, plugin_host(runner, markers_of(checkout)), agents(False))
+    decision, launched, _, _ = report_tick(checkout, plugin_host(runner, markers_of(checkout)), agents())
     assert (decision.action, launched) == (Action.LAUNCH, "s1")
     assert decision.loaded is not None and decision.loaded.error is not None
     lines = tick_lines(decision, launched, (), (), dry_run=False)
@@ -800,7 +576,7 @@ def test_a_failed_latest_release_read_is_reported_and_the_session_starts(checkou
 
 def test_with_no_install_the_session_starts_and_the_tick_says_so(checkout: Git) -> None:
     runner = FakeRunner(checkout.root, version=None, user=None)
-    decision, launched, _, _ = report_tick(checkout, plugin_host(runner, markers_of(checkout)), agents(False))
+    decision, launched, _, _ = report_tick(checkout, plugin_host(runner, markers_of(checkout)), agents())
     assert (decision.action, launched) == (Action.LAUNCH, "s1")
     lines = tick_lines(decision, launched, (), (), dry_run=False)
     assert (

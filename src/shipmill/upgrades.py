@@ -1,8 +1,8 @@
 """The config upgrades shipmill can propose (spec 014): features that need an opt-in in a
 repo's .github/shipmill.toml, which shipmill never turns on by itself (D-10, D-22).
 
-An upgrade is decided once the config holds its key, whatever the value: `plugin_update =
-false` written by hand ends the proposal as surely as accepting it. Applying one edits the
+An upgrade is decided once the config holds its key, whatever the value: `fragments = ""`
+written by hand ends the proposal as surely as accepting it. Applying one edits the
 config's text, adding its line at the end of its table and keeping every other byte (comments
 included), and creates the files it owns; it commits nothing. A top-level `requires` lower than
 the upgrade's version is raised to it, in place (spec 031); a higher one stays.
@@ -17,7 +17,8 @@ Proposing one opens an issue labelled shipmill-upgrade whose first line is the u
 marker, kept up to date on later runs. Closing that issue while the config lacks the key is a
 decline: the upgrade is never proposed again, nor listed as pending. An issue the maintainer
 answered "not now" carries shipmill-upgrade-later, which a run takes off only once the upgrade's
-version is newer than the one the issue's marker records (S-014-14)."""
+version is newer than the one the issue's marker records (S-014-14). An upgrade shipmill no
+longer offers is WITHDRAWN: a run closes its open issue, saying why (S-031-21)."""
 
 import copy
 import json
@@ -56,7 +57,7 @@ class UpgradeId:
     def __post_init__(self) -> None:
         if not _ID.match(self.value):
             raise ReleaseError(
-                f"an upgrade id is lowercase words joined by '-', such as plugin-update; got {self.value!r}"
+                f"an upgrade id is lowercase words joined by '-', such as changelog-fragments; got {self.value!r}"
             )
 
     def __str__(self) -> str:
@@ -212,17 +213,6 @@ CATALOGUE: tuple[Upgrade, ...] = (
         files=(OwnedFile(Path(FRAGMENTS) / "README.md", _config_readme),),
     ),
     Upgrade(
-        id=UpgradeId("plugin-update"),
-        version=Version.parse("0.37.0"),
-        table="agents",
-        key="plugin_update",
-        value=True,
-        needs_table=True,
-        changes="shipmill gate updates the shipmill plugin keyed on its checkout, at most once a day (D-23)",
-        why="the gate's sessions run the latest skills instead of the ones installed when it was set up",
-        off="set plugin_update = false in [agents]",
-    ),
-    Upgrade(
         id=UpgradeId("stable-every-batch"),
         version=Version.parse("0.53.0"),
         table="lanes.stable",
@@ -243,6 +233,17 @@ CATALOGUE: tuple[Upgrade, ...] = (
         declined=("shipmill refuses `min_soak_days`, so a decline means deleting it from `[lanes.stable]` by hand."),
     ),
 )
+
+
+# Upgrades shipmill no longer offers, each with why: a run closes the open issue that proposes
+# one, since its id names nothing `upgrade --apply` knows
+WITHDRAWN: Mapping[UpgradeId, str] = {
+    # S-031-21: the key it added is deprecated, and the gate changes no install whatever its value
+    UpgradeId("plugin-update"): (
+        "gate sessions load the installed plugin and report its lag (spec 031), so `[agents] plugin_update`"
+        " is deprecated and the gate changes no install"
+    ),
+}
 
 
 def find(upgrade_id: UpgradeId) -> Upgrade:
@@ -392,17 +393,19 @@ class Outcome(StrEnum):
     UNCHANGED = "unchanged"
     RENEWED = "renewed"  # updated, and shipmill-upgrade-later taken off: the question is asked again
     CLOSED = "closed"  # the config holds the key: closed as completed
+    WITHDRAWN = "withdrawn"  # shipmill no longer offers the upgrade: closed, naming why
 
 
 @dataclass(frozen=True, slots=True)
 class Proposed:
-    upgrade: Upgrade
+    id: UpgradeId
     issue: int
     outcome: Outcome
 
 
 def propose(raw: Mapping[str, Any], level: Autonomy, github: GitHub, fix: str) -> list[Proposed]:
-    """Close as completed the open issue of each upgrade the config decided; then, unless the
+    """Close as completed the open issue of each upgrade the config decided, and the open issue
+    of each WITHDRAWN upgrade, naming why; then, unless the
     upgrade autonomy is observe, open or update one issue per offer, taking shipmill-upgrade-later
     off an issue whose upgrade is newer than the version its marker records (before the update
     rewrites the marker). A failure names the upgrade, and fix says how to grant `issues: write`
@@ -423,18 +426,25 @@ def propose(raw: Mapping[str, Any], level: Autonomy, github: GitHub, fix: str) -
                 f"`[{upgrade.table}]` in `{CONFIG_PATH.as_posix()}` {settled} `{upgrade.removes or upgrade.key}`:"
                 f" {upgrade.id} is decided, so this issue is done."
             )
-            with _named(upgrade, fix):
+            with _named(upgrade.id, fix):
                 github.close_issue(issue.number, text)
-            done.append(Proposed(upgrade, issue.number, Outcome.CLOSED))
+            done.append(Proposed(upgrade.id, issue.number, Outcome.CLOSED))
+    for issue in sorted(issues, key=lambda i: i.number):  # S-031-21: an id no catalogue entry has any more
+        name = marked(issue)
+        if issue.closed or name is None or name not in WITHDRAWN:
+            continue
+        with _named(name, fix):
+            github.close_issue(issue.number, f"shipmill no longer offers {name}: {WITHDRAWN[name]}.")
+        done.append(Proposed(name, issue.number, Outcome.WITHDRAWN))
     if level is Autonomy.OBSERVE:
         return done
     for offer in offers(raw, issues):
         upgrade = offer.upgrade
         wanted_title, wanted = title(upgrade), body(upgrade)
-        with _named(upgrade, fix):
+        with _named(upgrade.id, fix):
             if offer.issue is None:
                 number = github.create_issue(wanted_title, wanted, (UPGRADE_LABEL,))
-                done.append(Proposed(upgrade, number, Outcome.OPENED))
+                done.append(Proposed(upgrade.id, number, Outcome.OPENED))
                 continue
             issue = next(i for i in issues if i.number == offer.issue)
             renew = renewed(upgrade, issue)
@@ -444,17 +454,17 @@ def propose(raw: Mapping[str, Any], level: Autonomy, github: GitHub, fix: str) -
             if not same:
                 github.update_issue(issue.number, wanted_title, wanted)
             outcome = Outcome.RENEWED if renew else Outcome.UNCHANGED if same else Outcome.UPDATED
-            done.append(Proposed(upgrade, issue.number, outcome))
+            done.append(Proposed(upgrade.id, issue.number, outcome))
     return done
 
 
 @contextmanager
-def _named(upgrade: Upgrade, fix: str) -> Iterator[None]:
+def _named(upgrade: UpgradeId, fix: str) -> Iterator[None]:
     """Re-raise a GitHub failure naming the upgrade, with the fix for a refused write"""
     try:
         yield
     except ReleaseError as exc:
-        raise ReleaseError(f"upgrade {upgrade.id}: {exc}; if GitHub refused it (403): {fix}") from exc
+        raise ReleaseError(f"upgrade {upgrade}: {exc}; if GitHub refused it (403): {fix}") from exc
 
 
 @dataclass(frozen=True, slots=True)

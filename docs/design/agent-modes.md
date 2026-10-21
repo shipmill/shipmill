@@ -36,7 +36,6 @@ remind_hours = 4    # repeat it while the session still waits (1..168)
 max_wait_minutes = 15  # stop a session that waited this long (0..10080); 0: never
 # app_id = 123456      # sessions write as this GitHub App; unset: as the host's gh login
 # mode = "headless"    # interactive (default): sessions ask you; headless: they ask on GitHub
-# plugin_update = true # false (default): no install changes; true: the gate updates its checkout's plugin daily (D-23)
 ```
 
 ```
@@ -81,11 +80,11 @@ and any checkout with tracked changes, naming the files. Each run:
 7. Compares the rows with the last launch's fingerprint, which counts each open PR's head
    commit (#546). The same rows within `retry_hours`: **UNCHANGED**, stop. A session that left an item alone on purpose
    doesn't wake a new one every tick
-8. With `plugin_update = true`, updates the checkout's own plugin installs once a day
-   (D-23). Then reads the `shipmill@shipmill` install a session in the checkout would load
-   (the most specific scope installed for its project, user scope included). Older than
-   the latest release: **PLUGIN_STALE**, stop, naming the install and the command that
-   updates it; no session stops or starts until it is current (D-35)
+8. Reads the `shipmill@shipmill` install a session in the checkout would load (the most
+   specific scope installed for its project, user scope included) and reports, never
+   pauses on, each install that lags the latest release, with the command that updates it
+   (spec 031, D-44); the gate changes no install. PyPI answering 404 for the version
+   sessions load: **PYPI_WAIT**, stop, and the next tick tries again
 9. **LAUNCH**: stops this repo's finished sessions (`claude stop` keeps their
    conversation), starts `claude --bg -n "shipmill <repo> <time>" "<prompt>"` in the
    checkout with the rows appended to the prompt, each by state and subject only (an

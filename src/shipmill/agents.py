@@ -33,7 +33,9 @@ class AgentsConfig:
     max_wait_minutes: int = _MAX_WAIT_MINUTES  # stop a session that waited this long; 0: never
     app_id: int | None = None  # sessions write as this GitHub App (spec 004, D-14); None: the host's gh login
     mode: Mode = Mode.INTERACTIVE  # headless: `claude -p` (spec 005); either mode asks via needs-decision (D-21)
-    plugin_update: bool = False  # update the gate checkout's plugin installs, once a day (D-23); False: never
+    # deprecated (spec 031, D-44): read and ignored, the gate changes no install whatever its
+    # value, and doctor warns; None: unset. The next minor release refuses it (S-031-22)
+    plugin_update: bool | None = None
     wip: int | None = None  # at most this many issues in progress at once, read by triage (D-32); None: no limit
 
     @classmethod
@@ -66,7 +68,7 @@ class AgentsConfig:
             max_wait_minutes=max_wait,
             app_id=table.integer("app_id", default=None, low=1, high=None),
             mode=table.enum("mode", Mode, default=Mode.INTERACTIVE),
-            plugin_update=table.boolean("plugin_update", default=False),
+            plugin_update=table.boolean("plugin_update", default=False) if "plugin_update" in table.raw else None,
             wip=table.integer("wip", default=None, low=1, high=_MAX_WIP),
         )
 
