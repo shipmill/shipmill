@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-10-21
+
+### Changed
+
+- `shipmill gate` no longer pauses on a lagging plugin: `PLUGIN_STALE` is gone, and the tick starts the session and reports, each on one line with its fix, every install of `shipmill@shipmill` older than the latest release (with `claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope <scope>`), an install keyed on the gate's linked worktree that no session loads (delete its entry in `~/.claude/plugins/installed_plugins.json`; shipmill never writes that file), the gate's own CLI when it lags (`uv tool upgrade shipmill`, or `uvx shipmill@latest --repo <checkout> launchd <repo>` for a launchd job on the old `@v0` source), and a config whose `requires` the version sessions load doesn't meet; with `[agents] notify = true` the first gate on a host to find a lagging install sends one desktop notification per release (marker `~/.cache/shipmill/plugin/<version>.notified`). The one plugin hold left is PyPI answering 404 for the version sessions load: the tick reads `PYPI_WAIT: plugin <version> waits for PyPI` and the next tick tries again. `doctor` and `shipmill status` report the same as WARNs and rows, with no line saying a gate starts no session, and `shipmill launchd` writes jobs that run `shipmill@latest` unless `--tool` names another source (spec 031) (#551)
+
 ## [0.58.0] - 2026-10-20
 
 ### Added
@@ -1641,7 +1647,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.58.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.59.0...HEAD
+[0.59.0]: https://github.com/shipmill/shipmill/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/shipmill/shipmill/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/shipmill/shipmill/compare/v0.56.0...v0.57.0
 [0.56.0]: https://github.com/shipmill/shipmill/compare/v0.55.0...v0.56.0
