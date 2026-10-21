@@ -532,7 +532,7 @@ the gate's own environment to choose another ceiling.
    session would load (spec 031: `project`, `scope`, `folder`, `version`, `latest`, `lags`,
    `unloaded`, `cli`, `requires`, and `error`), and `pypi` PyPI's answer for its version
    (`version`, `status`, `error`), each null on a tick that reached no launch. Releases up
-   to 0.58.0 also gave `plugin`, the daily update of `plugin_update = true`, which is gone
+   to 0.59.0 also gave `plugin`, the daily update of `plugin_update = true`, which is gone
 
 ## Pause or remove it
 

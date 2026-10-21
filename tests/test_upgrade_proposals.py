@@ -174,7 +174,7 @@ def test_s014_7_a_config_that_holds_the_key_closes_its_open_issue_as_completed(
 def test_s031_21_propose_closes_an_open_plugin_update_issue_as_withdrawn(
     repo: Repo, capsys: pytest.CaptureFixture[str], level: str
 ) -> None:
-    # 0.37.0 to 0.58.0 proposed plugin-update; its open issue names an id `upgrade --apply` no longer knows
+    # 0.37.0 to 0.59.0 proposed plugin-update; its open issue names an id `upgrade --apply` no longer knows
     old = "<!-- shipmill-upgrade: plugin-update 0.37.0 -->\nshipmill 0.37.0 offers **plugin-update**\n"
     number = repo.github.create_issue("shipmill upgrade: turn on plugin-update", old, (UPGRADE_LABEL,))
     write_config(repo.root, DECIDED + AGENTS + f'\n[autonomy]\nupgrade = "{level}"\n')
