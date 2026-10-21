@@ -39,13 +39,10 @@ from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
 from shipmill.notify import Notifier, NotifyFailed
 from shipmill.plugin import (
-    CHECKED,
     CLI_RECORD,
     Loaded,
     PluginHost,
-    PluginUpdate,
     PyPI,
-    daily_update,
     loaded,
     notify_lags,
     pypi,
@@ -224,7 +221,6 @@ class Decision:
     mode: Mode | None = None  # the config's mode on a tick that read the state; None: it didn't
     decisions: tuple[Asked, ...] = ()  # what the tick did for each item waiting on a decision (spec 005)
     asks_as: str | None = None  # a headless launch without an App: the login its questions post as
-    plugin: PluginUpdate | None = None  # the daily plugin check before a launch (D-23); None: none ran
     loaded: Loaded | None = None  # the plugin a session would load, read before a launch (spec 031); None: not read
     pypi: PyPI | None = None  # PyPI's answer for that plugin's version (S-031-24); None: not asked
     plugin_notice: str | None = None  # the once-per-release notification of a lagging install (S-031-20)
@@ -1310,14 +1306,10 @@ def gate(
 
     plugin reads the plugin (`claude plugin ...`, and `gh api` for the marketplace's latest
     release, spec 031), PyPI, and the config's requires, and knows the gate's own CLI; None, as
-    in tests that don't exercise it, reads and updates no plugin. A real tick with it records
-    the gate's CLI version (cli.json in the state directory) for doctor and status. With [agents]
-    plugin_update = true (D-23), a real LAUNCH first checks, at most once per 24 hours
-    (plugin-check.json in the state directory), whether any shipmill@shipmill install keyed on
-    the checkout, at project or local scope, is behind the latest release, and updates each one
-    that is (`claude plugin marketplace update shipmill` once, then `claude plugin update
-    --scope <its scope>` run in the checkout). With false, the default, the gate changes no
-    install. Then a LAUNCH, dry run or not, reads the install a session in the checkout would
+    in tests that don't exercise it, reads no plugin. A real tick with it records the gate's CLI
+    version (cli.json in the state directory) for doctor and status. The gate changes no
+    install: [agents] plugin_update is deprecated and ignored, whatever its value (S-031-21).
+    A LAUNCH, dry run or not, reads the install a session in the checkout would
     load and reports each install that lags, an install keyed on its linked worktree, its own
     lagging CLI, and an unmet requires, each with its fix, and starts the session (spec 031,
     D-44, plugin_read); only PyPI answering 404 for the version sessions load makes it
@@ -1408,14 +1400,8 @@ def gate(
         if app_env is None:
             raise ReleaseError(f"app_id {agents.app_id} is set, but no session env was given; no session starts")
         env = app_env(identity)
-    if agents.plugin_update:  # before the session starts, so it loads the updated skills
-        if plugin is None:
-            raise ReleaseError("[agents] plugin_update = true, but no plugin command runner was given")
-        decision = replace(decision, plugin=daily_update(state / CHECKED, git.root, now, plugin.run))
-    decision = plugin_read(
-        decision, git, plugin, agents.notify, notifier, dry_run
-    )  # after the update, which it reports
-    decision = self_tested(decision, hooks, headless)  # of the install the session loads, so after the update too
+    decision = plugin_read(decision, git, plugin, agents.notify, notifier, dry_run)
+    decision = self_tested(decision, hooks, headless)  # of the install the session loads
     if decision.action in (Action.PYPI_WAIT, Action.HOOKS_FAILED):
         return decision, None, waiting, pruned
     decision = relaunching(decision)
@@ -1451,7 +1437,6 @@ def tick_record(
         "pruned": [j.path for j in pruned],
         "mode": None if decision.mode is None else decision.mode.value,
         "decisions": [a.record() for a in decision.decisions],
-        "plugin": None if decision.plugin is None else decision.plugin.record(),
         "loaded": None if decision.loaded is None else decision.loaded.record(),
         "pypi": None if decision.pypi is None else decision.pypi.record(),
         "plugin_notice": decision.plugin_notice,
@@ -1484,8 +1469,6 @@ def tick_lines(
         if w.stopped and w.error is not None:  # the stop line above leaves out the failed send
             lines.append(f"  notify failed for {w.session}: {w.error}")
     lines += [f"  {line}" for a in decision.decisions if (line := a.line(dry_run)) is not None]
-    if decision.plugin is not None:
-        lines += [f"  {line}" for line in decision.plugin.lines()]
     if decision.loaded is not None:
         lines += [f"  {line}" for line in decision.loaded.lines()]
     if decision.pypi is not None:

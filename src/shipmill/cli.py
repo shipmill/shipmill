@@ -1449,11 +1449,11 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
         fix = f"grant `issues: write` to the job in {CALLER} that calls shipmill's land.yml"
         done = propose_upgrades(raw, level, github, fix)
         if args.json:
-            records = [{"id": str(d.upgrade.id), "issue": d.issue, "outcome": str(d.outcome)} for d in done]
+            records = [{"id": str(d.id), "issue": d.issue, "outcome": str(d.outcome)} for d in done]
             print(json.dumps(records, indent=2))
             return 0
         for d in done:
-            print(f"{d.outcome} #{d.issue}: {d.upgrade.id}")
+            print(f"{d.outcome} #{d.issue}: {d.id}")
         if level is Autonomy.OBSERVE:
             print("upgrade autonomy is observe: no upgrade issue opened or updated")
         elif not done:

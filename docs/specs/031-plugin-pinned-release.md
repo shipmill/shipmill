@@ -225,10 +225,16 @@ It follows the path D-32 set for `[roadmap]`:
   no install, whatever its value, and `doctor` WARNs `[agents] plugin_update is deprecated
   (spec 031): gate sessions load the installed plugin and report its lag; delete the key, which
   the next minor release refuses`. The `plugin-update` upgrade (`src/shipmill/upgrades.py`)
-  is no longer proposed, and `init` no longer writes the key's comment
-- **The next minor release** refuses it: `src/shipmill/agents.py` exits 2 with `[agents]
-  plugin_update was removed (spec 031); delete it`. `daily_update`, `check`, and
-  `plugin-check.json` go with it
+  is no longer proposed, and `init` no longer writes the key's comment. The update path,
+  dead once nothing calls it, goes in the same release: `daily_update`, `check`, and
+  `plugin-check.json` (an old file stays on disk unread), with the rest of
+  `shipmill.plugin`'s update code; `shipmill gate --json` drops its `plugin` key with it
+- **The same release withdraws an open proposal:** `upgrade --propose` (land.yml's upgrade
+  job) closes an open `plugin-update` upgrade issue as withdrawn, with a comment naming spec
+  031, and reports the new outcome `withdrawn`, so the issue doesn't read UPGRADE_PENDING
+  for an `--apply` that no longer exists
+- **The next minor release** only refuses it: `src/shipmill/agents.py` exits 2 with
+  `[agents] plugin_update was removed (spec 031); delete it`
 
 ### Docs
 
@@ -261,7 +267,7 @@ It follows the path D-32 set for `[roadmap]`:
 - S-031-18: `shipmill launchd <repo>` writes a job running shipmill from `shipmill@latest` unless `--tool` names another source
 - S-031-19: When the config's `requires` isn't met by the version sessions load, `doctor` WARNs and the tick reports the bound, the version, and the fix, and the session still starts
 - S-031-20: With `[agents] notify = true`, the first tick on a host to find an install lagging a new release sends one desktop notification naming each lagging install and its fix and creates `~/.cache/shipmill/plugin/<version>.notified`; a tick of any gate on the host that finds the marker sends none; with `notify = false` none is sent and no marker is written
-- S-031-21: In the minor release that ships this spec, `[agents] plugin_update = true` changes no install and runs no `claude plugin update`, `doctor` WARNs naming the key, spec 031, and that the next minor release refuses it, and `shipmill upgrade` no longer lists `plugin-update`
+- S-031-21: In the minor release that ships this spec, `[agents] plugin_update = true` changes no install and runs no `claude plugin update`, `doctor` WARNs naming the key, spec 031, and that the next minor release refuses it, and `shipmill upgrade` no longer lists `plugin-update`; the same release removes the update path (`daily_update`, `check`, `plugin-check.json`), drops `shipmill gate --json`'s `plugin` key, and has `upgrade --propose` close an open `plugin-update` upgrade issue as `withdrawn`
 - S-031-22: In the minor release after the one that ships S-031-21, a config whose `[agents]` sets `plugin_update` exits 2 naming the key and spec 031
 - S-031-23: `docs/install.md`, `docs/release-lanes.md`, `skills/shipmill-setup/SKILL.md`, and `skills/github-ship-watch/SKILL.md` describe the pinned CLI, the marketplace serving releases, gate sessions loading the installed plugin, `requires`, and the `plugin_update` deprecation, and none describes a gate paused on a stale plugin
 - S-031-24: While PyPI answers 404 for the version of the install sessions load, the tick starts no session and reports `plugin <version> waits for PyPI`, and the next tick tries again; any other PyPI answer is reported and the session starts; the gate's `claude -p` and `claude --bg` commands carry no `--plugin-dir`

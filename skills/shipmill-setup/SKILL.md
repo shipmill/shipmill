@@ -451,19 +451,15 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    max_wait_minutes = 15 # stop a session that waited this long; 0: never
    app_id = 123456    # replace with the App ID step 3 prints; sessions write as its bot
    mode = "interactive" # step 4's answer: sessions ask you; "headless": they ask on GitHub
-   # plugin_update = true # default false: the gate changes no plugin install
    # wip = 3          # at most 3 issues in progress at once (1..100); unset: no limit
    ```
 
-   `plugin_update = true` lets the gate update its checkout's own plugin installs (project
-   and local scope; never user scope), at most once a day, before it starts a session, so
-   gate sessions run the released skills; a failed update is printed on the tick (D-23). Ask
-   the user before setting it: it is the policy's permission to change an install. Either
-   way, the gate starts no session while the install a session in its checkout would load,
-   at any scope, is older than the latest release (D-35): the tick reads `PLUGIN_STALE` with
-   the install, its scope, and the command that updates it, and the gate starts sessions
-   again once a person runs it. The setup checklist's `PLUGIN_OUTDATED` rows name that
-   install with a `gate:` row
+   Gate sessions load the installed plugin, which runs the CLI release it pins (spec 031,
+   D-44); the gate never changes an install. When an install a session in its checkout
+   would load is older than the latest release, the tick reports it with its fix and the
+   session still starts. The setup checklist's `PLUGIN_OUTDATED` rows name that install
+   with a `gate:` row. `[agents] plugin_update` is deprecated: never write it; in a config
+   that has it, delete it, since `doctor` warns and the next minor release refuses it
 
    The delivery hooks come with the plugin (spec 026), and need `uv` on PATH. In a repo
    whose config has `[agents]`, they refuse with exit 2 a plain `gh` write while `app_id`

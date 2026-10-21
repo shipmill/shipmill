@@ -33,8 +33,7 @@ KEYS = {
     "waiting",
     "pruned",
     "mode",
-    "decisions",
-    "plugin",
+    "decisions",  # "plugin", the daily plugin update, went with plugin_update (S-031-21)
     "loaded",
     "pypi",  # spec 031's PyPI answer for the version sessions load
     "plugin_notice",  # spec 031's once-per-release notification

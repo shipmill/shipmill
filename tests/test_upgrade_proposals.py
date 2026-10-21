@@ -30,7 +30,8 @@ ROOT = Path(__file__).parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
 AGENTS = '\n[agents]\nprompt = "triage {repo}"\n'
 FRAGMENTS = find(UpgradeId("changelog-fragments"))
-PLUGIN = find(UpgradeId("plugin-update"))
+# a second upgrade to list beside the fragments one; the catalogue offers no other that adds a key
+OTHER = dataclasses.replace(FRAGMENTS, id=UpgradeId("other-upgrade"), changes="another opt-in")
 DECIDED = POLICY.replace("[changelog]\n", '[changelog]\nfragments = "changelog.d"\n')
 NO_MAJOR = POLICY.replace('major = ["Breaking"]\n', "")  # no breaking stable candidate (spec 029)
 
@@ -64,8 +65,8 @@ def test_s014_5_propose_opens_one_issue_per_pending_upgrade_with_the_marker_firs
     write_config(repo.root, POLICY + AGENTS)
     out = propose(repo.root, repo.github, capsys)
     issues = by_id(repo.github)
-    assert sorted(issues) == ["changelog-fragments", "plugin-update"]
-    for upgrade in (FRAGMENTS, PLUGIN):
+    assert sorted(issues) == ["changelog-fragments"]
+    for upgrade in (FRAGMENTS,):
         issue = issues[str(upgrade.id)]
         assert issue.body.split("\n", 1)[0] == marker(upgrade) == f"<!-- shipmill-upgrade: {upgrade.id} 0.37.0 -->"
         assert repo.github.labels[issue.number] == (UPGRADE_LABEL,)
@@ -109,7 +110,7 @@ def test_s014_5_propose_prints_json(repo: Repo, capsys: pytest.CaptureFixture[st
 
 def test_propose_and_apply_go_alone(repo: Repo) -> None:
     with pytest.raises(SystemExit):
-        main(["--repo", str(repo.root), "upgrade", "--propose", "--apply", "plugin-update"], github=repo.github)
+        main(["--repo", str(repo.root), "upgrade", "--propose", "--apply", "changelog-fragments"], github=repo.github)
 
 
 # -- a declined upgrade (S-014-6) ------------------------------------------------------------
@@ -124,11 +125,10 @@ def test_s014_6_an_issue_closed_without_the_key_is_never_proposed_again_nor_list
     repo.github.close_issue(declined, "not for us")  # a person closes it, as not planned or completed
     for _ in range(2):
         out = propose(repo.root, repo.github, capsys)
-        assert sorted(by_id(repo.github)) == ["plugin-update"]
+        assert by_id(repo.github) == {}
         assert not any("changelog-fragments" in line for line in out)
     assert main(["--repo", str(repo.root), "upgrade", "--json"], github=repo.github) == 0
-    listed = json.loads(capsys.readouterr().out)
-    assert [(u["id"], u["issue"]) for u in listed] == [("plugin-update", by_id(repo.github)["plugin-update"].number)]
+    assert json.loads(capsys.readouterr().out) == []
     assert main(["--repo", str(repo.root), "upgrade"], github=repo.github) == 0
     assert "changelog-fragments" not in capsys.readouterr().out
 
@@ -168,6 +168,22 @@ def test_s014_7_a_config_that_holds_the_key_closes_its_open_issue_as_completed(
     assert repo.github.issues == {} and number in repo.github.closed_issues
     assert "sets `fragments`" in repo.github.closed[number]  # closed with gh's default reason: completed
     assert not any(line.startswith("closed") for line in propose(repo.root, repo.github, capsys))
+
+
+@pytest.mark.parametrize("level", ["propose", "observe"])
+def test_s031_21_propose_closes_an_open_plugin_update_issue_as_withdrawn(
+    repo: Repo, capsys: pytest.CaptureFixture[str], level: str
+) -> None:
+    # 0.37.0 to 0.59.1 proposed plugin-update; its open issue names an id `upgrade --apply` no longer knows
+    old = "<!-- shipmill-upgrade: plugin-update 0.37.0 -->\nshipmill 0.37.0 offers **plugin-update**\n"
+    number = repo.github.create_issue("shipmill upgrade: turn on plugin-update", old, (UPGRADE_LABEL,))
+    write_config(repo.root, DECIDED + AGENTS + f'\n[autonomy]\nupgrade = "{level}"\n')
+    out = propose(repo.root, repo.github, capsys)
+    assert out[0] == f"withdrawn #{number}: plugin-update"
+    assert number in repo.github.closed_issues and repo.github.issues == {}
+    assert "no longer offers plugin-update" in repo.github.closed[number]
+    assert "spec 031" in repo.github.closed[number]
+    assert not any(line.startswith("withdrawn") for line in propose(repo.root, repo.github, capsys))
 
 
 # -- "not now" (S-014-14) ---------------------------------------------------------------------
@@ -353,7 +369,7 @@ def test_s014_9_doctor_warns_about_issues_write_only_when_upgrades_propose_and_o
 def test_s014_9_pending_upgrades_alone_never_make_doctor_exit_1(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
     repo.write(str(CALLER), LAND_JOB.format(issues="read"))
     (repo.root / "changelog.d").mkdir()
-    write_config(repo.root, DECIDED + AGENTS + "plugin_update = false\n")
+    write_config(repo.root, DECIDED + AGENTS)
     decided = {c.name for c in doctor(repo.root, repo.github) if c.status == "FAIL"}
     no_claude = {"PATH": ""}  # no claude on PATH: no hook self-test against this host's real install
     code = main(["--repo", str(repo.root), "doctor"], github=repo.github, environ=no_claude)
@@ -364,13 +380,13 @@ def test_s014_9_pending_upgrades_alone_never_make_doctor_exit_1(repo: Repo, caps
     checks = doctor(repo.root, repo.github, repo=REPO)
     assert {c.name for c in checks if c.status == "FAIL"} == decided
     shown = [c for c in checks if c.name == "upgrade"]
-    assert [c.status for c in shown] == ["PASS", "PASS"]
+    assert [c.status for c in shown] == ["PASS"]
     assert shown[0].detail.startswith(f"changelog-fragments pending (shipmill 0.37.0): {FRAGMENTS.changes}; fix: ")
     fixes = (f"{form} upgrade --apply changelog-fragments" for form in ("shipmill", UVX))
     assert shown[0].detail.endswith(tuple(fixes))  # bare or the uvx form
-    number = repo.github.create_issue("t", f"{marker(PLUGIN)}\n", (UPGRADE_LABEL,))
+    number = repo.github.create_issue("t", f"{marker(FRAGMENTS)}\n", (UPGRADE_LABEL,))
     shown = [c for c in doctor(repo.root, repo.github, repo=REPO) if c.name == "upgrade"]
-    assert shown[1].detail.endswith(f"fix: https://github.com/{REPO}/issues/{number}")
+    assert shown[0].detail.endswith(f"fix: https://github.com/{REPO}/issues/{number}")
 
 
 def test_doctor_says_when_it_cant_read_the_upgrade_issues(repo: Repo) -> None:
@@ -382,10 +398,10 @@ def test_doctor_says_when_it_cant_read_the_upgrade_issues(repo: Repo) -> None:
 
 
 def test_s014_15_status_lists_each_pending_upgrade_with_its_issue_or_the_apply_command() -> None:
-    found = lines(facts(upgrades=[Offer(FRAGMENTS, None), Offer(PLUGIN, 42)]))
+    found = lines(facts(upgrades=[Offer(FRAGMENTS, None), Offer(OTHER, 42)]))
     at = found.index(f"  upgrade        changelog-fragments (shipmill 0.37.0): {FRAGMENTS.changes}")
     assert found[at + 1] == "                 fix: shipmill upgrade --apply changelog-fragments"
-    assert found[at + 2] == f"                 plugin-update (shipmill 0.37.0): {PLUGIN.changes}"
+    assert found[at + 2] == f"                 other-upgrade (shipmill 0.37.0): {OTHER.changes}"
     assert found[at + 3] == f"                 fix: https://github.com/{REPO}/issues/42"
     assert found[0].endswith(": IDLE")  # an offer, not a reason for the verdict
 
@@ -394,7 +410,7 @@ def test_s014_15_status_lists_each_pending_upgrade_with_its_issue_or_the_apply_c
 def test_s014_15_status_lists_an_upgrade_issue_on_its_upgrade_line_only(state: str) -> None:
     # triage_state.py reads an upgrade issue as any issue (NEW, or DECIDED once its question is
     # answered), but github-ship-watch owns it: it is no issue to triage
-    found = lines(facts(upgrades=[Offer(PLUGIN, 42)], issues=[StatusIssue(42, state), StatusIssue(7, "NEW")]))
+    found = lines(facts(upgrades=[Offer(OTHER, 42)], issues=[StatusIssue(42, state), StatusIssue(7, "NEW")]))
     triage = [line for line in found if "/issues/7" in line or "/issues/42" in line]
     assert [line for line in triage if "/issues/42" in line] == [
         f"                 fix: https://github.com/{REPO}/issues/42"
@@ -414,14 +430,16 @@ class Gh:
 
 def test_s014_15_status_reads_the_issues_and_leaves_out_a_declined_upgrade(tmp_path: Path) -> None:
     write_config(tmp_path, POLICY + AGENTS)
-    closed = {"number": 3, "title": "t", "body": f"{marker(FRAGMENTS)}\n", "state": "CLOSED", "labels": []}
-    closed["closedAt"] = "2026-10-01T00:00:00Z"
-    opened = {"number": 5, "title": "t", "body": f"{marker(PLUGIN)}\n", "state": "OPEN", "closedAt": None}
+    opened = {"number": 5, "title": "t", "body": f"{marker(FRAGMENTS)}\n", "state": "OPEN", "closedAt": None}
     opened["labels"] = [{"name": UPGRADE_LABEL}]
-    gh = Gh([closed, opened])
-    assert read_upgrades(REPO, tmp_path, gh) == (Offer(PLUGIN, 5),)
+    gh = Gh([opened])
+    assert read_upgrades(REPO, tmp_path, gh) == (Offer(FRAGMENTS, 5),)
     (cmd,) = gh.seen
     assert cmd[:3] == ["gh", "issue", "list"] and cmd[-2:] == ["-R", REPO] and UPGRADE_LABEL in cmd
+    closed = {"number": 3, "title": "t", "body": f"{marker(FRAGMENTS)}\n", "state": "CLOSED", "labels": []}
+    closed["closedAt"] = "2026-10-01T00:00:00Z"
+    declined = Gh([closed])
+    assert read_upgrades(REPO, tmp_path, declined) == ()  # closed without the key: declined
     write_config(tmp_path, DECIDED)  # nothing pending: GitHub isn't asked
     assert read_upgrades(REPO, tmp_path, gh) == () and len(gh.seen) == 1
     assert read_upgrades(REPO, tmp_path / "none", gh) == ()  # no config
