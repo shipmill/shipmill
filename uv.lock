@@ -288,7 +288,7 @@ wheels = [
 
 [[package]]
 name = "shipmill"
-version = "0.59.0"
+version = "0.59.1"
 source = { editable = "." }
 
 [package.dev-dependencies]

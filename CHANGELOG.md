@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.59.1] - 2026-10-21
+
+### Fixed
+
+- A gate held because PyPI doesn't serve the plugin version sessions load no longer reads healthy: `shipmill status` reads the gate's last `PYPI_WAIT` tick as a wait on you (`paused: plugin <version> waits for PyPI`), and `doctor` asks PyPI for that version itself, a WARN on 404 or when PyPI doesn't answer; each names the fix, the release's `publish.yml` run, or a new one with `gh workflow run publish.yml --repo shipmill/shipmill -f tag=v<version>` (#569)
+- A gate whose launchd job runs a pinned `--tool` or the pre-org `@v0` source is told to rewrite its job with `uvx shipmill@latest --repo <checkout> launchd <repo>` when its CLI lags, not `uv tool upgrade shipmill`, which never changes the job; a job on `shipmill@latest` is told to run now with `launchctl kickstart` (#570)
+
 ## [0.59.0] - 2026-10-21
 
 ### Changed
@@ -1647,7 +1654,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.59.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.59.1...HEAD
+[0.59.1]: https://github.com/shipmill/shipmill/compare/v0.59.0...v0.59.1
 [0.59.0]: https://github.com/shipmill/shipmill/compare/v0.58.0...v0.59.0
 [0.58.0]: https://github.com/shipmill/shipmill/compare/v0.57.0...v0.58.0
 [0.57.0]: https://github.com/shipmill/shipmill/compare/v0.56.0...v0.57.0
