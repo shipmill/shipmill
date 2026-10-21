@@ -289,7 +289,7 @@ that exists.
 - D-17: headless sessions run as `claude -p` with a tool allowlist, which hooks still apply under
 - D-33: no rebase merge, which `rebase-merge` enforces
 - D-34: a repo with `[agents]` keeps a direction and an optional rubric, which the PostToolUse hook checks
-- D-43 (superseding D-35, the model for the self-test pause): the gate no longer pauses on stale skills, it loads the latest release per session; the self-test pause stays, under D-40, and tests the folder the session loads (spec 031)
+- D-44 (superseding D-43, which superseded D-35, the model for the self-test pause): the gate no longer pauses on stale skills, and its sessions load the installed plugin; the self-test pause stays, under D-40, and tests the install the session loads (spec 031)
 - D-40 (superseding D-36): delivery rules that guard irreversible writes are enforced by plugin hooks in repos with `[agents]`; it settles the inline `GH_TOKEN=$T gh` refusal, the switches, the headless pause, and that a hook which can't start its script exits 1 and lets the command run
 
 ## Issues
