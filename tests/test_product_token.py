@@ -5,6 +5,7 @@ cache, the gate's check of the App on every listed repo, and a repo never naming
 
 import datetime as dt
 import json
+import os
 import re
 import stat
 from collections.abc import Mapping
@@ -16,6 +17,7 @@ import pytest
 from shipmill.agents import AgentsConfig, ProductConfig
 from shipmill.app import (
     CACHE,
+    HELPERS,
     PERMISSIONS,
     PRODUCT_PERMISSIONS,
     Answer,
@@ -23,8 +25,9 @@ from shipmill.app import (
     app_check,
     load_product_token,
     product_cache,
+    write_helpers,
 )
-from shipmill.app_gh import product_refusal
+from shipmill.app_gh import product_refusal, run_gh
 from shipmill.autonomy import Hold
 from shipmill.cli import _product_repos, main
 from shipmill.errors import ReleaseError
@@ -33,7 +36,7 @@ from shipmill.gitrepo import Git
 
 from .test_app import APP_ID, BOT, BOT_ID, BOT_PATH, GRANTED, REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout
-from .test_app_token import FAKE_GH, MintApi, executable
+from .test_app_token import FAKE_GH, FAKE_PYTHON, MintApi, executable
 from .test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier, bg
 
 HOUR = dt.timedelta(hours=1)
@@ -452,6 +455,20 @@ def test_s038_9_gh_product_runs_gh_with_the_product_token(
     assert (env["GH_TOKEN"], env["GH_REPO"]) == ("token-1", target)
     assert [path for path, _ in api.posts] == ["/app/installations/55/access_tokens"]
     assert product_cache_of(root).is_file() and not (state_dir(Git(root)) / CACHE).exists()
+
+
+def test_s038_9_gh_product_in_the_coordinators_session_skips_the_sessions_gh_helper(tmp_path: Path, host: Host) -> None:
+    # the session's PATH starts with its gh helper, which would put the session's token on gh
+    root = checkout(tmp_path, HOME)
+    python = executable(host.fakes / "python", FAKE_PYTHON)
+    helpers = write_helpers(
+        state_dir(Git(root)) / HELPERS, python, root, REPO, APP_ID, key_file(tmp_path), host.env()["PATH"]
+    )
+    environ = host.env(PATH=os.pathsep.join([str(helpers.folder), host.env()["PATH"]]))
+    argv = ["--repo", str(root), "gh", "--app-key", str(key_file(tmp_path)), "--product", "romamo/api", "issue", "list"]
+    assert main(argv, api=ProductApi(), signer=FakeSigner(), environ=environ, home=host.home, gh_runner=run_gh) == 7
+    assert (host.record / "gh-token").read_text() == "token-1"
+    assert not (host.record / "python-args").exists()  # the session's helper never ran
 
 
 def test_s038_9_product_may_follow_app_key_or_come_first(tmp_path: Path, host: Host) -> None:

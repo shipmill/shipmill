@@ -109,6 +109,7 @@ from shipmill.app import (
     prepare_session,
     product_cache,
     product_token,
+    resolve_gh,
 )
 from shipmill.app_create import (
     FLOW_SECONDS,
@@ -1216,7 +1217,9 @@ def _gh_product(
     app_id = app_id_of(top)
     if app_id is None:
         raise ReleaseError(f"{what} needs [agents] app_id in {CONFIG_PATH}; the product's token comes from that App")
-    binary = find_gh(environ)
+    # In the coordinator's session the session's gh helper comes first on PATH, and would put
+    # the session's token over the product token: skip it, as the helper itself does
+    binary = resolve_gh(state_dir(Git(top)) / HELPERS, environ.get("PATH", ""))
     cache = state_dir(Git(top)) / product_cache(coordinated.partition("/")[0])
     now = dt.datetime.now(dt.UTC)
     try:
