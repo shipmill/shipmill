@@ -118,7 +118,7 @@ from shipmill.app_create import (
     pick_owner,
     plan,
 )
-from shipmill.app_gh import GhRunner, as_app, as_host, find_gh, named_repo, run_gh
+from shipmill.app_gh import GhRunner, as_app, as_host, bundled_repo_flag, find_gh, named_repo, run_gh
 from shipmill.app_install import WAIT_SECONDS, guide
 from shipmill.autonomy import Autonomy, AutonomyPolicy, Hold
 from shipmill.claude_auth import ClaudeAuth, claude_auth, run_auth
@@ -991,14 +991,20 @@ def _app_token(
 
 def _component_token(root: Path, repo: str) -> None:
     """S-038-10: a checkout whose config sets [product] home gets a token only for its origin
-    repo (D-47). Outside a checkout there is no config, so nothing to refuse"""
+    repo (D-47). Outside a checkout there is no config, so nothing to refuse; a checkout git
+    can't read still has its config, as `shipmill gh` reads it"""
     git = Git(root)
-    if not git.ok("rev-parse", "--show-toplevel"):
+    readable = git.ok("rev-parse", "--show-toplevel")
+    top = Path(git.run("rev-parse", "--show-toplevel").strip()) if readable else _unreadable_top(root)
+    product = None if top is None else ProductConfig.load(top)
+    if top is None or product is None or not product.component:
         return
-    top = Path(git.run("rev-parse", "--show-toplevel").strip())
-    product = ProductConfig.load(top)
-    if product is not None:
-        product.refuse_outside(repo, _origin_repo(top), f"app-token {repo}")
+    if not readable:
+        raise ReleaseError(
+            f"git can't read the checkout at {top}, a component of {product.home}, so its origin repo "
+            f"can't be told; `git -C {top} status` names why"
+        )
+    product.refuse_outside(repo, _origin_repo(top), f"app-token {repo}")
 
 
 def _app_key(passed: list[str]) -> tuple[Path | None, list[str]]:
@@ -1045,6 +1051,13 @@ def _gh(
             raise ReleaseError(
                 f"git can't read the checkout at {top}, a component of {product.home}, so its origin repo "
                 f"can't be told; `git -C {top} status` names why"
+            )
+        bundled = bundled_repo_flag(gh_args)
+        if bundled is not None:
+            raise ReleaseError(
+                f"gh's {bundled} bundles -R with another flag, and this repo is a component of {product.home} "
+                "([product] home), whose session reaches only its origin repo (D-47); write -R owner/name on its "
+                "own, so the repo it names can be checked"
             )
         named = named_repo(gh_args)
         if named is not None:

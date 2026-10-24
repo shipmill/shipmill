@@ -3,6 +3,7 @@ policy (`shipmill plan`) and the gate's loader alike (S-038-1), `repos` needing 
 (S-038-2), and a component's `shipmill gh -R` and `shipmill app-token` limited to its origin
 repo before any token is minted (S-038-10). No test reaches the network"""
 
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -159,6 +160,22 @@ def test_s038_10_a_components_gh_naming_another_repo_exits_2_naming_d47_before_a
     assert (api.calls, api.posts, runner.calls) == ([], [], [])
 
 
+@pytest.mark.parametrize("flag", [["-sR", OTHER], [f"-sR{OTHER}"], ["-dsR", OTHER]])
+@pytest.mark.parametrize("config", [WITH_APP + COMPONENT, COMPONENT])
+def test_s038_10_a_components_gh_with_r_bundled_after_another_flag_exits_2_naming_d47(
+    tmp_path: Path, host: Host, flag: list[str], config: str
+) -> None:
+    # gh's flag parser reads `-sR other/x` as -s and -R other/x, so the cluster names a repo too
+    root = checkout(tmp_path, config)
+    key_file(tmp_path)
+    api = MintApi()
+    runner = Runner()
+    with pytest.raises(ReleaseError, match="D-47") as raised:
+        gh(root, ["--app-key", str(tmp_path / "app.pem"), "pr", "merge", "1", *flag], host, api, runner)
+    assert "-R owner/name on its own" in str(raised.value)
+    assert (api.calls, api.posts, runner.calls) == ([], [], [])
+
+
 @pytest.mark.parametrize("flag", [[], ["-R", REPO], ["--repo", f"github.com/{REPO}"]])
 def test_s038_10_a_components_gh_on_its_own_repo_runs(tmp_path: Path, host: Host, flag: list[str]) -> None:
     root = checkout(tmp_path, WITH_APP + COMPONENT)
@@ -199,6 +216,18 @@ def test_s038_10_a_components_app_token_for_another_repo_exits_2_naming_d47(
     assert f"app-token {other} names {other}" in str(raised.value)
     assert (api.calls, api.posts) == ([], [])
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("other", [OTHER, REPO])
+def test_s038_10_a_component_checkout_git_cant_read_gets_no_app_token(tmp_path: Path, host: Host, other: str) -> None:
+    # a worktree whose repo is gone: git can't tell the origin, but the config still says component
+    root = checkout(tmp_path, WITH_APP + COMPONENT)
+    shutil.rmtree(root / ".git")
+    (root / ".git").write_text(f"gitdir: {tmp_path / 'gone'}\n")
+    api = MintApi()
+    with pytest.raises(ReleaseError, match=f"component of {HOME}.*git -C"):
+        _token(root, tmp_path, other, api, host)
+    assert (api.calls, api.posts) == ([], [])
 
 
 def test_s038_10_a_components_app_token_for_its_own_repo_mints(

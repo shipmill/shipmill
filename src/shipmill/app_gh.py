@@ -62,6 +62,18 @@ def named_repo(args: Sequence[str]) -> str | None:
     return matched.group(1)
 
 
+def bundled_repo_flag(args: Sequence[str]) -> str | None:
+    """The first short-flag cluster in args that holds -R after another flag (`-sR x`, `-dRx`),
+    which gh's flag parser reads as -R naming a repo, though `named_repo` can't tell its value
+    from another flag's; None when there is none. Nothing after `--` is a flag"""
+    for arg in args:
+        if arg == "--":
+            return None
+        if arg.startswith("-") and not arg.startswith("--") and len(arg) > 2 and arg[1] != "R" and "R" in arg:
+            return arg
+    return None
+
+
 def as_host(environ: Mapping[str, str]) -> dict[str, str]:
     """gh's env with no App: the caller's, less a GH_TOKEN set but empty, so gh uses the
     host's login as the repo chose rather than by a silent fallback"""
