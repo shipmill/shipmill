@@ -155,6 +155,23 @@ Intake (github-issue-triage's triage_state.py):
                   CHAIN_NO_GATE rows, while the rest of the watch stands; an action for a
                   person, never an agent's
 
+Upstream reports (spec 038; only in a home repo's checkout, whose config has [product] repos,
+from github-issue-triage's `upstream_state.py <repo> --json`, run in the checkout with the
+--bot-login; never run without [product] repos, and then none of these rows appear):
+  UPSTREAM_DUE    the reports the coordinator acts on, as owner/repo#N by state: ROUTE_DUE
+                  (route it to the owning repos), ANSWERED (route it by the maintainer's
+                  answer), CLOSE_DUE (every child closed: close it with its summary). An
+                  agent's row: the gate starts the coordinator's session for it
+  UPSTREAM_ASKED  the reports whose needs-decision question has no reply, as owner/repo#N:
+                  the maintainer owes the answer, so an action, never an agent's
+  UPSTREAM_UNTRUSTED  the reports whose author is neither an OWNER, MEMBER, or COLLABORATOR
+                  of their repo nor the --bot-login, as owner/repo#N (reported, never an
+                  action: an interactive session takes them up, D-16)
+  UPSTREAM_UNREADABLE  upstream_state.py failed (a gh error, `shipmill gh --product` refusing,
+                  a config it refuses): one row with the error's first line, in place of the
+                  rows above, while the rest of the watch stands; an action for a person,
+                  never an agent's
+
 --bot-login and --trusted-only go through to triage_state.py: the login shipmill's
 sessions write as (whose comment is the question, and whose issue is trusted), and the
 trust filter of an unattended gate. The config's [product] home (spec 038) goes through
@@ -242,13 +259,13 @@ API error: rerun". An auth, not-found, or any other failure stops it at once.
 
 --json prints one JSON object per row: state, subject, detail, and agent, true when the
 row needs an agent (BOT_FAILED, BOT_STALLED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
-ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING): the rows shipmill gate starts a
+ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING, UPSTREAM_DUE): the rows shipmill gate starts a
 session for. A waiting
 item is in no agent row, so it neither starts a session nor changes the gate's fingerprint.
 Each line has a fix too (spec 011): the one line that clears the row, an exact command where
 one exists (every gh naming the repo, every git its checkout with -C), else the decision to
-make; null for a row with nothing to clear. Every action row, HOLD, WORKTREE_STALE, and
-UNTRUSTED carry one, and PRS_OPEN while no gate lands pull requests ([agents] prs not true).
+make; null for a row with nothing to clear. Every action row, HOLD, WORKTREE_STALE,
+UNTRUSTED, and UPSTREAM_UNTRUSTED carry one, and PRS_OPEN while no gate lands pull requests ([agents] prs not true).
 A fix is built from the repo, numbers, run ids, tags, paths, and config keys, never from an
 issue's or a pull request's text (D-16). The table prints it on an indented "fix:" line
 after its row, unless the row's detail already ends with it. The PRS_OPEN line also has
@@ -259,7 +276,8 @@ Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when an
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
 ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, GATE_SESSIONS_DEAD, SKILL_SHADOWED,
-UPGRADE_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, or MILESTONE_OVERTAKEN row is present, 2
+UPGRADE_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, MILESTONE_OVERTAKEN, UPSTREAM_DUE, UPSTREAM_ASKED,
+or UPSTREAM_UNREADABLE row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
 milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
 `shipmill: ` error is the BOT_PLAN_FAILED row instead), and on a missing or malformed
@@ -305,6 +323,7 @@ SKILLS = Path(__file__).resolve().parents[2]
 SHIPPED = SKILLS / "github-pr-triage" / "scripts" / "shipped.py"
 TRIAGE_STATE = SKILLS / "github-issue-triage" / "scripts" / "triage_state.py"
 CHAINS = SKILLS / "github-issue-triage" / "scripts" / "chains.py"
+UPSTREAM_STATE = SKILLS / "github-issue-triage" / "scripts" / "upstream_state.py"
 INTAKE_STATE = SKILLS / "product-intake" / "scripts" / "intake_state.py"
 DIRECTION = Path("docs/product.md")  # the product's direction (spec 024), whose goals a plan serves
 # intake_state.py's plan states (spec 028): the ones that make it exit 1, in its order, and the rest
@@ -400,6 +419,9 @@ ACTION = {
     "CHAIN_NO_GATE",
     "CHAIN_UNREADABLE",
     "MILESTONE_OVERTAKEN",
+    "UPSTREAM_DUE",
+    "UPSTREAM_ASKED",
+    "UPSTREAM_UNREADABLE",
 }
 # the states whose row needs an agent: --json marks each row's "agent" from this, and
 # shipmill gate starts a session on those rows (SKILL.md's repair table says what it does)
@@ -414,11 +436,12 @@ AGENT = {
     "OPERATE_FAILED",
     "INCIDENT_OPEN",
     "UPGRADE_PENDING",
+    "UPSTREAM_DUE",
 }
 # the states whose every row carries a fix, the one line that clears it (spec 011): every
 # action, and the report-only rows a person still has to act on. PRS_OPEN carries one only
 # while no gate lands pull requests; every other state's fix is None
-FIXED = ACTION | {"HOLD", "WORKTREE_STALE", "UNTRUSTED"}
+FIXED = ACTION | {"HOLD", "WORKTREE_STALE", "UNTRUSTED", "UPSTREAM_UNTRUSTED"}
 FIX_INDENT = " " * 15  # the table's fix line starts under the subject column
 RUN_ID = re.compile(r"/actions/runs/(\d+)(?:/|$)")  # a workflow run's URL names its id
 HEAD_SHA = re.compile(r"[0-9a-f]{40}")  # a pull request's headRefOid (#546)
@@ -2384,6 +2407,89 @@ def chain_rows(
         return [chain_unreadable_row(repo, starts, str(refused))]
 
 
+# -- upstream reports (spec 038) ------------------------------------------------------------
+
+# upstream_state.py's states: the ones that make it exit 1, the coordinator's to act on, in
+# its order, and the rest
+UPSTREAM_ACTION = ("ROUTE_DUE", "ANSWERED", "CLOSE_DUE")
+UPSTREAM_STATES = frozenset({*UPSTREAM_ACTION, "ASKED", "ROUTED", "UNTRUSTED"})
+
+
+def upstream_unreadable_row(repo: str, repo_dir: Path, error: str) -> Row:
+    """UPSTREAM_UNREADABLE: upstream_state.py failed (a gh error, a `shipmill gh --product`
+    refusal, a config it refuses), so the reports weren't read; the rest of the watch stands,
+    as for CHAIN_UNREADABLE. The detail is the error's first line; the fix reruns the script in
+    the checkout to see it, from the repo and the path alone"""
+    lines = [line.strip() for line in error.splitlines() if line.strip()]
+    first = next((line for line in lines if line.startswith("error:")), lines[0] if lines else "no error output")
+    fix = f"see why: uv run --directory {repo_dir} --no-project python {UPSTREAM_STATE} {repo}"
+    return Row("UPSTREAM_UNREADABLE", repo, first, fix)
+
+
+def upstream_report_rows(repo: str, code: int, text: str) -> list[Row]:
+    """UPSTREAM_DUE (the reports the coordinator routes, takes the answer of, or closes),
+    UPSTREAM_ASKED (a question the maintainer owes), and UPSTREAM_UNTRUSTED (reports by an
+    author the coordinator doesn't trust, D-16), from upstream_state.py's exit code and --json
+    lines. Each names its reports as owner/repo#N, checked, never a report's text or note.
+    A line it can't read, or an exit code its lines don't explain, is refused"""
+    listed: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise Refused(f"error: upstream_state.py printed {line[:200]!r}, not JSON: {exc}") from None
+        if not isinstance(row, dict) or row.get("state") not in UPSTREAM_STATES:
+            raise Refused(f"error: upstream_state.py printed a row without a known state: {line[:200]!r}")
+        ref = row.get("ref")
+        if not isinstance(ref, str) or CHAIN_REF.match(ref) is None:
+            raise Refused(f"error: upstream_state.py printed a malformed reference {ref!r}")
+        listed.setdefault(row["state"], []).append(ref)
+    due = "; ".join(f"{s} {' '.join(listed[s])}" for s in UPSTREAM_ACTION if s in listed)
+    if (code == 1) != bool(due):
+        raise Refused(f"error: upstream_state.py exited {code}, which its rows don't explain")
+    rows = []
+    if due:
+        rows.append(Row("UPSTREAM_DUE", repo, due, skill_fix("github-issue-triage", repo)))
+    if "ASKED" in listed:
+        named = " ".join(listed["ASKED"])
+        rows.append(Row("UPSTREAM_ASKED", repo, named, f"answer the needs-decision question on {named}"))
+    if "UNTRUSTED" in listed:
+        review = f"review them in an interactive session: {skill_fix('github-issue-triage', repo)}"
+        rows.append(Row("UPSTREAM_UNTRUSTED", repo, " ".join(listed["UNTRUSTED"]), review))
+    return rows
+
+
+def upstream_rows(repo: str, repo_dir: Path, bot_login: str | None = None, execute: Spawn = spawn) -> list[Row]:
+    """The upstream report rows of a home repo, a checkout whose config has [product] repos:
+    one upstream_state.py run in the checkout, where it reads the config and the product's
+    token. A run that fails is one UPSTREAM_UNREADABLE row instead, never the watch's exit 2"""
+    cmd = [sys.executable, str(UPSTREAM_STATE), repo, "--json"]
+    cmd += ["--bot-login", bot_login] if bot_login is not None else []
+    proc = execute(cmd, repo_dir, None)
+    if proc.returncode not in (0, 1):
+        why = proc.stderr or f"error: upstream_state.py exited {proc.returncode}"
+        return [upstream_unreadable_row(repo, repo_dir, why)]
+    try:
+        return upstream_report_rows(repo, proc.returncode, proc.stdout)
+    except Refused as refused:
+        return [upstream_unreadable_row(repo, repo_dir, str(refused))]
+
+
+def coordinator_rows(
+    text: str | None,
+    policy: Path | None,
+    repo: str,
+    repo_dir: Path,
+    bot_login: str | None = None,
+    execute: Spawn = spawn,
+) -> list[Row]:
+    """The upstream report rows when the config (its text, None without one) has [product]
+    repos, the home repo's coordinator (spec 038); none, and no upstream_state.py run, without"""
+    if text is None or policy is None or product_repos(text, policy) is None:
+        return []
+    return upstream_rows(repo, repo_dir, bot_login, execute)
+
+
 # -- agents --------------------------------------------------------------------------------
 
 
@@ -2487,9 +2593,9 @@ def product_home_toml(raw: dict[str, object], policy: Path) -> str | None:
     return checked_home(table.get("home"), policy)
 
 
-def product_home_310(text: str, policy: Path) -> str | None:
-    """[product] home on Python 3.10: a plain [product] table whose home is a one-line
-    string; any other form of home is refused rather than misread. repos may take any form"""
+def product_table_310(text: str, policy: Path) -> str | None:
+    """The body of a plain [product] table on Python 3.10; None without one. Any other form
+    of the table (an array of tables, a dotted key, a malformed header) is refused"""
     for line in text.splitlines():
         header = TOML_HEADER.match(line)
         if PRODUCT_HEADER.match(line) and (header is None or header.group(1) == "[["):
@@ -2500,10 +2606,17 @@ def product_home_310(text: str, policy: Path) -> str | None:
         name.startswith("product.") for name in tables
     ):
         raise Refused(f"error: {policy}: can't read [product] on Python 3.10: use 3.11+ or a plain [product] table")
-    if "product" not in tables:
+    return tables.get("product")
+
+
+def product_home_310(text: str, policy: Path) -> str | None:
+    """[product] home on Python 3.10: a plain [product] table whose home is a one-line
+    string; any other form of home is refused rather than misread. repos may take any form"""
+    body = product_table_310(text, policy)
+    if body is None:
         return None
     home = None
-    for line in tables["product"].splitlines():
+    for line in body.splitlines():
         if PRODUCT_HOME.match(line) is None:
             continue
         found = PRODUCT_HOME_VALUE.match(line)
@@ -3090,6 +3203,7 @@ def main() -> int:
     table = None
     upgrades = None
     home = None
+    text = None
     if policy is not None:
         text = (repo_dir / policy).read_text(encoding="utf-8")
         rows.append(triage_mode_row(text, policy))
@@ -3125,6 +3239,7 @@ def main() -> int:
     lands = lands_prs(table)
     rows += intake_rows(args.repo, code, triage, args.bot_login, args.trusted_only, lands, upgrades, plans.untrusted)
     rows += chain_rows(args.repo, triage, args.bot_login)
+    rows += coordinator_rows(text, policy, args.repo, repo_dir, args.bot_login)
     rows += active_rows(fetch_active(args.repo), now)
     rows += agent_rows(args.repo, repo_dir, now)
     rows += shipmill_rows(args.repo, repo_dir)

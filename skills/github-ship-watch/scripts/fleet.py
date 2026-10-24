@@ -99,6 +99,9 @@ ACTION = frozenset(
         "CHAIN_NO_GATE",
         "CHAIN_UNREADABLE",
         "MILESTONE_OVERTAKEN",
+        "UPSTREAM_DUE",
+        "UPSTREAM_ASKED",
+        "UPSTREAM_UNREADABLE",
     }
 )
 REPO_ERROR = "REPO_ERROR"

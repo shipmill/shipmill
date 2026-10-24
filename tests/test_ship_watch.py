@@ -861,6 +861,7 @@ AGENT_ROWS = [
     "OPERATE_FAILED",
     "INCIDENT_OPEN",
     "UPGRADE_PENDING",
+    "UPSTREAM_DUE",
 ]
 REPORT_ROWS = [
     "PROMOTION_DUE",
@@ -888,6 +889,9 @@ REPORT_ROWS = [
     "UNTRUSTED",
     "MILESTONE_WAITING",
     "MILESTONE_OVERTAKEN",
+    "UPSTREAM_ASKED",
+    "UPSTREAM_UNTRUSTED",
+    "UPSTREAM_UNREADABLE",
 ]
 
 
@@ -1587,6 +1591,15 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         *ws.plans_rows(
             json.dumps({"goal": "G-1", "kind": "goal", "number": None, "state": "PLAN_DUE", "title": TITLE}), REPO
         ).rows,
+        *ws.upstream_report_rows(
+            REPO,
+            1,
+            "\n".join(
+                json.dumps({"ref": ref, "state": state, "note": TITLE})
+                for ref, state in (("o/r#3", "ROUTE_DUE"), ("x/b#2", "ASKED"), ("x/b#4", "UNTRUSTED"))
+            ),
+        ),
+        ws.upstream_unreadable_row(REPO, CHECKOUT, f"error: {TITLE}"),
     ]
     found: dict[str, list[Any]] = {}
     for row in rows:
@@ -1639,6 +1652,10 @@ FIXES = {
     ],
     "UPGRADE_PENDING": ["/shipmill:github-ship-watch o/r"],
     "MILESTONE_OVERTAKEN": [RENAME],
+    "UPSTREAM_DUE": ["/shipmill:github-issue-triage o/r"],
+    "UPSTREAM_ASKED": ["answer the needs-decision question on x/b#2"],
+    "UPSTREAM_UNTRUSTED": ["review them in an interactive session: /shipmill:github-issue-triage o/r"],
+    "UPSTREAM_UNREADABLE": ["see why: uv run --directory /work/r --no-project python {upstream} o/r"],
 }
 
 
@@ -1668,7 +1685,7 @@ def test_s011_1_every_json_line_adds_a_fix_and_keeps_the_rest(ws: ModuleType, tm
 
 
 def test_s011_2_every_action_state_is_fixed_and_a_fixed_row_needs_its_fix(ws: ModuleType) -> None:
-    assert {"HOLD", "WORKTREE_STALE", "UNTRUSTED"} | ws.ACTION == ws.FIXED
+    assert {"HOLD", "WORKTREE_STALE", "UNTRUSTED", "UPSTREAM_UNTRUSTED"} | ws.ACTION == ws.FIXED
     assert ws.ACTION <= ws.FIXED, "a state in ACTION but not in FIXED ships without a fix"
     assert set(FIXES) == ws.FIXED
     for state in ws.FIXED:
@@ -1682,7 +1699,9 @@ def test_s011_2_every_action_state_is_fixed_and_a_fixed_row_needs_its_fix(ws: Mo
 def test_s011_3_each_fixed_state_carries_the_fix_behaviour_names(ws: ModuleType, tmp_path: Path, state: str) -> None:
     found = fixed_rows(ws, tmp_path)
     copy = tmp_path / ".agents" / "skills" / "github-pr-triage"
-    assert [r.fix for r in found[state]] == [f.format(copy=copy, chains=ws.CHAINS) for f in FIXES[state]]
+    assert [r.fix for r in found[state]] == [
+        f.format(copy=copy, chains=ws.CHAINS, upstream=ws.UPSTREAM_STATE) for f in FIXES[state]
+    ]
 
 
 def test_s011_4_a_failed_runs_fix_reruns_the_run_its_detail_links(ws: ModuleType) -> None:
