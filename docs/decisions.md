@@ -371,3 +371,19 @@ entry that supersedes it, never by editing an old one.
 - Applies to: src/shipmill/gate.py, src/shipmill/plugin.py, src/shipmill/agents.py, src/shipmill/doctor.py, src/shipmill/status.py, src/shipmill/policy.py, src/shipmill/launchd.py, src/shipmill/init.py, src/shipmill/upgrades.py, src/shipmill/__init__.py, .claude-plugin/marketplace.json, .claude-plugin/plugin.json, .github/shipmill.toml, hooks/delivery.py, skills/*/SKILL.md, skills/github-ship-watch/scripts/watch_state.py, skills/shipmill-setup/scripts/setup_state.py, skills/github-pr-triage/scripts/shipped.py, [agents] plugin_update, requires, shipmill status
 - Enforced by: review, until spec 031 is built
 - Supersedes: D-43
+
+## D-45: Gates read every repo of the fleet and write only to their own
+
+- Decided: 2026-10-24, in shipmill/shipmill#338
+- Rule: A gate session gets two App tokens: the write token limited to the gate's repo (D-14, unchanged), and a read-only token over the repos of the fleet, used only to read the state of items in other repos; a cross-repo effect happens when the waiting repo reads its upstream's state, never by writing to another repo. This refines D-14
+- Why: Chains across repos (spec 017) read an upstream item's state, but the App's token covers only the gate's repo, so an upstream in another private repo reads UNREADABLE and the chain stalls. An installation token carries the same permissions on every repo it lists, so reading the fleet with the write token would also let a session write anywhere; a separate read-only token keeps writes at home
+- Applies to: src/shipmill/app.py, src/shipmill/gate.py, shipmill app-token, skills/github-issue-triage/scripts/chains.py, skills/github-issue-triage/scripts/triage_state.py, [agents] app_id, fleet
+- Enforced by: review, until the implementing PR adds tests
+
+## D-46: A plan across repos lives in the product's home repo and reaches the others through a trusted marker
+
+- Decided: 2026-10-24, in shipmill/shipmill#338
+- Rule: A plan for a product that spans repos, with its stand-in issues and milestone, lives in the product's home repo: its main repo, or a separate planning repo only for a product without one. Once the maintainer accepts it, the maintainer posts a trusted marker that names each repo's items, and each repo's own session takes up its part, the way D-29's marker confirms a close; no session writes the plan's items into another repo
+- Why: Writing into other repos would need a write token beyond the gate's repo (D-45 keeps writes at home), and filing each repo's items by hand in a session the maintainer starts would add a manual step to every plan; a trusted marker carries the maintainer's accept to each repo without letting one repo's text steer another's session (D-16)
+- Applies to: skills/product-intake/*, docs/design/product-layer.md, plans across repos, milestones
+- Enforced by: review
