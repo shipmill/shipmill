@@ -64,7 +64,7 @@ Read it from the tags and the manifest version.
 
 - **One mechanism, several issues:** decide on it once and comment the same plan on each issue. For example, `env=` aliases for both flags and settings, or a data-only output, line-mode stdin, and typed stdin records.
 - **Small part, big part:** ship the small part now, and postpone the rest. For example, an unsupported annotation raising `RegistrationError` now, with typed lists of objects later.
-- **Spec-governed behaviour:** when the fix would depart from a spec the project implements (a default value, a required field), the verdict is **clarify**. File an issue on the spec repo with the requirement IDs, the exact numbers, and a proposal, then link it.
+- **Spec-governed behaviour:** when the fix would depart from a spec the project implements (a default value, a required field), the verdict is **clarify**. File an upstream report in this repo with the requirement IDs, the exact numbers, and a proposal ([comments.md](comments.md), Upstream report), and hold the issue on it; never file an issue in the spec's repo.
 
 ## Links between issues
 
@@ -74,6 +74,8 @@ An issue waits on another in either of two forms, and `triage_state.py` reads th
 - **Native:** an issue GitHub records it blocked by (`blockedBy`), or a sub-issue. The note marks a hold only GitHub records `(native)` and a sub-issue `(child)`, such as `o/r#12:open(child)`; a parent's note starts with `children K/N closed`. Where the forge can't read them, the script holds on text alone and prints one `note: native relations unavailable:` line
 
 Write a link with `chains.py link`, which writes both forms at once: `chains.py link <owner/repo#N> --blocked-by <owner/repo#M>` (N waits on M) or `chains.py link <owner/repo#P> --child <owner/repo#C>` (C under P, and P waits on it). Run again, it prints `already linked` and changes nothing; when the forge refuses the relation (no dependencies or sub-issues there, a cross-owner link) it still writes the line and prints `text only: <error>`. It exits 2 naming the reference for a malformed one, a missing issue, a pull request, or an issue linked to itself. Run from a checkout whose config sets `[agents] app_id`, it writes through `shipmill gh` as the App and exits 2 with `shipmill gh`'s message when that fails. A relation someone set in the UI holds as it is: don't copy it into text.
+
+**In a component** (its config sets `[product] home`), an item waits only on items in the same repo, and `chains.py link` exits 2, before any write, for a reference to another repo (D-47). Write a dependency on another repo as a stand-in instead of a direct `Depends on owner/repo#N` line: an issue in this repo labelled `upstream`, saying what work it needs, with a `Stands in for owner/repo#N` line when the other repo's issue already exists ([comments.md](comments.md), Upstream report). Hold the waiting issue on the stand-in with `chains.py link <owner/repo#N> --blocked-by <owner/repo#S>`; the product's coordinator routes it and closes it once the other repo's work is done (SKILL.md, Reports from other repos). Outside a product, a hold on another repo is written as above.
 
 ## A person's item
 
@@ -104,6 +106,7 @@ A check the session's tools can't run (a host it can't reach, a command outside 
 | DONE_NOT_CLOSED | Close it and cite the merged PR |
 | SUSPECT_CLOSE | Check the fix is on the default branch. If it isn't, reopen and explain; if the close is right, post the close-confirmed comment (comments.md, Follow-ups) |
 | BLOCKED | Nothing, until the upstream issue closes or the spec PR merges |
+| UPSTREAM | Nothing: an upstream report waits outside, for the coordinator its note names or, with `no coordinator`, the maintainer, who closes it with what changed |
 | OFF_MILESTONE | A build issue isn't in its feature issue's milestone (spec 022): set its milestone to the parent's, as the note names it |
 | UNFILLED | A `Depends on #{Bk}` placeholder from `specs.py split` was never filled in: edit the issue body to name the dependency's number |
 | SPEC_REFUSED | The spec PR it waits on closed without merging: the spec was refused. Decide again in a new triage comment: revise the spec in a new PR (with a new hold line), postpone, or won't fix |

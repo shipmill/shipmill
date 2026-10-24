@@ -121,7 +121,58 @@ Options:
 1. {option}: {consequence}
 2. {option}: {consequence}
 
-I'd go with {n} because {reason}.{ Filed upstream as <owner/repo#N>.}
+I'd go with {n} because {reason}.{ The other repo's part is reported in #{R}, an upstream report in this repo.}
+```
+
+What only another repo can settle (a spec the project implements, a module another repo owns) goes in an upstream report in this repo, below, never in an issue filed in the other repo.
+
+## Upstream report
+
+A fault traced to a module another repo owns is reported in this repo, never in the other one (spec 038, D-47): an issue labelled `upstream`, filed with `issue create --label upstream --body-file <file>` through `shipmill gh` (as the App with `[agents] app_id` set). Its body:
+
+```markdown
+{What fails, in one sentence}. It holds #{N}.
+
+## Reproduce
+
+{How to reproduce it: the steps or the command, and what came back}
+
+## Touches
+
+{The object it touches: an endpoint, a table, an index, a package and its version}
+
+## Suspected code
+
+{The place in the module's source, as owner/repo path:line, when you traced the cause there; a guess you couldn't trace starts with `Guess:`, such as "Guess: the index the nightly job rebuilds"}
+```
+
+A stand-in for a dependency on another repo's work has the same label: an issue in the waiting repo saying what work it needs, with a `Stands in for owner/repo#N` line when the other repo's issue already exists ([triage-rubric.md](triage-rubric.md), Links between issues).
+
+Hold the waiting issue on it with `chains.py link <owner/repo#N> --blocked-by <owner/repo#R>`, both in this repo, and post the hold line on the waiting issue:
+
+```markdown
+On hold: waits on {owner/repo}#{R}, the upstream report of {what fails}
+```
+
+Then the report's triage comment, the first variant when the config sets `[product] home`, the second without:
+
+```markdown
+Triage: **upstream**. Routed by {owner/home}, the product's coordinator: it files the work in the repos that own it and closes this with what changed.
+```
+
+```markdown
+Triage: **upstream**. No coordinator routes it: it waits for @{maintainer}, who reports it to the owning repo and closes this with what changed.
+```
+
+The coordinator's close, once every child closed (SKILL.md, Reports from other repos), written with the product token; then it closes the report as completed, or as not planned when a child closed as not planned:
+
+```markdown
+Every issue this was routed to is closed:
+
+- {owner/repo#C}: {completed | not planned}, {by owner/repo#PR | with no pull request}
+- {owner/repo#D}: {completed | not planned}, {by owner/repo#PR | with no pull request}
+
+{What changed, in one or two sentences, for the agent that waits on this.}{ Closing as not planned: {owner/repo#D} won't be done, so the issue waiting on this is decided again.}
 ```
 
 ## Hold (blocked on something outside the repo)
