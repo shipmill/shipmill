@@ -11,6 +11,11 @@ one, limited to the gate's repo, at each call, or reuse the one cached in `app-t
 (mode 0600) while it has at least 10 minutes left. A token reaches stdout only as
 `shipmill app-token`'s answer, which the helpers read; never an error message, a process's
 arguments, or a helper's file.
+
+The product's home repo, the coordinator, has a second token (spec 038, D-47): over the repos
+its `[product] repos` lists under one owner, with PRODUCT_PERMISSIONS, cached apart in
+`app-token-product-<owner>.json`. It never reaches the session's cache or helpers, so a push
+from the coordinator's session still reaches only the home repo.
 """
 
 import base64
@@ -68,6 +73,16 @@ PERMISSIONS = (
     Permission("checks", "Checks", Access.READ),
     Permission("statuses", "Commit statuses", Access.READ),
     Permission("discussions", "Discussions", Access.READ),
+    Permission("metadata", "Metadata", Access.READ),
+)
+
+# Spec 038, D-47: the coordinator's second token, over the product's repos: it reads their code
+# and items and files and links issues there; it never writes contents, pull requests, actions,
+# or workflows
+PRODUCT_PERMISSIONS = (
+    Permission("contents", "Contents", Access.READ),
+    Permission("issues", "Issues", Access.WRITE),
+    Permission("pull_requests", "Pull requests", Access.READ),
     Permission("metadata", "Metadata", Access.READ),
 )
 
@@ -253,7 +268,14 @@ def installation(
 ) -> Installation:
     """Spec 004, At launch step 3: the App's slug, then its installation on repo, which must
     grant every permission in the table (a session's, unless another is given)"""
-    slug = app_slug(app_id, token, api)
+    return installed(app_id, app_slug(app_id, token, api), repo, token, api, table)
+
+
+def installed(
+    app_id: int, slug: str, repo: str, token: str, api: Api, table: tuple[Permission, ...] = PERMISSIONS
+) -> Installation:
+    """`installation` once the App's slug is known: its installation on repo, granting every
+    permission in the table; NotInstalled and Lacks name the repo"""
     path = f"/repos/{repo}/installation"
     answer = api.get(path, token)
     if answer.status == 404:
@@ -314,14 +336,30 @@ def bot_id(slug: str, app_id: int, api: Api) -> int:
 AppCheck = Callable[[int, dt.datetime], Identity]
 
 
-def app_check(repo: str, key: Path | None, home: Path, signer: Signer, api: Api) -> AppCheck:
+def _no_product() -> tuple[str, ...]:
+    return ()
+
+
+def app_check(
+    repo: str,
+    key: Path | None,
+    home: Path,
+    signer: Signer,
+    api: Api,
+    product: Callable[[], tuple[str, ...]] = _no_product,
+) -> AppCheck:
     """The gate's App check for repo, spec 004's At launch steps 1 to 4: the key (`--app-key`,
     else the default path for the App's id), the JWT, the installation, then the bot account.
+    In the product's home repo (S-038-7) product gives the config's `[product] repos`, and the
+    App must be installed on each with PRODUCT_PERMISSIONS before any session starts.
     Any failure raises ReleaseError (exit 2). It writes nothing, so a dry run runs it too"""
 
     def check(app_id: int, now: dt.datetime) -> Identity:
         path = check_key(key if key is not None else default_key(app_id, home))
-        found = installation(app_id, repo, jwt(app_id, path, now, signer), api)
+        bearer = jwt(app_id, path, now, signer)
+        found = installation(app_id, repo, bearer, api)
+        for listed in product():
+            installed(app_id, found.slug, listed, bearer, api, PRODUCT_PERMISSIONS)
         return Identity(app_id, found.slug, bot_id(found.slug, app_id, api), path)
 
     return check
@@ -513,6 +551,137 @@ def app_token(cache: Path, repo: str, app_id: int, key: Path, now: dt.datetime, 
         return cached.value
     fresh = mint(app_id, repo, key, now, signer, api)
     save_token(cache, fresh)
+    return fresh.value
+
+
+def product_cache(owner: str) -> str:
+    """Spec 038: the product token's cache for owner's repos, beside the session's `app-token.json`
+    in the state folder and never the same file"""
+    if not _plain(owner):
+        raise ReleaseError(f"the owner is letters, digits, '.', '-', or '_'; got {owner!r}")
+    return f"app-token-product-{owner.lower()}.json"
+
+
+def _same_repos(one: tuple[str, ...], other: tuple[str, ...]) -> bool:
+    return sorted(r.lower() for r in one) == sorted(r.lower() for r in other)
+
+
+@dataclass(frozen=True, slots=True)
+class ProductToken:
+    """The coordinator's token over one owner's listed repos (spec 038); repr leaves the value out"""
+
+    value: str = field(repr=False)
+    expires: dt.datetime
+    repos: tuple[str, ...]
+    app_id: int
+
+    def reusable(self, repos: tuple[str, ...], app_id: int, now: dt.datetime) -> bool:
+        """S-038-8: the same App, the config's very repos, and at least 10 minutes left"""
+        return self.app_id == app_id and _same_repos(self.repos, repos) and self.expires - now >= REUSE_FOR
+
+
+def load_product_token(path: Path) -> ProductToken | None:
+    """The cached product token, or None when there is none; a malformed one raises naming it.
+    No message quotes the file, which holds the token"""
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_bytes())
+    except json.JSONDecodeError, UnicodeDecodeError:
+        raise _malformed(path, "not JSON") from None
+    if not isinstance(data, dict):
+        raise _malformed(path, "not a JSON object")
+    value, repos, app_id = data.get("token"), data.get("repositories"), data.get("app_id")
+    if not isinstance(value, str) or not value:
+        raise _malformed(path, "token is not a non-empty string")
+    if not isinstance(repos, list) or not repos or not all(isinstance(r, str) and is_plain_repo(r) for r in repos):
+        raise _malformed(path, "repositories is not a non-empty list of owner/name")
+    if not isinstance(app_id, int) or isinstance(app_id, bool):
+        raise _malformed(path, "app_id is not an integer")
+    expires = _expiry(data.get("expires_at"))
+    if expires is None:
+        raise _malformed(path, "expires_at is not an ISO time with an offset")
+    return ProductToken(value, expires, tuple(repos), app_id)
+
+
+def save_product_token(path: Path, token: ProductToken) -> None:
+    """Cache the product token with mode 0600, written whole as `save_token` writes"""
+    record = {
+        "app_id": token.app_id,
+        "repositories": list(token.repos),
+        "expires_at": token.expires.isoformat(),
+        "token": token.value,
+    }
+    _write_atomic(path, (json.dumps(record, indent=2) + "\n").encode(), 0o600)
+
+
+def _product_scope(data: Mapping[str, object], repos: tuple[str, ...], path: str) -> None:
+    """S-038-6, mirroring `_scope`: GitHub's answer covers exactly the asked repos and grants
+    no permission broader than PRODUCT_PERMISSIONS (a key not asked, or write where read was)"""
+    listed = data.get("repositories")
+    names: list[str] = []
+    if isinstance(listed, list):
+        for each in listed:
+            full = each.get("full_name") if isinstance(each, dict) else None
+            if not isinstance(full, str):
+                raise ReleaseError(f"POST {path} gave a repository with no full_name; refusing the token")
+            names.append(full)
+    asked = ", ".join(repos)
+    if not isinstance(listed, list) or len(names) != len(repos) or not _same_repos(tuple(names), repos):
+        raise ReleaseError(f"POST {path} gave a token for other repositories than {asked}; refusing it")
+    granted = data.get("permissions")
+    if not isinstance(granted, dict):
+        raise ReleaseError(f"POST {path} gave a token without its permissions; refusing it")
+    table = {p.key: p.access for p in PRODUCT_PERMISSIONS}
+    for key, value in granted.items():
+        access = _ACCESS.get(value) if isinstance(value, str) else None
+        wanted = table.get(key) if isinstance(key, str) else None
+        if access is None or wanted is None or not wanted.covers(access) or value == "admin":
+            raise ReleaseError(
+                f"POST {path} gave a token with {key}: {value}, broader than the coordinator asks (D-47); refusing it"
+            )
+
+
+def mint_product(
+    app_id: int, repos: tuple[str, ...], key: Path, now: dt.datetime, signer: Signer, api: Api
+) -> ProductToken:
+    """Spec 038: one installation token over repos, all of one owner, asking PRODUCT_PERMISSIONS.
+    Each repo's installation must grant them (NotInstalled and Lacks name the repo), and all must
+    be the one installation of the App on that owner"""
+    owners = {r.partition("/")[0].lower() for r in repos}
+    if not repos or len(owners) != 1 or not all(is_plain_repo(r) for r in repos):
+        raise ReleaseError(f"a product token covers owner/name repos of one owner; got {', '.join(repos) or 'none'}")
+    bearer = jwt(app_id, check_key(key), now, signer)
+    slug = app_slug(app_id, bearer, api)
+    ids = {installed(app_id, slug, repo, bearer, api, PRODUCT_PERMISSIONS).id for repo in repos}
+    if len(ids) != 1:
+        raise ReleaseError(f"app {slug} has more than one installation over {', '.join(repos)}; refusing the token")
+    path = f"/app/installations/{ids.pop()}/access_tokens"
+    body = {
+        "repositories": [repo_name(r) for r in repos],
+        "permissions": {p.key: str(p.access) for p in PRODUCT_PERMISSIONS},
+    }
+    data = _ok(api.post(path, bearer, body), path, app_id, "POST", 201)
+    value = data.get("token")
+    if not isinstance(value, str) or not value or any(c.isspace() for c in value):
+        raise ReleaseError(f"POST {path} gave no token")
+    expires = _expiry(data.get("expires_at"))
+    if expires is None:
+        raise ReleaseError(f"POST {path} gave no expires_at with an offset")
+    _product_scope(data, repos, path)
+    return ProductToken(value, expires, repos, app_id)
+
+
+def product_token(
+    cache: Path, repos: tuple[str, ...], app_id: int, key: Path, now: dt.datetime, signer: Signer, api: Api
+) -> str:
+    """S-038-8: the cached product token while it has 10 minutes left and covers the config's
+    very repos, else a new one, cached only once its scope checks out"""
+    cached = load_product_token(cache)
+    if cached is not None and cached.reusable(repos, app_id, now):
+        return cached.value
+    fresh = mint_product(app_id, repos, key, now, signer, api)
+    save_product_token(cache, fresh)
     return fresh.value
 
 

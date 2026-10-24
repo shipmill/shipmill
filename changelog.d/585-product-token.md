@@ -1,0 +1,3 @@
+### Added
+
+- The coordinator's token (spec 038, D-47): in the product's home repo, `shipmill app-token OWNER/NAME --product` and `shipmill gh --product OWNER/NAME` use a second App token over the repos `[product] repos` lists under OWNER, asking contents read, issues write, pull requests read, and metadata read; a token GitHub grants wider than asked is refused, it is cached apart in `app-token-product-<owner>.json`, `gh --product` refuses the commands that write code or pull requests, the home repo's gate checks the App on every listed repo before it starts a session, and a `[product]` naming the checkout's own repo exits 2 (#585)

@@ -37,11 +37,15 @@
                   --prune removes the REMOVABLE ones and their local branches
   app-token       print a GitHub App installation token limited to one repo, cached while it has
                   10 minutes left (in the checkout, else under $XDG_CACHE_HOME/shipmill);
-                  --git-credential answers as git's credential helper
+                  --git-credential answers as git's credential helper; --product, in the
+                  product's home repo, prints the coordinator's token over the listed repos of
+                  the repo's owner (spec 038)
   gh              run gh with the arguments that follow, as the repo's GitHub App when
                   [agents] app_id is set (the token limited to gh's -R/--repo, else origin's
                   repo), else as the host's gh login; exits with gh's code. Every gh call that
-                  writes in an agent session goes through it
+                  writes in an agent session goes through it. A leading --product OWNER/NAME
+                  runs it with the coordinator's token, refusing commands that write code or
+                  pull requests (D-47)
   app-create      create the gate's GitHub App in one click: owner and visibility planned from the
                   repos holding .github/shipmill.toml, the key saved with mode 0600
   app-install     guide installing the App on more repos: the App's Install App page and what to pick
@@ -101,7 +105,11 @@ from shipmill.app import (
     check_key,
     credential,
     default_key,
+    is_plain_repo,
     prepare_session,
+    product_cache,
+    product_token,
+    resolve_gh,
 )
 from shipmill.app_create import (
     FLOW_SECONDS,
@@ -118,7 +126,16 @@ from shipmill.app_create import (
     pick_owner,
     plan,
 )
-from shipmill.app_gh import GhRunner, as_app, as_host, bundled_repo_flag, find_gh, named_repo, run_gh
+from shipmill.app_gh import (
+    GhRunner,
+    as_app,
+    as_host,
+    bundled_repo_flag,
+    find_gh,
+    named_repo,
+    product_refusal,
+    run_gh,
+)
 from shipmill.app_install import WAIT_SECONDS, guide
 from shipmill.autonomy import Autonomy, AutonomyPolicy, Hold
 from shipmill.claude_auth import ClaudeAuth, claude_auth, run_auth
@@ -463,6 +480,15 @@ def _parser() -> argparse.ArgumentParser:
             "as password for https://github.com; store, erase, and other operations print nothing"
         ),
     )
+    p.add_argument(
+        "--product",
+        action="store_true",
+        help=(
+            "in the product's home repo: the coordinator's token over every repo [product] repos lists under "
+            "owner (owner/name must be listed), with contents read, issues write, pull requests read, and "
+            "metadata read, cached in app-token-product-<owner>.json (spec 038, D-47)"
+        ),
+    )
 
     sub.add_parser(
         "gh",
@@ -470,7 +496,9 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "run gh with the arguments that follow, as [agents] app_id's GitHub App when set, else as the "
             "host's gh login (spec 012); use it for every gh call that writes from an agent session. "
-            "Only a leading --app-key PATH is shipmill's (default: ~/.config/shipmill/app-<app_id>.pem)"
+            "Only a leading --app-key PATH (default: ~/.config/shipmill/app-<app_id>.pem) and --product "
+            "OWNER/NAME are shipmill's; --product runs gh with the coordinator's token for OWNER's listed repos "
+            "and refuses the commands that write code or pull requests (spec 038, D-47)"
         ),
     )
 
@@ -907,7 +935,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
     decision, launched, waiting, pruned = gate(
         git,
         args.slug,
-        lambda: AgentsConfig.load(root),
+        lambda: AgentsConfig.load(root, args.slug),
         ClaudeCli(args.claude_arg),
         lambda read: watch(args.slug, root, read),
         dt.datetime.now(dt.UTC),
@@ -916,7 +944,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         pruner(git, github, sessions),
         args.refresh,
         args.dry_run,
-        app_check(args.slug, args.app_key, Path.home(), Openssl(), UrllibApi()),
+        app_check(args.slug, args.app_key, Path.home(), Openssl(), UrllibApi(), lambda: _product_repos(root)),
         args.app_key is not None,
         session_env,
         lambda: host_login(root),
@@ -935,6 +963,13 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         return 0
     print("\n".join(tick_lines(decision, launched, waiting, pruned, args.dry_run)))
     return 0
+
+
+def _product_repos(root: Path) -> tuple[str, ...]:
+    """S-038-7: the repos the gate's App check covers with the product permissions: the config's
+    [product] repos in the home repo, none elsewhere"""
+    found = ProductConfig.load(root)
+    return () if found is None else found.repos
 
 
 def _split_gh(argv: list[str]) -> tuple[list[str], list[str] | None]:
@@ -976,6 +1011,21 @@ def _app_token(
     if app_id < 1:
         raise ReleaseError(f"--app-id must be 1 or more, got {app_id}")
     key: Path = args.app_key if args.app_key is not None else default_key(app_id, home)
+    if args.product:
+        if args.git_credential is not None:
+            raise ReleaseError(
+                "--product's token never goes to git: the coordinator's pushes reach only the home repo, "
+                "through the session's own token (D-47)"
+            )
+        top, repos = _coordinator(root, args.slug, f"app-token {args.slug} --product")
+        configured = app_id_of(top)
+        if configured != app_id:
+            raise ReleaseError(
+                f"--app-id {app_id} isn't the App the product's token comes from, [agents] app_id {configured}"
+            )
+        cache = state_dir(Git(top)) / product_cache(args.slug.partition("/")[0])
+        print(product_token(cache, repos, app_id, key, dt.datetime.now(dt.UTC), signer, api))
+        return 0
     cache = _cache(root, args.slug, environ, home)
     _component_token(root, args.slug)
 
@@ -1007,16 +1057,55 @@ def _component_token(root: Path, repo: str) -> None:
     product.refuse_outside(repo, _origin_repo(top), f"app-token {repo}")
 
 
-def _app_key(passed: list[str]) -> tuple[Path | None, list[str]]:
-    """A leading --app-key PATH (or --app-key=PATH) is shipmill's, since gh has no such flag
-    before its command; the rest goes to gh untouched"""
-    if passed[:1] == ["--app-key"]:
-        if len(passed) < 2:
-            raise ReleaseError("--app-key needs the App's private key, such as ~/.config/shipmill/app-123.pem")
-        return Path(passed[1]).expanduser(), passed[2:]
-    if passed and passed[0].startswith("--app-key="):
-        return Path(passed[0].removeprefix("--app-key=")).expanduser(), passed[1:]
-    return None, passed
+def _coordinator(root: Path, repo: str, what: str) -> tuple[Path, tuple[str, ...]]:
+    """Spec 038: the home repo's checkout and the listed repos of repo's owner, which one
+    product token covers. Exits 2 in a component (S-038-10), in a repo its own [product] names
+    (S-038-3), and without [product] repos or with repo not listed (S-038-5, S-038-9); all
+    before any token is minted"""
+    if not is_plain_repo(repo):
+        raise ReleaseError(f"{what} needs owner/name of letters, digits, '.', '-', or '_'; got {repo!r}")
+    if not root.is_dir():
+        raise ReleaseError(f"--repo {root} is not a folder")
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(
+            f"{what} needs the product's home checkout, and git can't read {root}; `git -C {root} status` names why"
+        )
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    product = ProductConfig.load(top)
+    if product is None:
+        raise ReleaseError(f"{what} needs [product] repos in {CONFIG_PATH}; {top} has no [product] table")
+    product.refuse_product()
+    product.refuse_self(_known_origin(top))
+    return top, product.coordinated(repo, what)
+
+
+def _leading(passed: list[str]) -> tuple[Path | None, str | None, list[str]]:
+    """A leading --app-key PATH and --product OWNER/NAME (or --flag=value), in either order, are
+    shipmill's, since gh has no such flags before its command; the rest goes to gh untouched"""
+    key: Path | None = None
+    product: str | None = None
+    rest = passed
+    while rest:
+        flag, equals, value = rest[0].partition("=")
+        if flag not in ("--app-key", "--product"):
+            break
+        if not equals:
+            if len(rest) < 2:
+                need = "the App's private key, such as ~/.config/shipmill/app-123.pem"
+                raise ReleaseError(f"--app-key needs {need}" if flag == "--app-key" else "--product needs OWNER/NAME")
+            value, rest = rest[1], rest[2:]
+        else:
+            rest = rest[1:]
+        if flag == "--app-key":
+            if key is not None:
+                raise ReleaseError("--app-key is given twice")
+            key = Path(value).expanduser()
+        else:
+            if product is not None:
+                raise ReleaseError("--product is given twice")
+            product = value
+    return key, product, rest
 
 
 def _unreadable_top(root: Path) -> Path | None:
@@ -1038,7 +1127,9 @@ def _gh(
     """Spec 012: gh as the App when the checkout's config sets [agents] app_id, else as the
     host's login; gh's exit code. With app_id set any failure to get the token exits 2 and gh
     never runs (D-14); GH_TOKEN is never set but empty"""
-    key, gh_args = _app_key(passed)
+    key, coordinated, gh_args = _leading(passed)
+    if coordinated is not None:
+        return _gh_product(root, coordinated, key, gh_args, api, signer, environ, home, runner)
     if not root.is_dir():  # a mistyped --repo must not read as a repo with no App
         raise ReleaseError(f"--repo {root} is not a folder")
     git = Git(root)
@@ -1046,6 +1137,8 @@ def _gh(
     top = Path(git.run("rev-parse", "--show-toplevel").strip()) if readable else _unreadable_top(root)
     app_id = None if top is None else app_id_of(top)
     product = None if top is None else ProductConfig.load(top)
+    if top is not None and product is not None and readable:  # S-038-3: before any token, App or not
+        product.refuse_self(_known_origin(top))
     if top is not None and product is not None and product.component:  # S-038-10: before any token, App or not
         if not readable:
             raise ReleaseError(
@@ -1081,6 +1174,59 @@ def _gh(
     except NotInstalled as exc:
         raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {repo}`") from None
     return runner([str(binary), *gh_args], as_app(environ, token))
+
+
+def _gh_product(
+    root: Path,
+    coordinated: str,
+    key: Path | None,
+    gh_args: list[str],
+    api: Api,
+    signer: Signer,
+    environ: Mapping[str, str],
+    home: Path,
+    runner: GhRunner,
+) -> int:
+    """S-038-9: gh with the coordinator's token over the listed repos of coordinated's owner.
+    Before any token is minted it exits 2 in a component, without [product] repos, for a repo
+    not listed, for a -R naming a repo not listed or of another owner, and for a command that
+    writes code or pull requests (D-47). gh works on -R's repo, else on coordinated, never on
+    the checkout's origin: GH_REPO names it"""
+    what = f"gh --product {coordinated}"
+    top, repos = _coordinator(root, coordinated, what)
+    refused = product_refusal(gh_args)
+    if refused is not None:
+        raise ReleaseError(
+            f"{refused} under --product is refused: the coordinator never changes files, pushes, opens, edits, "
+            "or merges a pull request, or runs a workflow outside the home repo (D-47); name the gh command "
+            "first and its subcommand right after it, from the ones that read"
+        )
+    bundled = bundled_repo_flag(gh_args)
+    if bundled is not None:
+        raise ReleaseError(
+            f"gh's {bundled} bundles -R with another flag; under --product write -R owner/name on its own, so the "
+            "repo it names can be checked against [product] repos (D-47)"
+        )
+    named = named_repo(gh_args)
+    target = coordinated if named is None else named
+    if named is not None and named.lower() not in {r.lower() for r in repos}:
+        raise ReleaseError(
+            f"gh's -R {named} isn't a listed repo of {coordinated.partition('/')[0]}, which the token for "
+            f"{coordinated} covers: {', '.join(repos)}; name it with --product (D-47)"
+        )
+    app_id = app_id_of(top)
+    if app_id is None:
+        raise ReleaseError(f"{what} needs [agents] app_id in {CONFIG_PATH}; the product's token comes from that App")
+    # In the coordinator's session the session's gh helper comes first on PATH, and would put
+    # the session's token over the product token: skip it, as the helper itself does
+    binary = resolve_gh(state_dir(Git(top)) / HELPERS, environ.get("PATH", ""))
+    cache = state_dir(Git(top)) / product_cache(coordinated.partition("/")[0])
+    now = dt.datetime.now(dt.UTC)
+    try:
+        token = product_token(cache, repos, app_id, key or default_key(app_id, home), now, signer, api)
+    except NotInstalled as exc:
+        raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {' '.join(repos)}`") from None
+    return runner([str(binary), *gh_args], {**as_app(environ, token), "GH_REPO": target})
 
 
 def _app_create(
@@ -1308,6 +1454,12 @@ def _downstream_collect(root: Path, args: argparse.Namespace, library: Library, 
 def _doctor_repo(root: Path) -> str | None:
     """The repo doctor reads the plugin's installs for: the origin's, or None without a GitHub
     origin, which doctor's remote check reports"""
+    return _known_origin(root)
+
+
+def _known_origin(root: Path) -> str | None:
+    """The checkout's GitHub origin as owner/name, or None without an origin remote or one on
+    GitHub"""
     try:
         return _origin_repo(root)
     except ReleaseError:  # no origin remote

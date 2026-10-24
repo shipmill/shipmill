@@ -74,8 +74,9 @@ class AgentsConfig:
         )
 
     @classmethod
-    def load(cls, root: Path) -> AgentsConfig:
-        """The [agents] section alone: a repo may use the gate without the release keys"""
+    def load(cls, root: Path, repo: str | None = None) -> AgentsConfig:
+        """The [agents] section alone: a repo may use the gate without the release keys. repo,
+        the gate's, must not be named in its own [product] (S-038-3)"""
         if not (root / CONFIG_PATH).is_file():
             raise ReleaseError(f"no {CONFIG_PATH} in {root}; add an [agents] section with a prompt to use the gate")
         path = config_path(root)
@@ -83,7 +84,9 @@ class AgentsConfig:
         if "agents" not in raw:
             raise ReleaseError(f"{path} has no [agents] section; add one with a prompt to use the gate")
         agents = cls.parse(Table(raw, path.name).table("agents"))
-        ProductConfig.read(Table(raw, path.name), agents.app_id)  # the gate refuses a bad [product] too
+        product = ProductConfig.read(Table(raw, path.name), agents.app_id)  # the gate refuses a bad [product] too
+        if product is not None:
+            product.refuse_self(repo)
         return agents
 
 
@@ -171,6 +174,26 @@ class ProductConfig:
             f"so its session reads and writes only {own} (D-47); report work for another repo in "
             "this repo, labelled upstream"
         )
+
+    def refuse_self(self, repo: str | None) -> None:
+        """S-038-3: a repo never names itself, as its home or as one of its components; None (a
+        repo that can't be told) has nothing to compare"""
+        if repo is None:
+            return
+        if self.home is not None and self.home.lower() == repo.lower():
+            raise ReleaseError(f"[product] home names {self.home}, this checkout's own repo; a repo never names itself")
+        if any(listed.lower() == repo.lower() for listed in self.repos):
+            raise ReleaseError(f"[product] repos lists {repo}, this checkout's own repo; a repo never names itself")
+
+    def coordinated(self, repo: str, what: str) -> tuple[str, ...]:
+        """S-038-5, S-038-9: the listed repos of repo's owner, which one product token covers;
+        exits 2 when the config lists no repos (not the home repo) or doesn't list repo"""
+        if not self.repos:
+            raise ReleaseError(f"{what} needs [product] repos in {CONFIG_PATH}; only the product's home repo has them")
+        if not any(listed.lower() == repo.lower() for listed in self.repos):
+            raise ReleaseError(f"{what} names {repo}, which [product] repos doesn't list: {', '.join(self.repos)}")
+        owner = repo.partition("/")[0].lower()
+        return tuple(listed for listed in self.repos if listed.partition("/")[0].lower() == owner)
 
     def refuse_product(self) -> None:
         """S-038-10: `--product` is the coordinator's, so in a component it exits 2 naming D-47"""
