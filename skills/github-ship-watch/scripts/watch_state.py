@@ -2573,6 +2573,10 @@ def product_repos_310(text: str, policy: Path) -> tuple[str, ...] | None:
     tables = toml_tables(text)
     if "product" not in tables:
         return None
+    headers = [TOML_HEADER.match(line) for line in text.splitlines()]
+    if sum(1 for h in headers if h is not None and h.group(1) == "[" and h.group(2).strip("\"' ") == "product") > 1:
+        # toml_tables keeps the last of two [product] tables, which tomllib refuses: refused too
+        raise Refused(f"error: {policy}: [product] is declared twice; keep one [product] table")
     repos: list[str] | None = None
     for line in tables["product"].splitlines():
         if blank(line) or PRODUCT_HOME.match(line):

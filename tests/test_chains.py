@@ -718,6 +718,16 @@ def test_s038_12_the_310_reader_reads_repos_as_tomllib_does(ch: ModuleType, tmp_
             ws.product_repos_310(text, policy)
 
 
+def test_s038_12_the_310_reader_refuses_a_product_table_declared_twice(ch: ModuleType, tmp_path: Path) -> None:
+    ws = ch.watch_module()
+    policy = tmp_path / "shipmill.toml"
+    text = '[product]\nrepos = ["acme/api"]\n\n[agents]\napp_id = 1\n\n[ "product" ]\nrepos = ["acme/web"]\n'
+    with pytest.raises(ws.Refused):
+        ws.product_repos(text, policy)  # tomllib: "Cannot declare ('product',) twice"
+    with pytest.raises(ws.Refused, match=r"\[product\] is declared twice"):
+        ws.product_repos_310(text, policy)  # never the last table's repos alone
+
+
 def test_s038_4_without_a_product_table_link_reads_no_origin_and_links_any_repo(
     ch: ModuleType, forge: Forge, tmp_path: Path
 ) -> None:
