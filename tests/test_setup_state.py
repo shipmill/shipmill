@@ -261,7 +261,8 @@ NO_APP = (
     " and GitHub won't notify you of their mentions; run shipmill-setup's step 3 (app-create)"
 )
 BASE_LABELS = {"postponed", "blocked", "shipmill-hold", "release-blocker"}
-AGENT_LABELS = {"needs-decision", "human", "shipmill-upgrade-later"}  # D-21, spec 017, spec 014's "not now"
+# D-21, spec 017, spec 014's "not now", spec 038's report for another repo
+AGENT_LABELS = {"needs-decision", "human", "shipmill-upgrade-later", "upstream"}
 
 
 def test_s005_16_headless_wants_the_needs_decision_label(ss: ModuleType, tmp_path: Path) -> None:
@@ -272,7 +273,8 @@ def test_s005_16_headless_wants_the_needs_decision_label(ss: ModuleType, tmp_pat
     row = ss.labels_row(["needs-decision"], wanted)
     assert (row.state, row.detail) == ("LABELS_MISSING", "needs-decision")
     assert ss.labels_row([], wanted).detail == (
-        "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, and the blocker label exist"
+        "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream,"
+        " and the blocker label exist"
     )
 
 
@@ -290,7 +292,8 @@ def test_d21_interactive_wants_the_needs_decision_label_too(ss: ModuleType, tmp_
     wanted = ss.wanted_labels(tmp_path)
     assert set(wanted) == BASE_LABELS | AGENT_LABELS
     assert ss.labels_row([], wanted).detail == (
-        "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, and the blocker label exist"
+        "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream,"
+        " and the blocker label exist"
     )
 
 
@@ -342,6 +345,27 @@ def test_s017_21_human_is_wanted_wherever_needs_decision_is(ss: ModuleType, tmp_
     assert [call[3] for call in gh.calls] == ["needs-decision", "human"]
     assert gh.calls[1] == [
         *["gh", "label", "create", "human", "-R", "me/demo", "--color", "0e8a16"],
+        *["--description", description],
+    ]
+
+
+@pytest.mark.parametrize(
+    "text", [HEADLESS, '[agents]\nprompt = "x"\n', '[agents]\nprompt = "x"\napp_id = 1\n', "", 'mode = "release"\n']
+)
+def test_s038_24_upstream_is_wanted_wherever_needs_decision_is(ss: ModuleType, tmp_path: Path, text: str) -> None:
+    write(tmp_path, ".github/shipmill.toml", text)
+    wanted = ss.wanted_labels(tmp_path)
+    assert ("upstream" in wanted) is ("needs-decision" in wanted)
+    if "upstream" not in wanted:
+        return
+    description = "A report for another repo: the product's coordinator or the maintainer routes it"
+    assert wanted["upstream"] == ("5319e7", description)
+    row = ss.labels_row(["needs-decision", "upstream"], wanted)
+    assert (row.state, row.detail) == ("LABELS_MISSING", "needs-decision, upstream")
+    gh = FakeGh("")
+    ss.create_labels("me/demo", wanted, ["needs-decision", "upstream"], ["gh"], gh)
+    assert gh.calls[1] == [
+        *["gh", "label", "create", "upstream", "-R", "me/demo", "--color", "5319e7"],
         *["--description", description],
     ]
 

@@ -118,8 +118,10 @@ Intake (github-issue-triage's triage_state.py):
   ISSUES_OPEN     the other open issues, by state: in progress, blocked, triaged, or
                   postponed, less the ones NEEDS_DECISION and UNTRUSTED list (reported,
                   never an action by itself). A person's item waiting on its assignees
-                  (WITH_PERSON, spec 017) names them: WITH_PERSON #N (@login ...)
-  PRS_OPEN        open non-draft pull requests (reported, never an action by itself),
+                  (WITH_PERSON, spec 017) names them: WITH_PERSON #N (@login ...). An
+                  upstream report, which waits outside (spec 038), is listed here only, as
+                  UPSTREAM #N: never in ISSUES, NEEDS_DECISION, or an agent row
+  PRS_OPEN       open non-draft pull requests (reported, never an action by itself),
                   less the ones NEEDS_DECISION and UNTRUSTED list
   NEEDS_DECISION  issues and pull requests labelled needs-decision whose question has no
                   reply, as #N only (triage_state.py's rule, applied to pull requests'
@@ -155,7 +157,8 @@ Intake (github-issue-triage's triage_state.py):
 
 --bot-login and --trusted-only go through to triage_state.py: the login shipmill's
 sessions write as (whose comment is the question, and whose issue is trusted), and the
-trust filter of an unattended gate.
+trust filter of an unattended gate. The config's [product] home (spec 038) goes through
+as --home, which words an upstream report's note; a home that isn't owner/name exits 2.
 
 Repository settings:
   BRANCH_DELETE_OFF  delete_branch_on_merge is off: merged pull request branches stay on
@@ -2166,11 +2169,22 @@ def lands_prs(table: dict[str, str] | None) -> bool:
     return table is not None and table.get("prs") == "true"
 
 
-def triage_run(repo: str, bot_login: str | None = None, trusted_only: bool = False) -> tuple[int, str]:
-    """triage_state.py's exit code (0 or 1) and its --json lines"""
+def triage_command(
+    repo: str, bot_login: str | None = None, trusted_only: bool = False, home: str | None = None
+) -> list[str]:
+    """triage_state.py's command line: with the config's [product] home as --home (spec 038)"""
     cmd = [sys.executable, str(TRIAGE_STATE), repo, "--json"]
     cmd += ["--bot-login", bot_login] if bot_login is not None else []
     cmd += ["--trusted-only"] if trusted_only else []
+    cmd += ["--home", home] if home is not None else []
+    return cmd
+
+
+def triage_run(
+    repo: str, bot_login: str | None = None, trusted_only: bool = False, home: str | None = None
+) -> tuple[int, str]:
+    """triage_state.py's exit code (0 or 1) and its --json lines"""
+    cmd = triage_command(repo, bot_login, trusted_only, home)
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode not in (0, 1):
         sys.stderr.write(f"error: triage_state.py: {proc.stderr.strip()}\n")
@@ -2432,6 +2446,69 @@ def agents_table_310(text: str, policy: Path) -> dict[str, str] | None:
         value = key.group(2)
         found[key.group(1)] = json.dumps(value[1:-1]) if value[0] in "\"'" else value
     return found
+
+
+# -- product (spec 038) ----------------------------------------------------------------------
+
+
+PRODUCT_HEADER = re.compile(r"^\s*\[+\s*[\"']?product\b")  # a line that opens a [product] header, well formed or not
+PRODUCT_HOME = re.compile(r"^\s*[\"']?home[\"']?\s*=")  # a home key's line in [product]
+PRODUCT_HOME_VALUE = re.compile(r"^\s*[\"']?home[\"']?\s*=\s*(?:\"([^\"\\]*)\"|'([^']*)')\s*(?:#.*)?$")
+
+
+def product_home(text: str, policy: Path) -> str | None:
+    """[product] home of the config, the product's home repo as owner/name (spec 038); None
+    without the table or the key. The other key, repos, is the home repo's own and not read
+    here. A home that isn't owner/name by triage_state.py's rule is refused"""
+    if tomllib is None:
+        return product_home_310(text, policy)
+    try:
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise Refused(f"error: {policy}: {exc}") from None
+    return product_home_toml(raw, policy)
+
+
+def checked_home(home: object, policy: Path) -> str | None:
+    """A [product] home as read, refused unless it is owner/name by triage_state.py's rule"""
+    if home is None:
+        return None
+    if isinstance(home, str) and TRIAGE.home_repo(home):
+        return home
+    raise Refused(f"error: {policy}: [product] home must be owner/name, such as acme/product; got {home!r}")
+
+
+def product_home_toml(raw: dict[str, object], policy: Path) -> str | None:
+    table = raw.get("product")
+    if table is None:
+        return None
+    if not isinstance(table, dict):
+        raise Refused(f"error: {policy}: product is not a table")
+    return checked_home(table.get("home"), policy)
+
+
+def product_home_310(text: str, policy: Path) -> str | None:
+    """[product] home on Python 3.10: a plain [product] table whose home is a one-line
+    string; any other form of home is refused rather than misread. repos may take any form"""
+    for line in text.splitlines():
+        if PRODUCT_HEADER.match(line) and TOML_HEADER.match(line) is None:
+            raise Refused(f"error: {policy}: can't read [product] on Python 3.10: a malformed header {line.strip()!r}")
+    tables = toml_tables(text)
+    if re.search(r"^\s*[\"']?product[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE) or any(
+        name.startswith("product.") for name in tables
+    ):
+        raise Refused(f"error: {policy}: can't read [product] on Python 3.10: use 3.11+ or a plain [product] table")
+    if "product" not in tables:
+        return None
+    home = None
+    for line in tables["product"].splitlines():
+        if PRODUCT_HOME.match(line) is None:
+            continue
+        found = PRODUCT_HOME_VALUE.match(line)
+        if found is None or home is not None:
+            raise Refused(f"error: {policy}: can't read [product] home on Python 3.10: use 3.11+ ({line.strip()!r})")
+        home = found.group(1) if found.group(1) is not None else found.group(2)
+    return checked_home(home, policy)
 
 
 def gh_writer(repo_dir: Path) -> list[str]:
@@ -2931,10 +3008,12 @@ def main() -> int:
 
     table = None
     upgrades = None
+    home = None
     if policy is not None:
         text = (repo_dir / policy).read_text(encoding="utf-8")
         rows.append(triage_mode_row(text, policy))
         table = agents_table(text, policy)
+        home = product_home(text, policy)
         rows += gate_app_rows(table)
         read = config(text, policy, args.incident_label)
         holds = hold_rows(fetch_issues(args.repo, "--label", HOLD_LABEL), now, args.repo)
@@ -2961,7 +3040,7 @@ def main() -> int:
         lines = plans_run(args.repo, repo_dir, args.tool, args.bot_login, plan_wip(table, POLICY))
         plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only)
     rows += plans.rows
-    code, triage = triage_run(args.repo, args.bot_login, args.trusted_only)
+    code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home)
     lands = lands_prs(table)
     rows += intake_rows(args.repo, code, triage, args.bot_login, args.trusted_only, lands, upgrades, plans.untrusted)
     rows += chain_rows(args.repo, triage, args.bot_login)

@@ -4,7 +4,7 @@
 Usage: triage_state.py <owner/repo> [--marker "Triage:"] [--postponed-label postponed]
                        [--stable-tag-regex REGEX] [--hold-label release-blocker]
                        [--incident-label incident] [--closed N] [--json] [--wip N]
-                       [--bot-login LOGIN] [--trusted-only]
+                       [--bot-login LOGIN] [--trusted-only] [--home OWNER/NAME]
 
 For each open issue:
   NEW              no comment starts with the triage marker
@@ -74,16 +74,24 @@ For each open issue:
                    shipmill-upgrade, and with <!-- shipmill-upgrade: <id> <version> --> as
                    its body's first line, reads as usual; any other github-actions[bot]
                    issue, or one with only the label or only the marker, is UNTRUSTED
-  OFF_MILESTONE    a build issue whose feature issue (its sub-issue parent, in this
+  UPSTREAM         labelled upstream: a report of a fault another repo owns, or a stand-in
+                   for another repo's work, which waits outside (spec 038). Read right
+                   after UNTRUSTED, before NEEDS_DECISION, DECIDED, and every other state,
+                   triaged or not, whatever its holds. Its note is "routed by OWNER/NAME"
+                   with --home OWNER/NAME (the config's [product] home), else "no
+                   coordinator: waits for the maintainer", and adds "asks the maintainer"
+                   when it is labelled needs-decision and its question has no reply.
+                   Never an action: it starts no session
+  OFF_MILESTONE   a build issue whose feature issue (its sub-issue parent, in this
                    repo) is in a milestone it isn't in (spec 022): set its milestone
-                   to the parent's. Read after UNTRUSTED, NEEDS_DECISION, and DECIDED,
+                   to the parent's. Read after UNTRUSTED, UPSTREAM, NEEDS_DECISION, and DECIDED,
                    before any other state; one already in that milestone, or whose
                    parent has none, reads its usual state
 
 An open issue labelled human is a person's item (spec 017): its assignees do it, no PR
 state (IN_PROGRESS, DONE_NOT_CLOSED) applies, and it counts as triaged from the start, so
 its "Depends on" lines and GitHub's holds apply with no triage comment. After UNTRUSTED,
-NEEDS_DECISION, DECIDED, and OFF_MILESTONE, it reads NO_ASSIGNEE, else UNFILLED, SPEC_REFUSED, BLOCKED,
+UPSTREAM, NEEDS_DECISION, DECIDED, and OFF_MILESTONE, it reads NO_ASSIGNEE, else UNFILLED, SPEC_REFUSED, BLOCKED,
 REVISIT, or POSTPONED as any issue would, else, with every hold closed, one of:
   NO_ASSIGNEE      labelled human with no assignee: ask the maintainer who does it
   HANDOFF_DUE      no hand-off came after its newest hold closed (or ever, with no
@@ -118,8 +126,11 @@ For the N most recently closed issues (default 20):
                    a comment after its last close whose first line is
                    <!-- shipmill:close-confirmed --> by an OWNER, MEMBER, or
                    COLLABORATOR or the --bot-login (D-29); a marker comment by anyone
-                   else never counts, and a reopen and a new close re-arm it
-  VERIFY_CLOSED    labelled human, closed as completed by someone other than the
+                   else never counts, and a reopen and a new close re-arm it. Nor does
+                   an issue labelled upstream, whoever closed it and however: the
+                   product's coordinator, or the maintainer without one, closes it by
+                   hand by design (spec 038)
+  VERIFY_CLOSED   labelled human, closed as completed by someone other than the
                    --bot-login, with a "## Check" section and no comment after its close
                    whose first line is <!-- shipmill:verified --> by an OWNER, MEMBER, or
                    COLLABORATOR or the --bot-login: run its check
@@ -130,11 +141,14 @@ PR), the room left under N, and the issues
 ready to start (NEEDS_PR or UNBLOCKED), oldest first; with --json, as one JSON object.
 An issue labelled human never counts as in progress or ready: the limit is on agents' work.
 
---bot-login names the login shipmill's sessions write as (an App's <slug>[bot]).
+--bot-login names the login shipmill's sessions write as (an App's <slug>[bot]). --home
+names the product's home repo, the config's [product] home, as owner/name (letters, digits,
+".", "-", or "_" on each side; anything else exits 2); it only words UPSTREAM's note.
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
 SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, SUSPECT_CLOSE, HANDOFF_DUE, VERIFY_DUE,
-NO_ASSIGNEE, VERIFY_CLOSED, or OFF_MILESTONE (never for NEEDS_DECISION, UNTRUSTED, or WITH_PERSON),
+NO_ASSIGNEE, VERIFY_CLOSED, or OFF_MILESTONE (never for NEEDS_DECISION, UNTRUSTED, UPSTREAM, or
+WITH_PERSON),
 2 on bad input (an issue with more than 100
 labels) or a gh failure. It pages past 100 open issues and an issue's 50 comments, 50
 cross-references, 50 blocking issues, or 50 sub-issues, and back through tags to the
@@ -451,6 +465,11 @@ def native_refused(response: dict[str, Any]) -> str | None:
 INCIDENT_LABEL = "incident"  # the default of [operate] incident_label
 DECISION_LABEL = "needs-decision"  # references/needs-decision.md
 DECISION_MARKER = "<!-- shipmill:needs-decision -->"  # the first line of a session's question
+# A report of a fault another repo owns, or a stand-in for another repo's work (spec 038): it
+# waits outside, for the product's coordinator or, without one, the maintainer
+UPSTREAM_LABEL = "upstream"
+# An owner or a repo name: the characters GitHub allows, shipmill's app._SEGMENT
+SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 # The author associations whose comment answers a question, and whose issue an unattended
 # session works on (D-16); CONTRIBUTOR, FIRST_TIMER, NONE, and the rest never count
 TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
@@ -1191,18 +1210,39 @@ def person_state(
     return "WITH_PERSON", f"with {who} since {comments[newest]['createdAt']}"
 
 
-def gated(issue: dict[str, Any], bot_login: str | None, trusted_only: bool) -> tuple[str, str] | None:
-    """UNTRUSTED (with trusted_only), then NEEDS_DECISION or DECIDED, each read before any
-    other state; None when none holds, and the issue reads as classify_open says. DECIDED
-    comes first so the reply is acted on, whatever its text links (#309)"""
+def upstream_note(home: str | None, asks: bool) -> str:
+    """UPSTREAM's note (spec 038): who routes the report, and whether its question to the
+    maintainer still waits for a reply"""
+    note = f"routed by {home}" if home is not None else "no coordinator: waits for the maintainer"
+    return f"{note}, asks the maintainer" if asks else note
+
+
+def home_repo(text: str) -> bool:
+    """Whether text is owner/name, each side of letters, digits, '.', '-', or '_' and neither
+    "." nor "..", as shipmill reads a repo (app.repo_name and its cache segment rule)"""
+    parts = text.split("/")
+    return len(parts) == 2 and all(p not in {".", ".."} and SEGMENT.fullmatch(p) for p in parts)
+
+
+def gated(
+    issue: dict[str, Any], bot_login: str | None, trusted_only: bool, home: str | None = None
+) -> tuple[str, str] | None:
+    """UNTRUSTED (with trusted_only), then UPSTREAM, then NEEDS_DECISION or DECIDED, each read
+    before any other state; None when none holds, and the issue reads as classify_open says.
+    DECIDED comes first so the reply is acted on, whatever its text links (#309). An upstream
+    report waits outside whatever its labels and holds (spec 038); ``home`` words its note"""
     author, association = login(issue.get("author")), str(issue.get("authorAssociation") or "NONE")
     if trusted_only and not trusted(author, association, bot_login) and not workflow_upgrade(issue):
         return "UNTRUSTED", f"opened by @{author} ({association.lower()})"
-    if DECISION_LABEL in {n["name"] for n in issue["labels"]["nodes"]}:
+    labels = {n["name"] for n in issue["labels"]["nodes"]}
+    if UPSTREAM_LABEL in labels or DECISION_LABEL in labels:
         comments = [
             (login(c.get("author")), str(c.get("authorAssociation") or "NONE"), c["body"])
             for c in issue["comments"]["nodes"]
         ]
+        if UPSTREAM_LABEL in labels:
+            asks = DECISION_LABEL in labels and waits_on_decision(comments, bot_login)
+            return "UPSTREAM", upstream_note(home, asks)
         asked = question(comments, bot_login)
         if waits_on_decision(comments, bot_login):
             return "NEEDS_DECISION", "waits on a reply" if asked is not None else "labelled, no question"
@@ -1253,6 +1293,8 @@ def classify_closed(
     if HUMAN_LABEL in labels and issue["stateReason"] == "COMPLETED":
         # A person closes their own item by hand by design: never SUSPECT_CLOSE (spec 017)
         return verify_closed(issue, bot_login)
+    if UPSTREAM_LABEL in labels:
+        return None  # the coordinator, or the maintainer without one, closes a report by hand (spec 038)
     if close_confirmed(issue, bot_login):
         return None  # every path below reads None or SUSPECT_CLOSE, which the marker ends (D-29)
     events = issue["timelineItems"]["nodes"]
@@ -1293,7 +1335,8 @@ def main() -> int:
         description=__doc__.splitlines()[0],
         epilog=(
             "States: NEW NEEDS_PR IN_PROGRESS DONE_NOT_CLOSED BLOCKED UNFILLED SPEC_REFUSED UNBLOCKED "
-            "POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED UNTRUSTED OFF_MILESTONE; for an issue labelled human "
+            "POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED UNTRUSTED UPSTREAM OFF_MILESTONE; for an issue labelled "
+            "human "
             "(a person's item) NO_ASSIGNEE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
             "SUSPECT_CLOSE VERIFY_CLOSED. The module docstring defines each."
         ),
@@ -1321,7 +1364,12 @@ def main() -> int:
     parser.add_argument(
         "--trusted-only", action="store_true", help="report issues by untrusted authors as UNTRUSTED (D-16)"
     )
+    parser.add_argument(
+        "--home", metavar="OWNER/NAME", help="the config's [product] home, which routes upstream reports (spec 038)"
+    )
     args = parser.parse_args()
+    if args.home is not None and not home_repo(args.home):
+        parser.error(f"--home must be owner/name of letters, digits, '.', '-', or '_', got {args.home!r}")
     if not 0 <= args.closed <= 100:
         parser.error("--closed must be 0..100")
     if args.wip is not None and args.wip < 1:
@@ -1351,7 +1399,7 @@ def main() -> int:
     for issue in data["open"]["nodes"]:
         if HUMAN_LABEL in {n["name"] for n in issue["labels"]["nodes"]}:
             people.add(issue["number"])
-        state, note = gated(issue, args.bot_login, args.trusted_only) or classify_open(
+        state, note = gated(issue, args.bot_login, args.trusted_only, args.home) or classify_open(
             issue, args.marker, args.postponed_label, states, stable, (owner, name), args.bot_login, closes
         )
         if state == "OFF_MILESTONE":
@@ -1389,6 +1437,7 @@ def main() -> int:
         "BLOCKED",
         "TRIAGED",
         "POSTPONED",
+        "UPSTREAM",
         "NEEDS_DECISION",
         "UNTRUSTED",
     ]
