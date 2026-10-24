@@ -60,8 +60,9 @@ Labels (the triage skills and shipmill read them):
   LABELS_MISSING   some of postponed, blocked, shipmill-hold, the config's
                    blocker_label (default release-blocker), and, with an [agents]
                    section in either mode, needs-decision, human (a person's item,
-                   spec 017), and shipmill-upgrade-later (a config upgrade's "not
-                   now", spec 014) don't exist; --fix creates
+                   spec 017), shipmill-upgrade-later (a config upgrade's "not
+                   now", spec 014), and upstream (a report for another repo, spec
+                   038) don't exist; --fix creates
                    them on GitHub, as the App through `uvx shipmill==<version> gh`
                    (the version in the plugin's .claude-plugin/plugin.json, spec 031) when
                    [agents] sets app_id (spec 012), else with plain gh; a `shipmill gh`
@@ -154,6 +155,9 @@ HUMAN_LABEL = ("0e8a16", "A person's item: its assignees do it, and a shipmill s
 # Wanted with an [agents] section too (spec 014): a session marks a config upgrade's "not now" with it
 UPGRADE_LATER = "shipmill-upgrade-later"
 UPGRADE_LATER_LABEL = ("ededed", "A config upgrade the maintainer put off until shipmill changes it")
+# Wanted wherever needs-decision is (spec 038): a report of a fault another repo owns, which waits outside
+UPSTREAM = "upstream"
+UPSTREAM_LABEL = ("5319e7", "A report for another repo: the product's coordinator or the maintainer routes it")
 # D-19: the gate runs without an App, but setup isn't done until one is connected
 NO_APP = (
     "no app connected: sessions write as the host's gh login, so you can't approve their PRs"
@@ -414,13 +418,14 @@ def wanted_labels(repo_dir: Path) -> dict[str, tuple[str, str]]:
         wanted[NEEDS_DECISION] = NEEDS_DECISION_LABEL
         wanted[HUMAN] = HUMAN_LABEL  # a person's item in a chain (spec 017)
         wanted[UPGRADE_LATER] = UPGRADE_LATER_LABEL  # a config upgrade's "not now" (spec 014)
+        wanted[UPSTREAM] = UPSTREAM_LABEL  # a report for another repo (spec 038)
     return wanted
 
 
 def labels_row(missing: list[str], wanted: dict[str, tuple[str, str]]) -> Row:
     if missing:
         return Row("LABELS_MISSING", ", ".join(missing))
-    extra = "".join(f" {label}," for label in (NEEDS_DECISION, HUMAN, UPGRADE_LATER) if label in wanted)
+    extra = "".join(f" {label}," for label in (NEEDS_DECISION, HUMAN, UPGRADE_LATER, UPSTREAM) if label in wanted)
     return Row("LABELS_OK", f"postponed, blocked, shipmill-hold,{extra} and the blocker label exist")
 
 
