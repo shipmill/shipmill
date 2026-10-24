@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-10-24
+
+### Added
+
+- The coordinator's token (spec 038, D-47): in the product's home repo, `shipmill app-token OWNER/NAME --product` and `shipmill gh --product OWNER/NAME` use a second App token over the repos `[product] repos` lists under OWNER, asking contents read, issues write, pull requests read, and metadata read; a token GitHub grants wider than asked is refused, it is cached apart in `app-token-product-<owner>.json`, `gh --product` refuses the commands that write code or pull requests, the home repo's gate checks the App on every listed repo before it starts a session, and a `[product]` naming the checkout's own repo exits 2 (#585)
+
 ## [0.64.0] - 2026-10-24
 
 ### Added
@@ -1689,7 +1695,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.64.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.65.0...HEAD
+[0.65.0]: https://github.com/shipmill/shipmill/compare/v0.64.0...v0.65.0
 [0.64.0]: https://github.com/shipmill/shipmill/compare/v0.63.0...v0.64.0
 [0.63.0]: https://github.com/shipmill/shipmill/compare/v0.62.0...v0.63.0
 [0.62.0]: https://github.com/shipmill/shipmill/compare/v0.61.0...v0.62.0
