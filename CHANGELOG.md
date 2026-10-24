@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-10-24
+
+### Added
+
+- Config: an optional `[product]` table (spec 038, D-47), `home = "owner/name"` in a component repo or `repos = [...]` in the product's home repo, read strictly by `shipmill plan` and the gate alike; `repos` needs `[agents] app_id`, and in a component `shipmill gh -R` and `shipmill app-token` for any repo but the checkout's origin exit 2 naming D-47 before a token is minted (#584)
+- An open issue labelled `upstream`, a report of a fault another repo owns, reads UPSTREAM in `triage_state.py`, right after UNTRUSTED and before every other state, and is never an action; a new `--home OWNER/NAME` words its note (`routed by OWNER/NAME`, else `no coordinator: waits for the maintainer`, plus `asks the maintainer` while its needs-decision question has no reply), and a closed one never reads SUSPECT_CLOSE. `watch_state.py` passes the config's `[product] home` as `--home` and lists the reports in ISSUES_OPEN as `UPSTREAM #N`, so the gate starts no session for one, and `setup_state.py --fix` creates the `upstream` label wherever it creates `needs-decision` (spec 038) (#586)
+
 ## [0.63.0] - 2026-10-24
 
 ### Changed
@@ -1682,7 +1689,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.63.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.64.0...HEAD
+[0.64.0]: https://github.com/shipmill/shipmill/compare/v0.63.0...v0.64.0
 [0.63.0]: https://github.com/shipmill/shipmill/compare/v0.62.0...v0.63.0
 [0.62.0]: https://github.com/shipmill/shipmill/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/shipmill/shipmill/compare/v0.60.0...v0.61.0

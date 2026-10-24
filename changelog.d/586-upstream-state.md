@@ -1,3 +1,0 @@
-### Added
-
-- An open issue labelled `upstream`, a report of a fault another repo owns, reads UPSTREAM in `triage_state.py`, right after UNTRUSTED and before every other state, and is never an action; a new `--home OWNER/NAME` words its note (`routed by OWNER/NAME`, else `no coordinator: waits for the maintainer`, plus `asks the maintainer` while its needs-decision question has no reply), and a closed one never reads SUSPECT_CLOSE. `watch_state.py` passes the config's `[product] home` as `--home` and lists the reports in ISSUES_OPEN as `UPSTREAM #N`, so the gate starts no session for one, and `setup_state.py --fix` creates the `upstream` label wherever it creates `needs-decision` (spec 038) (#586)
