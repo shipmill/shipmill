@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-10-24
+
+### Added
+
+- `docs/design/product-layer.md` gains an Across repos section: components stay in their repo while the product's manager owns every cross-repo step, a bug found in another repo's module reported in the agent's own repo, the manager as a role on a home repo rather than a store, the forge's own cross-repo objects, why no external tracker is needed, and decisions D-45 and D-46 (#338)
+
 ## [0.61.0] - 2026-10-21
 
 ### Removed
@@ -1670,7 +1676,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.61.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.62.0...HEAD
+[0.62.0]: https://github.com/shipmill/shipmill/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/shipmill/shipmill/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/shipmill/shipmill/compare/v0.59.1...v0.60.0
 [0.59.1]: https://github.com/shipmill/shipmill/compare/v0.59.0...v0.59.1
