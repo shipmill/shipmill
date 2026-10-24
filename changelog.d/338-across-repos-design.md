@@ -1,0 +1,3 @@
+### Added
+
+- `docs/design/product-layer.md` gains an Across repos section: read anywhere and write at home, the manager as a role on a home repo rather than a store, the forge's own cross-repo objects, and why no external tracker is needed (#338)

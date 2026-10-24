@@ -142,10 +142,84 @@ child closes. The spec gate's feature issue is then one kind of parent, not a sp
 so a cross-repo chain advances as long as every repo in it runs a gate, and D-16 applies in
 each. A plan across repos (one milestone name in several repos, released together) is a
 later question, and depends on the queue (gap 3) to be visible at all.
+Chains shipped in spec 017; the plan across repos is under [Across repos](#across-repos).
+
+## Across repos
+
+Added 2026-10-24 (shipmill 0.61.0), after chains across repos shipped in spec 017. It answers
+gap 6: how repos work together, and whether that takes another product.
+
+The repo stays the unit of execution: its gate, policy, lanes, milestones and the App's
+identity are per repo. The fleet becomes the unit of planning. Working across repos needs
+no new product and no new store, because the forge already holds everything the fleet
+needs; what it needs is one access rule, one role, and the forge's own cross-repo objects.
+
+### Read anywhere, write at home
+
+- A session writes only to its own repo. A cross-repo effect happens on the side that
+  waits: the downstream item names its upstream (`Depends on owner/repo#N`, or a native
+  relation), and the downstream repo's gate reads the upstream's state on its tick and takes
+  the item up when it closes. The upstream repo knows nothing about its dependents. This is
+  built for chains (spec 017), which reads an upstream item's state and never its text
+- A person is told from the repo where their item waits, by that repo's gate
+- A release that needs another repo's change holds a stand-in issue in its own milestone
+  with `Depends on owner/repo#N`, so the milestone empties only when the other repo's change
+  closes. GitHub milestones are per repo, so this needs no cross-repo milestone; GitLab's
+  group milestones can come later through the code host port
+- The gap: the App's token covers only the gate's repo (`src/shipmill/app.py`), so an
+  upstream in another private repo reads UNREADABLE in `chains.py show`. An installation
+  token carries the same permissions on every repo it lists, so the rule needs two tokens:
+  one that reads the repos of the fleet, and the write token for the gate's own repo, as
+  today. This refines D-14 and needs a decision of its own
+
+### The manager is a role, not a store
+
+Someone has to look across repos: gather what waits on the maintainer, watch chains, and
+put together the plan for a product that spans repos. Today the maintainer does it from
+memory. The role fits a fleet-level playbook, run by a gate on the product's home repo (its
+main repo, or a planning repo for a product without one), with the fleet's read token:
+
+- It builds the maintainer's queue (#337) and reports where chains stall (`chains.py show`,
+  CHAIN_NO_GATE)
+- It proposes a plan across repos from each repo's goal plans (spec 028) for the maintainer
+  to accept (D-10, D-34); the plan, its stand-in issues and its milestone live in the home
+  repo
+- It writes only to the home repo. How an accepted plan's items reach the other repos is
+  open (below)
+
+### Cross-repo objects the forge already has
+
+| Need | GitHub | GitLab |
+|---|---|---|
+| A board or plan over many repos | Projects (fields, iterations, a roadmap view) | Group boards |
+| A parent over many repos | Sub-issues in other repos (spec 017 reads them) | Group epics |
+| A milestone over many repos | None: a stand-in issue in each repo's milestone | Group milestones |
+| Dependencies | Issue dependencies across repos (spec 017) | Linked issues, `blocks` |
+
+They are read and written through the code host port as capabilities, like the relations
+in spec 017. A GitHub Project belongs to a user or an organization and needs its own App
+permission, and one maintainer's repos often span several owners: whether one Project can
+hold them is to be checked before anything relies on it.
+
+### Linear and Jira
+
+Neither is needed as a system of record: a shipmill-owned tracker or an external one would
+be state outside the forge, which every layer avoids (D-6's spirit). A person's step that
+has no repo of its own is a `human` item (spec 017) in the repo where it waits, or in an
+operations repo. An external tracker fits only as an intake source, behind its own config
+section and never required, for a team that already works there or for work no repo holds.
+
+### Questions
+
+- Whether gates read every repo of the fleet with a second, read-only token, writing only
+  to their own repo (a new D-n refining D-14)
+- How a plan accepted in the home repo reaches the other repos: a session started by the
+  maintainer files the items there, or each repo's own session takes up a plan through a
+  trusted marker the maintainer posts (as D-29 does for a close)
+- Whether the home repo is the product's main repo or a separate planning repo
 
 ## Questions for the maintainer
 
 - Whether a release may close its milestone by itself, or proposes the close (gap 2)
 - Whether fixes belong in the roadmap plan, or milestones stay for features only (gap 2)
-- Whether a plan across repos is wanted in shipmill at all, or stays a view over per-repo
-  plans (gap 6)
+- The plan across repos: the questions under [Across repos](#across-repos) (gap 6)
