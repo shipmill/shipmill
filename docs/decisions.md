@@ -372,18 +372,18 @@ entry that supersedes it, never by editing an old one.
 - Enforced by: review, until spec 031 is built
 - Supersedes: D-43
 
-## D-45: Gates read every repo of the fleet and write only to their own
+## D-45: Gates read the fleet and may file issues there; every change stays in their own repo
 
 - Decided: 2026-10-24, in shipmill/shipmill#338
-- Rule: A gate session gets two App tokens: the write token limited to the gate's repo (D-14, unchanged), and a read-only token over the repos of the fleet, used only to read the state of items in other repos; a cross-repo effect happens when the waiting repo reads its upstream's state, never by writing to another repo. This refines D-14
-- Why: Chains across repos (spec 017) read an upstream item's state, but the App's token covers only the gate's repo, so an upstream in another private repo reads UNREADABLE and the chain stalls. An installation token carries the same permissions on every repo it lists, so reading the fleet with the write token would also let a session write anywhere; a separate read-only token keeps writes at home
-- Applies to: src/shipmill/app.py, src/shipmill/gate.py, shipmill app-token, skills/github-issue-triage/scripts/chains.py, skills/github-issue-triage/scripts/triage_state.py, [agents] app_id, fleet
-- Enforced by: review, until the implementing PR adds tests
+- Rule: A gate session gets two App tokens: the write token limited to the gate's repo (D-14, unchanged), and a fleet token over the other repos of the fleet that the App is installed on, with only metadata and contents read, pull requests read, and issues write. With the fleet token a session reads items, code and pull requests in those repos and files an issue there, such as a bug it found in another repo's module, written as a report: how to reproduce it and, when the session found it in the module's source, the suspected place in the code. It never changes files, pushes, creates a branch, opens a pull request, merges, or closes, edits, or relabels an issue it didn't file in another repo; those stay with that repo's own sessions. This refines D-14
+- Why: Chains across repos (spec 017) read an upstream item's state, but the App's token covers only the gate's repo, so an upstream in another private repo reads UNREADABLE and the chain stalls; and an agent that finds a bug in another repo's module has nowhere to report it. A coding agent usually can't run another repo's services, so its report is the steps and the suspected code, which an issue in that repo carries best; the receiving repo's triage judges it like any other issue. An installation token carries the same permissions on every repo it lists, so the fleet token's permissions, not the agent's care, keep code changes at home: without contents or pull requests write, nothing but issues can be written there
+- Applies to: src/shipmill/app.py, src/shipmill/gate.py, shipmill app-token, shipmill gh, skills/github-issue-triage/scripts/chains.py, skills/github-issue-triage/scripts/triage_state.py, skills/github-issue-triage/references/comments.md, skills/github-issue-resolve/SKILL.md, [agents] app_id, fleet
+- Enforced by: the fleet token's permissions (no contents or pull requests write); review for the issue rules, until the implementing PR adds tests
 
 ## D-46: A plan across repos lives in the product's home repo and reaches the others through a trusted marker
 
 - Decided: 2026-10-24, in shipmill/shipmill#338
 - Rule: A plan for a product that spans repos, with its stand-in issues and milestone, lives in the product's home repo: the repo whose docs/product.md describes the product as a whole, whether or not it holds code. Each component repo keeps its own docs/product.md for its own scope (D-34). Once the maintainer accepts the plan, they post a trusted marker that names each repo's items, and each repo's own session takes up its part, the way D-29's marker confirms a close; no session writes the plan's items into another repo
-- Why: Writing into other repos would need a write token beyond the gate's repo (D-45 keeps writes at home), and filing each repo's items by hand in a session the maintainer starts would add a manual step to every plan; a trusted marker carries the maintainer's accept to each repo without letting one repo's text steer another's session (D-16)
+- Why: A plan is the maintainer's choice of work, so its items reach another repo only with the maintainer's word there; the fleet token of D-45 lets a session file a bug report, a fact the other repo's triage weighs, not accepted work. Filing each repo's items by hand in a session the maintainer starts would add a manual step to every plan; a trusted marker carries the maintainer's accept to each repo without letting one repo's text steer another's session (D-16)
 - Applies to: skills/product-intake/*, docs/design/product-layer.md, docs/product.md, plans across repos, milestones
 - Enforced by: review

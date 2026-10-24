@@ -154,23 +154,44 @@ identity are per repo. The fleet becomes the unit of planning. Working across re
 no new product and no new store, because the forge already holds everything the fleet
 needs; what it needs is one access rule, one role, and the forge's own cross-repo objects.
 
-### Read anywhere, write at home
+### Read anywhere, change at home
 
-- A session writes only to its own repo. A cross-repo effect happens on the side that
-  waits: the downstream item names its upstream (`Depends on owner/repo#N`, or a native
-  relation), and the downstream repo's gate reads the upstream's state on its tick and takes
-  the item up when it closes. The upstream repo knows nothing about its dependents. This is
-  built for chains (spec 017), which reads an upstream item's state and never its text
+- Every change to code stays in its own repo: its branch, its pull request, its CI, its
+  gate. A session may read other repos of the fleet and file an issue there, nothing more
+  (D-45)
+- A cross-repo effect happens on the side that waits: the downstream item names its
+  upstream (`Depends on owner/repo#N`, or a native relation), and the downstream repo's
+  gate reads the upstream's state on its tick and takes the item up when it closes. The
+  upstream repo knows nothing about its dependents. This is built for chains (spec 017),
+  which reads an upstream item's state and never its text
 - A person is told from the repo where their item waits, by that repo's gate
 - A release that needs another repo's change holds a stand-in issue in its own milestone
   with `Depends on owner/repo#N`, so the milestone empties only when the other repo's change
   closes. GitHub milestones are per repo, so this needs no cross-repo milestone; GitLab's
   group milestones can come later through the code host port
-- The gap: the App's token covers only the gate's repo (`src/shipmill/app.py`), so an
-  upstream in another private repo reads UNREADABLE in `chains.py show`. An installation
-  token carries the same permissions on every repo it lists, so the rule needs two tokens:
-  one that reads the repos of the fleet, and the write token for the gate's own repo, as
-  today (D-45, refining D-14)
+- The App's token covers only the gate's repo today (`src/shipmill/app.py`), so an upstream
+  in another private repo reads UNREADABLE in `chains.py show`. D-45 adds a second token
+  over the fleet with read access and issues write only; an installation token carries the
+  same permissions on every repo it lists, so its permissions keep code changes at home
+
+### A bug found in another repo
+
+An agent working an issue finds that the fault is in a module another repo owns:
+
+1. **It reports what it can.** A coding agent usually can't run another repo's services, so
+   the report is how to reproduce the bug and, when it found the cause in the module's
+   source (a dependency's code it can read), the suspected place in the code. A guess it
+   could not trace is said to be one
+2. **It files the report in the module's repo** with the fleet token (D-45), linking back to
+   its own issue, and names that issue on a `Depends on` line of its own when its work
+   can't go on without the fix. That repo's triage judges the report like any other issue
+3. **It never fixes the module from its own repo:** no vendored copy, no patch of an
+   installed dependency, no pull request in the other repo. A workaround in its own code
+   is fine when it is a real change there (a check, an error handled on its side), said to
+   be temporary in its pull request
+
+A plan's items still reach other repos only through the maintainer's marker (D-46): a plan
+is the maintainer's choice of work, a bug report is a fact the other repo's triage weighs.
 
 ### The manager is a role, not a store
 
@@ -185,8 +206,8 @@ with the fleet's read token:
 - It proposes a plan across repos from each repo's goal plans (spec 028) for the maintainer
   to accept (D-10, D-34); the plan, its stand-in issues and its milestone live in the home
   repo
-- It writes only to the home repo; an accepted plan reaches the other repos through a
-  trusted marker the maintainer posts, and each repo takes up its part (D-46)
+- It changes nothing outside the home repo; an accepted plan reaches the other repos
+  through a trusted marker the maintainer posts, and each repo takes up its part (D-46)
 
 ### Cross-repo objects the forge already has
 
@@ -214,8 +235,8 @@ section and never required, for a team that already works there or for work no r
 
 The maintainer settled the three questions on 2026-10-24, in #338:
 
-- Gates read every repo of the fleet with a second, read-only token and write only to their
-  own repo (D-45, refining D-14)
+- Gates read the fleet and may file issues there, with a second token that has no write
+  access to code or pull requests; every change stays in its own repo (D-45, refining D-14)
 - A plan accepted in the home repo reaches the other repos through a trusted marker the
   maintainer posts, and each repo's own session takes up its part (D-46)
 - The home repo is the one whose `docs/product.md` describes the product as a whole, code or
