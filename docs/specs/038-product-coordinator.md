@@ -1,6 +1,6 @@
 # S-038: Work across repos through the product's coordinator
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -279,3 +279,30 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - shipmill/shipmill#589: S-038-4, S-038-22, S-038-23, S-038-26
 
 ## Verification
+
+- S-038-1: tests/test_product_config.py (test_s038_1_*) parses both tables and refuses each bad one with the same message in `shipmill plan`, `AgentsConfig.load`, and `ProductConfig.load`; passes
+- S-038-2: tests/test_product_config.py (test_s038_2_*): `[product] repos` without `[agents] app_id` exits 2 saying the coordinator needs the App, a component needs none; passes
+- S-038-3: tests/test_product_token.py (test_s038_3_*): `shipmill gh`, `app-token --product`, and the gate exit 2 when the config names the checkout's own repo, before any GitHub call; passes
+- S-038-4: tests/test_product_absent.py (test_s038_4_*) pins the tokens, helper files, gate checks, triage states, and watch rows of a config without `[product]`, the same values the code before spec 038 (02008b1) gave for the same inputs, checked by running those tests on a checkout of it; tests/test_chains.py and tests/test_product_config.py (test_s038_4_*) cover link and the git helper; passes
+- S-038-5: tests/test_product_token.py (test_s038_5_*): one token per owner over the listed repos with exactly contents read, issues write, pull requests read, metadata read; exits 2 without `[product] repos` or for a repo not listed; `shipmill --repo . app-token shipmill/other --app-id 1 --product` in this repo exits 2 naming the missing table; passes
+- S-038-6: tests/test_product_token.py (test_s038_6_*): an answer for other repositories or broader permissions exits 2, unprinted and uncached; passes
+- S-038-7: tests/test_product_token.py (test_s038_7_*): NotInstalled and Lacks name the repo for `app-token --product`, and the home repo's gate starts no session for them; passes
+- S-038-8: tests/test_product_token.py (test_s038_8_*): `app-token-product-<owner>.json` with mode 0600, reused with 10 minutes left and the same repos, never `app-token.json`; a session token still asks `PERMISSIONS` for one repo; passes
+- S-038-9: tests/test_product_token.py (test_s038_9_*): `shipmill gh --product` runs gh with the product token and GH_REPO, and refuses an unlisted repo, a `-R` outside the owner's listed repos, and each listed code or pull request command before gh runs; `shipmill --repo . gh --product shipmill/other issue list` in this repo exits 2; passes
+- S-038-10: tests/test_product_config.py and tests/test_product_token.py (test_s038_10_*): a component's `shipmill gh -R` another repo, `app-token` for another repo, and any `--product` exit 2 naming D-47 before a token; passes
+- S-038-11: tests/test_chains.py (test_s038_11_*): `chains.py link` in a component exits 2 for another repo's reference with no read or write, and links within its repo as before; passes
+- S-038-12: tests/test_chains.py (test_s038_12_*): `link --product` writes through `shipmill gh --product <the parent's repo>`, and exits 2 before any read outside the product or without `[product] repos`; `chains.py link --product` in this repo exits 2; passes
+- S-038-13: tests/test_triage_upstream.py (test_s038_13_*): a report reads UPSTREAM over every state but UNTRUSTED, and a repo whose only issue is one exits 0; passes
+- S-038-14: tests/test_triage_upstream.py (test_s038_14_*): the notes `routed by OWNER/NAME`, `no coordinator: waits for the maintainer`, and `, asks the maintainer`; a malformed `--home` exits 2; passes
+- S-038-15: tests/test_triage_upstream.py (test_s038_15_*): the watch passes `[product] home` as `--home`, lists `UPSTREAM #N` in ISSUES_OPEN only, and the gate stays quiet for a lone report; passes
+- S-038-16: tests/test_triage_upstream.py (test_s038_16_*): BLOCKED, UNBLOCKED, and UNBLOCKED with `#5:not_planned`, with and without `--home`; passes
+- S-038-17: tests/test_triage_upstream.py (test_s038_17_*): a closed report is never SUSPECT_CLOSE, closed by hand, as not planned, by an unmerged pull request, or by a quoting commit; passes
+- S-038-18: tests/test_upstream_state.py (test_s038_18_*): one line per open report of the home repo and each listed repo in each state, the exit codes, and exit 2 on a gh failure with no partial output; `upstream_state.py shipmill/shipmill` in this repo exits 2 for its missing `[product] repos`; passes
+- S-038-19: tests/test_upstream_state.py (test_s038_19_*): an untrusted author's report reads UNTRUSTED with only the reports' list read; passes
+- S-038-20: tests/test_upstream_state.py (test_s038_20_*): sub-issues and `Depends on` lines are children once each, and a `Stands in for` line puts `link owner/repo#N` in the ROUTE_DUE note; passes
+- S-038-21: tests/test_upstream_state.py (test_s038_21_*): UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNTRUSTED, and one UPSTREAM_UNREADABLE row for a failing run; no run without `[product] repos`; passes
+- S-038-22: tests/test_coordinator_docs.py (test_s038_22_*) reads github-issue-triage's SKILL.md, Reports from other repos: routing with `shipmill gh --product` and `chains.py link --product`, the needs-decision ask, the close with each child, how it closed, and its pull request, and the D-47 limits; passes
+- S-038-23: tests/test_coordinator_docs.py (test_s038_23_*) reads comments.md's Upstream report and Clarify, triage-rubric.md's stand-in for a component, and github-issue-resolve's Phase 2 upstream verdict; passes
+- S-038-24: tests/test_setup_state.py (test_s038_24_*): `upstream` is wanted wherever `needs-decision` is, reported missing beside it, and created by `setup_state.py`'s label step, which shipmill-setup's SKILL.md runs; passes
+- S-038-25: tests/test_triage_upstream.py (test_s038_25_*): a hold on another repo's issue reads as spec 017 says, with and without `--home`; passes
+- S-038-26: tests/test_coordinator_e2e.py (test_s038_26_*) drives a home repo and two components over one scripted forge through the real `shipmill gh`, `chains.py`, `upstream_state.py`, and `triage_state.py`, from A's report to B's closed issue to A's UNBLOCKED issue, and checks every recorded gh call's token: A's only for its repo, the product token only for issue writes and reads; passes
