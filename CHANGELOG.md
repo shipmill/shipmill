@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-10-24
+
+### Changed
+
+- D-47 supersedes D-45: the role that owns delivery across a product's repos is the coordinator, which routes `upstream` reports, closes stand-ins and builds the queue, and never plans the product; `docs/design/product-layer.md` says so (#580)
+
 ## [0.62.0] - 2026-10-24
 
 ### Added
@@ -1676,7 +1682,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.62.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.63.0...HEAD
+[0.63.0]: https://github.com/shipmill/shipmill/compare/v0.62.0...v0.63.0
 [0.62.0]: https://github.com/shipmill/shipmill/compare/v0.61.0...v0.62.0
 [0.61.0]: https://github.com/shipmill/shipmill/compare/v0.60.0...v0.61.0
 [0.60.0]: https://github.com/shipmill/shipmill/compare/v0.59.1...v0.60.0
