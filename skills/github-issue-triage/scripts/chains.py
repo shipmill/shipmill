@@ -4,6 +4,7 @@
 Usage:
   chains.py link <owner/repo#N> --blocked-by <owner/repo#M>
   chains.py link <owner/repo#P> --child <owner/repo#C>
+  chains.py link --product <owner/repo#P> --child <owner/repo#C>
   chains.py show <owner/repo#N>... [--json] [--trusted-only] [--bot-login LOGIN]
 
 link  writes a link in both forms triage_state.py reads:
@@ -35,6 +36,15 @@ link  writes a link in both forms triage_state.py reads:
       A `shipmill gh` that fails (exit 2: no App identity) stops the link with its message
       and exit 2, never retried with plain gh. Without app_id, plain gh writes as the host's
       login. Reads always use plain gh.
+
+      In a product (spec 038, D-47), the checkout's [product] table decides more, before any
+      read or write. In a component ([product] home), a reference to another repo than the
+      checkout's origin exits 2: an item there waits only on items in the same repo.
+      --product is the coordinator's, in the home repo ([product] repos, with [agents]
+      app_id), and goes with --child alone: its writes run through `shipmill gh --product
+      <P's repo>`, the token over the product's repos, and it exits 2 when the checkout has
+      no [product] repos or a reference is in neither a listed repo nor the home repo (the
+      checkout's origin). Without a [product] table, link is as above.
 
 show prints the chain an issue belongs to, one row per item, each once (by owner/repo#N,
       whatever case it is spelled in), so a cycle ends where it closes:
@@ -122,6 +132,7 @@ TRANSIENT = frozenset({"RATE_LIMITED"})
 REFUSAL_TYPES = frozenset({"UNPROCESSABLE", "FORBIDDEN"})
 UNDEFINED = re.compile(r"doesn't exist on type|isn't a defined input type")
 PAGE = 100
+ORIGIN = re.compile(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$")  # an origin URL's owner/name, as shipmill reads it
 
 RESOLVE = """
 query($owner: String!, $name: String!, $number: Int!) {
@@ -291,6 +302,109 @@ def writer(checkout: Path) -> list[str]:
         sys.stderr.write(f"{refused}\n")
         raise SystemExit(2) from None
     return command
+
+
+@dataclass(frozen=True)
+class Product:
+    """The checkout's [product] table (spec 038): home in a component, repos in the home repo;
+    origin, the checkout's own repo as its origin remote names it (None when it can't be told)"""
+
+    top: Path
+    home: str | None
+    repos: tuple[str, ...]
+    origin: str | None
+
+    def is_origin(self, ref: Ref) -> bool:
+        return self.origin is not None and ref.same_repo(*self.origin.split("/"))
+
+    def is_listed(self, ref: Ref) -> bool:
+        return any(ref.same_repo(*repo.split("/")) for repo in self.repos)
+
+
+def checkout_top(checkout: Path) -> Path:
+    """The checkout's top folder, found from a subfolder as watch_state.py's gh_writer and
+    `shipmill gh` find it: the nearest folder holding a .git"""
+    here = checkout.resolve()
+    return next((folder for folder in (here, *here.parents) if (folder / ".git").exists()), here)
+
+
+def origin_of(top: Path, execute: Execute = capture) -> str | None:
+    """The checkout's GitHub origin as owner/name, read as shipmill reads it (cli._origin_repo);
+    None without an origin remote or one on GitHub"""
+    proc = execute(["git", "-C", str(top), "remote", "get-url", "origin"])
+    if proc.returncode != 0:
+        return None
+    found = ORIGIN.search(proc.stdout.strip())
+    return found.group(1) if found else None
+
+
+def product_of(checkout: Path, execute: Execute = capture) -> Product | None:
+    """The checkout's [product] table, read with watch_state.py's reader as shipmill's
+    ProductConfig checks it; None without a config or a [product] table, so link is as before.
+    A table it refuses, repos without [agents] app_id, or a table naming the checkout's own
+    repo (S-038-3) exits 2"""
+    top = checkout_top(checkout)
+    path = top / CONFIG
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if not text:
+        return None
+    ws = watch_module()
+    try:
+        home, repos = ws.product_home(text, path), ws.product_repos(text, path)
+        agents = ws.agents_table(text, path) if repos is not None else None
+    except ws.Refused as refused:
+        sys.stderr.write(f"{refused}\n")
+        raise SystemExit(2) from None
+    if home is None and repos is None:
+        return None
+    if repos is not None and "app_id" not in (agents or {}):
+        fail(f"{path}: [product] repos needs [agents] app_id; the coordinator's token comes from that App (D-47)")
+    origin = origin_of(top, execute)
+    if origin is not None and home is not None and home.lower() == origin.lower():
+        fail(f"{path}: [product] home names {home}, this checkout's own repo; a repo never names itself")
+    if origin is not None and any(repo.lower() == origin.lower() for repo in repos or ()):
+        fail(f"{path}: [product] repos lists {origin}, this checkout's own repo; a repo never names itself")
+    return Product(top, home, tuple(repos or ()), origin)
+
+
+def refuse_outside(product: Product | None, refs: Sequence[Ref], coordinated: bool) -> None:
+    """Spec 038, before any read or write. In a component ([product] home), a reference to
+    another repo than the checkout's origin exits 2 naming D-47 (S-038-11). With --product
+    (coordinated), a checkout without [product] repos, or a reference in neither a listed repo
+    nor the home repo (the checkout's origin), exits 2 (S-038-12). Without [product], nothing"""
+    if coordinated:
+        if product is None or not product.repos:
+            fail(
+                f"--product is the coordinator's: it needs [product] repos in {CONFIG}, which only the "
+                "product's home repo has (D-47)"
+            )
+        home = product.origin or "the checkout's origin, which can't be told"
+        for ref in refs:
+            if not product.is_listed(ref) and not product.is_origin(ref):
+                fail(
+                    f"--product links only the product's repos: {ref} is in neither a repo [product] repos "
+                    f"lists ({', '.join(product.repos)}) nor the home repo ({home})"
+                )
+        return
+    if product is None or product.home is None:
+        return
+    own = product.origin or "the checkout's origin, which can't be told"
+    for ref in refs:
+        if not product.is_origin(ref):
+            fail(
+                f"{ref} is in another repo than this one ({own}), a component of {product.home} "
+                "([product] home): an item here waits only on items in the same repo (D-47); report work "
+                "for another repo in this repo, labelled upstream"
+            )
+
+
+def product_writer(product: Product, parent: Ref) -> list[str]:
+    """The gh command --product's writes go through: `shipmill gh --product <the parent's
+    repo>`, the coordinator's token over the product's repos (S-038-12)"""
+    command = writer(product.top)
+    if command == ["gh"]:  # product_of refused repos without app_id: no App, no product token
+        fail(f"--product needs [agents] app_id in {CONFIG}")
+    return [*command, "--product", parent.repo]
 
 
 def parse_ref(text: str) -> Ref:
@@ -797,9 +911,12 @@ def main(
     contents: Contents = gh_contents,
     standing: Standing = gh_collaborator,
     write: Runner | None = None,
+    checkout: Path | None = None,
+    execute: Execute = capture,
 ) -> int:
-    """write is link's runner for its writes; None reads the current folder's checkout for
-    it (see writer)"""
+    """write is link's runner for its writes; None reads the checkout for it (see writer and
+    product_writer). checkout is the folder whose config link reads, the current one when
+    None; execute runs git (its origin) and the writes' gh"""
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     link_parser = commands.add_parser("link", help="write a link as a native relation and a Depends on line")
@@ -807,6 +924,11 @@ def main(
     how = link_parser.add_mutually_exclusive_group(required=True)
     how.add_argument("--blocked-by", metavar="OWNER/REPO#M", help="the issue it waits on")
     how.add_argument("--child", metavar="OWNER/REPO#C", help="the issue to put under it as a sub-issue")
+    link_parser.add_argument(
+        "--product",
+        action="store_true",
+        help="the coordinator's: write through `shipmill gh --product <the parent's repo>` (spec 038, --child only)",
+    )
     show_parser = commands.add_parser("show", help="print the chain an issue belongs to")
     show_parser.add_argument("issues", nargs="+", metavar="OWNER/REPO#N", help="the issue (or issues) to start from")
     show_parser.add_argument("--json", action="store_true", help="the rows as one JSON object")
@@ -828,8 +950,14 @@ def main(
         return show(reader, contents, starts, args.json)
     target = parse_ref(args.issue)
     other = parse_ref(args.child if args.child is not None else args.blocked_by)
+    if args.product and args.child is None:
+        fail("--product routes a report to a child: use it with --child, never --blocked-by")
+    here = checkout if checkout is not None else Path.cwd()
+    product = product_of(here, execute)
+    refuse_outside(product, (target, other), args.product)
     if write is None:
-        write = gh_runner(writer(Path.cwd()))
+        coordinator = product if args.product else None  # refuse_outside exits 2 without [product] repos
+        write = gh_runner(writer(here) if coordinator is None else product_writer(coordinator, target), execute)
     return link(run, target, other, args.child is not None, write)
 
 

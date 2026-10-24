@@ -2513,6 +2513,85 @@ def product_home_310(text: str, policy: Path) -> str | None:
     return checked_home(home, policy)
 
 
+PRODUCT_KEYS = ("home", "repos")
+PRODUCT_REPOS_VALUE = re.compile(r"^\s*[\"']?repos[\"']?\s*=\s*\[(.*)\]\s*(?:#.*)?$")
+PRODUCT_LIST_ITEM = re.compile(r"\s*(?:\"([^\"\\]*)\"|'([^']*)')\s*")
+
+
+def product_repos(text: str, policy: Path) -> tuple[str, ...] | None:
+    """[product] repos of the config, the home repo's component repos (spec 038); None without
+    the table or in a component's (home set). Checked as shipmill's ProductConfig checks them:
+    only home and repos in the table, one of them and never both, and repos a non-empty list of
+    owner/name with no repo twice (case ignored); anything else is refused naming the key.
+    That repos needs [agents] app_id is the caller's to check, as it is the writer's"""
+    if tomllib is None:
+        return product_repos_310(text, policy)
+    try:
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise Refused(f"error: {policy}: {exc}") from None
+    table = raw.get("product")
+    if table is None:
+        return None
+    if not isinstance(table, dict):
+        raise Refused(f"error: {policy}: product is not a table")
+    unknown = sorted(set(table) - set(PRODUCT_KEYS))
+    if unknown:
+        raise Refused(f"error: {policy}: [product] has an unknown key {unknown[0]!r}; it holds home or repos")
+    repos = table.get("repos")
+    if repos is not None and not (isinstance(repos, list) and all(isinstance(r, str) for r in repos)):
+        raise Refused(f"error: {policy}: [product] repos must be a list of owner/name strings; got {repos!r}")
+    return checked_repos("home" in table, repos, policy)
+
+
+def checked_repos(has_home: bool, repos: list[str] | None, policy: Path) -> tuple[str, ...] | None:
+    """[product] repos as read, refused unless it is a non-empty list of owner/name by
+    triage_state.py's rule with no repo twice, in a table without home"""
+    if repos is None:
+        if not has_home:
+            raise Refused(f"error: {policy}: [product] sets neither home (in a component) nor repos (in the home repo)")
+        return None
+    if has_home:
+        raise Refused(f"error: {policy}: [product] home and repos can't both be set; a repo is the home or a component")
+    if not repos:
+        raise Refused(f"error: {policy}: [product] repos must list at least one repo")
+    seen: set[str] = set()
+    for repo in repos:
+        if not TRIAGE.home_repo(repo):
+            raise Refused(f"error: {policy}: [product] repos holds {repo!r}; each repo is owner/name")
+        if repo.lower() in seen:
+            raise Refused(f"error: {policy}: [product] repos lists {repo} twice")
+        seen.add(repo.lower())
+    return tuple(repos)
+
+
+def product_repos_310(text: str, policy: Path) -> tuple[str, ...] | None:
+    """[product] repos on Python 3.10: a plain [product] table whose repos is a one-line list
+    of strings and whose other keys are home alone; any other form is refused rather than
+    misread. product_home_310 checks the headers and home"""
+    home = product_home_310(text, policy)
+    tables = toml_tables(text)
+    if "product" not in tables:
+        return None
+    headers = [TOML_HEADER.match(line) for line in text.splitlines()]
+    if sum(1 for h in headers if h is not None and h.group(1) == "[" and h.group(2).strip("\"' ") == "product") > 1:
+        # toml_tables keeps the last of two [product] tables, which tomllib refuses: refused too
+        raise Refused(f"error: {policy}: [product] is declared twice; keep one [product] table")
+    repos: list[str] | None = None
+    for line in tables["product"].splitlines():
+        if blank(line) or PRODUCT_HOME.match(line):
+            continue
+        found = PRODUCT_REPOS_VALUE.match(line)
+        if found is None or repos is not None:
+            raise Refused(f"error: {policy}: can't read [product] on Python 3.10: use 3.11+ ({line.strip()!r})")
+        inner = found.group(1).strip().rstrip(",")
+        items = [PRODUCT_LIST_ITEM.fullmatch(part) for part in inner.split(",")] if inner.strip() else []
+        if any(item is None for item in items):
+            raise Refused(f"error: {policy}: can't read [product] repos on Python 3.10: use 3.11+ ({line.strip()!r})")
+        repos = [item.group(1) if item.group(1) is not None else item.group(2) for item in items if item is not None]
+    return checked_repos(home is not None, repos, policy)
+
+
 def gh_writer(repo_dir: Path) -> list[str]:
     """The command a skill script's writing gh call starts with (spec 012, #290): with [agents]
     app_id set in the checkout's config, `shipmill gh` run as `uvx shipmill==<the plugin's
