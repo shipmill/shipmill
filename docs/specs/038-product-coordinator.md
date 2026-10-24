@@ -271,4 +271,11 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 
 ## Issues
 
+- shipmill/shipmill#584: S-038-1, S-038-2, S-038-10
+- shipmill/shipmill#585: S-038-3, S-038-5, S-038-6, S-038-7, S-038-8, S-038-9
+- shipmill/shipmill#586: S-038-13, S-038-14, S-038-15, S-038-16, S-038-17, S-038-24, S-038-25
+- shipmill/shipmill#587: S-038-11, S-038-12
+- shipmill/shipmill#588: S-038-18, S-038-19, S-038-20, S-038-21
+- shipmill/shipmill#589: S-038-4, S-038-22, S-038-23, S-038-26
+
 ## Verification
