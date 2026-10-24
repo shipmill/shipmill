@@ -511,3 +511,219 @@ def test_526_run_from_a_checkout_without_app_id_the_script_writes_with_plain_gh(
     assert proc.returncode == 0, proc.stderr
     assert [c[0] for c in calls] == ["gh"] * len(calls)
     assert sum("mutation" in c[4] for c in calls) == 2  # the relation and the body edit
+
+
+# -- spec 038: a component links within its repo; the coordinator links with --product (D-47)
+
+PRODUCT_APP = '[agents]\nprompt = "Triage the repo"\napp_id = 123\n'
+COMPONENT = PRODUCT_APP + '\n[product]\nhome = "acme/product"\n'
+COORDINATOR = PRODUCT_APP + '\n[product]\nrepos = ["acme/api", "Acme/Web"]\n'
+
+
+class Checkout:
+    """git and the writes' gh in front of the fake forge, for a checkout whose origin is origin
+    (None: no origin remote): every command run, and each write's gh prefix"""
+
+    def __init__(self, forge: Forge, origin: str | None) -> None:
+        self.forge, self.origin = forge, origin
+        self.ran: list[list[str]] = []
+
+    def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        self.ran.append(cmd)
+        if cmd[0] == "git":
+            assert cmd[3:] == ["remote", "get-url", "origin"], cmd
+            if self.origin is None:
+                return subprocess.CompletedProcess(cmd, 2, "", "error: No such remote 'origin'\n")
+            return subprocess.CompletedProcess(cmd, 0, f"git@github.com:{self.origin}.git\n", "")
+        response = self.forge(*gh_call(cmd[cmd.index("api") :]))
+        return subprocess.CompletedProcess(cmd, 1 if response.get("errors") else 0, json.dumps(response), "")
+
+    def writes(self) -> list[list[str]]:
+        """The prefix of each gh call run here, each a write: the reads stay on the plain runner"""
+        return [cmd[: cmd.index("api")] for cmd in self.ran if cmd[0] != "git"]
+
+
+def run_link(
+    ch: ModuleType, forge: Forge, tmp_path: Path, config: str | None, origin: str | None, *argv: str
+) -> tuple[int, Checkout]:
+    """chains.py link from a checkout (from its .github subfolder when it has a config)"""
+    git = Checkout(forge, origin)
+    top = checkout(tmp_path / "repo", config)
+    here = top / ".github" if config is not None else top
+    code: int = ch.main(["link", *argv], run=forge, checkout=here, execute=git)
+    return code, git
+
+
+def prepare(forge: Forge, parent: str, other: str, state: str, child: bool) -> None:
+    """Two issues, linked already in both forms, or with the forge refusing the relation"""
+    p, o = forge.add(parent, "Body"), forge.add(other)
+    if state == "already linked":
+        if child:
+            forge.parents[o] = p
+        else:
+            forge.blocked.add((p, o))
+        next(i for i in forge.issues.values() if i["id"] == p)["body"] = f"Depends on {other}"
+    if state == "text only":
+        forge.refuse_write = "Issues must belong to the same owner"
+
+
+STATES = ["new", "already linked", "text only"]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["acme/api#5", "--blocked-by", "acme/web#4"],
+        ["acme/api#5", "--blocked-by", "acme/product#4"],  # waits on its home's item
+        ["acme/product#4", "--blocked-by", "acme/api#5"],  # the other way round
+        ["acme/api#5", "--child", "acme/web#4"],
+        ["Acme/API#5", "--child", "acme/api-old#4"],
+    ],
+)
+@pytest.mark.parametrize("state", STATES)
+def test_s038_11_a_component_refuses_another_repo_s_reference_before_any_write(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str], argv: list[str], state: str
+) -> None:
+    prepare(forge, argv[0], argv[2], state, argv[1] == "--child")
+    with pytest.raises(SystemExit) as exit_:
+        run_link(ch, forge, tmp_path, COMPONENT, "acme/api", *argv)
+    assert exit_.value.code == 2
+    err = capsys.readouterr().err
+    assert "a component of acme/product" in err and "D-47" in err and "upstream" in err
+    assert forge.calls == []  # not one read, so not one write
+
+
+def test_s038_11_a_component_without_a_known_origin_refuses_every_link(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forge.add("acme/api#5")
+    forge.add("acme/api#4")
+    with pytest.raises(SystemExit) as exit_:
+        run_link(ch, forge, tmp_path, COMPONENT, None, "acme/api#5", "--blocked-by", "acme/api#4")
+    assert exit_.value.code == 2
+    assert "the checkout's origin, which can't be told" in capsys.readouterr().err
+    assert forge.calls == []
+
+
+def test_s038_11_a_component_links_within_its_own_repo_as_before(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a = forge.add("acme/api#5", "Body\n")
+    r = forge.add("acme/api#9")
+    code, git = run_link(ch, forge, tmp_path, COMPONENT, "Acme/Api", "ACME/api#5", "--blocked-by", "acme/API#9")
+    assert code == 0  # GitHub ignores case, and so does the check
+    assert (a, r) in forge.blocked and forge.body("acme/api#5") == "Body\n\nDepends on acme/API#9"
+    top = str((tmp_path / "repo").resolve())
+    assert git.writes() == [[*UVX, "--repo", top, "gh"]] * 2  # the session's App, as before
+    assert "added to ACME/api#5" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("parent", "child"),
+    [("acme/api#3", "acme/web#7"), ("ACME/Web#3", "acme/product#7"), ("acme/api#3", "acme/api#7")],
+)
+def test_s038_12_product_child_writes_through_shipmill_gh_product_of_the_parent_s_repo(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str], parent: str, child: str
+) -> None:
+    p, c = forge.add(parent, "The report\n"), forge.add(child)
+    code, git = run_link(ch, forge, tmp_path, COORDINATOR, "acme/product", "--product", parent, "--child", child)
+    assert code == 0
+    assert forge.parents[c] == p and forge.body(parent) == f"The report\n\nDepends on {child}"
+    top = (tmp_path / "repo").resolve()
+    repo = parent.partition("#")[0]
+    assert git.writes() == [[*UVX, "--repo", str(top), "gh", "--product", repo]] * 2  # the sub-issue, the line
+    assert forge.writes() == ["addSubIssue", "updateIssue"]
+    assert f"linked: {child} is a sub-issue of {parent}" in capsys.readouterr().out
+
+    git.ran.clear()  # again: already linked, nothing written
+    assert ch.main(["link", "--product", parent, "--child", child], run=forge, checkout=top, execute=git) == 0
+    assert git.writes() == []
+    assert capsys.readouterr().out.strip() == "already linked"
+
+
+@pytest.mark.parametrize(
+    ("config", "origin", "argv", "named"),
+    [
+        (None, "acme/product", ["acme/api#3", "--child", "acme/web#7"], "needs [product] repos"),
+        (PRODUCT_APP, "acme/product", ["acme/api#3", "--child", "acme/web#7"], "needs [product] repos"),
+        (COMPONENT, "acme/api", ["acme/api#3", "--child", "acme/api#7"], "needs [product] repos"),
+        (COORDINATOR, "acme/product", ["acme/api#3", "--child", "acme/sdk#7"], "acme/sdk#7 is in neither"),
+        (COORDINATOR, "acme/product", ["other/api#3", "--child", "acme/web#7"], "other/api#3 is in neither"),
+        (COORDINATOR, None, ["acme/product#3", "--child", "acme/web#7"], "acme/product#3 is in neither"),
+        (COORDINATOR, "acme/product", ["acme/api#3", "--blocked-by", "acme/web#7"], "never --blocked-by"),
+    ],
+)
+@pytest.mark.parametrize("state", STATES)
+def test_s038_12_product_exits_2_before_any_write_outside_the_product(
+    ch: ModuleType,
+    forge: Forge,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    config: str | None,
+    origin: str | None,
+    argv: list[str],
+    named: str,
+    state: str,
+) -> None:
+    prepare(forge, argv[0], argv[2], state, argv[1] == "--child")
+    with pytest.raises(SystemExit) as exit_:
+        run_link(ch, forge, tmp_path, config, origin, "--product", *argv)
+    assert exit_.value.code == 2
+    assert named in capsys.readouterr().err
+    assert forge.calls == []
+
+
+@pytest.mark.parametrize(
+    ("config", "named"),
+    [
+        ('[agents]\nprompt = "x"\n\n[product]\nrepos = ["acme/api"]\n', "repos needs [agents] app_id"),
+        (PRODUCT_APP + '\n[product]\nrepos = ["acme/api", "acme/product"]\n', "this checkout's own repo"),
+        (PRODUCT_APP + '\n[product]\nhome = "ACME/product"\n', "this checkout's own repo"),
+        (PRODUCT_APP + '\n[product]\nhome = "acme/x"\nrepos = ["acme/api"]\n', "can't both be set"),
+        (PRODUCT_APP + "\n[product]\nrepos = []\n", "at least one repo"),
+        (PRODUCT_APP + '\n[product]\nrepos = ["acme/api", "Acme/API"]\n', "twice"),
+        (PRODUCT_APP + '\n[product]\nrepos = ["acme"]\n', "owner/name"),
+        (PRODUCT_APP + '\n[product]\nrepo = ["acme/api"]\n', "'repo'"),
+        (PRODUCT_APP + "\n[product]\n", "neither home"),
+    ],
+)
+def test_s038_12_a_product_table_shipmill_refuses_is_refused_before_any_read(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str], config: str, named: str
+) -> None:
+    forge.add("acme/product#3")
+    forge.add("acme/product#7")
+    with pytest.raises(SystemExit) as exit_:
+        run_link(ch, forge, tmp_path, config, "acme/product", "acme/product#3", "--child", "acme/product#7")
+    assert exit_.value.code == 2
+    assert named in capsys.readouterr().err
+    assert forge.calls == []
+
+
+def test_s038_12_the_310_reader_reads_repos_as_tomllib_does(ch: ModuleType, tmp_path: Path) -> None:
+    ws = ch.watch_module()
+    policy = tmp_path / "shipmill.toml"
+    for text, repos in [
+        (COORDINATOR, ("acme/api", "Acme/Web")),
+        ("[product]\nrepos = ['acme/api', \"other/sdk\",]  # the components\n", ("acme/api", "other/sdk")),
+        (COMPONENT, None),
+        (PRODUCT_APP, None),
+    ]:
+        assert ws.product_repos(text, policy) == repos
+        assert ws.product_repos_310(text, policy) == repos
+    refused = ['[product]\nrepos = "acme/api"\n', "[product]\nrepos = [1]\n", '[product]\nx = "y"\n']
+    for text in refused:
+        with pytest.raises(ws.Refused):
+            ws.product_repos(text, policy)
+        with pytest.raises(ws.Refused, match=r"\[product\]"):
+            ws.product_repos_310(text, policy)
+
+
+def test_s038_4_without_a_product_table_link_reads_no_origin_and_links_any_repo(
+    ch: ModuleType, forge: Forge, tmp_path: Path
+) -> None:
+    p, c = forge.add("o/r#1"), forge.add("someone/else#2")
+    code, git = run_link(ch, forge, tmp_path, PRODUCT_APP, "o/r", "o/r#1", "--child", "someone/else#2")
+    assert code == 0 and forge.parents[c] == p
+    assert all(cmd[0] != "git" for cmd in git.ran)  # no [product]: the origin is never asked
+    top = str((tmp_path / "repo").resolve())
+    assert git.writes() == [[*UVX, "--repo", top, "gh"]] * 2
