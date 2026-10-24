@@ -393,7 +393,8 @@ def checkout_repos(home: str, here: Path) -> list[str]:
 def default_readers(home: str, top: Path, execute: Execute = capture) -> Readers:
     """Plain gh for the home repo (the session's), `shipmill gh --product <repo>` for a listed
     one (the coordinator's product token), as the plugin's pinned release runs it; execute
-    runs each command"""
+    runs each command, and a pinned shipmill uv finds no version of runs once more with its
+    index refreshed (watch_state.py's pinned, #597)"""
     ws = watch_module()
 
     def readers(repo: str) -> Runner:
@@ -404,7 +405,8 @@ def default_readers(home: str, top: Path, execute: Execute = capture) -> Readers
         except ws.Refused as refused:
             sys.stderr.write(f"{refused}\n")
             raise SystemExit(2) from None
-        return gh_runner((*shipmill, "--repo", str(top), "gh", "--product", repo), execute)
+        refreshed: Execute = lambda cmd: ws.pinned(cmd, execute)  # noqa: E731
+        return gh_runner((*shipmill, "--repo", str(top), "gh", "--product", repo), refreshed)
 
     return readers
 

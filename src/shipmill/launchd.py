@@ -18,6 +18,8 @@ from pathlib import Path
 
 from shipmill import cli_command
 from shipmill.errors import ReleaseError
+from shipmill.plugin import GateCli
+from shipmill.version import Version
 
 TOOLS = ("claude", "gh", "git", "uvx")
 BASE_PATH = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
@@ -25,6 +27,7 @@ BASE_PATH = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
 # (spec 031); a job written before it runs the floating major tag, which can lag a release
 DEFAULT_TOOL = "shipmill@latest"
 OLD_TOOL = "git+https://github.com/shipmill/shipmill@v0"
+FLOATING = (OLD_TOOL, "git+https://github.com/romamo/shipmill@v0")  # the @v0 sources, the pre-org URL too
 UPGRADE = "uv tool upgrade shipmill"  # the fix for a lagging `uv tool install shipmill`
 DEFAULT_EVERY = 15  # minutes between runs, `shipmill launchd --every`'s default
 _TEMP_ROOTS = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
@@ -193,3 +196,17 @@ def cli_fix(job: dict[str, object] | None, repo: str) -> str:
         command += ["--app-key", args[args.index("--app-key") + 1]]
     command += [a for a in args if a.startswith("--claude-arg=")]
     return shlex.join(command)
+
+
+def floating(job: dict[str, object] | None) -> str | None:
+    """The job's source when it is the floating `@v0` git tag (OLD_TOOL, or FLOATING's pre-org
+    URL): it runs the newest commit, so its CLI never lags, while the tag moves minutes before
+    PyPI serves the release the plugin then pins (#597). None for any other job, or none"""
+    tool = None if job is None else job_tool(job)
+    return tool if tool in FLOATING else None
+
+
+def gate_cli(version: Version, job: dict[str, object] | None, repo: str) -> GateCli:
+    """S-031-17: the gate's CLI at version, run by job (None: a tool install), with cli_fix's
+    fix; a job on @v0 owes that rewrite whether or not its CLI lags (#597)"""
+    return GateCli(version, cli_fix(job, repo), floating(job))

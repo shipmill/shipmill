@@ -239,15 +239,27 @@ class Lag:
 
 @dataclass(frozen=True, slots=True)
 class GateCli:
-    """S-031-17: the gate's own shipmill and how to bring it to the latest release"""
+    """S-031-17: the gate's own shipmill and how to bring it to the latest release. floating
+    is the source of a launchd job on the floating `@v0` git tag, which moves before PyPI
+    serves a release and so never lags (#597); None for any other install"""
 
     version: Version
     fix: str
+    floating: str | None = None
 
     def lags(self, latest: Version) -> bool:
         return self.version < latest
 
+    def owes(self, latest: Version) -> bool:
+        """Whether doctor, status, and the tick report it: a CLI that lags, or a job on @v0"""
+        return self.lags(latest) or self.floating is not None
+
     def line(self, latest: Version) -> str:
+        if self.floating is not None and not self.lags(latest):
+            return (
+                f"the gate's launchd job runs shipmill from {self.floating}, which moves before PyPI serves a"
+                f" release; move it to shipmill@latest: {self.fix}"
+            )
         return f"the gate's CLI, shipmill {self.version}, lags the latest release {latest}: {self.fix}"
 
 
@@ -338,7 +350,7 @@ def loaded(checkout: Path, project: Path, run: Runner, cli: GateCli | None, boun
     unloaded = () if here == project else tuple(i for i in installs if i.folder == here)
     unmet = bound if bound is not None and found is not None and not bound.met(found.version) else None
     fix = None if unmet is None or found is None else requires_fix(unmet, found, installs, latest)
-    lagging = cli if cli is not None and cli.lags(latest) else None
+    lagging = cli if cli is not None and cli.owes(latest) else None
     return Loaded(project, found, latest, lags, unloaded, lagging, unmet, fix)
 
 

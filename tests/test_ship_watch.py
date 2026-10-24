@@ -1600,6 +1600,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
             ),
         ),
         ws.upstream_unreadable_row(REPO, CHECKOUT, f"error: {TITLE}"),
+        ws.pypi_wait_row("0.66.0", "the release plan"),
     ]
     found: dict[str, list[Any]] = {}
     for row in rows:
@@ -1656,6 +1657,10 @@ FIXES = {
     "UPSTREAM_ASKED": ["answer the needs-decision question on x/b#2"],
     "UPSTREAM_UNTRUSTED": ["review them in an interactive session: /shipmill:github-issue-triage o/r"],
     "UPSTREAM_UNREADABLE": ["see why: uv run --directory /work/r --no-project python {upstream} o/r"],
+    "PYPI_WAIT": [
+        "check the publish.yml run for v0.66.0: gh run list --repo shipmill/shipmill --workflow publish.yml;"
+        " if none passed, publish it: gh workflow run publish.yml --repo shipmill/shipmill -f tag=v0.66.0"
+    ],
 }
 
 
@@ -1685,7 +1690,7 @@ def test_s011_1_every_json_line_adds_a_fix_and_keeps_the_rest(ws: ModuleType, tm
 
 
 def test_s011_2_every_action_state_is_fixed_and_a_fixed_row_needs_its_fix(ws: ModuleType) -> None:
-    assert {"HOLD", "WORKTREE_STALE", "UNTRUSTED", "UPSTREAM_UNTRUSTED"} | ws.ACTION == ws.FIXED
+    assert {"HOLD", "WORKTREE_STALE", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT"} | ws.ACTION == ws.FIXED
     assert ws.ACTION <= ws.FIXED, "a state in ACTION but not in FIXED ships without a fix"
     assert set(FIXES) == ws.FIXED
     for state in ws.FIXED:
@@ -1820,6 +1825,8 @@ def test_s011_8_every_fix_names_its_target_and_quotes_no_title(ws: ModuleType, t
             gh_fixes += 1
             # gh api takes no -R: its path names the repo (#475's milestone rename)
             named = command.startswith(("gh repo edit o/r ", "gh api -X PATCH repos/o/r/"))
+            # #597: PYPI_WAIT's publish run is shipmill's own, as doctor's and status's fix names it
+            named = named or (row.state == "PYPI_WAIT" and "--repo shipmill/shipmill" in command)
             assert "-R o/r" in command or named, command
         for flag in re.findall(r"\bgit (\S+)", row.fix):
             git_fixes += 1
