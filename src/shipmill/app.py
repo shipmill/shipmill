@@ -357,15 +357,25 @@ def repo_name(repo: str) -> str:
 _SEGMENT = re.compile(r"[A-Za-z0-9._-]+")  # the characters GitHub allows in an owner or a repo name
 
 
+def _plain(part: str) -> bool:
+    """One plain folder name: GitHub's characters, never `.` or `..`"""
+    return part not in {".", ".."} and _SEGMENT.fullmatch(part) is not None
+
+
+def is_plain_repo(repo: str) -> bool:
+    """repo is owner/name by `repo_name`'s rule, each part a plain name by the cache's rule"""
+    owner, slash, name = repo.partition("/")
+    return bool(owner and slash and name) and "/" not in name and _plain(owner) and _plain(name)
+
+
 def cache_outside(repo: str, environ: Mapping[str, str], home: Path) -> Path:
     """Spec 012: the token cache with no git checkout, `$XDG_CACHE_HOME/shipmill/<owner>/<repo>/`
     (`~/.cache` when XDG_CACHE_HOME is unset or empty). Each part of the repo is one plain
     folder name, so the path never leaves the cache folder"""
     name = repo_name(repo)
     owner = repo.partition("/")[0]
-    for part in (owner, name):
-        if part in {".", ".."} or not _SEGMENT.fullmatch(part):
-            raise ReleaseError(f"the repo is owner/name of letters, digits, '.', '-', or '_'; got {repo!r}")
+    if not is_plain_repo(repo):
+        raise ReleaseError(f"the repo is owner/name of letters, digits, '.', '-', or '_'; got {repo!r}")
     base = environ.get("XDG_CACHE_HOME", "")
     folder = Path(base) if base else home / ".cache"
     if not folder.is_absolute():

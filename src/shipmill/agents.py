@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from shipmill.config import CONFIG_PATH, Table, config_path, read
+from shipmill.app import is_plain_repo
+from shipmill.config import CONFIG_PATH, Table, config_path, read, read_unchecked
 from shipmill.errors import ReleaseError
 
 _MAX_HOURS = 7 * 24  # a week
@@ -81,7 +82,9 @@ class AgentsConfig:
         raw = read(path)
         if "agents" not in raw:
             raise ReleaseError(f"{path} has no [agents] section; add one with a prompt to use the gate")
-        return cls.parse(Table(raw, path.name).table("agents"))
+        agents = cls.parse(Table(raw, path.name).table("agents"))
+        ProductConfig.read(Table(raw, path.name), agents.app_id)  # the gate refuses a bad [product] too
+        return agents
 
 
 def app_id_of(root: Path) -> int | None:
@@ -94,3 +97,93 @@ def app_id_of(root: Path) -> int | None:
     if "agents" not in raw:
         return None
     return AgentsConfig.parse(Table(raw, path.name).table("agents")).app_id
+
+
+@dataclass(frozen=True, slots=True)
+class ProductConfig:
+    """The [product] table (spec 038, D-47): a component names its home repo, the home repo
+    names its components; never both. Each repo is owner/name"""
+
+    home: str | None = None  # in a component: the product's home repo
+    repos: tuple[str, ...] = ()  # in the home repo: its component repos, none twice
+
+    @property
+    def component(self) -> bool:
+        return self.home is not None
+
+    @classmethod
+    def parse(cls, table: Table, app_id: int | None) -> ProductConfig:
+        """app_id is the same file's [agents] app_id: `repos` needs it"""
+        table.allow("home", "repos")
+        if "home" in table.raw and "repos" in table.raw:
+            raise ReleaseError(
+                f"{table.where}: home and repos can't both be set; a repo is the product's home (repos) "
+                "or one of its components (home)"
+            )
+        if "home" in table.raw:
+            return cls(home=_repo(table, "home", table.string("home")))
+        if "repos" not in table.raw:
+            raise ReleaseError(f"{table.where}: set home (in a component) or repos (in the product's home repo)")
+        repos = tuple(_repo(table, "repos", r) for r in table.strings("repos"))
+        if not repos:
+            raise ReleaseError(f"{table.where}: repos must list at least one repo")
+        seen: set[str] = set()
+        for repo in repos:
+            if repo.lower() in seen:
+                raise ReleaseError(f"{table.where}: repos lists {repo} twice")
+            seen.add(repo.lower())
+        if app_id is None:
+            raise ReleaseError(
+                f"{table.where}: repos needs [agents] app_id; the coordinator is the home repo's gate, "
+                "and its token over the product's repos comes from that App (D-47)"
+            )
+        return cls(repos=repos)
+
+    @classmethod
+    def read(cls, top: Table, app_id: int | None) -> ProductConfig | None:
+        """The config's [product] table, or None without one"""
+        return cls.parse(top.table("product"), app_id) if "product" in top.raw else None
+
+    @classmethod
+    def load(cls, root: Path) -> ProductConfig | None:
+        """The checkout's [product] alone, as `app_id_of` reads [agents]: None with no config
+        file or no [product] table; a malformed one, a malformed [agents], or a TOML syntax error
+        still fails. The config's requires isn't checked here (S-038-4): the credential helpers
+        read this on every call, and never read the config before spec 038"""
+        if not (root / CONFIG_PATH).is_file():
+            return None
+        path = config_path(root)
+        raw = read_unchecked(path)
+        if "product" not in raw:
+            return None
+        top = Table(raw, path.name)
+        app_id = AgentsConfig.parse(top.table("agents")).app_id if "agents" in raw else None
+        return cls.read(top, app_id)
+
+    def refuse_outside(self, repo: str, origin: str | None, what: str) -> None:
+        """S-038-10: in a component, what (a gh call, a token) names only the checkout's origin
+        repo; another repo, or an origin that can't be told, exits 2 naming D-47"""
+        if self.home is None or (origin is not None and repo.lower() == origin.lower()):
+            return
+        own = "the checkout's origin" if origin is None else origin
+        raise ReleaseError(
+            f"{what} names {repo}, but this repo is a component of {self.home} ([product] home), "
+            f"so its session reads and writes only {own} (D-47); report work for another repo in "
+            "this repo, labelled upstream"
+        )
+
+    def refuse_product(self) -> None:
+        """S-038-10: `--product` is the coordinator's, so in a component it exits 2 naming D-47"""
+        if self.home is not None:
+            raise ReleaseError(
+                f"--product is the coordinator's, in the product's home repo {self.home}; this repo is a "
+                "component ([product] home), so its session gets no token over other repos (D-47)"
+            )
+
+
+def _repo(table: Table, key: str, value: str) -> str:
+    if not is_plain_repo(value):
+        raise ReleaseError(
+            f"{table.where}: {key} holds {value!r}; each repo is owner/name of letters, digits, '.', '-', or '_'"
+        )
+    return value

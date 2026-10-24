@@ -597,6 +597,23 @@ change: `gh workflow run downstream.yml -f pr=<N>`. A bot can't start a fork's r
    they FAIL for a downstream the App isn't installed on or lacks Actions: read and write;
    without it one WARN says the installation is unchecked
 
+## A product across repos
+
+A product made of several repos names them in `[product]` ([spec
+038](specs/038-product-coordinator.md), D-47). A component repo names its home, and the
+home repo, whose gate is the product's coordinator, names its components:
+
+```toml
+[product]
+home = "acme/product"            # in a component
+# repos = ["acme/api", "acme/web"]  # or, in the home repo; needs [agents] app_id
+```
+
+A table sets one of the two keys. Each repo is `owner/name`; `repos` is non-empty and lists
+no repo twice. In a component, `shipmill gh -R` and `shipmill app-token` for any repo but the
+checkout's origin exit 2 naming D-47, before a token is minted. Without `[product]` nothing
+changes.
+
 ## Work in progress
 
 `[agents] wip` caps how many issues the agents have in progress at once (an open PR or a
