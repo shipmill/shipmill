@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-10-24
+
+### Added
+
+- The instructions for work across a product's repos (spec 038, D-47): github-issue-triage's Reports from other repos has the home repo's coordinator route each `upstream` report with `shipmill gh --product` and `chains.py link --product`, ask through needs-decision when it can't tell the owning repo, and close the report with a summary of each child, how it closed, and its pull request, as completed or not planned, never changing files, pushing, branching, opening a pull request, or merging outside the home repo; `comments.md` has an Upstream report template (Reproduce, Touches, Suspected code, a `Guess:` when the cause wasn't traced, and the triage comment with or without a coordinator); github-issue-resolve's Phase 2 has the upstream verdict, which reports in the agent's own repo and holds its issue with `chains.py link --blocked-by`; and triage-rubric.md has a component write a dependency on another repo as a stand-in. A fault in another repo, or a gap in a spec the project implements, is now always reported in the repo's own tracker instead of filed in the other repo, so the Clarify template no longer says "Filed upstream as" (#589)
+
+### Fixed
+
+- A release no longer fails the gate's ticks while PyPI doesn't serve it yet: a skill script's `uvx shipmill==<version>` that uv finds no such version of runs once more as `uvx --refresh-package shipmill ...`, and when that fails too `watch_state.py` prints a report-only `PYPI_WAIT` row (`shipmill==<version> waits for PyPI`, the release's `publish.yml` run as its fix) in place of the rows that read owed, and reads the rest instead of exiting 2; any other uvx failure still exits 2. A launchd job on the floating `git+https://github.com/shipmill/shipmill@v0` source, whose CLI never lags, now gets its rewrite to `shipmill@latest` in `doctor` (a WARN), `status`, and the tick report whether or not its CLI lags (#597)
+
 ## [0.66.0] - 2026-10-24
 
 ### Added
@@ -1702,7 +1712,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.66.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.67.0...HEAD
+[0.67.0]: https://github.com/shipmill/shipmill/compare/v0.66.0...v0.67.0
 [0.66.0]: https://github.com/shipmill/shipmill/compare/v0.65.0...v0.66.0
 [0.65.0]: https://github.com/shipmill/shipmill/compare/v0.64.0...v0.65.0
 [0.64.0]: https://github.com/shipmill/shipmill/compare/v0.63.0...v0.64.0
