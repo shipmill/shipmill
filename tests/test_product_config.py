@@ -3,6 +3,7 @@ policy (`shipmill plan`) and the gate's loader alike (S-038-1), `repos` needing 
 (S-038-2), and a component's `shipmill gh -R` and `shipmill app-token` limited to its origin
 repo before any token is minted (S-038-10). No test reaches the network"""
 
+import io
 import shutil
 import tomllib
 from pathlib import Path
@@ -18,7 +19,7 @@ from shipmill.policy import Policy
 from .conftest import POLICY, Repo
 from .test_app import APP_ID, REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout, gh
-from .test_app_token import FAKE_GH, MintApi, executable
+from .test_app_token import FAKE_GH, GET, MintApi, executable
 
 
 @pytest.fixture
@@ -228,6 +229,39 @@ def test_s038_10_a_component_checkout_git_cant_read_gets_no_app_token(tmp_path: 
     with pytest.raises(ReleaseError, match=f"component of {HOME}.*git -C"):
         _token(root, tmp_path, other, api, host)
     assert (api.calls, api.posts) == ([], [])
+
+
+NEWER = 'requires = ">=99.0"\n'  # a config for a shipmill newer than this one
+
+
+def test_s038_4_app_token_and_its_git_helper_mint_as_before_under_a_newer_requires(
+    tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the helpers run app-token on every call; before spec 038 it never read the config
+    root = checkout(tmp_path, NEWER + WITH_APP)
+    assert _token(root, tmp_path, REPO, MintApi(), host) == 0
+    assert capsys.readouterr().out == "token-1\n"
+    argv = ["--repo", str(root), "app-token", REPO, "--app-id", str(APP_ID), "--app-key", str(key_file(tmp_path))]
+    argv += ["--git-credential", "get"]
+    assert main(argv, api=MintApi(), signer=FakeSigner(), environ={}, home=host.home, stdin=io.StringIO(GET)) == 0
+    assert capsys.readouterr().out == "username=x-access-token\npassword=token-1\n"
+
+
+def test_s038_10_a_newer_requires_still_keeps_a_component_to_its_repo(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, NEWER + WITH_APP + COMPONENT)
+    api = MintApi()
+    with pytest.raises(ReleaseError, match="D-47"):
+        _token(root, tmp_path, OTHER, api, host)
+    assert api.calls == []
+
+
+def test_s038_10_a_config_that_isnt_toml_still_stops_app_token(tmp_path: Path, host: Host) -> None:
+    # the guard can't tell a component from a broken file, so it fails closed, as `shipmill gh` does
+    root = checkout(tmp_path, WITH_APP + "\nbroken = [\n")
+    api = MintApi()
+    with pytest.raises(ReleaseError, match="shipmill.toml: Invalid value"):
+        _token(root, tmp_path, REPO, api, host)
+    assert api.calls == []
 
 
 def test_s038_10_a_components_app_token_for_its_own_repo_mints(

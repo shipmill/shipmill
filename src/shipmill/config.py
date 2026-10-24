@@ -26,16 +26,27 @@ def read(path: Path) -> Mapping[str, Any]:
     return loads(path.read_text(encoding="utf-8"), str(path))
 
 
+def read_unchecked(path: Path) -> Mapping[str, Any]:
+    """The file's TOML with no requires check, for a reader of one table that a newer config
+    must not stop (S-038-4: the credential helpers read [product] alone); a syntax error still
+    names the file"""
+    return _parse(path.read_text(encoding="utf-8"), str(path))
+
+
 def loads(text: str, where: str) -> Mapping[str, Any]:
     """text's TOML; a syntax error names where it was read from. Its requires is checked
     first (spec 031): a CLI too old for the config says so before any reader of a section
     refuses a key it doesn't know"""
-    try:
-        raw = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        raise ReleaseError(f"{where}: {exc}") from None
+    raw = _parse(text, where)
     requires.check(raw)
     return raw
+
+
+def _parse(text: str, where: str) -> Mapping[str, Any]:
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ReleaseError(f"{where}: {exc}") from None
 
 
 class Table:

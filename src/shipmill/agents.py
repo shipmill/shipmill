@@ -8,7 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from shipmill.app import is_plain_repo
-from shipmill.config import CONFIG_PATH, Table, config_path, read
+from shipmill.config import CONFIG_PATH, Table, config_path, read, read_unchecked
 from shipmill.errors import ReleaseError
 
 _MAX_HOURS = 7 * 24  # a week
@@ -147,11 +147,13 @@ class ProductConfig:
     @classmethod
     def load(cls, root: Path) -> ProductConfig | None:
         """The checkout's [product] alone, as `app_id_of` reads [agents]: None with no config
-        file or no [product] table; a malformed one, or a malformed [agents], still fails"""
+        file or no [product] table; a malformed one, a malformed [agents], or a TOML syntax error
+        still fails. The config's requires isn't checked here (S-038-4): the credential helpers
+        read this on every call, and never read the config before spec 038"""
         if not (root / CONFIG_PATH).is_file():
             return None
         path = config_path(root)
-        raw = read(path)
+        raw = read_unchecked(path)
         if "product" not in raw:
             return None
         top = Table(raw, path.name)
