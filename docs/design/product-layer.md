@@ -142,10 +142,123 @@ child closes. The spec gate's feature issue is then one kind of parent, not a sp
 so a cross-repo chain advances as long as every repo in it runs a gate, and D-16 applies in
 each. A plan across repos (one milestone name in several repos, released together) is a
 later question, and depends on the queue (gap 3) to be visible at all.
+Chains shipped in spec 017; the plan across repos is under [Across repos](#across-repos).
+
+## Across repos
+
+Added 2026-10-24 (shipmill 0.61.0), after chains across repos shipped in spec 017. It answers
+gap 6: how repos work together, and whether that takes another product.
+
+The repo stays the unit of execution: its gate, policy, lanes, milestones and the App's
+identity are per repo. The fleet becomes the unit of planning. Working across repos needs
+no new product and no new store, because the forge already holds everything the fleet
+needs; what it needs is one access rule, one role, and the forge's own cross-repo objects.
+
+### Components stay home, the manager crosses
+
+- A component repo's session reads and writes only its own repo, plus its product's
+  `docs/product.md` in the home repo. Every change to code stays in its own repo: its
+  branch, its pull request, its CI, its gate (D-45)
+- An item waits only on items in its own repo. A dependency on another repo is a local
+  stand-in, and the manager watches the other side: when the work there closes, the
+  manager closes the stand-in with a summary of what changed, the item reads UNBLOCKED,
+  and the component's gate takes it up. The agent never polls another repo
+- The manager is the only session that reads or writes across repos: it reads the code,
+  items and pull requests of its product's repos, and files, links and comments on issues
+  in them, with a second token that has no write access to code or pull requests
+- A person is told from the repo where their item waits, by that repo's gate
+- A release that needs another repo's change holds a stand-in in its own milestone, so the
+  milestone empties only when the manager closes it. GitHub milestones are per repo, so
+  this needs no cross-repo milestone; GitLab's group milestones can come later through the
+  code host port
+- Spec 017's direct holds (`Depends on owner/repo#N` read by the waiting repo itself) keep
+  working where the waiting repo can read the other one (a public repo) or where a product
+  has no manager; in a product with a manager, the stand-in replaces them. Without a running
+  manager a product's cross-repo chains stop, which the maintainer's queue (#337) shows
+
+### A bug found in another repo
+
+An agent working an issue finds that the fault is in a module another repo owns:
+
+1. **It reports what it can, in its own repo.** A coding agent usually can't run another
+   repo's services, so the report is how to reproduce the bug, the object it touches (an
+   endpoint, a table, an index, a package) and, when it found the cause in the module's
+   source, the suspected place in the code; a guess it could not trace is said to be one.
+   The report is an issue in its own repo labelled `upstream`, linked from its issue, which
+   names the report on a `Depends on` line when its work can't go on without the fix. Local
+   triage reads an `upstream` report as waiting outside, like `needs-decision`, and starts
+   nothing for it
+2. **It never fixes the module from its own repo:** no vendored copy, no patch of an
+   installed dependency, no pull request in the other repo. A workaround in its own code
+   is fine when it is a real change there (a check, an error handled on its side), said to
+   be temporary in its pull request
+3. **The manager routes it.** It finds the repos at fault, often more than one, files an
+   issue in each and makes them the report's children; when it can't tell, it asks the
+   maintainer through `needs-decision`. Without a manager the report waits in the
+   maintainer's queue
+4. **The manager closes it.** Once the last child closes, it closes the report with what
+   changed (as not planned when the owners won't fix it, so the agent decides again), and
+   the agent's issue unblocks in its own repo
+
+A plan's items reach other repos only through the maintainer's marker (D-46): a plan is the
+maintainer's choice of work, a bug report is a fact the owning repos' triage weighs.
+
+### The manager is a role, not a store
+
+Someone has to look across repos: gather what waits on the maintainer, watch chains, and
+put together the plan for a product that spans repos. Today the maintainer does it from
+memory. The role fits a fleet-level playbook, run by a gate on the product's home repo (the repo
+whose `docs/product.md` describes the product as a whole, with or without code of its own),
+with the second token of D-45:
+
+- It owns every cross-repo step: it routes `upstream` reports, watches the other side of
+  each stand-in, and closes the stand-in with a summary when that side is done
+- It builds the maintainer's queue (#337) and reports where chains stall (`chains.py show`,
+  CHAIN_NO_GATE)
+- It proposes a plan across repos from each repo's goal plans (spec 028) for the maintainer
+  to accept (D-10, D-34); the plan, its stand-in issues and its milestone live in the home
+  repo
+- It changes no code outside the home repo; an accepted plan reaches the other repos
+  through a trusted marker the maintainer posts, and each repo takes up its part (D-46)
+
+### Cross-repo objects the forge already has
+
+| Need | GitHub | GitLab |
+|---|---|---|
+| A board or plan over many repos | Projects (fields, iterations, a roadmap view) | Group boards |
+| A parent over many repos | Sub-issues in other repos (spec 017 reads them) | Group epics |
+| A milestone over many repos | None: a stand-in issue in each repo's milestone | Group milestones |
+| Dependencies | Issue dependencies across repos (spec 017) | Linked issues, `blocks` |
+
+They are read and written through the code host port as capabilities, like the relations
+in spec 017. A GitHub Project belongs to a user or an organization and needs its own App
+permission, and one maintainer's repos often span several owners: whether one Project can
+hold them is to be checked before anything relies on it.
+
+### Linear and Jira
+
+Neither is needed as a system of record: a shipmill-owned tracker or an external one would
+be state outside the forge, which every layer avoids (D-6's spirit). A person's step that
+has no repo of its own is a `human` item (spec 017) in the repo where it waits, or in an
+operations repo. An external tracker fits only as an intake source, behind its own config
+section and never required, for a team that already works there or for work no repo holds.
+
+### Decided
+
+The maintainer settled the three questions on 2026-10-24, in #338, and refined the first
+the same day in chat:
+
+- A component's session stays in its own repo; the product's manager owns every cross-repo
+  read and write, with a second token that has no write access to code or pull requests,
+  and closes the local stand-ins an agent waits on (D-45, refining D-14)
+- A plan accepted in the home repo reaches the other repos through a trusted marker the
+  maintainer posts, and each repo's own session takes up its part (D-46)
+- The home repo is the one whose `docs/product.md` describes the product as a whole, code or
+  no code; each component repo keeps a `docs/product.md` for its own scope, such as an API
+  (D-46, D-34)
 
 ## Questions for the maintainer
 
 - Whether a release may close its milestone by itself, or proposes the close (gap 2)
 - Whether fixes belong in the roadmap plan, or milestones stay for features only (gap 2)
-- Whether a plan across repos is wanted in shipmill at all, or stays a view over per-repo
-  plans (gap 6)
+- The plan across repos: decided, see [Across repos](#across-repos) (gap 6)
