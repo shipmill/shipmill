@@ -212,6 +212,14 @@ def test_s038_15_a_malformed_home_is_refused(ws: ModuleType, tmp_path: Path, tex
         ws.product_home_310(text, tmp_path / "shipmill.toml")
 
 
+@pytest.mark.parametrize("text", ['[[product]]\nhome = "acme/product"\n', '[product]\nhome.x = "acme/product"\n'])
+def test_s038_15_a_home_tomllib_refuses_is_refused_on_310_too(ws: ModuleType, tmp_path: Path, text: str) -> None:
+    with pytest.raises(ws.Refused):
+        ws.product_home(text, tmp_path / "shipmill.toml")
+    with pytest.raises(ws.Refused, match=r"\[product\]"):
+        ws.product_home_310(text, tmp_path / "shipmill.toml")
+
+
 @pytest.mark.parametrize(
     "text",
     ['[product\nhome = "acme/product"\n', '[product.x]\nhome = "acme/product"\n', 'product.home = "acme/product"\n'],

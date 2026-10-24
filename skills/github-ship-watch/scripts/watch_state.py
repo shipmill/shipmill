@@ -2452,7 +2452,7 @@ def agents_table_310(text: str, policy: Path) -> dict[str, str] | None:
 
 
 PRODUCT_HEADER = re.compile(r"^\s*\[+\s*[\"']?product\b")  # a line that opens a [product] header, well formed or not
-PRODUCT_HOME = re.compile(r"^\s*[\"']?home[\"']?\s*=")  # a home key's line in [product]
+PRODUCT_HOME = re.compile(r"^\s*[\"']?home[\"']?\s*[.=]")  # a home key's line in [product], dotted or not
 PRODUCT_HOME_VALUE = re.compile(r"^\s*[\"']?home[\"']?\s*=\s*(?:\"([^\"\\]*)\"|'([^']*)')\s*(?:#.*)?$")
 
 
@@ -2491,7 +2491,9 @@ def product_home_310(text: str, policy: Path) -> str | None:
     """[product] home on Python 3.10: a plain [product] table whose home is a one-line
     string; any other form of home is refused rather than misread. repos may take any form"""
     for line in text.splitlines():
-        if PRODUCT_HEADER.match(line) and TOML_HEADER.match(line) is None:
+        header = TOML_HEADER.match(line)
+        if PRODUCT_HEADER.match(line) and (header is None or header.group(1) == "[["):
+            # toml_tables skips an array of tables, which tomllib reads as no table: refused
             raise Refused(f"error: {policy}: can't read [product] on Python 3.10: a malformed header {line.strip()!r}")
     tables = toml_tables(text)
     if re.search(r"^\s*[\"']?product[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE) or any(
