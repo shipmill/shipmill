@@ -1,0 +1,3 @@
+### Fixed
+
+- A release no longer fails the gate's ticks while PyPI doesn't serve it yet: a skill script's `uvx shipmill==<version>` that uv finds no such version of runs once more as `uvx --refresh-package shipmill ...`, and when that fails too `watch_state.py` prints a report-only `PYPI_WAIT` row (`shipmill==<version> waits for PyPI`, the release's `publish.yml` run as its fix) in place of the rows that read owed, and reads the rest instead of exiting 2; any other uvx failure still exits 2. A launchd job on the floating `git+https://github.com/shipmill/shipmill@v0` source, whose CLI never lags, now gets its rewrite to `shipmill@latest` in `doctor` (a WARN), `status`, and the tick report whether or not its CLI lags (#597)

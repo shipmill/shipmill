@@ -178,7 +178,7 @@ from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
 from shipmill.land import ActionsRun, Prepared, Stop, cleanup, land, prepare, work_branch
-from shipmill.launchd import DEFAULT_EVERY, DEFAULT_TOOL, build, cli_fix, install, read_job, remove
+from shipmill.launchd import DEFAULT_EVERY, DEFAULT_TOOL, build, gate_cli, install, read_job, remove
 from shipmill.lineedit import LineText
 from shipmill.notify import Desktop
 from shipmill.operate import Http, Unreachable, UrllibHttp, approve, approve_rollback, operate, summary
@@ -921,7 +921,7 @@ def _gate_cli(root: Path, repo: str, home: Path) -> GateCli | None:
     if not git.ok("rev-parse", "--git-common-dir"):
         return None
     version = load_cli(state_dir(git) / CLI_RECORD)
-    return None if version is None else GateCli(version, cli_fix(read_job(repo, home), repo))
+    return None if version is None else gate_cli(version, read_job(repo, home), repo)
 
 
 def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessions) -> int:
@@ -950,7 +950,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         lambda: host_login(root),
         plugin=PluginHost(
             run_command,
-            GateCli(requires.running(), cli_fix(read_job(args.slug, Path.home()), args.slug)),
+            gate_cli(requires.running(), read_job(args.slug, Path.home()), args.slug),
             _pypi_status,
             Path.home() / MARKERS,
             lambda: requires.check(read_config(config_path(root))),

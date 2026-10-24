@@ -47,7 +47,8 @@ means the default, propose).
 
 With --plans (spec 028), the goals of the direction come next, read with
 `uvx shipmill==<version> product show --section goals --json` in the current directory
-(the version in the plugin's .claude-plugin/plugin.json, spec 031; --tool runs `uvx --from
+(the version in the plugin's .claude-plugin/plugin.json, spec 031, run once more with
+`--refresh-package shipmill` when uv finds no such version, #597; --tool runs `uvx --from
 <tool> shipmill` instead), and a goal with no open plan issue (an issue labelled goal-plan whose body's
 first line is the plan marker <!-- shipmill:plan goal=G-n rev=k -->) reads:
   PLAN_DUE          a trigger holds; the note is the trigger:
@@ -658,12 +659,7 @@ def shipmill_command(tool: str | None, plugin: Path | None = None) -> list[str]:
     """How the CLI runs: `uvx shipmill==<version>`, the version in the plugin's own
     .claude-plugin/plugin.json (spec 031), or `uvx --from <tool> shipmill` with --tool. It is
     github-ship-watch's watch_state.py's shipmill_cli; a broken plugin.json exits 2 naming it"""
-    spec = importlib.util.spec_from_file_location("shipmill_watch_state", WATCH_STATE)
-    if spec is None or spec.loader is None:
-        fail(f"can't load {WATCH_STATE}")
-    ws = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = ws  # its dataclasses look their module up by name
-    spec.loader.exec_module(ws)
+    ws = watch_module()
     try:
         found: list[str] = ws.shipmill_cli(tool, plugin or ws.PLUGIN_JSON)
     except ws.Refused as refused:
@@ -671,13 +667,35 @@ def shipmill_command(tool: str | None, plugin: Path | None = None) -> list[str]:
     return found
 
 
-def uvx_goals(tool: str | None) -> GoalsReader:
-    """The default goals reader: the direction of the checkout in the current directory"""
+def watch_module() -> ModuleType:
+    """github-ship-watch's watch_state.py, loaded once"""
+    loaded = sys.modules.get("shipmill_watch_state")
+    if loaded is not None:
+        return loaded
+    spec = importlib.util.spec_from_file_location("shipmill_watch_state", WATCH_STATE)
+    if spec is None or spec.loader is None:
+        fail(f"can't load {WATCH_STATE}")
+    ws = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ws  # its dataclasses look their module up by name
+    spec.loader.exec_module(ws)
+    return ws
+
+
+def run_uvx(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def uvx_goals(
+    tool: str | None, execute: Callable[[list[str]], subprocess.CompletedProcess[str]] = run_uvx
+) -> GoalsReader:
+    """The default goals reader: the direction of the checkout in the current directory. A
+    pinned shipmill uv finds no version of runs once more with its index refreshed, as
+    watch_state.py's pinned does (#597)"""
 
     def read() -> list[Goal]:
         cmd = [*shipmill_command(tool), "product", "show", "--section", "goals", "--json"]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            proc: subprocess.CompletedProcess[str] = watch_module().pinned(cmd, execute)
         except FileNotFoundError:
             fail("uvx is not on PATH: --plans reads the goals with `shipmill product show`")
         if proc.returncode != 0:

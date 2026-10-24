@@ -172,6 +172,16 @@ from github-issue-triage's `upstream_state.py <repo> --json`, run in the checkou
                   rows above, while the rest of the watch stands; an action for a person,
                   never an agent's
 
+PyPI's window (#597; the pinned `uvx shipmill==<version>` form only, never --tool's):
+  PYPI_WAIT       uv found no shipmill==<version> on PyPI (its "there is no version of" resolution
+                  error), even run once more as `uvx --refresh-package shipmill ...`, since a
+                  release's tag moves minutes before PyPI serves it and uv caches the index up to
+                  10 minutes: one row per version, naming the reads it stands in for (the release
+                  plan, worktrees, milestones, plans, upstream reports; with --trusted-only, a
+                  plans read takes the issues and pull requests with it, since its untrusted plan
+                  issues aren't known), with the release's publish.yml run as the fix. The rest of
+                  the watch stands; reported, never an action by itself, and never an agent's
+
 --bot-login and --trusted-only go through to triage_state.py: the login shipmill's
 sessions write as (whose comment is the question, and whose issue is trusted), and the
 trust filter of an unattended gate. The config's [product] home (spec 038) goes through
@@ -280,7 +290,8 @@ UPGRADE_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, MILESTONE_OVERTAKEN, UPSTREAM_
 or UPSTREAM_UNREADABLE row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
 milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
-`shipmill: ` error is the BOT_PLAN_FAILED row instead), and on a missing or malformed
+`shipmill: ` error is the BOT_PLAN_FAILED row instead, and uv finding no pinned version the
+PYPI_WAIT row), and on a missing or malformed
 .claude-plugin/plugin.json (spec 031).
 Needs git, an authenticated gh, and uvx (for a shipmill bot's plan, worktrees, and milestones,
 and a direction's plans; `shipmill
@@ -441,7 +452,7 @@ AGENT = {
 # the states whose every row carries a fix, the one line that clears it (spec 011): every
 # action, and the report-only rows a person still has to act on. PRS_OPEN carries one only
 # while no gate lands pull requests; every other state's fix is None
-FIXED = ACTION | {"HOLD", "WORKTREE_STALE", "UNTRUSTED", "UPSTREAM_UNTRUSTED"}
+FIXED = ACTION | {"HOLD", "WORKTREE_STALE", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT"}
 FIX_INDENT = " " * 15  # the table's fix line starts under the subject column
 RUN_ID = re.compile(r"/actions/runs/(\d+)(?:/|$)")  # a workflow run's URL names its id
 HEAD_SHA = re.compile(r"[0-9a-f]{40}")  # a pull request's headRefOid (#546)
@@ -489,6 +500,15 @@ GH_CLIENT_ERROR = re.compile(r"\bHTTP 4\d\d\b")  # auth, not found, a bad query:
 GH_FIELDS = ("-f", "-F", "--field", "--raw-field", "--input")  # make gh api POST unless -X says otherwise
 GH_PAUSE = 5.0  # seconds before the one rerun
 GH_RERUN = "transient GitHub API error: rerun"  # ends the error line when the rerun failed too
+# uv's resolution error for a pinned shipmill its index doesn't list: PyPI doesn't serve the
+# release yet, or uv's cached index (kept up to 10 minutes) predates the upload (#597). Read
+# with the stderr's whitespace collapsed, since uv wraps it; any other failure never matches
+NO_VERSION = re.compile(
+    r"No solution found when resolving tool dependencies: \S+ Because there is no version of"
+    r" shipmill==(\d+\.\d+\.\d+) and you require shipmill==\1, we can conclude that your requirements"
+    r" are unsatisfiable"
+)
+PINNED = re.compile(r"shipmill==(\d+\.\d+\.\d+)")  # the second word of the pinned uvx form, whole
 # a config upgrade's issue (spec 014): triage_state.py's label and first-line marker, one
 # definition for the watch and for the trust filter that lets the release workflow's in (D-30)
 UPGRADE_LABEL: str = TRIAGE.UPGRADE_LABEL
@@ -712,6 +732,77 @@ def checked(cmd: list[str], proc: subprocess.CompletedProcess[str]) -> str:
     return proc.stdout
 
 
+class PypiWait(Exception):
+    """The pinned shipmill isn't on PyPI as uv sees it, even with its index refreshed (#597)"""
+
+    def __init__(self, version: str) -> None:
+        super().__init__(version)
+        self.version = version
+
+
+def no_version(text: str) -> str | None:
+    """The version uv's "no version of shipmill==<v>" resolution error names in text, else None"""
+    found = NO_VERSION.search(" ".join(text.split()))
+    return found.group(1) if found else None
+
+
+def unserved(cmd: Sequence[str], proc: subprocess.CompletedProcess[str]) -> str | None:
+    """The version when cmd runs the pinned CLI, `uvx shipmill==<v> ...` (never --tool's `uvx
+    --from`), and failed on uv's "no version" error for that very version; None otherwise"""
+    pinned = PINNED.fullmatch(cmd[1]) if proc.returncode != 0 and len(cmd) > 1 and cmd[0] == "uvx" else None
+    if pinned is None or no_version(proc.stderr) != pinned.group(1):
+        return None
+    return pinned.group(1)
+
+
+def pinned(
+    cmd: list[str], execute: Callable[[list[str]], subprocess.CompletedProcess[str]]
+) -> subprocess.CompletedProcess[str]:
+    """The pinned CLI's result, run once more as `uvx --refresh-package shipmill ...` when uv
+    found no such version, since its cached index may predate the upload (#597)"""
+    proc = execute(cmd)
+    if unserved(cmd, proc) is None:
+        return proc
+    return execute([cmd[0], "--refresh-package", "shipmill", *cmd[1:]])
+
+
+def pinned_run(cmd: list[str], execute: Callable[[list[str]], subprocess.CompletedProcess[str]] = capture) -> str:
+    """run for the CLI: its output; PyPI's wait, retried, raises PypiWait; any other failure
+    stops the watch (exit 2)"""
+    proc = pinned(cmd, execute)
+    version = unserved(cmd, proc)
+    if version is not None:
+        raise PypiWait(version)
+    return checked(cmd, proc)
+
+
+def pypi_wait_row(version: str, what: str) -> Row:
+    """PYPI_WAIT: the reads the pinned CLI owed this pass, in place of their rows (#597). Report
+    only, never an agent's: the next pass reads them once PyPI serves the release. The fix is
+    doctor's and status's for a version PyPI doesn't serve, the release's publish.yml run"""
+    tag = f"v{version}"
+    fix = (
+        f"check the publish.yml run for {tag}: gh run list --repo {SHIPMILL_REPO} --workflow publish.yml;"
+        f" if none passed, publish it: gh workflow run publish.yml --repo {SHIPMILL_REPO} -f tag={tag}"
+    )
+    return Row("PYPI_WAIT", f"shipmill=={version}", f"waits for PyPI; not read: {what}", fix)
+
+
+def merged_waits(rows: list[Row]) -> list[Row]:
+    """The rows with one PYPI_WAIT row per version, where its first stood, naming every read"""
+    waits: dict[str, list[str]] = {}
+    for row in rows:
+        if row.state == "PYPI_WAIT":
+            waits.setdefault(row.subject, []).append(row.detail.partition("; not read: ")[2])
+    merged = []
+    for row in rows:
+        if row.state != "PYPI_WAIT":
+            merged.append(row)
+        elif row.subject in waits:
+            merged.append(pypi_wait_row(row.subject.partition("==")[2], ", ".join(waits.pop(row.subject))))
+    return merged
+
+
 def parse_time(text: str) -> dt.datetime:
     return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
 
@@ -840,17 +931,22 @@ def planned_release(
     """What the shipmill planner would release now on the default branch, or None. The plan's
     own failure (its `shipmill: ` error line) raises PlanFailed (#276); a failed worktree add
     or remove, any other failure (uvx unable to fetch the tool, say), or a plan that prints no
-    JSON stops the watch as any failed command does"""
+    JSON stops the watch as any failed command does. A pinned shipmill PyPI doesn't serve yet,
+    retried with uv's index refreshed, raises PypiWait (#597)"""
     shipmill = shipmill_cli(tool)  # before the worktree: a broken plugin.json leaves none behind
     work = repo_dir / "tmp" / f"ship-watch-{os.getpid()}"
     add = ["git", "worktree", "add", "-q", "--detach", str(work), f"origin/{branch}"]
     checked(add, execute(add, repo_dir, None))
+    plan = [*shipmill, "plan", "--event", "schedule", "--dry-run"]
     try:
         env = {**os.environ, "GITHUB_REPOSITORY": repo}
-        proc = execute([*shipmill, "plan", "--event", "schedule", "--dry-run"], work, env)
+        proc = pinned(plan, lambda cmd: execute(cmd, work, env))
     finally:
         remove = ["git", "worktree", "remove", "--force", str(work)]
         checked(remove, execute(remove, repo_dir, None))
+    version = unserved(plan, proc)
+    if version is not None:
+        raise PypiWait(version)
     if proc.returncode != 0:
         lines = [line.strip() for line in proc.stderr.splitlines() if line.strip()]
         if lines and lines[-1].startswith("shipmill: "):  # the planner's own error, not uvx's
@@ -878,11 +974,14 @@ def bot_plan(
     repo: str, repo_dir: Path, policy: Path, branch: str, tool: str | None, workflow: str, execute: Spawn = spawn
 ) -> tuple[Due | None, list[Row]]:
     """The planned release, or the plan's failure as a row read as no release due, so the
-    watch goes on to the issues and pull requests (#276)"""
+    watch goes on to the issues and pull requests (#276); PyPI's wait for the pinned shipmill is
+    its PYPI_WAIT row, read the same way (#597)"""
     try:
         return planned_release(repo, repo_dir, policy, branch, tool, execute), []
     except PlanFailed as failed:
         return None, [plan_failed_row(failed, workflow, repo_dir, branch, tool)]
+    except PypiWait as wait:
+        return None, [pypi_wait_row(wait.version, "the release plan")]
 
 
 def stale_rows(text: str, main: Path, branch: str) -> list[Row]:
@@ -924,9 +1023,15 @@ def stale_fix(main: Path, path: str, branch: str) -> str:
     return f"see the work not landed: {see}; then push it and open a pull request, or remove it: {remove}"
 
 
-def stale_worktrees(repo_dir: Path, tool: str | None, branch: str) -> list[Row]:
-    """The kept shipmill worktrees of the checkout's repository created over STALE ago"""
-    out = run([*shipmill_cli(tool), "--repo", str(repo_dir), "worktrees", "--json"])
+def stale_worktrees(
+    repo_dir: Path, tool: str | None, branch: str, execute: Callable[[list[str]], str] = pinned_run
+) -> list[Row]:
+    """The kept shipmill worktrees of the checkout's repository created over STALE ago; the
+    PYPI_WAIT row in their place while PyPI doesn't serve the pinned shipmill (#597)"""
+    try:
+        out = execute([*shipmill_cli(tool), "--repo", str(repo_dir), "worktrees", "--json"])
+    except PypiWait as wait:
+        return [pypi_wait_row(wait.version, "worktrees")]
     return stale_rows(out, project_folder(repo_dir), branch)
 
 
@@ -1019,12 +1124,19 @@ def milestone_item(item: dict[str, Any]) -> bool:
     return numbered and all(isinstance(item.get(k), str) and item[k] for k in ("next", "fix"))
 
 
-def milestones(repo_dir: Path, policy: Path, tool: str | None, execute: Callable[[list[str]], str] = run) -> list[Row]:
+def milestones(
+    repo_dir: Path, policy: Path, tool: str | None, execute: Callable[[list[str]], str] = pinned_run
+) -> list[Row]:
     """Spec 022's milestone rows of the checkout's repository, from `shipmill milestones`, run
-    only when a lane of its config sets milestone = true; none and nothing run otherwise"""
+    only when a lane of its config sets milestone = true; none and nothing run otherwise. The
+    PYPI_WAIT row stands in their place while PyPI doesn't serve the pinned shipmill (#597)"""
     if not milestone_lanes((repo_dir / policy).read_text(encoding="utf-8"), policy):
         return []
-    return milestone_rows(execute([*shipmill_cli(tool), "--repo", str(repo_dir), "milestones", "--json"]))
+    try:
+        out = execute([*shipmill_cli(tool), "--repo", str(repo_dir), "milestones", "--json"])
+    except PypiWait as wait:
+        return [pypi_wait_row(wait.version, "milestones")]
+    return milestone_rows(out)
 
 
 # -- releases ------------------------------------------------------------------------------
@@ -2266,12 +2378,15 @@ def plans_run(
 ) -> str:
     """intake_state.py --plans --json's lines, run in the checkout, where it reads the
     direction with `shipmill product show` (the plugin's pinned version, or --tool's when a
-    person passed one) and the config; a failure (exit 2) stops the watch"""
+    person passed one) and the config; a failure (exit 2) stops the watch, save the pinned
+    shipmill's "no version" error, which it has retried already: that raises PypiWait (#597)"""
     cmd = [sys.executable, str(INTAKE_STATE), repo, "--plans", "--json"]
     cmd += ["--tool", tool] if tool is not None else []
     cmd += ["--wip", str(wip)] if wip is not None else []
     cmd += ["--bot-login", bot_login] if bot_login is not None else []
     proc = execute(cmd, repo_dir, None)
+    if proc.returncode == 2 and tool is None and no_version(proc.stderr) == plugin_version():
+        raise PypiWait(plugin_version())
     if proc.returncode not in (0, 1):  # 1 is "something needs action", not a failure
         raise Refused(f"error: intake_state.py --plans failed with exit {proc.returncode}: {proc.stderr.strip()}")
     return proc.stdout
@@ -2462,10 +2577,14 @@ def upstream_report_rows(repo: str, code: int, text: str) -> list[Row]:
 def upstream_rows(repo: str, repo_dir: Path, bot_login: str | None = None, execute: Spawn = spawn) -> list[Row]:
     """The upstream report rows of a home repo, a checkout whose config has [product] repos:
     one upstream_state.py run in the checkout, where it reads the config and the product's
-    token. A run that fails is one UPSTREAM_UNREADABLE row instead, never the watch's exit 2"""
+    token. A run that fails is one UPSTREAM_UNREADABLE row instead, never the watch's exit 2;
+    one that failed on the pinned shipmill's "no version" error, retried already, is the
+    PYPI_WAIT row (#597)"""
     cmd = [sys.executable, str(UPSTREAM_STATE), repo, "--json"]
     cmd += ["--bot-login", bot_login] if bot_login is not None else []
     proc = execute(cmd, repo_dir, None)
+    if proc.returncode == 2 and no_version(proc.stderr) == plugin_version():
+        return [pypi_wait_row(plugin_version(), "upstream reports")]
     if proc.returncode not in (0, 1):
         why = proc.stderr or f"error: upstream_state.py exited {proc.returncode}"
         return [upstream_unreadable_row(repo, repo_dir, why)]
@@ -3231,19 +3350,32 @@ def main() -> int:
         )  # its rows come with the intake's, which knows which issues triage_state.py trusts
 
     plans = Plans([], frozenset())
+    unplanned = None  # PyPI's wait for the plans' pinned shipmill (#597)
     if (repo_dir / DIRECTION).is_file():  # a goal's plan needs goals (spec 028)
-        lines = plans_run(args.repo, repo_dir, args.tool, args.bot_login, plan_wip(table, POLICY))
-        plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only)
+        try:
+            lines = plans_run(args.repo, repo_dir, args.tool, args.bot_login, plan_wip(table, POLICY))
+            plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only)
+        except PypiWait as wait:
+            unplanned = wait
     rows += plans.rows
-    code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home)
-    lands = lands_prs(table)
-    rows += intake_rows(args.repo, code, triage, args.bot_login, args.trusted_only, lands, upgrades, plans.untrusted)
-    rows += chain_rows(args.repo, triage, args.bot_login)
+    if unplanned is not None and args.trusted_only:
+        # the plan issues the --bot-login didn't open are unknown, so no issue or pull request
+        # is read either: one of them could start a session (D-16)
+        rows.append(pypi_wait_row(unplanned.version, "plans, issues, and pull requests"))
+    else:
+        rows += [] if unplanned is None else [pypi_wait_row(unplanned.version, "plans")]
+        code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home)
+        lands = lands_prs(table)
+        rows += intake_rows(
+            args.repo, code, triage, args.bot_login, args.trusted_only, lands, upgrades, plans.untrusted
+        )
+        rows += chain_rows(args.repo, triage, args.bot_login)
     rows += coordinator_rows(text, policy, args.repo, repo_dir, args.bot_login)
     rows += active_rows(fetch_active(args.repo), now)
     rows += agent_rows(args.repo, repo_dir, now)
     rows += shipmill_rows(args.repo, repo_dir)
     rows += shadow_rows(Path.home(), skill_names())
+    rows = merged_waits(rows)
     for row in ordered(rows):
         print(json.dumps(row.json(), sort_keys=True) if args.json else row.text())
     return 1 if any(r.state in ACTION for r in rows) else 0

@@ -133,7 +133,7 @@ def plugin_checks(
             checks.append(Check("WARN", "plugin", f"{row.subject} {row.detail}"))
         else:
             raise ReleaseError(f"watch_state.py's shipmill_rows returned a {row.state} row")
-    if gate_cli is not None and latest is not None and gate_cli.lags(latest):
+    if gate_cli is not None and latest is not None and gate_cli.owes(latest):
         checks.append(Check("WARN", "gate cli", gate_cli.line(latest)))
     if bound is not None and loads is not None and not bound.met(Version.parse(loads.group(2))):
         scope, version = loads.group(1), loads.group(2)

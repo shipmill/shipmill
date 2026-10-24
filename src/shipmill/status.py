@@ -884,7 +884,7 @@ def verdict(facts: Facts) -> tuple[Verdict, list[Reason], list[str]]:
     if cli_outdated(facts.cli, latest):
         yours.append(Reason(f"the shipmill CLI {facts.cli} is older than {latest}", cli_update(facts.command)))
     gate_cli = facts.gate.cli
-    if latest is not None and gate_cli is not None and gate_cli.lags(Version.of_tag(latest)):  # S-031-17
+    if latest is not None and gate_cli is not None and gate_cli.owes(Version.of_tag(latest)):  # S-031-17, #597
         yours.append(Reason(gate_cli.line(Version.of_tag(latest)), gate_cli.fix))
     land_yours, land_working = landing_reasons(facts)
     yours += land_yours
@@ -1174,8 +1174,8 @@ def shipmill_lines(facts: Facts) -> list[str]:
         fixes.append(cli_update(facts.command))
     after = [row_fix(facts.repo, r) for r in outdated]
     gate_cli = facts.gate.cli
-    if latest is not None and gate_cli is not None and gate_cli.lags(Version.of_tag(latest)):
-        parts.append(f"gate {gate_cli.version}")
+    if latest is not None and gate_cli is not None and gate_cli.owes(Version.of_tag(latest)):
+        parts.append(f"gate {gate_cli.version}" + ("" if gate_cli.floating is None else " on @v0"))
         if gate_cli.fix not in fixes:
             fixes.append(gate_cli.fix)
             after.append(gate_cli.fix)

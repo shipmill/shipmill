@@ -371,6 +371,17 @@ def test_s031_17_the_gates_own_lagging_cli_is_reported_with_its_fix_and_the_sess
     assert not any("gate's CLI" in line for line in tick_lines(decision, launched, (), (), dry_run=False))
 
 
+def test_597_the_tick_reports_a_current_gate_on_v0_with_its_rewrite_and_the_session_starts(checkout: Git) -> None:
+    runner = FakeRunner(checkout.root, version=None, user="0.32.2")
+    fix = "uvx shipmill@latest --repo /g launchd o/r"
+    cli = GateCli(Version.parse("0.32.2"), fix, "git+https://github.com/shipmill/shipmill@v0")
+    plugin = PluginHost(runner, cli, FakePyPI(), markers_of(checkout), lambda: None)
+    decision, launched, _, _ = report_tick(checkout, plugin, agents())
+    assert (decision.action, launched) == (Action.LAUNCH, "s1")
+    lines = tick_lines(decision, launched, (), (), dry_run=False)
+    assert f"  {cli.line(Version.parse('0.32.2'))}" in lines and fix in cli.line(Version.parse("0.32.2"))
+
+
 def test_s031_17_a_dry_run_records_no_cli_version(checkout: Git) -> None:
     runner = FakeRunner(checkout.root, version=None)
     report_tick(checkout, plugin_host(runner, markers_of(checkout), cli="0.30.0"), agents(), dry=True)

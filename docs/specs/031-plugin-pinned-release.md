@@ -176,6 +176,13 @@ it starts no session on that tick and reports `plugin <version> waits for PyPI`;
 tick tries again. Any other answer is reported and the session starts. This is the only
 plugin check that holds a session. `PLUGIN_STALE` and its pause are gone.
 
+The tick's own read, `watch_state.py`, runs the pinned CLI in the same window, and uv
+caches PyPI's index up to ten minutes, so a version can stay unlisted after its upload
+(#597). A skill script's `uvx shipmill==<version>` that uv finds no such version of runs
+once more as `uvx --refresh-package shipmill ...`; when that fails the same way,
+`watch_state.py` prints a report-only `PYPI_WAIT` row (`shipmill==<version> waits for
+PyPI`, the publish run as its fix) in place of the rows that read owed, and reads the rest.
+
 The hooks' self-test (spec 026, S-026-15 and S-026-16) runs the `hooks/delivery.py` of
 the install the session loads, as it does today.
 
@@ -202,7 +209,10 @@ report, each as one line with its fix:
   `--app-key`, and `--claude-arg`, since the old CLI would write `@v0` again. A job on any
   other source but `shipmill@latest` (a pinned `--tool`, the pre-org `@v0` URL) gets the
   same fix (#570); a job on `shipmill@latest` gets `launchctl kickstart gui/<uid>/<label>`,
-  since its uvx looks the release up on each run. Every tick
+  since its uvx looks the release up on each run. A job on the `@v0` git source runs its
+  newest commit, so its CLI never lags, while the tag moves minutes before PyPI serves the
+  release the plugin then pins: it gets the same line and rewrite whether or not its CLI
+  lags (#597). Every tick
   writes the gate's CLI version to `cli.json` in the gate's state folder, which `doctor`
   and `status` read; until a gate on this release has ticked once, they can't report its
   CLI
