@@ -614,6 +614,26 @@ no repo twice. In a component, `shipmill gh -R` and `shipmill app-token` for any
 checkout's origin exit 2 naming D-47, before a token is minted. Without `[product]` nothing
 changes.
 
+A repo never names itself: `shipmill gate`, `shipmill gh`, and `shipmill app-token
+--product` exit 2 when `home` is the checkout's repo or `repos` lists it.
+
+The home repo's gate, the coordinator, gets a second token over the listed repos, one per
+owner, with contents read, issues write, pull requests read, and metadata read:
+
+```bash
+shipmill app-token acme/api --app-id 123456 --product   # every listed repo of acme
+shipmill gh --product acme/api issue create -t "..."    # gh on acme/api, as the coordinator
+```
+
+The token is refused, never printed or cached, when GitHub's answer covers other repos or
+grants more than it asked. It is cached in `app-token-product-<owner>.json`, apart from the
+session's `app-token.json`, and never reaches git, so a push still reaches only the home
+repo. `gh --product` refuses `-R` naming a repo not listed or of another owner, and the
+commands that write code or pull requests (`pr` other than list, view, diff, checks, and
+status; `release` other than list and view; `repo` other than view and list; `workflow run`;
+`run rerun` and `run cancel`). The gate in the home repo checks the App's installation on
+every listed repo, with those permissions, before it starts a session.
+
 ## Work in progress
 
 `[agents] wip` caps how many issues the agents have in progress at once (an open PR or a
