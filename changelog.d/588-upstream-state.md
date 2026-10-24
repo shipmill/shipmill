@@ -1,0 +1,3 @@
+### Added
+
+- The coordinator's view of upstream reports (spec 038, D-47): github-issue-triage's `upstream_state.py <owner/home>`, run in the home repo's checkout, reads every open `upstream` report of the home repo (through gh) and of each repo `[product] repos` lists (through `shipmill gh --product`) as ROUTE_DUE, ASKED, ANSWERED, ROUTED, CLOSE_DUE, or UNTRUSTED, counting a report's sub-issues and `Depends on` lines as its children and never reading an untrusted author's report past its author (D-16); in a checkout with `[product] repos`, github-ship-watch's `watch_state.py` reports UPSTREAM_DUE as an agent's row, so the gate starts the coordinator's session, UPSTREAM_ASKED, UPSTREAM_UNTRUSTED, and a failing run as one UPSTREAM_UNREADABLE row (#588)
