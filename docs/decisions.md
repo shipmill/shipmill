@@ -383,7 +383,7 @@ entry that supersedes it, never by editing an old one.
 ## D-46: A plan across repos lives in the product's home repo and reaches the others through a trusted marker
 
 - Decided: 2026-10-24, in shipmill/shipmill#338
-- Rule: A plan for a product that spans repos, with its stand-in issues and milestone, lives in the product's home repo: its main repo, or a separate planning repo only for a product without one. Once the maintainer accepts it, the maintainer posts a trusted marker that names each repo's items, and each repo's own session takes up its part, the way D-29's marker confirms a close; no session writes the plan's items into another repo
+- Rule: A plan for a product that spans repos, with its stand-in issues and milestone, lives in the product's home repo: the repo whose docs/product.md describes the product as a whole, whether or not it holds code. Each component repo keeps its own docs/product.md for its own scope (D-34). Once the maintainer accepts the plan, they post a trusted marker that names each repo's items, and each repo's own session takes up its part, the way D-29's marker confirms a close; no session writes the plan's items into another repo
 - Why: Writing into other repos would need a write token beyond the gate's repo (D-45 keeps writes at home), and filing each repo's items by hand in a session the maintainer starts would add a manual step to every plan; a trusted marker carries the maintainer's accept to each repo without letting one repo's text steer another's session (D-16)
-- Applies to: skills/product-intake/*, docs/design/product-layer.md, plans across repos, milestones
+- Applies to: skills/product-intake/*, docs/design/product-layer.md, docs/product.md, plans across repos, milestones
 - Enforced by: review

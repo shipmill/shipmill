@@ -176,8 +176,9 @@ needs; what it needs is one access rule, one role, and the forge's own cross-rep
 
 Someone has to look across repos: gather what waits on the maintainer, watch chains, and
 put together the plan for a product that spans repos. Today the maintainer does it from
-memory. The role fits a fleet-level playbook, run by a gate on the product's home repo (its
-main repo, or a planning repo for a product without one), with the fleet's read token:
+memory. The role fits a fleet-level playbook, run by a gate on the product's home repo (the repo
+whose `docs/product.md` describes the product as a whole, with or without code of its own),
+with the fleet's read token:
 
 - It builds the maintainer's queue (#337) and reports where chains stall (`chains.py show`,
   CHAIN_NO_GATE)
@@ -217,8 +218,9 @@ The maintainer settled the three questions on 2026-10-24, in #338:
   own repo (D-45, refining D-14)
 - A plan accepted in the home repo reaches the other repos through a trusted marker the
   maintainer posts, and each repo's own session takes up its part (D-46)
-- The home repo is the product's main repo; a separate planning repo only for a product
-  without one (D-46)
+- The home repo is the one whose `docs/product.md` describes the product as a whole, code or
+  no code; each component repo keeps a `docs/product.md` for its own scope, such as an API
+  (D-46, D-34)
 
 ## Questions for the maintainer
 
