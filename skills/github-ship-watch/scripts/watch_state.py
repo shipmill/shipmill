@@ -121,7 +121,7 @@ Intake (github-issue-triage's triage_state.py):
                   (WITH_PERSON, spec 017) names them: WITH_PERSON #N (@login ...). An
                   upstream report, which waits outside (spec 038), is listed here only, as
                   UPSTREAM #N: never in ISSUES, NEEDS_DECISION, or an agent row
-  PRS_OPEN       open non-draft pull requests (reported, never an action by itself),
+  PRS_OPEN        open non-draft pull requests (reported, never an action by itself),
                   less the ones NEEDS_DECISION and UNTRUSTED list
   NEEDS_DECISION  issues and pull requests labelled needs-decision whose question has no
                   reply, as #N only (triage_state.py's rule, applied to pull requests'

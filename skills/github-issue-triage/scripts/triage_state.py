@@ -82,7 +82,7 @@ For each open issue:
                    coordinator: waits for the maintainer", and adds "asks the maintainer"
                    when it is labelled needs-decision and its question has no reply.
                    Never an action: it starts no session
-  OFF_MILESTONE   a build issue whose feature issue (its sub-issue parent, in this
+  OFF_MILESTONE    a build issue whose feature issue (its sub-issue parent, in this
                    repo) is in a milestone it isn't in (spec 022): set its milestone
                    to the parent's. Read after UNTRUSTED, UPSTREAM, NEEDS_DECISION, and DECIDED,
                    before any other state; one already in that milestone, or whose
@@ -130,7 +130,7 @@ For the N most recently closed issues (default 20):
                    an issue labelled upstream, whoever closed it and however: the
                    product's coordinator, or the maintainer without one, closes it by
                    hand by design (spec 038)
-  VERIFY_CLOSED   labelled human, closed as completed by someone other than the
+  VERIFY_CLOSED    labelled human, closed as completed by someone other than the
                    --bot-login, with a "## Check" section and no comment after its close
                    whose first line is <!-- shipmill:verified --> by an OWNER, MEMBER, or
                    COLLABORATOR or the --bot-login: run its check
