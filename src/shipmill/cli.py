@@ -84,7 +84,7 @@ from pathlib import Path, PurePosixPath
 from typing import TextIO
 
 from shipmill import agent_as_person, cli_command, evals, fragments, product, requires, review, status
-from shipmill.agents import AgentsConfig, app_id_of
+from shipmill.agents import AgentsConfig, ProductConfig, app_id_of
 from shipmill.app import (
     CACHE,
     HELPERS,
@@ -977,6 +977,7 @@ def _app_token(
         raise ReleaseError(f"--app-id must be 1 or more, got {app_id}")
     key: Path = args.app_key if args.app_key is not None else default_key(app_id, home)
     cache = _cache(root, args.slug, environ, home)
+    _component_token(root, args.slug)
 
     def token() -> str:
         return app_token(cache, args.slug, app_id, key, dt.datetime.now(dt.UTC), signer, api)
@@ -986,6 +987,18 @@ def _app_token(
         return 0
     sys.stdout.write(credential(args.git_credential, stdin.read(), token))
     return 0
+
+
+def _component_token(root: Path, repo: str) -> None:
+    """S-038-10: a checkout whose config sets [product] home gets a token only for its origin
+    repo (D-47). Outside a checkout there is no config, so nothing to refuse"""
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        return
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    product = ProductConfig.load(top)
+    if product is not None:
+        product.refuse_outside(repo, _origin_repo(top), f"app-token {repo}")
 
 
 def _app_key(passed: list[str]) -> tuple[Path | None, list[str]]:
@@ -1026,6 +1039,16 @@ def _gh(
     readable = git.ok("rev-parse", "--show-toplevel")
     top = Path(git.run("rev-parse", "--show-toplevel").strip()) if readable else _unreadable_top(root)
     app_id = None if top is None else app_id_of(top)
+    product = None if top is None else ProductConfig.load(top)
+    if top is not None and product is not None and product.component:  # S-038-10: before any token, App or not
+        if not readable:
+            raise ReleaseError(
+                f"git can't read the checkout at {top}, a component of {product.home}, so its origin repo "
+                f"can't be told; `git -C {top} status` names why"
+            )
+        named = named_repo(gh_args)
+        if named is not None:
+            product.refuse_outside(named, _origin_repo(top), f"gh's -R {named}")
     if top is None or app_id is None:
         if key is not None:
             raise ReleaseError(f"--app-key names an App's key, but no [agents] app_id is set in {CONFIG_PATH}")

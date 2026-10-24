@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from shipmill import environments, requires
-from shipmill.agents import AgentsConfig
+from shipmill.agents import AgentsConfig, ProductConfig
 from shipmill.autonomy import AutonomyPolicy
 from shipmill.config import Table, read
 from shipmill.downstream import DownstreamConfig
@@ -147,6 +147,7 @@ class Policy:
     notices: NoticesConfig = NoticesConfig()  # [notices]: validated here, read by shipped.py (spec 021)
     hooks: HooksConfig = HooksConfig()  # [hooks]: validated here, read by the plugin's hook (spec 026)
     downstream: DownstreamConfig | None = None  # [downstream]: the repos tested on a pull request (spec 032)
+    product: ProductConfig | None = None  # [product]: the product's home or components (spec 038, D-47)
 
     @property
     def incident_label(self) -> str | None:
@@ -188,6 +189,7 @@ class Policy:
             "notices",
             "hooks",
             "downstream",
+            "product",
         )
         changelog = top.table("changelog")
         changelog.allow("path", "style", "fragments")
@@ -229,6 +231,7 @@ class Policy:
         autonomy = AutonomyPolicy.parse(autonomy_table)
         autonomy.require_environments(declared.keys(), autonomy_table.where)
         agents = AgentsConfig.parse(top.table("agents")) if "agents" in raw else None
+        product = ProductConfig.read(top, None if agents is None else agents.app_id)
         roadmap = RoadmapConfig.parse(top.table("roadmap")) if "roadmap" in raw else None
         notices = NoticesConfig.parse(top.table("notices", optional=True))
         hooks = HooksConfig.parse(top.table("hooks", optional=True))
@@ -263,6 +266,7 @@ class Policy:
             notices=notices,
             hooks=hooks,
             downstream=downstream,
+            product=product,
         )
 
     def rule(self, lane: Lane) -> LaneRule:
