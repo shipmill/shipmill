@@ -152,29 +152,30 @@ gap 6: how repos work together, and whether that takes another product.
 The repo stays the unit of execution: its gate, policy, lanes, milestones and the App's
 identity are per repo. The fleet becomes the unit of planning. Working across repos needs
 no new product and no new store, because the forge already holds everything the fleet
-needs; what it needs is one access rule, one role, and the forge's own cross-repo objects.
+needs; what it needs is one access rule, one role that coordinates delivery, and the
+forge's own cross-repo objects. Planning the product stays with the maintainer.
 
-### Components stay home, the manager crosses
+### Components stay home, the coordinator crosses
 
 - A component repo's session reads and writes only its own repo, plus its product's
   `docs/product.md` in the home repo. Every change to code stays in its own repo: its
-  branch, its pull request, its CI, its gate (D-45)
+  branch, its pull request, its CI, its gate (D-47)
 - An item waits only on items in its own repo. A dependency on another repo is a local
-  stand-in, and the manager watches the other side: when the work there closes, the
-  manager closes the stand-in with a summary of what changed, the item reads UNBLOCKED,
+  stand-in, and the coordinator watches the other side: when the work there closes, the
+  coordinator closes the stand-in with a summary of what changed, the item reads UNBLOCKED,
   and the component's gate takes it up. The agent never polls another repo
-- The manager is the only session that reads or writes across repos: it reads the code,
+- The coordinator is the only session that reads or writes across repos: it reads the code,
   items and pull requests of its product's repos, and files, links and comments on issues
   in them, with a second token that has no write access to code or pull requests
 - A person is told from the repo where their item waits, by that repo's gate
 - A release that needs another repo's change holds a stand-in in its own milestone, so the
-  milestone empties only when the manager closes it. GitHub milestones are per repo, so
+  milestone empties only when the coordinator closes it. GitHub milestones are per repo, so
   this needs no cross-repo milestone; GitLab's group milestones can come later through the
   code host port
 - Spec 017's direct holds (`Depends on owner/repo#N` read by the waiting repo itself) keep
   working where the waiting repo can read the other one (a public repo) or where a product
-  has no manager; in a product with a manager, the stand-in replaces them. Without a running
-  manager a product's cross-repo chains stop, which the maintainer's queue (#337) shows
+  has no coordinator; in a product with a coordinator, the stand-in replaces them. Without a
+  running coordinator a product's cross-repo chains stop, which the maintainer's queue (#337) shows
 
 ### A bug found in another repo
 
@@ -192,34 +193,41 @@ An agent working an issue finds that the fault is in a module another repo owns:
    installed dependency, no pull request in the other repo. A workaround in its own code
    is fine when it is a real change there (a check, an error handled on its side), said to
    be temporary in its pull request
-3. **The manager routes it.** It finds the repos at fault, often more than one, files an
+3. **The coordinator routes it.** It finds the repos at fault, often more than one, files an
    issue in each and makes them the report's children; when it can't tell, it asks the
-   maintainer through `needs-decision`. Without a manager the report waits in the
+   maintainer through `needs-decision`. Without a coordinator the report waits in the
    maintainer's queue
-4. **The manager closes it.** Once the last child closes, it closes the report with what
+4. **The coordinator closes it.** Once the last child closes, it closes the report with what
    changed (as not planned when the owners won't fix it, so the agent decides again), and
    the agent's issue unblocks in its own repo
 
 A plan's items reach other repos only through the maintainer's marker (D-46): a plan is the
 maintainer's choice of work, a bug report is a fact the owning repos' triage weighs.
 
-### The manager is a role, not a store
+### The coordinator delivers across repos, and plans nothing
 
-Someone has to look across repos: gather what waits on the maintainer, watch chains, and
-put together the plan for a product that spans repos. Today the maintainer does it from
-memory. The role fits a fleet-level playbook, run by a gate on the product's home repo (the repo
-whose `docs/product.md` describes the product as a whole, with or without code of its own),
-with the second token of D-45:
+Someone has to carry delivery across repos: route a fault to the repos that own it, watch
+the other side of each dependency, and gather what waits on the maintainer. Today the
+maintainer does it from memory. The role is the **coordinator**, a playbook run by a gate
+on the product's home repo (the repo whose `docs/product.md` describes the product as a
+whole, with or without code of its own), with the second token of D-47 (which replaced
+D-45, where the role was called the manager):
 
-- It owns every cross-repo step: it routes `upstream` reports, watches the other side of
-  each stand-in, and closes the stand-in with a summary when that side is done
+- It owns every cross-repo step of delivery: it routes `upstream` reports, watches the
+  other side of each stand-in, and closes the stand-in with a summary when that side is
+  done
 - It builds the maintainer's queue (#337) and reports where chains stall (`chains.py show`,
   CHAIN_NO_GATE)
-- It proposes a plan across repos from each repo's goal plans (spec 028) for the maintainer
-  to accept (D-10, D-34); the plan, its stand-in issues and its milestone live in the home
-  repo
-- It changes no code outside the home repo; an accepted plan reaches the other repos
-  through a trusted marker the maintainer posts, and each repo takes up its part (D-46)
+- It changes no code outside the home repo
+
+It is not a product manager. Deciding what to build, setting priorities, and planning a
+product across repos stay with the maintainer, and with what the product keeps outside
+shipmill for strategy, support and operations (shipmill's N-4). It reads the home repo's
+own docs to find who owns a fault, and knows nothing else about the business. A plan across
+repos (D-46) is on hold with #338; when it comes back, it is the maintainer's, carried to
+each repo by the maintainer's marker. A product that spans one repo has no coordinator,
+and one without a running coordinator has its `upstream` reports and stand-ins wait for
+the maintainer.
 
 ### Cross-repo objects the forge already has
 
@@ -248,9 +256,10 @@ section and never required, for a team that already works there or for work no r
 The maintainer settled the three questions on 2026-10-24, in #338, and refined the first
 the same day in chat:
 
-- A component's session stays in its own repo; the product's manager owns every cross-repo
-  read and write, with a second token that has no write access to code or pull requests,
-  and closes the local stand-ins an agent waits on (D-45, refining D-14)
+- A component's session stays in its own repo; the product's coordinator owns every
+  cross-repo read and write, with a second token that has no write access to code or pull
+  requests, and closes the local stand-ins an agent waits on (D-45, superseded by D-47,
+  which names the role the coordinator and keeps it to delivery)
 - A plan accepted in the home repo reaches the other repos through a trusted marker the
   maintainer posts, and each repo's own session takes up its part (D-46)
 - The home repo is the one whose `docs/product.md` describes the product as a whole, code or
