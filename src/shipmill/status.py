@@ -33,6 +33,7 @@ from shipmill.launchd import label
 from shipmill.planner import MilestoneOvertaken, MilestoneWaiting, Planner
 from shipmill.plugin import GateCli, publish_fix
 from shipmill.policy import Policy
+from shipmill.roles import ResolvedRole, arguments
 from shipmill.upgrades import Offer, offers, pending
 from shipmill.version import Version
 
@@ -139,6 +140,9 @@ CLOSED_STATES = {state for _, state, _ in CLOSED_LINES}
 # a GitHub login, as triage_state.py's WITH_PERSON line names its assignees: watch_state.py's
 # LOGIN (tests/test_ship_watch.py keeps them equal); shown, never any other text (D-16)
 LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$")
+# a team as @<org>/<team-slug>, as the WITH_PERSON line's teams name them (spec 036):
+# triage_state.py's TEAM (tests/test_roles_wiring.py keeps them equal)
+TEAM = re.compile(r"@[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}/[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 # the needs-decision items share one fix, shown once after the group (S-011-12)
 DECISION_FIX = "answer the needs-decision question on each item named"
 
@@ -188,14 +192,16 @@ class Row:
 class Issue:
     """One of triage_state.py's JSON lines; note is its note, such as the pull requests that
     cover it (`#409:open`) or what a blocked issue waits on (`owner/repo#5:open`); assignees
-    the logins a WITH_PERSON issue waits on (spec 017), empty for any other; closed a closed
-    issue's VETOED line (`"closed": true`, spec 030)"""
+    the logins a WITH_PERSON issue waits on (spec 017), empty for any other; teams the
+    @org/team entries its roles resolve to (spec 036), which may stand without assignees;
+    closed a closed issue's VETOED line (`"closed": true`, spec 030)"""
 
     number: int
     state: str
     note: str = ""
     assignees: tuple[str, ...] = ()
     closed: bool = False
+    teams: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,21 +335,31 @@ def parse_rows(text: str) -> list[Row]:
 
 def parse_issues(text: str) -> list[Issue]:
     found = (r for r in map(json.loads, text.splitlines()) if r)
-    return [
-        Issue(int(r["number"]), str(r["state"]), str(r["note"]), person_logins(r), r.get("closed") is True)
-        for r in found
-    ]
+    issues = []
+    for r in found:
+        people, teams = person_logins(r)
+        issues.append(Issue(int(r["number"]), str(r["state"]), str(r["note"]), people, r.get("closed") is True, teams))
+    return issues
 
 
-def person_logins(raw: Mapping[str, Any]) -> tuple[str, ...]:
-    """A WITH_PERSON line's assignees, the logins it waits on, as watch_state.py reads them; a
-    WITH_PERSON line without a list of logins is malformed. Any other line has none"""
+def person_logins(raw: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """A WITH_PERSON line's assignees and teams, whom it waits on, as watch_state.py reads them:
+    assignees a list of logins, teams (spec 036, absent from a line without --role flags) a
+    list of @org/team entries; the assignees may be empty only with a team. Anything else is
+    malformed. Any other line has neither"""
     if raw["state"] != "WITH_PERSON":
-        return ()
+        return (), ()
     found = raw.get("assignees")
-    if not isinstance(found, list) or not found or not all(isinstance(p, str) and LOGIN.match(p) for p in found):
-        raise ReleaseError(f"triage_state.py printed a WITH_PERSON line without its assignees: {raw!r}")
-    return tuple(found)
+    teams = raw.get("teams", [])
+    if (
+        not isinstance(found, list)
+        or not all(isinstance(p, str) and LOGIN.match(p) for p in found)
+        or not isinstance(teams, list)
+        or not all(isinstance(t, str) and TEAM.fullmatch(t) for t in teams)
+        or not (found or teams)
+    ):
+        raise ReleaseError(f"triage_state.py printed a WITH_PERSON line without its assignees or teams: {raw!r}")
+    return tuple(found), tuple(teams)
 
 
 def parse_job(
@@ -387,11 +403,12 @@ def _checked(proc: subprocess.CompletedProcess[str], what: str) -> str:
     return proc.stdout
 
 
-def read_issues(repo: str, run: StateRunner, bot_login: str | None) -> list[Issue]:
-    """triage_state.py's states, read as watch_state.py read them (the same --bot-login)"""
+def read_issues(repo: str, run: StateRunner, bot_login: str | None, roles: Sequence[ResolvedRole] = ()) -> list[Issue]:
+    """triage_state.py's states, read as watch_state.py read them (the same --bot-login and
+    --role flags, spec 036)"""
     script = skills_dir() / "github-issue-triage" / "scripts" / "triage_state.py"
     login = [] if bot_login is None else ["--bot-login", bot_login]
-    proc = run([sys.executable, str(script), repo, "--json", *login])
+    proc = run([sys.executable, str(script), repo, "--json", *arguments(roles), *login])
     if proc.returncode not in (0, 1):  # 1: an issue needs triage, an answer like 0
         raise ReleaseError(f"triage_state.py failed (exit {proc.returncode}): {proc.stderr.strip()[-500:]}")
     return parse_issues(proc.stdout)
@@ -1030,8 +1047,8 @@ def issue_value(repo: str, issue: Issue) -> str:
         return shown
     if issue.state in ("POSTPONED", "TRIAGED"):
         return f"{shown} {issue.state.lower()}"
-    if issue.state == "WITH_PERSON":  # the logins it waits on, never the note's text (D-16)
-        return f"{shown} ({' '.join(f'@{p}' for p in issue.assignees)})"
+    if issue.state == "WITH_PERSON":  # the logins and teams it waits on, never the note's text (D-16)
+        return f"{shown} ({' '.join([*(f'@{p}' for p in issue.assignees), *issue.teams])})"
     return shown
 
 

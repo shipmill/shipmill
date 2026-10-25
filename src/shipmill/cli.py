@@ -730,7 +730,8 @@ def main(
         ask = input if sys.stdin.isatty() and not args.owner else None
         return _app_create(root, args, api or UrllibApi(), signer or Openssl(), ask=ask)
     if args.command == "status":
-        return _status(root, args, state or run_state, api or UrllibApi(), signer or Openssl())
+        host = login or (lambda: host_login(root))
+        return _status(root, args, state or run_state, api or UrllibApi(), signer or Openssl(), host)
     if args.command == "milestones":
         return _milestones(root, args, github)
     if args.command == "roles":
@@ -1030,6 +1031,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         ),
         hooks=_hook_test(root, os.environ, Path.home()),
         auth=_claude_auth(os.environ),
+        roles=roles.resolve,
     )
     if args.json:
         print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))
@@ -1425,13 +1427,16 @@ def _status(
     run: StateRunner,
     api: Api,
     signer: Signer,
+    login: LoginReader,
     home: Path | None = None,
     platform: str = sys.platform,
     now: dt.datetime | None = None,
 ) -> int:
     """Specs 008 and 009: the factory's picture for the checkout's repo, or with --rows or
     --json github-ship-watch's report passed through; exit 1 when a row needs action, 2 when
-    the script failed rather than reported"""
+    the script failed rather than reported. Both reads pass the resolved roles as the gate's
+    do (S-036-5), the maintainer the host's login (login) when the config lists nobody; a
+    malformed [agents.roles] or an unreadable login needed for it exits 2 before any read"""
     git = Git(root)
     if not git.ok("rev-parse", "--show-toplevel"):  # S-008-9: first, before any other git call
         raise ReleaseError(f"{root} is not a git checkout; run status in a checkout of the repo, or pass --repo PATH")
@@ -1444,6 +1449,7 @@ def _status(
     else:
         check_checkout(Git(top), slug)
     picture = not (args.rows or args.json)
+    resolved = roles.resolve(roles.configured(top), login)
     home = home if home is not None else Path.home()
     when = now if now is not None else dt.datetime.now(dt.UTC)
 
@@ -1465,10 +1471,10 @@ def _status(
     gate = status.read_gate(slug, top, home, platform, run, check, os.getuid()) if picture else None
     if gate is not None:  # S-031-17: the gate's own CLI against the latest release
         gate = dataclasses.replace(gate, cli=_gate_cli(top, slug, home))
-    login = None if gate is None else gate.login
-    if login is None:  # #311: --rows, --json, or a failed check still count the App's questions
-        login = status.read_login(slug, top, home, platform, bot_login)
-    proc = run(watch_command(slug, top, StateRead(bot_login=login), json=not args.rows))
+    bot = None if gate is None else gate.login
+    if bot is None:  # #311: --rows, --json, or a failed check still count the App's questions
+        bot = status.read_login(slug, top, home, platform, bot_login)
+    proc = run(watch_command(slug, top, StateRead(bot_login=bot, roles=resolved), json=not args.rows))
     sys.stderr.write(proc.stderr)  # S-008-10: warnings on 0 and 1, the whole traceback on a failure
     if state_failed(proc):
         print(f"shipmill: watch_state.py failed (exit {proc.returncode})", file=sys.stderr)
@@ -1483,7 +1489,7 @@ def _status(
     facts = status.Facts(
         repo=slug,
         rows=status.parse_rows(proc.stdout),  # spec 022's milestone rows among them (#475)
-        issues=status.read_issues(slug, run, login),
+        issues=status.read_issues(slug, run, bot, resolved),
         pulls=status.read_pulls(slug, run),
         main=main,
         version=status.describe(git, main.remote),

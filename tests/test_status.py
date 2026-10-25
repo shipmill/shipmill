@@ -37,10 +37,14 @@ def checkout(root: Path, origin: str = f"git@github.com:{REPO}.git") -> Path:
     return root.resolve()
 
 
+HOST = "octocat"  # the host's gh login, the maintainer of a config without [agents.roles] (spec 036)
+ROLES = ["--role", f"maintainer={HOST}"]
+
+
 def status(root: Path, script: Script, *extra: str) -> int:
     """Spec 008's report: --rows for its table (spec 009's picture is the default now)"""
     shown = extra if "--json" in extra else ("--rows", *extra)
-    return main(["--repo", str(root), "status", *shown], state=script)
+    return main(["--repo", str(root), "status", *shown], state=script, login=lambda: HOST)
 
 
 def test_s008_1_the_default_repo_is_origins_with_the_checkouts_top_level(tmp_path: Path) -> None:
@@ -48,7 +52,7 @@ def test_s008_1_the_default_repo_is_origins_with_the_checkouts_top_level(tmp_pat
     (root / "src").mkdir()
     script = Script()
     assert status(root / "src", script) == 0
-    assert script.seen == [[sys.executable, str(SCRIPT), REPO, "--repo-dir", str(root)]]
+    assert script.seen == [[sys.executable, str(SCRIPT), REPO, "--repo-dir", str(root), *ROLES]]
 
 
 def test_s008_2_an_origin_off_github_asks_for_the_repo(tmp_path: Path) -> None:
@@ -78,7 +82,7 @@ def test_s008_4_the_table_and_the_json_lines_are_printed_unchanged(
     script = Script(stdout=ROW)
     assert status(root, script, "--json") == 0
     assert capsys.readouterr().out == ROW
-    assert script.seen[0][-1] == "--json"
+    assert script.seen[0][-3:] == ["--json", *ROLES]
 
 
 def test_s008_5_the_scripts_answer_is_the_exit_code(tmp_path: Path) -> None:
