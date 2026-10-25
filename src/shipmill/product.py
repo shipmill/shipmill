@@ -346,7 +346,11 @@ class GitRef:
         if not name or name.startswith("-") or name != name.strip():
             raise ReleaseError(f"a git ref names a commit, such as origin/main; got {name!r}")
         git = Git(root)
-        git.run("rev-parse", "--git-dir")  # refuses a folder that isn't a git checkout
+        if not git.ok("rev-parse", "--git-dir"):
+            raise ReleaseError(
+                f"{root} is not a git checkout, so it holds no ref {name}; run it in a checkout of the repo, "
+                "or pass --repo PATH"
+            )
         if not git.ok("rev-parse", "--verify", "-q", f"{name}^{{commit}}"):
             raise ReleaseError(
                 f"git can't resolve {name} to a commit in {root}; fetch it, or name a branch, tag, or commit it holds"

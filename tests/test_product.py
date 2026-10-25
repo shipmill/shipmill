@@ -555,8 +555,11 @@ def test_s034_1_check_ref_exits_2_through_the_cli(tmp_path: Path) -> None:
 
 def test_s034_1_check_ref_exits_2_outside_a_git_checkout(tmp_path: Path) -> None:
     root = write(tmp_path, WELL_FORMED)
-    with pytest.raises(ReleaseError, match="rev-parse --git-dir failed"):
+    with pytest.raises(ReleaseError) as refused:  # Q-1: the message names the fix, not git's own error
         run(root, "check", "--ref", "HEAD")
+    assert str(refused.value) == (
+        f"{root} is not a git checkout, so it holds no ref HEAD; run it in a checkout of the repo, or pass --repo PATH"
+    )
 
 
 def test_s034_1_check_ref_follows_a_symlink_only_inside_the_commit(
