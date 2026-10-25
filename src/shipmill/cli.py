@@ -1259,6 +1259,12 @@ def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, r
             f"{DEFAULT_REF} is not set in {top}, so the levels that decide who merges #{number} can't be read: run "
             f"`git -C {top} remote set-head origin --auto`"
         )
+    if git.show(DEFAULT_REF, CONFIG_PATH.as_posix()) is None:
+        raise ReleaseError(
+            f"{DEFAULT_REF} has no {CONFIG_PATH}, so the levels that decide who merges #{number} can't be read: land "
+            f"the config on the default branch through a pull request the maintainer merges, then run "
+            f"`git -C {top} fetch origin`"
+        )
     found = classify_pull(Base.read(git, DEFAULT_REF), reads, number)
     never = [z for z in found.zones if z.level is decide.Level.NEVER]
     if never:

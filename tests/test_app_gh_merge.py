@@ -157,6 +157,33 @@ def test_s030_13_the_levels_come_from_origin_head_not_the_working_tree(repo: Rep
     assert len(runner.calls) == 2
 
 
+def test_s030_13_without_origin_head_a_merge_exits_2_naming_the_fix(repo: Repo, tmp_path: Path) -> None:
+    key = connected(repo, tmp_path)
+    repo.git.run("remote", "set-head", "origin", "--delete")
+    reader, runner = Reader(FakeReads((CODE,))), Runner()
+    with pytest.raises(ReleaseError) as raised:
+        gh(repo, tmp_path, key, ["pr", "merge", "7"], reader, runner)
+    assert "origin/HEAD is not set" in str(raised.value)
+    assert f"`git -C {repo.root} remote set-head origin --auto`" in str(raised.value)
+    assert runner.calls == []
+
+
+def test_s030_13_a_base_without_the_config_exits_2_naming_the_fix(repo: Repo, tmp_path: Path) -> None:
+    key = connected(repo, tmp_path)
+    repo.git.run("rm", "-q", CONFIG)
+    repo.git.run("commit", "-q", "-m", "drop the config")
+    repo.git.run("update-ref", "refs/remotes/origin/main", "HEAD")  # as a fetch would; origin is on GitHub now
+    repo.write(CONFIG, POLICY + WITH_APP)  # app_id is read from the working tree, the levels from the base
+    reader, runner = Reader(FakeReads((CODE,))), Runner()
+    with pytest.raises(ReleaseError) as raised:
+        gh(repo, tmp_path, key, ["pr", "merge", "7"], reader, runner)
+    message = str(raised.value)
+    assert f"origin/HEAD has no {CONFIG}" in message
+    assert "land the config on the default branch" in message
+    assert f"`git -C {repo.root} fetch origin`" in message
+    assert runner.calls == []
+
+
 def test_s030_13_a_merge_in_another_repo_is_refused(repo: Repo, tmp_path: Path) -> None:
     key = connected(repo, tmp_path)
     reader, runner = Reader(FakeReads((CODE,))), Runner()
