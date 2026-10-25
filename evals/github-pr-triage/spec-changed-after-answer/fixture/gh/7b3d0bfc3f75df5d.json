@@ -1,0 +1,12 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "880",
+    "--json",
+    "commits"
+  ],
+  "stdout": "{\"commits\": [{\"authoredDate\": \"2026-10-19T21:39:50Z\", \"authors\": [{\"email\": \"bot@shipmill.dev\", \"id\": \"BOT_kgDODCgtTQ\", \"login\": \"shipmill-romamo[bot]\", \"name\": \"shipmill-romamo[bot]\"}], \"committedDate\": \"2026-10-19T21:39:50Z\", \"messageBody\": \"\", \"messageHeadline\": \"Add spec 090: a weekly release digest\", \"oid\": \"3c9e1a7b5d2f4e6a8c0b1d3f5a7e9c2b4d6f8a10\"}, {\"authoredDate\": \"2026-10-22T09:12:05Z\", \"authors\": [{\"email\": \"bot@shipmill.dev\", \"id\": \"BOT_kgDODCgtTQ\", \"login\": \"shipmill-romamo[bot]\", \"name\": \"shipmill-romamo[bot]\"}], \"committedDate\": \"2026-10-22T09:12:05Z\", \"messageBody\": \"\", \"messageHeadline\": \"Add S-090-5: the digest's --json output\", \"oid\": \"9f2d4b6a8c0e1f3a5b7d9e2c4a6f8b0d1e3c5a7f\"}]}\n",
+  "stderr": "",
+  "exit": 0
+}

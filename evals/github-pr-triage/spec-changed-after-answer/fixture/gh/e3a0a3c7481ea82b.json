@@ -1,0 +1,13 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "number,title,author,headRefName,baseRefName,isDraft,mergeable,additions,deletions,changedFiles,createdAt"
+  ],
+  "stdout": "[{\"number\": 880, \"title\": \"Add spec 090: a weekly release digest\", \"author\": {\"id\": \"BOT_kgDODCgtTQ\", \"is_bot\": true, \"login\": \"app/shipmill-romamo\", \"name\": \"\"}, \"headRefName\": \"spec/090-release-digest\", \"baseRefName\": \"main\", \"isDraft\": false, \"mergeable\": \"MERGEABLE\", \"additions\": 32, \"deletions\": 0, \"changedFiles\": 1, \"createdAt\": \"2026-10-19T21:40:12Z\"}]\n",
+  "stderr": "",
+  "exit": 0
+}

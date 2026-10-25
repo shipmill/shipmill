@@ -18,3 +18,10 @@ skill = "github-pr-triage"
 kind = "decision"
 source = "shipmill/shipmill#547"
 commit = "fbb8b6c"
+
+[[case]]
+path = "github-pr-triage/spec-changed-after-answer"
+skill = "github-pr-triage"
+kind = "decision"
+source = "shipmill/shipmill#620"
+commit = "99eb662"

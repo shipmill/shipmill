@@ -1,0 +1,10 @@
+{
+  "args": [
+    "pr",
+    "diff",
+    "880"
+  ],
+  "stdout": "diff --git a/docs/specs/090-release-digest.md b/docs/specs/090-release-digest.md\nnew file mode 100644\nindex 0000000..7b1c3e2\n--- /dev/null\n+++ b/docs/specs/090-release-digest.md\n@@ -0,0 +1,32 @@\n+# 090: A weekly release digest\n+\n+status: approved\n+serves: G-3\n+\n+## Problem\n+\n+A person who filed an issue hears when its fix ships, but someone following the project\n+reads every release's notes to learn what changed in a week.\n+\n+## Behaviour\n+\n+`shipmill digest --since 7d` prints the week's releases, newest first, each with the issues\n+it fixed, from the release commits and `CHANGELOG.md`.\n+\n+## Acceptance criteria\n+\n+- S-090-1: `shipmill digest --since 7d` exits 0 and lists each release cut in that window, newest first\n+- S-090-2: each release lists the issues its changelog entries name, as `#N`\n+- S-090-3: a window with no release prints `no release since <date>` and exits 0\n+- S-090-4: a malformed `--since` exits 2 naming the accepted forms\n+- S-090-5: `shipmill digest --json` prints the same releases as one JSON array\n+\n+## Out of scope\n+\n+Posting the digest anywhere; it prints only.\n+\n+## Decisions relied on\n+\n+- D-3: prose calls the release automation shipmill\n+\n+## Issues\n",
+  "stderr": "",
+  "exit": 0
+}

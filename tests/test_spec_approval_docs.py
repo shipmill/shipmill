@@ -73,6 +73,33 @@ def test_547_pr_triage_lands_an_answered_spec_pr_and_never_one_editing_the_direc
     assert "9. **Only the maintainer changes the direction.**" in skill
 
 
+def test_620_the_answer_approves_the_spec_as_it_stood_when_given() -> None:
+    gate = folded(TRIAGE / "references" / "spec-gate.md")
+    section = gate.split("## Approved by an answer ", 1)[1].split(" ## ", 1)[0]
+    changed = section.split("- **The spec changed after the answer**", 1)[1]
+    assert "the answer approves the spec as it stood when the answer was given" in changed
+    # the answered head, named from the commits' dates or the force-push that rewrote them
+    assert "the newest commit of `gh pr view <n> --json commits` whose `committedDate`" in changed
+    assert "the `beforeCommit` of the first `HeadRefForcePushedEvent` after the answer" in changed
+    # the PR's own change to the spec file at both heads, so main's changes don't count
+    assert "git diff $(git merge-base origin/<default> <head>) <head> -- docs/specs/NNN-<slug>.md" in changed
+    assert "Main's changes brought in by a rebase fall outside these patches" in changed
+    assert "differing only where a `D-n` the PR claims was renumbered" in changed
+    assert "it lands on the answer" in changed
+    assert "**Any other difference** (a criterion added, removed, or reworded" in changed
+    assert "a new marker comment that names what changed since the answer and repeats the question" in changed
+    assert "the old answer, which comes before it, doesn't answer it" in changed
+    assert "**The answered head can't be named**" in changed
+    assert "ask again the same way rather than land" in changed
+    skill = folded(PR_TRIAGE / "SKILL.md")
+    bullet = skill.split("- **A spec pull request**", 1)[1].split(" - **An upgrade pull request**", 1)[0]
+    assert "The answer approves the spec as it stood when it was given" in bullet
+    assert "compare the PR's own change to the spec file at the answered head and at the current head" in bullet
+    assert "A rebase, or a renumbered `D-n` the PR claims, still lands on the answer" in bullet
+    assert "any other change to the spec file (a criterion, the behaviour, the scope) asks again" in bullet
+    assert "which the old answer doesn't satisfy" in bullet
+
+
 def test_547_needs_decision_points_an_answered_spec_pr_at_its_landing() -> None:
     ref = folded(TRIAGE / "references" / "needs-decision.md")
     taking = ref.split("## Taking up an answered item ", 1)[1]

@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "880",
+    "--json",
+    "title,body,labels,comments",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"title\": \"Add spec 090: a weekly release digest\", \"body\": \"Spec for #878\\n\\nAdds `docs/specs/090-release-digest.md` (`status: approved`, `serves: G-3`): `shipmill digest --since 7d` prints the week's releases, each with the issues it fixed, so someone following the project needn't read every release's notes.\\n\\n- 5 testable criteria, S-090-1 to S-090-5\\n\\n`specs.py check` passes.\\n\\n## Plan\\n\\n- Serves: G-3\\n- Files: docs/specs/090-release-digest.md (new spec, `status: approved`)\\n- Order: the spec alone\\n- Proof: `specs.py check` passes; CI green\\n\\n## Decisions for you\\n\\n1. **Where the digest reads releases from.** Recommended: the release commits and `CHANGELOG.md`, so it works offline and with no token\\n2. **Its default window.** Recommended: 7 days, set with `--since`\\n\\n\\ud83e\\udd16 Generated with [Claude Code](https://claude.com/claude-code)\\n\", \"labels\": [{\"id\": \"LA_1\", \"name\": \"needs-decision\", \"description\": \"\", \"color\": \"d876e3\"}], \"comments\": [{\"author\": {\"login\": \"shipmill-romamo[bot]\"}, \"authorAssociation\": \"CONTRIBUTOR\", \"body\": \"<!-- shipmill:needs-decision -->\\n@romamo Decision needed: does spec 090, a weekly release digest (#878), set the behaviour the way you want, with the choices listed under \\\"Decisions for you\\\" in this PR's body?\\n\\n1. Take every recommendation (recommended): you merge this PR yourself, since merging the spec is the approval, and its build issues get filed under #878\\n2. Change some of them: reply with the numbers and what you want instead; the spec is revised in this PR before you merge it\\n\\nReply here with a number or your own answer; shipmill takes this up on the tick after your reply.\\n\", \"createdAt\": \"2026-10-20T10:01:43Z\"}, {\"author\": {\"login\": \"romamo\"}, \"authorAssociation\": \"COLLABORATOR\", \"body\": \"1\", \"createdAt\": \"2026-10-20T17:20:23Z\"}]}\n",
+  "stderr": "",
+  "exit": 0
+}
