@@ -60,8 +60,10 @@ def test_s028_15_the_skill_files_each_feature_and_fix_item_in_work_order() -> No
     assert "`Serves: G-n`" in accepted
     # a sub-issue of the plan, without an edit to the plan's body
     assert "sub-issue of the plan" in accepted
-    assert "shipmill gh api -X POST repos/<owner/repo>/issues/<P>/sub_issues -F sub_issue_id=<id>" in accepted
-    assert "Not `chains.py link --child`" in accepted
+    assert "`chains.py link <owner/repo>#P --child <owner/repo>#<item> --no-text`" in accepted
+    assert "`--no-text` writes GitHub's relation alone" in accepted
+    assert "sub_issues" not in accepted  # no direct API call
+    assert "exits 2" in accepted and "stop filing" in accepted
     # (after W-k): a Depends on line and GitHub's relation, through chains.py link
     assert "a `Depends on owner/repo#M` line per `(after W-k)`" in accepted
     assert "`chains.py link <owner/repo>#<item> --blocked-by <owner/repo>#M`" in accepted
@@ -85,6 +87,8 @@ def test_s028_15_the_filed_item_template_carries_the_marker_plans_py_reads(plans
     assert "Serves: G-{n}" in body and "#{plan}" in body
     assert "Depends on {owner/repo}#{the issue of W-k}" in body
     assert "One `Depends on` line per `(after W-k)`" in item
+    # linked under the plan with the relation alone, the plan's body untouched
+    assert "`chains.py link {owner/repo}#{plan} --child {owner/repo}#{item} --no-text`" in item
 
 
 def test_s028_15_the_commands_the_skill_names_exist() -> None:
@@ -93,6 +97,8 @@ def test_s028_15_the_commands_the_skill_names_exist() -> None:
     assert "plans.py check FILE [--root DIR]" in plans_doc
     chains = read(ROOT / "skills" / "github-issue-triage" / "scripts" / "chains.py")
     assert "chains.py link <owner/repo#N> --blocked-by <owner/repo#M>" in chains
+    assert "chains.py link <owner/repo#P> --child <owner/repo#C> [--no-text]" in chains
+    assert '"--no-text"' in chains
     intake = read(INTAKE / "scripts" / "intake_state.py")
     for flag in ("--plans", "--wip N", "--bot-login LOGIN"):
         assert flag in intake, flag

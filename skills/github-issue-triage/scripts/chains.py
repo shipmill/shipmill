@@ -2,9 +2,9 @@
 """Write and show the links of a chain of work across issues and repos (spec 017).
 
 Usage:
-  chains.py link <owner/repo#N> --blocked-by <owner/repo#M>
-  chains.py link <owner/repo#P> --child <owner/repo#C>
-  chains.py link --product <owner/repo#P> --child <owner/repo#C>
+  chains.py link <owner/repo#N> --blocked-by <owner/repo#M> [--no-text]
+  chains.py link <owner/repo#P> --child <owner/repo#C> [--no-text]
+  chains.py link --product <owner/repo#P> --child <owner/repo#C> [--no-text]
   chains.py show <owner/repo#N>... [--json] [--trusted-only] [--bot-login LOGIN]
 
 link  writes a link in both forms triage_state.py reads:
@@ -23,6 +23,11 @@ link  writes a link in both forms triage_state.py reads:
       line is still written and it prints "text only: <the error's first line>": the line
       holds the issue by itself. A refusal is a schema without the field or mutation, or
       an UNPROCESSABLE or FORBIDDEN error; any other error fails the run.
+
+      --no-text writes the relation alone and never edits the body, for an issue whose
+      body must stay as it is (an accepted plan, spec 028): it prints "linked: ..." or
+      "already linked", and a refusal exits 2 with the error, there being no line to fall
+      back on.
 
       Exit 0 when the link is in place (or text only), 2 on a malformed reference, an
       issue that doesn't exist or is a pull request, an issue linked to itself (each
@@ -522,8 +527,9 @@ def appended(body: str, line: str) -> str:
     return text + line
 
 
-def link(run: Runner, target: Ref, other: Ref, child: bool, write: Runner) -> int:
-    """Reads go through run, the relation's mutation and the body edit through write"""
+def link(run: Runner, target: Ref, other: Ref, child: bool, write: Runner, text: bool = True) -> int:
+    """Reads go through run, the relation's mutation and the body edit through write.
+    Without text (--no-text), only the relation: no body edit, and a refusal exits 2"""
     if target.same(other):
         fail(f"{target} can't be linked to itself")
     issue, upstream = resolve(run, target), resolve(run, other)
@@ -542,7 +548,12 @@ def link(run: Runner, target: Ref, other: Ref, child: bool, write: Runner) -> in
             native(write, mutation, dict(variables))
             lines.append(f"linked: {relation}")
     except Refused as exc:
+        if not text:
+            fail(f"the forge refused the relation and --no-text writes no Depends on line: {exc}")
         have_native, refused = False, str(exc)
+    if not text:
+        print("\n".join(lines) if lines else "already linked")
+        return 0
     have_text = names(issue.body, target, other)
     if not have_text:
         line = f"Depends on {other}"
@@ -937,6 +948,11 @@ def main(
         action="store_true",
         help="the coordinator's: write through `shipmill gh --product <the parent's repo>` (spec 038, --child only)",
     )
+    link_parser.add_argument(
+        "--no-text",
+        action="store_true",
+        help="write only GitHub's relation, no Depends on line; exit 2 when the forge refuses it (spec 028)",
+    )
     show_parser = commands.add_parser("show", help="print the chain an issue belongs to")
     show_parser.add_argument("issues", nargs="+", metavar="OWNER/REPO#N", help="the issue (or issues) to start from")
     show_parser.add_argument("--json", action="store_true", help="the rows as one JSON object")
@@ -966,7 +982,7 @@ def main(
     if write is None:
         coordinator = product if args.product else None  # refuse_outside exits 2 without [product] repos
         write = gh_runner(writer(here) if coordinator is None else product_writer(coordinator, target), execute)
-    return link(run, target, other, args.child is not None, write)
+    return link(run, target, other, args.child is not None, write, text=not args.no_text)
 
 
 if __name__ == "__main__":

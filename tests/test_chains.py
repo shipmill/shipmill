@@ -322,6 +322,72 @@ def test_a_forbidden_relation_is_a_refusal(ch: ModuleType, forge: Forge, capsys:
     assert "text only: Resource not accessible by integration" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("child", [True, False])
+def test_s028_15_no_text_writes_the_relation_alone_and_leaves_the_body(
+    ch: ModuleType, forge: Forge, capsys: pytest.CaptureFixture[str], child: bool
+) -> None:
+    # An accepted plan's body must stay as accepted: the relation, and no Depends on line
+    plan = "<!-- shipmill:goal-plan G-1 rev 1 -->\n## Milestone\nv2\n"
+    p, c = forge.add("o/r#1", plan), forge.add("o/r#2")
+    how = "--child" if child else "--blocked-by"
+    assert link(ch, forge, "o/r#1", how, "o/r#2", "--no-text") == 0
+    assert (forge.parents.get(c) == p) if child else ((p, c) in forge.blocked)
+    assert forge.body("o/r#1") == plan
+    assert forge.writes() == ["addSubIssue" if child else "addBlockedBy"]
+    relation = "o/r#2 is a sub-issue of o/r#1" if child else "o/r#1 is blocked by o/r#2"
+    assert capsys.readouterr().out.strip() == f"linked: {relation}"
+
+    forge.calls.clear()  # again: the relation is there, nothing is written
+    assert link(ch, forge, "o/r#1", how, "o/r#2", "--no-text") == 0
+    assert forge.writes() == []
+    assert forge.body("o/r#1") == plan
+    assert capsys.readouterr().out.strip() == "already linked"
+
+
+@pytest.mark.parametrize(
+    ("refuse", "named"),
+    [
+        ("write", "Issues must belong to the same owner"),
+        ("read", "Field 'parent' doesn't exist on type 'Issue'"),
+        ("forbidden", "Resource not accessible by integration"),
+    ],
+)
+def test_s028_15_no_text_fails_when_the_forge_refuses_the_relation(
+    ch: ModuleType, forge: Forge, capsys: pytest.CaptureFixture[str], refuse: str, named: str
+) -> None:
+    # No text fallback: a refusal exits 2 with the forge's error and writes nothing
+    forge.add("o/r#1", "Plan\n")
+    forge.add("someone/else#2")
+    if refuse == "write":
+        forge.refuse_write = named
+    elif refuse == "read":
+        forge.refuse_read = named
+    else:
+        forge.relation_error = ("write", error(named, "FORBIDDEN"))
+    with pytest.raises(SystemExit) as exit_:
+        link(ch, forge, "o/r#1", "--child", "someone/else#2", "--no-text")
+    assert exit_.value.code == 2
+    captured = capsys.readouterr()
+    assert named in captured.err and "--no-text" in captured.err
+    assert "text only" not in captured.out
+    assert forge.body("o/r#1") == "Plan\n"
+    assert "updateIssue" not in forge.writes()
+
+
+def test_s028_15_no_text_with_product_writes_the_sub_issue_alone_through_the_product_token(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    p, c = forge.add("acme/api#3", "The report\n"), forge.add("acme/web#7")
+    argv = ("--product", "acme/api#3", "--child", "acme/web#7", "--no-text")
+    code, git = run_link(ch, forge, tmp_path, COORDINATOR, "acme/product", *argv)
+    assert code == 0
+    assert forge.parents[c] == p and forge.body("acme/api#3") == "The report\n"
+    top = (tmp_path / "repo").resolve()
+    assert git.writes() == [[*UVX, "--repo", str(top), "gh", "--product", "acme/api"]]  # the sub-issue alone
+    assert forge.writes() == ["addSubIssue"]
+    assert capsys.readouterr().out.strip() == "linked: acme/web#7 is a sub-issue of acme/api#3"
+
+
 def test_the_script_runs_from_its_folder_and_refuses_a_malformed_reference_before_gh(tmp_path: Path) -> None:
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / "chains.py"), "link", "nope", "--blocked-by", "o/r#4"],

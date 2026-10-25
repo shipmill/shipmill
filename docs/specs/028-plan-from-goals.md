@@ -167,9 +167,12 @@ through `shipmill gh` (D-14). Each body starts with the marker
 `<!-- shipmill:plan-item #<plan> W-<n> -->`, states the item, names `Serves: G-n`, and links
 the plan. Then:
 
-- Each filed issue becomes a sub-issue of the plan (`chains.py link <plan> --child <item>`,
-  spec 017), so the plan reads BLOCKED with `children K/N closed` until its work closes, and
-  triage closes it like any parent
+- Each filed issue becomes a sub-issue of the plan
+  (`chains.py link <plan> --child <item> --no-text`, spec 017), so the plan reads BLOCKED
+  with `children K/N closed` until its work closes, and triage closes it like any parent.
+  `--no-text` writes GitHub's sub-issue relation alone, with no `Depends on` line in the
+  plan's body, which an edit after the accept would turn back to PLAN_OPEN; a forge that
+  refuses the relation fails the link, since there is no line to fall back on
 - Each `(after W-k)` becomes a `Depends on` line and GitHub's relation
   (`chains.py link <item> --blocked-by <W-k's issue>`); an `existing` item is named by its
   own number

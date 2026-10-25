@@ -1,6 +1,6 @@
 # Goal plans and the comments around them
 
-Write each body to a file in the repo's `tmp/` and post it with `--body-file`, as for an opportunity ([opportunity.md](opportunity.md)). Every write runs as `shipmill gh` (SKILL.md, rule 7); where `shipmill` isn't on PATH, and in a headless session, as `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill gh ...`. Every comment intake writes on a plan issue starts with `Triage:` or a `<!-- shipmill:... -->` marker, so `intake_state.py` never reads it as the maintainer's answer, even where the session writes as the maintainer's own login.
+Write each body to a file in the repo's `tmp/` and post it with `--body-file`, as for an opportunity ([opportunity.md](opportunity.md)). Every write runs as `shipmill gh` (SKILL.md, rule 7), as `uvx shipmill==0.73.1 gh ...`, the release this plugin pins (spec 031), in every session. Every comment intake writes on a plan issue starts with `Triage:` or a `<!-- shipmill:... -->` marker, so `intake_state.py` never reads it as the maintainer's answer, even where the session writes as the maintainer's own login.
 
 ## The plan issue
 
@@ -94,6 +94,8 @@ Depends on {owner/repo}#{the issue of W-k}
 ```bash
 shipmill gh issue create -R {owner/repo} --title "{item text}" --body-file tmp/plan-{plan}-W-{n}.md {--milestone "{title}"}
 ```
+
+Then make it a sub-issue of the plan with github-issue-triage's `chains.py link {owner/repo}#{plan} --child {owner/repo}#{item} --no-text`: `--no-text` writes GitHub's relation alone, with no `Depends on` line in the plan's body, which stays as accepted
 
 ## Intake's line on the plan once filed
 
