@@ -5,7 +5,8 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Mapping
+import textwrap
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -17,10 +18,12 @@ from shipmill.downstream import (
     FORK_TITLE,
     AppDispatcher,
     Check,
+    CommitSha,
     Conclusion,
     Downstream,
     DownstreamConfig,
     GhLibrary,
+    HeadMoved,
     Pull,
     Status,
     Written,
@@ -44,7 +47,8 @@ REPORT_ONLY = Downstream("private-app", "example-org/private-app", "tests.yaml",
 CONFIG = DownstreamConfig(APP, 30, (REQUIRED, REPORT_ONLY))
 SAME = Pull(12, SHA, LIBRARY, LIBRARY, "main")
 FORK = Pull(12, SHA, "stranger/library", LIBRARY, "main")
-FORK_COMMAND = "gh workflow run downstream.yml -f pr=12"
+FORK_COMMAND = f"gh workflow run downstream.yml -f pr=12 -f sha={SHA}"
+OTHER = "fedcba9876543210fedcba9876543210fedcba98"  # a commit pushed after the person read SHA
 SECTION = (
     "\n[downstream]\napp_id = 123456\n"
     '\n[downstream.consumer-app]\nrepo = "example-org/consumer-app"\nworkflow = "library-tests.yml"\nref = "release"\n'
@@ -158,10 +162,14 @@ def run(
     actor: str | None = None,
     origin: str | None = None,
     config: DownstreamConfig = CONFIG,
+    sha: str | None = SHA,
 ) -> list[str]:
+    """start as the reusable workflow runs it: a person's start (an actor) pinned to sha"""
     signer = FakeSigner()
     dispatcher = AppDispatcher(APP, key, signer, api, clock)
-    return start(config, library, dispatcher, key_problem(APP, key, signer, api, clock), 12, actor, origin, clock)
+    pinned = CommitSha(sha) if actor is not None and sha is not None else None
+    key_check = key_problem(APP, key, signer, api, clock)
+    return start(config, library, dispatcher, key_check, 12, actor, origin, clock, pinned)
 
 
 # S-032-4
@@ -181,8 +189,11 @@ def test_s032_4_the_reusable_workflow_checks_out_the_default_branch_and_no_pull_
     checkouts = re.findall(r"- uses: actions/checkout@\S+\n        with:\n          ref: (.+)\n", text)
     assert checkouts and set(checkouts) == {"${{ github.event.repository.default_branch }}"}
     assert text.count("actions/checkout@") == len(checkouts)
-    for pr_ref in ("pull_request.head", "head_ref", "head.sha", "refs/pull", "merge_commit_sha"):
-        assert pr_ref not in text, pr_ref
+    assert "refs/pull" not in text and "merge_commit_sha" not in text
+    # the pin step reads the head's SHA to compare it (S-032-24); no expression names a head ref
+    for expression in re.findall(r"\$\{\{(.*?)\}\}", text):
+        for pr_ref in ("pull_request.head", "head_ref", "head.sha"):
+            assert pr_ref not in expression, expression
     assert text.count("persist-credentials: false") == len(checkouts)
 
 
@@ -190,7 +201,7 @@ def test_s032_4_start_runs_when_collect_is_empty_and_collect_otherwise() -> None
     found = jobs(WORKFLOW.read_text(encoding="utf-8"))
     assert "if: inputs.collect == ''" in found["start"]
     assert 'args=(downstream start --pr "$PR" --app-key "$key")' in found["start"]
-    assert '--actor "$GITHUB_TRIGGERING_ACTOR"' in found["start"]
+    assert '--actor "$GITHUB_TRIGGERING_ACTOR" --sha "$SHA"' in found["start"]
     assert "group: downstream-${{ inputs.pr }}" in found["start"]
     assert "if: inputs.collect != ''" in found["limit"]
     assert "needs: limit" in found["collect"]
@@ -352,10 +363,10 @@ def test_s032_7_an_installation_without_actions_write_fails_the_check_with_403(t
     assert (required.conclusion, required.title) == (Conclusion.FAILURE, "couldn't start: 403")
 
 
-# S-032-11
+# S-032-17
 
 
-def test_s032_11_a_forks_pull_request_dispatches_nothing_and_waits_for_a_person(tmp_path: Path) -> None:
+def test_s032_17_a_forks_pull_request_dispatches_nothing_and_waits_for_a_person(tmp_path: Path) -> None:
     library, api = FakeLibrary(answer=FORK), DownstreamApi()
     lines = run(library, api, key_file(tmp_path))
 
@@ -372,13 +383,13 @@ def test_s032_11_a_forks_pull_request_dispatches_nothing_and_waits_for_a_person(
     )
     assert FORK_TITLE == "a fork's pull request runs downstream tests only by hand"
     for check in (required, report_only):
-        assert FORK_COMMAND in check.summary
+        assert f"```\n{FORK_COMMAND}\n```" in check.summary  # the full head SHA start read
     assert required.details_url == f"https://github.com/{LIBRARY}/actions/workflows/downstream.yml"
     assert api.dispatched == [] and api.minted == [] and library.collects == []
     assert lines == [f"downstream: {n}: waits for a person: {FORK_COMMAND}" for n in ("consumer-app", "private-app")]
 
 
-def test_s032_11_a_deleted_forks_pull_request_is_a_forks(tmp_path: Path) -> None:
+def test_s032_17_a_deleted_forks_pull_request_is_a_forks(tmp_path: Path) -> None:
     library, api = FakeLibrary(answer=replace(FORK, head_repo=None)), DownstreamApi()
     run(library, api, key_file(tmp_path))
     assert library.check("consumer-app").conclusion is Conclusion.ACTION_REQUIRED
@@ -413,6 +424,230 @@ def test_s032_12_a_bot_starts_a_pull_request_from_the_repository_as_a_person_doe
     run(library, api, key_file(tmp_path), actor="shipmill-app[bot]")
     assert [d[0] for d in api.dispatched] == [REQUIRED.repo, REPORT_ONLY.repo]
     assert library.check("consumer-app").status is Status.IN_PROGRESS
+
+
+# S-032-18: a person's start is pinned to the head they read
+
+
+def moved_line(current: str) -> str:
+    return f"the head of #12 is {current}, not {SHA}; read the new commits and start again with -f sha={current}"
+
+
+def test_s032_18_a_start_for_a_head_that_moved_writes_mints_and_dispatches_nothing(tmp_path: Path) -> None:
+    library, api = FakeLibrary(answer=replace(SAME, head_sha=OTHER)), DownstreamApi()
+    with pytest.raises(HeadMoved) as moved:
+        run(library, api, key_file(tmp_path), actor="maintainer", sha=SHA)
+    assert str(moved.value) == moved_line(OTHER)
+    assert moved_line(OTHER) == (
+        f"the head of #12 is {OTHER}, not {SHA}; read the new commits and start again with -f sha={OTHER}"
+    )
+    assert not isinstance(moved.value, ReleaseError)  # exit 1, not the exit 2 of a bad setup
+    assert library.checks == {} and api.minted == [] and api.dispatched == [] and library.collects == []
+
+
+def test_s032_18_a_forks_held_checks_stay_as_they_were(tmp_path: Path) -> None:
+    library, api = FakeLibrary(answer=replace(FORK, head_sha=OTHER)), DownstreamApi()
+    run(library, api, key_file(tmp_path))  # pull_request_target holds the fork's head OTHER
+    held = dict(library.checks)
+    with pytest.raises(HeadMoved):
+        run(library, api, key_file(tmp_path), actor="maintainer", sha=SHA)  # the person read SHA
+    assert library.checks == held
+    assert all(c.conclusion is Conclusion.ACTION_REQUIRED for _, c in held.values() if "consumer" in c.name)
+    assert api.minted == [] and api.dispatched == []
+
+
+def test_s032_18_the_cli_exits_1_with_the_line_and_writes_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "shipmill.toml").write_text(POLICY + SECTION, encoding="utf-8")
+    library, api = FakeLibrary(answer=replace(SAME, head_sha=OTHER)), DownstreamApi()
+    argv = ["--repo", str(tmp_path), "downstream", "start", "--pr", "12", "--app-key", str(key_file(tmp_path))]
+    argv += ["--actor", "maintainer", "--sha", SHA]
+    assert main(argv, api=api, signer=FakeSigner(), library=library) == 1
+    err = capsys.readouterr().err
+    assert err == f"shipmill: {moved_line(OTHER)}\n"
+    assert library.checks == {} and api.minted == [] and api.dispatched == []
+
+
+# S-032-19
+
+
+@pytest.mark.parametrize(
+    "sha",
+    [
+        None,  # a caller written before the sha input, or a dispatch without it
+        "",
+        SHA[:12],
+        SHA.upper(),
+        SHA + "0",
+        "0123456789abcdef0123456789abcdef0123456g",
+        f"{SHA}\n::error::injected",
+    ],
+)
+def test_s032_19_a_dispatched_start_without_a_full_sha_exits_2_and_writes_nothing(
+    tmp_path: Path, sha: str | None
+) -> None:
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "shipmill.toml").write_text(POLICY + SECTION, encoding="utf-8")
+    library, api = FakeLibrary(), DownstreamApi()
+    argv = ["--repo", str(tmp_path), "downstream", "start", "--pr", "12", "--app-key", str(key_file(tmp_path))]
+    argv += ["--actor", "maintainer"] + ([] if sha is None else ["--sha", sha])
+    with pytest.raises(ReleaseError, match=r"--sha.*`shipmill init --downstream --force`") as refused:
+        main(argv, api=api, signer=FakeSigner(), library=library)
+    assert "sha input" in str(refused.value)
+    assert library.checks == {} and api.minted == [] and api.dispatched == [] and library.collects == []
+
+
+def test_s032_19_start_itself_refuses_a_persons_start_without_a_sha(tmp_path: Path) -> None:
+    library, api = FakeLibrary(), DownstreamApi()
+    with pytest.raises(ReleaseError, match="shipmill init --downstream --force"):
+        run(library, api, key_file(tmp_path), actor="maintainer", sha=None)
+    assert library.checks == {} and api.dispatched == []
+
+
+def test_s032_19_a_sha_without_a_persons_start_is_refused(tmp_path: Path) -> None:
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "shipmill.toml").write_text(POLICY + SECTION, encoding="utf-8")
+    library = FakeLibrary()
+    argv = ["--repo", str(tmp_path), "downstream", "start", "--pr", "12", "--app-key", str(key_file(tmp_path))]
+    with pytest.raises(ReleaseError, match="--sha pins a workflow_dispatch start"):
+        main([*argv, "--sha", SHA], api=DownstreamApi(), signer=FakeSigner(), library=library)
+    assert library.checks == {}
+
+
+def test_s032_19_a_pull_request_target_start_needs_no_sha(tmp_path: Path) -> None:
+    library, api = FakeLibrary(), DownstreamApi()
+    run(library, api, key_file(tmp_path), actor=None, sha=None)
+    assert [d[0] for d in api.dispatched] == [REQUIRED.repo, REPORT_ONLY.repo]
+
+
+def test_s032_19_a_commit_sha_is_40_lowercase_hexadecimal_characters() -> None:
+    assert str(CommitSha(SHA)) == SHA
+    for bad in ("", SHA[:39], SHA.upper(), SHA + "a", " " + SHA[1:]):
+        with pytest.raises(ReleaseError, match="40 lowercase hexadecimal characters"):
+            CommitSha(bad)
+
+
+# S-032-20
+
+
+def test_s032_20_a_start_for_the_head_tests_that_sha(tmp_path: Path) -> None:
+    library, api = FakeLibrary(answer=FORK), DownstreamApi()
+    run(library, api, key_file(tmp_path), actor="maintainer", sha=SHA)
+    sid = f"{LIBRARY}#12@{SHA}/consumer-app"
+    assert api.dispatched[0][2] == {
+        "ref": "release",
+        "inputs": {"library-repo": LIBRARY, "library-ref": SHA, "shipmill-id": sid},
+    }
+    assert {s for s, _ in library.checks.values()} == {SHA}
+    assert library.check("consumer-app").external_id.startswith(f"{sid} ")
+    assert library.collects == [("main", 12, SHA)]
+
+
+def test_s032_20_the_collect_dispatch_carries_pr_sha_and_collect(tmp_path: Path) -> None:
+    calls = gh_library(tmp_path)
+    GhLibrary(tmp_path, str(tmp_path / "gh")).dispatch_collect("main", 12, SHA)
+    [call] = calls()
+    assert call["args"] == [
+        "workflow", "run", "downstream.yml", "--ref", "main", "-f", "pr=12", "-f", f"sha={SHA}", "-f", f"collect={SHA}",
+    ]  # fmt: skip
+
+
+def test_s032_20_a_caller_without_the_sha_input_refusing_collect_names_the_fix(tmp_path: Path) -> None:
+    gh = tmp_path / "gh"
+    refused = "could not create workflow dispatch event: HTTP 422: Unexpected inputs provided"
+    gh.write_text(f"#!/bin/sh\necho '{refused}' >&2\nexit 1\n", encoding="utf-8")
+    gh.chmod(0o755)
+    with pytest.raises(ReleaseError, match="rewritten with `shipmill init --downstream --force`"):
+        GhLibrary(tmp_path, str(gh)).dispatch_collect("main", 12, SHA)
+
+
+# S-032-21: the reusable workflow takes sha and passes it to start
+
+
+def test_s032_21_the_reusable_workflow_takes_an_optional_sha_and_passes_it_on_a_dispatch() -> None:
+    text = WORKFLOW.read_text(encoding="utf-8")
+    inputs = text.split("    inputs:\n", 1)[1].split("    secrets:\n", 1)[0]
+    sha = inputs.split("      sha:\n", 1)[1].split("\n      collect:\n", 1)[0]
+    assert "type: string" in sha and 'default: ""' in sha and "required: true" not in sha
+    start_job = jobs(text)["start"]
+    assert "SHA: ${{ inputs.sha }}" in start_job
+    assert '[ "$EVENT" = workflow_dispatch ] && args+=(--actor "$GITHUB_TRIGGERING_ACTOR" --sha "$SHA")' in start_job
+
+
+# S-032-24: the reusable workflow compares the SHA before any key reaches the disk
+
+PIN = "Check the head is the one the person read"
+
+
+def step_script(name: str) -> str:
+    """A step's run script in the reusable workflow, dedented as the runner runs it"""
+    lines = WORKFLOW.read_text(encoding="utf-8").splitlines()
+    begin = lines.index(f"      - name: {name}")
+    at = next(i for i in range(begin, len(lines)) if lines[i] == "        run: |")
+    body: list[str] = []
+    for line in lines[at + 1 :]:
+        if line.strip() and not line.startswith(" " * 10):
+            break
+        body.append(line)
+    return textwrap.dedent("\n".join(body))
+
+
+def start_steps() -> list[str]:
+    """The start job's steps, each as its text"""
+    return re.split(r"\n(?=      - )", jobs(WORKFLOW.read_text(encoding="utf-8"))["start"])[1:]
+
+
+def test_s032_24_the_comparison_runs_before_the_key_file_and_any_token() -> None:
+    steps = start_steps()
+    pin = next(i for i, s in enumerate(steps) if f"name: {PIN}" in s)
+    checkout = next(i for i, s in enumerate(steps) if "uses: actions/checkout@" in s)
+    assert pin == checkout + 1  # the first step after the default branch's checkout
+    assert "if: github.event_name == 'workflow_dispatch'" in steps[pin]
+    assert "secrets." not in steps[pin] and "shipmill-downstream-key" not in steps[pin]
+    for i, step in enumerate(steps):  # every step that holds the key or runs shipmill comes after
+        if "secrets.downstream-key" in step or "shipmill-downstream-key" in step or "uvx" in step:
+            assert i > pin, step
+
+
+def pin(tmp_path: Path, head: str, sha: str) -> tuple[int, str, list[str]]:
+    """The pin step as bash with GitHub's env and a gh that answers the pull request's head"""
+    log = tmp_path / "gh.log"
+    gh = tmp_path / "bin" / "gh"
+    gh.parent.mkdir()
+    gh.write_text(f'#!/bin/sh\necho "$*" >> {log}\necho {head}\n', encoding="utf-8")
+    gh.chmod(0o755)
+    env = {"PATH": f"{gh.parent}:/usr/bin:/bin", "GH_TOKEN": "t", "REPO": LIBRARY, "PR": "12", "SHA": sha}
+    env["RUNNER_TEMP"] = str(tmp_path)
+    proc = subprocess.run(["bash", "-e", "-c", step_script(PIN)], env=env, capture_output=True, text=True, check=False)
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return proc.returncode, proc.stdout, calls
+
+
+def test_s032_24_a_moved_head_exits_1_naming_both_shas_with_no_key_file(tmp_path: Path) -> None:
+    code, out, calls = pin(tmp_path, OTHER, SHA)
+    assert code == 1
+    assert out == (
+        f"::error::the head of #12 is {OTHER}, not {SHA}; read the new commits and start again with -f sha={OTHER}\n"
+    )
+    assert calls == [f"api repos/{LIBRARY}/pulls/12 --jq .head.sha"]
+    assert not (tmp_path / "shipmill-downstream-key.pem").exists()
+
+
+def test_s032_24_the_head_the_person_read_goes_on(tmp_path: Path) -> None:
+    code, out, _ = pin(tmp_path, SHA, SHA)
+    assert code == 0
+    assert out == f"the head of #12 is {SHA}, the one the person read\n"
+
+
+@pytest.mark.parametrize("sha", ["", SHA[:12], SHA.upper(), f"{SHA}\n::warning::x"])
+def test_s032_24_a_missing_or_malformed_sha_exits_before_reading_anything(tmp_path: Path, sha: str) -> None:
+    code, out, calls = pin(tmp_path, SHA, sha)
+    assert code == 2
+    assert out.startswith("::error::shipmill: a workflow_dispatch start needs the sha input")
+    assert "shipmill init --downstream --force" in out and "::warning::" not in out
+    assert calls == []
 
 
 # S-032-13
@@ -571,13 +806,23 @@ elif "/pulls/" in path:
 """.replace("THE_SHA", SHA).replace("THE_LIBRARY", LIBRARY)
 
 
-def test_gh_library_reads_and_writes_through_gh(tmp_path: Path) -> None:
+def gh_library(tmp_path: Path) -> Callable[[], list[dict[str, object]]]:
+    """A gh at tmp_path/gh that records its calls; the calls it recorded so far"""
     script = tmp_path / "fake_gh.py"
     script.write_text(FAKE_GH, encoding="utf-8")
     gh = tmp_path / "gh"
     gh.write_text(f'#!/bin/sh\nexec {sys.executable} {script} "$@"\n', encoding="utf-8")
     gh.chmod(0o755)
-    library = GhLibrary(tmp_path, str(gh))
+
+    def calls() -> list[dict[str, object]]:
+        return [json.loads(line) for line in (tmp_path / "calls.jsonl").read_text().splitlines()]
+
+    return calls
+
+
+def test_gh_library_reads_and_writes_through_gh(tmp_path: Path) -> None:
+    gh_library(tmp_path)
+    library = GhLibrary(tmp_path, str(tmp_path / "gh"))
 
     assert library.pull(12) == replace(FORK, head_repo=None)
     assert library.find_check(SHA, "downstream: consumer-app") == 7  # the newest this workflow's App wrote
@@ -597,5 +842,6 @@ def test_gh_library_reads_and_writes_through_gh(tmp_path: Path) -> None:
     }
     assert updated["conclusion"] == "failure" and "head_sha" not in updated
     assert calls[3]["args"][:4] == ["api", "-X", "PATCH", "repos/{owner}/{repo}/check-runs/7"]
-    collect = ["workflow", "run", "downstream.yml", "--ref", "main", "-f", "pr=12", "-f", f"collect={SHA}"]
+    collect = ["workflow", "run", "downstream.yml", "--ref", "main", "-f", "pr=12"]
+    collect += ["-f", f"sha={SHA}", "-f", f"collect={SHA}"]
     assert calls[4]["args"] == collect

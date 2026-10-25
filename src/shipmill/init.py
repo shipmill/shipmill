@@ -361,8 +361,8 @@ def downstream_caller_text() -> str:
 
 # shipmill: https://github.com/{BOT_REPO}. On each pull request shipmill starts the test
 # workflow of every repository in .github/shipmill.toml's [downstream] and writes its result
-# as a check named "downstream: <name>". A fork's pull request waits for a person: gh
-# workflow run downstream.yml -f pr=<N>
+# as a check named "downstream: <name>". A fork's pull request waits for a person, who starts
+# it for the head SHA they read: gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>
 
 on:
   pull_request_target:
@@ -370,6 +370,7 @@ on:
   workflow_dispatch:
     inputs:
       pr: {{description: "pull request to test", required: true, type: number}}
+      sha: {{description: "the head SHA you read; the run refuses any other", required: true, type: string}}
       collect: {{description: "set by shipmill: the head SHA to collect results for", type: string, default: ""}}
 permissions:
   actions: write          # start this workflow's collect run
@@ -381,6 +382,7 @@ jobs:
     uses: {uses}/downstream.yml@{BOT_REF}
     with:
       pr: ${{{{ github.event.pull_request.number || inputs.pr }}}}
+      sha: ${{{{ inputs.sha }}}}
       collect: ${{{{ inputs.collect }}}}
     secrets:
       downstream-key: ${{{{ secrets.SHIPMILL_DOWNSTREAM_KEY }}}}

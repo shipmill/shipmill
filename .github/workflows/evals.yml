@@ -1,7 +1,8 @@
 # The agents' evals (spec 025, D-37): `claude plugin eval` runs the suite in evals/, offline,
 # and `shipmill evals compare` gates a pull request's run against the default branch's.
 # A scheduled or plain dispatched run on the default branch is the baseline; a pull request's
-# run, or a dispatched run with `pr`, is compared against it. Until the suite holds the first
+# run, or a dispatched run with `pr` and the head `sha` the maintainer read (which runs no case
+# for any other head), is compared against it. Until the suite holds the first
 # suite's counts (`shipmill evals check --gate`), the pull request job reports and exits 0.
 name: evals
 
@@ -18,6 +19,10 @@ on:
     inputs:
       pr:
         description: "A pull request's number to evaluate; a fork's pull request runs only this way"
+        type: string
+        default: ""
+      sha:
+        description: "With pr: the full head SHA you read; the run refuses any other head"
         type: string
         default: ""
       model:
@@ -42,13 +47,15 @@ jobs:
     permissions:
       contents: read
       actions: read # the baseline: the default branch's runs and their artifacts
+      pull-requests: read # a dispatched run's read of the pull request's current head
     steps:
       - name: Refuse a fork's pull request, which runs only by hand (D-16)
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         env:
           PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          line="evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f pr=$PR"
+          line="evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f pr=$PR -f sha=$HEAD_SHA"
           echo "$line" >>"$GITHUB_STEP_SUMMARY"
           echo "::error::$line"
           exit 1
@@ -59,12 +66,14 @@ jobs:
           EVENT: ${{ github.event_name }}
           PR_EVENT: ${{ github.event.pull_request.number }}
           PR_INPUT: ${{ inputs.pr }}
+          SHA_INPUT: ${{ inputs.sha }}
           MODEL_INPUT: ${{ inputs.model }}
           REF: ${{ github.ref }}
           DEFAULT: ${{ github.event.repository.default_branch }}
         run: |
           model=${MODEL_INPUT:-$EVALS_MODEL}
           ref=""
+          sha=""
           case "$EVENT" in
             pull_request)
               mode="pr"
@@ -80,13 +89,27 @@ jobs:
                 exit 1
               fi
               pr=$PR_INPUT
+              # the input's value is never echoed: it is a person's text, not a SHA yet
+              if [ -z "$pr" ] && [ -n "$SHA_INPUT" ]; then
+                echo "::error::evals: sha pins a pull request's run; dispatch it with -f pr=<N> beside it"
+                exit 1
+              fi
               if [ -n "$pr" ]; then
                 if ! [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then
-                  echo "::error::evals: pr is a pull request's number; got $pr"
+                  echo "::error::evals: pr is a pull request's number"
+                  exit 1
+                fi
+                if [ -z "$SHA_INPUT" ]; then
+                  echo "::error::evals: a run with pr needs sha, the head SHA you read: -f pr=$pr -f sha=<head SHA>"
+                  exit 1
+                fi
+                if ! [[ "$SHA_INPUT" =~ ^[0-9a-f]{40}$ ]]; then
+                  echo "::error::evals: sha is the 40 lowercase hexadecimal characters of the head SHA you read"
                   exit 1
                 fi
                 mode="pr"
                 ref="refs/pull/$pr/merge"
+                sha=$SHA_INPUT
               elif [ "$model" = "$EVALS_MODEL" ]; then
                 mode=baseline
               else
@@ -102,14 +125,59 @@ jobs:
             echo "mode=$mode"
             echo "pr=$pr"
             echo "ref=$ref"
+            echo "sha=$sha"
             echo "model=$model"
           } >>"$GITHUB_OUTPUT"
+
+      # A dispatched run measures only the head the maintainer read (#545): the pull request's
+      # head is read before any checkout or secret, and the merge ref's head parent after the
+      # checkout, so a push after the read runs no case with ANTHROPIC_API_KEY
+      - name: Read the pull request's head before any checkout (S-025-20)
+        if: steps.plan.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }} # this step's only; the checkout and the eval run have none
+          REPO: ${{ github.repository }}
+          PR: ${{ steps.plan.outputs.pr }}
+          SHA: ${{ steps.plan.outputs.sha }}
+        run: |
+          current=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
+          if ! [[ "$current" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::evals: GitHub gave no full head SHA for #$PR"
+            exit 1
+          fi
+          if [ "$current" != "$SHA" ]; then
+            line="evals: the head of #$PR is $current, not $SHA; read the new commits and dispatch again with -f sha=$current"
+            echo "$line" >>"$GITHUB_STEP_SUMMARY"
+            echo "::error::$line"
+            exit 1
+          fi
 
       - uses: actions/checkout@v7
         with:
           ref: ${{ steps.plan.outputs.ref }} # empty: the event's commit, a pull request's merge
           fetch-depth: 0 # each case's commit, and the merge base
           persist-credentials: false # no GitHub token in the checkout the cases clone
+
+      - name: Check the merge ref's head is the one read (S-025-21)
+        if: steps.plan.outputs.sha != ''
+        env:
+          PR: ${{ steps.plan.outputs.pr }}
+          SHA: ${{ steps.plan.outputs.sha }}
+        run: |
+          # refs/pull/<N>/merge: its first parent is the default branch, its second the head
+          if ! current=$(git rev-parse --verify --quiet 'HEAD^2^{commit}'); then
+            line="evals: the checkout of refs/pull/$PR/merge has no head parent, so no case runs"
+            echo "$line" >>"$GITHUB_STEP_SUMMARY"
+            echo "::error::$line"
+            exit 1
+          fi
+          if [ "$current" != "$SHA" ]; then
+            line="evals: the head of #$PR is $current, not $SHA; read the new commits and dispatch again with -f sha=$current"
+            echo "$line" >>"$GITHUB_STEP_SUMMARY"
+            echo "::error::$line"
+            exit 1
+          fi
+          echo "evals: measured $SHA of #$PR" >>"$GITHUB_STEP_SUMMARY" # the summary's first line (S-025-22)
 
       - uses: astral-sh/setup-uv@v10.2.0
         with:
@@ -200,6 +268,8 @@ jobs:
           MODEL: ${{ steps.plan.outputs.model }}
           DEFAULT: ${{ github.event.repository.default_branch }}
           ON_MERGE_BASE: ${{ steps.plan.outputs.mode == 'pr' && steps.base.outputs.fresh != 'true' }}
+          PR: ${{ steps.plan.outputs.pr }}
+          HEAD_SHA: ${{ steps.plan.outputs.sha }} # a dispatched run's: the head it measured (S-025-22)
         run: |
           # The tools the suite's cases allow, from their prompt.md frontmatter
           tools() {
@@ -230,9 +300,12 @@ jobs:
               echo "::error::evals: claude plugin eval exited $code and wrote no result in $tree"
               return 1
             fi
+            # pr and head: the pull request and the head SHA a dispatched run measured, else null
             jq -n --arg model "$MODEL" --arg commit "$(git -C "$tree" rev-parse HEAD)" \
-              --arg claude "$(claude --version)" --argjson code "$code" \
-              '{model: $model, commit: $commit, claude: $claude, exit: $code}' >"$out/meta.json"
+              --arg claude "$(claude --version)" --argjson code "$code" --arg pr "$PR" --arg head "$HEAD_SHA" \
+              '{model: $model, commit: $commit, claude: $claude, exit: $code,
+                pr: (if $pr == "" then null else ($pr | tonumber) end),
+                head: (if $head == "" then null else $head end)}' >"$out/meta.json"
           }
           if [ "$ON_MERGE_BASE" = true ]; then
             merge_base=$(git merge-base "origin/$DEFAULT" HEAD)

@@ -106,7 +106,7 @@ def test_s032_15_the_caller_init_writes_passes_and_the_whole_block_is_green(repo
     assert [status for status, _ in lines] == ["PASS"] * 6
     assert lines[0][1] == (
         f"{DOWNSTREAM_CALLER} calls shipmill's downstream.yml on pull_request_target and workflow_dispatch"
-        " with actions: write and checks: write"
+        " with actions: write and checks: write, and passes the sha a person's start is pinned to"
     )
     assert lines[1][1] == f"the repository secret {SECRET} is set"
     assert lines[2][1] == (
@@ -153,6 +153,35 @@ def test_s032_15_a_caller_without_the_workflow_dispatch_trigger_fails(repo: Repo
         "FAIL",
         f"{DOWNSTREAM_CALLER} lacks the workflow_dispatch trigger: rewrite it with {FIX}",
     )
+
+
+SHA_INPUT = '      sha: {description: "the head SHA you read; the run refuses any other", required: true, type: string}'
+SHA_INPUT += "\n"
+SHA_PASSED = "      sha: ${{ inputs.sha }}\n"
+
+
+@pytest.mark.parametrize(
+    ("cut", "named"),
+    [
+        (SHA_INPUT, "the workflow_dispatch input sha"),
+        (SHA_PASSED, "sha: ${{ inputs.sha }} passed to the reusable workflow"),
+    ],
+)
+def test_s032_22_a_caller_without_the_sha_input_or_passing_it_fails_naming_the_fix(
+    repo: Repo, cut: str, named: str
+) -> None:
+    text = downstream_caller_text()
+    assert cut in text
+    library(repo, text.replace(cut, ""))
+    assert block(repo, FakeReader())[0] == ("FAIL", f"{DOWNSTREAM_CALLER} lacks {named}: rewrite it with {FIX}")
+
+
+def test_s032_22_a_caller_written_before_the_sha_input_fails_naming_both(repo: Repo) -> None:
+    library(repo, downstream_caller_text().replace(SHA_INPUT, "").replace(SHA_PASSED, ""))
+    status, detail = block(repo, FakeReader())[0]
+    assert status == "FAIL"
+    assert "the workflow_dispatch input sha, sha: ${{ inputs.sha }} passed to the reusable workflow" in detail
+    assert detail.endswith(f"rewrite it with {FIX}")
 
 
 def test_s032_15_a_permission_named_only_in_a_comment_still_fails(repo: Repo) -> None:
@@ -379,6 +408,20 @@ def test_s032_16_landing_treats_a_downstream_check_as_any_check() -> None:
     for needle in ("downstream: <name>", "red job", "gh workflow run downstream.yml -f pr=<N>", "shipmill gh"):
         assert needle in section, needle
     assert "action_required" in section and "maintainer" in section
+
+
+def test_s032_23_landing_reruns_a_downstream_for_the_head_sha_the_maintainer_read() -> None:
+    text = _text("skills/github-pr-triage/references/landing.md")
+    section = " ".join(text.split("## Downstream checks\n", 1)[1].split("\n## ", 1)[0].split())
+    rerun = section.split("A downstream's flaky test", 1)[1].split("\n- ", 1)[0]
+    assert "`gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>`, through `shipmill gh`" in rerun
+    fork = section.split("A fork's PR gets `action_required`", 1)[1]
+    assert "for the head SHA the maintainer read" in fork
+    assert "A push after the read needs a new read and a start naming the new SHA" in fork
+    release_lanes = " ".join(_text("docs/release-lanes.md").split())
+    assert "`gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>`, the head SHA it read filled in" in (
+        release_lanes
+    )
 
 
 def test_s032_16_pr_gate_says_a_downstream_check_is_read_like_any_check() -> None:

@@ -121,6 +121,44 @@ FORK_TITLE = "a fork's pull request runs downstream tests only by hand"
 RUNNING = "running"  # a required check's title until collect concludes it
 REPORT_RUNNING = "report-only: running"  # a report-only check is completed from the start: its title says it waits
 _SHA = re.compile(r"[0-9a-f]{40}")
+OLD_CALLER_FIX = "shipmill init --downstream --force"  # rewrites a caller written before the sha input
+
+
+@dataclass(frozen=True, slots=True)
+class CommitSha:
+    """A full commit SHA as GitHub writes it: 40 lowercase hexadecimal characters, nothing else"""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _SHA.fullmatch(self.value):
+            raise ReleaseError(f"a commit SHA is 40 lowercase hexadecimal characters, got {self.value!r}")
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class HeadMoved(Exception):
+    """A dispatched start named a head SHA the pull request no longer has: exit 1, nothing written.
+    Not a ReleaseError, whose exit is 2: the run is refused, the setup is fine"""
+
+
+def moved(pr: int, current: str, named: CommitSha) -> str:
+    """The line a dispatched start prints when the head moved after the person read it"""
+    return f"the head of #{pr} is {current}, not {named}; read the new commits and start again with -f sha={current}"
+
+
+def dispatched_sha(text: str | None) -> CommitSha:
+    """--sha of a workflow_dispatch start: the head SHA the person read; missing or malformed is
+    a caller written before the sha input, or a bad dispatch"""
+    if text is None or not _SHA.fullmatch(text):
+        got = "no --sha" if text is None else f"--sha {text!r}"
+        raise ReleaseError(
+            f"a workflow_dispatch start names the head SHA the person read with --sha, the 40 lowercase "
+            f"hexadecimal characters of the workflow's sha input; got {got}. Dispatch it with "
+            f"-f sha=<head SHA>, and rewrite a caller without the sha input with `{OLD_CALLER_FIX}`"
+        )
+    return CommitSha(text)
 
 
 def check_name(name: str) -> str:
@@ -313,7 +351,7 @@ class Library(Protocol):
     def update_check(self, check_id: int, check: Check) -> None: ...
 
     def dispatch_collect(self, ref: str, pr: int, sha: str) -> None:
-        """Start the library's WORKFLOW on ref with pr and collect=sha"""
+        """Start the library's WORKFLOW on ref with pr, sha=sha, and collect=sha"""
         ...
 
 
@@ -403,7 +441,16 @@ class GhLibrary:
         )  # fmt: skip
 
     def dispatch_collect(self, ref: str, pr: int, sha: str) -> None:
-        self._gh("workflow", "run", WORKFLOW, "--ref", ref, "-f", f"pr={pr}", "-f", f"collect={sha}")
+        try:
+            self._gh(
+                "workflow", "run", WORKFLOW, "--ref", ref, "-f", f"pr={pr}", "-f", f"sha={sha}", "-f", f"collect={sha}"
+            )  # fmt: skip
+        except GhFailed as exc:
+            if exc.status == 422:  # a caller written before the sha input refuses it as unexpected
+                raise ReleaseError(
+                    f"{exc}; a {WORKFLOW} without the sha input is rewritten with `{OLD_CALLER_FIX}`"
+                ) from None
+            raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -535,12 +582,19 @@ def start(
     actor: str | None,
     origin: str | None,
     clock: Callable[[], dt.datetime],
+    pinned: CommitSha | None = None,
 ) -> list[str]:
     """Spec 032, `downstream start`: a check per downstream on the pull request's head, each
     downstream's workflow dispatched, then collect dispatched on the library's default branch.
     actor is the person or bot who started a workflow_dispatch run, None on pull_request_target.
+    pinned is the head SHA that person read, which a workflow_dispatch start needs: when the
+    head is another, start writes, mints, and dispatches nothing and raises HeadMoved (exit 1).
     origin is the checkout's GitHub repository when it is known. The lines it returns say what
     it did; a ReleaseError is exit 2"""
+    if actor is not None and pinned is None:
+        dispatched_sha(None)  # raises: a person's start names the head it is for
+    if actor is None and pinned is not None:
+        raise ReleaseError("--sha pins a workflow_dispatch start, which names its --actor; omit it otherwise")
     for d in config.downstreams:
         if origin is not None and d.repo.lower() == origin.lower():
             raise ReleaseError(
@@ -551,6 +605,8 @@ def start(
     sha = pull.head_sha
     if pull.fork and actor is not None and actor.endswith("[bot]"):
         raise ReleaseError(f"a fork's downstream run is started by a person, not {actor}")
+    if pinned is not None and pinned.value != sha:  # before any check, token, or dispatch (S-032-18)
+        raise HeadMoved(moved(pr, sha, pinned))
     if pull.fork and actor is None:
         return _hold_fork(config, library, pull)
     problem = key()
@@ -602,11 +658,12 @@ def start(
 def _hold_fork(config: DownstreamConfig, library: Library, pull: Pull) -> list[str]:
     """A fork's head is code no maintainer has read: no dispatch until a person starts one"""
     where = pull.head_repo if pull.head_repo is not None else "a deleted fork"
-    command = f"gh workflow run {WORKFLOW} -f pr={pull.number}"
+    command = f"gh workflow run {WORKFLOW} -f pr={pull.number} -f sha={pull.head_sha}"
     summary = (
         f"The head of this pull request, {pull.head_sha}, is in {where}, not {pull.repo}. A downstream's "
         "workflow would run it with the downstream's secrets on its runners, so it runs only once a "
-        f"maintainer has read the change and starts it:\n\n```\n{command}\n```"
+        f"maintainer has read the change at this commit and starts it for that commit; the run refuses "
+        f"any other head:\n\n```\n{command}\n```"
     )
     page = f"{SERVER}/{pull.repo}/actions/workflows/{WORKFLOW}"  # GitHub asks action_required for a details URL
     lines = []

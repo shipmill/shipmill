@@ -1,6 +1,6 @@
 # S-032: Run downstream repositories' tests on a library's pull request
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -369,3 +369,11 @@ fork's `action_required` downstream check is the maintainer's to start.
 - S-032-14: ran `tests/test_pr_gate.py`'s S-032-14 tests: exit 1 printing `failed: downstream: <name> (FAILURE)`, likewise `TIMED_OUT` and `ACTION_REQUIRED`, exit 3 for `IN_PROGRESS`, `NEUTRAL` and `SUCCESS` green
 - S-032-15: ran `tests/test_downstream_doctor.py`'s S-032-15 tests against fake readers and GitHub, and `GhReader` read only against GitHub (a workflow on its default branch, a missing file, a repo the login can't read): the caller and secret FAILs, the per-downstream PASS, FAIL, and WARN, the App's FAIL with the key and one WARN without it, and no block without `[downstream]`
 - S-032-16: read the "Downstream tests" section of `docs/release-lanes.md`, setup's "Downstream tests", landing's "Downstream checks", and `pr_gate.py`'s docstring, and ran the S-032-16 tests: each covers what the Docs list names
+- S-032-17: ran `tests/test_downstream_start.py`'s S-032-17 tests: a fork's head, and a deleted fork's, dispatches nothing and mints no token; the required check is `completed`/`action_required`, the report-only one `neutral`, both titled `a fork's pull request runs downstream tests only by hand` with `gh workflow run downstream.yml -f pr=12 -f sha=<the full head SHA read>` in the summary
+- S-032-18: ran the S-032-18 tests: a `--sha` the head moved past raises `HeadMoved` (not a `ReleaseError`) with the spec's line, the CLI exits 1 printing it, and no check, token, dispatch, or collect is made; a fork's `action_required` checks are left unchanged
+- S-032-19: ran the S-032-19 tests: no `--sha`, an empty, short, upper-case, 41-character, non-hex, or multi-line one exits 2 naming `--sha`, the sha input, and `shipmill init --downstream --force` before the config is read; `--sha` without `--actor` exits 2; a `pull_request_target` start needs none; `CommitSha` takes only 40 lowercase hexadecimal characters
+- S-032-20: ran the S-032-20 tests: a person's start for the head dispatches `library-ref` and a `shipmill-id` with that SHA, writes the checks on it, and dispatches collect with `pr`, `sha`, and `collect` set to it; `GhLibrary` passes `-f sha=<SHA>`, and a caller that refuses it (HTTP 422) names `shipmill init --downstream --force`
+- S-032-21: ran `tests/test_downstream_init.py`'s S-032-21 tests and actionlint on the file `downstream_caller_text()` writes (printed nothing): a required `sha` on `workflow_dispatch` and `sha: ${{ inputs.sha }}` passed to the reusable call; read `.github/workflows/downstream.yml`: an optional `sha` `workflow_call` input (default empty) and `--sha "$SHA"` added to `start` on `workflow_dispatch`
+- S-032-22: ran `tests/test_downstream_doctor.py`'s S-032-22 tests: a caller without the `sha` input, without `sha: ${{ inputs.sha }}`, or without both FAILs naming each and `shipmill init --downstream --force`; the caller init writes PASSes
+- S-032-23: read landing's "Downstream checks" and ran `test_s032_23_landing_reruns_a_downstream_for_the_head_sha_the_maintainer_read`: the rerun is `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>` through `shipmill gh`, and a fork's run starts only for the head SHA the maintainer read
+- S-032-24: ran the S-032-24 tests: the start job's first step after the checkout, on `workflow_dispatch` only, compares `sha` with the head `gh api` reads, holds no secret, and precedes every step that writes `downstream-key` or runs shipmill; run as bash with a fake `gh`, a moved head exits 1 naming both SHAs and leaves no key file, and a missing or malformed `sha` exits 2 before any read, never echoing the input

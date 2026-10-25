@@ -1,5 +1,6 @@
 """Spec 032: `shipmill init --downstream` writes the library's downstream caller"""
 
+import shutil
 import subprocess
 import sys
 
@@ -23,6 +24,7 @@ CALLER_BODY = """on:
   workflow_dispatch:
     inputs:
       pr: {description: "pull request to test", required: true, type: number}
+      sha: {description: "the head SHA you read; the run refuses any other", required: true, type: string}
       collect: {description: "set by shipmill: the head SHA to collect results for", type: string, default: ""}
 permissions:
   actions: write          # start this workflow's collect run
@@ -34,6 +36,7 @@ jobs:
     uses: shipmill/shipmill/.github/workflows/downstream.yml@v0
     with:
       pr: ${{ github.event.pull_request.number || inputs.pr }}
+      sha: ${{ inputs.sha }}
       collect: ${{ inputs.collect }}
     secrets:
       downstream-key: ${{ secrets.SHIPMILL_DOWNSTREAM_KEY }}
@@ -57,6 +60,28 @@ def test_s032_3_init_downstream_writes_only_the_caller_the_spec_names(repo: Repo
     assert text.startswith("name: Downstream tests\n")
     assert text.endswith(CALLER_BODY)
     assert _changed(repo) == [f"?? {DOWNSTREAM_CALLER}"]
+
+
+def test_s032_21_the_caller_has_a_required_sha_on_dispatch_passed_to_the_reusable_workflow(repo: Repo) -> None:
+    _with_downstream(repo)
+    assert main(["--repo", str(repo.root), "init", "--downstream"]) == 0
+    text = repo.read(str(DOWNSTREAM_CALLER))
+    dispatch = text.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:\n", 1)[0]
+    sha = '      sha: {description: "the head SHA you read; the run refuses any other", required: true, type: string}'
+    assert sha in dispatch
+    assert "      sha: ${{ inputs.sha }}\n" in text.split("    with:\n", 1)[1]
+    assert "gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>" in text
+
+
+def test_s032_21_actionlint_accepts_the_written_caller(repo: Repo) -> None:
+    """actionlint is CI's (uvx actionlint-py); the test runs it when the host has it on PATH"""
+    actionlint = shutil.which("actionlint")
+    if actionlint is None:
+        pytest.skip("actionlint is not on PATH; CI's actionlint step and the spec's Verification run it")
+    _with_downstream(repo)
+    init_downstream(repo.root, force=False)
+    out = subprocess.run([actionlint, str(repo.root / DOWNSTREAM_CALLER)], capture_output=True, text=True, check=False)
+    assert out.returncode == 0, out.stdout + out.stderr
 
 
 def test_s032_3_init_downstream_refuses_an_existing_caller_without_force(repo: Repo) -> None:

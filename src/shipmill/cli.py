@@ -74,15 +74,17 @@
                   a pull request's run against the default branch's (D-37)
   downstream      the downstream repositories' tests on a pull request (spec 032): start writes a
                   check per [downstream] repository on the head and dispatches each one's workflow
-                  as the App; a fork's pull request waits for a person's workflow_dispatch;
-                  collect finds each run by its shipmill-id and concludes its check
+                  as the App; a fork's pull request waits for a person's workflow_dispatch,
+                  pinned with --sha to the head they read; collect finds each run by its
+                  shipmill-id and concludes its check
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
 action, app-create or app-install left a repo without the App, product check found a broken
 rule, review check found a malformed REVIEW.md, evals check found a malformed case (or, with
---gate, a suite short of the gate's counts), or evals compare found a regression or a run
-stopped at its budget; 2 bad input or a refused state, such as an edit of a file its check
-refuses, a malformed evals/cases.toml, or a missing or malformed aggregate-result.json.
+--gate, a suite short of the gate's counts), evals compare found a regression or a run
+stopped at its budget, or downstream start's --sha is no longer the pull request's head; 2
+bad input or a refused state, such as an edit of a file its check refuses, a malformed
+evals/cases.toml, or a missing or malformed aggregate-result.json.
 """
 
 import argparse
@@ -167,10 +169,12 @@ from shipmill.downstream import (
     AppRuns,
     GhLibrary,
     GhReader,
+    HeadMoved,
     Library,
     Reader,
     app_on_host,
     collect,
+    dispatched_sha,
     key_problem,
     start,
 )
@@ -680,6 +684,10 @@ def _parser() -> argparse.ArgumentParser:
     q.add_argument(
         "--actor",
         help="who started a workflow_dispatch run ($GITHUB_TRIGGERING_ACTOR); omitted on pull_request_target",
+    )
+    q.add_argument(
+        "--sha",
+        help="with --actor: the full head SHA the person read; start refuses any other head with exit 1",
     )
     q = acting.add_parser(
         "collect", help="read each downstream run start dispatched back into its check, once it ends or times out"
@@ -1587,6 +1595,8 @@ def _downstream_start(root: Path, args: argparse.Namespace, library: Library, ap
     actor: str | None = args.actor
     if actor is not None and not actor.strip():
         raise ReleaseError("--actor names who started the run; omit it on pull_request_target")
+    # a person's start is pinned to the head they read (S-032-19); pull_request_target needs none
+    pinned = dispatched_sha(args.sha) if actor is not None or args.sha is not None else None
     config = Policy.load(config_path(root)).downstream
     if config is None:
         raise ReleaseError(f"{CONFIG_PATH} has no [downstream] section, so no downstream repository to test")
@@ -1596,7 +1606,12 @@ def _downstream_start(root: Path, args: argparse.Namespace, library: Library, ap
 
     dispatcher = AppDispatcher(config.app_id, args.app_key, signer, api, clock)
     key = key_problem(config.app_id, args.app_key, signer, api, clock)
-    for line in start(config, library, dispatcher, key, args.pr, actor, _doctor_repo(root), clock):
+    try:
+        lines = start(config, library, dispatcher, key, args.pr, actor, _doctor_repo(root), clock, pinned)
+    except HeadMoved as exc:
+        print(f"shipmill: {exc}", file=sys.stderr)
+        return 1
+    for line in lines:
         print(line)
     return 0
 

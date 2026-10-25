@@ -5,7 +5,9 @@ name: shipmill downstream
 # `shipmill downstream start`: a `downstream: <name>` check per [downstream] repository on the
 # pull request's head, each downstream's own workflow dispatched as the App, then this caller
 # dispatched again with `collect` set to the head SHA. With `collect` set it runs
-# `shipmill downstream collect`, which reads each downstream run back into its check.
+# `shipmill downstream collect`, which reads each downstream run back into its check. A
+# person's start (workflow_dispatch) names the head SHA they read in `sha`, and runs nothing
+# for any other head (shipmill/shipmill#545).
 #
 # Every job checks out the library's default branch and never a ref from the pull request:
 # under pull_request_target the token can write checks on a fork's pull request, so the
@@ -19,6 +21,10 @@ on:
         description: "The library's pull request"
         type: number
         required: true
+      sha:
+        description: "The head SHA the person read; a workflow_dispatch start refuses any other head"
+        type: string
+        default: "" # optional, so a caller written before it still starts; its dispatch is refused naming the fix
       collect:
         description: "Set by shipmill: the head SHA to collect results for; empty starts the downstream runs"
         type: string
@@ -50,6 +56,31 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
+      # A person's start runs only the head they read (S-032-24): compared here, before the key
+      # reaches the disk or any App token is minted, so a push after the read leaves no key file
+      - name: Check the head is the one the person read
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::shipmill: a workflow_dispatch start needs the sha input, the 40 lowercase hexadecimal characters of the head SHA you read: dispatch it with -f sha=<head SHA>, and rewrite a caller without the sha input with shipmill init --downstream --force"
+            exit 2
+          fi
+          current=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
+          if ! [[ "$current" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::shipmill: GitHub gave no full head SHA for #$PR"
+            exit 2
+          fi
+          if [ "$current" != "$SHA" ]; then
+            echo "::error::the head of #$PR is $current, not $SHA; read the new commits and start again with -f sha=$current"
+            exit 1
+          fi
+          echo "the head of #$PR is $SHA, the one the person read"
+
       - uses: astral-sh/setup-uv@v10.2.0
 
       - name: Start the downstream runs
@@ -57,14 +88,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TOOL: ${{ inputs.tool }}
           PR: ${{ inputs.pr }}
+          SHA: ${{ inputs.sha }}
           KEY: ${{ secrets.downstream-key }}
           EVENT: ${{ github.event_name }}
         run: |
           key="$RUNNER_TEMP/shipmill-downstream-key.pem"
           (umask 077; if [ -n "$KEY" ]; then printf '%s\n' "$KEY"; fi > "$key")
           args=(downstream start --pr "$PR" --app-key "$key")
-          # a person's start: shipmill refuses a fork's head when a bot started the run
-          [ "$EVENT" = workflow_dispatch ] && args+=(--actor "$GITHUB_TRIGGERING_ACTOR")
+          # a person's start: shipmill refuses a fork's head when a bot started the run, and any
+          # head but the one the person read, for a push between the check above and this read
+          [ "$EVENT" = workflow_dispatch ] && args+=(--actor "$GITHUB_TRIGGERING_ACTOR" --sha "$SHA")
           uvx --from "$TOOL" shipmill "${args[@]}"
 
   limit:
