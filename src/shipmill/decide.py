@@ -11,11 +11,15 @@ their levels in [autonomy]: [decisions] can't set them, nor the fixed zones."""
 
 import functools
 import importlib.util
+import re
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import ModuleType
+from typing import Any
 
+from shipmill.autonomy import Autonomy, AutonomyPolicy
 from shipmill.config import Table
 from shipmill.errors import ReleaseError
 from shipmill.gate import skills_dir
@@ -111,10 +115,8 @@ _TABLE = ("github-issue-triage", "scripts", "decisions.py")
 
 
 @functools.cache
-def zones() -> Mapping[Zone, ZoneRule]:
-    """Each zone's rule, in the zone table's order. The table (ids, defaults, floors) has one
-    copy, decisions.py's ZONES and LEVELS, which the skill scripts read too; a table that
-    disagrees with Zone or Level stops here rather than being guessed at"""
+def _log() -> ModuleType:
+    """decisions.py, the decisions log's script: the zone table and the log's parser live there"""
     script = skills_dir().joinpath(*_TABLE)
     spec = importlib.util.spec_from_file_location("shipmill_decisions_log", script)
     if spec is None or spec.loader is None:
@@ -122,6 +124,16 @@ def zones() -> Mapping[Zone, ZoneRule]:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module  # its dataclasses look their module up by name
     spec.loader.exec_module(module)
+    return module
+
+
+@functools.cache
+def zones() -> Mapping[Zone, ZoneRule]:
+    """Each zone's rule, in the zone table's order. The table (ids, defaults, floors) has one
+    copy, decisions.py's ZONES and LEVELS, which the skill scripts read too; a table that
+    disagrees with Zone or Level stops here rather than being guessed at"""
+    module = _log()
+    script = skills_dir().joinpath(*_TABLE)
     levels, table = tuple(module.LEVELS), dict(module.ZONES)
     if levels != tuple(Level):
         raise ReleaseError(f"{script}: LEVELS {list(levels)} are not {[level.value for level in Level]}")
@@ -226,3 +238,109 @@ def _check_floor(zone: Zone, level: Level, where: str) -> None:
     rule = zones()[zone]
     if rule.floor is not None and level.below(rule.floor):
         raise ReleaseError(f'{where}: {zone} = "{level}" is below its floor {rule.floor}: {rule.why}')
+
+
+# -- `shipmill decide levels` ------------------------------------------------------------------
+
+
+class Source(StrEnum):
+    """Where a zone's level comes from"""
+
+    DEFAULT = "default"
+    CONFIG = "config"
+    AUTONOMY = "autonomy"
+    FIXED = "fixed"
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneLevel:
+    """One row of `decide levels`: a zone, its level (None: agents take no part, as under
+    [autonomy] observe), its floor, and where the level comes from"""
+
+    zone: Zone | ReleaseZone
+    level: Level | None
+    floor: Level | None
+    source: Source
+
+    def record(self) -> dict[str, str | None]:
+        return {
+            "zone": self.zone.value,
+            "level": None if self.level is None else self.level.value,
+            "floor": None if self.floor is None else self.floor.value,
+            "source": self.source.value,
+        }
+
+    def text(self) -> str:
+        level = "none" if self.level is None else self.level.value
+        floor = "none" if self.floor is None else self.floor.value
+        return f"{self.zone.value:<18} {level:<7} floor {floor:<7} {self.source.value}"
+
+
+# The level an agent has at a release-side stage: under propose the proposal issue is the question
+_AUTONOMY: Mapping[Autonomy, Level | None] = {
+    Autonomy.ACT: Level.ACT,
+    Autonomy.PROPOSE: Level.ASK,
+    Autonomy.OBSERVE: None,
+}
+# From the least to the most held back, to pick the stage the deploy row shows
+_HELD = (Autonomy.ACT, Autonomy.PROPOSE, Autonomy.OBSERVE)
+
+
+def agent_level(autonomy: Autonomy) -> Level | None:
+    """A release-side stage's level for agents: act for act, ask for propose, none for observe"""
+    return _AUTONOMY[autonomy]
+
+
+def levels(decisions: DecisionPolicy, autonomy: AutonomyPolicy) -> tuple[ZoneLevel, ...]:
+    """Every zone, the agent zones in the zone table's order, then the release side's. Deploy
+    shows its most held-back environment, act when [autonomy] lists none (D-7)"""
+    rows = []
+    for zone, rule in zones().items():
+        if zone is Zone.DECISION_POLICY:
+            source = Source.FIXED
+        else:
+            source = Source.CONFIG if decisions.is_configured(zone) else Source.DEFAULT
+        rows.append(ZoneLevel(zone, decisions.level(zone), rule.floor, source))
+    deploy = max(autonomy.deploy.values(), key=_HELD.index, default=Autonomy.ACT)
+    stages = {
+        ReleaseZone.RELEASE: autonomy.release,
+        ReleaseZone.DEPLOY: deploy,
+        ReleaseZone.ROLLBACK: autonomy.rollback,
+        ReleaseZone.INTAKE: autonomy.intake,
+        ReleaseZone.UPGRADE: autonomy.upgrade,
+    }
+    for release_zone in ReleaseZone:
+        if release_zone is ReleaseZone.BREAKING_RELEASE:  # D-39: a trigger only proposes
+            rows.append(ZoneLevel(release_zone, Level.ASK, None, Source.FIXED))
+        else:
+            rows.append(ZoneLevel(release_zone, agent_level(stages[release_zone]), None, Source.AUTONOMY))
+    return tuple(rows)
+
+
+# -- the D-n candidates of a change ------------------------------------------------------------
+
+_DECISION_ID = re.compile(r"D-[1-9][0-9]*")
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate:
+    """An active D-n whose "Applies to" covers a changed path: the session checks whether the
+    change departs from it (rule-departure); code can't tell, so it is never a zone"""
+
+    decision: str
+    title: str
+
+    def __post_init__(self) -> None:
+        if not _DECISION_ID.fullmatch(self.decision):
+            raise ReleaseError(f"a decision's id is D-n, got {self.decision!r}")
+
+    def record(self) -> dict[str, str]:
+        return {"decision": self.decision, "title": self.title}
+
+
+def candidates(log: str, paths: Sequence[str]) -> tuple[Candidate, ...]:
+    """The active entries of a decisions log that `decisions.py find` gives for paths, by id"""
+    module = _log()
+    entries: list[Any] = module.parse(log)[0]
+    found = [e for e in entries if e.active and any(module.matches(e, path) for path in paths)]
+    return tuple(Candidate(f"D-{e.number}", str(e.title)) for e in sorted(found, key=lambda e: e.number))

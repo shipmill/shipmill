@@ -11,6 +11,11 @@
   notes           print a release's notes
   operate         check environment health, promote after the bake, roll back; approve a proposal
   doctor          check that the repository is ready for the bot
+  decide          the decision policy (spec 030): levels prints every zone with its level, its floor,
+                  and where the level comes from (default, config, autonomy, or fixed), from the working
+                  tree's config or --ref's; classify prints the zones code detects for --pr N or --files
+                  PATH..., each with its level and reason, the strictest level, and the D-n candidates,
+                  the levels read at --ref (default origin/HEAD), never from the change; --json for both
   review          REVIEW.md, the review rubric (spec 024): check exits 1 naming the file, line, and rule
                   a structured section breaks; show prints the rubric for the files given with --path,
                   the root's and their directories' merged, as Markdown or --json; add-rule, protect,
@@ -87,7 +92,7 @@ from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import TextIO
 
-from shipmill import agent_as_person, cli_command, evals, fragments, product, requires, review, status
+from shipmill import agent_as_person, cli_command, decide, evals, fragments, product, requires, review, status
 from shipmill.agents import AgentsConfig, ProductConfig, app_id_of
 from shipmill.app import (
     CACHE,
@@ -138,6 +143,7 @@ from shipmill.app_gh import (
 )
 from shipmill.app_install import WAIT_SECONDS, guide
 from shipmill.autonomy import Autonomy, AutonomyPolicy, Hold
+from shipmill.classify import DEFAULT_REF, Base, Pulls, RepoPath, classify_paths, classify_pull, policy_at
 from shipmill.claude_auth import ClaudeAuth, claude_auth, run_auth
 from shipmill.config import CONFIG_PATH, Table, config_path
 from shipmill.config import read as read_config
@@ -329,6 +335,27 @@ def _parser() -> argparse.ArgumentParser:
         help="with [downstream]: the App's private key, to check its installation on each downstream"
         " (default: ~/.config/shipmill/app-<app_id>.pem when it exists)",
     )
+
+    p = sub.add_parser("decide", help="the decision policy's zones and levels, and the zones of a change (spec 030)")
+    deciding = p.add_subparsers(dest="decide", required=True)
+    q = deciding.add_parser("levels", help="print every zone with its level, its floor, and where the level comes from")
+    q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    q.add_argument("--ref", help="read the config at this git ref (default: the working tree's)")
+    q.add_argument("--json", action="store_true", help="print the levels as one JSON object")
+    q = deciding.add_parser(
+        "classify", help="print the zones code detects for a change, their strictest level, and the D-n candidates"
+    )
+    q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    q.add_argument(
+        "--ref",
+        default=DEFAULT_REF,
+        help="read the levels, REVIEW.md, and the decisions log at this git ref, never from the change"
+        f" (default: {DEFAULT_REF})",
+    )
+    changed = q.add_mutually_exclusive_group(required=True)
+    changed.add_argument("--pr", type=int, metavar="N", help="the pull request, its files and diff read through gh")
+    changed.add_argument("--files", nargs="+", metavar="PATH", help="changed paths; the diff rules don't apply")
+    q.add_argument("--json", action="store_true", help="print the classification as one JSON object")
 
     p = sub.add_parser("review", help="check, show, or edit REVIEW.md, the review rubric (spec 024)")
     reviews = p.add_subparsers(dest="review_command", required=True)
@@ -650,13 +677,15 @@ def main(
     gh_runner: GhRunner | None = None,
     library: Library | None = None,
     downstream_reader: Reader | None = None,
+    pulls: Pulls | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
     watch_state.py (and doctor's AGENT_AS_PERSON read), environ for this process's env, home
     for the user's home, gh_runner for running `shipmill gh`'s gh, library for the library's
-    repository `downstream start` and `collect` write checks on, and downstream_reader for
-    what doctor reads of the secrets and the downstream workflows, as tests pass fakes"""
+    repository `downstream start` and `collect` write checks on, downstream_reader for
+    what doctor reads of the secrets and the downstream workflows, and pulls for the pull
+    request `decide classify --pr` reads, as tests pass fakes"""
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
     root: Path = args.repo.resolve()
@@ -683,6 +712,8 @@ def main(
         return _product(root, args)
     if args.command == "review":
         return _review(root, args)
+    if args.command == "decide":
+        return _decide(root, args, pulls or GhCli(root))
     if args.command == "evals":
         if args.evals == "compare":
             return _evals_compare(args.base, args.head, frozenset(args.changed), args.tolerance)
@@ -1528,6 +1559,32 @@ def _app_install(
     if args.json:
         print(json.dumps(guided.record(app_id, repos), indent=2))
     return 1 if missing else 0
+
+
+def _decide(root: Path, args: argparse.Namespace, pulls: Pulls) -> int:
+    """Spec 030: `decide levels` from the working tree's config or --ref's; `decide classify`
+    by the levels at --ref, never the change's own"""
+    git = Git(root)
+    if args.decide == "levels":
+        policy = Policy.load(config_path(root)) if args.ref is None else policy_at(git, args.ref)
+        rows = decide.levels(policy.decisions, policy.autonomy)
+        if args.json:
+            record = {"veto_hours": int(policy.decisions.veto_hours), "zones": [r.record() for r in rows]}
+            print(json.dumps(record, indent=2))
+        else:
+            print(f"veto_hours: {int(policy.decisions.veto_hours)}")
+            for row in rows:
+                print(row.text())
+        return 0
+    base = Base.read(git, args.ref)
+    if args.pr is not None:
+        if args.pr < 1:
+            raise ReleaseError(f"--pr is a pull request's number, got {args.pr}")
+        found = classify_pull(base, pulls, args.pr)
+    else:
+        found = classify_paths(base, [RepoPath.given(p) for p in args.files])
+    sys.stdout.write(json.dumps(found.record(), indent=2) + "\n" if args.json else found.text())
+    return 0
 
 
 def _review(root: Path, args: argparse.Namespace) -> int:
