@@ -3121,9 +3121,10 @@ def uvx_environment(program: Path) -> bool:
 def path_shipmill(path: str, environments: Sequence[Path]) -> Path | None:
     """The first `shipmill` on path outside the environments: a folder whose `shipmill`
     resolves into one of them is skipped, as shipmill's cli_command() skips it (#236), and so is
-    one in an environment of uv's cache, a uvx run's own"""
+    one in an environment of uv's cache, a uvx run's own. An empty or relative entry names the
+    working folder, a checkout that may be a pull request's, so it is never searched"""
     for folder in path.split(os.pathsep):
-        if not folder:
+        if not folder or not os.path.isabs(folder):
             continue
         found = shutil.which("shipmill", path=folder)
         if found is None:

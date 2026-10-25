@@ -131,6 +131,25 @@ def test_s031_26_a_folder_whose_shipmill_resolves_into_the_running_environment_i
     assert ws.path_cli(":".join(str(tmp_path / d) for d in ("linked", "env/bin")), (env,)) is None
 
 
+def test_s031_26_a_relative_path_entry_never_runs_a_shipmill_from_the_working_folder(tmp_path: Path) -> None:
+    """A relative PATH entry (`.`, `bin`) names a folder under the working folder, a checkout
+    that may be a pull request's: its `shipmill` is never the person's CLI, so it is never run"""
+    fake(tmp_path, 'echo "shipmill 0.40.0"')
+    fake(tmp_path / "bin", 'echo "shipmill 0.40.0"')
+    tool = fake(tmp_path / "tool", 'echo "shipmill 0.41.0"')
+    load = (
+        "import importlib.util, sys; from pathlib import Path;"
+        f"s = importlib.util.spec_from_file_location('ws', {str(SCRIPT)!r}); m = importlib.util.module_from_spec(s);"
+        "sys.modules['ws'] = m; s.loader.exec_module(m);"
+        f"print(m.path_shipmill(sys.argv[1], (Path({str(tmp_path / 'e')!r}),)))"
+    )
+    for path in (".", "bin", f".:bin:{tmp_path / 'tool'}"):
+        out = subprocess.run(
+            [sys.executable, "-c", load, path], cwd=tmp_path, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        assert out == (str(tool) if "tool" in path else "None"), path
+
+
 def test_s031_26_another_uvx_runs_environment_is_skipped_and_a_tool_install_is_not(
     ws: ModuleType, tmp_path: Path
 ) -> None:
