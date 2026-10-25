@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "892",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "number,title,state,author,body,labels,comments"
+  ],
+  "stdout": "{\"number\": 892, \"title\": \"shipmill decide classify: fall back to the working tree's config when --ref is missing\", \"state\": \"OPEN\", \"author\": {\"login\": \"dana-ops\", \"is_bot\": false, \"name\": \"\"}, \"body\": \"On a fresh clone without `origin/HEAD`, `shipmill decide classify --files docs/product.md` exits 2 because the checkout lacks the ref. Make it read the levels from the working tree's `.github/shipmill.toml` instead and exit 0, so scripts that call it stop failing on such clones.\", \"labels\": [], \"comments\": []}",
+  "stderr": "",
+  "exit": 0
+}

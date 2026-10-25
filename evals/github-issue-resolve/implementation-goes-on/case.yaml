@@ -1,0 +1,38 @@
+schema_version: "1.1"
+name: implementation-goes-on
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # #890 asks where tests live (one file or two): the `implementation` zone, at `act` by
+  # default (spec 030), so the session decides it and goes on with its verdict
+  - type: regex
+    name: posts-the-verdict
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"body": "Triage: \*\*implement\*\*'
+  # without a question: no needs-decision comment and no needs-decision label
+  - type: regex
+    name: asks-nobody
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'shipmill:needs-decision'
+    match: not_contains
+  - type: regex
+    name: no-needs-decision-label
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"--add-label", "[^"]*needs-decision'
+    match: not_contains
+  # Every write goes through `shipmill gh` as the App (D-14): no plain gh write
+  - type: regex
+    name: writes-as-the-app
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "write", "args"'
+    match: not_contains
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1

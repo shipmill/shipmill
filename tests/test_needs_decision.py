@@ -541,7 +541,8 @@ def folded(path: Path) -> str:
 
 def test_s005_17_the_reference_defines_the_protocol() -> None:
     ref = folded(SKILLS / "github-issue-triage" / "references" / "needs-decision.md")
-    first = ref.split("```", 2)[1].split(" ", 1)[1].strip()  # the comment template, after its fence's language
+    asking = ref.split("## Asking ", 1)[1]  # "Who decides" comes first (spec 030), with its own templates
+    first = asking.split("```", 2)[1].split(" ", 1)[1].strip()  # the comment template, after its fence's language
     assert first.startswith(f"{MARKER} @<login> Decision needed: <the question")
     assert "1. <option> (recommended):" in first and "2. <option>:" in first
     for rule in (

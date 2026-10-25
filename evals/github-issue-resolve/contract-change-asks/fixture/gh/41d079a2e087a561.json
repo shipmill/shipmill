@@ -1,0 +1,10 @@
+{
+  "args": [
+    "api",
+    "repos/shipmill/shipmill/issues/892",
+    "--paginate"
+  ],
+  "stdout": "{\"number\": 892, \"title\": \"shipmill decide classify: fall back to the working tree's config when --ref is missing\", \"body\": \"On a fresh clone without `origin/HEAD`, `shipmill decide classify --files docs/product.md` exits 2 because the checkout lacks the ref. Make it read the levels from the working tree's `.github/shipmill.toml` instead and exit 0, so scripts that call it stop failing on such clones.\", \"state\": \"open\", \"user\": {\"login\": \"dana-ops\", \"type\": \"User\"}, \"author_association\": \"COLLABORATOR\", \"labels\": [], \"comments\": 0, \"created_at\": \"2026-10-25T09:00:00Z\", \"html_url\": \"https://github.com/shipmill/shipmill/issues/892\"}",
+  "stderr": "",
+  "exit": 0
+}

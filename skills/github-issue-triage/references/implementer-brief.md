@@ -21,7 +21,7 @@ Follow the github-issue-resolve skill's phases 2 to 6 (verify the claim on the c
 
 Issue #{N} (branch `{fix|feat}/{N}-{slug}`): {the problem in two sentences, with the repro}. {The agreed plan from the triage comment, including its Design section for a contract change}. {Risks: the paths that must not change, every input path to cover, platform-only branches, docs and specs that name old values}. {Out of scope: what is deferred}.
 
-Final report: each PR URL, 2 to 3 lines on each, and a "Decisions for you" list naming every behaviour change, spec deviation (with its `S-NNN-k` id), public-API change, and anything you couldn't verify.
+Final report: each PR URL, 2 to 3 lines on each, and a "Decisions for you" list naming every behaviour change, spec deviation (with its `S-NNN-k` id), public-API change, and anything you couldn't verify, each item with its zone (github-issue-triage's needs-decision.md, Who decides).
 ```
 
 ## Risks worth naming, by issue type

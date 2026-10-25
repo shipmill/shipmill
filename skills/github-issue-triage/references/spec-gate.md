@@ -1,6 +1,6 @@
 # Spec gate
 
-A feature is designed once, in a spec file the maintainers review line by line, before any implementer starts. Merging the spec is the approval: one review instead of a question on every PR that builds it. The maintainer approves it either by merging the spec PR or by a trusted answer to its needs-decision question that takes every recommendation unchanged; after such an answer github-pr-triage lands the spec PR once it is mergeable and green (D-49, [Approved by an answer](#approved-by-an-answer)). Specs live in `docs/specs/NNN-<slug>.md` and are merged through a pull request before their build starts; issue bodies link to the spec, they don't hold it (shipmill's own D-5).
+A feature is designed once, in a spec file the maintainers review line by line, before any implementer starts. Merging the spec is the approval: one review instead of a question on every PR that builds it. The maintainer approves it either by merging the spec PR or by a trusted answer to its needs-decision question that takes every recommendation unchanged; after such an answer github-pr-triage lands the spec PR once it is mergeable and green (D-49, [Approved by an answer](#approved-by-an-answer)). A spec's approval is the `scope` zone, which no agent takes on its own ([Who decides](needs-decision.md#who-decides)). Specs live in `docs/specs/NNN-<slug>.md` and are merged through a pull request before their build starts; issue bodies link to the spec, they don't hold it (shipmill's own D-5).
 
 ## Feature, contract change, or bug fix
 

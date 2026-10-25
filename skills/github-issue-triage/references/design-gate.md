@@ -23,7 +23,7 @@ A bug fix that restores documented behaviour skips the gate. So does an internal
    - At most two alternatives, and why this one
    - Compatibility: who breaks, and the migration or deprecation
    - The decisions it relies on (`D-n`), and how it will be tested
-3. **Decide who decides.** Dispatch without asking only when the design follows from the spec and the log. Ask with AskUserQuestion, before dispatch, when:
+3. **Decide who decides.** In a repo whose config has `[agents]`, the design's zone and its level decide it, as [Who decides](needs-decision.md#who-decides) says (`contract-change` asks, `contract-addition` notifies, a departure is `rule-departure`); how to ask, below, holds for an `ask` level. Without `[agents]`: dispatch without asking only when the design follows from the spec and the log. Ask with AskUserQuestion, before dispatch, when:
    - it departs from a `D-n` entry or the spec
    - two designs are both reasonable and users would see the difference
    - it breaks existing users

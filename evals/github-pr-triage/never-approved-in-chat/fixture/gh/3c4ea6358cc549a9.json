@@ -1,0 +1,13 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "number,title,headRefName,labels"
+  ],
+  "stdout": "[{\"number\": 893, \"title\": \"Add G-8 to the direction: a fleet's goals\", \"headRefName\": \"direction/g-8-fleet-goals\", \"labels\": []}]",
+  "stderr": "",
+  "exit": 0
+}

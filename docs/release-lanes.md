@@ -434,7 +434,9 @@ The operate job needs `deployments: write` (statuses) and `actions: write` (depl
 ## Autonomy and the stop switch
 
 `[autonomy]` in the same file sets how far shipmill goes by itself at each stage: `observe`
-reports only, `propose` opens an issue saying what it would do, and `act` does it. Every
+reports only, `propose` opens an issue saying what it would do, and `act` does it. The
+agents' own decisions have levels too, in `[decisions]`; `shipmill decide levels` shows
+these stages beside them, mapped as [Who decides](flow.md#who-decides) says. Every
 stage defaults to `act`, which is how shipmill has always released:
 
 ```toml

@@ -1,0 +1,10 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "892"
+  ],
+  "stdout": "title:\tshipmill decide classify: fall back to the working tree's config when --ref is missing\nstate:\tOPEN\nauthor:\tdana-ops\nlabels:\t\ncomments:\t0\nassignees:\t\nprojects:\t\nmilestone:\t\nnumber:\t892\n--\nOn a fresh clone without `origin/HEAD`, `shipmill decide classify --files docs/product.md` exits 2 because the checkout lacks the ref. Make it read the levels from the working tree's `.github/shipmill.toml` instead and exit 0, so scripts that call it stop failing on such clones.\n",
+  "stderr": "",
+  "exit": 0
+}

@@ -1,0 +1,12 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--json",
+    "title,body,files,labels,comments,author"
+  ],
+  "stdout": "{\"title\": \"Add G-8 to the direction: a fleet's goals\", \"body\": \"Adds G-8 to `docs/product.md`'s Goals: a fleet of repositories works toward one set of goals, kept in its home repository.\\n\\n## Plan\\n\\n- Serves: G-4\\n- Files: docs/product.md (G-8)\\n- Order: the goal line\\n- Proof: `shipmill product check` passes; CI green\\n\\n\\ud83e\\udd16 Generated with [Claude Code](https://claude.com/claude-code)\\n\", \"files\": [{\"path\": \"docs/product.md\", \"additions\": 1, \"deletions\": 0}], \"labels\": [], \"comments\": [], \"author\": {\"id\": \"BOT_kgDODCgtTQ\", \"is_bot\": true, \"login\": \"app/shipmill-romamo\", \"name\": \"\"}}",
+  "stderr": "",
+  "exit": 0
+}

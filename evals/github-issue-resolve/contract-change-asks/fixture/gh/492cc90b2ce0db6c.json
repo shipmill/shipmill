@@ -1,0 +1,15 @@
+{
+  "args": [
+    "label",
+    "list",
+    "--repo",
+    "shipmill/shipmill",
+    "--limit",
+    "100",
+    "--json",
+    "name,description,color"
+  ],
+  "stdout": "[{\"name\": \"bug\", \"description\": \"\", \"color\": \"ededed\"}, {\"name\": \"enhancement\", \"description\": \"\", \"color\": \"ededed\"}, {\"name\": \"needs-decision\", \"description\": \"\", \"color\": \"ededed\"}, {\"name\": \"decided\", \"description\": \"\", \"color\": \"ededed\"}, {\"name\": \"human\", \"description\": \"\", \"color\": \"ededed\"}, {\"name\": \"postponed\", \"description\": \"\", \"color\": \"ededed\"}, {\"name\": \"opportunity\", \"description\": \"\", \"color\": \"ededed\"}, {\"name\": \"planned\", \"description\": \"\", \"color\": \"ededed\"}]",
+  "stderr": "",
+  "exit": 0
+}

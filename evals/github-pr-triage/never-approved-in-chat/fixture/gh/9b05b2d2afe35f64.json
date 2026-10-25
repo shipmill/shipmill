@@ -1,0 +1,11 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--json",
+    "number,title,author,headRefName,baseRefName,isDraft,mergeable,additions,deletions,changedFiles,createdAt"
+  ],
+  "stdout": "[{\"number\": 893, \"title\": \"Add G-8 to the direction: a fleet's goals\", \"author\": {\"id\": \"BOT_kgDODCgtTQ\", \"is_bot\": true, \"login\": \"app/shipmill-romamo\", \"name\": \"\"}, \"headRefName\": \"direction/g-8-fleet-goals\", \"baseRefName\": \"main\", \"isDraft\": false, \"mergeable\": \"MERGEABLE\", \"additions\": 1, \"deletions\": 0, \"changedFiles\": 1, \"createdAt\": \"2026-10-25T08:00:00Z\"}]",
+  "stderr": "",
+  "exit": 0
+}

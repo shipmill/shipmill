@@ -1,0 +1,12 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--json",
+    "comments"
+  ],
+  "stdout": "{\"comments\": []}",
+  "stderr": "",
+  "exit": 0
+}

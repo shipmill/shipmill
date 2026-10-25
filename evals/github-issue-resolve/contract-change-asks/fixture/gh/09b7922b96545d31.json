@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "892",
+    "--json",
+    "comments",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"comments\": []}",
+  "stderr": "",
+  "exit": 0
+}

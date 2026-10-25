@@ -1,0 +1,10 @@
+{
+  "args": [
+    "pr",
+    "diff",
+    "893"
+  ],
+  "stdout": "diff --git a/docs/product.md b/docs/product.md\nindex 1f0e2a3..9c4b7d1 100644\n--- a/docs/product.md\n+++ b/docs/product.md\n@@ -27,6 +27,7 @@ below.\n - G-5: Agents keep to the written direction: work outside the goals is postponed or declined with its reason\n - G-6: Agents pursue a goal: they propose the work that reaches it, and the maintainer approves it\n - G-7: The loop knows whether each goal is met, from a measure, and proposes changing the direction when it is\n+- G-8: A fleet of repositories works toward one set of goals, kept in its home repository\n \n ## Non-goals\n \n",
+  "stderr": "",
+  "exit": 0
+}

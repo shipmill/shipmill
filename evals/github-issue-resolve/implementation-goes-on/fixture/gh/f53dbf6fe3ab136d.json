@@ -1,0 +1,10 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "890"
+  ],
+  "stdout": "title:\tSplit tests/test_decide_cli.py into one file per subcommand?\nstate:\tOPEN\nauthor:\tromamo\nlabels:\t\ncomments:\t0\nassignees:\t\nprojects:\t\nmilestone:\t\nnumber:\t890\n--\n`tests/test_decide_cli.py` holds the tests of both `shipmill decide levels` and `shipmill decide classify`. Split it into `tests/test_decide_levels.py` and `tests/test_decide_classify.py`, or keep one file and group its tests under two section comments?\n\nEither way no command, output, flag, or test name changes: it's only where the tests live. Which do you prefer?\n",
+  "stderr": "",
+  "exit": 0
+}

@@ -1,0 +1,12 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--json",
+    "author"
+  ],
+  "stdout": "{\"author\": {\"id\": \"BOT_kgDODCgtTQ\", \"is_bot\": true, \"login\": \"app/shipmill-romamo\", \"name\": \"\"}}",
+  "stderr": "",
+  "exit": 0
+}

@@ -1,0 +1,10 @@
+{
+  "args": [
+    "api",
+    "--paginate",
+    "repos/shipmill/shipmill/issues/890/timeline"
+  ],
+  "stdout": "[]",
+  "stderr": "",
+  "exit": 0
+}

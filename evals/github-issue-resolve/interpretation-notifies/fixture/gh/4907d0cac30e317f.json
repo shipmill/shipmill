@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "891",
+    "--json",
+    "state,labels",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"state\": \"OPEN\", \"labels\": []}",
+  "stderr": "",
+  "exit": 0
+}

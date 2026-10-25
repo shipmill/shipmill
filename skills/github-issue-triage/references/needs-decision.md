@@ -1,5 +1,89 @@
 # The needs-decision protocol
 
+## Who decides
+
+Every session in a repo whose `.github/shipmill.toml` has `[agents]`, a gate session or not, places each decision before it takes it (spec 030, D-48). A decision falls in one or more **zones**, and each zone has one **level**, set in the config's `[decisions]` section and read from the default branch, never from the change:
+
+| Level | The session |
+|---|---|
+| `act` | decides and goes on; the commit, the pull request's plan, or the triage comment is the record |
+| `notify` | decides, posts the [decided comment](#a-decided-comment) and the `decided` label, and goes on; the maintainer may veto |
+| `ask` | asks with this protocol, the [zone line](#the-zone-line) under the marker, and leaves the item until a trusted reply |
+| `never` | may prepare the change (a pull request, an issue, a draft) but never takes the decision: never merges, accepts, closes, or answers it, even when the maintainer says yes in chat |
+
+`shipmill decide levels` prints each zone's level, its floor, where the level comes from, and `veto_hours`. The zones:
+
+| Zone | Covers |
+|---|---|
+| `direction` | an edit of `docs/product.md` or `docs/product/` (D-34) |
+| `decision-policy` | the `[decisions]` section of `.github/shipmill.toml`; always `never` |
+| `scope` | accepting or declining an opportunity (D-10), approving a spec, accepting a goal plan, creating or editing a milestone |
+| `rule-departure` | a change that departs from an active `D-n` or an approved spec's `S-NNN-k` |
+| `contract-change` | changing or removing a command, flag, argument, exit code, env var, output or file format, default, limit, public API, or stored state an upgrade reads |
+| `contract-addition` | adding one of those while every existing use behaves as before; a new runtime dependency |
+| `security` | `.github/**`, a secret or credential, a token's or a workflow's permissions, the delivery hooks' rules, the gate's tool allowlist |
+| `protected` | a file a `REVIEW.md` Protected areas glob covers |
+| `interpretation` | choosing between readings of an approved spec, a `D-n`, or an issue, where each reading meets the criteria |
+| `triage-verdict` | won't fix, duplicate, postpone, or close as done on an issue |
+| `implementation` | work order, how a change splits into pull requests, internal design, refactors, tests, docs of existing behaviour |
+| `unknown` | a decision no other zone covers |
+
+The release side's zones (`release`, `breaking-release`, `deploy`, `rollback`, `intake`, `upgrade`) take their levels from `[autonomy]` and D-39, and `decide levels` lists them too. Without `[agents]` there are no zones: the skills' own rules (the [design gate](design-gate.md)'s, the [spec gate](spec-gate.md)'s) say when to ask.
+
+### Placing a decision
+
+1. **Code first.** For a change on a branch or a pull request, ask `shipmill decide classify` through the CLI the skill pins, with `--pr <n> --json`, or `--files <path>...` for a change without a pull request (paths alone, so the changelog and spec-status rules don't apply). It reads the levels at `--ref`, `origin/HEAD` by default, so a change that edits `[decisions]` is judged by the levels it would replace. The zones it prints hold, whatever the session thinks of them. Its `candidates` are the `D-n` entries whose "Applies to" covers the change, never zones: read each, and call the change `rule-departure` when it departs from one or you can't tell
+2. **Then the model.** For each decision code doesn't see (a verdict, a reading of a spec, a contract addition, a candidate `D-n`), pick its zone from the table. When two zones could fit, pick the one with the stricter level; when none fits, it is `unknown`
+3. **The strictest level wins.** A decision in several zones takes the strictest of their levels, in the order `act`, `notify`, `ask`, `never`, and the session follows that level's path:
+   - **`act`:** go on. No question, no decided comment
+   - **`notify`:** post the [decided comment](#a-decided-comment), add the `decided` label, and go on
+   - **`ask`:** post the needs-decision question ([Asking](#asking)) with its [zone line](#the-zone-line), and leave the item
+   - **`never`:** prepare what helps (a pull request, an issue with the evidence), assign it to the maintainer, label it `human` (a person's item), say in one comment what the maintainer does by hand, and leave it. A reply never moves it: no answer in the session or on GitHub lets the agent take the step. `pr_gate.py` reads such a pull request as MAINTAINER_ONLY (exit 7), which `--maintainer-accepted` doesn't lift, and `shipmill gh pr merge` refuses it with exit 2
+
+A session a person started by hand still asks in the session for `ask`, with AskUserQuestion as usual; `never` holds there too, even when the person says yes.
+
+### The zone line
+
+A needs-decision question carries its zone on its second line; the first line stays the marker the scripts read, and the retro counts the asks per zone from the second:
+
+```markdown
+<!-- shipmill:needs-decision -->
+<!-- shipmill:zone contract-change -->
+@<login> Decision needed: <the question, one sentence>
+```
+
+The session that takes up the answer edits that line of the question to `<!-- shipmill:zone contract-change answer=recommended -->`, or `answer=other` when the reply picked another option or its own words.
+
+### A decided comment
+
+A `notify` decision is one comment on the item it belongs to, posted through `--body-file`, and the `decided` label on the item (create the label with `shipmill gh label create decided` when the repo lacks it):
+
+```markdown
+<!-- shipmill:decided zone=interpretation until=2026-10-20T14:00:00Z -->
+@<login> Decided without waiting: <the decision, one sentence>
+
+Why: <one or two sentences, naming the D-n or S-NNN-k it rests on>
+Not taken: <the other option, and what it would have meant for users>
+
+Reply with a comment starting with `veto` before 2026-10-20 14:00 UTC to reverse it, adding what you want instead if you like. A later veto still counts and gets a follow-up.
+```
+
+`zone` is the decision's zone id, and `until` the post time plus `veto_hours`, in UTC. `<login>` is the person the gate's prompt names, as for a question, so GitHub notifies them.
+
+- **The work doesn't wait.** The session goes on at once, and a pull request carrying a `notify` decision merges when it is otherwise ready, inside the window too. `pr_gate.py` prints a `notify: <zone>: <reason>` line for one: post the decided comment before the merge, unless one for that zone is already on the pull request
+- **A rule goes to the log.** When the decision sets something later work must respect (a format for a new output, a reading of a criterion the next pull request relies on), also record it with `decisions.py add --zone <id>`, which writes its `- Zone: <id> (notify, veto until <until>)` line; one decisions pull request per pass still holds ([design-gate.md](design-gate.md#recording-a-decision)). A decision that sets no rule is recorded by the comment alone
+
+### Taking up a veto
+
+A veto is a comment newer than the decided marker, by an OWNER, MEMBER, or COLLABORATOR other than the App, whose first word is `veto` in any case; an outsider's comment, or a `veto` in the middle of a comment, never counts (D-16). `triage_state.py` reads such an item as VETOED until a newer `<!-- shipmill:veto-handled ... -->` comment by the App answers it, closed issues of the last 14 days included, and `watch_state.py` lists it in its VETOED row, which starts a session. That session:
+
+1. Reads the veto. When it says what to do instead, that is the maintainer's decision: do it. When it doesn't, the decision moves to `ask`: post the needs-decision question with the options, the vetoed one last
+2. Undoes what it can. Not landed (a pull request or an issue still open): revise or close the pull request, restore the issue's labels. Landed: open a revert pull request for a merged change (`implementation`, its plan citing the veto), reopen a closed issue. A published release is never unpublished: file a follow-up issue to fix forward
+3. Supersedes the `D-n` the decision recorded, if any, with `decisions.py add --supersedes`, the veto's comment as the source
+4. Posts `<!-- shipmill:veto-handled zone=<id> -->` as the first line of a comment saying what it did, and removes the `decided` label. Without a veto the label stays, as the record the retro counts
+
+## Gate sessions
+
 A session the shipmill gate started can't count on an answer in the session: it runs in the background, and nobody may attach. So every question a gate session asks goes to GitHub first, interactive or headless (D-21), and the item waits there while the rest of the repo keeps moving (spec S-005, D-17).
 
 A session is a **gate session** when its prompt carries one of the gate's paragraphs:
@@ -25,7 +109,7 @@ Every place github-issue-triage, github-issue-resolve, and github-pr-triage woul
    Reply here with a number or your own answer; shipmill takes this up on the tick after your reply.
    ```
 
-   The marker is the comment's first line, with or without an App: it is how `triage_state.py` and `watch_state.py` tell the question from the reply when the session posts as the maintainer. `<login>` is the person the gate's prompt names (the host's `gh` login). Put the recommendation first, and say in each option what it means for users and what it costs, in words a user of the tool knows. Name `D-n` entries and `S-NNN-k` criteria when the question is a departure from one
+   The marker is the comment's first line, with or without an App: it is how `triage_state.py` and `watch_state.py` tell the question from the reply when the session posts as the maintainer. `<login>` is the person the gate's prompt names (the host's `gh` login). Put the recommendation first, and say in each option what it means for users and what it costs, in words a user of the tool knows. Name `D-n` entries and `S-NNN-k` criteria when the question is a departure from one. With `[agents]` in the config, the question's zone goes on the second line, right under the marker ([The zone line](#the-zone-line))
 2. Add the `needs-decision` label to the item: `gh issue edit <n> --add-label needs-decision` (or `gh pr edit`). From now on the scripts read the item as waiting, not as work, so the gate doesn't start a session for it again
 3. **Interactive (`Gate session:`) only:** ask the same question, with the same options in the same order, with AskUserQuestion. An answer in the session: follow [Answered in the session](#answered-in-the-session). No answer: the item already waits on GitHub, and the gate's `max_wait_minutes` stops the waiting session (D-15); whoever answers on GitHub later is read as below
 4. **Headless:** Leave the item: don't build, push, merge, or comment on it further in this session. Go on with the other items, and report this one under the decisions you left

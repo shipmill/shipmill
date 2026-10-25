@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "892",
+    "--json",
+    "body",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"body\": \"On a fresh clone without `origin/HEAD`, `shipmill decide classify --files docs/product.md` exits 2 because the checkout lacks the ref. Make it read the levels from the working tree's `.github/shipmill.toml` instead and exit 0, so scripts that call it stop failing on such clones.\"}",
+  "stderr": "",
+  "exit": 0
+}

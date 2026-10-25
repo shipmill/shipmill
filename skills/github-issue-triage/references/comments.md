@@ -4,6 +4,8 @@ Write each body to a file and post it with `gh issue comment <n> --body-file <fi
 
 **The goal, in the verdict line.** When the repo has `docs/product.md`, a verdict on new behaviour names the goal it serves right after the bolded verdict, `Serves: G-n.` (several as `Serves: G-2, G-3.`), from the direction's Goals; a non-goal it hits gets the Won't fix (non-goal) template, and a feature that serves no goal the Postpone (no goal) template; a user's request that serves no goal keeps the Opportunity template with `Serves no goal.` in its slot ([triage-rubric.md](triage-rubric.md), The direction). A bug fix or a contract tweak serves the quality bar and names no goal, and a repo without `docs/product.md` leaves the `{ Serves: G-n.}` slots out.
 
+**Who decides a verdict.** In a repo whose config has `[agents]`, won't fix, duplicate, postpone, and close as done are the `triage-verdict` zone, and its level says whether the verdict also gets a decided comment and the `decided` label (`notify`, the default) or waits on a question (`ask`), as [Who decides](needs-decision.md#who-decides) says.
+
 ## Implement
 
 ```markdown

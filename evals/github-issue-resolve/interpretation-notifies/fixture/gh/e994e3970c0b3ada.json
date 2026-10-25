@@ -1,0 +1,13 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "891",
+    "--comments",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "README: name the decision policy where it says what the maintainer keeps (spec 030) #891\nOpen \u2022 romamo opened about 1 hour ago \u2022 0 comments\n\n\n  Spec 030's Docs section says `README.md` \"names the policy where it describes what the maintainer keeps\". That reads two ways, and both meet the spec:\n\n1. One sentence pointing to the policy: what the maintainer keeps is the zones at `ask` and `never`, which `shipmill decide levels` lists\n2. The zones themselves, inline: `direction` and `decision-policy` never, and `scope`, `rule-departure`, `contract-change`, `security`, and `protected` asked\n\nPick a reading and build it.\n\n\nView this issue on GitHub: https://github.com/shipmill/shipmill/issues/891\n",
+  "stderr": "",
+  "exit": 0
+}

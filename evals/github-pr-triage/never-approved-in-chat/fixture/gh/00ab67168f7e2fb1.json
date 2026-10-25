@@ -1,0 +1,12 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--json",
+    "reviews"
+  ],
+  "stdout": "{\"reviews\": []}",
+  "stderr": "",
+  "exit": 0
+}

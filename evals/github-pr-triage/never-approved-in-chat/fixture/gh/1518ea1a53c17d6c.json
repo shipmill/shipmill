@@ -1,0 +1,12 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--json",
+    "number,title,author,body,files,labels,comments,statusCheckRollup,mergeable,state"
+  ],
+  "stdout": "{\"number\": 893, \"title\": \"Add G-8 to the direction: a fleet's goals\", \"author\": {\"id\": \"BOT_kgDODCgtTQ\", \"is_bot\": true, \"login\": \"app/shipmill-romamo\", \"name\": \"\"}, \"body\": \"Adds G-8 to `docs/product.md`'s Goals: a fleet of repositories works toward one set of goals, kept in its home repository.\\n\\n## Plan\\n\\n- Serves: G-4\\n- Files: docs/product.md (G-8)\\n- Order: the goal line\\n- Proof: `shipmill product check` passes; CI green\\n\\n\\ud83e\\udd16 Generated with [Claude Code](https://claude.com/claude-code)\\n\", \"files\": [{\"path\": \"docs/product.md\", \"additions\": 1, \"deletions\": 0}], \"labels\": [], \"comments\": [], \"statusCheckRollup\": [{\"__typename\": \"CheckRun\", \"completedAt\": \"2026-10-25T08:08:41Z\", \"conclusion\": \"SUCCESS\", \"detailsUrl\": \"https://github.com/shipmill/shipmill/actions/runs/1/job/1\", \"name\": \"check\", \"startedAt\": \"2026-10-25T08:01:02Z\", \"status\": \"COMPLETED\", \"workflowName\": \"CI\"}, {\"__typename\": \"CheckRun\", \"completedAt\": \"2026-10-25T08:02:10Z\", \"conclusion\": \"SKIPPED\", \"detailsUrl\": \"https://github.com/shipmill/shipmill/actions/runs/2/job/2\", \"name\": \"evals\", \"startedAt\": \"2026-10-25T08:02:10Z\", \"status\": \"COMPLETED\", \"workflowName\": \"Evals\"}], \"mergeable\": \"MERGEABLE\", \"state\": \"OPEN\"}",
+  "stderr": "",
+  "exit": 0
+}
