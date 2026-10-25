@@ -4,6 +4,7 @@
 Usage: retro.py gather <owner/repo> [--days 7] [--environment NAME ...]
                        [--incident-label incident] [--bot LOGIN ...] [--json]
                        [--goals [--checkout DIR] [--stalled-weeks 3] [--met-weeks 4]]
+                       [--decisions [--checkout DIR] [--raise-at 2] [--lower-after 4]]
        retro.py dedupe <owner/repo> --title TITLE [--title TITLE ...] [--json]
 
 gather   runs metrics.py over the --days to now and over the --days before that, and prints
@@ -27,6 +28,17 @@ gather   runs metrics.py over the --days to now and over the --days before that,
          to the lowest id), and the agent-made merged pull requests whose plan names no
          listed goal. A verdict comment counts only when its first line starts `Triage: ` and
          an OWNER, MEMBER, or COLLABORATOR or a --bot login wrote it (D-29)
+         --decisions adds the report per zone of the decision policy (spec 030), the levels
+         read from DIR's .github/shipmill.toml [decisions] (DIR at origin/HEAD, else exit 2;
+         the zones, defaults, and floors from github-issue-triage's decisions.py). Per zone,
+         on the issues' and pull requests' comments posted in this --days window by a
+         trusted author as above: the decided markers, the veto-handled markers, the
+         needs-decision questions with a zone line, and those whose zone line reads
+         answer=recommended; and the questions over the last --lower-after windows. It
+         proposes `Decision policy: <zone> from notify to ask` for a zone at notify with
+         --raise-at vetoes or more this window, and `<zone> from ask to notify` for a zone at
+         ask, above its floor, whose questions over the --lower-after windows number at least
+         5 and were all answered recommended. A marker naming no zone id is listed apart
 dedupe   each proposed issue title against the repo's open issues: DUPLICATE with the open
          issue whose title matches (ignoring case, punctuation, and spacing), else NEW.
          Read-only: the retro opens only the NEW ones
@@ -40,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib.util
 import json
 import re
 import subprocess
@@ -47,9 +60,10 @@ import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
-from metrics import PULL_COMMITS, Runner, Variables, agent_made, gh_graphql, pages, pull_commits, sized
+from metrics import PULL_COMMITS, Runner, Variables, agent_made, dig, gh_graphql, pages, pull_commits, sized
 
 METRICS = Path(__file__).resolve().parent / "metrics.py"
 PR_LIMIT = 500  # closed pull requests in one window; more is refused, not truncated
@@ -173,6 +187,7 @@ def pinned_shipmill(plugin: Path | None = None) -> tuple[str, ...]:
 
 def gather(args: argparse.Namespace, sources: Sources) -> int:
     direction = read_direction(sources, args.checkout) if args.goals else None
+    levels = read_policy(sources, args.checkout) if args.decisions else None
     current = sources.metrics(None)
     previous = sources.metrics(current["start"])
     start, end = timestamp(current["start"]), timestamp(current["end"])
@@ -202,6 +217,7 @@ def gather(args: argparse.Namespace, sources: Sources) -> int:
         goals = {"direction": False}
         if direction is not None:
             goals = goals_report(args, sources, direction, [current, previous])
+    decisions = decisions_report(args, sources, levels, end) if levels is not None else None
     if args.json:
         window = {"start": current["start"], "end": current["end"], "previous_start": previous["start"]}
         report = {
@@ -212,6 +228,8 @@ def gather(args: argparse.Namespace, sources: Sources) -> int:
         }
         if goals is not None:
             report["goals"] = goals
+        if decisions is not None:
+            report["decisions"] = decisions
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
     print(f"{args.repo}: the {args.days} days to {end:%Y-%m-%d %H:%M} UTC, against the {args.days} days before")
@@ -223,6 +241,8 @@ def gather(args: argparse.Namespace, sources: Sources) -> int:
             print(f"  #{p.number} {p.title} ({p.why}) {p.url}")
     if goals is not None:
         print("\n".join(goals_text(goals)))
+    if decisions is not None:
+        print("\n".join(decisions_text(decisions)))
     return 0
 
 
@@ -320,9 +340,8 @@ def weeks(end: dt.datetime, days: int, count: int) -> list[Window]:
     return [Window(end - (k + 1) * span, end - k * span) for k in range(count)]
 
 
-def read_direction(sources: Sources, checkout: Path) -> dict[str, Any] | None:
-    """The direction as `shipmill product show --json` gives it, None without docs/product.md;
-    exit 2 when the checkout isn't at origin/HEAD or shipmill refuses the direction"""
+def at_origin_head(sources: Sources, checkout: Path) -> None:
+    """Exit 2 unless the checkout's HEAD is origin/HEAD's commit"""
     proc = sources.command(["git", "-C", str(checkout), "rev-parse", "HEAD", "origin/HEAD"])
     heads = proc.stdout.split()
     if proc.returncode != 0 or len(heads) != 2 or heads[0] != heads[1]:
@@ -331,6 +350,12 @@ def read_direction(sources: Sources, checkout: Path) -> dict[str, Any] | None:
             f"{checkout}: {why}; run `git -C {checkout} fetch origin` and "
             f"`git -C {checkout} checkout --detach origin/HEAD`, then gather again"
         )
+
+
+def read_direction(sources: Sources, checkout: Path) -> dict[str, Any] | None:
+    """The direction as `shipmill product show --json` gives it, None without docs/product.md;
+    exit 2 when the checkout isn't at origin/HEAD or shipmill refuses the direction"""
+    at_origin_head(sources, checkout)
     if not (checkout / DIRECTION).is_file():
         return None
     proc = sources.command([*sources.shipmill, "product", "show", "--json", "--repo", str(checkout)])
@@ -732,6 +757,261 @@ def goals_text(goals: dict[str, Any]) -> list[str]:
     return lines
 
 
+# -- decisions (spec 030) ---------------------------------------------------------------------
+
+# github-issue-triage's decisions.py holds the zone table (ids, defaults, floors) and reads [decisions]
+DECISIONS_SCRIPT = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "decisions.py"
+CONFIG = ".github/shipmill.toml"
+DECIDED_MARK = re.compile(r"^<!-- shipmill:decided zone=([a-z][a-z-]*) until=\S+ -->$")
+VETO_HANDLED_MARK = re.compile(r"^<!-- shipmill:veto-handled zone=([a-z][a-z-]*) -->$")
+NEEDS_DECISION_MARK = "<!-- shipmill:needs-decision -->"
+ZONE_MARK = re.compile(r"^<!-- shipmill:zone ([a-z][a-z-]*)(?: answer=(recommended|other))? -->$")
+MIN_ASKS = 5  # the questions a zone needs over --lower-after windows before it is proposed lower
+COUNTS = ("decided", "vetoes", "asks", "recommended")
+
+THREAD_FIELDS = """
+        number updatedAt
+        comments(last: 50) {
+          pageInfo { hasPreviousPage startCursor }
+          nodes { body createdAt authorAssociation author { __typename login } }
+        }
+"""
+ISSUE_THREADS = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String, $since: DateTime!) {
+  repository(owner: $owner, name: $name) {
+    issues(first: $size, after: $cursor, filterBy: {since: $since}, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {"""
+    + THREAD_FIELDS
+    + """      }
+    }
+  }
+}
+"""
+)
+PULL_THREADS = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: $size, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {"""
+    + THREAD_FIELDS
+    + """      }
+    }
+  }
+}
+"""
+)
+PULL_COMMENTS = """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      comments(last: $size, before: $cursor) {
+        pageInfo { hasPreviousPage startCursor }
+        nodes { body createdAt authorAssociation author { __typename login } }
+      }
+    }
+  }
+}
+"""
+
+
+def decisions_module() -> ModuleType:
+    """github-issue-triage's decisions.py, for the zone table and its reading of [decisions]"""
+    spec = importlib.util.spec_from_file_location("shipmill_decisions", DECISIONS_SCRIPT)
+    if spec is None or spec.loader is None:
+        raise fail(f"can't load {DECISIONS_SCRIPT}; reinstall the shipmill plugin")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up by name
+    spec.loader.exec_module(module)
+    return module
+
+
+@dataclass(frozen=True)
+class Levels:
+    """The policy gather judges by: each zone's level and floor, and the veto window"""
+
+    levels: dict[str, str]
+    floors: dict[str, str | None]
+    veto_hours: int
+
+
+def read_policy(sources: Sources, checkout: Path) -> Levels:
+    """The [decisions] levels of the checkout's config, which must be at origin/HEAD: levels
+    are read from the default branch (D-48); a malformed table exits 2"""
+    at_origin_head(sources, checkout)
+    module = decisions_module()
+    try:
+        found = module.policy(checkout / CONFIG)
+    except module.LogError as refused:
+        raise fail(str(refused)) from None
+    floors = {zone: floor for zone, (_, floor) in module.ZONES.items()}
+    return Levels(dict(found.levels), floors, int(found.veto_hours))
+
+
+def fetch_threads(sources: Sources, repo: str, since: dt.datetime) -> list[dict[str, Any]]:
+    """Issues and pull requests updated since, each with its comments paged back past since"""
+    owner, _, name = repo.partition("/")
+    base: Variables = {"owner": owner, "name": name}
+    sizes = {ISSUE_THREADS: 50, PULL_THREADS: 50, ISSUE_COMMENTS: 100, PULL_COMMENTS: 100}
+    issues = pages(
+        sources.graphql,
+        ISSUE_THREADS,
+        {**base, "since": since.isoformat().replace("+00:00", "Z")},
+        sizes,
+        ["issues"],
+        "issues updated in the windows",
+    )
+    pulls = pages(
+        sources.graphql,
+        PULL_THREADS,
+        base,
+        sizes,
+        ["pullRequests"],
+        "pull requests updated in the windows",
+        lambda n: timestamp(n["updatedAt"]) < since,
+    )
+    threads = []
+    for kind, query, key, found in (
+        ("issue", ISSUE_COMMENTS, "issue", issues),
+        ("pull", PULL_COMMENTS, "pullRequest", pulls),
+    ):
+        for thread in found:
+            if timestamp(thread["updatedAt"]) < since:
+                continue
+            comments = thread["comments"]
+            seen: set[str] = set()
+            while comments["pageInfo"]["hasPreviousPage"] and (
+                not comments["nodes"] or timestamp(comments["nodes"][0]["createdAt"]) >= since
+            ):
+                cursor = comments["pageInfo"]["startCursor"]
+                if not cursor or cursor in seen:
+                    raise fail(f"GitHub reported more comments on #{thread['number']}, but the cursor did not advance")
+                seen.add(cursor)
+                variables: Variables = {**base, "number": thread["number"], "cursor": cursor}
+                page = sized(sources.graphql, query, variables, sizes, f"the comments of #{thread['number']}")
+                older = dig(page, [key, "comments"], f"the comments of #{thread['number']}")
+                comments["nodes"] = older["nodes"] + comments["nodes"]
+                comments["pageInfo"] = older["pageInfo"]
+            threads.append({"kind": kind, "number": thread["number"], "comments": comments["nodes"]})
+    return threads
+
+
+def marker(body: str) -> tuple[str, str, bool] | None:
+    """The kind of decision marker a comment opens with (decided, vetoes, or asks), its zone,
+    and whether its question's zone line reads answer=recommended; None for any other comment"""
+    lines = body.lstrip().splitlines()
+    first = lines[0].strip() if lines else ""
+    decided, handled = DECIDED_MARK.match(first), VETO_HANDLED_MARK.match(first)
+    if decided:
+        return "decided", decided.group(1), False
+    if handled:
+        return "vetoes", handled.group(1), False
+    zone = ZONE_MARK.match(lines[1].strip()) if first == NEEDS_DECISION_MARK and len(lines) > 1 else None
+    if zone:
+        return "asks", zone.group(1), zone.group(2) == "recommended"
+    return None
+
+
+def decision_counts(
+    threads: list[dict[str, Any]], windows: list[Window], zones: list[str], bots: frozenset[str]
+) -> tuple[list[dict[str, dict[str, int]]], list[dict[str, Any]]]:
+    """Per window, per zone, the trusted markers posted in it: decided markers, veto-handled
+    markers, zoned needs-decision questions, and those answered with the recommended option;
+    and the markers naming no zone id, so a mistyped zone shows instead of vanishing"""
+    counts = [{zone: dict.fromkeys(COUNTS, 0) for zone in zones} for _ in windows]
+    unknown: list[dict[str, Any]] = []
+    for thread in threads:
+        for comment in thread["comments"]:
+            found = marker(comment["body"])
+            if found is None or not trusted(comment, bots):
+                continue
+            kind, zone, recommended = found
+            posted = timestamp(comment["createdAt"])
+            for week, window in zip(counts, windows, strict=True):
+                if posted not in window:
+                    continue
+                if zone not in week:
+                    unknown.append({"kind": thread["kind"], "number": thread["number"], "zone": zone})
+                    continue
+                week[zone][kind] += 1
+                week[zone]["recommended"] += int(recommended)
+    return counts, sorted(unknown, key=lambda u: (u["number"], u["zone"]))
+
+
+def decision_proposals(
+    policy: Levels, counts: list[dict[str, dict[str, int]]], raise_at: int, lower_after: int
+) -> list[dict[str, str]]:
+    """A zone at notify with raise_at vetoes or more this window goes up to ask; a zone at ask,
+    above its floor, whose questions over the last lower_after windows number MIN_ASKS or more
+    and were all answered with the recommended option goes down to notify"""
+    found = []
+    for zone, level in policy.levels.items():
+        now = counts[0][zone]
+        asks = sum(week[zone]["asks"] for week in counts[:lower_after])
+        recommended = sum(week[zone]["recommended"] for week in counts[:lower_after])
+        floor = policy.floors[zone]
+        above_floor = floor is None or floor in ("act", "notify")
+        if level == "notify" and now["vetoes"] >= raise_at:
+            why = f"{now['vetoes']} vetoes this window, at least {raise_at}"
+            found.append(proposal(zone, "notify", "ask", why))
+        elif level == "ask" and above_floor and asks >= MIN_ASKS and recommended == asks:
+            why = f"all {asks} questions over {lower_after} windows answered with the recommended option"
+            found.append(proposal(zone, "ask", "notify", why))
+    return found
+
+
+def proposal(zone: str, before: str, after: str, why: str) -> dict[str, str]:
+    title = f"Decision policy: {zone} from {before} to {after}"
+    return {"zone": zone, "from": before, "to": after, "title": title, "why": why}
+
+
+def decisions_report(args: argparse.Namespace, sources: Sources, policy: Levels, end: dt.datetime) -> dict[str, Any]:
+    """The JSON `decisions` key of spec 030: per zone this window's counts and the questions
+    over --lower-after windows, and the proposed level changes"""
+    windows = weeks(end, args.days, max(1, args.lower_after))
+    threads = fetch_threads(sources, args.repo, windows[-1].start)
+    zones = list(policy.levels)
+    counts, unknown = decision_counts(threads, windows, zones, frozenset(args.bot))
+    rows = []
+    for zone in zones:
+        now = counts[0][zone]
+        rows.append(
+            {
+                "zone": zone,
+                "level": policy.levels[zone],
+                "floor": policy.floors[zone],
+                **now,
+                "asks_over_windows": sum(week[zone]["asks"] for week in counts),
+                "recommended_over_windows": sum(week[zone]["recommended"] for week in counts),
+            }
+        )
+    return {
+        "veto_hours": policy.veto_hours,
+        "windows": len(windows),
+        "zones": rows,
+        "proposals": decision_proposals(policy, counts, args.raise_at, args.lower_after),
+        "unknown_zones": unknown,
+    }
+
+
+def decisions_text(decisions: dict[str, Any]) -> list[str]:
+    lines = [f"Decisions (veto window {decisions['veto_hours']} h; questions over {decisions['windows']} windows):"]
+    for z in decisions["zones"]:
+        lines.append(
+            f"  {z['zone']} ({z['level']}): decided {z['decided']}, vetoes {z['vetoes']},"
+            f" asks {z['asks']} ({z['recommended']} recommended);"
+            f" over the windows {z['asks_over_windows']} asks ({z['recommended_over_windows']} recommended)"
+        )
+    for u in decisions["unknown_zones"]:
+        lines.append(f"  a marker on #{u['number']} names no zone id: {u['zone']}")
+    lines.append(f"  Proposals: {len(decisions['proposals']) or 'none'}")
+    lines += [f"    {p['title']} ({p['why']})" for p in decisions["proposals"]]
+    return lines
+
+
 # -- dedupe ---------------------------------------------------------------------------------
 
 
@@ -782,13 +1062,31 @@ def main() -> int:
     g.add_argument("--environment", action="append", default=[], help="passed to metrics.py")
     g.add_argument("--incident-label", default="incident", help="[operate] incident_label")
     g.add_argument(
-        "--bot", action="append", default=[], help="passed to metrics.py; with --goals, a trusted verdict author"
+        "--bot",
+        action="append",
+        default=[],
+        help="passed to metrics.py; with --goals or --decisions, a trusted comment author",
     )
     g.add_argument("--json", action="store_true")
     g.add_argument("--goals", action="store_true", help="add the report per goal of docs/product.md (spec 027)")
-    g.add_argument("--checkout", type=Path, default=Path("."), help="with --goals: the repo's checkout, at origin/HEAD")
+    g.add_argument(
+        "--checkout",
+        type=Path,
+        default=Path("."),
+        help="with --goals or --decisions: the repo's checkout, at origin/HEAD",
+    )
     g.add_argument("--stalled-weeks", type=int, default=3, help="with --goals: weeks unserved that make a goal stalled")
     g.add_argument("--met-weeks", type=int, default=4, help="with --goals: weeks met in a row the report counts up to")
+    g.add_argument("--decisions", action="store_true", help="add the report per zone of [decisions] (spec 030)")
+    g.add_argument(
+        "--raise-at", type=int, default=2, help="with --decisions: vetoes in the window that propose notify to ask"
+    )
+    g.add_argument(
+        "--lower-after",
+        type=int,
+        default=4,
+        help="with --decisions: windows whose questions, all answered recommended, propose ask to notify",
+    )
     d = sub.add_parser("dedupe", help="each proposed title against the open issues")
     d.add_argument("repo", help="owner/name")
     d.add_argument("--title", action="append", required=True, help="a proposed issue's title")
@@ -801,6 +1099,8 @@ def main() -> int:
             parser.error("--days must be at least 1")
         if args.stalled_weeks < 1 or args.met_weeks < 1:
             parser.error("--stalled-weeks and --met-weeks must be at least 1")
+        if args.raise_at < 1 or args.lower_after < 1:
+            parser.error("--raise-at and --lower-after must be at least 1")
         return gather(args, sources_for(args))
     return dedupe_command(args)
 

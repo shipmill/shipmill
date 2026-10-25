@@ -215,6 +215,9 @@ def arguments(checkout: Path, **overrides: Any) -> argparse.Namespace:
         "checkout": checkout,
         "stalled_weeks": 3,
         "met_weeks": 4,
+        "decisions": False,
+        "raise_at": 2,
+        "lower_after": 4,
     }
     return argparse.Namespace(**{**values, **overrides})
 
@@ -485,3 +488,182 @@ def test_s027_12_the_weekly_retro_reports_goals_and_proposes_but_never_edits_the
         "It never edits `docs/product.md` or `docs/product/`, never runs a `shipmill product` edit command"
         " (`add`, `edit`, `retire`, `measure`), and never opens a pull request that changes the direction"
     ) in retro
+
+
+# -- the report per zone of the decision policy (spec 030) ---------------------------------------
+
+BOT = "shipmill-app"
+
+
+def bot(body: str, when: str) -> dict[str, Any]:
+    return comment(body, when, association="NONE", login=BOT, kind="Bot")
+
+
+def thread(number: int, *comments: dict[str, Any], cursor: str | None = None) -> dict[str, Any]:
+    newest = max((c["createdAt"] for c in comments), default=iso(END))
+    page = {"hasPreviousPage": cursor is not None, "startCursor": cursor}
+    return {"number": number, "updatedAt": newest, "comments": {"pageInfo": page, "nodes": list(comments)}}
+
+
+def decided(zone: str) -> str:
+    return f"<!-- shipmill:decided zone={zone} until=2026-10-04T00:00:00Z -->\n@amy Decided without waiting: x"
+
+
+def asked(zone: str, answer: str = "") -> str:
+    line = f"<!-- shipmill:zone {zone} answer={answer} -->" if answer else f"<!-- shipmill:zone {zone} -->"
+    return f"<!-- shipmill:needs-decision -->\n{line}\n@amy Decision needed: x"
+
+
+def handled(zone: str) -> str:
+    return f"<!-- shipmill:veto-handled zone={zone} -->\nReverted in #9."
+
+
+def thread_graphql(
+    rt: ModuleType,
+    issues: list[dict[str, Any]],
+    pulls: list[dict[str, Any]],
+    older: dict[int, list[dict[str, Any]]] | None = None,
+) -> Callable[..., dict[str, Any]]:
+    def run(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        if query == rt.ISSUE_THREADS:
+            return {"data": {"repository": {"issues": connection(issues)}}}
+        if query == rt.PULL_THREADS:
+            return {"data": {"repository": {"pullRequests": connection(pulls)}}}
+        assert query == rt.PULL_COMMENTS, query
+        page = {
+            "pageInfo": {"hasPreviousPage": False, "startCursor": None},
+            "nodes": (older or {})[variables["number"]],
+        }
+        return {"data": {"repository": {"pullRequest": {"comments": page}}}}
+
+    return run
+
+
+def policy_args(checkout: Path, **overrides: Any) -> argparse.Namespace:
+    values = {"goals": False, "decisions": True, "bot": [f"{BOT}[bot]"], **overrides}
+    return arguments(checkout, **values)
+
+
+def test_s030_18_gather_counts_each_zones_markers_in_the_window(
+    rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    day1, day3, day9 = iso(END - dt.timedelta(days=1)), iso(END - dt.timedelta(days=3)), iso(END - dt.timedelta(days=9))
+    issues = [
+        thread(
+            60,
+            bot(decided("interpretation"), day3),
+            bot(handled("interpretation"), day1),
+            comment(handled("interpretation"), day1, association="NONE", login="outsider"),  # untrusted
+            bot("See above.\n" + decided("interpretation"), day1),  # a marker mid-comment
+            bot(decided("interpretations"), day1),  # no zone id
+        ),
+    ]
+    pulls = [
+        thread(
+            70,
+            bot(asked("scope", "recommended"), day1),
+            bot(asked("contract-change", "recommended"), day1),
+            bot("<!-- shipmill:needs-decision -->\n@amy Decision needed: unzoned", day1),
+            cursor="c1",
+        ),
+    ]
+    older = {
+        70: [
+            bot(asked("scope", "other"), day3),
+            bot(decided("triage-verdict"), day9),  # the week before
+            bot(asked("contract-change", "recommended"), day9),
+        ]
+    }
+    _, run = commands()
+    src = sources(rt, run, graphql=thread_graphql(rt, issues, pulls, older))
+    assert rt.gather(policy_args(tmp_path), src) == 0
+    report = json.loads(capsys.readouterr().out)["decisions"]
+    rows = {z["zone"]: z for z in report["zones"]}
+    assert (report["veto_hours"], report["windows"]) == (24, 4)
+    assert list(rows) == list(rt.decisions_module().ZONES)
+    pick = ("level", "decided", "vetoes", "asks", "recommended", "asks_over_windows", "recommended_over_windows")
+    assert [rows["interpretation"][k] for k in pick] == ["notify", 1, 1, 0, 0, 0, 0]
+    assert [rows["scope"][k] for k in pick] == ["ask", 0, 0, 2, 1, 2, 1]
+    assert [rows["contract-change"][k] for k in pick] == ["ask", 0, 0, 1, 1, 2, 2]
+    assert [rows["triage-verdict"][k] for k in pick] == ["notify", 0, 0, 0, 0, 0, 0]
+    assert rows["scope"]["floor"] == "ask" and rows["contract-change"]["floor"] is None
+    assert report["unknown_zones"] == [{"kind": "issue", "number": 60, "zone": "interpretations"}]
+    assert report["proposals"] == []
+    src = sources(rt, run, graphql=thread_graphql(rt, issues, pulls, older))
+    assert rt.gather(policy_args(tmp_path, json=False), src) == 0
+    text = capsys.readouterr().out
+    assert "Decisions (veto window 24 h; questions over 4 windows):" in text
+    assert "  scope (ask): decided 0, vetoes 0, asks 2 (1 recommended); over the windows 2 asks (1 recommended)" in text
+    assert "a marker on #60 names no zone id: interpretations" in text and "Proposals: none" in text
+
+
+def test_s030_18_gather_reads_the_levels_from_the_checkouts_config(
+    rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / ".github").mkdir()
+    config = tmp_path / ".github" / "shipmill.toml"
+    config.write_text('[decisions]\nveto_hours = 12\ncontract-change = "notify"\n', encoding="utf-8")
+    day1 = iso(END - dt.timedelta(days=1))
+    issues = [thread(61, bot(handled("contract-change"), day1), bot(handled("contract-change"), day1))]
+    _, run = commands()
+    src = sources(rt, run, graphql=thread_graphql(rt, issues, []))
+    assert rt.gather(policy_args(tmp_path), src) == 0
+    report = json.loads(capsys.readouterr().out)["decisions"]
+    assert report["veto_hours"] == 12
+    assert report["proposals"] == [
+        {
+            "zone": "contract-change",
+            "from": "notify",
+            "to": "ask",
+            "title": "Decision policy: contract-change from notify to ask",
+            "why": "2 vetoes this window, at least 2",
+        }
+    ]
+    config.write_text('[decisions]\nscope = "notify"\n', encoding="utf-8")
+    with pytest.raises(SystemExit) as stopped:
+        rt.gather(policy_args(tmp_path), sources(rt, run))
+    assert stopped.value.code == 2
+    assert "scope = 'notify' is below its floor ask" in capsys.readouterr().err
+    _, elsewhere = commands(heads=f"{SHA}\n{'b' * 40}\n")
+    with pytest.raises(SystemExit) as stopped:
+        rt.gather(policy_args(tmp_path), sources(rt, elsewhere))
+    assert stopped.value.code == 2
+    assert "fetch origin" in capsys.readouterr().err
+
+
+def test_s030_18_proposals_raise_at_vetoes_and_lower_only_after_every_question_was_recommended(
+    rt: ModuleType,
+) -> None:
+    zones = rt.decisions_module().ZONES
+    levels = {zone: default for zone, (default, _) in zones.items()}
+    policy = rt.Levels(levels, {zone: floor for zone, (_, floor) in zones.items()}, 24)
+
+    def counts(**per_zone: list[tuple[int, int, int]]) -> list[dict[str, dict[str, int]]]:
+        """per zone, per window back from this one: (vetoes, asks, recommended)"""
+        windows = [{z: dict.fromkeys(rt.COUNTS, 0) for z in zones} for _ in range(5)]
+        for zone, weeks_back in per_zone.items():
+            for week, (vetoes, asks, recommended) in zip(windows, weeks_back, strict=False):
+                week[zone.replace("_", "-")].update(vetoes=vetoes, asks=asks, recommended=recommended)
+        return windows
+
+    def titles(found: list[dict[str, dict[str, int]]], raise_at: int = 2, lower_after: int = 4) -> list[str]:
+        return [p["title"] for p in rt.decision_proposals(policy, found, raise_at, lower_after)]
+
+    # notify zones: raised at --raise-at vetoes this window; last week's vetoes don't count
+    assert titles(counts(interpretation=[(2, 0, 0)])) == ["Decision policy: interpretation from notify to ask"]
+    assert titles(counts(interpretation=[(1, 0, 0), (3, 0, 0)])) == []
+    assert titles(counts(interpretation=[(1, 0, 0)]), raise_at=1) == [
+        "Decision policy: interpretation from notify to ask"
+    ]
+    # ask zones: lowered when at least 5 questions over the windows were all answered recommended
+    five = [(0, 2, 2), (0, 1, 1), (0, 0, 0), (0, 2, 2)]
+    assert titles(counts(contract_change=five)) == ["Decision policy: contract-change from ask to notify"]
+    assert titles(counts(contract_change=[(0, 2, 2), (0, 2, 2)])) == []  # only 4
+    assert titles(counts(contract_change=[(0, 3, 3), (0, 2, 1)])) == []  # one answered otherwise
+    assert titles(counts(contract_change=[(0, 0, 0), (0, 2, 2), (0, 0, 0), (0, 0, 0), (0, 9, 9)])) == []  # too old
+    assert titles(counts(contract_change=five), lower_after=3) == []  # 3 in the last 3 windows
+    # never below the floor: scope, rule-departure, unknown sit at their floor ask; security's is notify
+    assert titles(counts(scope=five, rule_departure=five, unknown=five)) == []
+    assert titles(counts(security=five)) == ["Decision policy: security from ask to notify"]
+    # a zone at act or never is never proposed
+    assert titles(counts(implementation=[(5, 9, 9)] * 4, direction=[(5, 9, 9)] * 4)) == []

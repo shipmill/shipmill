@@ -1,8 +1,11 @@
 """The decisions log script shared by github-issue-triage and github-pr-triage"""
 
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-issue-triage" / "scripts" / "decisions.py"
 
@@ -77,3 +80,71 @@ def test_check_reports_each_problem(tmp_path: Path) -> None:
 
 def test_no_log_is_an_input_error(tmp_path: Path) -> None:
     assert decisions(tmp_path, "check").returncode == 2
+
+
+# -- zoned decisions (spec 030) -----------------------------------------------------------------
+
+
+def zoned(cwd: Path, title: str, zone: str, *extra: str) -> subprocess.CompletedProcess[str]:
+    return add(cwd, title, "src/a.py", "--zone", zone, "--decided-at", "2026-10-03T14:00:00+02:00", *extra)
+
+
+def test_s030_17_add_zone_writes_the_zone_line_and_check_accepts_it(tmp_path: Path) -> None:
+    out = zoned(tmp_path, "Read S-001-2 as per item", "interpretation")
+    assert (out.returncode, out.stdout) == (0, "D-1\n"), out.stderr
+    log = (tmp_path / "docs" / "decisions.md").read_text()
+    # veto_hours defaults to 24 without a config; the time is in UTC
+    assert "- Enforced by: review\n- Zone: interpretation (notify, veto until 2026-10-04T12:00:00Z)\n" in log
+    assert decisions(tmp_path, "check").returncode == 0
+
+
+def test_s030_17_the_veto_window_is_the_configs_veto_hours(tmp_path: Path) -> None:
+    (tmp_path / ".github").mkdir()
+    config = tmp_path / ".github" / "shipmill.toml"
+    config.write_text('[decisions]\nveto_hours = 48\ncontract-addition = "act"\n', encoding="utf-8")
+    assert zoned(tmp_path, "A reading", "interpretation").returncode == 0
+    assert (
+        "- Zone: interpretation (notify, veto until 2026-10-05T12:00:00Z)"
+        in (tmp_path / "docs/decisions.md").read_text()
+    )
+    # a zone the config doesn't keep at notify carries no Zone line
+    refused = zoned(tmp_path, "An addition", "contract-addition")
+    assert refused.returncode == 2 and "at act" in refused.stderr
+    assert zoned(tmp_path, "A scope call", "scope").returncode == 2
+    assert zoned(tmp_path, "Nowhere", "release").returncode == 2  # no agent zone
+    config.write_text('[decisions]\ndirection = "act"\n', encoding="utf-8")
+    below = zoned(tmp_path, "Below the floor", "interpretation")
+    assert below.returncode == 2 and "below its floor ask" in below.stderr
+
+
+def test_s030_17_check_fails_a_zone_that_names_no_zone_id(tmp_path: Path) -> None:
+    assert zoned(tmp_path, "A reading", "interpretation").returncode == 0
+    log = tmp_path / "docs" / "decisions.md"
+    log.write_text(log.read_text().replace("Zone: interpretation", "Zone: interpretations"))
+    out = decisions(tmp_path, "check")
+    assert out.returncode == 1
+    assert "D-1 (line 7): Zone names no zone id 'interpretations'; zone ids: direction," in out.stdout
+    log.write_text(log.read_text().replace("Zone: interpretations (notify, ", "Zone: interpretation (ask, "))
+    assert "Zone must read" in decisions(tmp_path, "check").stdout
+
+
+def test_s030_17_the_repos_own_log_passes_check() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    assert decisions(repo, "check").returncode == 0
+
+
+def test_s030_17_the_decisions_table_reads_the_same_without_tomllib(tmp_path: Path) -> None:
+    spec = importlib.util.spec_from_file_location("decisions_script", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    text = "[agents]\nmode = \"headless\"\n\n[decisions]  # levels\nveto_hours = 12\ntriage-verdict = 'ask'\n"
+    path = tmp_path / "shipmill.toml"
+    assert module.decisions_table_310(text, path) == {"veto_hours": 12, "triage-verdict": "ask"}
+    path.write_text(text, encoding="utf-8")
+    found = module.policy(path)
+    assert (found.veto_hours, found.levels["triage-verdict"], found.levels["scope"]) == (12, "ask", "ask")
+    for unreadable in ("[decisions]\nscope = { a = 1 }\n", 'decisions.scope = "ask"\n', "[decisions.sub]\n"):
+        with pytest.raises(module.LogError, match=r"can't read \[decisions\] on Python 3.10"):
+            module.decisions_table_310(unreadable, path)
