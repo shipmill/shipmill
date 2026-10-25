@@ -124,6 +124,7 @@ ISSUE_LINES = (
             "HANDOFF_DUE",
             "VERIFY_DUE",
             "NO_ASSIGNEE",
+            "ASSIGN_DUE",  # spec 036: assign a person's item to its roles' users
             "OFF_MILESTONE",  # spec 022: a build issue outside its feature's milestone
         ),
     ),
