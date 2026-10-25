@@ -287,10 +287,9 @@ the details.
    gate's own CLI when it lags, and a config whose `requires` the version sessions load
    doesn't meet; the session starts all the same. With `notify = true` the first gate on
    the host to find a lagging install sends one desktop notification per release. The one
-   hold is PyPI: while it answers 404 for the version sessions load (the marketplace moves
-   to a release only once PyPI serves it, D-50, so only a plugin installed some other way
-   gets there first), the tick prints `plugin <version> waits for PyPI` and the next tick
-   tries again. A failed read is printed and the session starts.
+   hold is PyPI: while it answers 404 for the version sessions load (the release tag moves a
+   few minutes before the package is uploaded), the tick prints `plugin <version> waits for
+   PyPI` and the next tick tries again. A failed read is printed and the session starts.
    `status`, `doctor`, and the setup checklist report every install that is behind, in the
    repo's folder and in the gate's checkout, each with its own fix, and name the one a
    session loads.

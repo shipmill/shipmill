@@ -2,9 +2,10 @@ name: Move the major tag
 
 # Callers pin `@v0`, and the plugin's marketplace entry names a release tag: after a stable or
 # hotfix release, point both at it. shipmill's land workflow starts this one with the release's
-# tag only once publish.yml's run passed and PyPI serves the version (after_publish, D-50), so
-# neither ever names a release PyPI can't serve. A release that isn't the newest stable one,
-# such as a hotfix on an older series, moves neither.
+# tag; listed under a lane's after_publish (D-50), only once publish.yml's run passed and PyPI
+# serves the version, so neither ever names a release PyPI can't serve. A ref the release
+# commit already moved is left as it is. A release that isn't the newest stable one, such as a
+# hotfix on an older series, moves neither.
 
 on:
   workflow_dispatch:

@@ -52,10 +52,6 @@ read` and nothing else. Its steps:
 In `.github/shipmill.toml`, `publish.yml` joins `dispatch` in `[lanes.stable]` (after
 `move-major-tag.yml`) and in `[lanes.hotfix]`. The dev and rc lanes don't publish.
 
-Since #598 (D-50), `publish.yml` is the only `dispatch` of both lanes, and
-`move-major-tag.yml` is their `after_publish`: land starts it only once the publish run
-passed and PyPI serves the version.
-
 ### Failure
 
 The GitHub release is created before the dispatch, so a failed publish leaves it in place;
@@ -74,7 +70,7 @@ tool install` fetch it when needed, while `pip install` on an older interpreter 
 - S-010-1: `.github/workflows/publish.yml` runs only on `workflow_dispatch` with a required `tag` input, and its job runs in the `pypi` environment with `id-token: write` and `contents: read` as its only permissions, and reads no secret
 - S-010-2: publish.yml fails, with an error naming the tag, for a tag that isn't `vX.Y.Z`, and fails naming both versions when `pyproject.toml` at the tag holds a different version
 - S-010-3: publish.yml checks out the tag it was given, builds with `uv build`, and publishes with `uv publish` and `--check-url`, after a smoke-test step that runs `shipmill --help` from the built wheel and checks the wheel holds `watch_state.py` and `triage_state.py`
-- S-010-4: `.github/shipmill.toml` dispatches `publish.yml` on the stable lane and on the hotfix lane, and on no other lane, with `move-major-tag.yml` as both lanes' `after_publish` (D-50, #598), and `shipmill doctor` passes on the repo
+- S-010-4: `.github/shipmill.toml` dispatches `publish.yml` on the stable lane (after `move-major-tag.yml`) and on the hotfix lane, and on no other lane, and `shipmill doctor` passes on the repo
 - S-010-5: `docs/install.md` says shipmill is published to PyPI on each stable and hotfix release and that it needs Python 3.14
 
 ## Out of scope

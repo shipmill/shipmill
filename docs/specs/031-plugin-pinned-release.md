@@ -87,13 +87,11 @@ So the marketplace on `main` always serves the files of a tagged release whose
 `release/X.Y` stamps that branch, not `main`; it reaches the marketplace with the next
 stable release.
 
-Since #598 (D-50, superseding D-44 on this point), no version line moves the `ref` and the
-release commit leaves it alone. `move-major-tag.yml` moves it on the default branch, in the
-same run that moves `@v0`, and land starts that run (the lanes' `after_publish`) only once
-the release's `publish.yml` run passed and PyPI serves the version. So the `ref` only ever
-names a version PyPI serves; a failed publish leaves it, and `@v0`, on the previous release.
-A release that isn't the newest stable one, such as a hotfix on an older series, moves
-neither; the newest hotfix moves both.
+D-50 (#598) moves the `ref` after publish instead. The land step supports it through a
+lane's `after_publish` (docs/release-lanes.md), and `move-major-tag.yml` now moves the `ref`
+with `@v0`. shipmill's own config turns it on, dropping the version line above, in a
+follow-up, once a release that knows `after_publish` is on PyPI and the plugin installs
+have it: until then a pinned older plugin would refuse the key.
 
 Everywhere shipmill compares an install against "the latest release" (the gate, `doctor`,
 `status`, and `skills/github-ship-watch/scripts/watch_state.py`), the latest is the
@@ -182,9 +180,7 @@ whose `uvx shipmill==<version>` PyPI doesn't serve yet. Before a session the gat
 `https://pypi.org/pypi/shipmill/<version>/json` for the version sessions load. On a 404
 it starts no session on that tick and reports `plugin <version> waits for PyPI`; the next
 tick tries again. Any other answer is reported and the session starts. This is the only
-plugin check that holds a session. `PLUGIN_STALE` and its pause are gone. Since #598 the
-marketplace's `ref` moves only once PyPI serves the version (D-50), which closes the window
-for new installs; the check stays for a plugin installed some other way.
+plugin check that holds a session. `PLUGIN_STALE` and its pause are gone.
 
 The tick's own read, `watch_state.py`, runs the pinned CLI in the same window, and uv
 caches PyPI's index up to ten minutes, so a version can stay unlisted after its upload
@@ -267,7 +263,7 @@ It follows the path D-32 set for `[roadmap]`:
 
 ## Acceptance criteria
 
-- S-031-1: `.claude-plugin/marketplace.json` on main names the plugin's source as `{"source": "github", "repo": "shipmill/shipmill", "ref": "v<version>"}` with `<version>` equal to `.claude-plugin/plugin.json`'s `version`, and a release's stamp moves both to the new version (a `shipmill stamp` test on a copy of the repo's config). Since #598 (D-50): the `ref` names a release no newer than `plugin.json`'s `version`, the stamp moves `plugin.json` and leaves the `ref`, and `move-major-tag.yml` moves the `ref` once PyPI serves the release
+- S-031-1: `.claude-plugin/marketplace.json` on main names the plugin's source as `{"source": "github", "repo": "shipmill/shipmill", "ref": "v<version>"}` with `<version>` equal to `.claude-plugin/plugin.json`'s `version`, and a release's stamp moves both to the new version (a `shipmill stamp` test on a copy of the repo's config)
 - S-031-2: The latest release the gate, `doctor`, `status`, and `watch_state.py` compare against is the version in the marketplace entry's `ref` read from shipmill/shipmill's default branch; a marketplace entry without a `github` source or with a `ref` not of the form `vX.Y.Z` exits 2 naming the file and the entry
 - S-031-3: No file under `skills/` or `hooks/` contains `git+https://github.com/shipmill/shipmill@v0`, and every `uvx shipmill==<version>` under `skills/` names the version in `.claude-plugin/plugin.json`; a release's stamp moves each of them
 - S-031-4: `watch_state.py`, `setup_state.py`, `shipped.py`, and `hooks/delivery.py` run the CLI as `uvx shipmill==<version>` with the version read from the `.claude-plugin/plugin.json` of their own plugin, both in the repo's layout and from the built wheel; a missing or malformed `plugin.json`, or a `version` not of the form `X.Y.Z`, exits 2 naming the path; they run under Python 3.10 with no dependencies
