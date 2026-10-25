@@ -72,6 +72,11 @@ its bytes ever entering the gate's memory.
 - **Not to the session's tools.** The same env sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`,
   so Claude Code strips its credentials from the environment of the session's Bash tool,
   hooks, and MCP servers: an agent reading issue text can't print the token with `env`
+- **Nothing outranks the token.** The same env, for a session and for the preflight, drops
+  `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` when the gate inherited them. Claude Code
+  ranks both above `CLAUDE_CODE_OAUTH_TOKEN` (its Authentication precedence), so a key left
+  in the host's environment would silently move the gate's sessions off the subscription.
+  Without a token file the gate's environment passes unchanged, both keys included
 - **Only session starts and the preflight get it.** The gate's other `claude` calls
   (`claude agents`, `claude stop`, `claude plugin ...`, the hooks self-test) and its GitHub
   reads keep the gate's own environment
@@ -84,8 +89,8 @@ its bytes ever entering the gate's memory.
 #500's preflight runs `claude auth status --json`. With a token file it changes:
 
 1. The file checks above run first; a failure is the `CLAUDE_AUTH` row from that table
-2. `claude auth status --json` runs with the token in its environment (the same env a
-   session gets). It must report logged in, and when its JSON names the auth method, that
+2. `claude auth status --json` runs with the token in its environment and without
+   `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` (the same env a session gets). It must report logged in, and when its JSON names the auth method, that
    method must be the environment token, not the stored login; otherwise `CLAUDE_AUTH`
    with the fix "the token in `<path>` was not accepted; run `claude setup-token` and save
    it to `<path>`"
@@ -141,11 +146,12 @@ Both name the auth kind and never the token or any part of it:
 - S-035-15: `shipmill status` prints a `claude auth` line reading `token file <path>`, `login`, or the refusal with its fix on the next line, and never the token
 - S-035-16: `shipmill doctor` with `[agents]` reports `claude auth` as OK with the kind, FAIL with the refusal for a file the gate would refuse, WARN for `login` when the repo has a launchd job, and WARN when the token file is older than 330 days
 - S-035-17: `docs/install.md`, `docs/design/agent-modes.md`, and `skills/shipmill-setup/SKILL.md` name `claude setup-token`, the path `~/.config/shipmill/claude-token`, mode `600`, `--claude-token`, and that the token never goes in the plist or the repo; the setup skill tells the person to run `claude setup-token` themselves
+- S-035-18: with a valid token file and `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` in the gate's environment, the headless `claude -p` process, the interactive `claude --bg` command, and the preflight's `claude auth status --json` each run with `CLAUDE_CODE_OAUTH_TOKEN` and with neither `ANTHROPIC_API_KEY` nor `ANTHROPIC_AUTH_TOKEN` in their environment, checked by `test_s035_18_a_token_file_drops_the_api_key_and_auth_token_from_sessions_and_the_preflight`
 
 ## Out of scope
 
 - The preflight itself, the dead-session handling, and the watch's report of dead sessions: #500, which this builds on
-- An Anthropic API key (`ANTHROPIC_API_KEY`) or a cloud provider's credentials for gate sessions: a different billing path; the format check refuses an API key in the token file
+- An Anthropic API key (`ANTHROPIC_API_KEY`) or a cloud provider's credentials for gate sessions: a different billing path; the format check refuses an API key in the token file, and a gate with a token file drops one from the host's environment (S-035-18)
 - Rotating or renewing the token automatically: `claude setup-token` is a person's step, and doctor's age warning says when it is due
 - A per-repo token: one host-wide file serves every gate; a gate that needs another passes `--claude-token`
 - Reading the token from the macOS Keychain: a file with mode `600` matches how the App key is kept; the Keychain can follow behind its own flag if a user asks
