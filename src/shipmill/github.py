@@ -646,11 +646,14 @@ class GhCli:
             if not line.strip():
                 continue
             entry = json.loads(line)
+            patch = entry.get("patch")
+            if patch is None and entry.get("changes") == 0:  # a rename without changes: an empty diff
+                patch = ""
             files.append(
                 FileChange(
                     str(entry["filename"]),
                     str(entry["status"]),
-                    None if entry.get("patch") is None else str(entry["patch"]),
+                    None if patch is None else str(patch),
                     None if entry.get("previous_filename") is None else str(entry["previous_filename"]),
                 )
             )

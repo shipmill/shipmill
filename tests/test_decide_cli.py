@@ -437,6 +437,37 @@ def test_s030_8_gh_reads_the_merge_base_the_head_and_every_file_with_its_patch(t
     assert calls[3].endswith(f"contents/docs/specs/031%20x.md?ref={HEAD}")
 
 
+def test_s030_8_a_pure_rename_has_an_empty_diff_and_classifies(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
+    """GitHub gives no patch for a rename without changes; that is an empty diff, not a missing one"""
+    commit(repo)
+    renamed = FakePulls((FileChange("docs/specs/032-x.md", "renamed", "", previous="docs/specs/031-x.md"),))
+    assert zones_of(run(repo, capsys, "classify", "--pr", "14", pulls=renamed)) == {}
+
+
+def test_s030_8_gh_reads_a_pure_rename_as_an_empty_patch(tmp_path: Path) -> None:
+    pull = json.dumps({"head": {"sha": HEAD}, "base": {"sha": "t" * 40}})
+    renamed = {"filename": "docs/specs/032-x.md", "status": "renamed", "changes": 0}
+    large = {"filename": "docs/specs/033-x.md", "status": "modified", "changes": 9000}
+    files = (json.dumps({**renamed, "previous_filename": "docs/specs/031-x.md"}), json.dumps(large))
+    script = tmp_path / "gh"
+    script.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        f"  *compare/*) echo {'a' * 40} ;;\n"
+        f"  *pulls/5/files*) printf '%s\\n' '{files[0]}' '{files[1]}' ;;\n"
+        f"  *pulls/5) echo '{pull}' ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    change = GhCli(tmp_path, gh=str(script)).pull_change(5)
+    assert change.files == (
+        FileChange("docs/specs/032-x.md", "renamed", "", "docs/specs/031-x.md"),
+        FileChange("docs/specs/033-x.md", "modified", None),  # too large a diff stays missing
+    )
+
+
 def test_s030_8_a_missing_diff_for_a_file_a_rule_reads_exits_2(repo: Repo) -> None:
     commit(repo)
     pulls = FakePulls((FileChange("docs/specs/031-x.md", "modified", None),))
