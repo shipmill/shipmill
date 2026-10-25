@@ -374,7 +374,7 @@ It follows the path D-32 set for `[roadmap]`:
 - D-17: headless sessions run as `claude -p`, unchanged by this spec
 - D-31: the one delivery shipmill performs itself is moving its own references, which the marketplace `ref` is, like the floating major tag
 - D-32: a deprecated key is accepted with a doctor warning for one minor release, then refused
-- D-40: the headless gate's hook self-test still pauses a session; it tests the install the session loads
+- D-51 (superseding D-40): the headless gate's hook self-test still pauses a session; it tests the install the session loads
 - D-50 (superseding D-44, which superseded D-43, which superseded D-35): the plugin pins its CLI from PyPI, the marketplace serves releases once PyPI serves them, gate sessions load the installed plugin, and stale installs are reported, never paused on
 
 ## Issues
