@@ -2,13 +2,15 @@
 
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
-from shipmill.product import DIRECTION, ItemId, Prefix, Problem, Section, check, read
+from shipmill.product import DIRECTION, GitRef, ItemId, Prefix, Problem, Section, check, read
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -448,3 +450,150 @@ def test_a_section_is_named_by_its_option() -> None:
 
 def test_a_problem_reads_file_line_rule() -> None:
     assert str(Problem(DIRECTION, 4, "a rule")) == "docs/product.md:4: a rule"
+
+
+# Spec 034: `product check --ref REF` reads the direction as committed at a ref, not the working tree
+
+
+def git(root: Path, *args: str) -> str:
+    out = subprocess.run(
+        ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return out.stdout
+
+
+def committed(root: Path, *paths: str) -> Path:
+    """A git checkout whose HEAD holds the paths as the working tree has them now"""
+    git(root, "init", "-q", "-b", "main")
+    if paths:
+        git(root, "add", "--", *paths)
+    git(root, "commit", "-q", "--allow-empty", "-m", "direction")
+    return root
+
+
+def test_s034_1_check_ref_reads_the_commit_not_the_working_tree(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = committed(write(tmp_path, WELL_FORMED), str(DIRECTION))
+    write(root, WELL_FORMED.replace("- G-3:", "- G-1:"))  # broken, uncommitted
+    assert run(root, "check") == 1
+    capsys.readouterr()
+    assert run(root, "check", "--ref", "main") == 0
+    assert capsys.readouterr().out == f"{DIRECTION} at main: well formed, 4 items\n"
+    assert check(root, GitRef.resolve(root, "HEAD")) == ()
+
+
+def test_s034_1_check_ref_exits_1_naming_file_line_and_rule(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = committed(write(tmp_path, WELL_FORMED.replace("- G-3:", "- G-1:")), str(DIRECTION))
+    write(root, WELL_FORMED)  # fixed, uncommitted
+    assert run(root, "check") == 0
+    capsys.readouterr()
+    assert run(root, "check", "--ref", "HEAD") == 1
+    assert capsys.readouterr().out == "docs/product.md:16: G-1 again; it is already on docs/product.md:15\n"
+
+
+def test_s034_1_check_ref_reads_a_moved_sections_file_at_the_ref(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = committed(moved(tmp_path), "docs")
+    write(root, GOALS.replace("- G-3:", "- Q-3:"), Path("docs/product/goals.md"))  # broken, uncommitted
+    assert run(root, "check", "--ref", "HEAD") == 0
+    capsys.readouterr()
+    git(root, "commit", "-q", "-am", "break goals")
+    assert run(root, "check", "--ref", "HEAD") == 1
+    assert capsys.readouterr().out == "docs/product/goals.md:4: `## Goals` holds G-n items; got Q-3\n"
+    assert run(root, "check", "--ref", "HEAD~1") == 0
+
+
+def test_s034_1_check_ref_names_a_moved_sections_file_absent_at_the_ref(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = committed(moved(tmp_path), str(DIRECTION))  # goals.md only in the working tree
+    assert run(root, "check") == 0
+    capsys.readouterr()
+    assert run(root, "check", "--ref", "main") == 1
+    assert capsys.readouterr().out == (
+        "docs/product.md:15: `## Goals` moved to docs/product/goals.md, which doesn't exist at main\n"
+    )
+
+
+def test_s034_1_check_ref_exits_1_when_the_direction_is_absent_at_the_ref(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = committed(tmp_path)
+    write(root, WELL_FORMED)  # only in the working tree
+    assert run(root, "check", "--ref", "main") == 1
+    assert capsys.readouterr().out == "docs/product.md:1: no docs/product.md at main\n"
+    (root / "docs/product.md").unlink()
+    (root / "docs/product.md").mkdir()  # a directory where the file goes is no file either
+    write(root, WELL_FORMED, Path("docs/product.md/x.md"))
+    git(root, "add", "docs")
+    git(root, "commit", "-q", "-m", "a folder")
+    assert run(root, "check", "--ref", "main") == 1
+    assert capsys.readouterr().out == "docs/product.md:1: no docs/product.md at main\n"
+
+
+@pytest.mark.parametrize("ref", ["origin/main", "nope", "main:docs", "-q", "", "HEAD~5"])
+def test_s034_1_check_ref_exits_2_for_a_ref_git_cant_resolve(tmp_path: Path, ref: str) -> None:
+    root = committed(write(tmp_path, WELL_FORMED), str(DIRECTION))
+    with pytest.raises(ReleaseError, match="can't resolve|a git ref names a commit"):
+        run(root, "check", f"--ref={ref}")  # `=` lets a ref that looks like a flag through argparse
+
+
+def test_s034_1_check_ref_exits_2_through_the_cli(tmp_path: Path) -> None:
+    """The process's own exit code: 2 for an unknown ref, 1 for a direction absent at a known one"""
+    root = committed(tmp_path)
+    argv = [sys.executable, "-m", "shipmill", "--repo", str(root), "product", "check", "--ref"]
+    unknown = subprocess.run([*argv, "origin/main"], capture_output=True, text=True)
+    assert unknown.returncode == 2 and "can't resolve origin/main" in unknown.stderr
+    absent = subprocess.run([*argv, "main"], capture_output=True, text=True)
+    assert absent.returncode == 1 and absent.stdout == "docs/product.md:1: no docs/product.md at main\n"
+
+
+def test_s034_1_check_ref_exits_2_outside_a_git_checkout(tmp_path: Path) -> None:
+    root = write(tmp_path, WELL_FORMED)
+    with pytest.raises(ReleaseError, match="rev-parse --git-dir failed"):
+        run(root, "check", "--ref", "HEAD")
+
+
+def test_s034_1_check_ref_follows_a_symlink_only_inside_the_commit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A link within docs/product/ reads; one out of it, or out of the repo, is refused unread"""
+    root = moved(tmp_path, None)
+    write(root, GOALS, Path("docs/product/real.md"))
+    (root / "docs/product/goals.md").symlink_to("real.md")
+    committed(root, "docs")
+    assert run(root, "check", "--ref", "HEAD") == 0
+    capsys.readouterr()
+    (root / "docs/product/goals.md").unlink()
+    write(root, "TOKEN=secret\n", Path("secret.md"))
+    (root / "docs/product/goals.md").symlink_to("../../secret.md")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "out of docs/product")
+    assert run(root, "check", "--ref", "HEAD") == 1
+    out = capsys.readouterr().out
+    assert out.startswith("docs/product.md:15: docs/product/goals.md is a symlink out of docs/product/") and (
+        "secret" not in out
+    )
+    (root / "docs/product/goals.md").unlink()
+    (root / "docs/product/goals.md").symlink_to("/etc/hosts")
+    (root / DIRECTION).unlink()
+    (root / DIRECTION).symlink_to("../../outside.md")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "out of the repo")
+    assert [str(p) for p in check(root, GitRef.resolve(root, "HEAD"))] == [
+        "docs/product.md:1: a symlink out of docs/; the direction is a file in the repo"
+    ]
+
+
+def test_s034_1_a_symlink_loop_at_the_ref_reads_as_absent(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / DIRECTION).symlink_to("product.md")
+    root = committed(tmp_path, "docs")
+    assert [str(p) for p in check(root, GitRef.resolve(root, "main"))] == [
+        "docs/product.md:1: no docs/product.md at main"
+    ]

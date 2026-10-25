@@ -5,17 +5,21 @@ sections holding only `- <prefix>-<n>: <text>` items. A section may move to its 
 under docs/product/ through a single `See [<section>](product/<file>.md).` line. A goal may
 carry one measure on the line right after it, `  measure: <metric> <comparison> <target>`
 (spec 027). Only the maintainer merges a change to it (D-34); the edit commands at the end
-write one item line, or a goal's measure line, in the working tree, never a commit"""
+write one item line, or a goal's measure line, in the working tree, never a commit. `check`
+and `read` also read it as committed at a git ref (spec 034), so the watch checks the default
+branch's direction rather than whatever the checkout holds"""
 
+import posixpath
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Protocol
 
 from shipmill import cli_command
 from shipmill.errors import ReleaseError
+from shipmill.gitrepo import Git
 from shipmill.lineedit import Document, LineText, history_numbers
 
 DIRECTION = Path("docs/product.md")
@@ -328,15 +332,41 @@ def _ordered(sections: Iterable[Section]) -> list[Section]:
     return [s for s in Section if s in wanted]
 
 
-def check(root: Path) -> tuple[Problem, ...]:
+@dataclass(frozen=True, slots=True)
+class GitRef:
+    """A git ref of the checkout, as given, and the commit it resolved to (spec 034)"""
+
+    name: str
+    commit: str
+
+    @classmethod
+    def resolve(cls, root: Path, name: str) -> GitRef:
+        """The ref's commit; refused (exit 2) when git can't resolve it to one, which is never
+        read as a direction absent at it"""
+        if not name or name.startswith("-") or name != name.strip():
+            raise ReleaseError(f"a git ref names a commit, such as origin/main; got {name!r}")
+        git = Git(root)
+        git.run("rev-parse", "--git-dir")  # refuses a folder that isn't a git checkout
+        if not git.ok("rev-parse", "--verify", "-q", f"{name}^{{commit}}"):
+            raise ReleaseError(
+                f"git can't resolve {name} to a commit in {root}; fetch it, or name a branch, tag, or commit it holds"
+            )
+        return cls(name, git.sha(name))
+
+    def __str__(self) -> str:
+        return self.name
+
+
+def check(root: Path, at: GitRef | None = None) -> tuple[Problem, ...]:
     """Every rule docs/product.md and the files its sections moved to break; none when well
-    formed. A missing docs/product.md is a problem too"""
-    return _parse(root)[1]
+    formed. A missing docs/product.md is a problem too. Read from the working tree, or from
+    the commit `at` names"""
+    return _parse(_tree(root, at))[1]
 
 
-def read(root: Path) -> Direction:
+def read(root: Path, at: GitRef | None = None) -> Direction:
     """The direction, moved sections resolved; refused (exit 2) when it isn't well formed"""
-    direction, problems = _parse(root)
+    direction, problems = _parse(_tree(root, at))
     if problems:
         listed = "\n".join(f"  {p}" for p in problems)
         raise ReleaseError(
@@ -359,9 +389,143 @@ class _Body:
         return [(n, line) for n, line in self.lines if line]
 
 
+class _Tree(Protocol):
+    """Where the direction's files are read: the working tree, or the tree of a commit"""
+
+    @property
+    def ref(self) -> GitRef | None: ...
+
+    def is_file(self, relative: Path) -> bool: ...
+
+    def contained(self, relative: Path, under: Path) -> bool:
+        """Whether the file, symlinks resolved, stays under the repo's `under` directory, so a
+        link never reads, and a problem never quotes, a file outside it"""
+        ...
+
+    def lines(self, relative: Path) -> list[Line]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkTree:
+    root: Path
+    ref: None = None
+
+    def is_file(self, relative: Path) -> bool:
+        return (self.root / relative).is_file()
+
+    def contained(self, relative: Path, under: Path) -> bool:
+        return (self.root / relative).resolve().is_relative_to((self.root / under).resolve()) and (
+            self.root / under
+        ).resolve().is_relative_to(self.root.resolve())
+
+    def lines(self, relative: Path) -> list[Line]:
+        path = self.root / relative
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ReleaseError(f"{path} is not UTF-8 text: {exc}") from None
+        return _split(text)
+
+
+_SYMLINK = "120000"  # the git mode of a symbolic link, whose blob is the link's target
+_MAX_LINKS = 40  # symlinks followed for one path before it reads as missing, as the kernel's ELOOP
+
+
+@dataclass(frozen=True, slots=True)
+class _Entry:
+    mode: str
+    kind: str  # blob, tree, or commit (a submodule)
+    object: str
+
+
+@dataclass(slots=True)
+class _RefTree:
+    """The tree of the commit a ref names (spec 034): the files as committed there, symlinks
+    followed inside that tree by the same containment rules as the working tree's"""
+
+    git: Git
+    ref: GitRef
+    _entries: dict[PurePosixPath, _Entry | None] = field(default_factory=dict)
+
+    def is_file(self, relative: Path) -> bool:
+        path = self._resolve(relative)
+        if path is None:
+            return False
+        if _outside(path):
+            return True  # a link out of the repo; contained() refuses it, its target never read
+        entry = self._entry(path)
+        return entry is not None and entry.kind == "blob"
+
+    def contained(self, relative: Path, under: Path) -> bool:
+        path, directory = self._resolve(relative), self._resolve(under)
+        if path is None or directory is None or _outside(path) or _outside(directory):
+            return False
+        return path.is_relative_to(directory)
+
+    def lines(self, relative: Path) -> list[Line]:
+        path = self._resolve(relative)
+        entry = None if path is None or _outside(path) else self._entry(path)
+        if entry is None or entry.kind != "blob":
+            raise ReleaseError(f"{self.ref}:{relative} is not a file")
+        try:
+            text = self.git.run_bytes("cat-file", "blob", entry.object).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ReleaseError(f"{self.ref}:{relative} is not UTF-8 text: {exc}") from None
+        return _split(text)
+
+    def _entry(self, path: PurePosixPath) -> _Entry | None:
+        """The commit tree's entry at path, None when there is none; path holds no symlink"""
+        if path not in self._entries:
+            out = self.git.run_bytes("ls-tree", "-z", "--full-tree", self.ref.commit, "--", path.as_posix())
+            found = None
+            for record in out.decode("utf-8", errors="replace").split("\0"):
+                meta, _, name = record.partition("\t")
+                if name == path.as_posix():
+                    mode, kind, obj = meta.split(" ")
+                    found = _Entry(mode, kind, obj)
+            self._entries[path] = found
+        return self._entries[path]
+
+    def _resolve(self, relative: Path) -> PurePosixPath | None:
+        """The path with each symlink in it followed within the commit's tree; None when a part
+        is missing or the links loop. A link out of the repo gives a path outside it"""
+        done = PurePosixPath()
+        parts = list(PurePosixPath(relative.as_posix()).parts)
+        links = 0
+        while parts:
+            current = done / parts.pop(0)
+            entry = self._entry(current)
+            if entry is None:
+                return None
+            if entry.mode != _SYMLINK:
+                done = current
+                continue
+            links += 1
+            if links > _MAX_LINKS:
+                return None
+            target = self.git.run_bytes("cat-file", "blob", entry.object).decode("utf-8", errors="replace")
+            if target.startswith("/"):
+                return PurePosixPath(target)
+            joined = PurePosixPath(posixpath.normpath(posixpath.join(done.as_posix(), target)))
+            if _outside(joined):
+                return joined
+            parts = [p for p in joined.parts if p != "."] + parts
+            done = PurePosixPath()
+        return done
+
+
+def _outside(path: PurePosixPath) -> bool:
+    """Whether a path resolved at a ref leaves the repo"""
+    return path.is_absolute() or path.parts[:1] == ("..",)
+
+
+def _tree(root: Path, at: GitRef | None) -> _Tree:
+    return _WorkTree(root) if at is None else _RefTree(Git(root), at)
+
+
 class _Parser:
-    def __init__(self, root: Path) -> None:
-        self.root = root
+    def __init__(self, tree: _Tree) -> None:
+        self.tree = tree
         self.problems: list[Problem] = []
         self.seen: dict[ItemId, str] = {}  # the file:line each id first appears on, for a duplicate's message
         self.bodies: dict[Section, _Body] = {}  # each section's lines, in the file a moved one moved to
@@ -370,14 +534,17 @@ class _Parser:
         self.problems.append(Problem(path, line, rule))
 
     def direction(self) -> Direction | None:
-        path = self.root / DIRECTION
-        if not path.is_file():
-            self.fail(DIRECTION, 1, f"no such file; the direction is {DIRECTION}, in the grammar of spec 024")
+        if not self.tree.is_file(DIRECTION):
+            ref = self.tree.ref
+            if ref is None:
+                self.fail(DIRECTION, 1, f"no such file; the direction is {DIRECTION}, in the grammar of spec 024")
+            else:
+                self.fail(DIRECTION, 1, f"no {DIRECTION} at {ref}")
             return None
-        if not self._contained(DIRECTION, DIRECTION.parent):
+        if not self.tree.contained(DIRECTION, DIRECTION.parent):
             self.fail(DIRECTION, 1, f"a symlink out of {DIRECTION.parent}/; the direction is a file in the repo")
             return None
-        name, bodies = self._sections(_lines(path))
+        name, bodies = self._sections(self.tree.lines(DIRECTION))
         parts: dict[Section, str | tuple[Item, ...]] = {}
         for section in Section:
             body = self._resolve(section, bodies[section]) if section in bodies else None
@@ -497,23 +664,16 @@ class _Parser:
             self.fail(body.path, number, f"the link names `{moved['label']}`; under `## {section.value}` it names it")
             return None
         relative = DIRECTION.parent / _MOVED_DIR / moved["file"]
-        path = self.root / relative
-        if not path.is_file():
-            self.fail(body.path, number, f"`## {section.value}` moved to {relative}, which doesn't exist")
+        if not self.tree.is_file(relative):
+            at = "" if self.tree.ref is None else f" at {self.tree.ref}"
+            self.fail(body.path, number, f"`## {section.value}` moved to {relative}, which doesn't exist{at}")
             return None
-        if not self._contained(relative, relative.parent):
+        if not self.tree.contained(relative, relative.parent):
             self.fail(
                 body.path, number, f"{relative} is a symlink out of {relative.parent}/; a moved section is a file there"
             )
             return None
-        return self._moved(section, relative, _lines(path))
-
-    def _contained(self, relative: Path, under: Path) -> bool:
-        """Whether the file, symlinks resolved, stays under the repo's `under` directory, so a link
-        never reads, and a problem never quotes, a file outside it"""
-        return (self.root / relative).resolve().is_relative_to((self.root / under).resolve()) and (
-            self.root / under
-        ).resolve().is_relative_to(self.root.resolve())
+        return self._moved(section, relative, self.tree.lines(relative))
 
     def _moved(self, section: Section, path: Path, lines: list[Line]) -> _Body | None:
         body: _Body | None = None
@@ -624,17 +784,13 @@ class _Previous(StrEnum):
     BROKEN = "broken"  # a line already reported, or one no measure may follow
 
 
-def _parse(root: Path) -> tuple[Direction | None, tuple[Problem, ...]]:
-    parser = _Parser(root)
+def _parse(tree: _Tree) -> tuple[Direction | None, tuple[Problem, ...]]:
+    parser = _Parser(tree)
     direction = parser.direction()
     return direction, tuple(parser.problems)
 
 
-def _lines(path: Path) -> list[Line]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        raise ReleaseError(f"{path} is not UTF-8 text: {exc}") from None
+def _split(text: str) -> list[Line]:
     return [(n, line.rstrip()) for n, line in enumerate(text.splitlines(), start=1)]
 
 
@@ -743,7 +899,7 @@ def measure(root: Path, id: ItemId, written: Measure | None) -> Edited | None:
 def _editable(root: Path) -> tuple[Direction, dict[Section, _Body]]:
     """The direction and each section's lines; refused (exit 2) when `check` refuses it, so
     nothing is written over a broken file"""
-    parser = _Parser(root)
+    parser = _Parser(_WorkTree(root))
     direction = parser.direction()
     if parser.problems:
         listed = "\n".join(f"  {p}" for p in parser.problems)
