@@ -153,7 +153,7 @@ CASES: dict[str, list[Change]] = {
 
 
 MESSAGES: dict[str, str] = {
-    "top unknown key": "shipmill.toml: unknown keys ['colour']; allowed: ['after_stamp', 'agents', 'autonomy', 'bot', 'branch', 'bump', 'changelog', 'downstream', 'environments', 'gates', 'hooks', 'lanes', 'mode', 'name', 'notices', 'operate', 'product', 'publish', 'requires', 'roadmap', 'version_files', 'version_lines']",
+    "top unknown key": "shipmill.toml: unknown keys ['colour']; allowed: ['after_stamp', 'agents', 'autonomy', 'bot', 'branch', 'bump', 'changelog', 'decisions', 'downstream', 'environments', 'gates', 'hooks', 'lanes', 'mode', 'name', 'notices', 'operate', 'product', 'publish', 'requires', 'roadmap', 'version_files', 'version_lines']",
     "top name required": "shipmill.toml: name is required",
     "top name a string": "shipmill.toml: name must be a string, got 1",
     "top mode enum": "shipmill.toml: mode must be one of ['off', 'dry-run', 'release'], got 'on'",
