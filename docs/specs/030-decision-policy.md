@@ -401,4 +401,12 @@ changelog says so under `Changed`:
 
 ## Issues
 
+- shipmill/shipmill#607: S-030-1, S-030-2, S-030-3, S-030-4
+- shipmill/shipmill#610: S-030-5, S-030-6, S-030-7, S-030-8, S-030-9, S-030-10
+- shipmill/shipmill#612: S-030-11, S-030-12, S-030-13
+- shipmill/shipmill#608: S-030-14, S-030-15, S-030-16
+- shipmill/shipmill#609: S-030-17, S-030-18
+- shipmill/shipmill#611: S-030-19, S-030-20
+- shipmill/shipmill#613: S-030-21, S-030-22
+
 ## Verification
