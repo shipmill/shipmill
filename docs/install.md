@@ -280,7 +280,17 @@ the details.
    # app_id = 123456  # sessions write as this GitHub App; unset: as your gh login
    # mode = "headless" # interactive (default): sessions ask you; headless: `claude -p`, they ask on GitHub
    # wip = 3          # at most 3 issues in progress at once (1..100); unset: no limit
+
+   # [agents.roles]   # who receives a step an agent can't do (spec 036); optional
+   # maintainer = ["octocat"]        # unset or []: your gh login
+   # infra = ["octocat", "hubot"]    # GitHub logins, never an App's [bot]
+   # legal = ["@example-org/legal"]  # a team, as @org/team: mentioned, not assigned
+   # accounting = []                 # nobody yet: falls back to the maintainer
    ```
+
+   `shipmill roles` prints each role resolved (`--json`, or `--flags` for triage_state.py's
+   `--role` arguments); a malformed `[agents.roles]` exits 2 from every command that reads
+   the config, `doctor` included.
 
    Gate sessions load the installed plugin (spec 031, D-44), as any session on the host
    does: the gate passes no `--plugin-dir` and never changes an install. A session loads the

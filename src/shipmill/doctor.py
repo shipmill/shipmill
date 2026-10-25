@@ -14,6 +14,7 @@ from typing import Any
 from shipmill import cli_command, fragments, ticks
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
+from shipmill.agents import RolesError
 from shipmill.app import Lacks, NotInstalled
 from shipmill.autonomy import HOLD_LABEL, Autonomy, Hold
 from shipmill.changelog import Changelog
@@ -216,6 +217,8 @@ def doctor(
     try:
         found = config_path(root)
         policy = Policy.load(found)
+    except RolesError:  # S-036-2: a malformed [agents.roles] exits 2, as every reader of the config does
+        raise
     except ReleaseError as exc:
         add(False, "policy", str(exc))
         return checks

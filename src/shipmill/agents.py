@@ -3,6 +3,7 @@ for, and with which prompt. The prompt carries the scope the user grants ("merge
 green" or not), so it is a reviewed, committed decision like [autonomy]. Where the session
 runs (which machine, which scheduler) is not here: that belongs to the host"""
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -27,6 +28,146 @@ class Mode(StrEnum):
     HEADLESS = "headless"  # `claude -p`: it asks on GitHub and ends (D-17)
 
 
+ROLES = "[agents.roles]"
+MAINTAINER = "maintainer"  # the role every step an agent can't do falls back to (spec 036)
+_ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")  # its label, role:<name>, stays within GitHub's 50
+_LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}"
+_TEAM = re.compile(rf"@(?P<org>{_LOGIN})/(?P<slug>[A-Za-z0-9][A-Za-z0-9_-]{{0,99}})")  # as triage_state.py
+
+
+class RolesError(ReleaseError):
+    """A malformed [agents.roles] (S-036-2): every reader of the config exits 2 with it, and
+    doctor too, rather than reporting it as a failed check"""
+
+
+@dataclass(frozen=True, slots=True)
+class RoleName:
+    """A role's name, such as infra: lowercase letters, digits, and '-', at most 45 characters"""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if not _ROLE_NAME.fullmatch(self.value):
+            raise RolesError(
+                f"{ROLES} {self.value!r}: a role name is lowercase letters, digits, and '-', starting with a "
+                "letter or digit, at most 45 characters"
+            )
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class Login:
+    """A GitHub user's login, such as octocat; never an App's bot, name[bot]"""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        if self.value.lower().endswith("[bot]"):
+            raise ReleaseError(f"{self.value!r} is an App's bot; a role is filled by people")
+        if not re.fullmatch(_LOGIN, self.value):
+            raise ReleaseError(f"{self.value!r} is neither a GitHub login nor a team as @org/team")
+
+    @property
+    def key(self) -> str:
+        """Logins compare case-insensitively"""
+        return self.value.lower()
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class Team:
+    """A GitHub team, written @org/team-slug: mentioned, since a team can't be assigned"""
+
+    org: str
+    slug: str
+
+    @classmethod
+    def parse(cls, text: str) -> Team:
+        m = _TEAM.fullmatch(text)
+        if m is None:
+            raise ReleaseError(f"{text!r} is neither a GitHub login nor a team as @org/team")
+        return cls(m["org"], m["slug"])
+
+    @property
+    def key(self) -> str:
+        """Teams compare case-insensitively"""
+        return f"@{self.org}/{self.slug}".lower()
+
+    def __str__(self) -> str:
+        return f"@{self.org}/{self.slug}"
+
+
+type Filler = Login | Team
+
+
+def filler(text: str) -> Filler:
+    """A role's filler as the config writes it: a login, or a team as @org/team"""
+    return Team.parse(text) if text.startswith("@") else Login(text)
+
+
+@dataclass(frozen=True, slots=True)
+class Role:
+    """A role as [agents.roles] lists it; no fillers: nobody fills it yet"""
+
+    name: RoleName
+    fillers: tuple[Filler, ...]
+
+    @property
+    def users(self) -> tuple[Login, ...]:
+        return tuple(f for f in self.fillers if isinstance(f, Login))
+
+    @property
+    def teams(self) -> tuple[Team, ...]:
+        return tuple(f for f in self.fillers if isinstance(f, Team))
+
+    @classmethod
+    def parse(cls, key: str, value: object) -> Role:
+        name = RoleName(key)
+        if isinstance(value, dict):
+            raise RolesError(
+                f"{ROLES} {key}: agent-filled roles aren't supported yet; list GitHub logins and @org/team entries"
+            )
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise RolesError(f"{ROLES} {key} must be an array of logins and @org/team entries, got {value!r}")
+        fillers: list[Filler] = []
+        for text in value:
+            try:
+                found = filler(text)
+            except ReleaseError as exc:
+                raise RolesError(f"{ROLES} {key}: {exc}") from None
+            if any(found.key == f.key for f in fillers):
+                raise RolesError(f"{ROLES} {key} lists {found} twice")
+            fillers.append(found)
+        role = cls(name, tuple(fillers))
+        if key == MAINTAINER and role.fillers and not role.users:
+            raise RolesError(
+                f"{ROLES} {MAINTAINER} lists only teams; the maintainer's steps are assigned at once and a team "
+                "can't be assigned, so list at least one login"
+            )
+        return role
+
+
+@dataclass(frozen=True, slots=True)
+class RolesConfig:
+    """The [agents.roles] table (spec 036): each role's fillers, in the table's order. The
+    table is optional; with none, the only role is maintainer, the host's gh login"""
+
+    roles: tuple[Role, ...] = ()
+
+    @classmethod
+    def parse(cls, raw: object) -> RolesConfig:
+        if not isinstance(raw, dict):
+            raise RolesError(f"{ROLES} must be a table of role = [logins and @org/team entries], got {raw!r}")
+        return cls(tuple(Role.parse(str(key), value) for key, value in raw.items()))
+
+    def get(self, name: str) -> Role | None:
+        return next((r for r in self.roles if r.name.value == name), None)
+
+
 @dataclass(frozen=True, slots=True)
 class AgentsConfig:
     prompt: str  # the session's prompt; {repo} becomes owner/name
@@ -38,6 +179,7 @@ class AgentsConfig:
     app_id: int | None = None  # sessions write as this GitHub App (spec 004, D-14); None: the host's gh login
     mode: Mode = Mode.INTERACTIVE  # headless: `claude -p` (spec 005); either mode asks via needs-decision (D-21)
     wip: int | None = None  # at most this many issues in progress at once, read by triage (D-32); None: no limit
+    roles: RolesConfig = RolesConfig()  # [agents.roles]: who receives a step an agent can't do (spec 036)
 
     @classmethod
     def parse(cls, table: Table) -> AgentsConfig:
@@ -53,7 +195,9 @@ class AgentsConfig:
             "app_id",
             "mode",
             "wip",
+            "roles",
         )
+        roles = RolesConfig.parse(table.raw["roles"]) if "roles" in table.raw else RolesConfig()
         prompt = table.string("prompt").strip()
         if not prompt:
             raise ReleaseError(f"{table.where}: prompt must not be empty")
@@ -71,6 +215,7 @@ class AgentsConfig:
             app_id=table.integer("app_id", default=None, low=1, high=None),
             mode=table.enum("mode", Mode, default=Mode.INTERACTIVE),
             wip=table.integer("wip", default=None, low=1, high=_MAX_WIP),
+            roles=roles,
         )
 
     @classmethod

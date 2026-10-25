@@ -30,6 +30,10 @@
   upgrade         list the config upgrades this repo hasn't decided or declined (spec 014); --apply <id>
                   makes one's edit in the checkout and commits nothing; --propose opens or updates
                   one shipmill-upgrade issue per pending upgrade, as land.yml runs it after a release
+  roles           print who receives each step an agent can't do (spec 036): [agents.roles] resolved,
+                  maintainer first (its listed users and teams, else the host's gh login), a role
+                  nobody fills marked fallback with the maintainer's; --json for one JSON object,
+                  --flags for triage_state.py's --role arguments
   init            write a starting policy, the calling workflow, and changelog.d/README.md for changelog
                   fragments (--no-fragments: no fragments; --operate: only the operate workflow;
                   --downstream: only the downstream tests workflow, for a policy with [downstream];
@@ -92,7 +96,7 @@ from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import TextIO
 
-from shipmill import agent_as_person, cli_command, decide, evals, fragments, product, requires, review, status
+from shipmill import agent_as_person, cli_command, decide, evals, fragments, product, requires, review, roles, status
 from shipmill.agents import AgentsConfig, ProductConfig, app_id_of
 from shipmill.app import (
     CACHE,
@@ -200,6 +204,7 @@ from shipmill.product import DIRECTION, ItemId, Measure, Section
 from shipmill.product import check as check_product
 from shipmill.product import read as read_product
 from shipmill.propose import close_released, propose, run_url
+from shipmill.roles import LoginReader
 from shipmill.stamp import notes, sync
 from shipmill.upgrades import UpgradeId, apply, find, offers, pending
 from shipmill.upgrades import propose as propose_upgrades
@@ -411,6 +416,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--json", action="store_true", help="print the rows and the read's error as one JSON object")
     p.add_argument("--now", help="ISO time with offset (default: now)")
+
+    p = sub.add_parser("roles", help="print who receives each step an agent can't do, [agents.roles] (spec 036)")
+    shown = p.add_mutually_exclusive_group()
+    shown.add_argument("--json", action="store_true", help="print the roles as one JSON object")
+    shown.add_argument("--flags", action="store_true", help="print the --role arguments triage_state.py takes")
 
     p = sub.add_parser("upgrade", help=f"list the config upgrades {CONFIG_PATH} hasn't decided (spec 014)")
     acts = p.add_mutually_exclusive_group()
@@ -687,6 +697,7 @@ def main(
     downstream_reader: Reader | None = None,
     pulls: Pulls | None = None,
     merge_reader: MergeReader | None = None,
+    login: LoginReader | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -694,8 +705,8 @@ def main(
     for the user's home, gh_runner for running `shipmill gh`'s gh, library for the library's
     repository `downstream start` and `collect` write checks on, downstream_reader for
     what doctor reads of the secrets and the downstream workflows, pulls for the pull
-    request `decide classify --pr` reads, and merge_reader for the pull request a `shipmill
-    gh` merge reads, as tests pass fakes"""
+    request `decide classify --pr` reads, merge_reader for the pull request a `shipmill
+    gh` merge reads, and login for the host's gh login `roles` reads, as tests pass fakes"""
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
     root: Path = args.repo.resolve()
@@ -717,6 +728,11 @@ def main(
         return _status(root, args, state or run_state, api or UrllibApi(), signer or Openssl())
     if args.command == "milestones":
         return _milestones(root, args, github)
+    if args.command == "roles":
+        resolved = roles.resolve(roles.configured(root), login or (lambda: host_login(root)))
+        render = roles.as_json if args.json else roles.flags if args.flags else roles.text
+        sys.stdout.write(render(resolved))
+        return 0
     if args.command == "upgrade":
         return _upgrade(root, args, github or GhCli(root))
     if args.command == "product":
