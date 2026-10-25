@@ -7,6 +7,17 @@ bot.
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-10-25
+
+### Added
+
+- `shipmill product check --ref REF` checks `docs/product.md`, and the files its moved sections link, as committed at a git ref instead of the working tree: exit 1 with `no docs/product.md at <ref>` when the file is absent there, and 2 for a ref git can't resolve (spec 034) (#634)
+- Direction issue: `triage_state.py` tells shipmill's question for a missing `docs/product.md` (the `shipmill-direction` label, its marker first, a trusted author or the `--bot-login`), the watch keeps it out of ISSUES and ISSUES_OPEN, triage posts no verdict on it, and setup creates its label with `[agents]` (#635)
+- `[agents.roles]` in `.github/shipmill.toml` maps role names to the GitHub logins and `@org/team` entries who receive the steps an agent can't do, with the maintainer defaulting to the host's gh login and an empty role falling back to the maintainer; `shipmill roles` prints them resolved, with `--json` and `--flags`, and a malformed table exits 2 from every reader of the config, `shipmill doctor` included (spec 036) (#638)
+- `triage_state.py` reads an issue labelled `role:<name>` as a person's item exactly as a `human` one (which counts as `role:maintainer`), and takes `--role NAME=FILLER[,FILLER...]` flags, one per role with `maintainer` among them, exiting 2 on a malformed or incomplete set: with them, an unassigned person's item whose roles resolve to a user reads ASSIGN_DUE, even while held, with an `assign` list in `--json` (an undefined role falls back to the maintainer, and the note says so), a team-only role's item is handed off to its team with `assignees` and `teams` lists on its HANDOFF_DUE and WITH_PERSON lines, and NO_ASSIGNEE is never read; without them, an unassigned person's item still reads NO_ASSIGNEE (#639)
+- `chains.py show` lists an issue labelled `role:<name>` as a person's item, like a `human` one: its executor reads `person: @login,...` from its assignees, or its `role:<name>` labels when it has none (#641)
+- shipmill-setup: `setup_state.py` wants `role:maintainer` wherever it wants `needs-decision`, and `role:<name>` for each role `[agents.roles]` defines, and still wants `human` (#642)
+
 ## [0.73.1] - 2026-10-25
 
 ### Fixed
@@ -1779,7 +1790,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.73.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.74.0...HEAD
+[0.74.0]: https://github.com/shipmill/shipmill/compare/v0.73.1...v0.74.0
 [0.73.1]: https://github.com/shipmill/shipmill/compare/v0.73.0...v0.73.1
 [0.73.0]: https://github.com/shipmill/shipmill/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/shipmill/shipmill/compare/v0.71.0...v0.72.0

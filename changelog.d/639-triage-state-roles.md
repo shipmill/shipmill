@@ -1,3 +1,0 @@
-### Added
-
-- `triage_state.py` reads an issue labelled `role:<name>` as a person's item exactly as a `human` one (which counts as `role:maintainer`), and takes `--role NAME=FILLER[,FILLER...]` flags, one per role with `maintainer` among them, exiting 2 on a malformed or incomplete set: with them, an unassigned person's item whose roles resolve to a user reads ASSIGN_DUE, even while held, with an `assign` list in `--json` (an undefined role falls back to the maintainer, and the note says so), a team-only role's item is handed off to its team with `assignees` and `teams` lists on its HANDOFF_DUE and WITH_PERSON lines, and NO_ASSIGNEE is never read; without them, an unassigned person's item still reads NO_ASSIGNEE (#639)
