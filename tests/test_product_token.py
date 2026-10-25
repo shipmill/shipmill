@@ -580,7 +580,8 @@ def test_s038_9_the_read_commands_and_issue_writes_run(args: list[str]) -> None:
 def test_s038_9_gh_without_product_is_unchanged_in_the_home_repo(tmp_path: Path, host: Host) -> None:
     root = checkout(tmp_path, HOME)
     api, runner = MintApi(), Runner()
-    assert gh(root, tmp_path, ["pr", "merge", "1"], host, api, runner) == 7
+    # a write --product refuses; a merge is classified first (S-030-13, tests/test_app_gh_merge.py)
+    assert gh(root, tmp_path, ["pr", "edit", "1", "--title", "x"], host, api, runner) == 7
     assert runner.calls[0][1]["GH_TOKEN"] == "token-1"
     assert "GH_REPO" not in runner.calls[0][1]
     assert not product_cache_of(root).exists()

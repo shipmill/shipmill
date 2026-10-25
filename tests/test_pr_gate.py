@@ -4,6 +4,7 @@ Protected areas from the default branch (spec 024), end to end with a stand-in g
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -458,6 +459,166 @@ def test_a_subdirectory_review_md_glob_also_matches_relative_to_its_folder(tmp_p
     assert proc.returncode == 5, proc.stdout
     assert "matches `github-pr-triage/**` (skills/REVIEW.md): it merges" in proc.stdout
     assert run_gate(tmp_path, work, {7: pr(files=("skills/other/x.py",))}).returncode == 0
+
+
+# S-030-11, S-030-12: the decision policy's zones, from `shipmill decide classify`
+
+AGENTS = '[agents]\nprompt = "/t"\n'
+PLUGIN_VERSION = json.loads((SCRIPT.parents[3] / ".claude-plugin" / "plugin.json").read_text())["version"]
+FAKE_UVX = """#!{python}
+import json, os, sys
+here = os.path.dirname(os.path.abspath(sys.argv[0]))
+with open(os.path.join(here, "uvx-calls"), "a") as calls:
+    calls.write(json.dumps(sys.argv[1:]) + "\\n")
+args = sys.argv[1:]
+zones = json.loads(open(os.path.join(here, "zones.json")).read())
+number = args[args.index("--pr") + 1]
+if number not in zones:
+    sys.exit("classify failed for #" + number)
+print(json.dumps({{"level": None, "zones": zones[number], "candidates": []}}))
+"""
+DIRECTION_ZONE = {
+    "zone": "direction",
+    "level": "never",
+    "reason": "docs/product.md edits the product's direction, which only the maintainer changes (D-34)",
+}
+PROTECTED_ZONE = {
+    "zone": "protected",
+    "level": "ask",
+    "reason": "src/land.py matches `src/land.py` (REVIEW.md): pushes",
+}
+SECURITY_ZONE = {"zone": "security", "level": "notify", "reason": ".github/workflows/ci.yml is under .github/"}
+
+
+def classify_as(tmp_path: Path, zones: dict[int, list[dict[str, str]]]) -> Path:
+    """A uvx on the gate's PATH whose `shipmill decide classify` prints zones; its calls are recorded"""
+    fakes = tmp_path / "fakes"
+    fakes.mkdir(exist_ok=True)
+    uvx = fakes / "uvx"
+    uvx.write_text(FAKE_UVX.format(python=sys.executable), encoding="utf-8")
+    uvx.chmod(0o700)
+    (fakes / "zones.json").write_text(json.dumps({str(n): z for n, z in zones.items()}), encoding="utf-8")
+    return fakes / "uvx-calls"
+
+
+def uvx_calls(record: Path) -> list[list[str]]:
+    return [json.loads(line) for line in record.read_text().splitlines()] if record.exists() else []
+
+
+@pytest.fixture
+def agents(tmp_path: Path) -> Path:
+    return checkout(tmp_path, {"docs/product.md": DIRECTION, "REVIEW.md": REVIEW, ".github/shipmill.toml": AGENTS})
+
+
+def test_s030_11_a_never_zone_is_maintainer_only_with_or_without_acceptance(tmp_path: Path, agents: Path) -> None:
+    record = classify_as(tmp_path, {7: [DIRECTION_ZONE]})
+    for accepted in ((), ("--maintainer-accepted",)):
+        proc = run_gate(tmp_path, agents, {7: pr(files=("docs/product.md",))}, "--bot-login", BOT, *accepted)
+        assert proc.returncode == gate.MAINTAINER_ONLY == 7, proc.stdout + proc.stderr
+        lines = proc.stdout.splitlines()
+        assert lines[0].startswith("#7 MAINTAINER_ONLY state=OPEN")
+        assert lines[1:] == [f"  maintainer-only: direction: {DIRECTION_ZONE['reason']}"]  # the D-34 ask is classify's
+    [call, _] = uvx_calls(record)
+    assert call == [
+        f"shipmill=={PLUGIN_VERSION}", "--repo", str(agents), "decide", "classify", "--pr", "7",
+        "--ref", "origin/main", "--json",
+    ]  # fmt: skip
+
+
+def test_s030_11_maintainer_only_ranks_above_needs_decision_and_below_refused(tmp_path: Path, agents: Path) -> None:
+    classify_as(tmp_path, {7: [DIRECTION_ZONE], 8: [PROTECTED_ZONE], 9: []})
+    held = run_gate(tmp_path, agents, {7: pr(), 8: pr()}, "--bot-login", BOT)
+    assert held.returncode == 7, held.stdout + held.stderr
+    refused = run_gate(tmp_path, agents, {7: pr(), 9: pr(body="none")}, "--bot-login", BOT)
+    assert refused.returncode == 6, refused.stdout + refused.stderr
+    assert [line.split()[1] for line in refused.stdout.splitlines() if line.startswith("#")] == [
+        "MAINTAINER_ONLY",
+        "REFUSED",
+    ]
+
+
+def test_s030_12_an_ask_zone_needs_a_decision_until_the_maintainer_accepts(tmp_path: Path, agents: Path) -> None:
+    classify_as(tmp_path, {7: [PROTECTED_ZONE]})
+    proc = run_gate(tmp_path, agents, {7: pr(files=("src/land.py",))}, "--bot-login", BOT)
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [f"  needs-decision: protected: {PROTECTED_ZONE['reason']}"]
+    accepted = run_gate(tmp_path, agents, {7: pr(files=("src/land.py",))}, "--bot-login", BOT, "--maintainer-accepted")
+    assert (accepted.returncode, accepted.stdout) == (0, MAIN_READY)
+    failing = pr(files=("src/land.py",))
+    failing["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    ci = run_gate(tmp_path, agents, {7: failing}, "--bot-login", BOT, "--maintainer-accepted")
+    assert ci.returncode == 1, ci.stdout  # CI alone judges it
+    assert ci.stdout.splitlines()[1:] == ["  failed: test (FAILURE)"]
+
+
+def test_s030_12_a_notify_zone_keeps_the_ci_verdict_and_prints_a_notify_line(tmp_path: Path, agents: Path) -> None:
+    classify_as(tmp_path, {7: [SECURITY_ZONE, {"zone": "protected", "level": "act", "reason": "x"}]})
+    proc = run_gate(tmp_path, agents, {7: pr(files=(".github/workflows/ci.yml",))}, "--bot-login", BOT)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout == MAIN_READY + f"  notify: security: {SECURITY_ZONE['reason']}\n"  # an act zone prints nothing
+    failing = pr(files=(".github/workflows/ci.yml",))
+    failing["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    ci = run_gate(tmp_path, agents, {7: failing}, "--bot-login", BOT)
+    assert ci.returncode == 1
+    assert ci.stdout.splitlines()[1:] == ["  failed: test (FAILURE)", f"  notify: security: {SECURITY_ZONE['reason']}"]
+
+
+DIRECTION_ASK = (
+    "#7 NEEDS_DECISION state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=1 pending=0 failed=0\n"
+    "  needs-decision: docs/product.md edits the product's direction, which only the maintainer changes (D-34)\n"
+)
+
+
+@pytest.mark.parametrize("config", [None, "[release]\n", "# [agents]\n"])
+def test_s030_12_without_agents_on_the_base_a_direction_edit_gates_as_before(
+    tmp_path: Path, config: str | None
+) -> None:
+    files = {"docs/product.md": DIRECTION, "REVIEW.md": REVIEW}
+    work = checkout(tmp_path, files if config is None else {**files, ".github/shipmill.toml": config})
+    (work / ".github").mkdir(exist_ok=True)
+    (work / ".github" / "shipmill.toml").write_text(AGENTS)  # the working tree's config is not the base's
+    record = classify_as(tmp_path, {7: [DIRECTION_ZONE]})
+    proc = run_gate(tmp_path, work, {7: pr(files=("docs/product.md",))}, "--bot-login", BOT)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (5, DIRECTION_ASK, "")
+    assert uvx_calls(record) == []
+
+
+def test_s030_11_a_failing_classify_stops_the_gate(tmp_path: Path, agents: Path) -> None:
+    classify_as(tmp_path, {})
+    proc = run_gate(tmp_path, agents, {7: pr()}, "--bot-login", BOT)
+    assert proc.returncode == 2
+    assert "decide classify --pr 7 --ref origin/main --json` failed for #7: classify failed for #7" in proc.stderr
+    assert (
+        f"shipmill=={PLUGIN_VERSION} is the release the plugin pins: if PyPI doesn't serve it yet, wait for its "
+        "publish, or pass --tool <path or URL> to run another shipmill" in proc.stderr
+    )  # the fix is named (Q-1)
+    tool = run_gate(tmp_path, agents, {7: pr()}, "--bot-login", BOT, "--tool", "./shipmill")
+    assert tool.returncode == 2
+    assert (
+        "failed for #7: classify failed for #7; check that --tool ./shipmill is a shipmill uvx can run" in tool.stderr
+    )
+
+
+@pytest.mark.skipif(shutil.which("uvx", path="/usr/bin:/bin") is not None, reason="uvx is on the gate's PATH")
+def test_s030_11_without_uvx_the_gate_stops_naming_the_fix(tmp_path: Path, agents: Path) -> None:
+    proc = run_gate(tmp_path, agents, {7: pr()}, "--bot-login", BOT)
+    assert (proc.returncode, proc.stdout) == (2, "")
+    assert "uvx is not on PATH" in proc.stderr
+    assert "install uv, https://docs.astral.sh/uv/" in proc.stderr
+
+
+def test_s030_11_a_zone_the_gate_doesnt_know_stops_it() -> None:
+    with pytest.raises(gate.GateError, match="zone 'nope' at 'never'"):
+        gate.parse_zones(json.dumps({"zones": [{"zone": "nope", "level": "never", "reason": "x"}]}), 7)
+    with pytest.raises(gate.GateError, match="no zones list"):
+        gate.parse_zones("{}", 7)
+
+
+def test_s030_11_tool_runs_classify_from_another_shipmill(tmp_path: Path, agents: Path) -> None:
+    record = classify_as(tmp_path, {7: []})
+    proc = run_gate(tmp_path, agents, {7: pr()}, "--bot-login", BOT, "--tool", "git+https://example.com/x")
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert uvx_calls(record)[0][:3] == ["--from", "git+https://example.com/x", "shipmill"]
 
 
 # The parts, without gh
