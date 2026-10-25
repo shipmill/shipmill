@@ -66,7 +66,17 @@ For each open issue:
                    which the issue reads its usual state. Read right after
                    NEEDS_DECISION, before any other state, so an answer that links an
                    open issue doesn't read BLOCKED (#309)
-  UNTRUSTED        with --trusted-only, an issue whose author is neither an OWNER,
+  VETOED           labelled decided (spec 030, a decision taken at notify) and a veto
+                   came after its first decided marker, the comment whose first line is
+                   <!-- shipmill:decided ... --> by the --bot-login or an OWNER, MEMBER,
+                   or COLLABORATOR, with no newer <!-- shipmill:veto-handled ... -->
+                   comment by such an author answering it: take the veto up
+                   (references/needs-decision.md). A veto is a comment by an OWNER,
+                   MEMBER, or COLLABORATOR other than the --bot-login whose first word is
+                   "veto" in any case; an outsider's, or a "veto" further into a comment,
+                   never counts. Read right after DECIDED, before any other state; an
+                   item labelled decided without such a veto reads its usual state
+  UNTRUSTED       with --trusted-only, an issue whose author is neither an OWNER,
                    MEMBER, or COLLABORATOR nor the --bot-login, whatever it would read
                    otherwise: an unattended session leaves it to an interactive one (D-16).
                    One exception (D-30): a config upgrade's issue the release workflow
@@ -76,7 +86,7 @@ For each open issue:
                    issue, or one with only the label or only the marker, is UNTRUSTED
   UPSTREAM         labelled upstream: a report of a fault another repo owns, or a stand-in
                    for another repo's work, which waits outside (spec 038). Read right
-                   after UNTRUSTED, before NEEDS_DECISION, DECIDED, and every other state,
+                   after UNTRUSTED, before NEEDS_DECISION, DECIDED, VETOED, and every other state,
                    triaged or not, whatever its holds. Its note is "routed by OWNER/NAME"
                    with --home OWNER/NAME (the config's [product] home), else "no
                    coordinator: waits for the maintainer", and adds "asks the maintainer"
@@ -84,15 +94,15 @@ For each open issue:
                    Never an action: it starts no session
   OFF_MILESTONE    a build issue whose feature issue (its sub-issue parent, in this
                    repo) is in a milestone it isn't in (spec 022): set its milestone
-                   to the parent's. Read after UNTRUSTED, UPSTREAM, NEEDS_DECISION, and DECIDED,
-                   before any other state; one already in that milestone, or whose
+                   to the parent's. Read after UNTRUSTED, UPSTREAM, NEEDS_DECISION, DECIDED, and
+                   VETOED, before any other state; one already in that milestone, or whose
                    parent has none, reads its usual state
 
 An open issue labelled human is a person's item (spec 017): its assignees do it, no PR
 state (IN_PROGRESS, DONE_NOT_CLOSED) applies, and it counts as triaged from the start, so
 its "Depends on" lines and GitHub's holds apply with no triage comment. After UNTRUSTED,
-UPSTREAM, NEEDS_DECISION, DECIDED, and OFF_MILESTONE, it reads NO_ASSIGNEE, else UNFILLED, SPEC_REFUSED, BLOCKED,
-REVISIT, or POSTPONED as any issue would, else, with every hold closed, one of:
+UPSTREAM, NEEDS_DECISION, DECIDED, VETOED, and OFF_MILESTONE, it reads NO_ASSIGNEE, else UNFILLED,
+SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue would, else, with every hold closed, one of:
   NO_ASSIGNEE      labelled human with no assignee: ask the maintainer who does it
   HANDOFF_DUE      no hand-off came after its newest hold closed (or ever, with no
                    hold): tell its assignees it is their turn. A hand-off is a comment
@@ -135,6 +145,13 @@ For the N most recently closed issues (default 20):
                    whose first line is <!-- shipmill:verified --> by an OWNER, MEMBER, or
                    COLLABORATOR or the --bot-login: run its check
 
+For each closed issue labelled decided and updated in the last 14 days (a veto comment
+updates it), read in the first query and paged past 50:
+  VETOED           it holds an unanswered trusted veto, as an open issue's VETOED reads it;
+                   its line carries "closed": true (with --json). Such an issue reads
+                   nothing else, SUSPECT_CLOSE and VERIFY_CLOSED included, and one without
+                   such a veto reports nothing here
+
 With --wip N (a work-in-progress limit, such as the config's [agents] wip), a last
 line says how many issues are IN_PROGRESS (counting an OFF_MILESTONE one with an open
 PR), the room left under N, and the issues
@@ -146,7 +163,7 @@ names the product's home repo, the config's [product] home, as owner/name (lette
 ".", "-", or "_" on each side; anything else exits 2); it only words UPSTREAM's note.
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
-SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, SUSPECT_CLOSE, HANDOFF_DUE, VERIFY_DUE,
+SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, VETOED, SUSPECT_CLOSE, HANDOFF_DUE, VERIFY_DUE,
 NO_ASSIGNEE, VERIFY_CLOSED, or OFF_MILESTONE (never for NEEDS_DECISION, UNTRUSTED, UPSTREAM, or
 WITH_PERSON),
 2 on bad input (an issue with more than 100
@@ -206,6 +223,23 @@ NATIVE = "".join(f"\n        {field}(first: 50) {{ {NATIVE_NODES} }}" for field 
 PARENT = "\n        parent { number repository { nameWithOwner } milestone { title } }"
 # The fields only a forge with sub-issues and dependencies has: refusing one falls back
 NATIVE_SCHEMA = (*NATIVE_FIELDS, "parent")
+# A decision taken at notify carries this label (spec 030); a veto comment updates the item, so
+# a closed one is read back over VETO_WINDOW, in the first query, never with a call per issue
+DECIDED_LABEL = "decided"
+VETO_WINDOW = dt.timedelta(days=14)
+UTC = dt.timezone.utc  # noqa: UP017 (dt.UTC needs 3.11)
+VETOABLE_FIRST = 50  # the first query's page of them; more are paged with VETOABLE_PAGE
+VETOABLE_NODES = (
+    "pageInfo { hasNextPage endCursor } nodes { number title comments(last: 50) { nodes { " + COMMENT + " } } }"
+)
+
+
+def vetoable(size: str, cursor: str = "") -> str:
+    """The closed issues labelled decided and updated since $since, newest first"""
+    return (
+        f'vetoable: issues(states: CLOSED, labels: ["{DECIDED_LABEL}"], first: {size}{cursor},'
+        " filterBy: {since: $since}, orderBy: {field: UPDATED_AT, direction: DESC}) { " + VETOABLE_NODES + " }"
+    )
 
 
 def open_issue_fields(native: bool) -> str:
@@ -238,7 +272,7 @@ def open_issue_fields(native: bool) -> str:
 def first_query(native: bool) -> str:
     return (
         """
-query($owner: String!, $name: String!, $size: Int!, $closed: Int!) {
+query($owner: String!, $name: String!, $size: Int!, $closed: Int!, $since: DateTime!) {
   repository(owner: $owner, name: $name) {
     open: issues(states: OPEN, first: $size, orderBy: {field: CREATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }"""
@@ -318,6 +352,9 @@ CLOSED_AND_TAGS = (
         }
       }
     }
+    """
+    + vetoable(str(VETOABLE_FIRST))
+    + """
   }
 }
 """
@@ -374,6 +411,17 @@ query($owner: String!, $name: String!, $size: Int!, $number: Int!, $cursor: Stri
 }
 """
 )
+VETOABLE_PAGE = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String!, $since: DateTime!) {
+  repository(owner: $owner, name: $name) {
+    """
+    + vetoable("$size", ", after: $cursor")
+    + """
+  }
+}
+"""
+)
 TAGS_PAGE = (
     """
 query($owner: String!, $name: String!, $size: Int!, $cursor: String!) {
@@ -404,6 +452,7 @@ SIZES = {
     TIMELINE_PAGE: 100,
     REFS_PAGE: 100,
     TAGS_PAGE: 100,
+    VETOABLE_PAGE: VETOABLE_FIRST,
     **{query: 100 for query in NATIVE_PAGES.values()},
 }
 # A rejected page halves down to this floor; one that fails at the floor ends the run.
@@ -465,6 +514,11 @@ def native_refused(response: dict[str, Any]) -> str | None:
 INCIDENT_LABEL = "incident"  # the default of [operate] incident_label
 DECISION_LABEL = "needs-decision"  # references/needs-decision.md
 DECISION_MARKER = "<!-- shipmill:needs-decision -->"  # the first line of a session's question
+# Spec 030's notify level: a decided comment's first line, `<!-- shipmill:decided zone=<id>
+# until=<time> -->`, and the take-up of a veto's, `<!-- shipmill:veto-handled zone=<id> -->`
+DECIDED_MARKER = re.compile(r"^<!-- shipmill:decided(?:\s[^>]*)?-->$")
+VETO_HANDLED_MARKER = re.compile(r"^<!-- shipmill:veto-handled(?:\s[^>]*)?-->$")
+VETO = re.compile(r"veto\b", re.IGNORECASE)  # a veto's first word, in any case
 # A report of a fault another repo owns, or a stand-in for another repo's work (spec 038): it
 # waits outside, for the product's coordinator or, without one, the maintainer
 UPSTREAM_LABEL = "upstream"
@@ -499,6 +553,7 @@ ACTION = {
     "REVISIT",
     "DONE_NOT_CLOSED",
     "DECIDED",
+    "VETOED",
     "SUSPECT_CLOSE",
     "HANDOFF_DUE",
     "VERIFY_DUE",
@@ -721,26 +776,36 @@ def complete_closed_comments(run: Runner, base: Variables, sizes: Sizes, issue: 
         comments_since_close(run, base, sizes, issue)
 
 
-def fetch(repo: str, closed: int, stable_pattern: re.Pattern[str] = STABLE, run: Runner = gh_graphql) -> dict[str, Any]:
+def fetch(
+    repo: str,
+    closed: int,
+    stable_pattern: re.Pattern[str] = STABLE,
+    run: Runner = gh_graphql,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
     """One query, plus follow-up pages only for the connections it reports as capped. When
-    the forge refuses blockedBy or subIssues, one stderr note, then the text holds alone"""
+    the forge refuses blockedBy or subIssues, one stderr note, then the text holds alone.
+    ``now`` (default: the clock) dates the window of closed decided issues it reads back"""
     owner, _, name = repo.partition("/")
     if not owner or not name or "/" in name:
         fail(f"repo must be owner/name, got {repo!r}")
+    moment = now if now is not None else dt.datetime.now(UTC)
+    since = (moment - VETO_WINDOW).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        return fetch_pages(owner, name, closed, stable_pattern, run, native=True)
+        return fetch_pages(owner, name, closed, stable_pattern, run, native=True, since=since)
     except NativeUnavailable as refused:
         sys.stderr.write(f"note: native relations unavailable: {refused}\n")
-    return fetch_pages(owner, name, closed, stable_pattern, run, native=False)
+    return fetch_pages(owner, name, closed, stable_pattern, run, native=False, since=since)
 
 
 def fetch_pages(
-    owner: str, name: str, closed: int, stable_pattern: re.Pattern[str], run: Runner, native: bool
+    owner: str, name: str, closed: int, stable_pattern: re.Pattern[str], run: Runner, native: bool, since: str
 ) -> dict[str, Any]:
     base: Variables = {"owner": owner, "name": name}
     sizes = dict(SIZES)
     first, later = (QUERY, OPEN_PAGE) if native else (TEXT_QUERY, TEXT_OPEN_PAGE)
-    data = sized(run, first, {**base, "closed": closed}, sizes, "the first query (open issues, tags, recent closes)")
+    what = "the first query (open issues, tags, recent closes)"
+    data = sized(run, first, {**base, "closed": closed, "since": since}, sizes, what)
 
     issues = data["open"]
     # A first query that had to shrink says how heavy this repo's issues are
@@ -763,6 +828,18 @@ def fetch_pages(
         check_labels(issue)
         complete_refs(run, REFS_PAGE, base, sizes, issue, "refs")
         complete_closed_comments(run, base, sizes, issue)
+    # The closed issues labelled decided in the veto window: every comment, since a veto
+    # counts only after the decided marker, however far back that is
+    decided = data["vetoable"]
+    seen = set()
+    while decided["pageInfo"]["hasNextPage"]:
+        cursor = advance(decided["pageInfo"]["endCursor"], seen, "closed decided issues")
+        variables: Variables = {**base, "cursor": cursor, "since": since}
+        page = sized(run, VETOABLE_PAGE, variables, sizes, "the closed decided issues")["vetoable"]
+        decided["nodes"] = decided["nodes"] + page["nodes"]
+        decided["pageInfo"] = page["pageInfo"]
+    for issue in decided["nodes"]:
+        complete_comments(run, base, sizes, issue)
 
     # Only the newest stable tag is used: page back until one is in hand, not through every tag
     tags = data["tags"]
@@ -1148,6 +1225,56 @@ def trusted(author: str, association: str, bot_login: str | None) -> bool:
     return association in TRUSTED or (bot_login is not None and same_login(author, bot_login))
 
 
+def vetoes(comment: tuple[str, str, str], bot_login: str | None) -> bool:
+    """A veto (spec 030): a comment by an OWNER, MEMBER, or COLLABORATOR other than the
+    --bot-login whose first word is "veto" in any case; an outsider's never counts (D-16),
+    nor does a "veto" further into a comment"""
+    author, association, body = comment
+    if bot_login is not None and same_login(author, bot_login):
+        return False
+    return association in TRUSTED and VETO.match(first_line(body)) is not None
+
+
+def vetoed(comments: list[tuple[str, str, str]], bot_login: str | None) -> str | None:
+    """Who vetoed a decided item and is still unanswered, or None; comments are (login, author
+    association, body), oldest first. A veto counts after the first decided marker (its first
+    line, by the --bot-login or an OWNER, MEMBER, or COLLABORATOR, as D-29's markers), until a
+    newer veto-handled marker by such an author answers it"""
+    marks = (
+        i
+        for i, (author, association, body) in enumerate(comments)
+        if DECIDED_MARKER.match(first_line(body)) and trusted(author, association, bot_login)
+    )
+    decided = next(marks, None)
+    if decided is None:
+        return None
+    veto, handled = None, -1
+    for i in range(decided + 1, len(comments)):
+        author, association, body = comments[i]
+        if VETO_HANDLED_MARKER.match(first_line(body)) and trusted(author, association, bot_login):
+            handled = i
+        elif vetoes(comments[i], bot_login):
+            veto = i
+    if veto is None or handled > veto:
+        return None
+    return comments[veto][0]
+
+
+def comment_tuples(issue: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """An issue's comments as the decision rules read them: (login, author association, body)"""
+    return [
+        (login(c.get("author")), str(c.get("authorAssociation") or "NONE"), c["body"])
+        for c in issue["comments"]["nodes"]
+    ]
+
+
+def closed_vetoed(issue: dict[str, Any], bot_login: str | None) -> tuple[str, str] | None:
+    """VETOED for a closed issue labelled decided (the query picks those updated in the veto
+    window) that holds an unanswered trusted veto; None otherwise, which reports nothing"""
+    who = vetoed(comment_tuples(issue), bot_login)
+    return None if who is None else ("VETOED", f"closed, vetoed by @{who}")
+
+
 def upgrade_id(body: str) -> str | None:
     """The config upgrade an issue proposes, from the marker on its body's first line (not
     past leading blank lines); None without one"""
@@ -1227,28 +1354,30 @@ def home_repo(text: str) -> bool:
 def gated(
     issue: dict[str, Any], bot_login: str | None, trusted_only: bool, home: str | None = None
 ) -> tuple[str, str] | None:
-    """UNTRUSTED (with trusted_only), then UPSTREAM, then NEEDS_DECISION or DECIDED, each read
-    before any other state; None when none holds, and the issue reads as classify_open says.
-    DECIDED comes first so the reply is acted on, whatever its text links (#309). An upstream
-    report waits outside whatever its labels and holds (spec 038); ``home`` words its note"""
+    """UNTRUSTED (with trusted_only), then UPSTREAM, then NEEDS_DECISION or DECIDED, then
+    VETOED, each read before any other state; None when none holds, and the issue reads as
+    classify_open says. DECIDED comes first so the reply is acted on, whatever its text links
+    (#309). An upstream report waits outside whatever its labels and holds (spec 038); ``home``
+    words its note. VETOED is an item labelled decided with an unanswered veto (spec 030)"""
     author, association = login(issue.get("author")), str(issue.get("authorAssociation") or "NONE")
     if trusted_only and not trusted(author, association, bot_login) and not workflow_upgrade(issue):
         return "UNTRUSTED", f"opened by @{author} ({association.lower()})"
     labels = {n["name"] for n in issue["labels"]["nodes"]}
-    if UPSTREAM_LABEL in labels or DECISION_LABEL in labels:
-        comments = [
-            (login(c.get("author")), str(c.get("authorAssociation") or "NONE"), c["body"])
-            for c in issue["comments"]["nodes"]
-        ]
+    if UPSTREAM_LABEL in labels or DECISION_LABEL in labels or DECIDED_LABEL in labels:
+        comments = comment_tuples(issue)
         if UPSTREAM_LABEL in labels:
             asks = DECISION_LABEL in labels and waits_on_decision(comments, bot_login)
             return "UPSTREAM", upstream_note(home, asks)
-        asked = question(comments, bot_login)
-        if waits_on_decision(comments, bot_login):
-            return "NEEDS_DECISION", "waits on a reply" if asked is not None else "labelled, no question"
-        # it no longer waits, so it has a question and a reply after it: the newest reply
-        reply = next(c for c in reversed(comments) if replies(c, bot_login))
-        return "DECIDED", f"answered by @{reply[0]}"
+        if DECISION_LABEL in labels:
+            asked = question(comments, bot_login)
+            if waits_on_decision(comments, bot_login):
+                return "NEEDS_DECISION", "waits on a reply" if asked is not None else "labelled, no question"
+            # it no longer waits, so it has a question and a reply after it: the newest reply
+            reply = next(c for c in reversed(comments) if replies(c, bot_login))
+            return "DECIDED", f"answered by @{reply[0]}"
+        who = vetoed(comments, bot_login)
+        if who is not None:
+            return "VETOED", f"vetoed by @{who}"
     return None
 
 
@@ -1316,6 +1445,30 @@ def classify_closed(
     return "SUSPECT_CLOSE", f"commit {closer.get('abbreviatedOid')} names #{number} only mid-line"
 
 
+def closed_rows(
+    data: dict[str, Any], closed: int, hold: str, incident: str, bot_login: str | None
+) -> list[dict[str, Any]]:
+    """The lines of closed issues: each closed issue labelled decided in the veto window reads
+    VETOED, marked "closed", or nothing (spec 030); VETOED, read right after DECIDED, comes
+    before any other state, so such an issue gets no second line. Then the ``closed`` most
+    recently updated closed issues as classify_closed reads them"""
+    rows: list[dict[str, Any]] = []
+    vetoed_closed: set[int] = set()
+    for issue in data["vetoable"]["nodes"]:
+        verdict = closed_vetoed(issue, bot_login)
+        if verdict is not None:
+            vetoed_closed.add(issue["number"])
+            row = {"number": issue["number"], "state": verdict[0], "title": issue["title"], "note": verdict[1]}
+            rows.append({**row, "closed": True})
+    for issue in data["closed"]["nodes"][:closed]:
+        if issue["number"] in vetoed_closed:
+            continue
+        verdict = classify_closed(issue, hold, incident, bot_login)
+        if verdict is not None:
+            rows.append({"number": issue["number"], "state": verdict[0], "title": issue["title"], "note": verdict[1]})
+    return rows
+
+
 def wip_room(
     rows: list[dict[str, Any]], wip: int, people: frozenset[int] = frozenset(), busy: frozenset[int] = frozenset()
 ) -> dict[str, Any]:
@@ -1335,10 +1488,10 @@ def main() -> int:
         description=__doc__.splitlines()[0],
         epilog=(
             "States: NEW NEEDS_PR IN_PROGRESS DONE_NOT_CLOSED BLOCKED UNFILLED SPEC_REFUSED UNBLOCKED "
-            "POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED UNTRUSTED UPSTREAM OFF_MILESTONE; for an issue labelled "
-            "human "
+            "POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED VETOED UNTRUSTED UPSTREAM OFF_MILESTONE; for an issue "
+            "labelled human "
             "(a person's item) NO_ASSIGNEE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
-            "SUSPECT_CLOSE VERIFY_CLOSED. The module docstring defines each."
+            "SUSPECT_CLOSE VERIFY_CLOSED VETOED. The module docstring defines each."
         ),
     )
     parser.add_argument("repo", help="owner/name")
@@ -1412,16 +1565,14 @@ def main() -> int:
         if state == "WITH_PERSON":  # whom it waits on, for github-ship-watch's ISSUES_OPEN row
             row["assignees"] = assignees(issue)
         rows.append(row)
-    for issue in data["closed"]["nodes"][: args.closed]:
-        verdict = classify_closed(issue, args.hold_label, args.incident_label, args.bot_login)
-        if verdict is not None:
-            rows.append({"number": issue["number"], "state": verdict[0], "title": issue["title"], "note": verdict[1]})
+    rows += closed_rows(data, args.closed, args.hold_label, args.incident_label, args.bot_login)
 
     order = [
         "SUSPECT_CLOSE",
         "VERIFY_CLOSED",
         "DONE_NOT_CLOSED",
         "DECIDED",
+        "VETOED",
         "OFF_MILESTONE",
         "VERIFY_DUE",
         "HANDOFF_DUE",

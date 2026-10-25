@@ -854,6 +854,15 @@ def test_status_reads_a_with_person_lines_assignees_and_refuses_one_without() ->
             parse_issues(json.dumps(raw) + "\n")
 
 
+def test_s030_15_a_closed_vetoed_issue_says_closed_and_is_not_counted_open() -> None:
+    vetoed = {"number": 9, "state": "VETOED", "title": "t", "note": "closed, vetoed by @amy", "closed": True}
+    new = {"number": 5, "state": "NEW", "title": "t", "note": ""}
+    issues = parse_issues(json.dumps(vetoed) + "\n" + json.dumps(new) + "\n")
+    text = lines(facts(issues=issues))
+    assert f"  to triage      #9 {URL}/issues/9 (closed)" in text
+    assert f"  open issues    1 {URL}/issues" in text
+
+
 def test_status_places_every_state_triage_state_acts_on() -> None:
     placed = {s for _, states in ISSUE_LINES for s in states} | CLOSED_STATES
     assert placed >= triage_state().ACTION

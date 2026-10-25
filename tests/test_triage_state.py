@@ -166,6 +166,7 @@ def first_page(
         "open": forward(open_nodes, open_next),
         "tags": tags or backward([]),
         "closed": {"nodes": closed_nodes or []},
+        "vetoable": forward([]),  # the closed issues labelled decided (spec 030)
     }
 
 
@@ -520,7 +521,8 @@ class HeavyGitHub:
         end = start + size
         page = forward(self.issues[start:end], str(end) if end < len(self.issues) else None)
         if name == "QUERY":
-            return {"data": {"repository": {"open": page, "tags": backward([]), "closed": {"nodes": []}}}}
+            first = {"open": page, "tags": backward([]), "closed": {"nodes": []}, "vetoable": forward([])}
+            return {"data": {"repository": first}}
         return {"data": {"repository": {"open": page}}}
 
 

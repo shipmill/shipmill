@@ -116,6 +116,7 @@ ISSUE_LINES = (
         (
             "NEW",
             "DECIDED",
+            "VETOED",  # spec 030: a trusted veto of a decision taken at notify, open or closed
             "REVISIT",
             "SPEC_REFUSED",
             "UNFILLED",
@@ -186,12 +187,14 @@ class Row:
 class Issue:
     """One of triage_state.py's JSON lines; note is its note, such as the pull requests that
     cover it (`#409:open`) or what a blocked issue waits on (`owner/repo#5:open`); assignees
-    the logins a WITH_PERSON issue waits on (spec 017), empty for any other"""
+    the logins a WITH_PERSON issue waits on (spec 017), empty for any other; closed a closed
+    issue's VETOED line (`"closed": true`, spec 030)"""
 
     number: int
     state: str
     note: str = ""
     assignees: tuple[str, ...] = ()
+    closed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,7 +328,10 @@ def parse_rows(text: str) -> list[Row]:
 
 def parse_issues(text: str) -> list[Issue]:
     found = (r for r in map(json.loads, text.splitlines()) if r)
-    return [Issue(int(r["number"]), str(r["state"]), str(r["note"]), person_logins(r)) for r in found]
+    return [
+        Issue(int(r["number"]), str(r["state"]), str(r["note"]), person_logins(r), r.get("closed") is True)
+        for r in found
+    ]
 
 
 def person_logins(raw: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1002,6 +1008,8 @@ def issue_value(repo: str, issue: Issue) -> str:
     its title (S-011-18): an in-progress issue's open pull requests, and why a parked one is
     parked"""
     shown = item(repo, issue.number, False)
+    if issue.closed:  # a closed issue's VETOED line (spec 030)
+        return f"{shown} (closed)"
     if issue.state == "IN_PROGRESS":
         opened = [int(n) for n in re.findall(r"(?<![\w/])#(\d+):open\b", issue.note)]
         return f"{shown} → {', '.join(item(repo, n, True) for n in opened)}" if opened else shown
@@ -1197,7 +1205,7 @@ def agent_as_person_lines(facts: Facts) -> list[str]:
 
 def report(facts: Facts) -> Report:
     found, reasons, working = verdict(facts)
-    open_ = sum(1 for i in facts.issues if i.state not in CLOSED_STATES)
+    open_ = sum(1 for i in facts.issues if i.state not in CLOSED_STATES and not i.closed)
     lines = [
         *repo_lines(facts),
         *item_lines(facts),
