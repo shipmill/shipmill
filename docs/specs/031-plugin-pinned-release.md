@@ -1,6 +1,6 @@
 # S-031: The plugin pins its release; gate sessions load the installed plugin
 
-status: built
+status: approved
 serves: G-1, G-2
 
 ## Problem
@@ -373,6 +373,7 @@ It follows the path D-32 set for `[roadmap]`:
 - shipmill/shipmill#551: S-031-13, S-031-15, S-031-16, S-031-17, S-031-18, S-031-19, S-031-20, S-031-24
 - shipmill/shipmill#552: S-031-21, S-031-23
 - shipmill/shipmill#553: S-031-22
+- shipmill/shipmill#583: S-031-25, S-031-26, S-031-27, S-031-28, S-031-29, S-031-30
 
 ## Verification
 
