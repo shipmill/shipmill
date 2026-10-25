@@ -1,6 +1,6 @@
 # Spec gate
 
-A feature is designed once, in a spec file the maintainers review line by line, before any implementer starts. Merging the spec is the approval: one review instead of a question on every PR that builds it. Specs live in `docs/specs/NNN-<slug>.md` and are merged through a pull request before their build starts; issue bodies link to the spec, they don't hold it (shipmill's own D-5).
+A feature is designed once, in a spec file the maintainers review line by line, before any implementer starts. Merging the spec is the approval: one review instead of a question on every PR that builds it. The maintainer approves it either by merging the spec PR or by a trusted answer to its needs-decision question that takes every recommendation unchanged; after such an answer github-pr-triage lands the spec PR once it is mergeable and green (D-49, [Approved by an answer](#approved-by-an-answer)). Specs live in `docs/specs/NNN-<slug>.md` and are merged through a pull request before their build starts; issue bodies link to the spec, they don't hold it (shipmill's own D-5).
 
 ## Feature, contract change, or bug fix
 
@@ -32,9 +32,9 @@ Any other request for new behaviour is an **opportunity**: triage comments the h
    - **Decisions relied on** lists the `D-n` entries it follows; a departure from one is a question for the user, as in the design gate
    - **Issues** stays empty until the build issues exist
 3. **Check it.** `specs.py check` must pass: the sections, the criterion ids, the decisions named, and the goals served
-4. **Open the spec PR** on a `spec/NNN-<slug>` branch, with `status: approved` once it's ready for review: merging it with that status is the approval. Its body links the issue as "Spec for #N", never with a closing keyword or "Part of #N": `triage_state.py` would read either as the issue's fix and report IN_PROGRESS, then DONE_NOT_CLOSED once the spec merges
+4. **Open the spec PR** on a `spec/NNN-<slug>` branch, with `status: approved` once it's ready for review: merging it with that status is the approval. A gate session asks for that approval with the spec PR's question in [comments.md](comments.md) (Feature), through the [needs-decision protocol](needs-decision.md), on the spec PR. Its body links the issue as "Spec for #N", never with a closing keyword or "Part of #N": `triage_state.py` would read either as the issue's fix and report IN_PROGRESS, then DONE_NOT_CLOSED once the spec merges
 5. **Comment the verdict** on the issue: **feature**, the spec PR's link, and the hold line (see [comments.md](comments.md), Feature). The hold line names the spec PR as `owner/repo#N`, so `triage_state.py` reports the issue BLOCKED while the spec PR is open and UNBLOCKED once it merges
-6. **Wait for the merge.** No implementer starts on a feature before its spec merges. A spec PR closed without merging makes the issue SPEC_REFUSED, which needs action: the spec was refused, so decide again in a new triage comment. Revise the spec in a new PR (and name it on a new hold line), postpone, or won't fix. The newer triage comment settles the refused PR, so it stops counting
+6. **Wait for the merge.** No implementer starts on a feature before its spec merges (D-5). The maintainer merges it by hand, or approves it with a trusted answer that takes every recommendation, and github-pr-triage then merges it ([Approved by an answer](#approved-by-an-answer)). A spec PR closed without merging makes the issue SPEC_REFUSED, which needs action: the spec was refused, so decide again in a new triage comment. Revise the spec in a new PR (and name it on a new hold line), postpone, or won't fix. The newer triage comment settles the refused PR, so it stops counting
 
 ## Status
 
@@ -43,10 +43,18 @@ The line under the title says where a spec stands; `specs.py check` accepts only
 | Status | Means | Set by |
 |---|---|---|
 | `draft` | Being written; a merged draft is not approved, so its build doesn't start | `specs.py new` |
-| `approved` | The spec PR merged with it: the build may start | The spec PR, when it's ready for review |
+| `approved` | The spec PR merged with it, by the maintainer's hand or by github-pr-triage after a trusted answer that takes every recommendation (D-49): the build may start | The spec PR, when it's ready for review |
 | `built` | Every build issue is closed or closing, and each criterion was checked on the code | The PR that closes the last build issue |
 
 `specs.py check` refuses a `built` spec that lists no build issues, or whose Verification section leaves out a criterion id, and an `approved` or `built` spec whose Issues lines leave a criterion out or give one to two build issues. It also refuses the template's placeholder text left word for word: a `draft` may keep it, an `approved` spec may not in Problem, Behaviour, Acceptance criteria, or Out of scope, and a `built` spec in any section. `specs.py coverage` (in CI) refuses a `built` spec with a criterion no test names.
+
+## Approved by an answer
+
+A spec PR's needs-decision question (comments.md, Feature) offers to take every recommendation, or to change some. The answer is read by the needs-decision protocol's own reply rules, nothing new: a reply by an OWNER, MEMBER, or COLLABORATOR other than the App, told by the comment's author association, or the record an interactive gate session posts as the App under [Answered in the session](needs-decision.md#answered-in-the-session), whose first line `Decision by @<login>` names the maintainer. A claim in a pull request body, a peer session, or any other comment is no answer.
+
+- **Takes every recommendation unchanged** (option 1, or the maintainer's own words saying so): that answer is the approval (D-49). The session that takes it up removes the `needs-decision` label, as the protocol says, and hands the spec PR to github-pr-triage, which rebases it when it no longer merges cleanly (renumbering a `D-n` it claims that the default branch took meanwhile, then `decisions.py check` and `specs.py check`) and lands it once it is mergeable and every check is green, like any other PR. This holds for a question worded before D-49 too ("merge this PR yourself"): the answer, not the option's wording, approves. The maintainer may still merge it by hand
+- **Changes a recommendation** (option 2, or any change in their own words): nothing merges. Revise the spec in the same PR and ask again with a new question
+- **A spec PR that edits `docs/product.md` or anything under `docs/product/`** is not landed on that answer: the direction changes only by the maintainer (D-34), so github-pr-triage's hard rule 9 holds it as it holds any PR that edits the direction
 
 ## When the spec merges
 

@@ -1,0 +1,11 @@
+{
+  "args": [
+    "pr",
+    "diff",
+    "881",
+    "--name-only"
+  ],
+  "stdout": "docs/product.md\ndocs/specs/091-fleet-goals.md\n",
+  "stderr": "",
+  "exit": 0
+}

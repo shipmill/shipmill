@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "881",
+    "--json",
+    "comments",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"comments\": [{\"author\": {\"login\": \"shipmill-romamo[bot]\"}, \"authorAssociation\": \"CONTRIBUTOR\", \"body\": \"<!-- shipmill:needs-decision -->\\n@romamo Decision needed: does spec 091, a fleet's goals (#879), set the behaviour the way you want, with the choices under \\\"Decisions for you\\\" in this PR's body?\\n\\n1. Take every recommendation (recommended): your answer is the approval; shipmill rebases this PR if it needs it and merges it once it is mergeable and green, then files its build issues under #879. You may still merge it by hand\\n2. Change some of them: reply with the numbers and what you want instead; the spec is revised in this PR and you're asked again, and nothing merges until then\\n\\nReply here with a number or your own answer; shipmill takes this up on the tick after your reply.\\n\", \"createdAt\": \"2026-10-24T08:20:02Z\"}, {\"author\": {\"login\": \"romamo\"}, \"authorAssociation\": \"OWNER\", \"body\": \"1\", \"createdAt\": \"2026-10-24T11:02:51Z\"}]}\n",
+  "stderr": "",
+  "exit": 0
+}

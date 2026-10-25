@@ -1,0 +1,13 @@
+{
+  "args": [
+    "pr",
+    "diff",
+    "881",
+    "--repo",
+    "shipmill/shipmill",
+    "--name-only"
+  ],
+  "stdout": "docs/product.md\ndocs/specs/091-fleet-goals.md\n",
+  "stderr": "",
+  "exit": 0
+}

@@ -1,0 +1,15 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--repo",
+    "shipmill/shipmill",
+    "--state",
+    "open",
+    "--json",
+    "number,title,author,headRefName,baseRefName,isDraft,mergeable,additions,deletions,changedFiles,createdAt"
+  ],
+  "stdout": "[{\"number\": 881, \"title\": \"Add spec 091: a fleet's goals\", \"author\": {\"id\": \"BOT_kgDODCgtTQ\", \"is_bot\": true, \"login\": \"app/shipmill-romamo\", \"name\": \"\"}, \"headRefName\": \"spec/091-fleet-goals\", \"baseRefName\": \"main\", \"isDraft\": false, \"mergeable\": \"MERGEABLE\", \"additions\": 24, \"deletions\": 0, \"changedFiles\": 2, \"createdAt\": \"2026-10-24T08:12:30Z\"}]\n",
+  "stderr": "",
+  "exit": 0
+}

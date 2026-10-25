@@ -74,3 +74,5 @@ Once a trusted person replies, `triage_state.py` reads an issue as DECIDED, an a
 1. Reads the reply. A reply that answers none of the options, or asks something back, is a new question: ask again with this protocol
 2. Removes the `needs-decision` label before it acts on the answer: `gh issue edit <n> --remove-label needs-decision` (or `gh pr edit`)
 3. Records the answer with `decisions.py add` when it sets a rule, as the [design gate](design-gate.md) says, and goes on
+
+On a spec PR, a trusted answer that takes every recommendation unchanged is the spec's approval: the session lands the spec PR through github-pr-triage once it is mergeable and green, rather than leaving the merge to the maintainer, who may still merge it by hand; an answer that changes a recommendation revises the spec and asks again, and a spec PR that edits `docs/product.md` stays the maintainer's to merge (D-49, D-34, [spec-gate.md](spec-gate.md#approved-by-an-answer)).

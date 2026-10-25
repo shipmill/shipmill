@@ -400,6 +400,22 @@ def test_s024_7_a_pr_editing_the_direction_needs_the_maintainer(tmp_path: Path, 
         )
 
 
+def test_547_a_spec_pr_is_landable_like_any_other_once_green(tmp_path: Path, directed: Path) -> None:
+    # D-49: a spec PR approved by an answer lands on the gate's READY; the gate holds no spec
+    spec = ("docs/specs/030-decision-policy.md", "docs/decisions.md")
+    proc = run_gate(tmp_path, directed, {7: pr(files=spec)}, "--bot-login", BOT)
+    assert proc.returncode == 0, proc.stdout
+    assert proc.stdout.splitlines()[0].startswith("#7 READY ")
+
+
+def test_547_a_spec_pr_editing_the_direction_still_waits_on_the_maintainer(tmp_path: Path, directed: Path) -> None:
+    # D-34: the spec's answer is no --maintainer-accepted, so the direction's edit holds it
+    files = ("docs/specs/030-decision-policy.md", "docs/product.md")
+    proc = run_gate(tmp_path, directed, {7: pr(files=files)}, "--bot-login", BOT)
+    assert proc.returncode == 5, proc.stdout
+    assert "  needs-decision: docs/product.md edits the product's direction" in proc.stdout
+
+
 def test_the_worst_verdict_across_prs_is_the_exit_code(tmp_path: Path, directed: Path) -> None:
     proc = run_gate(tmp_path, directed, {7: pr(), 8: pr(body="none")}, "--bot-login", BOT)
     assert proc.returncode == 6
