@@ -7,6 +7,20 @@ bot.
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-10-25
+
+### Added
+
+- github-issue-triage's `needs-decision.md` opens with "Who decides": in a repo whose config has `[agents]`, a session asks `shipmill decide classify` first, then places what code doesn't see in a zone, takes the strictest level among a decision's zones (`unknown` when none fits), and follows it: `act` goes on, `notify` posts a `<!-- shipmill:decided zone=<id> until=<time> -->` comment and the `decided` label and goes on, `ask` asks with the zone on the question's second line, and `never` prepares the change and leaves the step to the maintainer, even after a yes in chat; it also says how a veto is taken up. The design gate, the spec gate, the triage comments, and the resolve, PR triage, and product intake skills point to it, `docs/flow.md` gains a "Who decides" section with the zone table, and four eval cases cover act, notify, ask, and never (spec 030, S-030-21, S-030-22) (#613)
+
+### Changed
+
+- In a repo whose config has `[agents]`, a won't fix, duplicate, postpone, or close verdict, a reading of a spec, and an additive contract change carry a decided comment and the `decided` label at their default `notify` level, where they went on before with only the triage comment (#613)
+
+### Fixed
+
+- The merge gate reads a pull request of more than 100 files through GitHub's files API, so one over 300 files no longer fails it with HTTP 406, and one past the API's 3000-file cap stops it naming the gap instead of being judged on a partial list (#630)
+
 ## [0.72.0] - 2026-10-25
 
 ### Added
@@ -1759,7 +1773,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.72.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.73.0...HEAD
+[0.73.0]: https://github.com/shipmill/shipmill/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/shipmill/shipmill/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/shipmill/shipmill/compare/v0.70.0...v0.71.0
 [0.70.0]: https://github.com/shipmill/shipmill/compare/v0.69.0...v0.70.0
