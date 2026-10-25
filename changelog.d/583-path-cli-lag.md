@@ -1,6 +1,6 @@
 ### Added
 
-- `shipmill --version` prints `shipmill <version>`. `doctor` (a WARN) and `shipmill status` (waiting on you) report a `shipmill on PATH` whose version differs from the plugin install a session loads: `uv tool upgrade shipmill` when it is older or predates `--version`, the plugin's update when it is newer; `watch_state.py` reads it as one `SHIPMILL_OUTDATED` row, asking the first `shipmill` on PATH outside its own environment with only PATH and HOME and a 10 s timeout (spec 031, S-031-25 to S-031-29) (#583)
+- `shipmill --version` prints `shipmill <version>`. `doctor` (a WARN) and `shipmill status` (waiting on you) report a `shipmill on PATH` whose version differs from the plugin install a session loads: `uv tool upgrade shipmill` when it is older, predates `--version`, or doesn't answer it (a 10 s timeout, or it can't start), the plugin's update when it is newer; `watch_state.py` reads it as one `SHIPMILL_OUTDATED` row, asking the first `shipmill` on PATH outside its own environment with only PATH and HOME (spec 031, S-031-25 to S-031-29) (#583)
 
 ### Changed
 

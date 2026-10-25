@@ -163,15 +163,35 @@ def test_s031_26_the_environment_is_the_interpreters_and_the_one_holding_the_scr
     )
 
 
-def test_s031_26_version_runs_with_path_and_home_only_and_a_timeout(ws: ModuleType, tmp_path: Path) -> None:
+def test_s031_26_version_runs_with_path_and_home_only(ws: ModuleType, tmp_path: Path) -> None:
     program = fake(
         tmp_path / "bin", 'echo "${GH_TOKEN-unset}|${GITHUB_TOKEN-unset}|${USER-unset}|${HOME:+home}|${PATH:+path}"'
     )
     assert ws.answer_version(program).stdout.strip() == "unset|unset|unset|home|path"
+
+
+def test_s031_29_a_shipmill_that_never_answers_is_a_row_never_a_stop(ws: ModuleType, tmp_path: Path) -> None:
+    """D-50, S-031-29: the gate reads watch_state.py every tick and stops on its exit 2, so a hung
+    or unstartable shipmill on PATH is the row with its reason and uv's upgrade, never exit 2"""
     slow = fake(tmp_path / "slow", "exec sleep 5")
-    with pytest.raises(ws.Refused) as refused:
-        ws.answer_version(slow, timeout=0.2)
-    assert refused.value.code == 2 and str(slow) in str(refused.value)
+
+    def hurried() -> object:
+        return ws.path_cli(str(tmp_path / "slow"), (tmp_path / "e",), lambda p: ws.answer_version(p, timeout=0.2))
+
+    rows = ws.plugin_rows([install("user", "0.67.0")], None, "v0.67.0", [REPO], [GATE], REPO, hurried)
+    (row,) = person(rows)
+    assert (row.detail, row.fix) == (
+        f"{slow} doesn't answer shipmill --version: timed out after 0.2 s, the plugin is 0.67.0; {UPGRADE}",
+        UPGRADE,
+    )
+    assert row.json()["agent"] is False
+    broken = tmp_path / "broken" / "shipmill"
+    broken.parent.mkdir()
+    broken.write_text("#!/nonexistent/interpreter\n", encoding="utf-8")
+    broken.chmod(0o755)
+    found = ws.path_cli(str(broken.parent), (tmp_path / "e",))
+    assert found.path == broken and found.silent is not None and found.silent.startswith("can't start: ")
+    assert ws.path_cli_row(found, "0.67.0", USER_UPDATE).fix == UPGRADE
 
 
 def test_s031_27_a_shipmill_from_before_version_is_a_row_naming_it(ws: ModuleType, tmp_path: Path) -> None:

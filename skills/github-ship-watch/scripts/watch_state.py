@@ -264,7 +264,8 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
                   environment running the check (a folder whose shipmill resolves into it, or
                   into a uvx run's environment in uv's cache, is skipped), asked `shipmill
                   --version` with only PATH and HOME and 10 s; older, or exiting non-zero
-                  ("predates shipmill --version"), its fix is `uv tool upgrade shipmill`,
+                  ("predates shipmill --version"), or never answering in time or starting
+                  ("doesn't answer shipmill --version"), its fix is `uv tool upgrade shipmill`,
                   newer the install's update; an exit 0 that isn't `shipmill X.Y.Z` exits 2.
                   No row without one on PATH or without an install a session loads. An
                   action for a person, never an agent's
@@ -3080,10 +3081,21 @@ UV_CACHE_ENVS = re.compile(r"archive-v\d+|environments-v\d+")  # the folders of 
 @dataclass(frozen=True)
 class PathCli:
     """The person's shipmill on PATH (#583): its path as PATH names it, and the version its
-    --version printed; None for a release from before --version, which answers it exit 2"""
+    --version printed; None for a release from before --version, which answers it exit 2, and
+    for one that never answered, whose reason is silent (a timeout, or it can't start)"""
 
     path: Path
     version: str | None
+    silent: str | None = None
+
+
+class NoAnswer(Exception):
+    """A shipmill on PATH that never answered --version: it timed out or couldn't start. A row,
+    never a stop: the gate reads this script every tick, and only PyPI holds a session (D-50)"""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 def own_environments(prefix: str = sys.prefix, script: Path = Path(__file__)) -> tuple[Path, ...]:
@@ -3125,7 +3137,7 @@ def path_shipmill(path: str, environments: Sequence[Path]) -> Path | None:
 
 def answer_version(program: Path, timeout: float = VERSION_TIMEOUT) -> subprocess.CompletedProcess[str]:
     """`<program> --version`, given PATH and HOME only, never the watch's tokens, and timeout
-    seconds; one that can't start or doesn't answer is refused, naming it"""
+    seconds; one that doesn't answer in time or can't start raises NoAnswer with the reason"""
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(Path.home())}
     try:
         return subprocess.run(
@@ -3138,9 +3150,9 @@ def answer_version(program: Path, timeout: float = VERSION_TIMEOUT) -> subproces
             stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
-        raise Refused(f"error: {program} --version didn't answer in {timeout:g} s") from None
+        raise NoAnswer(f"timed out after {timeout:g} s") from None
     except OSError as exc:
-        raise Refused(f"error: {program} --version can't start: {exc}") from None
+        raise NoAnswer(f"can't start: {exc.strerror or exc}") from None
 
 
 def path_cli(
@@ -3150,13 +3162,16 @@ def path_cli(
 ) -> PathCli | None:
     """The person's shipmill (S-031-26): the first on path (default: $PATH) outside the
     environment running the check, with the version its --version printed; None without one. A
-    non-zero exit predates --version (S-031-27); an exit 0 that isn't `shipmill X.Y.Z` is refused,
-    naming the path and the output"""
+    non-zero exit predates --version (S-031-27), and one that never answers is silent, both rows;
+    an exit 0 that isn't `shipmill X.Y.Z` is refused, naming the path and the output"""
     searched = os.environ.get("PATH", "") if path is None else path
     program = path_shipmill(searched, own_environments() if environments is None else environments)
     if program is None:
         return None
-    proc = execute(program)
+    try:
+        proc = execute(program)
+    except NoAnswer as silent:
+        return PathCli(program, None, silent.reason)
     if proc.returncode != 0:
         return PathCli(program, None)
     found = CLI_VERSION.fullmatch(proc.stdout.strip())
@@ -3169,7 +3184,10 @@ def path_cli_row(cli: PathCli, plugin: str, update: str) -> Row | None:
     """S-031-26, S-031-27: the person's shipmill against the plugin a session loads (plugin, its
     version), one SHIPMILL_OUTDATED row when they differ. Older, or from before --version: uv's
     upgrade. Newer: the plugin is behind, so update, S-031-15's update of that install. None
-    when they match"""
+    when they match. One that never answered is the row too, with its reason and uv's upgrade"""
+    if cli.silent is not None:
+        detail = f"{cli.path} doesn't answer shipmill --version: {cli.silent}, the plugin is {plugin}; {UV_UPGRADE}"
+        return Row("SHIPMILL_OUTDATED", PATH_CLI, detail, UV_UPGRADE)
     if cli.version is None:
         detail = f"{cli.path} predates shipmill --version, the plugin is {plugin}; {UV_UPGRADE}"
         return Row("SHIPMILL_OUTDATED", PATH_CLI, detail, UV_UPGRADE)
