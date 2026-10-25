@@ -236,7 +236,7 @@ waiting it is unchanged.
 - D-16: a fix never quotes untrusted issue or pull request text, and untrusted items go to
   an interactive session
 - D-19: a gate without an App is unfinished setup; its fix is the App step
-- D-44 (superseding D-43, which superseded D-35): each fix works when run where it says, as the plugin update's already does
+- D-50 (superseding D-44, which superseded D-43, which superseded D-35): each fix works when run where it says, as the plugin update's already does
 
 ## Issues
 
