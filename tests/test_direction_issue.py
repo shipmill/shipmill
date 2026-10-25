@@ -171,6 +171,13 @@ def test_s034_5_the_watch_keeps_direction_issues_out_of_issues_and_issues_open(w
     assert rows == []
 
 
+def test_s034_5_a_direction_issue_waiting_on_its_question_stays_in_needs_decision(ws: ModuleType) -> None:
+    # spec 034: while the question waits, the issue is in NEEDS_DECISION, out of ISSUES and ISSUES_OPEN
+    triage = "\n".join([triage_line(12, "NEEDS_DECISION"), triage_line(13, "DECIDED")])
+    rows = ws.intake("o/r", 1, triage, [], lambda n: [], BOT, False, False, None, frozenset(), (), frozenset({12, 13}))
+    assert [(r.state, r.detail) for r in rows] == [("NEEDS_DECISION", "#12")]
+
+
 def test_s034_5_an_outsiders_labelled_marked_issue_stays_untrusted(ws: ModuleType) -> None:
     # with --trusted-only triage_state.py reads it UNTRUSTED, and it is no direction issue
     directions = ws.direction_numbers([rest(14, by="mallory", association="NONE")], BOT)

@@ -2280,8 +2280,9 @@ def intake(
     both, is trusted, D-30) stays UNTRUSTED and nothing else: an unattended session never
     starts for it (D-16). So does each of untrusted_plans, the open plan issues plans_rows
     left out (spec 028), whatever triage_state.py reads it as. directions are the open
-    direction issues (spec 034), shipmill's question: none is in the issue rows, and one
-    triage_state.py reads as UNTRUSTED stays there, as an upgrade issue does"""
+    direction issues (spec 034), shipmill's question: none is in the issue rows, one whose
+    question waits on the maintainer is in NEEDS_DECISION, and one triage_state.py reads as
+    UNTRUSTED stays there, as an upgrade issue does"""
     owned = (upgrades.owned if upgrades is not None else frozenset()) | directions
     counts: dict[str, list[int]] = {}
     waits_on: dict[int, list[str]] = {}  # a WITH_PERSON issue's assignees (spec 017)
@@ -2293,6 +2294,8 @@ def intake(
             continue  # in UNTRUSTED below, and nothing else
         if number in owned and row["state"] == "UNTRUSTED":
             untrusted_upgrades.add(number)
+        elif number in directions and row["state"] == "NEEDS_DECISION":
+            pass  # its question waits on the maintainer: in NEEDS_DECISION (spec 034)
         elif number in owned:
             continue
         if row["state"] == "WITH_PERSON":
