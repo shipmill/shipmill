@@ -100,7 +100,8 @@ def test_s038_4_app_token_mints_the_one_repo_session_token_as_before(
         (f"https://github.com/{REPO}.git", ["issue", "comment", "250", "--body-file", "tmp/c.md"]),
         (f"https://github.com/{REPO}.git", ["issue", "list", "-R", REPO]),
         (ELSEWHERE, ["issue", "comment", "3", "-R", REPO, "--body-file", "tmp/c.md"]),  # a repo not its origin
-        (f"https://github.com/{REPO}.git", ["pr", "merge", "1", "--squash"]),  # --product's refusals aren't read
+        # --product's refusals aren't read; a merge is classified first (S-030-13, tests/test_app_gh_merge.py)
+        (f"https://github.com/{REPO}.git", ["pr", "edit", "1", "--title", "x"]),
         (f"https://github.com/{REPO}.git", ["workflow", "run", "ci.yml"]),
     ],
 )
