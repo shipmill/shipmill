@@ -59,7 +59,10 @@ Plugin (.claude/settings.json, so every session in the repo loads the skills):
 Labels (the triage skills and shipmill read them):
   LABELS_MISSING   some of postponed, blocked, shipmill-hold, the config's
                    blocker_label (default release-blocker), and, with an [agents]
-                   section in either mode, needs-decision, human (a person's item,
+                   section in either mode, needs-decision, role:maintainer and
+                   role:<name> for each role [agents.roles] defines (a role's item,
+                   spec 036; roles that isn't a table, or a name outside
+                   [a-z0-9][a-z0-9-]{0,44}, exits 2), human (a person's item,
                    spec 017), shipmill-upgrade-later (a config upgrade's "not
                    now", spec 014), upstream (a report for another repo, spec
                    038), and decided (a notify decision, spec 030) don't exist;
@@ -153,6 +156,11 @@ NEEDS_DECISION_LABEL = ("d876e3", "A shipmill session asked a question here; wai
 # Wanted wherever needs-decision is (spec 017): a person's item, which its assignees do
 HUMAN = "human"
 HUMAN_LABEL = ("0e8a16", "A person's item: its assignees do it, and a shipmill session hands it off")
+# Wanted wherever needs-decision is (spec 036): a role's item, role:maintainer and role:<name> for
+# each role [agents.roles] defines; a name as shipmill's, so the label fits GitHub's 50 characters
+ROLE = "role:"
+ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")
+MAINTAINER = "maintainer"
 # Wanted with an [agents] section too (spec 014): a session marks a config upgrade's "not now" with it
 UPGRADE_LATER = "shipmill-upgrade-later"
 UPGRADE_LATER_LABEL = ("ededed", "A config upgrade the maintainer put off until shipmill changes it")
@@ -413,18 +421,72 @@ def enable_plugin(settings: dict[str, Any]) -> dict[str, Any]:
 # -- labels --------------------------------------------------------------------------------
 
 
-def wanted_labels(repo_dir: Path) -> dict[str, tuple[str, str]]:
+def wanted_labels(repo_dir: Path, ws: ModuleType | None = None) -> dict[str, tuple[str, str]]:
+    """The labels the repo needs; ws is watch_state.py, which reads [agents.roles], loaded
+    here when not given"""
     wanted = dict(LABELS)
     config = config_file(repo_dir)
     blocker = policy_value(config.read_text(encoding="utf-8"), "blocker_label") if config else None
     wanted[blocker or "release-blocker"] = BLOCKER
     if agents_section(repo_dir) is not None:  # every gate session asks this way, in either mode (D-21)
         wanted[NEEDS_DECISION] = NEEDS_DECISION_LABEL
+        wanted.update(role_labels(repo_dir, ws or watch_module()))  # a role's item (spec 036)
         wanted[HUMAN] = HUMAN_LABEL  # a person's item in a chain (spec 017)
         wanted[UPGRADE_LATER] = UPGRADE_LATER_LABEL  # a config upgrade's "not now" (spec 014)
         wanted[UPSTREAM] = UPSTREAM_LABEL  # a report for another repo (spec 038)
         wanted[DECIDED] = DECIDED_LABEL  # a notify decision, open to a veto (spec 030)
     return wanted
+
+
+def role_labels(repo_dir: Path, ws: ModuleType) -> dict[str, tuple[str, str]]:
+    """role:maintainer, then role:<name> for each other role [agents.roles] defines, in its
+    order (spec 036)"""
+    names = dict.fromkeys([MAINTAINER, *role_names(repo_dir, ws)])
+    return {f"{ROLE}{name}": ("0e8a16", f"A step for the {name} role: its people do it") for name in names}
+
+
+def role_names(repo_dir: Path, ws: ModuleType) -> list[str]:
+    """The names [agents.roles] defines, in order, read as watch_state.py reads the config:
+    with tomllib on Python 3.11+, with plain tables on 3.10. Only the names: shipmill
+    validates the fillers. A roles that isn't a table, or a name outside shipmill's pattern,
+    exits 2"""
+    config = repo_dir / CONFIG
+    text = config.read_text(encoding="utf-8")
+    if ws.tomllib is None:
+        names = role_names_310(text, config, ws)
+    else:
+        try:
+            raw = ws.tomllib.loads(text)
+        except ws.tomllib.TOMLDecodeError as exc:
+            fail(f"{config}: {exc}")
+        agents = raw.get("agents")
+        roles = agents.get("roles") if isinstance(agents, dict) else None
+        if roles is not None and not isinstance(roles, dict):
+            fail(f"{config}: [agents.roles] must be a table of role names, got {type(roles).__name__}")
+        names = list(roles or {})
+    for name in names:
+        if ROLE_NAME.fullmatch(name) is None:
+            fail(
+                f"{config}: [agents.roles] {name!r} isn't a role name: lowercase letters, digits, and '-',"
+                " starting with a letter or digit, at most 45 characters"
+            )
+    return names
+
+
+def role_names_310(text: str, config: Path, ws: ModuleType) -> list[str]:
+    """role_names on Python 3.10, without tomllib: a plain [agents.roles] table whose keys
+    start their lines; roles set any other way (a roles key under [agents], dotted or inline,
+    or an [agents.roles.<name>] table) is refused rather than misread"""
+    tables = ws.toml_tables(text)
+    dotted = re.search(r"^\s*[\"']?roles[\"']?\s*[.=]", tables.get("agents", ""), re.MULTILINE)
+    if dotted or any(name.startswith("agents.roles.") for name in tables):
+        fail(f"{config}: can't read [agents.roles] on Python 3.10: use 3.11+ or a plain [agents.roles] table")
+    names = []
+    for line in tables.get("agents.roles", "").splitlines():
+        key = re.match(r"^\s*([\"']?)([^\"'=\s#]+)\1\s*=", line)
+        if key is not None:
+            names.append(key.group(2))
+    return names
 
 
 def labels_row(missing: list[str], wanted: dict[str, tuple[str, str]]) -> Row:
@@ -836,7 +898,7 @@ def main() -> int:
         settings_path.parent.mkdir(exist_ok=True)
         settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
-    wanted = wanted_labels(repo_dir)
+    wanted = wanted_labels(repo_dir, ws)
     have = existing_labels(args.repo)
     missing = [name for name in wanted if name not in have]
     if args.fix:

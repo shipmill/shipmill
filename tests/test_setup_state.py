@@ -260,6 +260,7 @@ NO_APP = (
     "no app connected: sessions write as the host's gh login, so you can't approve their PRs"
     " and GitHub won't notify you of their mentions; run shipmill-setup's step 3 (app-create)"
 )
+ROLE_LABELS = {"role:maintainer"}  # spec 036: wanted wherever needs-decision is
 BASE_LABELS = {"postponed", "blocked", "shipmill-hold", "release-blocker"}
 # D-21, spec 017, spec 014's "not now", spec 038's report for another repo, spec 030's notify decision
 AGENT_LABELS = {"needs-decision", "human", "shipmill-upgrade-later", "upstream", "decided"}
@@ -268,7 +269,7 @@ AGENT_LABELS = {"needs-decision", "human", "shipmill-upgrade-later", "upstream",
 def test_s005_16_headless_wants_the_needs_decision_label(ss: ModuleType, tmp_path: Path) -> None:
     write(tmp_path, ".github/shipmill.toml", HEADLESS)
     wanted = ss.wanted_labels(tmp_path)
-    assert set(wanted) == BASE_LABELS | AGENT_LABELS
+    assert set(wanted) == BASE_LABELS | AGENT_LABELS | ROLE_LABELS
     assert wanted["needs-decision"] == ("d876e3", "A shipmill session asked a question here; waits for a reply")
     row = ss.labels_row(["needs-decision"], wanted)
     assert (row.state, row.detail) == ("LABELS_MISSING", "needs-decision")
@@ -290,7 +291,7 @@ def test_d21_interactive_wants_the_needs_decision_label_too(ss: ModuleType, tmp_
     # #206, D-21: an interactive gate session posts its questions as needs-decision too
     write(tmp_path, ".github/shipmill.toml", text)
     wanted = ss.wanted_labels(tmp_path)
-    assert set(wanted) == BASE_LABELS | AGENT_LABELS
+    assert set(wanted) == BASE_LABELS | AGENT_LABELS | ROLE_LABELS
     assert ss.labels_row([], wanted).detail == (
         "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream, decided,"
         " and the blocker label exist"
@@ -308,7 +309,7 @@ def test_s005_16_no_agents_doesnt_want_the_label(ss: ModuleType, tmp_path: Path,
 
 def test_s005_16_a_headless_mode_outside_agents_doesnt_count(ss: ModuleType, tmp_path: Path) -> None:
     write(tmp_path, ".github/shipmill.toml", '[agents]\nprompt = "x"\napp_id = 1\n[lanes.dev]\nmode = "headless"\n')
-    assert set(ss.wanted_labels(tmp_path)) == BASE_LABELS | AGENT_LABELS  # the [agents] section, D-21
+    assert set(ss.wanted_labels(tmp_path)) == BASE_LABELS | AGENT_LABELS | ROLE_LABELS  # the [agents] section, D-21
     assert ss.agents_row(tmp_path).state == "AGENTS_NO_MODE"  # another table's mode isn't [agents]'s
 
 
@@ -376,7 +377,7 @@ def test_s030_20_decided_is_wanted_with_agents(ss: ModuleType, tmp_path: Path, t
     wanted = ss.wanted_labels(tmp_path)
     description = "A shipmill session decided here without waiting; the maintainer may veto it"
     assert wanted["decided"] == ("bfd4f2", description)
-    have = BASE_LABELS | AGENT_LABELS - {"decided"}
+    have = BASE_LABELS | ROLE_LABELS | AGENT_LABELS - {"decided"}
     row = ss.labels_row([name for name in wanted if name not in have], wanted)
     assert (row.state, row.detail) == ("LABELS_MISSING", "decided")
     gh = FakeGh("")
