@@ -148,6 +148,8 @@ class FakeGitHub:
     run_states: dict[int, list[RunState]] = field(default_factory=dict)
     run_reads: list[int] = field(default_factory=list)  # the run id of each run_state call
     no_run_url: bool = False  # dispatch names no run, as a gh too old to print its URL
+    repo_labels: set[str] = field(default_factory=set)  # the repository's labels, as label_names reads them
+    label_reads: int = 0  # label_names calls
 
     def deploy(self, environment: str, ref: str, at: dt.datetime, *states: DeploymentState) -> int:
         """Record a deployment of ref, with its statuses one minute apart from at; its id"""
@@ -262,6 +264,10 @@ class FakeGitHub:
     def remove_label(self, number: int, label: str) -> None:
         assert label in self.labels.get(number, ()), f"#{number} has no {label} label"
         self.labels[number] = tuple(have for have in self.labels[number] if have != label)
+
+    def label_names(self) -> frozenset[str]:
+        self.label_reads += 1
+        return frozenset(self.repo_labels)
 
     def close_issue(self, number: int, comment: str) -> None:
         self.closed_issues[number] = replace(self.issues.pop(number), closed_at=self.now)

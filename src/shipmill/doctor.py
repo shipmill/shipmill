@@ -20,6 +20,7 @@ from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
 from shipmill.config import config_path
 from shipmill.config import read as read_config
+from shipmill.decide import VETO_HOURS_KEY, Zone, zones
 from shipmill.downstream import (
     INPUTS,
     RUN_NAME_RULE,
@@ -54,6 +55,8 @@ DIRECTION_GUIDE = "https://github.com/shipmill/shipmill/blob/main/docs/direction
 OPERATE_CALLER = Path(".github") / "workflows" / "operate.yml"  # calls shipmill's operate.yml on a schedule
 DOWNSTREAM_CALLER = Path(".github") / "workflows" / "downstream.yml"  # calls shipmill's downstream.yml (spec 032)
 _BOT_WORKFLOWS = ("prepare.yml", "land.yml")
+DECISIONS_SECTION = "decisions"  # the config's [decisions] section, and doctor's block for it (spec 030)
+DECIDED_LABEL = "decided"  # a notify decision's label, as triage_state.py reads it (spec 030)
 _ROADMAP_DEPRECATED = (
     "[roadmap] is deprecated (D-32) and read by nothing: the work-in-progress limit is [agents] wip;"
     " move wip there and delete [roadmap], which the next minor release refuses"
@@ -226,6 +229,7 @@ def doctor(
         checks.extend(hooks_checks(policy, Git(root), hooks))
         if auth is not None:
             checks.append(auth_check(auth()))
+    checks.extend(decisions_checks(policy, raw, github))
     autonomy, hold = _autonomy(policy, github, root / CALLER)
     checks.extend(autonomy)
     upgrades, proposed = _upgrades(policy, raw, github, repo)
@@ -377,6 +381,77 @@ def direction_check(root: Path) -> Check:
         )
         return Check("FAIL", "direction", detail)
     return Check("PASS", "direction", f"{DIRECTION} is well formed")
+
+
+def decisions_checks(policy: Policy, raw: Mapping[str, Any], github: GitHub | None) -> list[Check]:
+    """S-030-19: the decision policy's block, for a config with [agents]: the veto window and
+    one PASS per zone with its level and source; a WARN for each zone [decisions] sets below
+    its default, for an unset [agents] app_id (the hooks block's app-writes off: shipmill gh
+    refuses a never zone's merge only as the App), and for a repo without the decided label,
+    read in one call. Without [agents], one WARN when [decisions] is set, as nothing reads it
+    then (D-9: no line otherwise)"""
+    section = raw.get(DECISIONS_SECTION)
+    agents = policy.agents
+    if agents is None:
+        if section is None:
+            return []
+        detail = (
+            f"[{DECISIONS_SECTION}] is set, but nothing reads it without [agents]: the levels apply to agent"
+            f" sessions only; add [agents] or delete [{DECISIONS_SECTION}]"
+        )
+        return [Check("WARN", DECISIONS_SECTION, detail)]
+    decisions = policy.decisions
+    set_hours = isinstance(section, Mapping) and VETO_HOURS_KEY in section
+    hours = int(decisions.veto_hours)
+    checks = [
+        Check(
+            "PASS",
+            DECISIONS_SECTION,
+            f"{VETO_HOURS_KEY} {hours} ({'config' if set_hours else 'default'}):"
+            f" the maintainer may veto a notify decision for {hours} hours",
+        )
+    ]
+    lowered = []
+    for zone, rule in zones().items():
+        level = decisions.level(zone)
+        fixed = zone is Zone.DECISION_POLICY  # [decisions] can't set it (D-48)
+        source = "fixed" if fixed else "config" if decisions.is_configured(zone) else "default"
+        checks.append(Check("PASS", DECISIONS_SECTION, f"{zone} {level} ({source})"))
+        if level.below(rule.default):
+            lowered.append((zone, level, rule.default))
+    for zone, level, default in lowered:
+        detail = (
+            f'[{DECISIONS_SECTION}] {zone} = "{level}" is below its default {default}, so agents involve you'
+            " less there than shipmill ships; delete the key to restore the default"
+        )
+        checks.append(Check("WARN", DECISIONS_SECTION, detail))
+    if agents.app_id is None:
+        detail = (
+            "no [agents] app_id (hooks: app-writes off), so a never zone holds by the skills and pr_gate.py only:"
+            f" `{cli_command()} gh` refuses its merge only as the App (D-40); connect one with shipmill-setup's"
+            " step 3 (app-create)"
+        )
+        checks.append(Check("WARN", DECISIONS_SECTION, detail))
+    checks.append(_decided_label(github, agents.app_id is not None))
+    return checks
+
+
+def _decided_label(github: GitHub | None, app: bool) -> Check:
+    """The decided label a notify decision adds (spec 030); one read of the repo's labels"""
+    if github is None:
+        return Check("WARN", DECISIONS_SECTION, f"can't read the labels for {DECIDED_LABEL}: gh isn't installed")
+    try:
+        have = github.label_names()
+    except ReleaseError as exc:
+        return Check("WARN", DECISIONS_SECTION, f"can't read the labels for {DECIDED_LABEL}: {exc}")
+    if DECIDED_LABEL in have:
+        return Check("PASS", DECISIONS_SECTION, f"the {DECIDED_LABEL} label exists")
+    create = f"{cli_command()} gh label create {DECIDED_LABEL}" if app else f"gh label create {DECIDED_LABEL}"
+    detail = (
+        f"no {DECIDED_LABEL} label, which a notify decision adds with its decided comment: create it with"
+        f" `{create}`, or run shipmill-setup's setup_state.py --fix"
+    )
+    return Check("WARN", DECISIONS_SECTION, detail)
 
 
 def auth_check(found: ClaudeAuth) -> Check:

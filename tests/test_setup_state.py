@@ -261,8 +261,8 @@ NO_APP = (
     " and GitHub won't notify you of their mentions; run shipmill-setup's step 3 (app-create)"
 )
 BASE_LABELS = {"postponed", "blocked", "shipmill-hold", "release-blocker"}
-# D-21, spec 017, spec 014's "not now", spec 038's report for another repo
-AGENT_LABELS = {"needs-decision", "human", "shipmill-upgrade-later", "upstream"}
+# D-21, spec 017, spec 014's "not now", spec 038's report for another repo, spec 030's notify decision
+AGENT_LABELS = {"needs-decision", "human", "shipmill-upgrade-later", "upstream", "decided"}
 
 
 def test_s005_16_headless_wants_the_needs_decision_label(ss: ModuleType, tmp_path: Path) -> None:
@@ -273,7 +273,7 @@ def test_s005_16_headless_wants_the_needs_decision_label(ss: ModuleType, tmp_pat
     row = ss.labels_row(["needs-decision"], wanted)
     assert (row.state, row.detail) == ("LABELS_MISSING", "needs-decision")
     assert ss.labels_row([], wanted).detail == (
-        "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream,"
+        "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream, decided,"
         " and the blocker label exist"
     )
 
@@ -292,7 +292,7 @@ def test_d21_interactive_wants_the_needs_decision_label_too(ss: ModuleType, tmp_
     wanted = ss.wanted_labels(tmp_path)
     assert set(wanted) == BASE_LABELS | AGENT_LABELS
     assert ss.labels_row([], wanted).detail == (
-        "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream,"
+        "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream, decided,"
         " and the blocker label exist"
     )
 
@@ -368,6 +368,30 @@ def test_s038_24_upstream_is_wanted_wherever_needs_decision_is(ss: ModuleType, t
         *["gh", "label", "create", "upstream", "-R", "me/demo", "--color", "5319e7"],
         *["--description", description],
     ]
+
+
+@pytest.mark.parametrize("text", [HEADLESS, '[agents]\nprompt = "x"\n', '[agents]\nprompt = "x"\napp_id = 1\n'])
+def test_s030_20_decided_is_wanted_with_agents(ss: ModuleType, tmp_path: Path, text: str) -> None:
+    write(tmp_path, ".github/shipmill.toml", text)
+    wanted = ss.wanted_labels(tmp_path)
+    description = "A shipmill session decided here without waiting; the maintainer may veto it"
+    assert wanted["decided"] == ("bfd4f2", description)
+    have = BASE_LABELS | AGENT_LABELS - {"decided"}
+    row = ss.labels_row([name for name in wanted if name not in have], wanted)
+    assert (row.state, row.detail) == ("LABELS_MISSING", "decided")
+    gh = FakeGh("")
+    ss.create_labels("me/demo", wanted, ["decided"], ["gh"], gh)
+    assert gh.calls == [
+        [*["gh", "label", "create", "decided", "-R", "me/demo", "--color", "bfd4f2"], *["--description", description]]
+    ]
+
+
+@pytest.mark.parametrize("text", ["", 'mode = "release"\n', "[decisions]\nveto_hours = 12\n"])
+def test_s030_20_decided_isnt_wanted_without_agents(ss: ModuleType, tmp_path: Path, text: str) -> None:
+    write(tmp_path, ".github/shipmill.toml", text)
+    wanted = ss.wanted_labels(tmp_path)
+    assert "decided" not in wanted
+    assert ss.labels_row([], wanted).detail == "postponed, blocked, shipmill-hold, and the blocker label exist"
 
 
 # the plugin's pinned CLI (spec 031): the version in .claude-plugin/plugin.json
