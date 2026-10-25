@@ -456,11 +456,22 @@ class Classifier:
             proc = subprocess.run(cmd, capture_output=True, text=True)
         except FileNotFoundError:
             raise GateError(
-                f"{cmd[0]} is not on PATH: the gate reads the zones with `shipmill decide classify`"
+                f"{cmd[0]} is not on PATH: the gate reads the zones with `shipmill decide classify`; install uv, "
+                "https://docs.astral.sh/uv/"
             ) from None
         if proc.returncode != 0:
-            raise GateError(f"`{' '.join(cmd)}` failed for #{number}: {proc.stderr.strip() or proc.stdout.strip()}")
+            why = proc.stderr.strip() or proc.stdout.strip()
+            raise GateError(f"`{' '.join(cmd)}` failed for #{number}: {why}; {self.fix(cli)}")
         return parse_zones(proc.stdout, number)
+
+    def fix(self, cli: list[str]) -> str:
+        """What to do when classify fails: the shipmill --tool names, or the release the plugin pins"""
+        if self.tool is not None:
+            return f"check that --tool {self.tool} is a shipmill uvx can run"
+        return (
+            f"{cli[-1]} is the release the plugin pins: if PyPI doesn't serve it yet, wait for its publish, "
+            "or pass --tool <path or URL> to run another shipmill"
+        )
 
 
 def parse_zones(text: str, number: int) -> tuple[Zone, ...]:

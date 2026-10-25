@@ -4,6 +4,7 @@ Protected areas from the default branch (spec 024), end to end with a stand-in g
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -587,6 +588,23 @@ def test_s030_11_a_failing_classify_stops_the_gate(tmp_path: Path, agents: Path)
     proc = run_gate(tmp_path, agents, {7: pr()}, "--bot-login", BOT)
     assert proc.returncode == 2
     assert "decide classify --pr 7 --ref origin/main --json` failed for #7: classify failed for #7" in proc.stderr
+    assert (
+        f"shipmill=={PLUGIN_VERSION} is the release the plugin pins: if PyPI doesn't serve it yet, wait for its "
+        "publish, or pass --tool <path or URL> to run another shipmill" in proc.stderr
+    )  # the fix is named (Q-1)
+    tool = run_gate(tmp_path, agents, {7: pr()}, "--bot-login", BOT, "--tool", "./shipmill")
+    assert tool.returncode == 2
+    assert (
+        "failed for #7: classify failed for #7; check that --tool ./shipmill is a shipmill uvx can run" in tool.stderr
+    )
+
+
+@pytest.mark.skipif(shutil.which("uvx", path="/usr/bin:/bin") is not None, reason="uvx is on the gate's PATH")
+def test_s030_11_without_uvx_the_gate_stops_naming_the_fix(tmp_path: Path, agents: Path) -> None:
+    proc = run_gate(tmp_path, agents, {7: pr()}, "--bot-login", BOT)
+    assert (proc.returncode, proc.stdout) == (2, "")
+    assert "uvx is not on PATH" in proc.stderr
+    assert "install uv, https://docs.astral.sh/uv/" in proc.stderr
 
 
 def test_s030_11_a_zone_the_gate_doesnt_know_stops_it() -> None:
