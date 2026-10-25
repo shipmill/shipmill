@@ -247,6 +247,19 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - The home reads each component's config with the product token (contents read), never
   the session's token
 
+A repo that names a home which doesn't list it can't be found from the home: the product
+token covers only the listed repos (S-038-6). So in a component, a checkout whose config has
+`[product] home`, `doctor` checks the back-link itself (D-51):
+
+- It reads the home's `.github/shipmill.toml` with the gh it reads GitHub with, as it reads
+  a downstream's workflow, never with the App's token, so S-038-10 still holds; it reads
+  nothing else of the home repo and writes nothing there
+- **WARN:** the home's `[product] repos` doesn't list this repo, naming the fix: add this
+  repo to `[product] repos` in the home's `.github/shipmill.toml`
+- **WARN:** the home's config can't be read (no access, no file, or a file it can't parse),
+  naming the home
+- No WARN when the home lists this repo (case ignored)
+
 ## Acceptance criteria
 
 - S-038-1: a `[product]` table with `home = "owner/name"` or `repos = [...]` parses; an unknown key, a value that isn't `owner/name`, an empty `repos`, a repo listed twice (case ignored), or both keys in one table exits 2 naming the key, in `shipmill plan` and in the gate's loader alike
@@ -278,6 +291,7 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - S-038-27: `shipmill doctor` in a checkout whose config has `[product] repos` reports a FAIL naming the repo and `shipmill app-install <repo>` for a listed repo the App isn't installed on or whose installation lacks a product permission, and a FAIL naming the entry and the key for a malformed or repeated `[product] repos` entry, without exiting before its other checks
 - S-038-28: `shipmill doctor` in that checkout, reading each component's `.github/shipmill.toml` with the product token, reports a WARN naming the fix for a listed repo whose `[product] home` is missing or names another repo than this home
 - S-038-29: `chains.py link --product P --child C` in the home repo writes through the session's own `shipmill gh`, with no `--product`, when P is in the home repo, and through `shipmill gh --product <P's repo>` when P is in a listed repo; each read of a listed repo (resolving P or C, checking whether C is already linked) goes through `shipmill gh --product <that repo>`, never plain gh; it exits 2 before any read or write when the checkout has no `[product] repos` or a reference is in neither a listed repo nor the home repo
+- S-038-30: `shipmill doctor` in a checkout whose config sets `[product] home` reads the home's `.github/shipmill.toml` and nothing else of the home repo, and reports a WARN naming the fix (add this repo to the home's `[product] repos`) when that list doesn't name this repo, a WARN naming the home when that config can't be read, and no WARN when the list names this repo, case ignored; it writes nothing in the home repo and mints no App token for it
 
 ## Out of scope
 
@@ -287,7 +301,6 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - GitHub Projects, and GitLab's group boards, epics, and milestones (through the code host port, #322)
 - A release in one repo held by a stand-in in its milestone: a stand-in is an ordinary issue, so a milestone may hold one, with nothing built for it here
 - Reporting where chains stall (`chains.py show`, CHAIN_NO_GATE): unchanged
-- `doctor` warning about a repo whose `[product] home` names this home but which `[product] repos` doesn't list: the product token covers only the listed repos (S-038-6), so the home has no way to find such a repo; an open question on shipmill/shipmill#580
 
 ## Decisions relied on
 
@@ -302,6 +315,7 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - D-50
 - D-47
 - D-46
+- D-51
 
 ## Issues
 
@@ -311,7 +325,7 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - shipmill/shipmill#587: S-038-11, S-038-12
 - shipmill/shipmill#588: S-038-18, S-038-19, S-038-20, S-038-21
 - shipmill/shipmill#589: S-038-4, S-038-22, S-038-23, S-038-26
-- shipmill/shipmill#604: S-038-27, S-038-28
+- shipmill/shipmill#604: S-038-27, S-038-28, S-038-30
 - shipmill/shipmill#596: S-038-29
 
 ## Verification

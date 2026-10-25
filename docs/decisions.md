@@ -439,3 +439,11 @@ entry that supersedes it, never by editing an old one.
 - Why: A pull request needs one owner at a time, and its draft state is the one GitHub already shows. Until now it held only because watch_state.py lists non-draft pull requests in PRS_OPEN, so a draft never started a gate session by itself, but a session started for other work could still review, push to, or merge a draft: on 2026-10-26 a session fixing its own pull request in an auto-fix loop and the gate's reviewer both pushed to one branch
 - Applies to: skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md, skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/SKILL.md, skills/github-ship-watch/scripts/watch_state.py, draft pull requests
 - Enforced by: tests/test_pr_gate.py (pr_gate.py's exit 8); review for the skills' text
+
+## D-51: A component may read its home's config to check that the home lists it
+
+- Decided: 2026-10-25, in shipmill/shipmill#580
+- Rule: As D-46, plus a component repo's session, and its doctor, may read its home repo's .github/shipmill.toml to check the back-link, that the home's [product] repos lists this repo, and nothing else of that file or repo beyond what D-46 and D-47 already allow; it still writes nothing in the home repo. This refines D-46, and the reads of the home repo D-47 allows a component
+- Why: A component the home doesn't list can't be found from the home: the coordinator's product token covers only the listed repos (S-038-6), so the home's doctor can't read an unlisted repo's [product] home. The component knows its home, so its own doctor is the one place that can see a missing back-link and name the fix
+- Applies to: src/shipmill/doctor.py, [product] home, [product] repos, home repo, docs/specs/038-product-coordinator.md
+- Enforced by: review, until #604 is built
