@@ -52,6 +52,7 @@ import argparse
 import fnmatch
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -517,20 +518,37 @@ def fetch(number: int, repo: str | None) -> dict:
     return data
 
 
-def gh(cmd: list[str], number: int) -> str:
+def gh(cmd: list[str], number: int, env: dict[str, str] | None = None) -> str:
     """gh's output; a failure exits 1 with the message, as the gate always has"""
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if proc.returncode != 0:
         sys.exit(f"pr_gate: gh failed for #{number}: {proc.stderr.strip()}")
     return proc.stdout
 
 
 def all_files(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
-    """Every file the PR changes: gh pr view lists the first 100"""
+    """Every file the PR changes: gh pr view lists the first 100, so past them the files API is
+    read, which pages where `gh pr diff` refuses a diff over 300 files (#630). Each file is its
+    path after the change, as gh pr view's `path` is; the API lists at most 3000, and a partial
+    list stops the gate rather than being judged"""
     files: tuple[str, ...] = data["files"]
-    if len(files) < int(data.get("changedFiles") or 0):
-        diff = ["gh", "pr", "diff", str(number), "--name-only"] + (["-R", repo] if repo else [])
-        files = tuple(line for line in gh(diff, number).splitlines() if line)
+    changed = int(data.get("changedFiles") or 0)
+    if len(files) >= changed:
+        return files
+    # gh fills {owner}/{repo} in from GH_REPO, which takes what -R takes, else from the cwd's repo, as gh pr view does
+    cmd = ["gh", "api", "--paginate", f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100", "--jq", ".[]"]
+    env = None
+    if repo:
+        env = {**os.environ, "GH_REPO": repo}
+        host = re.fullmatch(r"([^/:]+)/[^/]+/[^/]+", repo.strip("/"))  # [HOST/]OWNER/NAME: gh api's host is its own
+        cmd[2:2] = ["--hostname", host.group(1)] if host else []
+    listed = gh(cmd, number, env)
+    files = tuple(str(json.loads(line)["filename"]) for line in listed.splitlines() if line.strip())
+    if len(files) < changed:
+        sys.exit(
+            f"pr_gate: #{number} changes {changed} files but GitHub lists {len(files)} (its files API stops at "
+            "3000); the gate judges no partial list: review and land it by hand"
+        )
     return files
 
 

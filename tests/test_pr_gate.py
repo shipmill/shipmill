@@ -69,14 +69,22 @@ pytest
 """
 
 FAKE_GH = """#!{python}
-import json, os, sys
+import json, os, re, sys
 fake = json.loads(open(os.environ["FAKE_GH_DATA"]).read())
 args = sys.argv[1:]
-pr = fake[args[2]]
+with open(os.environ["FAKE_GH_CALLS"], "a") as calls:
+    calls.write(json.dumps({{"args": args, "GH_REPO": os.environ.get("GH_REPO")}}) + "\\n")
+files = re.compile(r"repos/(.+)/pulls/([0-9]+)/files[?]per_page=100")
 if args[:2] == ["pr", "view"]:
-    print(json.dumps(pr))
+    print(json.dumps(fake[args[2]]))
 elif args[:2] == ["pr", "diff"]:
-    print("\\n".join(pr["all_files"]))
+    sys.exit("HTTP 406: Sorry, the diff exceeded the maximum number of files (300)")
+elif args[0] == "api" and "--paginate" in args and args[args.index("--jq") + 1] == ".[]":
+    found = [files.fullmatch(a) for a in args if files.fullmatch(a)]
+    pr = fake[found[0].group(2)]
+    for path in pr["all_files"][: pr["listed"]]:  # every page, one object a line, as gh --jq prints them
+        old = pr["renamed"].get(path)
+        print(json.dumps({{"filename": path, **({{"previous_filename": old}} if old else {{}})}}))
 else:
     sys.exit("unexpected gh call: " + " ".join(args))
 """
@@ -120,7 +128,11 @@ def pr(
     login: str = "app/shipmill-demo",
     files: tuple[str, ...] = ("src/app.py",),
     changed: int | None = None,
+    listed: int | None = None,
+    renamed: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    """listed caps the files the files API returns (GitHub's stops at 3000); renamed maps a
+    file's new path to its old one"""
     return {
         "state": "OPEN",
         "mergeable": "MERGEABLE",
@@ -132,6 +144,8 @@ def pr(
         "files": [{"path": f} for f in files[:100]],
         "changedFiles": len(files) if changed is None else changed,
         "all_files": list(files),
+        "listed": len(files) if listed is None else listed,
+        "renamed": renamed or {},
     }
 
 
@@ -150,6 +164,7 @@ def run_gate(
         **os.environ,
         "PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]),
         "FAKE_GH_DATA": str(data),
+        "FAKE_GH_CALLS": str(tmp_path / "gh-calls"),
         "GIT_CEILING_DIRECTORIES": str(tmp_path),  # so no checkout above tmp_path counts
     }
     where = ["--checkout", str(work)] if work is not None else []
@@ -382,6 +397,58 @@ def test_s024_7_a_subdirectory_review_md_guards_changes_under_it(tmp_path: Path)
 def test_s024_7_files_past_the_first_hundred_are_matched_too(tmp_path: Path, directed: Path) -> None:
     files = tuple(f"src/m{i}.py" for i in range(100)) + ("src/land.py",)
     assert run_gate(tmp_path, directed, {7: pr(files=files)}, "--bot-login", BOT).returncode == 5
+
+
+def gh_calls(tmp_path: Path) -> list[dict[str, Any]]:
+    """Each gh call the gate made: its args and the GH_REPO it ran with"""
+    return [json.loads(line) for line in (tmp_path / "gh-calls").read_text(encoding="utf-8").splitlines()]
+
+
+FILES_API = "repos/{owner}/{repo}/pulls/7/files?per_page=100"
+
+
+def test_630_a_pr_of_more_than_300_files_is_read_through_the_files_api(tmp_path: Path, directed: Path) -> None:
+    """gh pr diff refuses a diff over 300 files with HTTP 406 (the fake gh does too), so the gate never asks it"""
+    files = tuple(f"src/m{i}.py" for i in range(349)) + ("src/land.py",)
+    proc = run_gate(tmp_path, directed, {7: pr(files=files)}, "--bot-login", BOT)
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    assert "  needs-decision: src/land.py matches `src/land.py`" in proc.stdout
+    api = [c for c in gh_calls(tmp_path) if c["args"][0] == "api"]
+    assert api == [{"args": ["api", "--paginate", FILES_API, "--jq", ".[]"], "GH_REPO": None}]
+
+
+@pytest.mark.parametrize(
+    ("repo", "host"), [("demo/app", []), ("Demo/App", []), ("github.com/demo/app", ["--hostname", "github.com"])]
+)
+def test_630_r_names_the_repo_the_files_api_reads(tmp_path: Path, directed: Path, repo: str, host: list[str]) -> None:
+    git(directed, "remote", "set-url", "origin", "git@github.com:Demo/App.git")
+    files = tuple(f"src/m{i}.py" for i in range(349)) + ("src/land.py",)
+    proc = run_gate(tmp_path, directed, {7: pr(files=files)}, "--bot-login", BOT, "-R", repo)
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    api = [c for c in gh_calls(tmp_path) if c["args"][0] == "api"]
+    assert api == [{"args": ["api", *host, "--paginate", FILES_API, "--jq", ".[]"], "GH_REPO": repo}]
+
+
+def test_630_a_pr_gh_pr_view_lists_whole_reads_no_more(tmp_path: Path, directed: Path) -> None:
+    proc = run_gate(tmp_path, directed, {7: pr(files=tuple(f"src/m{i}.py" for i in range(100)))}, "--bot-login", BOT)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert [c["args"][:2] for c in gh_calls(tmp_path)] == [["pr", "view"]]
+
+
+def test_630_a_list_short_of_changed_files_stops_the_gate(tmp_path: Path, directed: Path) -> None:
+    """GitHub's files API lists at most 3000 files: the gate judges no partial list"""
+    files = tuple(f"src/m{i}.py" for i in range(3001))
+    proc = run_gate(tmp_path, directed, {7: pr(files=files, listed=3000)}, "--bot-login", BOT)
+    assert proc.returncode == 1
+    assert proc.stderr.startswith("pr_gate: #7 changes 3001 files but GitHub lists 3000"), proc.stderr
+    assert proc.stdout == ""
+
+
+def test_630_a_renamed_file_is_judged_by_its_new_path_as_gh_pr_view_names_it(tmp_path: Path, directed: Path) -> None:
+    files = tuple(f"src/m{i}.py" for i in range(150))
+    renamed = {"src/m120.py": "src/land.py"}
+    proc = run_gate(tmp_path, directed, {7: pr(files=files, renamed=renamed)}, "--bot-login", BOT)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 def test_s024_7_a_malformed_protected_item_stops_the_gate(tmp_path: Path) -> None:
