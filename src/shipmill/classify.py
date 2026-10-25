@@ -11,7 +11,8 @@ request's (--pr) by its files and their patches too, read through gh:
   base and the head, compared parsed, so a comment or a reorder doesn't count
 - security: any other path under .github/, or the config's other tables, compared parsed
 - protected: a path a REVIEW.md Protected areas glob on the base covers, as pr_gate.py matches
-- scope: a docs/specs/*.md whose status line becomes approved
+- scope: a docs/specs/*.md whose header's status line reads approved at the head and not at
+  the merge base, both read whole
 - contract-change: an added line under a heading [bump] major lists, in the changelog or a
   changelog fragment
 """
@@ -45,7 +46,9 @@ DEFAULT_REF = "origin/HEAD"
 FRAGMENTS_README = "README.md"
 
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
-_APPROVED = re.compile(r"^status:\s*approved\s*$")
+_TITLE = re.compile(r"^# S-\d{3,}: \S")  # specs.py's TITLE and STATUS
+_STATUS = re.compile(r"^status: (\S+)$")
+APPROVED = "approved"
 
 
 class Pulls(Protocol):
@@ -242,10 +245,8 @@ def classify_pull(base: Base, pulls: Pulls, number: int) -> Classification:
             _config(found, pulls, change, file)
         if file.status == "removed":
             continue
-        if fnmatch.fnmatchcase(file.path, SPECS) and "/" not in file.path[len("docs/specs/") :]:
-            added, removed = _patch(file, number)
-            if any(_APPROVED.match(text) for _, text in added) and not any(_APPROVED.match(t) for t in removed):
-                found.add(Zone.SCOPE, f"{file.path}'s status line becomes approved")
+        if _is_spec(file.path) and _becomes_approved(pulls, change, file):
+            found.add(Zone.SCOPE, f"{file.path}'s status line becomes approved")
         if _changelog(base.policy, file.path):
             head = pulls.text_at(change.head, file.path)
             for line, heading in _major_entries(base.policy, file, head, number):
@@ -276,6 +277,37 @@ def _config(found: _Found, pulls: Pulls, change: PullChange, file: FileChange) -
         found.add(Zone.DECISION_POLICY, f"{CONFIG} changes its [{DECISIONS_TABLE}] table")
     if _rest(before) != _rest(after):
         found.add(Zone.SECURITY, f"{CONFIG} changes outside [{DECISIONS_TABLE}]")
+
+
+def _is_spec(path: str) -> bool:
+    return fnmatch.fnmatchcase(path, SPECS) and "/" not in path[len("docs/specs/") :]
+
+
+def _becomes_approved(pulls: Pulls, change: PullChange, file: FileChange) -> bool:
+    """The spec's header status line reads approved at the head and not at the merge base;
+    both sides are read whole, since a diff's hunks needn't show the header"""
+    if _spec_status(pulls.text_at(change.head, file.path)) != APPROVED:
+        return False
+    if file.status in ("added", "copied"):  # no such file at the base
+        return True
+    before = file.previous if file.status == "renamed" and file.previous is not None else file.path
+    return _spec_status(pulls.text_at(change.base, before)) != APPROVED
+
+
+def _spec_status(text: str) -> str | None:
+    """The status line as specs.py reads it: the first `status:` line after the title and
+    before the first section; a line in the body is not it"""
+    titled = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            return None
+        if not titled:
+            titled = _TITLE.match(line) is not None
+            continue
+        status = _STATUS.match(line)
+        if status is not None:
+            return status.group(1)
+    return None
 
 
 def _rest(raw: Mapping[str, Any]) -> dict[str, Any]:

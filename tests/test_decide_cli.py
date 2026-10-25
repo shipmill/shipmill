@@ -94,6 +94,14 @@ def zones_of(found: dict[str, Any]) -> dict[str, str]:
     return {z["zone"]: z["level"] for z in found["zones"]}
 
 
+SPEC = "docs/specs/031-x.md"
+
+
+def spec_text(status: str, *body: str) -> str:
+    """A spec as specs.py reads it: the title, the header's status line, then its sections"""
+    return "\n".join(["# S-031: X", "", f"status: {status}", "", "## Intent", "", *body]) + "\n"
+
+
 def patch(*added: str, removed: tuple[str, ...] = (), start: int = 1) -> str:
     lines = [f"@@ -{start},{len(removed)} +{start},{len(added)} @@", *(f"-{r}" for r in removed)]
     return "\n".join(lines + [f"+{a}" for a in added])
@@ -268,19 +276,52 @@ def test_s030_8_a_spec_whose_status_line_becomes_approved_is_scope(
     repo: Repo, capsys: pytest.CaptureFixture[str]
 ) -> None:
     commit(repo)
-    spec = "docs/specs/031-x.md"
     approved = FakePulls(
-        (FileChange(spec, "modified", patch("status: approved", removed=("status: draft",), start=3)),)
+        (FileChange(SPEC, "modified", patch("status: approved", removed=("status: draft",), start=3)),),
+        {(BASE, SPEC): spec_text("draft"), (HEAD, SPEC): spec_text("approved")},
     )
     found = run(repo, capsys, "classify", "--pr", "8", pulls=approved)
     assert zones_of(found) == {"scope": "ask"}
-    assert found["zones"][0]["reason"] == f"{spec}'s status line becomes approved"
-    new = FakePulls((FileChange(spec, "added", patch("# S-031: X", "", "status: approved")),))
+    assert found["zones"][0]["reason"] == f"{SPEC}'s status line becomes approved"
+    new = FakePulls((FileChange(SPEC, "added", patch("x")),), {(HEAD, SPEC): spec_text("approved")})
     assert zones_of(run(repo, capsys, "classify", "--pr", "8", pulls=new)) == {"scope": "ask"}
-    still = FakePulls((FileChange(spec, "modified", patch("status: approved", removed=("status: approved",))),))
+    still = FakePulls(
+        (FileChange(SPEC, "modified", patch("x")),),
+        {(BASE, SPEC): spec_text("approved"), (HEAD, SPEC): spec_text("approved", "more")},
+    )
     assert zones_of(run(repo, capsys, "classify", "--pr", "8", pulls=still)) == {}
-    draft = FakePulls((FileChange(spec, "added", patch("status: draft")),))
+    draft = FakePulls((FileChange(SPEC, "added", patch("x")),), {(HEAD, SPEC): spec_text("draft")})
     assert zones_of(run(repo, capsys, "classify", "--pr", "8", pulls=draft)) == {}
+    old = "docs/specs/030-x.md"
+    renamed = FakePulls(
+        (FileChange(SPEC, "renamed", "", previous=old),),
+        {(BASE, old): spec_text("approved"), (HEAD, SPEC): spec_text("approved")},
+    )
+    assert zones_of(run(repo, capsys, "classify", "--pr", "8", pulls=renamed)) == {}
+
+
+def test_s030_8_a_body_line_reading_status_approved_in_a_draft_spec_is_not_scope(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(repo)
+    body = spec_text("draft", "```", "status: approved", "```")
+    pulls = FakePulls(
+        (FileChange(SPEC, "modified", patch("```", "status: approved", "```", start=8)),),
+        {(BASE, SPEC): spec_text("draft"), (HEAD, SPEC): body},
+    )
+    assert zones_of(run(repo, capsys, "classify", "--pr", "8", pulls=pulls)) == {}
+
+
+def test_s030_8_a_header_going_from_draft_to_approved_is_scope_whatever_else_the_diff_removes(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The approval and the removal of a body example reading `status: approved`, in one diff"""
+    commit(repo)
+    pulls = FakePulls(
+        (FileChange(SPEC, "modified", patch("status: approved", removed=("status: draft", "status: approved"))),),
+        {(BASE, SPEC): spec_text("draft", "status: approved"), (HEAD, SPEC): spec_text("approved")},
+    )
+    assert zones_of(run(repo, capsys, "classify", "--pr", "8", pulls=pulls)) == {"scope": "ask"}
 
 
 def test_s030_8_a_changelog_line_under_a_major_heading_is_contract_change(
@@ -439,8 +480,12 @@ def test_s030_8_gh_reads_the_merge_base_the_head_and_every_file_with_its_patch(t
 
 def test_s030_8_a_pure_rename_has_an_empty_diff_and_classifies(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
     """GitHub gives no patch for a rename without changes; that is an empty diff, not a missing one"""
-    commit(repo)
-    renamed = FakePulls((FileChange("docs/specs/032-x.md", "renamed", "", previous="docs/specs/031-x.md"),))
+    fragment = "changelog.d/9-x.md"
+    renamed = FakePulls(
+        (FileChange(fragment, "renamed", "", previous="changelog.d/8-x.md"),),
+        {(HEAD, fragment): "### Breaking\n\n- Drop --old (#9)\n"},
+    )
+    commit(repo, FRAGMENTS)
     assert zones_of(run(repo, capsys, "classify", "--pr", "14", pulls=renamed)) == {}
 
 
@@ -470,6 +515,6 @@ def test_s030_8_gh_reads_a_pure_rename_as_an_empty_patch(tmp_path: Path) -> None
 
 def test_s030_8_a_missing_diff_for_a_file_a_rule_reads_exits_2(repo: Repo) -> None:
     commit(repo)
-    pulls = FakePulls((FileChange("docs/specs/031-x.md", "modified", None),))
-    with pytest.raises(ReleaseError, match="no diff for docs/specs/031-x.md"):
+    pulls = FakePulls((FileChange("CHANGELOG.md", "modified", None),), {(HEAD, "CHANGELOG.md"): "# Changelog\n"})
+    with pytest.raises(ReleaseError, match="no diff for CHANGELOG.md"):
         main(["--repo", str(repo.root), "decide", "classify", "--pr", "13"], pulls=pulls)
