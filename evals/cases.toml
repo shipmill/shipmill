@@ -25,3 +25,31 @@ skill = "github-pr-triage"
 kind = "decision"
 source = "shipmill/shipmill#620"
 commit = "99eb662"
+
+[[case]]
+path = "github-issue-resolve/implementation-goes-on"
+skill = "github-issue-resolve"
+kind = "decision"
+source = "shipmill/shipmill#613"
+commit = "c48559b"
+
+[[case]]
+path = "github-issue-resolve/interpretation-notifies"
+skill = "github-issue-resolve"
+kind = "decision"
+source = "shipmill/shipmill#613"
+commit = "c48559b"
+
+[[case]]
+path = "github-issue-resolve/contract-change-asks"
+skill = "github-issue-resolve"
+kind = "decision"
+source = "shipmill/shipmill#613"
+commit = "c48559b"
+
+[[case]]
+path = "github-pr-triage/never-approved-in-chat"
+skill = "github-pr-triage"
+kind = "decision"
+source = "shipmill/shipmill#613"
+commit = "c48559b"

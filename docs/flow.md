@@ -80,6 +80,33 @@ the maintainer ──lists───► milestone "1.5.0" ◄── feature issue
 - **Today a milestone is done when it has no open issues** and at least one closed (`planner.py`), which says nothing about whether its spec is built
 - **Above all three sits the product's direction**, `docs/product.md`: its goals (`G-n`) decide whether new behaviour is built at all, and its non-goals what is declined. [direction.md](direction.md) explains it for the maintainer who writes it
 
+## Who decides
+
+Every decision an agent meets falls in a **zone**, and each zone has one **level** (spec 030, D-48): `act` (the agent decides and goes on), `notify` (it decides, posts a decided comment and the `decided` label, and goes on; you may veto with a comment starting `veto`), `ask` (it asks through the needs-decision protocol and waits), or `never` (it may prepare the change but never takes the decision, even after your yes in chat). shipmill ships the zones and their defaults; you change a level in `[decisions]` of `.github/shipmill.toml`, never below its floor:
+
+| Zone | Covers | Default | Floor |
+|---|---|---|---|
+| `direction` | an edit of `docs/product.md` or `docs/product/` | `never` | `ask` |
+| `decision-policy` | the `[decisions]` section itself | `never` | `never` |
+| `scope` | accepting an opportunity, approving a spec, accepting a goal plan, a milestone | `ask` | `ask` |
+| `rule-departure` | a change that departs from a `D-n` or an approved spec's criterion | `ask` | `ask` |
+| `contract-change` | changing or removing a command, flag, exit code, format, default, limit, public API, or stored state | `ask` | none |
+| `contract-addition` | adding one of those while every existing use behaves as before; a new runtime dependency | `notify` | none |
+| `security` | `.github/**`, secrets, permissions, the delivery hooks' rules, the gate's allowlist | `ask` | `notify` |
+| `protected` | a file a `REVIEW.md` Protected areas glob covers | `ask` | none |
+| `interpretation` | choosing between readings of a spec, a `D-n`, or an issue that all meet it | `notify` | none |
+| `triage-verdict` | won't fix, duplicate, postpone, or close as done | `notify` | none |
+| `implementation` | work order, how a change splits into pull requests, internal design, refactors, tests | `act` | none |
+| `unknown` | a decision no other zone covers | `ask` | `ask` |
+
+```toml
+[decisions]
+veto_hours = 24                   # the notify window, 1 to 168
+contract-addition = "act"         # a zone id = a level; an absent zone keeps its default
+```
+
+The release side's stages keep their levels in `[autonomy]` ([release-lanes.md](release-lanes.md#autonomy-and-the-stop-switch)), which `[decisions]` can't set: `release`, `deploy`, `rollback`, `intake`, and `upgrade` read `act` for `act`, `ask` for `propose` (the proposal issue is the question), and no level for `observe`, and `breaking-release` is always `ask`, since a breaking stable release waits for a person's hand start (D-39). `shipmill decide levels` shows both: every zone with its level, its floor, and where the level comes from. `shipmill decide classify`, given a pull request's number, names the zones code detects in its change, read from the default branch's config, so a pull request can't lower its own levels. A session asks the code first, then places what code doesn't see itself, and the strictest level among a decision's zones wins: the sessions' steps are in github-issue-triage's [needs-decision.md](../skills/github-issue-triage/references/needs-decision.md#who-decides).
+
 ## Issue states
 
 `triage_state.py` sorts every issue into one state and exits 1 when any need action.

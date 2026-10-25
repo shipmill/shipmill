@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "890",
+    "--json",
+    "number,title,state",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"number\": 890, \"title\": \"Split tests/test_decide_cli.py into one file per subcommand?\", \"state\": \"OPEN\"}",
+  "stderr": "",
+  "exit": 0
+}

@@ -1,0 +1,13 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--repo",
+    "shipmill/shipmill",
+    "--state",
+    "open"
+  ],
+  "stdout": "893\tAdd G-8 to the direction: a fleet's goals\tdirection/g-8-fleet-goals\tOPEN\n",
+  "stderr": "",
+  "exit": 0
+}

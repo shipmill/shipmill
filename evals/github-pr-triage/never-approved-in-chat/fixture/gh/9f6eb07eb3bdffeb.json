@@ -1,0 +1,12 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--json",
+    "mergeable,mergeStateStatus"
+  ],
+  "stdout": "{\"mergeable\": \"MERGEABLE\", \"mergeStateStatus\": \"CLEAN\"}",
+  "stderr": "",
+  "exit": 0
+}

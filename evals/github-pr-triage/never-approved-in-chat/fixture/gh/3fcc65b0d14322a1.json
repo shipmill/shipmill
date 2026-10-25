@@ -1,0 +1,11 @@
+{
+  "args": [
+    "pr",
+    "diff",
+    "893",
+    "--stat"
+  ],
+  "stdout": " docs/product.md | 1 +\n 1 file changed, 1 insertion(+)\n",
+  "stderr": "",
+  "exit": 0
+}

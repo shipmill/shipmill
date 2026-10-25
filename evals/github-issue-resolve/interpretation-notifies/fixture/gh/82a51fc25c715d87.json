@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "891",
+    "--json",
+    "number,title,state",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"number\": 891, \"title\": \"README: name the decision policy where it says what the maintainer keeps (spec 030)\", \"state\": \"OPEN\"}",
+  "stderr": "",
+  "exit": 0
+}

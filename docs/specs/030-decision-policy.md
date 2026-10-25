@@ -1,6 +1,6 @@
 # S-030: A decision policy
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -410,3 +410,26 @@ changelog says so under `Changed`:
 - shipmill/shipmill#613: S-030-21, S-030-22
 
 ## Verification
+
+- S-030-1: `test_s030_1_*` in `tests/test_decide.py` parse a config without `[decisions]`, an empty one, and one that sets a zone; ran `shipmill decide levels --json` on this repo, which has no `[decisions]`: every agent zone at its default and `veto_hours` 24; pass
+- S-030-2: `test_s030_2_*` in `tests/test_decide.py` (an unknown key lists the zone ids, a value outside the four levels names them); pass
+- S-030-3: `test_s030_3_*` in `tests/test_decide.py` refuse each level below its floor, give the direction message word for word, and accept `direction = "ask"`; pass
+- S-030-4: `test_s030_4_*` in `tests/test_decide.py` refuse `decision-policy`, the five `[autonomy]` zones, `breaking-release` naming D-39, and `veto_hours` of 0, 169, or a non-integer, with exit 2 through the CLI; pass
+- S-030-5: ran `shipmill decide levels --json`: every zone with `level`, `floor`, and `source`, `decision-policy` and `breaking-release` `fixed`, the release side `autonomy`; `test_s030_5_*` in `tests/test_decide_cli.py` cover `config`, `propose` as `ask`, and `observe` as no level; pass
+- S-030-6: ran `shipmill decide classify --files docs/product.md docs/product/goals.md .github/workflows/ci.yml --json` (`direction` at `never`, `security` at `ask`) and `--files src/x.py --json` (no zone, `"level": null`); `test_s030_6_*` pass
+- S-030-7: `test_s030_7_*` in `tests/test_decide_cli.py` (a changed `[decisions]` key, another section only, a comment in `[decisions]`, an added config); pass
+- S-030-8: `test_s030_8_*` in `tests/test_decide_cli.py` (a status line becoming `approved`, a changelog line and a fragment under a `major` heading, a base Protected areas glob, and gh's reads of the merge base, head, and patches); pass
+- S-030-9: `test_s030_9_*` in `tests/test_decide_cli.py` (a pull request setting `direction = "ask"` is still `never`; a ref the checkout lacks exits 2, as `--ref no-such-ref` did here); pass
+- S-030-10: ran `shipmill decide classify --files docs/product.md ... --json`: D-3, D-34, D-39, and D-46 under `candidates`, never as zones; `test_s030_10_*` pass
+- S-030-11: `test_s030_11_*` in `tests/test_pr_gate.py` (MAINTAINER_ONLY, a `maintainer-only:` line, exit 7 with or without `--maintainer-accepted`, ranked between NEEDS_DECISION and REFUSED); pass
+- S-030-12: `test_s030_12_*` in `tests/test_pr_gate.py` (an `ask` zone exits 5 until accepted, a `notify:` line keeps the CI verdict, no `[agents]` gates a direction edit as before); pass
+- S-030-13: `test_s030_13_*` in `tests/test_app_gh_merge.py` (`shipmill gh pr merge` and the merge API `PUT` exit 2 without running gh for a `never` zone, and run gh for a pull request without one); pass
+- S-030-14: `test_s030_14_*` in `tests/test_vetoed.py` (a COLLABORATOR's `Veto` after the bot's decided marker reads VETOED, after DECIDED; a CONTRIBUTOR's, a mid-comment one, or a newer veto-handled comment doesn't); pass
+- S-030-15: `test_s030_15_*` in `tests/test_vetoed.py` and `tests/test_status_picture.py` (a closed `decided` issue of the last 14 days reads VETOED only with an unanswered trusted veto); pass
+- S-030-16: `test_s030_16_*` in `tests/test_vetoed.py` (VETOED issues and pull requests, open, closed, or merged, in a work row; `decided` without a veto in none); pass
+- S-030-17: `test_s030_17_*` in `tests/test_decisions.py` (`add --zone` writes the Zone line, `check` accepts it and fails an unknown zone id, this repo's log passes); pass
+- S-030-18: `test_s030_18_*` in `tests/test_retro.py` (per-zone counts of decided, veto-handled, zoned and recommended asks; the raise and lower proposals, none below a floor); pass
+- S-030-19: `test_s030_19_*` in `tests/test_doctor_decisions.py` (a PASS line per zone, WARNs for a lowered zone, an unset `app_id`, a missing `decided` label, and `[decisions]` without `[agents]`); pass
+- S-030-20: `test_s030_20_*` in `tests/test_setup_state.py` (`decided` wanted with `[agents]`, not without); pass
+- S-030-21: opened `skills/github-issue-triage/references/needs-decision.md`, which opens with "Who decides" (code first, then the model, the strictest level, `unknown`, the four paths, the zone line, the decided comment, the veto take-up), and the one-line pointers in `design-gate.md`, `spec-gate.md`, `comments.md`, and github-issue-resolve's, github-pr-triage's, and product-intake's SKILL.md; `test_s030_21_*` in `tests/test_who_decides.py` check them against `decisions.py`'s zones, `triage_state.py`'s and `retro.py`'s markers, and the reference's anchors; pass
+- S-030-22: the cases `evals/github-issue-resolve/implementation-goes-on`, `interpretation-notifies`, `contract-change-asks`, and `evals/github-pr-triage/never-approved-in-chat`, registered in `evals/cases.toml`; `shipmill evals check` passes, and `test_s030_22_*` in `tests/test_who_decides.py` check each case's graders against the writes they must pass and fail, and that the `never` case's fixture answers every read `shipmill decide classify --pr 893` makes and reads `direction` at `never`; their pass rate is the `evals` check's to measure on this pull request (D-37)

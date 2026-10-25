@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "statusCheckRollup"
+  ],
+  "stdout": "{\"statusCheckRollup\": [{\"__typename\": \"CheckRun\", \"completedAt\": \"2026-10-25T08:08:41Z\", \"conclusion\": \"SUCCESS\", \"detailsUrl\": \"https://github.com/shipmill/shipmill/actions/runs/1/job/1\", \"name\": \"check\", \"startedAt\": \"2026-10-25T08:01:02Z\", \"status\": \"COMPLETED\", \"workflowName\": \"CI\"}, {\"__typename\": \"CheckRun\", \"completedAt\": \"2026-10-25T08:02:10Z\", \"conclusion\": \"SKIPPED\", \"detailsUrl\": \"https://github.com/shipmill/shipmill/actions/runs/2/job/2\", \"name\": \"evals\", \"startedAt\": \"2026-10-25T08:02:10Z\", \"status\": \"COMPLETED\", \"workflowName\": \"Evals\"}]}",
+  "stderr": "",
+  "exit": 0
+}

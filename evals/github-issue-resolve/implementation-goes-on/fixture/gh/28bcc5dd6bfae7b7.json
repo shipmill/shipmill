@@ -1,0 +1,12 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "890",
+    "--json",
+    "state"
+  ],
+  "stdout": "{\"state\": \"OPEN\"}",
+  "stderr": "",
+  "exit": 0
+}

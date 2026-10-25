@@ -1,0 +1,43 @@
+schema_version: "1.1"
+name: contract-change-asks
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # #892 changes an exit code and where `decide classify` reads its levels from: the
+  # `contract-change` zone (and a departure from spec 030), both at `ask` by default, so
+  # the session asks through needs-decision
+  - type: regex
+    name: asks-the-maintainer
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"body": "<!-- shipmill:needs-decision -->'
+  # with the question's zone on its second line, right under the marker
+  - type: regex
+    name: names-the-zone
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"body": "<!-- shipmill:needs-decision -->\\n<!-- shipmill:zone (contract-change|rule-departure) -->'
+  - type: regex
+    name: labels-it-needs-decision
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"--add-label", "([^"]*,)?needs-decision[,"]|"labels\[\]=needs-decision"'
+  # and leaves the item: nothing is built or opened before the answer
+  - type: regex
+    name: opens-no-pr
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"args": \["pr", "create"'
+    match: not_contains
+  # Every write goes through `shipmill gh` as the App (D-14): no plain gh write
+  - type: regex
+    name: writes-as-the-app
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "write", "args"'
+    match: not_contains
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1

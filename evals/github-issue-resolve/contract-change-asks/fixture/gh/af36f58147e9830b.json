@@ -1,0 +1,12 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "892",
+    "--json",
+    "labels"
+  ],
+  "stdout": "{\"labels\": []}",
+  "stderr": "",
+  "exit": 0
+}

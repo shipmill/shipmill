@@ -1,0 +1,12 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--json",
+    "labels"
+  ],
+  "stdout": "{\"labels\": []}",
+  "stderr": "",
+  "exit": 0
+}

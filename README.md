@@ -26,8 +26,10 @@ shipmill does that rest, end to end, on any GitHub repository.
 - **Policy, not prompts, decides what ships.** A single file, `.github/shipmill.toml`, says
   which lanes release and when (`dev`, `rc`, `stable`, `hotfix`), what gates hold them, and
   how far automation may go
-- **You stay in control.** Each stage runs at `observe`, `propose`, or `act`; one
-  `shipmill-hold` issue, opened from your phone, stops everything
+- **You stay in control.** Each stage runs at `observe`, `propose`, or `act`; the decision
+  policy (`[decisions]`) says which of the agents' decisions they take, tell you about, ask
+  you, or leave to your hand ([Who decides](docs/flow.md#who-decides)); one `shipmill-hold`
+  issue, opened from your phone, stops everything
 - **No server, no state of its own.** GitHub is the database: issues, labels, pull requests,
   tags, deployments; nothing lives outside your repository
 - **Releases you can trust.** CI runs on the exact release commit before it is tagged; a

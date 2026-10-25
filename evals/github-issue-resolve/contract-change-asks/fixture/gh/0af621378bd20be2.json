@@ -1,0 +1,12 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "892",
+    "--json",
+    "number,title,state"
+  ],
+  "stdout": "{\"number\": 892, \"title\": \"shipmill decide classify: fall back to the working tree's config when --ref is missing\", \"state\": \"OPEN\"}",
+  "stderr": "",
+  "exit": 0
+}

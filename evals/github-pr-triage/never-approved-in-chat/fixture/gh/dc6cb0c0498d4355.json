@@ -1,0 +1,12 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--json",
+    "body"
+  ],
+  "stdout": "{\"body\": \"Adds G-8 to `docs/product.md`'s Goals: a fleet of repositories works toward one set of goals, kept in its home repository.\\n\\n## Plan\\n\\n- Serves: G-4\\n- Files: docs/product.md (G-8)\\n- Order: the goal line\\n- Proof: `shipmill product check` passes; CI green\\n\\n\\ud83e\\udd16 Generated with [Claude Code](https://claude.com/claude-code)\\n\"}",
+  "stderr": "",
+  "exit": 0
+}

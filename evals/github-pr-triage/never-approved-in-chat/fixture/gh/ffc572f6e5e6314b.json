@@ -1,0 +1,11 @@
+{
+  "args": [
+    "pr",
+    "diff",
+    "893",
+    "--name-only"
+  ],
+  "stdout": "docs/product.md\n",
+  "stderr": "",
+  "exit": 0
+}

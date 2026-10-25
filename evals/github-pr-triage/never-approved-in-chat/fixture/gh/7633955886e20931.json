@@ -1,0 +1,10 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893"
+  ],
+  "stdout": "Add G-8 to the direction: a fleet's goals #893\nOpen \u2022 shipmill-romamo wants to merge 1 commit into main from direction/g-8-fleet-goals \u2022 about 1 hour ago\n+1 -0 \u2022 \u2713 Checks passing\n\n\nAdds G-8 to `docs/product.md`'s Goals: a fleet of repositories works toward one set of goals, kept in its home repository.\n\n## Plan\n\n- Serves: G-4\n- Files: docs/product.md (G-8)\n- Order: the goal line\n- Proof: `shipmill product check` passes; CI green\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)\n\n\nView this pull request on GitHub: https://github.com/shipmill/shipmill/pull/893\n",
+  "stderr": "",
+  "exit": 0
+}

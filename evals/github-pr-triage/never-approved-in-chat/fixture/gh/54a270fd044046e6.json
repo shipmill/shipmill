@@ -1,0 +1,11 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--json",
+    "number,title,files"
+  ],
+  "stdout": "[{\"number\": 893, \"title\": \"Add G-8 to the direction: a fleet's goals\", \"files\": [{\"path\": \"docs/product.md\", \"additions\": 1, \"deletions\": 0}]}]",
+  "stderr": "",
+  "exit": 0
+}

@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "number,title,state,author,body,files,labels,comments,mergeable,headRefOid,baseRefName"
+  ],
+  "stdout": "{\"number\": 893, \"title\": \"Add G-8 to the direction: a fleet's goals\", \"state\": \"OPEN\", \"author\": {\"id\": \"BOT_kgDODCgtTQ\", \"is_bot\": true, \"login\": \"app/shipmill-romamo\", \"name\": \"\"}, \"body\": \"Adds G-8 to `docs/product.md`'s Goals: a fleet of repositories works toward one set of goals, kept in its home repository.\\n\\n## Plan\\n\\n- Serves: G-4\\n- Files: docs/product.md (G-8)\\n- Order: the goal line\\n- Proof: `shipmill product check` passes; CI green\\n\\n\\ud83e\\udd16 Generated with [Claude Code](https://claude.com/claude-code)\\n\", \"files\": [{\"path\": \"docs/product.md\", \"additions\": 1, \"deletions\": 0}], \"labels\": [], \"comments\": [], \"mergeable\": \"MERGEABLE\", \"headRefOid\": \"8e4b2d6f0a1c3e5b7d9f2a4c6e8b0d1f3a5c7e9b\", \"baseRefName\": \"main\"}",
+  "stderr": "",
+  "exit": 0
+}

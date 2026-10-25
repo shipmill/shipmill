@@ -1,0 +1,17 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--search",
+    "#890",
+    "--state",
+    "all",
+    "--json",
+    "number,title,state,url",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "[]",
+  "stderr": "",
+  "exit": 0
+}

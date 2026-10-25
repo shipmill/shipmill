@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--json",
+    "labels",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"labels\": []}",
+  "stderr": "",
+  "exit": 0
+}

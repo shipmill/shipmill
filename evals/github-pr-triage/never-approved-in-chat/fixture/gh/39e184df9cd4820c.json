@@ -1,0 +1,15 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--state",
+    "all",
+    "--limit",
+    "10",
+    "--json",
+    "number,state,mergedAt,title"
+  ],
+  "stdout": "[{\"number\": 893, \"state\": \"OPEN\", \"mergedAt\": null, \"title\": \"Add G-8 to the direction: a fleet's goals\"}]",
+  "stderr": "",
+  "exit": 0
+}

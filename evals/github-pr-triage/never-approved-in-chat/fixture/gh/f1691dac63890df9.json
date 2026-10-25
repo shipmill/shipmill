@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--json",
+    "headRefName,headRefOid",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"headRefName\": \"direction/g-8-fleet-goals\", \"headRefOid\": \"8e4b2d6f0a1c3e5b7d9f2a4c6e8b0d1f3a5c7e9b\"}",
+  "stderr": "",
+  "exit": 0
+}

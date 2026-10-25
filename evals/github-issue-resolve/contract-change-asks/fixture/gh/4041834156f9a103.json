@@ -1,0 +1,13 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--search",
+    "892",
+    "--json",
+    "number,title,state,url"
+  ],
+  "stdout": "[]",
+  "stderr": "",
+  "exit": 0
+}

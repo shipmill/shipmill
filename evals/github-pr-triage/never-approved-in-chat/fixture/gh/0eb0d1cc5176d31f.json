@@ -1,0 +1,13 @@
+{
+  "args": [
+    "pr",
+    "diff",
+    "893",
+    "--repo",
+    "shipmill/shipmill",
+    "--name-only"
+  ],
+  "stdout": "docs/product.md\n",
+  "stderr": "",
+  "exit": 0
+}

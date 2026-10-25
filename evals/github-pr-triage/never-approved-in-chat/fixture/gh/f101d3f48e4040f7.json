@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "893",
+    "--json",
+    "commits",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"commits\": [{\"oid\": \"8e4b2d6f0a1c3e5b7d9f2a4c6e8b0d1f3a5c7e9b\", \"messageHeadline\": \"Add G-8 to the direction: a fleet's goals\", \"committedDate\": \"2026-10-25T08:00:00Z\", \"authors\": [{\"login\": \"shipmill-romamo[bot]\", \"name\": \"shipmill-romamo[bot]\"}]}]}",
+  "stderr": "",
+  "exit": 0
+}

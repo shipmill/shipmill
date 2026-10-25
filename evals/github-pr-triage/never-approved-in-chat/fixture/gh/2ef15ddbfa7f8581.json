@@ -1,0 +1,9 @@
+{
+  "args": [
+    "api",
+    "repos/shipmill/shipmill/pulls/893"
+  ],
+  "stdout": "{\"number\": 893, \"head\": {\"sha\": \"8e4b2d6f0a1c3e5b7d9f2a4c6e8b0d1f3a5c7e9b\", \"ref\": \"direction/g-8-fleet-goals\"}, \"base\": {\"sha\": \"c48559b201219498dd077b9f030e42184ff20a84\", \"ref\": \"main\"}}",
+  "stderr": "",
+  "exit": 0
+}
