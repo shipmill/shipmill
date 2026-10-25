@@ -423,16 +423,21 @@ class GhCli:
     notes go on stdin, never in argv, which Linux caps at 128 KiB an argument (#499); one
     over GitHub's limit is cut to fit, linking the changelog that holds the full text"""
 
-    def __init__(self, root: Path, gh: str = "gh", changelog: str = "CHANGELOG.md") -> None:
+    def __init__(
+        self, root: Path, gh: str = "gh", changelog: str = "CHANGELOG.md", env: Mapping[str, str] | None = None
+    ) -> None:
+        """env, when given, is gh's whole environment (`shipmill gh`'s, with the App's token);
+        else gh gets this process's"""
         self.root = root
         self.gh = gh
         self.changelog = changelog
+        self.env = None if env is None else dict(env)
         self._url: str | None = None
 
     def _run(self, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
         # gh reads and writes UTF-8, whatever the locale says
         return subprocess.run(
-            [self.gh, *args], capture_output=True, text=True, encoding="utf-8", cwd=self.root, input=stdin
+            [self.gh, *args], capture_output=True, text=True, encoding="utf-8", cwd=self.root, input=stdin, env=self.env
         )
 
     def _changelog_at(self, ref: str) -> str:
@@ -658,6 +663,11 @@ class GhCli:
                 )
             )
         return PullChange(number, base, head, tuple(files))
+
+    def pull_of(self, selector: str | None) -> str:
+        """The URL of the pull request gh resolves selector to (a branch; None for the current
+        branch's), as `gh pr view` does for `gh pr merge`"""
+        return self._gh("pr", "view", *([] if selector is None else [selector]), "--json", "url", "--jq", ".url")
 
     def text_at(self, sha: str, path: str) -> str:
         """The file's text at a commit, through the contents API; a missing file fails"""

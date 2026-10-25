@@ -22,17 +22,35 @@ A downstream check (spec 032), `downstream: <name>`, is a CheckRun in the rollup
 check, with no logic of its own: FAILURE, TIMED_OUT, or ACTION_REQUIRED fails, IN_PROGRESS is
 pending, and a report-only one's NEUTRAL counts green.
 
+The decision policy (spec 030): when that branch's .github/shipmill.toml has an [agents]
+table, the zones come from `shipmill --repo <checkout> decide classify --pr N --ref <the
+branch> --json`, run as `uvx shipmill==<the version in the plugin's plugin.json>` (or `uvx
+--from <tool> shipmill` with --tool), in place of the direction and Protected areas checks
+above; the plan check stays. Each zone by its level, read from that branch, never the PR:
+
+- never: MAINTAINER_ONLY, `  maintainer-only: <zone>: <reason>`; --maintainer-accepted
+  doesn't lift it, since only the maintainer merges it, by hand (D-48)
+- ask: NEEDS_DECISION, `  needs-decision: <zone>: <reason>`, until --maintainer-accepted
+- notify: the verdict stays, with `  notify: <zone>: <reason>`; the skill posts the decided
+  comment before it merges
+- act: nothing
+
+Without [agents] on that branch the gate judges as it did before spec 030.
+
 Exit codes: 0 every PR is ready; 1 a check failed, or gh failed; 3 a check is still
 pending (or --wait timed out); 4 a PR is not open or conflicts; 5 a PR needs the
-maintainer's decision; 6 an agent's PR is refused for its plan; 2 bad arguments, a base
-branch the checkout lacks, a git failure, or a REVIEW.md or docs/product.md the gate can't
-read.
+maintainer's decision; 6 an agent's PR is refused for its plan; 7 a PR only the maintainer
+merges, by hand (a `never` zone); 2 bad arguments, a base branch the checkout lacks, a git
+failure, a REVIEW.md, docs/product.md, or config the gate can't read, or a `shipmill decide
+classify` that fails or prints what the gate can't read. With several PRs the exit code is
+the worst verdict's, ranked 0, 1, 3, 4, 5, 7, 6.
 """
 
 from __future__ import annotations
 
 import argparse
 import fnmatch
+import importlib.util
 import json
 import re
 import subprocess
@@ -40,9 +58,11 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
+from types import ModuleType
 
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
-READY, FAILED, PENDING, BLOCKED, NEEDS_DECISION, REFUSED = 0, 1, 3, 4, 5, 6
+READY, FAILED, PENDING, BLOCKED, NEEDS_DECISION, REFUSED, MAINTAINER_ONLY = 0, 1, 3, 4, 5, 6, 7
 LABELS = {
     READY: "READY",
     FAILED: "FAILED",
@@ -50,7 +70,17 @@ LABELS = {
     BLOCKED: "BLOCKED",
     NEEDS_DECISION: "NEEDS_DECISION",
     REFUSED: "REFUSED",
+    MAINTAINER_ONLY: "MAINTAINER_ONLY",
 }
+# the worst verdict last: MAINTAINER_ONLY ranks above NEEDS_DECISION and below REFUSED (spec 030)
+RANK = (READY, FAILED, PENDING, BLOCKED, NEEDS_DECISION, MAINTAINER_ONLY, REFUSED)
+
+# github-ship-watch's watch_state.py: one reading of the config's [agents] and of the plugin's
+# pinned CLI for every skill script
+WATCH_STATE = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "watch_state.py"
+# github-issue-triage's decisions.py: the zone table's one copy, its ZONES and LEVELS
+DECISIONS = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "decisions.py"
+CONFIG = ".github/shipmill.toml"
 
 DIRECTION = "docs/product.md"
 DIRECTION_DIR = "docs/product/"
@@ -92,6 +122,8 @@ class Gate:
     checks: tuple[Check, ...]
     refused: tuple[str, ...] = ()  # why an agent's PR is refused for its plan
     asks: tuple[str, ...] = ()  # why the PR waits on the maintainer
+    never: tuple[str, ...] = ()  # the never zones: only the maintainer merges it, by hand (spec 030)
+    notices: tuple[str, ...] = ()  # the notify zones: decided without waiting, the verdict kept
 
     @property
     def verdict(self) -> int:
@@ -99,6 +131,8 @@ class Gate:
             return BLOCKED
         if self.refused:
             return REFUSED
+        if self.never:
+            return MAINTAINER_ONLY
         if self.asks:
             return NEEDS_DECISION
         if any(c.done and c.conclusion not in GREEN for c in self.checks):
@@ -124,11 +158,14 @@ class Protected:
 
 @dataclass(frozen=True)
 class Base:
-    """What the default branch holds: the direction's ids (None without docs/product.md)
-    and every REVIEW.md, read for the files a PR changes"""
+    """What the default branch holds: the direction's ids (None without docs/product.md),
+    every REVIEW.md, read for the files a PR changes, and whether its config has [agents]
+    (spec 030: then `shipmill decide classify` at ref names the zones)"""
 
     ids: frozenset[str] | None
     reviews: dict[str, str]  # REVIEW.md path -> its text
+    agents: bool = False
+    ref: str | None = None  # the ref it was read at
 
     def protected(self, files: tuple[str, ...]) -> list[Protected]:
         wanted = {REVIEW}
@@ -345,7 +382,108 @@ def read_base(checkout: str, ref: str) -> Base:
 
     reviews = {n: git(checkout, "show", f"{ref}:{n}") for n in names if n.rsplit("/", 1)[-1] == REVIEW}
     ids = direction_ids(read) if DIRECTION in tree else None
-    return Base(ids, reviews)
+    config = read(CONFIG)
+    return Base(ids, reviews, config is not None and has_agents(config, f"{CONFIG} at {ref}"), ref)
+
+
+def load(name: str, path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise GateError(f"can't load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up by name
+    spec.loader.exec_module(module)
+    return module
+
+
+_MODULES: dict[str, ModuleType] = {}
+
+
+def module(name: str, path: Path) -> ModuleType:
+    """A sibling skill's script, loaded once and only when the gate needs it"""
+    if name not in _MODULES:
+        _MODULES[name] = load(name, path)
+    return _MODULES[name]
+
+
+def watch_state() -> ModuleType:
+    return module("shipmill_watch_state", WATCH_STATE)
+
+
+def has_agents(text: str, where: str) -> bool:
+    """Whether the config has an [agents] table, read as watch_state.py reads it"""
+    ws = watch_state()
+    try:
+        return ws.agents_table(text, Path(where)) is not None
+    except ws.Refused as refused:
+        raise GateError(str(refused).removeprefix("error: ")) from None
+
+
+@dataclass(frozen=True)
+class Zone:
+    """A zone `shipmill decide classify` detects, at the base's level, with why"""
+
+    zone: str
+    level: str
+    reason: str
+
+    def line(self) -> str:
+        return f"{self.zone}: {self.reason}"
+
+
+class Classifier:
+    """`shipmill decide classify --pr N --ref <base> --json` in the checkout, once per PR head"""
+
+    def __init__(self, checkout: str, tool: str | None) -> None:
+        self.checkout = checkout
+        self.tool = tool
+        self.found: dict[tuple[int, str, str], tuple[Zone, ...]] = {}
+
+    def zones(self, number: int, ref: str, head: str) -> tuple[Zone, ...]:
+        key = (number, ref, head)
+        if key not in self.found:
+            self.found[key] = self.run(number, ref)
+        return self.found[key]
+
+    def run(self, number: int, ref: str) -> tuple[Zone, ...]:
+        ws = watch_state()
+        try:
+            cli: list[str] = ws.shipmill_cli(self.tool)
+        except ws.Refused as refused:
+            raise GateError(str(refused).removeprefix("error: ")) from None
+        cmd = [*cli, "--repo", self.checkout, "decide", "classify", "--pr", str(number), "--ref", ref, "--json"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        except FileNotFoundError:
+            raise GateError(
+                f"{cmd[0]} is not on PATH: the gate reads the zones with `shipmill decide classify`"
+            ) from None
+        if proc.returncode != 0:
+            raise GateError(f"`{' '.join(cmd)}` failed for #{number}: {proc.stderr.strip() or proc.stdout.strip()}")
+        return parse_zones(proc.stdout, number)
+
+
+def parse_zones(text: str, number: int) -> tuple[Zone, ...]:
+    """classify's JSON zones, each a known zone at a known level; anything else stops the gate"""
+    decisions = module("shipmill_decisions", DECISIONS)
+    what = f"`shipmill decide classify --pr {number} --json`"
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise GateError(f"{what} printed no JSON: {exc}") from None
+    listed = data.get("zones") if isinstance(data, dict) else None
+    if not isinstance(listed, list):
+        raise GateError(f"{what} printed no zones list")
+    found = []
+    for entry in listed:
+        if not isinstance(entry, dict) or not all(isinstance(entry.get(k), str) for k in ("zone", "level", "reason")):
+            raise GateError(f"{what} printed a zone that isn't {{zone, level, reason}}: {entry!r}")
+        if entry["zone"] not in decisions.ZONES or entry["level"] not in decisions.LEVELS:
+            raise GateError(
+                f"{what} printed zone {entry['zone']!r} at {entry['level']!r}, which this gate doesn't know"
+            )
+        found.append(Zone(entry["zone"], entry["level"], entry["reason"]))
+    return tuple(found)
 
 
 def author_of(entry: dict) -> str:
@@ -385,14 +523,24 @@ def all_files(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
     return files
 
 
-def judge(data: dict, number: int, base: Base, agent: bool, accepted: bool) -> Gate:
+def judge(
+    data: dict, number: int, base: Base, agent: bool, accepted: bool, zones: tuple[Zone, ...] | None = None
+) -> Gate:
+    """zones, classify's for the PR, are given when the base's config has [agents] (spec 030);
+    they replace the direction and Protected areas checks"""
     checks = tuple(check_of(e) for e in data.get("statusCheckRollup") or ())
     files: tuple[str, ...] = data["files"]
     refused: list[str] = []
     if agent and base.ids is not None:
         refused = plan_problems(str(data.get("body") or ""), base.ids)
     asks: list[str] = []
-    if not accepted and (base.ids is not None or base.reviews):
+    never: list[str] = []
+    notices: list[str] = []
+    if zones is not None:
+        never = [z.line() for z in zones if z.level == "never"]  # --maintainer-accepted never lifts it (D-48)
+        asks = [] if accepted else [z.line() for z in zones if z.level == "ask"]
+        notices = [z.line() for z in zones if z.level == "notify"]
+    elif not accepted and (base.ids is not None or base.reviews):
         edited = [f for f in files if f == DIRECTION or f.startswith(DIRECTION_DIR)]
         asks += [f"{f} edits the product's direction, which only the maintainer changes (D-34)" for f in edited]
         for area in base.protected(files):
@@ -406,6 +554,8 @@ def judge(data: dict, number: int, base: Base, agent: bool, accepted: bool) -> G
         checks,
         tuple(refused),
         tuple(asks),
+        tuple(never),
+        tuple(notices),
     )
 
 
@@ -420,7 +570,9 @@ def render(gate: Gate) -> str:
     lines += [f"  failed: {c.name} ({c.conclusion})" for c in failed]
     lines += [f"  pending: {c.name}" for c in pending]
     lines += [f"  refused: {reason}" for reason in gate.refused]
+    lines += [f"  maintainer-only: {reason}" for reason in gate.never]
     lines += [f"  needs-decision: {reason}" for reason in gate.asks]
+    lines += [f"  notify: {reason}" for reason in gate.notices]
     return "\n".join(lines)
 
 
@@ -441,7 +593,13 @@ def main() -> int:
     parser.add_argument(
         "--maintainer-accepted",
         action="store_true",
-        help="the maintainer accepted these PRs' protected or direction changes; don't ask again",
+        help="the maintainer accepted these PRs' protected or direction changes, or their ask zones; don't ask "
+        "again (a never zone stays: the maintainer merges it by hand)",
+    )
+    parser.add_argument(
+        "--tool",
+        help="with [agents] on the base: where uvx gets shipmill for `decide classify` (default: "
+        "shipmill==<the plugin.json version>)",
     )
     args = parser.parse_args()
     if args.interval < 1 or args.timeout < 1:
@@ -451,6 +609,7 @@ def main() -> int:
     deadline = time.monotonic() + args.timeout
     try:
         bases = Bases(args.checkout, args.repo)
+        classifier = Classifier(bases.checkout, args.tool)
         while True:
             gates = []
             for number in args.prs:
@@ -461,8 +620,11 @@ def main() -> int:
                 agent = args.agent or (
                     args.bot_login is not None and author_of(data.get("author") or {}) == args.bot_login
                 )
-                gates.append(judge(data, number, base, agent, args.maintainer_accepted))
-            worst = max(g.verdict for g in gates)
+                zones = None
+                if base.agents and base.ref is not None:
+                    zones = classifier.zones(number, base.ref, str(data["headRefOid"]))
+                gates.append(judge(data, number, base, agent, args.maintainer_accepted, zones))
+            worst = max((g.verdict for g in gates), key=RANK.index)
             if not args.wait or worst != PENDING or time.monotonic() >= deadline:
                 print("\n".join(render(g) for g in gates))
                 return worst

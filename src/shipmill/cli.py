@@ -133,12 +133,17 @@ from shipmill.app_create import (
 )
 from shipmill.app_gh import (
     GhRunner,
+    Merge,
+    MergeReader,
+    MergeReads,
     as_app,
     as_host,
     bundled_repo_flag,
     find_gh,
+    merge_of,
     named_repo,
     product_refusal,
+    pull_url,
     run_gh,
 )
 from shipmill.app_install import WAIT_SECONDS, guide
@@ -678,14 +683,16 @@ def main(
     library: Library | None = None,
     downstream_reader: Reader | None = None,
     pulls: Pulls | None = None,
+    merge_reader: MergeReader | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
     watch_state.py (and doctor's AGENT_AS_PERSON read), environ for this process's env, home
     for the user's home, gh_runner for running `shipmill gh`'s gh, library for the library's
     repository `downstream start` and `collect` write checks on, downstream_reader for
-    what doctor reads of the secrets and the downstream workflows, and pulls for the pull
-    request `decide classify --pr` reads, as tests pass fakes"""
+    what doctor reads of the secrets and the downstream workflows, pulls for the pull
+    request `decide classify --pr` reads, and merge_reader for the pull request a `shipmill
+    gh` merge reads, as tests pass fakes"""
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
     root: Path = args.repo.resolve()
@@ -694,7 +701,8 @@ def main(
     if args.command == "gh":
         if passed is None:  # such as `shipmill -- gh ...`
             raise ReleaseError("only --repo PATH may come before gh, as in `shipmill --repo PATH gh pr list`")
-        return _gh(root, passed, api or UrllibApi(), signer or Openssl(), env, user_home, gh_runner or run_gh)
+        reader = merge_reader or _gh_reader
+        return _gh(root, passed, api or UrllibApi(), signer or Openssl(), env, user_home, gh_runner or run_gh, reader)
     if args.command == "app-token":
         return _app_token(root, args, api or UrllibApi(), signer or Openssl(), stdin or sys.stdin, env, user_home)
     if args.command == "app-install":
@@ -1164,10 +1172,12 @@ def _gh(
     environ: Mapping[str, str],
     home: Path,
     runner: GhRunner,
+    reader: MergeReader,
 ) -> int:
     """Spec 012: gh as the App when the checkout's config sets [agents] app_id, else as the
     host's login; gh's exit code. With app_id set any failure to get the token exits 2 and gh
-    never runs (D-14); GH_TOKEN is never set but empty"""
+    never runs (D-14); GH_TOKEN is never set but empty. As the App, a merge of a pull request
+    with a `never` zone exits 2 and gh never runs (S-030-13)"""
     key, coordinated, gh_args = _leading(passed)
     if coordinated is not None:
         return _gh_product(root, coordinated, key, gh_args, api, signer, environ, home, runner)
@@ -1214,7 +1224,50 @@ def _gh(
         token = app_token(cache, repo, app_id, key or default_key(app_id, home), dt.datetime.now(dt.UTC), signer, api)
     except NotInstalled as exc:
         raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {repo}`") from None
+    merge = merge_of(gh_args)
+    if merge is not None:
+        _hold_never(top, merge, as_app(environ, token), binary, reader)
     return runner([str(binary), *gh_args], as_app(environ, token))
+
+
+def _gh_reader(top: Path, binary: Path, env: Mapping[str, str]) -> MergeReads:
+    """The pull request a merge names, read through the gh shipmill runs, with its env"""
+    return GhCli(top, gh=str(binary), env=env)
+
+
+def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, reader: MergeReader) -> None:
+    """S-030-13: a merge of a pull request whose classification, by the levels at origin/HEAD,
+    has a `never` zone exits 2, naming the zone and the maintainer's hand merge; approval in
+    chat changes nothing, since nothing here reads it (D-48). Read with the App's token, in the
+    checkout's own repo only, whose levels it holds"""
+    origin = _origin_repo(top)
+    if origin is None:
+        raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so {merge.command}'s pull request can't be classified")
+    target = merge.target(env.get("GH_REPO") or origin)
+    reads: MergeReads = reader(top, binary, {**env, "GH_REPO": target})
+    number = merge.number
+    if number is None:
+        target, number = pull_url(reads.pull_of(merge.selector))
+    if target.lower() != origin.lower():
+        raise ReleaseError(
+            f"{merge.command} names a pull request in {target}, and the levels that decide who merges it are "
+            f"{target}'s: merge it from a checkout of {target}, whose origin it is (spec 030); this one's is {origin}"
+        )
+    git = Git(top)
+    if not git.ok("rev-parse", "--verify", "--quiet", f"{DEFAULT_REF}^{{commit}}"):
+        raise ReleaseError(
+            f"{DEFAULT_REF} is not set in {top}, so the levels that decide who merges #{number} can't be read: run "
+            f"`git -C {top} remote set-head origin --auto`"
+        )
+    found = classify_pull(Base.read(git, DEFAULT_REF), reads, number)
+    never = [z for z in found.zones if z.level is decide.Level.NEVER]
+    if never:
+        zones = "; ".join(f"{z.zone.value}: {z.reason}" for z in never)
+        raise ReleaseError(
+            f"{merge.command} is refused: #{number} in {target} has a never zone ({zones}), so only the maintainer "
+            "merges it, by hand; an approval in chat doesn't change that (spec 030, D-48). Assign it to the "
+            "maintainer and leave it"
+        )
 
 
 def _gh_product(
