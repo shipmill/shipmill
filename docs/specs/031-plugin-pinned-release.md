@@ -1,6 +1,6 @@
 # S-031: The plugin pins its release; gate sessions load the installed plugin
 
-status: built
+status: approved
 serves: G-1, G-2
 
 ## Problem
@@ -55,6 +55,17 @@ maintainer dropped that on 2026-10-21 in shipmill/shipmill#564: the marketplace 
 single registry and the single way the plugin reaches a host, and Claude Code already
 keeps its own copy of each installed version. S-031-8 to S-031-12 and S-031-14 are
 dropped; S-031-24 replaces the PyPI wait of S-031-9.
+
+Pinning closed the drift inside the plugin, but not the person's own CLI
+(shipmill/shipmill#583). A `shipmill` on PATH from `uv tool install shipmill`, upgraded by
+hand, can lag the installed plugin by many releases, and nothing says so. Agent sessions
+still run a bare `shipmill ...` from notes and `CLAUDE.md` files, so `doctor`, `gate`,
+`upgrade`, and `setup` read the config by an old release's rules. `shipmill status` reports
+a CLI older than the latest release only when it is itself that CLI (S-011-15), and
+S-031-17 covers the gate's CLI, not the person's. The maintainer decided on #583
+(2026-10-25) to report the lag: `doctor`, `status`, and `watch_state.py` compare the
+`shipmill` on PATH with the plugin's version and name `uv tool upgrade shipmill` when they
+differ, as S-031-17 does for the gate's CLI (S-031-25 to S-031-30).
 
 ## Behaviour
 
@@ -134,6 +145,7 @@ The 44 matches of `git+https://github.com/shipmill/shipmill@v0` on main split as
 | `skills/`, `hooks/`, `src/shipmill/__init__.py` | The pinned form above; a test fails on any `@v0` left under `skills/` or `hooks/` |
 | `src/shipmill/launchd.py` (`DEFAULT_TOOL`) | `shipmill@latest` from PyPI (below) |
 | `docs/install.md`, `docs/release-lanes.md`, `README.md`, `docs/design/ephemeral-mode.md` | The pinned form for the plugin's commands, `uv tool install shipmill` for a person's CLI |
+| `README.md`, `docs/install.md` (#583) | `uv tool install shipmill` is the one way to get a person's CLI, with `uv tool upgrade shipmill` after each plugin update; a reader without it runs `uvx shipmill <command>` (the latest release from PyPI, the fallback #236 asks for) in place of `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill` (S-031-30) |
 | `.github/workflows/prepare.yml`, `land.yml`, `operate.yml` (`tool` input default) | Unchanged: outside users' CI, which the floating tag serves (D-31) |
 | `CHANGELOG.md`, `docs/specs/0*.md`, tests and fixtures quoting the old form | Unchanged history; tests change only where they assert the new form |
 
@@ -232,6 +244,43 @@ release on the host, when a release first finds an install that lags: the first 
 create the marker `~/.cache/shipmill/plugin/<version>.notified` (exclusive create) sends
 it, naming each lagging install and its fix, so five gates send one.
 
+### The person's CLI on PATH (#583)
+
+`shipmill --version` (`src/shipmill/cli.py`) prints `shipmill <version>` and exits 0,
+without `--repo`, a command, or a config. A release from before it answers `--version`
+with argparse's usage error, exit 2.
+
+`skills/github-ship-watch/scripts/watch_state.py` reads the person's CLI: the first
+`shipmill` on PATH outside the environment that runs the check. A folder whose `shipmill`
+resolves into the environment holding `watch_state.py` (the one `uvx shipmill==<version>
+status` puts first on PATH for its own run) is skipped, as `cli_command()` in
+`src/shipmill/__init__.py` skips it (#236). It runs that `shipmill --version` and compares
+it with the plugin's version: the version of the install a session in the checkout loads,
+resolved as the gate resolves it (a project or local install keyed on the main checkout,
+else the user's). When they differ it adds one `SHIPMILL_OUTDATED` row:
+
+```
+SHIPMILL_OUTDATED  shipmill on PATH  /Users/me/.local/bin/shipmill is 0.40.0, the plugin is 0.67.0; uv tool upgrade shipmill
+```
+
+- **Older than the plugin:** the fix is `uv tool upgrade shipmill`
+- **Newer than the plugin:** the plugin is the one behind; the fix is the plugin's update
+  for the install a session loads, the command S-031-15 prints
+- **From before `--version`** (a non-zero exit): the detail reads `<path> predates
+  shipmill --version, the plugin is <version>`, and the fix is `uv tool upgrade shipmill`.
+  An exit 0 whose output isn't `shipmill X.Y.Z` exits 2 naming the path and the output
+- **No `shipmill` on PATH:** no row. The plugin runs `uvx shipmill==<version>`, so a
+  person without a tool install has nothing to lag
+- **No install a session loads** (claude isn't on PATH, or none applies): no row, since
+  there is no plugin version to compare with; `SHIPMILL_VERSION` already says so
+
+`doctor` (`src/shipmill/doctor.py`) shows the row as a WARN with its fix, which leaves its
+exit code as the other checks set it. `shipmill status` (`src/shipmill/status.py`) counts it
+among the reasons that wait on the person, with its fix, like the other `SHIPMILL_OUTDATED`
+rows; when the `shipmill` running `status` is the one on PATH and it lags the latest
+release, its S-011-15 line and the row name `uv tool upgrade shipmill` once, not twice.
+Neither changes the CLI, and no gate holds a session on it.
+
 ### `[agents] plugin_update`: deprecated, then refused
 
 The gate no longer relies on installs keyed on its checkout, so the key has no job left.
@@ -260,6 +309,12 @@ It follows the path D-32 set for `[roadmap]`:
   plugin_update` deprecated
 - `skills/shipmill-setup/SKILL.md` and `skills/github-ship-watch/SKILL.md`: the pinned
   command, and the report rows without the pause
+- `README.md` and `docs/install.md` (#583): one way to get a person's CLI, `uv tool install
+  shipmill`, and `uv tool upgrade shipmill` after each plugin update; `doctor` and `status`
+  report a `shipmill` on PATH whose version differs from the plugin's. A reader without the
+  install runs `uvx shipmill <command>`, which replaces the
+  `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill` form in both (and
+  `CR=` in `docs/install.md`)
 
 ## Acceptance criteria
 
@@ -287,6 +342,12 @@ It follows the path D-32 set for `[roadmap]`:
 - S-031-22: In the minor release after the one that ships S-031-21, a config whose `[agents]` sets `plugin_update` exits 2 naming the key and spec 031
 - S-031-23: `docs/install.md`, `docs/release-lanes.md`, `skills/shipmill-setup/SKILL.md`, and `skills/github-ship-watch/SKILL.md` describe the pinned CLI, the marketplace serving releases, gate sessions loading the installed plugin, `requires`, and the `plugin_update` deprecation, and none describes a gate paused on a stale plugin
 - S-031-24: While PyPI answers 404 for the version of the install sessions load, the tick starts no session and reports `plugin <version> waits for PyPI`, and the next tick tries again; any other PyPI answer is reported and the session starts; the gate's `claude -p` and `claude --bg` commands carry no `--plugin-dir`
+- S-031-25: `shipmill --version` prints `shipmill <version>`, the package's version, and exits 0 with no `--repo`, no command, and no `.github/shipmill.toml` in the folder
+- S-031-26: When the first `shipmill` on PATH outside the environment running the check (a folder whose `shipmill` resolves into the environment holding `watch_state.py` is skipped) prints a version older than the install a session in the checkout loads, `watch_state.py` prints one `SHIPMILL_OUTDATED` row, subject `shipmill on PATH`, detail `<path> is <version>, the plugin is <plugin version>; uv tool upgrade shipmill`, fix `uv tool upgrade shipmill`; when it is newer, the same row's fix is S-031-15's update for the install a session loads; when it equals the plugin's version, no row
+- S-031-27: A `shipmill` on PATH whose `--version` exits non-zero gets the row with detail `<path> predates shipmill --version, the plugin is <plugin version>; uv tool upgrade shipmill`; one whose `--version` exits 0 with output not of the form `shipmill X.Y.Z` makes `watch_state.py` exit 2 naming the path and the output
+- S-031-28: With no `shipmill` on PATH outside that environment, or no install a session in the checkout loads (claude isn't on PATH, or none applies), `watch_state.py` prints no `shipmill on PATH` row, and `doctor` and `status` report nothing about the person's CLI
+- S-031-29: `doctor` shows the `shipmill on PATH` row as a WARN naming the path, both versions, and its fix, and that WARN alone leaves `doctor`'s exit code 0; `shipmill status` lists it among the reasons that wait on the person with its fix, and when the `shipmill` running `status` is that one and lags the latest release, `uv tool upgrade shipmill` appears once in its output; no gate holds a session on it
+- S-031-30: `README.md` and `docs/install.md` give `uv tool install shipmill` as the one way to get a person's CLI, say to run `uv tool upgrade shipmill` after each plugin update, and say `doctor` and `status` report a `shipmill` on PATH whose version differs from the plugin's; the run without the install they name is `uvx shipmill <command>`, and neither contains `git+https://github.com/shipmill/shipmill@v0`
 
 ## Out of scope
 
@@ -295,6 +356,8 @@ It follows the path D-32 set for `[roadmap]`:
   spec
 - Updating a person's installs: shipmill reports them with the fix and changes none, at
   any scope
+- Updating or replacing the `shipmill` on a person's PATH (#583): reported with its fix,
+  never upgraded, shimmed, or redirected to the plugin's pinned CLI
 - Pre-release plugins (an rc channel in the marketplace): shipmill releases only stable
   and hotfix lanes today
 - Editing `~/.claude/plugins/installed_plugins.json`: Claude Code's file, undocumented
@@ -316,6 +379,7 @@ It follows the path D-32 set for `[roadmap]`:
 - shipmill/shipmill#551: S-031-13, S-031-15, S-031-16, S-031-17, S-031-18, S-031-19, S-031-20, S-031-24
 - shipmill/shipmill#552: S-031-21, S-031-23
 - shipmill/shipmill#553: S-031-22
+- shipmill/shipmill#583: S-031-25, S-031-26, S-031-27, S-031-28, S-031-29, S-031-30
 
 ## Verification
 
