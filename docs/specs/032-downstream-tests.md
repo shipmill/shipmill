@@ -98,6 +98,7 @@ on:
   workflow_dispatch:
     inputs:
       pr: {description: "pull request to test", required: true, type: number}
+      sha: {description: "the head SHA you read; the run refuses any other", required: true, type: string}
       collect: {description: "set by shipmill: the head SHA to collect results for", type: string, default: ""}
 permissions:
   actions: write          # start this workflow's collect run
@@ -109,6 +110,7 @@ jobs:
     uses: shipmill/shipmill/.github/workflows/downstream.yml@v0
     with:
       pr: ${{ github.event.pull_request.number || inputs.pr }}
+      sha: ${{ inputs.sha }}
       collect: ${{ inputs.collect }}
     secrets:
       downstream-key: ${{ secrets.SHIPMILL_DOWNSTREAM_KEY }}
@@ -191,16 +193,49 @@ evals (D-37), it runs only once a person starts it:
 - On a fork's pull request, `start` dispatches nothing. A required downstream's check is
   written `completed` with conclusion `action_required`, title `a fork's pull request runs
   downstream tests only by hand`, and the command in its summary: `gh workflow run
-  downstream.yml -f pr=<N>`. A report-only one is written `neutral` with the same text
+  downstream.yml -f pr=<N> -f sha=<head SHA>`, the head SHA it read filled in. A
+  report-only one is written `neutral` with the same text
 - A `workflow_dispatch` run with `pr` and an empty `collect` is the person's start:
-  `start` dispatches every downstream for the pull request's current head, fork or not,
-  and updates the same checks. When `$GITHUB_TRIGGERING_ACTOR` (passed as `--actor`) ends
+  `start` dispatches every downstream for the head SHA the person named, fork or not,
+  and updates the same checks (pinned as below). When `$GITHUB_TRIGGERING_ACTOR` (passed as `--actor`) ends
   in `[bot]` and the head is a fork's, `start` writes nothing and exits 2 with `a fork's
   downstream run is started by a person, not <login>`: an agent writing as the App can't
   decide to run a fork's code in another repository
 - `pull_request_target` gives the run a token that can write checks on a fork's pull
   request, which a `pull_request` run from a fork can't; the reusable workflow never checks
   out or runs the pull request's code, so the token never meets it
+
+### A dispatched start is pinned to the head the person read
+
+The person reads a fork's change at one commit and starts the run some time later. If
+`start` took the head it reads at dispatch, the fork's author could push in between, and
+the commit nobody read would run in each downstream with its secrets, on a token that can
+dispatch the downstream's workflows (shipmill/shipmill#545). So a person's start names the
+commit it is for:
+
+- The caller's `workflow_dispatch` gains a required `sha` input, the full head SHA the
+  person read: `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>`. The reusable
+  `.github/workflows/downstream.yml` takes `sha` as an optional `workflow_call` input
+  (default empty, so a caller written before it still starts) and passes it to `shipmill
+  downstream start --sha <SHA>` on a `workflow_dispatch` run
+- **Before it writes a check, mints a token, or dispatches anything**, `start` on a
+  `workflow_dispatch` run compares `--sha` with the pull request's head SHA it reads. When
+  they differ it writes nothing and exits 1 with `the head of #<N> is <current SHA>, not
+  <sha>; read the new commits and start again with -f sha=<current SHA>`. The checks it
+  wrote before keep their state, so a fork's stay `action_required`
+- A `workflow_dispatch` start with no `--sha`, or one that is not 40 hexadecimal
+  characters, writes nothing and exits 2 naming the missing input and the fix for an old
+  caller, `shipmill init --downstream --force`. A `pull_request_target` start needs no
+  `--sha`: its head is the event's, and a fork's is held as above
+- The SHA the person named is the one tested: the downstream's `library-ref`, its
+  `shipmill-id`, the checks' head, and the collect dispatch (`pr`, `sha`, and `collect` all
+  set to it) carry it
+- The hand-offs name the SHA: the fork hold's summary prints the command with the head SHA
+  it read, and `skills/github-pr-triage/references/landing.md` gives the rerun of a flaky
+  downstream as `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>` (through
+  `shipmill gh`)
+- `shipmill doctor` FAILs a caller whose `workflow_dispatch` lacks the `sha` input or
+  doesn't pass `sha` to the reusable workflow, naming `shipmill init --downstream --force`
 
 ### How `pr_gate.py` reads it
 
@@ -211,7 +246,8 @@ or waits for a person's start (`FAILURE`, `TIMED_OUT`, `ACTION_REQUIRED`) is out
 still running exits 3 as pending; a report-only one (`NEUTRAL`) and a passed one count
 green. Its docstring gains one line saying so. `skills/github-pr-triage/references/landing.md`
 says a red downstream check is treated like any red job, that a downstream's flaky test is
-rerun with `gh workflow run downstream.yml -f pr=<N>` (through `shipmill gh`), and that a
+rerun with `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>` (through `shipmill
+gh`), and that a
 fork's `action_required` downstream check is the maintainer's to start.
 
 ### `shipmill doctor`
@@ -258,12 +294,19 @@ fork's `action_required` downstream check is the maintainer's to start.
 - S-032-8: `shipmill downstream collect` finds each downstream run by the `shipmill-id` in its run-name among the workflow's `workflow_dispatch` runs created after the dispatch, sets it as the check's details URL, and concludes a required check `success` for a run concluding `success`, `failure` with title `failed: <conclusion>` for any other conclusion, and `timed_out` once `timeout_minutes` from the dispatch has passed; a report-only check keeps conclusion `neutral` in every case with the result in its title
 - S-032-9: When no run with the `shipmill-id` appears within 2 minutes of the dispatch, `collect` concludes a required check `failure` (a report-only one `neutral`) naming the run-name rule
 - S-032-10: A check's summary names the tested SHA, links the downstream run, and lists the names of its failed jobs, and holds no line of the downstream's logs
-- S-032-11: On a pull request whose head repository isn't the library's, `start` dispatches nothing and writes each required check `completed`/`action_required` and each report-only one `neutral`, titled `a fork's pull request runs downstream tests only by hand` with `gh workflow run downstream.yml -f pr=<N>` in the summary
+- S-032-11: dropped in #NNN, see S-032-17: the command the fork hold prints names the head SHA
 - S-032-12: A `workflow_dispatch` start with `--actor <person>` dispatches every downstream for a fork's pull request and updates its checks; with `--actor <name>[bot]` on a fork's pull request it writes nothing and exits 2 with `a fork's downstream run is started by a person, not <name>[bot]`; for a head in the repository a bot actor starts as a person does
 - S-032-13: `start` and `collect` exit 2 when the config doesn't parse, the pull request can't be read, or a check can't be written; with an empty or malformed key file `start` writes every check with the reason (required `failure`, report-only `neutral`) and exits 2
 - S-032-14: `pr_gate.py` on a pull request whose rollup holds a `downstream: <name>` CheckRun exits 1 printing `failed: downstream: <name> (FAILURE)` for `FAILURE`, likewise for `TIMED_OUT` and `ACTION_REQUIRED`; exits 3 for one `IN_PROGRESS`; and counts `NEUTRAL` and `SUCCESS` as green
 - S-032-15: `shipmill doctor` with `[downstream]` FAILs naming `shipmill init --downstream --force` when the caller workflow is missing or lacks a trigger, the reusable call, `actions: write`, or `checks: write`; FAILs when `SHIPMILL_DOWNSTREAM_KEY` isn't a repository secret; per downstream PASSes for a readable workflow with the three inputs and a run-name containing `inputs.shipmill-id`, FAILs naming the missing part, and WARNs naming the repo when it can't read it; with the App's key on the host it FAILs for a downstream the App isn't installed on or lacks Actions: read and write, and without it WARNs once; a policy without `[downstream]` gets no downstream block
 - S-032-16: `docs/release-lanes.md`, `skills/shipmill-setup/SKILL.md`, and `skills/github-pr-triage/references/landing.md` cover downstream tests as the Behaviour's Docs list says, and `pr_gate.py`'s docstring says a downstream check is read like any check
+- S-032-17: On a pull request whose head repository isn't the library's, `start` dispatches nothing and writes each required check `completed`/`action_required` and each report-only one `neutral`, titled `a fork's pull request runs downstream tests only by hand` with `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>` in the summary, the full head SHA it read filled in
+- S-032-18: A `workflow_dispatch` start whose `--sha` differs from the pull request's head SHA writes no check, mints no token, dispatches nothing, and exits 1 with `the head of #<N> is <current SHA>, not <sha>; read the new commits and start again with -f sha=<current SHA>`; a fork's `action_required` checks are left as they were
+- S-032-19: A `workflow_dispatch` start with no `--sha`, or a `--sha` that is not 40 hexadecimal characters, writes nothing and exits 2 naming the input and `shipmill init --downstream --force`; a `pull_request_target` start needs no `--sha`
+- S-032-20: A `workflow_dispatch` start whose `--sha` is the head tests that SHA: each downstream's `library-ref` and `shipmill-id`, the checks' head SHA, and the collect dispatch's `pr`, `sha`, and `collect` inputs carry it
+- S-032-21: `shipmill init --downstream` writes the caller with a required `sha` input on `workflow_dispatch` passed to the reusable workflow, and actionlint accepts it; the reusable `.github/workflows/downstream.yml` takes an optional `sha` `workflow_call` input and passes `--sha` to `shipmill downstream start` on a `workflow_dispatch` run
+- S-032-22: `shipmill doctor` with `[downstream]` FAILs naming `shipmill init --downstream --force` when the caller's `workflow_dispatch` lacks the `sha` input or doesn't pass `sha` to the reusable workflow
+- S-032-23: `skills/github-pr-triage/references/landing.md` gives the rerun of a downstream as `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>` through `shipmill gh`, and says a fork's run is started only for the head SHA the maintainer read
 
 ## Out of scope
 
@@ -311,7 +354,7 @@ fork's `action_required` downstream check is the maintainer's to start.
 - S-032-8: ran `tests/test_downstream_collect.py`'s S-032-8 tests: the run is found by its id among `workflow_dispatch` runs created after the dispatch, linked as the details URL, and concluded `success`, `failure` titled `failed: <conclusion>`, or `timed_out`; a report-only check stays `neutral` with the result in its title
 - S-032-9: ran the S-032-9 tests: no run within 2 minutes concludes `failure` (report-only `neutral`) naming the run-name rule, and a run found inside 2 minutes doesn't
 - S-032-10: ran the S-032-10 tests and read `_result`: the summary names the SHA, links the run, lists failed jobs on one line each without a backtick, and copies no log
-- S-032-11: ran the S-032-11 tests: a fork's (or a deleted fork's) pull request dispatches nothing, required checks `action_required`, report-only `neutral`, with the title and `gh workflow run downstream.yml -f pr=<N>`
+- S-032-11: dropped in #NNN
 - S-032-12: ran the S-032-12 tests: a person's `--actor` dispatches a fork's head and updates its checks, a `[bot]` actor on a fork writes nothing and exits 2 with the message, and a bot starts a same-repository head
 - S-032-13: ran the S-032-13 tests for `start` and `collect`: exit 2 on a bad config, an unreadable pull request, and a check that can't be written; an empty, malformed, or refused key writes every check with the reason and exits 2
 - S-032-14: ran `tests/test_pr_gate.py`'s S-032-14 tests: exit 1 printing `failed: downstream: <name> (FAILURE)`, likewise `TIMED_OUT` and `ACTION_REQUIRED`, exit 3 for `IN_PROGRESS`, `NEUTRAL` and `SUCCESS` green
