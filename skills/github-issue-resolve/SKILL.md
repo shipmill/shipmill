@@ -117,7 +117,7 @@ Report pre-existing failures as such; never claim a green suite you didn't see. 
 1. Commit only the relevant paths. Message: imperative summary, a why-focused body, `Fixes #<n>`, plus any attribution lines the environment requires
 2. `git push -u origin <branch>`
 3. `gh pr create --body-file <file>` with a Summary (what and why), the Phase 4 `## Plan` when the repo has `docs/product.md`, `Fixes #<n>`, and a Test plan that lists pre-existing failures honestly. Before a later push that departs from the plan, update the plan in the body first (Phase 4)
-4. Before opening, check the PR diff contains only the intended files: `gh pr diff <pr> --name-only`
+4. Before opening, check the PR diff contains only the intended files: `git fetch origin`, then `git diff --name-only origin/<default>...HEAD` in the worktree (`gh pr diff --name-only` fails with HTTP 406 past 300 files)
 5. Comment the triage on the issue: root cause, why it was missed (if notable), and a link to the PR. Post with `--body-file`: in zsh, backticks inside a double-quoted `--body` run as commands and a glob error aborts the whole command line, so the comment silently never posts
 6. Keep the worktree while the PR is open: a review round or a rebase reuses it. Tell the user its path
 
@@ -131,7 +131,7 @@ This skill stops at an open PR. Merging goes through the `github-pr-triage` skil
 - merge style and stacked PRs
 - other sessions merging concurrently
 
-Before handing over, re-confirm that `gh pr diff <pr> --name-only` shows only the intended files. After the merge, `git pull --ff-only` in the user's checkout only if they ask. It may hold their uncommitted work.
+Before handing over, re-confirm in the worktree that `git diff --name-only origin/<default>...HEAD`, after a `git fetch origin`, shows only the intended files. After the merge, `git pull --ff-only` in the user's checkout only if they ask. It may hold their uncommitted work.
 
 After the merge, remove the Phase 3 worktree and its local branch once github-pr-triage's `scripts/landed.py --onto origin/<default> <sha>...` exits 0 for the branch's commits (for a squash merge, compare trees as its [landing.md](../github-pr-triage/references/landing.md) says):
 

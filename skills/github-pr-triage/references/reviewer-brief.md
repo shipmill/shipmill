@@ -4,7 +4,7 @@ Fill in the `{...}` fields and send one brief per PR, all in one message so the 
 
 **The rubric, the direction, and the plan (spec 024).** Read them in a checkout at `origin/<default>` after `git fetch`, never on the PR's branch, which could rewrite its own rules; run each as `uvx shipmill==0.73.0 <command>`, the release this plugin pins, in every session:
 
-- `{review_rubric}`: `shipmill review show --path <file> ...` with every file of `gh pr diff <N> --name-only`, which merges the root `REVIEW.md` with those of the directories the diff touches: Important rules (`I-n`, a subdirectory's cited as `skills/I-2`), the nit cap, Protected areas, and the free sections as they are. Without a `REVIEW.md`, drop the field
+- `{review_rubric}`: `shipmill review show --path <file> ...` with every file of `gh api repos/{owner}/{repo}/pulls/<N>/files --paginate --jq '.[].filename'` (gh fills in `{owner}/{repo}`; `gh pr diff --name-only` fails with HTTP 406 past 300 files), which merges the root `REVIEW.md` with those of the directories the diff touches: Important rules (`I-n`, a subdirectory's cited as `skills/I-2`), the nit cap, Protected areas, and the free sections as they are. Without a `REVIEW.md`, drop the field
 - `{direction}`: `shipmill product show --section goals --section non-goals --section quality`. Without `docs/product.md`, drop the field
 - `{cap}`: the most nits a review raises, the merged rubric's `cap:` (5 when its files set none); without a `REVIEW.md`, drop the clauses that name it
 - `{plan}`: the PR body's `## Plan` section as written (`gh pr view <N> --json body`); without one, drop the field
