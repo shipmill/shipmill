@@ -14,6 +14,7 @@ from shipmill import environments, requires
 from shipmill.agents import AgentsConfig, ProductConfig
 from shipmill.autonomy import AutonomyPolicy
 from shipmill.config import Table, read
+from shipmill.decide import DecisionPolicy
 from shipmill.downstream import DownstreamConfig
 from shipmill.environments import Environment, OperateConfig
 from shipmill.errors import ReleaseError
@@ -148,6 +149,7 @@ class Policy:
     hooks: HooksConfig = HooksConfig()  # [hooks]: validated here, read by the plugin's hook (spec 026)
     downstream: DownstreamConfig | None = None  # [downstream]: the repos tested on a pull request (spec 032)
     product: ProductConfig | None = None  # [product]: the product's home or components (spec 038, D-47)
+    decisions: DecisionPolicy = DecisionPolicy()  # [decisions]: each zone's level, or its default (spec 030, D-48)
 
     @property
     def incident_label(self) -> str | None:
@@ -190,6 +192,7 @@ class Policy:
             "hooks",
             "downstream",
             "product",
+            "decisions",
         )
         changelog = top.table("changelog")
         changelog.allow("path", "style", "fragments")
@@ -236,6 +239,7 @@ class Policy:
         notices = NoticesConfig.parse(top.table("notices", optional=True))
         hooks = HooksConfig.parse(top.table("hooks", optional=True))
         downstream = DownstreamConfig.parse(top.table("downstream")) if "downstream" in raw else None
+        decisions = DecisionPolicy.parse(top.table("decisions", optional=True))
         return cls(
             name=top.string("name"),
             mode=top.enum("mode", Mode),
@@ -267,6 +271,7 @@ class Policy:
             hooks=hooks,
             downstream=downstream,
             product=product,
+            decisions=decisions,
         )
 
     def rule(self, lane: Lane) -> LaneRule:
