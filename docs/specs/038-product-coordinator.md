@@ -1,6 +1,6 @@
 # S-038: Work across repos through the product's coordinator
 
-status: built
+status: approved
 serves: G-1
 
 ## Problem
@@ -185,9 +185,14 @@ The coordinator's session (github-issue-triage's SKILL.md, Reports from other re
   files an issue in each owning repo (often more than one) with `shipmill gh --product`,
   naming the report and quoting its sections, and makes each one a child of the report with
   `chains.py link --product <report> --child <issue>`; a stand-in's named issue is linked
-  the same way, with no new issue. `--product` sends `link`'s writes through `shipmill gh
-  --product <the parent's repo>`, and exits 2 when the checkout has no `[product] repos` or
-  a reference is in neither a listed repo nor the home repo
+  the same way, with no new issue. Where `link --product` writes depends on the report's
+  repo: for a report in the home repo it writes through the session's own `shipmill gh`
+  (the App's token over the home repo), since `shipmill gh --product` takes only a listed
+  repo; for a report in a listed repo it writes through `shipmill gh --product <the
+  report's repo>`. Its reads of a listed repo (resolving each reference, checking whether
+  the child is already linked) go through `shipmill gh --product <that repo>`, never the
+  session's plain gh. It exits 2 before any read or write when the checkout has no
+  `[product] repos` or a reference is in neither a listed repo nor the home repo
 - **Ask:** when it can't tell which repos own the fault, it asks on the report through the
   needs-decision protocol (D-21), with `shipmill gh --product`
 - **Close:** for CLOSE_DUE, it comments a summary of what changed (each child, how it
@@ -195,6 +200,15 @@ The coordinator's session (github-issue-triage's SKILL.md, Reports from other re
   not planned when a child closed not planned, so the agent decides again
 - It never changes files, pushes, creates a branch, opens a pull request, or merges outside
   the home repo (D-47)
+
+The first version of this spec sent every write of `link --product` through `shipmill gh
+--product <the parent's repo>` (S-038-12). That can't route a report in the home repo,
+which `upstream_state.py` reads as routable (S-038-18): `shipmill gh --product` exits 2 for
+a repo outside `[product] repos` (S-038-9), and `repos` never lists the home repo
+(S-038-3). The maintainer decided on 2026-10-25 in shipmill/shipmill#596 that a report in
+the home repo is written through the session's own `shipmill gh`, and that `link
+--product` reads a listed repo through `shipmill gh --product` too, in
+`skills/github-issue-triage/scripts/chains.py`. S-038-12 is dropped for S-038-29.
 
 ### Without a coordinator
 
@@ -217,6 +231,23 @@ stand-in instead.
 `skills/shipmill-setup/scripts/setup_state.py` reports the `upstream` label missing wherever
 it reports `needs-decision` missing, and shipmill-setup creates it with the others.
 
+### `doctor` checks the product's repos
+
+`shipmill doctor` (`src/shipmill/doctor.py`) in the home repo, a checkout whose config has
+`[product] repos`, adds a `product` check per listed repo, as it checks each downstream
+(shipmill/shipmill#580):
+
+- **FAIL:** a listed repo the App isn't installed on, or whose installation lacks one of
+  the product permissions, naming the repo and the fix `shipmill app-install <repo>`; and a
+  malformed or repeated `[product] repos` entry, naming the entry and the key, as a FAIL row
+  rather than an exit before the other checks
+- **WARN:** a listed repo whose `.github/shipmill.toml` has no `[product] home` or one that
+  names another repo than this home, naming the fix: set `[product] home = "<this home>"`
+  there; and a repo that names this home in its `[product] home` but isn't listed, naming
+  the fix: add it to `[product] repos` here, or remove its `home`
+- The home reads each component's config with the product token (contents read), never
+  the session's token
+
 ## Acceptance criteria
 
 - S-038-1: a `[product]` table with `home = "owner/name"` or `repos = [...]` parses; an unknown key, a value that isn't `owner/name`, an empty `repos`, a repo listed twice (case ignored), or both keys in one table exits 2 naming the key, in `shipmill plan` and in the gate's loader alike
@@ -230,7 +261,7 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - S-038-9: `shipmill gh --product OWNER/NAME <args>` runs gh with the product token; it exits 2 when OWNER/NAME isn't listed, or gh's `-R` names a repo not listed or of another owner, and, before gh runs, for `pr` other than list, view, diff, checks, and status, `release` other than list and view, `repo` other than view and list, `workflow run`, `run rerun`, and `run cancel`
 - S-038-10: in a checkout whose config sets `[product] home`, `shipmill gh` whose `-R` names a repo other than the checkout's origin, `shipmill app-token` for such a repo, and any `--product` exit 2 naming D-47 before a token is minted
 - S-038-11: `chains.py link` run from a checkout whose config sets `[product] home` exits 2 before any write when either reference names another repo than its own
-- S-038-12: `chains.py link --product P --child C` writes through `shipmill gh --product <P's repo>`, and exits 2 before any write when the checkout has no `[product] repos` or a reference is in neither a listed repo nor the home repo
+- S-038-12: dropped in #NNN, see S-038-29: `chains.py link --product P --child C` writes through `shipmill gh --product <P's repo>`, and exits 2 before any write when the checkout has no `[product] repos` or a reference is in neither a listed repo nor the home repo
 - S-038-13: `triage_state.py` reads an open issue labelled `upstream` as UPSTREAM before NEEDS_DECISION, DECIDED, and every other state but UNTRUSTED, triaged or not, whatever its holds; UPSTREAM is not in `ACTION`, so a repo whose only open issue reads UPSTREAM exits 0
 - S-038-14: UPSTREAM's note is `routed by OWNER/NAME` with `--home OWNER/NAME` and `no coordinator: waits for the maintainer` without it, and adds `asks the maintainer` when the report is labelled needs-decision and its question has no reply
 - S-038-15: `watch_state.py` passes `[product] home` as `--home` and lists UPSTREAM issues in ISSUES_OPEN as `UPSTREAM #N`, in no ISSUES, NEEDS_DECISION, or agent row, and the gate starts no session for a repo whose only open issue reads UPSTREAM
@@ -245,6 +276,9 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - S-038-24: `setup_state.py` reports the `upstream` label missing wherever it reports `needs-decision` missing, and shipmill-setup creates it
 - S-038-25: with or without `--home`, a `Depends on owner/repo#N` line or a native relation naming another repo's issue reads as spec 017 says: BLOCKED while open or unreadable, UNBLOCKED once closed
 - S-038-26: over one scripted forge of a home repo and two components, an issue in component A waits on its `upstream` report, the coordinator routes the report to an issue in component B as its child, B's issue closes, the coordinator closes the report as completed with its summary, and A's issue reads UNBLOCKED; along the way no write from A's session names another repo and no write with the product token touches contents or a pull request
+- S-038-27: `shipmill doctor` in a checkout whose config has `[product] repos` reports a FAIL naming the repo and `shipmill app-install <repo>` for a listed repo the App isn't installed on or whose installation lacks a product permission, and a FAIL naming the entry and the key for a malformed or repeated `[product] repos` entry, without exiting before its other checks
+- S-038-28: `shipmill doctor` in that checkout, reading each component's `.github/shipmill.toml` with the product token, reports a WARN naming the fix for a listed repo whose `[product] home` is missing or names another repo than this home, and a WARN naming the fix for a repo whose `[product] home` names this home but which `[product] repos` doesn't list
+- S-038-29: `chains.py link --product P --child C` in the home repo writes through the session's own `shipmill gh`, with no `--product`, when P is in the home repo, and through `shipmill gh --product <P's repo>` when P is in a listed repo; each read of a listed repo (resolving P or C, checking whether C is already linked) goes through `shipmill gh --product <that repo>`, never plain gh; it exits 2 before any read or write when the checkout has no `[product] repos` or a reference is in neither a listed repo nor the home repo
 
 ## Out of scope
 
@@ -291,7 +325,7 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - S-038-9: tests/test_product_token.py (test_s038_9_*): `shipmill gh --product` runs gh with the product token and GH_REPO, and refuses an unlisted repo, a `-R` outside the owner's listed repos, and each listed code or pull request command before gh runs; `shipmill --repo . gh --product shipmill/other issue list` in this repo exits 2; passes
 - S-038-10: tests/test_product_config.py and tests/test_product_token.py (test_s038_10_*): a component's `shipmill gh -R` another repo, `app-token` for another repo, and any `--product` exit 2 naming D-47 before a token; passes
 - S-038-11: tests/test_chains.py (test_s038_11_*): `chains.py link` in a component exits 2 for another repo's reference with no read or write, and links within its repo as before; passes
-- S-038-12: tests/test_chains.py (test_s038_12_*): `link --product` writes through `shipmill gh --product <the parent's repo>`, and exits 2 before any read outside the product or without `[product] repos`; `chains.py link --product` in this repo exits 2; passes
+- S-038-12: dropped in #NNN
 - S-038-13: tests/test_triage_upstream.py (test_s038_13_*): a report reads UPSTREAM over every state but UNTRUSTED, and a repo whose only issue is one exits 0; passes
 - S-038-14: tests/test_triage_upstream.py (test_s038_14_*): the notes `routed by OWNER/NAME`, `no coordinator: waits for the maintainer`, and `, asks the maintainer`; a malformed `--home` exits 2; passes
 - S-038-15: tests/test_triage_upstream.py (test_s038_15_*): the watch passes `[product] home` as `--home`, lists `UPSTREAM #N` in ISSUES_OPEN only, and the gate stays quiet for a lone report; passes
