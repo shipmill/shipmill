@@ -19,7 +19,9 @@ below.
 ## Goals
 
 - G-1: A connected repository goes from a new issue to an announced release with no human step but the maintainer's decisions
+  measure: issue_to_release_p90 < 2d
 - G-2: Agents' work holds a quality bar the maintainer can trust without reading every diff
+  measure: change_failure_rate <= 5%
 - G-3: The person who asked for a change hears where it is available at each stage and can confirm it works
 - G-4: The maintainer sees in one place what waits on them, across all their repositories
 - G-5: Agents keep to the written direction: work outside the goals is postponed or declined with its reason
