@@ -77,7 +77,15 @@ def connected(repo: Repo, tmp_path: Path, config: str = POLICY + WITH_APP) -> Pa
     return key_file(tmp_path)
 
 
-def gh(repo: Repo, tmp_path: Path, key: Path, args: list[str], reader: Reader, runner: Runner) -> int:
+def gh(
+    repo: Repo,
+    tmp_path: Path,
+    key: Path,
+    args: list[str],
+    reader: Reader,
+    runner: Runner,
+    environ: Mapping[str, str] | None = None,
+) -> int:
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     executable(fakes / "gh", FAKE_GH)
@@ -87,7 +95,7 @@ def gh(repo: Repo, tmp_path: Path, key: Path, args: list[str], reader: Reader, r
         ["--repo", str(repo.root), "gh", "--app-key", str(key), *args],
         api=MintApi(),
         signer=FakeSigner(),
-        environ={"PATH": f"{fakes}:/usr/bin:/bin"},
+        environ={"PATH": f"{fakes}:/usr/bin:/bin", **(environ or {})},
         home=home,
         gh_runner=runner,
         merge_reader=reader,
@@ -105,6 +113,8 @@ MERGES = [
     ["api", "--method", "PUT", f"/repos/{REPO}/pulls/7/merge", "-f", "merge_method=squash"],
     ["api", "-XPUT", "repos/{owner}/{repo}/pulls/7/merge"],
     ["api", "--method=put", f"https://api.github.com/repos/{REPO}/pulls/7/merge"],
+    ["api", "-X", "PUT", f"repos/{REPO}/pulls/007/merge"],  # GitHub reads 007 as 7
+    ["api", "-X", "PUT", f"repos/{REPO}/pulls/%37/merge"],  # and %37 too
 ]
 
 
@@ -182,6 +192,15 @@ def test_s030_13_a_base_without_the_config_exits_2_naming_the_fix(repo: Repo, tm
     assert "land the config on the default branch" in message
     assert f"`git -C {repo.root} fetch origin`" in message
     assert runner.calls == []
+
+
+@pytest.mark.parametrize("args", [["pr", "merge", "7"], ["api", "-X", "PUT", "repos/{owner}/{repo}/pulls/7/merge"]])
+def test_s030_13_gh_repo_in_host_form_names_the_checkouts_repo(repo: Repo, tmp_path: Path, args: list[str]) -> None:
+    key = connected(repo, tmp_path)
+    reader, runner = Reader(FakeReads((CODE,))), Runner()
+    assert gh(repo, tmp_path, key, args, reader, runner, {"GH_REPO": f"github.com/{REPO}"}) == 0
+    assert [env["GH_REPO"] for env in reader.envs] == [REPO]
+    assert len(runner.calls) == 1
 
 
 def test_s030_13_a_merge_in_another_repo_is_refused(repo: Repo, tmp_path: Path) -> None:

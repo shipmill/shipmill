@@ -1243,7 +1243,8 @@ def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, r
     origin = _origin_repo(top)
     if origin is None:
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so {merge.command}'s pull request can't be classified")
-    target = merge.target(env.get("GH_REPO") or origin)
+    gh_repo = env.get("GH_REPO")  # [HOST/]OWNER/REPO, as gh reads it
+    target = merge.target(origin if not gh_repo else named_repo(["-R", gh_repo]) or origin)
     reads: MergeReads = reader(top, binary, {**env, "GH_REPO": target})
     number = merge.number
     if number is None:

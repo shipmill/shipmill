@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import unquote
 
 from shipmill.classify import Pulls
 from shipmill.errors import ReleaseError
@@ -150,7 +151,8 @@ _METHOD_FLAGS = ("-X", "--method")
 _PULL_URL = re.compile(r"https?://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/pull/([1-9][0-9]*)(?:[/?#].*)?")
 _NUMBER = re.compile(r"#?([1-9][0-9]*)")
 _API_HOST = re.compile(r"^https?://api\.github\.com/", re.IGNORECASE)
-_MERGE_PATH = re.compile(r"repos/([^/]+)/([^/]+)/pulls/([1-9][0-9]*)/merge/?")
+# GitHub reads the number with leading zeros (pulls/007 is #7), so they don't hide a merge
+_MERGE_PATH = re.compile(r"repos/([^/]+)/([^/]+)/pulls/0*([1-9][0-9]*)/merge/?")
 PLACEHOLDER = ("{owner}", "{repo}")  # gh api fills them with the current repo
 
 
@@ -244,7 +246,8 @@ def merge_of(args: Sequence[str]) -> Merge | None:
     methods = [value for name, value in flags if name in _METHOD_FLAGS]
     if not positional or not methods or methods[-1].upper() != "PUT":
         return None
-    path = _API_HOST.sub("", positional[0]).lstrip("/").partition("?")[0]
+    # percent-decoded as GitHub decodes it: pulls/%37/merge merges #7
+    path = unquote(_API_HOST.sub("", positional[0]).lstrip("/").partition("?")[0])
     found = _MERGE_PATH.fullmatch(path)
     if found is None:
         return None
