@@ -1,6 +1,6 @@
 # S-031: The plugin pins its release; gate sessions load the installed plugin
 
-status: approved
+status: built
 serves: G-1, G-2
 
 ## Problem
@@ -409,3 +409,12 @@ Checked on main at v0.60.0 plus #553's pull request, on 2026-10-21.
 - S-031-22: `shipmill plan` on a config with `[agents] plugin_update = false` exits 2 with `shipmill: [agents] plugin_update was removed (spec 031); delete it`, and `shipmill doctor` FAILs the policy with that line; `true` and a non-bool are refused the same way, held
 - S-031-23: the four docs carry the pinned command, the marketplace serving release tags, gate sessions loading the installed plugin, `requires`, and `plugin_update` removed, and none matches a gate paused on a stale plugin, held
 - S-031-24: `doctor` on this host asks PyPI for 0.58.0, the version sessions load, and passes on its answer; a 404 makes the tick `PYPI_WAIT` with `plugin <version> waits for PyPI` (`plugin.py`, `status.py`), and no `--plugin-dir` in `src/` (grep), held
+
+S-031-25 to S-031-30 checked on main at v0.71.0 plus #583's pull request, on 2026-10-25.
+
+- S-031-25: `uv run shipmill --version` prints `shipmill 0.71.0` and exits 0, and the test runs it in a folder without `.github/shipmill.toml` (`cli.py`'s argparse `version` action, before the required command), held
+- S-031-26: `watch_state.py`'s `path_cli` skips a PATH folder whose `shipmill` resolves into `own_environments()` (the interpreter's prefix and the venv holding the script), and `plugin_rows` compares the rest with `session_install`'s version, the same resolver as S-031-15, by `version_key`, not as strings; it skips a uvx run's environment in uv's cache too (`archive-v0/<id>`), whose bin a gate's `uvx shipmill@latest` puts first on its sessions' PATH; on this host `path_cli()` passes over such a bin and reads the `uv tool install` at `~/.local/bin/shipmill`, held
+- S-031-27: a fake `shipmill` exiting 2 gives the `predates shipmill --version` row; one printing `0.40.0` or `shipmill v0.40.0` on exit 0 exits 2 naming the path and the output (`Refused`), held
+- S-031-28: `plugin_rows` calls the PATH read only when a session loads an install, so claude off PATH or no install gives no row, and `path_cli` gives none without a `shipmill` outside the environment; doctor's and status's lines then name no `shipmill on PATH`, held
+- S-031-29: `doctor.plugin_checks` turns the row into a WARN (doctor exits 1 only on a FAIL); `status.YOURS_ROWS` holds `SHIPMILL_OUTDATED`, and `shipmill_lines` names `uv tool upgrade shipmill` once when S-011-15's line says it too; the row isn't in `AGENT`, so no gate starts or holds a session on it, and a `--version` that times out (10 s) or can't start is the same row (`doesn't answer shipmill --version: <reason>`, `uv tool upgrade shipmill`), never an exit 2 that would stop the gate's tick, held
+- S-031-30: `README.md` and `docs/install.md` give `uv tool install shipmill` as the one way, `uv tool upgrade shipmill` after each plugin update, doctor and status reporting the drift, and `uvx shipmill <command>` (`CR="uvx shipmill"`); neither contains `git+https://github.com/shipmill/shipmill@v0` (grep, 0 matches), held

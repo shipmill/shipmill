@@ -350,7 +350,7 @@ Environments → `<environment>` → Deployment branches and tags, or run
 ### Operate: health, bake, promotion, and rollback
 
 With `from` or `health` in use, run `shipmill init --operate` (the CLI from `uv tool install
-shipmill`, or `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill` without it;
+shipmill`, or `uvx shipmill` without it;
 see [install.md](install.md#before-you-start)). It writes
 `.github/workflows/operate.yml`, which runs `shipmill operate` every 10 minutes, one run at
 a time. The deploy workflow's `operate` job above also starts it once a deploy succeeds, so

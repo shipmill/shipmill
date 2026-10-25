@@ -100,7 +100,7 @@ Each row that needs a person or an agent carries a `fix` (`--json`'s `"fix"` key
 | `false` | GATE_SESSIONS_DEAD | The gate's own sessions are what dies; a session started for it would die the same way |
 | `false` | CHAIN_NO_GATE | The stalled item is in a repo without a gate; only a person sets one up there or does the item, and as an agent's row every tick would start a session for it |
 | `false` | CHAIN_UNREADABLE | The walk fails the same way every tick until a person fixes the item, the config, or the access; a session started for it could only report it again |
-| `false` | SHIPMILL_OUTDATED | A person updates the plugin and restarts the session |
+| `false` | SHIPMILL_OUTDATED | A person updates the plugin and restarts the session, or, for the `shipmill on PATH` row, runs `uv tool upgrade shipmill` (or the plugin's update when that CLI is the newer one) |
 | `false` | SKILL_SHADOWED | The fix is in the user's home folder; an agent never deletes files there |
 | `false` | MILESTONE_OVERTAKEN | A watch pass renames it when it runs; a session started only for a rename would wake every retry window for one API call |
 | `false` | UNHEALTHY | Operate owns it and rolls back after `rollback_after` failures; past that, the incident it opens reads INCIDENT_OPEN |

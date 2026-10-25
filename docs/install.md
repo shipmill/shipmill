@@ -29,7 +29,8 @@ page is what it does, for doing it by hand or checking its work.
   skills' scripts
 - [Claude Code](https://code.claude.com/) for parts 1 and 3
 
-Install the CLI from PyPI once, and upgrade it after a release:
+Install the CLI from PyPI once, the one way to get it on your `PATH`, and upgrade it after
+each plugin update:
 
 ```bash
 uv tool install shipmill
@@ -37,17 +38,21 @@ uv tool upgrade shipmill
 ```
 
 That puts `shipmill` on your `PATH` (`uv tool update-shell` adds uv's tool folder if it
-isn't there yet). The commands below use:
+isn't there yet). The plugin runs its own pinned release (below), so a `shipmill` on your
+`PATH` drifts from it until you upgrade: `doctor` and `status` report a `shipmill` on
+`PATH` whose version differs from the plugin's, `doctor` as a WARN, with the fix
+(`uv tool upgrade shipmill`, or the plugin's update when the CLI is the newer one).
+`shipmill --version` prints the version it is. The commands below use:
 
 ```bash
 CR=shipmill
 ```
 
-Without the install, run the CLI from git instead. Each call resolves `@v0` again, which
-can take minutes, and leaves a build in uv's cache:
+Without the install, `uvx shipmill <command>` runs the latest release from PyPI, cached by
+uv after the first call:
 
 ```bash
-CR="uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill"
+CR="uvx shipmill"
 ```
 
 The plugin pins its CLI (spec 031): its skills, their scripts, and its hooks run `uvx

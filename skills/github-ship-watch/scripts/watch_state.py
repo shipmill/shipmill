@@ -258,8 +258,17 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
                   fix reinstalls the folder's own instead. An install keyed on a gate
                   checkout that is a linked worktree is a row at any version: no session
                   loads it and no `claude plugin` command reaches it, so the fix deletes its
-                  entry in ~/.claude/plugins/installed_plugins.json by hand (#485). An action
-                  for a person, never an agent's
+                  entry in ~/.claude/plugins/installed_plugins.json by hand (#485). One more
+                  row, subject "shipmill on PATH" (#583), when the person's CLI differs from
+                  the install a session loads: the first `shipmill` on PATH outside the
+                  environment running the check (a folder whose shipmill resolves into it, or
+                  into a uvx run's environment in uv's cache, is skipped), asked `shipmill
+                  --version` with only PATH and HOME and 10 s; older, or exiting non-zero
+                  ("predates shipmill --version"), or never answering in time or starting
+                  ("doesn't answer shipmill --version"), its fix is `uv tool upgrade shipmill`,
+                  newer the install's update; an exit 0 that isn't `shipmill X.Y.Z` exits 2.
+                  No row without one on PATH or without an install a session loads. An
+                  action for a person, never an agent's
   SKILL_SHADOWED  one row per link or copy of a shipmill skill (a folder name under skills/)
                   in ~/.claude/skills or ~/.agents/skills, a folder with a SKILL.md (a broken
                   link or a plain file loads as nothing), that doesn't resolve into the
@@ -3062,6 +3071,136 @@ def session_install(
     return None
 
 
+PATH_CLI = "shipmill on PATH"  # the subject of the person's CLI's SHIPMILL_OUTDATED row (#583)
+UV_UPGRADE = "uv tool upgrade shipmill"  # the fix for a lagging `uv tool install shipmill`, shipmill's launchd.UPGRADE
+CLI_VERSION = re.compile(r"shipmill (\d+\.\d+\.\d+)")  # what `shipmill --version` prints (S-031-25), matched whole
+VERSION_TIMEOUT = 10.0  # seconds a shipmill on PATH has to answer --version
+UV_CACHE_ENVS = re.compile(r"archive-v\d+|environments-v\d+")  # the folders of uv's cache holding uvx's environments
+
+
+@dataclass(frozen=True)
+class PathCli:
+    """The person's shipmill on PATH (#583): its path as PATH names it, and the version its
+    --version printed; None for a release from before --version, which answers it exit 2, and
+    for one that never answered, whose reason is silent (a timeout, or it can't start)"""
+
+    path: Path
+    version: str | None
+    silent: str | None = None
+
+
+class NoAnswer(Exception):
+    """A shipmill on PATH that never answered --version: it timed out or couldn't start. A row,
+    never a stop: the gate reads this script every tick, and only PyPI holds a session (D-50)"""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def own_environments(prefix: str = sys.prefix, script: Path = Path(__file__)) -> tuple[Path, ...]:
+    """The environment running the check: the interpreter's, and the virtual environment that
+    holds this script, when one does (the one `uvx shipmill==<version> status` puts first on
+    PATH for its own run, #236)"""
+    found = [Path(prefix).resolve()]
+    held = next((p for p in script.resolve().parents if (p / "pyvenv.cfg").is_file()), None)
+    if held is not None and held not in found:
+        found.append(held)
+    return tuple(found)
+
+
+def uvx_environment(program: Path) -> bool:
+    """Whether a resolved program lives in an environment uv's cache made for one uvx run
+    (<cache>/archive-v0/<id>/, the folder holding pyvenv.cfg): another run's, such as the gate's
+    `uvx shipmill@latest`, whose bin its sessions inherit first on PATH, never a person's
+    install; a `uv tool install` lives in uv's tools folder instead"""
+    held = next((p for p in program.parents if (p / "pyvenv.cfg").is_file()), None)
+    return held is not None and UV_CACHE_ENVS.fullmatch(held.parent.name) is not None
+
+
+def path_shipmill(path: str, environments: Sequence[Path]) -> Path | None:
+    """The first `shipmill` on path outside the environments: a folder whose `shipmill`
+    resolves into one of them is skipped, as shipmill's cli_command() skips it (#236), and so is
+    one in an environment of uv's cache, a uvx run's own. An empty or relative entry names the
+    working folder, a checkout that may be a pull request's, so it is never searched"""
+    for folder in path.split(os.pathsep):
+        if not folder or not os.path.isabs(folder):
+            continue
+        found = shutil.which("shipmill", path=folder)
+        if found is None:
+            continue
+        resolved = Path(found).resolve()
+        if any(resolved == env or env in resolved.parents for env in environments) or uvx_environment(resolved):
+            continue
+        return Path(found)
+    return None
+
+
+def answer_version(program: Path, timeout: float = VERSION_TIMEOUT) -> subprocess.CompletedProcess[str]:
+    """`<program> --version`, given PATH and HOME only, never the watch's tokens, and timeout
+    seconds; one that doesn't answer in time or can't start raises NoAnswer with the reason"""
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(Path.home())}
+    try:
+        return subprocess.run(
+            [str(program), "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        raise NoAnswer(f"timed out after {timeout:g} s") from None
+    except OSError as exc:
+        raise NoAnswer(f"can't start: {exc.strerror or exc}") from None
+
+
+def path_cli(
+    path: str | None = None,
+    environments: Sequence[Path] | None = None,
+    execute: Callable[[Path], subprocess.CompletedProcess[str]] = answer_version,
+) -> PathCli | None:
+    """The person's shipmill (S-031-26): the first on path (default: $PATH) outside the
+    environment running the check, with the version its --version printed; None without one. A
+    non-zero exit predates --version (S-031-27), and one that never answers is silent, both rows;
+    an exit 0 that isn't `shipmill X.Y.Z` is refused, naming the path and the output"""
+    searched = os.environ.get("PATH", "") if path is None else path
+    program = path_shipmill(searched, own_environments() if environments is None else environments)
+    if program is None:
+        return None
+    try:
+        proc = execute(program)
+    except NoAnswer as silent:
+        return PathCli(program, None, silent.reason)
+    if proc.returncode != 0:
+        return PathCli(program, None)
+    found = CLI_VERSION.fullmatch(proc.stdout.strip())
+    if found is None:
+        raise Refused(f"error: {program} --version printed {proc.stdout.strip()!r}, not shipmill X.Y.Z")
+    return PathCli(program, found.group(1))
+
+
+def path_cli_row(cli: PathCli, plugin: str, update: str) -> Row | None:
+    """S-031-26, S-031-27: the person's shipmill against the plugin a session loads (plugin, its
+    version), one SHIPMILL_OUTDATED row when they differ. Older, or from before --version: uv's
+    upgrade. Newer: the plugin is behind, so update, S-031-15's update of that install. None
+    when they match. One that never answered is the row too, with its reason and uv's upgrade"""
+    if cli.silent is not None:
+        detail = f"{cli.path} doesn't answer shipmill --version: {cli.silent}, the plugin is {plugin}; {UV_UPGRADE}"
+        return Row("SHIPMILL_OUTDATED", PATH_CLI, detail, UV_UPGRADE)
+    if cli.version is None:
+        detail = f"{cli.path} predates shipmill --version, the plugin is {plugin}; {UV_UPGRADE}"
+        return Row("SHIPMILL_OUTDATED", PATH_CLI, detail, UV_UPGRADE)
+    mine, theirs = version_key(f"v{cli.version}"), version_key(f"v{plugin}")
+    if mine is None or theirs is None:
+        raise Refused(f"error: can't compare shipmill {cli.version!r} on PATH with the plugin's {plugin!r}")
+    if mine == theirs:
+        return None
+    fix = UV_UPGRADE if mine < theirs else update
+    return Row("SHIPMILL_OUTDATED", PATH_CLI, f"{cli.path} is {cli.version}, the plugin is {plugin}; {fix}", fix)
+
+
 def plugin_rows(
     plugins: object,
     marketplaces: object,
@@ -3069,6 +3208,7 @@ def plugin_rows(
     folders: list[Path],
     gates: list[Path] | None = None,
     session: Path | None = None,
+    cli: Callable[[], PathCli | None] | None = None,
 ) -> list[Row]:
     """The plugin's installs that apply to the repo, against the latest release: from `claude
     plugin list --json` and `claude plugin marketplace list --json`, parsed (None when claude
@@ -3080,7 +3220,8 @@ def plugin_rows(
     SHIPMILL_OUTDATED row too, at any version, whose fix deletes its entry by hand (S-031-16).
     session, the project a session in the gate's folder loads as, adds the install that
     session would load to SHIPMILL_VERSION, and says when it is behind; the gate reports it
-    and still starts sessions (spec 031)"""
+    and still starts sessions (spec 031). cli, read only when a session loads an install, is
+    the person's shipmill on PATH (path_cli), compared with that install's version (#583)"""
     newest = version_key(latest)
     if newest is None:
         raise Refused(f"error: {SHIPMILL_REPO}'s latest release {latest!r} is not a version tag")
@@ -3131,6 +3272,11 @@ def plugin_rows(
                 raise Refused(f"error: {PLUGIN} {loads[0]} install has version {loads[1]!r}")
             behind = f", older than {latest}" if key < newest else ""
             detail += f"; a session loads {loads[0]} {loads[1]} ({session}){behind}"
+            person = None if cli is None else cli()
+            if person is not None:
+                where = str(session) if loads[0] in ("local", "project") else None
+                row = path_cli_row(person, loads[1], plugin_fix(loads[0], where, keyed))
+                rows += [] if row is None else [row]
     market = PLUGIN.partition("@")[2]
     for m in marketplaces if isinstance(marketplaces, list) else []:
         origin = m.get("repo") if isinstance(m, dict) and m.get("name") == market else None
@@ -3210,7 +3356,7 @@ def shipmill_rows(repo: str, repo_dir: Path) -> list[Row]:
         return plugin_rows(None, None, latest, folders, gates)
     plugins = claude_json(claude, "plugin", "list")
     market = claude_json(claude, "plugin", "marketplace", "list")
-    return plugin_rows(plugins, market, latest, folders, gates, session)
+    return plugin_rows(plugins, market, latest, folders, gates, session, path_cli)
 
 
 def gate_folder(repo_dir: Path, workdir: str | None) -> Path:

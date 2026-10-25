@@ -67,12 +67,15 @@ switch them on.
 Then ask what needs you:
 
 ```bash
-uv tool install shipmill  # once; `uv tool upgrade shipmill` after a release
+uv tool install shipmill  # once; `uv tool upgrade shipmill` after each plugin update
 shipmill status
 ```
 
-Without the install, `uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill status`
-runs it from git, resolving it again on each call.
+`uv tool install shipmill` is the one way to put the CLI on your `PATH`. The plugin runs its
+own pinned release, so run `uv tool upgrade shipmill` after each plugin update to keep the
+two the same; `shipmill doctor` and `shipmill status` report a `shipmill` on `PATH` whose
+version differs from the plugin's. Without the install, `uvx shipmill status` runs the
+latest release from PyPI.
 
 It answers STUCK, WAITS ON YOU, WORKING, or IDLE, with a link to each item that waits on you.
 

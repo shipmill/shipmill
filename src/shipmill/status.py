@@ -1177,8 +1177,9 @@ def shipmill_lines(facts: Facts) -> list[str]:
     if any(v != facts.cli for v in re.findall(r"\d+\.\d+\.\d+[^\s,;]*", plugin)):
         parts.append(f"plugin {plugin}")
     outdated = [r for r in facts.rows if r.state == "SHIPMILL_OUTDATED"]
-    fixes = [r.detail.partition("; ")[2] for r in outdated]
-    if cli_outdated(facts.cli, latest):
+    fixes = list(dict.fromkeys(r.detail.partition("; ")[2] for r in outdated))
+    # S-031-29: the shipmill on PATH row and this CLI's own lag may name the same upgrade, once
+    if cli_outdated(facts.cli, latest) and cli_update(facts.command) not in fixes:
         fixes.append(cli_update(facts.command))
     after = [row_fix(facts.repo, r) for r in outdated]
     gate_cli = facts.gate.cli
