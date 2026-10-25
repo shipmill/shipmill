@@ -103,6 +103,7 @@ def test_s036_15_a_table_without_maintainer_still_wants_it_first(
     [
         (AGENTS + 'roles = "infra"\n', "[agents.roles] must be a table of role names, got str"),
         (AGENTS + "roles = [1]\n", "[agents.roles] must be a table of role names, got list"),
+        (AGENTS + '[[agents.roles]]\ninfra = ["a"]\n', "[agents.roles] must be a table of role names, got list"),
         (AGENTS + '[agents.roles]\nInfra = ["a"]\n', "[agents.roles] 'Infra' isn't a role name"),
         (AGENTS + '[agents.roles]\n"-x" = ["a"]\n', "[agents.roles] '-x' isn't a role name"),
         (AGENTS + f'[agents.roles]\n{"a" * 46} = ["a"]\n', f"[agents.roles] '{'a' * 46}' isn't a role name"),
@@ -124,6 +125,8 @@ def test_s036_15_malformed_roles_exit_2_naming_them(
         AGENTS + 'roles = { infra = ["a"] }\n',  # inline
         AGENTS + 'roles.infra = ["a"]\n',  # dotted
         AGENTS + '[agents.roles.infra]\nagent = "x"\n',  # a role as a table
+        AGENTS + '[[agents.roles]]\ninfra = ["a"]\n',  # an array of tables, which toml_tables skips
+        AGENTS + '[[ "agents" . roles ]]\ninfra = ["a"]\n',
     ],
 )
 def test_s036_15_on_310_roles_set_another_way_is_refused(

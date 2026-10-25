@@ -476,10 +476,13 @@ def role_names(repo_dir: Path, ws: ModuleType) -> list[str]:
 def role_names_310(text: str, config: Path, ws: ModuleType) -> list[str]:
     """role_names on Python 3.10, without tomllib: a plain [agents.roles] table whose keys
     start their lines; roles set any other way (a roles key under [agents], dotted or inline,
-    or an [agents.roles.<name>] table) is refused rather than misread"""
+    an [agents.roles.<name>] table, or an array of tables) is refused rather than misread"""
     tables = ws.toml_tables(text)
     dotted = re.search(r"^\s*[\"']?roles[\"']?\s*[.=]", tables.get("agents", ""), re.MULTILINE)
-    if dotted or any(name.startswith("agents.roles.") for name in tables):
+    # toml_tables skips an array of tables, [[agents.roles]], which tomllib reads as a list: refused
+    arrays = [m.group(1) for m in re.finditer(r"^\s*\[\[\s*([^\[\]]+?)\s*\]\]", text, re.MULTILINE)]
+    in_roles = [[p.strip().strip("\"'") for p in name.split(".")][:2] == ["agents", "roles"] for name in arrays]
+    if dotted or any(in_roles) or any(name.startswith("agents.roles.") for name in tables):
         fail(f"{config}: can't read [agents.roles] on Python 3.10: use 3.11+ or a plain [agents.roles] table")
     names = []
     for line in tables.get("agents.roles", "").splitlines():
