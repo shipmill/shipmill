@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-10-25
+
+### Changed
+
+- A spec pull request is approved by the maintainer's merge or by a trusted answer to its needs-decision question that takes every recommendation; after such an answer github-pr-triage lands the spec pull request once it is mergeable and green, the maintainer may still merge it by hand, an answer that changes a recommendation revises the spec, and a spec pull request that edits `docs/product.md` stays the maintainer's (D-49) (#547)
+
+### Added
+
+- Zoned decisions in the decisions log and the weekly retro (spec 030): `decisions.py add --zone <id>` records a rule an agent set at notify with a `- Zone: <id> (notify, veto until <time>)` line, the time `--decided-at` (default now) plus `[decisions] veto_hours` (default 24), and `decisions.py check` refuses a `Zone:` naming no zone id; `retro.py gather --decisions` counts per zone the window's decided markers, veto-handled markers, zoned needs-decision questions, and those answered with the recommended option, and proposes `Decision policy: <zone> from notify to ask` at `--raise-at` vetoes (2) and `from ask to notify` when at least 5 questions over `--lower-after` windows (4) were all answered recommended, never below a zone's floor (#609)
+
 ## [0.68.0] - 2026-10-25
 
 ### Changed
@@ -1718,7 +1728,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.68.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.69.0...HEAD
+[0.69.0]: https://github.com/shipmill/shipmill/compare/v0.68.0...v0.69.0
 [0.68.0]: https://github.com/shipmill/shipmill/compare/v0.67.0...v0.68.0
 [0.67.0]: https://github.com/shipmill/shipmill/compare/v0.66.0...v0.67.0
 [0.66.0]: https://github.com/shipmill/shipmill/compare/v0.65.0...v0.66.0

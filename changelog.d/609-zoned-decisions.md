@@ -1,3 +1,0 @@
-### Added
-
-- Zoned decisions in the decisions log and the weekly retro (spec 030): `decisions.py add --zone <id>` records a rule an agent set at notify with a `- Zone: <id> (notify, veto until <time>)` line, the time `--decided-at` (default now) plus `[decisions] veto_hours` (default 24), and `decisions.py check` refuses a `Zone:` naming no zone id; `retro.py gather --decisions` counts per zone the window's decided markers, veto-handled markers, zoned needs-decision questions, and those answered with the recommended option, and proposes `Decision policy: <zone> from notify to ask` at `--raise-at` vetoes (2) and `from ask to notify` when at least 5 questions over `--lower-after` windows (4) were all answered recommended, never below a zone's floor (#609)
