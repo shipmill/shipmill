@@ -262,8 +262,9 @@ NO_APP = (
 )
 ROLE_LABELS = {"role:maintainer"}  # spec 036: wanted wherever needs-decision is
 BASE_LABELS = {"postponed", "blocked", "shipmill-hold", "release-blocker"}
-# D-21, spec 017, spec 014's "not now", spec 038's report for another repo, spec 030's notify decision
-AGENT_LABELS = {"needs-decision", "human", "shipmill-upgrade-later", "upstream", "decided"}
+# D-21, spec 017, spec 014's "not now", spec 038's report for another repo, spec 030's notify
+# decision, spec 034's question for a missing direction
+AGENT_LABELS = {"needs-decision", "human", "shipmill-upgrade-later", "upstream", "decided", "shipmill-direction"}
 
 
 def test_s005_16_headless_wants_the_needs_decision_label(ss: ModuleType, tmp_path: Path) -> None:
@@ -275,7 +276,7 @@ def test_s005_16_headless_wants_the_needs_decision_label(ss: ModuleType, tmp_pat
     assert (row.state, row.detail) == ("LABELS_MISSING", "needs-decision")
     assert ss.labels_row([], wanted).detail == (
         "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream, decided,"
-        " and the blocker label exist"
+        " shipmill-direction, and the blocker label exist"
     )
 
 
@@ -294,7 +295,7 @@ def test_d21_interactive_wants_the_needs_decision_label_too(ss: ModuleType, tmp_
     assert set(wanted) == BASE_LABELS | AGENT_LABELS | ROLE_LABELS
     assert ss.labels_row([], wanted).detail == (
         "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream, decided,"
-        " and the blocker label exist"
+        " shipmill-direction, and the blocker label exist"
     )
 
 

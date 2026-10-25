@@ -65,8 +65,9 @@ Labels (the triage skills and shipmill read them):
                    [a-z0-9][a-z0-9-]{0,44}, exits 2), human (a person's item,
                    spec 017), shipmill-upgrade-later (a config upgrade's "not
                    now", spec 014), upstream (a report for another repo, spec
-                   038), and decided (a notify decision, spec 030) don't exist;
-                   --fix creates
+                   038), decided (a notify decision, spec 030), and
+                   shipmill-direction (the question for a missing direction,
+                   spec 034) don't exist; --fix creates
                    them on GitHub, as the App through `uvx shipmill==<version> gh`
                    (the version in the plugin's .claude-plugin/plugin.json, spec 031) when
                    [agents] sets app_id (spec 012), else with plain gh; a `shipmill gh`
@@ -170,6 +171,9 @@ UPSTREAM_LABEL = ("5319e7", "A report for another repo: the product's coordinato
 # Wanted wherever needs-decision is (spec 030): an agent's notify decision, which the maintainer may veto
 DECIDED = "decided"
 DECIDED_LABEL = ("bfd4f2", "A shipmill session decided here without waiting; the maintainer may veto it")
+# Wanted wherever needs-decision is (spec 034): shipmill's question for the product's direction
+DIRECTION = "shipmill-direction"
+DIRECTION_LABEL = ("1d76db", "shipmill's question for the product's direction")
 # D-19: the gate runs without an App, but setup isn't done until one is connected
 NO_APP = (
     "no app connected: sessions write as the host's gh login, so you can't approve their PRs"
@@ -435,6 +439,7 @@ def wanted_labels(repo_dir: Path, ws: ModuleType | None = None) -> dict[str, tup
         wanted[UPGRADE_LATER] = UPGRADE_LATER_LABEL  # a config upgrade's "not now" (spec 014)
         wanted[UPSTREAM] = UPSTREAM_LABEL  # a report for another repo (spec 038)
         wanted[DECIDED] = DECIDED_LABEL  # a notify decision, open to a veto (spec 030)
+        wanted[DIRECTION] = DIRECTION_LABEL  # the question for a missing direction (spec 034)
     return wanted
 
 
@@ -496,7 +501,9 @@ def labels_row(missing: list[str], wanted: dict[str, tuple[str, str]]) -> Row:
     if missing:
         return Row("LABELS_MISSING", ", ".join(missing))
     extra = "".join(
-        f" {label}," for label in (NEEDS_DECISION, HUMAN, UPGRADE_LATER, UPSTREAM, DECIDED) if label in wanted
+        f" {label},"
+        for label in (NEEDS_DECISION, HUMAN, UPGRADE_LATER, UPSTREAM, DECIDED, DIRECTION)
+        if label in wanted
     )
     return Row("LABELS_OK", f"postponed, blocked, shipmill-hold,{extra} and the blocker label exist")
 
