@@ -5,6 +5,7 @@ Usage: triage_state.py <owner/repo> [--marker "Triage:"] [--postponed-label post
                        [--stable-tag-regex REGEX] [--hold-label release-blocker]
                        [--incident-label incident] [--closed N] [--json] [--wip N]
                        [--bot-login LOGIN] [--trusted-only] [--home OWNER/NAME]
+                       [--role NAME=FILLER[,FILLER...] ...]
 
 For each open issue:
   NEW              no comment starts with the triage marker
@@ -98,21 +99,37 @@ For each open issue:
                    VETOED, before any other state; one already in that milestone, or whose
                    parent has none, reads its usual state
 
-An open issue labelled human is a person's item (spec 017): its assignees do it, no PR
-state (IN_PROGRESS, DONE_NOT_CLOSED) applies, and it counts as triaged from the start, so
-its "Depends on" lines and GitHub's holds apply with no triage comment. After UNTRUSTED,
-UPSTREAM, NEEDS_DECISION, DECIDED, VETOED, and OFF_MILESTONE, it reads NO_ASSIGNEE, else UNFILLED,
-SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue would, else, with every hold closed, one of:
-  NO_ASSIGNEE      labelled human with no assignee: ask the maintainer who does it
+An open issue labelled human or role:<name> (label names compared case-insensitively) is a
+person's item (spec 017, spec 036): its assignees do it, no PR state (IN_PROGRESS,
+DONE_NOT_CLOSED) applies, and it counts as triaged from the start, so its "Depends on" lines
+and GitHub's holds apply with no triage comment. Its roles are its role:<name> labels, and
+human counts as role:maintainer. --role NAME=FILLER[,FILLER...], one flag per role and
+maintainer among them, gives each role's fillers already resolved: GitHub logins and teams
+as @<org>/<team-slug> (a malformed name or filler, an empty list, a name given twice, or no
+maintainer exits 2). A role no flag gives resolves to maintainer's fillers, and several
+roles to the union of theirs. After UNTRUSTED, UPSTREAM, NEEDS_DECISION, DECIDED, VETOED,
+and OFF_MILESTONE, it reads NO_ASSIGNEE (without --role) or ASSIGN_DUE (with it), else
+UNFILLED, SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue would, else, with every
+hold closed, one of:
+  NO_ASSIGNEE      without --role flags, a person's item with no assignee: ask the
+                   maintainer who does it. With them, never read
+  ASSIGN_DUE       with --role flags, a person's item with no assignee whose roles
+                   resolve to at least one user, read while it is still held: assign
+                   them. Its note is "assign @a @b (role:infra)", plus "role:<name>
+                   undefined" for each role no flag gives; with --json, its line has an
+                   "assign" list of those logins. One whose roles resolve to teams only
+                   reads its holds, then the states below
   HANDOFF_DUE      no hand-off came after its newest hold closed (or ever, with no
-                   hold): tell its assignees it is their turn. A hand-off is a comment
-                   whose first line is <!-- shipmill:handoff -->, by an OWNER, MEMBER, or
-                   COLLABORATOR or the --bot-login; a marker comment by anyone else never
-                   counts
+                   hold): tell its assignees, and with --role flags its roles' teams, it
+                   is their turn. A hand-off is a comment whose first line is
+                   <!-- shipmill:handoff -->, by an OWNER, MEMBER, or COLLABORATOR or
+                   the --bot-login; a marker comment by anyone else never counts
   WITH_PERSON      a hand-off came after its newest hold closed and no done report
                    followed it: it waits on the person, however long (not an action).
                    With --json, its line has an "assignees" list of the logins it waits
-                   on too, and no other state's line has one
+                   on too, and without --role flags no other state's line has one. With
+                   them, its line and HANDOFF_DUE's carry "assignees" (empty for a
+                   team-only role's item) and a "teams" list of its roles' teams
   VERIFY_DUE       a done report came after the newest hand-off: run its ## Check. A
                    done report is a comment whose first line (past leading blank lines)
                    starts with "done" in any case, by one of its assignees or an OWNER,
@@ -130,8 +147,8 @@ For the N most recently closed issues (default 20):
                    isn't one either: an incident closes by hand once the environment
                    is healthy, and ship-watch's POSTMORTEM_DUE follows it up. The
                    script can't read the shipmill config: pass [operate]
-                   incident_label here when it isn't "incident". An issue labelled
-                   human closed as completed never reads SUSPECT_CLOSE: a person
+                   incident_label here when it isn't "incident". A person's item
+                   closed as completed never reads SUSPECT_CLOSE: a person
                    closes their own item by hand. Nor does a close someone confirmed:
                    a comment after its last close whose first line is
                    <!-- shipmill:close-confirmed --> by an OWNER, MEMBER, or
@@ -140,7 +157,7 @@ For the N most recently closed issues (default 20):
                    an issue labelled upstream, whoever closed it and however: the
                    product's coordinator, or the maintainer without one, closes it by
                    hand by design (spec 038)
-  VERIFY_CLOSED    labelled human, closed as completed by someone other than the
+  VERIFY_CLOSED    a person's item, closed as completed by someone other than the
                    --bot-login, with a "## Check" section and no comment after its close
                    whose first line is <!-- shipmill:verified --> by an OWNER, MEMBER, or
                    COLLABORATOR or the --bot-login: run its check
@@ -156,7 +173,7 @@ With --wip N (a work-in-progress limit, such as the config's [agents] wip), a la
 line says how many issues are IN_PROGRESS (counting an OFF_MILESTONE one with an open
 PR), the room left under N, and the issues
 ready to start (NEEDS_PR or UNBLOCKED), oldest first; with --json, as one JSON object.
-An issue labelled human never counts as in progress or ready: the limit is on agents' work.
+A person's item never counts as in progress or ready: the limit is on agents' work.
 
 --bot-login names the login shipmill's sessions write as (an App's <slug>[bot]). --home
 names the product's home repo, the config's [product] home, as owner/name (letters, digits,
@@ -164,7 +181,7 @@ names the product's home repo, the config's [product] home, as owner/name (lette
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
 SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, VETOED, SUSPECT_CLOSE, HANDOFF_DUE, VERIFY_DUE,
-NO_ASSIGNEE, VERIFY_CLOSED, or OFF_MILESTONE (never for NEEDS_DECISION, UNTRUSTED, UPSTREAM, or
+NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, or OFF_MILESTONE (never for NEEDS_DECISION, UNTRUSTED, UPSTREAM, or
 WITH_PERSON),
 2 on bad input (an issue with more than 100
 labels) or a gh failure. It pages past 100 open issues and an issue's 50 comments, 50
@@ -539,6 +556,15 @@ PLAN_VERDICT = "**plan**"
 # A person's item (spec 017): its assignees do it, a hand-off comment tells them it is
 # their turn, and a verified comment records that a session checked a close by hand
 HUMAN_LABEL = "human"
+# A role's item (spec 036): labelled role:<name>, a person's item exactly as a human one,
+# which counts as role:maintainer. --role NAME=FILLER,... gives each role's fillers, already
+# resolved: a role name, a GitHub user login, or a team as @<org>/<team-slug>
+ROLE_PREFIX = "role:"
+MAINTAINER = "maintainer"
+ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")
+LOGIN_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}"
+USER = re.compile(LOGIN_PATTERN)
+TEAM = re.compile(r"@" + LOGIN_PATTERN + r"/[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 HANDOFF_MARKER = "<!-- shipmill:handoff -->"
 VERIFIED_MARKER = "<!-- shipmill:verified -->"
 # A trusted comment after a close saying it was right: SUSPECT_CLOSE stops reading it (D-29)
@@ -558,6 +584,7 @@ ACTION = {
     "HANDOFF_DUE",
     "VERIFY_DUE",
     "NO_ASSIGNEE",
+    "ASSIGN_DUE",
     "VERIFY_CLOSED",
     "OFF_MILESTONE",
 }
@@ -719,14 +746,90 @@ def complete_refs(run: Runner, query: str, base: Variables, sizes: Sizes, issue:
         items["pageInfo"] = page["pageInfo"]
 
 
+# Each role's fillers, from the --role flags: (user logins, @org/team entries)
+Roles = dict[str, tuple[tuple[str, ...], tuple[str, ...]]]
+
+
+def item_roles(issue: dict[str, Any]) -> list[str]:
+    """The roles of a person's item, label names compared case-insensitively (spec 036): its
+    role:<name> labels' names, with human counting as role:maintainer, in label order; empty
+    for an issue that is no person's item"""
+    found: list[str] = []
+    for node in issue["labels"]["nodes"]:
+        name = str(node["name"]).lower()
+        if name == HUMAN_LABEL:
+            role = MAINTAINER
+        elif name.startswith(ROLE_PREFIX):
+            role = name[len(ROLE_PREFIX) :]
+        else:
+            continue
+        if role not in found:
+            found.append(role)
+    return found
+
+
+def person_item(issue: dict[str, Any]) -> bool:
+    """A person's item: labelled human or role:<name> (spec 017, spec 036)"""
+    return bool(item_roles(issue))
+
+
+def unique(names: list[str]) -> tuple[str, ...]:
+    """The names in order, each once; GitHub logins and team slugs ignore case"""
+    seen: dict[str, str] = {}
+    for name in names:
+        seen.setdefault(name.lower(), name)
+    return tuple(seen.values())
+
+
+def resolve(issue: dict[str, Any], roles: Roles) -> tuple[tuple[str, ...], tuple[str, ...], list[str]]:
+    """A person's item's roles resolved through the --role flags: the union of their users,
+    of their teams, and the roles no flag gives, which resolve to the maintainer's fillers"""
+    users: list[str] = []
+    teams: list[str] = []
+    undefined: list[str] = []
+    for role in item_roles(issue):
+        if role not in roles:
+            undefined.append(role)
+        given_users, given_teams = roles.get(role, roles[MAINTAINER])
+        users += given_users
+        teams += given_teams
+    return unique(users), unique(teams), undefined
+
+
+def parse_roles(values: list[str]) -> Roles:
+    """The --role NAME=FILLER[,FILLER...] flags, one per role, which must include maintainer;
+    ValueError names what is wrong"""
+    roles: Roles = {}
+    for value in values:
+        name, sep, fillers = value.partition("=")
+        if not sep or not ROLE_NAME.fullmatch(name):
+            raise ValueError(
+                f"--role wants NAME=FILLER[,FILLER...] with NAME matching {ROLE_NAME.pattern}, got {value!r}"
+            )
+        if name in roles:
+            raise ValueError(f"--role {name} is given twice")
+        if not fillers:
+            raise ValueError(f"--role {name} has no fillers")
+        users: list[str] = []
+        teams: list[str] = []
+        for filler in fillers.split(","):
+            if USER.fullmatch(filler):
+                users.append(filler)
+            elif TEAM.fullmatch(filler):
+                teams.append(filler)
+            else:
+                raise ValueError(f"--role {name}: {filler!r} is neither a GitHub login nor @org/team")
+        roles[name] = (unique(users), unique(teams))
+    if MAINTAINER not in roles:
+        raise ValueError(f"--role flags must include {MAINTAINER}=FILLER[,FILLER...]")
+    return roles
+
+
 def checkable(issue: dict[str, Any]) -> bool:
     """A closed person's item whose close a session may owe a check (VERIFY_CLOSED): labelled
-    human, closed as completed, with a ## Check section"""
-    labels = {n["name"] for n in issue["labels"]["nodes"]}
+    human or role:<name>, closed as completed, with a ## Check section"""
     return (
-        HUMAN_LABEL in labels
-        and issue["stateReason"] == "COMPLETED"
-        and CHECK.search(issue.get("body") or "") is not None
+        person_item(issue) and issue["stateReason"] == "COMPLETED" and CHECK.search(issue.get("body") or "") is not None
     )
 
 
@@ -1069,17 +1172,20 @@ def classify_open(
     bot_login: str | None = None,
     closes: dict[tuple[str, str, int], str] | None = None,
     milestone: bool = True,
+    roles: Roles | None = None,
 ) -> tuple[str, str]:
     """An open issue's state once gated found none; ``closes`` says when each closed hold
-    closed, which a person's item (labelled human) reads its hand-off against. Without
-    ``milestone``, the state OFF_MILESTONE hides (--wip counts one hiding IN_PROGRESS)"""
+    closed, which a person's item (labelled human or role:<name>) reads its hand-off against.
+    Without ``milestone``, the state OFF_MILESTONE hides (--wip counts one hiding IN_PROGRESS).
+    ``roles``, the --role flags (None without them), turns NO_ASSIGNEE into ASSIGN_DUE"""
     missed = off_milestone(issue, repo) if milestone else None
     if missed is not None:
         return "OFF_MILESTONE", missed
     labels = {n["name"] for n in issue["labels"]["nodes"]}
-    # A person's item: its assignees do it, never an implementer, so no PR state applies,
-    # and it counts as triaged from the start (spec 017)
-    human = HUMAN_LABEL in labels
+    # A person's item (labelled human or role:<name>): its assignees do it, never an
+    # implementer, so no PR state applies, and it counts as triaged from the start (spec 017)
+    own_roles = item_roles(issue)
+    human = bool(own_roles)
     triaged = [c for c in issue["comments"]["nodes"] if c["body"].lstrip().startswith(marker)]
     triage = [c["body"] for c in triaged]
     prs = linked_prs(issue)
@@ -1087,8 +1193,15 @@ def classify_open(
     merged = [n for n, s, whole in prs if s == "MERGED" and whole]
     note = " ".join(f"#{n}:{s.lower()}" + ("" if whole else "(part)") for n, s, whole in prs)
     people = assignees(issue) if human else []
-    if human and not people:
-        return "NO_ASSIGNEE", "labelled human, no assignee"
+    teams: tuple[str, ...] = ()
+    if human and roles is None and not people:
+        return "NO_ASSIGNEE", no_assignee_note(issue)
+    if human and roles is not None:
+        # Spec 036: its roles' teams are mentioned at the hand-off; with no assignee, its
+        # roles' users are assigned, while it is still held, so the step is theirs at once
+        users, teams, undefined = resolve(issue, roles)
+        if users and not people:
+            return "ASSIGN_DUE", assign_note(users, own_roles, undefined)
     if open_prs and not human:
         return "IN_PROGRESS", note
     if merged and not human:
@@ -1147,7 +1260,8 @@ def classify_open(
     if human:
         # Every hold has closed: the person's turn starts at the newest close
         ends = [timestamp(closes[r]) for r in waits if r in closes and states.get(r) in CLOSED_STATES]
-        return person_state(issue["comments"]["nodes"], people, bot_login, max(ends, default=None), shown)
+        since = max(ends, default=None)
+        return person_state(issue["comments"]["nodes"], people, bot_login, since, shown, teams)
     if not triage:
         return "NEW", note
     if PLAN_LABEL in labels and triage[-1].lstrip()[len(marker) :].lstrip().lower().startswith(PLAN_VERDICT):
@@ -1314,13 +1428,35 @@ def done_report(comment: dict[str, Any], people: list[str], bot_login: str | Non
     return any(same_login(author, p) for p in people) or by_trusted(comment, bot_login)
 
 
+def no_assignee_note(issue: dict[str, Any]) -> str:
+    """NO_ASSIGNEE's note: the label that makes it a person's item"""
+    names = [str(n["name"]) for n in issue["labels"]["nodes"]]
+    if any(n.lower() == HUMAN_LABEL for n in names):
+        return "labelled human, no assignee"
+    shown = " ".join(n.lower() for n in names if n.lower().startswith(ROLE_PREFIX))
+    return f"labelled {shown}, no assignee"
+
+
+def assign_note(users: tuple[str, ...], roles: list[str], undefined: list[str]) -> str:
+    """ASSIGN_DUE's note (spec 036): whom to assign, for which roles, and each role no
+    --role flag gives, which fell back to the maintainer"""
+    note = " ".join(f"@{u}" for u in users) + " (" + " ".join(f"{ROLE_PREFIX}{r}" for r in roles) + ")"
+    return "; ".join([f"assign {note}", *(f"{ROLE_PREFIX}{r} undefined" for r in undefined)])
+
+
 def person_state(
-    comments: list[dict[str, Any]], people: list[str], bot_login: str | None, since: dt.datetime | None, shown: str
+    comments: list[dict[str, Any]],
+    people: list[str],
+    bot_login: str | None,
+    since: dt.datetime | None,
+    shown: str,
+    teams: tuple[str, ...] = (),
 ) -> tuple[str, str]:
     """A person's item with nothing holding it: HANDOFF_DUE until a trusted hand-off comes
     after its newest hold closed (``since``, None when it never had one), then WITH_PERSON
-    until a done report follows the newest such hand-off, then VERIFY_DUE"""
-    who = " ".join(f"@{p}" for p in people)
+    until a done report follows the newest such hand-off, then VERIFY_DUE. ``teams``, its
+    roles' teams (spec 036), are named with its assignees"""
+    who = " ".join([*(f"@{p}" for p in people), *teams])
     handoffs = [
         i
         for i, c in enumerate(comments)
@@ -1419,7 +1555,7 @@ def classify_closed(
     labels = {n["name"] for n in issue["labels"]["nodes"]}
     if hold in labels:
         return None
-    if HUMAN_LABEL in labels and issue["stateReason"] == "COMPLETED":
+    if person_item(issue) and issue["stateReason"] == "COMPLETED":
         # A person closes their own item by hand by design: never SUSPECT_CLOSE (spec 017)
         return verify_closed(issue, bot_login)
     if UPSTREAM_LABEL in labels:
@@ -1489,8 +1625,8 @@ def main() -> int:
         epilog=(
             "States: NEW NEEDS_PR IN_PROGRESS DONE_NOT_CLOSED BLOCKED UNFILLED SPEC_REFUSED UNBLOCKED "
             "POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED VETOED UNTRUSTED UPSTREAM OFF_MILESTONE; for an issue "
-            "labelled human "
-            "(a person's item) NO_ASSIGNEE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
+            "labelled human or role:<name> "
+            "(a person's item) NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
             "SUSPECT_CLOSE VERIFY_CLOSED VETOED. The module docstring defines each."
         ),
     )
@@ -1520,7 +1656,19 @@ def main() -> int:
     parser.add_argument(
         "--home", metavar="OWNER/NAME", help="the config's [product] home, which routes upstream reports (spec 038)"
     )
+    parser.add_argument(
+        "--role",
+        action="append",
+        metavar="NAME=FILLER[,FILLER...]",
+        help="a role's resolved fillers (logins or @org/team), one flag per role, maintainer included (spec 036)",
+    )
     args = parser.parse_args()
+    roles: Roles | None = None
+    if args.role is not None:
+        try:
+            roles = parse_roles(args.role)
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.home is not None and not home_repo(args.home):
         parser.error(f"--home must be owner/name of letters, digits, '.', '-', or '_', got {args.home!r}")
     if not 0 <= args.closed <= 100:
@@ -1550,10 +1698,18 @@ def main() -> int:
     people: set[int] = set()
     busy: set[int] = set()  # OFF_MILESTONE over an open PR: still in progress under --wip
     for issue in data["open"]["nodes"]:
-        if HUMAN_LABEL in {n["name"] for n in issue["labels"]["nodes"]}:
+        if person_item(issue):
             people.add(issue["number"])
         state, note = gated(issue, args.bot_login, args.trusted_only, args.home) or classify_open(
-            issue, args.marker, args.postponed_label, states, stable, (owner, name), args.bot_login, closes
+            issue,
+            args.marker,
+            args.postponed_label,
+            states,
+            stable,
+            (owner, name),
+            args.bot_login,
+            closes,
+            roles=roles,
         )
         if state == "OFF_MILESTONE":
             usual = classify_open(
@@ -1564,6 +1720,12 @@ def main() -> int:
         row: dict[str, Any] = {"number": issue["number"], "state": state, "title": issue["title"], "note": note}
         if state == "WITH_PERSON":  # whom it waits on, for github-ship-watch's ISSUES_OPEN row
             row["assignees"] = assignees(issue)
+        if roles is not None and state == "ASSIGN_DUE":
+            row["assign"] = list(resolve(issue, roles)[0])
+        if roles is not None and state in ("HANDOFF_DUE", "WITH_PERSON"):
+            # Spec 036: whom the hand-off mentions, its assignees (maybe none) and its roles' teams
+            row["assignees"] = assignees(issue)
+            row["teams"] = list(resolve(issue, roles)[1])
         rows.append(row)
     rows += closed_rows(data, args.closed, args.hold_label, args.incident_label, args.bot_login)
 
@@ -1575,6 +1737,7 @@ def main() -> int:
         "VETOED",
         "OFF_MILESTONE",
         "VERIFY_DUE",
+        "ASSIGN_DUE",
         "HANDOFF_DUE",
         "NO_ASSIGNEE",
         "UNBLOCKED",

@@ -374,6 +374,7 @@ TRIAGE_ACTION = {
     "HANDOFF_DUE",
     "VERIFY_DUE",
     "NO_ASSIGNEE",
+    "ASSIGN_DUE",  # spec 036: assign a person's item to its roles' users
     "VERIFY_CLOSED",
     "OFF_MILESTONE",
 }
