@@ -301,6 +301,10 @@ class GitHub(Protocol):
         """Take the label off the issue"""
         ...
 
+    def label_names(self) -> frozenset[str]:
+        """The names of the repository's labels (the first 1000), in one read"""
+        ...
+
     def deployments(self, environment: str) -> list[Deployment]:
         """The environment's deployments, newest first (the newest 100)"""
         ...
@@ -535,14 +539,17 @@ class GhCli:
         hits = [Issue(int(i["number"]), i["title"], i["body"]) for i in found if marker in i["body"]]
         return min(hits, key=lambda i: i.number) if hits else None
 
+    def label_names(self) -> frozenset[str]:
+        return frozenset(
+            str(label["name"]) for label in json.loads(self._gh("label", "list", "--json", "name", "--limit", "1000"))
+        )
+
     def _create_labels(self, labels: Sequence[str]) -> None:
         """Create each label the repository lacks, as `gh issue create --label` won't. One
         another run created meanwhile (GitHub's 422, "already exists") is there: success"""
         if not labels:
             return
-        have = {
-            str(label["name"]) for label in json.loads(self._gh("label", "list", "--json", "name", "--limit", "1000"))
-        }
+        have = self.label_names()
         for label in labels:
             if label not in have:
                 described = _LABEL_DESCRIPTIONS.get(label, "Opened by shipmill; holds releases while open")
