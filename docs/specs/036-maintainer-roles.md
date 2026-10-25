@@ -207,4 +207,11 @@ item a role's item.
 
 ## Issues
 
+- shipmill/shipmill#638: S-036-1, S-036-2, S-036-3, S-036-4
+- shipmill/shipmill#639: S-036-6, S-036-7, S-036-8, S-036-9, S-036-10, S-036-11, S-036-12
+- shipmill/shipmill#640: S-036-5, S-036-13
+- shipmill/shipmill#641: S-036-14
+- shipmill/shipmill#642: S-036-15
+- shipmill/shipmill#643: S-036-16
+
 ## Verification

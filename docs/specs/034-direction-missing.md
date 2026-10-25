@@ -229,4 +229,9 @@ row shows and no issue is read.
 
 ## Issues
 
+- shipmill/shipmill#634: S-034-1
+- shipmill/shipmill#635: S-034-5, S-034-10, S-034-11
+- shipmill/shipmill#636: S-034-2, S-034-3, S-034-4, S-034-6, S-034-7, S-034-12
+- shipmill/shipmill#637: S-034-8, S-034-9
+
 ## Verification
