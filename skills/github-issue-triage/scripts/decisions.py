@@ -181,18 +181,24 @@ def decisions_table_310(text: str, path: Path) -> dict[str, object]:
     unreadable = f"{path}: can't read [decisions] on Python 3.10: use 3.11+, or plain key = value lines in it"
     table: dict[str, object] = {}
     current = ""
+    seen = False
     for line in text.splitlines():
-        header = re.match(r"^\s*\[\[?\s*([^\[\]]+?)\s*\]\]?\s*(?:#.*)?$", line)
+        header = re.match(r"^\s*(\[\[?)\s*([^\[\]]+?)\s*\]\]?\s*(?:#.*)?$", line)
         if header:
-            current = header.group(1).strip()
+            current = re.sub(r"\s*\.\s*", ".", header.group(2).strip())
             if current.startswith("decisions.") or current.strip("\"'") != current:
                 raise LogError(unreadable)
+            if current == "decisions":
+                # an array of tables, or the table declared twice, is no table tomllib reads
+                if header.group(1) == "[[" or seen:
+                    raise LogError(unreadable)
+                seen = True
             continue
         if current == "" and re.match(r"^\s*[\"']?decisions[\"']?\s*[.=]", line):
             raise LogError(unreadable)
         if current != "decisions" or not line.strip() or line.lstrip().startswith("#"):
             continue
-        item = re.match(r"^\s*([A-Za-z0-9_-]+)\s*=\s*(?:\"([^\"\\]*)\"|'([^']*)'|(-?\d+))\s*(?:#.*)?$", line)
+        item = re.match(r"^\s*([A-Za-z0-9_-]+)\s*=\s*(?:\"([^\"\\]*)\"|'([^']*)'|(-?(?:0|[1-9]\d*)))\s*(?:#.*)?$", line)
         if item is None or item.group(1) in table:
             raise LogError(unreadable)
         word = item.group(2) if item.group(2) is not None else item.group(3)

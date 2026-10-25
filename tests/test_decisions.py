@@ -148,3 +148,23 @@ def test_s030_17_the_decisions_table_reads_the_same_without_tomllib(tmp_path: Pa
     for unreadable in ("[decisions]\nscope = { a = 1 }\n", 'decisions.scope = "ask"\n', "[decisions.sub]\n"):
         with pytest.raises(module.LogError, match=r"can't read \[decisions\] on Python 3.10"):
             module.decisions_table_310(unreadable, path)
+
+
+def test_s030_17_the_310_reader_refuses_what_tomllib_refuses(tmp_path: Path) -> None:
+    """An array of tables, a table declared twice, a spaced dotted subtable, and a leading-zero
+    integer are invalid or no plain table to tomllib, so the 3.10 reader refuses them too"""
+    spec = importlib.util.spec_from_file_location("decisions_script", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    path = tmp_path / "shipmill.toml"
+    for unreadable in (
+        '[[decisions]]\nscope = "ask"\n',
+        '[decisions]\nscope = "ask"\n[agents]\n[decisions]\nsecurity = "ask"\n',
+        '[ decisions . sub ]\nx = "ask"\n',
+        "[decisions]\nveto_hours = 012\n",
+    ):
+        with pytest.raises(module.LogError, match=r"can't read \[decisions\] on Python 3.10"):
+            module.decisions_table_310(unreadable, path)
+    assert module.decisions_table_310("[ decisions ]\nveto_hours = 0\n", path) == {"veto_hours": 0}
