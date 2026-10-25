@@ -1,0 +1,12 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "880",
+    "--json",
+    "files"
+  ],
+  "stdout": "{\"files\": [{\"path\": \"docs/specs/090-release-digest.md\", \"additions\": 1, \"deletions\": 0}]}\n",
+  "stderr": "",
+  "exit": 0
+}

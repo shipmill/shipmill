@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "880",
+    "--json",
+    "labels",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"labels\": [{\"id\": \"LA_1\", \"name\": \"needs-decision\", \"description\": \"\", \"color\": \"d876e3\"}]}\n",
+  "stderr": "",
+  "exit": 0
+}

@@ -1,0 +1,35 @@
+schema_version: "1.1"
+name: spec-answered-lands
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # #880 (a spec PR, as #487 was) is green and mergeable, and @romamo answered "1" (take
+  # every recommendation) on its needs-decision question, worded before D-49 ("you merge
+  # this PR yourself"): that answer is the approval (D-49), so the session lands it rather
+  # than leave the merge to the maintainer, as #487 waited five days for
+  - type: regex
+    name: lands-the-spec-pr
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"via": "shipmill", "args": \["pr", "merge"[^\]]*"880"'
+  # Squash by default, never a rebase merge (D-33)
+  - type: regex
+    name: no-rebase-merge
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"args": \["pr", "merge"[^\]]*"(--rebase|-r)"'
+    match: not_contains
+  # Every write goes through `shipmill gh` as the App (D-14): no plain gh write
+  - type: regex
+    name: writes-as-the-app
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "write", "args"'
+    match: not_contains
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1

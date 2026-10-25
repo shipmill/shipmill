@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "881",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "files"
+  ],
+  "stdout": "{\"files\": [{\"path\": \"docs/product.md\", \"additions\": 1, \"deletions\": 0}, {\"path\": \"docs/specs/091-fleet-goals.md\", \"additions\": 1, \"deletions\": 0}]}\n",
+  "stderr": "",
+  "exit": 0
+}

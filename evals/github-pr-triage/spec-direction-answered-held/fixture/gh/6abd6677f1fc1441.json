@@ -1,0 +1,15 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--repo",
+    "shipmill/shipmill",
+    "--state",
+    "open",
+    "--json",
+    "number,title,headRefName,labels"
+  ],
+  "stdout": "[{\"number\": 881, \"title\": \"Add spec 091: a fleet's goals\", \"headRefName\": \"spec/091-fleet-goals\", \"labels\": [{\"id\": \"LA_1\", \"name\": \"needs-decision\", \"description\": \"\", \"color\": \"d876e3\"}]}]\n",
+  "stderr": "",
+  "exit": 0
+}

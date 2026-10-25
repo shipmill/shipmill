@@ -1,0 +1,17 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--repo",
+    "shipmill/shipmill",
+    "--state",
+    "all",
+    "--limit",
+    "10",
+    "--json",
+    "number,state,mergedAt,title"
+  ],
+  "stdout": "[{\"number\": 881, \"state\": \"OPEN\", \"mergedAt\": null, \"title\": \"Add spec 091: a fleet's goals\"}]\n",
+  "stderr": "",
+  "exit": 0
+}

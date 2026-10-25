@@ -59,7 +59,7 @@ collaborators, D-16), and **shipmill's code** (the release planner and the gate)
 | Stage | States (script) | Agent moves | Person moves | Code moves |
 |---|---|---|---|---|
 | Feedback | NEW_FEEDBACK, OVERLAP, OPPORTUNITY_OPEN, ACCEPTED, DECLINED, NO_REASON, HANDED_OFF, DONE, MERGED (`intake_state.py`) | Groups requests, opens and updates opportunities | Accepts (`planned`) or declines with a reason | Nothing |
-| Spec | The feature reads BLOCKED on its spec PR, then UNBLOCKED or SPEC_REFUSED (`triage_state.py`); the spec's status line (`specs.py check`) | Writes the spec, opens its PR, splits it | Merges the spec PR, or closes it | `specs.py check` and `coverage` in CI |
+| Spec | The feature reads BLOCKED on its spec PR, then UNBLOCKED or SPEC_REFUSED (`triage_state.py`); the spec's status line (`specs.py check`) | Writes the spec, opens its PR, splits it | Merges the spec PR, or approves it with an answer that takes every recommendation, which github-pr-triage then lands (D-49); or closes it | `specs.py check` and `coverage` in CI |
 | Build | NEEDS_PR, IN_PROGRESS, BLOCKED, UNFILLED, UNBLOCKED, DONE_NOT_CLOSED (`triage_state.py`) | Implements, reviews, lands within `[agents] wip` | Nothing, unless asked | Merges on green under the repo's autonomy |
 | Decisions | NEEDS_DECISION, then DECIDED (`triage_state.py`, `watch_state.py`) | Asks, then takes up the answer | Answers | The gate starts no session while it waits |
 | Release | A lane is due when a trigger fires and no gate holds it; `milestone = true` fires when the version's milestone has closed issues and none open (`planner.py`) | Watches, reruns, tells reporters | Holds or starts a lane by hand | Cuts the release |

@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "880",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "comments"
+  ],
+  "stdout": "{\"comments\": [{\"author\": {\"login\": \"shipmill-romamo[bot]\"}, \"authorAssociation\": \"CONTRIBUTOR\", \"body\": \"<!-- shipmill:needs-decision -->\\n@romamo Decision needed: does spec 090, a weekly release digest (#878), set the behaviour the way you want, with the choices listed under \\\"Decisions for you\\\" in this PR's body?\\n\\n1. Take every recommendation (recommended): you merge this PR yourself, since merging the spec is the approval, and its build issues get filed under #878\\n2. Change some of them: reply with the numbers and what you want instead; the spec is revised in this PR before you merge it\\n\\nReply here with a number or your own answer; shipmill takes this up on the tick after your reply.\\n\", \"createdAt\": \"2026-10-20T10:01:43Z\"}, {\"author\": {\"login\": \"romamo\"}, \"authorAssociation\": \"COLLABORATOR\", \"body\": \"1\", \"createdAt\": \"2026-10-20T17:20:23Z\"}]}\n",
+  "stderr": "",
+  "exit": 0
+}

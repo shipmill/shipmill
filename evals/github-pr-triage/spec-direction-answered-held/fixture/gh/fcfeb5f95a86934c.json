@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "881",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "number,title,body,author,labels,comments"
+  ],
+  "stdout": "{\"number\": 881, \"title\": \"Add spec 091: a fleet's goals\", \"body\": \"Spec for #879\\n\\nAdds `docs/specs/091-fleet-goals.md` (`status: approved`, `serves: G-4`): a fleet of repositories shares one set of goals, read from the home repository's direction. To name the goal it serves, it adds G-8 to `docs/product.md`'s Goals.\\n\\n- **Behaviour:** `shipmill product show --fleet` lists each repository's goals beside the home's\\n- 4 testable criteria, S-091-1 to S-091-4\\n\\n`specs.py check` passes.\\n\\n## Plan\\n\\n- Serves: G-4\\n- Files: docs/specs/091-fleet-goals.md (new spec, `status: approved`), docs/product.md (G-8)\\n- Order: the goal, then the spec that serves it\\n- Proof: `specs.py check` and `shipmill product check` pass; CI green\\n\\n## Decisions for you\\n\\n1. **Where the fleet's goals live.** Recommended: in the home repository's `docs/product.md`, as G-8, so each repository reads one direction\\n2. **A repository's own goals.** Recommended: kept, and listed beside the home's\\n\\n\\ud83e\\udd16 Generated with [Claude Code](https://claude.com/claude-code)\\n\", \"author\": {\"id\": \"BOT_kgDODCgtTQ\", \"is_bot\": true, \"login\": \"app/shipmill-romamo\", \"name\": \"\"}, \"labels\": [{\"id\": \"LA_1\", \"name\": \"needs-decision\", \"description\": \"\", \"color\": \"d876e3\"}], \"comments\": [{\"author\": {\"login\": \"shipmill-romamo[bot]\"}, \"authorAssociation\": \"CONTRIBUTOR\", \"body\": \"<!-- shipmill:needs-decision -->\\n@romamo Decision needed: does spec 091, a fleet's goals (#879), set the behaviour the way you want, with the choices under \\\"Decisions for you\\\" in this PR's body?\\n\\n1. Take every recommendation (recommended): your answer is the approval; shipmill rebases this PR if it needs it and merges it once it is mergeable and green, then files its build issues under #879. You may still merge it by hand\\n2. Change some of them: reply with the numbers and what you want instead; the spec is revised in this PR and you're asked again, and nothing merges until then\\n\\nReply here with a number or your own answer; shipmill takes this up on the tick after your reply.\\n\", \"createdAt\": \"2026-10-24T08:20:02Z\"}, {\"author\": {\"login\": \"romamo\"}, \"authorAssociation\": \"OWNER\", \"body\": \"1\", \"createdAt\": \"2026-10-24T11:02:51Z\"}]}\n",
+  "stderr": "",
+  "exit": 0
+}

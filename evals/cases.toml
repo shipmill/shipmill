@@ -4,3 +4,17 @@ skill = "product-intake"
 kind = "verdict"
 source = "shipmill/shipmill#488"
 commit = "744ffee"
+
+[[case]]
+path = "github-pr-triage/spec-answered-lands"
+skill = "github-pr-triage"
+kind = "verdict"
+source = "shipmill/shipmill#487"
+commit = "fbb8b6c"
+
+[[case]]
+path = "github-pr-triage/spec-direction-answered-held"
+skill = "github-pr-triage"
+kind = "decision"
+source = "shipmill/shipmill#547"
+commit = "fbb8b6c"

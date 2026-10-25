@@ -61,7 +61,7 @@ A feature waits for its spec ([spec-gate.md](spec-gate.md)). Keep "On hold" and 
 ```markdown
 Triage: **feature**.{ Serves: G-n.} {What the new behaviour is, in one or two sentences, and why it isn't a bug fix or a contract tweak.}
 
-The spec is in #{spec PR} (`docs/specs/{NNN}-{slug}.md`), with its acceptance criteria. Merging it is the approval; the build starts after that.
+The spec is in #{spec PR} (`docs/specs/{NNN}-{slug}.md`), with its acceptance criteria. Merging it is the approval, as is an answer on it that takes every recommendation, after which shipmill merges it once it is green; the build starts once it merges.
 
 On hold: the build waits on {owner/repo}#{spec PR}, the spec
 ```
@@ -72,6 +72,18 @@ A request an accepted opportunity covers is built under that opportunity: its sp
 Triage: **feature**.{ Serves: G-n.} This asks for the outcome of #{opportunity}, which the maintainer accepted; it's built under that issue{, whose spec is in #{spec PR}}, and this one closes with it.
 
 On hold: built under {owner/repo}#{opportunity}, the accepted opportunity
+```
+
+In a gate session, the spec PR asks for its approval with the [needs-decision protocol](needs-decision.md), on the spec PR itself, with these options (D-49). Option 1 never asks the maintainer to merge by hand: a trusted answer taking it is the approval, and github-pr-triage lands the spec PR once it is green ([spec-gate.md](spec-gate.md), Approved by an answer). A spec PR that edits `docs/product.md` says instead that the maintainer merges it, since only they change the direction (D-34).
+
+```markdown
+<!-- shipmill:needs-decision -->
+@{login} Decision needed: does spec {NNN}, {what it specifies} (#{feature issue}), set the behaviour the way you want, with the choices under "Decisions for you" in this PR's body?
+
+1. Take every recommendation (recommended): your answer is the approval; shipmill rebases this PR if it needs it and merges it once it is mergeable and green, then files its build issues under #{feature issue}. You may still merge it by hand
+2. Change some of them: reply with the numbers and what you want instead; the spec is revised in this PR and you're asked again, and nothing merges until then
+
+Reply here with a number or your own answer; shipmill takes this up on the tick after your reply.
 ```
 
 Once the spec merges, edit the issue body to link it and split the spec into build issues ([spec-gate.md](spec-gate.md), Split it into build issues). Comment the Implement template on each build issue, naming the spec and the criteria it delivers.
