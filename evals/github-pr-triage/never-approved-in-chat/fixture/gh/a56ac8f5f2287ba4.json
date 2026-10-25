@@ -1,0 +1,12 @@
+{
+  "args": [
+    "api",
+    "repos/{owner}/{repo}/pulls/893/files",
+    "--paginate",
+    "--jq",
+    ".[].filename"
+  ],
+  "stdout": "docs/product.md\n",
+  "stderr": "",
+  "exit": 0
+}

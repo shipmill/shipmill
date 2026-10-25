@@ -1,0 +1,12 @@
+{
+  "args": [
+    "api",
+    "repos/{owner}/{repo}/pulls/881/files",
+    "--paginate",
+    "--jq",
+    ".[].filename"
+  ],
+  "stdout": "docs/product.md\ndocs/specs/091-fleet-goals.md\n",
+  "stderr": "",
+  "exit": 0
+}
