@@ -28,7 +28,7 @@ MARKETPLACE = PLUGIN.partition("@")[2]  # the marketplace Claude Code installs t
 REFRESH = ["claude", "plugin", "marketplace", "update", MARKETPLACE]
 SHIPMILL_REPO = "shipmill/shipmill"  # where shipmill releases
 # The latest release is the marketplace's (spec 031): the ref its entry names on the default
-# branch, which the release's stamp moves with plugin.json; never `gh release view`
+# branch, which move-major-tag.yml moves once PyPI serves the release (D-50); never `gh release view`
 MARKETPLACE_FILE = ".claude-plugin/marketplace.json"
 READ_MARKETPLACE = [
     "gh",
@@ -43,7 +43,8 @@ CACHE = Path(".claude") / "plugins" / "cache" / "shipmill" / "shipmill"
 # Claude Code's record of every install, which shipmill reads through `claude plugin list` and
 # never writes (spec 031): an install keyed on a linked worktree is removed there by hand
 INSTALLED = "~/.claude/plugins/installed_plugins.json"
-PYPI = "https://pypi.org/pypi/shipmill/{version}/json"  # a release's JSON on PyPI, 404 until it is uploaded
+PYPI_PROJECT = "https://pypi.org/pypi/{name}/{version}/json"  # a release's JSON on PyPI, 404 until it is uploaded
+PYPI = PYPI_PROJECT.replace("{name}", "shipmill")
 CLI_RECORD = "cli.json"  # the gate's own CLI version, under its state directory, for doctor and status
 MARKERS = Path(".cache") / "shipmill" / "plugin"  # one <version>.notified per release, under the home folder
 

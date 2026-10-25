@@ -216,6 +216,19 @@ class WorkflowRun:
     created_at: dt.datetime
 
 
+@dataclass(frozen=True, slots=True)
+class RunState:
+    """Where one workflow run stands: GitHub's `status`, and its `conclusion` once completed
+    (success, failure, cancelled, ...), else empty"""
+
+    status: str
+    conclusion: str
+
+    @property
+    def done(self) -> bool:
+        return self.status == "completed"
+
+
 class GitHub(Protocol):
     def open_issues(self, label: str) -> list[str]:
         """'#N title' for each open issue with the label"""
@@ -302,6 +315,10 @@ class GitHub(Protocol):
 
     def workflow_runs(self, workflow: str, ref: str) -> list[WorkflowRun]:
         """The workflow's runs on the branch or tag, newest first (the newest 100)"""
+        ...
+
+    def run_state(self, run: int) -> RunState:
+        """Where the workflow run with the id stands"""
         ...
 
     def open_pull_requests(self) -> list[PullRequest]:
@@ -630,6 +647,10 @@ class GhCli:
             for r in found["workflow_runs"]:
                 runs[int(r["id"])] = WorkflowRun(int(r["id"]), str(r["status"]), _time(r["created_at"]))
         return sorted(runs.values(), key=lambda r: r.id, reverse=True)
+
+    def run_state(self, run: int) -> RunState:
+        found = self._api("-X", "GET", f"repos/{{owner}}/{{repo}}/actions/runs/{run}")
+        return RunState(str(found["status"]), str(found["conclusion"] or ""))
 
     def open_pull_requests(self) -> list[PullRequest]:
         found = json.loads(

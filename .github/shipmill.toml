@@ -23,11 +23,14 @@ blocker_lanes = ["stable"]
 [lanes.stable]
 quiet_minutes = 30
 github_release = true
-dispatch = ["move-major-tag.yml", "publish.yml"]  # publish.yml: PyPI (spec 010)
+dispatch = ["publish.yml"]  # PyPI (spec 010)
+# @v0 and the marketplace ref move only once PyPI serves the release (D-50)
+after_publish = ["move-major-tag.yml"]
 
 [lanes.hotfix]
 github_release = true
 dispatch = ["publish.yml"]
+after_publish = ["move-major-tag.yml"]  # moves the references only for the newest release
 
 # The plugin's version follows the package's, so a plugin update ships with each release
 [[version_lines]]
@@ -35,11 +38,8 @@ file = ".claude-plugin/plugin.json"
 pattern = '"version": "[^"]+"'
 replace = '"version": "{version}"'
 
-# The marketplace serves the release's tag, never main's unreleased commits (spec 031)
-[[version_lines]]
-file = ".claude-plugin/marketplace.json"
-pattern = '"ref": "v[^"]+"'
-replace = '"ref": "v{version}"'
+# The marketplace serves the release's tag, never main's unreleased commits (spec 031); no
+# version line moves it: move-major-tag.yml does, after publish (D-50)
 
 # The skills run the CLI the plugin pins, `uvx shipmill==<plugin.json's version>` (spec 031):
 # one entry per place the prose writes it out, each matching exactly once

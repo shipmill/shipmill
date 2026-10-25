@@ -177,7 +177,7 @@ from shipmill.github import UPGRADE_LABEL, GhCli, GitHub
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
-from shipmill.land import ActionsRun, Prepared, Stop, cleanup, land, prepare, work_branch
+from shipmill.land import ActionsRun, Prepared, Stop, Waiting, cleanup, land, prepare, work_branch
 from shipmill.launchd import DEFAULT_EVERY, DEFAULT_TOOL, build, gate_cli, install, read_job, remove
 from shipmill.lineedit import LineText
 from shipmill.notify import Desktop
@@ -808,7 +808,17 @@ def main(
         sha = prepared.sha if (prepared.pushed or not args.push) else ""
         _outputs(args.github_output, {"sha": sha})
     elif args.command == "land":
-        landed = land(git, policy, hub, Lane(args.lane), args.version, args.sha, args.base, args.date or today)
+        landed = land(
+            git,
+            policy,
+            hub,
+            Lane(args.lane),
+            args.version,
+            args.sha,
+            args.base,
+            args.date or today,
+            waiting=Waiting(pypi=_pypi_status),
+        )
         print(
             json.dumps(
                 {

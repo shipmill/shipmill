@@ -22,6 +22,7 @@ from shipmill.github import (
     OpenMilestone,
     PullRequest,
     RequesterVotes,
+    RunState,
     WorkflowRun,
 )
 from shipmill.gitrepo import Git
@@ -143,6 +144,10 @@ class FakeGitHub:
     merged_reads: list[tuple[str, ...]] = field(default_factory=list)  # the branch names of each read
     active: dict[str, list[WorkflowRun]] = field(default_factory=dict)  # unfinished runs by workflow file
     actions_error: str = ""  # when set, listing runs fails with it: Forbidden when it holds "(HTTP 403)"
+    # what each read of a run gives, by run id, in turn; the last stays. A run without any passed
+    run_states: dict[int, list[RunState]] = field(default_factory=dict)
+    run_reads: list[int] = field(default_factory=list)  # the run id of each run_state call
+    no_run_url: bool = False  # dispatch names no run, as a gh too old to print its URL
 
     def deploy(self, environment: str, ref: str, at: dt.datetime, *states: DeploymentState) -> int:
         """Record a deployment of ref, with its statuses one minute apart from at; its id"""
@@ -211,7 +216,12 @@ class FakeGitHub:
     def dispatch(self, workflow: str, ref: str, tag: str, inputs: Mapping[str, str] | None = None) -> str | None:
         self.dispatched.append((workflow, ref, tag, dict(inputs or {})))
         self.runs.append((workflow, ref, WorkflowRun(len(self.runs) + 1, "queued", self.now)))
-        return f"https://github.com/o/demo/actions/runs/{len(self.runs)}"
+        return None if self.no_run_url else f"https://github.com/o/demo/actions/runs/{len(self.runs)}"
+
+    def run_state(self, run: int) -> RunState:
+        self.run_reads.append(run)
+        states = self.run_states.get(run, [RunState("completed", "success")])
+        return states.pop(0) if len(states) > 1 else states[0]
 
     def workflow_runs(self, workflow: str, ref: str) -> list[WorkflowRun]:
         return [run for w, r, run in reversed(self.runs) if (w, r) == (workflow, ref)]

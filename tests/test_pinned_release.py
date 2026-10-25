@@ -78,12 +78,15 @@ def pins(root: Path) -> dict[str, list[str]]:
 # -- S-031-1: the marketplace names the release tag, and the stamp moves it ------------------
 
 
-def test_s031_1_the_marketplace_entry_names_the_tag_of_plugin_json() -> None:
+def test_s031_1_the_marketplace_entry_names_a_release_tag_no_newer_than_plugin_json() -> None:
     data = json.loads(MARKETPLACE.read_text(encoding="utf-8"))
     (entry,) = [p for p in data["plugins"] if p["name"] == "shipmill"]
-    assert entry["source"] == {"source": "github", "repo": "shipmill/shipmill", "ref": f"v{version()}"}
+    assert {k: v for k, v in entry["source"].items() if k != "ref"} == {"source": "github", "repo": "shipmill/shipmill"}
+    # D-50: the ref moves to a release only once PyPI serves it, after the release commit, so
+    # main's plugin.json may lead it while a publish runs, or after one failed
+    assert marketplace_release(MARKETPLACE.read_text(encoding="utf-8")) <= Version.parse(version())
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    assert project["version"] == version()  # the package, the plugin, and the marketplace move together
+    assert project["version"] == version()  # the package and the plugin move together
 
 
 def stamped_copy(tmp_path: Path, new: str) -> Path:
@@ -96,18 +99,16 @@ def stamped_copy(tmp_path: Path, new: str) -> Path:
         shutil.copy(ROOT / name, copy / name)
     policy = Policy.load(copy / ".github" / "shipmill.toml")
     changed = write_version(copy, policy, Version.parse(new), dt.date(2026, 10, 20))
-    assert ".claude-plugin/plugin.json" in changed and ".claude-plugin/marketplace.json" in changed
+    assert ".claude-plugin/plugin.json" in changed
     return copy
 
 
-def test_s031_1_a_release_stamp_moves_the_marketplace_ref_with_plugin_json(tmp_path: Path) -> None:
+def test_s031_1_a_release_stamp_moves_plugin_json_and_leaves_the_marketplace_ref(tmp_path: Path) -> None:
+    before = MARKETPLACE.read_text(encoding="utf-8")
     copy = stamped_copy(tmp_path, "0.99.0")
     assert json.loads((copy / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "0.99.0"
-    data = json.loads((copy / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
-    assert data["plugins"][0]["source"] == {"source": "github", "repo": "shipmill/shipmill", "ref": "v0.99.0"}
-    assert marketplace_release((copy / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")) == (
-        Version.parse("0.99.0")
-    )
+    # move-major-tag.yml moves the ref, once PyPI serves the release (D-50, tests/test_publish_first.py)
+    assert (copy / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8") == before
 
 
 # -- S-031-2: the latest release is the marketplace entry's ref -------------------------------

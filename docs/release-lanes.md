@@ -132,6 +132,7 @@ quiet_minutes = 30                # main's head after every batch of merges
 # milestone = true                # or: due once the milestone named "1.5.0" is done (below)
 github_release = true
 dispatch = ["publish.yml"]
+# after_publish = ["move-major-tag.yml"]  # optional: started once each dispatch run passed (below)
 
 [lanes.hotfix]                    # by hand only
 github_release = true
@@ -151,6 +152,18 @@ any other key, naming the bound, its own version, and the commands that update t
 the CLI, so a config that uses a newer key says "update" rather than "unknown keys".
 `shipmill init` writes it at its own `X.Y`; `shipmill upgrade --apply <id>` raises a lower
 one to the upgrade's version.
+
+A lane's `dispatch` workflows all start at once, right after the tag is pushed, and land
+waits on none of them. `after_publish` is for what must not run before the release is
+published, such as moving a floating major tag or another reference consumers follow
+(D-50): land starts those workflows, the same way, only once every `dispatch` run of the
+release has succeeded and, under `version_files = "pyproject"`, PyPI serves
+`pyproject.toml`'s `[project] name` at the version. It waits up to 30 minutes in all,
+reading each run GitHub named when it was dispatched; a run that fails, or doesn't finish in
+time, or a version PyPI doesn't serve by then, fails the land job, names the run or the
+URL, and leaves the `after_publish` workflows unstarted, with the `gh workflow run`
+commands that start them once the release is out. `after_publish` needs a `dispatch` to
+wait on and names no workflow `dispatch` also names. A lane without it lands as before.
 
 A lane releases when one of its **triggers** is due (quiet time, a schedule window that
 opened after its last release, a finished milestone) and no **gate** holds it. Any lane can
