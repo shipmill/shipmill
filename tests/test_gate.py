@@ -276,6 +276,7 @@ def test_the_gate_reads_the_rows_watch_state_prints() -> None:
         "OPERATE_FAILED",
         "INCIDENT_OPEN",
         "UPGRADE_PENDING",
+        "DIRECTION_PENDING",  # S-034-4: a session opens, asks, or takes up the direction question
         "UPSTREAM_DUE",  # S-038-21: the coordinator's session routes or closes a report
         "VETOED",  # S-030-16: a session takes up an unanswered veto
     }
