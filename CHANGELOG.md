@@ -7,6 +7,18 @@ bot.
 
 ## [Unreleased]
 
+## [0.70.0] - 2026-10-25
+
+### Fixed
+
+- A release can publish before it moves its references (D-50): a lane's new `after_publish` workflows start only once each `dispatch` run of the release succeeded and PyPI serves the version, and a publish that fails or never ends leaves them unstarted, naming the run; a lane without `after_publish` lands as before. `move-major-tag.yml` also moves the plugin marketplace `ref`, for the newest stable release only. shipmill's own config turns `after_publish` on in a follow-up, once a release with it is on PyPI and the plugin installs have it (#598)
+- github-pr-triage lands a spec pull request on a trusted answer only while the spec is the one the maintainer answered on: it compares the pull request's own change to the spec file at the answered head and at the current head, lands through a rebase or a renumbered `D-n`, and asks again with a new needs-decision question after any other change to the spec (#620)
+
+### Added
+
+- `.github/shipmill.toml` takes an optional `[decisions]` section (spec 030, D-48): each key a zone id set to `act`, `notify`, `ask`, or `never`, and `veto_hours` for the notify window (1 to 168, default 24); a zone left out keeps its default, and a level below a zone's floor, a fixed zone, a release-side zone `[autonomy]` sets, or an unknown key stops the run with exit 2. Nothing reads the levels yet (#607)
+- `triage_state.py` reads an issue labelled `decided` whose decided marker is followed by a trusted comment starting `veto`, and no newer `<!-- shipmill:veto-handled -->` comment, as `VETOED`, an action read right after `DECIDED`, for closed issues updated in the last 14 days too; `watch_state.py` lists such issues and pull requests, open, closed, or merged, in a `VETOED` row that starts a gate session (spec 030, S-030-14 to S-030-16) (#608)
+
 ## [0.69.0] - 2026-10-25
 
 ### Changed
@@ -1728,7 +1740,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.69.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.70.0...HEAD
+[0.70.0]: https://github.com/shipmill/shipmill/compare/v0.69.0...v0.70.0
 [0.69.0]: https://github.com/shipmill/shipmill/compare/v0.68.0...v0.69.0
 [0.68.0]: https://github.com/shipmill/shipmill/compare/v0.67.0...v0.68.0
 [0.67.0]: https://github.com/shipmill/shipmill/compare/v0.66.0...v0.67.0
