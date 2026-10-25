@@ -1,3 +1,0 @@
-### Added
-
-- `shipmill decide levels [--ref REF] [--json]` prints every zone of the decision policy (spec 030, D-48) with its level, its floor, and where the level comes from (`default`, `config`, `autonomy`, or `fixed`), the release side's stages mapped from `[autonomy]` beside the agent zones; `shipmill decide classify (--pr N | --files PATH...) [--ref REF] [--json]` prints the zones code detects for a change (`direction`, `decision-policy`, `security`, `protected`, `scope`, `contract-change`), each with its level and reason, the strictest level, and the `D-n` candidates, the levels read at `--ref` (default `origin/HEAD`), never from the change (#610)

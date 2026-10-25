@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.71.0] - 2026-10-25
+
+### Added
+
+- `shipmill decide levels [--ref REF] [--json]` prints every zone of the decision policy (spec 030, D-48) with its level, its floor, and where the level comes from (`default`, `config`, `autonomy`, or `fixed`), the release side's stages mapped from `[autonomy]` beside the agent zones; `shipmill decide classify (--pr N | --files PATH...) [--ref REF] [--json]` prints the zones code detects for a change (`direction`, `decision-policy`, `security`, `protected`, `scope`, `contract-change`), each with its level and reason, the strictest level, and the `D-n` candidates, the levels read at `--ref` (default `origin/HEAD`), never from the change (#610)
+- `shipmill doctor`, for a config with `[agents]`, prints a `decisions` block: the veto window and one line per zone with its level and source, and a WARN for each zone `[decisions]` sets below its default, for an unset `[agents] app_id`, and for a repo without the `decided` label; a config with `[decisions]` and no `[agents]` gets one WARN that nothing reads the section. `setup_state.py` wants the `decided` label with `[agents]`, so `LABELS_MISSING` names it and `--fix` creates it (spec 030, S-030-19, S-030-20) (#611)
+
 ## [0.70.0] - 2026-10-25
 
 ### Fixed
@@ -1740,7 +1747,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.70.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.71.0...HEAD
+[0.71.0]: https://github.com/shipmill/shipmill/compare/v0.70.0...v0.71.0
 [0.70.0]: https://github.com/shipmill/shipmill/compare/v0.69.0...v0.70.0
 [0.69.0]: https://github.com/shipmill/shipmill/compare/v0.68.0...v0.69.0
 [0.68.0]: https://github.com/shipmill/shipmill/compare/v0.67.0...v0.68.0
