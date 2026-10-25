@@ -243,8 +243,7 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
   rather than an exit before the other checks
 - **WARN:** a listed repo whose `.github/shipmill.toml` has no `[product] home` or one that
   names another repo than this home, naming the fix: set `[product] home = "<this home>"`
-  there; and a repo that names this home in its `[product] home` but isn't listed, naming
-  the fix: add it to `[product] repos` here, or remove its `home`
+  there
 - The home reads each component's config with the product token (contents read), never
   the session's token
 
@@ -277,7 +276,7 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - S-038-25: with or without `--home`, a `Depends on owner/repo#N` line or a native relation naming another repo's issue reads as spec 017 says: BLOCKED while open or unreadable, UNBLOCKED once closed
 - S-038-26: over one scripted forge of a home repo and two components, an issue in component A waits on its `upstream` report, the coordinator routes the report to an issue in component B as its child, B's issue closes, the coordinator closes the report as completed with its summary, and A's issue reads UNBLOCKED; along the way no write from A's session names another repo and no write with the product token touches contents or a pull request
 - S-038-27: `shipmill doctor` in a checkout whose config has `[product] repos` reports a FAIL naming the repo and `shipmill app-install <repo>` for a listed repo the App isn't installed on or whose installation lacks a product permission, and a FAIL naming the entry and the key for a malformed or repeated `[product] repos` entry, without exiting before its other checks
-- S-038-28: `shipmill doctor` in that checkout, reading each component's `.github/shipmill.toml` with the product token, reports a WARN naming the fix for a listed repo whose `[product] home` is missing or names another repo than this home, and a WARN naming the fix for a repo whose `[product] home` names this home but which `[product] repos` doesn't list
+- S-038-28: `shipmill doctor` in that checkout, reading each component's `.github/shipmill.toml` with the product token, reports a WARN naming the fix for a listed repo whose `[product] home` is missing or names another repo than this home
 - S-038-29: `chains.py link --product P --child C` in the home repo writes through the session's own `shipmill gh`, with no `--product`, when P is in the home repo, and through `shipmill gh --product <P's repo>` when P is in a listed repo; each read of a listed repo (resolving P or C, checking whether C is already linked) goes through `shipmill gh --product <that repo>`, never plain gh; it exits 2 before any read or write when the checkout has no `[product] repos` or a reference is in neither a listed repo nor the home repo
 
 ## Out of scope
@@ -288,6 +287,7 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - GitHub Projects, and GitLab's group boards, epics, and milestones (through the code host port, #322)
 - A release in one repo held by a stand-in in its milestone: a stand-in is an ordinary issue, so a milestone may hold one, with nothing built for it here
 - Reporting where chains stall (`chains.py show`, CHAIN_NO_GATE): unchanged
+- `doctor` warning about a repo whose `[product] home` names this home but which `[product] repos` doesn't list: the product token covers only the listed repos (S-038-6), so the home has no way to find such a repo; an open question on shipmill/shipmill#580
 
 ## Decisions relied on
 
@@ -311,6 +311,8 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 - shipmill/shipmill#587: S-038-11, S-038-12
 - shipmill/shipmill#588: S-038-18, S-038-19, S-038-20, S-038-21
 - shipmill/shipmill#589: S-038-4, S-038-22, S-038-23, S-038-26
+- shipmill/shipmill#604: S-038-27, S-038-28
+- shipmill/shipmill#596: S-038-29
 
 ## Verification
 
