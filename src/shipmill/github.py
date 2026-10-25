@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import quote
 
 from shipmill.errors import ReleaseError
 
@@ -66,6 +67,33 @@ ACTIVE_STATUSES = ("queued", "in_progress", "waiting", "pending", "requested")
 
 class Forbidden(ReleaseError):
     """GitHub refused the call for the token's permissions (HTTP 403, not a rate limit)"""
+
+
+@dataclass(frozen=True, slots=True)
+class FileChange:
+    """A file a pull request changes, as GitHub's pull request files list it: its unified diff
+    hunks in patch, None when GitHub gives none (a binary file, a diff too large)"""
+
+    path: str
+    status: str  # added, removed, modified, renamed, copied, changed
+    patch: str | None = None
+    previous: str | None = None  # a renamed file's old path
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        """The paths the change touches: a rename touches its old path too"""
+        return (self.path,) if self.previous is None else (self.path, self.previous)
+
+
+@dataclass(frozen=True, slots=True)
+class PullChange:
+    """A pull request's change: the commit it branched from on its base (the merge base, the
+    side its diff is against), its head commit, and its files"""
+
+    number: int
+    base: str
+    head: str
+    files: tuple[FileChange, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -602,6 +630,36 @@ class GhCli:
 
     def _api(self, *args: str) -> Any:
         return json.loads(self._gh("api", *args))
+
+    def pull_change(self, number: int) -> PullChange:
+        """The pull request's merge base, head, and every file it changes with its patch (spec 030)"""
+        pull = self._api(f"repos/{{owner}}/{{repo}}/pulls/{number}")
+        head, tip = str(pull["head"]["sha"]), str(pull["base"]["sha"])
+        compare = f"repos/{{owner}}/{{repo}}/compare/{tip}...{head}"
+        base = self._gh("api", compare, "--jq", ".merge_base_commit.sha").strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", base):
+            raise ReleaseError(f"gh api {compare} named no merge base, got {base!r}")
+        files_of = f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100"
+        listed = self._gh("api", "--paginate", files_of, "--jq", ".[]")  # one file per line, every page
+        files = []
+        for line in listed.splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            files.append(
+                FileChange(
+                    str(entry["filename"]),
+                    str(entry["status"]),
+                    None if entry.get("patch") is None else str(entry["patch"]),
+                    None if entry.get("previous_filename") is None else str(entry["previous_filename"]),
+                )
+            )
+        return PullChange(number, base, head, tuple(files))
+
+    def text_at(self, sha: str, path: str) -> str:
+        """The file's text at a commit, through the contents API; a missing file fails"""
+        where = f"repos/{{owner}}/{{repo}}/contents/{quote(path)}?ref={sha}"
+        return self._gh("api", "-H", "Accept: application/vnd.github.raw+json", where)
 
     def deployments(self, environment: str) -> list[Deployment]:
         found = self._api(
