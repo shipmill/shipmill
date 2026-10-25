@@ -1,0 +1,11 @@
+{
+  "args": [
+    "pr",
+    "diff",
+    "880",
+    "--name-only"
+  ],
+  "stdout": "docs/specs/090-release-digest.md\n",
+  "stderr": "",
+  "exit": 0
+}

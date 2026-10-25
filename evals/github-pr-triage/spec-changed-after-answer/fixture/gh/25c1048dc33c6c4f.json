@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "880",
+    "--json",
+    "files",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"files\": [{\"path\": \"docs/specs/090-release-digest.md\", \"additions\": 32, \"deletions\": 0}]}\n",
+  "stderr": "",
+  "exit": 0
+}

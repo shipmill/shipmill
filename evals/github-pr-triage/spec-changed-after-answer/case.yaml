@@ -1,0 +1,35 @@
+schema_version: "1.1"
+name: spec-changed-after-answer
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # #880 (a spec PR) is green and mergeable, and @romamo answered "1" on its needs-decision
+  # question on 2026-10-20 at head 3c9e1a7. A later commit, 9f2d4b6 on 2026-10-22, added
+  # criterion S-090-5 to the spec. The answer approves the spec as it stood when it was given
+  # (#620, D-49), so the session doesn't land it
+  - type: regex
+    name: does-not-land
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"args": \["pr", "merge"'
+    match: not_contains
+  # It asks again: a new needs-decision question on #880, which the old answer doesn't satisfy
+  - type: regex
+    name: asks-again
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"via": "shipmill", "args": \[[^\n]*880[^\n]*"body": "<!-- shipmill:needs-decision -->'
+  # Every write goes through `shipmill gh` as the App (D-14): no plain gh write
+  - type: regex
+    name: writes-as-the-app
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "write", "args"'
+    match: not_contains
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1

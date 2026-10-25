@@ -1,0 +1,10 @@
+{
+  "args": [
+    "pr",
+    "checks",
+    "880"
+  ],
+  "stdout": "check\tpass\t7m39s\thttps://github.com/shipmill/shipmill/actions/runs/1/job/1\nevals\tskipping\t0\thttps://github.com/shipmill/shipmill/actions/runs/2/job/2\n",
+  "stderr": "",
+  "exit": 0
+}

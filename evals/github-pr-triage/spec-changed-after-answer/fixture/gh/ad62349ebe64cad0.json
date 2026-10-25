@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "880",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "state,headRefOid,baseRefName"
+  ],
+  "stdout": "{\"state\": \"OPEN\", \"headRefOid\": \"9f2d4b6a8c0e1f3a5b7d9e2c4a6f8b0d1e3c5a7f\", \"baseRefName\": \"main\"}\n",
+  "stderr": "",
+  "exit": 0
+}

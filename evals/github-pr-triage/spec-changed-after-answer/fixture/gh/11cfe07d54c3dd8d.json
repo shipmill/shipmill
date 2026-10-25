@@ -1,0 +1,10 @@
+{
+  "args": [
+    "api",
+    "--paginate",
+    "repos/shipmill/shipmill/pulls/880/commits"
+  ],
+  "stdout": "[{\"sha\": \"3c9e1a7b5d2f4e6a8c0b1d3f5a7e9c2b4d6f8a10\", \"commit\": {\"author\": {\"name\": \"shipmill-romamo[bot]\", \"email\": \"bot@shipmill.dev\", \"date\": \"2026-10-19T21:39:50Z\"}, \"committer\": {\"name\": \"shipmill-romamo[bot]\", \"email\": \"bot@shipmill.dev\", \"date\": \"2026-10-19T21:39:50Z\"}, \"message\": \"Add spec 090: a weekly release digest\"}, \"author\": {\"login\": \"shipmill-romamo[bot]\", \"type\": \"Bot\"}, \"committer\": {\"login\": \"shipmill-romamo[bot]\", \"type\": \"Bot\"}, \"parents\": [], \"html_url\": \"https://github.com/shipmill/shipmill/commit/3c9e1a7b5d2f4e6a8c0b1d3f5a7e9c2b4d6f8a10\"}, {\"sha\": \"9f2d4b6a8c0e1f3a5b7d9e2c4a6f8b0d1e3c5a7f\", \"commit\": {\"author\": {\"name\": \"shipmill-romamo[bot]\", \"email\": \"bot@shipmill.dev\", \"date\": \"2026-10-22T09:12:05Z\"}, \"committer\": {\"name\": \"shipmill-romamo[bot]\", \"email\": \"bot@shipmill.dev\", \"date\": \"2026-10-22T09:12:05Z\"}, \"message\": \"Add S-090-5: the digest's --json output\"}, \"author\": {\"login\": \"shipmill-romamo[bot]\", \"type\": \"Bot\"}, \"committer\": {\"login\": \"shipmill-romamo[bot]\", \"type\": \"Bot\"}, \"parents\": [{\"sha\": \"3c9e1a7b5d2f4e6a8c0b1d3f5a7e9c2b4d6f8a10\"}], \"html_url\": \"https://github.com/shipmill/shipmill/commit/9f2d4b6a8c0e1f3a5b7d9e2c4a6f8b0d1e3c5a7f\"}]\n",
+  "stderr": "",
+  "exit": 0
+}

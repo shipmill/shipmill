@@ -1,0 +1,10 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "880"
+  ],
+  "stdout": "Add spec 090: a weekly release digest #880\nOpen \u2022 shipmill-romamo wants to merge into main from spec/090-release-digest\n\nSpec for #878\n\nAdds `docs/specs/090-release-digest.md` (`status: approved`, `serves: G-3`): `shipmill digest --since 7d` prints the week's releases, each with the issues it fixed, so someone following the project needn't read every release's notes.\n\n- 5 testable criteria, S-090-1 to S-090-5\n\n`specs.py check` passes.\n\n## Plan\n\n- Serves: G-3\n- Files: docs/specs/090-release-digest.md (new spec, `status: approved`)\n- Order: the spec alone\n- Proof: `specs.py check` passes; CI green\n\n## Decisions for you\n\n1. **Where the digest reads releases from.** Recommended: the release commits and `CHANGELOG.md`, so it works offline and with no token\n2. **Its default window.** Recommended: 7 days, set with `--since`\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)\n\n",
+  "stderr": "",
+  "exit": 0
+}
