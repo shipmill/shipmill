@@ -294,7 +294,7 @@ fork's `action_required` downstream check is the maintainer's to start.
 - S-032-8: `shipmill downstream collect` finds each downstream run by the `shipmill-id` in its run-name among the workflow's `workflow_dispatch` runs created after the dispatch, sets it as the check's details URL, and concludes a required check `success` for a run concluding `success`, `failure` with title `failed: <conclusion>` for any other conclusion, and `timed_out` once `timeout_minutes` from the dispatch has passed; a report-only check keeps conclusion `neutral` in every case with the result in its title
 - S-032-9: When no run with the `shipmill-id` appears within 2 minutes of the dispatch, `collect` concludes a required check `failure` (a report-only one `neutral`) naming the run-name rule
 - S-032-10: A check's summary names the tested SHA, links the downstream run, and lists the names of its failed jobs, and holds no line of the downstream's logs
-- S-032-11: dropped in #NNN, see S-032-17: the command the fork hold prints names the head SHA
+- S-032-11: dropped in #603, see S-032-17: the command the fork hold prints names the head SHA
 - S-032-12: A `workflow_dispatch` start with `--actor <person>` dispatches every downstream for a fork's pull request and updates its checks; with `--actor <name>[bot]` on a fork's pull request it writes nothing and exits 2 with `a fork's downstream run is started by a person, not <name>[bot]`; for a head in the repository a bot actor starts as a person does
 - S-032-13: `start` and `collect` exit 2 when the config doesn't parse, the pull request can't be read, or a check can't be written; with an empty or malformed key file `start` writes every check with the reason (required `failure`, report-only `neutral`) and exits 2
 - S-032-14: `pr_gate.py` on a pull request whose rollup holds a `downstream: <name>` CheckRun exits 1 printing `failed: downstream: <name> (FAILURE)` for `FAILURE`, likewise for `TIMED_OUT` and `ACTION_REQUIRED`; exits 3 for one `IN_PROGRESS`; and counts `NEUTRAL` and `SUCCESS` as green
@@ -354,7 +354,7 @@ fork's `action_required` downstream check is the maintainer's to start.
 - S-032-8: ran `tests/test_downstream_collect.py`'s S-032-8 tests: the run is found by its id among `workflow_dispatch` runs created after the dispatch, linked as the details URL, and concluded `success`, `failure` titled `failed: <conclusion>`, or `timed_out`; a report-only check stays `neutral` with the result in its title
 - S-032-9: ran the S-032-9 tests: no run within 2 minutes concludes `failure` (report-only `neutral`) naming the run-name rule, and a run found inside 2 minutes doesn't
 - S-032-10: ran the S-032-10 tests and read `_result`: the summary names the SHA, links the run, lists failed jobs on one line each without a backtick, and copies no log
-- S-032-11: dropped in #NNN
+- S-032-11: dropped in #603
 - S-032-12: ran the S-032-12 tests: a person's `--actor` dispatches a fork's head and updates its checks, a `[bot]` actor on a fork writes nothing and exits 2 with the message, and a bot starts a same-repository head
 - S-032-13: ran the S-032-13 tests for `start` and `collect`: exit 2 on a bad config, an unreadable pull request, and a check that can't be written; an empty, malformed, or refused key writes every check with the reason and exits 2
 - S-032-14: ran `tests/test_pr_gate.py`'s S-032-14 tests: exit 1 printing `failed: downstream: <name> (FAILURE)`, likewise `TIMED_OUT` and `ACTION_REQUIRED`, exit 3 for `IN_PROGRESS`, `NEUTRAL` and `SUCCESS` green
