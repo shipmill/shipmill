@@ -244,6 +244,9 @@ def _parser() -> argparse.ArgumentParser:
         prog="shipmill", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--repo", type=Path, default=Path.cwd(), help="the repository checkout (default: .)")
+    parser.add_argument(  # S-031-25: what watch_state.py asks a shipmill on PATH (#583)
+        "--version", action="version", version=f"shipmill {importlib.metadata.version('shipmill')}"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("settle-minutes", help="print the longest quiet_minutes in the policy, 0 when its mode is off")

@@ -16,8 +16,10 @@ from shipmill.cli import _parser
 
 ROOT = Path(__file__).resolve().parents[1]
 LONG = UVX  # `uvx shipmill==<the running release>`, the form the skills write out (spec 031)
-# the docs' form for a reader without the install, until spec 031's docs issue moves them (S-031-23)
-LEGACY = "uvx --from git+https://github.com/shipmill/shipmill@v0 shipmill"
+# the docs' form for a reader without the install: the latest release from PyPI (S-031-30)
+LATEST = "uvx shipmill"
+LATEST_FORM = re.compile(r"uvx shipmill(?![=\w-])")  # never the pinned form's `uvx shipmill==`
+GIT_FORM = "git+https://github.com/shipmill/shipmill@v0"  # the form S-031-30 drops for a person's CLI
 
 
 def subcommands() -> set[str]:
@@ -161,14 +163,19 @@ def test_the_string_scan_skips_docstrings_and_reads_f_strings() -> None:
 def test_a_doc_that_runs_a_bare_shipmill_gives_the_uvx_form_too() -> None:
     """#236: a bare `shipmill <command>` needs `uv tool install shipmill`; the page or skill that
     shows one also names the uvx form, or defines $CR, for a reader without the install. A
-    skill names the pinned form (spec 031); a doc may still name the @v0 one"""
+    skill names the pinned form (spec 031); a doc may name `uvx shipmill` instead (S-031-30)"""
     subs = subcommands()
     skills = ROOT / "skills"
+
+    def named(text: str, skill: bool) -> bool:
+        folded = " ".join(text.split())
+        return LONG in folded or (not skill and LATEST_FORM.search(folded) is not None)
+
     offenders = {
         str(path.relative_to(ROOT)): hits
         for path in scanned()
         if (hits := bare_commands(text := path.read_text(encoding="utf-8"), subs))
-        and not any(form in " ".join(text.split()) for form in ((LONG,) if skills in path.parents else (LONG, LEGACY)))
+        and not named(text, skills in path.parents)
     }
     assert offenders == {}
 
@@ -230,9 +237,25 @@ def test_install_md_recommends_the_tool_install_with_the_uvx_fallback() -> None:
     install = (ROOT / "docs" / "install.md").read_text(encoding="utf-8")
     first = install.index("$CR ")
     assert install.index("uv tool install shipmill") < install.index("CR=shipmill\n") < first
-    assert install.index(f'CR="{LEGACY}"') < first
+    assert install.index(f'CR="{LATEST}"') < first
     assert "uv tool upgrade shipmill" in install
     assert "Don't `uv tool install`" not in install and "alias shipmill=" not in install
+
+
+def test_s031_30_the_readme_and_install_md_give_one_tool_install_and_drop_the_git_form() -> None:
+    """S-031-30 (#583): `uv tool install shipmill` is the one way to a person's CLI, upgraded after
+    each plugin update; doctor and status report a shipmill on PATH that differs from the plugin;
+    the run without the install is `uvx shipmill <command>`, never the @v0 git form"""
+    for name in ("README.md", "docs/install.md"):
+        text = " ".join((ROOT / name).read_text(encoding="utf-8").split())
+        assert "uv tool install shipmill" in text and "the one way" in text, name
+        assert "uv tool upgrade shipmill" in text and "after each plugin update" in text, name
+        assert re.search(r"doctor`? and `?(?:shipmill )?status`? report a `shipmill` on `PATH`", text), name
+        assert "version differs from the plugin's" in text, name
+        assert LATEST_FORM.search(text) is not None, name
+        assert GIT_FORM not in text, name
+    readme = " ".join((ROOT / "README.md").read_text(encoding="utf-8").split())
+    assert "`uvx shipmill status`" in readme
 
 
 def test_install_md_says_how_to_clean_up_old_builds() -> None:
