@@ -325,5 +325,6 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - shipmill/shipmill#443: S-025-8, S-025-9, S-025-14
 - shipmill/shipmill#448: S-025-10, S-025-11, S-025-12, S-025-13, S-025-16
 - shipmill/shipmill#449: S-025-7
+- shipmill/shipmill#545: S-025-18, S-025-19, S-025-20, S-025-21, S-025-22, S-025-23
 
 ## Verification

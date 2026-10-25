@@ -1,6 +1,6 @@
 # S-032: Run downstream repositories' tests on a library's pull request
 
-status: built
+status: approved
 serves: G-2
 
 ## Problem
@@ -223,6 +223,13 @@ commit it is for:
   they differ it writes nothing and exits 1 with `the head of #<N> is <current SHA>, not
   <sha>; read the new commits and start again with -f sha=<current SHA>`. The checks it
   wrote before keep their state, so a fork's stay `action_required`
+- **Before any key reaches the disk:** in the reusable `.github/workflows/downstream.yml`,
+  the start job's first step after the checkout of the default branch, on a
+  `workflow_dispatch` run, compares `sha` with the pull request's head SHA (read with the
+  job's own token, nothing written to disk) and exits 1 with the same line on a mismatch.
+  It runs before the step that writes `downstream-key` to a file and before any App token
+  is minted, so a mismatch leaves no key file on the runner; `start`'s own comparison
+  stays, for the push between the two reads
 - A `workflow_dispatch` start with no `--sha`, or one that is not 40 hexadecimal
   characters, writes nothing and exits 2 naming the missing input and the fix for an old
   caller, `shipmill init --downstream --force`. A `pull_request_target` start needs no
@@ -307,6 +314,7 @@ fork's `action_required` downstream check is the maintainer's to start.
 - S-032-21: `shipmill init --downstream` writes the caller with a required `sha` input on `workflow_dispatch` passed to the reusable workflow, and actionlint accepts it; the reusable `.github/workflows/downstream.yml` takes an optional `sha` `workflow_call` input and passes `--sha` to `shipmill downstream start` on a `workflow_dispatch` run
 - S-032-22: `shipmill doctor` with `[downstream]` FAILs naming `shipmill init --downstream --force` when the caller's `workflow_dispatch` lacks the `sha` input or doesn't pass `sha` to the reusable workflow
 - S-032-23: `skills/github-pr-triage/references/landing.md` gives the rerun of a downstream as `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>` through `shipmill gh`, and says a fork's run is started only for the head SHA the maintainer read
+- S-032-24: On a `workflow_dispatch` run, the reusable `.github/workflows/downstream.yml` compares `sha` with the pull request's head SHA in a step before any step that writes `downstream-key` to disk or mints an App token, and on a mismatch exits 1 naming both SHAs with no key file left on the runner
 
 ## Out of scope
 
@@ -341,6 +349,7 @@ fork's `action_required` downstream check is the maintainer's to start.
 - shipmill/shipmill#511: S-032-8, S-032-9, S-032-10
 - shipmill/shipmill#513: S-032-3
 - shipmill/shipmill#516: S-032-15, S-032-16
+- shipmill/shipmill#545: S-032-17, S-032-18, S-032-19, S-032-20, S-032-21, S-032-22, S-032-23, S-032-24
 
 ## Verification
 
