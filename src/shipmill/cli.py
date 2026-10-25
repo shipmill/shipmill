@@ -200,7 +200,7 @@ from shipmill.operate import Http, Unreachable, UrllibHttp, approve, approve_rol
 from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
 from shipmill.plugin import CLI_RECORD, MARKERS, GateCli, PluginHost, load_cli
 from shipmill.policy import Lane, Policy
-from shipmill.product import DIRECTION, ItemId, Measure, Section
+from shipmill.product import DIRECTION, GitRef, ItemId, Measure, Section
 from shipmill.product import check as check_product
 from shipmill.product import read as read_product
 from shipmill.propose import close_released, propose, run_url
@@ -574,6 +574,11 @@ def _parser() -> argparse.ArgumentParser:
     p = sub.add_parser("product", help=f"read or edit the product's direction, {DIRECTION} (spec 024)")
     acting = p.add_subparsers(dest="product", required=True)
     checking = acting.add_parser("check", help=f"exit 1 naming the file, line, and rule {DIRECTION} breaks")
+    checking.add_argument(
+        "--ref",
+        help=f"read {DIRECTION} and its moved sections' files as committed at this git ref, not the working tree "
+        "(spec 034); exit 2 when git can't resolve it",
+    )
     showing = acting.add_parser("show", help="print the direction, or some sections, moved ones resolved")
     showing.add_argument(
         "--section",
@@ -1817,13 +1822,15 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
 def _product(root: Path, args: argparse.Namespace) -> int:
     """Spec 024: check exits 1 naming each broken rule; show and ids refuse a broken direction"""
     if args.product == "check":
-        problems = check_product(root)
+        at = None if args.ref is None else GitRef.resolve(root, args.ref)  # S-034-1: an unknown ref exits 2
+        problems = check_product(root, at)
         for problem in problems:
             print(problem)
         if problems:
             return 1
-        direction = read_product(root)
-        print(f"{DIRECTION}: well formed, {len(direction.all_items())} items")
+        direction = read_product(root, at)
+        where = "" if at is None else f" at {at}"
+        print(f"{DIRECTION}{where}: well formed, {len(direction.all_items())} items")
         return 0
     if args.product in ("add", "edit", "retire"):
         if args.product == "add":

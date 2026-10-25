@@ -106,7 +106,7 @@ still lands through a pull request:
 
 | Command | Does |
 |---|---|
-| `shipmill product check` | Exits 1 naming the file, line, and rule broken; 0 when well formed |
+| `shipmill product check [--ref REF]` | Exits 1 naming the file, line, and rule broken; 0 when well formed. `--ref` reads the files as committed at a git ref, such as `origin/main`, instead of the working tree; exits 1 with `no docs/product.md at <ref>` when the file is absent there, and 2 for a ref git can't resolve |
 | `shipmill product show [--section NAME] [--json]` | Prints the direction, or some sections (`mission`, `users`, `goals`, `non-goals`, `quality`), moved ones resolved |
 | `shipmill product ids` | Lists every id with its text, one per line |
 | `shipmill product add <users\|goals\|non-goals\|quality> "<text>"` | Appends an item with the next id, one above any the file's history held, and prints it |
