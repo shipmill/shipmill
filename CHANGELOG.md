@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.73.1] - 2026-10-25
+
+### Fixed
+
+- The skills list a pull request's files without `gh pr diff --name-only`, which GitHub refuses with HTTP 406 past 300 files: github-issue-resolve checks its pull request's files with `git diff --name-only origin/<default>...HEAD` in its worktree, and github-pr-triage's reviewer brief reads them for the review rubric through the paginated files API (#632)
+
 ## [0.73.0] - 2026-10-25
 
 ### Added
@@ -1773,7 +1779,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.73.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.73.1...HEAD
+[0.73.1]: https://github.com/shipmill/shipmill/compare/v0.73.0...v0.73.1
 [0.73.0]: https://github.com/shipmill/shipmill/compare/v0.72.0...v0.73.0
 [0.72.0]: https://github.com/shipmill/shipmill/compare/v0.71.0...v0.72.0
 [0.71.0]: https://github.com/shipmill/shipmill/compare/v0.70.0...v0.71.0
