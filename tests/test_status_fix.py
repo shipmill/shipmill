@@ -216,8 +216,8 @@ def test_s031_17_status_reports_the_gates_lagging_cli_with_its_fix(fix: str) -> 
 
 
 def test_597_status_reports_a_current_gate_on_v0_with_its_rewrite() -> None:
-    """#597: a job on the @v0 git source runs the newest commit, so it never lags, yet its tag
-    moves before PyPI serves the release; status names the rewrite as for a lagging CLI"""
+    """#597: a job on the @v0 git source runs the newest commit, so it never lags, yet it runs a
+    git tag rather than the release PyPI serves; status names the rewrite as for a lagging CLI"""
     fix = "uvx shipmill@latest --repo /w/r/tmp/shipmill-gate launchd acme/web"
     floating = facts(
         gate=gate(cli=GateCli(Version.parse("0.26.0"), fix, "git+https://github.com/shipmill/shipmill@v0"))

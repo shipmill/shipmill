@@ -1,9 +1,13 @@
 """Land a release commit that passed CI: put it where its lane keeps releases, tag it, bring
-a stable release made off main back into main, and publish it"""
+a stable release made off main back into main, and publish it. A lane with after_publish
+then waits for its publish runs and PyPI before it starts the workflows that move the
+release's references (D-50)"""
 
 import datetime as dt
 import re
 import time
+import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -12,7 +16,8 @@ from shipmill.environments import deployed_from
 from shipmill.errors import ReleaseError
 from shipmill.github import Forbidden, GitHub
 from shipmill.gitrepo import Git
-from shipmill.policy import Lane, Policy
+from shipmill.plugin import PYPI_PROJECT, Fetch
+from shipmill.policy import Lane, Policy, VersionFiles
 from shipmill.stamp import notes, stamp, sync
 from shipmill.version import Version
 
@@ -159,7 +164,11 @@ def land(
     base: str,
     today: dt.date,
     retry_waits: tuple[int, ...] = _TAG_RETRY_WAITS,
+    waiting: Waiting | None = None,
 ) -> Landed:
+    """Land the release commit sha as version. A lane with after_publish starts those
+    workflows only once each dispatch run succeeded and, under version_files = 'pyproject',
+    PyPI serves the version (D-50); waiting is how land waits, needed for such a lane"""
     rule = policy.rule(lane)
     work = work_branch(version)
     git.fetch(f"+refs/heads/{work}:refs/remotes/origin/{work}")
@@ -206,14 +215,111 @@ def land(
         pending = fragments.entries(fragments.at_revision(git, policy, sha)) if not version.is_stable else []
         github.create_release(version.tag, title, notes(policy, released, version, since, pending), lane.is_pre)
         published.append("github-release")
+    started: list[tuple[str, str | None]] = []
     for workflow in rule.dispatch:
-        github.dispatch(workflow, policy.branch, version.tag)
+        started.append((workflow, github.dispatch(workflow, policy.branch, version.tag)))
         published.append(workflow)
     for env in deployed_from(policy.environments, lane):
         # on the tag, so the deployment GitHub records names it as its ref: operate reads it there
         github.dispatch(env.workflow, version.tag, version.tag, env.inputs)
         published.append(f"{env.workflow}@{env.name}")
+    if rule.after_publish:
+        if waiting is None:
+            raise ReleaseError(f"{lane} sets after_publish, and land was given no way to wait for the publish")
+        held = _Held.of(policy, rule.after_publish, version, waiting.clock() + waiting.timeout)
+        for workflow, url in started:
+            _await_run(github, workflow, url, waiting, held)
+        if (project := _pypi_project(git, policy, sha)) is not None:
+            _await_pypi(project, version, waiting, held)
+        for workflow in rule.after_publish:
+            github.dispatch(workflow, policy.branch, version.tag)
+            published.append(workflow)
     return Landed(version.tag, placed, synced, tuple(published))
+
+
+PUBLISH_TIMEOUT = 30 * 60.0  # seconds land waits for the publish runs and PyPI, together (D-50)
+PUBLISH_POLL = 15.0  # seconds between two reads of a run or of PyPI
+_RUN_URL = re.compile(r"/actions/runs/(?P<id>\d+)$")
+
+
+@dataclass(frozen=True, slots=True)
+class Waiting:
+    """How land waits for a release's publish before it starts the lane's after_publish
+    workflows (D-50): PyPI's HTTP status for a URL (ReleaseError when no answer comes back), a
+    monotonic clock, and a sleep, so a test waits without sleeping"""
+
+    pypi: Fetch
+    clock: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], None] = time.sleep
+    timeout: float = PUBLISH_TIMEOUT
+    poll: float = PUBLISH_POLL
+
+
+@dataclass(frozen=True, slots=True)
+class _Held:
+    """One wait for a publish: when it gives up, and what a failed wait leaves undone, for its
+    error: the after_publish workflows and the commands that start them by hand"""
+
+    deadline: float  # on Waiting's clock
+    workflows: tuple[str, ...]
+    fix: str
+
+    @classmethod
+    def of(cls, policy: Policy, workflows: tuple[str, ...], version: Version, deadline: float) -> _Held:
+        runs = "; ".join(f"gh workflow run {w} --ref {policy.branch} -f tag={version.tag}" for w in workflows)
+        return cls(deadline, workflows, f"once {version.tag} is published, run {runs}")
+
+    def say(self, problem: str) -> ReleaseError:
+        names = ", ".join(self.workflows)
+        return ReleaseError(
+            f"{problem}; {names} not started, so the references stay on the previous release: {self.fix}"
+        )
+
+
+def _await_run(github: GitHub, workflow: str, url: str | None, waiting: Waiting, held: _Held) -> None:
+    """Wait for the run land started to succeed; the run is the one GitHub named when it was
+    dispatched, never the newest of its workflow"""
+    found = _RUN_URL.search(url or "")
+    if found is None:
+        raise held.say(f"dispatching {workflow} named no run ({url!r}), so land can't wait for it")
+    run = int(found["id"])
+    while not (state := github.run_state(run)).done:
+        if waiting.clock() >= held.deadline:
+            raise held.say(f"{workflow} run {url} is still {state.status} after {waiting.timeout:.0f}s")
+        waiting.sleep(waiting.poll)
+    if state.conclusion != "success":
+        raise held.say(f"{workflow} run {url} ended {state.conclusion or 'without a conclusion'}")
+
+
+def _pypi_project(git: Git, policy: Policy, sha: str) -> str | None:
+    """The project PyPI serves the release as: pyproject.toml's [project] name at the release
+    commit, under version_files = 'pyproject'; None otherwise, when land waits on no index"""
+    if policy.version_files is not VersionFiles.PYPROJECT:
+        return None
+    text = git.show(sha, "pyproject.toml")
+    if text is None:
+        raise ReleaseError(f"no pyproject.toml in {sha[:12]}, which version_files = 'pyproject' needs")
+    name = tomllib.loads(text).get("project", {}).get("name")
+    if not isinstance(name, str) or not name:
+        raise ReleaseError(f"pyproject.toml in {sha[:12]} has no [project] name")
+    return name
+
+
+def _await_pypi(project: str, version: Version, waiting: Waiting, held: _Held) -> None:
+    """Wait for PyPI to serve the project at the version: 200 for its release JSON"""
+    url = PYPI_PROJECT.format(name=project, version=version)
+    while True:
+        try:
+            status = waiting.pypi(url)
+        except ReleaseError as exc:
+            answer = f"no answer ({exc})"
+        else:
+            if status == 200:
+                return
+            answer = f"HTTP {status}"
+        if waiting.clock() >= held.deadline:
+            raise held.say(f"PyPI still answers {answer} for {url} after {waiting.timeout:.0f}s")
+        waiting.sleep(waiting.poll)
 
 
 def _push_tag(git: Git, version: Version, sha: str, retry_waits: tuple[int, ...]) -> None:

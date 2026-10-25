@@ -28,7 +28,8 @@ MARKETPLACE = PLUGIN.partition("@")[2]  # the marketplace Claude Code installs t
 REFRESH = ["claude", "plugin", "marketplace", "update", MARKETPLACE]
 SHIPMILL_REPO = "shipmill/shipmill"  # where shipmill releases
 # The latest release is the marketplace's (spec 031): the ref its entry names on the default
-# branch, which the release's stamp moves with plugin.json; never `gh release view`
+# branch, which the release's stamp moves with plugin.json, and move-major-tag.yml moves too, after
+# publish once the lanes set after_publish (D-50); never `gh release view`
 MARKETPLACE_FILE = ".claude-plugin/marketplace.json"
 READ_MARKETPLACE = [
     "gh",
@@ -43,7 +44,8 @@ CACHE = Path(".claude") / "plugins" / "cache" / "shipmill" / "shipmill"
 # Claude Code's record of every install, which shipmill reads through `claude plugin list` and
 # never writes (spec 031): an install keyed on a linked worktree is removed there by hand
 INSTALLED = "~/.claude/plugins/installed_plugins.json"
-PYPI = "https://pypi.org/pypi/shipmill/{version}/json"  # a release's JSON on PyPI, 404 until it is uploaded
+PYPI_PROJECT = "https://pypi.org/pypi/{name}/{version}/json"  # a release's JSON on PyPI, 404 until it is uploaded
+PYPI = PYPI_PROJECT.replace("{name}", "shipmill")
 CLI_RECORD = "cli.json"  # the gate's own CLI version, under its state directory, for doctor and status
 MARKERS = Path(".cache") / "shipmill" / "plugin"  # one <version>.notified per release, under the home folder
 
@@ -240,8 +242,9 @@ class Lag:
 @dataclass(frozen=True, slots=True)
 class GateCli:
     """S-031-17: the gate's own shipmill and how to bring it to the latest release. floating
-    is the source of a launchd job on the floating `@v0` git tag, which moves before PyPI
-    serves a release and so never lags (#597); None for any other install"""
+    is the source of a launchd job on the floating `@v0` git tag, which never lags but is a
+    git tag, not the release PyPI serves (#597; when it moves depends on the repo's
+    after_publish, D-50); None for any other install"""
 
     version: Version
     fix: str
@@ -257,8 +260,8 @@ class GateCli:
     def line(self, latest: Version) -> str:
         if self.floating is not None and not self.lags(latest):
             return (
-                f"the gate's launchd job runs shipmill from {self.floating}, which moves before PyPI serves a"
-                f" release; move it to shipmill@latest: {self.fix}"
+                f"the gate's launchd job runs shipmill from {self.floating}, a git tag rather than the release"
+                f" PyPI serves; move it to shipmill@latest: {self.fix}"
             )
         return f"the gate's CLI, shipmill {self.version}, lags the latest release {latest}: {self.fix}"
 

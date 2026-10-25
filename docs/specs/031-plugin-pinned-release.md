@@ -87,6 +87,12 @@ So the marketplace on `main` always serves the files of a tagged release whose
 `release/X.Y` stamps that branch, not `main`; it reaches the marketplace with the next
 stable release.
 
+D-50 (#598) moves the `ref` after publish instead. The land step supports it through a
+lane's `after_publish` (docs/release-lanes.md), and `move-major-tag.yml` now moves the `ref`
+with `@v0`. shipmill's own config turns it on, dropping the version line above, in a
+follow-up, once a release that knows `after_publish` is on PyPI and the plugin installs
+have it: until then a pinned older plugin would refuse the key.
+
 Everywhere shipmill compares an install against "the latest release" (the gate, `doctor`,
 `status`, and `skills/github-ship-watch/scripts/watch_state.py`), the latest is the
 version in the marketplace entry's `ref` on shipmill/shipmill's default branch, read with

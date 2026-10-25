@@ -335,10 +335,11 @@ def doctor(
             ok = ci.is_file() and _takes_input(ci.read_text(encoding="utf-8"), "workflow_call", "ref")
             add(ok, "ci", f"{m['file']} runs on workflow_call with a 'ref' input to check out")
     for rule in policy.lanes.values():
-        for workflow in rule.dispatch:
-            target = root / ".github" / "workflows" / workflow
-            ok = target.is_file() and _takes_input(target.read_text(encoding="utf-8"), "workflow_dispatch", "tag")
-            add(ok, "dispatch", f"{workflow} ({rule.lane}) runs on workflow_dispatch with a 'tag' input")
+        for key, workflows in (("dispatch", rule.dispatch), ("after_publish", rule.after_publish)):
+            for workflow in workflows:
+                target = root / ".github" / "workflows" / workflow
+                ok = target.is_file() and _takes_input(target.read_text(encoding="utf-8"), "workflow_dispatch", "tag")
+                add(ok, key, f"{workflow} ({rule.lane}) runs on workflow_dispatch with a 'tag' input")
     operate_caller = _operate_caller(root)
     for env in policy.environments.values():
         watched = env.source is not None or bool(env.health)  # D-9: only these need operate

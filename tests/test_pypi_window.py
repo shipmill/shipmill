@@ -310,7 +310,7 @@ def test_a_job_on_v0_owes_its_rewrite_while_its_cli_is_current(tmp_path: Path) -
     rewrite += " --claude-arg=--model --claude-arg=opus"
     assert cli.fix == rewrite and not cli.lags(LATEST) and cli.owes(LATEST)
     assert cli.line(LATEST) == (
-        f"the gate's launchd job runs shipmill from {OLD_TOOL}, which moves before PyPI serves a release;"
+        f"the gate's launchd job runs shipmill from {OLD_TOOL}, a git tag rather than the release PyPI serves;"
         f" move it to shipmill@latest: {rewrite}"
     )
 

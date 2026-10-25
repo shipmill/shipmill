@@ -3,7 +3,9 @@ name: shipmill land
 # Called after the caller's CI ran on the release commit. When CI passed it lands the
 # release: main (a stable release on an unmoved main), release/X.Y (a hotfix), or the tag
 # alone (a pre-release, or a stable release promoted while main moved on, which then gets a
-# sync commit on main). It tags, publishes, and starts the lane's dispatch workflows.
+# sync commit on main). It tags, publishes, and starts the lane's dispatch workflows; a lane
+# with after_publish then waits, up to 30 minutes within the job's default 6-hour limit, for
+# those runs to pass and PyPI to serve the version before it starts those workflows (D-50).
 # Whatever happened, the work branch is deleted: a failed release is planned again. Under
 # release = "propose", or for a stable lane that can hold a breaking change (spec 029), it
 # then closes the lane's proposal issue, and it proposes the config upgrades the repo hasn't

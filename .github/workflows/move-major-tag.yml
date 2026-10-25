@@ -1,7 +1,11 @@
 name: Move the major tag
 
-# Callers pin `@v0`: after a stable release, point the major tag at it. shipmill's land
-# workflow starts this one with the release's tag.
+# Callers pin `@v0`, and the plugin's marketplace entry names a release tag: after a stable or
+# hotfix release, point both at it. shipmill's land workflow starts this one with the release's
+# tag; listed under a lane's after_publish (D-50), only once publish.yml's run passed and PyPI
+# serves the version, so neither ever names a release PyPI can't serve. A ref the release
+# commit already moved is left as it is. A release that isn't the newest stable one, such as a
+# hotfix on an older series, moves neither.
 
 on:
   workflow_dispatch:
@@ -20,16 +24,75 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
-      - name: Point the major tag at the release
+      - name: Check the tag
+        id: check
         env:
           TAG: ${{ inputs.tag }}
         run: |
-          if ! [[ "$TAG" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+$ ]]; then
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::$TAG is not a stable vX.Y.Z tag"
             exit 1
           fi
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::no tag $TAG"
+            exit 1
+          fi
+          newest=$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+          if [ "$newest" = "$TAG" ]; then
+            echo "newest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "newest=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG is not the newest stable release ($newest is): the major tag and the marketplace stay"
+          fi
+
+      - name: Point the major tag at the release
+        if: steps.check.outputs.newest == 'true'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^v([0-9]+)\. ]]
           major="v${BASH_REMATCH[1]}"
           git tag -f "$major" "$TAG^{commit}"
           git push -f origin "refs/tags/$major"
+
+      - name: Point the marketplace at the release
+        if: steps.check.outputs.newest == 'true'
+        env:
+          TAG: ${{ inputs.tag }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          file=.claude-plugin/marketplace.json
+          for attempt in 1 2 3 4 5; do
+            git fetch -q origin "refs/heads/$BRANCH"
+            git checkout -q --detach FETCH_HEAD
+            python3 - "$file" "$TAG" <<'EOF'
+          import re
+          import sys
+
+          path, tag = sys.argv[1], sys.argv[2]
+          with open(path, encoding="utf-8") as f:
+              text = f.read()
+          pattern = re.compile(r'"ref": "v[^"]+"')
+          hits = len(pattern.findall(text))
+          if hits != 1:
+              sys.exit(f"::error::{path}: {pattern.pattern!r} matches {hits} times, want exactly 1")
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(pattern.sub(lambda _: f'"ref": "{tag}"', text))
+          EOF
+            if git diff --quiet -- "$file"; then
+              echo "$file names $TAG already"
+              exit 0
+            fi
+            git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "Point the marketplace at $TAG" -- "$file"
+            if git push -q origin "HEAD:refs/heads/$BRANCH"; then
+              echo "$file names $TAG on $BRANCH (attempt $attempt)"
+              exit 0
+            fi
+          done
+          echo "::error::$BRANCH kept moving: pointing $file at $TAG failed 5 times"
+          exit 1

@@ -72,6 +72,9 @@ class LaneRule:
     marker: str  # rc only: a, b, or rc
     github_release: bool
     dispatch: tuple[str, ...]  # workflows started with -f tag=v<version>
+    # workflows started the same way once each dispatch run succeeded and PyPI serves the
+    # version (D-50): what moves the release's references, such as a floating major tag
+    after_publish: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,9 +313,9 @@ def _lane(lane: Lane, t: Table) -> LaneRule:
     if lane is Lane.STABLE and _SOAK_KEY in t.raw:
         raise ReleaseError(SOAK_REMOVED)
     if lane is Lane.HOTFIX:
-        t.allow("github_release", "dispatch")  # a hotfix is cut by hand only
+        t.allow("github_release", "dispatch", "after_publish")  # a hotfix is cut by hand only
     else:
-        t.allow(*triggers, *extra, "github_release", "dispatch")
+        t.allow(*triggers, *extra, "github_release", "dispatch", "after_publish")
     quiet = t.integer("quiet_minutes", default=None, low=0, high=_MAX_QUIET)
     promote_from = t.string("promote_from", default="") if lane is Lane.STABLE else ""
     if promote_from not in ("", "rc"):
@@ -321,9 +324,17 @@ def _lane(lane: Lane, t: Table) -> LaneRule:
     if marker not in ("a", "b", "rc"):
         raise ReleaseError(f"{t.where}: marker is a, b, or rc, got {marker!r}")
     dispatch = t.strings("dispatch", default=())
-    for workflow in dispatch:
-        if "/" in workflow or not workflow.endswith((".yml", ".yaml")):
-            raise ReleaseError(f"{t.where}: dispatch names a file in .github/workflows, got {workflow!r}")
+    after_publish = t.strings("after_publish", default=())
+    for key, workflows in (("dispatch", dispatch), ("after_publish", after_publish)):
+        for workflow in workflows:
+            if "/" in workflow or not workflow.endswith((".yml", ".yaml")):
+                raise ReleaseError(f"{t.where}: {key} names a file in .github/workflows, got {workflow!r}")
+    if len(set(after_publish)) != len(after_publish):
+        raise ReleaseError(f"{t.where}: after_publish names a workflow twice: {list(after_publish)}")
+    if after_publish and not dispatch:
+        raise ReleaseError(f"{t.where}: after_publish waits on the lane's dispatch runs, and dispatch is empty")
+    if both := sorted(set(dispatch) & set(after_publish)):
+        raise ReleaseError(f"{t.where}: {both} in both dispatch and after_publish; a workflow runs once")
     return LaneRule(
         lane=lane,
         quiet_minutes=quiet,
@@ -333,6 +344,7 @@ def _lane(lane: Lane, t: Table) -> LaneRule:
         marker=marker,
         github_release=t.boolean("github_release", default=False),
         dispatch=dispatch,
+        after_publish=after_publish,
     )
 
 
