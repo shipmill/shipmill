@@ -532,6 +532,10 @@ TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 UPGRADE_LABEL = "shipmill-upgrade"
 UPGRADE_MARKER = re.compile(r"^<!-- shipmill-upgrade: ([a-z][a-z0-9]*(?:-[a-z0-9]+)*) (\S+) -->\s*$")
 WORKFLOW_BOT = "github-actions[bot]"  # who the release workflow writes as
+# shipmill's question for a repo's missing direction (spec 034): the label, and the marker
+# that is its body's first line; github-ship-watch asks it, so triage posts no verdict on it
+DIRECTION_LABEL = "shipmill-direction"
+DIRECTION_MARKER = "<!-- shipmill-direction -->"
 # A goal's plan (spec 028): product-intake's intake_state.py PLAN_LABEL, and the verdict its
 # triage comment on a plan starts with, "Triage: **plan**. ..."
 PLAN_LABEL = "goal-plan"
@@ -1292,6 +1296,20 @@ def workflow_upgrade(issue: dict[str, Any]) -> bool:
         return False
     labels = {n["name"] for n in issue["labels"]["nodes"]}
     return UPGRADE_LABEL in labels and upgrade_id(issue["body"]) is not None
+
+
+def direction_issue(issue: dict[str, Any], bot_login: str | None) -> bool:
+    """Spec 034: shipmill's question for the product's direction, which github-ship-watch
+    asks and takes up: labelled shipmill-direction, the marker as its body's first line
+    exactly (not past leading blank lines or whitespace; a CRLF body reads as LF, trailing
+    whitespace is dropped), and opened by an OWNER, MEMBER, or COLLABORATOR or the
+    --bot-login (D-16). An issue missing any of the three is any issue to triage"""
+    labels = {n["name"] for n in issue["labels"]["nodes"]}
+    if DIRECTION_LABEL not in labels:
+        return False
+    if (issue["body"] or "").replace("\r\n", "\n").split("\n", 1)[0].rstrip() != DIRECTION_MARKER:
+        return False
+    return trusted(login(issue.get("author")), str(issue.get("authorAssociation") or "NONE"), bot_login)
 
 
 def assignees(issue: dict[str, Any]) -> list[str]:

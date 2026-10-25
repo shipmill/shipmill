@@ -120,7 +120,11 @@ Intake (github-issue-triage's triage_state.py):
                   never an action by itself). A person's item waiting on its assignees
                   (WITH_PERSON, spec 017) names them: WITH_PERSON #N (@login ...). An
                   upstream report, which waits outside (spec 038), is listed here only, as
-                  UPSTREAM #N: never in ISSUES, NEEDS_DECISION, or an agent row
+                  UPSTREAM #N: never in ISSUES, NEEDS_DECISION, or an agent row. With
+                  [agents], an open direction issue (spec 034: labelled shipmill-direction,
+                  <!-- shipmill-direction --> as its body's first line, opened by an OWNER,
+                  MEMBER, or COLLABORATOR or the --bot-login) is in neither ISSUES nor
+                  ISSUES_OPEN
   PRS_OPEN        open non-draft pull requests (reported, never an action by itself),
                   less the ones NEEDS_DECISION and UNTRUSTED list
   NEEDS_DECISION  issues and pull requests labelled needs-decision whose question has no
@@ -536,6 +540,9 @@ PINNED = re.compile(r"shipmill==(\d+\.\d+\.\d+)")  # the second word of the pinn
 UPGRADE_LABEL: str = TRIAGE.UPGRADE_LABEL
 UPGRADE_LATER_LABEL = "shipmill-upgrade-later"  # shipmill's github.UPGRADE_LATER_LABEL: answered "not now"
 UPGRADE_BRANCH = "shipmill/upgrade-"  # an upgrade pull request's head: this and the upgrade's id
+# shipmill's question for a missing direction (spec 034): triage_state.py's label, marker, and
+# rule (direction_issue), one definition for the watch and for triage
+DIRECTION_LABEL: str = TRIAGE.DIRECTION_LABEL
 OPERATE_USES = re.compile(
     r"^\s*(?:-\s*)?uses:\s*[\"']?(?:[\w.-]+/[\w.-]+/\.github/workflows/operate\.ya?ml@|\./\.github/workflows/operate\.ya?ml)",
     re.MULTILINE,
@@ -2200,6 +2207,34 @@ def upgrade_rows(
     return Upgrades(rows, waiting, frozenset(owned))
 
 
+def direction_numbers(found: list[dict[str, Any]], bot_login: str | None = None) -> frozenset[int]:
+    """The direction issues (spec 034) among the REST API's issues: triage_state.py's
+    direction_issue on each, labelled, marked, and opened by an OWNER, MEMBER, or
+    COLLABORATOR or the --bot-login (D-16); a pull request is none"""
+    numbers = set()
+    for issue in found:
+        if "pull_request" in issue:
+            continue
+        user = issue.get("user")
+        node = {
+            "body": issue.get("body") or "",
+            "author": {"login": user["login"], "__typename": user.get("type")} if user else None,
+            "authorAssociation": issue.get("author_association"),
+            "labels": {"nodes": [{"name": label["name"]} for label in issue["labels"]]},
+        }
+        if TRIAGE.direction_issue(node, bot_login):
+            numbers.add(int(issue["number"]))
+    return frozenset(numbers)
+
+
+def direction_issues(repo: str, bot_login: str | None = None) -> frozenset[int]:
+    """The open direction issues, read through the REST API, which gives each author's
+    association (gh issue list doesn't), every page"""
+    path = f"repos/{repo}/issues?labels={DIRECTION_LABEL}&state=open&per_page=100"
+    out = run(["gh", "api", "--paginate", path, "--jq", ".[]"])
+    return direction_numbers([json.loads(line) for line in out.splitlines() if line], bot_login)
+
+
 def declined_prs(repo: str, name: str) -> list[int]:
     """The pull requests from the repo's own upgrade branch that closed without merging. gh's
     closed state lists merged ones too, which GitHub tells apart as MERGED; a fork's branch of
@@ -2226,6 +2261,7 @@ def intake(
     upgrades: Upgrades | None = None,
     untrusted_plans: frozenset[int] = frozenset(),
     closed_prs: Sequence[dict[str, Any]] = (),
+    directions: frozenset[int] = frozenset(),
 ) -> list[Row]:
     """The intake rows from triage_state.py's exit code and --json lines, and the open pull
     requests (number, isDraft, isCrossRepository, labels, headRefOid). Each pull request is UNTRUSTED
@@ -2243,8 +2279,10 @@ def intake(
     --bot-login; the release workflow's github-actions[bot] upgrade issue, label and marker
     both, is trusted, D-30) stays UNTRUSTED and nothing else: an unattended session never
     starts for it (D-16). So does each of untrusted_plans, the open plan issues plans_rows
-    left out (spec 028), whatever triage_state.py reads it as"""
-    owned = upgrades.owned if upgrades is not None else frozenset()
+    left out (spec 028), whatever triage_state.py reads it as. directions are the open
+    direction issues (spec 034), shipmill's question: none is in the issue rows, and one
+    triage_state.py reads as UNTRUSTED stays there, as an upgrade issue does"""
+    owned = (upgrades.owned if upgrades is not None else frozenset()) | directions
     counts: dict[str, list[int]] = {}
     waits_on: dict[int, list[str]] = {}  # a WITH_PERSON issue's assignees (spec 017)
     untrusted_upgrades = set()
@@ -2380,9 +2418,11 @@ def intake_rows(
     upgrades: Upgrades | None,
     untrusted_plans: frozenset[int],
     now: dt.datetime,
+    directions: frozenset[int] = frozenset(),
 ) -> list[Row]:
     """The intake rows from triage_run's exit code and lines, the open pull requests, and the
-    closed and merged ones labelled decided and updated in the veto window (spec 030)"""
+    closed and merged ones labelled decided and updated in the veto window (spec 030);
+    directions are the open direction issues, never in the issue rows (spec 034)"""
     fields = "number,isDraft,isCrossRepository,labels,headRefOid"
     prs = json.loads(run(["gh", "pr", "list", "-R", repo, "--json", fields, "-L", "100"]))
 
@@ -2391,7 +2431,18 @@ def intake_rows(
 
     closed = decided_prs(repo, now)
     return intake(
-        repo, code, triage, prs, comments_of, bot_login, trusted_only, lands, upgrades, untrusted_plans, closed
+        repo,
+        code,
+        triage,
+        prs,
+        comments_of,
+        bot_login,
+        trusted_only,
+        lands,
+        upgrades,
+        untrusted_plans,
+        closed,
+        directions,
     )
 
 
@@ -3569,8 +3620,19 @@ def main() -> int:
         rows += [] if unplanned is None else [pypi_wait_row(unplanned.version, "plans")]
         code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home)
         lands = lands_prs(table)
+        # shipmill asks for the direction only in a repo with [agents] (spec 034)
+        directions = direction_issues(args.repo, args.bot_login) if table is not None else frozenset()
         rows += intake_rows(
-            args.repo, code, triage, args.bot_login, args.trusted_only, lands, upgrades, plans.untrusted, now
+            args.repo,
+            code,
+            triage,
+            args.bot_login,
+            args.trusted_only,
+            lands,
+            upgrades,
+            plans.untrusted,
+            now,
+            directions,
         )
         rows += chain_rows(args.repo, triage, args.bot_login)
     rows += coordinator_rows(text, policy, args.repo, repo_dir, args.bot_login)
