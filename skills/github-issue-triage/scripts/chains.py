@@ -54,7 +54,9 @@ show prints the chain an issue belongs to, one row per item, each once (by owner
       - every issue that waits on it, recursively: one GitHub records it blocking, and its
         parent
       Each row: the reference, the title, the executor ("agent", or "person: @login,..."
-      for an issue labelled human, "person: none" with no assignee; "pull request" for a
+      from the assignees of a person's item, an issue labelled human or role:<name> in any
+      case; with no assignee, its role:<name> labels, sorted and joined by commas, or
+      "person: none" for one labelled human alone; "pull request" for a
       pull request a "Depends on" line names), and the state: CLOSED (an issue closed in
       any way, a pull request merged or closed), BLOCKED with the holds still open, READY
       (an open issue nothing open holds), or OPEN (a pull request still open). A hold that
@@ -173,6 +175,7 @@ mutation($id: ID!, $body: String!) {
 CHUNK = 20
 LINKS = 100  # a connection's one page; an issue with more fails rather than read short
 HUMAN_LABEL = "human"  # a person's item: its assignees do it (spec 017)
+ROLE_PREFIX = "role:"  # a role's item, a person's item as a human one (spec 036)
 CONFIG = ".github/shipmill.toml"
 UNREADABLE_TYPES = frozenset({"NOT_FOUND", "FORBIDDEN"})  # no such repo or issue, or no access
 HELD = "pageInfo { hasNextPage } nodes { number state stateReason repository { nameWithOwner } }"
@@ -650,8 +653,13 @@ def parse_item(node: dict[str, Any], reader: Reader) -> Item:
     labels = {n["name"] for n in connection(node, "labels", ref)}
     logins = [str(n["login"]) for n in connection(node, "assignees", ref)]
     executor = "agent"
-    if HUMAN_LABEL in labels:
-        executor = "person: " + (",".join(f"@{login}" for login in logins) or "none")
+    # A person's item: labelled human (spec 017) or role:<name> (spec 036), names in any case.
+    # Another repo's roles can't be read here, so one with no assignee shows its role labels
+    named = {str(n).lower() for n in labels}
+    roles = sorted(n for n in named if n.startswith(ROLE_PREFIX))
+    if HUMAN_LABEL in named or roles:
+        people = ",".join(f"@{login}" for login in logins)
+        executor = f"person: {people}" if people else ",".join(roles) or "person: none"
     holds: dict[Key, tuple[Ref, str | None]] = {}
     for owner, name, number in dependency_refs(node, (ref.owner, ref.name)):
         hold = Ref(owner, name, number)

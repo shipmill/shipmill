@@ -219,6 +219,26 @@ def test_s017_18_a_person_item_without_assignees_and_a_pull_request_it_names(
     assert code == 0 and forge.read == []
 
 
+def test_s036_14_show_lists_a_role_item_as_a_person_s_item(
+    ch: ModuleType, forge: Forge, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forge.issue("o/r#1", labels=["Role:Infra"], body="Depends on #2\nDepends on #3\nDepends on #4\nDepends on #5")
+    forge.issue("o/r#2", labels=["role:infra"], assignees=["alice", "bob"])
+    forge.issue("o/r#3", labels=["role:legal", "human", "role:dns"])
+    forge.issue("o/r#4", labels=["human"])
+    forge.issue("o/r#5", labels=["role-like"])  # not role:<name>: an agent's
+    forge.configs = {"o/r": GATED}
+    code, rows = shown(ch, forge, capsys, "o/r#1")
+    assert cells(rows) == [
+        ("o/r#1", "role:infra", "BLOCKED", ["o/r#2", "o/r#3", "o/r#4", "o/r#5"], None),
+        ("o/r#2", "person: @alice,@bob", "READY", [], None),
+        ("o/r#3", "role:dns,role:legal", "READY", [], None),
+        ("o/r#4", "person: none", "READY", [], None),  # human alone reads as before
+        ("o/r#5", "agent", "READY", [], None),
+    ]
+    assert code == 0
+
+
 def test_s017_19_a_ready_item_in_a_repo_without_a_gate_is_no_gate_and_exits_1(
     ch: ModuleType, forge: Forge, capsys: pytest.CaptureFixture[str]
 ) -> None:
