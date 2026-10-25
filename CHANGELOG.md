@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-10-25
+
+### Changed
+
+- shipmill's own goals carry measures: G-1 `issue_to_release_p90 < 2d` and G-2 `change_failure_rate <= 5%`; G-3 to G-7 carry none, since the forge can't measure them yet (#484)
+
 ## [0.67.0] - 2026-10-24
 
 ### Added
@@ -1712,7 +1718,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.67.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.68.0...HEAD
+[0.68.0]: https://github.com/shipmill/shipmill/compare/v0.67.0...v0.68.0
 [0.67.0]: https://github.com/shipmill/shipmill/compare/v0.66.0...v0.67.0
 [0.66.0]: https://github.com/shipmill/shipmill/compare/v0.65.0...v0.66.0
 [0.65.0]: https://github.com/shipmill/shipmill/compare/v0.64.0...v0.65.0
