@@ -161,8 +161,37 @@ it passes:
   the run needs the API key, so as with unattended sessions (D-16) the job runs only for a
   head in the repository. On a fork's pull request the job fails, never skips, with the
   line `evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f
-  pr=<N>`, so the change can't land unevaluated; the maintainer dispatches that run once
-  they have read the change, and its green result is the check that counts (D-37)
+  pr=<N> -f sha=<head SHA>`, the number and the event's head SHA filled in, so the change
+  can't land unevaluated; the maintainer
+  dispatches that run once they have read the change, and its green result for that head
+  is the check that counts (D-37)
+
+### A dispatched run is pinned to the head the maintainer read
+
+The maintainer reads a fork's change at one commit and dispatches the run some time later.
+If the run took the pull request as it is when it starts, the fork's author could push in
+between, and the commit nobody read would run with `ANTHROPIC_API_KEY` (shipmill/shipmill#545).
+So a dispatched run names the commit it is for:
+
+- `.github/workflows/evals.yml` gains a `sha` input beside `pr`. A dispatch with `pr` needs
+  `sha`, the full 40-character head SHA the maintainer read: `gh workflow run evals.yml -f
+  pr=<N> -f sha=<head SHA>`. A dispatch with `pr` and no `sha`, with a `sha` that is not 40
+  hexadecimal characters, or with `sha` and no `pr` exits 1 naming the input; a plain
+  dispatch without either stays the baseline run
+- **Before any checkout, and before any step that has the secret**, the run reads the pull
+  request's current head SHA (`gh api repos/<repo>/pulls/<N>`, with the job's own token)
+  and compares it with `sha`. When they differ it runs no case and exits 1 with `evals: the
+  head of #<N> is <current SHA>, not <sha>; read the new commits and dispatch again with
+  -f sha=<current SHA>`, written as the job's error and to its summary
+- **After the checkout**, the run confirms that the head parent of the checked-out
+  `refs/pull/<N>/merge` (`HEAD^2`) is `sha`, and exits 1 with the same line naming both
+  commits when it isn't, still before the step that has `ANTHROPIC_API_KEY`: a push between
+  the read and the checkout is refused too
+- **The run records what it measured:** the job summary's first line is `evals: measured
+  <sha> of #<N>`, and the run's `meta.json` in its artifact holds `"pr"` and `"head"` beside
+  the model and commit it holds today. A green dispatched run counts for a fork's pull
+  request only while that SHA is still its head: a push after the run needs a new dispatch,
+  and `skills/github-pr-triage/SKILL.md` says so beside its rule on a red `evals` check
 
 The job runs `claude plugin eval . --trust-plugin --scaffold --allow-tools <the case's
 tools> --ablation none --no-publish --model <pinned> --runs 3 -j 4 --max-cost-usd 15
@@ -234,7 +263,8 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - `.github/workflows/evals.yml`: the runs; `.github/workflows/ci.yml`: `shipmill evals check`
 - `docs/evals.md`: how to run a case locally, record one, and read a failing gate
 - `docs/postmortems/TEMPLATE.md` and the skills' "Improve the skill" sections
-- `skills/github-pr-triage/SKILL.md`: a red `evals` check blocks the merge (D-37)
+- `skills/github-pr-triage/SKILL.md`: a red `evals` check blocks the merge (D-37), and a
+  fork's dispatched run counts only for the head SHA it recorded
 - `docs/decisions.md`: D-37
 - `.gitignore`: `evals/results/`
 
@@ -252,11 +282,17 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-10: `.github/workflows/evals.yml` runs on a pull request touching `skills/**`, `.claude-plugin/**`, `evals/**`, or `src/shipmill/gate.py`, weekly on the default branch, and by `workflow_dispatch`, and on no other pull request
 - S-025-11: The evals job runs `claude plugin eval` with `--ablation none`, `--no-publish`, `--model` set to the gate sessions' model, `--runs 3`, `-j 4`, and `--max-cost-usd 15`, with `evals/bin` first on `PATH` and no GitHub token in the run's environment, uploads the JSON result and the HTML report, and writes the moved cases, both pass rates, and the spend to the job summary
 - S-025-12: The pull request job compares against the latest successful default-branch run's result, and runs the suite on the merge base first when that result is missing, older than 14 days, or from a different model
-- S-025-13: On a pull request from a fork the evals job runs no case and fails, never skips, naming the `gh workflow run evals.yml -f pr=<N>` command
+- S-025-13: dropped in #603, see S-025-18: the command the fork refusal prints names the head SHA
 - S-025-14: A run that reaches `--max-cost-usd` fails the gate with `evals: budget reached after <n> of <m> runs` and compares nothing
 - S-025-15: `docs/postmortems/TEMPLATE.md` has an `## Eval case` section, and the "Improve the skill" section of every skill under `skills/` says to add a failing case under `evals/` with the lesson
 - S-025-16: `shipmill evals check --gate` exits 1 naming the kinds short of the first suite's counts (8 `verdict`, 4 `decision`, 4 `finding`, 4 `fix`), and while it does, the evals pull request job reports the comparison and exits 0
 - S-025-17: `skills/github-pr-triage/SKILL.md` says a red `evals` check is never proven unrelated and blocks the merge unless the maintainer accepts that run
+- S-025-18: On a pull request from a fork the evals job runs no case and fails, never skips, with the line `evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>`, the pull request's number and the event's full head SHA filled in, as its error and in its summary
+- S-025-19: `.github/workflows/evals.yml`'s `workflow_dispatch` takes a `sha` input beside `pr`; a dispatch with `pr` and no `sha`, with a `sha` that is not 40 hexadecimal characters, or with `sha` and no `pr` exits 1 naming the input before any checkout, and a dispatch with neither runs as the baseline
+- S-025-20: A dispatched run with `pr` reads the pull request's current head SHA before any checkout and before any step that has `ANTHROPIC_API_KEY`, and when it differs from `sha` runs no case and exits 1 with `evals: the head of #<N> is <current SHA>, not <sha>; read the new commits and dispatch again with -f sha=<current SHA>` as the job's error and in its summary
+- S-025-21: After its checkout of `refs/pull/<N>/merge` and before any step that has `ANTHROPIC_API_KEY`, a dispatched run whose `HEAD^2` is not `sha` runs no case and exits 1 with the S-025-20 line naming both commits
+- S-025-22: A dispatched run with `pr` writes `evals: measured <sha> of #<N>` as the first line of its job summary, and its `meta.json` in the uploaded artifact holds `pr` and `head` set to that number and SHA
+- S-025-23: `skills/github-pr-triage/SKILL.md` says a fork's dispatched `evals` run counts only while the head SHA it recorded is the pull request's current head, and a push after the run needs a new dispatch naming the new SHA
 
 ## Out of scope
 
@@ -289,5 +325,6 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - shipmill/shipmill#443: S-025-8, S-025-9, S-025-14
 - shipmill/shipmill#448: S-025-10, S-025-11, S-025-12, S-025-13, S-025-16
 - shipmill/shipmill#449: S-025-7
+- shipmill/shipmill#545: S-025-18, S-025-19, S-025-20, S-025-21, S-025-22, S-025-23
 
 ## Verification
