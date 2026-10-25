@@ -127,6 +127,15 @@ Intake (github-issue-triage's triage_state.py):
                   reply, as #N only (triage_state.py's rule, applied to pull requests'
                   comments too): a person owes the answer, so an action, but never an
                   agent's
+  VETOED          issues and pull requests, open, closed, or merged, whose decision taken at
+                  notify (spec 030, labelled decided) holds an unanswered trusted veto, as #N
+                  only: the issues triage_state.py reads as VETOED (a closed one's line says
+                  "closed": true), the open pull requests labelled decided (their comments read
+                  only then, by triage_state.py's rule), and the closed and merged ones labelled
+                  decided and updated in the last 14 days (one gh pr list; with --trusted-only,
+                  never a fork's). An agent's row: the gate starts a session to take the veto up.
+                  One in it is in no other row; an item labelled decided without such a veto
+                  reads as it would without the label
   UNTRUSTED       with --trusted-only, the issues triage_state.py reads as UNTRUSTED, the
                   open plan issues the --bot-login didn't open (PLANS), and the pull
                   requests whose head is in a fork, as #N only (reported, never an
@@ -269,7 +278,7 @@ API error: rerun". An auth, not-found, or any other failure stops it at once.
 
 --json prints one JSON object per row: state, subject, detail, and agent, true when the
 row needs an agent (BOT_FAILED, BOT_STALLED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
-ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING, UPSTREAM_DUE): the rows shipmill gate starts a
+ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING, UPSTREAM_DUE, VETOED): the rows shipmill gate starts a
 session for. A waiting
 item is in no agent row, so it neither starts a session nor changes the gate's fingerprint.
 Each line has a fix too (spec 011): the one line that clears the row, an exact command where
@@ -287,7 +296,7 @@ BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNAN
 ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, GATE_SESSIONS_DEAD, SKILL_SHADOWED,
 UPGRADE_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, MILESTONE_OVERTAKEN, UPSTREAM_DUE, UPSTREAM_ASKED,
-or UPSTREAM_UNREADABLE row is present, 2
+UPSTREAM_UNREADABLE, or VETOED row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
 milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
 `shipmill: ` error is the BOT_PLAN_FAILED row instead, and uv finding no pinned version the
@@ -351,6 +360,7 @@ TRIAGE_ACTION = {
     "REVISIT",
     "DONE_NOT_CLOSED",
     "DECIDED",
+    "VETOED",
     "SUSPECT_CLOSE",
     "HANDOFF_DUE",
     "VERIFY_DUE",
@@ -358,6 +368,7 @@ TRIAGE_ACTION = {
     "VERIFY_CLOSED",
     "OFF_MILESTONE",
 }
+VETOED = "VETOED"  # triage_state.py's state and this script's row for an unanswered veto (spec 030)
 POLICY = Path(".github/shipmill.toml")
 # a GitHub login, as a WITH_PERSON line's assignees name them: the row shows nothing else (D-16)
 LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$")
@@ -433,6 +444,7 @@ ACTION = {
     "UPSTREAM_DUE",
     "UPSTREAM_ASKED",
     "UPSTREAM_UNREADABLE",
+    VETOED,
 }
 # the states whose row needs an agent: --json marks each row's "agent" from this, and
 # shipmill gate starts a session on those rows (SKILL.md's repair table says what it does)
@@ -443,6 +455,7 @@ AGENT = {
     "NOT_PUBLISHED",
     "UNANNOUNCED",
     "ISSUES",
+    VETOED,
     "PLANS",
     "OPERATE_FAILED",
     "INCIDENT_OPEN",
@@ -2203,11 +2216,17 @@ def intake(
     lands_prs: bool = False,
     upgrades: Upgrades | None = None,
     untrusted_plans: frozenset[int] = frozenset(),
+    closed_prs: Sequence[dict[str, Any]] = (),
 ) -> list[Row]:
     """The intake rows from triage_state.py's exit code and --json lines, and the open pull
     requests (number, isDraft, isCrossRepository, labels, headRefOid). Each pull request is UNTRUSTED
     (with trusted_only, a head in a fork), else waiting on a decision (labelled, no reply;
-    its comments are read only then), else in PRS_OPEN unless a draft. lands_prs is the
+    its comments are read only then), else VETOED (labelled decided with an unanswered
+    trusted veto, triage_state.py's rule; its comments are read only then), else in PRS_OPEN
+    unless a draft. closed_prs are the closed and merged pull requests labelled decided in the
+    veto window (number, isCrossRepository): each with such a veto is VETOED too, save a
+    fork's with trusted_only. VETOED issues and pull requests share one row, an agent's
+    (spec 030), and an issue in it is in no other row. lands_prs is the
     config's [agents] prs = true: a gate lands them, so PRS_OPEN carries no fix. upgrades
     are the shipmill-upgrade issues: their UPGRADE_PENDING rows come first, none is in the
     issue rows, and the ones waiting on a reply join NEEDS_DECISION. One triage_state.py
@@ -2235,7 +2254,9 @@ def intake(
     held_back = {f"#{n}" for n in untrusted_upgrades}
     rows = [r for r in (upgrades.rows if upgrades is not None else []) if r.subject not in held_back]
     detail = "; ".join(
-        f"{s} {' '.join(f'#{n}' for n in numbers)}" for s, numbers in sorted(counts.items()) if s in TRIAGE_ACTION
+        f"{s} {' '.join(f'#{n}' for n in numbers)}"
+        for s, numbers in sorted(counts.items())
+        if s in TRIAGE_ACTION and s != VETOED  # VETOED has a row of its own
     )
     if code == 1 and detail:  # triage_state.py exits 1 only with an action line: an upgrade issue's, left out
         rows.append(Row("ISSUES", repo, detail, skill_fix("github-issue-triage", repo)))
@@ -2250,6 +2271,7 @@ def intake(
     waiting = list(counts.get("NEEDS_DECISION", []))
     untrusted = [*counts.get("UNTRUSTED", []), *untrusted_plans]
     waiting += [n for n in (upgrades.waiting if upgrades is not None else []) if n not in untrusted_upgrades]
+    vetoed = list(counts.get(VETOED, []))
     ready: list[tuple[int, str]] = []
     for pr in prs:
         number = int(pr["number"])
@@ -2258,12 +2280,24 @@ def intake(
             untrusted.append(number)
         elif TRIAGE.DECISION_LABEL in labels and TRIAGE.waits_on_decision(comments_of(number), bot_login):
             waiting.append(number)
+        elif TRIAGE.DECIDED_LABEL in labels and TRIAGE.vetoed(comments_of(number), bot_login) is not None:
+            vetoed.append(number)
         elif not pr["isDraft"]:
             ready.append((number, head_sha(pr)))
+    for pr in closed_prs:
+        number = int(pr["number"])
+        if trusted_only and pr["isCrossRepository"]:
+            continue  # a fork's closed pull request starts no unattended session (D-16)
+        if TRIAGE.vetoed(comments_of(number), bot_login) is not None:
+            vetoed.append(number)
     if ready:
         land = f"set prs = true under [agents] in {POLICY}, or land them by hand: {skill_fix('github-pr-triage', repo)}"
         listed = " ".join(f"#{n}" for n, _ in ready)
         rows.append(Row("PRS_OPEN", repo, listed, None if lands_prs else land, tuple(sorted(ready))))
+    if vetoed:
+        named = " ".join(f"#{n}" for n in sorted(set(vetoed)))
+        take_up = f"take up each veto (needs-decision.md): {skill_fix('github-issue-triage', repo)}"
+        rows.append(Row(VETOED, repo, named, take_up))
     if waiting:
         named = " ".join(f"#{n}" for n in sorted(set(waiting)))
         rows.append(Row("NEEDS_DECISION", repo, named, f"answer the needs-decision question on {repo} {named}"))
@@ -2331,20 +2365,42 @@ def intake_rows(
     repo: str,
     code: int,
     triage: str,
-    bot_login: str | None = None,
-    trusted_only: bool = False,
-    lands: bool = False,
-    upgrades: Upgrades | None = None,
-    untrusted_plans: frozenset[int] = frozenset(),
+    bot_login: str | None,
+    trusted_only: bool,
+    lands: bool,
+    upgrades: Upgrades | None,
+    untrusted_plans: frozenset[int],
+    now: dt.datetime,
 ) -> list[Row]:
-    """The intake rows from triage_run's exit code and lines, and the open pull requests"""
+    """The intake rows from triage_run's exit code and lines, the open pull requests, and the
+    closed and merged ones labelled decided and updated in the veto window (spec 030)"""
     fields = "number,isDraft,isCrossRepository,labels,headRefOid"
     prs = json.loads(run(["gh", "pr", "list", "-R", repo, "--json", fields, "-L", "100"]))
 
     def comments_of(number: int) -> Comments:
         return pr_comments(repo, number)
 
-    return intake(repo, code, triage, prs, comments_of, bot_login, trusted_only, lands, upgrades, untrusted_plans)
+    closed = decided_prs(repo, now)
+    return intake(
+        repo, code, triage, prs, comments_of, bot_login, trusted_only, lands, upgrades, untrusted_plans, closed
+    )
+
+
+def decided_prs_command(repo: str, now: dt.datetime) -> list[str]:
+    """gh's list of the closed and merged pull requests labelled decided and updated in
+    triage_state.py's veto window (a veto comment updates one): gh's closed state lists merged
+    ones too"""
+    since = (now - TRIAGE.VETO_WINDOW).astimezone(TRIAGE.UTC).strftime("%Y-%m-%d")
+    cmd = ["gh", "pr", "list", "-R", repo, "--state", "closed", "--label", TRIAGE.DECIDED_LABEL]
+    return [*cmd, "--search", f"updated:>={since}", "--json", "number,isCrossRepository", "-L", str(ISSUE_LIMIT)]
+
+
+def decided_prs(repo: str, now: dt.datetime) -> list[dict[str, Any]]:
+    """The pull requests decided_prs_command lists; as many as its limit is refused"""
+    found: list[dict[str, Any]] = json.loads(run(decided_prs_command(repo, now)))
+    if len(found) >= ISSUE_LIMIT:
+        raise Refused(f"error: {repo} has {ISSUE_LIMIT}+ closed pull requests labelled {TRIAGE.DECIDED_LABEL}")
+    return found
 
 
 # -- goal plans (spec 028) ------------------------------------------------------------------
@@ -2448,11 +2504,12 @@ NAMED_REF = re.compile(r"(?<![\w.-])[\w.-]+/[\w.-]+#[1-9]\d*\b")  # the item a c
 
 def chain_starts(repo: str, triage: str) -> list[str]:
     """The repo's open issues, as owner/repo#N, from triage_state.py's --json lines; none it
-    reads as UNTRUSTED, whose "Depends on" lines an outsider wrote"""
+    reads as UNTRUSTED, whose "Depends on" lines an outsider wrote, and no closed one (a
+    closed VETOED issue's line says "closed": true)"""
     numbers = set()
     for line in triage.splitlines():
         row = json.loads(line)
-        if row["state"] not in NOT_CHAIN_STARTS:
+        if row["state"] not in NOT_CHAIN_STARTS and row.get("closed") is not True:
             numbers.add(int(row["number"]))
     return [f"{repo}#{n}" for n in sorted(numbers)]
 
@@ -3367,7 +3424,7 @@ def main() -> int:
         code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home)
         lands = lands_prs(table)
         rows += intake_rows(
-            args.repo, code, triage, args.bot_login, args.trusted_only, lands, upgrades, plans.untrusted
+            args.repo, code, triage, args.bot_login, args.trusted_only, lands, upgrades, plans.untrusted, now
         )
         rows += chain_rows(args.repo, triage, args.bot_login)
     rows += coordinator_rows(text, policy, args.repo, repo_dir, args.bot_login)

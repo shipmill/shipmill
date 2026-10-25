@@ -102,6 +102,7 @@ ACTION = frozenset(
         "UPSTREAM_DUE",
         "UPSTREAM_ASKED",
         "UPSTREAM_UNREADABLE",
+        "VETOED",
     }
 )
 REPO_ERROR = "REPO_ERROR"

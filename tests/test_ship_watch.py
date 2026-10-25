@@ -862,6 +862,7 @@ AGENT_ROWS = [
     "INCIDENT_OPEN",
     "UPGRADE_PENDING",
     "UPSTREAM_DUE",
+    "VETOED",
 ]
 REPORT_ROWS = [
     "PROMOTION_DUE",
@@ -1547,7 +1548,8 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
     """A row of every FIXED state, each built by the script's own row code, from titles that
     hold MARKER"""
     failed = [run(ws, "completed", "failure", 5)]
-    triage = "\n".join([triage_line(12, "NEW"), triage_line(4, "NEEDS_DECISION"), triage_line(6, "UNTRUSTED")])
+    lines = [triage_line(12, "NEW"), triage_line(4, "NEEDS_DECISION"), triage_line(6, "UNTRUSTED")]
+    triage = "\n".join([*lines, triage_line(14, "VETOED")])
     intake = ws.intake(REPO, 1, triage, [pull(3), pull(8, fork=True)], lambda n: [], None, True)
     proposal = issue(ws, 9, body="<!-- shipmill:propose deploy=production -->", title=TITLE)  # no tag: the title shows
     command, start = ws.operate_start(None, REPO, CHECKOUT)
@@ -1657,6 +1659,7 @@ FIXES = {
     "UPSTREAM_ASKED": ["answer the needs-decision question on x/b#2"],
     "UPSTREAM_UNTRUSTED": ["review them in an interactive session: /shipmill:github-issue-triage o/r"],
     "UPSTREAM_UNREADABLE": ["see why: uv run --directory /work/r --no-project python {upstream} o/r"],
+    "VETOED": ["take up each veto (needs-decision.md): /shipmill:github-issue-triage o/r"],
     "PYPI_WAIT": [
         "check the publish.yml run for v0.66.0: gh run list --repo shipmill/shipmill --workflow publish.yml;"
         " if none passed, publish it: gh workflow run publish.yml --repo shipmill/shipmill -f tag=v0.66.0"

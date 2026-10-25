@@ -223,6 +223,7 @@ class World:
                 },
                 "tags": {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": []},
                 "closed": {"nodes": [self.closed_node(t) for t in mine if t.state == "CLOSED"]},
+                "vetoable": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []},
             }
         items = {ref: {"__typename": "Issue", **self.native(ref)} for ref in self.tickets}
         comments = {

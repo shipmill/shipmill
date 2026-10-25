@@ -116,6 +116,7 @@ ISSUE_LINES = (
         (
             "NEW",
             "DECIDED",
+            "VETOED",  # spec 030: a trusted veto of a decision taken at notify, open or closed
             "REVISIT",
             "SPEC_REFUSED",
             "UNFILLED",
