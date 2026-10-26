@@ -130,11 +130,13 @@ def pr(
     changed: int | None = None,
     listed: int | None = None,
     renamed: dict[str, str] | None = None,
+    draft: bool = False,
 ) -> dict[str, Any]:
     """listed caps the files the files API returns (GitHub's stops at 3000); renamed maps a
     file's new path to its old one"""
     return {
         "state": "OPEN",
+        "isDraft": draft,
         "mergeable": "MERGEABLE",
         "baseRefName": "main",
         "headRefOid": "abcdef0123",
@@ -488,6 +490,56 @@ def test_the_worst_verdict_across_prs_is_the_exit_code(tmp_path: Path, directed:
     proc = run_gate(tmp_path, directed, {7: pr(), 8: pr(body="none")}, "--bot-login", BOT)
     assert proc.returncode == 6
     assert [line.split()[1] for line in proc.stdout.splitlines() if line.startswith("#")] == ["READY", "REFUSED"]
+
+
+# D-52: a draft pull request belongs to whoever opened it
+
+
+def test_673_a_green_draft_is_left_to_its_author(tmp_path: Path, directed: Path) -> None:
+    proc = run_gate(tmp_path, directed, {7: pr(draft=True)}, "--bot-login", BOT)
+    assert proc.returncode == gate.DRAFT == 8, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == [
+        "#7 DRAFT state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=1 pending=0 failed=0",
+        "  draft: left to its author until marked ready (D-52)",
+    ]
+
+
+def test_673_a_draft_is_judged_for_nothing_else(tmp_path: Path, directed: Path) -> None:
+    """no plan, a protected file, a conflict, a failed check: still its author's, and --maintainer-accepted
+    changes nothing"""
+    draft = pr(body="none", files=("src/land.py",), draft=True)
+    draft["mergeable"] = "CONFLICTING"
+    draft["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    for accepted in ((), ("--maintainer-accepted",)):
+        proc = run_gate(tmp_path, directed, {7: draft}, "--bot-login", BOT, *accepted)
+        assert proc.returncode == 8, proc.stdout + proc.stderr
+        assert proc.stdout.startswith("#7 DRAFT state=OPEN mergeable=CONFLICTING")
+        assert "refused:" not in proc.stdout and "needs-decision:" not in proc.stdout
+
+
+def test_673_a_closed_draft_reads_blocked(tmp_path: Path, directed: Path) -> None:
+    closed = pr(draft=True)
+    closed["state"] = "CLOSED"
+    proc = run_gate(tmp_path, directed, {7: closed})
+    assert proc.returncode == 4, proc.stdout + proc.stderr
+
+
+def test_673_a_draft_reads_neither_its_files_nor_its_zones(tmp_path: Path, agents: Path) -> None:
+    record = classify_as(tmp_path, {7: [DIRECTION_ZONE]})
+    proc = run_gate(tmp_path, agents, {7: pr(files=tuple(f"src/{n}.py" for n in range(150)), draft=True)})
+    assert proc.returncode == 8, proc.stdout + proc.stderr
+    assert uvx_calls(record) == []
+    calls = [json.loads(line)["args"] for line in (tmp_path / "gh-calls").read_text().splitlines()]
+    assert [c[:2] for c in calls] == [["pr", "view"]]
+
+
+def test_673_draft_ranks_above_blocked_and_below_needs_decision(tmp_path: Path, directed: Path) -> None:
+    conflicting = pr()
+    conflicting["mergeable"] = "CONFLICTING"
+    proc = run_gate(tmp_path, directed, {7: conflicting, 8: pr(draft=True)})
+    assert proc.returncode == 8, proc.stdout + proc.stderr
+    held = run_gate(tmp_path, directed, {7: pr(draft=True), 8: pr(files=("src/land.py",))})
+    assert held.returncode == 5, held.stdout + held.stderr
 
 
 def test_a_gh_failure_exits_1_as_before(tmp_path: Path, directed: Path) -> None:
