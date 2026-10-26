@@ -604,8 +604,8 @@ class Checkout:
     """git and the writes' gh in front of the fake forge, for a checkout whose origin is origin
     (None: no origin remote): every command run, and each write's gh prefix"""
 
-    def __init__(self, forge: Forge, origin: str | None) -> None:
-        self.forge, self.origin = forge, origin
+    def __init__(self, forge: Forge, origin: str | None, code: int = 0) -> None:
+        self.forge, self.origin, self.code = forge, origin, code
         self.ran: list[list[str]] = []
 
     def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -615,12 +615,24 @@ class Checkout:
             if self.origin is None:
                 return subprocess.CompletedProcess(cmd, 2, "", "error: No such remote 'origin'\n")
             return subprocess.CompletedProcess(cmd, 0, f"git@github.com:{self.origin}.git\n", "")
+        if self.code == 2:  # `shipmill gh` without the App's identity
+            return subprocess.CompletedProcess(cmd, 2, "", "error: the App's private key is missing\n")
         response = self.forge(*gh_call(cmd[cmd.index("api") :]))
         return subprocess.CompletedProcess(cmd, 1 if response.get("errors") else 0, json.dumps(response), "")
 
+    def gh(self, mutations: bool) -> list[list[str]]:
+        """The prefix of each gh call run here that is a write (mutations) or a read"""
+        calls = [cmd for cmd in self.ran if cmd[0] != "git"]
+        return [
+            cmd[: cmd.index("api")] for cmd in calls if ("mutation" in gh_call(cmd[cmd.index("api") :])[0]) is mutations
+        ]
+
     def writes(self) -> list[list[str]]:
-        """The prefix of each gh call run here, each a write: the reads stay on the plain runner"""
-        return [cmd[: cmd.index("api")] for cmd in self.ran if cmd[0] != "git"]
+        return self.gh(mutations=True)
+
+    def reads(self) -> list[list[str]]:
+        """The reads run here, not on the plain runner: a listed repo's, through the product token"""
+        return self.gh(mutations=False)
 
 
 def run_link(
@@ -698,11 +710,24 @@ def test_s038_11_a_component_links_within_its_own_repo_as_before(
     assert "added to ACME/api#5" in capsys.readouterr().out
 
 
+def through(top: Path, repo: str) -> list[str]:
+    """The gh prefix a coordinator's call on repo runs with: the session's `shipmill gh` for
+    the home repo (acme/product), `shipmill gh --product <repo>` for a listed one"""
+    session = [*UVX, "--repo", str(top), "gh"]
+    return session if repo.lower() == "acme/product" else [*session, "--product", repo]
+
+
 @pytest.mark.parametrize(
     ("parent", "child"),
-    [("acme/api#3", "acme/web#7"), ("ACME/Web#3", "acme/product#7"), ("acme/api#3", "acme/api#7")],
+    [
+        ("acme/api#3", "acme/web#7"),
+        ("ACME/Web#3", "acme/product#7"),
+        ("acme/api#3", "acme/api#7"),
+        ("acme/product#3", "acme/web#7"),  # a report in the home repo itself (#596)
+        ("Acme/Product#3", "acme/product#7"),
+    ],
 )
-def test_s038_12_product_child_writes_through_shipmill_gh_product_of_the_parent_s_repo(
+def test_s038_29_product_child_writes_through_the_session_or_the_product_token_and_reads_a_listed_repo_with_it(
     ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str], parent: str, child: str
 ) -> None:
     p, c = forge.add(parent, "The report\n"), forge.add(child)
@@ -710,15 +735,43 @@ def test_s038_12_product_child_writes_through_shipmill_gh_product_of_the_parent_
     assert code == 0
     assert forge.parents[c] == p and forge.body(parent) == f"The report\n\nDepends on {child}"
     top = (tmp_path / "repo").resolve()
-    repo = parent.partition("#")[0]
-    assert git.writes() == [[*UVX, "--repo", str(top), "gh", "--product", repo]] * 2  # the sub-issue, the line
+    p_repo, c_repo = parent.partition("#")[0], child.partition("#")[0]
+    assert git.writes() == [through(top, p_repo)] * 2  # the sub-issue, the line: never --product for the home
     assert forge.writes() == ["addSubIssue", "updateIssue"]
+    # resolving P, resolving C, C's parent: a listed repo's through the product token, never plain gh
+    reads = [through(top, p_repo), through(top, c_repo), through(top, c_repo)]
+    listed = [r for r in reads if "--product" in r]
+    assert git.reads() == listed
+    on_plain_gh = len(forge.calls) - len(git.reads()) - len(git.writes())  # the runner main was given
+    assert on_plain_gh == len(reads) - len(listed)  # the home repo's reads alone
     assert f"linked: {child} is a sub-issue of {parent}" in capsys.readouterr().out
 
-    git.ran.clear()  # again: already linked, nothing written
+    git.ran.clear()  # again: already linked, nothing written, the same reads
     assert ch.main(["link", "--product", parent, "--child", child], run=forge, checkout=top, execute=git) == 0
-    assert git.writes() == []
+    assert git.writes() == [] and git.reads() == listed
     assert capsys.readouterr().out.strip() == "already linked"
+
+
+@pytest.mark.parametrize("parent", ["acme/api#3", "acme/product#3"])
+def test_s038_29_a_shipmill_gh_exit_2_stops_the_link_with_no_plain_gh_fallback(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str], parent: str
+) -> None:
+    # a listed parent fails its first read; a home parent reads with plain gh, then the
+    # child's read through the product token fails: nothing is read again with plain gh
+    forge.add(parent, "The report\n")
+    forge.add("acme/web#7")
+    git = Checkout(forge, "acme/product", code=2)
+    top = checkout(tmp_path / "repo", COORDINATOR).resolve()
+    with pytest.raises(SystemExit) as exit_:
+        ch.main(["link", "--product", parent, "--child", "acme/web#7"], run=forge, checkout=top, execute=git)
+    assert exit_.value.code == 2
+    assert "the App's private key is missing" in capsys.readouterr().err
+    assert forge.writes() == [] and forge.body(parent) == "The report\n"
+    home = parent.startswith("acme/product")
+    assert [q for q, _ in forge.calls] == ([ch.RESOLVE] if home else [])  # the home's own read alone
+    assert [cmd[: cmd.index("api")] for cmd in git.ran if cmd[0] != "git"] == [
+        through(top, "acme/web" if home else "acme/api")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -734,7 +787,7 @@ def test_s038_12_product_child_writes_through_shipmill_gh_product_of_the_parent_
     ],
 )
 @pytest.mark.parametrize("state", STATES)
-def test_s038_12_product_exits_2_before_any_write_outside_the_product(
+def test_s038_29_product_exits_2_before_any_read_or_write_outside_the_product(
     ch: ModuleType,
     forge: Forge,
     tmp_path: Path,
@@ -767,7 +820,7 @@ def test_s038_12_product_exits_2_before_any_write_outside_the_product(
         (PRODUCT_APP + "\n[product]\n", "neither home"),
     ],
 )
-def test_s038_12_a_product_table_shipmill_refuses_is_refused_before_any_read(
+def test_s038_29_a_product_table_shipmill_refuses_is_refused_before_any_read(
     ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str], config: str, named: str
 ) -> None:
     forge.add("acme/product#3")
@@ -779,7 +832,7 @@ def test_s038_12_a_product_table_shipmill_refuses_is_refused_before_any_read(
     assert forge.calls == []
 
 
-def test_s038_12_the_310_reader_reads_repos_as_tomllib_does(ch: ModuleType, tmp_path: Path) -> None:
+def test_s038_29_the_310_reader_reads_repos_as_tomllib_does(ch: ModuleType, tmp_path: Path) -> None:
     ws = ch.watch_module()
     policy = tmp_path / "shipmill.toml"
     for text, repos in [
@@ -798,7 +851,7 @@ def test_s038_12_the_310_reader_reads_repos_as_tomllib_does(ch: ModuleType, tmp_
             ws.product_repos_310(text, policy)
 
 
-def test_s038_12_the_310_reader_refuses_a_product_table_declared_twice(ch: ModuleType, tmp_path: Path) -> None:
+def test_s038_29_the_310_reader_refuses_a_product_table_declared_twice(ch: ModuleType, tmp_path: Path) -> None:
     ws = ch.watch_module()
     policy = tmp_path / "shipmill.toml"
     text = '[product]\nrepos = ["acme/api"]\n\n[agents]\napp_id = 1\n\n[ "product" ]\nrepos = ["acme/web"]\n'

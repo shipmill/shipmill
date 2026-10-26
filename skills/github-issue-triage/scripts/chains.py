@@ -40,16 +40,20 @@ link  writes a link in both forms triage_state.py reads:
       the plugin's .claude-plugin/plugin.json (spec 012, D-14, #526, spec 031).
       A `shipmill gh` that fails (exit 2: no App identity) stops the link with its message
       and exit 2, never retried with plain gh. Without app_id, plain gh writes as the host's
-      login. Reads always use plain gh.
+      login. Reads use plain gh, save --product's of a listed repo.
 
       In a product (spec 038, D-47), the checkout's [product] table decides more, before any
       read or write. In a component ([product] home), a reference to another repo than the
       checkout's origin exits 2: an item there waits only on items in the same repo.
       --product is the coordinator's, in the home repo ([product] repos, with [agents]
-      app_id), and goes with --child alone: its writes run through `shipmill gh --product
-      <P's repo>`, the token over the product's repos, and it exits 2 when the checkout has
-      no [product] repos or a reference is in neither a listed repo nor the home repo (the
-      checkout's origin). Without a [product] table, link is as above.
+      app_id), and goes with --child alone. Its writes run through the session's own
+      `shipmill gh`, with no --product, when P is in the home repo (the checkout's origin),
+      and through `shipmill gh --product <P's repo>`, the token over the product's repos,
+      when P is in a listed repo; each read of a listed repo (resolving P or C, and whether
+      C is already P's child) runs through `shipmill gh --product <that repo>`, never plain
+      gh, and a read of the home repo through plain gh (S-038-29). It exits 2 when the
+      checkout has no [product] repos or a reference is in neither a listed repo nor the
+      home repo. Without a [product] table, link is as above.
 
 show prints the chain an issue belongs to, one row per item, each once (by owner/repo#N,
       whatever case it is spelled in), so a cycle ends where it closes:
@@ -379,7 +383,7 @@ def refuse_outside(product: Product | None, refs: Sequence[Ref], coordinated: bo
     """Spec 038, before any read or write. In a component ([product] home), a reference to
     another repo than the checkout's origin exits 2 naming D-47 (S-038-11). With --product
     (coordinated), a checkout without [product] repos, or a reference in neither a listed repo
-    nor the home repo (the checkout's origin), exits 2 (S-038-12). Without [product], nothing"""
+    nor the home repo (the checkout's origin), exits 2 (S-038-29). Without [product], nothing"""
     if coordinated:
         if product is None or not product.repos:
             fail(
@@ -406,13 +410,30 @@ def refuse_outside(product: Product | None, refs: Sequence[Ref], coordinated: bo
             )
 
 
-def product_writer(product: Product, parent: Ref) -> list[str]:
-    """The gh command --product's writes go through: `shipmill gh --product <the parent's
-    repo>`, the coordinator's token over the product's repos (S-038-12)"""
+def session_gh(product: Product) -> list[str]:
+    """The coordinator's own `shipmill gh`, the session's token over the home repo"""
     command = writer(product.top)
     if command == ["gh"]:  # product_of refused repos without app_id: no App, no product token
         fail(f"--product needs [agents] app_id in {CONFIG}")
-    return [*command, "--product", parent.repo]
+    return command
+
+
+def product_reader(product: Product, ref: Ref, run: Runner, execute: Execute = capture) -> Runner:
+    """The runner --product reads ref's repo through (S-038-29): a listed repo's through
+    `shipmill gh --product <that repo>`, the product token, never plain gh; the home repo's
+    through run, plain gh, as every other read"""
+    if product.is_origin(ref):
+        return run
+    return gh_runner([*session_gh(product), "--product", ref.repo], execute)
+
+
+def product_writer(product: Product, parent: Ref, execute: Execute = capture) -> Runner:
+    """The runner --product's writes go through (S-038-29): the session's own `shipmill gh`,
+    with no --product, when the parent is in the home repo, which [product] repos never lists;
+    `shipmill gh --product <the parent's repo>`, the token over the product's repos, when it
+    is in a listed repo"""
+    command = session_gh(product)
+    return gh_runner(command if product.is_origin(parent) else [*command, "--product", parent.repo], execute)
 
 
 def parse_ref(text: str) -> Ref:
@@ -527,17 +548,28 @@ def appended(body: str, line: str) -> str:
     return text + line
 
 
-def link(run: Runner, target: Ref, other: Ref, child: bool, write: Runner, text: bool = True) -> int:
-    """Reads go through run, the relation's mutation and the body edit through write.
-    Without text (--no-text), only the relation: no body edit, and a refusal exits 2"""
+def link(
+    run: Runner,
+    target: Ref,
+    other: Ref,
+    child: bool,
+    write: Runner,
+    text: bool = True,
+    run_other: Runner | None = None,
+) -> int:
+    """Reads of target's repo go through run, those of other's (resolving it, and whether the
+    child has its parent) through run_other, run when None; the relation's mutation and the
+    body edit through write. Without text (--no-text), only the relation: no body edit, and a
+    refusal exits 2"""
     if target.same(other):
         fail(f"{target} can't be linked to itself")
-    issue, upstream = resolve(run, target), resolve(run, other)
+    read_other = run if run_other is None else run_other
+    issue, upstream = resolve(run, target), resolve(read_other, other)
     lines: list[str] = []
     refused: str | None = None
     try:
         if child:
-            have_native = is_child(run, issue, upstream)
+            have_native = is_child(read_other, issue, upstream)
             relation = f"{other} is a sub-issue of {target}"
             mutation, variables = ADD_SUB_ISSUE, {"issue": issue.id, "sub": upstream.id}
         else:
@@ -946,7 +978,10 @@ def main(
     link_parser.add_argument(
         "--product",
         action="store_true",
-        help="the coordinator's: write through `shipmill gh --product <the parent's repo>` (spec 038, --child only)",
+        help=(
+            "the coordinator's: read a listed repo and write a listed parent through `shipmill gh --product "
+            "<that repo>`, a home-repo parent through the session's `shipmill gh` (spec 038, --child only)"
+        ),
     )
     link_parser.add_argument(
         "--no-text",
@@ -979,10 +1014,15 @@ def main(
     here = checkout if checkout is not None else Path.cwd()
     product = product_of(here, execute)
     refuse_outside(product, (target, other), args.product)
-    if write is None:
-        coordinator = product if args.product else None  # refuse_outside exits 2 without [product] repos
-        write = gh_runner(writer(here) if coordinator is None else product_writer(coordinator, target), execute)
-    return link(run, target, other, args.child is not None, write, text=not args.no_text)
+    run_other: Runner | None = None
+    if args.product and product is not None:  # refuse_outside exited 2 for --product without [product] repos
+        run_other = product_reader(product, other, run, execute)
+        run = product_reader(product, target, run, execute)
+        if write is None:
+            write = product_writer(product, target, execute)
+    elif write is None:
+        write = gh_runner(writer(here), execute)
+    return link(run, target, other, args.child is not None, write, text=not args.no_text, run_other=run_other)
 
 
 if __name__ == "__main__":

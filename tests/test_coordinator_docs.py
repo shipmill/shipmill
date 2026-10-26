@@ -51,8 +51,10 @@ def test_s038_22_triage_has_a_reports_from_other_repos_section_for_the_coordinat
         in reports
     )
     assert "never plans the product" in reports
-    # the home repo's report is not claimed to route (#596)
-    assert "can't link it yet (#596)" in reports
+    # the home repo's report routes too, its link through the session's own token (S-038-29, #596)
+    assert "can't link it yet" not in reports
+    assert "A report in the home repo itself is routed the same way" in reports
+    assert "`chains.py link --product` writes its link through that token too" in reports
     # the coordinator's session finds the section from Take stock and the scripts table
     skill = doc(TRIAGE / "SKILL.md")
     assert "scripts/upstream_state.py <owner/repo> --bot-login '<slug>[bot]'" in skill
