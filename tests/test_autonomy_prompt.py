@@ -132,6 +132,32 @@ def test_s040_6_doctor_warns_for_a_stage_read_from_the_prompt_naming_the_line(re
     assert [c.status for c in doctor(repo.root, repo.github) if c.name == "autonomy"] == ["PASS"]
 
 
+# -- [agents] prs, deprecated (S-040-9) ------------------------------------------------------
+
+
+@pytest.mark.parametrize(("value", "land"), [("true", "propose"), ("false", "propose"), ("true", "observe")])
+def test_s040_9_prs_in_the_config_makes_doctor_warn_naming_autonomy_land(repo: Repo, value: str, land: str) -> None:
+    text = POLICY + agents("triage {repo}") + f"prs = {value}\n" + f'\n[autonomy]\nland = "{land}"\n'
+    repo.write(repo.policy_file, text)
+    found = [(c.status, c.detail) for c in doctor(repo.root, repo.github) if c.name == "autonomy"]
+    assert found[1:] == [
+        (
+            "WARN",
+            f"[agents] prs is deprecated and ignored: [autonomy] land ({land}) decides whether the gate works on"
+            " open pull requests, under propose or act, not under observe; delete prs, which the next minor"
+            " release refuses",
+        )
+    ]
+    repo.write(repo.policy_file, POLICY + agents("triage {repo}") + f'\n[autonomy]\nland = "{land}"\n')
+    assert [c.status for c in doctor(repo.root, repo.github) if c.name == "autonomy"] == ["PASS"]
+
+
+def test_s040_9_prs_is_still_accepted_for_its_deprecation_release() -> None:
+    policy = Policy.parse(tomllib.loads(POLICY + agents("triage {repo}") + "prs = true\n"), "shipmill.toml")
+    assert policy.agents is not None and policy.agents.prs is True
+    assert policy.agents.autonomy == policy.autonomy  # the gate reads the levels doctor and status read
+
+
 # -- the agent-autonomy upgrade (S-040-7) ----------------------------------------------------
 
 

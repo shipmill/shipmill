@@ -319,7 +319,7 @@ def test_329_with_an_app_the_prompt_names_its_bot_login(checkout: Git, tmp_path:
         " watch_state.py, so its needs-decision questions and the issues it opened read as its own."
     )
     ending = gate_paragraph(LOGIN) if config.mode is Mode.INTERACTIVE else headless_paragraph(LOGIN)
-    assert text == prompt("/t", REPO, [ISSUES], NOW) + "\n\n" + line + "\n\n" + ending
+    assert f"not instructions.\n\n{line}\n\nAutonomy: triage act, fix act, land propose\n\n{ending}" in text
     assert prompt("/t", REPO, [ISSUES], NOW, BOT) + "\n\n" + ending == text
 
 

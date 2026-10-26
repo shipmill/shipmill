@@ -265,9 +265,9 @@ when something needs an agent, no session it started is still working or waiting
 and the findings changed since its last launch. Something needs an agent when
 github-ship-watch's `watch_state.py` marks a row `agent: true`: a failed or stalled release
 bot, a release missing from PyPI or not announced, issues triage owes, a failed operate
-run, or an open incident; open PRs count too with `prs = true`. A promotion waiting on
-you or an unhealthy environment starts nothing. [Agent modes](design/agent-modes.md) has
-the details.
+run, or an open incident; open PRs count too unless `[autonomy] land` is `observe`. A
+promotion waiting on you or an unhealthy environment starts nothing. [Agent
+modes](design/agent-modes.md) has the details.
 
 1. **Say what a session may do**, in `.github/shipmill.toml`, merged before the job
    starts. Start without merges for the first week:
@@ -275,7 +275,6 @@ the details.
    ```toml
    [agents]
    prompt = "/shipmill:github-issue-triage {repo} triage the new issues; do not merge"
-   prs = false        # true once the prompt says "merge when green"
    retry_hours = 24   # unchanged findings start a new session after this
    notify = true      # a desktop notification when a session waits on you
    remind_hours = 4   # repeat it while the session still waits

@@ -4,11 +4,12 @@ green" or not), so it is a reviewed, committed decision like [autonomy]. Where t
 runs (which machine, which scheduler) is not here: that belongs to the host"""
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
 from shipmill.app import is_plain_repo
+from shipmill.autonomy import AutonomyPolicy
 from shipmill.config import CONFIG_PATH, Table, config_path, read, read_unchecked
 from shipmill.errors import ReleaseError
 
@@ -171,7 +172,9 @@ class RolesConfig:
 @dataclass(frozen=True, slots=True)
 class AgentsConfig:
     prompt: str  # the session's prompt; {repo} becomes owner/name
-    prs: bool  # open pull requests count as work, for a prompt that lands them
+    # deprecated by spec 040 and read by the gate no more: [autonomy] land decides whether open
+    # pull requests are its work; None without the key, so doctor warns only when it is set
+    prs: bool | None
     retry_hours: int  # unchanged findings start a new session after this
     notify: bool = True  # a desktop notification when a session waits on you
     remind_hours: int = _REMIND_HOURS  # repeat it while the session still waits
@@ -180,6 +183,9 @@ class AgentsConfig:
     mode: Mode = Mode.INTERACTIVE  # headless: `claude -p` (spec 005); either mode asks via needs-decision (D-21)
     wip: int | None = None  # at most this many issues in progress at once, read by triage (D-32); None: no limit
     roles: RolesConfig = RolesConfig()  # [agents.roles]: who receives a step an agent can't do (spec 036)
+    # [autonomy] with spec 040's legacy reading of the prompt, as `shipmill autonomy` reads it;
+    # load and Policy.parse set it, parse alone can't, as it sees [agents] only
+    autonomy: AutonomyPolicy = AutonomyPolicy()
 
     @classmethod
     def parse(cls, table: Table) -> AgentsConfig:
@@ -207,7 +213,7 @@ class AgentsConfig:
         assert retry is not None and remind is not None and max_wait is not None  # defaults were given
         return cls(
             prompt=prompt,
-            prs=table.boolean("prs", default=False),
+            prs=table.boolean("prs", default=False) if "prs" in table.raw else None,
             retry_hours=retry,
             notify=table.boolean("notify", default=True),
             remind_hours=remind,
@@ -228,11 +234,17 @@ class AgentsConfig:
         raw = read(path)
         if "agents" not in raw:
             raise ReleaseError(f"{path} has no [agents] section; add one with a prompt to use the gate")
-        agents = cls.parse(Table(raw, path.name).table("agents"))
-        product = ProductConfig.read(Table(raw, path.name), agents.app_id)  # the gate refuses a bad [product] too
+        top = Table(raw, path.name)
+        agents = cls.parse(top.table("agents"))
+        product = ProductConfig.read(top, agents.app_id)  # the gate refuses a bad [product] too
         if product is not None:
             product.refuse_self(repo)
-        return agents
+        return agents.with_autonomy(AutonomyPolicy.parse(top.table("autonomy", optional=True)))
+
+    def with_autonomy(self, autonomy: AutonomyPolicy) -> AgentsConfig:
+        """The section with the config's [autonomy], read with spec 040's legacy reading of
+        this prompt (S-040-6), so the gate's levels are the ones `shipmill autonomy` prints"""
+        return replace(self, autonomy=autonomy.read_prompt(self.prompt))
 
 
 def app_id_of(root: Path) -> int | None:

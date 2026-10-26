@@ -29,7 +29,7 @@ from typing import Protocol
 
 from shipmill.agents import AgentsConfig, Mode, RolesConfig
 from shipmill.app import AppCheck, Identity
-from shipmill.autonomy import Hold
+from shipmill.autonomy import AGENT_STAGES, Autonomy, AutonomyPolicy, Hold, Stage, StageKind
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import ClaudeAuth
 from shipmill.config import CONFIG_PATH
@@ -56,7 +56,7 @@ RECORD = "gate.json"
 WAITING = "waiting.json"  # one entry per blocked gate session (spec 003)
 DECISIONS = "needs-decision.json"  # one entry per item that waits on a decision (spec 005)
 NEEDS_DECISION = "NEEDS_DECISION"  # watch_state.py's items waiting on a reply, `#N` only (S-005-9)
-PRS_OPEN = "PRS_OPEN"  # watch_state.py's open pull requests: work only with [agents] prs = true
+PRS_OPEN = "PRS_OPEN"  # watch_state.py's open pull requests: work unless [autonomy] land is observe (S-040-9)
 HEAD_SHA = re.compile(r"[0-9a-f]{40}")  # a PRS_OPEN row's head SHA, as --json prints it (#546)
 SESSIONS = "sessions"  # a headless session's log, <uuid>.log, under the state directory (D-17)
 AUTH = "claude-auth.json"  # the failing Claude Code login's episode: since, and its one notification (#500)
@@ -282,16 +282,20 @@ def decide(
     last: Launch | None,
     now: dt.datetime,
     retry: dt.timedelta,
-    prs: bool = False,
+    land: Autonomy = Autonomy.PROPOSE,  # land's default (D-51)
 ) -> Decision:
+    """land, the effective [autonomy] land level (S-040-9): open pull requests are work under
+    propose (a session reviews and labels them) and act (it merges them), never under observe,
+    whatever the deprecated [agents] prs says"""
     pending = busy(sessions)
     if pending is not None:
         return pending
-    work = tuple(f for f in findings if f.agent or (prs and f.state == PRS_OPEN))
+    lands = land is not Autonomy.OBSERVE
+    work = tuple(f for f in findings if f.agent or (lands and f.state == PRS_OPEN))
     if not work:
-        waiting = () if prs else unlanded(findings)
+        waiting = () if lands else unlanded(findings)
         landing = (
-            f"; {len(waiting)} pull request(s) wait to land, landing off ([agents] prs = false)" if waiting else ""
+            f"; {len(waiting)} pull request(s) wait to land, landing off ([autonomy] land = observe)" if waiting else ""
         )
         return Decision(Action.QUIET, f"nothing needs an agent{landing}", work)
     if last is not None and last.fingerprint == fingerprint(work) and now - last.at < retry:
@@ -323,6 +327,30 @@ def role_line(roles: Sequence[ResolvedRole]) -> str:
     return f"Pass the same role flags to triage_state.py and watch_state.py when you read the state again: {flags}"
 
 
+@dataclass(frozen=True, slots=True)
+class Levels:
+    """The agent stages' levels a launch prompt names (S-040-8): the config's [autonomy], as
+    `shipmill autonomy` reads it, under the hold the tick read"""
+
+    policy: AutonomyPolicy
+    hold: Hold = Hold()
+
+    @property
+    def land(self) -> Autonomy:
+        """The effective land level, which decides whether open pull requests are work (S-040-9)"""
+        return self.policy.effective(Stage(StageKind.LAND), self.hold)
+
+    def line(self) -> str:
+        """`Autonomy: triage act, fix act, land propose`, each stage's effective level, and
+        `(held by shipmill-hold #88)` while a hold is open"""
+        levels = ", ".join(f"{kind} {self.policy.effective(Stage(kind), self.hold)}" for kind in AGENT_STAGES)
+        held = f" ({self.hold.reason})" if self.hold.on else ""
+        return f"Autonomy: {levels}{held}"
+
+
+DEFAULT_LEVELS = Levels(AutonomyPolicy())  # a config without the agent stages' keys or a prompt that lands
+
+
 def prompt(
     template: str,
     repo: str,
@@ -330,16 +358,21 @@ def prompt(
     now: dt.datetime,
     bot: str | None = None,
     roles: Sequence[ResolvedRole] = (),
+    levels: Levels = DEFAULT_LEVELS,
 ) -> str:
     """The session's prompt lists each finding by state and subject only, never its detail
     (#114); bot, the App's <slug>[bot] when [agents] app_id is set, adds bot_line; roles, the
-    resolved roles the state read passed (spec 036), add role_line"""
+    resolved roles the state read passed (spec 036), add role_line; levels, the agent stages'
+    levels (spec 040), add their Autonomy: line after it, in every prompt"""
     found = "\n".join(f"- {f.brief()}" for f in work)
     stamp = now.isoformat(timespec="minutes")
     head = template.replace("{repo}", repo)
     app = "" if bot is None else f"\n\n{bot_line(bot)}"
     passed = f"\n\n{role_line(roles)}" if roles else ""
-    return f"{head}\n\nThe shipmill gate found this at {stamp} (from code):\n{found}\n\n{UNTRUSTED}{app}{passed}"
+    return (
+        f"{head}\n\nThe shipmill gate found this at {stamp} (from code):\n{found}\n\n{UNTRUSTED}{app}{passed}"
+        f"\n\n{levels.line()}"
+    )
 
 
 def headless_paragraph(login: str) -> str:
@@ -360,9 +393,10 @@ def headless_prompt(
     login: str,
     bot: str | None = None,
     roles: Sequence[ResolvedRole] = (),
+    levels: Levels = DEFAULT_LEVELS,
 ) -> str:
     """The mode 1 prompt with the headless paragraph at its end"""
-    return f"{prompt(template, repo, work, now, bot, roles)}\n\n{headless_paragraph(login)}"
+    return f"{prompt(template, repo, work, now, bot, roles, levels)}\n\n{headless_paragraph(login)}"
 
 
 def gate_paragraph(login: str) -> str:
@@ -385,9 +419,10 @@ def interactive_prompt(
     login: str,
     bot: str | None = None,
     roles: Sequence[ResolvedRole] = (),
+    levels: Levels = DEFAULT_LEVELS,
 ) -> str:
     """The mode 1 prompt with the gate paragraph at its end"""
-    return f"{prompt(template, repo, work, now, bot, roles)}\n\n{gate_paragraph(login)}"
+    return f"{prompt(template, repo, work, now, bot, roles, levels)}\n\n{gate_paragraph(login)}"
 
 
 def refuse_headless_args(args: Sequence[str]) -> None:
@@ -1401,7 +1436,8 @@ def gate(
     gone = {w.session for w in waiting if w.stopped}  # on a dry run, the ones a real tick would stop
     sessions = [s for s in sessions if s.id not in gone]
     pruned = tuple(j for j in worktrees(now, dry_run) if j.verdict in (Verdict.REMOVED, Verdict.WOULD_REMOVE))
-    stopped = held(hold(), sessions)
+    on_hold = hold()
+    stopped = held(on_hold, sessions)
     if stopped is not None:
         return stopped, None, waiting, pruned
     pending = busy(sessions)
@@ -1425,11 +1461,12 @@ def gate(
     resolved = () if roles is None else roles(agents.roles, host_read)
     read = StateRead(trusted_only=headless, bot_login=None if identity is None else identity.login, roles=resolved)
     retry = dt.timedelta(hours=agents.retry_hours)
+    levels = Levels(agents.autonomy, on_hold)
     rows = findings(read)
     asked = ask(state / DECISIONS, repo, rows, agents, notifier, now, dry_run) if headless else ()
     capped = dead is not None and dead.deaths.count >= DEAD_STREAK  # retry_hours holds the findings again
     decision = replace(
-        decide(rows, sessions, last if dead is None or capped else None, now, retry, agents.prs),
+        decide(rows, sessions, last if dead is None or capped else None, now, retry, levels.land),
         mode=agents.mode,
         decisions=asked,
         detached=detached,
@@ -1446,11 +1483,11 @@ def gate(
         decision = replace(decision, identity=identity.login)
     host = host_read()
     if headless:
-        text = headless_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login, read.roles)
+        text = headless_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login, read.roles, levels)
         if identity is None:  # GitHub doesn't notify anyone of their own mention (spec 005)
             decision = replace(decision, asks_as=host)
     else:
-        text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login, read.roles)
+        text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login, read.roles, levels)
     if dry_run:
         checked_plugin = plugin_read(decision, git, plugin, agents.notify, notifier, dry_run)
         return relaunching(self_tested(checked_plugin, hooks, headless)), None, waiting, pruned

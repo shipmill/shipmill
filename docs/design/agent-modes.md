@@ -29,7 +29,6 @@ The repo decides what the session does, in the `[agents]` section of
 ```toml
 [agents]
 prompt = "/shipmill:github-issue-triage {repo} merge when green"
-prs = true          # open pull requests count as work
 retry_hours = 24    # unchanged findings start a new session after this
 notify = true       # a desktop notification when a session waits on you
 remind_hours = 4    # repeat it while the session still waits (1..168)
@@ -74,7 +73,8 @@ and any checkout with tracked changes, naming the files. Each run:
    the wheel, so the gate and the script always come from the same version). The rows
    that need an agent are the ones it marks `agent: true` (a failed or stalled release
    bot, a release missing from PyPI or not announced, issues triage owes, a failed operate
-   run, an open incident), plus open PRs when `prs = true`. A promotion waiting on a
+   run, an open incident), plus open PRs unless `[autonomy] land` is `observe` (spec
+   040; `[agents] prs` is deprecated and ignored). A promotion waiting on a
    person, an unhealthy environment (operate's rollback owns it), and a postmortem due
    start nothing. None: **QUIET**, stop. No model call has happened
 7. Compares the rows with the last launch's fingerprint, which counts each open PR's head
@@ -326,7 +326,7 @@ from `claude agents`.
 
 ## Next
 
-1. **Pull requests in the fingerprint:** `prs = true` counts open PRs by number and head
+1. **Pull requests in the fingerprint:** the gate counts open PRs by number and head
    commit (#546), so a push to an open PR starts a session at once, but a new review or a
    finished CI run on the same head waits for `retry_hours`. A `pr_state` that lists reviews
    and CI fixes that

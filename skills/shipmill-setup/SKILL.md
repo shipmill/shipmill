@@ -372,16 +372,7 @@ or the tags are wrong; fix those, not the version.
    config's `[autonomy]` sets none of `triage`, `fix`, and `land` (spec 040): how far a
    gate session goes was never chosen, so it comes from the defaults or the prompt's
    words. Not done; `--fix` leaves it. Its fix is the Autonomy step, which writes all
-   three keys
-
-   The last row is landing: `LANDING_OFF` when the config's `[agents]` has `prs = false`
-   (or no `prs` key, which the config reads as false) and open non-draft pull requests
-   wait, listed newest first; `LANDING_OK` otherwise. `--fix` leaves it. On
-   `LANDING_OFF`, ask the user whether the gate should land pull requests, showing the
-   ones waiting now: `prs = true` with a prompt that merges when green, or landing them by
-   hand on purpose. In a gate session ask through the needs-decision protocol
-   ([needs-decision.md](../github-issue-triage/references/needs-decision.md)), otherwise
-   with AskUserQuestion
+   three keys, `land` among them: whether the gate works on open pull requests
 
    A warning row may follow: `RUNNER_SHARED` when `release.yml` passes a `runs-on` other
    than `ubuntu-latest`, a lane sets `quiet_minutes` above 0, and a workflow an
@@ -427,7 +418,8 @@ or the tags are wrong; fix those, not the version.
 session (`claude --bg`) only when something needs an agent, no session it started is still
 working or waiting on the user, and the findings changed since its last launch. Something
 needs an agent when github-ship-watch's `watch_state.py` marks a row `agent: true`
-(github-ship-watch's SKILL.md lists them), plus open PRs with `prs = true`.
+(github-ship-watch's SKILL.md lists them), plus open PRs unless `[autonomy] land` is
+`observe` (spec 040; `[agents] prs` is deprecated, and doctor warns while it is set).
 docs/design/agent-modes.md has the details.
 
 Each tick also prunes landed worktrees, before the hold check, so it prunes under a hold
@@ -443,8 +435,7 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
 
 1. **Scope.** Ask what the session may do; the prompt carries it. Recommend triage without
    merges for the first week: `/shipmill:github-issue-triage {repo} triage the new issues;
-   do not merge`. "merge when green" lets it land PRs; then also set `prs = true`, so open
-   PRs count as work. Name every shipmill skill with the plugin's prefix
+   do not merge`. Open PRs count as work unless `[autonomy] land` is `observe`. Name every shipmill skill with the plugin's prefix
    (`/shipmill:<skill>`): a skill of the same name in `~/.claude/skills` or
    `~/.agents/skills`, such as a link to a working copy, answers a bare `/<skill>` in place
    of the released plugin (#236). The checklist reads a bare one as `AGENTS_UNPREFIXED`
@@ -454,7 +445,6 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    ```toml
    [agents]
    prompt = "/shipmill:github-issue-triage {repo} triage the new issues; do not merge"
-   prs = false        # true when the prompt lands PRs
    retry_hours = 24   # unchanged findings start a new session after this
    notify = true      # a desktop notification when a session waits on you
    remind_hours = 4   # repeat it while the session still waits

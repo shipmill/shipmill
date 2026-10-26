@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from shipmill.autonomy import Autonomy
 from shipmill.gate import Action, Launch, decide, fingerprint, parse_findings
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -375,14 +376,14 @@ def test_s005_9_a_repo_whose_only_work_waits_reads_quiet_at_the_gate(ws: ModuleT
     text = "\n".join(json.dumps(r.json(), sort_keys=True) for r in found)
     findings = parse_findings(text)
     assert [f.state for f in findings] == ["NEEDS_DECISION"]
-    assert decide(findings, [], None, NOW, DAY).action is Action.QUIET
-    assert decide(findings, [], None, NOW, DAY, prs=True).action is Action.QUIET
+    for land in Autonomy:
+        assert decide(findings, [], None, NOW, DAY, land).action is Action.QUIET
 
 
 def test_s005_9_a_waiting_item_does_not_change_the_gates_fingerprint(ws: ModuleType) -> None:
     def work(code: int, out: str, prs: list[dict[str, Any]], asked: dict[int, Comments], last: Launch | None) -> Any:
         text = "\n".join(json.dumps(r.json()) for r in ws.intake("o/r", code, out, prs, comments(asked)))
-        return decide(parse_findings(text), [], last, NOW, DAY, prs=True)
+        return decide(parse_findings(text), [], last, NOW, DAY, Autonomy.ACT)
 
     before = work(1, triage((12, "NEW")), [pr(3)], {}, None)
     last = Launch(fingerprint(before.work), "s1", NOW - dt.timedelta(minutes=15))

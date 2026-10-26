@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from shipmill.autonomy import Autonomy
 from shipmill.gate import Action, decide, parse_findings
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -293,7 +294,8 @@ def test_s030_16_an_item_labelled_decided_without_a_veto_is_in_no_work_row(ws: M
         assert [r.json() for r in found] == [r.json() for r in plain]
         assert not [r for r in found if r.json()["agent"]]
         text = "\n".join(json.dumps(r.json(), sort_keys=True) for r in found)
-        assert decide(parse_findings(text), [], None, NOW, DAY).action is Action.QUIET
+        # land observe: the open pull request alone, not a veto, would be work (S-040-9)
+        assert decide(parse_findings(text), [], None, NOW, DAY, Autonomy.OBSERVE).action is Action.QUIET
 
 
 def test_s030_16_a_forks_closed_pull_request_starts_no_unattended_session(ws: ModuleType) -> None:

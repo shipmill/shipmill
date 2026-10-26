@@ -16,7 +16,7 @@ from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
 from shipmill.agents import RolesError
 from shipmill.app import Lacks, NotInstalled
-from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage
+from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage, StageKind
 from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
 from shipmill.config import config_path
@@ -781,6 +781,14 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
         detail = (
             f"[autonomy] sets {', '.join(unread)}, but nothing reads {them} without [agents]: the agent stages"
             f" bound agent sessions only; add [agents] or delete {them}"
+        )
+        checks.append(Check("WARN", "autonomy", detail))
+    if policy.agents is not None and policy.agents.prs is not None:  # S-040-9: D-32's path for a key
+        land = policy.autonomy.configured(Stage(StageKind.LAND))
+        detail = (
+            f"[agents] prs is deprecated and ignored: [autonomy] land ({land}) decides whether the gate works on"
+            " open pull requests, under propose or act, not under observe; delete prs, which the next minor"
+            " release refuses"
         )
         checks.append(Check("WARN", "autonomy", detail))
     for stage in agent_stages:  # spec 040's legacy reading, for one minor release
