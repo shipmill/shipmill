@@ -28,7 +28,7 @@ from .test_status_picture import REPO, facts, lines
 
 ROOT = Path(__file__).parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
-AGENTS = '\n[agents]\nprompt = "triage {repo}"\n'
+AGENTS = '\n[agents]\nprompt = "triage {repo}"\n\n[autonomy]\nland = "propose"\n'  # agent-autonomy decided
 FRAGMENTS = find(UpgradeId("changelog-fragments"))
 # a second upgrade to list beside the fragments one; the catalogue offers no other that adds a key
 OTHER = dataclasses.replace(FRAGMENTS, id=UpgradeId("other-upgrade"), changes="another opt-in")
@@ -177,7 +177,7 @@ def test_s031_21_propose_closes_an_open_plugin_update_issue_as_withdrawn(
     # 0.37.0 to 0.59.1 proposed plugin-update; its open issue names an id `upgrade --apply` no longer knows
     old = "<!-- shipmill-upgrade: plugin-update 0.37.0 -->\nshipmill 0.37.0 offers **plugin-update**\n"
     number = repo.github.create_issue("shipmill upgrade: turn on plugin-update", old, (UPGRADE_LABEL,))
-    write_config(repo.root, DECIDED + AGENTS + f'\n[autonomy]\nupgrade = "{level}"\n')
+    write_config(repo.root, DECIDED + AGENTS + f'upgrade = "{level}"\n')  # AGENTS ends in [autonomy]
     out = propose(repo.root, repo.github, capsys)
     assert out[0] == f"withdrawn #{number}: plugin-update"
     assert number in repo.github.closed_issues and repo.github.issues == {}

@@ -18,7 +18,7 @@ from shipmill.upgrades import CATALOGUE, FRAGMENTS_README, UpgradeId, find, frag
 
 from .conftest import POLICY, FakeGitHub, Repo
 
-AGENTS = '\n[agents]\nprompt = "triage {repo}"\n'
+AGENTS = '\n[agents]\nprompt = "triage {repo}"\n\n[autonomy]\nland = "propose"\n'  # agent-autonomy decided
 HELD = Hold(("#7 Investigating",))
 
 
@@ -45,7 +45,7 @@ def shipmill(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 def test_catalogue_ids_are_unique_and_found() -> None:
     ids = [u.id for u in CATALOGUE]
-    assert [str(i) for i in ids] == ["changelog-fragments", "stable-every-batch"]
+    assert [str(i) for i in ids] == ["changelog-fragments", "stable-every-batch", "agent-autonomy"]
     assert len(set(ids)) == len(ids)
     assert find(UpgradeId("changelog-fragments")).line == 'fragments = "changelog.d"'
 
@@ -246,12 +246,12 @@ def test_apply_refuses_a_table_without_a_header_line_it_can_edit(tmp_path: Path,
         (
             POLICY,
             "nightly-builds",
-            "unknown upgrade nightly-builds; known: changelog-fragments, stable-every-batch",
+            "unknown upgrade nightly-builds; known: changelog-fragments, stable-every-batch, agent-autonomy",
         ),
         (  # S-031-21: withdrawn
             POLICY + AGENTS,
             "plugin-update",
-            "unknown upgrade plugin-update; known: changelog-fragments, stable-every-batch",
+            "unknown upgrade plugin-update; known: changelog-fragments, stable-every-batch, agent-autonomy",
         ),
         (
             POLICY.replace("[changelog]\n", '[changelog]\nfragments = "changelog.d"\n'),

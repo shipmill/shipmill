@@ -513,9 +513,20 @@ too; `doctor` warns until it has it. `doctor`
 prints the effective autonomy per stage, the agent stages (`triage`, `fix`, `land`) too, and
 warns while a hold is open, and when an agent stage is set in a config without `[agents]`,
 since nothing reads it then. `shipmill autonomy` prints every stage with its configured
-level, its level under the hold, and where it comes from (`default`, `config`, or `hold`),
+level, its level under the hold, and where it comes from (`default`, `config`, `prompt`, or
+`hold`, which wins over the others for a stage the hold lowers),
 read from the config at `origin/HEAD` (or `--ref`), so a pull request that raises a level
-is read by the level it would replace; `--json` lists the open hold issues too. Each `deploy.<name>`
+is read by the level it would replace; `--json` lists the open hold issues too.
+
+For one minor release, a config with `[agents]` that sets none of `triage`, `fix`, and
+`land` reads `land` from `[agents] prompt`: "merge when green", or "land" as a word, in any
+case, reads `land = "act"` with source `prompt`, so no repo changes behaviour on upgrade;
+otherwise each stage takes its default. A config that sets any of the three keys reads
+nothing from the prompt. `doctor` warns for a stage read from the prompt, naming the line
+to add, and `shipmill upgrade --apply agent-autonomy` writes the three keys with the levels
+the prompt gives today, at the end of `[autonomy]` (or as a new `[autonomy]` table at the
+end of the file), keeping every other byte. The next minor release drops the reading: an
+absent key is its default. Each `deploy.<name>`
 must name an environment in `[environments]`. `deploy` and `rollback` take effect in
 `shipmill operate` (see Operate above).
 
@@ -764,7 +775,7 @@ The workflows call these; you can run them locally too.
 | `sync` | Bring a stable release made off main into main, to recover a failed sync |
 | `notes` | Print a release's notes |
 | `settle-minutes` | Print how long to wait after a push: the longest `quiet_minutes`, 0 when `mode = "off"` |
-| `autonomy` | Print every stage's `[autonomy]` level, configured and under the hold, with its source (`default`, `config`, or `hold`) and the open hold issues, from the config at `--ref` (default `origin/HEAD`); `--json` |
+| `autonomy` | Print every stage's `[autonomy]` level, configured and under the hold, with its source (`default`, `config`, `prompt`, or `hold`) and the open hold issues, from the config at `--ref` (default `origin/HEAD`); `--json` |
 | `upgrade` | List the config upgrades this repo hasn't decided; `--apply <id>` makes one's edit in the checkout, `--json` |
 | `gate` | Start a Claude Code session for a repo only when its state needs one, with the config's `[agents]` prompt ([agent modes](design/agent-modes.md)) |
 | `launchd` | Run `gate` for a dedicated checkout every few minutes on a Mac |

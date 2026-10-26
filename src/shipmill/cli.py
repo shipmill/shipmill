@@ -18,7 +18,7 @@
                   the levels read at --ref (default origin/HEAD), never from the change; --json for both
   autonomy        every stage's [autonomy] level (spec 040): triage, fix, land, release, each deploy
                   environment, rollback, intake, and upgrade, each configured, under the shipmill-hold
-                  stop switch, and its source (default, config, or hold), from the config at --ref
+                  stop switch, and its source (default, config, prompt, or hold), from the config at --ref
                   (default origin/HEAD); --json for one JSON object with the open hold issues
   review         REVIEW.md, the review rubric (spec 024): check exits 1 naming the file, line, and rule
                   a structured section breaks; show prints the rubric for the files given with --path,
@@ -1807,7 +1807,8 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
             record = {
                 "id": str(upgrade.id),
                 "config": CONFIG_PATH.as_posix(),
-                "line": upgrade.line if applied.added else None,
+                "line": "\n".join(applied.lines) if applied.added else None,
+                "lines": list(applied.lines) if applied.added else [],
                 "removed": upgrade.removes,
                 "created": [p.as_posix() for p in applied.created],
                 "kept": [p.as_posix() for p in applied.kept],
@@ -1817,7 +1818,8 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
         if upgrade.removes is not None:
             print(f"removed {upgrade.removes} from [{upgrade.table}] in {CONFIG_PATH}")
         if applied.added:
-            print(f"added {upgrade.line} to [{upgrade.table}] in {CONFIG_PATH}")
+            for line in applied.lines:
+                print(f"added {line} to [{upgrade.table}] in {CONFIG_PATH}")
         for path in applied.created:
             print(f"wrote {path.as_posix()}")
         for path in applied.kept:
@@ -1844,7 +1846,7 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
     # GitHub is read only when an upgrade is pending, to leave out the declined ones
     found = offers(raw, github.labelled_issues(UPGRADE_LABEL)) if pending(raw) else ()
     if args.json:
-        print(json.dumps([o.upgrade.record() | {"issue": o.issue} for o in found], indent=2))
+        print(json.dumps([o.upgrade.record(raw) | {"issue": o.issue} for o in found], indent=2))
         return 0
     if not found:
         print("no pending upgrades")
@@ -1854,7 +1856,8 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
         if upgrade.removes is not None:
             print(f"  removes: [{upgrade.table}] {upgrade.removes}")
         if upgrade.adds(raw):
-            print(f"  adds: [{upgrade.table}] {upgrade.line}")
+            for line in upgrade.lines(raw):
+                print(f"  adds: [{upgrade.table}] {line}")
         print(f"  off: {upgrade.off}")
         if offer.issue is not None:
             print(f"  proposed: #{offer.issue}")
