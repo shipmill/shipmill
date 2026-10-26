@@ -311,7 +311,7 @@ token covers only the listed repos (S-038-6). So in a component, a checkout whos
 - D-29
 - D-34
 - D-37
-- D-40
+- D-54
 - D-50
 - D-47
 - D-46

@@ -396,7 +396,7 @@ changelog says so under `Changed`:
 - D-29: a trusted marker comment is the model for the decided and veto-handled markers
 - D-34: only the maintainer changes the direction, the zone `direction`
 - D-39: a breaking stable release waits for a person's hand start, the fixed zone `breaking-release`
-- D-40: `shipmill gh` is the write path with an App, where the `never` merge refusal lives
+- D-54 (superseding D-40): `shipmill gh` is the write path with an App, where the `never` merge refusal lives
 - D-48: this policy, settled by the maintainer when approving this spec
 
 ## Issues

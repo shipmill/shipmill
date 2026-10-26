@@ -164,7 +164,7 @@ otherwise run with plain `gh`.
 
 ### How it relates to spec 033
 
-Spec 033 (decision 2, D-42) is about plain `gh` from a contributor's session in a repo
+Spec 033 (D-54) is about plain `gh` from a contributor's session in a repo
 that has an App: where the App's key isn't on the host, the `app-writes` hook lets a plain
 `gh` write run as the person at the keyboard, and `shipmill gh` still exits 2. This spec is
 about `shipmill gh` in a repo with no App. Together: `shipmill gh` never writes as a person
@@ -246,9 +246,9 @@ The build updates every place that describes `shipmill gh` in a repo without an 
   `app_id` set doesn't change
 - D-19: a gate without an App is unfinished setup; the refusal's first fix is an App, and
   `identity = "host"` doesn't change D-19's reports
-- D-40 (superseded by D-42 if spec 033 lands): the hooks fail open and act only in repos
+- D-54 (superseding D-40): the hooks fail open and act only in repos
   with `[agents]`; `shipmill gh` fails safe, and `--as-host` turns off no hook rule
-- D-42 (proposed in shipmill/shipmill#521, spec 033): a plain `gh` write runs as the
+- D-54 (spec 033): a plain `gh` write runs as the
   person where the App isn't available; this spec leaves that case to it
 
 ## Issues
