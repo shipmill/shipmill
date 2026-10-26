@@ -1,10 +1,12 @@
 """Spec 040: `shipmill autonomy`, and doctor's report of the agent stages"""
 
 import json
+import re
 from typing import Any
 
 import pytest
 
+import shipmill.cli
 from shipmill.cli import main
 from shipmill.doctor import doctor
 from shipmill.errors import ReleaseError
@@ -129,6 +131,18 @@ def test_s040_5_a_malformed_config_at_the_ref_exits_2(repo: Repo) -> None:
     commit(repo, POLICY + '\n[autonomy]\nland = "merge"\n')
     with pytest.raises(ReleaseError, match=r"land must be one of \['observe', 'propose', 'act'\], got 'merge'"):
         main(["--repo", str(repo.root), "autonomy"], github=repo.github)
+
+
+def test_the_cli_help_keeps_every_commands_description_in_one_column() -> None:
+    doc = shipmill.cli.__doc__ or ""
+    named = [line for line in doc.splitlines() if re.match(r"^  \S", line)]
+    assert "autonomy" in {line.split()[0] for line in named}
+    misaligned = [
+        line
+        for line in named
+        if not re.match(r"^  \S+ +", line) or len(line) - len(line[2:].split(maxsplit=1)[1]) != 18
+    ]
+    assert misaligned == []
 
 
 # -- doctor ----------------------------------------------------------------------------------

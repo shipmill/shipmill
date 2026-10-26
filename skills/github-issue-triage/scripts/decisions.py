@@ -86,7 +86,8 @@ ZONES: dict[str, tuple[str, str | None]] = {
     "implementation": ("act", None),
     "unknown": ("ask", "ask"),
 }
-# The release side's zones, which [autonomy] or a decision sets, never [decisions]
+# The release side's zones and the agent stages (spec 040), which [autonomy] or a decision
+# sets, never [decisions]; the package's ReleaseZone, in its order
 RELEASE_ZONES = {
     "release": "release is set in [autonomy] release",
     "deploy": "deploy is set in [autonomy] deploy",
@@ -94,6 +95,9 @@ RELEASE_ZONES = {
     "intake": "intake is set in [autonomy] intake",
     "upgrade": "upgrade is set in [autonomy] upgrade",
     "breaking-release": "a breaking stable release waits for a person's hand start (D-39)",
+    "triage": "triage is set in [autonomy] triage",
+    "fix": "fix is set in [autonomy] fix",
+    "land": "land is set in [autonomy] land",
 }
 VETO_HOURS = 24
 CONFIG = Path(".github/shipmill.toml")
