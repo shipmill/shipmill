@@ -133,7 +133,7 @@ def test_s028_13_an_untrusted_plan_is_in_untrusted_and_nothing_else(ws: ModuleTy
         json.dumps({"number": n, "state": s, "title": "t", "note": ""})
         for n, s in ((20, "NEW"), (22, "TRIAGED"), (30, "NEW"))
     )
-    rows = ws.intake("o/r", 1, triage, [], lambda n: [], BOT, True, False, None, frozenset({20, 22}))
+    rows = ws.intake("o/r", 1, triage, [], lambda n: [], BOT, True, None, None, frozenset({20, 22}))
     shown = {r.state: r.detail for r in rows}
     assert shown == {"ISSUES": "NEW #30", "UNTRUSTED": "#20 #22"}
     assert all(r.json()["agent"] is False for r in rows if r.state == "UNTRUSTED")

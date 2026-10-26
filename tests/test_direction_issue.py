@@ -163,18 +163,18 @@ def test_s034_5_the_watch_keeps_direction_issues_out_of_issues_and_issues_open(w
     triage = "\n".join(lines)
     before = ws.intake("o/r", 1, triage, [], lambda n: [], BOT)
     assert [(r.state, r.detail) for r in before] == [("ISSUES", "NEW #12 #20"), ("ISSUES_OPEN", "BLOCKED #13 #9")]
-    rows = ws.intake("o/r", 1, triage, [], lambda n: [], BOT, False, False, None, frozenset(), (), frozenset({12, 13}))
+    rows = ws.intake("o/r", 1, triage, [], lambda n: [], BOT, False, None, None, frozenset(), (), frozenset({12, 13}))
     assert [(r.state, r.detail) for r in rows] == [("ISSUES", "NEW #20"), ("ISSUES_OPEN", "BLOCKED #9")]
     # with only a direction issue to triage, there is no ISSUES row at all
     only = "\n".join(lines[:2])
-    rows = ws.intake("o/r", 1, only, [], lambda n: [], BOT, False, False, None, frozenset(), (), frozenset({12, 13}))
+    rows = ws.intake("o/r", 1, only, [], lambda n: [], BOT, False, None, None, frozenset(), (), frozenset({12, 13}))
     assert rows == []
 
 
 def test_s034_5_a_direction_issue_waiting_on_its_question_stays_in_needs_decision(ws: ModuleType) -> None:
     # spec 034: while the question waits, the issue is in NEEDS_DECISION, out of ISSUES and ISSUES_OPEN
     triage = "\n".join([triage_line(12, "NEEDS_DECISION"), triage_line(13, "DECIDED")])
-    rows = ws.intake("o/r", 1, triage, [], lambda n: [], BOT, False, False, None, frozenset(), (), frozenset({12, 13}))
+    rows = ws.intake("o/r", 1, triage, [], lambda n: [], BOT, False, None, None, frozenset(), (), frozenset({12, 13}))
     assert [(r.state, r.detail) for r in rows] == [("NEEDS_DECISION", "#12")]
 
 
@@ -183,7 +183,7 @@ def test_s034_5_an_outsiders_labelled_marked_issue_stays_untrusted(ws: ModuleTyp
     directions = ws.direction_numbers([rest(14, by="mallory", association="NONE")], BOT)
     assert directions == frozenset()
     line = triage_line(14, "UNTRUSTED")
-    rows = ws.intake("o/r", 0, line, [], lambda n: [], BOT, True, False, None, frozenset(), (), directions)
+    rows = ws.intake("o/r", 0, line, [], lambda n: [], BOT, True, None, None, frozenset(), (), directions)
     assert [(r.state, r.detail, r.json()["agent"]) for r in rows] == [("UNTRUSTED", "#14", False)]
 
 

@@ -275,7 +275,7 @@ def test_s034_4_a_question_that_waits_shows_no_pending_and_reads_needs_decision(
     triage = json.dumps({"number": 12, "state": "NEEDS_DECISION", "title": "t", "note": "", "direction": True})
     directions = ws.triage_directions(triage)
     assert directions == {12}
-    intake = ws.intake(REPO, 0, triage, [], never, BOT, True, False, None, frozenset(), (), directions)
+    intake = ws.intake(REPO, 0, triage, [], never, BOT, True, None, None, frozenset(), (), directions)
     assert [(r.state, r.detail, r.json()["agent"]) for r in intake] == [("NEEDS_DECISION", "#12", False)]
 
 
@@ -447,7 +447,7 @@ def test_s034_5_the_watch_keeps_marked_lines_out_of_its_issue_rows(ws: ModuleTyp
     )
     directions = ws.triage_directions(triage)
     assert directions == {12}
-    rows = ws.intake(REPO, 1, triage, [], never, BOT, False, False, None, frozenset(), (), directions)
+    rows = ws.intake(REPO, 1, triage, [], never, BOT, False, None, None, frozenset(), (), directions)
     assert [(r.state, r.detail) for r in rows] == [("ISSUES", "NEW #20")]
 
 
