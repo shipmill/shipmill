@@ -48,6 +48,13 @@ source = "shipmill/shipmill#613"
 commit = "c48559b"
 
 [[case]]
+path = "github-issue-resolve/no-app-drafts"
+skill = "github-issue-resolve"
+kind = "fix"
+source = "shipmill/shipmill#698"
+commit = "bd2381f"
+
+[[case]]
 path = "github-pr-triage/never-approved-in-chat"
 skill = "github-pr-triage"
 kind = "decision"

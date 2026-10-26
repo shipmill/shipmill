@@ -105,27 +105,49 @@ def load_delivery() -> ModuleType:
 DELIVERY = load_delivery()
 
 
+APP_KEY = "SHIPMILL_APP_KEY"
+# The hook's environment where the App is available (spec 033): a HOME holding the App's key
+# file, which spec 026's app-writes cases run with, so S-026-3 keeps its meaning under D-54
+AVAILABLE: dict[str, str] = {}
+
+
+def key_home(home: Path, app_id: int = 5209412) -> Path:
+    """home with the App's key file at its default path; the hook only stats it"""
+    key = home / ".config" / "shipmill" / f"app-{app_id}.pem"
+    key.parent.mkdir(parents=True)
+    key.write_text("not a key: the hook never reads it\n", encoding="utf-8")
+    return home
+
+
+@pytest.fixture(scope="module", autouse=True)
+def app_available(tmp_path_factory: pytest.TempPathFactory) -> None:
+    AVAILABLE.clear()
+    AVAILABLE["HOME"] = str(key_home(tmp_path_factory.mktemp("home")))
+
+
 def process(data: object, mode: str = "pre") -> subprocess.CompletedProcess[str]:
-    """delivery.py as Claude Code runs it: a subprocess"""
+    """delivery.py as Claude Code runs it: a subprocess, with the App available"""
     where = Path(data["cwd"]) if isinstance(data, dict) else ROOT
     text = data if isinstance(data, str) else json.dumps(data)
+    env = {**{k: v for k, v in os.environ.items() if k != APP_KEY}, **AVAILABLE}
     return subprocess.run(
-        [sys.executable, str(SCRIPT), mode], input=text, cwd=where, capture_output=True, text=True, check=False
+        [sys.executable, str(SCRIPT), mode], input=text, cwd=where, env=env, capture_output=True, text=True, check=False
     )
 
 
-def hook(data: object, mode: str = "pre") -> subprocess.CompletedProcess[str]:
-    """delivery.py's main in process, as its __main__ calls it; the script writes nothing to
-    stdout, which the cases that run it as a process prove"""
+def hook(data: object, mode: str = "pre", env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    """delivery.py's main in process, as its __main__ calls it, with the App available unless
+    env says otherwise; the script writes nothing to stdout, which the cases that run it as a
+    process prove"""
     text = data if isinstance(data, str) else json.dumps(data)
     stderr = io.StringIO()
-    code = DELIVERY.main([mode], io.StringIO(text), stderr)
+    code = DELIVERY.main([mode], io.StringIO(text), stderr, env=AVAILABLE if env is None else env)
     assert isinstance(code, int)
     return subprocess.CompletedProcess([str(SCRIPT), mode], code, "", stderr.getvalue())
 
 
-def bash(command: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    return hook(fixture("bash-read.json", cwd, command))
+def bash(command: str, cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return hook(fixture("bash-read.json", cwd, command), env=env)
 
 
 def allowed(result: subprocess.CompletedProcess[str]) -> None:
@@ -458,6 +480,115 @@ def test_s026_3_refusal_fixture_names_the_rule_and_shipmill_gh(box: Sandbox) -> 
     instead = refused(result, "app-writes", "D-14")
     assert instead == [*SHIPMILL, "gh", "pr", "comment", "412", "--body", "Reviewed: green, merging"]
     allowed(hook(fixture("bash-app-writes-allowed.json", box.app)))
+
+
+# --- S-033: app-writes only where the App is available --------------------------------------
+
+
+def no_app(tmp_path: Path) -> list[dict[str, str]]:
+    """Hook environments where the App isn't available: no HOME, a HOME without the key, and an
+    empty SHIPMILL_APP_KEY beside it"""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    return [{}, {"HOME": str(home)}, {"HOME": str(home), APP_KEY: ""}, {"HOME": "relative", APP_KEY: ""}]
+
+
+def with_app(tmp_path: Path) -> list[dict[str, str]]:
+    """Where it is: the key file and no variable, and the variable and no key file"""
+    keyed = key_home(tmp_path / "keyed")
+    bare = tmp_path / "bare-home"
+    bare.mkdir()
+    return [{"HOME": str(keyed)}, {"HOME": str(bare), APP_KEY: "/nowhere/app.pem"}, {APP_KEY: "x"}]
+
+
+@pytest.mark.parametrize("command", GH_WRITES)
+def test_s033_5_without_the_app_every_gh_write_passes(box: Sandbox, tmp_path: Path, command: str) -> None:
+    for env in no_app(tmp_path):
+        for prefix in ("", "GH_TOKEN=$T ", 'GH_TOKEN="$(cat token)" '):
+            allowed(bash(prefix + command, box.app, env))
+
+
+@pytest.mark.parametrize("command", GH_WRITES)
+def test_s033_6_with_the_key_file_or_the_variable_every_gh_write_is_refused(
+    box: Sandbox, tmp_path: Path, command: str
+) -> None:
+    for env in with_app(tmp_path):
+        for prefix in ("", "GH_TOKEN=$T "):
+            instead = refused(bash(prefix + command, box.app, env), "app-writes", "D-14")
+            assert instead == [*SHIPMILL, "gh", *gh_args(command)]
+
+
+def test_s033_6_the_fixtures_refuse_with_the_app_and_pass_without(box: Sandbox, tmp_path: Path) -> None:
+    for env in with_app(tmp_path):
+        refused(hook(fixture("bash-app-writes-refused.json", box.app), env=env), "app-writes", "D-14")
+    for env in no_app(tmp_path):
+        allowed(hook(fixture("bash-app-writes-refused.json", box.app), env=env))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "SHIPMILL_APP_KEY= gh pr create",
+        "HOME=/tmp gh pr create",
+        "HOME= SHIPMILL_APP_KEY= gh pr create",
+        "env SHIPMILL_APP_KEY= HOME=/tmp gh pr create",
+        "export SHIPMILL_APP_KEY= HOME=/tmp; gh pr create",
+    ],
+)
+def test_s033_7_a_commands_own_assignments_never_turn_the_rule_off(box: Sandbox, tmp_path: Path, command: str) -> None:
+    refused(bash(command, box.app, {"HOME": str(key_home(tmp_path / "keyed"))}), "app-writes", "D-14")
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["SHIPMILL_APP_KEY=/x gh pr create", "env SHIPMILL_APP_KEY=/x gh pr create", "HOME={keyed} gh pr create"],
+)
+def test_s033_7_a_commands_own_assignments_never_turn_the_rule_on(box: Sandbox, tmp_path: Path, command: str) -> None:
+    keyed = key_home(tmp_path / "keyed")  # a home holding the key, named only by the command
+    for env in no_app(tmp_path):
+        allowed(bash(command.format(keyed=keyed), box.app, env))
+
+
+def test_s033_7_the_availability_check_starts_no_process_and_reads_no_file(
+    delivery: ModuleType, box: Sandbox, tmp_path: Path
+) -> None:
+    """A key file nobody may read still counts: the check only stats it; the counting runner
+    and config reader see no process and the one config read"""
+    home = key_home(tmp_path / "keyed")
+    key = home / ".config" / "shipmill" / "app-5209412.pem"
+    key.chmod(0)
+    try:
+        for env, code in (({"HOME": str(home)}, 2), ({"HOME": str(tmp_path)}, 0), ({APP_KEY: str(key)}, 2)):
+            counted, stderr = Counted(), io.StringIO()
+            data = fixture("bash-read.json", box.app, "gh pr create --title t && gh issue comment 1 -b x")
+            assert (
+                delivery.main(["pre"], io.StringIO(json.dumps(data)), stderr, counted.runner, counted.read, env=env)
+                == code
+            )
+            assert (counted.runs, counted.reads) == (0, 1)
+    finally:
+        key.chmod(0o600)
+    source = SCRIPT.read_text(encoding="utf-8")
+    body = source.split("def app_available(", 1)[1].split("\ndef ", 1)[0]
+    assert all(call not in body for call in ("open(", ".read", "subprocess", "runner"))
+
+
+@pytest.mark.parametrize("prefix", ["", "uvx shipmill==0.1.0 "])
+def test_s033_8_without_the_app_rebase_merge_keeps_plain_gh(box: Sandbox, tmp_path: Path, prefix: str) -> None:
+    for env in no_app(tmp_path):
+        command = f"{prefix}gh pr merge 1 --rebase"
+        instead = refused(bash(command, box.app, env), "rebase-merge", "D-33")
+        assert instead == shlex.split(f"{prefix}gh pr merge 1 --squash")
+
+
+@pytest.mark.parametrize("rule", ["default-branch-push", "force-push", "private-paths"])
+def test_s033_8_the_other_rules_answer_alike_with_and_without_the_app(box: Sandbox, tmp_path: Path, rule: str) -> None:
+    for case in ("refused", "allowed"):
+        data = fixture(f"bash-{rule}-{case}.json", box.app)
+        expected = answer(hook(data))
+        assert expected[0] == (2 if case == "refused" else 0)
+        for env in no_app(tmp_path):
+            assert answer(hook(data, env=env)) == expected
 
 
 # --- S-026-5: rebase-merge -------------------------------------------------------------------
@@ -989,7 +1120,7 @@ class Counted:
 def in_process(delivery: ModuleType, data: dict[str, Any], mode: str = "pre") -> tuple[int, Counted]:
     counted = Counted()
     stderr = io.StringIO()
-    code = delivery.main([mode], io.StringIO(json.dumps(data)), stderr, counted.runner, counted.read)
+    code = delivery.main([mode], io.StringIO(json.dumps(data)), stderr, counted.runner, counted.read, env=AVAILABLE)
     assert isinstance(code, int)
     return code, counted
 
@@ -1300,7 +1431,9 @@ def test_s031_4_a_broken_plugin_json_exits_2_naming_it(
         ("pre", fixture("bash-read.json", box.app, "gh pr comment 7 --body hi")),  # its Instead names the CLI
     ):
         counted, stderr = Counted(), io.StringIO()
-        code = delivery.main([mode], io.StringIO(json.dumps(data)), stderr, counted.runner, counted.read, path)
+        code = delivery.main(
+            [mode], io.StringIO(json.dumps(data)), stderr, counted.runner, counted.read, path, AVAILABLE
+        )
         assert (code, counted.runs) == (2, 0), stderr.getvalue()
         assert stderr.getvalue().startswith(f"shipmill hook: {path}") and said in stderr.getvalue()
 
@@ -1320,7 +1453,7 @@ def test_s031_4_the_hooks_read_the_version_of_their_own_plugin(
     assert seen == [["uvx", "shipmill==9.8.7", "review", "check", "--repo", str(box.agents)]]
     stderr = io.StringIO()
     pre = fixture("bash-read.json", box.app, "gh pr comment 7 --body hi")
-    assert delivery.main(["pre"], io.StringIO(json.dumps(pre)), stderr, runner, Counted().read, path) == 2
+    assert delivery.main(["pre"], io.StringIO(json.dumps(pre)), stderr, runner, Counted().read, path, AVAILABLE) == 2
     assert stderr.getvalue().splitlines()[2] == "Instead: uvx shipmill==9.8.7 gh pr comment 7 --body hi"
     assert delivery.PLUGIN_JSON == ROOT / ".claude-plugin" / "plugin.json"  # one folder above hooks/
 
@@ -1406,7 +1539,7 @@ def test_s026_12_broken_config_refuses_guarded_commands(tmp_path: Path, config: 
 
 
 def test_s026_12_a_valid_hooks_section_is_read(tmp_path: Path) -> None:
-    config = '[agents]\napp_id = 1\n[hooks]\ndefault_branch = false\nprivate = ["owner/**"]\n'
+    config = '[agents]\napp_id = 5209412\n[hooks]\ndefault_branch = false\nprivate = ["owner/**"]\n'
     root = git_repo(tmp_path / "hooks", config)
     refused(bash("gh pr comment 7 --body hi", root), "app-writes", "D-14")
     allowed(bash("git push origin feat/x", root))

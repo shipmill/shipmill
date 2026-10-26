@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "9902",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "title,body,comments,labels,state"
+  ],
+  "stdout": "{\"body\":\"`docs/install.md`'s Pause or remove it table says how to remove the CLI installed with `uv tool install` (`uv tool uninstall shipmill`), but the skills and the hooks run the CLI as `uvx shipmill==<version>`, whose copies stay in uv's cache after the plugin is gone.\\n\\nAdd a row to that table:\\n\\n| Clear the copies `uvx` cached | `uv cache clean shipmill` |\\n\\nFiled by the maintainer.\",\"comments\":[],\"labels\":[],\"state\":\"OPEN\",\"title\":\"install.md: Pause or remove it has no row for the CLI copies uvx caches\"}\n",
+  "stderr": "",
+  "exit": 0
+}

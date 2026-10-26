@@ -216,6 +216,7 @@ def doctor(
     credential: Callable[[], Credential] | None = None,
     launchd_job: bool = False,
     now: dt.datetime | None = None,
+    home: Path | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -235,7 +236,8 @@ def doctor(
     with the maintainer's gh, only with [product] home (D-53); None (no gh) reports that it
     can't. credential reads the Claude token file the gate would use, only with [agents]
     (spec 035); None reads none and the preflight asks about the login. launchd_job says the
-    repo has a launchd job on this host, and now times the token's age"""
+    repo has a launchd job on this host, and now times the token's age. home is the user's
+    home, where the hooks block looks for the App's key (spec 033); None takes Path.home()"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -256,7 +258,7 @@ def doctor(
     raw = read_config(found)
     if policy.agents is not None:
         checks.append(direction_check(root))
-        checks.extend(hooks_checks(policy, Git(root), hooks))
+        checks.extend(hooks_checks(policy, Git(root), hooks, Path.home() if home is None else home))
         uses = None if credential is None else credential()
         if uses is not None:
             checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC)))
@@ -882,20 +884,33 @@ def _uncommented(text: str) -> str:
     return "\n".join(re.sub(r"(?:^|\s)#.*$", "", line) for line in text.splitlines())
 
 
-def hooks_checks(policy: Policy, git: Git, test: HookTester | None) -> list[Check]:
+def app_writes(app_id: int | None, home: Path) -> str:
+    """S-033-12: which case the host is in for the app-writes rule: on where the App's key is at
+    its default path, on in gate sessions only (which carry SHIPMILL_APP_KEY) where it isn't,
+    and off without app_id. The key is only looked for, never read"""
+    if app_id is None:
+        return "app-writes: off (no [agents] app_id), so gh writes go as your own login"
+    path = default_key(app_id, home)
+    if path.is_file():
+        return (
+            f"app-writes: on (the App's key is at {path}), so a gh write must go as the App through shipmill gh"
+            " (D-14, D-54)"
+        )
+    return (
+        f"app-writes: on in gate sessions only (no key at {path} on this host; in your own sessions shipmill's"
+        " skills draft and you post, or set SHIPMILL_APP_KEY)"
+    )
+
+
+def hooks_checks(policy: Policy, git: Git, test: HookTester | None, home: Path) -> list[Check]:
     """S-026-15: the delivery hooks' block, for a repo with [agents]: one line per rule the hook
-    holds, on or off and why; the self-test against the install a session would load, a FAIL
-    naming the fix when it fails (a WARN when nothing here runs a session, or when the test
-    couldn't read what a session loads); and a WARN when
-    origin/HEAD is unset, as a hook can't tell the default branch then"""
+    holds, on or off and why (app-writes by where the App's key is, S-033-12); the self-test
+    against the install a session would load, a FAIL naming the fix when it fails (a WARN when
+    nothing here runs a session, or when the test couldn't read what a session loads); and a
+    WARN when origin/HEAD is unset, as a hook can't tell the default branch then"""
     agents = policy.agents
     if agents is None:
         return []
-    app = (
-        f"on: [agents] app_id {agents.app_id} is set, so a gh write must go as the App through shipmill gh (D-14)"
-        if agents.app_id is not None
-        else "off: no [agents] app_id, so gh writes go as your own login"
-    )
     hooks = policy.hooks
     default_branch = (
         "on: [hooks] default_branch is not false, so work reaches the default branch through a pull request"
@@ -909,7 +924,7 @@ def hooks_checks(policy: Policy, git: Git, test: HookTester | None) -> list[Chec
         else "off: no [hooks] private globs"
     )
     checks = [
-        Check("PASS", "hooks", f"app-writes {app}"),
+        Check("PASS", "hooks", app_writes(agents.app_id, home)),
         Check("PASS", "hooks", f"default-branch-push {default_branch}"),
         Check("PASS", "hooks", "rebase-merge on: always, a pull request lands with a squash or a merge commit (D-33)"),
         Check("PASS", "hooks", "force-push on: always, a force push needs a lease pinned to a commit"),

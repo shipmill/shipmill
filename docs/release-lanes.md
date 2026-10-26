@@ -702,11 +702,29 @@ latest release instead of updating it. 0.60.0 accepted the key and ignored it; s
 a config with it, whatever its value, exits 2 with `[agents] plugin_update was removed (spec
 031); delete it`. `shipmill upgrade` no longer offers `plugin-update`.
 
+## Where the plugin loads
+
+`[agents] plugin` says who turns the shipmill plugin on (spec 033). With `"host"`, the
+default, each person installs it on their own host and nothing in the repo turns it on; with
+`plugin = "repo"`, `.claude/settings.json` enables it, so every session in the repo loads it,
+a contributor's too. Any other value, or one that isn't a string, exits 2. It changes nothing
+the gate loads: a gate session loads the install that applies to its checkout, at any scope
+(D-50). The setup checklist reads it: `PLUGIN_COMMITTED` says the repo still commits the
+plugin while the key is `"host"`.
+
+```toml
+[agents]
+prompt = "/shipmill:github-issue-triage {repo} triage the new issues"
+plugin = "host"   # the default; "repo" enables it in .claude/settings.json for everyone
+```
+
 ## Delivery hooks
 
 In a repo whose config has `[agents]`, the shipmill plugin's delivery hooks
 (`hooks/delivery.py`, spec 026) refuse with exit 2 the writes the delivery rules forbid: a
-`gh` write without `shipmill gh` while `[agents] app_id` is set (D-14), a push to the
+`gh` write without `shipmill gh` while `[agents] app_id` is set and the App is available
+to the session, its key at `~/.config/shipmill/app-<app_id>.pem` or `SHIPMILL_APP_KEY` set
+(D-14, D-54), a push to the
 default branch, a rebase merge (D-33), a force push without a lease pinned to a commit,
 and a copy of a private path out of the repo. `[hooks]` holds the two rules a repo may
 change; the other three have no switch:
