@@ -51,7 +51,7 @@ The maintainer (@romamo) settled the direction on #495, and this spec builds it:
    `CONTRIBUTING.md` is the maintainer's: shipmill never writes to it, adds to it, or
    prints text for it (shipmill/shipmill#502)
 
-The rule is recorded as D-51, which supersedes D-40 and restates its whole rule.
+The rule is recorded as D-54, which supersedes D-40 and restates its whole rule.
 
 ## Behaviour
 
@@ -230,7 +230,7 @@ A repo without `[agents] app_id` is spec 037's case for `shipmill gh`, and a ski
 runs no check: its write through `shipmill gh` exits 2 unless `[agents] identity = "host"`
 or `--as-host` allows the host's identity, and where it exits 2 the skill stops and hands
 over its drafts as in step 4. This spec doesn't change spec 037's two
-allowances; whether they stay under D-51 is the maintainer's call (see the pull request)
+allowances; whether they stay under D-54 is the maintainer's call (see the pull request)
 
 ### `shipmill gh` reads the same variable
 
@@ -287,9 +287,9 @@ host is in, each a PASS line:
 - `docs/release-lanes.md`: `[agents] plugin`, next to the other `[agents]` keys
 - `skills/shipmill-setup/SKILL.md`: the question and rows above
 - The six skills' "Write as the App" rules: the steps above
-- `docs/specs/026-delivery-hooks.md`, Decisions relied on: D-51 in place of D-40. Spec 026's
+- `docs/specs/026-delivery-hooks.md`, Decisions relied on: D-54 in place of D-40. Spec 026's
   `app-writes` tests run with the App available (a key file in the test's `HOME`), so
-  S-026-3 keeps its meaning under D-51
+  S-026-3 keeps its meaning under D-54
 
 ## Acceptance criteria
 
@@ -335,7 +335,7 @@ host is in, each a PASS line:
 - D-16: unattended sessions work only on trusted authors' items; `docs/install.md` tells the maintainer, the client repo's docs don't
 - D-37: the skills' new rule changes the agents' instructions, so it lands with S-033-18's eval case and only when the evals don't regress
 - D-50 (superseding D-44, which superseded D-43, which superseded D-35): a gate session loads the install of `shipmill@shipmill` that applies to its checkout, at any scope, so a user-scope install is enough for the gate
-- D-51 (superseding D-40): shipmill writes to GitHub only as the App; where the App isn't available, read from the host alone, a skill drafts and the person posts, and the `app-writes` rule refuses nothing; the other rules, the switches, the fail-open start, and the headless self-test pause are D-40's, unchanged; spec 037 (shipmill/shipmill#577) covers `shipmill gh` in a repo without `[agents] app_id`, whose exit 2 there is this spec's step 4 stop
+- D-54 (superseding D-40): shipmill writes to GitHub only as the App; where the App isn't available, read from the host alone, a skill drafts and the person posts, and the `app-writes` rule refuses nothing; the other rules, the switches, the fail-open start, and the headless self-test pause are D-40's, unchanged; spec 037 (shipmill/shipmill#577) covers `shipmill gh` in a repo without `[agents] app_id`, whose exit 2 there is this spec's step 4 stop
 
 ## Issues
 

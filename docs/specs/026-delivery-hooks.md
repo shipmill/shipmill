@@ -289,8 +289,8 @@ that exists.
 - D-17: headless sessions run as `claude -p` with a tool allowlist, which hooks still apply under
 - D-33: no rebase merge, which `rebase-merge` enforces
 - D-34: a repo with `[agents]` keeps a direction and an optional rubric, which the PostToolUse hook checks
-- D-50 (superseding D-44, which superseded D-43, which superseded D-35, the model for the self-test pause): the gate no longer pauses on stale skills, and its sessions load the installed plugin; the self-test pause stays, under D-51, and tests the install the session loads (spec 031)
-- D-51 (superseding D-40, which superseded D-36): delivery rules that guard irreversible writes are enforced by plugin hooks in repos with `[agents]`, and the `app-writes` rule applies only where the App is available, a gate session or a host with the App's key; where it isn't, a skill drafts its writes for the person and the hook refuses none of the person's own (spec 033); it settles the inline `GH_TOKEN=$T gh` refusal, the switches, the headless pause, and that a hook which can't start its script exits 1 and lets the command run
+- D-50 (superseding D-44, which superseded D-43, which superseded D-35, the model for the self-test pause): the gate no longer pauses on stale skills, and its sessions load the installed plugin; the self-test pause stays, under D-54, and tests the install the session loads (spec 031)
+- D-54 (superseding D-40, which superseded D-36): delivery rules that guard irreversible writes are enforced by plugin hooks in repos with `[agents]`, and the `app-writes` rule applies only where the App is available, a gate session or a host with the App's key; where it isn't, a skill drafts its writes for the person and the hook refuses none of the person's own (spec 033); it settles the inline `GH_TOKEN=$T gh` refusal, the switches, the headless pause, and that a hook which can't start its script exits 1 and lets the command run
 
 ## Issues
 
