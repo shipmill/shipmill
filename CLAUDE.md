@@ -28,7 +28,7 @@ uv run --no-project python skills/github-issue-triage/scripts/specs.py coverage
 uvx --from actionlint-py actionlint .github/workflows/*.yml
 ```
 
-- An agent runs the full suite through the machine-wide queue, `uv run --no-project python skills/github-issue-triage/scripts/suite_lock.py -- uv run pytest -q -n auto`, and only the touched files' tests while it works
+- An agent runs the fast checks and the touched files' tests and leaves the full suite to the PR's CI
 - Package code needs Python 3.14 and strict mypy
 - Skill scripts run with `uv run --no-project python` and must stay Python 3.10 compatible
   with no dependencies

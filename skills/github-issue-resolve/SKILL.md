@@ -102,7 +102,7 @@ Each of the four lines appears once, with its label exactly as above: github-pr-
 
 ## Phase 5: Verify against a baseline
 
-While you work, run lint, the type checker, and the tests of the files you touched. Run the full suite once, before pushing, through the machine-wide queue: `uv run --no-project python <github-issue-triage>/scripts/suite_lock.py -- <full-suite command>`, with the project's parallel runner when it has one (pytest-xdist: `-n auto`). Parallel agents that each ran a full suite at once starved each other of CPU and hit the tool timeout. Scope pytest to the tests dir if stray folders (e.g. `tmp/`) break collection.
+Run lint, the type checker, and the tests of the files you touched. The full suite is CI's: the PR's CI runs it on every push, and `pr_gate.py --wait` waits for it before any merge, so don't run it locally; say in the PR's test notes that it was left to CI. Only in a repo whose CI doesn't run the full suite on a pull request, run it once before pushing, through the machine-wide queue: `uv run --no-project python <github-issue-triage>/scripts/suite_lock.py -- <full-suite command>`, with the project's parallel runner when it has one (pytest-xdist: `-n auto`). Parallel agents that each ran a full suite at once starved each other of CPU and hit the tool timeout. Scope pytest to the tests dir if stray folders (e.g. `tmp/`) break collection.
 
 For any failures, prove whether they predate the change:
 

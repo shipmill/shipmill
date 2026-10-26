@@ -1,6 +1,6 @@
 ### Changed
 
-- Agents queue their full test suites through github-issue-triage's new `suite_lock.py`, run only the touched files' tests while they work, and a reviewer leaves the full suite to CI, so parallel agents no longer starve each other of CPU; shipmill's CI runs its tests with pytest-xdist (#657)
+- Implementers and reviewers run the fast checks and the touched files' tests and leave the full suite to the PR's CI, so parallel agents no longer starve each other of CPU; in a repo whose CI doesn't run the full suite, they queue it through github-issue-triage's new `suite_lock.py`. shipmill's CI runs its tests with pytest-xdist (#657)
 
 ### Fixed
 
