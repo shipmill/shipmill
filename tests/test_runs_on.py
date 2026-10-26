@@ -160,9 +160,12 @@ def test_s015_4_the_cli_exits_2_naming_the_value(repo: Repo) -> None:
 def test_init_operate_refuses_a_runner_it_would_not_write(repo: Repo) -> None:
     """operate.yml takes no runner input (out of scope for spec 015), so a valid --runs-on with
     --operate is refused rather than ignored"""
-    with pytest.raises(ReleaseError, match="--operate writes only"):
+    policy = repo.read(repo.policy_file)
+    with pytest.raises(ReleaseError, match="--operate leaves .* alone and writes .*, which takes no runner") as exc:
         main(["--repo", str(repo.root), "init", "--operate", "--runs-on", "self-hosted"])
+    assert "writes only" not in str(exc.value)  # --operate edits the policy's [autonomy] too (S-040-16)
     assert not (repo.root / OPERATE_CALLER).exists()
+    assert repo.read(repo.policy_file) == policy
 
 
 def test_a_label_and_a_list_parse_to_their_labels() -> None:

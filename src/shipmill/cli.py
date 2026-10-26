@@ -802,7 +802,10 @@ def main(
             return 0
         if args.operate:
             if runs_on is not None:
-                raise ReleaseError(f"--runs-on sets {CALLER}'s runner; --operate writes only {OPERATE_CALLER}")
+                raise ReleaseError(
+                    f"--runs-on sets {CALLER}'s runner; --operate leaves {CALLER} alone and writes"
+                    f" {OPERATE_CALLER}, which takes no runner"
+                )
             for path in init_operate(root, args.force):
                 print(f"wrote {path.relative_to(root)}")
             print(f"next: run `{cli_command()} doctor`")
