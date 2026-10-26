@@ -86,13 +86,8 @@ on GitHub retargeting a stacked PR when the branch under it is deleted):
                      plain gh even with app_id set: the App has no Administration permission
   BRANCH_DELETE_ON   GitHub deletes a PR's branch when it merges
 
-Landing (the config's [agents] prs: whether the gate lands open pull requests; read the way
-the config loader reads it, so a section without the key has prs = false):
-  LANDING_OFF  an [agents] section with prs = false, and open non-draft pull requests wait
-               (`shipmill status` reads "landing off" and the PRs as waiting on you); the
-               detail lists them newest first. Set [agents] prs = true with a prompt that
-               merges when green, or land them by hand. --fix leaves it: it needs the user
-  LANDING_OK   prs = true, no [agents] section, or no pull request waits to land
+Whether the gate lands open pull requests is [autonomy] land's (spec 040), which
+AUTONOMY_IMPLICIT asks for; [agents] prs is deprecated and read here no more.
 
 Runner (spec 015; a warning, read only when release.yml passes shipmill's prepare.yml or
 land.yml a runs-on other than ubuntu-latest and a lane sets quiet_minutes above 0):
@@ -110,14 +105,13 @@ Contributor rules (a warning, read only when the config's [changelog] sets fragm
                    leaves CHANGELOG.md alone, so a rule to edit Unreleased is stale. The
                    repo's own docs are the maintainer's (D-42): --fix leaves them
 
-Exit 0 when every row is RELEASE_READY, AGENTS_OK, PLUGIN_OK, SKILLS_OK, LABELS_OK,
-BRANCH_DELETE_ON, or LANDING_OK (RUNNER_SHARED and CHANGELOG_RULES, warnings, leave the
-exit code alone), 1
+Exit 0 when every row is RELEASE_READY, AGENTS_OK, PLUGIN_OK, SKILLS_OK, LABELS_OK, or
+BRANCH_DELETE_ON (RUNNER_SHARED and CHANGELOG_RULES, warnings, leave the exit code alone), 1
 otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT,
-PLUGIN_OUTDATED, SKILL_SHADOWED, and LANDING_OFF included), 2 on bad input, a malformed
+PLUGIN_OUTDATED, and SKILL_SHADOWED included), 2 on bad input, a malformed
 settings.json or config (its [agents] read as github-ship-watch reads it; its [lanes] and
-[environments] too when the runner is read; its [autonomy] with an [agents] section), an
-[agents] prs that isn't a TOML boolean, both config files,
+[environments] too when the runner is read; its [autonomy] with an [agents] section), both
+config files,
 a runs-on in release.yml that isn't a label or a quoted JSON list of labels, a git or gh
 failure (a failed read of the repo setting never reads as off), or a malformed
 `claude plugin list --json`.
@@ -190,7 +184,7 @@ NO_MODE = (
     'no mode in [agents]: the gate runs interactive by default, which nobody chose; set mode = "interactive"'
     ' or mode = "headless" (shipmill-setup\'s step 4)'
 )
-DONE = {"RELEASE_READY", "AGENTS_OK", "PLUGIN_OK", "SKILLS_OK", "LABELS_OK", "BRANCH_DELETE_ON", "LANDING_OK"}
+DONE = {"RELEASE_READY", "AGENTS_OK", "PLUGIN_OK", "SKILLS_OK", "LABELS_OK", "BRANCH_DELETE_ON"}
 # rows that warn without being part of setup's done states: they leave the exit code alone
 WARNINGS = {"RUNNER_SHARED", "CHANGELOG_RULES"}
 # the repo's own contributor rules, read for a stale rule to edit Unreleased and never written (D-42)
@@ -615,62 +609,6 @@ def branch_delete_row(repo: str, fix: bool, gh: Callable[[list[str]], str] = run
     return Row("BRANCH_DELETE_OFF", "merged branches stay on GitHub and stacked PRs aren't retargeted")
 
 
-# -- landing -------------------------------------------------------------------------------
-
-
-def agents_prs(section: str, where: Path) -> bool | None:
-    """[agents] prs as a TOML boolean, or None without the key (the config loader's default
-    is false). Anything but true or false fails rather than being guessed"""
-    found = re.findall(r"^[ \t]*prs[ \t]*=(.*)$", section, re.MULTILINE)
-    if not found:
-        return None
-    if len(found) > 1:
-        fail(f"{where}: [agents] sets prs more than once")
-    value = found[0].split("#", 1)[0].strip()
-    if value not in ("true", "false"):
-        fail(f"{where}: [agents] prs must be true or false, got {value!r}")
-    return value == "true"
-
-
-def waiting_prs(repo: str, gh: Callable[[list[str]], str]) -> list[int]:
-    """The open non-draft pull requests, newest first"""
-    cmd = ["gh", "pr", "list", "-R", repo, "--state", "open", "--json", "number,isDraft", "--limit", "500"]
-    try:
-        pulls = json.loads(gh(cmd))
-    except json.JSONDecodeError as exc:
-        fail(f"gh pr list -R {repo}: {exc}")
-    if not isinstance(pulls, list):
-        fail(f"gh pr list -R {repo}: expected a JSON list")
-    found = []
-    for pull in pulls:
-        if not (isinstance(pull, dict) and type(pull.get("number")) is int and type(pull.get("isDraft")) is bool):
-            fail(f"gh pr list -R {repo}: unreadable pull request {pull!r}")
-        if not pull["isDraft"]:
-            found.append(pull["number"])
-    return sorted(found, reverse=True)
-
-
-def landing_row(repo: str, repo_dir: Path, gh: Callable[[list[str]], str] = run) -> Row:
-    """Whether open pull requests wait on a gate that doesn't land them, as `shipmill status`
-    reports it ("landing off"); gh is called only when [agents] has prs = false"""
-    section = agents_section(repo_dir)
-    if section is None:
-        return Row("LANDING_OK", "no [agents] section: no gate to land pull requests")
-    prs = agents_prs(section, repo_dir / CONFIG)
-    if prs:
-        return Row("LANDING_OK", "[agents] prs = true: the gate lands open pull requests")
-    how = "prs = false" if prs is False else "no prs key, so prs = false"
-    waiting = waiting_prs(repo, gh)
-    if not waiting:
-        return Row("LANDING_OK", f"[agents] {how}, and no pull request waits to land")
-    listed = " ".join(f"#{n}" for n in waiting)
-    return Row(
-        "LANDING_OFF",
-        f"{listed} wait to land: the gate doesn't land pull requests ([agents] {how});"
-        " set [agents] prs = true with a prompt that merges when green, or land them by hand",
-    )
-
-
 # -- runner --------------------------------------------------------------------------------
 # A workflow is read without a YAML library: the block mappings a workflow is written in, by
 # indentation, which is all runs-on and the jobs around it need
@@ -978,7 +916,6 @@ def main() -> int:
         *skill_rows(Path.home(), ws),
         labels_row(missing, wanted),
         branch_delete_row(args.repo, args.fix),
-        landing_row(args.repo, repo_dir),
         *runner_rows(repo_dir, ws),
         *changelog_rule_rows(repo_dir, ws),
     ]
