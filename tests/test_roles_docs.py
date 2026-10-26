@@ -79,6 +79,14 @@ def test_s036_16_the_hand_off_mentions_the_teams() -> None:
     assert "gets no comment and no question" in no_assignee and "so a session never asks" in no_assignee
 
 
+def test_s036_16_triage_state_help_never_asks_who_does_a_step() -> None:
+    # the script's own help, which a session reads too, says what the rubric says
+    script = folded(TRIAGE / "scripts" / "triage_state.py")
+    no_assignee = script.split("NO_ASSIGNEE without --role flags", 1)[1].split(" ASSIGN_DUE ", 1)[0]
+    assert "`shipmill roles --flags`" in no_assignee
+    assert "who does it" not in no_assignee
+
+
 def test_s036_16_a_step_is_filed_with_its_role_and_assigned_at_once() -> None:
     gate = folded(TRIAGE / "references" / "spec-gate.md")
     step = gate.split("**A step only a person can do**", 1)[1].split(" - **", 1)[0].split(" ## ", 1)[0]
