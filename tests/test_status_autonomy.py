@@ -97,6 +97,28 @@ def test_s040_10_status_reads_the_checkouts_autonomy_and_the_prompt(tmp_path: Pa
         read_autonomy(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("toml", "error"),
+    [
+        ('[autonomy]\ndeploy.production = "act"\n', "deploy.production names no environment in"),
+        ('[autonomy]\ndeploy.production = "act"\n[environments]\nproduction = 1\n', "production must be a table"),
+        ('environments = "production"\n', "environments must be a table"),
+    ],
+)
+def test_s040_10_status_refuses_environments_shipmill_autonomy_refuses(tmp_path: Path, toml: str, error: str) -> None:
+    # the CLI's run() turns a ReleaseError into exit 2, before watch_state.py runs
+    root = repo_with_release(tmp_path / "repo")
+    (root / ".github").mkdir()
+    (root / ".github" / "shipmill.toml").write_text(toml, encoding="utf-8")
+    with pytest.raises(ReleaseError, match=error):
+        read_autonomy(root)
+    fake = Fake(0)
+    for shown in (["--json"], []):
+        with pytest.raises(ReleaseError, match=error):
+            main(["--repo", str(root), "status", *shown], state=fake, login=host)
+    assert fake.seen == []
+
+
 class Held(Fake):
     """watch_state.py with an open hold among its rows"""
 

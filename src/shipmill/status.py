@@ -466,13 +466,20 @@ def read_autonomy(root: Path) -> tuple[AutonomyPolicy, tuple[EnvironmentName, ..
     """Spec 040: the checkout config's [autonomy] as `shipmill autonomy` parses it, with the
     legacy reading of [agents] prompt (S-040-6), and the environments [environments] names;
     a config without the file reads every default. A malformed [autonomy] or [agents] stops
-    the report, as a level that can't be read is unknown"""
+    the report, as a level that can't be read is unknown, and so does a deploy level for an
+    environment [environments] doesn't declare, as Policy.parse refuses it"""
     raw = _raw(root)
-    policy = AutonomyPolicy.parse(Table(raw, Path(CONFIG_PATH).name).table("autonomy", optional=True))
+    top = Table(raw, Path(CONFIG_PATH).name)
+    table = top.table("autonomy", optional=True)
+    policy = AutonomyPolicy.parse(table)
+    declared = top.table("environments", optional=True)
+    for name in declared.raw:  # each [environments.<name>] a table, as environments.parse reads it
+        declared.table(name)
+    policy.require_environments(declared.keys(), table.where)
+    environments = tuple(EnvironmentName(name) for name in declared.raw)
     if "agents" in raw:
         policy = policy.read_prompt(AgentsConfig.load(root).prompt)
-    declared = raw.get("environments")
-    return policy, tuple(EnvironmentName(name) for name in declared) if isinstance(declared, dict) else ()
+    return policy, environments
 
 
 def hold_of(rows: Sequence[Row]) -> Hold:
