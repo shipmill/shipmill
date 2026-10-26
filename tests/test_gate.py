@@ -593,6 +593,28 @@ def test_no_config_file_names_the_gate(tmp_path: Path) -> None:
         AgentsConfig.load(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("autonomy", "match"),
+    [
+        ('[autonomy]\nland = "merge"\n', "land must be one of"),
+        ('[autonomy]\nlnd = "act"\n', "unknown keys \\['lnd'\\]"),
+    ],
+)
+def test_s040_9_a_malformed_autonomy_stops_the_gate(tmp_path: Path, autonomy: str, match: str) -> None:
+    # a land level the gate can't read never falls back to a default that starts sessions
+    write_config(tmp_path, '[agents]\nprompt = "/t merge when green"\n' + autonomy)
+    with pytest.raises(ReleaseError, match=match):
+        AgentsConfig.load(tmp_path)
+
+
+def test_s040_9_no_doc_says_prs_decides_whether_open_prs_are_work() -> None:
+    # the gate follows [autonomy] land; ship-watch's row table and agent-modes said prs = true
+    root = Path(__file__).parents[1]
+    for doc in (skills_dir() / "github-ship-watch" / "SKILL.md", root / "docs" / "design" / "agent-modes.md"):
+        text = doc.read_text(encoding="utf-8")
+        assert "PRS_OPEN with `[agents] prs = true`" not in text and "open PRs when `prs = true`" not in text
+
+
 def test_the_release_policy_accepts_and_checks_agents() -> None:
     policy = Policy.parse(tomllib.loads(POLICY + '\n[agents]\nprompt = "/t"\n'), "policy")
     assert policy.agents == AgentsConfig("/t", None, 24)

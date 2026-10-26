@@ -84,7 +84,7 @@ Each row that needs a person or an agent carries a `fix` (`--json`'s `"fix"` key
 | PYPI_WAIT | uv found no `shipmill==<version>` on PyPI for the pinned CLI, even with its index refreshed: a release's tag moves minutes before PyPI serves it (#597). The detail names the reads it stands in for; the rest of the watch stands. Report it with the row's fix, the release's `publish.yml` run, only when it outlasts a few passes. Report only |
 | PRS_OPEN, BOT_OK, BOT_NONE, NO_REGISTRY | Report only |
 
-`--json` prints one JSON object per row: `state`, `subject`, `detail`, and `agent`, which says whether the row needs an agent. `shipmill gate` starts a session only on `agent: true` rows (plus PRS_OPEN with `[agents] prs = true`), and refuses a row without the field. The script's `AGENT` set decides it, next to this table; change both together:
+`--json` prints one JSON object per row: `state`, `subject`, `detail`, and `agent`, which says whether the row needs an agent. `shipmill gate` starts a session only on `agent: true` rows (plus PRS_OPEN unless `[autonomy] land` is `observe`, spec 040), and refuses a row without the field. The script's `AGENT` set decides it, next to this table; change both together:
 
 | `agent` | States | Why |
 |---|---|---|
