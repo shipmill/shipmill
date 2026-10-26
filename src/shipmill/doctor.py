@@ -783,6 +783,15 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
             f" bound agent sessions only; add [agents] or delete {them}"
         )
         checks.append(Check("WARN", "autonomy", detail))
+    for stage in agent_stages:  # spec 040's legacy reading, for one minor release
+        if policy.autonomy.is_read_from_prompt(stage):
+            level = policy.autonomy.configured(stage)
+            detail = (
+                f'{stage} reads {level} from [agents] prompt ("merge when green" or "land"), which the next minor'
+                f' release stops reading: add {stage} = "{level}" to [autonomy], or run'
+                f" `{cli_command()} upgrade --apply agent-autonomy`"
+            )
+            checks.append(Check("WARN", "autonomy", detail))
     proposes = any(policy.autonomy.configured(stage) is Autonomy.PROPOSE for stage in policy.autonomy.stages())
     breaks = policy.can_break  # S-029-7: a breaking stable candidate is proposed, whatever the autonomy
     if (

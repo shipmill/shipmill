@@ -7,6 +7,11 @@ config's text, adding its line at the end of its table and keeping every other b
 included), and creates the files it owns; it commits nothing. A top-level `requires` lower than
 the upgrade's version is raised to it, in place (spec 031); a higher one stays.
 
+An upgrade may add several keys to one top-level table, with values it reads from the config
+(agent-autonomy writes triage, fix, and land as spec 040's legacy reading gives them); setting
+any of them decides it, and one that creates its table appends it at the end of a file without
+its header line.
+
 An upgrade that retires a deprecated key (spec 029) works the other way round: it applies
 while its table sets that key, whatever the value, and is decided once the key is gone, so a
 repo that edits it out by hand is done. Its edit takes the key's line out, a trailing comment
@@ -32,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from shipmill import UVX, requires
-from shipmill.autonomy import Autonomy
+from shipmill.autonomy import Autonomy, AutonomyPolicy, StageKind
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.github import UPGRADE_LABEL, UPGRADE_LATER_LABEL, GitHub, Issue
@@ -94,17 +99,39 @@ class Upgrade:
     removes: str | None = None
     unless: tuple[str, ...] = ()  # with removes: keys of the table, any of which means no line is added
     declined: str = ""  # what closing its issue means besides "never proposed again", for the issue's body
+    also: tuple[str, ...] = ()  # more keys it adds to the table after key; setting any of them decides it
+    # the values of key and also, read from the config being upgraded; None: value alone
+    reads: Callable[[Mapping[str, Any]], tuple[str | bool | int, ...]] | None = None
+    when: str | None = None  # another top-level table the config must have for it to apply, such as agents
+    creates: bool = False  # a config without the table gets it, at the end of the file
 
     def __post_init__(self) -> None:
-        for name in (*self.table.split("."), self.key, *([self.removes] if self.removes else []), *self.unless):
+        names = (*self.table.split("."), self.key, *self.also, *([self.removes] if self.removes else []), *self.unless)
+        for name in (*names, *([self.when] if self.when else [])):
             if not _KEY.match(name):
                 raise ReleaseError(f"upgrade {self.id}: {name!r} is not a bare TOML key")
+        if (self.also or self.creates) and (self.removes is not None or "." in self.table):
+            raise ReleaseError(f"upgrade {self.id}: only an upgrade that adds to a top-level table adds more keys")
+
+    @property
+    def keys(self) -> tuple[str, ...]:
+        return (self.key, *self.also)
+
+    def settings(self, raw: Mapping[str, Any]) -> dict[str, str | bool | int]:
+        """Each key it adds with its value for this config"""
+        values = (self.value,) if self.reads is None else self.reads(raw)
+        if len(values) != len(self.keys):
+            raise ReleaseError(f"upgrade {self.id}: {len(values)} values for the keys {', '.join(self.keys)}")
+        return dict(zip(self.keys, values, strict=True))
+
+    def lines(self, raw: Mapping[str, Any]) -> tuple[str, ...]:
+        """The config lines it adds to this config, such as fragments = "changelog.d" """
+        return tuple(f"{key} = {_toml(value)}" for key, value in self.settings(raw).items())
 
     @property
     def line(self) -> str:
-        """The config line it adds, such as fragments = "changelog.d" """
-        value = ("true" if self.value else "false") if isinstance(self.value, bool) else json.dumps(self.value)
-        return f"{self.key} = {value}"
+        """The config lines it adds, one per key, with the values a config with nothing to read gets"""
+        return "\n".join(self.lines({}))
 
     def section(self, raw: Mapping[str, Any]) -> Mapping[str, Any] | None:
         """The config's table the upgrade edits, None when it has none; refuses a value that
@@ -124,15 +151,17 @@ class Upgrade:
         if self.removes is not None:
             table = self.section(raw)
             return table is not None and self.removes in table
+        if self.when is not None and self.when not in raw:
+            return False
         return not self.needs_table or self.section(raw) is not None
 
     def decided(self, raw: Mapping[str, Any]) -> bool:
-        """The config holds the key, whatever its value: a maintainer's decision either way;
-        for an upgrade that removes a key, the table no longer sets it"""
+        """The config holds the key, or any of also, whatever its value: a maintainer's decision
+        either way; for an upgrade that removes a key, the table no longer sets it"""
         if self.removes is not None:
             return not self.applies(raw)
         table = self.section(raw)
-        return table is not None and self.key in table
+        return table is not None and any(key in table for key in self.keys)
 
     def adds(self, raw: Mapping[str, Any]) -> bool:
         """Whether applying it to the config adds its line: always, unless it removes a key from a
@@ -140,12 +169,15 @@ class Upgrade:
         table = self.section(raw)
         return self.removes is None or table is None or not any(k in table for k in (self.key, *self.unless))
 
-    def record(self) -> dict[str, object]:
+    def record(self, raw: Mapping[str, Any] | None = None) -> dict[str, object]:
+        """The upgrade as JSON, its lines with the values for raw, the config being upgraded"""
+        lines = self.lines(raw or {})
         return {
             "id": str(self.id),
             "version": str(self.version),
             "table": self.table,
-            "line": self.line,
+            "line": "\n".join(lines),
+            "lines": list(lines),
             "removes": self.removes,
             "files": [p.path.as_posix() for p in self.files],
             "changes": self.changes,
@@ -154,6 +186,22 @@ class Upgrade:
         }
 
 
+def _toml(value: str | bool | int) -> str:
+    return ("true" if value else "false") if isinstance(value, bool) else json.dumps(value)
+
+
+def _legacy_levels(raw: Mapping[str, Any]) -> tuple[str | bool | int, ...]:
+    """triage, fix, and land as spec 040's legacy reading gives them for the config: the
+    defaults, and land act when [agents] prompt says "merge when green" or "land" """
+    agents = raw.get(AGENTS_TABLE)
+    prompt = agents.get("prompt", "") if isinstance(agents, dict) else ""
+    if not isinstance(prompt, str):
+        raise ReleaseError(f"{CONFIG_PATH}: [{AGENTS_TABLE}] prompt must be a string, got {prompt!r}")
+    read = AutonomyPolicy().read_prompt(prompt)
+    return (read.triage.value, read.fix.value, read.land.value)
+
+
+AGENTS_TABLE = "agents"
 FRAGMENTS = "changelog.d"
 # A fragment's example, in each CHANGELOG style: keep-a-changelog's category heading and entry,
 # or dash style's titled entry block
@@ -231,6 +279,31 @@ CATALOGUE: tuple[Upgrade, ...] = (
         # a trigger beside milestone would release before the milestone is done
         unless=("schedule", "milestone"),
         declined=("shipmill refuses `min_soak_days`, so a decline means deleting it from `[lanes.stable]` by hand."),
+    ),
+    Upgrade(
+        id=UpgradeId("agent-autonomy"),
+        version=Version.parse("0.78.0"),  # the release that adds it (spec 014); 0.77.0 shipped without it
+        table="autonomy",
+        key=StageKind.TRIAGE.value,
+        also=(StageKind.FIX.value, StageKind.LAND.value),
+        value=Autonomy.ACT.value,
+        reads=_legacy_levels,
+        needs_table=False,
+        when=AGENTS_TABLE,
+        creates=True,
+        changes=(
+            "[autonomy] sets triage, fix, and land, the stages agent sessions run, to the levels they have today:"
+            ' land acts when [agents] prompt says "merge when green" or "land", and proposes otherwise'
+        ),
+        why=(
+            "the levels move from the prompt's words, which nothing checks, to checked keys; the next minor"
+            " release stops reading the prompt, and an absent key then takes its default (spec 040)"
+        ),
+        off='set each key to "observe", "propose", or "act" in [autonomy]',
+        declined=(
+            "Until the next minor release `land` keeps being read from the prompt; after it, an absent key"
+            " takes its default (`triage` and `fix` act, `land` proposes)."
+        ),
     ),
 )
 
@@ -335,7 +408,9 @@ def _edit_text(upgrade: Upgrade) -> str:
     config = CONFIG_PATH.as_posix()
     if upgrade.removes is None:
         created = "".join(f" and creates `{f.path.as_posix()}`" for f in upgrade.files)
-        return f"It adds this line under `[{upgrade.table}]` in `{config}`{created}:"
+        what = "these lines" if upgrade.also else "this line"
+        table = " (the table too, when the file has none)" if upgrade.creates else ""
+        return f"It adds {what} under `[{upgrade.table}]`{table} in `{config}`{created}:"
     keys = ", ".join(f"`{k}`" for k in (upgrade.key, *upgrade.unless))
     return (
         f"It deletes the `{upgrade.removes}` line from `[{upgrade.table}]` in `{config}`, keeps every other line,"
@@ -346,11 +421,15 @@ def _edit_text(upgrade: Upgrade) -> str:
 def _decided_text(upgrade: Upgrade) -> str:
     """When the config has decided the upgrade, for the issue's body"""
     if upgrade.removes is None:
+        if upgrade.also:
+            keys = ", ".join(f"`{key}`" for key in upgrade.keys)
+            return f"`[{upgrade.table}]` sets any of {keys}, to any value"
         return f"`[{upgrade.table}]` sets `{upgrade.key}`, to any value"
     return f"`[{upgrade.table}]` no longer sets `{upgrade.removes}`"
 
 
-def body(upgrade: Upgrade) -> str:
+def body(upgrade: Upgrade, raw: Mapping[str, Any] | None = None) -> str:
+    """The issue's body; its lines carry the values for raw, the config being upgraded"""
     lines = [
         marker(upgrade),
         f"shipmill {upgrade.version} offers **{upgrade.id}**, which needs an opt-in in `{CONFIG_PATH.as_posix()}`."
@@ -364,7 +443,7 @@ def body(upgrade: Upgrade) -> str:
         "",
         "```toml",
         f"[{upgrade.table}]",
-        upgrade.line,
+        *upgrade.lines(raw or {}),
         "```",
         "",
         "### Accept",
@@ -422,8 +501,11 @@ def propose(raw: Mapping[str, Any], level: Autonomy, github: GitHub, fix: str) -
             continue
         for issue in _issues(issues, upgrade)[0]:
             settled = "no longer sets" if upgrade.removes is not None else "sets"
+            table = upgrade.section(raw) or {}
+            keys = [upgrade.removes] if upgrade.removes is not None else [k for k in upgrade.keys if k in table]
+            named = ", ".join(f"`{k}`" for k in keys)  # the keys that decided it, not only the first
             text = (
-                f"`[{upgrade.table}]` in `{CONFIG_PATH.as_posix()}` {settled} `{upgrade.removes or upgrade.key}`:"
+                f"`[{upgrade.table}]` in `{CONFIG_PATH.as_posix()}` {settled} {named}:"
                 f" {upgrade.id} is decided, so this issue is done."
             )
             with _named(upgrade.id, fix):
@@ -440,7 +522,7 @@ def propose(raw: Mapping[str, Any], level: Autonomy, github: GitHub, fix: str) -
         return done
     for offer in offers(raw, issues):
         upgrade = offer.upgrade
-        wanted_title, wanted = title(upgrade), body(upgrade)
+        wanted_title, wanted = title(upgrade), body(upgrade, raw)
         with _named(upgrade.id, fix):
             if offer.issue is None:
                 number = github.create_issue(wanted_title, wanted, (UPGRADE_LABEL,))
@@ -473,6 +555,7 @@ class Applied:
     created: tuple[Path, ...]  # relative to the repo root
     kept: tuple[Path, ...]  # owned files that already existed, left as they were
     added: bool = True  # whether the edit added the upgrade's line; an upgrade that removes a key may not
+    lines: tuple[str, ...] = ()  # the lines the edit added, or would have added, with this config's values
 
 
 def apply(root: Path, upgrade: Upgrade) -> Applied:
@@ -493,23 +576,27 @@ def apply(root: Path, upgrade: Upgrade) -> Applied:
             raise ReleaseError(
                 f"upgrade {upgrade.id} doesn't apply: [{upgrade.table}] in {CONFIG_PATH} sets no {upgrade.removes}"
             )
-        raise ReleaseError(f"upgrade {upgrade.id} doesn't apply: {CONFIG_PATH} has no [{upgrade.table}] section")
+        missing = upgrade.when if upgrade.when is not None and upgrade.when not in raw else upgrade.table
+        raise ReleaseError(f"upgrade {upgrade.id} doesn't apply: {CONFIG_PATH} has no [{missing}] section")
     if upgrade.decided(raw):
-        raise ReleaseError(
-            f"upgrade {upgrade.id} is already decided: [{upgrade.table}] {upgrade.key} is set in {CONFIG_PATH}"
-        )
-    if upgrade.section(raw) is None:
+        keys = "/".join(upgrade.keys)
+        raise ReleaseError(f"upgrade {upgrade.id} is already decided: [{upgrade.table}] {keys} is set in {CONFIG_PATH}")
+    if upgrade.section(raw) is None and not upgrade.creates:
         raise ReleaseError(
             f"upgrade {upgrade.id}: {CONFIG_PATH} has no [{upgrade.table}] table to add {upgrade.key} to"
         )
     adds = upgrade.adds(raw)
+    lines = upgrade.lines(raw)
     expected = copy.deepcopy(dict(raw))
+    if upgrade.creates:
+        expected.setdefault(upgrade.table, {})
     table = expected
     for part in upgrade.table.split("."):
         table = table[part]
     if upgrade.removes is None:
-        edited = _insert(text, upgrade)
-        refused = ReleaseError(f"upgrade {upgrade.id}: can't add {upgrade.line} to {CONFIG_PATH}; add it by hand")
+        edited = _insert(text, upgrade, lines)
+        shown = "; ".join(lines)
+        refused = ReleaseError(f"upgrade {upgrade.id}: can't add {shown} to {CONFIG_PATH}; add it by hand")
     else:
         edited = _replace(text, upgrade, upgrade.removes, adds)
         del table[upgrade.removes]
@@ -518,7 +605,7 @@ def apply(root: Path, upgrade: Upgrade) -> Applied:
             " edit it by hand"
         )
     if adds:
-        table[upgrade.key] = upgrade.value
+        table.update(upgrade.settings(raw))
     needed = Requires.at(upgrade.version)
     if bound is not None and bound.floor < needed.floor:  # a higher or equal bound stays (S-031-7)
         edited = _set_requires(edited, needed, upgrade)
@@ -540,7 +627,7 @@ def apply(root: Path, upgrade: Upgrade) -> Applied:
         target.write_text(owned.render(raw), encoding="utf-8")
         created.append(owned.path)
     path.write_bytes(edited.encode("utf-8"))
-    return Applied(upgrade, tuple(created), tuple(kept), adds)
+    return Applied(upgrade, tuple(created), tuple(kept), adds, lines)
 
 
 _REQUIRES_LINE = re.compile(rf"^(\s*{requires.KEY}\s*=\s*)(\"[^\"\n]*\"|'[^'\n]*')")
@@ -561,13 +648,24 @@ def _set_requires(text: str, bound: Requires, upgrade: Upgrade) -> str:
     return "".join(lines)
 
 
+def _headers(text: str, upgrade: Upgrade) -> list[int]:
+    """The indexes of the lines that open the upgrade's table, [table], outside strings"""
+    lines = _LINE.findall(text)  # not splitlines: it also breaks on U+2028 and the like, TOML only on \n
+    outside = _outside_strings(lines)
+    return [
+        i
+        for i, line in enumerate(lines)
+        if outside[i] and (m := _HEADER.match(line)) and re.sub(r"\s", "", m[1]) == upgrade.table
+    ]
+
+
 def _body(text: str, upgrade: Upgrade, key: str) -> tuple[list[str], list[bool], int, int]:
     """The text's lines, whether each starts outside a multi-line string, and the bounds of the
     upgrade's table: its header line and the next header's (or the line count)"""
-    lines = _LINE.findall(text)  # not splitlines: it also breaks on U+2028 and the like, TOML only on \n
+    lines = _LINE.findall(text)
     outside = _outside_strings(lines)
     headers = [i for i, line in enumerate(lines) if outside[i] and _ANY_HEADER.match(line)]
-    found = [i for i in headers if (m := _HEADER.match(lines[i])) and re.sub(r"\s", "", m[1]) == upgrade.table]
+    found = _headers(text, upgrade)
     if len(found) != 1:
         raise ReleaseError(f"upgrade {upgrade.id}: no [{upgrade.table}] header line in {CONFIG_PATH} to edit {key} in")
     start = found[0]
@@ -590,10 +688,15 @@ def _replace(text: str, upgrade: Upgrade, removes: str, adds: bool) -> str:
     return "".join(lines)
 
 
-def _insert(text: str, upgrade: Upgrade) -> str:
-    """The text with the upgrade's line after the last line of its table's body (the header
-    when the body is empty), in the file's own line ending"""
+def _insert(text: str, upgrade: Upgrade, added: Sequence[str]) -> str:
+    """The text with the added lines after the last line of the upgrade's table's body (the
+    header when the body is empty), in the file's own line ending. An upgrade that creates its
+    table, in a file without its header line, gets the header and the lines at the end"""
     newline = "\r\n" if "\r\n" in text else "\n"
+    if upgrade.creates and not _headers(text, upgrade):
+        ended = text if not text or text.endswith("\n") else text + newline
+        gap = newline if ended else ""
+        return ended + gap + f"[{upgrade.table}]{newline}" + "".join(line + newline for line in added)
     lines, outside, start, end = _body(text, upgrade, upgrade.key)
     last = start
     for i in range(start + 1, end):
@@ -602,7 +705,7 @@ def _insert(text: str, upgrade: Upgrade) -> str:
             last = i
     if not lines[last].endswith("\n"):
         lines[last] += newline
-    lines.insert(last + 1, upgrade.line + newline)
+    lines[last + 1 : last + 1] = [line + newline for line in added]
     return "".join(lines)
 
 

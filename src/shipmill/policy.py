@@ -237,6 +237,8 @@ class Policy:
         autonomy = AutonomyPolicy.parse(autonomy_table)
         autonomy.require_environments(declared.keys(), autonomy_table.where)
         agents = AgentsConfig.parse(top.table("agents")) if "agents" in raw else None
+        if agents is not None:  # spec 040's legacy reading; a config without [agents] has no prompt
+            autonomy = autonomy.read_prompt(agents.prompt)
         product = ProductConfig.read(top, None if agents is None else agents.app_id)
         roadmap = RoadmapConfig.parse(top.table("roadmap")) if "roadmap" in raw else None
         notices = NoticesConfig.parse(top.table("notices", optional=True))
