@@ -2,6 +2,7 @@
 milestone's issues are built and every build issue's fix is in the candidate's base"""
 
 import datetime as dt
+from pathlib import Path
 
 import pytest
 
@@ -19,7 +20,7 @@ from shipmill.milestones import CLOSE_CONFIRMED, GoalError, parse_spec
 from shipmill.planner import Decision, Event, Planner
 from shipmill.policy import Lane
 
-from .conftest import Repo, at_day
+from .conftest import Repo, Repos, at_day
 from .test_lanes import plan, release
 
 CLOSED = at_day(2)
@@ -91,8 +92,8 @@ def in_milestone(repo: Repo, *issues: tuple[int, str]) -> None:
     repo.github.milestone_lists["1.1.0"] = MilestoneIssues("o/demo", tuple(issues))
 
 
-def test_s022_1_a_milestone_with_open_issues_is_not_due(repo: Repo) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "built", "o/demo#11")})
+def test_s022_1_a_milestone_with_open_issues_is_not_due(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "o/demo#11")})
     repo.github.milestones["1.1.0"] = Milestone(1, 1)
     decision = plan_stable(repo)
     assert "stable: 1.1.0 is ready but no trigger is due; rc:" in decision.reason
@@ -100,8 +101,10 @@ def test_s022_1_a_milestone_with_open_issues_is_not_due(repo: Repo) -> None:
     assert repo.github.close_reads == []
 
 
-def test_s022_2_a_spec_not_built_holds_the_milestone(repo: Repo) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "approved", "o/demo#11"), "023-other.md": spec(23, "draft", "#12")})
+def test_s022_2_a_spec_not_built_holds_the_milestone(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(
+        tmp_path, rc_cut, {"021-goal.md": spec(21, "approved", "o/demo#11"), "023-other.md": spec(23, "draft", "#12")}
+    )
     in_milestone(repo, (11, "Build A"), (12, "Build B"))
     decision = plan_stable(repo)
     assert decision.lane is not Lane.STABLE
@@ -112,9 +115,9 @@ def test_s022_2_a_spec_not_built_holds_the_milestone(repo: Repo) -> None:
     assert repo.github.close_reads == []  # nothing built: no build issue is read
 
 
-def test_s022_2_the_spec_is_read_at_mains_head(repo: Repo) -> None:
+def test_s022_2_the_spec_is_read_at_mains_head(repos: Repos, tmp_path: Path) -> None:
     """A spec marked built only on a branch doesn't count"""
-    rc_cut(repo, {"021-goal.md": spec(21, "approved", "#11")})
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "approved", "#11")})
     repo.git.run("checkout", "-q", "-b", "wip", "origin/main")
     repo.write("docs/specs/021-goal.md", spec(21, "built", "#11"))
     repo.git.run("commit", "-q", "-am", "built on a branch")
@@ -124,8 +127,8 @@ def test_s022_2_the_spec_is_read_at_mains_head(repo: Repo) -> None:
     assert "milestone 1.1.0: S-021 is approved, not built" in plan_stable(repo).reason
 
 
-def test_s022_3_a_build_issue_closed_with_no_merged_pull_request_holds_it(repo: Repo) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "built", "o/demo#11")})
+def test_s022_3_a_build_issue_closed_with_no_merged_pull_request_holds_it(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "o/demo#11")})
     in_milestone(repo, (11, "Build A"))
     repo.github.closes[11] = closed(11)
     decision = plan_stable(repo)
@@ -142,8 +145,10 @@ def test_s022_3_a_build_issue_closed_with_no_merged_pull_request_holds_it(repo: 
         comment(CLOSE_CONFIRMED, "NONE", author="other-app", bot=True),  # another App
     ],
 )
-def test_s022_3_an_untrusted_or_stale_marker_confirms_nothing(repo: Repo, marker: IssueComment) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "built", "#11")})
+def test_s022_3_an_untrusted_or_stale_marker_confirms_nothing(
+    repos: Repos, tmp_path: Path, marker: IssueComment
+) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "#11")})
     in_milestone(repo, (11, "Build A"))
     with_app(repo, 7)
     repo.github.apps = {"other-app": 8, "shipmill-demo": 7}
@@ -158,8 +163,10 @@ def test_s022_3_an_untrusted_or_stale_marker_confirms_nothing(repo: Repo, marker
         comment("\n" + CLOSE_CONFIRMED, "NONE", author="shipmill-demo", bot=True),  # the [agents] App
     ],
 )
-def test_s022_3_a_trusted_close_confirmed_marker_stands_in_for_a_pull_request(repo: Repo, marker: IssueComment) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "built", "#11")})
+def test_s022_3_a_trusted_close_confirmed_marker_stands_in_for_a_pull_request(
+    repos: Repos, tmp_path: Path, marker: IssueComment
+) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "#11")})
     in_milestone(repo, (11, "Build A"))
     with_app(repo, 7)
     repo.github.apps = {"shipmill-demo": 7}
@@ -169,8 +176,8 @@ def test_s022_3_a_trusted_close_confirmed_marker_stands_in_for_a_pull_request(re
     assert "milestone 1.1.0 built: S-021" in decision.reason
 
 
-def test_s022_4_a_fix_merged_after_the_rc_holds_the_promotion(repo: Repo) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "built", "#11")})
+def test_s022_4_a_fix_merged_after_the_rc_holds_the_promotion(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "#11")})
     late = repo.merge(2, "Fixed", "Fix B, after the rc")
     in_milestone(repo, (11, "Build A"))
     repo.github.closes[11] = closed(11, late)
@@ -179,8 +186,8 @@ def test_s022_4_a_fix_merged_after_the_rc_holds_the_promotion(repo: Repo) -> Non
     assert "milestone 1.1.0: S-021's #11 is not in v1.1.0rc1" in decision.reason
 
 
-def test_s022_5_a_build_issue_closed_as_not_planned_holds_nothing(repo: Repo) -> None:
-    fix = rc_cut(repo, {"021-goal.md": spec(21, "built", "#11", "#12")})
+def test_s022_5_a_build_issue_closed_as_not_planned_holds_nothing(repos: Repos, tmp_path: Path) -> None:
+    repo, fix = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "#11", "#12")})
     in_milestone(repo, (11, "Build A"), (12, "Build B"))
     repo.github.closes[11] = closed(11, fix)
     repo.github.closes[12] = closed(12, reason=CloseReason.NOT_PLANNED)
@@ -188,9 +195,10 @@ def test_s022_5_a_build_issue_closed_as_not_planned_holds_nothing(repo: Repo) ->
     assert decision.lane is Lane.STABLE, decision.reason
 
 
-def test_s022_6_built_specs_in_the_base_make_the_lane_due(repo: Repo) -> None:
-    fix = rc_cut(
-        repo,
+def test_s022_6_built_specs_in_the_base_make_the_lane_due(repos: Repos, tmp_path: Path) -> None:
+    repo, fix = repos.after(
+        tmp_path,
+        rc_cut,
         {
             "021-goal.md": spec(21, "built", "o/demo#11", "other/lib#40"),  # another repo's issue is ignored
             "023-other.md": spec(23, "built", "#12"),
@@ -207,8 +215,8 @@ def test_s022_6_built_specs_in_the_base_make_the_lane_due(repo: Repo) -> None:
     assert repo.github.close_reads == [(11, 12), (11, 12)]
 
 
-def test_s022_7_a_milestone_no_spec_names_is_due_as_today(repo: Repo) -> None:
-    rc_cut(repo, {"024-unrelated.md": spec(24, "draft", "#30")})
+def test_s022_7_a_milestone_no_spec_names_is_due_as_today(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut, {"024-unrelated.md": spec(24, "draft", "#30")})
     in_milestone(repo, (11, "Fix A"))
     decision = plan_stable(repo)
     assert decision.lane is Lane.STABLE
@@ -216,8 +224,8 @@ def test_s022_7_a_milestone_no_spec_names_is_due_as_today(repo: Repo) -> None:
     assert repo.github.close_reads == []
 
 
-def test_s022_7_without_specs_the_milestone_reads_nothing_more(repo: Repo) -> None:
-    rc_cut(repo)
+def test_s022_7_without_specs_the_milestone_reads_nothing_more(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut)
     repo.github.milestones["1.1.0"] = Milestone(0, 3)
     decision = plan_stable(repo)
     assert decision.lane is Lane.STABLE
@@ -225,26 +233,26 @@ def test_s022_7_without_specs_the_milestone_reads_nothing_more(repo: Repo) -> No
     assert repo.github.milestone_reads == []
 
 
-def test_s022_7_a_file_in_docs_specs_that_is_no_spec_changes_nothing(repo: Repo) -> None:
+def test_s022_7_a_file_in_docs_specs_that_is_no_spec_changes_nothing(repos: Repos, tmp_path: Path) -> None:
     """A repository may keep other notes in docs/specs; they are the spec checker's to report"""
-    rc_cut(repo, {"api-notes.md": "# API notes\n", "021-goal.md": spec(21, "draft", "#30")})
+    repo, _ = repos.after(tmp_path, rc_cut, {"api-notes.md": "# API notes\n", "021-goal.md": spec(21, "draft", "#30")})
     in_milestone(repo, (11, "Fix A"))
     decision = plan_stable(repo)
     assert decision.lane is Lane.STABLE, decision.reason
     assert "; milestone 1.1.0 has no open issues" in decision.reason
 
 
-def test_s022_9_an_issue_linking_a_spec_holds_the_milestone(repo: Repo) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "approved", "#11")})
+def test_s022_9_an_issue_linking_a_spec_holds_the_milestone(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "approved", "#11")})
     in_milestone(repo, (5, "Feature\n\nSpec: https://github.com/o/demo/blob/main/docs/specs/021-goal.md\n"))
     decision = plan_stable(repo)
     assert decision.lane is not Lane.STABLE
     assert "milestone 1.1.0: S-021 is approved, not built" in decision.reason
 
 
-def test_an_unreadable_goal_does_not_stop_the_rc_lane(repo: Repo) -> None:
+def test_an_unreadable_goal_does_not_stop_the_rc_lane(repos: Repos, tmp_path: Path) -> None:
     """A built spec naming an issue GitHub doesn't have fails the stable lane only"""
-    rc_cut(repo, {"021-goal.md": spec(21, "built", "#99")})
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "#99")})
     in_milestone(repo, (99, "Build"))
     repo.merge(2, "Fixed", "Fix B")
     decision = plan_stable(repo)
@@ -252,10 +260,10 @@ def test_an_unreadable_goal_does_not_stop_the_rc_lane(repo: Repo) -> None:
     assert "stable: not planned, gh api graphql failed: Could not resolve" in decision.reason
 
 
-def test_a_failed_milestone_read_fails_the_plan_as_on_main(repo: Repo) -> None:
+def test_a_failed_milestone_read_fails_the_plan_as_on_main(repos: Repos, tmp_path: Path) -> None:
     """Only the goal's reading spares rc and dev; the milestone's own read fails the plan,
     so a GitHub outage never lets an rc release green in the stable lane's place"""
-    rc_cut(repo, {"021-goal.md": spec(21, "built", "#11")})
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "#11")})
     repo.merge(2, "Fixed", "Fix B")  # rc would release, were the error spared
     repo.github.milestone_error = "gh api repos/o/demo/milestones failed: HTTP 502"
     with pytest.raises(ReleaseError, match="HTTP 502") as raised:
@@ -263,8 +271,8 @@ def test_a_failed_milestone_read_fails_the_plan_as_on_main(repo: Repo) -> None:
     assert not isinstance(raised.value, GoalError)
 
 
-def test_a_spec_with_an_unknown_status_in_the_milestone_fails_its_lane(repo: Repo) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "done", "#11")})
+def test_a_spec_with_an_unknown_status_in_the_milestone_fails_its_lane(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "done", "#11")})
     in_milestone(repo, (11, "Build"))
     with pytest.raises(ReleaseError, match=r"021-goal.md says status 'done'"):
         Planner(repo.git, repo.policy, repo.github, at_day(5)).plan(Event.SCHEDULE)

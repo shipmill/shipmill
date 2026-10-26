@@ -21,7 +21,7 @@ from shipmill.github import Milestone, OpenMilestone, parse_open_milestones
 from shipmill.policy import Lane
 from shipmill.status import MilestoneRow, Row, Verdict, read_milestones, report
 
-from .conftest import Repo, at_day
+from .conftest import Repo, Repos, at_day
 from .test_lanes import plan, release
 from .test_milestones import closed, in_milestone, land_on_main, milestone_policy, plan_stable, rc_cut, spec
 from .test_status_picture import facts, lines
@@ -62,8 +62,10 @@ def milestones(repo: Repo, now: dt.datetime, capsys: pytest.CaptureFixture[str],
     return capsys.readouterr().out
 
 
-def test_s022_8_a_milestone_whose_goal_isnt_built_reads_waiting_with_its_reasons(repo: Repo) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "approved", "#11"), "023-other.md": spec(23, "built", "#12")})
+def test_s022_8_a_milestone_whose_goal_isnt_built_reads_waiting_with_its_reasons(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(
+        tmp_path, rc_cut, {"021-goal.md": spec(21, "approved", "#11"), "023-other.md": spec(23, "built", "#12")}
+    )
     in_milestone(repo, (11, "Build A"), (12, "Build B"))
     repo.github.closes[12] = closed(12)
     rows, error = read(repo, at_day(5))
@@ -76,8 +78,8 @@ def test_s022_8_a_milestone_whose_goal_isnt_built_reads_waiting_with_its_reasons
     assert report(found).verdict is Verdict.IDLE  # the build work is the factory's, not a reason
 
 
-def test_s022_8_a_fix_after_the_rc_names_the_rc(repo: Repo) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "built", "#11")})
+def test_s022_8_a_fix_after_the_rc_names_the_rc(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "#11")})
     late = repo.merge(2, "Fixed", "Fix B, after the rc")
     in_milestone(repo, (11, "Build A"))
     repo.github.closes[11] = closed(11, late)
@@ -85,8 +87,8 @@ def test_s022_8_a_fix_after_the_rc_names_the_rc(repo: Repo) -> None:
     assert rows == [MilestoneRow("MILESTONE_WAITING", "1.1.0", "milestone 1.1.0: S-021's #11 is not in v1.1.0rc1")]
 
 
-def test_s022_8_no_row_while_the_milestone_has_open_issues_or_its_goal_is_done(repo: Repo) -> None:
-    fix = rc_cut(repo, {"021-goal.md": spec(21, "approved", "#11")})
+def test_s022_8_no_row_while_the_milestone_has_open_issues_or_its_goal_is_done(repos: Repos, tmp_path: Path) -> None:
+    repo, fix = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "approved", "#11")})
     repo.github.milestones["1.1.0"] = Milestone(1, 1)  # the ordinary wait
     assert read(repo, at_day(5)) == ([], None)
     in_milestone(repo, (11, "Build A"))
@@ -96,8 +98,8 @@ def test_s022_8_no_row_while_the_milestone_has_open_issues_or_its_goal_is_done(r
     assert plan_stable(repo).lane is Lane.STABLE  # done: the plan is due by it
 
 
-def test_s022_8_no_row_and_nothing_read_without_a_milestone_or_a_milestone_lane(repo: Repo) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "approved", "#11")})
+def test_s022_8_no_row_and_nothing_read_without_a_milestone_or_a_milestone_lane(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "approved", "#11")})
     assert read(repo, at_day(5)) == ([], None)  # no milestone named 1.1.0, none open
     assert repo.github.milestone_reads == []
     milestone_policy_off(repo)
@@ -114,10 +116,12 @@ def milestone_policy_off(repo: Repo) -> None:
     land_on_main(repo, "no milestone", {repo.policy_file: text.replace("milestone = true\n", "")})
 
 
-def test_a_goal_the_plan_cant_read_is_shown_not_dropped(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_goal_the_plan_cant_read_is_shown_not_dropped(
+    repos: Repos, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """#475: `shipmill milestones` prints the error, and watch_state.py warns with it on
     stderr, with no row"""
-    rc_cut(repo, {"021-goal.md": spec(21, "built", "#99")})
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "#99")})
     in_milestone(repo, (99, "Build"))  # #99 isn't on GitHub
     rows, error = read(repo, at_day(5))
     assert rows == [] and error is not None and "Could not resolve" in error
@@ -141,8 +145,10 @@ def stable_released(repo: Repo) -> None:
     repo.merge(2, "Fixed", "Fix B")
 
 
-def test_s022_10_an_open_milestone_a_stable_tag_took_reads_overtaken_with_the_next_version(repo: Repo) -> None:
-    stable_released(repo)
+def test_s022_10_an_open_milestone_a_stable_tag_took_reads_overtaken_with_the_next_version(
+    repos: Repos, tmp_path: Path
+) -> None:
+    repo, _ = repos.after(tmp_path, stable_released)
     repo.github.open = [OpenMilestone(3, "1.1.0", 1), OpenMilestone(4, "1.2.0", 1), OpenMilestone(5, "Someday", 1)]
     rows, error = read(repo, at_day(6))
     rename = "shipmill gh api -X PATCH repos/o/demo/milestones/3 -f title=1.1.1"
@@ -155,9 +161,9 @@ def test_s022_10_an_open_milestone_a_stable_tag_took_reads_overtaken_with_the_ne
     assert f"                 fix: {rename}" in text
 
 
-def test_s022_10_the_next_version_is_the_lanes_candidate(repo: Repo) -> None:
+def test_s022_10_the_next_version_is_the_lanes_candidate(repos: Repos, tmp_path: Path) -> None:
     """With an rc to promote, the stable lane cuts that rc's version next"""
-    stable_released(repo)
+    repo, _ = repos.after(tmp_path, stable_released)
     repo.merge(3, "Added", "Feature C")
     release(repo, plan(repo, at_day(6)))  # 1.2.0rc1
     repo.github.open = [OpenMilestone(3, "1.1.0", 1)]
@@ -165,16 +171,16 @@ def test_s022_10_the_next_version_is_the_lanes_candidate(repo: Repo) -> None:
     assert [r.detail for r in rows] == ["v1.1.0 exists; the stable lane cuts 1.2.0 next"]
 
 
-def test_s022_10_no_row_while_no_stable_tag_took_an_open_milestone(repo: Repo) -> None:
-    rc_cut(repo)
+def test_s022_10_no_row_while_no_stable_tag_took_an_open_milestone(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, rc_cut)
     repo.github.open = [OpenMilestone(3, "1.1.0", 1), OpenMilestone(4, "1.0.0rc1", 1), OpenMilestone(5, "v1.0.0", 1)]
     assert read(repo, at_day(2)) == ([], None)
 
 
-def test_s022_10_a_milestone_its_own_release_shipped_is_not_overtaken(repo: Repo) -> None:
+def test_s022_10_a_milestone_its_own_release_shipped_is_not_overtaken(repos: Repos, tmp_path: Path) -> None:
     """GitHub leaves a milestone open after its version ships: with no open issues, the tag
     shipped its goal rather than took it, so there is nothing to rename"""
-    fix = rc_cut(repo, {"021-goal.md": spec(21, "built", "#11")})
+    repo, fix = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "#11")})
     in_milestone(repo, (11, "Build A"))
     repo.github.closes[11] = closed(11, fix)
     release(repo, plan_stable(repo))  # 1.1.0, due by its milestone
@@ -187,10 +193,10 @@ def test_s022_10_a_milestone_its_own_release_shipped_is_not_overtaken(repo: Repo
     assert [r.state for r in rows] == ["MILESTONE_OVERTAKEN"]
 
 
-def test_s022_10_a_milestone_never_changes_the_bump(repo: Repo) -> None:
+def test_s022_10_a_milestone_never_changes_the_bump(repos: Repos, tmp_path: Path) -> None:
     """The plan reads no open milestone, and an overtaken 1.1.0 and a closed 1.2.0 leave the
     fix pending a patch: the rc is 1.1.1rc1, and stable promotes it as 1.1.1"""
-    stable_released(repo)
+    repo, _ = repos.after(tmp_path, stable_released)
     repo.github.open = [OpenMilestone(3, "1.1.0", 1), OpenMilestone(4, "1.2.0", 1)]
     repo.github.milestones["1.2.0"] = Milestone(0, 2)
     rc = plan(repo, at_day(6))
@@ -203,11 +209,11 @@ def test_s022_10_a_milestone_never_changes_the_bump(repo: Repo) -> None:
 
 
 def test_s022_10_shipmill_milestones_prints_the_overtaken_row_and_the_watch_reads_it(
-    repo: Repo, capsys: pytest.CaptureFixture[str]
+    repos: Repos, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """#475: the row's milestone, number, next version, and the rename through `shipmill gh`;
     watch_state.py makes it an action with the rename as its fix, never an agent's"""
-    stable_released(repo)
+    repo, _ = repos.after(tmp_path, stable_released)
     repo.github.open = [OpenMilestone(3, "1.1.0", 1)]
     on_github(repo)
     repo.git.run("push", "-q", "origin", "+HEAD:refs/tags/v0")  # a moving major tag, moved on origin
@@ -229,9 +235,9 @@ def test_s022_10_shipmill_milestones_prints_the_overtaken_row_and_the_watch_read
 
 
 def test_s022_8_the_watch_reads_a_waiting_milestone_from_shipmill_milestones(
-    repo: Repo, capsys: pytest.CaptureFixture[str]
+    repos: Repos, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    rc_cut(repo, {"021-goal.md": spec(21, "approved", "#11")})
+    repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "approved", "#11")})
     in_milestone(repo, (11, "Build A"))
     on_github(repo)
     printed = milestones(repo, at_day(5), capsys, "--json")

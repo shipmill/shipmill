@@ -1,8 +1,11 @@
+import copy
 import datetime as dt
+import shutil
 import subprocess
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Concatenate
 
 import pytest
 
@@ -363,12 +366,35 @@ def _git(*args: str, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
-@pytest.fixture
-def repo(tmp_path: Path) -> Iterator[Repo]:
-    origin = tmp_path / "origin.git"
-    _git("init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
-    root = tmp_path / "work"
-    _git("clone", "-q", str(origin), str(root), cwd=tmp_path)
+# The files where git writes a repo's absolute paths: a clone's origin url, a worktree's links
+PATH_FILES = frozenset({"config", ".git", "gitdir"})
+
+
+def copy_tree(template: Path, dest: Path) -> None:
+    """Copy each entry of template into dest, moving the absolute paths git wrote from template
+    to dest: a few file copies instead of the git init, clone, and commits that built it"""
+    dest.mkdir(parents=True, exist_ok=True)
+    for entry in template.iterdir():
+        if entry.is_dir():
+            shutil.copytree(entry, dest / entry.name, symlinks=True)
+        else:
+            shutil.copy2(entry, dest / entry.name)
+    old, new = f"{template}/", f"{dest}/"
+    for path in dest.rglob("*"):
+        if path.name in PATH_FILES and path.is_file():
+            text = path.read_text(encoding="utf-8")
+            if old in text:
+                path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+@pytest.fixture(scope="session")
+def repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The repo fixture's origin.git and work clone, built once per session (per xdist worker)"""
+    base = tmp_path_factory.mktemp("repo-template")
+    origin = base / "origin.git"
+    _git("init", "-q", "--bare", "-b", "main", str(origin), cwd=base)
+    root = base / "work"
+    _git("clone", "-q", str(origin), str(root), cwd=base)
     git = Git(root, "bot", "bot@example.com")
     r = Repo(root, git, FakeGitHub())
     r.at(T0 - dt.timedelta(days=30))
@@ -383,4 +409,62 @@ def repo(tmp_path: Path) -> Iterator[Repo]:
     git.run("commit", "-q", "-m", "Release 1.0.0")
     git.run("tag", "-a", "v1.0.0", "-m", "demo 1.0.0")
     git.run("push", "-q", "origin", "main", "v1.0.0")
-    yield r
+    return base
+
+
+def bot_repo(root: Path, github: FakeGitHub, env: Mapping[str, str]) -> Repo:
+    r = Repo(root, Git(root, "bot", "bot@example.com"), github)
+    r.git.env = dict(env)
+    return r
+
+
+@dataclass(frozen=True)
+class Built[T]:
+    tree: Path
+    github: FakeGitHub
+    env: dict[str, str]
+    value: T
+
+
+@dataclass
+class Repos:
+    """Repo states built once per session (per xdist worker) and copied per test: a test that
+    starts where other tests start copies that state instead of replaying its git commands"""
+
+    base: Path
+    template: Path  # the repo fixture's origin.git and work
+    built: dict[tuple[object, str], Built[object]] = field(default_factory=dict)  # by build and repr(args)
+
+    def fresh(self, dest: Path) -> Repo:
+        """The repo fixture's state, at dest"""
+        copy_tree(self.template, dest)
+        r = bot_repo(dest / "work", FakeGitHub(), {})
+        r.at(T0 - dt.timedelta(days=30))
+        return r
+
+    def after[**P, T](
+        self, dest: Path, build: Callable[Concatenate[Repo, P], T], *args: P.args, **kwargs: P.kwargs
+    ) -> tuple[Repo, T]:
+        """A copy at dest of the repo fixture after build(repo, *args, **kwargs) ran on it, and
+        what build returned; build runs once per arguments, so it must give the same state
+        whenever it runs"""
+        key = (build, repr((args, sorted(kwargs.items()))))
+        if key not in self.built:
+            tree = self.base / str(len(self.built))
+            r = self.fresh(tree)
+            value: object = build(r, *args, **kwargs)
+            self.built[key] = Built(tree, r.github, dict(r.git.env), value)
+        done = self.built[key]
+        copy_tree(done.tree, dest)
+        value = copy.deepcopy(done.value)
+        return bot_repo(dest / "work", copy.deepcopy(done.github), done.env), value  # type: ignore[return-value]
+
+
+@pytest.fixture(scope="session")
+def repos(tmp_path_factory: pytest.TempPathFactory, repo_template: Path) -> Repos:
+    return Repos(tmp_path_factory.mktemp("repos"), repo_template)
+
+
+@pytest.fixture
+def repo(tmp_path: Path, repos: Repos) -> Repo:
+    return repos.fresh(tmp_path)
