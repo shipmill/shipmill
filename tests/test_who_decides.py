@@ -13,6 +13,7 @@ from types import ModuleType
 import pytest
 
 from shipmill.classify import Base, classify_pull
+from shipmill.decide import ReleaseZone
 from shipmill.github import GhCli
 from shipmill.gitrepo import Git
 
@@ -100,6 +101,13 @@ def test_s030_21_the_zone_table_names_every_zone_decisions_py_knows() -> None:
     assert zones[-1] == "unknown"
     for zone in decisions.RELEASE_ZONES:
         assert f"`{zone}`" in who, zone
+
+
+def test_s040_12_decisions_py_refuses_the_agent_stages_in_decisions_as_the_package_does() -> None:
+    decisions = load("shipmill_decisions_660", SKILLS / "github-issue-triage" / "scripts" / "decisions.py")
+    assert sorted(decisions.RELEASE_ZONES) == sorted(ReleaseZone)
+    with pytest.raises(decisions.LogError, match=r"x: \[decisions\] land: land is set in \[autonomy\] land"):
+        decisions.policy_from({"land": "ask"}, Path("x"))
 
 
 def test_s030_21_the_four_paths() -> None:
