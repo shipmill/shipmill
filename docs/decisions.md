@@ -460,7 +460,7 @@ entry that supersedes it, never by editing an old one.
 
 ## D-55: shipmill status reports the pipeline; the host's machinery is shipmill factory's
 
-- Decided: 2026-10-26, in shipmill/shipmill#709
+- Decided: 2026-10-26, in shipmill/shipmill#710
 - Rule: `shipmill status` reports whether the factory works and what waits on whom, from GitHub, with one `factory` line summing up this host's checks; it never reads worktrees. `shipmill factory` reports the host's machinery for the repo (the gate's launchd job and log, its sessions, the App, the plugin and CLI installs, the local checkout, the worktrees), one line per check. Each factory check runs on its own: one that fails to run prints its error as its line and the rest still run, and in `shipmill status` it makes the verdict STUCK without stopping the report
 - Why: The worktree read behind the report-only `WORKTREE_STALE` row overran GitHub's query limit on a host with 137 agent worktrees, and `shipmill status` exited 2 with no verdict and no queue. Host state is local to one machine and reads nothing on a fresh clone, so mixing it into the pipeline report made the report depend on where it ran
 - Applies to: src/shipmill/status.py, src/shipmill/factory.py, src/shipmill/cli.py, skills/github-ship-watch/scripts/watch_state.py, skills/github-ship-watch/SKILL.md, skills/shipmill-setup/SKILL.md, shipmill status, shipmill factory, WORKTREE_STALE
