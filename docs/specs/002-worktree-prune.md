@@ -141,7 +141,7 @@ other gate error, and the gate starts no session on that tick.
 
 `skills/github-ship-watch/scripts/watch_state.py`, for a repo whose release workflow is
 shipmill's (where it already runs `uvx --from <tool> shipmill plan`), runs
-`uvx --from <tool> shipmill --repo <repo-dir> worktrees --json` and adds one
+`uvx --from <tool> shipmill --repo <repo-dir> worktrees --json --older-than 7` and adds one
 `WORKTREE_STALE` row per worktree whose verdict is KEPT, whose path is a shipmill worktree
 (the reasons `main checkout`, `current checkout`, and `not a shipmill worktree` never
 report), and whose age is over 7 days: the subject is its path, the detail its reason. The

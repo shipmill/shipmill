@@ -533,6 +533,12 @@ def _parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="with --prune: print the REMOVABLE ones as WOULD_REMOVE, remove nothing"
     )
     p.add_argument("--json", action="store_true", help="print the worktrees as one JSON object")
+    p.add_argument(
+        "--older-than",
+        type=_days,
+        metavar="DAYS",
+        help="judge only the linked worktrees created over DAYS days ago, as shipmill status reads them",
+    )
 
     p = sub.add_parser(
         "app-token",
@@ -870,7 +876,7 @@ def main(
         if args.dry_run and not args.prune:
             raise ReleaseError("--dry-run goes with --prune")
         git = Git(root)
-        judged = judge(git, hub, sessions or ClaudeSessions(root), dt.datetime.now(dt.UTC))
+        judged = judge(git, hub, sessions or ClaudeSessions(root), dt.datetime.now(dt.UTC), args.older_than)
         if args.prune:
             judged = prune(git, judged, args.dry_run)
         sys.stdout.write(json.dumps(worktrees_report(judged), indent=2) + "\n" if args.json else table(judged))
@@ -1808,6 +1814,12 @@ def _tolerance(text: str) -> Fraction:
     if not re.fullmatch(r"0(\.[0-9]+)?|1(\.0+)?", text):
         raise argparse.ArgumentTypeError(f"a decimal from 0 to 1, such as 0.05; got {text!r}")
     return Fraction(text)
+
+
+def _days(text: str) -> dt.timedelta:
+    if not re.fullmatch(r"[0-9]+", text):
+        raise argparse.ArgumentTypeError(f"a whole number of days, such as 7; got {text!r}")
+    return dt.timedelta(days=int(text))
 
 
 def _case_path(text: str) -> PurePosixPath:

@@ -299,13 +299,13 @@ class _Context:
     roots: tuple[Path, ...]
     live: tuple[LiveSession, ...]
     pulls: tuple[PullRequest, ...]
-    merged: tuple[MergedPull, ...]
     upstream: dict[str, str]
     landing: Landing
 
 
-def _reason(ctx: _Context, tree: Worktree, path: Path, age: dt.timedelta | None) -> str | None:
-    """The first check the worktree fails, in the spec's order; None when it passes them all"""
+def _local_reason(ctx: _Context, tree: Worktree, path: Path, age: dt.timedelta | None) -> str | None:
+    """The first check the worktree fails that git and the live sessions answer, in the spec's
+    order; None when it passes them all, and only then is GitHub asked whether it landed"""
     if path == ctx.main:
         return "main checkout"
     if path == ctx.current:
@@ -332,8 +332,16 @@ def _reason(ctx: _Context, tree: Worktree, path: Path, age: dt.timedelta | None)
             return f"holds worktree {os.path.relpath(other, ctx.main)}"
     if Git(path).run("status", "--porcelain", "--untracked-files=all").strip():
         return "uncommitted changes"
+    return None
+
+
+def _landed_reason(ctx: _Context, tree: Worktree, merged: Sequence[MergedPull]) -> str | None:
+    """The spec's last checks, for a worktree that passed the local ones: its commits landed,
+    by git or by a merged pull request, and no open pull request has its branch"""
+    if tree.branch is None:
+        raise ReleaseError(f"{tree.path} passed the local checks without a branch")
     names = {tree.branch, ctx.upstream.get(tree.branch, tree.branch)}
-    landed = (pr for pr in ctx.merged if pr.head in names and pr.base == ctx.default)
+    landed = (pr for pr in merged if pr.head in names and pr.base == ctx.default)
     merged_heads = frozenset[str]().union(*(pr.heads for pr in landed))
     unlanded = ctx.landing.unlanded(tree.branch, merged_heads)
     if unlanded:
@@ -346,26 +354,30 @@ def _reason(ctx: _Context, tree: Worktree, path: Path, age: dt.timedelta | None)
 
 def _ahead(git: Git, trees: Iterable[Worktree], default: str, onto: str, upstream: dict[str, str]) -> list[str]:
     """The branch names, local and upstream, of the worktrees whose branch holds a commit onto
-    doesn't: the only ones a merged pull request can prove landed"""
+    doesn't: the only ones a merged pull request can prove landed. The default branch is never
+    one, though a branch made from origin/<default> tracks it"""
     names = set()
     for tree in trees:
         if tree.branch is None or tree.branch == default:
             continue
         if not git.ok("merge-base", "--is-ancestor", f"{HEADS}{tree.branch}", onto):
             names.update({tree.branch, upstream.get(tree.branch, tree.branch)})
-    return sorted(names)
+    return sorted(names - {default})
 
 
 def _hours(age: dt.timedelta) -> int:
     return max(0, int(age.total_seconds() // 3600))
 
 
-def judge(git: Git, github: GitHub, sessions: Sessions, now: dt.datetime) -> list[Judged]:
+def judge(
+    git: Git, github: GitHub, sessions: Sessions, now: dt.datetime, older_than: dt.timedelta | None = None
+) -> list[Judged]:
     """Every worktree of the repository whose checkout git names, with its verdict, in git's
-    order (the main checkout first). Reads the live sessions, the open pull requests, and the
-    merged ones from the worktrees' branches before judging anything, so a failure of any
-    judges nothing. Landing is measured against the branch releases land on: the config's
-    `branch`, else origin/HEAD (#694)"""
+    order (the main checkout first); with older_than, only the linked worktrees created over
+    that long ago. Reads the live sessions, the open pull requests, and the merged ones from
+    the branches of the worktrees the local checks leave undecided before returning any
+    verdict, so a failure of any judges nothing. Landing is measured against the branch
+    releases land on: the config's `branch`, else origin/HEAD (#694)"""
     default = git.landing_branch()
     onto = f"refs/remotes/{REMOTE}/{default}"
     git.run("fetch", "-q", REMOTE, f"+{HEADS}{default}:{onto}")
@@ -373,7 +385,6 @@ def judge(git: Git, github: GitHub, sessions: Sessions, now: dt.datetime) -> lis
     pulls = tuple(github.open_pull_requests())
     trees = parse_worktrees(git.run("worktree", "list", "--porcelain", "-z"))
     upstream = upstreams(git)
-    merged = tuple(github.merged_pull_requests(_ahead(git, trees, default, onto, upstream)))
     resolved = [t.path.resolve() for t in trees]
     common = Path(git.run("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
     created = created_times(common)
@@ -385,15 +396,21 @@ def judge(git: Git, github: GitHub, sessions: Sessions, now: dt.datetime) -> lis
         roots=tuple(resolved),
         live=tuple(LiveSession(s.name, s.cwd.resolve()) for s in live),
         pulls=pulls,
-        merged=merged,
         upstream=upstream,
         landing=Landing(git, onto),
     )
-    judged = []
+    local = []
     for tree, path in zip(trees, resolved, strict=True):
         when = None if path == main else created.get(path)
         age = None if when is None else now - when
-        reason = _reason(ctx, tree, path, age)
+        if older_than is not None and (path == main or (age is not None and age <= older_than)):
+            continue
+        local.append((tree, path, when, age, _local_reason(ctx, tree, path, age)))
+    undecided = [tree for tree, _, _, _, reason in local if reason is None]
+    merged = tuple(github.merged_pull_requests(_ahead(git, undecided, default, onto, upstream)))
+    judged = []
+    for tree, path, when, age, found in local:
+        reason = found if found is not None else _landed_reason(ctx, tree, merged)
         judged.append(
             Judged(
                 worktree=tree,
