@@ -13,6 +13,8 @@ from typing import Any
 
 import pytest
 
+from .conftest import copy_tree
+
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-pr-triage" / "scripts" / "pr_gate.py"
 BOT = "shipmill-demo[bot]"
 
@@ -572,9 +574,18 @@ def uvx_calls(record: Path) -> list[list[str]]:
     return [json.loads(line) for line in record.read_text().splitlines()] if record.exists() else []
 
 
+@pytest.fixture(scope="module")
+def agents_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    base = tmp_path_factory.mktemp("agents")
+    checkout(base, {"docs/product.md": DIRECTION, "REVIEW.md": REVIEW, ".github/shipmill.toml": AGENTS})
+    return base
+
+
 @pytest.fixture
-def agents(tmp_path: Path) -> Path:
-    return checkout(tmp_path, {"docs/product.md": DIRECTION, "REVIEW.md": REVIEW, ".github/shipmill.toml": AGENTS})
+def agents(tmp_path: Path, agents_template: Path) -> Path:
+    """checkout() with the direction, a REVIEW.md, and [agents], copied from one built once"""
+    copy_tree(agents_template, tmp_path)
+    return tmp_path / "work"
 
 
 def test_s030_11_a_never_zone_is_maintainer_only_with_or_without_acceptance(tmp_path: Path, agents: Path) -> None:

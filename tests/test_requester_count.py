@@ -2,6 +2,7 @@
 the count never changes whether the lane is due (spec 021, S-021-8)"""
 
 import datetime as dt
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,7 +20,7 @@ from shipmill.github import (
 from shipmill.planner import Decision, Event, Planner
 from shipmill.requesters import confirmed
 
-from .conftest import Repo, at_day
+from .conftest import Repo, Repos, at_day
 from .test_lanes import release
 
 
@@ -37,8 +38,7 @@ def plan(repo: Repo, now: dt.datetime) -> Decision:
     return Planner(repo.git, repo.policy, repo.github, now).plan(Event.SCHEDULE)
 
 
-@pytest.fixture
-def promoting(repo: Repo) -> Repo:
+def promote(repo: Repo) -> None:
     """rc1 holds the fix of #11, #12, and #16; #13 is fixed after it, #14 before 1.0.0, and #15
     is open. #11's requester confirmed rc1, #12's didn't (only someone else did), #16 is a bot's"""
     old = repo.git.sha("v1.0.0")
@@ -56,7 +56,11 @@ def promoting(repo: Repo) -> Repo:
     gh.votes[11] = RequesterVotes(11, "alice", (notice("v1.1.0rc1", "alice", "bob"),))
     gh.votes[12] = RequesterVotes(12, "carol", (notice("v1.1.0rc1", "bob"),))
     gh.votes[16] = RequesterVotes(16, None, (notice("v1.1.0rc1", "bob"),))
-    return repo
+
+
+@pytest.fixture
+def promoting(repos: Repos, tmp_path: Path) -> Repo:
+    return repos.after(tmp_path, promote)[0]
 
 
 def test_s021_8_the_promotion_s_reason_counts_the_rc_s_confirmed_requesters(promoting: Repo) -> None:

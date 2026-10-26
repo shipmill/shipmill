@@ -30,7 +30,7 @@ from shipmill.worktrees import (
     prune,
 )
 
-from .conftest import FakeGitHub
+from .conftest import FakeGitHub, copy_tree
 
 CHANGELOG = "# Changelog\n\n## [Unreleased]\n\n### Added\n\n"
 OLD = 72  # hours: past the 24-hour floor
@@ -95,17 +95,25 @@ def run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, check=True, capture_output=True, text=True)
 
 
-@pytest.fixture
-def repo(tmp_path: Path) -> Checkout:
-    origin = tmp_path / "origin.git"
+@pytest.fixture(scope="module")
+def template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The repo fixture's origin.git and work, built once"""
+    base = tmp_path_factory.mktemp("worktrees")
+    origin = base / "origin.git"
     run("git", "init", "-q", "--bare", "-b", "main", str(origin))
-    root = tmp_path / "work"
+    root = base / "work"
     run("git", "clone", "-q", str(origin), str(root))
     c = Checkout(root)
     c.git().run("checkout", "-q", "-b", "main")
     c.commit(root, {"CHANGELOG.md": CHANGELOG, "app.py": "VALUE = 1\n"}, "Start")
     c.push_main()
-    return c
+    return base
+
+
+@pytest.fixture
+def repo(tmp_path: Path, template: Path) -> Checkout:
+    copy_tree(template, tmp_path)
+    return Checkout(tmp_path / "work")
 
 
 def changelog(*entries: str) -> str:

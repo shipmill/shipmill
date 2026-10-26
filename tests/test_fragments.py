@@ -19,7 +19,7 @@ from shipmill.policy import Lane, Policy, Style
 from shipmill.propose import propose
 from shipmill.version import Version
 
-from .conftest import Repo, at_day
+from .conftest import Repo, Repos, at_day
 from .test_lanes import _tag_on_main, plan, release
 
 FOLDER = "changelog.d"
@@ -57,8 +57,8 @@ def folder_files(repo: Repo, rev: str) -> list[str]:
     return repo.git.run("ls-tree", "-r", "--name-only", rev, "--", f"{FOLDER}/").split()
 
 
-def test_s013_2_a_missing_folder_fails_plan_and_doctor_with_exit_2(repo: Repo) -> None:
-    use_fragments(repo, readme=False)
+def test_s013_2_a_missing_folder_fails_plan_and_doctor_with_exit_2(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments, readme=False)
     for argv in (["plan", "--event", "workflow_dispatch"], ["doctor"]):
         done = subprocess.run(
             [sys.executable, "-m", "shipmill", "--repo", str(repo.root), *argv], capture_output=True, text=True
@@ -79,8 +79,10 @@ def test_s013_2_a_missing_folder_fails_plan_and_doctor_with_exit_2(repo: Repo) -
         ("7-heading-only.md", "### Added\n", "changelog.d/7-heading-only.md: the fragment holds no entry"),
     ],
 )
-def test_s013_3_a_malformed_fragment_fails_plan_naming_the_file(repo: Repo, name: str, text: str, error: str) -> None:
-    use_fragments(repo)
+def test_s013_3_a_malformed_fragment_fails_plan_naming_the_file(
+    repos: Repos, tmp_path: Path, name: str, text: str, error: str
+) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     add_fragment(repo, name, text)
     with pytest.raises(ReleaseError, match=f"^{error}"):
         plan(repo, at_day(1))
@@ -104,13 +106,13 @@ def rc_skip(repo: Repo) -> str:
     return decision.reason
 
 
-def test_s013_3_readme_in_the_folder_is_never_a_fragment(repo: Repo) -> None:
-    use_fragments(repo)  # README.md holds prose that, as a fragment, would fail to read
+def test_s013_3_readme_in_the_folder_is_never_a_fragment(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)  # README.md holds prose that, as a fragment, would fail to read
     assert rc_skip(repo) == NOTHING
 
 
-def test_s013_4_a_fragment_alone_plans_the_release_its_heading_bumps(repo: Repo) -> None:
-    use_fragments(repo)
+def test_s013_4_a_fragment_alone_plans_the_release_its_heading_bumps(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     assert rc_skip(repo) == NOTHING
     add_fragment(repo, "1-feature-a.md", "### Added\n\n- Feature A (#1)\n")
     decision = plan(repo, at_day(1))
@@ -118,14 +120,14 @@ def test_s013_4_a_fragment_alone_plans_the_release_its_heading_bumps(repo: Repo)
     assert decision.reason.startswith("rc 1.1.0rc1: 1 pending entries")
 
 
-def test_s013_4_a_fix_fragment_bumps_the_patch(repo: Repo) -> None:
-    use_fragments(repo)
+def test_s013_4_a_fix_fragment_bumps_the_patch(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     add_fragment(repo, "1-fix.md", "### Fixed\n\n- Fix A (#1)\n")
     assert str(plan(repo, at_day(1)).version) == "1.0.1rc1"
 
 
-def test_s013_5_the_planner_reads_fragments_at_the_revision_not_the_checkout(repo: Repo) -> None:
-    use_fragments(repo)
+def test_s013_5_the_planner_reads_fragments_at_the_revision_not_the_checkout(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     repo.git.run("checkout", "-q", "--detach", "origin/main")
     repo.write(f"{FOLDER}/1-local.md", "### Added\n\n- Only in the working tree (#1)\n")
     assert rc_skip(repo) == NOTHING
@@ -137,8 +139,8 @@ def test_s013_5_the_planner_reads_fragments_at_the_revision_not_the_checkout(rep
     assert str(plan(repo, at_day(1)).version) == "1.0.1rc1"
 
 
-def test_s013_6_a_released_fragment_is_not_pending_and_doctor_names_it(repo: Repo) -> None:
-    use_fragments(repo)
+def test_s013_6_a_released_fragment_is_not_pending_and_doctor_names_it(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     add_fragment(repo, "1-old.md", "### Added\n\n- The first release\n")
     assert rc_skip(repo) == NOTHING
     repo.git.run("checkout", "-q", "main")
@@ -149,8 +151,8 @@ def test_s013_6_a_released_fragment_is_not_pending_and_doctor_names_it(repo: Rep
     )
 
 
-def test_doctor_reports_a_fragment_that_fails_to_read(repo: Repo) -> None:
-    use_fragments(repo)
+def test_doctor_reports_a_fragment_that_fails_to_read(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     add_fragment(repo, "1-bad.md", "- no heading (#1)\n")
     checks = {(c.status, c.name): c.detail for c in doctor(repo.root, repo.github)}
     assert checks[("FAIL", "changelog")].startswith("changelog.d/1-bad.md:1: an entry has no '### ' category heading")
@@ -208,9 +210,9 @@ def test_s013_8_a_promotion_folds_unreleased_fragments_and_rc_sections_once(repo
 
 
 def test_s013_9_dev_and_rc_releases_leave_the_folder_and_notes_list_fragments(
-    repo: Repo, capsys: pytest.CaptureFixture[str]
+    repos: Repos, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    use_fragments(repo)
+    repo, _ = repos.after(tmp_path, use_fragments)
     repo.merge(1, "Fixed", "Fix U")
     add_fragment(repo, "2-a.md", "### Added\n\n- Feature A (#2)\n")
     rc = plan(repo, at_day(1))
@@ -272,8 +274,8 @@ def test_s013_12_dash_fragments_are_pending_and_released(repo: Repo) -> None:
     assert folder_files(repo, sha) == ["changelog.d/README.md"]
 
 
-def test_a_proposal_lists_the_fragments_at_its_base(repo: Repo) -> None:
-    use_fragments(repo)
+def test_a_proposal_lists_the_fragments_at_its_base(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     base = add_fragment(repo, "1-a.md", "### Added\n\n- Feature A (#1)\n")
     proposal = Proposal(Lane.RC, Version.parse("1.1.0rc1"), base, "release autonomy is propose")
     (done,) = propose(repo.git, repo.policy, repo.github, (proposal,))
@@ -331,8 +333,8 @@ def hotfix_of(repo: Repo, *prs: int) -> tuple[str, Decision]:
     return release(repo, decision), decision
 
 
-def test_s013_10_a_hotfix_ships_exactly_its_merges_fragments_and_entries(repo: Repo) -> None:
-    use_fragments(repo)
+def test_s013_10_a_hotfix_ships_exactly_its_merges_fragments_and_entries(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     merge_fragment(repo, 1, "1-a.md", "### Added\n\n- Feature A, not ready (#1)\n", "src/a.py", "A = 1\n")
     # PR 2 adds an Unreleased entry and a fragment in one merge
     repo.write(f"{FOLDER}/2-b.md", "### Fixed\n\n- Fix B, as a fragment (#2)\n")
@@ -352,8 +354,8 @@ def test_s013_10_a_hotfix_ships_exactly_its_merges_fragments_and_entries(repo: R
     assert repo.git.run("diff", "--name-only", decision.base, sha, "--", FOLDER) == ""
 
 
-def test_s013_10_a_merge_that_adds_neither_entry_nor_fragment_fails(repo: Repo) -> None:
-    use_fragments(repo)
+def test_s013_10_a_merge_that_adds_neither_entry_nor_fragment_fails(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     repo.write("src/app.py", "VALUE = 3\n")
     repo.write(f"{FOLDER}/README.md", README + "\nEdited.\n")  # a change in the folder adds no fragment
     repo.github.merges[5] = commit_on_main(repo, "No entry")
@@ -376,8 +378,8 @@ def test_s013_10_a_hotfix_without_fragments_configured_is_unchanged(repo: Repo) 
     assert repo.main_text(f"{FOLDER}/2-b.md")  # the sync deletes nothing on main
 
 
-def test_s013_11_sync_deletes_on_main_the_fragments_the_hotfix_released(repo: Repo) -> None:
-    use_fragments(repo)
+def test_s013_11_sync_deletes_on_main_the_fragments_the_hotfix_released(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     merge_fragment(repo, 1, "1-a.md", "### Added\n\n- Feature A, not ready (#1)\n")
     merge_fragment(repo, 2, "2-b.md", "### Fixed\n\n- Fix B (#2)\n", "src/app.py", "VALUE = 2\n")
     merge_fragment(repo, 3, "3-c.md", "### Fixed\n\n- Fix C (#3)\n")
@@ -398,8 +400,8 @@ def test_s013_11_sync_deletes_on_main_the_fragments_the_hotfix_released(repo: Re
     assert [e.text for e in on_main.pending(fragments.entries(left))] == ["- Feature A, not ready (#1)", "- Fix D (#4)"]
 
 
-def test_s013_11_sync_exits_2_naming_an_entry_main_no_longer_holds(repo: Repo) -> None:
-    use_fragments(repo)
+def test_s013_11_sync_exits_2_naming_an_entry_main_no_longer_holds(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     merge_fragment(repo, 2, "2-b.md", "### Fixed\n\n- Fix B (#2)\n", "src/app.py", "VALUE = 2\n")
     merge_fragment(repo, 3, "3-c.md", "### Fixed\n\n- Fix C (#3)\n")
     hotfix_of(repo, 2, 3)
@@ -417,8 +419,8 @@ def test_s013_11_sync_exits_2_naming_an_entry_main_no_longer_holds(repo: Repo) -
     assert (repo.root / FOLDER / "2-b.md").is_file()  # a failed sync deletes nothing
 
 
-def test_a_stable_sync_deletes_the_released_fragments_on_a_moved_main(repo: Repo) -> None:
-    use_fragments(repo)
+def test_a_stable_sync_deletes_the_released_fragments_on_a_moved_main(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments)
     merge_fragment(repo, 1, "1-a.md", "### Added\n\n- Feature A (#1)\n")
     release(repo, plan(repo, at_day(1)))
     repo.at(at_day(1, 9))
@@ -430,10 +432,10 @@ def test_a_stable_sync_deletes_the_released_fragments_on_a_moved_main(repo: Repo
     assert on_main.section(Version.parse("1.1.0")) == "### Added\n\n- Feature A (#1)\n"
 
 
-def test_s013_10_a_hotfix_ships_no_fragment_its_merge_only_renamed(repo: Repo) -> None:
+def test_s013_10_a_hotfix_ships_no_fragment_its_merge_only_renamed(repos: Repos, tmp_path: Path) -> None:
     """A merge that renames another PR's fragment adds none of its entries: the hotfix ships
     only the merge's own fragment, and the renamed one stays pending on main"""
-    use_fragments(repo)
+    repo, _ = repos.after(tmp_path, use_fragments)
     merge_fragment(repo, 1, "1-a.md", "### Added\n\n- Feature A, not ready (#1)\n", "src/a.py", "A = 1\n")
     repo.git.run("mv", f"{FOLDER}/1-a.md", f"{FOLDER}/1-feature-a.md")
     repo.write(f"{FOLDER}/2-b.md", "### Fixed\n\n- Fix B (#2)\n")
@@ -443,10 +445,10 @@ def test_s013_10_a_hotfix_ships_no_fragment_its_merge_only_renamed(repo: Repo) -
     assert repo.main_text(f"{FOLDER}/1-feature-a.md")
 
 
-def test_s013_10_a_hotfix_ships_the_entry_its_merge_added_to_another_fragment(repo: Repo) -> None:
+def test_s013_10_a_hotfix_ships_the_entry_its_merge_added_to_another_fragment(repos: Repos, tmp_path: Path) -> None:
     """A merge that adds an entry to an existing fragment ships that entry alone; the
     fragment, partly released, stays on main with its other entry pending"""
-    use_fragments(repo)
+    repo, _ = repos.after(tmp_path, use_fragments)
     merge_fragment(repo, 1, "1-a.md", "### Added\n\n- Feature A, not ready (#1)\n", "src/a.py", "A = 1\n")
     repo.write(f"{FOLDER}/1-a.md", "### Added\n\n- Feature A, not ready (#1)\n\n### Fixed\n\n- Fix B (#2)\n")
     repo.write("src/app.py", "VALUE = 2\n")
@@ -469,17 +471,17 @@ def rc_before_fragments(repo: Repo) -> Decision:
     return rc
 
 
-def test_s013_17_the_promotion_of_an_rc_cut_before_the_folder_plans(repo: Repo) -> None:
-    rc = rc_before_fragments(repo)
+def test_s013_17_the_promotion_of_an_rc_cut_before_the_folder_plans(repos: Repos, tmp_path: Path) -> None:
+    repo, rc = repos.after(tmp_path, rc_before_fragments)
     assert repo.git.show(rc.base, FOLDER) is None
     decision = plan(repo, at_day(4), event=Event.MANUAL, lane=Lane.STABLE)
     assert (decision.action, str(decision.version), decision.base) == ("release", "1.1.0", rc.base)
 
 
-def test_s013_17_the_promotion_of_an_rc_cut_before_the_folder_releases(repo: Repo) -> None:
+def test_s013_17_the_promotion_of_an_rc_cut_before_the_folder_releases(repos: Repos, tmp_path: Path) -> None:
     """plan, prepare, and land: the stamp at the rc's base, which predates the folder, reads
     no fragments, and main keeps its folder after the sync"""
-    rc = rc_before_fragments(repo)
+    repo, rc = repos.after(tmp_path, rc_before_fragments)
     decision = plan(repo, at_day(4), event=Event.MANUAL, lane=Lane.STABLE)
     sha = release(repo, decision)
     assert repo.git.first_parent(sha) == rc.base
@@ -496,14 +498,16 @@ def test_s013_17_a_stable_stamp_whose_base_config_sets_the_key_still_needs_the_f
         prepare(repo.git, repo.policy, Lane.STABLE, Version.parse("1.1.0"), base, at_day(1).date(), (), (), commit=True)
 
 
-def test_s013_17_notes_run_against_a_tag_older_than_the_folder(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
-    rc_before_fragments(repo)
+def test_s013_17_notes_run_against_a_tag_older_than_the_folder(
+    repos: Repos, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, _ = repos.after(tmp_path, rc_before_fragments)
     assert main(["--repo", str(repo.root), "notes", "--version", "1.1.0rc1"], repo.github) == 0
     assert capsys.readouterr().out == "Changes since v1.0.0:\n\n### Added\n\n- Feature A (#1)\n"
 
 
-def test_s013_17_a_revision_whose_config_sets_the_key_still_needs_the_folder(repo: Repo) -> None:
-    use_fragments(repo, readme=False)
+def test_s013_17_a_revision_whose_config_sets_the_key_still_needs_the_folder(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, use_fragments, readme=False)
     asked = repo.git.sha()
     repo.git.run("tag", "-a", "v1.1.0rc1", "-m", "rc", asked)
     add_fragment(repo, "1-a.md", "### Added\n\n- Feature A (#1)\n")  # HEAD has the folder now

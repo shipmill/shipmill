@@ -1,5 +1,7 @@
-"""Spec 026: the plugin's delivery hooks, driven as Claude Code drives them: hooks/delivery.py
-as a subprocess, the hook input JSON on stdin, and a temporary git repo as the cwd"""
+"""Spec 026: the plugin's delivery hooks, driven as Claude Code drives them: the hook input JSON
+on stdin and a temporary git repo as the cwd. Most cases call hooks/delivery.py's main in
+process, which is what its __main__ runs; a few run it as the subprocess Claude Code starts and
+prove the two answer alike"""
 
 import importlib.util
 import io
@@ -28,6 +30,7 @@ SHIPMILL = ["uvx", PINNED]
 
 APP = '[agents]\nprs = true\napp_id = 5209412\n[hooks]\nprivate = ["owner/**"]\n'
 AGENTS = "[agents]\nprs = true\n"
+OFF = "[hooks]\ndefault_branch = false\n"
 RELEASE_ONLY = 'name = "demo"\nmode = "release"\n'
 
 
@@ -90,13 +93,35 @@ def fixture(name: str, cwd: Path, command: str | None = None) -> dict[str, Any]:
     return data
 
 
-def hook(data: object, mode: str = "pre", cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    """delivery.py as Claude Code runs it"""
-    where = cwd if cwd is not None else Path(data["cwd"]) if isinstance(data, dict) else ROOT
+def load_delivery() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("delivery", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses look their module up by name
+    spec.loader.exec_module(module)
+    return module
+
+
+DELIVERY = load_delivery()
+
+
+def process(data: object, mode: str = "pre") -> subprocess.CompletedProcess[str]:
+    """delivery.py as Claude Code runs it: a subprocess"""
+    where = Path(data["cwd"]) if isinstance(data, dict) else ROOT
     text = data if isinstance(data, str) else json.dumps(data)
     return subprocess.run(
         [sys.executable, str(SCRIPT), mode], input=text, cwd=where, capture_output=True, text=True, check=False
     )
+
+
+def hook(data: object, mode: str = "pre") -> subprocess.CompletedProcess[str]:
+    """delivery.py's main in process, as its __main__ calls it; the script writes nothing to
+    stdout, which the cases that run it as a process prove"""
+    text = data if isinstance(data, str) else json.dumps(data)
+    stderr = io.StringIO()
+    code = DELIVERY.main([mode], io.StringIO(text), stderr)
+    assert isinstance(code, int)
+    return subprocess.CompletedProcess([str(SCRIPT), mode], code, "", stderr.getvalue())
 
 
 def bash(command: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -562,18 +587,37 @@ def pushing_repo(root: Path, config: str = AGENTS) -> Path:
     return root
 
 
+@dataclass(frozen=True)
+class Pushing:
+    """Clones the push cases only read, built once: the hook's git calls change nothing"""
+
+    on: Path  # pushing_repo with [agents]
+    off: Path  # the same with [hooks] default_branch = false
+    unset: Path  # the same as on, without origin/HEAD
+
+
+@pytest.fixture(scope="module")
+def pushing(tmp_path_factory: pytest.TempPathFactory) -> Pushing:
+    base = tmp_path_factory.mktemp("pushing")
+    unset = pushing_repo(base / "unset")
+    _git("remote", "set-head", "origin", "--delete", cwd=unset)
+    return Pushing(pushing_repo(base / "on"), pushing_repo(base / "off", AGENTS + OFF), unset)
+
+
 @pytest.mark.parametrize(("command", "instead"), TO_MAIN)
-def test_s026_4_push_to_the_default_branch_refused(tmp_path: Path, command: str, instead: str) -> None:
-    root = pushing_repo(tmp_path / "repo")
+def test_s026_4_push_to_the_default_branch_refused(
+    pushing: Pushing, tmp_path: Path, command: str, instead: str
+) -> None:
+    root = pushing.on
     assert refused(bash(command, root), "default-branch-push", "D-36") == shlex.split(instead)
     refused(bash(f"git -C {root} {command.removeprefix('git ')}", tmp_path), "default-branch-push", "D-36")
     refused(bash(f"cd {root} && {command}", tmp_path), "default-branch-push", "D-36")
 
 
-def test_s026_6_force_push_to_main_names_force_push_with_a_lease_on_a_branch(tmp_path: Path) -> None:
+def test_s026_6_force_push_to_main_names_force_push_with_a_lease_on_a_branch(pushing: Pushing) -> None:
     """force-push runs before default-branch-push (the maintainer's answer on #470); the
     Instead line takes both fixes, the lease moved to <branch> with the push"""
-    root = pushing_repo(tmp_path / "repo")
+    root = pushing.on
     instead = refused(bash(PLUS_MAIN, root), "force-push", "D-36")
     assert instead == shlex.split("git push --force-with-lease=<branch>:<sha> origin main:<branch>")
     instead = refused(bash("git push --force", root), "force-push", "D-36")
@@ -592,11 +636,11 @@ def test_s026_6_force_push_to_main_names_force_push_with_a_lease_on_a_branch(tmp
         ("git push origin 'refs/heads/*:refs/heads/*'", "git push origin 'refs/heads/*:<branch>'"),
     ],
 )
-def test_s026_4_every_branch_push_includes_the_default_branch(tmp_path: Path, command: str, instead: str) -> None:
+def test_s026_4_every_branch_push_includes_the_default_branch(pushing: Pushing, command: str, instead: str) -> None:
     """--all, --branches, --mirror, and a glob refspec push the default branch too"""
-    root = pushing_repo(tmp_path / "repo")
+    root = pushing.on
     assert refused(bash(command, root), "default-branch-push", "D-36") == shlex.split(instead)
-    off = pushing_repo(tmp_path / "off", AGENTS + "[hooks]\ndefault_branch = false\n")
+    off = pushing.off
     allowed(bash(command, off))
 
 
@@ -612,8 +656,8 @@ def test_s026_4_every_branch_push_includes_the_default_branch(tmp_path: Path, co
         "git push upstream-less-remote feat/main",
     ],
 )
-def test_s026_4_push_of_another_branch_passes(tmp_path: Path, command: str) -> None:
-    allowed(bash(command, pushing_repo(tmp_path / "repo")))
+def test_s026_4_push_of_another_branch_passes(pushing: Pushing, command: str) -> None:
+    allowed(bash(command, pushing.on))
 
 
 def test_s026_4_bare_push_on_another_branch_passes(tmp_path: Path) -> None:
@@ -632,20 +676,18 @@ def test_s026_4_bare_push_without_an_upstream_passes(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("command", [command for command, _ in TO_MAIN])
-def test_s026_4_every_push_passes_when_switched_off_or_origin_head_unset(tmp_path: Path, command: str) -> None:
-    off = pushing_repo(tmp_path / "off", AGENTS + "[hooks]\ndefault_branch = false\n")
+def test_s026_4_every_push_passes_when_switched_off_or_origin_head_unset(pushing: Pushing, command: str) -> None:
+    off = pushing.off
     allowed(bash(command, off))
-    unset = pushing_repo(tmp_path / "unset")
-    _git("remote", "set-head", "origin", "--delete", cwd=unset)
+    unset = pushing.unset
     allowed(bash(command, unset))
 
 
-def test_s026_4_plus_main_is_still_a_force_push_when_switched_off(tmp_path: Path) -> None:
+def test_s026_4_plus_main_is_still_a_force_push_when_switched_off(pushing: Pushing) -> None:
     """force-push has no switch (S-026-6): a + refspec needs a pinned lease wherever it points"""
-    off = pushing_repo(tmp_path / "off", AGENTS + "[hooks]\ndefault_branch = false\n")
+    off = pushing.off
     refused(bash(PLUS_MAIN, off), "force-push", "D-36")
-    unset = pushing_repo(tmp_path / "unset")
-    _git("remote", "set-head", "origin", "--delete", cwd=unset)
+    unset = pushing.unset
     refused(bash(PLUS_MAIN, unset), "force-push", "D-36")
 
 
@@ -897,17 +939,35 @@ def test_s026_9_refusal_stays_three_lines_with_a_multiline_argument(box: Sandbox
     refused(result, "app-writes", "D-14")
 
 
+# --- the script as a process answers as main in process --------------------------------------
+
+AS_PROCESS = [*((p.name, "pre") for p in sorted(FIXTURES.glob("bash-*.json"))), ("read-tool.json", "pre")]
+
+
+def answer(result: subprocess.CompletedProcess[str]) -> tuple[int, str, str]:
+    return result.returncode, result.stdout, result.stderr
+
+
+@pytest.mark.parametrize(("name", "mode"), AS_PROCESS)
+@pytest.mark.parametrize("where", ["app", "agents"])
+def test_the_script_as_a_process_answers_as_main(box: Sandbox, name: str, mode: str, where: str) -> None:
+    """hook() calls main in process; Claude Code starts the script, whose stdout stays empty"""
+    data = fixture(name, getattr(box, where))
+    assert answer(process(data, mode)) == answer(hook(data, mode))
+
+
+@pytest.mark.parametrize(("text", "mode"), [("not json", "pre"), (json.dumps({"hook_event_name": "x"}), "post")])
+def test_bad_input_as_a_process_answers_as_main(text: str, mode: str) -> None:
+    assert answer(process(text, mode)) == answer(hook(text, mode))
+    assert answer(process(text, "both")) == answer(hook(text, "both"))
+
+
 # --- S-026-10: no subprocess, one config read ------------------------------------------------
 
 
 @pytest.fixture(scope="module")
 def delivery() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("delivery", SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module  # dataclasses look their module up by name
-    spec.loader.exec_module(module)
-    return module
+    return DELIVERY
 
 
 @dataclass
@@ -1016,16 +1076,38 @@ class Stub:
     bin: Path
     log: Path
 
+    def env(self, code: int, out: str, err: str) -> dict[str, str]:
+        return {
+            "PATH": str(self.bin),
+            "STUB_LOG": str(self.log),
+            "STUB_EXIT": str(code),
+            "STUB_OUT": out,
+            "STUB_ERR": err,
+        }
+
     def run(
         self, data: dict[str, Any], code: int = 0, out: str = "", err: str = ""
     ) -> subprocess.CompletedProcess[str]:
-        env = {"PATH": str(self.bin), "STUB_LOG": str(self.log), "STUB_EXIT": str(code)}
-        env |= {"STUB_OUT": out, "STUB_ERR": err}
+        """The post hook in process, its checks started with only the stub on PATH"""
+        env = self.env(code, out, err)
+
+        def runner(cmd: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(list(cmd), cwd=cwd, env=env, capture_output=True, text=True, check=False)
+
+        stderr = io.StringIO()
+        result = DELIVERY.main(["post"], io.StringIO(json.dumps(data)), stderr, runner)
+        assert isinstance(result, int)
+        return subprocess.CompletedProcess([str(SCRIPT), "post"], result, "", stderr.getvalue())
+
+    def process(
+        self, data: dict[str, Any], code: int = 0, out: str = "", err: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        """The post hook as a subprocess with only the stub on PATH"""
         return subprocess.run(
             [sys.executable, str(SCRIPT), "post"],
             input=json.dumps(data),
             cwd=data["cwd"],
-            env=env,
+            env=self.env(code, out, err),
             capture_output=True,
             text=True,
             check=False,
@@ -1173,6 +1255,21 @@ def test_s026_17_post_fixtures_hold_a_case_for_each_check(box: Sandbox, stub: St
         assert stub.calls() == [[PINNED, check, "check", "--repo", str(box.agents)]]
 
 
+@pytest.mark.parametrize(
+    ("code", "out", "err"), [(0, "ok\n", ""), (1, "REVIEW.md:3: no rule\n", "1 problem\n"), (2, "", "bad")]
+)
+def test_the_post_hook_as_a_process_answers_as_main(
+    box: Sandbox, tmp_path: Path, code: int, out: str, err: str
+) -> None:
+    """Stub.run calls main in process; as a process the script starts the same check"""
+    data = edit("post-review-check.json", box.agents, "REVIEW.md")
+    (tmp_path / "main").mkdir()
+    (tmp_path / "process").mkdir()
+    in_process, started = stub_on_path(tmp_path / "main", "uvx"), stub_on_path(tmp_path / "process", "uvx")
+    assert answer(started.process(data, code, out, err)) == answer(in_process.run(data, code, out, err))
+    assert started.calls() == in_process.calls() == [[PINNED, "review", "check", "--repo", str(box.agents)]]
+
+
 # --- S-031-4: the CLI the hooks run is the plugin's own release -----------------------------
 
 BROKEN_PLUGIN = [
@@ -1245,7 +1342,7 @@ def test_s026_11_missing_field_exits_1_naming_it(box: Sandbox, key: str) -> None
 
 @pytest.mark.parametrize("text", ["", "not json", "[]", '"gh pr merge 7 --rebase"', "null"])
 def test_s026_11_not_a_json_object_exits_1(text: str) -> None:
-    result = hook(text, "pre", ROOT)
+    result = hook(text, "pre")
     assert result.returncode == 1
     assert "JSON" in result.stderr
 
@@ -1259,7 +1356,7 @@ def test_s026_11_wrong_shapes_exit_1(box: Sandbox) -> None:
         ({**data, "cwd": "relative/dir"}, "cwd"),
         ({**data, "hook_event_name": "PostToolUse"}, "PreToolUse"),
     ):
-        result = hook(broken, "pre", box.agents)
+        result = hook(broken, "pre")
         assert result.returncode == 1 and named in result.stderr, result.stderr
     edit = fixture("post-edit.json", box.agents)
     result = hook({**edit, "tool_input": {"content": "x"}}, "post")
