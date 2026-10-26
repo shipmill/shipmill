@@ -124,7 +124,7 @@ def test_s030_5_levels_json_names_every_zone_with_its_level_floor_and_source(
     assert list(rows) == [
         "direction", "decision-policy", "scope", "rule-departure", "contract-change", "contract-addition",
         "security", "protected", "interpretation", "triage-verdict", "implementation", "unknown",
-        "release", "breaking-release", "deploy", "rollback", "intake", "upgrade",
+        "release", "breaking-release", "deploy", "rollback", "intake", "upgrade", "triage", "fix", "land",
     ]  # fmt: skip
     assert all(set(r) == {"zone", "level", "floor", "source"} for r in found["zones"])
     assert rows["direction"] == {"zone": "direction", "level": "ask", "floor": "ask", "source": "config"}
@@ -170,7 +170,29 @@ def test_s030_5_levels_text_form(repo: Repo, capsys: pytest.CaptureFixture[str])
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "veto_hours: 24"
     assert out[1].split() == ["direction", "never", "floor", "ask", "default"]
-    assert len(out) == 1 + 18
+    assert len(out) == 1 + 21
+    assert out[-1].split() == ["land", "ask", "floor", "none", "autonomy"]
+
+
+def test_s040_12_levels_list_triage_fix_and_land_from_autonomy_mapped_as_release_is(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(repo)  # no [autonomy]: act, act, propose
+    rows = {r["zone"]: r for r in run(repo, capsys, "levels")["zones"]}
+    assert [rows[z] for z in ("triage", "fix", "land")] == [
+        {"zone": "triage", "level": "act", "floor": None, "source": "autonomy"},
+        {"zone": "fix", "level": "act", "floor": None, "source": "autonomy"},
+        {"zone": "land", "level": "ask", "floor": None, "source": "autonomy"},
+    ]
+    commit(repo, POLICY + '\n[autonomy]\ntriage = "observe"\nfix = "propose"\nland = "act"\nrelease = "propose"\n')
+    rows = {r["zone"]: r for r in run(repo, capsys, "levels")["zones"]}
+    levels = {z: (rows[z]["level"], rows[z]["source"]) for z in ("triage", "fix", "land", "release")}
+    assert levels == {
+        "triage": (None, "autonomy"),  # observe: no level, as release under observe
+        "fix": ("ask", "autonomy"),  # propose: ask, as release under propose
+        "land": ("act", "autonomy"),
+        "release": ("ask", "autonomy"),
+    }
 
 
 # -- classify --files -------------------------------------------------------------------------

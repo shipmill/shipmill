@@ -510,7 +510,12 @@ grants `issues: read`, which is enough until a stage is set to `propose` or a ho
 opened; from then on `doctor` warns until the prepare job grants `issues: write`. Under
 `release = "propose"` closing the issue once released needs `issues: write` on the land job
 too; `doctor` warns until it has it. `doctor`
-prints the effective autonomy per stage and warns while a hold is open. Each `deploy.<name>`
+prints the effective autonomy per stage, the agent stages (`triage`, `fix`, `land`) too, and
+warns while a hold is open, and when an agent stage is set in a config without `[agents]`,
+since nothing reads it then. `shipmill autonomy` prints every stage with its configured
+level, its level under the hold, and where it comes from (`default`, `config`, or `hold`),
+read from the config at `origin/HEAD` (or `--ref`), so a pull request that raises a level
+is read by the level it would replace; `--json` lists the open hold issues too. Each `deploy.<name>`
 must name an environment in `[environments]`. `deploy` and `rollback` take effect in
 `shipmill operate` (see Operate above).
 
@@ -759,6 +764,7 @@ The workflows call these; you can run them locally too.
 | `sync` | Bring a stable release made off main into main, to recover a failed sync |
 | `notes` | Print a release's notes |
 | `settle-minutes` | Print how long to wait after a push: the longest `quiet_minutes`, 0 when `mode = "off"` |
+| `autonomy` | Print every stage's `[autonomy]` level, configured and under the hold, with its source (`default`, `config`, or `hold`) and the open hold issues, from the config at `--ref` (default `origin/HEAD`); `--json` |
 | `upgrade` | List the config upgrades this repo hasn't decided; `--apply <id>` makes one's edit in the checkout, `--json` |
 | `gate` | Start a Claude Code session for a repo only when its state needs one, with the config's `[agents]` prompt ([agent modes](design/agent-modes.md)) |
 | `launchd` | Run `gate` for a dedicated checkout every few minutes on a Mac |

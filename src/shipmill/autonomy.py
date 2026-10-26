@@ -110,6 +110,37 @@ class Hold:
         return f"held by {HOLD_LABEL} {numbers}"
 
 
+class Source(StrEnum):
+    """Where a stage's level comes from, as `shipmill autonomy` shows it (spec 040)"""
+
+    DEFAULT = "default"
+    CONFIG = "config"
+    HOLD = "hold"  # the hold lowers the configured level
+
+
+@dataclass(frozen=True, slots=True)
+class StageLevel:
+    """One row of `shipmill autonomy`: a stage as [autonomy] names its key (triage,
+    deploy.production, intake), its configured level, its level under the hold, and the source"""
+
+    stage: str
+    configured: Autonomy
+    effective: Autonomy
+    source: Source
+
+    def record(self) -> dict[str, str]:
+        return {
+            "stage": self.stage,
+            "configured": self.configured.value,
+            "effective": self.effective.value,
+            "source": self.source.value,
+        }
+
+    def text(self, width: int = 18) -> str:
+        """The row as a line, the stage padded to width, so a long deploy environment's name aligns"""
+        return f"{self.stage:<{width}} {self.configured.value:<7} {self.effective.value:<7} {self.source.value}"
+
+
 @dataclass(frozen=True, slots=True)
 class AutonomyPolicy:
     """The configured autonomy per stage; an environment not listed deploys at act (D-7).
@@ -126,6 +157,8 @@ class AutonomyPolicy:
     triage: Autonomy = Autonomy.ACT
     fix: Autonomy = Autonomy.ACT
     land: Autonomy = Autonomy.PROPOSE
+    # the keys the config sets, as `shipmill autonomy` names them (deploy.<env> for a deploy level)
+    explicit: frozenset[str] = field(default=frozenset(), compare=False)
 
     @classmethod
     def parse(cls, t: Table) -> AutonomyPolicy:
@@ -134,6 +167,7 @@ class AutonomyPolicy:
         if not isinstance(t.raw.get("deploy", {}), dict):
             raise ReleaseError(f"{t.where}: deploy is a table of environments, such as deploy.production = 'propose'")
         deploy = t.table("deploy", optional=True)
+        keys = {key for key in t.raw if key != StageKind.DEPLOY} | {f"{StageKind.DEPLOY}.{name}" for name in deploy.raw}
         return cls(
             release=_level(t, "release"),
             rollback=_level(t, "rollback"),
@@ -143,6 +177,7 @@ class AutonomyPolicy:
             triage=_level(t, StageKind.TRIAGE),
             fix=_level(t, StageKind.FIX),
             land=_level(t, StageKind.LAND, default=Autonomy.PROPOSE),
+            explicit=frozenset(keys),
         )
 
     def require_environments(self, known: Collection[str], where: str) -> None:
@@ -186,6 +221,29 @@ class AutonomyPolicy:
         """The stages doctor reports: release, rollback, and each configured environment"""
         envs = sorted(self.deploy, key=str)
         return (Stage.release(), *(Stage.deploy(e) for e in envs), Stage.rollback())
+
+    def is_set(self, stage: Stage) -> bool:
+        """Whether the config sets the stage's key, rather than leaving it to its default"""
+        return str(stage) in self.explicit
+
+    def levels(self, hold: Hold, environments: Collection[EnvironmentName] = ()) -> tuple[StageLevel, ...]:
+        """Every stage, as `shipmill autonomy` lists it: the agent stages, release, a deploy per
+        environment [autonomy] lists or environments names (an unlisted one acts, D-7),
+        rollback, intake, and upgrade; each configured, under the hold, and its source"""
+        envs = sorted({*self.deploy, *environments}, key=str)
+        stages = (*(Stage(kind) for kind in AGENT_STAGES), Stage.release())
+        stages += (*(Stage.deploy(e) for e in envs), Stage.rollback())
+        rows = [self._row(str(s), self.configured(s), self.effective(s, hold)) for s in stages]
+        rows.append(self._row(INTAKE, self.intake, self.intake))  # never act, so the hold has nothing to lower
+        rows.append(self._row(UPGRADE, self.upgrade, self.upgrades(hold)))
+        return tuple(rows)
+
+    def _row(self, stage: str, configured: Autonomy, effective: Autonomy) -> StageLevel:
+        if effective is not configured:
+            source = Source.HOLD
+        else:
+            source = Source.CONFIG if stage in self.explicit else Source.DEFAULT
+        return StageLevel(stage, configured, effective, source)
 
 
 def _level(t: Table, key: str, default: Autonomy = Autonomy.ACT) -> Autonomy:

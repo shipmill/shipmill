@@ -6,8 +6,9 @@ each zone has one level, from the config's [decisions] section or the zone's def
 - ask: asks with the needs-decision protocol and leaves the item
 - never: may prepare the change, but the maintainer takes the decision by hand
 
-A zone's floor is the lowest level [decisions] may set it to. The release side's stages keep
-their levels in [autonomy]: [decisions] can't set them, nor the fixed zones."""
+A zone's floor is the lowest level [decisions] may set it to. The release side's stages and
+the agent stages (triage, fix, land; spec 040) keep their levels in [autonomy]: [decisions]
+can't set them, nor the fixed zones."""
 
 import functools
 import importlib.util
@@ -75,8 +76,8 @@ class Zone(StrEnum):
 
 
 class ReleaseZone(StrEnum):
-    """The release side's zones: [autonomy] sets them, or a decision fixes them, never
-    [decisions]"""
+    """The zones [autonomy] sets, or a decision fixes, never [decisions]: the release side's,
+    then the agent stages' (spec 040)"""
 
     RELEASE = "release"
     BREAKING_RELEASE = "breaking-release"
@@ -84,6 +85,9 @@ class ReleaseZone(StrEnum):
     ROLLBACK = "rollback"
     INTAKE = "intake"
     UPGRADE = "upgrade"
+    TRIAGE = "triage"
+    FIX = "fix"
+    LAND = "land"
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +312,9 @@ def levels(decisions: DecisionPolicy, autonomy: AutonomyPolicy) -> tuple[ZoneLev
         ReleaseZone.ROLLBACK: autonomy.rollback,
         ReleaseZone.INTAKE: autonomy.intake,
         ReleaseZone.UPGRADE: autonomy.upgrade,
+        ReleaseZone.TRIAGE: autonomy.triage,
+        ReleaseZone.FIX: autonomy.fix,
+        ReleaseZone.LAND: autonomy.land,
     }
     for release_zone in ReleaseZone:
         if release_zone is ReleaseZone.BREAKING_RELEASE:  # D-39: a trigger only proposes

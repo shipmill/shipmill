@@ -141,7 +141,7 @@ def test_s030_4_a_decision_policy_key_is_refused_whatever_its_value(value: str) 
     )
 
 
-@pytest.mark.parametrize("zone", ["release", "deploy", "rollback", "intake", "upgrade"])
+@pytest.mark.parametrize("zone", ["release", "deploy", "rollback", "intake", "upgrade", "triage", "fix", "land"])
 def test_s030_4_a_release_side_zone_is_refused_naming_autonomy(zone: str) -> None:
     assert refused(section(f'{zone} = "ask"')) == f"{WHERE}: {zone} is set in [autonomy] {zone}; move it there"
 

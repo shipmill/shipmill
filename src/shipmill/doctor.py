@@ -16,7 +16,7 @@ from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
 from shipmill.agents import RolesError
 from shipmill.app import Lacks, NotInstalled
-from shipmill.autonomy import HOLD_LABEL, Autonomy, Hold
+from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage
 from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
 from shipmill.config import config_path
@@ -769,9 +769,20 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
     if hold.on:
         detail += f" ({hold.reason})"
     detail += "; deploy and rollback act in shipmill operate"
+    agent_stages = [Stage(kind) for kind in AGENT_STAGES]
+    detail += "; " + ", ".join(f"{stage} {policy.autonomy.effective(stage, hold)}" for stage in agent_stages)
+    detail += " in agent sessions"
     detail += f"; intake {policy.autonomy.intake} in the product-intake skill"
     detail += f"; upgrade {policy.autonomy.upgrades(hold)} for config upgrades"
     checks.append(Check("PASS", "autonomy", detail))
+    unread = [str(stage) for stage in agent_stages if policy.autonomy.is_set(stage)]
+    if unread and policy.agents is None:  # S-040-17: as decisions_checks does for [decisions]
+        them = "it" if len(unread) == 1 else "them"
+        detail = (
+            f"[autonomy] sets {', '.join(unread)}, but nothing reads {them} without [agents]: the agent stages"
+            f" bound agent sessions only; add [agents] or delete {them}"
+        )
+        checks.append(Check("WARN", "autonomy", detail))
     proposes = any(policy.autonomy.configured(stage) is Autonomy.PROPOSE for stage in policy.autonomy.stages())
     breaks = policy.can_break  # S-029-7: a breaking stable candidate is proposed, whatever the autonomy
     if (

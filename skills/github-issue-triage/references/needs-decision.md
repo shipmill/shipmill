@@ -28,7 +28,7 @@ Every session in a repo whose `.github/shipmill.toml` has `[agents]`, a gate ses
 | `implementation` | work order, how a change splits into pull requests, internal design, refactors, tests, docs of existing behaviour |
 | `unknown` | a decision no other zone covers |
 
-The release side's zones (`release`, `breaking-release`, `deploy`, `rollback`, `intake`, `upgrade`) take their levels from `[autonomy]` and D-39, and `decide levels` lists them too. Without `[agents]` there are no zones: the skills' own rules (the [design gate](design-gate.md)'s, the [spec gate](spec-gate.md)'s) say when to ask.
+The release side's zones (`release`, `breaking-release`, `deploy`, `rollback`, `intake`, `upgrade`) and the agent stages (`triage`, `fix`, `land`, spec 040) take their levels from `[autonomy]` and D-39, and `decide levels` lists them too. Without `[agents]` there are no zones: the skills' own rules (the [design gate](design-gate.md)'s, the [spec gate](spec-gate.md)'s) say when to ask.
 
 ### Placing a decision
 

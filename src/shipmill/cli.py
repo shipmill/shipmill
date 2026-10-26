@@ -16,7 +16,11 @@
                   tree's config or --ref's; classify prints the zones code detects for --pr N or --files
                   PATH..., each with its level and reason, the strictest level, and the D-n candidates,
                   the levels read at --ref (default origin/HEAD), never from the change; --json for both
-  review          REVIEW.md, the review rubric (spec 024): check exits 1 naming the file, line, and rule
+  autonomy        every stage's [autonomy] level (spec 040): triage, fix, land, release, each deploy
+                  environment, rollback, intake, and upgrade, each configured, under the shipmill-hold
+                  stop switch, and its source (default, config, or hold), from the config at --ref
+                  (default origin/HEAD); --json for one JSON object with the open hold issues
+  review         REVIEW.md, the review rubric (spec 024): check exits 1 naming the file, line, and rule
                   a structured section breaks; show prints the rubric for the files given with --path,
                   the root's and their directories' merged, as Markdown or --json; add-rule, protect,
                   set-cap, and retire edit one line (--dir DIR: DIR/REVIEW.md) and print it
@@ -151,7 +155,7 @@ from shipmill.app_gh import (
     run_gh,
 )
 from shipmill.app_install import WAIT_SECONDS, guide
-from shipmill.autonomy import Autonomy, AutonomyPolicy, Hold
+from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold
 from shipmill.classify import DEFAULT_REF, Base, Pulls, RepoPath, classify_paths, classify_pull, policy_at
 from shipmill.claude_auth import ClaudeAuth, claude_auth, run_auth
 from shipmill.config import CONFIG_PATH, Table, config_path
@@ -369,6 +373,19 @@ def _parser() -> argparse.ArgumentParser:
     changed.add_argument("--pr", type=int, metavar="N", help="the pull request, its files and diff read through gh")
     changed.add_argument("--files", nargs="+", metavar="PATH", help="changed paths; the diff rules don't apply")
     q.add_argument("--json", action="store_true", help="print the classification as one JSON object")
+
+    p = sub.add_parser(
+        "autonomy",
+        help="print every stage's [autonomy] level: configured, under the hold, and where it comes from (spec 040)",
+    )
+    p.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    p.add_argument(
+        "--ref",
+        default=DEFAULT_REF,
+        help=f"read the config at this git ref, never from a change (default: {DEFAULT_REF}); exit 2 when the checkout"
+        " lacks it",
+    )
+    p.add_argument("--json", action="store_true", help="print the hold and the stages as one JSON object")
 
     p = sub.add_parser("review", help="check, show, or edit REVIEW.md, the review rubric (spec 024)")
     reviews = p.add_subparsers(dest="review_command", required=True)
@@ -747,6 +764,8 @@ def main(
         return _review(root, args)
     if args.command == "decide":
         return _decide(root, args, pulls or GhCli(root))
+    if args.command == "autonomy":
+        return _autonomy(root, args.ref, args.json, github or GhCli(root))
     if args.command == "evals":
         if args.evals == "compare":
             return _evals_compare(args.base, args.head, frozenset(args.changed), args.tolerance)
@@ -1674,6 +1693,24 @@ def _decide(root: Path, args: argparse.Namespace, pulls: Pulls) -> int:
     else:
         found = classify_paths(base, [RepoPath.given(p) for p in args.files])
     sys.stdout.write(json.dumps(found.record(), indent=2) + "\n" if args.json else found.text())
+    return 0
+
+
+def _autonomy(root: Path, ref: str, as_json: bool, github: GitHub) -> int:
+    """Spec 040: every stage's level at ref, never the working tree's, so a change that raises
+    a level is read by the level it would replace; the hold read through gh, which stops it
+    when it can't be read, as a level under an unknown hold is unknown"""
+    policy = policy_at(Git(root), ref)
+    hold = Hold.read(github)
+    rows = policy.autonomy.levels(hold, [EnvironmentName(name) for name in policy.environments])
+    if as_json:
+        print(json.dumps({"hold": list(hold.issues), "stages": [row.record() for row in rows]}, indent=2))
+        return 0
+    for issue in hold.issues:
+        print(f"hold: {issue}")
+    width = max(18, *(len(row.stage) for row in rows))
+    for row in rows:
+        print(row.text(width))
     return 0
 
 
