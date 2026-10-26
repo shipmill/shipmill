@@ -7,6 +7,20 @@ bot.
 
 ## [Unreleased]
 
+## [0.76.0] - 2026-10-26
+
+### Fixed
+
+- A `shipmill` on PATH whose `--version` exits 0 with anything but `shipmill X.Y.Z` is now the `SHIPMILL_OUTDATED` `shipmill on PATH` row, quoting the first line it printed with `uv tool upgrade shipmill` as its fix, instead of making `watch_state.py` exit 2 and stopping every gate tick (#628)
+
+### Added
+
+- github-ship-watch's Direction section says what a session does for each DIRECTION_PENDING row: it opens the `shipmill-direction` issue as the App, asks the maintainer for the five sections of `docs/product.md` through the needs-decision protocol, closes the issue as not planned on a decline, and otherwise writes the file from the maintainer's words only and opens a `shipmill/direction` pull request that the maintainer merges (#637)
+
+### Changed
+
+- The skills follow roles (spec 036): github-issue-triage files a step only a person can do labelled `role:<name>` and assigned that role's users at once (`role:maintainer` when none fits, never `human`), assigns an ASSIGN_DUE item with no comment, reads NO_ASSIGNEE as a state read without the `--role` flags instead of asking who does it, and mentions a role's teams in the hand-off; shipmill-setup documents `[agents.roles]` and its `role:<name>` labels (#643)
+
 ## [0.75.0] - 2026-10-26
 
 ### Added
@@ -1797,7 +1811,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.75.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.76.0...HEAD
+[0.76.0]: https://github.com/shipmill/shipmill/compare/v0.75.0...v0.76.0
 [0.75.0]: https://github.com/shipmill/shipmill/compare/v0.74.0...v0.75.0
 [0.74.0]: https://github.com/shipmill/shipmill/compare/v0.73.1...v0.74.0
 [0.73.1]: https://github.com/shipmill/shipmill/compare/v0.73.0...v0.73.1
