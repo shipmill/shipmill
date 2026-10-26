@@ -7,6 +7,14 @@ bot.
 
 ## [Unreleased]
 
+## [0.78.0] - 2026-10-26
+
+### Added
+
+- `shipmill autonomy [--ref REF] [--json]` prints every stage's `[autonomy]` level (triage, fix, land, release, each deploy environment, rollback, intake, upgrade), configured and under the `shipmill-hold` stop switch, with its source (`default`, `config`, or `hold`) and the open hold issues, from the config at `origin/HEAD` by default; `shipmill decide levels` lists `triage`, `fix`, and `land` with source `autonomy`; `doctor` names the three agent stages in its autonomy line and warns when one is set in a config without `[agents]` (#660)
+- For one minor release, a config with `[agents]` that sets none of `[autonomy]` `triage`, `fix`, and `land` reads `land = "act"` from an `[agents] prompt` that says "merge when green" or "land", shown with source `prompt` by `shipmill autonomy` and warned about by `doctor`; the `agent-autonomy` upgrade (`shipmill upgrade --apply agent-autonomy`) writes the three keys with those levels, keeping the rest of the file byte for byte (#661)
+- Setup reads and writes autonomy levels: `setup_state.py` reports `AUTONOMY_IMPLICIT` for a config with `[agents]` whose `[autonomy]` sets none of `triage`, `fix`, and `land`; `shipmill init` writes `[autonomy]` uncommented with `release` at its default, and `init --operate` adds `rollback` and each `deploy.<env>` the policy doesn't set, at their defaults (#664)
+
 ## [0.77.0] - 2026-10-26
 
 ### Added
@@ -1817,7 +1825,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.77.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.78.0...HEAD
+[0.78.0]: https://github.com/shipmill/shipmill/compare/v0.77.0...v0.78.0
 [0.77.0]: https://github.com/shipmill/shipmill/compare/v0.76.0...v0.77.0
 [0.76.0]: https://github.com/shipmill/shipmill/compare/v0.75.0...v0.76.0
 [0.75.0]: https://github.com/shipmill/shipmill/compare/v0.74.0...v0.75.0
