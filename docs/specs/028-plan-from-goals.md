@@ -1,6 +1,6 @@
 # S-028: A plan from a goal
 
-status: approved
+status: built
 serves: G-6
 
 ## Problem
@@ -271,3 +271,21 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 - shipmill/shipmill#517: S-028-15, S-028-16, S-028-17
 
 ## Verification
+
+- S-028-1: tests/test_intake_plans.py (test_s028_1_*): PLAN_DUE `no-work` for a goal nothing serves, nothing for one a draft or approved spec, a triaged issue, a pull request's plan, an opportunity, or an open plan item serves, and closed, built, or unrelated work serves nothing; passes
+- S-028-2: tests/test_intake_plans.py (test_s028_2_*): no `no-work` row after a declined newest plan, and a request still proposes one; passes
+- S-028-3: tests/test_intake_plans.py (test_s028_3_*): a trusted `goal-plan` issue naming one listed goal reads `requested in #N`, anyone else's is no request, and two requests make one row naming the oldest; passes
+- S-028-4: tests/test_intake_plans.py (test_s028_4_*): `no-work` waits for room under `--wip N` as `triage_state.py` counts it, and a request never waits; passes
+- S-028-5: tests/test_intake_plans.py (test_s028_5_*): a goal with an open plan issue never reads PLAN_DUE; passes
+- S-028-6: tests/test_plans.py (test_s028_6_*): `plans.py check` exits 0 on a well-formed body and 2 naming the line and rule for each listed fault; passes
+- S-028-7: tests/test_plans.py (test_s028_7_*): `plans.py items` lists each item with its id, kind, text, after, and filed issue, reads a marker only from a trusted author of this repo, and stops rather than truncating past one page; passes
+- S-028-8: tests/test_intake_plans.py (test_s028_8_*): PLAN_OPEN with no trusted answer, the session's own comments never an answer, and a trusted comment older than the newest revision stale; passes
+- S-028-9: tests/test_intake_plans.py (test_s028_9_*): `accept` reads PLAN_ACCEPTED, `decline` and any other answer PLAN_ANSWERED with their notes, the newest trusted answer decides, and only the `--bot-login`'s higher `rev` makes an earlier answer stale; passes
+- S-028-10: tests/test_intake_plans.py (test_s028_10_*): an accept older than the body's last edit reads PLAN_OPEN `edited after accept`; passes
+- S-028-11: tests/test_intake_plans.py (test_s028_11_*): PLAN_ACCEPTED until every `feature` and `fix` item carries its marker and every item of this repo is in the named milestone, then PLAN_FILED; passes
+- S-028-12: tests/test_intake_plans.py (test_s028_12_*): a refused body reads PLAN_MALFORMED naming the line, a broken marker is still a plan, and a plan closed as not planned reads PLAN_DECLINED with the reason; passes
+- S-028-13: tests/test_watch_plans.py (test_s028_13_*): the PLANS row lists each action state, `shipmill gate` starts a session for it, and with `--trusted-only` a plan not opened by the `--bot-login` starts none; passes
+- S-028-14: tests/test_watch_plans.py (test_s028_14_*): `intake_state.py` never reads a `goal-plan` issue as feedback, and `triage_state.py` reads a plan with intake's comment as TRIAGED; passes
+- S-028-15: tests/test_plan_skill.py and tests/test_chains.py (test_s028_15_*), and product-intake's SKILL.md step 6 read: each `feature` and `fix` item filed in Work order with the plan-item marker and `Serves: G-n`, linked with `chains.py link --child --no-text`, each `(after W-k)` a `Depends on` line and `--blocked-by` relation, and no implementer or spec; passes
+- S-028-16: tests/test_plan_skill.py (test_s028_16_*), and spec-gate.md's Where features come from read: a feature item of an accepted plan is chosen work that still needs its own spec merged with `status: approved`; passes
+- S-028-17: tests/test_plan_skill.py (test_s028_17_*), and product-intake's SKILL.md rule 9 and step 6 read: no plan decided without a trusted answer, no goal added or `docs/product.md` edited, and under `observe` the due plan's text reported with nothing opened; passes
