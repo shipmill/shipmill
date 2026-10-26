@@ -27,11 +27,13 @@ from shipmill.downstream import (
     Pull,
     Status,
     Written,
+    declares_sha,
     key_problem,
     parse_pull,
     start,
 )
 from shipmill.errors import ReleaseError
+from shipmill.init import downstream_caller_text
 
 from .conftest import POLICY
 from .test_app import FakeSigner, key_file
@@ -545,8 +547,21 @@ def test_s032_20_a_start_for_the_head_tests_that_sha(tmp_path: Path) -> None:
     assert library.collects == [("main", 12, SHA)]
 
 
-def test_s032_20_the_collect_dispatch_carries_pr_sha_and_collect(tmp_path: Path) -> None:
+SHA_INPUT = '      sha: {description: "the head SHA you read; the run refuses any other", required: true, type: string}'
+SHA_PASSED = "      sha: ${{ inputs.sha }}\n"
+# the caller `shipmill init --downstream` wrote before the sha input
+OLD_CALLER = downstream_caller_text().replace(SHA_INPUT + "\n", "").replace(SHA_PASSED, "")
+
+
+def caller(tmp_path: Path, text: str) -> None:
+    """The library checkout's caller, the default branch's that collect is dispatched on"""
+    (tmp_path / ".github" / "workflows").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".github" / "workflows" / "downstream.yml").write_text(text, encoding="utf-8")
+
+
+def test_s032_20_a_caller_declaring_sha_gets_it_on_the_collect_dispatch(tmp_path: Path) -> None:
     calls = gh_library(tmp_path)
+    caller(tmp_path, downstream_caller_text())
     GhLibrary(tmp_path, str(tmp_path / "gh")).dispatch_collect("main", 12, SHA)
     [call] = calls()
     assert call["args"] == [
@@ -554,13 +569,27 @@ def test_s032_20_the_collect_dispatch_carries_pr_sha_and_collect(tmp_path: Path)
     ]  # fmt: skip
 
 
-def test_s032_20_a_caller_without_the_sha_input_refusing_collect_names_the_fix(tmp_path: Path) -> None:
-    gh = tmp_path / "gh"
-    refused = "could not create workflow dispatch event: HTTP 422: Unexpected inputs provided"
-    gh.write_text(f"#!/bin/sh\necho '{refused}' >&2\nexit 1\n", encoding="utf-8")
-    gh.chmod(0o755)
-    with pytest.raises(ReleaseError, match="rewritten with `shipmill init --downstream --force`"):
-        GhLibrary(tmp_path, str(gh)).dispatch_collect("main", 12, SHA)
+def test_s032_20_an_old_caller_without_the_sha_input_is_dispatched_without_it(tmp_path: Path) -> None:
+    assert "sha" not in OLD_CALLER.split("permissions:")[0].split("workflow_dispatch:")[1]
+    calls = gh_library(tmp_path)
+    caller(tmp_path, OLD_CALLER)
+    GhLibrary(tmp_path, str(tmp_path / "gh")).dispatch_collect("main", 12, SHA)
+    [call] = calls()
+    assert call["args"] == ["workflow", "run", "downstream.yml", "--ref", "main", "-f", "pr=12", "-f", f"collect={SHA}"]
+
+
+def test_s032_20_a_sha_only_in_a_comment_or_under_with_is_not_declared() -> None:
+    assert declares_sha(downstream_caller_text())
+    assert not declares_sha(OLD_CALLER)
+    assert not declares_sha(OLD_CALLER.replace("      pr: {", "      # sha: {}\n      pr: {"))
+    assert not declares_sha(OLD_CALLER.replace("      collect: ${{", SHA_PASSED + "      collect: ${{"))
+
+
+def test_s032_20_a_checkout_without_the_caller_refuses_the_collect_dispatch(tmp_path: Path) -> None:
+    calls = gh_library(tmp_path)
+    with pytest.raises(ReleaseError, match="no .github/workflows/downstream.yml in the checkout"):
+        GhLibrary(tmp_path, str(tmp_path / "gh")).dispatch_collect("main", 12, SHA)
+    assert not (tmp_path / "calls.jsonl").exists() or calls() == []
 
 
 # S-032-21: the reusable workflow takes sha and passes it to start
@@ -822,6 +851,7 @@ def gh_library(tmp_path: Path) -> Callable[[], list[dict[str, object]]]:
 
 def test_gh_library_reads_and_writes_through_gh(tmp_path: Path) -> None:
     gh_library(tmp_path)
+    caller(tmp_path, downstream_caller_text())
     library = GhLibrary(tmp_path, str(tmp_path / "gh"))
 
     assert library.pull(12) == replace(FORK, head_repo=None)

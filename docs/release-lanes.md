@@ -616,8 +616,10 @@ A person's start is pinned to the commit they read. The caller's `workflow_dispa
 required `sha` input, and when the pull request's head is no longer that SHA the run exits 1
 before the App's key reaches the disk, writing no check and starting no downstream: `the head
 of #<N> is <current SHA>, not <sha>; read the new commits and start again with -f
-sha=<current SHA>`. A caller written before the `sha` input is refused on a dispatch, naming
-`shipmill init --downstream --force`, which rewrites it; `shipmill doctor` FAILs it too.
+sha=<current SHA>`. A caller written before the `sha` input keeps working unpinned: its pull
+requests' downstream runs start and are collected (shipmill sends `sha` on the collect
+dispatch only to a caller that declares it), but a person's start on it is refused, naming
+`shipmill init --downstream --force`, which rewrites it; `shipmill doctor` WARNs on it.
 
 ### The App, the secret, and the workflow
 

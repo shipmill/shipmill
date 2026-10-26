@@ -176,12 +176,23 @@ def test_s032_22_a_caller_without_the_sha_input_or_passing_it_fails_naming_the_f
     assert block(repo, FakeReader())[0] == ("FAIL", f"{DOWNSTREAM_CALLER} lacks {named}: rewrite it with {FIX}")
 
 
-def test_s032_22_a_caller_written_before_the_sha_input_fails_naming_both(repo: Repo) -> None:
+def test_s032_20_a_caller_written_before_the_sha_input_warns_naming_the_fix(repo: Repo) -> None:
     library(repo, downstream_caller_text().replace(SHA_INPUT, "").replace(SHA_PASSED, ""))
     status, detail = block(repo, FakeReader())[0]
-    assert status == "FAIL"
-    assert "the workflow_dispatch input sha, sha: ${{ inputs.sha }} passed to the reusable workflow" in detail
+    assert status == "WARN"
+    assert detail.startswith(f"{DOWNSTREAM_CALLER} was written before the sha input")
     assert detail.endswith(f"rewrite it with {FIX}")
+
+
+def test_s032_20_an_old_caller_missing_another_part_fails_naming_the_sha_too(repo: Repo) -> None:
+    old = downstream_caller_text().replace(SHA_INPUT, "").replace(SHA_PASSED, "")
+    checks = "  checks: write           # write one check per downstream on the pull request's head\n"
+    library(repo, old.replace(checks, ""))
+    assert block(repo, FakeReader())[0] == (
+        "FAIL",
+        f"{DOWNSTREAM_CALLER} lacks checks: write, the workflow_dispatch input sha,"
+        f" sha: ${{{{ inputs.sha }}}} passed to the reusable workflow: rewrite it with {FIX}",
+    )
 
 
 def test_s032_15_a_permission_named_only_in_a_comment_still_fails(repo: Repo) -> None:

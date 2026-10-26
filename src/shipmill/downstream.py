@@ -122,6 +122,19 @@ RUNNING = "running"  # a required check's title until collect concludes it
 REPORT_RUNNING = "report-only: running"  # a report-only check is completed from the start: its title says it waits
 _SHA = re.compile(r"[0-9a-f]{40}")
 OLD_CALLER_FIX = "shipmill init --downstream --force"  # rewrites a caller written before the sha input
+CALLER = Path(".github") / "workflows" / WORKFLOW
+_DISPATCH_BLOCK = re.compile(
+    r"^(?P<indent>[ \t]*)workflow_dispatch:[ \t]*$(?P<body>(?:\n(?:(?P=indent)[ \t]+.*|[ \t]*$))*)", re.MULTILINE
+)
+
+
+def declares_sha(text: str) -> bool:
+    """Whether a caller's workflow_dispatch declares the sha input: a caller written before it
+    refuses a dispatch carrying sha, and one written after needs it. A text check, not a YAML
+    parse; comments are cut first"""
+    body = "\n".join(re.sub(r"(?:^|\s)#.*$", "", line) for line in text.splitlines())
+    block = _DISPATCH_BLOCK.search(body)
+    return block is not None and re.search(r"^\s+sha:", block["body"], re.MULTILINE) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,7 +364,8 @@ class Library(Protocol):
     def update_check(self, check_id: int, check: Check) -> None: ...
 
     def dispatch_collect(self, ref: str, pr: int, sha: str) -> None:
-        """Start the library's WORKFLOW on ref with pr, sha=sha, and collect=sha"""
+        """Start the library's WORKFLOW on ref with pr and collect=sha, and sha=sha when the
+        caller on ref declares the sha input"""
         ...
 
 
@@ -441,16 +455,13 @@ class GhLibrary:
         )  # fmt: skip
 
     def dispatch_collect(self, ref: str, pr: int, sha: str) -> None:
-        try:
-            self._gh(
-                "workflow", "run", WORKFLOW, "--ref", ref, "-f", f"pr={pr}", "-f", f"sha={sha}", "-f", f"collect={sha}"
-            )  # fmt: skip
-        except GhFailed as exc:
-            if exc.status == 422:  # a caller written before the sha input refuses it as unexpected
-                raise ReleaseError(
-                    f"{exc}; a {WORKFLOW} without the sha input is rewritten with `{OLD_CALLER_FIX}`"
-                ) from None
-            raise
+        # the checkout is the default branch's, the ref collect runs on: its caller says whether
+        # the dispatch takes sha, which a caller written before the input refuses (S-032-20)
+        caller = self.root / CALLER
+        if not caller.is_file():
+            raise ReleaseError(f"no {CALLER} in the checkout at {self.root} to dispatch collect on")
+        pin = ["-f", f"sha={sha}"] if declares_sha(caller.read_text(encoding="utf-8")) else []
+        self._gh("workflow", "run", WORKFLOW, "--ref", ref, "-f", f"pr={pr}", *pin, "-f", f"collect={sha}")
 
 
 @dataclass(frozen=True, slots=True)

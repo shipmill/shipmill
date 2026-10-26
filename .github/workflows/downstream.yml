@@ -24,7 +24,7 @@ on:
       sha:
         description: "The head SHA the person read; a workflow_dispatch start refuses any other head"
         type: string
-        default: "" # optional, so a caller written before it still starts; its dispatch is refused naming the fix
+        default: "" # optional, so a caller written before it still starts; a person's start on it is refused naming the fix
       collect:
         description: "Set by shipmill: the head SHA to collect results for; empty starts the downstream runs"
         type: string

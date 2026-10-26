@@ -31,6 +31,7 @@ from shipmill.downstream import (
     Installed,
     Reader,
     Unreadable,
+    declares_sha,
     not_installed,
 )
 from shipmill.errors import ReleaseError
@@ -511,13 +512,24 @@ def _downstream_caller(root: Path) -> Check:
     for permission in ("actions", "checks"):
         if not re.search(rf"^\s*(?:{permission}:\s*write|permissions:\s*write-all)\b", text, re.MULTILINE):
             missing.append(f"{permission}: write")
-    # a person's start is pinned to the head they read (S-032-22)
-    if "the workflow_dispatch trigger" not in missing and not _takes_input(text, "workflow_dispatch", "sha"):
-        missing.append("the workflow_dispatch input sha")
-    if not re.search(r"^\s+sha:\s*\$\{\{\s*inputs\.sha\s*\}\}\s*$", text, re.MULTILINE):
-        missing.append("sha: ${{ inputs.sha }} passed to the reusable workflow")
+    # a person's start is pinned to the head they read: a caller with neither half of the sha
+    # input is one written before it, which still starts unpinned (S-032-20); one half is broken
+    declared = declares_sha(text)
+    passed = re.search(r"^\s+sha:\s*\$\{\{\s*inputs\.sha\s*\}\}\s*$", text, re.MULTILINE) is not None
+    if declared != passed or missing:
+        if not declared and "the workflow_dispatch trigger" not in missing:
+            missing.append("the workflow_dispatch input sha")
+        if not passed:
+            missing.append("sha: ${{ inputs.sha }} passed to the reusable workflow")
     if missing:
         return Check("FAIL", "downstream", f"{DOWNSTREAM_CALLER} lacks {', '.join(missing)}: rewrite it with {fix}")
+    if not declared:
+        detail = (
+            f"{DOWNSTREAM_CALLER} was written before the sha input: its downstream runs start and collect"
+            " without it, but a person's start, which a fork's pull request or a rerun needs, is refused"
+            f" until the caller has it; rewrite it with {fix}"
+        )
+        return Check("WARN", "downstream", detail)
     detail = (
         f"{DOWNSTREAM_CALLER} calls shipmill's downstream.yml on pull_request_target and workflow_dispatch"
         " with actions: write and checks: write, and passes the sha a person's start is pinned to"
