@@ -298,8 +298,9 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
                   into a uvx run's environment in uv's cache, is skipped), asked `shipmill
                   --version` with only PATH and HOME and 10 s; older, or exiting non-zero
                   ("predates shipmill --version"), or never answering in time or starting
-                  ("doesn't answer shipmill --version"), its fix is `uv tool upgrade shipmill`,
-                  newer the install's update; an exit 0 that isn't `shipmill X.Y.Z` exits 2.
+                  ("doesn't answer shipmill --version"), or exiting 0 with anything but
+                  `shipmill X.Y.Z` ("answers shipmill --version with '<its first line>'",
+                  #628), its fix is `uv tool upgrade shipmill`, newer the install's update.
                   No row without one on PATH or without an install a session loads. An
                   action for a person, never an agent's
   SKILL_SHADOWED  one row per link or copy of a shipmill skill (a folder name under skills/)
@@ -3379,18 +3380,29 @@ PATH_CLI = "shipmill on PATH"  # the subject of the person's CLI's SHIPMILL_OUTD
 UV_UPGRADE = "uv tool upgrade shipmill"  # the fix for a lagging `uv tool install shipmill`, shipmill's launchd.UPGRADE
 CLI_VERSION = re.compile(r"shipmill (\d+\.\d+\.\d+)")  # what `shipmill --version` prints (S-031-25), matched whole
 VERSION_TIMEOUT = 10.0  # seconds a shipmill on PATH has to answer --version
+ANSWER_SHOWN = 80  # characters of an answer that isn't `shipmill X.Y.Z` its row shows (#628)
 UV_CACHE_ENVS = re.compile(r"archive-v\d+|environments-v\d+")  # the folders of uv's cache holding uvx's environments
 
 
 @dataclass(frozen=True)
 class PathCli:
     """The person's shipmill on PATH (#583): its path as PATH names it, and the version its
-    --version printed; None for a release from before --version, which answers it exit 2, and
-    for one that never answered, whose reason is silent (a timeout, or it can't start)"""
+    --version printed; None for a release from before --version, which answers it exit 2, for
+    one that never answered, whose reason is silent (a timeout, or it can't start), and for one
+    that exits 0 printing something else, whose answer is its first line, bounded (#628)"""
 
     path: Path
     version: str | None
     silent: str | None = None
+    answer: str | None = None
+
+
+def shown_answer(stdout: str) -> str:
+    """What a row shows of a --version answer that isn't `shipmill X.Y.Z`: its first line,
+    cut to ANSWER_SHOWN characters; the row quotes it with control characters escaped"""
+    lines = stdout.strip().splitlines()
+    first = lines[0] if lines else ""
+    return first if len(first) <= ANSWER_SHOWN else first[:ANSWER_SHOWN] + "..."
 
 
 class NoAnswer(Exception):
@@ -3449,6 +3461,7 @@ def answer_version(program: Path, timeout: float = VERSION_TIMEOUT) -> subproces
             [str(program), "--version"],
             capture_output=True,
             text=True,
+            errors="replace",  # an arbitrary program's bytes: never a decode error (#628)
             check=False,
             env=env,
             timeout=timeout,
@@ -3467,8 +3480,9 @@ def path_cli(
 ) -> PathCli | None:
     """The person's shipmill (S-031-26): the first on path (default: $PATH) outside the
     environment running the check, with the version its --version printed; None without one. A
-    non-zero exit predates --version (S-031-27), and one that never answers is silent, both rows;
-    an exit 0 that isn't `shipmill X.Y.Z` is refused, naming the path and the output"""
+    non-zero exit predates --version (S-031-27), one that never answers is silent, and an exit 0
+    that isn't `shipmill X.Y.Z` keeps its answer: all rows, never a stop, since the gate reads
+    this script every tick (#628)"""
     searched = os.environ.get("PATH", "") if path is None else path
     program = path_shipmill(searched, own_environments() if environments is None else environments)
     if program is None:
@@ -3481,7 +3495,7 @@ def path_cli(
         return PathCli(program, None)
     found = CLI_VERSION.fullmatch(proc.stdout.strip())
     if found is None:
-        raise Refused(f"error: {program} --version printed {proc.stdout.strip()!r}, not shipmill X.Y.Z")
+        return PathCli(program, None, answer=shown_answer(proc.stdout))
     return PathCli(program, found.group(1))
 
 
@@ -3489,9 +3503,13 @@ def path_cli_row(cli: PathCli, plugin: str, update: str) -> Row | None:
     """S-031-26, S-031-27: the person's shipmill against the plugin a session loads (plugin, its
     version), one SHIPMILL_OUTDATED row when they differ. Older, or from before --version: uv's
     upgrade. Newer: the plugin is behind, so update, S-031-15's update of that install. None
-    when they match. One that never answered is the row too, with its reason and uv's upgrade"""
+    when they match. One that never answered is the row too, with its reason and uv's upgrade,
+    and so is one whose exit 0 printed something else, with that answer quoted (#628)"""
     if cli.silent is not None:
         detail = f"{cli.path} doesn't answer shipmill --version: {cli.silent}, the plugin is {plugin}; {UV_UPGRADE}"
+        return Row("SHIPMILL_OUTDATED", PATH_CLI, detail, UV_UPGRADE)
+    if cli.answer is not None:
+        detail = f"{cli.path} answers shipmill --version with {cli.answer!r}, the plugin is {plugin}; {UV_UPGRADE}"
         return Row("SHIPMILL_OUTDATED", PATH_CLI, detail, UV_UPGRADE)
     if cli.version is None:
         detail = f"{cli.path} predates shipmill --version, the plugin is {plugin}; {UV_UPGRADE}"

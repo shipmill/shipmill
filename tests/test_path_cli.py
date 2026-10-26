@@ -226,14 +226,38 @@ def test_s031_27_a_shipmill_from_before_version_is_a_row_naming_it(ws: ModuleTyp
 
 
 @pytest.mark.parametrize("printed", ["0.40.0", "shipmill 0.40", "shipmill v0.40.0", "shipmill 0.40.0rc1", ""])
-def test_s031_27_an_exit_0_that_isnt_a_version_stops_the_watch_naming_the_path(
+def test_s031_27_an_exit_0_that_isnt_a_version_is_a_row_naming_the_path_and_output(
     ws: ModuleType, tmp_path: Path, printed: str
 ) -> None:
+    """#628: the gate reads watch_state.py every tick and stops on its exit 2, so a person's
+    broken shipmill on PATH is the row with what it printed and uv's upgrade, never a stop"""
     program = fake(tmp_path / "bin", f'printf "%s\\n" "{printed}"')
-    with pytest.raises(ws.Refused) as refused:
-        ws.path_cli(str(tmp_path / "bin"), (tmp_path / "e",))
-    assert refused.value.code == 2
-    assert str(program) in str(refused.value) and repr(printed) in str(refused.value)
+    plugins = [install("user", "0.67.0")]
+    rows = ws.plugin_rows(plugins, None, "v0.67.0", [REPO], [GATE], REPO, reader(ws, tmp_path / "bin", tmp_path / "e"))
+    (row,) = person(rows)
+    assert (row.state, row.detail, row.fix) == (
+        "SHIPMILL_OUTDATED",
+        f"{program} answers shipmill --version with {printed!r}, the plugin is 0.67.0; {UPGRADE}",
+        UPGRADE,
+    )
+    assert row.json()["agent"] is False
+
+
+def test_s031_27_the_output_shown_is_one_bounded_line_never_interpreted(ws: ModuleType, tmp_path: Path) -> None:
+    """The output comes from an arbitrary program: its first line only, cut to a bound, quoted
+    with control characters escaped, and bytes that aren't UTF-8 replaced, not a crash"""
+    long = "x" * 200
+    fake(tmp_path / "long", f'printf "%s\\nsecond line\\n" "{long}"')
+    found = ws.path_cli(str(tmp_path / "long"), (tmp_path / "e",))
+    assert found.answer == "x" * ws.ANSWER_SHOWN + "..."
+    row = ws.path_cli_row(found, "0.67.0", USER_UPDATE)
+    assert "second line" not in row.detail and len(row.text().splitlines()) == 1
+    fake(tmp_path / "odd", "printf 'shipmill \\033[31m$(id)\\377\\n'")
+    odd = ws.path_cli(str(tmp_path / "odd"), (tmp_path / "e",))
+    printed = "shipmill \x1b[31m$(id)�"
+    assert odd.answer == printed
+    detail = ws.path_cli_row(odd, "0.67.0", USER_UPDATE).detail
+    assert "\x1b" not in detail and f"with {printed!r}," in detail and "\\x1b[31m$(id)" in detail
 
 
 def test_s031_28_no_shipmill_on_path_or_no_loaded_install_gives_no_row(ws: ModuleType, tmp_path: Path) -> None:
