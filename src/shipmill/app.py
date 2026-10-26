@@ -19,6 +19,7 @@ from the coordinator's session still reaches only the home repo.
 """
 
 import base64
+import binascii
 import datetime as dt
 import enum
 import http.client
@@ -693,6 +694,26 @@ def product_token(
     fresh = mint_product(app_id, repos, key, now, signer, api)
     save_product_token(cache, fresh)
     return fresh.value
+
+
+def contents(repo: str, file: str, token: str, api: Api) -> str | None:
+    """A file's text on repo's default branch, read with an installation token (spec 038's
+    doctor reads a component's config with the product token); None when GitHub has no such
+    file. No message quotes the token"""
+    path = f"/repos/{repo}/contents/{urllib.parse.quote(file)}"
+    answer = api.get(path, token)
+    if answer.status == 404:
+        return None
+    if answer.status != 200:
+        raise ReleaseError(f"GET {path} answered {answer.status}: {answer.body.strip()[:300]}")
+    data = _json(answer, path)
+    content = data.get("content")
+    if data.get("type") != "file" or data.get("encoding") != "base64" or not isinstance(content, str):
+        raise ReleaseError(f"GET {path} gave no file's base64 content")
+    try:
+        return base64.b64decode(content).decode("utf-8")
+    except binascii.Error, UnicodeDecodeError:
+        raise ReleaseError(f"GET {path} gave content that is not base64 of UTF-8 text") from None
 
 
 CREDENTIAL_HOST = "github.com"

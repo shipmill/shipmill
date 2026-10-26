@@ -9,13 +9,26 @@ import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from shipmill import cli_command, fragments, ticks
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
-from shipmill.agents import RolesError
-from shipmill.app import Lacks, NotInstalled
+from shipmill.agents import ProductConfig, RolesError
+from shipmill.app import (
+    PRODUCT_PERMISSIONS,
+    Api,
+    Clock,
+    Lacks,
+    NotInstalled,
+    Signer,
+    check_key,
+    contents,
+    default_key,
+    installation,
+    jwt,
+    product_token,
+)
 from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage, StageKind
 from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
@@ -196,6 +209,8 @@ def doctor(
     app: AppProbe | None = None,
     gate_cli: Callable[[], GateCli | None] | None = None,
     pypi: Fetch | None = None,
+    product: ProductProbe | None = None,
+    home_reader: HomeReader | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -209,7 +224,11 @@ def doctor(
     downstream; None, or a probe without the key, warns once that it is unchecked. gate_cli
     reads the version the repo's gate last ran as, with its fix, checked with the plugin
     (S-031-17); None checks none. pypi asks PyPI for the version sessions load, with the
-    plugin (#569); None asks nothing"""
+    plugin (#569); None asks nothing. product checks the App on each repo [product] repos
+    lists and reads their configs with the product token (spec 038); None, or a probe without
+    the key, warns once that they are unchecked. home_reader reads a component's home config
+    with the maintainer's gh, only with [product] home (D-53); None (no gh) reports that it
+    can't"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -217,7 +236,7 @@ def doctor(
 
     try:
         found = config_path(root)
-        policy = Policy.load(found)
+        policy, refused = _load(found)
     except RolesError:  # S-036-2: a malformed [agents.roles] exits 2, as every reader of the config does
         raise
     except ReleaseError as exc:
@@ -356,6 +375,12 @@ def doctor(
         checks.append(_deploy(root / ".github" / "workflows" / env.workflow, env.name, operate_caller, watched))
     if policy.downstream is not None:  # D-9: no downstream line without [downstream]
         checks.extend(downstream_checks(root, policy.downstream, downstream, app))
+    if refused is not None:  # S-038-27: a FAIL row, after which every other check still runs
+        detail = f"{refused}; fix [product] in {read}, which shipmill gate, gh, and app-token refuse until then"
+        checks.append(Check("FAIL", PRODUCT, detail))
+    elif policy.product is not None:  # D-9: no product line without [product]
+        app_id = None if policy.agents is None else policy.agents.app_id
+        checks.extend(product_checks(policy.product, app_id, repo, product, home_reader))
     if plugins is not None:
         checks.extend(plugin_checks(plugins, None if gate_cli is None else gate_cli(), check_requires(raw), pypi))
     if people is not None and policy.agents is not None and policy.agents.app_id is not None:
@@ -603,6 +628,216 @@ def _downstream_app(app_id: int, d: Downstream, installed: Installed) -> Check:
     return Check(
         "PASS", "downstream", f"{d.name}: the App {app_id} is installed on {d.repo} with Actions: read and write"
     )
+
+
+def _load(found: Path) -> tuple[Policy, ReleaseError | None]:
+    """The policy, and the refusal of its [product] table when that table alone is what the
+    policy can't parse: then the policy is read without it, so doctor reports the table as one
+    FAIL row and runs its other checks (S-038-27). Any other refusal raises, as before"""
+    try:
+        return Policy.load(found), None
+    except RolesError:
+        raise
+    except ReleaseError as exc:
+        if not found.is_file():
+            raise
+        raw = read_config(found)
+        if PRODUCT not in raw:
+            raise
+        try:
+            policy = Policy.parse({k: v for k, v in raw.items() if k != PRODUCT}, found.name)
+        except ReleaseError:
+            raise exc from None
+        return policy, exc
+
+
+PRODUCT = "product"  # the config's [product] table, and doctor's block for it (spec 038)
+_PRODUCT_GRANTS = ", ".join(f"{p.label}: {p.access}" for p in PRODUCT_PERMISSIONS)
+
+
+class ProductReads(Protocol):
+    """What doctor reads in the product's home repo with the App's key on this host"""
+
+    def installed(self, repo: str) -> None:
+        """NotInstalled or Lacks when the App's installation on repo doesn't grant the product
+        permissions; another ReleaseError when GitHub can't be asked"""
+        ...
+
+    def config(self, repos: tuple[str, ...], repo: str) -> str | None:
+        """repo's config text on its default branch, read with the product token over repos
+        (the listed repos of its owner); None when it has none"""
+        ...
+
+
+ProductProbe = Callable[[int], ProductReads | None]  # [agents] app_id's reads; None: no key on the host
+
+
+class HomeReader(Protocol):
+    """What a component's doctor reads of its home repo, through the maintainer's gh (D-53)"""
+
+    def file(self, repo: str, path: str) -> str | None:
+        """The file's text on repo's default branch; None when GitHub answers 404"""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class AppProductReads:
+    """ProductReads through GitHub's API: the installation check `app-token --product` makes,
+    and the product token it prints, minted or reused from its cache, never printed here"""
+
+    app_id: int
+    key: Path
+    cache: Callable[[str], Path]  # the product token's cache for an owner
+    signer: Signer
+    api: Api
+    clock: Clock
+
+    def installed(self, repo: str) -> None:
+        bearer = jwt(self.app_id, check_key(self.key), self.clock(), self.signer)
+        installation(self.app_id, repo, bearer, self.api, PRODUCT_PERMISSIONS)
+
+    def config(self, repos: tuple[str, ...], repo: str) -> str | None:
+        owner = repo.partition("/")[0]
+        token = product_token(self.cache(owner), repos, self.app_id, self.key, self.clock(), self.signer, self.api)
+        return contents(repo, CONFIG_FILE, token, self.api)
+
+
+def product_on_host(
+    key: Path | None, home: Path, cache: Callable[[str], Path], signer: Signer, api: Api, clock: Clock
+) -> ProductProbe:
+    """doctor's reads of the product's repos, given [agents] app_id: None when the key isn't
+    on the host (no key passed and none at the default path). A key that isn't a file only its
+    owner can read raises ReleaseError at once, never a row per repo; its bytes are never read"""
+
+    def probe(app_id: int) -> ProductReads | None:
+        path = key if key is not None else default_key(app_id, home)
+        if key is None and not path.exists():
+            return None
+        return AppProductReads(app_id, check_key(path), cache, signer, api, clock)
+
+    return probe
+
+
+def product_checks(
+    config: ProductConfig, app_id: int | None, repo: str | None, probe: ProductProbe | None, home: HomeReader | None
+) -> list[Check]:
+    """Spec 038's product block: in the home repo, the App on each listed repo and each one's
+    [product] home (S-038-27, S-038-28); in a component, its home's [product] repos (S-038-30)"""
+    if config.home is not None:
+        return [component_check(config.home, repo, home)]
+    try:
+        config.refuse_self(repo)
+    except ReleaseError as exc:  # S-038-3: the gate refuses this config, so nothing else is checked
+        return [Check("FAIL", PRODUCT, f"{exc}; delete it from [product] repos")]
+    assert app_id is not None  # ProductConfig.parse refuses repos without [agents] app_id (S-038-2)
+    return home_checks(config, app_id, repo, probe)
+
+
+def home_checks(config: ProductConfig, app_id: int, home: str | None, probe: ProductProbe | None) -> list[Check]:
+    """S-038-27, S-038-28: per listed repo, a FAIL naming the repo and `app-install` when the
+    App isn't installed there or lacks a product permission, then, with the product token over
+    its owner's listed repos, a WARN naming the fix when its config's [product] home is
+    missing or names another repo. A read that fails is a WARN, never a crash"""
+    try:
+        reads = None if probe is None else probe(app_id)
+    except ReleaseError as exc:  # --app-key names no usable key: the check asked for can't run
+        return [Check("FAIL", PRODUCT, f"the App {app_id}'s key: {exc}")]
+    if reads is None:
+        detail = (
+            f"the App {app_id}'s installation on each repo [product] repos lists, and their [product] home, are"
+            f" unchecked: its private key isn't on this host; pass --app-key, or save it at"
+            f" ~/.config/shipmill/app-{app_id}.pem"
+        )
+        return [Check("WARN", PRODUCT, detail)]
+    checks = []
+    ready = set()
+    for listed in config.repos:
+        try:
+            reads.installed(listed)
+        except (NotInstalled, Lacks) as exc:
+            fix = f"`{cli_command()} app-install {listed}`"
+            checks.append(Check("FAIL", PRODUCT, f"{listed}: {exc}; the coordinator can't reach it: run {fix}"))
+        except ReleaseError as exc:
+            detail = f"{listed}: can't check the App {app_id}'s installation: {exc}"
+            checks.append(Check("WARN", PRODUCT, detail))
+        else:
+            detail = f"{listed}: the App {app_id} is installed with {_PRODUCT_GRANTS}"
+            checks.append(Check("PASS", PRODUCT, detail))
+            ready.add(listed.lower())
+    if not ready:
+        return checks
+    if home is None:
+        detail = (
+            "can't check each listed repo's [product] home: this checkout's origin isn't a GitHub repo,"
+            " so the home they should name can't be told"
+        )
+        checks.append(Check("WARN", PRODUCT, detail))
+        return checks
+    for listed in config.repos:
+        if listed.lower() not in ready:
+            continue
+        covered = config.coordinated(listed, "doctor")
+        waiting = [r for r in covered if r.lower() not in ready]
+        if waiting:
+            detail = (
+                f"{listed}: its [product] home is unchecked: the product token over"
+                f" {listed.partition('/')[0]}'s listed repos needs the App on {', '.join(waiting)} too"
+            )
+            checks.append(Check("WARN", PRODUCT, detail))
+            continue
+        checks.append(_back_link(reads, covered, listed, home))
+    return checks
+
+
+def _back_link(reads: ProductReads, covered: tuple[str, ...], listed: str, home: str) -> Check:
+    """S-038-28: the listed repo's [product] home, read with the product token"""
+    fix = f'set [product] home = "{home}" in {listed}\'s {CONFIG_FILE}'
+    try:
+        text = reads.config(covered, listed)
+        found = None if text is None else ProductConfig.of_text(text, f"{listed}:{CONFIG_FILE}")
+    except ReleaseError as exc:
+        return Check("WARN", PRODUCT, f"{listed}: can't read its {CONFIG_FILE} with the product token: {exc}")
+    if text is None:
+        detail = (
+            f"{listed} has no {CONFIG_FILE}, so it names no product home and its sessions see no coordinator: {fix}"
+        )
+        return Check("WARN", PRODUCT, detail)
+    if found is None or found.home is None:
+        detail = f"{listed}'s {CONFIG_FILE} has no [product] home, so its sessions see no coordinator: {fix}"
+        return Check("WARN", PRODUCT, detail)
+    if found.home.lower() != home.lower():
+        detail = f"{listed}'s [product] home names {found.home}, not this home {home}: {fix}"
+        return Check("WARN", PRODUCT, detail)
+    return Check("PASS", PRODUCT, f"{listed}'s [product] home names {home}")
+
+
+def component_check(home: str, repo: str | None, reader: HomeReader | None) -> Check:
+    """S-038-30, D-53: a component reads its home's config, and nothing else of the home repo,
+    through the maintainer's gh, never the App's token: a WARN naming the fix when the home's
+    [product] repos doesn't list this repo (case ignored), a WARN naming the home when that
+    config can't be read. It writes nothing in the home repo"""
+    if repo is None:
+        detail = (
+            f"can't check that {home}'s [product] repos lists this repo: this checkout's origin isn't a GitHub repo"
+        )
+        return Check("WARN", PRODUCT, detail)
+    unread = f"can't read {home}'s {CONFIG_FILE}, so whether its [product] repos lists {repo} is unchecked"
+    if reader is None:
+        return Check("WARN", PRODUCT, f"{unread}: gh isn't installed")
+    try:
+        text = reader.file(home, CONFIG_FILE)
+        found = None if text is None else ProductConfig.of_text(text, f"{home}:{CONFIG_FILE}")
+    except ReleaseError as exc:
+        return Check("WARN", PRODUCT, f"{unread}: {exc}")
+    if text is None:
+        return Check("WARN", PRODUCT, f"{unread}: GitHub has no such file, or your gh login can't read {home}")
+    if found is None or not any(listed.lower() == repo.lower() for listed in found.repos):
+        detail = (
+            f"{home}'s [product] repos doesn't list {repo}, so its coordinator never routes this repo's upstream"
+            f' reports: add "{repo}" to [product] repos in {home}\'s {CONFIG_FILE}'
+        )
+        return Check("WARN", PRODUCT, detail)
+    return Check("PASS", PRODUCT, f"{home}'s [product] repos lists {repo}")
 
 
 def _uncommented(text: str) -> str:

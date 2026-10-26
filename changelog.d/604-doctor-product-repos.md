@@ -1,0 +1,3 @@
+### Added
+
+- `shipmill doctor` checks a product across repos: in the home repo (`[product] repos`) it FAILs for a listed repo the App isn't installed on or that lacks a product permission, naming `shipmill app-install <repo>`, reports a malformed or repeated entry as a FAIL row and still runs its other checks, and WARNs when a listed repo's config, read with the product token, has no `[product] home` or names another home; in a component (`[product] home`) it reads only the home's `.github/shipmill.toml` through your gh and WARNs when its `[product] repos` doesn't list this repo or can't be read (#604)
