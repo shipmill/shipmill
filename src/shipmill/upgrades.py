@@ -282,7 +282,7 @@ CATALOGUE: tuple[Upgrade, ...] = (
     ),
     Upgrade(
         id=UpgradeId("agent-autonomy"),
-        version=Version.parse("0.77.0"),  # the release that parses the three keys (S-040-1)
+        version=Version.parse("0.78.0"),  # the release that adds it (spec 014); 0.77.0 shipped without it
         table="autonomy",
         key=StageKind.TRIAGE.value,
         also=(StageKind.FIX.value, StageKind.LAND.value),
@@ -501,8 +501,11 @@ def propose(raw: Mapping[str, Any], level: Autonomy, github: GitHub, fix: str) -
             continue
         for issue in _issues(issues, upgrade)[0]:
             settled = "no longer sets" if upgrade.removes is not None else "sets"
+            table = upgrade.section(raw) or {}
+            keys = [upgrade.removes] if upgrade.removes is not None else [k for k in upgrade.keys if k in table]
+            named = ", ".join(f"`{k}`" for k in keys)  # the keys that decided it, not only the first
             text = (
-                f"`[{upgrade.table}]` in `{CONFIG_PATH.as_posix()}` {settled} `{upgrade.removes or upgrade.key}`:"
+                f"`[{upgrade.table}]` in `{CONFIG_PATH.as_posix()}` {settled} {named}:"
                 f" {upgrade.id} is decided, so this issue is done."
             )
             with _named(upgrade.id, fix):

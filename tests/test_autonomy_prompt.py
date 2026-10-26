@@ -14,8 +14,9 @@ from shipmill.cli import main
 from shipmill.config import CONFIG_PATH
 from shipmill.doctor import doctor
 from shipmill.errors import ReleaseError
+from shipmill.github import UPGRADE_LABEL
 from shipmill.policy import Policy
-from shipmill.upgrades import UpgradeId, body, find
+from shipmill.upgrades import UpgradeId, body, find, propose, title
 
 from .conftest import POLICY, FakeGitHub, Repo
 from .test_decide_cli import commit
@@ -161,7 +162,7 @@ def test_s040_7_upgrade_text_lists_each_line(tmp_path: Path, capsys: pytest.Capt
     write(tmp_path, FRAGMENTS + agents("triage {repo}; land"))
     assert main(["--repo", str(tmp_path), "upgrade"], github=FakeGitHub()) == 0
     out = capsys.readouterr().out
-    assert out.startswith("agent-autonomy (shipmill 0.77.0): ")
+    assert out.startswith("agent-autonomy (shipmill 0.78.0): ")  # the release that adds it, not 0.77.0
     assert '  adds: [autonomy] triage = "act"\n  adds: [autonomy] fix = "act"\n  adds: [autonomy] land = "act"\n' in out
 
 
@@ -226,6 +227,17 @@ def test_s040_7_apply_refuses_a_config_without_agents(tmp_path: Path) -> None:
     write(tmp_path, FRAGMENTS)
     with pytest.raises(ReleaseError, match=r"agent-autonomy doesn't apply: \.github/shipmill\.toml has no \[agents\]"):
         main(["--repo", str(tmp_path), "upgrade", "--apply", "agent-autonomy"])
+
+
+def test_s040_7_a_decided_issue_closes_naming_the_key_the_config_sets() -> None:
+    upgrade = find(UpgradeId("agent-autonomy"))
+    github = FakeGitHub()
+    number = github.create_issue(title(upgrade), body(upgrade), (UPGRADE_LABEL,))
+    raw = tomllib.loads(FRAGMENTS + agents("triage {repo}") + '\n[autonomy]\nland = "propose"\n')
+    assert [p.issue for p in propose(raw, Autonomy.PROPOSE, github, "")] == [number]
+    assert github.closed[number] == (
+        "`[autonomy]` in `.github/shipmill.toml` sets `land`: agent-autonomy is decided, so this issue is done."
+    )
 
 
 def test_s040_7_the_issue_body_carries_the_configs_values() -> None:
