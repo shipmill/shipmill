@@ -385,6 +385,55 @@ def test_s002_9_a_branch_with_no_commits_of_its_own_is_removable(repo: Checkout)
     assert repo.judge()["tmp/wt-empty"].verdict is Verdict.REMOVABLE
 
 
+def policy_branch_repo(repo: Checkout, branch: str = "v1") -> Path:
+    """#694: origin/HEAD is main, an older branch that diverged; the config names branch, which
+    holds a worktree's merged work. Returns that worktree"""
+    repo.commit(repo.root, {"old.py": "OLD = 1\n"}, "Only on the old default branch")
+    repo.push_main()
+    repo.git().run("checkout", "-q", "-b", branch, "HEAD~1")
+    (repo.root / ".github").mkdir()
+    repo.commit(repo.root, {".github/shipmill.toml": f'branch = "{branch}"\n'}, "Config")
+    repo.git().run("push", "-q", "-u", "origin", branch)
+    feat = repo.add("tmp/wt-feat", "-b", "feat", base=f"origin/{branch}")
+    sha = repo.commit(feat, {"feature.py": "A = 1\n"}, "Feature")
+    repo.git().run("cherry-pick", sha)
+    repo.git().run("push", "-q", "origin", branch)
+    return feat
+
+
+def test_s002_9_694_a_branch_merged_into_the_policys_branch_is_removable(repo: Checkout) -> None:
+    """#694: landing is measured against the config's branch, not origin/HEAD, which here is an
+    older diverged branch the work never reached"""
+    policy_branch_repo(repo)
+    assert repo.git().default_branch() == "main"
+    judged = repo.judge()["tmp/wt-feat"]
+    assert (judged.verdict, judged.reason) == (Verdict.REMOVABLE, None)
+    assert [j.verdict for j in prune(repo.git(), [judged], dry_run=True)] == [Verdict.WOULD_REMOVE]
+
+
+def test_s002_20_694_a_pr_merged_into_the_policys_branch_proves_landing(repo: Checkout) -> None:
+    feat = policy_branch_repo(repo)
+    head = repo.commit(feat, {"b.py": "B = 1\n"}, "Fixed in review")
+    repo.commit(repo.root, {"b.py": "B = 2\n"}, "Feature, reviewed (#5)")
+    repo.git().run("push", "-q", "origin", "v1")
+    repo.github.merged = [MergedPull(5, "feat", frozenset({head}), "main")]
+    assert repo.reasons()["tmp/wt-feat"] == "1 commit(s) not landed"  # merged into GitHub's default, not v1
+    repo.github.merged = [MergedPull(5, "feat", frozenset({head}), "v1")]
+    assert repo.reasons()["tmp/wt-feat"] is None
+
+
+def test_s002_8_694_a_config_without_branch_still_compares_against_origin_head(repo: Checkout) -> None:
+    (repo.root / ".github").mkdir()
+    repo.commit(repo.root, {".github/shipmill.toml": 'name = "demo"\n'}, "Config without branch")
+    repo.push_main()
+    feat = repo.add("tmp/wt-feat", "-b", "feat")
+    repo.commit(feat, {"feature.py": "A = 1\n"}, "Feature")
+    assert repo.reasons()["tmp/wt-feat"] == "1 commit(s) not landed"
+    repo.git().run("merge", "-q", "--ff-only", "feat")
+    repo.push_main()
+    assert repo.reasons()["tmp/wt-feat"] is None
+
+
 def fake_sha(n: int) -> str:
     """A commit SHA GitHub knows and this clone never had: a review's rebase or fix"""
     return f"{n:040x}"

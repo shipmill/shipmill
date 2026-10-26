@@ -20,6 +20,7 @@ from shipmill.app import (
     Installation,
     Openssl,
     app_check,
+    app_login,
     check_key,
     default_key,
     installation,
@@ -30,6 +31,7 @@ from shipmill.cli import main
 from shipmill.errors import ReleaseError
 from shipmill.gate import RECORD, Action, Finding, gate, state_dir
 from shipmill.gitrepo import Git
+from shipmill.worktrees import Judged
 
 from .test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier, bg, host, write_config
 
@@ -216,18 +218,18 @@ def test_s004_2_without_app_key_the_gate_reads_the_default_path(tmp_path: Path) 
     assert default_key(APP_ID, home) == expected
     check = app_check(REPO, None, home, FakeSigner(), FakeApi())
     with pytest.raises(ReleaseError, match=f"no App private key at {expected}"):
-        check(APP_ID, NOW)
+        check(APP_ID)
     expected.parent.mkdir(parents=True)
     key_file(expected.parent).rename(expected)
     signer = FakeSigner()
-    assert app_check(REPO, None, home, signer, FakeApi())(APP_ID, NOW).slug == "demo-agent"
+    assert app_check(REPO, None, home, signer, FakeApi())(APP_ID).slug == "demo-agent"
     assert signer.signed[0][0] == expected
 
 
 def test_s004_2_app_key_overrides_the_default_path(tmp_path: Path) -> None:
     key = key_file(tmp_path)
     signer = FakeSigner()
-    app_check(REPO, key, tmp_path / "home", signer, FakeApi())(APP_ID, NOW)
+    app_check(REPO, key, tmp_path / "home", signer, FakeApi())(APP_ID)
     assert signer.signed[0][0] == key
 
 
@@ -277,6 +279,52 @@ def test_s004_4_the_jwt_claims_and_header(tmp_path: Path) -> None:
     assert _unb64(signature) == b"signature"
     assert "=" not in token
     assert signer.signed == [(tmp_path / "k.pem", f"{header}.{claims}".encode())]
+
+
+def _claims(token: str) -> dict[str, int]:
+    claims: dict[str, int] = json.loads(_unb64(token.split(".")[1]))
+    return claims
+
+
+def test_s004_4_694_a_check_10_minutes_into_the_tick_signs_with_the_calls_time(checkout: Git, tmp_path: Path) -> None:
+    """#694: the waiting step and the prune ran 10 minutes, past VALID_FOR from the tick's
+    start; the JWT GitHub gets carries the call's iat and exp, so it isn't refused as expired"""
+    clock = [NOW]
+
+    def slow_prune(now: dt.datetime, dry_run: bool) -> list[Judged]:
+        clock[0] = NOW + dt.timedelta(minutes=10)
+        return []
+
+    api = FakeApi()
+    check = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api, clock=lambda: clock[0])
+    gate(
+        checkout,
+        REPO,
+        app_cfg,
+        FakeClaude(),
+        lambda _: [ISSUES],
+        NOW,
+        Hold,
+        FakeNotifier(),
+        slow_prune,
+        dry_run=True,
+        app=check,
+        login=host,
+    )
+    called = int((NOW + dt.timedelta(minutes=10)).timestamp())
+    tokens = {token for path, token in api.calls if token is not None}
+    assert [_claims(t) for t in tokens] == [{"iat": called - 60, "exp": called + 9 * 60, "iss": APP_ID}]
+
+
+def test_s004_4_694_the_bot_login_signs_at_each_call(tmp_path: Path) -> None:
+    clock = [NOW]
+    api = FakeApi()
+    login = app_login(FakeSigner(), api, clock=lambda: clock[0])
+    assert login(APP_ID, key_file(tmp_path)) == BOT
+    clock[0] = NOW + dt.timedelta(minutes=10)
+    assert login(APP_ID, key_file(tmp_path)) == BOT
+    issued = [_claims(token)["iat"] + 60 for _, token in api.calls if token is not None]
+    assert issued == [int(NOW.timestamp()), int(clock[0].timestamp())]
 
 
 @pytest.mark.skipif(shutil.which("openssl") is None, reason="needs openssl")
@@ -369,7 +417,7 @@ def test_an_unknown_access_is_refused() -> None:
 
 
 def test_with_app_id_set_a_tick_that_reads_no_state_checks_nothing(checkout: Git) -> None:
-    def unchecked(app_id: int, now: dt.datetime) -> Identity:
+    def unchecked(app_id: int) -> Identity:
         raise AssertionError("only a tick that reads the state checks the App")
 
     busy = FakeClaude([bg("a", "busy", "working")])
@@ -380,7 +428,7 @@ def test_with_app_id_set_a_tick_that_reads_no_state_checks_nothing(checkout: Git
 
 
 def test_with_app_id_unset_the_app_is_never_checked(checkout: Git) -> None:
-    def unchecked(app_id: int, now: dt.datetime) -> Identity:
+    def unchecked(app_id: int) -> Identity:
         raise AssertionError("no app_id, no App check")
 
     claude = FakeClaude()

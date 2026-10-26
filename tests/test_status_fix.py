@@ -347,6 +347,36 @@ def test_s011_16_the_repo_lines_fix_catches_up_off_the_default_branch_too(tmp_pa
     assert read_main(Git(work), "main").behind == 0, line
 
 
+def test_s009_17_694_the_repo_line_reads_the_policys_branch_not_an_older_github_default(tmp_path: Path) -> None:
+    """#694: GitHub's default branch is an old, diverged master the checkout never follows; the
+    config names v1, so the repo line reads v1, in sync, and asks GitHub nothing"""
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+    _git("init", "-q", "--bare", "-b", "master", str(origin), cwd=tmp_path)
+    _git("clone", "-q", str(origin), str(work), cwd=tmp_path)
+    _git("commit", "-q", "--allow-empty", "-m", "one", cwd=work)
+    _git("push", "-q", "origin", "master", cwd=work)
+    _git("switch", "-q", "-c", "v1", cwd=work)
+    (work / ".github").mkdir()
+    (work / ".github" / "shipmill.toml").write_text('branch = "v1"\n', encoding="utf-8")
+    _git("add", ".github", cwd=work)
+    _git("commit", "-q", "-m", "config", cwd=work)
+    _git("push", "-q", "-u", "origin", "v1", cwd=work)
+    _git("switch", "-q", "master", cwd=work)
+    _git("commit", "-q", "--allow-empty", "-m", "old work", cwd=work)
+    _git("push", "-q", "origin", "master", cwd=work)
+    _git("reset", "-q", "--hard", "HEAD~1", cwd=work)  # local master behind origin's
+    _git("switch", "-q", "v1", cwd=work)
+    never = GhAnswers()
+    branch = status.landing_branch(REPO, work, never, never.pause)
+    assert (branch, never.ran) == ("v1", [])
+    line = lines(facts(main=read_main(Git(work), branch), checkout=work))[1]
+    assert line.startswith("  repo           in sync ") and "master" not in line
+    gh = GhAnswers((0, "master\n", ""))
+    (work / ".github" / "shipmill.toml").write_text('name = "demo"\n', encoding="utf-8")  # no branch: GitHub's
+    assert status.landing_branch(REPO, work, gh, gh.pause) == "master"
+    assert "fetch origin master:master" in lines(facts(main=read_main(Git(work), "master"), checkout=work))[1]
+
+
 @pytest.mark.parametrize(
     ("merge", "shown"),
     [

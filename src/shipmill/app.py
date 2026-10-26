@@ -46,6 +46,12 @@ ISSUED_BEFORE = dt.timedelta(seconds=60)  # iat: allows for a host clock ahead o
 VALID_FOR = dt.timedelta(minutes=9)  # exp: GitHub refuses a JWT valid longer than 10 minutes
 _BODY_LIMIT = 1 << 20
 
+Clock = Callable[[], dt.datetime]  # read when a JWT is signed, so a long tick never signs with its start (#694)
+
+
+def utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
 
 class Access(enum.StrEnum):
     READ = "read"
@@ -333,7 +339,7 @@ def bot_id(slug: str, app_id: int, api: Api) -> int:
     return number
 
 
-AppCheck = Callable[[int, dt.datetime], Identity]
+AppCheck = Callable[[int], Identity]
 
 
 def _no_product() -> tuple[str, ...]:
@@ -347,16 +353,19 @@ def app_check(
     signer: Signer,
     api: Api,
     product: Callable[[], tuple[str, ...]] = _no_product,
+    clock: Clock = utc_now,
 ) -> AppCheck:
     """The gate's App check for repo, spec 004's At launch steps 1 to 4: the key (`--app-key`,
     else the default path for the App's id), the JWT, the installation, then the bot account.
     In the product's home repo (S-038-7) product gives the config's `[product] repos`, and the
     App must be installed on each with PRODUCT_PERMISSIONS before any session starts.
+    The JWT is signed with clock's time when the check runs, never the tick's start, which a
+    slow prune can put past VALID_FOR (#694).
     Any failure raises ReleaseError (exit 2). It writes nothing, so a dry run runs it too"""
 
-    def check(app_id: int, now: dt.datetime) -> Identity:
+    def check(app_id: int) -> Identity:
         path = check_key(key if key is not None else default_key(app_id, home))
-        bearer = jwt(app_id, path, now, signer)
+        bearer = jwt(app_id, path, clock(), signer)
         found = installation(app_id, repo, bearer, api)
         for listed in product():
             installed(app_id, found.slug, listed, bearer, api, PRODUCT_PERMISSIONS)
@@ -365,17 +374,18 @@ def app_check(
     return check
 
 
-AppLogin = Callable[[int, Path, dt.datetime], str]
+AppLogin = Callable[[int, Path], str]
 
 
-def app_login(signer: Signer, api: Api) -> AppLogin:
+def app_login(signer: Signer, api: Api, clock: Clock = utc_now) -> AppLogin:
     """The App's bot login, `<slug>[bot]`, with the key at the path: the JWT and GET /app
     alone, one GitHub call, without the full check's installation and bot account reads
     (#311). Whose needs-decision questions are the gate's (D-21), whether or not the App is
-    installed and granted today; any failure raises ReleaseError"""
+    installed and granted today; any failure raises ReleaseError. The JWT is signed with
+    clock's time at the call (#694)"""
 
-    def login(app_id: int, key: Path, now: dt.datetime) -> str:
-        return f"{app_slug(app_id, jwt(app_id, check_key(key), now, signer), api)}[bot]"
+    def login(app_id: int, key: Path) -> str:
+        return f"{app_slug(app_id, jwt(app_id, check_key(key), clock(), signer), api)}[bot]"
 
     return login
 

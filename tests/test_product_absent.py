@@ -125,7 +125,7 @@ def test_s038_4_the_gates_helpers_and_app_check_are_as_before(tmp_path: Path, co
     git = Git(root)
     # the gate checks its own repo only: the App, the installation, the bot account
     api = FakeApi()
-    app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api)(APP_ID, dt.datetime.now(dt.UTC))
+    app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api)(APP_ID)
     assert [path for path, _ in api.calls] == ["/app", f"/repos/{REPO}/installation", BOT_PATH]
     # the helpers' files, byte for byte as spec 004 wrote them
     fakes, record = tmp_path / "fakes", tmp_path / "record"

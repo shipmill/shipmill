@@ -1173,11 +1173,11 @@ def require_dedicated(git: Git, default: str, detach: bool = False) -> str | Non
 
 
 def refresh(git: Git, detach: bool = False) -> Detached | None:
-    """Move a dedicated gate checkout to the head of origin's default branch, so the session
-    reads the current [agents] section, CLAUDE.md, and skills. With detach (a --refresh
-    tick, not `launchd`), a clean linked worktree a session left on a branch is detached the
-    same way, and returned"""
-    default = git.default_branch()
+    """Move a dedicated gate checkout to the head of the branch releases land on (the config's
+    `branch`, else origin's default branch, #694), so the session reads the current [agents]
+    section, CLAUDE.md, and skills. With detach (a --refresh tick, not `launchd`), a clean
+    linked worktree a session left on a branch is detached the same way, and returned"""
+    default = git.landing_branch()
     branch = require_dedicated(git, default, detach)
     git.run("fetch", "-q", "origin", default)
     git.run("checkout", "-q", "--detach", "FETCH_HEAD")
@@ -1199,12 +1199,13 @@ def pruner(git: Git, github: GitHub, sessions: Sessions) -> Pruner:
 SessionEnv = Callable[[Identity], Mapping[str, str]]  # writes the helpers; the launch's --settings env
 
 
-def as_app(app_id: int, now: dt.datetime, app: AppCheck | None) -> Identity:
+def as_app(app_id: int, app: AppCheck | None) -> Identity:
     """D-14: with app_id set a session starts as the App or not at all, so a missing check
-    refuses rather than launch as the host's gh login"""
+    refuses rather than launch as the host's gh login. The check signs its JWT when it runs,
+    not at the tick's start, which the waiting step and the prune may leave minutes behind (#694)"""
     if app is None:
         raise ReleaseError(f"app_id {app_id} is set, but no App check was given; no session starts")
-    return app(app_id, now)
+    return app(app_id)
 
 
 def checked(config: Callable[[], AgentsConfig], args: Sequence[str]) -> Callable[[], AgentsConfig]:
@@ -1456,7 +1457,7 @@ def gate(
     headless = agents.mode is Mode.HEADLESS
     # the App first, in either mode: a failure reads no state and launches nothing (D-14), and
     # its bot's needs-decision questions read as questions (D-21, #206)
-    identity = None if agents.app_id is None else as_app(agents.app_id, now, app)
+    identity = None if agents.app_id is None else as_app(agents.app_id, app)
     host_read = once(login)
     resolved = () if roles is None else roles(agents.roles, host_read)
     read = StateRead(trusted_only=headless, bot_login=None if identity is None else identity.login, roles=resolved)

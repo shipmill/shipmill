@@ -7,8 +7,10 @@ Usage: watch_state.py <owner/repo> [--repo-dir PATH] [--releases N] [--grace MIN
                       [--bot-login LOGIN] [--trusted-only]
                       [--role NAME=FILLER[,FILLER...] ...]
 
-Release bot (a repo with .github/shipmill.toml):
-  BOT_FAILED      the bot's latest finished run failed (cancelled runs are ignored:
+Release bot (a repo with .github/shipmill.toml). "The default branch" in this help is the branch
+releases land on: the config's top-level branch, else GitHub's default branch (#694); it is the
+one branch fetched, and every read at origin/<branch> reads it.
+  BOT_FAILED     the bot's latest finished run failed (cancelled runs are ignored:
                   a newer push cancels the settle wait on purpose)
   BOT_STALLED     a shipmill bot in release mode has a release due now, no run of
                   its workflow is queued or running, and none started in --grace minutes
@@ -1621,6 +1623,38 @@ def requires_value_310(text: str, policy: Path) -> str | None:
     found = re.match(rf"^\s*{REQUIRES_KEY}\s*=\s*(?:\"([^\"]*)\"|'([^']*)')\s*(?:#.*)?$", lines[0])
     if found is None or len(lines) > 1:
         raise Refused(f'error: {policy}: can\'t read {REQUIRES_KEY} on Python 3.10: write it as requires = ">=X.Y"')
+    return found.group(1) if found.group(1) is not None else found.group(2)
+
+
+def landing_branch(text: str | None, policy: Path, default: str) -> str:
+    """The branch releases land on, which the fetch, the plan, the worktrees' fix, and every
+    read at origin/<branch> use: the config's top-level branch, else default, GitHub's default
+    branch, as shipmill's landing checks read it (#694). text is the config, None without one"""
+    if text is None:
+        return default
+    if tomllib is None:
+        value: object = landing_branch_310(text, policy)
+    else:
+        try:
+            value = tomllib.loads(text).get("branch")
+        except tomllib.TOMLDecodeError as exc:
+            raise Refused(f"error: {policy}: {exc}") from None
+    if value is None:
+        return default
+    if not isinstance(value, str) or not value:
+        raise Refused(f"error: {policy}: branch must be a non-empty string, got {value!r}")
+    return value
+
+
+def landing_branch_310(text: str, policy: Path) -> str | None:
+    """branch on Python 3.10: one plain string line before the first table, or refused"""
+    top = toml_tables(text).get("", "")
+    lines = [line for line in top.splitlines() if re.match(r"^\s*[\"']?branch[\"']?\s*=", line)]
+    if not lines:
+        return None
+    found = re.match(r"^\s*branch\s*=\s*(?:\"([^\"]*)\"|'([^']*)')\s*(?:#.*)?$", lines[0])
+    if found is None or len(lines) > 1:
+        raise Refused(f'error: {policy}: can\'t read branch on Python 3.10: write it as branch = "<name>"')
     return found.group(1) if found.group(1) is not None else found.group(2)
 
 
@@ -3946,12 +3980,13 @@ def main() -> int:
     grace = dt.timedelta(minutes=args.grace)
 
     view = json.loads(run(["gh", "repo", "view", args.repo, "--json", "defaultBranchRef,deleteBranchOnMerge"]))
-    branch = view["defaultBranchRef"]["name"]
+    policy = policy_file(repo_dir)
+    config_text = None if policy is None else (repo_dir / policy).read_text(encoding="utf-8")
+    branch = landing_branch(config_text, POLICY, view["defaultBranchRef"]["name"])
     run(["git", "fetch", "-q", "--force", "--tags", "origin", branch], cwd=repo_dir)
 
     rows: list[Row] = settings_rows(args.repo, view["deleteBranchOnMerge"])
     bot = bot_workflow(repo_dir)
-    policy = policy_file(repo_dir)
     if bot is None or policy is None:
         rows.append(Row("BOT_NONE", args.repo, 'no release policy: releases by "tag X"'))
     else:

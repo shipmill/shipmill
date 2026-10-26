@@ -653,6 +653,23 @@ def test_refresh_moves_a_detached_checkout_to_the_default_branch(gate_checkout: 
     assert git.run("rev-parse", "--abbrev-ref", "HEAD").strip() == "HEAD"
 
 
+def test_refresh_694_moves_to_the_policys_branch_not_an_older_origin_head(gate_checkout: tuple[Git, Path]) -> None:
+    """#694: origin/HEAD is main, while the config names v1, the branch releases land on"""
+    git, pusher = gate_checkout
+    git_("switch", "-q", "-c", "v1", "HEAD~1", cwd=pusher)
+    (pusher / ".github").mkdir()
+    (pusher / ".github" / "shipmill.toml").write_text('branch = "v1"\n', encoding="utf-8")
+    git_("add", ".github", cwd=pusher)
+    git_("commit", "-q", "-m", "config", cwd=pusher)
+    git_("push", "-q", "origin", "v1", cwd=pusher)
+    git.run("fetch", "-q", "origin")
+    git.run("checkout", "-q", "--detach", "origin/v1")
+    git_("commit", "-q", "--allow-empty", "-m", "three", cwd=pusher)
+    git_("push", "-q", "origin", "v1", cwd=pusher)
+    refresh(git)
+    assert git.run("rev-parse", "HEAD") == git_("rev-parse", "v1", cwd=pusher)
+
+
 def test_refresh_refuses_a_working_copy(gate_checkout: tuple[Git, Path]) -> None:
     """The main working tree on a branch is a person's: refused, with or without detach (#247)"""
     git, _ = gate_checkout
