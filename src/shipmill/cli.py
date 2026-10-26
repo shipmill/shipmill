@@ -20,7 +20,7 @@
                   environment, rollback, intake, and upgrade, each configured, under the shipmill-hold
                   stop switch, and its source (default, config, or hold), from the config at --ref
                   (default origin/HEAD); --json for one JSON object with the open hold issues
-  review         REVIEW.md, the review rubric (spec 024): check exits 1 naming the file, line, and rule
+  review          REVIEW.md, the review rubric (spec 024): check exits 1 naming the file, line, and rule
                   a structured section breaks; show prints the rubric for the files given with --path,
                   the root's and their directories' merged, as Markdown or --json; add-rule, protect,
                   set-cap, and retire edit one line (--dir DIR: DIR/REVIEW.md) and print it
