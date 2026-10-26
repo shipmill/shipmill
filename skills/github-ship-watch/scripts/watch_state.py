@@ -2564,7 +2564,7 @@ def intake(
             waiting.append(number)
         elif TRIAGE.DECIDED_LABEL in labels and TRIAGE.vetoed(comments_of(number), bot_login) is not None:
             vetoed.append(number)
-        elif not pr["isDraft"]:
+        elif not pr["isDraft"]:  # a draft is its author's until marked ready: it starts no session (D-52)
             ready.append((number, head_sha(pr)))
     for pr in closed_prs:
         number = int(pr["number"])

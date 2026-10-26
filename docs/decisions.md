@@ -431,3 +431,11 @@ entry that supersedes it, never by editing an old one.
 - Why: How far a gate session goes was set by the free words of [agents] prompt, which nothing checks, while the release side had a checked enum; one model answers 'how far does shipmill go by itself' for the whole pipeline (spec 040). The defaults keep what shipmill-setup recommends today: a verdict and a pull request are reversible, a merge waits for a person
 - Applies to: src/shipmill/autonomy.py, [autonomy] triage, [autonomy] fix, [autonomy] land, shipmill-hold label
 - Enforced by: tests/test_autonomy.py (S-040-1, S-040-2, S-040-3)
+
+## D-52: A draft pull request belongs to whoever opened it
+
+- Decided: 2026-10-26, in shipmill/shipmill#673
+- Rule: A draft pull request belongs to whoever opened it, a person or a session. Agents don't review, push to, rebase, or merge it, whatever their session was started for: github-pr-triage lists it as draft, left to its author, and pr_gate.py refuses it with exit 8 (DRAFT). It enters triage once it is marked ready. A person or session that keeps fixing its own pull request (an auto-fix loop, say) opens it as a draft and marks it ready once CI is green, which hands it to the agents; github-issue-triage hands over only pull requests marked ready
+- Why: A pull request needs one owner at a time, and its draft state is the one GitHub already shows. Until now it held only because watch_state.py lists non-draft pull requests in PRS_OPEN, so a draft never started a gate session by itself, but a session started for other work could still review, push to, or merge a draft: on 2026-10-26 a session fixing its own pull request in an auto-fix loop and the gate's reviewer both pushed to one branch
+- Applies to: skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md, skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/SKILL.md, skills/github-ship-watch/scripts/watch_state.py, draft pull requests
+- Enforced by: tests/test_pr_gate.py (pr_gate.py's exit 8); review for the skills' text

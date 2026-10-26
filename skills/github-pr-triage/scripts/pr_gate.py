@@ -37,13 +37,17 @@ above; the plan check stays. Each zone by its level, read from that branch, neve
 
 Without [agents] on that branch the gate judges as it did before spec 030.
 
+A draft PR belongs to whoever opened it (D-52): the gate reads it as DRAFT, whatever its checks,
+plan, or zones, and reads neither its files nor its zones. It enters triage once marked ready.
+
 Exit codes: 0 every PR is ready; 1 a check failed, or gh failed; 3 a check is still
 pending (or --wait timed out); 4 a PR is not open or conflicts; 5 a PR needs the
 maintainer's decision; 6 an agent's PR is refused for its plan; 7 a PR only the maintainer
-merges, by hand (a `never` zone); 2 bad arguments, a base branch the checkout lacks, a git
-failure, a REVIEW.md, docs/product.md, or config the gate can't read, or a `shipmill decide
-classify` that fails or prints what the gate can't read. With several PRs the exit code is
-the worst verdict's, ranked 0, 1, 3, 4, 5, 7, 6.
+merges, by hand (a `never` zone); 8 a draft PR, left to its author (D-52); 2 bad arguments,
+a base branch the checkout lacks, a git failure, a REVIEW.md, docs/product.md, or config the
+gate can't read, or a `shipmill decide classify` that fails or prints what the gate can't
+read. With several PRs the exit code is
+the worst verdict's, ranked 0, 1, 3, 4, 8, 5, 7, 6.
 """
 
 from __future__ import annotations
@@ -63,7 +67,7 @@ from pathlib import Path
 from types import ModuleType
 
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
-READY, FAILED, PENDING, BLOCKED, NEEDS_DECISION, REFUSED, MAINTAINER_ONLY = 0, 1, 3, 4, 5, 6, 7
+READY, FAILED, PENDING, BLOCKED, NEEDS_DECISION, REFUSED, MAINTAINER_ONLY, DRAFT = 0, 1, 3, 4, 5, 6, 7, 8
 LABELS = {
     READY: "READY",
     FAILED: "FAILED",
@@ -72,9 +76,11 @@ LABELS = {
     NEEDS_DECISION: "NEEDS_DECISION",
     REFUSED: "REFUSED",
     MAINTAINER_ONLY: "MAINTAINER_ONLY",
+    DRAFT: "DRAFT",
 }
-# the worst verdict last: MAINTAINER_ONLY ranks above NEEDS_DECISION and below REFUSED (spec 030)
-RANK = (READY, FAILED, PENDING, BLOCKED, NEEDS_DECISION, MAINTAINER_ONLY, REFUSED)
+# the worst verdict last: MAINTAINER_ONLY ranks above NEEDS_DECISION and below REFUSED (spec 030); DRAFT,
+# its author's, ranks above BLOCKED and below the verdicts that ask something of the maintainer (D-52)
+RANK = (READY, FAILED, PENDING, BLOCKED, DRAFT, NEEDS_DECISION, MAINTAINER_ONLY, REFUSED)
 
 # github-ship-watch's watch_state.py: one reading of the config's [agents] and of the plugin's
 # pinned CLI for every skill script
@@ -125,10 +131,15 @@ class Gate:
     asks: tuple[str, ...] = ()  # why the PR waits on the maintainer
     never: tuple[str, ...] = ()  # the never zones: only the maintainer merges it, by hand (spec 030)
     notices: tuple[str, ...] = ()  # the notify zones: decided without waiting, the verdict kept
+    draft: bool = False  # its author's until marked ready (D-52)
 
     @property
     def verdict(self) -> int:
-        if self.state != "OPEN" or self.mergeable == "CONFLICTING":
+        if self.state != "OPEN":
+            return BLOCKED
+        if self.draft:
+            return DRAFT
+        if self.mergeable == "CONFLICTING":
             return BLOCKED
         if self.refused:
             return REFUSED
@@ -508,9 +519,13 @@ def author_of(entry: dict) -> str:
     return login
 
 
+# the fields the gate reads; the github-pr-triage eval cases record this read, so a change here
+# re-records it there (#673)
+FIELDS = "state,isDraft,mergeable,baseRefName,headRefOid,statusCheckRollup,author,body,files,changedFiles"
+
+
 def fetch(number: int, repo: str | None) -> dict:
-    cmd = ["gh", "pr", "view", str(number), "--json"]
-    cmd.append("state,mergeable,baseRefName,headRefOid,statusCheckRollup,author,body,files,changedFiles")
+    cmd = ["gh", "pr", "view", str(number), "--json", FIELDS]
     if repo:
         cmd += ["-R", repo]
     data = json.loads(gh(cmd, number))
@@ -556,8 +571,12 @@ def judge(
     data: dict, number: int, base: Base, agent: bool, accepted: bool, zones: tuple[Zone, ...] | None = None
 ) -> Gate:
     """zones, classify's for the PR, are given when the base's config has [agents] (spec 030);
-    they replace the direction and Protected areas checks"""
+    they replace the direction and Protected areas checks. A draft is judged for nothing else (D-52)"""
     checks = tuple(check_of(e) for e in data.get("statusCheckRollup") or ())
+    if data["isDraft"]:
+        return Gate(
+            number, data["state"], data["mergeable"], data["baseRefName"], data["headRefOid"][:7], checks, draft=True
+        )
     files: tuple[str, ...] = data["files"]
     refused: list[str] = []
     if agent and base.ids is not None:
@@ -602,6 +621,8 @@ def render(gate: Gate) -> str:
     lines += [f"  maintainer-only: {reason}" for reason in gate.never]
     lines += [f"  needs-decision: {reason}" for reason in gate.asks]
     lines += [f"  notify: {reason}" for reason in gate.notices]
+    if gate.verdict == DRAFT:
+        lines.append("  draft: left to its author until marked ready (D-52)")
     return "\n".join(lines)
 
 
@@ -644,6 +665,9 @@ def main() -> int:
             for number in args.prs:
                 data = fetch(number, args.repo)
                 base = bases.base(str(data["baseRefName"]))
+                if data["isDraft"]:  # its author's: neither its files nor its zones are read (D-52)
+                    gates.append(judge(data, number, base, False, args.maintainer_accepted))
+                    continue
                 if base.ids is not None or base.reviews:
                     data["files"] = all_files(data, number, args.repo)
                 agent = args.agent or (
