@@ -253,7 +253,13 @@ reads them.
 
 ## Issues
 
-The build issues, filled in once they are filed.
+- shipmill/shipmill#659: S-040-1, S-040-2, S-040-3
+- shipmill/shipmill#660: S-040-4, S-040-5, S-040-12, S-040-17
+- shipmill/shipmill#661: S-040-6, S-040-7
+- shipmill/shipmill#662: S-040-8, S-040-9
+- shipmill/shipmill#663: S-040-10, S-040-11
+- shipmill/shipmill#664: S-040-13, S-040-16
+- shipmill/shipmill#665: S-040-14, S-040-15
 
 ## Verification
 
