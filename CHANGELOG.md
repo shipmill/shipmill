@@ -7,6 +7,18 @@ bot.
 
 ## [Unreleased]
 
+## [0.79.0] - 2026-10-26
+
+### Changed
+
+- `shipmill gate` counts open pull requests as work when `[autonomy] land` is `propose` or `act`, and not under `observe`, whatever `[agents] prs` says; a config without the agent stage keys reads `land` as the prompt does for this release ("merge when green" lands). Every launch prompt carries an `Autonomy:` line with each agent stage's effective level, naming the hold issue when one is open. `[agents] prs` is deprecated: still accepted, ignored, and `doctor` warns naming `[autonomy] land`. shipmill-setup's checklist drops its `LANDING_OFF` row, which `AUTONOMY_IMPLICIT` replaces (#662)
+- Tests: the suite takes about half the CPU; git fixtures are built once and copied per test, and most delivery hook cases call the hook's `main` in process (#667)
+- A draft pull request belongs to whoever opened it (D-52): github-pr-triage leaves drafts out of its review and landing and reports each as "draft, left to its author", `pr_gate.py` reads a draft as DRAFT with exit 8 whatever its checks, and github-issue-triage hands over only pull requests marked ready (#673)
+
+### Added
+
+- `shipmill status` prints an `autonomy` line after the repo line with every stage's effective level, `(held)` beside each stage a `shipmill-hold` issue lowers and `(from the prompt)` beside each stage the legacy reading took from `[agents] prompt` (with `shipmill upgrade --apply agent-autonomy` as its fix), and `status --json` adds one `AUTONOMY` line after github-ship-watch's rows whose `autonomy` key holds the stages `shipmill autonomy --json` prints. The open pull requests now follow `[autonomy] land` instead of `[agents] prs`: under `observe` they wait on you with the `[autonomy] land` fix, under `propose` the ones labelled `shipmill-ready` wait on you to merge (a new `to merge` line) and the rest are the gate's work, and under `act` all are the gate's work; the `landing` line names land's level (#663)
+
 ## [0.78.0] - 2026-10-26
 
 ### Added
@@ -1825,7 +1837,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.78.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.79.0...HEAD
+[0.79.0]: https://github.com/shipmill/shipmill/compare/v0.78.0...v0.79.0
 [0.78.0]: https://github.com/shipmill/shipmill/compare/v0.77.0...v0.78.0
 [0.77.0]: https://github.com/shipmill/shipmill/compare/v0.76.0...v0.77.0
 [0.76.0]: https://github.com/shipmill/shipmill/compare/v0.75.0...v0.76.0

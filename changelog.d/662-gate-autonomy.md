@@ -1,3 +1,0 @@
-### Changed
-
-- `shipmill gate` counts open pull requests as work when `[autonomy] land` is `propose` or `act`, and not under `observe`, whatever `[agents] prs` says; a config without the agent stage keys reads `land` as the prompt does for this release ("merge when green" lands). Every launch prompt carries an `Autonomy:` line with each agent stage's effective level, naming the hold issue when one is open. `[agents] prs` is deprecated: still accepted, ignored, and `doctor` warns naming `[autonomy] land`. shipmill-setup's checklist drops its `LANDING_OFF` row, which `AUTONOMY_IMPLICIT` replaces (#662)
