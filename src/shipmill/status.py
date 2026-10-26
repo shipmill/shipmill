@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +22,10 @@ from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
 from shipmill.agents import AgentsConfig, Mode
 from shipmill.app import Identity, default_key
+from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold, Source, StageKind, StageLevel
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import MISSING_FIX
-from shipmill.config import CONFIG_PATH, config_path, read
+from shipmill.config import CONFIG_PATH, Table, config_path, read
 from shipmill.errors import ReleaseError
 from shipmill.gate import StateRunner, skills_dir
 from shipmill.github import UPGRADE_LABEL, GitHub, labelled_command, parse_labelled
@@ -145,6 +146,11 @@ LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$")
 TEAM = re.compile(r"@[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}/[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 # the needs-decision items share one fix, shown once after the group (S-011-12)
 DECISION_FIX = "answer the needs-decision question on each item named"
+# spec 040: under land = "propose", github-pr-triage labels a pull request that passes every
+# check with it, and a person merges; a repo without the label has no such pull request
+READY_LABEL = "shipmill-ready"
+MERGE_FIX = f'merge each pull request named once you have read it, or set land = "act" in [autonomy] in {CONFIG_PATH}'
+AUTONOMY_ROW = "AUTONOMY"  # the --json line that carries the stages (S-040-10)
 
 
 class Verdict(enum.IntEnum):
@@ -206,12 +212,14 @@ class Issue:
 
 @dataclass(frozen=True, slots=True)
 class Pull:
-    """An open pull request; merge is GitHub's mergeStateStatus, base its base branch"""
+    """An open pull request; merge is GitHub's mergeStateStatus, base its base branch, ready
+    whether it is labelled shipmill-ready (spec 040)"""
 
     number: int
     draft: bool
     merge: str
     base: str
+    ready: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,6 +308,10 @@ class Facts:
     command: str  # how a fix names the CLI: cli_command()'s form
     agent_as_person: Flagged | None = None  # spec 012's check, read only with [agents] app_id
     upgrades: Sequence[Offer] = ()  # spec 014's pending upgrades, each with its open issue
+    # spec 040: the checkout config's [autonomy], with the legacy reading of [agents] prompt,
+    # and the environments [environments] declares; the hold comes from the HOLD rows
+    autonomy: AutonomyPolicy = field(default_factory=AutonomyPolicy)
+    environments: tuple[EnvironmentName, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,12 +446,79 @@ def gh_read(cmd: list[str], run: StateRunner, what: str, pause: Callable[[float]
 
 
 def read_pulls(repo: str, run: StateRunner, pause: Callable[[float], None] = time.sleep) -> list[Pull]:
-    fields = "number,isDraft,mergeStateStatus,baseRefName"
+    """The open pull requests, with their labels in the same read (spec 040's shipmill-ready)"""
+    fields = "number,isDraft,mergeStateStatus,baseRefName,labels"
     out = gh_read(["gh", "pr", "list", "-R", repo, "--json", fields, "-L", "1000"], run, "gh pr list", pause)
     found = json.loads(out)
     return [
-        Pull(int(p["number"]), bool(p["isDraft"]), str(p["mergeStateStatus"]), str(p["baseRefName"])) for p in found
+        Pull(
+            int(p["number"]),
+            bool(p["isDraft"]),
+            str(p["mergeStateStatus"]),
+            str(p["baseRefName"]),
+            any(str(name["name"]) == READY_LABEL for name in p["labels"]),
+        )
+        for p in found
     ]
+
+
+def read_autonomy(root: Path) -> tuple[AutonomyPolicy, tuple[EnvironmentName, ...]]:
+    """Spec 040: the checkout config's [autonomy] as `shipmill autonomy` parses it, with the
+    legacy reading of [agents] prompt (S-040-6), and the environments [environments] names;
+    a config without the file reads every default. A malformed [autonomy] or [agents] stops
+    the report, as a level that can't be read is unknown"""
+    raw = _raw(root)
+    policy = AutonomyPolicy.parse(Table(raw, Path(CONFIG_PATH).name).table("autonomy", optional=True))
+    if "agents" in raw:
+        policy = policy.read_prompt(AgentsConfig.load(root).prompt)
+    declared = raw.get("environments")
+    return policy, tuple(EnvironmentName(name) for name in declared) if isinstance(declared, dict) else ()
+
+
+def hold_of(rows: Sequence[Row]) -> Hold:
+    """The open shipmill-hold issues, from watch_state.py's HOLD rows: the hold `shipmill
+    autonomy` reads through gh, with no read of its own"""
+    return Hold(tuple(r.subject for r in rows if r.state == "HOLD"))
+
+
+def stage_levels(
+    policy: AutonomyPolicy, environments: Sequence[EnvironmentName], rows: Sequence[Row]
+) -> tuple[StageLevel, ...]:
+    """Every stage as `shipmill autonomy --json` lists it, under the hold the rows show"""
+    return policy.levels(hold_of(rows), environments)
+
+
+def stage_text(policy: AutonomyPolicy, level: StageLevel) -> str:
+    """S-040-10: a stage and its effective level, marked when the hold lowers it or the
+    legacy reading took it from the prompt"""
+    held = " (held)" if level.source is Source.HOLD else ""
+    prompt = " (from the prompt)" if level.stage in policy.from_prompt else ""
+    return f"{level.stage} {level.effective}{held}{prompt}"
+
+
+def autonomy_value(policy: AutonomyPolicy, levels: Sequence[StageLevel]) -> str:
+    return " · ".join(stage_text(policy, level) for level in levels)
+
+
+def autonomy_fix(policy: AutonomyPolicy, command: str) -> str | None:
+    """A stage read from the prompt is written into [autonomy] by spec 040's upgrade"""
+    return f"{command} upgrade --apply agent-autonomy" if policy.from_prompt else None
+
+
+def autonomy_record(
+    repo: str, policy: AutonomyPolicy, environments: Sequence[EnvironmentName], rows: Sequence[Row], command: str
+) -> dict[str, object]:
+    """S-040-10: `status --json`'s line after watch_state.py's, shaped as its rows are, with
+    the stages `shipmill autonomy --json` prints under its "autonomy" key"""
+    levels = stage_levels(policy, environments, rows)
+    return {
+        "state": AUTONOMY_ROW,
+        "subject": repo,
+        "detail": autonomy_value(policy, levels),
+        "agent": False,
+        "fix": autonomy_fix(policy, command),
+        "autonomy": [level.record() for level in levels],
+    }
 
 
 def read_upgrades(
@@ -687,31 +766,54 @@ def to_land(rows: Sequence[Row]) -> list[int]:
     return sorted(set(_row_numbers(rows, "PRS_OPEN")), reverse=True)
 
 
+def land_stage(facts: Facts) -> StageLevel:
+    """The land stage as `shipmill autonomy` lists it, under the hold (spec 040)"""
+    for level in stage_levels(facts.autonomy, facts.environments, facts.rows):
+        if level.stage == StageKind.LAND:
+            return level
+    raise ValueError("AutonomyPolicy.levels lists no land stage")
+
+
+def to_merge(facts: Facts) -> list[int]:
+    """S-040-11: under land = "propose", with a gate, the pull requests to land that are
+    labelled shipmill-ready: a person's to merge. None under observe, act, or without [agents]"""
+    if facts.gate.agents is None or land_stage(facts).effective is not Autonomy.PROPOSE:
+        return []
+    ready = {p.number for p in facts.pulls if p.ready}
+    return [n for n in to_land(facts.rows) if n in ready]
+
+
 def landing_fix(facts: Facts) -> str | None:
-    """S-011-13: with pull requests waiting and no gate landing them, how to land them; None
-    with [agents] prs = true or none waiting"""
-    agents = facts.gate.agents
-    if not to_land(facts.rows) or (agents is not None and agents.prs):
+    """S-011-13, S-040-11: with pull requests waiting and nothing landing them, no gate or
+    land = "observe", how to land them; None when the gate's work or none waiting"""
+    if not to_land(facts.rows):
         return None
     land = f"/shipmill:github-pr-triage {facts.repo}"
-    return f"set prs = true under [agents] in {CONFIG_PATH}, or land them by hand: {land}"
+    if facts.gate.agents is None:
+        return f"add [agents] to {CONFIG_PATH} for a gate to land them, or land them by hand: {land}"
+    if land_stage(facts).effective is Autonomy.OBSERVE:
+        return f'set land = "propose" or "act" in [autonomy], or land them by hand: {land}'
+    return None
 
 
 def landing_reasons(facts: Facts) -> tuple[list[Reason], list[str]]:
-    """The open pull requests as waits-on-you reasons when no gate lands them, else as work
-    for the gate (S-009-26)"""
+    """The open pull requests by [autonomy] land (S-009-26, S-040-11): waiting on you when no
+    gate or land = "observe"; under propose, those labelled shipmill-ready waiting on you to
+    merge and the rest the gate's work; under act, all the gate's work"""
     found = to_land(facts.rows)
-    fix = landing_fix(facts)
     if not found:
         return [], []
+    fix = landing_fix(facts)
     listed = f"pull request {numbers(found)}"
-    agents = facts.gate.agents
-    if fix is None:
-        return [], [f"{listed} to land"]
-    if agents is None:
+    if facts.gate.agents is None and fix is not None:
         return [Reason(f"{listed} wait to land: no gate lands pull requests (no [agents] in the config)", fix)], []
-    why = "the gate doesn't land pull requests ([agents] prs = false)"
-    return [Reason(f"{listed} wait to land: {why}; set [agents] prs = true, or land them by hand", fix)], []
+    if fix is not None:
+        return [Reason(f"{listed} wait to land: [autonomy] land is observe, so no session lands them", fix)], []
+    merge = to_merge(facts)
+    rest = [n for n in found if n not in merge]
+    yours = [Reason(f"pull request {numbers(merge)} labelled {READY_LABEL} wait on you to merge", MERGE_FIX)]
+    working = [f"pull request {numbers(rest)} to land"]
+    return (yours if merge else []), (working if rest else [])
 
 
 @dataclass(frozen=True, slots=True)
@@ -1127,10 +1229,12 @@ def item_lines(facts: Facts) -> list[str]:
         )
         lines += _group(name, [issue_value(repo, i) for i in found])
         if name == "in progress":  # S-009-24: the pull requests waiting to land follow the work
-            land = [pull_value(facts, n) for n in to_land(rows)]
+            merge = to_merge(facts)  # S-040-11: shipmill-ready ones under propose are yours to merge
+            land = [pull_value(facts, n) for n in to_land(rows) if n not in merge]
             # without [agents] there is no landing line, so the fix follows the pull requests
             fix = landing_fix(facts) if facts.gate.agents is None else None
             lines += _fixed("to land", [(v, fix) for v in land])
+            lines += _fixed("to merge", [(pull_value(facts, n), MERGE_FIX) for n in merge])
     drafts = sorted((p.number for p in facts.pulls if p.draft), reverse=True)
     ready = [f"{item(repo, n, True)}: gh pr ready {n} -R {repo} once it is ready" for n in drafts]
     lines += _group("drafts", ready)  # S-011-19
@@ -1146,6 +1250,25 @@ def item_lines(facts: Facts) -> list[str]:
 def count_line(label_: str, count: int, link: str) -> str:
     """S-009-19: the count and the list's link, or none"""
     return _line(label_, f"{count} {link}" if count else "none")
+
+
+def landing_value(land: StageLevel) -> str:
+    """S-009-25 by [autonomy] land (spec 040), never [agents] prs: what a session does with a
+    pull request at land's effective level"""
+    if land.effective is Autonomy.ACT:
+        return "act: the gate merges pull requests on green CI"
+    if land.effective is Autonomy.PROPOSE:
+        held = " (held)" if land.source is Source.HOLD else ""
+        return f"propose{held}: the gate reviews and labels {READY_LABEL}, a person merges"
+    return "observe: the gate reviews in its session only and lands nothing"
+
+
+def autonomy_lines(facts: Facts) -> list[str]:
+    """S-040-10: every stage's effective level, after the repo line, always shown; a stage
+    read from the prompt brings the upgrade that writes it into [autonomy]"""
+    levels = stage_levels(facts.autonomy, facts.environments, facts.rows)
+    fix = autonomy_fix(facts.autonomy, facts.command)
+    return _after(_line("autonomy", autonomy_value(facts.autonomy, levels)), [] if fix is None else [fix])
 
 
 def gate_lines(facts: Facts) -> list[str]:
@@ -1175,7 +1298,7 @@ def gate_lines(facts: Facts) -> list[str]:
         app = "active"
     else:
         app = f"not connected: {gate.app_error}"
-    landing = "on" if gate.agents.prs else "off: [agents] prs = false (the gate opens PRs but never lands them)"
+    landing = landing_value(land_stage(facts))
     land = landing_fix(facts)
     app_fixes = [] if (fix := app_fix(gate, facts.repo, facts.command)) is None else [fix]
     return [
@@ -1227,6 +1350,7 @@ def report(facts: Facts) -> Report:
     open_ = sum(1 for i in facts.issues if i.state not in CLOSED_STATES and not i.closed)
     lines = [
         *repo_lines(facts),
+        *autonomy_lines(facts),
         *item_lines(facts),
         count_line("open issues", open_, f"{github(facts.repo)}/issues"),
         count_line("pull requests", len(facts.pulls), f"{github(facts.repo)}/pulls"),

@@ -1,6 +1,7 @@
 """Spec 008: `shipmill status`, github-ship-watch's report from the CLI"""
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -81,7 +82,9 @@ def test_s008_4_the_table_and_the_json_lines_are_printed_unchanged(
     assert capsys.readouterr().out == TABLE
     script = Script(stdout=ROW)
     assert status(root, script, "--json") == 0
-    assert capsys.readouterr().out == ROW
+    out = capsys.readouterr().out
+    assert out.startswith(ROW)  # spec 040 adds one line after them, the AUTONOMY one (S-040-10)
+    assert json.loads(out.removeprefix(ROW))["state"] == "AUTONOMY"
     assert script.seen[0][-3:] == ["--json", *ROLES]
 
 

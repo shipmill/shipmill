@@ -26,7 +26,7 @@
                   set-cap, and retire edit one line (--dir DIR: DIR/REVIEW.md) and print it
   status          say whether the factory works or is stuck: a verdict, then a short summary with
                   a line per reason and a direct link per item; --rows for github-ship-watch's
-                  table, --json for its JSON lines
+                  table, --json for its JSON lines and an AUTONOMY line with every stage's level
   milestones      read-only: with a lane that sets milestone = true, print MILESTONE_WAITING for a goal's
                   milestone waiting on its specs and MILESTONE_OVERTAKEN for an open milestone a stable
                   tag took, with the version to rename it to and the `gh api` rename, run through
@@ -426,7 +426,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     shown = p.add_mutually_exclusive_group()
     shown.add_argument("--rows", action="store_true", help="print github-ship-watch's table instead")
-    shown.add_argument("--json", action="store_true", help="print github-ship-watch's JSON lines instead")
+    shown.add_argument(
+        "--json",
+        action="store_true",
+        help="print github-ship-watch's JSON lines instead, then an AUTONOMY line with every stage's level",
+    )
 
     p = sub.add_parser(
         "milestones",
@@ -1475,6 +1479,8 @@ def _status(
         check_checkout(Git(top), slug)
     picture = not (args.rows or args.json)
     resolved = roles.resolve(roles.configured(top), login)
+    # S-040-10: the picture and --json show the levels; a malformed [autonomy] exits 2 first
+    autonomy, environments = status.read_autonomy(top) if not args.rows else (AutonomyPolicy(), ())
     home = home if home is not None else Path.home()
     when = now if now is not None else dt.datetime.now(dt.UTC)
 
@@ -1506,6 +1512,10 @@ def _status(
         return 2
     if gate is None:
         sys.stdout.write(proc.stdout)
+        if args.json:  # S-040-10: one more line, after watch_state.py's, its hold from their HOLD rows
+            rows = status.parse_rows(proc.stdout)
+            record = status.autonomy_record(slug, autonomy, environments, rows, cli_command())
+            sys.stdout.write(json.dumps(record) + "\n")
         return proc.returncode
     # S-012-7, S-012-8: read only when agents write as an App
     people = agent_as_person.read(slug, run, when) if gate.agents is not None and gate.agents.app_id else None
@@ -1525,6 +1535,8 @@ def _status(
         command=cli_command(),
         agent_as_person=people,
         upgrades=status.read_upgrades(slug, top, run),
+        autonomy=autonomy,
+        environments=environments,
     )
     sys.stdout.write(status.report(facts).text(slug))
     return proc.returncode  # S-009-14: spec 008's code, whatever the verdict
