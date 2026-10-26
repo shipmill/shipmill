@@ -15,6 +15,7 @@ import pytest
 
 from shipmill.agents import AgentsConfig, Mode
 from shipmill.app import Answer, Identity, default_key
+from shipmill.autonomy import Autonomy, AutonomyPolicy
 from shipmill.cli import _parser, _status, main
 from shipmill.errors import ReleaseError
 from shipmill.gate import skills_dir
@@ -53,6 +54,12 @@ JOB = Job(dt.timedelta(minutes=15), True, False, "0", NOW - dt.timedelta(minutes
 GATE = Gate(AGENTS, True, True, JOB, None, APP, None, None)
 NO_PRS = dataclasses.replace(AGENTS, prs=False)
 CHECKOUT = Path("/src/web")
+# spec 040: the autonomy line after the repo line, every stage at its default (S-040-10)
+AUTONOMY = (
+    "  autonomy       triage act · fix act · land propose · release act · rollback act · intake propose"
+    " · upgrade propose"
+)
+OBSERVE = AutonomyPolicy(land=Autonomy.OBSERVE)
 
 
 def texts(found: Report) -> list[str]:
@@ -195,7 +202,7 @@ def test_s009_4_an_app_key_missing_on_this_host_is_not_a_failure(tmp_path: Path)
         facts(Row("BRANCH_DELETE_OFF", REPO, "turn it on", False)),
         facts(cli="0.25.0"),
         facts(gate=gate(agents=dataclasses.replace(AGENTS, app_id=None), app=None)),
-        facts(Row("PRS_OPEN", REPO, "#8", False), gate=gate(agents=NO_PRS)),
+        facts(Row("PRS_OPEN", REPO, "#8", False), autonomy=OBSERVE),
         facts(Row("PRS_OPEN", REPO, "#8", False), gate=gate(agents=None)),
     ],
 )
@@ -510,6 +517,7 @@ def test_s009_16_the_whole_summary_reads_as_the_spec_shows_it() -> None:
         [
             f"{REPO} ({URL}): WAITS ON YOU",
             "  repo           in sync at v0.26.0, release ok",
+            AUTONOMY,
             f"  needs decision #206 {URL}/issues/206",
             "                 fix: answer the needs-decision question on each item named",
             f"  parked         #26 {URL}/issues/26 postponed",
@@ -517,7 +525,7 @@ def test_s009_16_the_whole_summary_reads_as_the_spec_shows_it() -> None:
             "  pull requests  none",
             "  gate           OK, launchd every 15 min",
             "  mode           interactive",
-            "  landing        on",
+            "  landing        propose: the gate reviews and labels shipmill-ready, a person merges",
             "  github app     active",
             "  shipmill       0.26.0, up to date",
             "",
@@ -629,8 +637,9 @@ def test_s009_18_each_item_has_its_own_link_never_a_search() -> None:
     pulls = [Pull(9, False, "CLEAN", "main"), Pull(8, False, "UNKNOWN", "main"), Pull(7, True, "DRAFT", "main")]
     found = facts(*rows, issues=issues, pulls=pulls)
     text = lines(found)
-    assert text[1:13] == [
+    assert text[1:14] == [
         "  repo           in sync at v0.26.0, release ok",
+        AUTONOMY,
         f"  needs decision #6 {URL}/issues/6",
         f"                 #9 {URL}/pull/9",
         "                 fix: answer the needs-decision question on each item named",
@@ -719,9 +728,19 @@ def test_s009_22_the_shipmill_line_shows_the_version_and_the_updates() -> None:
 
 def test_s009_23_empty_lines_are_dropped_and_the_fixed_ones_always_shown() -> None:
     labels = [line[2:16].strip() for line in lines(facts())[1:]]
-    assert labels == ["repo", "open issues", "pull requests", "gate", "mode", "landing", "github app", "shipmill"]
+    assert labels == [
+        "repo",
+        "autonomy",
+        "open issues",
+        "pull requests",
+        "gate",
+        "mode",
+        "landing",
+        "github app",
+        "shipmill",
+    ]
     bare = [line[2:16].strip() for line in lines(facts(gate=gate(agents=None)))[1:]]
-    assert bare == ["repo", "open issues", "pull requests", "gate", "shipmill"]
+    assert bare == ["repo", "autonomy", "open issues", "pull requests", "gate", "shipmill"]
 
 
 def test_s009_23_gate_sessions_and_runs_are_counted_with_their_links() -> None:
@@ -742,7 +761,7 @@ def test_s009_23_gate_sessions_and_runs_are_counted_with_their_links() -> None:
 def test_s009_24_open_pull_requests_are_listed_to_land_newest_first() -> None:
     found = facts(Row("PRS_OPEN", REPO, "#408 #409", False), issues=[Issue(3, "IN_PROGRESS"), Issue(2, "TRIAGED")])
     text = lines(found)
-    assert text[2:6] == [
+    assert text[3:7] == [
         f"  in progress    #3 {URL}/issues/3",
         f"  to land        #409 {URL}/pull/409",
         f"                 #408 {URL}/pull/408",
@@ -758,36 +777,38 @@ def test_s009_24_an_unreadable_pull_request_row_fails() -> None:
 
 
 @pytest.mark.parametrize(
-    ("agents", "shown"),
+    ("autonomy", "shown"),
     [
-        (AGENTS, "on"),
-        (NO_PRS, "off: [agents] prs = false (the gate opens PRs but never lands them)"),
+        (AutonomyPolicy(land=Autonomy.ACT), "act: the gate merges pull requests on green CI"),
+        (AutonomyPolicy(), "propose: the gate reviews and labels shipmill-ready, a person merges"),
+        (OBSERVE, "observe: the gate reviews in its session only and lands nothing"),
     ],
 )
-def test_s009_25_the_landing_line_says_whether_the_gate_lands_pull_requests(agents: AgentsConfig, shown: str) -> None:
-    text = lines(facts(gate=gate(agents=agents)))
-    assert text[text.index("  mode           headless") + 1] == f"  landing        {shown}"
+def test_s009_25_the_landing_line_says_whether_the_gate_lands_pull_requests(
+    autonomy: AutonomyPolicy, shown: str
+) -> None:
+    # spec 040: the landing line reads [autonomy] land, never [agents] prs
+    for agents in (AGENTS, NO_PRS):
+        text = lines(facts(gate=gate(agents=agents), autonomy=autonomy))
+        assert text[text.index("  mode           headless") + 1] == f"  landing        {shown}"
     assert not any(line.startswith("  landing") for line in lines(facts(gate=gate(agents=None))))
 
 
 def test_s009_26_pull_requests_no_gate_lands_wait_on_you() -> None:
     row = Row("PRS_OPEN", REPO, "#408 #409", False)
-    off = report(facts(row, gate=gate(agents=NO_PRS)))
+    off = report(facts(row, autonomy=OBSERVE))
     assert off.verdict is Verdict.WAITS
-    assert texts(off) == [
-        "pull request #409 #408 wait to land: the gate doesn't land pull requests ([agents] prs = false); "
-        "set [agents] prs = true, or land them by hand"
-    ]
+    assert texts(off) == ["pull request #409 #408 wait to land: [autonomy] land is observe, so no session lands them"]
     bare = report(facts(Row("PRS_OPEN", REPO, "#7", False), gate=gate(agents=None)))
     assert bare.verdict is Verdict.WAITS
     assert texts(bare) == ["pull request #7 wait to land: no gate lands pull requests (no [agents] in the config)"]
 
 
 def test_s009_26_pull_requests_the_gate_lands_are_work_not_waiting() -> None:
-    found = report(facts(Row("PRS_OPEN", REPO, "#408 #409", False)))
+    found = report(facts(Row("PRS_OPEN", REPO, "#408 #409", False), gate=gate(agents=NO_PRS)))
     assert found.verdict is Verdict.WORKING
     assert (found.reasons, found.working) == ([], ["pull request #409 #408 to land"])
-    assert report(facts(gate=gate(agents=NO_PRS))).verdict is Verdict.IDLE
+    assert report(facts(autonomy=OBSERVE)).verdict is Verdict.IDLE
 
 
 @pytest.mark.parametrize("state", ["HANDOFF_DUE", "VERIFY_DUE", "NO_ASSIGNEE"])
@@ -803,8 +824,9 @@ def test_a_person_item_with_its_person_is_parked_with_the_logins_it_waits_on() -
     issue = Issue(7, "WITH_PERSON", "with @ann since 2026-10-09T10:00:00Z", ("ann", "bo-b"))
     found = facts(issues=[issue, Issue(4, "TRIAGED")])
     text = lines(found)
-    assert text[1:4] == [
+    assert text[1:5] == [
         "  repo           in sync at v0.26.0, release ok",
+        AUTONOMY,
         f"  parked         #7 {URL}/issues/7 (@ann @bo-b)",
         f"                 #4 {URL}/issues/4 triaged",
     ]
@@ -815,8 +837,9 @@ def test_a_person_item_with_its_person_is_parked_with_the_logins_it_waits_on() -
 def test_a_person_items_close_to_check_is_listed_with_suspect_close_and_not_open() -> None:
     issues = [Issue(9, "VERIFY_CLOSED", "closed by @ann: run its ## Check"), Issue(1, "SUSPECT_CLOSE"), Issue(5, "NEW")]
     text = lines(facts(issues=issues))
-    assert text[1:5] == [
+    assert text[1:6] == [
         "  repo           in sync at v0.26.0, release ok",
+        AUTONOMY,
         f"  suspect close  #1 {URL}/issues/1",
         f"  verify close   #9 {URL}/issues/9: run its ## Check",
         f"  to triage      #5 {URL}/issues/5",
@@ -831,7 +854,7 @@ def test_a_chain_item_without_a_gate_waits_on_you_with_its_fix() -> None:
     assert report(found).verdict is Verdict.WAITS
     assert texts(report(found)) == [f"CHAIN_NO_GATE o/x#3: {detail}"]
     text = lines(found)
-    assert text[2:4] == [
+    assert text[3:5] == [
         f"  chain          CHAIN_NO_GATE o/x#3 https://github.com/o/x/issues/3: {detail}",
         f"                 fix: {fix}",
     ]
@@ -843,7 +866,7 @@ def test_a_chain_walk_that_fails_waits_on_you_with_its_fix() -> None:
     found = facts(Row("CHAIN_UNREADABLE", REPO, "error: gh api graphql failed", False, fix))
     assert report(found).verdict is Verdict.WAITS
     text = lines(found)
-    assert text[2:4] == [
+    assert text[3:5] == [
         f"  chain          CHAIN_UNREADABLE {REPO}: error: gh api graphql failed",
         f"                 fix: {fix}",
     ]

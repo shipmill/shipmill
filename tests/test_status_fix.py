@@ -35,13 +35,13 @@ from shipmill.status import (
     report,
 )
 from shipmill.version import Version
-from tests.test_status_picture import AGENTS, FILES, NO_PRS, NOW, REPO, URL, facts, gate, job, lines
+from tests.test_status_picture import AGENTS, FILES, NO_PRS, NOW, OBSERVE, REPO, URL, facts, gate, job, lines
 
 FIX = "                 fix: "
 DECISION = "answer the needs-decision question on each item named"
-LAND = (
-    f"set prs = true under [agents] in .github/shipmill.toml, or land them by hand: /shipmill:github-pr-triage {REPO}"
-)
+TRIAGE_PRS = f"/shipmill:github-pr-triage {REPO}"
+LAND = f'set land = "propose" or "act" in [autonomy], or land them by hand: {TRIAGE_PRS}'  # S-040-11
+NO_GATE = f"add [agents] to .github/shipmill.toml for a gate to land them, or land them by hand: {TRIAGE_PRS}"
 
 
 def row(state: str) -> Row:
@@ -64,8 +64,9 @@ EVERY_REASON = [
     facts(issues=[Issue(6, "NEEDS_DECISION")]),
     facts(Row("NEEDS_DECISION", REPO, "#9", False), pulls=[Pull(9, False, "CLEAN", "main")]),
     facts(cli="0.25.0"),
-    facts(Row("PRS_OPEN", REPO, "#8", False), gate=gate(agents=NO_PRS)),
+    facts(Row("PRS_OPEN", REPO, "#8", False), autonomy=OBSERVE),
     facts(Row("PRS_OPEN", REPO, "#8", False), gate=gate(agents=None)),
+    facts(Row("PRS_OPEN", REPO, "#8", False), pulls=[Pull(8, False, "CLEAN", "main", ready=True)]),
 ]
 
 
@@ -103,7 +104,7 @@ def test_s011_12_each_item_with_its_own_fix_shows_it_after_that_item() -> None:
         Row("HOLD", "#3", "freeze", False, f"gh issue close 3 -R {REPO}"),
         Row("HOLD", "#4", "freeze", False, f"gh issue close 4 -R {REPO}"),
     )
-    assert lines(facts(*holds))[2:6] == [
+    assert lines(facts(*holds))[3:7] == [
         f"  hold           #3 {URL}/issues/3",
         f"{FIX}gh issue close 3 -R {REPO}",
         f"                 #4 {URL}/issues/4",
@@ -137,15 +138,15 @@ def test_s011_12_a_stuck_row_takes_the_watchs_fix_or_names_the_watch_without_one
 
 
 def test_s011_13_the_landing_line_carries_the_fix_only_when_no_gate_lands() -> None:
-    off = lines(facts(Row("PRS_OPEN", REPO, "#8", False), gate=gate(agents=NO_PRS)))
-    at = off.index("  landing        off: [agents] prs = false (the gate opens PRs but never lands them)")
+    off = lines(facts(Row("PRS_OPEN", REPO, "#8", False), autonomy=OBSERVE))
+    at = off.index("  landing        observe: the gate reviews in its session only and lands nothing")
     assert off[at + 1] == f"{FIX}{LAND}"
-    on = lines(facts(Row("PRS_OPEN", REPO, "#8", False)))
+    on = lines(facts(Row("PRS_OPEN", REPO, "#8", False), gate=gate(agents=NO_PRS)))  # prs is never read
     assert not any(line.startswith(FIX) for line in on)
-    assert not any(line.startswith(FIX) for line in lines(facts(gate=gate(agents=NO_PRS))))
+    assert not any(line.startswith(FIX) for line in lines(facts(autonomy=OBSERVE)))
     bare = lines(facts(Row("PRS_OPEN", REPO, "#8", False), gate=gate(agents=None)))
     at = bare.index(f"  to land        #8 {URL}/pull/8")
-    assert bare[at + 1] == f"{FIX}{LAND}"
+    assert bare[at + 1] == f"{FIX}{NO_GATE}"
 
 
 @pytest.mark.parametrize(
@@ -415,11 +416,11 @@ def test_s011_17_the_pull_request_read_asks_for_the_merge_state() -> None:
 
     def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
         seen.append(cmd)
-        out = [{"number": 8, "isDraft": False, "mergeStateStatus": "BEHIND", "baseRefName": "main"}]
+        out = [{"number": 8, "isDraft": False, "mergeStateStatus": "BEHIND", "baseRefName": "main", "labels": []}]
         return subprocess.CompletedProcess(cmd, 0, json.dumps(out), "")
 
     assert read_pulls(REPO, run) == [Pull(8, False, "BEHIND", "main")]
-    assert "number,isDraft,mergeStateStatus,baseRefName" in seen[0]
+    assert "number,isDraft,mergeStateStatus,baseRefName,labels" in seen[0]
 
 
 def test_s011_18_in_progress_names_its_pull_requests_and_parked_says_why() -> None:
