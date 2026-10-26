@@ -62,7 +62,7 @@ null.
 | `HOLD` | the decision: close `#N` when the factory may go on (`gh issue close <N> -R <repo>`) |
 | `WORKTREE_STALE` | `git -C <path> log origin/<branch>..HEAD` to see the unlanded work, then push it and open a pull request, or `git worktree remove <path>` |
 | `UNTRUSTED` | review them in an interactive session: `/shipmill:github-issue-triage <repo>` for issues, `/shipmill:github-pr-triage <repo>` for pull requests |
-| `PRS_OPEN`, with no `[agents]` or `[agents] prs` not true | `set prs = true under [agents] in .github/shipmill.toml, or land them by hand: /shipmill:github-pr-triage <repo>` |
+| `PRS_OPEN`, by the effective `[autonomy] land` (S-040-9, S-040-11; it replaced the deprecated `[agents] prs`) | with no `[agents]`: `add [agents] to .github/shipmill.toml for a gate to land them, or land them by hand: /shipmill:github-pr-triage <repo>`; under `observe`: `set land = "propose" or "act" in [autonomy], or land them by hand: /shipmill:github-pr-triage <repo>`; under `propose`: `merge each pull request labelled shipmill-ready once you have read it, or set land = "act" in [autonomy] in .github/shipmill.toml`; under `act`, none |
 
 The other consumers of the rows:
 
@@ -163,9 +163,11 @@ waiting it is unchanged.
   decision otherwise
 - S-011-6: a `WORKTREE_STALE` row's fix names `git -C <path> log origin/<branch>..HEAD` and
   `git worktree remove <path>` with the row's path
-- S-011-7: a `PRS_OPEN` row's fix names `prs = true` under `[agents]` in
-  `.github/shipmill.toml` and `/shipmill:github-pr-triage <repo>` when the config has no
-  `[agents]` or `prs` isn't true, and is null with `prs = true`
+- S-011-7: a `PRS_OPEN` row's fix follows the effective `[autonomy] land` (S-040-9,
+  S-040-11), whatever `[agents] prs` says: with no `[agents]` it names adding `[agents]` and
+  `/shipmill:github-pr-triage <repo>`; under `observe`, `[autonomy] land` and
+  `/shipmill:github-pr-triage <repo>`; under `propose`, merging the pull requests labelled
+  `shipmill-ready`; and it is null under `act`
 - S-011-8: every `gh` command in a fix names the repo, every `git` command names `-C
   <path>`, and no fix contains an issue's or pull request's title (a test with titles
   holding a marker string finds it in no fix)
@@ -259,7 +261,7 @@ test for every criterion.
 - S-011-4: `test_s011_4_a_failed_runs_fix_reruns_the_run_its_detail_links`, passing; `rerun_fix` reads the id from the run URL
 - S-011-5: `test_s011_5_a_missing_releases_fix_reruns_a_failed_publish_or_says_where_to_look`, passing
 - S-011-6: `test_s011_6_a_stale_worktrees_fix_shows_its_work_and_how_to_remove_it`, passing
-- S-011-7: `test_s011_7_open_prs_carry_a_fix_only_while_no_gate_lands_them`, passing
+- S-011-7: `test_s011_7_open_prs_carry_a_fix_by_the_land_level`, passing (amended by #693 after #691 moved the fix to `[autonomy] land`)
 - S-011-8: `test_s011_8_every_fix_names_its_target_and_quotes_no_title` and `test_s011_8_a_proposals_fix_never_copies_a_shell_word_from_its_body`, passing
 - S-011-9: `test_s011_9_the_table_prints_a_fix_line_unless_the_detail_ends_with_it`, passing; `Row.text()` skips the line when the detail ends with the fix
 - S-011-10: `test_s011_10_fleet_reads_the_lines_watch_state_prints_with_their_fix` and `test_s011_10_a_fix_changes_neither_the_fingerprint_nor_the_prompt`, passing; `gate.fingerprint` hashes state, subject, and detail only

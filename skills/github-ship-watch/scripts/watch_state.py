@@ -246,9 +246,10 @@ Workflows:
                   status, age, event, branch, and link (reported, never an action by itself)
 
 Agents (all reported, never an action by itself):
-  TRIAGE_MODE     the config's [agents] table, what the gate's sessions are told to do: its
-                  prompt and the rest of its keys, less the deprecated prs ([autonomy] land
-                  decides whether open pull requests count as work); "no [agents]" without one
+  TRIAGE_MODE     how far the gate's sessions go: the effective triage, fix, and land levels,
+                  each with its source as `shipmill autonomy` reads it (config, default,
+                  prompt, or hold), then the rest of [agents], less the prompt and the
+                  deprecated prs; "no [agents]" without one
   AGENT_SESSION   a Claude Code session on this host working the repo, one row each, from
                   `claude agents --json`: a gate session (named "shipmill <owner/repo>") or one
                   whose folder is in the checkout, with its kind, status, and age
@@ -1684,58 +1685,111 @@ def autonomy_string_310(text: str, policy: Path, name: str) -> str | None:
     return found
 
 
-# -- [autonomy] land (spec 040): whether the gate lands the open pull requests, read as
-# shipmill's AutonomyPolicy reads it, since a script can't import shipmill
+# -- [autonomy] triage, fix, and land (spec 040): how far the gate's sessions go, read as
+# shipmill's AutonomyPolicy reads them, since a script can't import shipmill
 
 AGENT_STAGES = ("triage", "fix", "land")  # shipmill's autonomy.AGENT_STAGES
-LAND_DEFAULT = "propose"  # a pull request waits for a person to merge it (D-51)
+# shipmill's AutonomyPolicy defaults (D-51): a pull request waits for a person to merge it
+AGENT_DEFAULTS = {"triage": "act", "fix": "act", "land": "propose"}
 # the legacy reading's words (S-040-6): shipmill's autonomy._LANDS
 LANDS = re.compile(r"\b(?:merge\s+when\s+green|land)\b", re.IGNORECASE)
 
 
-def land_level(value: object, policy: Path) -> str:
+@dataclass(frozen=True)
+class AgentLevel:
+    """One agent stage's row of `shipmill autonomy`: its configured level and where that
+    comes from, config, default, or prompt (the legacy reading); the hold is applied on read"""
+
+    stage: str
+    configured: str
+    source: str
+
+    def effective(self, held: bool) -> str:
+        return held_level(self.configured, held)
+
+    def record(self, held: bool) -> dict[str, str]:
+        """The row as `shipmill autonomy --json` prints it: a stage the hold lowers reads hold"""
+        effective = self.effective(held)
+        source = "hold" if effective != self.configured else self.source
+        return {"stage": self.stage, "configured": self.configured, "effective": effective, "source": source}
+
+    def text(self, held: bool) -> str:
+        """`land propose (hold)`: the effective level and its source"""
+        row = self.record(held)
+        return f"{self.stage} {row['effective']} ({row['source']})"
+
+
+def agent_level(value: object, stage: str, policy: Path) -> str:
     if not isinstance(value, str) or value not in AUTONOMY:
-        raise Refused(f"error: {policy}: [autonomy] land must be one of {list(AUTONOMY)}, got {value!r}")
+        raise Refused(f"error: {policy}: [autonomy] {stage} must be one of {list(AUTONOMY)}, got {value!r}")
     return value
 
 
-def legacy_land(level: str, sets_stage: bool, prompt: object) -> str:
-    """S-040-6, for one minor release: a config that sets none of triage, fix, and land reads
-    land as act from an [agents] prompt holding "merge when green" or "land" as a word"""
-    if sets_stage or not isinstance(prompt, str) or LANDS.search(prompt) is None:
-        return level
-    return "act"
+def agent_levels(found: dict[str, object], sets_stage: bool, prompt: object, policy: Path) -> tuple[AgentLevel, ...]:
+    """The agent stages' levels from the keys [autonomy] sets (found), each checked, the rest at
+    their default; and S-040-6, for one minor release: a config that sets none of triage, fix,
+    and land reads land as act from an [agents] prompt holding "merge when green" or "land" as a
+    word"""
+    levels = {
+        stage: AgentLevel(stage, agent_level(found[stage], stage, policy), "config")
+        if stage in found
+        else AgentLevel(stage, AGENT_DEFAULTS[stage], "default")
+        for stage in AGENT_STAGES
+    }
+    if not sets_stage and isinstance(prompt, str) and LANDS.search(prompt) is not None:
+        levels["land"] = AgentLevel("land", "act", "prompt")
+    return tuple(levels[stage] for stage in AGENT_STAGES)
 
 
-def land_autonomy_toml(raw: dict[str, object], policy: Path) -> str:
-    """[autonomy] land of the parsed config, or its default, propose, with the legacy reading
-    of [agents] prompt (S-040-6)"""
+def agent_levels_toml(raw: dict[str, object], policy: Path) -> tuple[AgentLevel, ...]:
+    """[autonomy] triage, fix, and land of the parsed config, with the legacy reading of
+    [agents] prompt (S-040-6)"""
     table = raw.get("autonomy", {})
     if not isinstance(table, dict):
         raise Refused(f"error: {policy}: autonomy is not a table")
-    level = land_level(table.get("land", LAND_DEFAULT), policy)
+    found = {stage: table[stage] for stage in AGENT_STAGES if stage in table}
     agents = raw.get("agents")
     prompt = agents.get("prompt") if isinstance(agents, dict) else None
-    return legacy_land(level, any(stage in table for stage in AGENT_STAGES), prompt)
+    return agent_levels(found, bool(found), prompt, policy)
 
 
-def land_autonomy_310(text: str, policy: Path) -> str:
-    """[autonomy] land, a plain string key of a plain [autonomy] table, or propose, with the
-    legacy reading of [agents] prompt (S-040-6): a triage, fix, or land key in any form ends it"""
-    found = autonomy_string_310(text, policy, "land")
-    level = land_level(LAND_DEFAULT if found is None else found, policy)
+def agent_levels_310(text: str, policy: Path) -> tuple[AgentLevel, ...]:
+    """[autonomy] triage, fix, and land, each a plain string key of a plain [autonomy] table,
+    with the legacy reading of [agents] prompt (S-040-6): a triage, fix, or land key in any
+    form ends it"""
+    found: dict[str, object] = {}
+    for stage in AGENT_STAGES:
+        value = autonomy_string_310(text, policy, stage)
+        if value is not None:
+            found[stage] = value
     stages = "|".join(AGENT_STAGES)
     body = toml_tables(text).get("autonomy", "")
     sets_stage = re.search(rf"^\s*[\"']?(?:{stages})[\"']?\s*[.=]", body, re.MULTILINE) is not None
     table = agents_table_310(text, policy)
     prompt = table.get("prompt") if table is not None else None
     said = json.loads(prompt) if prompt is not None and prompt.startswith('"') else None
-    return legacy_land(level, sets_stage, said)
+    return agent_levels(found, sets_stage, said, policy)
+
+
+def land_autonomy_toml(raw: dict[str, object], policy: Path) -> str:
+    """[autonomy] land of the parsed config, or its default, propose, with the legacy reading
+    of [agents] prompt (S-040-6)"""
+    return agent_levels_toml(raw, policy)[-1].configured
+
+
+def land_autonomy_310(text: str, policy: Path) -> str:
+    """[autonomy] land on Python 3.10, as agent_levels_310 reads it"""
+    return agent_levels_310(text, policy)[-1].configured
+
+
+def held_level(level: str, held: bool) -> str:
+    """The effective level: an open shipmill-hold issue turns act into propose (D-8)"""
+    return "propose" if level == "act" and held else level
 
 
 def held_land(level: str, held: bool) -> str:
-    """The effective land level: an open shipmill-hold issue turns act into propose (D-8)"""
-    return "propose" if level == "act" and held else level
+    """The effective land level, under the hold as every stage's is"""
+    return held_level(level, held)
 
 
 def deploy_autonomy_toml(raw: dict[str, object], policy: Path) -> dict[str, str]:
@@ -3064,15 +3118,19 @@ def coordinator_rows(
 # -- agents --------------------------------------------------------------------------------
 
 
-def triage_mode_row(text: str, policy: Path, declined: int | None = None) -> Row:
-    """The config's [agents] table, each key as the config sets it, the prompt first, less the
-    deprecated prs, which decides nothing ([autonomy] land does, spec 040); declined is the
-    direction issue whose close declined the direction (spec 034), said last"""
+def triage_mode_row(text: str, policy: Path, declined: int | None = None, held: bool = False) -> Row:
+    """The agent stages' effective levels under the hold (held), each with its source as
+    `shipmill autonomy` reads it (spec 040), then the config's other [agents] keys as the
+    config sets them, less the prompt, whose words are not the levels, and the deprecated prs,
+    which decides nothing; declined is the direction issue whose close declined the direction
+    (spec 034), said last"""
     table = agents_table(text, policy)
     if table is None:
         return Row("TRIAGE_MODE", "[agents]", "no [agents]: no gate session runs for this repo")
-    keys = sorted((k for k in table if k != "prs"), key=lambda k: (k != "prompt", k))
-    said = [f"{k} = {table[k]}" for k in keys]
+    # agents_table parsed the text already, so tomllib.loads can't fail here
+    levels = agent_levels_310(text, policy) if tomllib is None else agent_levels_toml(tomllib.loads(text), policy)
+    said = [", ".join(level.text(held) for level in levels)]
+    said += [f"{k} = {table[k]}" for k in sorted(table) if k not in ("prompt", "prs")]
     said += [] if declined is None else [f"no direction: declined in #{declined}"]
     return Row("TRIAGE_MODE", "[agents]", "; ".join(said))
 
@@ -3951,12 +4009,13 @@ def main() -> int:
         table = agents_table(text, policy)
         # shipmill asks for the direction only in a repo with [agents] (spec 034)
         direction = direction_state(table, args.repo, repo_dir, branch, args.tool, args.bot_login)
-        rows.append(triage_mode_row(text, policy, direction.declined))
+        # read before the triage mode, which names the levels under the hold, and listed after it
+        holds = hold_rows(fetch_issues(args.repo, "--label", HOLD_LABEL), now, args.repo)
+        rows.append(triage_mode_row(text, policy, direction.declined, bool(holds)))
         rows += direction.rows
         home = product_home(text, policy)
         rows += gate_app_rows(table)
         read = config(text, policy, args.incident_label)
-        holds = hold_rows(fetch_issues(args.repo, "--label", HOLD_LABEL), now, args.repo)
         rows += holds
         land = None if table is None else held_land(read.land, bool(holds))
         closed = fetch_issues(args.repo, "--label", read.incident_label, state="closed")
