@@ -38,7 +38,7 @@ The release side's zones (`release`, `breaking-release`, `deploy`, `rollback`, `
    - **`act`:** go on. No question, no decided comment
    - **`notify`:** post the [decided comment](#a-decided-comment), add the `decided` label, and go on
    - **`ask`:** post the needs-decision question ([Asking](#asking)) with its [zone line](#the-zone-line), and leave the item
-   - **`never`:** prepare what helps (a pull request, an issue with the evidence), assign it to the maintainer, label it `human` (a person's item), say in one comment what the maintainer does by hand, and leave it. A reply never moves it: no answer in the session or on GitHub lets the agent take the step. `pr_gate.py` reads such a pull request as MAINTAINER_ONLY (exit 7), which `--maintainer-accepted` doesn't lift, and `shipmill gh pr merge` refuses it with exit 2
+   - **`never`:** prepare what helps (a pull request, an issue with the evidence), assign it to the maintainer, label it `role:maintainer` (a person's item, spec 036; the older `human` label reads the same but isn't written), say in one comment what the maintainer does by hand, and leave it. A reply never moves it: no answer in the session or on GitHub lets the agent take the step. `pr_gate.py` reads such a pull request as MAINTAINER_ONLY (exit 7), which `--maintainer-accepted` doesn't lift, and `shipmill gh pr merge` refuses it with exit 2
 
 A session a person started by hand still asks in the session for `ask`, with AskUserQuestion as usual; `never` holds there too, even when the person says yes.
 
@@ -94,6 +94,8 @@ A session is a **gate session** when its prompt carries one of the gate's paragr
 A session the user started by hand, whose prompt carries neither paragraph, asks with AskUserQuestion as usual and posts no marker or label.
 
 Every place github-issue-triage, github-issue-resolve, and github-pr-triage would ask the user (triage's design-gate questions and a PR's "decisions for you", resolve's product decisions and spec departures, pr-triage's denied action and a departure from a `D-n`) follows this protocol in a gate session, before anything else.
+
+**Who does a step is not a question.** A step only a person can do goes to a role ([triage-rubric.md](triage-rubric.md), A person's item): its issue is labelled `role:<name>` and assigned the role's users at once ([spec-gate.md](spec-gate.md), A step only a person can do). A role nobody fills, or one `[agents.roles]` doesn't define, falls back to the maintainer: the users `[agents.roles] maintainer` lists, or with none the host's `gh` login. An unassigned item reads ASSIGN_DUE, and with the `--role` flags never NO_ASSIGNEE, so no session asks who does it. A team is mentioned in the hand-off, never assigned. Only an assignment GitHub refuses comes here: a question naming the users it couldn't assign and GitHub's message, with assigning the maintainer recommended.
 
 ## Asking
 

@@ -111,8 +111,8 @@ roles to the union of theirs. After UNTRUSTED, UPSTREAM, NEEDS_DECISION, DECIDED
 and OFF_MILESTONE, it reads NO_ASSIGNEE (without --role) or ASSIGN_DUE (with it), else
 UNFILLED, SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue would, else, with every
 hold closed, one of:
-  NO_ASSIGNEE      without --role flags, a person's item with no assignee: ask the
-                   maintainer who does it. With them, never read
+  NO_ASSIGNEE      without --role flags, a person's item with no assignee: read again
+                   with the flags `shipmill roles --flags` prints. With them, never read
   ASSIGN_DUE       with --role flags, a person's item with no assignee whose roles
                    resolve to at least one user, read while it is still held: assign
                    them. Its note is "assign @a @b (role:infra)", plus "role:<name>

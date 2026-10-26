@@ -339,8 +339,9 @@ or the tags are wrong; fix those, not the version.
 3. Run the checklist: `uv run --no-project python <skill>/scripts/setup_state.py <owner/repo>`.
    It reports releases, the `[agents]` section, the plugin in `.claude/settings.json`, and
    the labels (`postponed`, `blocked`, `shipmill-hold`, the blocker label, and with an
-   `[agents]` section, in either mode, `needs-decision`, `human`, a person's item in a
-   chain (spec 017), `shipmill-upgrade-later`, a config upgrade's "not now",
+   `[agents]` section, in either mode, `needs-decision`, `role:maintainer` and
+   `role:<name>` for each role `[agents.roles]` defines, a role's item (spec 036), `human`,
+   the older label for a person's item in a chain (spec 017), `shipmill-upgrade-later`, a config upgrade's "not now",
    `upstream`, a report for another repo, spec 038, and `decided`, a notify decision the
    maintainer may veto, spec 030), and
    whether GitHub deletes a pull request's branch when it merges (`BRANCH_DELETE_ON` or
@@ -481,6 +482,43 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    after 15 minutes. Ask whether the user answers questions sooner or later than that; set
    `max_wait_minutes` (0..10080) to match, or 0 to never stop one. `app_id` is a
    placeholder until step 3 replaces it; never merge `123456` itself
+
+   **Roles (spec 036).** A step an agent can't do (a DNS record, a new repository, a
+   provider key, a sign-off) goes to a role, and the session files it labelled
+   `role:<name>` and assigned that role's users at once, without asking who does it. Ask
+   the user who receives such steps, and whether some go to someone else; write the answer
+   as `[agents.roles]` in the same PR:
+
+   ```toml
+   [agents.roles]
+   maintainer = ["octocat"]           # the default for every step an agent can't do
+   infra = ["octocat", "hubot"]       # DNS, secrets, new repositories
+   legal = ["@example-org/legal"]     # a team: mentioned, since a team can't be assigned
+   accounting = []                    # nobody yet: falls back to the maintainer
+   ```
+
+   - Each key is a role name, `[a-z0-9][a-z0-9-]{0,44}`, and each value an array of
+     GitHub logins and teams as `@<org>/<team-slug>`. The table is optional; with none,
+     the only role is `maintainer`
+   - With `maintainer` unset or `[]`, the maintainer is the host's `gh` login (`gh api
+     user`), the person a needs-decision question mentions, never the repo's owner. A role
+     set to `[]`, or a `role:<name>` label no role defines, falls back to the maintainer
+   - A team is mentioned in the hand-off, never assigned, so `maintainer` must name at
+     least one user when it is set
+   - Every reader of the config (`$CR doctor`, the gate's tick, `$CR roles`) exits 2
+     naming `[agents.roles]` and the key for a table that isn't one, a name outside the
+     pattern, a value that isn't an array of strings (an inline table such as
+     `{ agent = "..." }` too: agent-filled roles aren't supported yet), a filler that is
+     neither a login nor `@org/team`, a login ending `[bot]`, a filler listed twice in one
+     role, or a `maintainer` that lists only teams
+   - `$CR roles` prints each role resolved, `maintainer` first, with `(fallback)` on one
+     that resolved to the maintainer; `--json` prints them as one object, and `--flags`
+     as the `--role` flags `triage_state.py` takes. The gate, `shipmill status`, and
+     `watch_state.py` pass those flags on every state read. Show the user `$CR roles`
+     before you call the section done
+   - Labels: `setup_state.py --fix` creates `role:maintainer` and a `role:<name>` label
+     for each role the table defines; a role added later needs `--fix` again. Existing
+     `human` items keep their label and read as `role:maintainer`
 
    **The product's direction (D-34, spec 024).** A repo whose agents implement keeps its
    direction in `docs/product.md`, and the agents work toward it: triage names the goal an
@@ -635,8 +673,9 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
      UNTRUSTED (`watch_state.py --trusted-only`), start no session, and wait for an
      interactive one; github-ship-watch reports them
    - **The label:** `setup_state.py --fix` creates `needs-decision` whenever the config
-     has an `[agents]` section, interactive or headless (D-21), and `human` with it (a
-     person's item, spec 017), `upstream` (a report for another repo, spec 038), and
+     has an `[agents]` section, interactive or headless (D-21), and with it
+     `role:maintainer` and `role:<name>` for each role `[agents.roles]` defines (a role's
+     item, spec 036), `human` (the older label for a person's item, spec 017), `upstream` (a report for another repo, spec 038), and
      `decided` (a notify decision, spec 030); it
      reads `LABELS_MISSING` until then. Without `[agents]` none is wanted
    - **Notifications:** with `app_id`, the question is `<slug>[bot]`'s, so its mention

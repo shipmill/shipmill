@@ -69,7 +69,7 @@ def test_s017_22_the_triage_docs_document_links_a_person_s_item_and_parents() ->
     # docs/flow.md shows a person's item in a chain
     flow = doc("docs", "flow.md")
     chain = flow.split("## A chain across repos and people", 1)[1].split("\n## ", 1)[0]
-    assert "a person (`human`" in chain and "HANDOFF_DUE" in chain and "VERIFY_DUE" in chain
+    assert "a person (`role:" in chain and "`human`" in chain and "HANDOFF_DUE" in chain and "VERIFY_DUE" in chain
     rows = [line for line in chain.splitlines() if line.startswith("| ") and line[2].isdigit()]
     executors = ["a person" if "a person" in row else "an agent" if "an agent" in row else "?" for row in rows]
     assert executors == ["an agent", "an agent", "a person", "an agent"]  # between two agents' items
