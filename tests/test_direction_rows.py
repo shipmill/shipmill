@@ -352,7 +352,8 @@ def test_s034_7_a_closed_direction_issue_is_a_decline_with_no_row(ws: ModuleType
     direction = rows(ws, found=[issue(12, "closed", labels), issue(9, "closed")])
     assert direction.rows == [] and direction.declined == 12
     mode = ws.triage_mode_row('[agents]\nprompt = "triage"\n', Path(".github/shipmill.toml"), direction.declined)
-    assert mode.detail == 'prompt = "triage"; no direction: declined in #12'
+    levels = "triage act (default), fix act (default), land propose (default)"
+    assert mode.detail == f"{levels}; no direction: declined in #12"
     assert mode.state not in ws.ACTION
 
 

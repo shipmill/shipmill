@@ -16,6 +16,8 @@ from typing import Any
 import pytest
 
 from shipmill import status as shipmill_status
+from shipmill.autonomy import AutonomyPolicy, Hold
+from shipmill.config import Table
 from shipmill.gate import parse_findings
 from shipmill.plugin import unloaded_fix
 
@@ -1050,13 +1052,72 @@ retry_hours = 24
 """
 
 
-def test_the_triage_mode_is_the_agents_table_prompt_first(ws: ModuleType) -> None:
-    # #182: a status report says what the gate's sessions are told to do; #691: never the
-    # deprecated prs, which decides nothing ([autonomy] land does, S-040-9)
+def test_s040_4_the_triage_mode_names_the_agent_levels_not_the_prompt(ws: ModuleType) -> None:
+    # #182: a status report says what the gate's sessions do; #693: the levels with their
+    # source, as `shipmill autonomy` reads them, never the prompt's words or the deprecated prs
     row = ws.triage_mode_row(AGENTS_CONFIG, Path("shipmill.toml"))
     assert (row.state, row.subject) == ("TRIAGE_MODE", "[agents]")
-    prompt = '"/github-issue-triage {repo} triage the new issues; merge when green"'
-    assert row.detail == f"prompt = {prompt}; retry_hours = 24"
+    assert row.detail == "triage act (default), fix act (default), land act (prompt); retry_hours = 24"
+    held = ws.triage_mode_row(AGENTS_CONFIG + "app_id = 42\n", Path("shipmill.toml"), held=True)
+    levels = "triage propose (hold), fix propose (hold), land propose (hold)"
+    assert held.detail == f"{levels}; app_id = 42; retry_hours = 24"
+
+
+def test_693_an_agents_table_with_only_prs_names_the_levels(ws: ModuleType) -> None:
+    row = ws.triage_mode_row("[agents]\nprs = true\n", Path("shipmill.toml"))
+    assert row.detail == "triage act (default), fix act (default), land propose (default)"
+
+
+def shipmill_levels(text: str, held: bool) -> list[dict[str, str]]:
+    """The agent stages' rows of `shipmill autonomy --json` for the config, read as status.py reads it"""
+    raw = tomllib.loads(text)
+    policy = AutonomyPolicy.parse(Table(raw.get("autonomy", {}), "[autonomy]"))
+    agents = raw.get("agents")
+    if isinstance(agents, dict) and isinstance(agents.get("prompt"), str):
+        policy = policy.read_prompt(agents["prompt"])
+    hold = Hold(("#7 held",) if held else ())
+    return [level.record() for level in policy.levels(hold)[:3]]
+
+
+@pytest.mark.parametrize("held", [False, True])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[agents]\nprs = true\n",  # default
+        '[agents]\nprompt = "/t triage"\n[autonomy]\ntriage = "propose"\nfix = "observe"\nland = "act"\n',  # config
+        "[agents]\nprompt = '/t triage'\n[autonomy]\nfix = 'act'  # set\n",  # config and default
+        '[agents]\nprompt = "/t triage; merge when green"\n',  # prompt
+        '[agents]\nprompt = "/t Land what is green"\n[autonomy]\nupgrade = "act"\n',  # prompt
+        '[agents]\nprompt = "/t merge when green"\n[autonomy]\ntriage = "act"\n',  # a set stage ends the prompt's
+        '[autonomy]\nland = "act"\n',  # no [agents]
+    ],
+)
+def test_s040_4_the_triage_mode_levels_are_shipmills_on_3_11_and_3_10(ws: ModuleType, text: str, held: bool) -> None:
+    # proves: S-040-4
+    policy = Path(".github/shipmill.toml")
+    want = shipmill_levels(text, held)
+    for levels in (ws.agent_levels_toml(tomllib.loads(text), policy), ws.agent_levels_310(text, policy)):
+        assert [level.record(held) for level in levels] == want
+    if "[agents]" in text:
+        detail = ", ".join(f"{r['stage']} {r['effective']} ({r['source']})" for r in want)
+        assert ws.triage_mode_row(text, policy, held=held).detail.startswith(detail)
+
+
+@pytest.mark.parametrize("stage", ["triage", "fix"])
+@pytest.mark.parametrize("value", ['"always"', "'Act'", "true", "3"])
+def test_s040_2_a_triage_or_fix_of_another_value_is_refused(ws: ModuleType, stage: str, value: str) -> None:
+    text = f"{GATE_CONFIG}[autonomy]\n{stage} = {value}\n"
+    policy = Path(".github/shipmill.toml")
+    levels = rf"\[autonomy\] {stage} must be one of \['observe', 'propose', 'act'\], got "
+    with pytest.raises(SystemExit, match=levels) as refused:
+        ws.agent_levels_toml(tomllib.loads(text), policy)
+    assert refused.value.code == 2
+    with pytest.raises(SystemExit, match=levels if value.startswith(("'", '"')) else "can't read") as refused:
+        ws.agent_levels_310(text, policy)
+    assert refused.value.code == 2
+    with pytest.raises(SystemExit) as refused:
+        ws.config(text, policy)
+    assert refused.value.code == 2
 
 
 def test_the_310_fallback_reads_the_agents_table_as_tomllib_does(ws: ModuleType) -> None:
