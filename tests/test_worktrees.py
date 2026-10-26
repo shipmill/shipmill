@@ -562,22 +562,6 @@ def test_s002_20_merged_prs_are_read_only_for_worktrees_the_local_checks_leave(r
     assert repo.github.merged_reads == [("ahead",)]
 
 
-def test_s002_older_than_judges_only_the_linked_worktrees_created_over_that_long_ago(
-    repo: Checkout, capsys: pytest.CaptureFixture[str]
-) -> None:
-    for rel, branch, hours in (("tmp/wt-old", "old", 8 * 24), ("tmp/wt-week", "week", 6 * 24)):
-        tree = repo.add(rel, "-b", branch, hours=hours)
-        repo.commit(tree, {f"{branch}.py": "X = 1\n"}, branch)
-    argv = ["--repo", str(repo.root), "worktrees", "--json", "--older-than", "7"]
-    assert main(argv, repo.github, sessions=repo.sessions) == 0
-    rows = json.loads(capsys.readouterr().out)["worktrees"]
-    assert [(r["path"], r["reason"]) for r in rows] == [("tmp/wt-old", "1 commit(s) not landed")]
-    assert repo.github.merged_reads == [("old",)]
-    for bad in ("-1", "1.5", "x"):
-        with pytest.raises(SystemExit):
-            main([*argv[:-1], bad], repo.github, sessions=repo.sessions)
-
-
 def test_s002_11_a_failing_merged_pr_read_judges_nothing(repo: Checkout) -> None:
     feat = repo.add(".claude/worktrees/ahead", "-b", "feat/ahead")
     repo.commit(feat, {"x.py": "X = 1\n"}, "Ahead")
@@ -986,15 +970,7 @@ def test_s002_17_the_watch_reports_kept_shipmill_worktrees_over_seven_days(
     (dirty / "notes.txt").write_text("unsaved\n", encoding="utf-8")
     repo.add(".claude/worktrees/young", "--detach", hours=WEEK)
     repo.add(".claude/worktrees/done", "-b", "done", hours=WEEK + 30)
-    sent: list[list[str]] = []
-
-    def execute(cmd: list[str]) -> str:
-        sent.append(cmd)
-        return '{"worktrees": []}'
-
-    watch_state().stale_worktrees(current, None, "main", execute)
-    argv = sent[0][sent[0].index("--repo") :]
-    assert argv == ["--repo", str(current), "worktrees", "--json", "--older-than", "7"]
+    argv = ["--repo", str(current), "worktrees", "--json"]
     assert main(argv, repo.github, sessions=repo.sessions) == 0
     rows = watch_state().stale_rows(capsys.readouterr().out, repo.root, "main")
     assert sorted((r.state, r.subject, r.detail) for r in rows) == [

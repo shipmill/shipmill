@@ -1108,10 +1108,7 @@ def stale_worktrees(
     """The kept shipmill worktrees of the checkout's repository created over STALE ago; the
     PYPI_WAIT row in their place while PyPI doesn't serve the pinned shipmill (#597)"""
     try:
-        # only the worktrees old enough to be a row: GitHub is asked about each one judged
-        out = execute(
-            [*shipmill_cli(tool), "--repo", str(repo_dir), "worktrees", "--json", "--older-than", str(STALE.days)]
-        )
+        out = execute([*shipmill_cli(tool), "--repo", str(repo_dir), "worktrees", "--json"])
     except PypiWait as wait:
         return [pypi_wait_row(wait.version, "worktrees")]
     return stale_rows(out, project_folder(repo_dir), branch)

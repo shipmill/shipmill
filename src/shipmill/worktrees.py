@@ -369,12 +369,9 @@ def _hours(age: dt.timedelta) -> int:
     return max(0, int(age.total_seconds() // 3600))
 
 
-def judge(
-    git: Git, github: GitHub, sessions: Sessions, now: dt.datetime, older_than: dt.timedelta | None = None
-) -> list[Judged]:
+def judge(git: Git, github: GitHub, sessions: Sessions, now: dt.datetime) -> list[Judged]:
     """Every worktree of the repository whose checkout git names, with its verdict, in git's
-    order (the main checkout first); with older_than, only the linked worktrees created over
-    that long ago. Reads the live sessions, the open pull requests, and the merged ones from
+    order (the main checkout first). Reads the live sessions, the open pull requests, and the merged ones from
     the branches of the worktrees the local checks leave undecided before returning any
     verdict, so a failure of any judges nothing. Landing is measured against the branch
     releases land on: the config's `branch`, else origin/HEAD (#694)"""
@@ -403,8 +400,6 @@ def judge(
     for tree, path in zip(trees, resolved, strict=True):
         when = None if path == main else created.get(path)
         age = None if when is None else now - when
-        if older_than is not None and (path == main or (age is not None and age <= older_than)):
-            continue
         local.append((tree, path, when, age, _local_reason(ctx, tree, path, age)))
     undecided = [tree for tree, _, _, _, reason in local if reason is None]
     merged = tuple(github.merged_pull_requests(_ahead(git, undecided, default, onto, upstream)))
