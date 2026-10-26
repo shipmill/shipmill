@@ -49,11 +49,17 @@ def policy_branch(root: Path) -> str | None:
     path = root / CONFIG_PATH
     if not path.is_file():
         return None
-    value = read_unchecked(path).get("branch")
+    return branch_in(path.read_text(encoding="utf-8"), str(path))
+
+
+def branch_in(text: str, where: str) -> str | None:
+    """The top-level `branch` a config's text sets, None without the key; where names the
+    file, or the ref it was read at, in a refusal"""
+    value = _parse(text, where).get("branch")
     if value is None:
         return None
     if not isinstance(value, str) or not value:
-        raise ReleaseError(f"{path}: branch must be a non-empty string, got {value!r}")
+        raise ReleaseError(f"{where}: branch must be a non-empty string, got {value!r}")
     return value
 
 

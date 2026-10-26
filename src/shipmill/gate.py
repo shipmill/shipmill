@@ -32,7 +32,7 @@ from shipmill.app import AppCheck, Identity
 from shipmill.autonomy import AGENT_STAGES, Autonomy, AutonomyPolicy, Hold, Stage, StageKind
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import ClaudeAuth
-from shipmill.config import CONFIG_PATH
+from shipmill.config import CONFIG_PATH, branch_in
 from shipmill.errors import ReleaseError
 from shipmill.github import GitHub
 from shipmill.gitrepo import Git
@@ -1175,9 +1175,17 @@ def require_dedicated(git: Git, default: str, detach: bool = False) -> str | Non
 def refresh(git: Git, detach: bool = False) -> Detached | None:
     """Move a dedicated gate checkout to the head of the branch releases land on (the config's
     `branch`, else origin's default branch, #694), so the session reads the current [agents]
-    section, CLAUDE.md, and skills. With detach (a --refresh tick, not `launchd`), a clean
-    linked worktree a session left on a branch is detached the same way, and returned"""
-    default = git.landing_branch()
+    section, CLAUDE.md, and skills. The branch is read from the config at origin's default
+    branch, the trusted ref classify reads too, never from the checkout, which a session may
+    have left on a pull request's branch (D-16, D-48). With detach (a --refresh tick, not
+    `launchd`), a clean linked worktree a session left on a branch is detached the same way,
+    and returned"""
+    trusted = git.default_branch()
+    git.run("fetch", "-q", "origin", f"+refs/heads/{trusted}:refs/remotes/origin/{trusted}")
+    ref = f"refs/remotes/origin/{trusted}"
+    text = git.show(ref, CONFIG_PATH.as_posix())
+    named = None if text is None else branch_in(text, f"{CONFIG_PATH} at origin/{trusted}")
+    default = trusted if named is None else named
     branch = require_dedicated(git, default, detach)
     git.run("fetch", "-q", "origin", default)
     git.run("checkout", "-q", "--detach", "FETCH_HEAD")

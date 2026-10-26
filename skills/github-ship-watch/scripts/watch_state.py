@@ -10,7 +10,7 @@ Usage: watch_state.py <owner/repo> [--repo-dir PATH] [--releases N] [--grace MIN
 Release bot (a repo with .github/shipmill.toml). "The default branch" in this help is the branch
 releases land on: the config's top-level branch, else GitHub's default branch (#694); it is the
 one branch fetched, and every read at origin/<branch> reads it.
-  BOT_FAILED     the bot's latest finished run failed (cancelled runs are ignored:
+  BOT_FAILED      the bot's latest finished run failed (cancelled runs are ignored:
                   a newer push cancels the settle wait on purpose)
   BOT_STALLED     a shipmill bot in release mode has a release due now, no run of
                   its workflow is queued or running, and none started in --grace minutes
