@@ -102,7 +102,7 @@ Each of the four lines appears once, with its label exactly as above: github-pr-
 
 ## Phase 5: Verify against a baseline
 
-Run the suite, lint, and type checker. Scope pytest to the tests dir if stray folders (e.g. `tmp/`) break collection.
+While you work, run lint, the type checker, and the tests of the files you touched. Run the full suite once, before pushing, through the machine-wide queue: `uv run --no-project python <github-issue-triage>/scripts/suite_lock.py -- <full-suite command>`, with the project's parallel runner when it has one (pytest-xdist: `-n auto`). Parallel agents that each ran a full suite at once starved each other of CPU and hit the tool timeout. Scope pytest to the tests dir if stray folders (e.g. `tmp/`) break collection.
 
 For any failures, prove whether they predate the change:
 

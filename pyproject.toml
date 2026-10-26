@@ -51,7 +51,7 @@ build-backend = "hatchling.build"
 ".claude-plugin/plugin.json" = "shipmill/.claude-plugin/plugin.json" # the scripts read the plugin's version (spec 031)
 
 [dependency-groups]
-dev = ["mypy>=1.18", "pytest>=8.4", "ruff>=0.13"]
+dev = ["mypy>=1.18", "pytest>=8.4", "pytest-xdist>=3.8", "ruff>=0.13"]
 
 [tool.mypy]
 strict = true

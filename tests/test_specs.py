@@ -281,6 +281,17 @@ def test_coverage_finds_both_forms_in_each_language(tmp_path: Path) -> None:
     )
 
 
+def test_coverage_skips_the_root_tmp_folder_but_not_a_nested_one(tmp_path: Path) -> None:
+    root = repo(tmp_path, **{"007-dry-run.md": built("007")})
+    write(root, "tests/test_run.py", "def test_s007_1_exits_2_on_a_missing_config():", "    pass")
+    write(root, "tmp/wt-pr-1/tests/test_run.py", "def test_s007_2_in_a_stray_worktree():", "    pass")
+    write(root, "tests/tmp/test_nested.py", "def test_s007_2_writes_nothing():", "    pass")
+    out = specs(root, "coverage")
+    assert out.returncode == 0, out.stdout
+    assert "tmp/wt-pr-1" not in out.stdout
+    assert "    tests/tmp/test_nested.py:1 test_s007_2_writes_nothing\n" in out.stdout
+
+
 def test_coverage_reports_a_criterion_with_no_test(tmp_path: Path) -> None:
     root = repo(tmp_path, **{"007-dry-run.md": built("007")})
     write(root, "tests/test_run.py", "# proves: S-007-1", "def test_exits():", "    pass")
