@@ -7,6 +7,17 @@ bot.
 
 ## [Unreleased]
 
+## [0.81.0] - 2026-10-26
+
+### Fixed
+
+- `chains.py link --product` links a report in the product's home repo: a home-repo parent's link is written through the session's own `shipmill gh`, a listed repo's through `shipmill gh --product <its repo>`, and every read of a listed repo goes through `shipmill gh --product <that repo>`, never plain gh (S-038-29) (#596)
+- The gate's prune and `shipmill milestones` read the branch releases land on from the config at origin's default branch, as the gate's refresh does, never from a checkout a session left on a pull request's branch (#697)
+
+### Added
+
+- `shipmill doctor` checks a product across repos: in the home repo (`[product] repos`) it FAILs for a listed repo the App isn't installed on or that lacks a product permission, naming `shipmill app-install <repo>`, reports a malformed or repeated entry as a FAIL row and still runs its other checks, and WARNs when a listed repo's config, read with the product token, has no `[product] home` or names another home; in a component (`[product] home`) it reads only the home's `.github/shipmill.toml` through your gh and WARNs when its `[product] repos` doesn't list this repo or can't be read (#604)
+
 ## [0.80.1] - 2026-10-26
 
 ### Fixed
@@ -1860,7 +1871,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.80.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.81.0...HEAD
+[0.81.0]: https://github.com/shipmill/shipmill/compare/v0.80.1...v0.81.0
 [0.80.1]: https://github.com/shipmill/shipmill/compare/v0.80.0...v0.80.1
 [0.80.0]: https://github.com/shipmill/shipmill/compare/v0.79.0...v0.80.0
 [0.79.0]: https://github.com/shipmill/shipmill/compare/v0.78.0...v0.79.0
