@@ -126,21 +126,22 @@ The release side's stages keep their levels in `[autonomy]` ([release-lanes.md](
 | POSTPONED | Labelled `postponed` | Skip it |
 | REVISIT | Postponed before the newest stable release | Decide again |
 | TRIAGED | Triaged, with nothing pending: a request handed to product intake (`opportunity`) reads this too | Nothing; intake groups the handed-over requests |
-| NO_ASSIGNEE | A person's item (labelled `human`) nobody is assigned to | The session asks you who does it |
-| HANDOFF_DUE | A person's item whose holds all closed, not yet handed off | The session mentions its assignees with what to do |
+| ASSIGN_DUE | A role's item (labelled `role:<name>`, or the older `human`, which counts as `role:maintainer`) nobody is assigned to, even while it is held | The session assigns the role's users from `[agents.roles]`, or the maintainer's when nobody fills the role |
+| NO_ASSIGNEE | A role's item nobody is assigned to, read without the `--role` flags the gate passes | The session reads the state again with them; it never asks who does a step |
+| HANDOFF_DUE | A person's item whose holds all closed, not yet handed off | The session mentions its assignees and its role's teams with what to do |
 | WITH_PERSON | A person's item handed off, no done report yet | Nothing: it waits on the person |
 | VERIFY_DUE | A person's item whose assignee replied `done` | The session runs its `## Check` and closes it, or hands it back |
 | VERIFY_CLOSED | A person's item closed by hand, its `## Check` not yet run | The session runs the check, and reopens it if it fails |
 
 ## A chain across repos and people
 
-Work that spans repos and people is a chain of issues, each waiting on the one before it through a `Depends on owner/repo#N` line or GitHub's own relations (blocked by, sub-issues); `chains.py link` writes both. Each repo's gate advances its own part, and a person's part is an issue labelled `human`. Building a page that a server change unhides, with a link to it from another site:
+Work that spans repos and people is a chain of issues, each waiting on the one before it through a `Depends on owner/repo#N` line or GitHub's own relations (blocked by, sub-issues); `chains.py link` writes both. Each repo's gate advances its own part, and a person's part is a role's item: an issue labelled `role:<name>` (such as `role:infra`), assigned at once to the people `[agents.roles]` lists for that role, or to the maintainer when nobody fills it. Issues labelled `human`, the label before roles, still read as `role:maintainer`. Building a page that a server change unhides, with a link to it from another site:
 
 | # | Item | Repo | Done by | Waits on |
 |---|---|---|---|---|
 | 1 | Build the page | `acme/app` | an agent | nothing |
 | 2 | Remove the rule that hides it | `acme/srv` | an agent | 1 |
-| 3 | Reload the web server | `acme/app` | a person (`human`, assigned) | 2 |
+| 3 | Reload the web server | `acme/app` | a person (`role:infra`, assigned) | 2 |
 | 4 | Link to the new page | `acme/site` | an agent | 3 |
 
 1. Item 1's PR merges and closes it: item 2 reads UNBLOCKED in `acme/srv`, and that repo's gate takes it up

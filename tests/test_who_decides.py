@@ -108,7 +108,7 @@ def test_s030_21_the_four_paths() -> None:
     assert "**`notify`:** post the [decided comment](#a-decided-comment), add the `decided` label, and go on" in who
     assert "**`ask`:** post the needs-decision question ([Asking](#asking)) with its [zone line](#the-zone-line)" in who
     never = who.split("**`never`:**", 1)[1]
-    assert "assign it to the maintainer, label it `human`" in never
+    assert "assign it to the maintainer, label it `role:maintainer`" in never  # spec 036: `human` is read, not written
     assert "say in one comment what the maintainer does by hand, and leave it" in never
     assert "no answer in the session or on GitHub lets the agent take the step" in never
     assert "MAINTAINER_ONLY (exit 7), which `--maintainer-accepted` doesn't lift" in never

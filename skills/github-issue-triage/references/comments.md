@@ -201,13 +201,15 @@ Put the same line on the held PR.
 
 ## A person's item
 
-An issue labelled `human` gets no triage verdict: its assignees do it ([triage-rubric.md](triage-rubric.md), A person's item). Each comment below starts with its marker as the first line where it has one, since `triage_state.py` reads the marker only there and only from the `--bot-login` or a trusted author.
+An issue labelled `role:<name>` (or `human`, which counts as `role:maintainer`) gets no triage verdict: its assignees do it ([triage-rubric.md](triage-rubric.md), A person's item). Each comment below starts with its marker as the first line where it has one, since `triage_state.py` reads the marker only there and only from the `--bot-login` or a trusted author.
 
-**HANDOFF_DUE**, the hand-off: a mention of every assignee, which holds closed, the issue's steps quoted (never rewritten), its `## Check` when it has one, and how to report. Post it once per unblock; nothing mentions the person again while the item reads WITH_PERSON.
+**ASSIGN_DUE** gets no comment: assigning the users its note names is the whole step, and GitHub's assignment is the notification. The hand-off comes once the item's holds close.
+
+**HANDOFF_DUE**, the hand-off: a mention of every assignee and of every team its roles resolve to (the note's `for @a @example-org/legal`, or the `assignees` and `teams` lists of its `--json` line), which holds closed, the issue's steps quoted (never rewritten), its `## Check` when it has one, and how to report. A team can't be assigned, so the mention is how its members hear of the step; a team-only role's item mentions the team alone. Post it once per unblock; nothing mentions the person or the team again while the item reads WITH_PERSON. A done report counts from an assignee or a trusted author (D-16): a team member who is a member of the repo's organization counts, an outside one doesn't.
 
 ```markdown
 <!-- shipmill:handoff -->
-@{assignee} @{assignee}, it's your turn: {owner/repo#N} closed{, and owner/repo#M}.
+@{assignee} @{assignee} @{org/team}, it's your turn: {owner/repo#N} closed{, and owner/repo#M}.
 
 What to do, from this issue:
 
@@ -251,7 +253,9 @@ Checked after @{login} closed this: `{the check}` returned {what came back}.
 Reply `done` here when it's fixed, or close the issue.
 ```
 
-**NO_ASSIGNEE**, and a check the session can't run: a question through the [needs-decision protocol](needs-decision.md), in its format, with its marker and the `needs-decision` label. For NO_ASSIGNEE, ask who does the item, and assign whoever the answer names. For a check, say what the report claims and why the check can't run here, and give two options, the recommended one first, as the protocol asks: close it on the report when other evidence backs the report (a log line, a page that changed), it isn't done when nothing but the report does (then it comes first, with the `(recommended)` mark and why):
+**NO_ASSIGNEE** gets no comment and no question: it means the state was read without the `--role` flags, so read it again with them ([triage-rubric.md](triage-rubric.md), A person's item). The roles say who does a step, so a session never asks. Only an ASSIGN_DUE assignment GitHub refuses goes to the maintainer, through the [needs-decision protocol](needs-decision.md): name the users it couldn't assign and GitHub's message, and recommend assigning the maintainer.
+
+A check the session can't run: a question through the [needs-decision protocol](needs-decision.md), in its format, with its marker and the `needs-decision` label. Say what the report claims and why the check can't run here, and give two options, the recommended one first, as the protocol asks: close it on the report when other evidence backs the report (a log line, a page that changed), it isn't done when nothing but the report does (then it comes first, with the `(recommended)` mark and why):
 
 ```markdown
 <!-- shipmill:needs-decision -->

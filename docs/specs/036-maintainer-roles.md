@@ -1,6 +1,6 @@
 # S-036: Steps an agent can't do go to the maintainer; roles for the rest
 
-status: approved
+status: built
 serves: G-1, G-4
 
 ## Problem
@@ -215,3 +215,20 @@ item a role's item.
 - shipmill/shipmill#643: S-036-16
 
 ## Verification
+
+- S-036-1: ran `shipmill --repo <tmp> roles --json` on the spec's example table: it printed `maintainer`, `infra`, `legal`, and `accounting`, each with `users`, `teams`, and `fallback` (`legal` with `teams: ["@example-org/legal"]` and no users); `roles.resolve` always puts `maintainer` first, and test_s036_1_maintainer_is_present_when_the_table_doesnt_name_it passes, holds
+- S-036-2: ran `shipmill roles` on a table with `infra = { agent = "x" }`: exit 2, `[agents.roles] infra: agent-filled roles aren't supported yet`; `agents.py`'s `Role.parse` and `RolesConfig.parse` raise `RolesError` naming `[agents.roles]` and the key for each listed case, and test_s036_2_doctor_and_roles_exit_2_naming_agents_roles_and_the_key runs `doctor` and `roles` over every case, holds
+- S-036-3: the same run printed `accounting = []` as `"users": ["octocat"]`, `"fallback": true`, and `roles.resolve` gives an empty role the maintainer's users and teams, holds
+- S-036-4: `roles.resolve` reads the login only when `maintainer` lists nobody and turns an unreadable one into a `ReleaseError` (exit 2) naming `[agents.roles] maintainer`; test_s036_4_* pass, holds
+- S-036-5: `gate.py`'s `StateRead.flags` puts `roles.arguments` (one `--role` per role, maintainer first) before the other flags, `watch_state.py` adds each `--role` to its `triage_state.py` command, `status.read_issues` passes `arguments(roles)`, and `role_line` adds "Pass the same role flags to triage_state.py and watch_state.py when you read the state again" to both prompts; test_s036_5_* pass, holds
+- S-036-6: `triage_state.py`'s `parse_roles` raises, and the script exits 2 naming `--role`, for a malformed name or filler, an empty list, a repeated name, or no `maintainer`; test_s036_6_* pass, holds
+- S-036-7: `item_roles` makes `human` and `role:<name>` labels (any case) a person's item, and `classify` gates PR states, the triage comment, and holds on it alone, so the spec 017 states follow; `wip_room` skips it; test_s036_7_* pass, holds
+- S-036-8: `classify` returns ASSIGN_DUE before reading holds when the roles resolve to a user and the item has no assignee, with `assign_note`'s `assign @a (role:<name>)`, the `--json` row gets `assign`, and ASSIGN_DUE is in `ACTION`, so the exit is 1; test_s036_8_* pass, holds
+- S-036-9: `human` resolves as `role:maintainer`, and an item with assignees skips ASSIGN_DUE and reads `person_state` as before; test_s036_9_* pass, holds
+- S-036-10: `resolve` gives a role no flag names the maintainer's fillers, records it as undefined (`role:<name> undefined` in the note), and unites several roles' users and teams; test_s036_10_* pass, holds
+- S-036-11: a team-only role resolves to no users, so ASSIGN_DUE is skipped and `person_state` names the teams (`for @example-org/legal`), and the `--json` row of HANDOFF_DUE and WITH_PERSON carries `assignees` (empty) and `teams`; test_s036_11_* pass, holds
+- S-036-12: `classify` reads NO_ASSIGNEE only when `roles is None`, so with any `--role` flags no item reads it (one whose roles resolve to no user goes on to its holds and HANDOFF_DUE), and the config refuses a teams-only maintainer, so the gate's flags always give it a user; test_s036_12_* pass, holds
+- S-036-13: `watch_state.py`'s `TRIAGE_ACTION` and `status.py`'s triage states hold ASSIGN_DUE, and both read a WITH_PERSON line with empty `assignees` and a `teams` list, refusing one with neither; test_s036_13_* pass, holds
+- S-036-14: `chains.py show`'s executor reads `person: @login,...` from the assignees of a `human` or `role:<name>` item, else its `role:<name>` labels sorted; test_s036_14_show_lists_a_role_item_as_a_person_s_item passes, holds
+- S-036-15: `setup_state.py`'s `wanted_labels` adds `role:maintainer` and each `[agents.roles]` name's `role:<name>` wherever it adds `needs-decision`, and keeps `human`; test_s036_15_* pass, on 3.10's parser too, holds
+- S-036-16: read the five github-issue-triage files and shipmill-setup's SKILL.md after #643: the rubric's A person's item has the role labels, the maintainer fallback, ASSIGN_DUE's row and action, NO_ASSIGNEE as "read without the flags", and the team mention; comments.md's hand-off mentions teams; spec-gate.md files a step with `role:<name>` assigned at once; needs-decision.md says who does a step is not a question; setup documents `[agents.roles]` and its labels; test_s036_16_* pass, holds
