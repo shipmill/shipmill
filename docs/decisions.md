@@ -440,7 +440,7 @@ entry that supersedes it, never by editing an old one.
 - Applies to: skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md, skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/SKILL.md, skills/github-ship-watch/scripts/watch_state.py, draft pull requests
 - Enforced by: tests/test_pr_gate.py (pr_gate.py's exit 8); review for the skills' text
 
-## D-51: A component may read its home's config to check that the home lists it
+## D-53: A component may read its home's config to check that the home lists it
 
 - Decided: 2026-10-25, in shipmill/shipmill#580
 - Rule: As D-46, plus a component repo's session, and its doctor, may read its home repo's .github/shipmill.toml to check the back-link, that the home's [product] repos lists this repo, and nothing else of that file or repo beyond what D-46 and D-47 already allow; it still writes nothing in the home repo. This refines D-46, and the reads of the home repo D-47 allows a component

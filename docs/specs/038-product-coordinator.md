@@ -249,7 +249,7 @@ it reports `needs-decision` missing, and shipmill-setup creates it with the othe
 
 A repo that names a home which doesn't list it can't be found from the home: the product
 token covers only the listed repos (S-038-6). So in a component, a checkout whose config has
-`[product] home`, `doctor` checks the back-link itself (D-51):
+`[product] home`, `doctor` checks the back-link itself (D-53):
 
 - It reads the home's `.github/shipmill.toml` with the gh it reads GitHub with, as it reads
   a downstream's workflow, never with the App's token, so S-038-10 still holds; it reads
@@ -315,7 +315,7 @@ token covers only the listed repos (S-038-6). So in a component, a checkout whos
 - D-50
 - D-47
 - D-46
-- D-51
+- D-53
 
 ## Issues
 
