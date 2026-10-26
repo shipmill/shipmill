@@ -22,6 +22,10 @@ OPEN_LIMIT = 100  # open issues read per label: proposals are one per lane and p
 PULL_LIMIT = 1000  # open pull requests read at once; gh's own default is 30
 MERGED_PER_BRANCH = 20  # merged pull requests read per head branch name, the newest
 HISTORY_LIMIT = 100  # a merged pull request's commits, and its force-pushes, read: the last ones
+# head branch names read per GraphQL query by merged_pull_requests: each costs GitHub up to
+# 20 + 20 * 2 * 100 = 4,020 nodes of the 500,000 a query may ask for, so 126 local branches
+# in one query were refused
+BRANCHES_PER_QUERY = 50
 MILESTONE_LIMIT = 1000  # a milestone's issues read at once; one with more is refused
 OPEN_MILESTONE_LIMIT = 100  # open milestones read at once, one page; a repository with more is refused
 COMMENTS_READ = 30  # an issue's newest comments read for a close-confirmed marker (D-29)
@@ -751,22 +755,26 @@ class GhCli:
 
     def merged_pull_requests(self, branches: Sequence[str]) -> list[MergedPull]:
         names = sorted(set(branches))
-        if not names:
-            return []
-        params = "".join(f", $b{i}: String!" for i in range(len(names)))
-        aliases = " ".join(
-            f"b{i}: pullRequests(headRefName: $b{i}, states: MERGED, last: {MERGED_PER_BRANCH}) {{ ...merged }}"
-            for i in range(len(names))
-        )
-        query = (
-            f"query($owner: String!, $name: String!{params}) "
-            f"{{ repository(owner: $owner, name: $name) {{ {aliases} }} }} {_MERGED_FRAGMENT}"
-        )
-        variables = [a for i, n in enumerate(names) for a in ("-f", f"b{i}={n}")]
-        found = json.loads(
-            self._gh("api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", f"query={query}", *variables)
-        )
-        return parse_merged_pulls(found, len(names))
+        pulls: dict[int, MergedPull] = {}
+        for start in range(0, len(names), BRANCHES_PER_QUERY):
+            chunk = names[start : start + BRANCHES_PER_QUERY]
+            params = "".join(f", $b{i}: String!" for i in range(len(chunk)))
+            aliases = " ".join(
+                f"b{i}: pullRequests(headRefName: $b{i}, states: MERGED, last: {MERGED_PER_BRANCH}) {{ ...merged }}"
+                for i in range(len(chunk))
+            )
+            query = (
+                f"query($owner: String!, $name: String!{params}) "
+                f"{{ repository(owner: $owner, name: $name) {{ {aliases} }} }} {_MERGED_FRAGMENT}"
+            )
+            variables = [a for i, n in enumerate(chunk) for a in ("-f", f"b{i}={n}")]
+            found = json.loads(
+                self._gh(
+                    "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", f"query={query}", *variables,
+                )
+            )  # fmt: skip
+            pulls.update((pull.number, pull) for pull in parse_merged_pulls(found, len(chunk)))
+        return [pulls[n] for n in sorted(pulls)]
 
 
 def parse_merged_pulls(found: Any, aliases: int) -> list[MergedPull]:
