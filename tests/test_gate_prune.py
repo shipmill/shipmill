@@ -39,7 +39,8 @@ KEYS = {
     "plugin_notice",  # spec 031's once-per-release notification
     "detached",
     "hooks",
-    "auth",  # #500's Claude Code login preflight
+    "auth",  # spec 035's kind: token-file or login
+    "preflight",  # #500's Claude Code login preflight
     "dead",  # #500's dead session
 }
 

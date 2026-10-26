@@ -160,7 +160,9 @@ from shipmill.app_gh import (
 from shipmill.app_install import WAIT_SECONDS, guide
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold
 from shipmill.classify import DEFAULT_REF, Base, Pulls, RepoPath, classify_paths, classify_pull, policy_at
-from shipmill.claude_auth import ClaudeAuth, claude_auth, run_auth
+from shipmill.claude_auth import ClaudeAuth, preflight_auth
+from shipmill.claude_token import FLAG as TOKEN_FLAG
+from shipmill.claude_token import Credential, Kind, Token, TokenSource, inspect, read_token
 from shipmill.config import CONFIG_PATH, Table, config_path
 from shipmill.config import read as read_config
 from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER, doctor, product_on_host, read_plugin_rows
@@ -180,7 +182,9 @@ from shipmill.downstream import (
 )
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
+    Action,
     ClaudeCli,
+    Decision,
     StateRead,
     StateRunner,
     check_checkout,
@@ -202,7 +206,7 @@ from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
 from shipmill.land import ActionsRun, Prepared, Stop, Waiting, cleanup, land, prepare, work_branch
-from shipmill.launchd import DEFAULT_EVERY, DEFAULT_TOOL, build, gate_cli, install, read_job, remove
+from shipmill.launchd import DEFAULT_EVERY, DEFAULT_TOOL, build, gate_cli, install, job_arguments, read_job, remove
 from shipmill.lineedit import LineText
 from shipmill.notify import Desktop
 from shipmill.operate import Http, Unreachable, UrllibHttp, approve, approve_rollback, operate, summary
@@ -520,6 +524,14 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="the private key of the App in [agents] app_id (default: ~/.config/shipmill/app-<app_id>.pem)",
     )
+    p.add_argument(
+        TOKEN_FLAG,
+        type=Path,
+        help=(
+            "the file holding the long-lived token `claude setup-token` printed, mode 600, for the sessions"
+            " (default: ~/.config/shipmill/claude-token; without it, the interactive login)"
+        ),
+    )
 
     p = sub.add_parser(
         "worktrees", help="list every worktree of the repository as REMOVABLE once its work landed, or KEPT and why"
@@ -707,6 +719,11 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="pass the private key of the App in [agents] app_id to the job's gate (made absolute)",
     )
+    p.add_argument(
+        TOKEN_FLAG,
+        type=Path,
+        help="pass the Claude token file's path (never the token) to the job's gate (made absolute)",
+    )
     p.add_argument("--print", action="store_true", help="print the job's plist; install nothing")
     p.add_argument("--remove", action="store_true", help="unload and delete the repo's job")
     return parser
@@ -837,6 +854,8 @@ def main(
         has_gh = shutil.which("gh") is not None
         key: Path | None = None if args.app_key is None else args.app_key.expanduser()
         hub_api, hub_signer = api or UrllibApi(), signer or Openssl()
+        job = None if slug is None or sys.platform != "darwin" else read_job(slug, user_home)
+        source = TokenSource.of_job(None if job is None else job_arguments(job), user_home)
         checks = doctor(
             root,
             github or (GhCli(root) if has_gh else None),
@@ -845,6 +864,8 @@ def main(
             slug,
             hooks=hooks,
             auth=_claude_auth(env),
+            credential=lambda: inspect(source),
+            launchd_job=job is not None,
             downstream=downstream_reader or (GhReader(root) if has_gh else None),
             app=app_on_host(key, user_home, hub_signer, hub_api, lambda: dt.datetime.now(dt.UTC)),
             gate_cli=None if slug is None else (lambda: _gate_cli(root, slug, user_home)),
@@ -1018,10 +1039,10 @@ def _hook_test(root: Path, environ: Mapping[str, str], home: Path) -> Callable[[
     return lambda: self_test(root, run_command, run_hook, which, home, environ)
 
 
-def _claude_auth(environ: Mapping[str, str]) -> Callable[[], ClaudeAuth]:
-    """#500's preflight, with claude looked up on environ's PATH"""
+def _claude_auth(environ: Mapping[str, str]) -> Callable[[Token | None], ClaudeAuth]:
+    """#500's preflight, with claude looked up on environ's PATH; with a token, spec 035's"""
     program = shutil.which("claude", path=environ.get("PATH", ""))
-    return lambda: claude_auth(run_auth, program)
+    return preflight_auth(environ, program)
 
 
 PYPI_TIMEOUT = 15.0  # seconds the gate waits for PyPI's answer (S-031-24)
@@ -1079,12 +1100,25 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         hooks=_hook_test(root, os.environ, Path.home()),
         auth=_claude_auth(os.environ),
         roles=roles.resolve,
+        credential=lambda: _credential(args.claude_token, Path.home()),
     )
     if args.json:
         print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))
-        return 0
-    print("\n".join(tick_lines(decision, launched, waiting, pruned, args.dry_run)))
-    return 0
+    else:
+        print("\n".join(tick_lines(decision, launched, waiting, pruned, args.dry_run)))
+    return _gate_exit(decision)
+
+
+def _credential(given: Path | None, home: Path) -> Credential:
+    """Spec 035: the token file --claude-token names, else the default one"""
+    return inspect(TokenSource.of(given, home))
+
+
+def _gate_exit(decision: Decision) -> int:
+    """Spec 035, Q-1: a tick whose token file, or the token in it, fails exits 2 after printing
+    CLAUDE_AUTH; every other tick, #500's login preflight's CLAUDE_AUTH included, exits 0"""
+    failed = decision.action is Action.CLAUDE_AUTH and decision.credential is Kind.TOKEN_FILE
+    return 2 if failed else 0
 
 
 def _product_repos(root: Path) -> tuple[str, ...]:
@@ -1959,7 +1993,9 @@ def _launchd(root: Path, args: argparse.Namespace) -> int:
     git = Git(root)
     check_checkout(git, args.slug)
     key: Path | None = None if args.app_key is None else args.app_key.expanduser().resolve()
-    job = build(args.slug, root, args.every, args.tool, args.claude_arg, home, os.environ.get("PATH", ""), app_key=key)
+    token: Path | None = None if args.claude_token is None else TokenSource.of(args.claude_token, home).path
+    path = os.environ.get("PATH", "")
+    job = build(args.slug, root, args.every, args.tool, args.claude_arg, home, path, app_key=key, claude_token=token)
     if args.print:
         sys.stdout.write(job.document.decode())
         return 0
@@ -1969,6 +2005,8 @@ def _launchd(root: Path, args: argparse.Namespace) -> int:
         if agents.app_id is None:
             raise ReleaseError(f"--app-key names an App's key, but [agents] in {CONFIG_PATH} sets no app_id")
         check_key(key)
+    if token is not None:  # S-035-9: a token file the gate would refuse fails every tick
+        read_token(TokenSource(token, named=True))
     install(job)
     print(f"installed {job.plist}: every {args.every} min, log {job.log}")
     print(f"prompt: {agents.prompt}")

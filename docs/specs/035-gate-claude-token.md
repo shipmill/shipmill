@@ -1,6 +1,6 @@
 # S-035: Gate sessions authenticate with a long-lived Claude token from a file
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -169,3 +169,22 @@ Both name the auth kind and never the token or any part of it:
 - shipmill/shipmill#699: S-035-1, S-035-2, S-035-3, S-035-4, S-035-5, S-035-6, S-035-7, S-035-8, S-035-9, S-035-10, S-035-11, S-035-12, S-035-13, S-035-14, S-035-15, S-035-16, S-035-17, S-035-18
 
 ## Verification
+
+- S-035-1: `claude_token.read_token` returns None for a missing default file, `session_env` then passes the gate's env unchanged to `claude -p` (through `headless_env`, as before) and `claude --bg` runs through the gate's own runner; `tick_record` writes `"auth": "login"`; test_s035_1_without_a_token_file_sessions_get_the_gates_env_unchanged_and_auth_reads_login passes, holds
+- S-035-2: `Token.env` sets `CLAUDE_CODE_OAUTH_TOKEN` to the file's text with one trailing newline stripped and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, and `ClaudeCli.start` spawns `claude -p` with it; test_s035_2_a_headless_session_gets_the_token_without_its_newline_and_the_scrub passes, holds
+- S-035-3: `ClaudeCli.launch` with a token runs `claude --bg` through `run_command`'s new env argument with the same env; test_s035_3_an_interactive_launch_runs_claude_bg_with_the_token_and_the_scrub passes, holds
+- S-035-4: the token is passed to `launch` and `start` as a `Token`, used only for the process env, never in the command list or `--settings` JSON, and `Token`'s repr hides its value; test_s035_4_no_launch_argument_holds_any_8_characters_of_the_token scans both commands for every 8-character substring, holds
+- S-035-5: `read_token` stats the file and refuses any `0o077` bit with `chmod 600 <path>` before `fs.read` is called; `gate` reads the credential first, before the waiting step and the state read, so the tick stops and starts nothing, and `cli._gate_exit` returns 2; test_s035_5_a_file_with_a_group_or_other_bit_exits_2_unopened_starting_and_stopping_none uses a file system whose read fails the test, holds
+- S-035-6: `checked` refuses an empty or whitespace-only file naming the path; test_s035_6_an_empty_or_blank_file_exits_2_naming_the_path passes with a blocked session the waiting step would otherwise stop, holds
+- S-035-7: `checked` names the path and the rule (more than one non-empty line, whitespace in the token, a non-ASCII or control byte, no `sk-ant-oat` prefix) and never the bytes; test_s035_7_a_malformed_token_exits_2_naming_the_rule_and_none_of_its_bytes scans the tick's text and record for every 8-character substring of the file, holds
+- S-035-8: `read_token` refuses a path that isn't a regular file, and one whose owner isn't the gate's user, naming the path and the owner; test_s035_8_a_folder_or_a_file_of_another_user_exits_2_naming_the_path passes, holds
+- S-035-9: `shipmill gate --claude-token <path>` makes a named `TokenSource`, whose missing file is refused with `create <path>, or drop --claude-token`, never the login; test_s035_9_claude_token_reads_that_file_and_a_missing_one_never_falls_back passes, holds
+- S-035-10: `launchd.build(claude_token=...)` adds `--claude-token <resolved path>` to `ProgramArguments`, the plist has no token and no `CLAUDE_CODE_OAUTH_TOKEN`, `_launchd` validates the file before it installs, and `cli_fix` keeps the flag; test_s035_10_launchd_writes_the_flag_and_path_never_the_token passes, holds
+- S-035-11: `claude agents` and `claude stop` run through `ClaudeCli`'s two-argument runner, the plugin reads and the hooks self-test through their own, all in the gate's env, which the gate never changes; test_s035_11_claude_agents_stop_plugin_and_the_hooks_self_test_run_without_the_token passes, holds
+- S-035-12: `claude_auth.token_auth` runs `claude auth status --json` in the session's env and `parse_token_auth` refuses `loggedIn` false and an `authMethod` other than `oauth_token` with the fix naming the path and `claude setup-token`; the tick exits 2; test_s035_12_the_preflight_runs_with_the_token_and_refuses_another_method passes, holds. The `oauth_token` value is the one Claude Code's CLI reference lists for the env token; not checked against a live `claude`
+- S-035-13: `Dead.fix` with a token is `rejected_fix(<path>)`, and status and `watch_state.py` pass that fix on from the gate's line; test_s035_13_a_dead_session_with_an_auth_failure_names_the_token_fix passes, holds
+- S-035-14: test_s035_14_a_tick_with_a_sentinel_token_writes_none_of_it_anywhere scans the tick's text, `--json`, every file under the state directory (`gate.json` and `needs-decision.json` among them), the notifications, and the started command for every 8-character substring of a sentinel token, and a refused tick's text and record too, holds
+- S-035-15: `status.auth_lines` prints `claude auth` as `token file ~/.config/shipmill/claude-token`, `login`, or `token file <path>: <refusal>` with its fix on the next line, from the launchd job's `--claude-token` or the default path; test_s035_15_status_names_the_kind_or_the_refusal_never_the_token passes, holds
+- S-035-16: `doctor.token_check` is PASS with the kind, FAIL with the refusal and its fix (and the preflight is skipped), WARN for `login` with a launchd job, and WARN for a file written more than 330 days ago; test_s035_16_doctor_reports_the_kind_the_refusal_the_login_and_an_old_token and test_s035_16_doctor_runs_the_token_check_with_agents_and_skips_the_preflight_on_a_refusal pass, holds
+- S-035-17: `docs/install.md` (Give the sessions a Claude token), `docs/design/agent-modes.md` (The session's Claude credential), and `skills/shipmill-setup/SKILL.md` step 7 name each item; test_s035_17_the_docs_and_the_setup_skill_name_the_token_steps passes, holds
+- S-035-18: `Token.env` drops `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` for the headless start, the interactive launch, and the preflight, and a gate without a token passes them through; test_s035_18_a_token_file_drops_the_api_key_and_auth_token_from_sessions_and_the_preflight passes, holds

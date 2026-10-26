@@ -470,6 +470,8 @@ GATE_CHECKOUT = Path("tmp/shipmill-gate")  # where shipmill-setup puts the gate'
 GATE_DECISION = re.compile(r"^(?:[A-Z][A-Z_]*|error): ")
 SESSION_DEAD = "SESSION_DEAD: "  # the gate's last session ended dead and it starts another (#500)
 AUTH_FIX = "claude auth login"  # shipmill's claude_auth.FIX
+# shipmill's claude_token.rejected_fix: a dead session's fix when the gate uses a token file (spec 035)
+TOKEN_FIX = re.compile(r"the token in (?P<path>.+) was not accepted; run claude setup-token and save it to (?P=path)")
 VERSION_TAG = re.compile(r"^v\d+\.\d+")  # skips moving major tags such as v0
 ACTION = {
     "BOT_FAILED",
@@ -3485,7 +3487,8 @@ def agent_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
 def dead_rows(label: str, log: str | None, log_path: str | None) -> list[Row]:
     """#500: GATE_SESSIONS_DEAD when the gate log's last decision is SESSION_DEAD, the gate's
     sessions ending right after they start (a run of them in a row when it says so). The fix is
-    the one the gate wrote last on the line when it is `claude auth login`, a `tail` of the
+    the one the gate wrote last on the line when it is `claude auth login`, a token file's
+    `claude setup-token` fix (spec 035), a `tail` of the
     session's log, or an interactive session's `claude logs <id>`, else a tail of the gate's
     own log"""
     decisions = [line for line in (log or "").splitlines() if GATE_DECISION.match(line)]
@@ -3494,7 +3497,11 @@ def dead_rows(label: str, log: str | None, log_path: str | None) -> list[Row]:
     line = decisions[-1]
     named = line.rpartition("; fix: ")[2]  # the gate writes its fix last, after the session log's line
     # claude logs <id>: an interactive session's, which leaves no log of the gate's
-    if named == AUTH_FIX or re.fullmatch(r"tail -n 20 \S+\.log|claude logs [\w-]+", named):
+    if (
+        named == AUTH_FIX
+        or TOKEN_FIX.fullmatch(named)
+        or re.fullmatch(r"tail -n 20 \S+\.log|claude logs [\w-]+", named)
+    ):
         fix = named
     elif log_path is not None:
         fix = f"tail -n 50 {shlex.quote(log_path)}"
