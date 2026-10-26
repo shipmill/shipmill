@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
-from shipmill.agents import AgentsConfig, Mode
+from shipmill.agents import AgentsConfig, Mode, RolesConfig
 from shipmill.app import AppCheck, Identity
 from shipmill.autonomy import Hold
 from shipmill.claude_auth import FIX as AUTH_FIX
@@ -49,6 +49,7 @@ from shipmill.plugin import (
     save_cli,
     session_project,
 )
+from shipmill.roles import LoginReader, ResolvedRole, arguments
 from shipmill.worktrees import Judged, Sessions, Verdict, judge, prune
 
 RECORD = "gate.json"
@@ -315,14 +316,30 @@ def bot_line(login: str) -> str:
     )
 
 
-def prompt(template: str, repo: str, work: Sequence[Finding], now: dt.datetime, bot: str | None = None) -> str:
+def role_line(roles: Sequence[ResolvedRole]) -> str:
+    """The line a prompt carries with the resolved roles (S-036-5): the state the session reads
+    again must read a person's item as the gate's read did"""
+    flags = " ".join(r.flag() for r in roles)
+    return f"Pass the same role flags to triage_state.py and watch_state.py when you read the state again: {flags}"
+
+
+def prompt(
+    template: str,
+    repo: str,
+    work: Sequence[Finding],
+    now: dt.datetime,
+    bot: str | None = None,
+    roles: Sequence[ResolvedRole] = (),
+) -> str:
     """The session's prompt lists each finding by state and subject only, never its detail
-    (#114); bot, the App's <slug>[bot] when [agents] app_id is set, adds bot_line"""
+    (#114); bot, the App's <slug>[bot] when [agents] app_id is set, adds bot_line; roles, the
+    resolved roles the state read passed (spec 036), add role_line"""
     found = "\n".join(f"- {f.brief()}" for f in work)
     stamp = now.isoformat(timespec="minutes")
     head = template.replace("{repo}", repo)
     app = "" if bot is None else f"\n\n{bot_line(bot)}"
-    return f"{head}\n\nThe shipmill gate found this at {stamp} (from code):\n{found}\n\n{UNTRUSTED}{app}"
+    passed = f"\n\n{role_line(roles)}" if roles else ""
+    return f"{head}\n\nThe shipmill gate found this at {stamp} (from code):\n{found}\n\n{UNTRUSTED}{app}{passed}"
 
 
 def headless_paragraph(login: str) -> str:
@@ -336,10 +353,16 @@ def headless_paragraph(login: str) -> str:
 
 
 def headless_prompt(
-    template: str, repo: str, work: Sequence[Finding], now: dt.datetime, login: str, bot: str | None = None
+    template: str,
+    repo: str,
+    work: Sequence[Finding],
+    now: dt.datetime,
+    login: str,
+    bot: str | None = None,
+    roles: Sequence[ResolvedRole] = (),
 ) -> str:
     """The mode 1 prompt with the headless paragraph at its end"""
-    return f"{prompt(template, repo, work, now, bot)}\n\n{headless_paragraph(login)}"
+    return f"{prompt(template, repo, work, now, bot, roles)}\n\n{headless_paragraph(login)}"
 
 
 def gate_paragraph(login: str) -> str:
@@ -355,10 +378,16 @@ def gate_paragraph(login: str) -> str:
 
 
 def interactive_prompt(
-    template: str, repo: str, work: Sequence[Finding], now: dt.datetime, login: str, bot: str | None = None
+    template: str,
+    repo: str,
+    work: Sequence[Finding],
+    now: dt.datetime,
+    login: str,
+    bot: str | None = None,
+    roles: Sequence[ResolvedRole] = (),
 ) -> str:
     """The mode 1 prompt with the gate paragraph at its end"""
-    return f"{prompt(template, repo, work, now, bot)}\n\n{gate_paragraph(login)}"
+    return f"{prompt(template, repo, work, now, bot, roles)}\n\n{gate_paragraph(login)}"
 
 
 def refuse_headless_args(args: Sequence[str]) -> None:
@@ -580,15 +609,18 @@ def skills_dir() -> Path:
 
 @dataclass(frozen=True, slots=True)
 class StateRead:
-    """How the gate reads the state: a headless gate passes the trust filter (D-16), and with
-    an App its bot's login, so its questions tell from the maintainer's replies (spec 005)"""
+    """How the gate reads the state: a headless gate passes the trust filter (D-16), with an
+    App its bot's login, so its questions tell from the maintainer's replies (spec 005), and
+    the resolved roles, one --role flag each, maintainer first (spec 036)"""
 
     trusted_only: bool = False
     bot_login: str | None = None
+    roles: tuple[ResolvedRole, ...] = ()
 
     def flags(self) -> list[str]:
         trusted = ["--trusted-only"] if self.trusted_only else []
-        return trusted + ([] if self.bot_login is None else ["--bot-login", self.bot_login])
+        bot = [] if self.bot_login is None else ["--bot-login", self.bot_login]
+        return arguments(self.roles) + trusted + bot
 
 
 def watch_command(repo: str, workspace: Path, read: StateRead, json: bool = True) -> list[str]:
@@ -1247,6 +1279,24 @@ def relaunching(decision: Decision) -> Decision:
     return replace(decision, action=Action.SESSION_DEAD, reason=f"{dead.summary()}; {again}; fix: {dead.fix}")
 
 
+RoleResolver = Callable[[RolesConfig, LoginReader], tuple[ResolvedRole, ...]]  # roles.resolve
+
+
+def once(login: Callable[[], str] | None) -> LoginReader:
+    """The host's login, read at most once in a tick, whoever asks first; without a reader,
+    asking raises"""
+    read: list[str] = []
+
+    def host() -> str:
+        if login is None:
+            raise ReleaseError("a gate session's questions mention your gh login, but no login read was given")
+        if not read:
+            read.append(login())
+        return read[0]
+
+    return host
+
+
 def gate(
     git: Git,
     repo: str,
@@ -1268,6 +1318,7 @@ def gate(
     plugin: PluginHost | None = None,
     hooks: Callable[[], HookTest] | None = None,
     auth: Callable[[], ClaudeAuth] | None = None,
+    roles: RoleResolver | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -1330,7 +1381,15 @@ def gate(
     names it, and a launch after it
     reads SESSION_DEAD and records the run of dead sessions in gate.json's dead. After
     DEAD_STREAK dead sessions in a row, the same findings wait for retry_hours again: the tick
-    reads SESSION_DEAD with the run, starts nothing, and names when they are retried"""
+    reads SESSION_DEAD with the run, starts nothing, and names when they are retried.
+
+    roles resolves [agents.roles] (spec 036, roles.resolve); None, as in tests that don't
+    exercise it, passes no --role flags. With it, every tick that reads the state resolves the
+    roles first, right after the App check, and the state read passes one --role flag per role,
+    maintainer included (S-036-5); a maintainer the config lists nobody for is the host's login,
+    read with login, so a failed read reads no state and starts nothing. The login is read at
+    most once a tick, for the roles and the prompt both. A LAUNCH's prompt then carries
+    role_line, so the session's own reads pass the same flags"""
     check_checkout(git, repo)
     config = checked(config, claude.args)
     state = state_dir(git)
@@ -1362,7 +1421,9 @@ def gate(
     # the App first, in either mode: a failure reads no state and launches nothing (D-14), and
     # its bot's needs-decision questions read as questions (D-21, #206)
     identity = None if agents.app_id is None else as_app(agents.app_id, now, app)
-    read = StateRead(trusted_only=headless, bot_login=None if identity is None else identity.login)
+    host_read = once(login)
+    resolved = () if roles is None else roles(agents.roles, host_read)
+    read = StateRead(trusted_only=headless, bot_login=None if identity is None else identity.login, roles=resolved)
     retry = dt.timedelta(hours=agents.retry_hours)
     rows = findings(read)
     asked = ask(state / DECISIONS, repo, rows, agents, notifier, now, dry_run) if headless else ()
@@ -1383,15 +1444,13 @@ def gate(
         return decision, None, waiting, pruned
     if identity is not None:
         decision = replace(decision, identity=identity.login)
-    if login is None:
-        raise ReleaseError("a gate session's questions mention your gh login, but no login read was given")
-    host = login()
+    host = host_read()
     if headless:
-        text = headless_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login)
+        text = headless_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login, read.roles)
         if identity is None:  # GitHub doesn't notify anyone of their own mention (spec 005)
             decision = replace(decision, asks_as=host)
     else:
-        text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login)
+        text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login, read.roles)
     if dry_run:
         checked_plugin = plugin_read(decision, git, plugin, agents.notify, notifier, dry_run)
         return relaunching(self_tested(checked_plugin, hooks, headless)), None, waiting, pruned

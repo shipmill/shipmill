@@ -4,7 +4,7 @@ gh login; a role nobody fills yet falls back to the maintainer's fillers. Printe
 JSON, or as the `--role NAME=FILLER,...` flags triage_state.py takes"""
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,8 +32,13 @@ class ResolvedRole:
         who = " ".join([*(f"@{u}" for u in self.users), *(str(t) for t in self.teams)])
         return f"{self.name}: {who}" + (" (fallback)" if self.fallback else "")
 
+    @property
+    def value(self) -> str:
+        """The --role flag's value, NAME=FILLER[,FILLER...]"""
+        return f"{self.name}={','.join(str(f) for f in self.fillers)}"
+
     def flag(self) -> str:
-        return f"--role {self.name}={','.join(str(f) for f in self.fillers)}"
+        return f"--role {self.value}"
 
     def record(self) -> dict[str, object]:
         return {"users": [str(u) for u in self.users], "teams": [str(t) for t in self.teams], "fallback": self.fallback}
@@ -88,3 +93,8 @@ def as_json(roles: tuple[ResolvedRole, ...]) -> str:
 def flags(roles: tuple[ResolvedRole, ...]) -> str:
     """One line: the --role arguments for triage_state.py, one per role, maintainer included"""
     return " ".join(r.flag() for r in roles) + "\n"
+
+
+def arguments(roles: Sequence[ResolvedRole]) -> list[str]:
+    """The --role flags as argv items, `--role` and its value apart, never through a shell"""
+    return [item for r in roles for item in ("--role", r.value)]

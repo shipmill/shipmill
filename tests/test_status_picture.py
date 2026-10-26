@@ -265,6 +265,11 @@ class Fake:
         return subprocess.CompletedProcess(cmd, 0, answers[(cmd[0], cmd[1])], "")
 
 
+def host() -> str:
+    """The host's gh login, the maintainer of a config without [agents.roles] (spec 036)"""
+    return "octocat"
+
+
 def repo_with_release(root: Path, repo: str = REPO) -> Path:
     def git(*args: str) -> None:
         subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
@@ -284,16 +289,16 @@ def test_s009_14_rows_json_and_the_exit_code_stay_spec_008s(
 ) -> None:
     root = repo_with_release(tmp_path / "repo")
     fake = Fake(code)
-    assert main(["--repo", str(root), "status"], state=fake) == code
+    assert main(["--repo", str(root), "status"], state=fake, login=host) == code
     out = capsys.readouterr().out
     assert out.startswith(
         f"{REPO} (https://github.com/{REPO}): STUCK\n  repo           in sync at v1.0.0, BOT_FAILED {REPO}\n"
     )
     assert f"  to triage      #4 https://github.com/{REPO}/issues/4" in out
-    assert main(["--repo", str(root), "status", "--rows"], state=Fake(code)) == code
+    assert main(["--repo", str(root), "status", "--rows"], state=Fake(code), login=host) == code
     assert capsys.readouterr().out == "BOT_FAILED table\n"
     rows = Fake(code)
-    assert main(["--repo", str(root), "status", "--json"], state=rows) == code
+    assert main(["--repo", str(root), "status", "--json"], state=rows, login=host) == code
     assert capsys.readouterr().out.startswith('{"state": "BOT_FAILED"')
     assert len(rows.seen) == 1 and rows.seen[0][1].endswith("watch_state.py")
     assert any(c[0] == sys.executable and c[1].endswith("triage_state.py") for c in fake.seen)
@@ -313,7 +318,7 @@ def test_s009_15_with_the_app_the_reads_pass_its_bot_login(tmp_path: Path, capsy
     fake = Fake(0)
     args = _parser().parse_args(["--repo", str(root), "status"])
     api, signer = test_app.FakeApi(), test_app.FakeSigner()
-    assert _status(root, args, fake, api, signer, home=home, platform="linux", now=NOW) == 0
+    assert _status(root, args, fake, api, signer, home=home, platform="linux", now=NOW, login=host) == 0
     reads = [c for c in fake.seen if c[1].endswith(("watch_state.py", "triage_state.py"))]
     assert len(reads) == 2
     for cmd in reads:
@@ -394,7 +399,7 @@ def test_s009_27_rows_and_json_read_the_apps_question_as_answered(
     api, signer = test_app.FakeApi(), test_app.FakeSigner()
     reads = Asked()
     args = _parser().parse_args(["--repo", str(root), "status", flag])
-    assert _status(root, args, reads, api, signer, home=home, platform="linux", now=NOW) == 1
+    assert _status(root, args, reads, api, signer, home=home, platform="linux", now=NOW, login=host) == 1
     assert reads.seen[0][-2:] == ["--bot-login", test_app.BOT]
     out = capsys.readouterr().out
     assert "DECIDED" in out and "NEEDS_DECISION" not in out
@@ -409,7 +414,7 @@ def test_s009_27_without_an_app_id_or_its_key_rows_and_json_read_as_before(
     root, home = app_repo(tmp_path, app_id=app_id, key=key)
     api, reads = test_app.FakeApi(), Asked()
     args = _parser().parse_args(["--repo", str(root), "status", flag])
-    assert _status(root, args, reads, api, test_app.FakeSigner(), home=home, platform="linux", now=NOW) == 1
+    assert _status(root, args, reads, api, test_app.FakeSigner(), home=home, platform="linux", now=NOW, login=host) == 1
     assert "--bot-login" not in reads.seen[0]
     assert "NEEDS_DECISION" in capsys.readouterr().out
     assert api.calls == []
@@ -422,7 +427,10 @@ def test_s009_27_a_refused_login_read_warns_and_reads_as_before(
     reads = Asked()
     args = _parser().parse_args(["--repo", str(root), "status", "--json"])
     refused = Refused()
-    assert _status(root, args, reads, refused, test_app.FakeSigner(), home=home, platform="linux", now=NOW) == 1
+    assert (
+        _status(root, args, reads, refused, test_app.FakeSigner(), home=home, platform="linux", now=NOW, login=host)
+        == 1
+    )
     assert "--bot-login" not in reads.seen[0]
     out, err = capsys.readouterr()
     assert "NEEDS_DECISION" in out
@@ -466,7 +474,7 @@ def test_s009_27_a_failed_app_check_still_reads_with_the_bot_login(
     root, home = app_repo(tmp_path)
     api, reads = test_app.FakeApi(installed=False), Asked()
     args = _parser().parse_args(["--repo", str(root), "status"])
-    assert _status(root, args, reads, api, test_app.FakeSigner(), home=home, platform="linux", now=NOW) == 1
+    assert _status(root, args, reads, api, test_app.FakeSigner(), home=home, platform="linux", now=NOW, login=host) == 1
     states = [c for c in reads.seen if c[1].endswith(("watch_state.py", "triage_state.py"))]
     assert len(states) == 2
     for cmd in states:

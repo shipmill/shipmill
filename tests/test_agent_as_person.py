@@ -169,7 +169,7 @@ def picture(tmp_path: Path, app_id: int | None, gh: Gh) -> tuple[int, Picture]:
     run = Picture(gh)
     args = _parser().parse_args(["--repo", str(root), "status"])
     api, signer = test_app.FakeApi(), test_app.FakeSigner()
-    return _status(root, args, run, api, signer, home=home, platform="linux", now=NOW), run
+    return _status(root, args, run, api, signer, lambda: "octocat", home=home, platform="linux", now=NOW), run
 
 
 def test_s012_7_status_prints_a_warn_row_with_the_count_three_urls_and_the_fix(

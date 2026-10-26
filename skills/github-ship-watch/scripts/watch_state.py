@@ -5,6 +5,7 @@ recent releases, the environments shipmill operate runs, and the issue intake.
 Usage: watch_state.py <owner/repo> [--repo-dir PATH] [--releases N] [--grace MIN]
                       [--tool SPEC] [--incident-label LABEL] [--json]
                       [--bot-login LOGIN] [--trusted-only]
+                      [--role NAME=FILLER[,FILLER...] ...]
 
 Release bot (a repo with .github/shipmill.toml):
   BOT_FAILED      the bot's latest finished run failed (cancelled runs are ignored:
@@ -118,7 +119,8 @@ Intake (github-issue-triage's triage_state.py):
   ISSUES_OPEN     the other open issues, by state: in progress, blocked, triaged, or
                   postponed, less the ones NEEDS_DECISION and UNTRUSTED list (reported,
                   never an action by itself). A person's item waiting on its assignees
-                  (WITH_PERSON, spec 017) names them: WITH_PERSON #N (@login ...). An
+                  (WITH_PERSON, spec 017) names them, then its roles' teams (spec 036),
+                  which may stand alone: WITH_PERSON #N (@login ... @org/team ...). An
                   upstream report, which waits outside (spec 038), is listed here only, as
                   UPSTREAM #N: never in ISSUES, NEEDS_DECISION, or an agent row. With
                   [agents], an open direction issue (spec 034: labelled shipmill-direction,
@@ -199,6 +201,10 @@ PyPI's window (#597; the pinned `uvx shipmill==<version>` form only, never --too
 sessions write as (whose comment is the question, and whose issue is trusted), and the
 trust filter of an unattended gate. The config's [product] home (spec 038) goes through
 as --home, which words an upstream report's note; a home that isn't owner/name exits 2.
+Each --role flag (spec 036: a role's resolved fillers, one per role, maintainer included, as
+`shipmill roles --flags` prints them) goes through to triage_state.py as given, so a person's
+item reads ASSIGN_DUE (an ISSUES action) rather than NO_ASSIGNEE; flags triage_state.py would
+refuse exit 2 before anything is read.
 
 Repository settings:
   BRANCH_DELETE_OFF  delete_branch_on_merge is off: merged pull request branches stay on
@@ -2286,7 +2292,7 @@ def intake(
     UNTRUSTED stays there, as an upgrade issue does"""
     owned = (upgrades.owned if upgrades is not None else frozenset()) | directions
     counts: dict[str, list[int]] = {}
-    waits_on: dict[int, list[str]] = {}  # a WITH_PERSON issue's assignees (spec 017)
+    waits_on: dict[int, list[str]] = {}  # a WITH_PERSON issue's assignees (spec 017) and teams (spec 036)
     untrusted_upgrades = set()
     for line in triage.splitlines():
         row = json.loads(line)
@@ -2370,18 +2376,23 @@ def head_sha(pr: dict[str, Any]) -> str:
 
 
 def person_logins(row: dict[str, Any]) -> list[str]:
-    """A WITH_PERSON line's assignees, the logins it waits on; a line without a list of
-    them is malformed"""
+    """Whom a WITH_PERSON line waits on, as shown: its assignees as @login, then its teams as
+    @org/team. assignees is a list of logins; teams (spec 036, absent from a line read without
+    --role flags) a list of teams, and the assignees may be empty only with a team. Anything
+    else is malformed"""
     found = row.get("assignees")
-    if not isinstance(found, list) or not found or not all(isinstance(p, str) and LOGIN.match(p) for p in found):
-        raise Refused(f"error: triage_state.py printed a WITH_PERSON line without its assignees: {row!r}")
-    return found
+    teams = row.get("teams", [])
+    logins = isinstance(found, list) and all(isinstance(p, str) and LOGIN.match(p) for p in found)
+    named = isinstance(teams, list) and all(isinstance(t, str) and TRIAGE.TEAM.fullmatch(t) for t in teams)
+    if not logins or not named or not (found or teams):
+        raise Refused(f"error: triage_state.py printed a WITH_PERSON line without its assignees or teams: {row!r}")
+    return [*(f"@{p}" for p in found), *teams]
 
 
 def open_issue(number: int, waits_on: dict[int, list[str]]) -> str:
-    """An ISSUES_OPEN issue as #N, a person's item with the logins it waits on: #N (@a @b)"""
+    """An ISSUES_OPEN issue as #N, a person's item with whom it waits on: #N (@a @b @org/team)"""
     people = waits_on.get(number)
-    return f"#{number}" if people is None else f"#{number} ({' '.join(f'@{p}' for p in people)})"
+    return f"#{number}" if people is None else f"#{number} ({' '.join(people)})"
 
 
 def lands_prs(table: dict[str, str] | None) -> bool:
@@ -2390,21 +2401,32 @@ def lands_prs(table: dict[str, str] | None) -> bool:
 
 
 def triage_command(
-    repo: str, bot_login: str | None = None, trusted_only: bool = False, home: str | None = None
+    repo: str,
+    bot_login: str | None = None,
+    trusted_only: bool = False,
+    home: str | None = None,
+    roles: Sequence[str] = (),
 ) -> list[str]:
-    """triage_state.py's command line: with the config's [product] home as --home (spec 038)"""
+    """triage_state.py's command line: with the config's [product] home as --home (spec 038),
+    and each of roles, a --role flag's NAME=FILLER[,FILLER...] value, as its own --role
+    (spec 036)"""
     cmd = [sys.executable, str(TRIAGE_STATE), repo, "--json"]
     cmd += ["--bot-login", bot_login] if bot_login is not None else []
     cmd += ["--trusted-only"] if trusted_only else []
     cmd += ["--home", home] if home is not None else []
+    cmd += [item for value in roles for item in ("--role", value)]
     return cmd
 
 
 def triage_run(
-    repo: str, bot_login: str | None = None, trusted_only: bool = False, home: str | None = None
+    repo: str,
+    bot_login: str | None = None,
+    trusted_only: bool = False,
+    home: str | None = None,
+    roles: Sequence[str] = (),
 ) -> tuple[int, str]:
     """triage_state.py's exit code (0 or 1) and its --json lines"""
-    cmd = triage_command(repo, bot_login, trusted_only, home)
+    cmd = triage_command(repo, bot_login, trusted_only, home, roles)
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode not in (0, 1):
         sys.stderr.write(f"error: triage_state.py: {proc.stderr.strip()}\n")
@@ -3503,6 +3525,13 @@ def arguments() -> argparse.ArgumentParser:
     parser.add_argument(
         "--trusted-only", action="store_true", help="leave untrusted issues and fork pull requests to UNTRUSTED (D-16)"
     )
+    parser.add_argument(
+        "--role",
+        action="append",
+        default=[],
+        metavar="NAME=FILLER[,FILLER...]",
+        help="a role's resolved fillers, passed to triage_state.py; one per role, maintainer included (spec 036)",
+    )
     return parser
 
 
@@ -3513,6 +3542,11 @@ def main() -> int:
         parser.error("--incident-label must not be empty")
     if args.bot_login is not None and not args.bot_login.strip():
         parser.error("--bot-login must not be empty")
+    if args.role:  # checked by triage_state.py's rule before any read, so a bad flag reads nothing
+        try:
+            TRIAGE.parse_roles(args.role)
+        except ValueError as exc:
+            parser.error(str(exc))
     if "/" not in args.repo:
         parser.error("repo must be owner/name")
     if not 1 <= args.releases <= 20:
@@ -3622,7 +3656,7 @@ def main() -> int:
         rows.append(pypi_wait_row(unplanned.version, "plans, issues, and pull requests"))
     else:
         rows += [] if unplanned is None else [pypi_wait_row(unplanned.version, "plans")]
-        code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home)
+        code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role)
         lands = lands_prs(table)
         # shipmill asks for the direction only in a repo with [agents] (spec 034)
         directions = direction_issues(args.repo, args.bot_login) if table is not None else frozenset()
