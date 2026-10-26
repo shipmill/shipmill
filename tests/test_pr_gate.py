@@ -542,6 +542,25 @@ def test_673_draft_ranks_above_blocked_and_below_needs_decision(tmp_path: Path, 
     assert held.returncode == 5, held.stdout + held.stderr
 
 
+def test_673_the_eval_cases_record_the_read_the_gate_makes() -> None:
+    """evals/bin/gh answers only a recorded read: a gate asking other fields is a miss in every
+    github-pr-triage case, and a recording without isDraft stops the gate"""
+    evals = Path(__file__).resolve().parents[1] / "evals" / "github-pr-triage"
+    found = 0
+    for path in sorted(evals.glob("*/fixture/gh/*.json")):
+        recording = json.loads(path.read_text(encoding="utf-8"))
+        args = recording["args"]
+        if args[:2] != ["pr", "view"] or "--json" not in args:
+            continue
+        fields = args[args.index("--json") + 1]
+        if not {"statusCheckRollup", "changedFiles"} <= set(fields.split(",")):
+            continue  # another skill step's read, not the gate's
+        found += 1
+        assert fields == gate.FIELDS, path
+        assert set(json.loads(recording["stdout"])) == set(gate.FIELDS.split(",")), path
+    assert found
+
+
 def test_a_gh_failure_exits_1_as_before(tmp_path: Path, directed: Path) -> None:
     fakes = tmp_path / "fakes"
     fakes.mkdir()

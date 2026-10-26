@@ -519,9 +519,13 @@ def author_of(entry: dict) -> str:
     return login
 
 
+# the fields the gate reads; the github-pr-triage eval cases record this read, so a change here
+# re-records it there (#673)
+FIELDS = "state,isDraft,mergeable,baseRefName,headRefOid,statusCheckRollup,author,body,files,changedFiles"
+
+
 def fetch(number: int, repo: str | None) -> dict:
-    cmd = ["gh", "pr", "view", str(number), "--json"]
-    cmd.append("state,isDraft,mergeable,baseRefName,headRefOid,statusCheckRollup,author,body,files,changedFiles")
+    cmd = ["gh", "pr", "view", str(number), "--json", FIELDS]
     if repo:
         cmd += ["-R", repo]
     data = json.loads(gh(cmd, number))
