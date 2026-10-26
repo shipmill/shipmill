@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-10-26
+
+### Added
+
+- The watch asks for a missing direction: for a repo with `[agents]`, `watch_state.py` reports DIRECTION_MISSING (an action for the maintainer) when the default branch has no `docs/product.md` or `shipmill product check --ref` refuses it, and DIRECTION_PENDING (an agent's) with what a session does on the direction question; a closed direction issue is a decline, noted in TRIAGE_MODE, and `triage_state.py` marks a direction issue's `--json` line so the watch keeps it out of the issue rows with no read of its own (#636)
+- `shipmill gate` and `shipmill status` pass the resolved `[agents.roles]` to the state scripts as one `--role` flag per role, `maintainer` included; `watch_state.py` takes the flags and passes them to `triage_state.py`, the gate's session prompt tells the session to pass the same flags, and the watch and status list a person's item's teams and read a team-only `WITH_PERSON` line (#640)
+
 ## [0.74.0] - 2026-10-25
 
 ### Added
@@ -1790,7 +1797,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.74.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.75.0...HEAD
+[0.75.0]: https://github.com/shipmill/shipmill/compare/v0.74.0...v0.75.0
 [0.74.0]: https://github.com/shipmill/shipmill/compare/v0.73.1...v0.74.0
 [0.73.1]: https://github.com/shipmill/shipmill/compare/v0.73.0...v0.73.1
 [0.73.0]: https://github.com/shipmill/shipmill/compare/v0.72.0...v0.73.0
