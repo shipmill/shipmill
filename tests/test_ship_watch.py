@@ -1051,11 +1051,12 @@ retry_hours = 24
 
 
 def test_the_triage_mode_is_the_agents_table_prompt_first(ws: ModuleType) -> None:
-    # #182: a status report says what the gate's sessions are told to do
+    # #182: a status report says what the gate's sessions are told to do; #691: never the
+    # deprecated prs, which decides nothing ([autonomy] land does, S-040-9)
     row = ws.triage_mode_row(AGENTS_CONFIG, Path("shipmill.toml"))
     assert (row.state, row.subject) == ("TRIAGE_MODE", "[agents]")
     prompt = '"/github-issue-triage {repo} triage the new issues; merge when green"'
-    assert row.detail == f"prompt = {prompt}; prs = true; retry_hours = 24"
+    assert row.detail == f"prompt = {prompt}; retry_hours = 24"
 
 
 def test_the_310_fallback_reads_the_agents_table_as_tomllib_does(ws: ModuleType) -> None:
@@ -1773,34 +1774,93 @@ def test_s011_6_a_stale_worktrees_fix_shows_its_work_and_how_to_remove_it(ws: Mo
     assert "git -C '/work/r/tmp/wt a' log origin/main..HEAD" in quoted.fix
 
 
+LAND_FIX = {  # the PRS_OPEN fix by the effective [autonomy] land level; None: no [agents]
+    None: "add [agents] to .github/shipmill.toml for a gate to land them, or land them by hand:"
+    " /shipmill:github-pr-triage o/r",
+    "observe": 'set land = "propose" or "act" in [autonomy], or land them by hand: /shipmill:github-pr-triage o/r',
+    "propose": "merge each pull request labelled shipmill-ready once you have read it,"
+    ' or set land = "act" in [autonomy] in .github/shipmill.toml',
+    "act": None,
+}
+
+
+@pytest.mark.parametrize("land", [None, "observe", "propose", "act"])
+def test_s011_7_open_prs_carry_a_fix_by_the_land_level(ws: ModuleType, land: str | None) -> None:
+    # proves: S-040-9
+    # #691: the fix read [agents] prs, which the gate no longer reads; it follows [autonomy] land
+    (row,) = ws.intake("o/r", 0, "", [pull(3)], lambda n: [], None, False, land)
+    assert (row.state, row.detail) == ("PRS_OPEN", "#3")
+    assert row.fix == LAND_FIX[land] and row.json()["fix"] == LAND_FIX[land]
+    assert "prs" not in (row.fix or "")
+
+
+@pytest.mark.parametrize("land", [False, True, "always"])
+def test_intake_refuses_a_land_level_it_doesnt_know(ws: ModuleType, land: object) -> None:
+    with pytest.raises(ValueError, match="land"):
+        ws.intake("o/r", 0, "", [pull(3)], lambda n: [], None, False, land)
+
+
+GATE_CONFIG = '[agents]\nprompt = "/github-issue-triage {repo} triage the new issues"\n'
+
+
 @pytest.mark.parametrize(
-    ("config", "lands"),
+    ("text", "land"),
     [
-        (None, False),
-        ('name = "demo"\n', False),
-        ("[agents]\nprompt = 'x'\n", False),
-        ("[agents]\nprs = false\n", False),
-        ("[agents]\nprs = true\n", True),
+        ('name = "demo"\n', "propose"),
+        (GATE_CONFIG, "propose"),  # absent: land's default (D-51)
+        (GATE_CONFIG + "prs = true\n", "propose"),  # #691: the deprecated prs decides nothing
+        (GATE_CONFIG + '[autonomy]\nland = "observe"\n', "observe"),
+        (GATE_CONFIG + "[autonomy]\nland = 'propose'  # a person merges\n", "propose"),
+        (GATE_CONFIG + 'prs = false\n[autonomy]\nland = "act"\n', "act"),
+        ('[autonomy]\nrelease = "act"\ndeploy.production = "propose"\nland = "act"\n', "act"),
+        # S-040-6: none of triage, fix, and land set, the prompt's words read land as act
+        ('[agents]\nprompt = "/t triage; merge when green"\n', "act"),
+        ('[agents]\nprompt = "/t Land what is green"\n', "act"),
+        ('[agents]\nprompt = "/t triage; landing later"\n', "propose"),
+        ('[agents]\nprompt = "/t merge when green"\n[autonomy]\ntriage = "act"\n', "propose"),
+        ('[agents]\nprompt = "/t merge when green"\n[autonomy]\nland = "observe"\n', "observe"),
+        ('[agents]\nprompt = "/t merge when green"\n[autonomy]\nupgrade = "act"\n', "act"),
+        ('prompt = "/t merge when green"\n', "propose"),  # no [agents]: no prompt to read
     ],
 )
-def test_s011_7_open_prs_carry_a_fix_only_while_no_gate_lands_them(
-    ws: ModuleType, config: str | None, lands: bool
-) -> None:
+def test_s040_9_the_land_autonomy_reads_alike_on_3_11_and_3_10(ws: ModuleType, text: str, land: str) -> None:
     policy = Path(".github/shipmill.toml")
-    tables = [None] if config is None else [ws.agents_table_310(config, policy)]
-    if config is not None:
-        tables.append(ws.agents_table_toml(tomllib.loads(config), policy))
-    for table in tables:
-        assert ws.lands_prs(table) is lands
-        (row,) = ws.intake("o/r", 0, "", [pull(3)], lambda n: [], None, False, ws.lands_prs(table))
-        assert (row.state, row.detail) == ("PRS_OPEN", "#3")
-        if lands:
-            assert row.fix is None and row.json()["fix"] is None
-        else:
-            assert row.fix == (
-                "set prs = true under [agents] in .github/shipmill.toml, or land them by hand:"
-                " /shipmill:github-pr-triage o/r"
-            )
+    assert ws.config(text, policy).land == land
+    assert ws.land_autonomy_310(text, policy) == land
+    assert ws.land_autonomy_toml(tomllib.loads(text), policy) == land
+
+
+@pytest.mark.parametrize("value", ['"always"', "'Act'", "true", "3"])
+def test_s040_9_a_land_autonomy_of_another_value_is_refused(ws: ModuleType, value: str) -> None:
+    text = f"{GATE_CONFIG}[autonomy]\nland = {value}\n"
+    policy = Path(".github/shipmill.toml")
+    with pytest.raises(SystemExit) as refused:
+        ws.land_autonomy_310(text, policy)
+    assert refused.value.code == 2
+    levels = r"\[autonomy\] land must be one of \['observe', 'propose', 'act'\], got "
+    with pytest.raises(SystemExit, match=levels) as refused:
+        ws.land_autonomy_toml(tomllib.loads(text), policy)
+    assert refused.value.code == 2
+    if value.startswith(("'", '"')):  # a string the 3.10 path reads names the levels too
+        with pytest.raises(SystemExit, match=levels):
+            ws.land_autonomy_310(text, policy)
+
+
+def test_s040_9_the_310_path_refuses_a_land_it_cant_read(ws: ModuleType) -> None:
+    policy = Path(".github/shipmill.toml")
+    for text in ('autonomy.land = "act"\n', '[autonomy]\nland = "act"\nland = "observe"\n'):
+        with pytest.raises(SystemExit, match="can't read"):
+            ws.land_autonomy_310(text, policy)
+
+
+@pytest.mark.parametrize(
+    ("level", "held", "land"),
+    [("act", False, "act"), ("act", True, "propose"), ("propose", True, "propose"), ("observe", True, "observe")],
+)
+def test_s040_9_an_open_hold_turns_land_act_into_propose(ws: ModuleType, level: str, held: bool, land: str) -> None:
+    assert ws.held_land(level, held) == land
+    (row,) = ws.intake("o/r", 0, "", [pull(3)], lambda n: [], None, False, ws.held_land(level, held))
+    assert row.fix == LAND_FIX[land]
 
 
 def test_546_the_prs_open_row_carries_each_heads_sha_in_json_only(ws: ModuleType) -> None:
@@ -1955,11 +2015,11 @@ def test_s014_10_needs_decision_joins_its_row_and_upgrade_issues_leave_the_issue
     upgrades = Upgrades(ws, issues, comments={12: []})
     # triage_state.py reads an upgrade issue as any issue: NEW, or NEEDS_DECISION with the label
     lines = [triage_line(13, "NEW"), triage_line(12, "NEEDS_DECISION"), triage_line(4, "NEEDS_DECISION")]
-    rows = ws.intake("o/r", 1, "\n".join(lines), [], lambda n: [], BOT, False, False, upgrades.found)
+    rows = ws.intake("o/r", 1, "\n".join(lines), [], lambda n: [], BOT, False, None, upgrades.found)
     want = [("UPGRADE_PENDING", "#13", "changelog-fragments: ask the maintainer (upgrade = propose)")]
     assert [(r.state, r.subject, r.detail) for r in rows] == [*want, ("NEEDS_DECISION", "o/r", "#4 #12")]
     lines.append(triage_line(20, "NEW"))  # another new issue still reads ISSUES, without the upgrade's number
-    rows = ws.intake("o/r", 1, "\n".join(lines), [], lambda n: [], BOT, False, False, upgrades.found)
+    rows = ws.intake("o/r", 1, "\n".join(lines), [], lambda n: [], BOT, False, None, upgrades.found)
     assert [(r.state, r.detail) for r in rows][:2] == [("UPGRADE_PENDING", want[0][2]), ("ISSUES", "NEW #20")]
 
 
@@ -1970,11 +2030,11 @@ def test_s014_10_d16_an_untrusted_upgrade_issue_stays_untrusted_for_an_unattende
     issues = [upgrade_issue(ws, 12, labels=("needs-decision",)), upgrade_issue(ws, 13)]
     upgrades = Upgrades(ws, issues, comments={12: []})
     lines = [triage_line(12, "UNTRUSTED"), triage_line(13, "UNTRUSTED")]
-    rows = ws.intake("o/r", 0, "\n".join(lines), [], lambda n: [], BOT, True, False, upgrades.found)
+    rows = ws.intake("o/r", 0, "\n".join(lines), [], lambda n: [], BOT, True, None, upgrades.found)
     assert [(r.state, r.detail, r.json()["agent"]) for r in rows] == [("UNTRUSTED", "#12 #13", False)]
     # an upgrade issue the gate's App or a maintainer opened reads as any other
     lines = [triage_line(12, "NEEDS_DECISION"), triage_line(13, "NEW")]
-    rows = ws.intake("o/r", 1, "\n".join(lines), [], lambda n: [], BOT, True, False, upgrades.found)
+    rows = ws.intake("o/r", 1, "\n".join(lines), [], lambda n: [], BOT, True, None, upgrades.found)
     assert [(r.state, r.subject) for r in rows] == [("UPGRADE_PENDING", "#13"), ("NEEDS_DECISION", "o/r")]
 
 
@@ -2004,7 +2064,7 @@ def test_s014_10_d30_the_release_workflows_upgrade_issue_is_pending_for_an_unatt
     body = f"{marker}\nshipmill 0.37.0 offers ...\n"
     upgrades = Upgrades(ws, [upgrade_issue(ws, 12, author="github-actions[bot]")])
     line = workflow_issue_line(ws, 12, body, ("shipmill-upgrade",))
-    rows = ws.intake("o/r", 1, line, [], lambda n: [], BOT, True, False, upgrades.found)
+    rows = ws.intake("o/r", 1, line, [], lambda n: [], BOT, True, None, upgrades.found)
     want = ("UPGRADE_PENDING", "#12", "changelog-fragments: ask the maintainer (upgrade = propose)")
     assert [(r.state, r.subject, r.detail) for r in rows] == [want]
     # any other workflow issue stays UNTRUSTED: label only, marker only, or marker on line 2
@@ -2013,7 +2073,7 @@ def test_s014_10_d30_the_release_workflows_upgrade_issue_is_pending_for_an_unatt
         workflow_issue_line(ws, 21, body, ()),
         workflow_issue_line(ws, 22, f"Upgrade\n{marker}\n", ("shipmill-upgrade",)),
     ]
-    rows = ws.intake("o/r", 0, "\n".join(others), [], lambda n: [], BOT, True, False, Upgrades(ws, []).found)
+    rows = ws.intake("o/r", 0, "\n".join(others), [], lambda n: [], BOT, True, None, Upgrades(ws, []).found)
     assert [(r.state, r.detail) for r in rows] == [("UNTRUSTED", "#20 #21 #22")]
 
 
@@ -2021,7 +2081,7 @@ def test_s014_10_without_upgrade_issues_the_intake_rows_are_unchanged(ws: Module
     triage = "\n".join([triage_line(12, "NEW"), triage_line(9, "BLOCKED"), triage_line(4, "NEEDS_DECISION")])
     before = ws.intake("o/r", 1, triage, [pull(3)], lambda n: [])
     none = Upgrades(ws, []).found
-    assert ws.intake("o/r", 1, triage, [pull(3)], lambda n: [], None, False, False, none) == before
+    assert ws.intake("o/r", 1, triage, [pull(3)], lambda n: [], None, False, None, none) == before
     assert [r.state for r in before] == ["ISSUES", "ISSUES_OPEN", "PRS_OPEN", "NEEDS_DECISION"]
 
 

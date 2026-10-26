@@ -151,7 +151,13 @@ Intake (github-issue-triage's triage_state.py):
                   MEMBER, or COLLABORATOR or the --bot-login, which triage_state.py marks
                   "direction": true on its line) is in neither ISSUES nor ISSUES_OPEN
   PRS_OPEN        open non-draft pull requests (reported, never an action by itself),
-                  less the ones NEEDS_DECISION and UNTRUSTED list
+                  less the ones NEEDS_DECISION and UNTRUSTED list. Its fix follows the
+                  config's [autonomy] land as shipmill reads it (spec 040: default propose;
+                  with none of triage, fix, and land set, act when the [agents] prompt says
+                  "merge when green" or "land"; an open shipmill-hold issue turns act into
+                  propose): none under act, a person merges the ones labelled shipmill-ready
+                  under propose, [autonomy] land named under observe, and adding [agents]
+                  without one
   NEEDS_DECISION  issues and pull requests labelled needs-decision whose question has no
                   reply, as #N only (triage_state.py's rule, applied to pull requests'
                   comments too): a person owes the answer, so an action, but never an
@@ -241,8 +247,8 @@ Workflows:
 
 Agents (all reported, never an action by itself):
   TRIAGE_MODE     the config's [agents] table, what the gate's sessions are told to do: its
-                  prompt, whether open pull requests count as work, and the rest of its keys;
-                  "no [agents]" without one
+                  prompt and the rest of its keys, less the deprecated prs ([autonomy] land
+                  decides whether open pull requests count as work); "no [agents]" without one
   AGENT_SESSION   a Claude Code session on this host working the repo, one row each, from
                   `claude agents --json`: a gate session (named "shipmill <owner/repo>") or one
                   whose folder is in the checkout, with its kind, status, and age
@@ -328,7 +334,7 @@ item is in no agent row, so it neither starts a session nor changes the gate's f
 Each line has a fix too (spec 011): the one line that clears the row, an exact command where
 one exists (every gh naming the repo, every git its checkout with -C), else the decision to
 make; null for a row with nothing to clear. Every action row, HOLD, WORKTREE_STALE,
-UNTRUSTED, and UPSTREAM_UNTRUSTED carry one, and PRS_OPEN while no gate lands pull requests ([agents] prs not true).
+UNTRUSTED, and UPSTREAM_UNTRUSTED carry one, and PRS_OPEN unless [autonomy] land is act with [agents].
 A fix is built from the repo, numbers, run ids, tags, paths, and config keys, never from an
 issue's or a pull request's text (D-16). The table prints it on an indented "fix:" line
 after its row, unless the row's detail already ends with it. The PRS_OPEN line also has
@@ -511,8 +517,8 @@ AGENT = {
     "UPSTREAM_DUE",
 }
 # the states whose every row carries a fix, the one line that clears it (spec 011): every
-# action, and the report-only rows a person still has to act on. PRS_OPEN carries one only
-# while no gate lands pull requests; every other state's fix is None
+# action, and the report-only rows a person still has to act on. PRS_OPEN carries one unless
+# a gate lands pull requests ([autonomy] land act, land_fix); every other state's fix is None
 FIXED = ACTION | {"HOLD", "WORKTREE_STALE", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT"}
 FIX_INDENT = " " * 15  # the table's fix line starts under the subject column
 RUN_ID = re.compile(r"/actions/runs/(\d+)(?:/|$)")  # a workflow run's URL names its id
@@ -527,6 +533,7 @@ ACTIVE = set(UNFINISHED)
 # a release's work branch: shipmill's land.WORK_PREFIX and a version tag
 WORK_BRANCH = re.compile(r"^refs/heads/(shipmill/v\d+\.\d+\S*)$")
 HOLD_LABEL = "shipmill-hold"  # shipmill's autonomy.HOLD_LABEL
+READY_LABEL = "shipmill-ready"  # shipmill's status.READY_LABEL: a pull request a person may merge
 INCIDENT_LABEL = "incident"  # the default of [operate] incident_label
 HEALTH_PREFIX = "shipmill health"  # starts the description of every status shipmill operate writes
 OPERATE_SILENT = dt.timedelta(hours=1)  # a scheduled operate runs every 10 minutes
@@ -1536,6 +1543,7 @@ class Config:
     environments: list[Environment]
     incident_label: str
     upgrade: str = "propose"  # [autonomy] upgrade: observe, propose (the default), or act (spec 014)
+    land: str = "propose"  # [autonomy] land, with the legacy reading of [agents] prompt (spec 040)
 
 
 def ago(span: dt.timedelta) -> str:
@@ -1548,13 +1556,14 @@ def ago(span: dt.timedelta) -> str:
 
 
 def config(text: str, policy: Path, incident_label: str | None = None) -> Config:
-    """The environments, the incident label, and the upgrade autonomy of the config, read as
+    """The environments, the incident label, and the upgrade and land autonomy of the config, read as
     shipmill reads it: with tomllib on Python 3.11+, with the regex fallback on 3.10. A given
     incident_label (the --incident-label flag) takes the place of the config's, which is still
     checked"""
     if tomllib is None:
         envs, levels = environments_310(text, policy), deploy_autonomy_310(text, policy)
         label, upgrade = incident_label_310(text, policy), upgrade_autonomy_310(text, policy)
+        land = land_autonomy_310(text, policy)
     else:
         try:
             raw = tomllib.loads(text)
@@ -1562,8 +1571,9 @@ def config(text: str, policy: Path, incident_label: str | None = None) -> Config
             raise Refused(f"error: {policy}: {exc}") from None
         envs, levels = environments_toml(raw, policy), deploy_autonomy_toml(raw, policy)
         label, upgrade = incident_label_toml(raw, policy), upgrade_autonomy_toml(raw, policy)
+        land = land_autonomy_toml(raw, policy)
     deployed = [replace(e, deploy=levels.get(e.name, "act")) for e in envs]
-    return Config(deployed, incident_label or label, upgrade)
+    return Config(deployed, incident_label or label, upgrade, land)
 
 
 # -- requires (spec 031): the oldest shipmill the config is written for, checked against the
@@ -1653,18 +1663,79 @@ def upgrade_autonomy_toml(raw: dict[str, object], policy: Path) -> str:
 
 def upgrade_autonomy_310(text: str, policy: Path) -> str:
     """[autonomy] upgrade, a plain string key of a plain [autonomy] table, or propose"""
+    found = autonomy_string_310(text, policy, "upgrade")
+    return upgrade_level("propose" if found is None else found, policy)
+
+
+def autonomy_string_310(text: str, policy: Path, name: str) -> str | None:
+    """[autonomy] <name> on Python 3.10, a plain string key of a plain [autonomy] table, or
+    None without it; any other form is refused rather than misread"""
     tables = toml_tables(text)
     if re.search(r"^\s*[\"']?autonomy[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE):
         raise Refused(f"error: {policy}: can't read [autonomy] on Python 3.10: use 3.11+ or a plain [autonomy] table")
     found = None
     for line in tables.get("autonomy", "").splitlines():
-        if not re.match(r"^\s*[\"']?upgrade[\"']?\s*=", line):
+        if not re.match(rf"^\s*[\"']?{name}[\"']?\s*=", line):
             continue
-        key = re.match(r"^\s*[\"']?upgrade[\"']?\s*=\s*(?:\"([^\"]*)\"|'([^']*)')\s*(?:#.*)?$", line)
+        key = re.match(rf"^\s*[\"']?{name}[\"']?\s*=\s*(?:\"([^\"]*)\"|'([^']*)')\s*(?:#.*)?$", line)
         if key is None or found is not None:
-            raise Refused(f"error: {policy}: can't read [autonomy] upgrade on Python 3.10: use 3.11+")
+            raise Refused(f"error: {policy}: can't read [autonomy] {name} on Python 3.10: use 3.11+")
         found = key.group(1) if key.group(1) is not None else key.group(2)
-    return upgrade_level("propose" if found is None else found, policy)
+    return found
+
+
+# -- [autonomy] land (spec 040): whether the gate lands the open pull requests, read as
+# shipmill's AutonomyPolicy reads it, since a script can't import shipmill
+
+AGENT_STAGES = ("triage", "fix", "land")  # shipmill's autonomy.AGENT_STAGES
+LAND_DEFAULT = "propose"  # a pull request waits for a person to merge it (D-51)
+# the legacy reading's words (S-040-6): shipmill's autonomy._LANDS
+LANDS = re.compile(r"\b(?:merge\s+when\s+green|land)\b", re.IGNORECASE)
+
+
+def land_level(value: object, policy: Path) -> str:
+    if not isinstance(value, str) or value not in AUTONOMY:
+        raise Refused(f"error: {policy}: [autonomy] land must be one of {list(AUTONOMY)}, got {value!r}")
+    return value
+
+
+def legacy_land(level: str, sets_stage: bool, prompt: object) -> str:
+    """S-040-6, for one minor release: a config that sets none of triage, fix, and land reads
+    land as act from an [agents] prompt holding "merge when green" or "land" as a word"""
+    if sets_stage or not isinstance(prompt, str) or LANDS.search(prompt) is None:
+        return level
+    return "act"
+
+
+def land_autonomy_toml(raw: dict[str, object], policy: Path) -> str:
+    """[autonomy] land of the parsed config, or its default, propose, with the legacy reading
+    of [agents] prompt (S-040-6)"""
+    table = raw.get("autonomy", {})
+    if not isinstance(table, dict):
+        raise Refused(f"error: {policy}: autonomy is not a table")
+    level = land_level(table.get("land", LAND_DEFAULT), policy)
+    agents = raw.get("agents")
+    prompt = agents.get("prompt") if isinstance(agents, dict) else None
+    return legacy_land(level, any(stage in table for stage in AGENT_STAGES), prompt)
+
+
+def land_autonomy_310(text: str, policy: Path) -> str:
+    """[autonomy] land, a plain string key of a plain [autonomy] table, or propose, with the
+    legacy reading of [agents] prompt (S-040-6): a triage, fix, or land key in any form ends it"""
+    found = autonomy_string_310(text, policy, "land")
+    level = land_level(LAND_DEFAULT if found is None else found, policy)
+    stages = "|".join(AGENT_STAGES)
+    body = toml_tables(text).get("autonomy", "")
+    sets_stage = re.search(rf"^\s*[\"']?(?:{stages})[\"']?\s*[.=]", body, re.MULTILINE) is not None
+    table = agents_table_310(text, policy)
+    prompt = table.get("prompt") if table is not None else None
+    said = json.loads(prompt) if prompt is not None and prompt.startswith('"') else None
+    return legacy_land(level, sets_stage, said)
+
+
+def held_land(level: str, held: bool) -> str:
+    """The effective land level: an open shipmill-hold issue turns act into propose (D-8)"""
+    return "propose" if level == "act" and held else level
 
 
 def deploy_autonomy_toml(raw: dict[str, object], policy: Path) -> dict[str, str]:
@@ -2489,7 +2560,7 @@ def intake(
     comments_of: Callable[[int], Comments],
     bot_login: str | None = None,
     trusted_only: bool = False,
-    lands_prs: bool = False,
+    land: str | None = None,
     upgrades: Upgrades | None = None,
     untrusted_plans: frozenset[int] = frozenset(),
     closed_prs: Sequence[dict[str, Any]] = (),
@@ -2503,8 +2574,8 @@ def intake(
     unless a draft. closed_prs are the closed and merged pull requests labelled decided in the
     veto window (number, isCrossRepository): each with such a veto is VETOED too, save a
     fork's with trusted_only. VETOED issues and pull requests share one row, an agent's
-    (spec 030), and an issue in it is in no other row. lands_prs is the
-    config's [agents] prs = true: a gate lands them, so PRS_OPEN carries no fix. upgrades
+    (spec 030), and an issue in it is in no other row. land is the effective [autonomy] land
+    level, None without [agents]: PRS_OPEN's fix (land_fix) follows it. upgrades
     are the shipmill-upgrade issues: their UPGRADE_PENDING rows come first, none is in the
     issue rows, and the ones waiting on a reply join NEEDS_DECISION. One triage_state.py
     reads as UNTRUSTED (with trusted_only, an author who is neither trusted nor the
@@ -2515,6 +2586,8 @@ def intake(
     direction issues (spec 034), shipmill's question: none is in the issue rows, one whose
     question waits on the maintainer is in NEEDS_DECISION, and one triage_state.py reads as
     UNTRUSTED stays there, as an upgrade issue does"""
+    if land is not None and (not isinstance(land, str) or land not in AUTONOMY):
+        raise ValueError(f"land must be None or one of {list(AUTONOMY)}, got {land!r}")
     owned = (upgrades.owned if upgrades is not None else frozenset()) | directions
     counts: dict[str, list[int]] = {}
     waits_on: dict[int, list[str]] = {}  # a WITH_PERSON issue's assignees (spec 017) and teams (spec 036)
@@ -2573,9 +2646,8 @@ def intake(
         if TRIAGE.vetoed(comments_of(number), bot_login) is not None:
             vetoed.append(number)
     if ready:
-        land = f"set prs = true under [agents] in {POLICY}, or land them by hand: {skill_fix('github-pr-triage', repo)}"
         listed = " ".join(f"#{n}" for n, _ in ready)
-        rows.append(Row("PRS_OPEN", repo, listed, None if lands_prs else land, tuple(sorted(ready))))
+        rows.append(Row("PRS_OPEN", repo, listed, land_fix(land, repo), tuple(sorted(ready))))
     if vetoed:
         named = " ".join(f"#{n}" for n in sorted(set(vetoed)))
         take_up = f"take up each veto (needs-decision.md): {skill_fix('github-issue-triage', repo)}"
@@ -2620,9 +2692,20 @@ def open_issue(number: int, waits_on: dict[int, list[str]]) -> str:
     return f"#{number}" if people is None else f"#{number} ({' '.join(people)})"
 
 
-def lands_prs(table: dict[str, str] | None) -> bool:
-    """[agents] prs = true (agents_table's): a gate lands the open pull requests"""
-    return table is not None and table.get("prs") == "true"
+def land_fix(land: str | None, repo: str) -> str | None:
+    """PRS_OPEN's fix by the effective [autonomy] land level, as `shipmill status` words it
+    (S-040-11): without [agents] no gate lands them; under observe no session does; under
+    propose a session reviews them and a person merges the ones labelled shipmill-ready; under
+    act the gate lands them, so there is nothing to clear"""
+    by_hand = f"or land them by hand: {skill_fix('github-pr-triage', repo)}"
+    if land is None:
+        return f"add [agents] to {POLICY} for a gate to land them, {by_hand}"
+    if land == "observe":
+        return f'set land = "propose" or "act" in [autonomy], {by_hand}'
+    if land == "propose":
+        merge = f"merge each pull request labelled {READY_LABEL} once you have read it"
+        return f'{merge}, or set land = "act" in [autonomy] in {POLICY}'
+    return None
 
 
 def triage_command(
@@ -2665,7 +2748,7 @@ def intake_rows(
     triage: str,
     bot_login: str | None,
     trusted_only: bool,
-    lands: bool,
+    land: str | None,
     upgrades: Upgrades | None,
     untrusted_plans: frozenset[int],
     now: dt.datetime,
@@ -2673,7 +2756,8 @@ def intake_rows(
 ) -> list[Row]:
     """The intake rows from triage_run's exit code and lines, the open pull requests, and the
     closed and merged ones labelled decided and updated in the veto window (spec 030);
-    directions are the open direction issues, never in the issue rows (spec 034)"""
+    land is the effective [autonomy] land level, None without [agents]; directions are the
+    open direction issues, never in the issue rows (spec 034)"""
     fields = "number,isDraft,isCrossRepository,labels,headRefOid"
     prs = json.loads(run(["gh", "pr", "list", "-R", repo, "--json", fields, "-L", "100"]))
 
@@ -2689,7 +2773,7 @@ def intake_rows(
         comments_of,
         bot_login,
         trusted_only,
-        lands,
+        land,
         upgrades,
         untrusted_plans,
         closed,
@@ -2981,12 +3065,13 @@ def coordinator_rows(
 
 
 def triage_mode_row(text: str, policy: Path, declined: int | None = None) -> Row:
-    """The config's [agents] table, each key as the config sets it, the prompt first; declined
-    is the direction issue whose close declined the direction (spec 034), said last"""
+    """The config's [agents] table, each key as the config sets it, the prompt first, less the
+    deprecated prs, which decides nothing ([autonomy] land does, spec 040); declined is the
+    direction issue whose close declined the direction (spec 034), said last"""
     table = agents_table(text, policy)
     if table is None:
         return Row("TRIAGE_MODE", "[agents]", "no [agents]: no gate session runs for this repo")
-    keys = sorted(table, key=lambda k: (k != "prompt", k))
+    keys = sorted((k for k in table if k != "prs"), key=lambda k: (k != "prompt", k))
     said = [f"{k} = {table[k]}" for k in keys]
     said += [] if declined is None else [f"no direction: declined in #{declined}"]
     return Row("TRIAGE_MODE", "[agents]", "; ".join(said))
@@ -3860,6 +3945,7 @@ def main() -> int:
     upgrades = None
     home = None
     text = None
+    land = None  # the effective [autonomy] land level, None without [agents]: no gate lands anything
     if policy is not None:
         text = (repo_dir / policy).read_text(encoding="utf-8")
         table = agents_table(text, policy)
@@ -3872,6 +3958,7 @@ def main() -> int:
         read = config(text, policy, args.incident_label)
         holds = hold_rows(fetch_issues(args.repo, "--label", HOLD_LABEL), now, args.repo)
         rows += holds
+        land = None if table is None else held_land(read.land, bool(holds))
         closed = fetch_issues(args.repo, "--label", read.incident_label, state="closed")
         if closed:  # the postmortems are read only once an incident has closed
             texts = postmortem_texts(args.repo, branch)
@@ -3905,7 +3992,6 @@ def main() -> int:
     else:
         rows += [] if unplanned is None else [pypi_wait_row(unplanned.version, "plans")]
         code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role)
-        lands = lands_prs(table)
         # the open direction issues, from triage_state.py's lines: no gh call of their own (spec 034)
         directions = triage_directions(triage) if table is not None else frozenset()
         rows += intake_rows(
@@ -3914,7 +4000,7 @@ def main() -> int:
             triage,
             args.bot_login,
             args.trusted_only,
-            lands,
+            land,
             upgrades,
             plans.untrusted,
             now,
