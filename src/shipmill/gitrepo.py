@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from shipmill.config import policy_branch
+from shipmill.config import CONFIG_PATH, branch_in
 from shipmill.errors import ReleaseError
 from shipmill.version import PATTERN, TAG_PREFIX, Version
 
@@ -123,10 +123,15 @@ class Git:
 
     def landing_branch(self) -> str:
         """The branch releases land on, which the landing checks compare against: the `branch`
-        the config at the checkout's top sets, else origin's default branch (#694)"""
-        top = Path(self.run("rev-parse", "--show-toplevel").strip())
-        branch = policy_branch(top)
-        return branch if branch is not None else self.default_branch()
+        the config at origin's default branch sets, else that default branch (#694). origin's
+        default branch is fetched first and its config read at the trusted ref, never from the
+        working tree, which a session may have left on a pull request's branch (D-16, D-48, #697)"""
+        trusted = self.default_branch()
+        ref = f"refs/remotes/{REMOTE}/{trusted}"
+        self.run("fetch", "-q", REMOTE, f"+refs/heads/{trusted}:{ref}")
+        text = self.show(ref, CONFIG_PATH.as_posix())
+        named = None if text is None else branch_in(text, f"{CONFIG_PATH} at {REMOTE}/{trusted}")
+        return trusted if named is None else named
 
     def remote_branch(self, branch: str) -> str | None:
         out = self.run("ls-remote", "--heads", REMOTE, f"refs/heads/{branch}").split()

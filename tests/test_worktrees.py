@@ -386,13 +386,15 @@ def test_s002_9_a_branch_with_no_commits_of_its_own_is_removable(repo: Checkout)
 
 
 def policy_branch_repo(repo: Checkout, branch: str = "v1") -> Path:
-    """#694: origin/HEAD is main, an older branch that diverged; the config names branch, which
-    holds a worktree's merged work. Returns that worktree"""
-    repo.commit(repo.root, {"old.py": "OLD = 1\n"}, "Only on the old default branch")
+    """#694: origin/HEAD is main, an older branch that diverged; the config there, the trusted
+    one (#697), names branch, which holds a worktree's merged work. Returns that worktree"""
+    (repo.root / ".github").mkdir()
+    config = {".github/shipmill.toml": f'branch = "{branch}"\n'}
+    repo.commit(repo.root, {"old.py": "OLD = 1\n", **config}, "Only on the old default branch")
     repo.push_main()
     repo.git().run("checkout", "-q", "-b", branch, "HEAD~1")
-    (repo.root / ".github").mkdir()
-    repo.commit(repo.root, {".github/shipmill.toml": f'branch = "{branch}"\n'}, "Config")
+    (repo.root / ".github").mkdir(exist_ok=True)
+    repo.commit(repo.root, config, "Config")
     repo.git().run("push", "-q", "-u", "origin", branch)
     feat = repo.add("tmp/wt-feat", "-b", "feat", base=f"origin/{branch}")
     sha = repo.commit(feat, {"feature.py": "A = 1\n"}, "Feature")
@@ -432,6 +434,37 @@ def test_s002_8_694_a_config_without_branch_still_compares_against_origin_head(r
     repo.git().run("merge", "-q", "--ff-only", "feat")
     repo.push_main()
     assert repo.reasons()["tmp/wt-feat"] is None
+
+
+@pytest.mark.parametrize(("trusted", "want"), [(None, "main"), ("v1", "v1")])
+def test_s002_9_697_landing_reads_the_branch_at_origins_default_never_the_checkout(
+    repo: Checkout, trusted: str | None, want: str
+) -> None:
+    """#697: the prune judges landing against the `branch` the config at origin's default branch
+    names, else that default branch; a config a session left in the checkout, on a pull
+    request's branch, never picks it (D-16, D-48)"""
+    (repo.root / ".github").mkdir()
+    if trusted is not None:
+        repo.commit(repo.root, {".github/shipmill.toml": f'branch = "{trusted}"\n'}, "Trusted config")
+        repo.push_main()
+    repo.git().run("push", "-q", "origin", "main:v1")  # v1: the work below lands on want alone
+    feat = repo.add("tmp/wt-feat", "-b", "feat")
+    repo.commit(feat, {"feature.py": "A = 1\n"}, "Feature")
+    repo.git().run("merge", "-q", "--ff-only", "feat")
+    repo.git().run("push", "-q", "origin", f"main:{want}")
+    other = "main" if want == "v1" else "v1"
+    repo.git().run("switch", "-q", "-c", "pr", "HEAD~1")
+    repo.commit(repo.root, {".github/shipmill.toml": f'branch = "{other}"\n'}, "Steer")
+    assert repo.git().landing_branch() == want
+    assert repo.reasons()["tmp/wt-feat"] is None
+
+
+def test_697_a_malformed_branch_at_origins_default_is_refused_naming_the_ref(repo: Checkout) -> None:
+    (repo.root / ".github").mkdir()
+    repo.commit(repo.root, {".github/shipmill.toml": "branch = 1\n"}, "Bad config")
+    repo.push_main()
+    with pytest.raises(ReleaseError, match=r"^\.github/shipmill\.toml at origin/main: branch must be a non-empty"):
+        repo.git().landing_branch()
 
 
 def fake_sha(n: int) -> str:

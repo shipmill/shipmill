@@ -1552,8 +1552,8 @@ def _status(
 
 def _milestones(root: Path, args: argparse.Namespace, github: GitHub | None) -> int:
     """#475, spec 022: the milestone rows of the lanes with milestone = true, read with the
-    release's planner at the branch releases land on (the config's branch, else origin's
-    default branch), fetched first; without such a lane nothing
+    release's planner at the branch releases land on (the branch the config at origin's
+    default branch names, else that default branch), fetched first; without such a lane nothing
     is fetched or read. It never writes GitHub: an overtaken milestone's rename is its row's
     fix. A read the planner fails (a goal, a policy, or GitHub) is printed as the error, and
     exits 0 as a report does; a checkout without a GitHub origin exits 2"""
@@ -1570,7 +1570,7 @@ def _milestones(root: Path, args: argparse.Namespace, github: GitHub | None) -> 
     error = None
     if status.wants_milestones(top):
         checkout = Git(top)
-        branch = checkout.landing_branch()  # the config's branch, else origin's default (#694)
+        branch = checkout.landing_branch()  # the branch origin's default config names, else that default (#694, #697)
         # --force, as watch_state.py fetches: a moving major tag (v0) would refuse the fetch otherwise
         checkout.run("fetch", "-q", "--force", "--tags", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
         head = checkout.sha(f"refs/remotes/origin/{branch}")
