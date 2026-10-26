@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.80.1] - 2026-10-26
+
+### Fixed
+
+- The landing checks compare against the branch releases land on: the `branch` that `.github/shipmill.toml` sets, and origin/HEAD only when the config sets none. In a repo whose GitHub default branch was an older, diverged branch, `shipmill worktrees` read every merged worktree as not landed, so the gate's prune removed none, and `shipmill status` read the repo as stuck, with the fix `fetch origin master:master`. Now `shipmill worktrees` and its prune, the gate's `--refresh`, `shipmill milestones`, the repo line of `shipmill status`, and the github-ship-watch skill's fetch, plan, and reads at `origin/<branch>` all follow the config's branch; the gate's `--refresh` reads it from the config at GitHub's default branch, never from a checkout a session left on a pull request's branch. `shipmill doctor` WARNs when GitHub's default branch isn't the config's branch, with the fix `gh api -X PATCH repos/<repo> -f default_branch=<branch>` (#694)
+- The gate's App check and the App's bot login sign their JWT when they run, not with the tick's start time. A tick whose prune ran past the JWT's 9 minutes no longer ends in `GitHub refused the JWT ... 401`, which read like a wrong key (#694)
+
 ## [0.80.0] - 2026-10-26
 
 ### Added
@@ -1853,7 +1860,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.80.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.80.1...HEAD
+[0.80.1]: https://github.com/shipmill/shipmill/compare/v0.80.0...v0.80.1
 [0.80.0]: https://github.com/shipmill/shipmill/compare/v0.79.0...v0.80.0
 [0.79.0]: https://github.com/shipmill/shipmill/compare/v0.78.0...v0.79.0
 [0.78.0]: https://github.com/shipmill/shipmill/compare/v0.77.0...v0.78.0
