@@ -162,7 +162,7 @@ Both name the auth kind and never the token or any part of it:
 - D-14: a gate set up with a credential starts sessions with it or not at all; a bad token file never falls back to the interactive login
 - D-17: a headless session is a `claude -p` process the gate spawns, so its process environment is where the token goes
 - D-20: setup asks for the mode; the token is recommended for launchd gates in either mode
-- D-40: a failed preflight starts no session, as a failed hooks self-test already does for a headless gate
+- D-54 (superseding D-40): a failed preflight starts no session, as a failed hooks self-test already does for a headless gate
 
 ## Issues
 
