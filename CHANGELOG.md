@@ -7,6 +7,22 @@ bot.
 
 ## [Unreleased]
 
+## [0.80.0] - 2026-10-26
+
+### Added
+
+- product-intake plans a goal: it proposes a `goal-plan` issue from `references/plan.md` (under `observe` it only reports the plan's text), acts on the maintainer's trusted reply alone, and on an accept files each `feature` and `fix` item in Work order with its plan-item marker and `Serves: G-n`, as a sub-issue of the plan (through `chains.py link --child --no-text`, so the accepted plan's body is never edited) with a `Depends on` line and GitHub's relation for each `(after W-k)`, starting no build and writing no spec; the spec gate lists a feature item of an accepted plan as chosen work that still needs its own approved spec (#517)
+- `chains.py link --no-text` writes only GitHub's relation (`--blocked-by` or `--child`, with or without `--product`) and no `Depends on` line, and exits 2 when the forge refuses the relation, there being no line to fall back on (#517)
+
+### Changed
+
+- A person's dispatch for a fork's pull request runs only the head SHA they read, so a push after the read never runs with `ANTHROPIC_API_KEY` or a token that dispatches downstream workflows. `evals.yml` takes a `sha` input that a dispatch with `pr` needs; before any checkout or secret the run reads the pull request's head and exits 1 naming both commits when it isn't `sha`, checks `HEAD^2` of `refs/pull/<N>/merge` again after the checkout, starts its summary with `evals: measured <sha> of #<N>`, and records `pr` and `head` in `meta.json`. The downstream caller `shipmill init --downstream` writes has a required `sha` on `workflow_dispatch`; the reusable `downstream.yml` takes it as an optional input, compares it with the head before the App's key reaches the disk, and passes `--sha` to `shipmill downstream start`, which exits 1 for another head before it writes a check, mints a token, or dispatches, and exits 2 naming `shipmill init --downstream --force` for a missing or malformed `--sha`. The fork hold and the fork refusal print `-f pr=<N> -f sha=<head SHA>`, the collect dispatch carries `sha` only to a caller that declares it, so a caller written before it keeps working unpinned while a person's start on it is refused, and `shipmill doctor` WARNs on such a caller; rewrite it with `shipmill init --downstream --force` (spec 025, S-025-18 to S-025-23; spec 032, S-032-17 to S-032-24) (#545)
+
+### Fixed
+
+- The ship watch's `PRS_OPEN` fix follows `[autonomy] land`, as the gate does, instead of the deprecated `[agents] prs`: none under `act`, merging the pull requests labelled `shipmill-ready` under `propose`, `[autonomy] land` named under `observe`, with the legacy prompt reading and the hold applied as `shipmill autonomy` reads them; an invalid `land` exits 2, and `TRIAGE_MODE` no longer echoes `prs` (#691)
+- The ship watch's `TRIAGE_MODE` row names the effective `triage`, `fix`, and `land` levels with their source, as `shipmill autonomy` reads them (`triage act (default), fix act (default), land propose (hold)`), instead of the `[agents]` prompt's words, so an `[agents]` table holding only `prs` no longer gives an empty row; an invalid `[autonomy] triage` or `fix` exits 2 as an invalid `land` does (#693)
+
 ## [0.79.0] - 2026-10-26
 
 ### Changed
@@ -1837,7 +1853,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.79.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.80.0...HEAD
+[0.80.0]: https://github.com/shipmill/shipmill/compare/v0.79.0...v0.80.0
 [0.79.0]: https://github.com/shipmill/shipmill/compare/v0.78.0...v0.79.0
 [0.78.0]: https://github.com/shipmill/shipmill/compare/v0.77.0...v0.78.0
 [0.77.0]: https://github.com/shipmill/shipmill/compare/v0.76.0...v0.77.0
