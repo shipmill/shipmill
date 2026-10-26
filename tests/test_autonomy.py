@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from shipmill.autonomy import HOLD_LABEL, Autonomy, AutonomyPolicy, EnvironmentName, Hold, Stage
+from shipmill.autonomy import HOLD_LABEL, Autonomy, AutonomyPolicy, EnvironmentName, Hold, Stage, StageKind
 from shipmill.cli import main
 from shipmill.doctor import doctor
 from shipmill.errors import ReleaseError
@@ -134,6 +134,60 @@ def test_the_hold_is_read_from_the_label(repo: Repo) -> None:
     assert not Hold.read(repo.github).on
     repo.github.holds = ["#7 Investigating", "#8 Also"]
     assert Hold.read(repo.github).reason == f"held by {HOLD_LABEL} #7, #8"
+
+
+# -- the agent stages: triage, fix, and land (spec 040) --------------------------------------
+
+AGENT_STAGES = {key: Stage(key) for key in (StageKind.TRIAGE, StageKind.FIX, StageKind.LAND)}
+
+
+def test_s040_1_agent_stages_default_to_act_act_propose_and_take_each_level(repo: Repo) -> None:
+    for parsed in (repo.policy.autonomy, autonomy(""), autonomy('release = "propose"\n')):
+        assert (parsed.triage, parsed.fix, parsed.land) == (Autonomy.ACT, Autonomy.ACT, Autonomy.PROPOSE)
+        assert [parsed.configured(s) for s in AGENT_STAGES.values()] == [Autonomy.ACT, Autonomy.ACT, Autonomy.PROPOSE]
+    for key, stage in AGENT_STAGES.items():
+        for level in Autonomy:
+            parsed = autonomy(f'{key} = "{level}"\n')
+            assert parsed.configured(stage) is level
+            others = {k: parsed.configured(s) for k, s in AGENT_STAGES.items() if k != key}
+            assert others == {k: AutonomyPolicy().configured(s) for k, s in AGENT_STAGES.items() if k != key}
+    # the CI stages read as before, and doctor's stage list holds no agent stage
+    parsed = autonomy('triage = "observe"\nfix = "propose"\nland = "act"\nrollback = "observe"\n')
+    assert (parsed.release, parsed.rollback, parsed.intake, parsed.upgrade) == (
+        Autonomy.ACT,
+        Autonomy.OBSERVE,
+        Autonomy.PROPOSE,
+        Autonomy.PROPOSE,
+    )
+    assert [str(s) for s in parsed.stages()] == ["release", "rollback"]
+
+
+@pytest.mark.parametrize("key", ["triage", "fix", "land"])
+@pytest.mark.parametrize("value", ['"auto"', '"Act"', '""', "true", "1", '["act"]', '{ level = "act" }'])
+def test_s040_2_an_agent_stage_outside_the_three_levels_exits_2(key: str, value: str) -> None:
+    levels = r"\['observe', 'propose', 'act'\]"
+    with pytest.raises(ReleaseError, match=rf"^shipmill\.toml \[autonomy\]: {key} must be one of {levels}, got "):
+        autonomy(f"{key} = {value}\n")
+
+
+def test_s040_2_a_malformed_agent_stage_stops_the_cli(repo: Repo) -> None:
+    # the CLI's run() turns a ReleaseError into exit 2; the release planner refuses the config too
+    set_autonomy(repo, 'land = "merge"\n')
+    with pytest.raises(ReleaseError, match=r"land must be one of \['observe', 'propose', 'act'\], got 'merge'"):
+        main(["--repo", str(repo.root), "plan"], github=repo.github)
+
+
+def test_s040_3_the_hold_turns_an_agent_stage_act_into_propose_only() -> None:
+    for key, stage in AGENT_STAGES.items():
+        for level in Autonomy:
+            parsed = autonomy(f'{key} = "{level}"\n')
+            held = Autonomy.PROPOSE if level is Autonomy.ACT else level  # the hold never raises a level
+            assert parsed.effective(stage, HELD) is held
+            assert parsed.effective(stage, Hold()) is level
+    defaults = AutonomyPolicy()
+    assert [defaults.effective(s, HELD) for s in AGENT_STAGES.values()] == [Autonomy.PROPOSE] * 3
+    assert defaults.cause(AGENT_STAGES[StageKind.LAND], HELD) == f"held by {HOLD_LABEL} #7"
+    assert autonomy('fix = "observe"\n').cause(AGENT_STAGES[StageKind.FIX], HELD) == "fix autonomy is observe"
 
 
 # -- release autonomy in the planner ---------------------------------------------------------

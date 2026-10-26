@@ -423,3 +423,11 @@ entry that supersedes it, never by editing an old one.
 - Applies to: src/shipmill/land.py, .github/workflows/land.yml, .github/workflows/move-major-tag.yml, .github/workflows/publish.yml, .claude-plugin/marketplace.json, src/shipmill/operate.py, [environments], move-major-tag.yml, src/shipmill/gate.py, src/shipmill/plugin.py, src/shipmill/agents.py, src/shipmill/doctor.py, src/shipmill/status.py, src/shipmill/policy.py, src/shipmill/launchd.py, src/shipmill/init.py, src/shipmill/upgrades.py, src/shipmill/__init__.py, .claude-plugin/plugin.json, .github/shipmill.toml, hooks/delivery.py, skills/*/SKILL.md, skills/github-ship-watch/scripts/watch_state.py, skills/shipmill-setup/scripts/setup_state.py, skills/github-pr-triage/scripts/shipped.py, [agents] plugin_update, requires, shipmill status
 - Enforced by: review, until #598 is built
 - Supersedes: D-44
+
+## D-51: Agent stages have [autonomy] levels: triage and fix act, land proposes by default
+
+- Decided: 2026-10-26, in shipmill/shipmill#656
+- Rule: [autonomy] in .github/shipmill.toml sets triage, fix, and land, the stages agent sessions run, to observe, propose, or act, with the same error shape as release: any other value, a non-string included, exits 2 naming the key and the levels. An absent key takes its default: triage act, fix act, land propose. An open shipmill-hold issue turns each of them from act into propose and leaves observe and propose as they are, as it does for release, deploy, and rollback. The CI stages (release, deploy, rollback, intake, upgrade) keep their keys, defaults, and hold behaviour unchanged (D-7, D-8, D-10); each stage's level is a ceiling over the zones of [decisions] (D-48)
+- Why: How far a gate session goes was set by the free words of [agents] prompt, which nothing checks, while the release side had a checked enum; one model answers 'how far does shipmill go by itself' for the whole pipeline (spec 040). The defaults keep what shipmill-setup recommends today: a verdict and a pull request are reversible, a merge waits for a person
+- Applies to: src/shipmill/autonomy.py, [autonomy] triage, [autonomy] fix, [autonomy] land, shipmill-hold label
+- Enforced by: tests/test_autonomy.py (S-040-1, S-040-2, S-040-3)
