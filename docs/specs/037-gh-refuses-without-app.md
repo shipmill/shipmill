@@ -253,4 +253,6 @@ The build updates every place that describes `shipmill gh` in a repo without an 
 
 ## Issues
 
+- shipmill/shipmill#700: S-037-1, S-037-2, S-037-3, S-037-4, S-037-5, S-037-6, S-037-7, S-037-8, S-037-9, S-037-10, S-037-11, S-037-12
+
 ## Verification

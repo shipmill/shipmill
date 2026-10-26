@@ -202,4 +202,6 @@ then: claude plugin marketplace update shipmill && claude plugin update shipmill
 
 ## Issues
 
+- shipmill/shipmill#701: S-039-1, S-039-2, S-039-3, S-039-4, S-039-5, S-039-6, S-039-7, S-039-8, S-039-9, S-039-10, S-039-11, S-039-12, S-039-13, S-039-14, S-039-15
+
 ## Verification

@@ -166,4 +166,6 @@ Both name the auth kind and never the token or any part of it:
 
 ## Issues
 
+- shipmill/shipmill#699: S-035-1, S-035-2, S-035-3, S-035-4, S-035-5, S-035-6, S-035-7, S-035-8, S-035-9, S-035-10, S-035-11, S-035-12, S-035-13, S-035-14, S-035-15, S-035-16, S-035-17, S-035-18
+
 ## Verification
