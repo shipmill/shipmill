@@ -1,0 +1,12 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "902",
+    "--json",
+    "number,title,body,author,labels,comments,state"
+  ],
+  "stdout": "{\"number\": 902, \"title\": \"Hold shipmill: the gate launched sessions on a stale plugin\", \"body\": \"Stop every stage while the plugin install is fixed. Closing this issue resumes shipmill.\", \"author\": {\"login\": \"romamo\", \"is_bot\": false, \"name\": \"\"}, \"labels\": [{\"id\": \"LA_kwDOhold\", \"name\": \"shipmill-hold\", \"description\": \"Stops shipmill\", \"color\": \"b60205\"}], \"comments\": [], \"state\": \"OPEN\"}",
+  "stderr": "",
+  "exit": 0
+}

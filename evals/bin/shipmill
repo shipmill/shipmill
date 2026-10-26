@@ -15,9 +15,16 @@ person. `shipmill [--repo PATH] app-token --check` (spec 033), in either form, a
 the real check would where the App is available: exit 0, and a `{"kind": "check"}` line in
 `.eval/gh.jsonl`. A case whose fixture holds a file `no-app` runs without the App: the check
 exits 2 with the real check's reason, and every `shipmill gh` call exits 2 with the real
-missing-key message, logged as `{"kind": "refused"}`, and never reaches the stub. Every
-other command (`uvx --from actionlint-py actionlint`, `shipmill product show`) runs the real
-program unchanged: the first one on PATH that isn't this shim.
+missing-key message, logged as `{"kind": "refused"}`, and never reaches the stub.
+
+`shipmill autonomy` (spec 040), in either form, answers from the case's `.eval/autonomy.json`
+when the fixture has one: the `--json` record as written there, or its table without
+`--json`. The real command reads the config at origin/HEAD and the hold through gh, neither of
+which a case's workspace pins, so a case that sets the levels records them as the CLI prints
+them. Without the file, the real program answers.
+
+Every other command (`uvx --from actionlint-py actionlint`, `shipmill product show`)
+runs the real program unchanged: the first one on PATH that isn't this shim.
 
 Python 3.10 compatible, standard library only, like the skills' scripts.
 """
@@ -87,18 +94,45 @@ UVX_VALUES = {
 }
 
 
-def gh_args(argv: list[str]) -> list[str] | None:
-    """The arguments after `gh` in a shipmill command line, as shipmill's CLI splits it:
-    only `--repo PATH` (or an abbreviation, or `--repo=PATH`) may come before gh"""
+def command(argv: list[str]) -> tuple[str, list[str]] | None:
+    """A shipmill command line's subcommand and the arguments after it, as shipmill's CLI
+    splits it: only `--repo PATH` (or an abbreviation, or `--repo=PATH`) may come before it"""
     index = 0
     while index < len(argv):
         arg = argv[index]
-        if arg == "gh":
-            return argv[index + 1 :]
-        if not arg.startswith("-") or arg == "--":
+        if arg == "--":
             return None
+        if not arg.startswith("-"):
+            return arg, argv[index + 1 :]
         index += 2 if len(arg) > 2 and "--repo".startswith(arg) else 1
     return None
+
+
+def find_eval(start: Path) -> Path | None:
+    for directory in (start, *start.parents):
+        candidate = directory / ".eval"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def autonomy_answer(args: list[str]) -> str | None:
+    """`shipmill autonomy`'s output from the case's `.eval/autonomy.json` (spec 040), the
+    `--json` record as recorded, or the table it prints without `--json`; None when the case
+    records none, so the real program answers"""
+    eval_dir = find_eval(Path.cwd())
+    recorded = None if eval_dir is None else eval_dir / "autonomy.json"
+    if recorded is None or not recorded.is_file():
+        return None
+    text = recorded.read_text(encoding="utf-8")
+    if "--json" in args:
+        return text if text.endswith("\n") else text + "\n"
+    data = json.loads(text)
+    stages = data["stages"]
+    width = max(18, *(len(row["stage"]) for row in stages))
+    lines = [f"hold: {issue}" for issue in data["hold"]]
+    lines += [f"{r['stage']:<{width}} {r['configured']:<7} {r['effective']:<7} {r['source']}" for r in stages]
+    return "".join(line + "\n" for line in lines)
 
 
 def uvx_command(argv: list[str]) -> int | None:
@@ -112,8 +146,8 @@ def uvx_command(argv: list[str]) -> int | None:
     return None
 
 
-def is_shipmill(command: str) -> bool:
-    return command == "shipmill" or command.startswith(("shipmill==", "shipmill@"))
+def is_shipmill(program: str) -> bool:
+    return program == "shipmill" or program.startswith(("shipmill==", "shipmill@"))
 
 
 def shipmill_args(name: str, argv: list[str]) -> list[str] | None:
@@ -124,6 +158,12 @@ def shipmill_args(name: str, argv: list[str]) -> list[str] | None:
             return None
         return argv[at + 1 :]
     return argv
+
+
+def gh_args(args: list[str]) -> list[str] | None:
+    """The arguments after `gh` in a shipmill command line; None for another subcommand"""
+    found = command(args)
+    return None if found is None or found[0] != "gh" else found[1]
 
 
 def stubbed(name: str, argv: list[str]) -> list[str] | None:
@@ -137,13 +177,6 @@ def is_check(args: list[str]) -> bool:
     while index < len(args) and args[index].startswith("-") and args[index] != "--":
         index += 2 if len(args[index]) > 2 and "--repo".startswith(args[index]) else 1
     return args[index:] == ["app-token", "--check"]
-
-
-def find_eval(start: Path) -> Path | None:
-    for directory in (start, *start.parents):
-        if (directory / ".eval").is_dir():
-            return directory / ".eval"
-    return None
 
 
 def log(eval_dir: Path, line: dict[str, object]) -> None:
@@ -187,6 +220,12 @@ def main(argv: list[str]) -> None:
     if name not in ("shipmill", "uvx"):
         sys.exit(f"shim: run as shipmill or uvx, not {name}")
     given = shipmill_args(name, argv[1:])
+    found = None if given is None else command(given)
+    if found is not None and found[0] == "autonomy":
+        answer = autonomy_answer(found[1])
+        if answer is not None:
+            sys.stdout.write(answer)
+            return
     checking = given is not None and is_check(given)
     args = stubbed(name, argv[1:])
     eval_dir = find_eval(Path.cwd()) if checking or args is not None else None

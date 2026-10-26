@@ -67,3 +67,17 @@ skill = "github-pr-triage"
 kind = "decision"
 source = "shipmill/shipmill#613"
 commit = "c48559b"
+
+[[case]]
+path = "github-pr-triage/land-propose-labels-ready"
+skill = "github-pr-triage"
+kind = "decision"
+source = "shipmill/shipmill#665"
+commit = "de1d180"
+
+[[case]]
+path = "github-issue-resolve/hold-proposes-verdict"
+skill = "github-issue-resolve"
+kind = "decision"
+source = "shipmill/shipmill#665"
+commit = "c48559b"

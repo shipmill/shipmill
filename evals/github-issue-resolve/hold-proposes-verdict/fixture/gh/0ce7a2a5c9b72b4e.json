@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "891",
+    "--json",
+    "title,body,comments,labels",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"title\": \"README: name the decision policy where it says what the maintainer keeps (spec 030)\", \"body\": \"Spec 030's Docs section says `README.md` \\\"names the policy where it describes what the maintainer keeps\\\". That reads two ways, and both meet the spec:\\n\\n1. One sentence pointing to the policy: what the maintainer keeps is the zones at `ask` and `never`, which `shipmill decide levels` lists\\n2. The zones themselves, inline: `direction` and `decision-policy` never, and `scope`, `rule-departure`, `contract-change`, `security`, and `protected` asked\\n\\nPick a reading and build it.\", \"comments\": [], \"labels\": []}",
+  "stderr": "",
+  "exit": 0
+}

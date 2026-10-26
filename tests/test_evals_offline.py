@@ -338,6 +338,47 @@ def test_494_with_no_real_program_after_the_stub_the_shim_fails_rather_than_recu
         assert f"{argv[0]}: no real {argv[0]} on PATH after {STUB.parent.resolve()}" in done.stderr
 
 
+LEVELS = {
+    "hold": ["#9 stop"],
+    "stages": [
+        {"stage": "land", "configured": "act", "effective": "propose", "source": "hold"},
+        {"stage": "deploy.github-pages", "configured": "act", "effective": "propose", "source": "hold"},
+    ],
+}
+
+
+def test_s040_15_shipmill_autonomy_answers_from_the_case_autonomy_json_in_each_form(tmp_path: Path) -> None:
+    ws = workspace(tmp_path)
+    (ws / ".eval" / "autonomy.json").write_text(json.dumps(LEVELS), encoding="utf-8")
+    (ws / "sub").mkdir()
+    real_bin, calls = fake_programs(tmp_path)
+    path = [STUB.parent, python_bin(tmp_path), real_bin]
+    for form in (
+        ["uvx", "shipmill==0.78.0"],
+        ["shipmill"],
+        ["shipmill", "--repo", "."],
+        ["uvx", "-q", "shipmill@0.78.0"],
+    ):
+        done = shim(ws / "sub", *form, "autonomy", "--json", path=path)
+        assert (done.returncode, json.loads(done.stdout)) == (0, LEVELS), (form, done.stderr)
+    table = shim(ws, "shipmill", "autonomy", path=path)
+    assert table.stdout.splitlines() == [
+        "hold: #9 stop",
+        "land                act     propose hold",
+        "deploy.github-pages act     propose hold",
+    ]  # as `shipmill autonomy` prints it
+    assert not calls.exists()  # the real programs never ran
+    assert not (ws / ".eval" / "gh.jsonl").exists()
+
+
+def test_s040_15_without_an_autonomy_json_the_real_shipmill_answers(tmp_path: Path) -> None:
+    ws = workspace(tmp_path)
+    real_bin, calls = fake_programs(tmp_path)
+    done = shim(ws, "uvx", "shipmill==0.78.0", "autonomy", "--json", path=[STUB.parent, python_bin(tmp_path), real_bin])
+    assert (done.returncode, done.stdout) == (0, "real uvx\n"), done.stderr
+    assert calls.read_text(encoding="utf-8").splitlines() == ["uvx shipmill==0.78.0 autonomy --json"]
+
+
 def test_stub_and_scaffold_are_executable_in_git() -> None:
     staged = subprocess.run(
         ["git", "-C", str(ROOT), "ls-files", "-s", "evals/bin/gh", "evals/bin/shipmill", "evals/scaffold.sh"],
@@ -404,6 +445,25 @@ def test_s025_6_scaffold_leaves_the_repo_at_the_case_commit_with_the_fixture_at_
     assert git(ws, "status", "--porcelain") == ""  # .eval/ never shows to a session's git
     alternates = ws / ".git" / "objects" / "info" / "alternates"
     assert alternates.is_file()  # a shared clone, not a copy of the objects
+
+
+def test_s040_15_scaffold_commits_a_case_fixture_repo_over_the_case_commit(tmp_path: Path) -> None:
+    repo, then, case = source_repo(tmp_path)
+    overlay = case / "fixture" / "repo"
+    (overlay / ".github").mkdir(parents=True)
+    (overlay / ".github" / "shipmill.toml").write_text('[autonomy]\nland = "propose"\n', encoding="utf-8")
+    (overlay / "state.txt").write_text("the case's\n", encoding="utf-8")
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    done = subprocess.run(
+        ["bash", str(repo / "evals" / "scaffold.sh"), str(case)], cwd=ws, capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    assert git(ws, "rev-parse", "--short", "HEAD^") == then  # one commit on top of the case's
+    assert (ws / "state.txt").read_text(encoding="utf-8") == "the case's\n"
+    assert (ws / ".github" / "shipmill.toml").read_text(encoding="utf-8") == '[autonomy]\nland = "propose"\n'
+    assert git(ws, "status", "--porcelain") == ""  # committed, and .eval/ stays out of git
+    assert git(ws, "show", "--name-only", "--format=", "HEAD").splitlines() == [".github/shipmill.toml", "state.txt"]
 
 
 def test_s025_6_scaffold_fails_for_a_case_the_manifest_lacks(tmp_path: Path) -> None:

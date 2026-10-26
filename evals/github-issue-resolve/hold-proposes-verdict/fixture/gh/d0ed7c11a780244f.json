@@ -1,0 +1,12 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "902",
+    "--json",
+    "number,title,state"
+  ],
+  "stdout": "{\"number\": 902, \"title\": \"Hold shipmill: the gate launched sessions on a stale plugin\", \"state\": \"OPEN\"}",
+  "stderr": "",
+  "exit": 0
+}

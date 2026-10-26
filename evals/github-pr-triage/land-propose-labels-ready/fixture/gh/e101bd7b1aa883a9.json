@@ -1,0 +1,12 @@
+{
+  "args": [
+    "api",
+    "repos/shipmill/shipmill/pulls/880/files",
+    "--paginate",
+    "--jq",
+    ".[].filename"
+  ],
+  "stdout": "docs/specs/090-release-digest.md\n",
+  "stderr": "",
+  "exit": 0
+}

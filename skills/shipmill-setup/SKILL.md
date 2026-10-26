@@ -439,8 +439,8 @@ or the tags are wrong; fix those, not the version.
    Recommend the gate over `/loop` for anything that runs for days: each pass is a fresh
    session, and a quiet tick makes no model call (see [The gate](#the-gate))
 
-   For a routine, also ask whether it may merge: it merges only when its prompt says
-   "merge when green". Write the prompt so it clones shipmill rather than relying on the
+   A routine goes no further than `[autonomy]`, whatever its prompt says: it merges only
+   under `land = "act"`, which the Autonomy step (in [The gate](#the-gate)) asks. Write the prompt so it clones shipmill rather than relying on the
    plugin, which a cloud routine may not load (docs/flow.md, Keeping it running), and offer
    to create it with `/schedule`
 
@@ -465,9 +465,59 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
 --dry-run` for what a prune would remove); github-ship-watch reports a kept one older than
 7 days as WORKTREE_STALE, for a person to finish or remove.
 
-1. **Scope.** Ask what the session may do; the prompt carries it. Recommend triage without
-   merges for the first week: `/shipmill:github-issue-triage {repo} triage the new issues;
-   do not merge`. Open PRs count as work unless `[autonomy] land` is `observe`. Name every shipmill skill with the plugin's prefix
+1. **Autonomy.** Ask once how far shipmill goes by itself, with AskUserQuestion (in a gate
+   session through the needs-decision protocol), before you report the agent side
+   connected (spec 040, D-51). Offer the profiles; each writes every stage key, so no level
+   hides in a default:
+
+   | Profile | triage | fix | land | release | deploy (production) | rollback |
+   |---|---|---|---|---|---|---|
+   | Watch first | propose | observe | observe | propose | propose | propose |
+   | Recommended for the first weeks | act | act | propose | act | propose | act |
+   | Ship by itself | act | act | act | act | act | act |
+   | Custom | asked one stage at a time | | | | | |
+
+   Recommend "Recommended for the first weeks". Under the question, show what each level
+   means for each stage:
+
+   - **triage:** `observe` reports the verdicts in the session and the gate log and writes
+     nothing to GitHub; `propose` posts each verdict as a comment headed `Proposed verdict`,
+     with no label, close, or dispatch, which you apply by hand or by replying `apply`;
+     `act` posts the verdict, labels, closes, and dispatches
+   - **fix:** `observe` writes no plan and no code; `propose` posts the implementation plan
+     on the issue and opens no branch; `act` opens a branch and a pull request per implement
+   - **land:** `observe` reviews in the session only, with no push and no comment; `propose`
+     reviews, pushes small fixes with regression tests, posts the review, and labels a pull
+     request that passes every check `shipmill-ready`, for a person to merge; `act` merges on
+     green CI
+   - **release, deploy, rollback:** `observe` reports only; `propose` opens an issue saying
+     what it would do, and a person does it; `act` does it
+
+   And the stop switch: one open issue labelled `shipmill-hold` turns every `act` into
+   `propose`, for these stages and the release side alike, until it is closed; the gate
+   starts nothing while it is open (D-15). Inside a stage at `act`, `[decisions]` still
+   decides each decision by its zone.
+
+   Write the answer into `[autonomy]` in the setup's PR, editing the section `shipmill
+   init` wrote rather than adding a second one. Write `deploy.<env>` for each environment
+   the config declares (the profile's production level for each; Custom asks per
+   environment), and leave it out when there are none:
+
+   ```toml
+   [autonomy]
+   triage = "act"
+   fix = "act"
+   land = "propose"
+   release = "act"
+   deploy.production = "propose"
+   rollback = "act"
+   ```
+
+   Once that PR merges, run `$CR autonomy` and show the user its table. The prompt holds
+   the task only, never the scope: `/shipmill:github-issue-triage {repo} triage the new
+   issues`. Its words can lower a stage ("do not merge") but never raise one, so "merge
+   when green" under `land = "propose"` merges nothing. Open PRs count as work unless
+   `land` is `observe`. Name every shipmill skill with the plugin's prefix
    (`/shipmill:<skill>`): a skill of the same name in `~/.claude/skills` or
    `~/.agents/skills`, such as a link to a working copy, answers a bare `/<skill>` in place
    of the released plugin (#236). The checklist reads a bare one as `AGENTS_UNPREFIXED`
@@ -476,7 +526,7 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
 
    ```toml
    [agents]
-   prompt = "/shipmill:github-issue-triage {repo} triage the new issues; do not merge"
+   prompt = "/shipmill:github-issue-triage {repo} triage the new issues"
    retry_hours = 24   # unchanged findings start a new session after this
    notify = true      # a desktop notification when a session waits on you
    remind_hours = 4   # repeat it while the session still waits

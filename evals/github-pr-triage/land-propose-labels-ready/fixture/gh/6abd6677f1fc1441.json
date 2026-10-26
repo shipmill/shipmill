@@ -1,0 +1,15 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--repo",
+    "shipmill/shipmill",
+    "--state",
+    "open",
+    "--json",
+    "number,title,headRefName,labels"
+  ],
+  "stdout": "[{\"number\": 880, \"title\": \"Add spec 090: a weekly release digest\", \"headRefName\": \"spec/090-release-digest\", \"labels\": [{\"id\": \"LA_1\", \"name\": \"needs-decision\", \"description\": \"\", \"color\": \"d876e3\"}]}]\n",
+  "stderr": "",
+  "exit": 0
+}

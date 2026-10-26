@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "902",
+    "--json",
+    "state,labels",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"state\": \"OPEN\", \"labels\": [{\"id\": \"LA_kwDOhold\", \"name\": \"shipmill-hold\", \"description\": \"Stops shipmill\", \"color\": \"b60205\"}]}",
+  "stderr": "",
+  "exit": 0
+}

@@ -47,7 +47,12 @@ replace = '"version": "{version}"'
 # one entry per place the prose writes it out, each matching exactly once
 [[version_lines]]
 file = "skills/github-issue-triage/SKILL.md"
-pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= gh )'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-issue-triage/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= autonomy )'
 replace = 'uvx shipmill=={version}'
 
 [[version_lines]]
@@ -57,12 +62,22 @@ replace = 'uvx shipmill=={version}'
 
 [[version_lines]]
 file = "skills/github-issue-resolve/SKILL.md"
-pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= gh )'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-issue-resolve/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= autonomy )'
 replace = 'uvx shipmill=={version}'
 
 [[version_lines]]
 file = "skills/github-pr-triage/SKILL.md"
-pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= gh )'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-pr-triage/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= autonomy )'
 replace = 'uvx shipmill=={version}'
 
 [[version_lines]]

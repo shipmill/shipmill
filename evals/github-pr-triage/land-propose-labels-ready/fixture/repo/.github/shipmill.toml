@@ -1,0 +1,126 @@
+# shipmill releases itself with its own workflows, at the commit being released
+name = "shipmill"
+mode = "release"
+branch = "main"
+version_files = "pyproject"
+after_stamp = ["uv lock --check"]
+
+[changelog]
+style = "keep-a-changelog"
+fragments = "changelog.d"
+
+[bump]
+from = "headings"
+major = ["Breaking"]
+minor = ["Added", "Changed", "Deprecated", "Removed"]
+patch = ["Fixed", "Security"]
+
+[gates]
+blocker_label = "release-blocker"
+blocker_lanes = ["stable"]
+
+# A stable release after every batch of merges, and hotfixes by hand
+[lanes.stable]
+quiet_minutes = 30
+github_release = true
+dispatch = ["move-major-tag.yml", "publish.yml"]  # publish.yml: PyPI (spec 010)
+
+[lanes.hotfix]
+github_release = true
+dispatch = ["publish.yml"]
+
+# The plugin's version follows the package's, so a plugin update ships with each release
+[[version_lines]]
+file = ".claude-plugin/plugin.json"
+pattern = '"version": "[^"]+"'
+replace = '"version": "{version}"'
+
+# The marketplace serves the release's tag, never main's unreleased commits (spec 031)
+[[version_lines]]
+file = ".claude-plugin/marketplace.json"
+pattern = '"ref": "v[^"]+"'
+replace = '"ref": "v{version}"'
+
+# The skills run the CLI the plugin pins, `uvx shipmill==<plugin.json's version>` (spec 031):
+# one entry per place the prose writes it out, each matching exactly once
+[[version_lines]]
+file = "skills/github-issue-triage/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-issue-triage/references/triage-rubric.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-issue-resolve/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-pr-triage/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-pr-triage/references/landing.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-pr-triage/references/reviewer-brief.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-ship-watch/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= <command>)'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-ship-watch/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= gh )'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/product-intake/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= gh )'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/product-intake/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= product show )'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/shipmill-setup/SKILL.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+# shipmill's own GitHub Pages site: each stable release deploys there, and operate checks that
+# its health.json names the deployed release (#53)
+[environments.github-pages]
+lane = "stable"
+workflow = "deploy.yml"
+health = "https://shipmill.dev/health.json"
+
+[operate]
+rollback_after = 3
+
+# How far shipmill goes by itself: shipmill-setup's "Recommended for the first weeks" (spec 040)
+[autonomy]
+triage = "act"
+fix = "act"
+land = "propose"
+release = "act"
+deploy.github-pages = "propose"
+rollback = "act"
+
+# shipmill's own gate: a background session triages new issues and lands green PRs
+[agents]
+prompt = "/shipmill:github-issue-triage {repo} triage the new issues; merge when green"
+prs = true
+retry_hours = 24
+app_id = 5209412   # gated sessions write as shipmill-romamo[bot] (spec 004)
+mode = "headless"  # what the gate runs; written out, not left to the default (D-20)

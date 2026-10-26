@@ -1,0 +1,15 @@
+{
+  "args": [
+    "label",
+    "list",
+    "--repo",
+    "shipmill/shipmill",
+    "--limit",
+    "100",
+    "--json",
+    "name"
+  ],
+  "stdout": "[{\"name\": \"bug\"}, {\"name\": \"enhancement\"}, {\"name\": \"needs-decision\"}, {\"name\": \"decided\"}, {\"name\": \"human\"}, {\"name\": \"postponed\"}, {\"name\": \"opportunity\"}, {\"name\": \"planned\"}]",
+  "stderr": "",
+  "exit": 0
+}

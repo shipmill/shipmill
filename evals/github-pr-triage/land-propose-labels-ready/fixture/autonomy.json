@@ -1,0 +1,53 @@
+{
+  "hold": [],
+  "stages": [
+    {
+      "stage": "triage",
+      "configured": "act",
+      "effective": "act",
+      "source": "config"
+    },
+    {
+      "stage": "fix",
+      "configured": "act",
+      "effective": "act",
+      "source": "config"
+    },
+    {
+      "stage": "land",
+      "configured": "propose",
+      "effective": "propose",
+      "source": "config"
+    },
+    {
+      "stage": "release",
+      "configured": "act",
+      "effective": "act",
+      "source": "config"
+    },
+    {
+      "stage": "deploy.github-pages",
+      "configured": "propose",
+      "effective": "propose",
+      "source": "config"
+    },
+    {
+      "stage": "rollback",
+      "configured": "act",
+      "effective": "act",
+      "source": "config"
+    },
+    {
+      "stage": "intake",
+      "configured": "propose",
+      "effective": "propose",
+      "source": "default"
+    },
+    {
+      "stage": "upgrade",
+      "configured": "propose",
+      "effective": "propose",
+      "source": "default"
+    }
+  ]
+}
