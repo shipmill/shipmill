@@ -133,10 +133,11 @@ BAD_ENTRIES = [
 UNREADABLE = ["{", "[]", '{"plugins": {}}', marketplace({"source": "./"}, name="other")]
 
 
-def test_s031_2_the_repo_marketplace_reads_as_the_plugin_version(ws: ModuleType) -> None:
+def test_s031_2_the_repo_marketplace_reads_the_same_in_the_cli_and_watch_state(ws: ModuleType) -> None:
     text = MARKETPLACE.read_text(encoding="utf-8")
-    assert marketplace_release(text) == Version.parse(version())
-    assert ws.marketplace_release(text) == f"v{version()}"
+    # D-50 (#617): on a release commit the ref still names the previous release, never a newer one
+    assert marketplace_release(text) <= Version.parse(version())
+    assert ws.marketplace_release(text) == f"v{marketplace_release(text)}"
 
 
 def test_s031_2_the_cli_reads_the_marketplace_from_the_default_branch_not_gh_release() -> None:
