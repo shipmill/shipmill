@@ -35,6 +35,11 @@ one PR that sets app_id sets mode too. One more row follows it when it applies:
                    skill of that name in ~/.claude/skills or ~/.agents/skills answers it in
                    place of the plugin's (#236). The detail names the prefixed form to write.
                    --fix leaves it: the config changes through a pull request
+And one more after it (spec 040):
+  AUTONOMY_IMPLICIT  an [agents] section, but [autonomy] sets none of triage, fix, and
+                   land: how far a session goes was never chosen, so it comes from the
+                   defaults (or, for one minor release, from the prompt's words).
+                   shipmill-setup's Autonomy step asks and writes all three. --fix leaves it
 
 Skills (the home folder's user skills, which shadow the plugin's by name):
   SKILL_SHADOWED   a link or copy of a shipmill skill in ~/.claude/skills or ~/.agents/skills
@@ -108,10 +113,11 @@ Contributor rules (a warning, read only when the config's [changelog] sets fragm
 Exit 0 when every row is RELEASE_READY, AGENTS_OK, PLUGIN_OK, SKILLS_OK, LABELS_OK,
 BRANCH_DELETE_ON, or LANDING_OK (RUNNER_SHARED and CHANGELOG_RULES, warnings, leave the
 exit code alone), 1
-otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, PLUGIN_OUTDATED,
-SKILL_SHADOWED, and LANDING_OFF included), 2 on bad input, a malformed settings.json or
-config (its [agents] read as github-ship-watch reads it; its [lanes] and [environments]
-too when the runner is read), an [agents] prs that isn't a TOML boolean, both config files,
+otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT,
+PLUGIN_OUTDATED, SKILL_SHADOWED, and LANDING_OFF included), 2 on bad input, a malformed
+settings.json or config (its [agents] read as github-ship-watch reads it; its [lanes] and
+[environments] too when the runner is read; its [autonomy] with an [agents] section), an
+[agents] prs that isn't a TOML boolean, both config files,
 a runs-on in release.yml that isn't a label or a quoted JSON list of labels, a git or gh
 failure (a failed read of the repo setting never reads as off), or a malformed
 `claude plugin list --json`.
@@ -196,6 +202,12 @@ DEFAULT_RUNNER = "ubuntu-latest"
 SHIPMILL_JOB = re.compile(r"(?:^|/)\.github/workflows/(?:prepare|land)\.ya?ml(?:@\S*)?$")
 # the plugin's name: a prompt calls its skills as /shipmill:<name> (#236)
 PREFIX = PLUGIN.partition("@")[0]
+# shipmill's autonomy.AGENT_STAGES: the [autonomy] keys of the stages agent sessions run (spec 040)
+AGENT_STAGES = ("triage", "fix", "land")
+IMPLICIT = (
+    "[autonomy] sets none of triage, fix, and land: how far a gate session goes was never chosen, so it"
+    " comes from the defaults or the prompt's words; run shipmill-setup's Autonomy step, which writes all three"
+)
 
 
 @dataclass(frozen=True)
@@ -340,6 +352,48 @@ def prompt_rows(repo_dir: Path, ws: ModuleType) -> list[Row]:
             f" runs in place of the plugin's; write {fixed}",
         )
     ]
+
+
+def autonomy_rows(repo_dir: Path, ws: ModuleType) -> list[Row]:
+    """AUTONOMY_IMPLICIT when the config has an [agents] section and its [autonomy] sets none
+    of the agent stages (spec 040); the levels are shipmill's to validate"""
+    if agents_section(repo_dir) is None or agent_stages_set(repo_dir, ws):
+        return []
+    return [Row("AUTONOMY_IMPLICIT", IMPLICIT)]
+
+
+def agent_stages_set(repo_dir: Path, ws: ModuleType) -> list[str]:
+    """The agent stages [autonomy] sets, in AGENT_STAGES' order, read as watch_state.py reads the
+    config: with tomllib on Python 3.11+, a plain [autonomy] table on 3.10. An autonomy that
+    isn't a table exits 2"""
+    config = repo_dir / CONFIG
+    text = config.read_text(encoding="utf-8")
+    if ws.tomllib is None:
+        return agent_stages_set_310(text, config, ws)
+    try:
+        raw = ws.tomllib.loads(text)
+    except ws.tomllib.TOMLDecodeError as exc:
+        fail(f"{config}: {exc}")
+    table = raw.get("autonomy", {})
+    if not isinstance(table, dict):
+        fail(f"{config}: autonomy must be a table, got {type(table).__name__}")
+    return [stage for stage in AGENT_STAGES if stage in table]
+
+
+def agent_stages_set_310(text: str, config: Path, ws: ModuleType) -> list[str]:
+    """agent_stages_set on Python 3.10, without tomllib: keys that start their lines in a plain
+    [autonomy] table, or an [autonomy.<stage>] table; an autonomy set from the top level (a
+    dotted key or an inline table) is refused rather than misread"""
+    tables = ws.toml_tables(text)
+    if re.search(r"^\s*[\"']?autonomy[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE):
+        fail(f"{config}: can't read [autonomy] on Python 3.10: use 3.11+ or a plain [autonomy] table")
+    body = tables.get("autonomy", "")
+    found = []
+    for stage in AGENT_STAGES:
+        key = re.search(rf"^\s*[\"']?{stage}[\"']?\s*[.=]", body, re.MULTILINE)
+        if key is not None or f"autonomy.{stage}" in tables:
+            found.append(stage)
+    return found
 
 
 # -- plugin --------------------------------------------------------------------------------
@@ -919,6 +973,7 @@ def main() -> int:
         release_row(repo_dir),
         agents_row(repo_dir),
         *prompt_rows(repo_dir, ws),
+        *autonomy_rows(repo_dir, ws),
         *plugin_rows(settings, lambda: outdated_installs(args.repo, repo_dir, ws)),
         *skill_rows(Path.home(), ws),
         labels_row(missing, wanted),

@@ -46,6 +46,7 @@ class StageKind(StrEnum):
 
 
 AGENT_STAGES = (StageKind.TRIAGE, StageKind.FIX, StageKind.LAND)  # the stages agent sessions run (spec 040)
+DEPLOY_DEFAULT = Autonomy.ACT  # an environment [autonomy] doesn't list deploys at act (D-7)
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +204,7 @@ class AutonomyPolicy:
         if stage.kind is StageKind.LAND:
             return self.land
         assert stage.environment is not None  # Stage guarantees it
-        return self.deploy.get(stage.environment, Autonomy.ACT)
+        return self.deploy.get(stage.environment, DEPLOY_DEFAULT)
 
     def effective(self, stage: Stage, hold: Hold) -> Autonomy:
         """The stage's autonomy under the hold: an open hold turns act into propose"""

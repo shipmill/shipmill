@@ -167,7 +167,8 @@ turns on changelog fragments: `fragments = "changelog.d"` in the policy and
 `changelog.d/README.md`, so each pull request adds its entry as a file there instead of
 editing `CHANGELOG.md` (spec 013). `$CR init --ci ci.yml --no-fragments` writes neither, and
 each pull request edits Unreleased. `--runs-on <runner>` puts shipmill's release jobs on a
-runner: a label, such as `self-hosted`, or a JSON list of labels. Then edit the policy: which lanes, when each releases, what each dispatches, and the
+runner: a label, such as `self-hosted`, or a JSON list of labels. The policy's
+`[autonomy]` is written out, with `release` at its default, `act` (spec 040). Then edit the policy: which lanes, when each releases, what each dispatches, and the
 gates. The keys are in [The policy](release-lanes.md#the-policy). For a uv
 project, add `after_stamp = ["uv lock --check"]`.
 
