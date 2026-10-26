@@ -861,10 +861,12 @@ AGENT_ROWS = [
     "OPERATE_FAILED",
     "INCIDENT_OPEN",
     "UPGRADE_PENDING",
+    "DIRECTION_PENDING",
     "UPSTREAM_DUE",
     "VETOED",
 ]
 REPORT_ROWS = [
+    "DIRECTION_MISSING",
     "PROMOTION_DUE",
     "UNHEALTHY",
     "HOLD",
@@ -1603,6 +1605,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         ),
         ws.upstream_unreadable_row(REPO, CHECKOUT, f"error: {TITLE}"),
         ws.pypi_wait_row("0.66.0", "the release plan"),
+        *ws.direction_rows(REPO, "main", False, list, lambda: [], list, lambda n: [], None, lambda n: None).rows,
     ]
     found: dict[str, list[Any]] = {}
     for row in rows:
@@ -1654,6 +1657,8 @@ FIXES = {
         " /shipmill:github-pr-triage o/r for pull requests"
     ],
     "UPGRADE_PENDING": ["/shipmill:github-ship-watch o/r"],
+    "DIRECTION_MISSING": ["/shipmill:github-ship-watch o/r"],
+    "DIRECTION_PENDING": ["/shipmill:github-ship-watch o/r"],
     "MILESTONE_OVERTAKEN": [RENAME],
     "UPSTREAM_DUE": ["/shipmill:github-issue-triage o/r"],
     "UPSTREAM_ASKED": ["answer the needs-decision question on x/b#2"],

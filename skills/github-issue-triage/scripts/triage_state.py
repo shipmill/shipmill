@@ -169,6 +169,11 @@ updates it), read in the first query and paged past 50:
                    nothing else, SUSPECT_CLOSE and VERIFY_CLOSED included, and one without
                    such a veto reports nothing here
 
+With --json, an open direction issue's line (spec 034: labelled shipmill-direction, the
+marker <!-- shipmill-direction --> as its body's first line, opened by an OWNER, MEMBER, or
+COLLABORATOR or the --bot-login) carries "direction": true, whatever its state, so
+github-ship-watch keeps it out of its issue rows without reading it again.
+
 With --wip N (a work-in-progress limit, such as the config's [agents] wip), a last
 line says how many issues are IN_PROGRESS (counting an OFF_MILESTONE one with an open
 PR), the room left under N, and the issues
@@ -1736,6 +1741,8 @@ def main() -> int:
             if usual[0] == "IN_PROGRESS":
                 busy.add(issue["number"])
         row: dict[str, Any] = {"number": issue["number"], "state": state, "title": issue["title"], "note": note}
+        if direction_issue(issue, args.bot_login):  # spec 034: github-ship-watch's, never in its issue rows
+            row["direction"] = True
         if state == "WITH_PERSON":  # whom it waits on, for github-ship-watch's ISSUES_OPEN row
             row["assignees"] = assignees(issue)
         if roles is not None and state == "ASSIGN_DUE":

@@ -89,6 +89,29 @@ with the `<!-- shipmill-upgrade: <id> <version> -->` marker on its first line):
                   MEMBER, or COLLABORATOR, the --bot-login, nor so by the release workflow)
                   stays in UNTRUSTED and nothing else (D-16)
 
+The direction (spec 034; only for a config with an [agents] table, which nothing reads
+without): `git cat-file -e origin/<branch>:docs/product.md` after the fetch of the default
+branch, and when it is there `shipmill --repo <repo-dir> product check --ref origin/<branch>`;
+any other failure of either stops the watch (exit 2). The direction issues (labelled
+shipmill-direction, open and closed, one REST read) are read only while the file is absent,
+and the pull requests from shipmill/direction only while one is open:
+  DIRECTION_MISSING  subject docs/product.md: the file is absent, or product check refuses it
+                  (its first problem). The fix names where the question stands: the open
+                  direction issue's URL, the open shipmill/direction pull request's (the repo's
+                  own, never a fork's), with neither the github-ship-watch skill, and for a
+                  refused file `shipmill product check`. An action (exit 1), never an
+                  agent's: the answer is the maintainer's (D-34)
+  DIRECTION_PENDING  while the file is absent, what a session does: open the direction
+                  question (no direction issue at all), or on the oldest open one, #N: ask the
+                  maintainer (no needs-decision label), take up the answer (labelled, a trusted
+                  reply after its question), or close it as not planned (a pull request from
+                  the repo's own shipmill/direction closed unmerged since it was opened or
+                  last reopened, read from its events only then). None while its question
+                  waits (it is in NEEDS_DECISION), while a shipmill/direction pull request is
+                  open, or for a refused file. An agent's row
+  A direction issue closed for any reason, with none open and no file, is a decline: no row,
+  and TRIAGE_MODE adds "no direction: declined in #N"
+
 Operations (only when the config declares environments; read from the
 deployments and issues shipmill operate writes):
   OPERATE_FAILED  the latest finished run of the workflow that calls shipmill's operate.yml
@@ -125,8 +148,8 @@ Intake (github-issue-triage's triage_state.py):
                   UPSTREAM #N: never in ISSUES, NEEDS_DECISION, or an agent row. With
                   [agents], an open direction issue (spec 034: labelled shipmill-direction,
                   <!-- shipmill-direction --> as its body's first line, opened by an OWNER,
-                  MEMBER, or COLLABORATOR or the --bot-login) is in neither ISSUES nor
-                  ISSUES_OPEN
+                  MEMBER, or COLLABORATOR or the --bot-login, which triage_state.py marks
+                  "direction": true on its line) is in neither ISSUES nor ISSUES_OPEN
   PRS_OPEN        open non-draft pull requests (reported, never an action by itself),
                   less the ones NEEDS_DECISION and UNTRUSTED list
   NEEDS_DECISION  issues and pull requests labelled needs-decision whose question has no
@@ -192,7 +215,7 @@ PyPI's window (#597; the pinned `uvx shipmill==<version>` form only, never --too
                   error), even run once more as `uvx --refresh-package shipmill ...`, since a
                   release's tag moves minutes before PyPI serves it and uv caches the index up to
                   10 minutes: one row per version, naming the reads it stands in for (the release
-                  plan, worktrees, milestones, plans, upstream reports; with --trusted-only, a
+                  plan, worktrees, milestones, the direction, plans, upstream reports; with --trusted-only, a
                   plans read takes the issues and pull requests with it, since its untrusted plan
                   issues aren't known), with the release's publish.yml run as the fix. The rest of
                   the watch stands; reported, never an action by itself, and never an agent's
@@ -297,7 +320,8 @@ API error: rerun". An auth, not-found, or any other failure stops it at once.
 
 --json prints one JSON object per row: state, subject, detail, and agent, true when the
 row needs an agent (BOT_FAILED, BOT_STALLED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
-ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING, UPSTREAM_DUE, VETOED): the rows shipmill gate starts a
+ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING, DIRECTION_PENDING, UPSTREAM_DUE, VETOED): the rows
+shipmill gate starts a
 session for. A waiting
 item is in no agent row, so it neither starts a session nor changes the gate's fingerprint.
 Each line has a fix too (spec 011): the one line that clears the row, an exact command where
@@ -313,16 +337,16 @@ push to one changes the gate's fingerprint (#546); the table never prints it.
 Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when any
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
 ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
-NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, GATE_SESSIONS_DEAD, SKILL_SHADOWED,
-UPGRADE_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, MILESTONE_OVERTAKEN, UPSTREAM_DUE, UPSTREAM_ASKED,
-UPSTREAM_UNREADABLE, or VETOED row is present, 2
+NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MISSING, GATE_SESSIONS_DEAD,
+SKILL_SHADOWED, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, MILESTONE_OVERTAKEN,
+UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, or VETOED row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
 milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
 `shipmill: ` error is the BOT_PLAN_FAILED row instead, and uv finding no pinned version the
 PYPI_WAIT row), and on a missing or malformed
 .claude-plugin/plugin.json (spec 031).
 Needs git, an authenticated gh, and uvx (for a shipmill bot's plan, worktrees, and milestones,
-and a direction's plans; `shipmill
+a direction's check and its plans; `shipmill
 worktrees` needs claude on PATH too, to see the live sessions). Python 3.10+,
 standard library only.
 
@@ -455,9 +479,11 @@ ACTION = {
     "BRANCH_DELETE_OFF",
     "SHIPMILL_OUTDATED",
     "GATE_NO_APP",
+    "DIRECTION_MISSING",
     "GATE_SESSIONS_DEAD",
     "SKILL_SHADOWED",
     "UPGRADE_PENDING",
+    "DIRECTION_PENDING",
     "CHAIN_NO_GATE",
     "CHAIN_UNREADABLE",
     "MILESTONE_OVERTAKEN",
@@ -480,6 +506,7 @@ AGENT = {
     "OPERATE_FAILED",
     "INCIDENT_OPEN",
     "UPGRADE_PENDING",
+    "DIRECTION_PENDING",
     "UPSTREAM_DUE",
 }
 # the states whose every row carries a fix, the one line that clears it (spec 011): every
@@ -550,6 +577,11 @@ UPGRADE_BRANCH = "shipmill/upgrade-"  # an upgrade pull request's head: this and
 # shipmill's question for a missing direction (spec 034): triage_state.py's label, marker, and
 # rule (direction_issue), one definition for the watch and for triage
 DIRECTION_LABEL: str = TRIAGE.DIRECTION_LABEL
+DIRECTION_BRANCH = "shipmill/direction"  # the head of the pull request adding docs/product.md
+# a refused direction is the maintainer's to repair (D-34): the fix names the check, nothing else
+DIRECTION_REPAIR = f"fix {DIRECTION.as_posix()}, then run shipmill product check"
+# git cat-file -e's error for a path its ref lacks (LC_ALL=C); any other failure is a failure
+GIT_ABSENT = re.compile(r"^fatal: path '[^']*' (?:does not exist|exists on disk, but not) in '")
 OPERATE_USES = re.compile(
     r"^\s*(?:-\s*)?uses:\s*[\"']?(?:[\w.-]+/[\w.-]+/\.github/workflows/operate\.ya?ml@|\./\.github/workflows/operate\.ya?ml)",
     re.MULTILINE,
@@ -2143,11 +2175,11 @@ def operations_rows(
 Comments = list[tuple[str, str, str]]  # (login, author association, body), oldest first
 
 
-def pr_comments(repo: str, number: int) -> Comments:
+def pr_comments(repo: str, number: int, read: Callable[[list[str]], str] = run) -> Comments:
     """A pull request's conversation comments, every page, through the REST API (a Bot's
     login carries "[bot]" there, as --bot-login does)"""
     jq = '.[] | [(.user.login // "ghost"), .author_association, (.body // "")]'
-    out = run(["gh", "api", "--paginate", f"repos/{repo}/issues/{number}/comments", "--jq", jq])
+    out = read(["gh", "api", "--paginate", f"repos/{repo}/issues/{number}/comments", "--jq", jq])
     return [(str(c[0]), str(c[1]), str(c[2])) for c in map(json.loads, out.splitlines())]
 
 
@@ -2214,32 +2246,224 @@ def upgrade_rows(
     return Upgrades(rows, waiting, frozenset(owned))
 
 
+def is_direction(issue: dict[str, Any], bot_login: str | None = None) -> bool:
+    """Whether one of the REST API's issues is a direction issue (spec 034): triage_state.py's
+    direction_issue, labelled, marked, and opened by an OWNER, MEMBER, or COLLABORATOR or the
+    --bot-login (D-16); a pull request is none"""
+    if "pull_request" in issue:
+        return False
+    user = issue.get("user")
+    node = {
+        "body": issue.get("body") or "",
+        "author": {"login": user["login"], "__typename": user.get("type")} if user else None,
+        "authorAssociation": issue.get("author_association"),
+        "labels": {"nodes": [{"name": label["name"]} for label in issue["labels"]]},
+    }
+    found: bool = TRIAGE.direction_issue(node, bot_login)
+    return found
+
+
 def direction_numbers(found: list[dict[str, Any]], bot_login: str | None = None) -> frozenset[int]:
-    """The direction issues (spec 034) among the REST API's issues: triage_state.py's
-    direction_issue on each, labelled, marked, and opened by an OWNER, MEMBER, or
-    COLLABORATOR or the --bot-login (D-16); a pull request is none"""
-    numbers = set()
-    for issue in found:
-        if "pull_request" in issue:
-            continue
-        user = issue.get("user")
-        node = {
-            "body": issue.get("body") or "",
-            "author": {"login": user["login"], "__typename": user.get("type")} if user else None,
-            "authorAssociation": issue.get("author_association"),
-            "labels": {"nodes": [{"name": label["name"]} for label in issue["labels"]]},
-        }
-        if TRIAGE.direction_issue(node, bot_login):
-            numbers.add(int(issue["number"]))
-    return frozenset(numbers)
+    """The direction issues among the REST API's issues, by number"""
+    return frozenset(int(issue["number"]) for issue in found if is_direction(issue, bot_login))
 
 
-def direction_issues(repo: str, bot_login: str | None = None) -> frozenset[int]:
-    """The open direction issues, read through the REST API, which gives each author's
-    association (gh issue list doesn't), every page"""
-    path = f"repos/{repo}/issues?labels={DIRECTION_LABEL}&state=open&per_page=100"
-    out = run(["gh", "api", "--paginate", path, "--jq", ".[]"])
-    return direction_numbers([json.loads(line) for line in out.splitlines() if line], bot_login)
+def triage_directions(triage: str) -> frozenset[int]:
+    """The open direction issues triage_state.py marks on its --json lines ("direction": true),
+    read from the one triage run, so keeping them out of the issue rows costs no gh call"""
+    found = set()
+    for line in triage.splitlines():
+        row = json.loads(line)
+        if row.get("direction") is True:
+            found.add(int(row["number"]))
+    return frozenset(found)
+
+
+@dataclass(frozen=True)
+class Direction:
+    """What a repo's direction adds to the report (spec 034)"""
+
+    rows: list[Row]  # DIRECTION_MISSING and DIRECTION_PENDING
+    declined: int | None = None  # the newest closed direction issue, a decline, when none is open
+
+
+def direction_present(repo_dir: Path, branch: str, execute: Spawn = spawn) -> bool:
+    """Whether origin/<branch> holds docs/product.md: `git cat-file -e`, whose exit 128 with
+    git's "path ... does not exist in" (or "exists on disk, but not in") says it is absent.
+    Any other failure, such as a ref git can't resolve, stops the watch (exit 2)"""
+    cmd = ["git", "cat-file", "-e", f"origin/{branch}:{DIRECTION.as_posix()}"]
+    proc = execute(cmd, repo_dir, {**os.environ, "LC_ALL": "C"})  # git's message in English
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 128 and GIT_ABSENT.match(proc.stderr.strip()):
+        return False
+    sys.stderr.write(f"error: {' '.join(cmd)}: exit {proc.returncode}: {proc.stderr.strip()}\n")
+    raise SystemExit(2)
+
+
+def direction_check_command(repo_dir: Path, branch: str, tool: str | None) -> list[str]:
+    """`shipmill product check` at origin/<branch>, the pinned CLI or --tool's (spec 034)"""
+    return [*shipmill_cli(tool), "--repo", str(repo_dir), "product", "check", "--ref", f"origin/{branch}"]
+
+
+def direction_problems(repo_dir: Path, branch: str, tool: str | None, execute: Spawn = spawn) -> list[str]:
+    """The problems `shipmill product check --ref origin/<branch>` names, one per line; none
+    for a well-formed direction (exit 0). An exit 1 that names none, or any other exit, stops
+    the watch (exit 2), never read as a direction; PyPI's wait for the pinned CLI raises
+    PypiWait (#597)"""
+    cmd = direction_check_command(repo_dir, branch, tool)
+    proc = pinned(cmd, lambda c: execute(c, repo_dir, None))
+    version = unserved(cmd, proc)
+    if version is not None:
+        raise PypiWait(version)
+    if proc.returncode == 0:
+        return []
+    problems = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if proc.returncode == 1 and problems:
+        return problems
+    sys.stderr.write(f"error: {' '.join(cmd)}: exit {proc.returncode}: {(proc.stderr or proc.stdout).strip()}\n")
+    raise SystemExit(2)
+
+
+def direction_found(repo: str, read: Callable[[list[str]], str] = run) -> list[dict[str, Any]]:
+    """The issues labelled shipmill-direction, open and closed, through the REST API, which
+    gives each author's association (gh issue list doesn't), every page: one read"""
+    path = f"repos/{repo}/issues?labels={DIRECTION_LABEL}&state=all&per_page=100"
+    out = read(["gh", "api", "--paginate", path, "--jq", ".[]"])
+    return [json.loads(line) for line in out.splitlines() if line]
+
+
+def direction_prs(repo: str, read: Callable[[list[str]], str] = run) -> list[dict[str, Any]]:
+    """The pull requests from shipmill/direction, open, closed, and merged"""
+    cmd = ["gh", "pr", "list", "-R", repo, "--head", DIRECTION_BRANCH, "--state", "all"]
+    fields = "number,state,isCrossRepository,closedAt"
+    found: list[dict[str, Any]] = json.loads(read([*cmd, "--json", fields, "-L", "100"]))
+    return found
+
+
+def direction_reopened(repo: str, number: int, read: Callable[[list[str]], str] = run) -> dt.datetime | None:
+    """When the direction issue was last reopened, from its events, every page; None if never"""
+    jq = '.[] | select(.event == "reopened") | .created_at'
+    out = read(["gh", "api", "--paginate", f"repos/{repo}/issues/{number}/events", "--jq", jq])
+    times = [parse_time(line) for line in out.splitlines() if line]
+    return max(times) if times else None
+
+
+def declined_while_open(
+    question: dict[str, Any], own: list[dict[str, Any]], reopened: Callable[[], dt.datetime | None]
+) -> list[int]:
+    """The repo's own shipmill/direction pull requests that closed unmerged while the question
+    was open (spec 034): after it was opened and after its last reopen, so a reopened issue,
+    or a new one, asks again (S-034-7). reopened, the issue's events, is read only when such a
+    pull request closed after the issue was opened"""
+    opened = parse_time(question["created_at"])
+    closed = [p for p in own if p["state"] == "CLOSED" and parse_time(p["closedAt"]) > opened]
+    if not closed:
+        return []
+    last = reopened()
+    return sorted(int(p["number"]) for p in closed if last is None or parse_time(p["closedAt"]) > last)
+
+
+def direction_rows(
+    repo: str,
+    branch: str,
+    present: bool,
+    problems: Callable[[], list[str]],
+    found: Callable[[], list[dict[str, Any]]],
+    prs: Callable[[], list[dict[str, Any]]],
+    comments_of: Callable[[int], Comments],
+    bot_login: str | None,
+    reopened_of: Callable[[int], dt.datetime | None],
+) -> Direction:
+    """DIRECTION_MISSING and DIRECTION_PENDING for a repo with [agents] (spec 034). present is
+    whether origin/<branch> holds docs/product.md; problems, what `shipmill product check`
+    names there, is read only then. Otherwise found, the direction issues, is read: none at
+    all asks for the question; a closed one with none open is a decline, no row; an open one
+    (the oldest) reads prs, from the repo's own shipmill/direction only (never a fork's, D-16):
+    an open one waits on the maintainer's merge, no DIRECTION_PENDING. comments_of is read only
+    for an issue labelled needs-decision: with no trusted reply after its question it waits,
+    in NEEDS_DECISION, no DIRECTION_PENDING. Each fix is built from the repo, the numbers, and
+    the path, never from an issue's text (D-16)"""
+    subject = DIRECTION.as_posix()
+    absent = f"no {subject} on origin/{branch}"
+    session = skill_fix("github-ship-watch", repo)
+    if present:
+        named = problems()
+        if not named:
+            return Direction([])
+        more = f" (and {len(named) - 1} more)" if len(named) > 1 else ""
+        detail = f"shipmill product check refuses {subject} on origin/{branch}: {named[0]}{more}"
+        return Direction([Row("DIRECTION_MISSING", subject, detail, DIRECTION_REPAIR)])
+    issues = [issue for issue in found() if is_direction(issue, bot_login)]
+    opened = sorted(int(issue["number"]) for issue in issues if issue["state"] == "open")
+    closed = [int(issue["number"]) for issue in issues if issue["state"] == "closed"]
+    if not opened and closed:
+        return Direction([], max(closed))
+    if not opened:
+        missing = Row("DIRECTION_MISSING", subject, f"{absent}; no direction question asked yet", session)
+        return Direction([missing, Row("DIRECTION_PENDING", subject, "open the direction question", session)])
+    number = opened[0]  # with several open, the oldest is the question
+    question = next(issue for issue in issues if int(issue["number"]) == number)
+    own = [p for p in prs() if p["isCrossRepository"] is False]
+    waiting = sorted(int(p["number"]) for p in own if p["state"] == "OPEN")
+    if waiting:
+        pr = waiting[-1]
+        detail = f"{absent}; pull request #{pr} adds it, for the maintainer to merge"
+        return Direction(
+            [Row("DIRECTION_MISSING", subject, detail, f"review and merge https://github.com/{repo}/pull/{pr}")]
+        )
+    answer = f"answer the direction question: https://github.com/{repo}/issues/{number}"
+    asked = TRIAGE.DECISION_LABEL in {label["name"] for label in question["labels"]}
+    if asked and TRIAGE.waits_on_decision(comments_of(number), bot_login):
+        detail = f"{absent}; the direction question #{number} waits on the maintainer"
+        return Direction([Row("DIRECTION_MISSING", subject, detail, answer)])
+    declined_own = declined_while_open(question, own, lambda: reopened_of(number))
+    if declined_own:
+        pr = declined_own[-1]
+        stands = f"pull request #{pr} for #{number} closed unmerged"
+        pending = f"pull request #{pr} closed unmerged, a decline: close #{number} as not planned"
+    elif asked:
+        stands, pending = f"#{number} has the maintainer's answer", "answered; take up the answer"
+    else:
+        stands, pending = f"#{number} is open, its question not asked", "ask the maintainer"
+    return Direction(
+        [
+            Row("DIRECTION_MISSING", subject, f"{absent}; {stands}", answer),
+            Row("DIRECTION_PENDING", f"#{number}", pending, session),
+        ]
+    )
+
+
+def direction_state(
+    table: dict[str, str] | None,
+    repo: str,
+    repo_dir: Path,
+    branch: str,
+    tool: str | None = None,
+    bot_login: str | None = None,
+    execute: Spawn = spawn,
+    read: Callable[[list[str]], str] = run,
+) -> Direction:
+    """The direction's rows for a repo whose config has [agents] (table, agents_table's), after
+    the fetch of the default branch; nothing at all is read without it (spec 034). PyPI's wait
+    for the pinned CLI is its PYPI_WAIT row, the direction unread (#597)"""
+    if table is None:
+        return Direction([])
+    present = direction_present(repo_dir, branch, execute)
+    try:
+        return direction_rows(
+            repo,
+            branch,
+            present,
+            lambda: direction_problems(repo_dir, branch, tool, execute),
+            lambda: direction_found(repo, read),
+            lambda: direction_prs(repo, read),
+            lambda n: pr_comments(repo, n, read),
+            bot_login,
+            lambda n: direction_reopened(repo, n, read),
+        )
+    except PypiWait as wait:
+        return Direction([pypi_wait_row(wait.version, "the direction")])
 
 
 def declined_prs(repo: str, name: str) -> list[int]:
@@ -2755,13 +2979,16 @@ def coordinator_rows(
 # -- agents --------------------------------------------------------------------------------
 
 
-def triage_mode_row(text: str, policy: Path) -> Row:
-    """The config's [agents] table, each key as the config sets it, the prompt first"""
+def triage_mode_row(text: str, policy: Path, declined: int | None = None) -> Row:
+    """The config's [agents] table, each key as the config sets it, the prompt first; declined
+    is the direction issue whose close declined the direction (spec 034), said last"""
     table = agents_table(text, policy)
     if table is None:
         return Row("TRIAGE_MODE", "[agents]", "no [agents]: no gate session runs for this repo")
     keys = sorted(table, key=lambda k: (k != "prompt", k))
-    return Row("TRIAGE_MODE", "[agents]", "; ".join(f"{k} = {table[k]}" for k in keys))
+    said = [f"{k} = {table[k]}" for k in keys]
+    said += [] if declined is None else [f"no direction: declined in #{declined}"]
+    return Row("TRIAGE_MODE", "[agents]", "; ".join(said))
 
 
 def gate_app_rows(table: dict[str, str] | None) -> list[Row]:
@@ -3617,8 +3844,11 @@ def main() -> int:
     text = None
     if policy is not None:
         text = (repo_dir / policy).read_text(encoding="utf-8")
-        rows.append(triage_mode_row(text, policy))
         table = agents_table(text, policy)
+        # shipmill asks for the direction only in a repo with [agents] (spec 034)
+        direction = direction_state(table, args.repo, repo_dir, branch, args.tool, args.bot_login)
+        rows.append(triage_mode_row(text, policy, direction.declined))
+        rows += direction.rows
         home = product_home(text, policy)
         rows += gate_app_rows(table)
         read = config(text, policy, args.incident_label)
@@ -3658,8 +3888,8 @@ def main() -> int:
         rows += [] if unplanned is None else [pypi_wait_row(unplanned.version, "plans")]
         code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role)
         lands = lands_prs(table)
-        # shipmill asks for the direction only in a repo with [agents] (spec 034)
-        directions = direction_issues(args.repo, args.bot_login) if table is not None else frozenset()
+        # the open direction issues, from triage_state.py's lines: no gh call of their own (spec 034)
+        directions = triage_directions(triage) if table is not None else frozenset()
         rows += intake_rows(
             args.repo,
             code,
