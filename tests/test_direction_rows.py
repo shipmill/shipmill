@@ -50,12 +50,14 @@ def issue(number: int, state: str = "open", labels: tuple[str, ...] = (), **kw: 
         "user": {"login": BOT, "type": "Bot"},
         "author_association": "NONE",
         "labels": [{"name": n} for n in ("shipmill-direction", *labels)],
+        "created_at": "2026-09-01T00:00:00Z",
     }
     return {**found, **kw}
 
 
 def pr(number: int, state: str, fork: bool = False) -> dict[str, Any]:
-    return {"number": number, "state": state, "isCrossRepository": fork}
+    closed = "2026-10-02T00:00:00Z" if state in ("CLOSED", "MERGED") else None
+    return {"number": number, "state": state, "isCrossRepository": fork, "closedAt": closed}
 
 
 def never(*_: Any) -> Any:
@@ -69,6 +71,7 @@ def rows(
     found: list[dict[str, Any]] | None = None,
     prs: list[dict[str, Any]] | None = None,
     comments: list[tuple[str, str, str]] | None = None,
+    reopened: Callable[[int], Any] = never,
 ) -> Any:
     return ws.direction_rows(
         REPO,
@@ -79,6 +82,7 @@ def rows(
         never if prs is None else lambda: prs,
         never if comments is None else lambda n: comments,
         BOT,
+        reopened,
     )
 
 
@@ -297,7 +301,7 @@ def test_s034_6_a_trusted_reply_reads_answered(ws: ModuleType, association: str)
 
 
 def test_s034_6_its_own_pull_request_closed_unmerged_is_a_decline(ws: ModuleType) -> None:
-    direction = rows(ws, found=[issue(12)], prs=[pr(30, "CLOSED")])
+    direction = rows(ws, found=[issue(12)], prs=[pr(30, "CLOSED")], reopened=lambda n: None)  # never reopened
     assert pending(direction) == [("#12", "pull request #30 closed unmerged, a decline: close #12 as not planned")]
     assert direction.rows[0].fix == "answer the direction question: https://github.com/o/r/issues/12"
 
@@ -332,7 +336,7 @@ def test_s034_6_the_pull_requests_are_read_from_its_branch(ws: ModuleType) -> No
             "--state",
             "all",
             "--json",
-            "number,state,isCrossRepository",
+            "number,state,isCrossRepository,closedAt",
             "-L",
             "100",
         ]
@@ -356,6 +360,43 @@ def test_s034_7_the_same_issue_reopened_asks_again(ws: ModuleType) -> None:
     direction = rows(ws, found=[issue(12)], prs=[])
     assert pending(direction) == [("#12", "ask the maintainer")]
     assert direction.declined is None
+
+
+def test_s034_7_reopened_after_its_pull_request_closed_asks_again(ws: ModuleType) -> None:
+    # #30 closed unmerged, #12 closed as the decline, then the maintainer reopened #12: the old
+    # pull request is no decline of the question asked anew (S-034-6: closed while it is open)
+    asked: list[int] = []
+
+    def reopened(number: int) -> Any:
+        asked.append(number)
+        return ws.parse_time("2026-10-03T00:00:00Z")
+
+    found = [issue(12, created_at="2026-10-01T00:00:00Z")]
+    direction = ws.direction_rows(
+        REPO, "main", False, never, lambda: found, lambda: [pr(30, "CLOSED")], never, BOT, reopened
+    )
+    assert pending(direction) == [("#12", "ask the maintainer")]
+    assert asked == [12]
+
+
+def test_s034_7_a_pull_request_closed_before_the_issue_was_opened_never_declines_it(ws: ModuleType) -> None:
+    # a second direction issue opened after an older one's pull request closed: no events read
+    found = [issue(20, created_at="2026-10-05T00:00:00Z")]
+    prs = lambda: [pr(30, "CLOSED")]  # noqa: E731
+    direction = ws.direction_rows(REPO, "main", False, never, lambda: found, prs, never, BOT, never)
+    assert pending(direction) == [("#20", "ask the maintainer")]
+
+
+def test_s034_7_the_reopen_is_read_from_the_issues_events(ws: ModuleType) -> None:
+    calls: list[list[str]] = []
+
+    def read(cmd: list[str]) -> str:
+        calls.append(cmd)
+        return "2026-10-02T00:00:00Z\n2026-10-04T00:00:00Z\n"
+
+    assert ws.direction_reopened(REPO, 12, read) == ws.parse_time("2026-10-04T00:00:00Z")
+    jq = '.[] | select(.event == "reopened") | .created_at'
+    assert calls == [["gh", "api", "--paginate", "repos/o/r/issues/12/events", "--jq", jq]]
 
 
 def test_s034_7_the_issues_are_read_open_and_closed_in_one_call(ws: ModuleType) -> None:

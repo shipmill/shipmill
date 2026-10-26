@@ -104,7 +104,8 @@ and the pull requests from shipmill/direction only while one is open:
                   question (no direction issue at all), or on the oldest open one, #N: ask the
                   maintainer (no needs-decision label), take up the answer (labelled, a trusted
                   reply after its question), or close it as not planned (a pull request from
-                  the repo's own shipmill/direction closed unmerged). None while its question
+                  the repo's own shipmill/direction closed unmerged since it was opened or
+                  last reopened, read from its events only then). None while its question
                   waits (it is in NEEDS_DECISION), while a shipmill/direction pull request is
                   open, or for a refused file. An agent's row
   A direction issue closed for any reason, with none open and no file, is a decline: no row,
@@ -2329,8 +2330,32 @@ def direction_found(repo: str, read: Callable[[list[str]], str] = run) -> list[d
 def direction_prs(repo: str, read: Callable[[list[str]], str] = run) -> list[dict[str, Any]]:
     """The pull requests from shipmill/direction, open, closed, and merged"""
     cmd = ["gh", "pr", "list", "-R", repo, "--head", DIRECTION_BRANCH, "--state", "all"]
-    found: list[dict[str, Any]] = json.loads(read([*cmd, "--json", "number,state,isCrossRepository", "-L", "100"]))
+    fields = "number,state,isCrossRepository,closedAt"
+    found: list[dict[str, Any]] = json.loads(read([*cmd, "--json", fields, "-L", "100"]))
     return found
+
+
+def direction_reopened(repo: str, number: int, read: Callable[[list[str]], str] = run) -> dt.datetime | None:
+    """When the direction issue was last reopened, from its events, every page; None if never"""
+    jq = '.[] | select(.event == "reopened") | .created_at'
+    out = read(["gh", "api", "--paginate", f"repos/{repo}/issues/{number}/events", "--jq", jq])
+    times = [parse_time(line) for line in out.splitlines() if line]
+    return max(times) if times else None
+
+
+def declined_while_open(
+    question: dict[str, Any], own: list[dict[str, Any]], reopened: Callable[[], dt.datetime | None]
+) -> list[int]:
+    """The repo's own shipmill/direction pull requests that closed unmerged while the question
+    was open (spec 034): after it was opened and after its last reopen, so a reopened issue,
+    or a new one, asks again (S-034-7). reopened, the issue's events, is read only when such a
+    pull request closed after the issue was opened"""
+    opened = parse_time(question["created_at"])
+    closed = [p for p in own if p["state"] == "CLOSED" and parse_time(p["closedAt"]) > opened]
+    if not closed:
+        return []
+    last = reopened()
+    return sorted(int(p["number"]) for p in closed if last is None or parse_time(p["closedAt"]) > last)
 
 
 def direction_rows(
@@ -2341,7 +2366,8 @@ def direction_rows(
     found: Callable[[], list[dict[str, Any]]],
     prs: Callable[[], list[dict[str, Any]]],
     comments_of: Callable[[int], Comments],
-    bot_login: str | None = None,
+    bot_login: str | None,
+    reopened_of: Callable[[int], dt.datetime | None],
 ) -> Direction:
     """DIRECTION_MISSING and DIRECTION_PENDING for a repo with [agents] (spec 034). present is
     whether origin/<branch> holds docs/product.md; problems, what `shipmill product check`
@@ -2385,7 +2411,7 @@ def direction_rows(
     if asked and TRIAGE.waits_on_decision(comments_of(number), bot_login):
         detail = f"{absent}; the direction question #{number} waits on the maintainer"
         return Direction([Row("DIRECTION_MISSING", subject, detail, answer)])
-    declined_own = sorted(int(p["number"]) for p in own if p["state"] == "CLOSED")
+    declined_own = declined_while_open(question, own, lambda: reopened_of(number))
     if declined_own:
         pr = declined_own[-1]
         stands = f"pull request #{pr} for #{number} closed unmerged"
@@ -2428,6 +2454,7 @@ def direction_state(
             lambda: direction_prs(repo, read),
             lambda n: pr_comments(repo, n, read),
             bot_login,
+            lambda n: direction_reopened(repo, n, read),
         )
     except PypiWait as wait:
         return Direction([pypi_wait_row(wait.version, "the direction")])

@@ -1605,7 +1605,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         ),
         ws.upstream_unreadable_row(REPO, CHECKOUT, f"error: {TITLE}"),
         ws.pypi_wait_row("0.66.0", "the release plan"),
-        *ws.direction_rows(REPO, "main", False, list, lambda: [], list, lambda n: [], None).rows,
+        *ws.direction_rows(REPO, "main", False, list, lambda: [], list, lambda n: [], None, lambda n: None).rows,
     ]
     found: dict[str, list[Any]] = {}
     for row in rows:
