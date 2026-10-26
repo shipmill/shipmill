@@ -6,8 +6,11 @@ the stop switch: an open issue labelled shipmill-hold.
 - act: do it
 
 The hold turns every act into propose for the whole repository. Release autonomy is read by
-the planner; deploy and rollback autonomy by shipmill operate. Intake autonomy is read by the
-product-intake skill, and is observe or propose only: the maintainer's accept is its valve.
+the planner; deploy and rollback autonomy by shipmill operate. Triage, fix, and land are the
+stages agent sessions run (spec 040): triage and fix act by default and land proposes, so a
+pull request waits for a person to merge it unless the config says otherwise. Intake
+autonomy is read by the product-intake skill, and is observe or propose only: the
+maintainer's accept is its valve.
 Upgrade autonomy is read by `shipmill upgrade` (spec 014): how far shipmill goes in proposing
 the config upgrades a release adds."""
 
@@ -36,6 +39,12 @@ class StageKind(StrEnum):
     RELEASE = "release"
     DEPLOY = "deploy"
     ROLLBACK = "rollback"
+    TRIAGE = "triage"
+    FIX = "fix"
+    LAND = "land"
+
+
+AGENT_STAGES = (StageKind.TRIAGE, StageKind.FIX, StageKind.LAND)  # the stages agent sessions run (spec 040)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,13 +114,18 @@ class Hold:
 class AutonomyPolicy:
     """The configured autonomy per stage; an environment not listed deploys at act (D-7).
     Intake and upgrade default to propose: an opportunity, like a config upgrade, is the
-    maintainer's to accept"""
+    maintainer's to accept. Of the agent stages (spec 040) triage and fix default to act and
+    land to propose: a pull request is itself a proposal, and merging it stays a person's
+    until the config raises land"""
 
     release: Autonomy = Autonomy.ACT
     rollback: Autonomy = Autonomy.ACT
     deploy: Mapping[EnvironmentName, Autonomy] = field(default_factory=dict)
     intake: Autonomy = Autonomy.PROPOSE
     upgrade: Autonomy = Autonomy.PROPOSE
+    triage: Autonomy = Autonomy.ACT
+    fix: Autonomy = Autonomy.ACT
+    land: Autonomy = Autonomy.PROPOSE
 
     @classmethod
     def parse(cls, t: Table) -> AutonomyPolicy:
@@ -126,6 +140,9 @@ class AutonomyPolicy:
             deploy={EnvironmentName(name): _level(deploy, name) for name in deploy.raw},
             intake=_intake(t),
             upgrade=_level(t, UPGRADE, default=Autonomy.PROPOSE),
+            triage=_level(t, StageKind.TRIAGE),
+            fix=_level(t, StageKind.FIX),
+            land=_level(t, StageKind.LAND, default=Autonomy.PROPOSE),
         )
 
     def require_environments(self, known: Collection[str], where: str) -> None:
@@ -140,6 +157,12 @@ class AutonomyPolicy:
             return self.release
         if stage.kind is StageKind.ROLLBACK:
             return self.rollback
+        if stage.kind is StageKind.TRIAGE:
+            return self.triage
+        if stage.kind is StageKind.FIX:
+            return self.fix
+        if stage.kind is StageKind.LAND:
+            return self.land
         assert stage.environment is not None  # Stage guarantees it
         return self.deploy.get(stage.environment, Autonomy.ACT)
 
