@@ -1,6 +1,6 @@
 # S-034: The watch asks for the direction a repo with [agents] lacks
 
-status: approved
+status: built
 serves: G-5
 
 ## Problem
@@ -235,3 +235,16 @@ row shows and no issue is read.
 - shipmill/shipmill#637: S-034-8, S-034-9
 
 ## Verification
+
+- S-034-1: ran `shipmill product check --ref` in a shipmill checkout: `origin/main` exits 0 (`docs/product.md at origin/main: well formed, 22 items`), `v0.40.0` exits 1 with `docs/product.md:1: no docs/product.md at v0.40.0`, `no-such-ref` exits 2 naming the ref; read `src/shipmill/product.py`, which reads the file and each moved section from the ref's commit (`git ls-tree`, then `git cat-file blob`), never the working tree; `tests/test_product.py`'s `s034_1` tests pass
+- S-034-2: read `watch_state.py`'s `direction_state`, called only when `agents_table` found `[agents]`, and `direction_rows`: an absent file or one `product check --ref origin/<default>` refuses gives DIRECTION_MISSING, which is in `ACTION` and not `AGENT`, and a well-formed one gives no row; `tests/test_direction_rows.py`'s `s034_2` tests pass
+- S-034-3: read `direction_rows`' fixes: the open issue's URL, the open `shipmill/direction` pull request's URL, `skill_fix("github-ship-watch", repo)` with neither, `DIRECTION_REPAIR` for a refused file with no DIRECTION_PENDING; each is built from the repo, the numbers, and the path; the `s034_3` tests pass
+- S-034-4: read `direction_rows`: no direction issue gives DIRECTION_PENDING `open the direction question`, and an issue labelled `needs-decision` that `waits_on_decision` returns only DIRECTION_MISSING, while `intake` keeps it in NEEDS_DECISION; the `s034_4` tests pass
+- S-034-5: read `triage_state.py`'s `direction_issue` (label, first-line marker, `trusted` author) and `watch_state.py`'s `is_direction` and `intake`, which drops the open direction issues from ISSUES and ISSUES_OPEN; the `s034_5` tests in `tests/test_direction_issue.py` and `tests/test_direction_rows.py` pass
+- S-034-6: read `direction_rows` and `declined_while_open`: `ask the maintainer` without the label, `answered; take up the answer` with a trusted reply, the decline only for the repo's own (`isCrossRepository` false) CLOSED pull request closed since the issue was opened or last reopened, and no DIRECTION_PENDING while one is OPEN; the `s034_6` tests pass
+- S-034-7: read `direction_rows`: closed direction issues with none open return no row and the newest as `declined`, which `triage_mode_row` writes as `no direction: declined in #<n>`; a reopened issue reads as open again; the `s034_7` tests pass
+- S-034-8: read github-ship-watch's Direction section: step 1 opens the issue as the App with the title, the label (created when missing), the marker as the body's first line, and the `docs/direction.md` link (the guide exists on main), step 2 posts the question, which `tests/test_direction_section.py` compares with this spec's block character for character, through the needs-decision protocol, under "watch" only, an interactive gate session also asking the five sections one at a time; the `s034_8` tests pass
+- S-034-9: read the same section: step 3 closes the issue as not planned on 2 or a declining reply and asks again naming only the sections still owed, step 4 writes the file from the reply's words only, runs `shipmill product check`, and opens the pull request as the App on `shipmill/direction` with `Closes #<issue>` and `Direction from @<login> in #<issue>`, never merged, step 5 closes the issue after its pull request closed unmerged; each DIRECTION_PENDING detail `watch_state.py` writes heads one step; the `s034_9` tests pass
+- S-034-10: read github-issue-triage's SKILL.md, which says triage posts no verdict on a direction issue and leaves a DECIDED one's reply and `needs-decision` label to github-ship-watch; the `s034_10` test passes
+- S-034-11: read `setup_state.py`'s `wanted_labels`, which adds `shipmill-direction` only beside `needs-decision` for a config with `[agents]`; the `s034_11` tests pass
+- S-034-12: read github-ship-watch's state table and `agent` table against `watch_state.py`'s `ACTION` and `AGENT`: DIRECTION_MISSING an action never an agent's, DIRECTION_PENDING an action and an agent's; the `s034_12` tests pass
