@@ -388,6 +388,20 @@ def test_s028_15_no_text_with_product_writes_the_sub_issue_alone_through_the_pro
     assert capsys.readouterr().out.strip() == "linked: acme/web#7 is a sub-issue of acme/api#3"
 
 
+@pytest.mark.parametrize("how", ["--child", "--blocked-by"])
+def test_s028_15_no_text_in_a_component_still_refuses_another_repo_before_any_write(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str], how: str
+) -> None:
+    # --no-text drops the Depends on line, never the component's same-repo rule (D-47)
+    forge.add("acme/api#5", "Plan\n")
+    forge.add("acme/web#4")
+    with pytest.raises(SystemExit) as exit_:
+        run_link(ch, forge, tmp_path, COMPONENT, "acme/api", "acme/api#5", how, "acme/web#4", "--no-text")
+    assert exit_.value.code == 2
+    assert "a component of acme/product" in capsys.readouterr().err
+    assert forge.calls == []
+
+
 def test_the_script_runs_from_its_folder_and_refuses_a_malformed_reference_before_gh(tmp_path: Path) -> None:
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / "chains.py"), "link", "nope", "--blocked-by", "o/r#4"],
