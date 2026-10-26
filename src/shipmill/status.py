@@ -25,7 +25,7 @@ from shipmill.app import Identity, default_key
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold, Source, StageKind, StageLevel
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import MISSING_FIX
-from shipmill.config import CONFIG_PATH, Table, config_path, read
+from shipmill.config import CONFIG_PATH, Table, config_path, policy_branch, read
 from shipmill.errors import ReleaseError
 from shipmill.gate import StateRunner, skills_dir
 from shipmill.github import UPGRADE_LABEL, GitHub, labelled_command, parse_labelled
@@ -224,8 +224,9 @@ class Pull:
 
 @dataclass(frozen=True, slots=True)
 class Main:
-    """The default branch here and on GitHub; local is None without a local branch, and
-    checked_out says whether the checkout is on it"""
+    """The branch releases land on (the config's `branch`, else GitHub's default branch, #694)
+    here and on GitHub; local is None without a local branch, and checked_out says whether the
+    checkout is on it"""
 
     branch: str
     local: str | None
@@ -300,7 +301,7 @@ class Facts:
     issues: Sequence[Issue]
     pulls: Sequence[Pull]
     main: Main
-    version: Described  # GitHub's default branch
+    version: Described  # origin's main.branch
     gate: Gate
     cli: str  # the installed CLI's version
     now: dt.datetime
@@ -603,7 +604,7 @@ def read_milestones(
     repo: str, root: Path, head: str, github: GitHub, now: dt.datetime, command: str
 ) -> tuple[list[MilestoneRow], str | None]:
     """Spec 022's rows for the lanes with milestone = true, from the planner the release runs,
-    at head (GitHub's default branch, fetched); none and nothing read without such a lane.
+    at head (the branch releases land on, fetched); none and nothing read without such a lane.
     The one source of the rows: `shipmill milestones` prints them, watch_state.py reads that,
     and `shipmill status` reads watch_state.py (#475). A read that fails (a policy, a
     changelog, or a goal the plan can't read, or GitHub) is the second value: the plan's own
@@ -624,6 +625,13 @@ def read_branch(repo: str, run: StateRunner, pause: Callable[[float], None] = ti
     if not branch:
         raise ReleaseError(f"gh repo view {repo} named no default branch")
     return branch
+
+
+def landing_branch(repo: str, root: Path, run: StateRunner, pause: Callable[[float], None] = time.sleep) -> str:
+    """The branch releases land on, which the repo line reads: the config's `branch`, as
+    watch_state.py fetches it, else GitHub's default branch, read only then (#694)"""
+    branch = policy_branch(root)
+    return branch if branch is not None else read_branch(repo, run, pause)
 
 
 def read_main(git: Git, branch: str) -> Main:

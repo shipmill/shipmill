@@ -9,6 +9,7 @@ from shipmill.cli import main
 from shipmill.config import config_path
 from shipmill.doctor import doctor
 from shipmill.errors import ReleaseError
+from shipmill.gitrepo import Git
 from shipmill.init import init
 from shipmill.policy import Lane, Policy, Style
 from shipmill.roadmap import RoadmapConfig
@@ -481,6 +482,28 @@ def test_doctor_warns_when_it_cannot_ask_origin(repo: Repo) -> None:
 
     repo.git.run("remote", "remove", "origin")
     assert check() == ("WARN", "no 'origin' remote to ask for a branch 'shipmill'")
+
+
+def test_doctor_694_warns_when_githubs_default_branch_is_not_the_policys(repo: Repo) -> None:
+    """#694: a WARN, not a FAIL, as the landing checks follow the policy's branch; asked of
+    origin as the work-branch check asks, so doctor adds no gh read"""
+
+    def check() -> tuple[str, str] | None:
+        found = [c for c in doctor(repo.root, repo="acme/web") if c.name == "default branch"]
+        return (found[0].status, found[0].detail) if found else None
+
+    assert check() == ("PASS", "GitHub's default branch is the policy's branch main")
+    origin = repo.root.parent / "origin.git"
+    repo.git.run("push", "-q", "origin", "main:refs/heads/master")
+    Git(origin).run("symbolic-ref", "HEAD", "refs/heads/master")
+    assert check() == (
+        "WARN",
+        "GitHub's default branch master is not the policy's branch main, so pull requests open against"
+        " master by default; make main the default: gh api -X PATCH repos/acme/web -f default_branch=main",
+    )
+    assert "default branch" not in {c.name for c in doctor(repo.root) if c.status == "FAIL"}
+    repo.write(repo.policy_file, repo.read(repo.policy_file).replace('branch = "main"\n', ""))
+    assert check() is None  # no branch in the config: nothing to compare
 
 
 def test_doctor_warns_the_roadmap_is_deprecated_and_names_agents_wip(repo: Repo) -> None:

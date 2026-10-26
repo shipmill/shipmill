@@ -19,7 +19,7 @@ from shipmill.app import Lacks, NotInstalled
 from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage, StageKind
 from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
-from shipmill.config import config_path
+from shipmill.config import config_path, policy_branch
 from shipmill.config import read as read_config
 from shipmill.decide import VETO_HOURS_KEY, Zone, zones
 from shipmill.downstream import (
@@ -246,6 +246,8 @@ def doctor(
     git = Git(root)
     add(git.ok("remote", "get-url", "origin"), "remote", "an 'origin' remote to push releases to")
     checks.append(_work_branch(git))
+    if (default_branch := _default_branch(git, policy_branch(root), repo)) is not None:
+        checks.append(default_branch)
     tags = git.tags()
     stable = [t.version for t in tags if t.version.is_stable]
     add(
@@ -962,6 +964,27 @@ def _work_branch(git: Git) -> Check:
         detail = f"a local branch '{BLOCKING_BRANCH}' would block the work branch {work} once pushed to {REMOTE}"
         return Check("WARN", "work branch", detail)
     return Check("PASS", "work branch", f"no branch '{BLOCKING_BRANCH}' on {REMOTE} to block {work}")
+
+
+def _default_branch(git: Git, branch: str | None, repo: str | None) -> Check | None:
+    """#694: GitHub's default branch against the config's branch, asked of origin itself as
+    _work_branch asks, so it adds no gh read; None without a config's branch or an origin
+    remote, which _work_branch reports. A differing default is a WARN, since the landing checks
+    follow the config's branch: GitHub's pull requests and links still default to its own"""
+    if branch is None or not git.ok("remote", "get-url", REMOTE):
+        return None
+    try:
+        default = git.default_branch()
+    except ReleaseError as exc:
+        return Check("WARN", "default branch", f"can't ask {REMOTE} for its default branch: {exc}")
+    if default == branch:
+        return Check("PASS", "default branch", f"GitHub's default branch is the policy's branch {branch}")
+    fix = f"gh api -X PATCH repos/{repo or '<owner>/<repo>'} -f default_branch={branch}"
+    detail = (
+        f"GitHub's default branch {default} is not the policy's branch {branch}, so pull requests open"
+        f" against {default} by default; make {branch} the default: {fix}"
+    )
+    return Check("WARN", "default branch", detail)
 
 
 def _local_sources(pyproject: Path) -> list[str]:

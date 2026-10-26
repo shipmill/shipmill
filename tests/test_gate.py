@@ -653,6 +653,26 @@ def test_refresh_moves_a_detached_checkout_to_the_default_branch(gate_checkout: 
     assert git.run("rev-parse", "--abbrev-ref", "HEAD").strip() == "HEAD"
 
 
+def test_refresh_694_moves_to_the_policys_branch_not_an_older_origin_head(gate_checkout: tuple[Git, Path]) -> None:
+    """#694: origin/HEAD is main, while the config there names v1, the branch releases land on"""
+    git, pusher = gate_checkout
+    (pusher / ".github").mkdir()
+    (pusher / ".github" / "shipmill.toml").write_text('branch = "v1"\n', encoding="utf-8")
+    git_("add", ".github", cwd=pusher)
+    git_("commit", "-q", "-m", "config", cwd=pusher)
+    git_("push", "-q", "origin", "main", cwd=pusher)
+    git_("switch", "-q", "-c", "v1", "HEAD~2", cwd=pusher)
+    git_("checkout", "-q", "main", "--", ".github", cwd=pusher)
+    git_("commit", "-q", "-m", "config", cwd=pusher)
+    git_("push", "-q", "origin", "v1", cwd=pusher)
+    git.run("fetch", "-q", "origin")
+    git.run("checkout", "-q", "--detach", "origin/v1")
+    git_("commit", "-q", "--allow-empty", "-m", "three", cwd=pusher)
+    git_("push", "-q", "origin", "v1", cwd=pusher)
+    refresh(git)
+    assert git.run("rev-parse", "HEAD") == git_("rev-parse", "v1", cwd=pusher)
+
+
 def test_refresh_refuses_a_working_copy(gate_checkout: tuple[Git, Path]) -> None:
     """The main working tree on a branch is a person's: refused, with or without detach (#247)"""
     git, _ = gate_checkout
@@ -708,6 +728,21 @@ def test_refresh_detaches_a_linked_worktree_left_on_a_branch(linked_gate: tuple[
     assert git.run("rev-parse", "fix/1-thing").strip() == wip
     assert (git.root / "notes.txt").read_text(encoding="utf-8") == "keep"
     assert refresh(git, detach=True) is None  # already detached: nothing to report
+
+
+def test_refresh_694_never_takes_the_branch_from_a_sessions_own_config(linked_gate: tuple[Git, Path]) -> None:
+    """#694: the branch a refresh moves to is read from the config at origin's default branch,
+    which is trusted, never from the checkout a session left on its branch: a pull request's
+    own config naming another branch must not pick the [agents], CLAUDE.md, and skills the
+    next session runs (D-16, D-48)"""
+    git, pusher = linked_gate
+    (git.root / ".github").mkdir()
+    (git.root / ".github" / "shipmill.toml").write_text('branch = "evil"\n', encoding="utf-8")
+    git.run("add", ".github")
+    git_("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "steer", cwd=git.root)
+    git.run("push", "-q", "origin", "HEAD:refs/heads/evil")
+    assert refresh(git, detach=True) == Detached(git.root, "fix/1-thing")
+    assert git.run("rev-parse", "HEAD") == git_("rev-parse", "HEAD", cwd=pusher)
 
 
 def test_refresh_without_detach_refuses_a_linked_worktree_on_a_branch(linked_gate: tuple[Git, Path]) -> None:

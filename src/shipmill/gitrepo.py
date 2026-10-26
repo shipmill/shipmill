@@ -7,6 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from shipmill.config import policy_branch
 from shipmill.errors import ReleaseError
 from shipmill.version import PATTERN, TAG_PREFIX, Version
 
@@ -119,6 +120,13 @@ class Git:
         if found is None:
             raise ReleaseError(f"origin of {self.root} names no default branch")
         return found.group(1)
+
+    def landing_branch(self) -> str:
+        """The branch releases land on, which the landing checks compare against: the `branch`
+        the config at the checkout's top sets, else origin's default branch (#694)"""
+        top = Path(self.run("rev-parse", "--show-toplevel").strip())
+        branch = policy_branch(top)
+        return branch if branch is not None else self.default_branch()
 
     def remote_branch(self, branch: str) -> str | None:
         out = self.run("ls-remote", "--heads", REMOTE, f"refs/heads/{branch}").split()

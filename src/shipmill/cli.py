@@ -1493,11 +1493,11 @@ def _status(
     when = now if now is not None else dt.datetime.now(dt.UTC)
 
     def check(app_id: int, key: Path) -> Identity:
-        return app_check(slug, key, home, signer, api)(app_id, when)
+        return app_check(slug, key, home, signer, api)(app_id)  # signed at the call (#694)
 
     def bot_login(app_id: int, key: Path) -> str | None:
         try:
-            return app_login(signer, api)(app_id, key, when)
+            return app_login(signer, api)(app_id, key)
         except ReleaseError as exc:  # the picture shows the App check's own failure instead
             if not picture:
                 print(
@@ -1528,7 +1528,7 @@ def _status(
     # S-012-7, S-012-8: read only when agents write as an App
     people = agent_as_person.read(slug, run, when) if gate.agents is not None and gate.agents.app_id else None
     git = Git(top)
-    main = status.read_main(git, status.read_branch(slug, run))
+    main = status.read_main(git, status.landing_branch(slug, top, run))
     facts = status.Facts(
         repo=slug,
         rows=status.parse_rows(proc.stdout),  # spec 022's milestone rows among them (#475)
@@ -1552,7 +1552,8 @@ def _status(
 
 def _milestones(root: Path, args: argparse.Namespace, github: GitHub | None) -> int:
     """#475, spec 022: the milestone rows of the lanes with milestone = true, read with the
-    release's planner at origin's default branch, fetched first; without such a lane nothing
+    release's planner at the branch releases land on (the config's branch, else origin's
+    default branch), fetched first; without such a lane nothing
     is fetched or read. It never writes GitHub: an overtaken milestone's rename is its row's
     fix. A read the planner fails (a goal, a policy, or GitHub) is printed as the error, and
     exits 0 as a report does; a checkout without a GitHub origin exits 2"""
@@ -1569,7 +1570,7 @@ def _milestones(root: Path, args: argparse.Namespace, github: GitHub | None) -> 
     error = None
     if status.wants_milestones(top):
         checkout = Git(top)
-        branch = checkout.default_branch()
+        branch = checkout.landing_branch()  # the config's branch, else origin's default (#694)
         # --force, as watch_state.py fetches: a moving major tag (v0) would refuse the fetch otherwise
         checkout.run("fetch", "-q", "--force", "--tags", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
         head = checkout.sha(f"refs/remotes/origin/{branch}")

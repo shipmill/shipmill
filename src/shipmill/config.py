@@ -42,6 +42,27 @@ def loads(text: str, where: str) -> Mapping[str, Any]:
     return raw
 
 
+def policy_branch(root: Path) -> str | None:
+    """The top-level `branch` the checkout's config sets, the branch releases land on, which
+    the landing checks compare against (#694); None without a config or without the key. Read
+    alone, with no requires check, as a reader of one key a newer config must not stop"""
+    path = root / CONFIG_PATH
+    if not path.is_file():
+        return None
+    return branch_in(path.read_text(encoding="utf-8"), str(path))
+
+
+def branch_in(text: str, where: str) -> str | None:
+    """The top-level `branch` a config's text sets, None without the key; where names the
+    file, or the ref it was read at, in a refusal"""
+    value = _parse(text, where).get("branch")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ReleaseError(f"{where}: branch must be a non-empty string, got {value!r}")
+    return value
+
+
 def _parse(text: str, where: str) -> Mapping[str, Any]:
     try:
         return tomllib.loads(text)

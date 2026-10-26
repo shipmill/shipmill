@@ -337,7 +337,7 @@ def test_s038_7_the_gate_checks_every_listed_repo_with_one_jwt(tmp_path: Path) -
     # the CLI's gate reads the config's repos with _product_repos
     root = checkout(tmp_path, HOME)
     api = ProductApi()
-    found = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api, lambda: _product_repos(root))(APP_ID, NOW)
+    found = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api, lambda: _product_repos(root))(APP_ID)
     assert found.login == BOT
     assert api.calls == ["/app", f"/repos/{REPO}/installation", *(f"/repos/{r}/installation" for r in LISTED), BOT_PATH]
     assert api.posts == []
@@ -345,7 +345,7 @@ def test_s038_7_the_gate_checks_every_listed_repo_with_one_jwt(tmp_path: Path) -
 
 def test_s038_7_without_product_the_gate_checks_only_its_repo(tmp_path: Path) -> None:
     api = ProductApi()
-    app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api)(APP_ID, NOW)
+    app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api)(APP_ID)
     assert api.calls == ["/app", f"/repos/{REPO}/installation", BOT_PATH]
 
 

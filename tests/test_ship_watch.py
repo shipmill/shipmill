@@ -844,6 +844,36 @@ def test_the_310_fallback_refuses_what_it_cannot_read(ws: ModuleType, config: st
     assert refused.value.code == 2
 
 
+@pytest.mark.parametrize(
+    ("config", "want"),
+    [
+        (None, "master"),
+        ('name = "demo"\n', "master"),
+        ('branch = "v1"\n', "v1"),
+        ("name = 'demo'\nbranch = 'v1'  # releases land here\n\n[lanes.stable]\nbranch = 'x'\n", "v1"),
+    ],
+)
+def test_694_the_watch_reads_the_policys_branch_not_githubs_default(
+    ws: ModuleType, config: str | None, want: str
+) -> None:
+    """#694: the fetch, the plan (BOT_PLAN_FAILED), and the worktrees' fix read the branch
+    releases land on; GitHub's default branch only without a config's branch. The 3.10
+    fallback reads what tomllib reads"""
+    policy = Path(".github/shipmill.toml")
+    assert ws.landing_branch(config, policy, "master") == want
+    if config is not None:
+        assert (ws.landing_branch_310(config, policy) or "master") == want
+
+
+@pytest.mark.parametrize("config", ['branch = ""\n', "branch = 1\n"])
+def test_694_a_branch_the_watch_cannot_use_is_refused(ws: ModuleType, config: str) -> None:
+    with pytest.raises(SystemExit, match="branch must be a non-empty string") as refused:
+        ws.landing_branch(config, Path(".github/shipmill.toml"), "master")
+    assert refused.value.code == 2
+    with pytest.raises(SystemExit, match="can't read branch on Python 3.10"):
+        ws.landing_branch_310("branch = 1\n", Path(".github/shipmill.toml"))
+
+
 def test_the_issue_states_reported_are_the_ones_triage_state_acts_on(ws: ModuleType) -> None:
     spec = importlib.util.spec_from_file_location("triage_state", ws.TRIAGE_STATE)
     assert spec is not None and spec.loader is not None

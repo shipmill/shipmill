@@ -281,7 +281,7 @@ def test_s004_6_a_helper_path_that_needs_quoting_goes_in_as_a_shell_command(tmp_
 def test_s004_7_with_app_id_unset_the_launch_is_todays(checkout: Git, tmp_path: Path) -> None:
     recorder = Recorder()
 
-    def unchecked(app_id: int, now: dt.datetime) -> Identity:
+    def unchecked(app_id: int) -> Identity:
         raise AssertionError("no app_id, no App check")
 
     def unprepared(identity: Identity) -> Mapping[str, str]:

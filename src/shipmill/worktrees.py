@@ -3,7 +3,8 @@
 Each worktree gets one verdict, REMOVABLE or KEPT; a KEPT one carries the first check it
 failed, in the spec's order. Judging reads git, `claude agents --json`, one `gh pr list`, and
 one GraphQL read of the merged pull requests from the worktrees' branches, and changes nothing
-but the fetched `origin/<default>`. Pruning removes the REMOVABLE ones
+but the fetched `origin/<default>`, where default is the config's `branch`, else origin/HEAD
+(#694). Pruning removes the REMOVABLE ones
 of that same judgement, each with the local branch it held, and nothing else.
 """
 
@@ -363,8 +364,9 @@ def judge(git: Git, github: GitHub, sessions: Sessions, now: dt.datetime) -> lis
     """Every worktree of the repository whose checkout git names, with its verdict, in git's
     order (the main checkout first). Reads the live sessions, the open pull requests, and the
     merged ones from the worktrees' branches before judging anything, so a failure of any
-    judges nothing"""
-    default = git.default_branch()
+    judges nothing. Landing is measured against the branch releases land on: the config's
+    `branch`, else origin/HEAD (#694)"""
+    default = git.landing_branch()
     onto = f"refs/remotes/{REMOTE}/{default}"
     git.run("fetch", "-q", REMOTE, f"+{HEADS}{default}:{onto}")
     live = tuple(sessions.live())
