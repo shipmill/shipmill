@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.77.0] - 2026-10-26
+
+### Added
+
+- `[autonomy]` takes `triage`, `fix`, and `land`, the stages agent sessions run, each `observe`, `propose`, or `act` (default `act`, `act`, and `propose`); any other value exits 2 naming the key and the levels, and an open `shipmill-hold` issue turns each `act` into `propose`. Nothing reads them yet, so no session changes behaviour (#659)
+
 ## [0.76.0] - 2026-10-26
 
 ### Fixed
@@ -1811,7 +1817,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.76.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.77.0...HEAD
+[0.77.0]: https://github.com/shipmill/shipmill/compare/v0.76.0...v0.77.0
 [0.76.0]: https://github.com/shipmill/shipmill/compare/v0.75.0...v0.76.0
 [0.75.0]: https://github.com/shipmill/shipmill/compare/v0.74.0...v0.75.0
 [0.74.0]: https://github.com/shipmill/shipmill/compare/v0.73.1...v0.74.0
