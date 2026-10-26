@@ -50,4 +50,16 @@ def test_s025_17_a_red_evals_check_is_never_proven_unrelated() -> None:
 def test_s025_17_a_forks_evals_land_only_after_a_dispatched_green_run() -> None:
     text = folded(ROOT / "skills" / "github-pr-triage" / "references" / "ci-failures.md")
     assert "A red `evals` check is always caused by the PR" in text
-    assert "`gh workflow run evals.yml -f pr=<N>`); the PR lands only after that run is green" in text
+    assert "`gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>`, for the head SHA the maintainer read)" in text
+    assert "the PR lands only after that run is green, and only while that SHA is still its head" in text
+
+
+def test_s025_23_a_forks_dispatched_run_counts_only_while_its_sha_is_the_head() -> None:
+    text = folded(ROOT / "skills" / "github-pr-triage" / "SKILL.md")
+    rule_2 = text.split(" 2. **Red CI blocks the merge**", 1)[1].split(" 3. **", 1)[0]
+    assert (
+        "A fork's dispatched `evals` run counts only while the head SHA it recorded "
+        "(its summary's `evals: measured <sha> of #<N>`) is the PR's current head"
+    ) in rule_2
+    assert "a push after the run needs a new dispatch naming the new SHA" in rule_2
+    assert "`gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>`" in rule_2

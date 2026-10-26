@@ -609,7 +609,17 @@ A fork's head is code no maintainer has read, and a downstream's workflow would 
 the downstream's secrets. On a fork's pull request shipmill dispatches nothing: a required
 check is `action_required` (a report-only one `neutral`), titled `a fork's pull request runs
 downstream tests only by hand`, with the command a maintainer runs once they have read the
-change: `gh workflow run downstream.yml -f pr=<N>`. A bot can't start a fork's run.
+change: `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>`, the head SHA it read
+filled in. A bot can't start a fork's run.
+
+A person's start is pinned to the commit they read. The caller's `workflow_dispatch` has a
+required `sha` input, and when the pull request's head is no longer that SHA the run exits 1
+before the App's key reaches the disk, writing no check and starting no downstream: `the head
+of #<N> is <current SHA>, not <sha>; read the new commits and start again with -f
+sha=<current SHA>`. A caller written before the `sha` input keeps working unpinned: its pull
+requests' downstream runs start and are collected (shipmill sends `sha` on the collect
+dispatch only to a caller that declares it), but a person's start on it is refused, naming
+`shipmill init --downstream --force`, which rewrites it; `shipmill doctor` WARNs on it.
 
 ### The App, the secret, and the workflow
 

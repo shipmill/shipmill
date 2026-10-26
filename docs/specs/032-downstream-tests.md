@@ -1,6 +1,6 @@
 # S-032: Run downstream repositories' tests on a library's pull request
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -236,13 +236,17 @@ commit it is for:
   `--sha`: its head is the event's, and a fork's is held as above
 - The SHA the person named is the one tested: the downstream's `library-ref`, its
   `shipmill-id`, the checks' head, and the collect dispatch (`pr`, `sha`, and `collect` all
-  set to it) carry it
+  set to it) carry it. The collect dispatch sends `sha` only when the caller on the default
+  branch declares the input, read from the job's checkout of that branch: a caller written
+  before it refuses an unexpected input, so it keeps working unpinned (a `pull_request_target`
+  start and its collect), while a person's start on it exits 2 as above
 - The hand-offs name the SHA: the fork hold's summary prints the command with the head SHA
   it read, and `skills/github-pr-triage/references/landing.md` gives the rerun of a flaky
   downstream as `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>` (through
   `shipmill gh`)
-- `shipmill doctor` FAILs a caller whose `workflow_dispatch` lacks the `sha` input or
-  doesn't pass `sha` to the reusable workflow, naming `shipmill init --downstream --force`
+- `shipmill doctor` WARNs on a caller written before the `sha` input (it neither declares
+  nor passes it) and FAILs one that has only one of the two, each naming `shipmill init
+  --downstream --force`
 
 ### How `pr_gate.py` reads it
 
@@ -310,9 +314,9 @@ fork's `action_required` downstream check is the maintainer's to start.
 - S-032-17: On a pull request whose head repository isn't the library's, `start` dispatches nothing and writes each required check `completed`/`action_required` and each report-only one `neutral`, titled `a fork's pull request runs downstream tests only by hand` with `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>` in the summary, the full head SHA it read filled in
 - S-032-18: A `workflow_dispatch` start whose `--sha` differs from the pull request's head SHA writes no check, mints no token, dispatches nothing, and exits 1 with `the head of #<N> is <current SHA>, not <sha>; read the new commits and start again with -f sha=<current SHA>`; a fork's `action_required` checks are left as they were
 - S-032-19: A `workflow_dispatch` start with no `--sha`, or a `--sha` that is not 40 hexadecimal characters, writes nothing and exits 2 naming the input and `shipmill init --downstream --force`; a `pull_request_target` start needs no `--sha`
-- S-032-20: A `workflow_dispatch` start whose `--sha` is the head tests that SHA: each downstream's `library-ref` and `shipmill-id`, the checks' head SHA, and the collect dispatch's `pr`, `sha`, and `collect` inputs carry it
+- S-032-20: A `workflow_dispatch` start whose `--sha` is the head tests that SHA: each downstream's `library-ref` and `shipmill-id`, the checks' head SHA, and the collect dispatch's `pr` and `collect` inputs carry it. The collect dispatch sends `sha` only when the caller on the default branch declares the `sha` input on `workflow_dispatch`, so a caller written before it keeps working unpinned; `shipmill doctor` WARNs on such a caller, naming `shipmill init --downstream --force`, and `shipmill init --downstream` writes a caller that declares it
 - S-032-21: `shipmill init --downstream` writes the caller with a required `sha` input on `workflow_dispatch` passed to the reusable workflow, and actionlint accepts it; the reusable `.github/workflows/downstream.yml` takes an optional `sha` `workflow_call` input and passes `--sha` to `shipmill downstream start` on a `workflow_dispatch` run
-- S-032-22: `shipmill doctor` with `[downstream]` FAILs naming `shipmill init --downstream --force` when the caller's `workflow_dispatch` lacks the `sha` input or doesn't pass `sha` to the reusable workflow
+- S-032-22: `shipmill doctor` with `[downstream]` FAILs naming `shipmill init --downstream --force` when the caller's `workflow_dispatch` lacks the `sha` input or doesn't pass `sha` to the reusable workflow, except a caller with neither, which WARNs (S-032-20)
 - S-032-23: `skills/github-pr-triage/references/landing.md` gives the rerun of a downstream as `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>` through `shipmill gh`, and says a fork's run is started only for the head SHA the maintainer read
 - S-032-24: On a `workflow_dispatch` run, the reusable `.github/workflows/downstream.yml` compares `sha` with the pull request's head SHA in a step before any step that writes `downstream-key` to disk or mints an App token, and on a mismatch exits 1 naming both SHAs with no key file left on the runner
 
@@ -369,3 +373,11 @@ fork's `action_required` downstream check is the maintainer's to start.
 - S-032-14: ran `tests/test_pr_gate.py`'s S-032-14 tests: exit 1 printing `failed: downstream: <name> (FAILURE)`, likewise `TIMED_OUT` and `ACTION_REQUIRED`, exit 3 for `IN_PROGRESS`, `NEUTRAL` and `SUCCESS` green
 - S-032-15: ran `tests/test_downstream_doctor.py`'s S-032-15 tests against fake readers and GitHub, and `GhReader` read only against GitHub (a workflow on its default branch, a missing file, a repo the login can't read): the caller and secret FAILs, the per-downstream PASS, FAIL, and WARN, the App's FAIL with the key and one WARN without it, and no block without `[downstream]`
 - S-032-16: read the "Downstream tests" section of `docs/release-lanes.md`, setup's "Downstream tests", landing's "Downstream checks", and `pr_gate.py`'s docstring, and ran the S-032-16 tests: each covers what the Docs list names
+- S-032-17: ran `tests/test_downstream_start.py`'s S-032-17 tests: a fork's head, and a deleted fork's, dispatches nothing and mints no token; the required check is `completed`/`action_required`, the report-only one `neutral`, both titled `a fork's pull request runs downstream tests only by hand` with `gh workflow run downstream.yml -f pr=12 -f sha=<the full head SHA read>` in the summary
+- S-032-18: ran the S-032-18 tests: a `--sha` the head moved past raises `HeadMoved` (not a `ReleaseError`) with the spec's line, the CLI exits 1 printing it, and no check, token, dispatch, or collect is made; a fork's `action_required` checks are left unchanged
+- S-032-19: ran the S-032-19 tests: no `--sha`, an empty, short, upper-case, 41-character, non-hex, or multi-line one exits 2 naming `--sha`, the sha input, and `shipmill init --downstream --force` before the config is read; `--sha` without `--actor` exits 2; a `pull_request_target` start needs none; `CommitSha` takes only 40 lowercase hexadecimal characters
+- S-032-20: ran the S-032-20 tests: a person's start for the head dispatches `library-ref` and a `shipmill-id` with that SHA, writes the checks on it, and dispatches collect with `pr` and `collect` set to it; `GhLibrary` passes `-f sha=<SHA>` when the checkout's caller declares the `sha` input (the caller `init --downstream` writes) and leaves it out for a caller written before it, a `sha` only in a comment or under `with:` isn't a declaration, and a checkout without the caller dispatches nothing; `tests/test_downstream_doctor.py`'s S-032-20 tests: such a caller WARNs naming `shipmill init --downstream --force`, and FAILs naming the `sha` parts too when it lacks another part
+- S-032-21: ran `tests/test_downstream_init.py`'s S-032-21 tests and actionlint on the file `downstream_caller_text()` writes (printed nothing): a required `sha` on `workflow_dispatch` and `sha: ${{ inputs.sha }}` passed to the reusable call; read `.github/workflows/downstream.yml`: an optional `sha` `workflow_call` input (default empty) and `--sha "$SHA"` added to `start` on `workflow_dispatch`
+- S-032-22: ran `tests/test_downstream_doctor.py`'s S-032-22 tests: a caller without the `sha` input or without `sha: ${{ inputs.sha }}` FAILs naming it and `shipmill init --downstream --force` (one without both WARNs, S-032-20); the caller init writes PASSes
+- S-032-23: read landing's "Downstream checks" and ran `test_s032_23_landing_reruns_a_downstream_for_the_head_sha_the_maintainer_read`: the rerun is `gh workflow run downstream.yml -f pr=<N> -f sha=<head SHA>` through `shipmill gh`, and a fork's run starts only for the head SHA the maintainer read
+- S-032-24: ran the S-032-24 tests: the start job's first step after the checkout, on `workflow_dispatch` only, compares `sha` with the head `gh api` reads, holds no secret, and precedes every step that writes `downstream-key` or runs shipmill; run as bash with a fake `gh`, a moved head exits 1 naming both SHAs and leaves no key file, and a missing or malformed `sha` exits 2 before any read, never echoing the input
