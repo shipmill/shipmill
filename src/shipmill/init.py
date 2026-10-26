@@ -2,6 +2,7 @@
 its CHANGELOG style, its version file, and its default branch; and, unless told not to, the
 changelog fragments folder the policy names (spec 013)"""
 
+import copy
 import datetime as dt
 import json
 import re
@@ -10,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from shipmill import UVX, requires
+from shipmill.autonomy import DEPLOY_DEFAULT, Autonomy, AutonomyPolicy
 from shipmill.config import CONFIG_PATH, config_path, loads
 from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER
 from shipmill.errors import ReleaseError
@@ -17,7 +19,7 @@ from shipmill.gitrepo import Git
 from shipmill.policy import Policy, Style, VersionFiles
 from shipmill.requires import Requires
 from shipmill.ticks import HOURLY_TICKS, Ticks, needed
-from shipmill.upgrades import FRAGMENTS, fragments_readme_text
+from shipmill.upgrades import FRAGMENTS, append_to_table, fragments_readme_text
 
 BOT_REPO = "shipmill/shipmill"
 BOT_REF = "v0"
@@ -111,6 +113,20 @@ def detect(root: Path) -> Detected:
     return Detected(name, branch, style, version_files)
 
 
+_DEFAULTS = AutonomyPolicy()  # the parser's defaults, which init writes out (S-040-16)
+_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _level_line(key: str, level: Autonomy, does: str) -> str:
+    """An [autonomy] line at its level, with a comment naming the three levels"""
+    return f'{key} = "{level}"'.ljust(35) + f" # {' | '.join(a.value for a in Autonomy)}: {does}"
+
+
+def _deploy_key(environment: str) -> str:
+    """deploy.<env> as a TOML dotted key, the environment quoted when it isn't a bare key"""
+    return f"deploy.{environment if _BARE_KEY.fullmatch(environment) else json.dumps(environment)}"
+
+
 def policy_text(d: Detected, fragments: bool = True) -> str:
     """The starting policy; fragments: it sets [changelog] fragments (spec 013)"""
     folder = (
@@ -202,11 +218,11 @@ github_release = true
 # pattern = '{d.name} v\\d+\\.\\d+\\.\\d+'
 # replace = "{d.name} v{{version}}"
 
-# How far shipmill goes by itself: observe (report only), propose (open an issue saying what
-# it would release; a person starts the lane), or act (the default). An open issue labelled
-# shipmill-hold turns every act into propose until it is closed.
-# [autonomy]
-# release = "act"
+# How far shipmill goes by itself at each stage: observe (report only), propose (open an issue
+# saying what it would do; a person does it), or act. An open issue labelled shipmill-hold
+# turns every act into propose until it is closed.
+[autonomy]
+{_level_line("release", _DEFAULTS.release, "cut the release a lane is due")}
 
 # What the gate starts a Claude Code session for; shipmill-setup writes this section with you.
 # [agents]
@@ -425,14 +441,77 @@ def _today() -> dt.date:
     return dt.datetime.now(dt.UTC).date()
 
 
-def init_operate(root: Path, force: bool) -> Path:
-    """Write the operate caller, for a repository whose environments use from or health"""
+def init_operate(root: Path, force: bool) -> tuple[Path, ...]:
+    """Write the operate caller, for a repository whose environments use from or health, and
+    add to the policy's [autonomy] each operate stage it doesn't set, at its default: rollback,
+    and deploy.<env> for each environment (S-040-16). A policy that isn't there or doesn't load
+    refuses, and so does a caller already there without force, before anything is written; the
+    rest of the policy stays byte for byte"""
+    config = config_path(root)
+    policy = Policy.load(config)
     path = root / OPERATE_CALLER
     if path.exists() and not force:
         raise ReleaseError(f"{OPERATE_CALLER} exists; pass --force to overwrite")
+    text = config.read_bytes().decode("utf-8")
+    edited = _with_operate_autonomy(text, sorted(policy.environments))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(operate_caller_text(), encoding="utf-8")
-    return path
+    if edited == text:
+        return (path,)
+    config.write_bytes(edited.encode("utf-8"))
+    return (path, config)
+
+
+def _with_operate_autonomy(text: str, environments: list[str]) -> str:
+    """The policy with rollback and each environment's deploy.<env> added to [autonomy] at
+    their defaults where it doesn't set them: after its body, or as a new [autonomy] at the end
+    without one. An edit that wouldn't mean exactly those keys more refuses, naming the lines"""
+    raw = loads(text, str(CONFIG_PATH))
+    expected = copy.deepcopy(dict(raw))
+    table = expected.setdefault("autonomy", {})
+    deploy = table.get("deploy", {})
+    added: list[str] = []
+    if "rollback" not in table:
+        table["rollback"] = _DEFAULTS.rollback.value
+        added.append(_level_line("rollback", _DEFAULTS.rollback, "roll back an environment that fails its checks"))
+    # into an [autonomy.deploy] table when the policy has one, as its own keys; else dotted under [autonomy]
+    nested = _has_table(text, "autonomy.deploy")
+    environments_added: list[str] = []
+    for name in (n for n in environments if n not in deploy):
+        deploy[name] = DEPLOY_DEFAULT.value
+        key = _deploy_key(name).removeprefix("deploy.") if nested else _deploy_key(name)
+        environments_added.append(_level_line(key, DEPLOY_DEFAULT, f"deploy a release to {name}"))
+    if deploy:
+        table["deploy"] = deploy
+    if not added and not environments_added:
+        return text
+    edited: str | None = text
+    if nested and environments_added:
+        edited = append_to_table(text, "autonomy.deploy", environments_added)
+    else:
+        added += environments_added
+    if edited is not None and added and "autonomy" in raw:
+        edited = append_to_table(edited, "autonomy", added)
+    elif edited is not None and added:
+        newline = "\r\n" if "\r\n" in edited else "\n"
+        ending = "" if not edited or edited.endswith("\n") else newline
+        edited = edited + ending + newline + newline.join(["[autonomy]", *added]) + newline
+    if edited is None or _parses_to(edited) != expected:
+        lines = "; ".join([*added, *(environments_added if nested else [])])
+        raise ReleaseError(f"can't add {lines} to [autonomy] in {CONFIG_PATH}; add them by hand")
+    return edited
+
+
+def _has_table(text: str, table: str) -> bool:
+    """Whether the text has exactly one header line for the table"""
+    return append_to_table(text, table, []) is not None
+
+
+def _parses_to(text: str) -> dict[str, object] | None:
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return None
 
 
 def init_downstream(root: Path, force: bool) -> Path:

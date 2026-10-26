@@ -353,7 +353,9 @@ With `from` or `health` in use, run `shipmill init --operate` (the CLI from `uv 
 shipmill`, or `uvx shipmill` without it;
 see [install.md](install.md#before-you-start)). It writes
 `.github/workflows/operate.yml`, which runs `shipmill operate` every 10 minutes, one run at
-a time. The deploy workflow's `operate` job above also starts it once a deploy succeeds, so
+a time, and adds to the policy's `[autonomy]` each operate stage it doesn't set yet:
+`rollback` and `deploy.<env>` for each environment, at their default, `act` (spec 040),
+leaving every other line as it was. The deploy workflow's `operate` job above also starts it once a deploy succeeds, so
 the first health check runs right after the deploy rather than at the next scheduled run;
 the schedule stays the backstop and runs the checks after it. It is a job of its own, so a
 failure to start operate leaves the deployment's success alone, and it needs
@@ -762,7 +764,7 @@ The workflows call these; you can run them locally too.
 
 | Command | What it does |
 |---|---|
-| `init` | Write the policy and the calling workflow; `--caller` rewrites the calling workflow alone from the policy, `--runs-on` names the runner, `--operate` writes the operate one, `init --downstream` the downstream tests one |
+| `init` | Write the policy and the calling workflow; `--caller` rewrites the calling workflow alone from the policy, `--runs-on` names the runner, `--operate` writes the operate one and adds `rollback` and each `deploy.<env>` to `[autonomy]`, `init --downstream` the downstream tests one |
 | `operate` | Check environment health, promote after the bake, roll back; `--approve <env>`, `--approve-rollback <env>`, `--dry-run` |
 | `doctor` | Check the repository is ready; exit 1 on a failure; `--app-key` checks the `[downstream]` App's installations |
 | `downstream start`, `downstream collect` | Start each downstream's tests on a pull request and write their checks; run by the reusable `downstream.yml` |

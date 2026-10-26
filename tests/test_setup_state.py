@@ -585,6 +585,92 @@ def test_shipmills_own_config_lands_its_prs(ss: ModuleType) -> None:
     assert gh.calls == []
 
 
+# -- spec 040: AUTONOMY_IMPLICIT ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "",
+        '\n[autonomy]\nrelease = "act"\nrollback = "act"\n',  # the release side only: init's [autonomy]
+        '\n[autonomy]\nupgrade = "propose"\n# triage = "act"\n',  # a comment sets nothing
+        '\n[lanes.stable]\ntriage = "act"\n',  # the key in another table
+    ],
+)
+def test_s040_13_agents_without_an_agent_stage_level_is_implicit(ss: ModuleType, tmp_path: Path, extra: str) -> None:
+    write(tmp_path, ".github/shipmill.toml", GATE + extra)
+    rows = ss.autonomy_rows(tmp_path, ss.watch_module())
+    assert rows == [ss.Row("AUTONOMY_IMPLICIT", ss.IMPLICIT)]
+    assert "shipmill-setup's Autonomy step" in rows[0].detail  # its fix
+    assert ss.exit_code([*(ss.Row(state, "") for state in sorted(ss.DONE)), *rows]) == 1
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        '\n[autonomy]\ntriage = "act"\n',
+        '\n[autonomy]\nfix = "observe"\n',
+        '\n[autonomy]\n  land = "propose"  # a person merges\n',
+        '\n[autonomy]\nrelease = "act"\ntriage = "propose"\nfix = "act"\nland = "act"\n',
+    ],
+)
+def test_s040_13_any_agent_stage_set_is_not_implicit(ss: ModuleType, tmp_path: Path, extra: str) -> None:
+    write(tmp_path, ".github/shipmill.toml", GATE + extra)
+    assert ss.autonomy_rows(tmp_path, ss.watch_module()) == []
+
+
+@pytest.mark.parametrize("text", ['mode = "release"\n', '[autonomy]\nrelease = "act"\n'])
+def test_s040_13_no_agents_section_is_not_implicit(ss: ModuleType, tmp_path: Path, text: str) -> None:
+    write(tmp_path, ".github/shipmill.toml", text)
+    assert ss.autonomy_rows(tmp_path, ss.watch_module()) == []
+
+
+def test_s040_13_an_autonomy_that_isnt_a_table_fails(ss: ModuleType, tmp_path: Path) -> None:
+    write(tmp_path, ".github/shipmill.toml", 'autonomy = "act"\n' + GATE)
+    with pytest.raises(SystemExit) as exc:
+        ss.autonomy_rows(tmp_path, ss.watch_module())
+    assert exc.value.code == 2
+
+
+def test_s040_13_the_310_reader_reads_the_stages_as_tomllib_does(ss: ModuleType) -> None:
+    ws, where = ss.watch_module(), Path(".github/shipmill.toml")
+    for text in (
+        GATE,
+        GATE + '\n[autonomy]\nrelease = "act"\n',
+        GATE + '\n[autonomy]\n"fix" = "act"\nland = "act"\n',
+        GATE + '\n[autonomy]\ntriage = "act"\n\n[autonomy.deploy]\nproduction = "propose"\n',
+    ):
+        table = ws.tomllib.loads(text).get("autonomy", {})
+        assert ss.agent_stages_set_310(text, where, ws) == [s for s in ss.AGENT_STAGES if s in table]
+    with pytest.raises(SystemExit):
+        ss.agent_stages_set_310('autonomy.triage = "act"\n' + GATE, where, ws)
+
+
+def test_s040_13_autonomy_implicit_runs_under_python_310(tmp_path: Path) -> None:
+    write(tmp_path, ".github/shipmill.toml", GATE + '\n[autonomy]\nrelease = "act"\n')
+    write(tmp_path, "set/.github/shipmill.toml", GATE + '\n[autonomy]\nland = "propose"\n')
+    uv = shutil.which("uv")
+    assert uv is not None, "uv runs the skill scripts"
+    code = (
+        "import importlib.util, sys; from pathlib import Path\n"
+        "spec = importlib.util.spec_from_file_location('setup_state', sys.argv[1])\n"
+        "ss = importlib.util.module_from_spec(spec); sys.modules['setup_state'] = ss; spec.loader.exec_module(ss)\n"
+        "ws = ss.watch_module(); assert ws.tomllib is None, 'tomllib on 3.10'\n"
+        "root = Path(sys.argv[2])\n"
+        "print([r.state for r in ss.autonomy_rows(root, ws)], ss.autonomy_rows(root / 'set', ws))\n"
+    )
+    command = [uv, "run", "--no-project", "--python", "3.10", "python", "-c", code, str(SCRIPT), str(tmp_path)]
+    done = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "['AUTONOMY_IMPLICIT'] []"
+
+
+def test_s040_13_the_skill_and_the_docstring_name_the_row(ss: ModuleType) -> None:
+    skill = (SCRIPT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
+    assert "`AUTONOMY_IMPLICIT`" in skill
+    assert "AUTONOMY_IMPLICIT" in (ss.__doc__ or "")
+
+
 ROOT = SCRIPT.parents[3]
 SKILLS = ["github-issue-resolve", "github-issue-triage", "github-pr-triage", "github-ship-watch", "product-intake"]
 

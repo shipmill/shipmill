@@ -659,17 +659,26 @@ def _headers(text: str, upgrade: Upgrade) -> list[int]:
     ]
 
 
-def _body(text: str, upgrade: Upgrade, key: str) -> tuple[list[str], list[bool], int, int]:
+def _bounds(text: str, table: str) -> tuple[list[str], list[bool], int, int] | None:
     """The text's lines, whether each starts outside a multi-line string, and the bounds of the
-    upgrade's table: its header line and the next header's (or the line count)"""
-    lines = _LINE.findall(text)
+    table: its header line and the next header's (or the line count); None without exactly one
+    header line for it"""
+    lines = _LINE.findall(text)  # not splitlines: it also breaks on U+2028 and the like, TOML only on \n
     outside = _outside_strings(lines)
     headers = [i for i, line in enumerate(lines) if outside[i] and _ANY_HEADER.match(line)]
-    found = _headers(text, upgrade)
+    found = [i for i in headers if (m := _HEADER.match(lines[i])) and re.sub(r"\s", "", m[1]) == table]
     if len(found) != 1:
-        raise ReleaseError(f"upgrade {upgrade.id}: no [{upgrade.table}] header line in {CONFIG_PATH} to edit {key} in")
+        return None
     start = found[0]
     return lines, outside, start, next((i for i in headers if i > start), len(lines))
+
+
+def _body(text: str, upgrade: Upgrade, key: str) -> tuple[list[str], list[bool], int, int]:
+    """_bounds of the upgrade's table, which must have one header line"""
+    bounds = _bounds(text, upgrade.table)
+    if bounds is None:
+        raise ReleaseError(f"upgrade {upgrade.id}: no [{upgrade.table}] header line in {CONFIG_PATH} to edit {key} in")
+    return bounds
 
 
 def _replace(text: str, upgrade: Upgrade, removes: str, adds: bool) -> str:
@@ -697,7 +706,22 @@ def _insert(text: str, upgrade: Upgrade, added: Sequence[str]) -> str:
         ended = text if not text or text.endswith("\n") else text + newline
         gap = newline if ended else ""
         return ended + gap + f"[{upgrade.table}]{newline}" + "".join(line + newline for line in added)
-    lines, outside, start, end = _body(text, upgrade, upgrade.key)
+    _body(text, upgrade, upgrade.key)  # refuses a table without one header line, in the upgrade's words
+    edited = append_to_table(text, upgrade.table, added)
+    assert edited is not None  # _body found the header
+    return edited
+
+
+def append_to_table(text: str, table: str, added: Sequence[str]) -> str | None:
+    """The text with the added lines after the last line of the table's body (the header when
+    the body is empty), in the file's own line ending; None without exactly one header line for
+    the table (a dotted name for a nested one: autonomy.deploy). The caller checks the result
+    parses to what it meant"""
+    bounds = _bounds(text, table)
+    if bounds is None:
+        return None
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines, outside, start, end = bounds
     last = start
     for i in range(start + 1, end):
         stripped = lines[i].strip()

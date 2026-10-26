@@ -39,7 +39,8 @@
                   nobody fills marked fallback with the maintainer's; --json for one JSON object,
                   --flags for triage_state.py's --role arguments
   init            write a starting policy, the calling workflow, and changelog.d/README.md for changelog
-                  fragments (--no-fragments: no fragments; --operate: only the operate workflow;
+                  fragments (--no-fragments: no fragments; --operate: only the operate workflow,
+                  adding rollback and each deploy.<env> to the existing policy's [autonomy];
                   --downstream: only the downstream tests workflow, for a policy with [downstream];
                   --caller: only the calling workflow, from the existing policy; --runs-on: the
                   release jobs' runner, a label or a JSON list of labels); the calling workflow's
@@ -466,7 +467,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--operate",
         action="store_true",
-        help=f"write only {OPERATE_CALLER}, which runs shipmill operate every 10 minutes",
+        help=f"write {OPERATE_CALLER}, which runs shipmill operate every 10 minutes, and add to the policy's"
+        " [autonomy] rollback and each deploy.<env> it doesn't set, at their defaults",
     )
     p.add_argument(
         "--downstream",
@@ -800,8 +802,12 @@ def main(
             return 0
         if args.operate:
             if runs_on is not None:
-                raise ReleaseError(f"--runs-on sets {CALLER}'s runner; --operate writes only {OPERATE_CALLER}")
-            print(f"wrote {init_operate(root, args.force).relative_to(root)}")
+                raise ReleaseError(
+                    f"--runs-on sets {CALLER}'s runner; --operate leaves {CALLER} alone and writes"
+                    f" {OPERATE_CALLER}, which takes no runner"
+                )
+            for path in init_operate(root, args.force):
+                print(f"wrote {path.relative_to(root)}")
             print(f"next: run `{cli_command()} doctor`")
             return 0
         initialized = init(root, args.ci, args.force, fragments=not args.no_fragments, runs_on=runs_on)

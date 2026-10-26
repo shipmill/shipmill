@@ -244,7 +244,8 @@ the release tags, since `land` starts the workflow on the tag (enabling GitHub P
 `gh api -X POST repos/<owner>/<repo>/environments/<environment>/deployment-branch-policies -f name='v*' -f type=tag`.
 
 When an environment has `health` or `from`, also run `$CR init --operate` in step 4. It
-writes `.github/workflows/operate.yml`, which runs `shipmill operate` every 10 minutes:
+writes `.github/workflows/operate.yml` and adds `rollback` and each `deploy.<env>` the
+policy's `[autonomy]` doesn't set, at their default, `act`. operate.yml runs `shipmill operate` every 10 minutes:
 it checks each `health` URL (2xx within 10 s; a JSON body's `version` must name the
 deployed release), records the result as deployment statuses, and promotes a `from`
 environment once its source stayed healthy for `bake_minutes`. An environment failing
@@ -366,6 +367,12 @@ or the tags are wrong; fix those, not the version.
    bare `/<skill>` loads it in place of the plugin's. Give the user the fix (remove it, or
    call the skill as `/shipmill:<skill>`); never delete anything in their home folder
    yourself. A link into the plugin's cache is the plugin's own and isn't reported
+
+   With an `[agents]` section, `AUTONOMY_IMPLICIT` follows the agents rows when the
+   config's `[autonomy]` sets none of `triage`, `fix`, and `land` (spec 040): how far a
+   gate session goes was never chosen, so it comes from the defaults or the prompt's
+   words. Not done; `--fix` leaves it. Its fix is the Autonomy step, which writes all
+   three keys
 
    The last row is landing: `LANDING_OFF` when the config's `[agents]` has `prs = false`
    (or no `prs` key, which the config reads as false) and open non-draft pull requests
