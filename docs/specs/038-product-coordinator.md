@@ -1,6 +1,6 @@
 # S-038: Work across repos through the product's coordinator
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -357,3 +357,6 @@ token covers only the listed repos (S-038-6). So in a component, a checkout whos
 - S-038-25: tests/test_triage_upstream.py (test_s038_25_*): a hold on another repo's issue reads as spec 017 says, with and without `--home`; passes
 - S-038-26: tests/test_coordinator_e2e.py (test_s038_26_*) drives a home repo and two components over one scripted forge through the real `shipmill gh`, `chains.py`, `upstream_state.py`, and `triage_state.py`, from A's report to B's closed issue to A's UNBLOCKED issue, and checks every recorded gh call's token: A's only for its repo, the product token only for issue writes and reads; passes
 - S-038-29: tests/test_chains.py (test_s038_29_*): `link --product` writes a home-repo parent's link through the session's `shipmill gh` and a listed parent's through `shipmill gh --product <its repo>`, reads each listed repo through `shipmill gh --product <that repo>` and the home repo through plain gh, stops on a `shipmill gh` exit 2 with no plain-gh retry, and exits 2 with no read for a checkout without `[product] repos` or a reference outside the product; passes
+- S-038-27: tests/test_doctor_product.py (test_s038_27_*): a listed repo the App isn't installed on, or whose installation lacks Issues: write, is a FAIL naming it and `shipmill app-install <repo>`; a malformed, repeated, or empty `[product] repos` is one FAIL row naming the entry and the key while the policy, hooks, decisions, changelog, and workflow checks still run, and `shipmill doctor` exits 1, not 2; without the key on the host there is one WARN; passes
+- S-038-28: tests/test_doctor_product.py (test_s038_28_*): each listed repo's `.github/shipmill.toml` is read through the contents API with the product token (one per owner, minted and cached as `app-token --product` does), and a missing `[product] home`, one naming another repo, or a config that can't be read is a WARN naming the fix `set [product] home = "<home>"`, while a home matching case ignored passes. One deviation: a product token covers all of an owner's listed repos, so while the App is missing on one of them, the owner's other repos read "unchecked: needs the App on X too" rather than having their config read; passes
+- S-038-30: tests/test_doctor_product.py (test_s038_30_*): a component reads only `repos/<home>/contents/.github/shipmill.toml` through the maintainer's gh (`GhReader.file`), never asks the App (the product probe is never called and no token is minted), passes when the home's `[product] repos` lists it case ignored, and WARNs with the fix when it doesn't, or naming the home when the file is missing, unreadable, or can't be parsed; passes

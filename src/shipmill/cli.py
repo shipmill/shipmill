@@ -163,7 +163,7 @@ from shipmill.classify import DEFAULT_REF, Base, Pulls, RepoPath, classify_paths
 from shipmill.claude_auth import ClaudeAuth, claude_auth, run_auth
 from shipmill.config import CONFIG_PATH, Table, config_path
 from shipmill.config import read as read_config
-from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER, doctor, read_plugin_rows
+from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER, doctor, product_on_host, read_plugin_rows
 from shipmill.downstream import (
     AppDispatcher,
     AppRuns,
@@ -836,6 +836,7 @@ def main(
         hooks = _hook_test(root, env, user_home)
         has_gh = shutil.which("gh") is not None
         key: Path | None = None if args.app_key is None else args.app_key.expanduser()
+        hub_api, hub_signer = api or UrllibApi(), signer or Openssl()
         checks = doctor(
             root,
             github or (GhCli(root) if has_gh else None),
@@ -845,9 +846,18 @@ def main(
             hooks=hooks,
             auth=_claude_auth(env),
             downstream=downstream_reader or (GhReader(root) if has_gh else None),
-            app=app_on_host(key, user_home, signer or Openssl(), api or UrllibApi(), lambda: dt.datetime.now(dt.UTC)),
+            app=app_on_host(key, user_home, hub_signer, hub_api, lambda: dt.datetime.now(dt.UTC)),
             gate_cli=None if slug is None else (lambda: _gate_cli(root, slug, user_home)),
             pypi=lambda url: _pypi_status(url, http),
+            product=product_on_host(
+                key,
+                user_home,
+                lambda owner: state_dir(Git(root)) / product_cache(owner),
+                hub_signer,
+                hub_api,
+                lambda: dt.datetime.now(dt.UTC),
+            ),
+            home_reader=GhReader(root) if has_gh else None,
         )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")

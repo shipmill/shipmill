@@ -1050,6 +1050,18 @@ class GhReader:
             raise
         return Found(ref, text)
 
+    def file(self, repo: str, path: str) -> str | None:
+        """One file's text on repo's default branch, and nothing else of repo (a component's
+        doctor reads its home's config so, D-53); None on a 404, which GitHub answers both for
+        no such file and for a private repo the login can't read"""
+        api = f"repos/{repo}/contents/{urllib.parse.quote(path)}"
+        try:
+            return _run_gh(self.gh, self.root, ("api", "-H", "Accept: application/vnd.github.raw", api), None)
+        except GhFailed as exc:
+            if exc.status == 404:
+                return None
+            raise
+
 
 Installed = Callable[[str], None]  # raises NotInstalled or Lacks when the App can't start a run on the repo
 

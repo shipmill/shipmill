@@ -4,13 +4,15 @@ green" or not), so it is a reviewed, committed decision like [autonomy]. Where t
 runs (which machine, which scheduler) is not here: that belongs to the host"""
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from shipmill.app import is_plain_repo
 from shipmill.autonomy import AutonomyPolicy
-from shipmill.config import CONFIG_PATH, Table, config_path, read, read_unchecked
+from shipmill.config import CONFIG_PATH, Table, config_path, loads_unchecked, read, read_unchecked
 from shipmill.errors import ReleaseError
 
 _MAX_HOURS = 7 * 24  # a week
@@ -313,10 +315,19 @@ class ProductConfig:
         if not (root / CONFIG_PATH).is_file():
             return None
         path = config_path(root)
-        raw = read_unchecked(path)
+        return cls._alone(read_unchecked(path), path.name)
+
+    @classmethod
+    def of_text(cls, text: str, where: str) -> ProductConfig | None:
+        """Another repo's [product] alone, read as `load` reads the checkout's, from the text
+        of its config; where names it in a refusal (spec 038's doctor, D-53)"""
+        return cls._alone(loads_unchecked(text, where), where)
+
+    @classmethod
+    def _alone(cls, raw: Mapping[str, Any], where: str) -> ProductConfig | None:
         if "product" not in raw:
             return None
-        top = Table(raw, path.name)
+        top = Table(raw, where)
         app_id = AgentsConfig.parse(top.table("agents")).app_id if "agents" in raw else None
         return cls.read(top, app_id)
 

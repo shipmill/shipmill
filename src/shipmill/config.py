@@ -30,7 +30,13 @@ def read_unchecked(path: Path) -> Mapping[str, Any]:
     """The file's TOML with no requires check, for a reader of one table that a newer config
     must not stop (S-038-4: the credential helpers read [product] alone); a syntax error still
     names the file"""
-    return _parse(path.read_text(encoding="utf-8"), str(path))
+    return loads_unchecked(path.read_text(encoding="utf-8"), str(path))
+
+
+def loads_unchecked(text: str, where: str) -> Mapping[str, Any]:
+    """text's TOML with no requires check, as `read_unchecked` reads a file: for another
+    repo's config, read for one table (spec 038's doctor); a syntax error names where"""
+    return _parse(text, where)
 
 
 def loads(text: str, where: str) -> Mapping[str, Any]:
