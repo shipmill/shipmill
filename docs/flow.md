@@ -131,7 +131,9 @@ The release side's stages keep their levels in `[autonomy]` ([release-lanes.md](
 | HANDOFF_DUE | A person's item whose holds all closed, not yet handed off | The session mentions its assignees and its role's teams with what to do |
 | WITH_PERSON | A person's item handed off, no done report yet | Nothing: it waits on the person |
 | VERIFY_DUE | A person's item whose assignee replied `done` | The session runs its `## Check` and closes it, or hands it back |
-| VERIFY_CLOSED | A person's item closed by hand, its `## Check` not yet run | The session runs the check, and reopens it if it fails |
+| VERIFY_CLOSED | A person's item closed by hand, its `## Check` not yet run; or a parent with a `## Check` closed by a PR, a commit, or the App before its check ran | The session runs the check, and reopens it if it fails |
+| VERIFY_DUE (a parent) | A parent with a `## Check` whose children all closed | The session runs the check: it holds, the parent closes with the check and what came back; it fails, the check-failed comment |
+| CHECK_FAILED | A parent's check failed after its last child closed | The session files the fix as a new child; the parent waits on it, then runs its check again |
 
 ## A chain across repos and people
 
@@ -151,6 +153,8 @@ Work that spans repos and people is a chain of issues, each waiting on the one b
 5. Item 3 closes: item 4 reads UNBLOCKED in `acme/site`, and that gate takes it up
 
 The person acts once, on item 3. `chains.py show acme/app#3` prints the whole chain with each item's executor and state, and NO_GATE on a ready item in a repo with no gate; `github-ship-watch` reports that as CHAIN_NO_GATE, since nothing would take it up.
+
+A parent over such a chain can carry a `## Check` of its own: what must hold in production once the whole chain is in, and how to see it. After its last child closes it reads VERIFY_DUE, not UNBLOCKED, and a session runs the check, which only reads. It holds: the parent closes, with the check and what came back. It fails: a check-failed comment, then the fix filed as a new child, and the parent waits on that before it checks again. A check the session can't run goes to you as a needs-decision question. A feature issue whose build deploys gets one from the spec gate, and an `upstream` report may carry one for its coordinator (spec 042).
 
 ## Keeping it running
 

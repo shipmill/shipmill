@@ -158,7 +158,13 @@ A fault traced to a module another repo owns is reported in this repo, never in 
 ## Suspected code
 
 {The place in the module's source, as owner/repo path:line, when you traced the cause there; a guess you couldn't trace starts with `Guess:`, such as "Guess: the index the nightly job rebuilds"}
+
+## Check
+
+{Optional, for a fault that shows in production: a command or a URL, and what it must return once the fix is in, such as the Reproduce above no longer reproducing in production}
 ```
+
+The `## Check` section is optional: add it when the fault shows in production, and leave it out otherwise (spec 042). With it, the coordinator closes the report only once the check holds there (SKILL.md, Reports from other repos); a check only reads, never writes to production.
 
 A stand-in for a dependency on another repo's work has the same label: an issue in the waiting repo saying what work it needs, with a `Stands in for owner/repo#N` line when the other repo's issue already exists ([triage-rubric.md](triage-rubric.md), Links between issues).
 
@@ -187,7 +193,10 @@ Every issue this was routed to is closed:
 - {owner/repo#D}: {completed | not planned}, {by owner/repo#PR | with no pull request}
 
 {What changed, in one or two sentences, for the agent that waits on this.}{ Closing as not planned: {owner/repo#D} won't be done, so the issue waiting on this is decided again.}
+{For a report with a ## Check:} Checked: `{the check}` returned {what came back}, as the ## Check asks.
 ```
+
+A report with a `## Check` reads VERIFY_DUE in place of CLOSE_DUE `completed`: the summary above carries its last line, and the close as completed comes once the check holds. When it fails, the coordinator posts the check-failed comment on the report ([A parent's check](#a-parents-check), the same marker and body) and files the fix in the owning repo as the report's child; when the change hasn't reached production yet, nothing; when it can't run the check, the needs-decision question below on the report.
 
 ## Hold (blocked on something outside the repo)
 
@@ -294,7 +303,52 @@ Every sub-issue is closed:
 Closing this as done.
 ```
 
-A child closed as not planned doesn't stop the close; say so in its line. A feature issue first gets its spec verified ([spec-gate.md](spec-gate.md), Verify the whole spec).
+A child closed as not planned doesn't stop the close; say so in its line. A feature issue first gets its spec verified ([spec-gate.md](spec-gate.md), Verify the whole spec). A parent with a `## Check` never takes this comment: it closes on its check, below.
+
+## A parent's check
+
+A parent with a `## Check` section reads VERIFY_DUE once its holds all close, CHECK_FAILED after a check-failed comment, and VERIFY_CLOSED when it closed before its check ran ([triage-rubric.md](triage-rubric.md), A parent's check). Each comment below starts with its marker as the first line, posted through `--body-file`, since `triage_state.py` reads the marker only there and only from the `--bot-login` or a trusted author. A check only reads: it runs a command or opens a URL and compares what comes back, and never writes to production.
+
+**VERIFY_DUE**, the check holds: close the parent as completed (`gh issue close <n> --reason completed`), then post the verified comment, after the close so `triage_state.py` dates it there. Never post it with `gh issue close --comment`, which posts the comment before the close. On VERIFY_CLOSED the parent is closed already: the comment alone.
+
+```markdown
+<!-- shipmill:verified -->
+Checked: `{the check}` returned {what came back}, as the ## Check asks. Closed as done.
+
+- {owner/repo#N}: {completed | not planned}
+- {owner/repo#M}: {completed | not planned}
+```
+
+**VERIFY_DUE**, the check fails: the check-failed comment, so the parent reads CHECK_FAILED. On VERIFY_CLOSED, reopen it first (`gh issue reopen <n>`).
+
+```markdown
+<!-- shipmill:check-failed -->
+The check didn't pass: `{the check}` returned {what came back}, and it must return {what the ## Check asks}. The fix is filed as a child of this issue; this closes once it lands and the check holds.
+```
+
+**CHECK_FAILED**, the fix: a new issue in the parent's repo, through `--body-file`, triaged **implement**, then made a child with `chains.py link <owner/repo#parent> --child <owner/repo#fix>`, so the parent reads BLOCKED on it and VERIFY_DUE again once it closes. The children that closed stay closed:
+
+```markdown
+The ## Check of #{parent} fails in production: `{the check}` returned {what came back}, and it must return {what the ## Check asks}.
+
+{What the fix is, as far as the session could tell, with the place in the code}
+```
+
+**The change hasn't reached production yet** (the deploy run for the merge is still going, or the version served predates the merge): no comment and no close. The parent reads the same on the next read.
+
+A check the session can't run (a production log, a dashboard, a host it can't reach, a command outside a headless session's allowlist, or one that would write to production): a question through the [needs-decision protocol](needs-decision.md), in its format, with its marker, its zone line under the marker when the config has `[agents]` (`triage-verdict`, the zone of closing an issue as done), and the `needs-decision` label. Say what the check is and why it can't run here, and give the two options, the recommended one first: leave it open when nothing else shows the result, close it unchecked when other evidence does (then it comes first, with the `(recommended)` mark and why):
+
+```markdown
+<!-- shipmill:needs-decision -->
+@{maintainer} Decision needed: every child of this issue closed, and I can't run its check here (`{the check}`: {why, such as "it reads a production log this session can't reach"}).
+
+1. Leave it open: I check it and close it by hand (recommended): nothing else shows the result in production; it stays open until you close it
+2. Close it unchecked: {the evidence beyond the merged children, or "nothing beyond the merged children"}; it closes now and nobody saw the result in production
+
+Reply here with a number or your own answer; shipmill takes this up on the tick after your reply.
+```
+
+On "close it unchecked", close the parent as completed, then post the verified comment with `Closed unchecked on @{login}'s answer: no check ran.` in place of its `Checked:` line; on "leave it open", nothing more.
 
 ## Follow-ups
 
