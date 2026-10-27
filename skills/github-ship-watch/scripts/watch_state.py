@@ -7,6 +7,7 @@ Usage: watch_state.py <owner/repo> [--repo-dir PATH] [--releases N] [--grace MIN
                       [--bot-login LOGIN] [--trusted-only]
                       [--role NAME=FILLER[,FILLER...] ...] [--no-host]
        watch_state.py <owner/repo> --host {sessions,shipmill} [--repo-dir PATH] [--json]
+       watch_state.py <owner/repo> (--tier N [--known FILE] | --sweep) [--repo-dir PATH] [--json] ...
 
 Release bot (a repo with .github/shipmill.toml). "The default branch" in this help is the branch
 releases land on: the config's top-level branch, else GitHub's default branch (#694); it is the
@@ -378,6 +379,25 @@ action row, as above. --no-host is the full report without those two sections, w
 `shipmill status` reads with --host, each on its own, so a failing `claude` or marketplace
 read is one factory check's error rather than the report's end (#745); the gate's launchd
 rows (LOOP, GATE_SESSIONS_DEAD) stay in it.
+
+--tier N and --sweep are the reads shipmill gate's walk makes (spec 046), and print no host
+row and no report-only row. The gate walks eight tiers in order and stops at the first item no
+session has taken: 1 INCIDENT_OPEN, OPERATE_FAILED; 2 BOT_FAILED, NOT_PUBLISHED,
+WORK_BRANCH_STALE, BOT_STALLED; 3 PRS_OPEN; 4 VETOED and triage's DECIDED; 5 UPGRADE_PENDING,
+UPSTREAM_DUE; 6 triage's other action states; 7 DIRECTION_PENDING, PLANS; 8 UNANNOUNCED.
+--tier N prints that tier's rows, and NEEDS_DECISION in tiers 3 and 4, where the gate's
+headless notifications read it; its ISSUES rows are one per triage state, `STATE #N ...`.
+Tier 2 reads NOT_PUBLISHED for the newest tag alone and leaves BOT_STALLED to the sweep;
+tier 3 reads the open pull requests and one batched GraphQL read of the comments of those
+labelled needs-decision or decided; tier 4 runs triage_state.py --label needs-decision
+--label decided; tier 6 runs triage_state.py on every open issue; tier 8 reads UNANNOUNCED
+for the newest tag alone; tiers 5 and 7 run their sections whole. --sweep prints the timed
+sections' rows, read whole: BOT_STALLED, UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING,
+PLANS, and UNANNOUNCED over every --releases tag and environment. --known FILE (with --tier)
+holds what the gate's change check read already: GitHub's default branch, whether a hold is
+open, the open pull requests, the open incidents, and the newest workflow runs, so tiers 1
+and 3 make no gh read of them again; a workflow none of those runs belongs to is read with gh
+run list.
 
 Every shipmill command runs as `uvx shipmill==<version>`, the version in the plugin's own
 .claude-plugin/plugin.json three folders above scripts/ (spec 031), or as `uvx --from <tool>
@@ -775,10 +795,14 @@ def capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def gh_read(cmd: Sequence[str]) -> bool:
-    """A gh command that only reads GitHub: a list or view, or a GET through gh api (its
-    default unless a field is passed). Only a read is ever run twice"""
+    """A gh command that only reads GitHub: a list or view, a GET through gh api (its
+    default unless a field is passed), or a GraphQL query, never a mutation (spec 046). Only a
+    read is ever run twice"""
     if len(cmd) < 3 or cmd[0] != "gh":
         return False
+    if list(cmd[1:3]) == ["api", "graphql"]:
+        queries = [word.partition("=")[2] for word in cmd if word.startswith("query=")]
+        return bool(queries) and not any(q.lstrip().startswith("mutation") for q in queries)
     if cmd[1] != "api":
         return cmd[2] in {"list", "view"}
     words = list(cmd)
@@ -2330,6 +2354,12 @@ def upgrade_id(issue: Issue) -> str | None:
     return name
 
 
+def upgrade_open(issue: Issue, level: str) -> bool:
+    """Whether an upgrade issue is taken up, or waits on its question, under [autonomy] upgrade
+    level: not under observe, nor once answered "not now" or closed by an open pull request"""
+    return level != "observe" and UPGRADE_LATER_LABEL not in issue.labels and not issue.closing_prs
+
+
 def upgrade_rows(
     issues: list[Issue],
     level: str,
@@ -2357,7 +2387,7 @@ def upgrade_rows(
         if name is None:
             continue  # not shipmill's proposal: triage reads it as any issue
         owned.add(issue.number)
-        if level == "observe" or UPGRADE_LATER_LABEL in issue.labels or issue.closing_prs:
+        if not upgrade_open(issue, level):
             continue
         asked = TRIAGE.DECISION_LABEL in issue.labels
         if asked and TRIAGE.waits_on_decision(comments_of(issue.number), bot_login):
@@ -2774,15 +2804,18 @@ def triage_command(
     trusted_only: bool = False,
     home: str | None = None,
     roles: Sequence[str] = (),
+    labels: Sequence[str] = (),
 ) -> list[str]:
     """triage_state.py's command line: with the config's [product] home as --home (spec 038),
-    and each of roles, a --role flag's NAME=FILLER[,FILLER...] value, as its own --role
-    (spec 036)"""
+    each of roles, a --role flag's NAME=FILLER[,FILLER...] value, as its own --role (spec
+    036), and each of labels as a --label, which reads only the open issues carrying one
+    (spec 046)"""
     cmd = [sys.executable, str(TRIAGE_STATE), repo, "--json"]
     cmd += ["--bot-login", bot_login] if bot_login is not None else []
     cmd += ["--trusted-only"] if trusted_only else []
     cmd += ["--home", home] if home is not None else []
     cmd += [item for value in roles for item in ("--role", value)]
+    cmd += [item for label in labels for item in ("--label", label)]
     return cmd
 
 
@@ -2792,9 +2825,10 @@ def triage_run(
     trusted_only: bool = False,
     home: str | None = None,
     roles: Sequence[str] = (),
+    labels: Sequence[str] = (),
 ) -> tuple[int, str]:
     """triage_state.py's exit code (0 or 1) and its --json lines"""
-    cmd = triage_command(repo, bot_login, trusted_only, home, roles)
+    cmd = triage_command(repo, bot_login, trusted_only, home, roles, labels)
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode not in (0, 1):
         sys.stderr.write(f"error: triage_state.py: {proc.stderr.strip()}\n")
@@ -4032,6 +4066,396 @@ def host_rows(section: str, repo: str, repo_dir: Path, now: dt.datetime) -> list
     return [*shipmill_rows(repo, repo_dir), *shadow_rows(Path.home(), skill_names())]
 
 
+# -- the gate's tiers (spec 046) -------------------------------------------------------------
+
+# shipmill gate walks the tiers in order and stops at the first item no session has taken. A
+# --tier read prints only its tier's rows, and NEEDS_DECISION in tiers 3 and 4, which the
+# gate's headless notifications read; its ISSUES rows are one per triage state, tier 4's
+# DECIDED and tier 6's every other. Tiers 5 and 7, BOT_STALLED, and UNANNOUNCED over every
+# --releases tag are the sweep's: the gate reads them from its last --sweep
+TIERS: dict[int, tuple[str, ...]] = {
+    1: ("INCIDENT_OPEN", "OPERATE_FAILED"),
+    2: ("BOT_FAILED", "NOT_PUBLISHED", "WORK_BRANCH_STALE", "BOT_STALLED"),
+    3: ("PRS_OPEN", "NEEDS_DECISION"),
+    4: (VETOED, "ISSUES", "NEEDS_DECISION"),
+    5: ("UPGRADE_PENDING", "UPSTREAM_DUE"),
+    6: ("ISSUES",),
+    7: ("DIRECTION_PENDING", "PLANS"),
+    8: ("UNANNOUNCED",),
+}
+SWEPT = ("BOT_STALLED", "UPGRADE_PENDING", "UPSTREAM_DUE", "DIRECTION_PENDING", "PLANS", "UNANNOUNCED")
+DECIDED_STATES = frozenset({"DECIDED"})  # triage_state.py's states in tier 4; VETOED has its own row
+ASKED = (TRIAGE.DECISION_LABEL, TRIAGE.DECIDED_LABEL)  # tier 4's items; tier 3 reads these pull requests' comments
+COMMENTS_LAST = 100  # comments a batched read takes of each item; one with more is read whole
+
+
+@dataclass(frozen=True)
+class Known:
+    """What shipmill gate's change check read already (--known FILE), so a tier reads none of
+    it again (spec 046): GitHub's default branch, whether a shipmill-hold is open (the gate
+    walks only without one, D-15), the open pull requests as `gh pr list --json
+    number,isDraft,isCrossRepository,labels,headRefOid` prints them, the open incidents, and
+    the newest workflow runs, each with its workflow's file name"""
+
+    default_branch: str
+    held: bool
+    prs: list[dict[str, Any]]
+    incidents: list[Issue]
+    runs: list[tuple[str, Run]]
+
+
+def read_known(path: Path) -> Known:
+    """--known's file, refused unless it holds exactly what Known names"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or set(data) != {"default_branch", "held", "prs", "incidents", "runs"}:
+            raise ValueError("expected exactly default_branch, held, prs, incidents, and runs")
+        if not isinstance(data["default_branch"], str) or not data["default_branch"]:
+            raise ValueError("default_branch must be a branch name")
+        if not isinstance(data["held"], bool):
+            raise ValueError("held must be true or false")
+        for key in ("prs", "incidents", "runs"):
+            if not isinstance(data[key], list) or not all(isinstance(item, dict) for item in data[key]):
+                raise ValueError(f"{key} must be a list of objects")
+        for pr in data["prs"]:
+            if set(pr) != {"number", "isDraft", "isCrossRepository", "labels", "headRefOid"}:
+                raise ValueError(f"a pull request needs exactly gh pr list's fields, got {sorted(pr)}")
+            if not known_pr(pr):
+                raise ValueError(f"pull request {pr['number']!r} is not as gh pr list prints it")
+        for i in data["incidents"]:
+            if not isinstance(i.get("labels"), list) or not isinstance(i.get("closing_prs"), list):
+                raise ValueError(f"incident {i.get('number')!r}: labels and closing_prs must be lists")
+        incidents = [
+            Issue(
+                int(i["number"]),
+                str(i["title"]),
+                "",
+                parse_time(i["createdAt"]),
+                str(i["author"]),
+                tuple(str(label) for label in i["labels"]),
+                tuple(int(n) for n in i["closing_prs"]),
+            )
+            for i in data["incidents"]
+        ]
+        runs = [
+            (
+                str(r["workflow"]),
+                Run(str(r["status"]), str(r["conclusion"] or ""), parse_time(r["createdAt"]), r["url"]),
+            )
+            for r in data["runs"]
+        ]
+    except (OSError, KeyError, TypeError, ValueError) as exc:  # json.JSONDecodeError is a ValueError
+        raise Refused(f"error: --known {path}: {exc}") from None
+    return Known(data["default_branch"], data["held"], list(data["prs"]), incidents, runs)
+
+
+def known_pr(pr: dict[str, Any]) -> bool:
+    """Whether a --known pull request's values are gh pr list's: a number, two flags, and its
+    labels as objects with a name"""
+    number = pr["number"]
+    return (
+        isinstance(number, int)
+        and not isinstance(number, bool)
+        and isinstance(pr["isDraft"], bool)
+        and isinstance(pr["isCrossRepository"], bool)
+        and isinstance(pr["labels"], list)
+        and all(isinstance(label, dict) and isinstance(label.get("name"), str) for label in pr["labels"])
+    )
+
+
+def known_runs(known: Known | None, workflow: str, repo: str) -> list[Run]:
+    """The workflow's ten newest runs, newest first, from the change check's runs; read with
+    gh run list without them, or when none of the newest runs the gate read is the workflow's"""
+    found = [] if known is None else [r for name, r in known.runs if name == workflow]
+    return sorted(found, key=lambda r: r.created, reverse=True)[:10] if found else fetch_runs(repo, workflow)
+
+
+def split_issues(rows: list[Row], decided: bool) -> list[Row]:
+    """The ISSUES row as one row per triage state, `STATE #N ...`, tier 4's states with
+    decided and every other without; any other row as it is"""
+    split: list[Row] = []
+    for row in rows:
+        if row.state != "ISSUES":
+            split.append(row)
+            continue
+        for part in row.detail.split("; "):
+            if (part.split(" ", 1)[0] in DECIDED_STATES) == decided:
+                split.append(Row("ISSUES", row.subject, part, row.fix))
+    return split
+
+
+def comment_login(author: dict[str, Any] | None) -> str:
+    """A comment author's login as the REST API shows it: a Bot's with "[bot]", a deleted
+    account's as ghost"""
+    if author is None:
+        return GHOST
+    login = str(author["login"])
+    return f"{login}[bot]" if author.get("__typename") == "Bot" else login
+
+
+def batched_comments(repo: str, numbers: Sequence[int], read: Callable[[list[str]], str] = run) -> dict[int, Comments]:
+    """Each issue's or pull request's conversation comments, oldest first, in one GraphQL
+    query (spec 046): the last COMMENTS_LAST of each, and one with more read whole with
+    pr_comments. No query without a number"""
+    wanted = sorted(set(numbers))
+    if not wanted:
+        return {}
+    owner, _, name = repo.partition("/")
+    nodes = "nodes { author { __typename login } authorAssociation body }"
+    fields = f"comments(last: {COMMENTS_LAST}) {{ pageInfo {{ hasPreviousPage }} {nodes} }}"
+    parts = " ".join(
+        f"n{n}: issueOrPullRequest(number: {n}) {{ ... on Issue {{ {fields} }} ... on PullRequest {{ {fields} }} }}"
+        for n in wanted
+    )
+    query = f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {parts} }} }}"
+    data = json.loads(
+        read(["gh", "api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}"])
+    )
+    found: dict[int, Comments] = {}
+    for n in wanted:
+        item = data["data"]["repository"][f"n{n}"]
+        if item is None:
+            raise Refused(f"error: {repo}#{n} is neither an issue nor a pull request")
+        comments = item["comments"]
+        if comments["pageInfo"]["hasPreviousPage"]:
+            found[n] = pr_comments(repo, n, read)
+            continue
+        found[n] = [
+            (comment_login(c["author"]), str(c["authorAssociation"]), c["body"] or "") for c in comments["nodes"]
+        ]
+    return found
+
+
+def asked(item: dict[str, Any]) -> bool:
+    """An open pull request labelled needs-decision or decided, as gh pr list prints it"""
+    return any(label["name"] in ASKED for label in item["labels"])
+
+
+def open_prs(repo: str) -> list[dict[str, Any]]:
+    fields = "number,isDraft,isCrossRepository,labels,headRefOid"
+    found: list[dict[str, Any]] = json.loads(run(["gh", "pr", "list", "-R", repo, "--json", fields, "-L", "100"]))
+    return found
+
+
+def default_branch(repo: str, known: Known | None) -> str:
+    if known is not None:
+        return known.default_branch
+    view = json.loads(run(["gh", "repo", "view", repo, "--json", "defaultBranchRef"]))
+    return str(view["defaultBranchRef"]["name"])
+
+
+def fetched_tags(repo: str, repo_dir: Path, text: str | None, known: Known | None) -> list[Tag]:
+    """The version tags, newest first, once the landing branch and its tags are fetched"""
+    branch = landing_branch(text, POLICY, default_branch(repo, known))
+    run(["git", "fetch", "-q", "--force", "--tags", "origin", branch], cwd=repo_dir)
+    return version_tags(repo_dir)
+
+
+def plan_trust(args: argparse.Namespace, repo_dir: Path, table: dict[str, str] | None) -> frozenset[int] | None:
+    """With --trusted-only, the open plan issues the --bot-login didn't open (spec 028), which
+    no issue row holds; None while PyPI doesn't serve the plans' pinned shipmill, when no issue
+    may be read at all (D-16), as the full report reads none then"""
+    if not args.trusted_only or not (repo_dir / DIRECTION).is_file():
+        return frozenset()
+    try:
+        lines = plans_run(args.repo, repo_dir, args.tool, args.bot_login, plan_wip(table, POLICY))
+    except PypiWait:
+        return None
+    return plans_rows(lines, args.repo, args.bot_login, True).untrusted
+
+
+def production_rows(
+    args: argparse.Namespace, repo_dir: Path, text: str | None, known: Known | None, now: dt.datetime
+) -> list[Row]:
+    """Tier 1: OPERATE_FAILED and INCIDENT_OPEN, for a config with environments, as the full
+    report reads them, from the change check's runs and incidents"""
+    if text is None:
+        return []
+    read = config(text, POLICY, args.incident_label)
+    if not read.environments:
+        return []
+    caller = operate_caller(repo_dir)
+    rows = operate_rows(known_runs(known, caller[0], args.repo), caller[0], args.repo) if caller else []
+    incidents = known.incidents if known is not None else fetch_issues(args.repo, "--label", read.incident_label)
+    return rows + incident_rows(incidents, read.incident_label, now, args.repo)
+
+
+def lane_rows(
+    args: argparse.Namespace, repo_dir: Path, text: str | None, known: Known | None, now: dt.datetime
+) -> list[Row]:
+    """Tier 2 but BOT_STALLED (the sweep's): BOT_FAILED from the change check's runs, the work
+    branches, and NOT_PUBLISHED for the newest tag alone"""
+    grace = dt.timedelta(minutes=args.grace)
+    rows: list[Row] = []
+    bot = bot_workflow(repo_dir)
+    if bot is not None and text is not None:
+        workflow, shipmill = bot
+        branches = work_branches(repo_dir) if shipmill else {}
+        runs = known_runs(known, workflow, args.repo)
+        rows += [r for r in bot_rows(runs, None, now, grace, workflow, args.repo) if r.state == "BOT_FAILED"]
+        owners = fetch_unfinished(args.repo, workflow) if branches else []
+        rows += work_branch_rows(branches, owners, workflow, args.repo)
+    tags = fetched_tags(args.repo, repo_dir, text, known)
+    package = package_name(repo_dir)
+    project = pypi_json(package) if tags and package is not None else None
+    if project is not None and package is not None:
+        newest = tags[0]
+        row = publish_row(
+            newest,
+            package,
+            on_pypi(f"{package}/{newest.name[1:]}"),
+            now,
+            grace,
+            first_upload(project, package),
+            repo=args.repo,
+            runs_on=lambda name: fetch_tag_runs(args.repo, name),
+        )
+        rows += [row] if row.state == "NOT_PUBLISHED" else []
+    return rows
+
+
+def land_level(args: argparse.Namespace, text: str | None, known: Known | None, now: dt.datetime) -> str | None:
+    """The effective [autonomy] land level, None without [agents], under a hold the change
+    check found or, without it, read"""
+    if text is None or agents_table(text, POLICY) is None:
+        return None
+    if known is not None:
+        held = known.held
+    else:
+        held = bool(hold_rows(fetch_issues(args.repo, "--label", HOLD_LABEL), now, args.repo))
+    return held_land(config(text, POLICY, args.incident_label).land, held)
+
+
+def landing_rows(args: argparse.Namespace, text: str | None, known: Known | None, now: dt.datetime) -> list[Row]:
+    """Tier 3: PRS_OPEN from the change check's pull requests, and the ones waiting on a
+    decision, whose comments, with those labelled decided, are one batched read"""
+    prs = known.prs if known is not None else open_prs(args.repo)
+    comments = batched_comments(args.repo, [int(pr["number"]) for pr in prs if asked(pr)])
+    land = land_level(args, text, known, now)
+    rows = intake(args.repo, 0, "", prs, comments.__getitem__, args.bot_login, args.trusted_only, land)
+    return [r for r in rows if r.state in TIERS[3]]
+
+
+def upgrade_issues(repo: str, text: str | None) -> list[Issue]:
+    """The open shipmill-upgrade issues carrying the upgrade's marker, which triage never reads
+    as its work (spec 014); none without a config"""
+    if text is None:
+        return []
+    return [i for i in fetch_issues(repo, "--label", UPGRADE_LABEL) if upgrade_id(i) is not None]
+
+
+def asked_upgrades(upgrades: list[Issue], level: str) -> list[int]:
+    """The upgrade issues labelled needs-decision whose question can wait on a reply, as
+    upgrade_rows reads them under [autonomy] upgrade level, so tier 4's NEEDS_DECISION is the
+    full report's"""
+    return [i.number for i in upgrades if TRIAGE.DECISION_LABEL in i.labels and upgrade_open(i, level)]
+
+
+def asked_rows(
+    args: argparse.Namespace, repo_dir: Path, text: str | None, known: Known | None, now: dt.datetime
+) -> list[Row]:
+    """Tier 4: VETOED and triage's DECIDED, from the open items labelled needs-decision or
+    decided and the closed pull requests labelled decided, with their comments; the items still
+    waiting on a reply are NEEDS_DECISION, an upgrade issue's too"""
+    table = None if text is None else agents_table(text, POLICY)
+    untrusted = plan_trust(args, repo_dir, table)
+    if untrusted is None:
+        return []
+    home = None if text is None else product_home(text, POLICY)
+    code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role, ASKED)
+    upgrades = upgrade_issues(args.repo, text)
+    level = "observe" if text is None else config(text, POLICY, args.incident_label).upgrade
+    waiting = asked_upgrades(upgrades, level)
+    prs = [pr for pr in (known.prs if known is not None else open_prs(args.repo)) if asked(pr)]
+    closed = decided_prs(args.repo, now)
+    numbers = [*waiting, *(int(pr["number"]) for pr in prs), *(int(pr["number"]) for pr in closed)]
+    comments = batched_comments(args.repo, numbers)
+    pending = [n for n in waiting if TRIAGE.waits_on_decision(comments[n], args.bot_login)]
+    owned = Upgrades([], pending, frozenset(i.number for i in upgrades))
+    directions = triage_directions(triage) if table is not None else frozenset()
+    rows = intake(
+        args.repo,
+        code,
+        triage,
+        prs,
+        comments.__getitem__,
+        args.bot_login,
+        args.trusted_only,
+        None,
+        owned,
+        untrusted,
+        closed,
+        directions,
+    )
+    return [r for r in split_issues(rows, decided=True) if r.state in TIERS[4]]
+
+
+def issue_rows(args: argparse.Namespace, repo_dir: Path, text: str | None) -> list[Row]:
+    """Tier 6: triage_state.py's every other action state, one ISSUES row each"""
+    table = None if text is None else agents_table(text, POLICY)
+    untrusted = plan_trust(args, repo_dir, table)
+    if untrusted is None:
+        return []
+    home = None if text is None else product_home(text, POLICY)
+    code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role)
+    owned = Upgrades([], [], frozenset(i.number for i in upgrade_issues(args.repo, text)))
+    directions = triage_directions(triage) if table is not None else frozenset()
+
+    def unread(number: int) -> Comments:
+        raise AssertionError(f"tier 6 reads no pull request, yet #{number}'s comments were asked for")
+
+    rows = intake(
+        args.repo, code, triage, [], unread, args.bot_login, args.trusted_only, None, owned, untrusted, (), directions
+    )
+    return [r for r in split_issues(rows, decided=False) if r.state == "ISSUES"]
+
+
+def notice_rows(
+    args: argparse.Namespace, repo_dir: Path, text: str | None, known: Known | None, now: dt.datetime
+) -> list[Row]:
+    """Tier 8 for a new release: UNANNOUNCED for the newest tag alone, once it is published"""
+    tags = fetched_tags(args.repo, repo_dir, text, known)
+    if len(tags) < 2:
+        return []
+    package = package_name(repo_dir)
+    project = pypi_json(package) if package is not None else None
+    newest, prev = tags[0], tags[1]
+    listed = on_pypi(f"{package}/{newest.name[1:]}") if project is not None else None
+    row = publish_row(
+        newest,
+        package if project is not None else None,
+        listed,
+        now,
+        dt.timedelta(minutes=args.grace),
+        first_upload(project, package) if project is not None and package is not None else None,
+        repo=args.repo,
+        runs_on=lambda name: fetch_tag_runs(args.repo, name),
+    )
+    if row.state not in {"PUBLISHED", "NO_REGISTRY"}:
+        return []
+    issues, _ = shipped_plan(args.repo, repo_dir, prev.name, newest.name)
+    return [unannounced_row(args.repo, newest.name, prev.name, issues)] if issues else []
+
+
+def tier_rows(tier: int, args: argparse.Namespace, repo_dir: Path, known: Known | None, now: dt.datetime) -> list[Row]:
+    """One tier's rows (spec 046); tiers 5 and 7 are the sweep's sections, read whole"""
+    if tier in (5, 7):
+        return [r for r in report_rows(args, repo_dir, now, host=False) if r.state in TIERS[tier]]
+    policy = policy_file(repo_dir)
+    text = None if policy is None else (repo_dir / policy).read_text(encoding="utf-8")
+    if tier == 1:
+        return production_rows(args, repo_dir, text, known, now)
+    if tier == 2:
+        return lane_rows(args, repo_dir, text, known, now)
+    if tier == 3:
+        return landing_rows(args, text, known, now)
+    if tier == 4:
+        return asked_rows(args, repo_dir, text, known, now)
+    if tier == 6:
+        return issue_rows(args, repo_dir, text)
+    return notice_rows(args, repo_dir, text, known, now)
+
+
 def arguments() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("repo", help="owner/name")
@@ -4064,36 +4488,28 @@ def arguments() -> argparse.ArgumentParser:
         metavar="NAME=FILLER[,FILLER...]",
         help="a role's resolved fillers, passed to triage_state.py; one per role, maintainer included (spec 036)",
     )
+    parser.add_argument(
+        "--tier",
+        type=int,
+        choices=sorted(TIERS),
+        help="print only this tier's rows, as shipmill gate walks them (spec 046)",
+    )
+    parser.add_argument(
+        "--sweep",
+        action="store_true",
+        help="print only the timed sections' rows, which shipmill gate reads every sweep_hours (spec 046)",
+    )
+    parser.add_argument(
+        "--known",
+        type=Path,
+        metavar="FILE",
+        help="with --tier: what shipmill gate's change check read already, so the tier reads none of it again",
+    )
     return parser
 
 
-def main() -> int:
-    parser = arguments()
-    args = parser.parse_args()
-    if args.incident_label is not None and not args.incident_label.strip():
-        parser.error("--incident-label must not be empty")
-    if args.bot_login is not None and not args.bot_login.strip():
-        parser.error("--bot-login must not be empty")
-    if args.role:  # checked by triage_state.py's rule before any read, so a bad flag reads nothing
-        try:
-            TRIAGE.parse_roles(args.role)
-        except ValueError as exc:
-            parser.error(str(exc))
-    if args.host is not None and args.no_host:
-        parser.error("--no-host goes without --host")
-    if "/" not in args.repo:
-        parser.error("repo must be owner/name")
-    if not 1 <= args.releases <= 20:
-        parser.error("--releases must be 1..20")
-    repo_dir = Path(args.repo_dir).resolve()
-    if args.host is not None:
-        found = host_rows(args.host, args.repo, repo_dir, dt.datetime.now(dt.timezone.utc))  # noqa: UP017
-        for row in found:
-            print(json.dumps(row.json(), sort_keys=True) if args.json else row.text())
-        return 1 if any(r.state in ACTION for r in found) else 0
-    if policy_file(repo_dir) is not None:  # first, as shipmill checks it before the config's other keys
-        check_requires((repo_dir / POLICY).read_text(encoding="utf-8"), POLICY)
-    now = dt.datetime.now(dt.timezone.utc)  # noqa: UP017 (dt.UTC needs 3.11)
+def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host: bool = True) -> list[Row]:
+    """Every section's rows, the full report; without host, none of the host's rows"""
     grace = dt.timedelta(minutes=args.grace)
 
     view = json.loads(run(["gh", "repo", "view", args.repo, "--json", "defaultBranchRef,deleteBranchOnMerge"]))
@@ -4219,13 +4635,57 @@ def main() -> int:
         rows += chain_rows(args.repo, triage, args.bot_login)
     rows += coordinator_rows(text, policy, args.repo, repo_dir, args.bot_login)
     rows += active_rows(fetch_active(args.repo), now)
+    if not host:  # a --sweep or --tier read prints no host row (spec 046)
+        return merged_waits(rows)
     if args.no_host:  # shipmill status reads the host sections with --host, each on its own (#745)
         rows += launchd_rows(args.repo, now)
     else:
         rows += agent_rows(args.repo, repo_dir, now)
         rows += shipmill_rows(args.repo, repo_dir)
         rows += shadow_rows(Path.home(), skill_names())
-    rows = merged_waits(rows)
+    return merged_waits(rows)
+
+
+def main() -> int:
+    parser = arguments()
+    args = parser.parse_args()
+    if args.incident_label is not None and not args.incident_label.strip():
+        parser.error("--incident-label must not be empty")
+    if args.bot_login is not None and not args.bot_login.strip():
+        parser.error("--bot-login must not be empty")
+    if args.role:  # checked by triage_state.py's rule before any read, so a bad flag reads nothing
+        try:
+            TRIAGE.parse_roles(args.role)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.host is not None and args.no_host:
+        parser.error("--no-host goes without --host")
+    if args.tier is not None and args.sweep:
+        parser.error("--tier and --sweep go alone")
+    if (args.tier is not None or args.sweep) and (args.host is not None or args.no_host):
+        parser.error("--tier and --sweep print no host row: they go without --host and --no-host")
+    if args.known is not None and args.tier is None:
+        parser.error("--known goes with --tier")
+    if "/" not in args.repo:
+        parser.error("repo must be owner/name")
+    if not 1 <= args.releases <= 20:
+        parser.error("--releases must be 1..20")
+    repo_dir = Path(args.repo_dir).resolve()
+    if args.host is not None:
+        found = host_rows(args.host, args.repo, repo_dir, dt.datetime.now(dt.timezone.utc))  # noqa: UP017
+        for row in found:
+            print(json.dumps(row.json(), sort_keys=True) if args.json else row.text())
+        return 1 if any(r.state in ACTION for r in found) else 0
+    if policy_file(repo_dir) is not None:  # first, as shipmill checks it before the config's other keys
+        check_requires((repo_dir / POLICY).read_text(encoding="utf-8"), POLICY)
+    now = dt.datetime.now(dt.timezone.utc)  # noqa: UP017 (dt.UTC needs 3.11)
+    if args.sweep:
+        rows = [r for r in report_rows(args, repo_dir, now, host=False) if r.state in SWEPT]
+    elif args.tier is not None:
+        known = None if args.known is None else read_known(args.known)
+        rows = tier_rows(args.tier, args, repo_dir, known, now)
+    else:
+        rows = report_rows(args, repo_dir, now)
     for row in ordered(rows):
         print(json.dumps(row.json(), sort_keys=True) if args.json else row.text())
     return 1 if any(r.state in ACTION for r in rows) else 0

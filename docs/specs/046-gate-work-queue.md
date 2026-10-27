@@ -237,4 +237,7 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
 
 ## Issues
 
+- shipmill/shipmill#756: S-046-7, S-046-20
+- shipmill/shipmill#757: S-046-1, S-046-2, S-046-3, S-046-4, S-046-5, S-046-6, S-046-8, S-046-9, S-046-10, S-046-11, S-046-12, S-046-13, S-046-14, S-046-15, S-046-16, S-046-17, S-046-18, S-046-19
+
 ## Verification
