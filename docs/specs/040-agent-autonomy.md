@@ -61,6 +61,8 @@ What each level lets an agent session do:
 | `fix` | writes no plan and no code | posts the implementation plan on the issue (design gate included), opens no branch | opens a branch and a pull request per implement, as today |
 | `land` | reviews in the session only: no push, no comment | reviews, pushes small fixes with regression tests, posts the review, and labels a pull request that passes every check `shipmill-ready`; a person merges | merges on green CI, as today |
 
+A `Proposed verdict` or `Proposed plan` adds the `needs-decision` label, the one label a proposal adds (D-21); "no label" above means no verdict label.
+
 Each stage's level is a ceiling: inside a stage at `act`, every decision still follows its
 zone in `[decisions]` (spec 030), so a `never` zone is not merged under `land = "act"`.
 Under `propose`, `[decisions]` applies to what the session still writes (a `notify`

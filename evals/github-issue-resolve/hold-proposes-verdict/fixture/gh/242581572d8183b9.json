@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "902",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "title,body,labels,comments,state"
+  ],
+  "stdout": "{\"title\": \"Hold shipmill: the gate launched sessions on a stale plugin\", \"body\": \"Stop every stage while the plugin install is fixed. Closing this issue resumes shipmill.\", \"labels\": [{\"id\": \"LA_kwDOhold\", \"name\": \"shipmill-hold\", \"description\": \"Stops shipmill\", \"color\": \"b60205\"}], \"comments\": [], \"state\": \"OPEN\"}",
+  "stderr": "",
+  "exit": 0
+}

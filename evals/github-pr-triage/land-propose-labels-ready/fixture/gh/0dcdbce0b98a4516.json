@@ -1,0 +1,11 @@
+{
+  "args": [
+    "api",
+    "repos/{owner}/{repo}/compare/de1d180f0120322d211c1d674312704b72dab66a...3c9e1a7b5d2f4e6a8c0b1d3f5a7e9c2b4d6f8a10",
+    "--jq",
+    ".merge_base_commit.sha"
+  ],
+  "stdout": "de1d180f0120322d211c1d674312704b72dab66a\n",
+  "stderr": "",
+  "exit": 0
+}

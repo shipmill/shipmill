@@ -1,0 +1,9 @@
+{
+  "args": [
+    "api",
+    "repos/shipmill/shipmill/issues/902/comments"
+  ],
+  "stdout": "[]",
+  "stderr": "",
+  "exit": 0
+}

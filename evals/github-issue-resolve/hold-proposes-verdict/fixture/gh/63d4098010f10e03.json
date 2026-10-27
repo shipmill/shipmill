@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "902",
+    "--json",
+    "body",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "{\"body\": \"Stop every stage while the plugin install is fixed. Closing this issue resumes shipmill.\"}",
+  "stderr": "",
+  "exit": 0
+}

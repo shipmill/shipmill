@@ -1,0 +1,55 @@
+{
+  "hold": [
+    "#902 Hold shipmill: the gate launched sessions on a stale plugin"
+  ],
+  "stages": [
+    {
+      "stage": "triage",
+      "configured": "act",
+      "effective": "propose",
+      "source": "hold"
+    },
+    {
+      "stage": "fix",
+      "configured": "act",
+      "effective": "propose",
+      "source": "hold"
+    },
+    {
+      "stage": "land",
+      "configured": "act",
+      "effective": "propose",
+      "source": "hold"
+    },
+    {
+      "stage": "release",
+      "configured": "act",
+      "effective": "propose",
+      "source": "hold"
+    },
+    {
+      "stage": "deploy.github-pages",
+      "configured": "act",
+      "effective": "propose",
+      "source": "hold"
+    },
+    {
+      "stage": "rollback",
+      "configured": "act",
+      "effective": "propose",
+      "source": "hold"
+    },
+    {
+      "stage": "intake",
+      "configured": "propose",
+      "effective": "propose",
+      "source": "default"
+    },
+    {
+      "stage": "upgrade",
+      "configured": "propose",
+      "effective": "propose",
+      "source": "default"
+    }
+  ]
+}

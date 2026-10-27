@@ -1,0 +1,13 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "902",
+    "--comments",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "title:\tHold shipmill: the gate launched sessions on a stale plugin\nstate:\tOPEN\nauthor:\tromamo\nlabels:\tshipmill-hold\ncomments:\t0\nassignees:\t\nprojects:\t\nmilestone:\t\nnumber:\t902\n--\nStop every stage while the plugin install is fixed. Closing this issue resumes shipmill.\n",
+  "stderr": "",
+  "exit": 0
+}

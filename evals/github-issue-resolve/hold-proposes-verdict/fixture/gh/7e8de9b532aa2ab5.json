@@ -1,0 +1,10 @@
+{
+  "args": [
+    "api",
+    "repos/shipmill/shipmill/issues/891/comments",
+    "--paginate"
+  ],
+  "stdout": "[]",
+  "stderr": "",
+  "exit": 0
+}

@@ -1,0 +1,11 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--search",
+    "891"
+  ],
+  "stdout": "",
+  "stderr": "",
+  "exit": 0
+}

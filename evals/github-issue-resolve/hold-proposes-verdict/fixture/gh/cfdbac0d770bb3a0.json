@@ -1,0 +1,12 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "902",
+    "--json",
+    "comments"
+  ],
+  "stdout": "{\"comments\": []}",
+  "stderr": "",
+  "exit": 0
+}

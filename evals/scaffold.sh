@@ -11,7 +11,8 @@
 #
 # Steps: a shared clone of the checkout this script sits in, a detached checkout of the
 # case's `commit` from evals/cases.toml (the entry whose `path` is the case's directory
-# relative to evals/), then fixture/ copied to .eval/ with an empty .eval/gh.jsonl, and
+# relative to evals/), fixture/repo/ committed over it when the case has one, then
+# fixture/ copied to .eval/ with an empty .eval/gh.jsonl, and
 # .eval/case naming the case's directory for EVAL_GH_RECORD=1. .eval/ is excluded from git
 # in the workspace, so a session's `git add -A` never commits it.
 set -euo pipefail
@@ -49,6 +50,16 @@ commit=$(awk -v want="$rel" '
 source_repo=$(git -C "$evals_dir" rev-parse --show-toplevel)
 git clone --quiet --shared --no-checkout "$source_repo" "$workspace"
 git -C "$workspace" checkout --quiet --detach "$commit"
+
+# A case may change files of the repository at its commit: fixture/repo/ (a config with
+# [autonomy] levels no commit here holds, spec 040) is copied over the checkout and
+# committed on top, so the session's git sees a clean tree in that state
+if [ -d "$case_dir/fixture/repo" ]; then
+  cp -R "$case_dir/fixture/repo/." "$workspace/"
+  git -C "$workspace" add -A
+  git -C "$workspace" -c user.name=shipmill-evals -c user.email=evals@shipmill.invalid -c commit.gpgsign=false \
+    commit --quiet -m "eval: the case's repository state"
+fi
 
 mkdir "$workspace/.eval"
 cp -R "$case_dir/fixture/." "$workspace/.eval/"

@@ -1,0 +1,9 @@
+{
+  "args": [
+    "label",
+    "list"
+  ],
+  "stdout": "bug\t\t#ededed\nenhancement\t\t#ededed\nneeds-decision\t\t#ededed\ndecided\t\t#ededed\nhuman\t\t#ededed\npostponed\t\t#ededed\nopportunity\t\t#ededed\nplanned\t\t#ededed\n",
+  "stderr": "",
+  "exit": 0
+}

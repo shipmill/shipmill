@@ -1,0 +1,15 @@
+{
+  "args": [
+    "pr",
+    "list",
+    "--search",
+    "#891",
+    "--state",
+    "all",
+    "--repo",
+    "shipmill/shipmill"
+  ],
+  "stdout": "",
+  "stderr": "",
+  "exit": 0
+}

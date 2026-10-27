@@ -1,0 +1,14 @@
+{
+  "args": [
+    "pr",
+    "view",
+    "880",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "state,mergeable,headRefOid,baseRefName"
+  ],
+  "stdout": "{\"state\": \"OPEN\", \"mergeable\": \"MERGEABLE\", \"headRefOid\": \"3c9e1a7b5d2f4e6a8c0b1d3f5a7e9c2b4d6f8a10\", \"baseRefName\": \"main\"}\n",
+  "stderr": "",
+  "exit": 0
+}
