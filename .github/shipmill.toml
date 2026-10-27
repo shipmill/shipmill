@@ -1,5 +1,5 @@
 # shipmill releases itself with its own workflows, at the commit being released
-requires = ">=0.70.0"  # after_publish (D-50); an older shipmill refuses the key
+requires = ">=0.78.0"  # after_publish (D-50); an older shipmill refuses the key
 name = "shipmill"
 mode = "release"
 branch = "main"
@@ -137,3 +137,8 @@ prs = true
 retry_hours = 24
 app_id = 5209412   # gated sessions write as shipmill-romamo[bot] (spec 004)
 mode = "headless"  # what the gate runs; written out, not left to the default (D-20)
+
+[autonomy]
+triage = "act"
+fix = "act"
+land = "act"
