@@ -153,7 +153,7 @@ waiting it is unchanged.
   and its `state`, `subject`, `detail`, and `agent` are the same as before for the same
   inputs
 - S-011-2: `watch_state.py`'s `FIXED` holds every state in `ACTION` plus `HOLD`,
-  `WORKTREE_STALE`, and `UNTRUSTED`; building a `Row` with a `FIXED` state and no fix
+  `WORKTREE_STALE` (moved to `shipmill factory` by spec 044, #731), and `UNTRUSTED`; building a `Row` with a `FIXED` state and no fix
   raises; and a test fails when a state is in `ACTION` but not in `FIXED`
 - S-011-3: for each state in `FIXED`, a test builds its row through the script's own row
   code and finds the fix the table under Behaviour names
