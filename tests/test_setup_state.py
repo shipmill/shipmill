@@ -949,3 +949,203 @@ def test_496_changelog_rules_runs_under_python_310(tmp_path: Path) -> None:
     done = subprocess.run(command, capture_output=True, text=True, check=False)
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == "(3, 10) ['CLAUDE.md:3', 'CONTRIBUTING.md:4', '.github/CONTRIBUTING.md:1']"
+
+
+# -- product (spec 043) ----------------------------------------------------------------------
+
+APP = GATE.replace("app_id = 1", "app_id = 42")
+OTHER_APP = GATE.replace("app_id = 1", "app_id = 7")
+LISTING_CMD = "--paginate"
+WRITES = {"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"}
+
+
+class FakeOwner:
+    """gh for the sibling reads: the login, the owner's type, its listing as `<archived>
+    <owner/name>` lines, and each repo's config (None for a 404, absent for a failure)"""
+
+    def __init__(self, configs: dict[str, str | None], archived: tuple[str, ...] = (), login: str = "me") -> None:
+        self.configs, self.archived, self.login = configs, archived, login
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd: list[str]) -> str | None:
+        self.calls.append(cmd)
+        if cmd[:3] == ["gh", "api", "user"]:
+            return self.login + "\n"
+        if cmd[2].startswith("users/"):
+            return "Organization\n"
+        if LISTING_CMD in cmd:
+            names = ["me/demo", *self.configs, *self.archived]
+            return "".join(f"{str(name in self.archived).lower()} {name}\n" for name in names)
+        name = cmd[-1].removeprefix("repos/").removesuffix("/contents/.github/shipmill.toml")
+        if name not in self.configs:
+            raise SystemExit(2)  # gh_get's end of a 403 or a network error
+        return self.configs[name]
+
+    def reads(self) -> list[str]:
+        return [c[-1].removeprefix("repos/").split("/contents/")[0] for c in self.calls if "/contents/" in c[-1]]
+
+
+def product_repo(root: Path, config: str = APP) -> Path:
+    write(root, ".github/shipmill.toml", config)
+    return root
+
+
+def test_s043_3_siblings_are_the_owners_repos_with_the_same_app_id(ss: ModuleType, tmp_path: Path) -> None:
+    gh = FakeOwner(
+        {"me/api": APP, "me/Web": APP, "me/other": OTHER_APP, "me/bare": None, "me/plain": 'mode = "release"\n'},
+        archived=("me/old",),
+    )
+    rows = ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), gh)
+    assert [r.state for r in rows] == ["PRODUCT_SIBLINGS"]
+    assert rows[0].detail.startswith("me/api, me/Web set app_id 42 too")
+    for left_out in ("me/other", "me/bare", "me/plain", "me/old", "me/demo"):
+        assert left_out not in rows[0].detail
+    assert "me/old" not in gh.reads() and "me/demo" not in gh.reads()  # archived and this repo aren't read
+    assert ss.exit_code([*(ss.Row(s, "") for s in sorted(ss.DONE)), *rows]) == 1
+
+
+def test_s043_3_the_listing_follows_the_owner(ss: ModuleType, tmp_path: Path) -> None:
+    mine = FakeOwner({"me/api": APP})
+    ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), mine)
+    assert mine.calls[1][:4] == ["gh", "api", "--paginate", "user/repos?affiliation=owner&per_page=100"]
+    org = FakeOwner({"me/api": APP}, login="someone")
+    ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), org)
+    assert org.calls[1][:3] == ["gh", "api", "users/me"]
+    assert org.calls[2][:4] == ["gh", "api", "--paginate", "orgs/me/repos?per_page=100"]
+
+
+@pytest.mark.parametrize("listed", ["me/demo", "ME/Demo"])
+def test_s043_4_a_sibling_listing_this_repo_reads_product_listed(ss: ModuleType, tmp_path: Path, listed: str) -> None:
+    home = APP + f'\n[product]\nrepos = ["{listed}", "me/web"]\n'
+    gh = FakeOwner({"me/api": APP, "me/product": home})
+    rows = ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), gh)
+    assert [r.state for r in rows] == ["PRODUCT_LISTED"]  # before PRODUCT_SIBLINGS, though me/api is one
+    assert 'write [product] home = "me/product"' in rows[0].detail
+    assert ss.exit_code([rows[0]]) == 1
+
+
+def test_s043_4_two_homes_listing_it_are_both_named(ss: ModuleType, tmp_path: Path) -> None:
+    home = APP + '\n[product]\nrepos = ["me/demo"]\n'
+    gh = FakeOwner({"me/a": home, "me/b": home})
+    (row,) = ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), gh)
+    assert row.state == "PRODUCT_LISTED"
+    assert 'home = "me/a" or home = "me/b"' in row.detail and "picks one" in row.detail
+
+
+def test_s043_4_a_home_of_another_app_isnt_a_sibling(ss: ModuleType, tmp_path: Path) -> None:
+    gh = FakeOwner({"me/product": OTHER_APP + '\n[product]\nrepos = ["me/demo"]\n'})
+    (row,) = ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), gh)
+    assert row.state == "PRODUCT_OK"
+
+
+@pytest.mark.parametrize(
+    "product",
+    ["[product]\nstandalone = true\n", '[product]\nhome = "me/product"\n', '[product]\nrepos = ["me/api"]\n'],
+)
+def test_s043_5_any_product_table_reads_ok_with_no_sibling_read(ss: ModuleType, tmp_path: Path, product: str) -> None:
+    gh = FakeOwner({"me/api": APP})
+    rows = ss.product_rows("me/demo", product_repo(tmp_path, APP + "\n" + product), ss.watch_module(), gh)
+    assert [r.state for r in rows] == ["PRODUCT_OK"]
+    assert "PRODUCT_OK" in ss.DONE
+    assert gh.calls == []
+
+
+@pytest.mark.parametrize("config", [None, '[agents]\nprompt = "x"\nmode = "headless"\n', 'mode = "release"\n'])
+def test_s043_5_no_app_id_reads_ok_with_no_sibling_read(ss: ModuleType, tmp_path: Path, config: str | None) -> None:
+    if config is not None:
+        product_repo(tmp_path, config)
+    gh = FakeOwner({"me/api": APP})
+    assert [r.state for r in ss.product_rows("me/demo", tmp_path, ss.watch_module(), gh)] == ["PRODUCT_OK"]
+    assert gh.calls == []
+
+
+def test_s043_5_no_sibling_found_reads_ok(ss: ModuleType, tmp_path: Path) -> None:
+    gh = FakeOwner({"me/other": OTHER_APP, "me/bare": None})
+    (row,) = ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), gh)
+    assert row == ss.Row("PRODUCT_OK", "no other repo of me sets app_id 42")
+
+
+def test_s043_6_a_sibling_read_failing_other_than_404_exits_2(ss: ModuleType, tmp_path: Path) -> None:
+    gh = FakeOwner({"me/api": APP, "me/bare": None})
+
+    def failing(cmd: list[str]) -> str | None:
+        if "repos/me/api/contents/.github/shipmill.toml" in cmd:
+            raise SystemExit(2)  # gh_get's end of a 403 or a network error
+        return gh(cmd)
+
+    with pytest.raises(SystemExit) as exc:
+        ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), failing)
+    assert exc.value.code == 2
+
+
+def test_s043_6_gh_get_reads_a_404_as_none_and_fails_on_anything_else(ss: ModuleType) -> None:
+    def gh(stderr: str, code: int) -> list[str]:
+        return [sys.executable, "-c", f"import sys; sys.stderr.write({stderr!r}); sys.exit({code})"]
+
+    assert ss.gh_get(gh("", 0)) == ""
+    assert ss.gh_get(gh("gh: Not Found (HTTP 404)", 1)) is None
+    for stderr in ("gh: Forbidden (HTTP 403)", "error connecting to api.github.com"):
+        with pytest.raises(SystemExit) as exc:
+            ss.gh_get(gh(stderr, 1))
+        assert exc.value.code == 2
+
+
+def test_s043_6_a_sibling_config_it_cant_parse_is_named_and_skipped(ss: ModuleType, tmp_path: Path) -> None:
+    gh = FakeOwner({"me/api": APP, "me/broken": "[agents\napp_id = 42\n", "me/bad": APP + "\n[product]\nrepos = []\n"})
+    (row,) = ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), gh)
+    assert row.state == "PRODUCT_SIBLINGS"
+    assert row.detail.startswith("me/api sets app_id 42 too")
+    assert "skipped, its config can't be read: me/bad:.github/shipmill.toml" in row.detail
+    assert "skipped, its config can't be read: me/broken:.github/shipmill.toml" in row.detail
+
+
+def test_s043_6_the_product_rows_only_read(ss: ModuleType, tmp_path: Path) -> None:
+    gh = FakeOwner({"me/api": APP, "me/product": APP + '\n[product]\nrepos = ["me/demo"]\n', "me/bare": None})
+    ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), gh)
+    assert gh.calls and all(not WRITES & set(cmd) for cmd in gh.calls)
+    assert "fix" not in ss.product_rows.__code__.co_varnames  # --fix never reaches the Product row
+    main = SCRIPT.read_text(encoding="utf-8")
+    assert "*product_rows(args.repo, repo_dir, ws)," in main
+
+
+def test_s043_6_a_malformed_own_product_table_exits_2(ss: ModuleType, tmp_path: Path) -> None:
+    gh = FakeOwner({"me/api": APP})
+    with pytest.raises(SystemExit) as exc:
+        ss.product_rows(
+            "me/demo", product_repo(tmp_path, APP + "\n[product]\nstandalone = false\n"), ss.watch_module(), gh
+        )
+    assert exc.value.code == 2
+    assert gh.calls == []
+
+
+def test_s043_3_the_product_rows_run_under_python_310(tmp_path: Path) -> None:
+    product_repo(tmp_path)
+    write(tmp_path, "set/.github/shipmill.toml", APP + "\n[product]\nstandalone = true\n")
+    configs = {"me/api": APP, "me/product": APP + '\n[product]\nrepos = ["me/demo"]\n', "me/bare": None}
+    uv = shutil.which("uv")
+    assert uv is not None, "uv runs the skill scripts"
+    code = (
+        "import importlib.util, json, sys; from pathlib import Path\n"
+        "spec = importlib.util.spec_from_file_location('setup_state', sys.argv[1])\n"
+        "ss = importlib.util.module_from_spec(spec); sys.modules['setup_state'] = ss; spec.loader.exec_module(ss)\n"
+        "ws = ss.watch_module(); assert ws.tomllib is None, 'tomllib on 3.10'\n"
+        "configs = json.loads(sys.argv[3])\n"
+        "def gh(cmd):\n"
+        "    if cmd[:3] == ['gh', 'api', 'user']: return 'me'\n"
+        "    if '--paginate' in cmd: return ''.join(f'false {n}\\n' for n in configs)\n"
+        "    return configs[cmd[-1].removeprefix('repos/').split('/contents/')[0]]\n"
+        "root = Path(sys.argv[2])\n"
+        "print([r.state for r in ss.product_rows('me/demo', root, ws, gh)],"
+        " [r.state for r in ss.product_rows('me/demo', root / 'set', ws, gh)])\n"
+    )
+    command = [uv, "run", "--no-project", "--python", "3.10", "python", "-c", code, str(SCRIPT), str(tmp_path)]
+    done = subprocess.run([*command, json.dumps(configs)], capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "['PRODUCT_LISTED'] ['PRODUCT_OK']"
+
+
+def test_s043_3_the_skill_and_the_docstring_name_the_rows(ss: ModuleType) -> None:
+    skill = (SCRIPT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
+    for state in ("PRODUCT_LISTED", "PRODUCT_SIBLINGS", "PRODUCT_OK"):
+        assert f"`{state}`" in skill
+        assert state in (ss.__doc__ or "")

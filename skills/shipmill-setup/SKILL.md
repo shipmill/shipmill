@@ -393,6 +393,18 @@ or the tags are wrong; fix those, not the version.
    words. Not done; `--fix` leaves it. Its fix is the Autonomy step, which writes all
    three keys, `land` among them: whether the gate works on open pull requests
 
+   One Product row follows (spec 043). With `[agents] app_id` and no `[product]` table, the
+   script lists the owner's unarchived repos with the host's `gh` and reads each one's
+   `.github/shipmill.toml` from its default branch; a repo whose config sets the same
+   `app_id` is a sibling. `PRODUCT_LISTED` (not done) names a sibling whose `[product]
+   repos` lists this repo and the `[product] home = "<sibling>"` line to write;
+   `PRODUCT_SIBLINGS` (not done) names the siblings, for the maintainer to say whether the
+   repos make up one product, written as `home`, `repos`, or `standalone = true`;
+   `PRODUCT_OK` is done: `[product]` is set in any form, there is no `app_id`, or no
+   sibling exists. `--fix` leaves the row: each answer is a config change in a pull
+   request. A sibling config the script can't read is named in the detail and skipped;
+   it is that repo's to fix
+
    A warning row may follow: `RUNNER_SHARED` when `release.yml` passes a `runs-on` other
    than `ubuntu-latest`, a lane sets `quiet_minutes` above 0, and a workflow an
    environment's `workflow` or a lane's `dispatch` names has a job on the same runner
