@@ -9,8 +9,11 @@ timeout. Wrapping the full suite in this script queues them, so each runs at ful
 
 Exits with the command's exit code, or 2 on bad usage. A slot is a lock file under DIR
 (default `$XDG_CACHE_HOME/shipmill/suite-locks`, else `~/.cache/shipmill/suite-locks`),
-shared by every repo and worktree of the user; the lock goes with the process, so a
-killed run never leaves a slot taken.
+shared by every repo and worktree of the user. On POSIX the command inherits the lock, so
+the slot frees once both this wrapper and the command have exited: killing the wrapper
+alone leaves the slot taken until the suite it started ends, and a killed run never leaves
+it taken for longer. A process the command leaves running with the lock's descriptor
+inherited holds the slot too. On Windows the lock goes with this wrapper's process.
 """
 
 from __future__ import annotations
@@ -26,12 +29,30 @@ from typing import IO
 if sys.platform == "win32":
     import msvcrt
 
+    # msvcrt.locking locks one byte at the current position; every process locks byte 0,
+    # since in "a+" mode the position starts at the end of a file the holder rewrites
     def try_lock(handle: IO[str]) -> bool:
+        handle.seek(0)
         try:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError:
             return False
         return True
+
+    def holder_of(handle: IO[str]) -> str:
+        handle.seek(0)
+        try:
+            return handle.read().strip()
+        except PermissionError:  # the holder's lock on byte 0 denies other processes a read
+            return ""
+
+    def release(handle: IO[str]) -> None:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        handle.close()
+
+    def run(command: list[str], handle: IO[str]) -> int:
+        return subprocess.run(command, check=False).returncode
 
 else:
     import fcntl
@@ -42,6 +63,19 @@ else:
         except BlockingIOError:
             return False
         return True
+
+    def holder_of(handle: IO[str]) -> str:
+        handle.seek(0)
+        return handle.read().strip()
+
+    def release(handle: IO[str]) -> None:
+        # Close, never LOCK_UN: an unlock would free the slot while the command still runs
+        handle.close()
+
+    def run(command: list[str], handle: IO[str]) -> int:
+        # The command inherits the locked descriptor, so the flock lasts until it exits too,
+        # even when this wrapper is killed first
+        return subprocess.run(command, check=False, pass_fds=(handle.fileno(),)).returncode
 
 
 POLL_SECONDS = 1.0
@@ -66,8 +100,7 @@ def acquire(directory: Path, slots: int) -> IO[str]:
                 handle.write(f"pid {os.getpid()} in {os.getcwd()}\n")
                 handle.flush()
                 return handle
-            handle.seek(0)
-            holders.append(handle.read().strip() or "another process")
+            holders.append(holder_of(handle) or "another process")
             handle.close()
         if not waiting:
             held = "; ".join(holders)
@@ -89,9 +122,9 @@ def main(argv: list[str]) -> int:
         parser.error("--slots must be at least 1")
     handle = acquire(args.dir or default_dir(), args.slots)
     try:
-        return subprocess.run(command, check=False).returncode
+        return run(command, handle)
     finally:
-        handle.close()
+        release(handle)
 
 
 if __name__ == "__main__":
