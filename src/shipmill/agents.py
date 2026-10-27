@@ -16,6 +16,7 @@ from shipmill.config import CONFIG_PATH, Table, config_path, loads_unchecked, re
 from shipmill.errors import ReleaseError
 
 _MAX_HOURS = 7 * 24  # a week
+_PRUNE_HOURS = 6  # the gate's prune runs this often by default (spec 045, D-56)
 _REMIND_HOURS = 4
 _MAX_WAIT_MINUTES = 15
 _MAX_WIP = 100
@@ -208,6 +209,7 @@ class AgentsConfig:
     # pull requests are its work; None without the key, so doctor warns only when it is set
     prs: bool | None
     retry_hours: int  # unchanged findings start a new session after this
+    prune_hours: int = _PRUNE_HOURS  # the gate prunes landed worktrees this often; 0: every tick (spec 045)
     notify: bool = True  # a desktop notification when a session waits on you
     remind_hours: int = _REMIND_HOURS  # repeat it while the session still waits
     max_wait_minutes: int = _MAX_WAIT_MINUTES  # stop a session that waited this long; 0: never
@@ -229,6 +231,7 @@ class AgentsConfig:
             "prompt",
             "prs",
             "retry_hours",
+            "prune_hours",
             "notify",
             "remind_hours",
             "max_wait_minutes",
@@ -251,13 +254,16 @@ class AgentsConfig:
                 'App writes as the App or not at all (D-14); delete identity, or set it to "app"'
             )
         retry = table.integer("retry_hours", default=24, low=1, high=_MAX_HOURS)
+        prune_hours = table.integer("prune_hours", default=_PRUNE_HOURS, low=0, high=_MAX_HOURS)
         remind = table.integer("remind_hours", default=_REMIND_HOURS, low=1, high=_MAX_HOURS)
         max_wait = table.integer("max_wait_minutes", default=_MAX_WAIT_MINUTES, low=0, high=_MAX_HOURS * 60)
-        assert retry is not None and remind is not None and max_wait is not None  # defaults were given
+        assert retry is not None and prune_hours is not None  # defaults were given
+        assert remind is not None and max_wait is not None
         return cls(
             prompt=prompt,
             prs=table.boolean("prs", default=False) if "prs" in table.raw else None,
             retry_hours=retry,
+            prune_hours=prune_hours,
             notify=table.boolean("notify", default=True),
             remind_hours=remind,
             max_wait_minutes=max_wait,

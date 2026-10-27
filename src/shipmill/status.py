@@ -32,7 +32,7 @@ from shipmill.claude_token import HOST, Credential, TokenFs, TokenSource, inspec
 from shipmill.claude_token import REJECTED as TOKEN_REJECTED
 from shipmill.config import CONFIG_PATH, Table, config_path, policy_branch, read
 from shipmill.errors import ReleaseError
-from shipmill.gate import StateRunner, skills_dir
+from shipmill.gate import PruneRecord, StateRunner, skills_dir
 from shipmill.github import UPGRADE_LABEL, GitHub, labelled_command, parse_labelled
 from shipmill.gitrepo import Git
 from shipmill.launchd import label
@@ -302,6 +302,8 @@ class Gate:
     home: Path | None = None  # the user's home, where status shortens a path to ~/...
     job_error: str | None = None  # spec 044: the launchd job's read failed, the gate check's error
     cli_error: str | None = None  # spec 044: the gate's own CLI's read failed, the shipmill check's error
+    prune: PruneRecord | None = None  # the gate's last prune, from prune.json (spec 045); None: none recorded
+    prune_error: str | None = None  # spec 045: prune.json's read failed, the prune check's error
 
     @property
     def login(self) -> str | None:
@@ -1505,9 +1507,26 @@ def checkout_check(main: Main, checkout: Path) -> Check:
     return Check("checkout", not (main.ahead and main.behind), checkout_state(main, checkout))
 
 
+def prune_check(record: PruneRecord | None, command: str) -> Check:
+    """S-045-10: the gate's last prune; one failing is a problem whose fix is the prune run by
+    hand, and changes no verdict, as the gate still works (S-045-11)"""
+    if record is None:
+        return Check("prune", True, "never ran here")
+    if record.failing_since is None:
+        return Check("prune", True, f"last ran {record.at.isoformat(timespec='minutes')}, removed {record.removed}")
+    since = record.failing_since.isoformat(timespec="minutes")
+    return Check("prune", False, f"failing since {since}: {record.error}", (f"{command} worktrees --prune",))
+
+
+def gate_prune_check(gate: Gate, command: str) -> Check:
+    if gate.prune_error is not None:
+        return failed_check("prune", gate.prune_error, command)
+    return prune_check(gate.prune, command)
+
+
 def host_checks(facts: Facts) -> list[Check]:
     """The checks `shipmill status` reads from its facts, each on its own: every check of
-    `shipmill factory` but the worktrees (S-044-5)"""
+    `shipmill factory` but the worktrees (S-044-5), the prune among them (S-045-11)"""
     command, gate = facts.command, facts.gate
     return [
         guarded("gate", command, lambda: gate_check(gate, facts.repo, facts.now, command)),
@@ -1519,6 +1538,7 @@ def host_checks(facts: Facts) -> list[Check]:
             lambda: shipmill_check(facts.rows, facts.cli, gate.cli, gate.cli_error, facts.repo, command),
         ),
         guarded("checkout", command, lambda: checkout_check(facts.main, facts.checkout)),
+        guarded("prune", command, lambda: gate_prune_check(gate, command)),
     ]
 
 

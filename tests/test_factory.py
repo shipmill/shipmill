@@ -41,7 +41,8 @@ from tests.test_status_picture import (
 
 CHECKOUT = Path("/src/web")
 IN_SYNC = Main("main", SHA, SHA, 0, 0, True)
-LABELS = ["gate", "sessions", "github app", "shipmill", "checkout", "worktrees"]
+LABELS = ["gate", "sessions", "github app", "shipmill", "checkout", "worktrees", "prune"]  # prune: spec 045
+STATUS_LABELS = [c for c in LABELS if c != "worktrees"]
 SESSION = Row("AGENT_SESSION", "s1", "gate busy, started 1 min ago: shipmill acme/web", False)
 
 
@@ -65,6 +66,7 @@ def fake_host(
         rows=lambda section: sessions if section == "sessions" else rows,
         main=lambda: main,
         worktrees=lambda: trees,
+        prune=lambda: None,
     )
 
 
@@ -91,7 +93,7 @@ def test_s044_2_the_factory_line_reads_ok_or_the_problems_with_the_first() -> No
     # the fixes of the problems follow the line, so every reason's fix is still in the summary
     assert "                 fix: shipmill app-install acme/web" in lines(two)
     # the worktrees are never among status's checks
-    assert [c.check for c in host_checks(facts())] == LABELS[:-1]
+    assert [c.check for c in host_checks(facts())] == STATUS_LABELS
 
 
 @pytest.mark.parametrize(
@@ -161,6 +163,7 @@ def test_s044_6_factory_prints_its_checks_in_order_with_spec_009s_values() -> No
         "shipmill",
         "checkout",
         "worktrees",
+        "prune",
     ]
     assert text == [
         "  gate           OK, launchd every 15 min",
@@ -169,6 +172,7 @@ def test_s044_6_factory_prints_its_checks_in_order_with_spec_009s_values() -> No
         "  shipmill       0.26.0, up to date",
         "  checkout       in sync",
         "  worktrees      0 removable, 1 kept",
+        "  prune          never ran here",
     ]
     assert factory.exit_code(found) == 0
 
@@ -219,12 +223,17 @@ def test_s044_8_a_check_that_fails_to_run_prints_its_error_and_the_rest_still_ru
         ("shipmill", False),
         ("checkout", True),
         ("worktrees", True),
+        ("prune", True),
     ]
     text = factory.text(found).splitlines()
     assert text[0] == "  gate           ERROR: launchctl print failed (exit 113): Could not find service"
     assert text[2] == "  github app     ERROR: launchctl print failed (exit 113): Could not find service"
     assert text[3].startswith("  shipmill       ERROR: Command '['claude']' returned non-zero exit status 2")
-    assert text[4:] == ["  checkout       in sync", "  worktrees      0 removable, 1 kept"]
+    assert text[4:] == [
+        "  checkout       in sync",
+        "  worktrees      0 removable, 1 kept",
+        "  prune          never ran here",
+    ]
 
 
 def test_s044_8_watch_states_host_rows_that_fail_are_the_checks_error() -> None:
