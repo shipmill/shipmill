@@ -41,6 +41,24 @@ And one more after it (spec 040):
                    defaults (or, for one minor release, from the prompt's words).
                    shipmill-setup's Autonomy step asks and writes all three. --fix leaves it
 
+Product (spec 043: whether the repo is one of several that make up one product; one row,
+after the agents rows, the first that applies):
+  PRODUCT_LISTED   this repo has no [product], and a sibling's [product] repos lists it
+                   (case ignored): the detail names the sibling and the home = "<sibling>"
+                   line to write, both when two list it. --fix leaves it
+  PRODUCT_SIBLINGS this repo has no [product], and siblings exist, named in the detail:
+                   shipmill-setup's Product step asks once, and writes home, repos, or
+                   standalone = true. --fix leaves it
+  PRODUCT_OK       [product] is set in any form (standalone = true too), there is no
+                   [agents] app_id, or no sibling exists; the first two read no sibling
+  A sibling is a repo of the same owner, other than this one and not archived, whose
+  default-branch .github/shipmill.toml sets the same [agents] app_id: the owner's repos
+  are listed with the host's gh (/user/repos?affiliation=owner for the gh login's own
+  account, /orgs/<owner>/repos for an organization, /users/<owner>/repos for another
+  user), then each one's config is read, one call each. A 404 is no config, and so no
+  sibling; any other gh failure exits 2. A sibling config that can't be read is named in
+  the row's detail and skipped
+
 Skills (the home folder's user skills, which shadow the plugin's by name):
   SKILL_SHADOWED   a link or copy of a shipmill skill in ~/.claude/skills or ~/.agents/skills
                    that doesn't resolve into the plugin's cache, one row each, as
@@ -124,10 +142,11 @@ Contributor rules (a warning, read only when the config's [changelog] sets fragm
                    leaves CHANGELOG.md alone, so a rule to edit Unreleased is stale. The
                    repo's own docs are the maintainer's (D-42): --fix leaves them
 
-Exit 0 when every row is RELEASE_READY, AGENTS_OK, PLUGIN_OK, SKILLS_OK, LABELS_OK, or
-BRANCH_DELETE_ON (RUNNER_SHARED and CHANGELOG_RULES, warnings, leave the exit code alone), 1
-otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT,
-PLUGIN_COMMITTED, PLUGIN_OUTDATED, PLUGIN_SHADOWING, and SKILL_SHADOWED included), 2 on bad input, a malformed
+Exit 0 when every row is RELEASE_READY, AGENTS_OK, PRODUCT_OK, PLUGIN_OK, SKILLS_OK,
+LABELS_OK, or BRANCH_DELETE_ON (RUNNER_SHARED and CHANGELOG_RULES, warnings, leave the exit
+code alone), 1 otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT,
+PRODUCT_LISTED, PRODUCT_SIBLINGS, PLUGIN_COMMITTED, PLUGIN_OUTDATED, PLUGIN_SHADOWING, and
+SKILL_SHADOWED included), 2 on bad input, a malformed
 settings.json or config (its [agents] read as github-ship-watch reads it; its [lanes] and
 [environments] too when the runner is read; its [autonomy] with an [agents] section), both
 config files,
@@ -204,7 +223,7 @@ NO_MODE = (
     'no mode in [agents]: the gate runs interactive by default, which nobody chose; set mode = "interactive"'
     ' or mode = "headless" (shipmill-setup\'s step 4)'
 )
-DONE = {"RELEASE_READY", "AGENTS_OK", "PLUGIN_OK", "SKILLS_OK", "LABELS_OK", "BRANCH_DELETE_ON"}
+DONE = {"RELEASE_READY", "AGENTS_OK", "PRODUCT_OK", "PLUGIN_OK", "SKILLS_OK", "LABELS_OK", "BRANCH_DELETE_ON"}
 # rows that warn without being part of setup's done states: they leave the exit code alone
 WARNINGS = {"RUNNER_SHARED", "CHANGELOG_RULES"}
 # the repo's own contributor rules, read for a stale rule to edit Unreleased and never written (D-42)
@@ -408,6 +427,133 @@ def agent_stages_set_310(text: str, config: Path, ws: ModuleType) -> list[str]:
         if key is not None or f"autonomy.{stage}" in tables:
             found.append(stage)
     return found
+
+
+# -- product -------------------------------------------------------------------------------
+
+NOT_FOUND = re.compile(r"\(HTTP 404\)")  # gh's words for a 404: "gh: Not Found (HTTP 404)"
+APP_ID = re.compile(r"[1-9][0-9]*")  # shipmill reads [agents] app_id as a positive integer
+# a line of the owner's repo listing, as the listing's --jq writes it: archived, then owner/name
+LISTED = re.compile(r"(true|false) ([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
+LISTING_JQ = '.[] | "\\(.archived) \\(.full_name)"'
+RAW = "Accept: application/vnd.github.raw"
+STEP = "shipmill-setup's Product step"
+
+
+def gh_get(cmd: list[str]) -> str | None:
+    """A gh read: its output, or None when GitHub answers 404; any other failure exits 2"""
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode == 0:
+        return proc.stdout
+    if NOT_FOUND.search(proc.stderr):
+        return None
+    sys.stderr.write(f"error: {' '.join(cmd)}: {proc.stderr.strip()}\n")  # the whole command names the repo read
+    raise SystemExit(2)
+
+
+def gh_need(gh: Callable[[list[str]], str | None], cmd: list[str]) -> str:
+    """A gh read that must find what it reads: a 404 exits 2 too"""
+    out = gh(cmd)
+    if out is None:
+        fail(f"{' '.join(cmd)}: not found")
+    return out
+
+
+def owner_repos(repo: str, gh: Callable[[list[str]], str | None]) -> list[str]:
+    """The owner's unarchived repos other than this one, as owner/name, sorted with case
+    ignored: the gh login's own account lists its private repos through /user/repos, an
+    organization through /orgs, another user through /users. One listing, paged. The login is
+    read for a user owner alone: a gate session's gh runs on the App's installation token,
+    which `gh api user` refuses"""
+    owner = repo.partition("/")[0]
+    kind = gh_need(gh, ["gh", "api", f"users/{owner}", "--jq", ".type"]).strip()
+    if kind not in ("Organization", "User"):
+        fail(f"users/{owner}: expected the type Organization or User, got {kind!r}")
+    if kind == "Organization":
+        endpoint = f"orgs/{owner}/repos?per_page=100"
+    elif gh_need(gh, ["gh", "api", "user", "--jq", ".login"]).strip().lower() == owner.lower():
+        endpoint = "user/repos?affiliation=owner&per_page=100"
+    else:
+        endpoint = f"users/{owner}/repos?per_page=100"
+    listing = gh_need(gh, ["gh", "api", "--paginate", endpoint, "--jq", LISTING_JQ])
+    found: dict[str, str] = {}
+    for line in listing.splitlines():
+        if not line.strip():
+            continue
+        entry = LISTED.fullmatch(line.strip())
+        if entry is None:
+            fail(f"{endpoint}: expected '<archived> <owner/name>', got {line.strip()!r}")
+        archived, name = entry.group(1) == "true", f"{entry.group(2)}/{entry.group(3)}"
+        if archived or entry.group(2).lower() != owner.lower() or name.lower() == repo.lower():
+            continue
+        found.setdefault(name.lower(), name)
+    return [found[key] for key in sorted(found)]
+
+
+def has_product(text: str, config: Path, ws: ModuleType) -> bool:
+    """Whether the config has a [product] table in any form, standalone = true too (spec 043),
+    read as watch_state.py reads it: a table shipmill would refuse exits 2"""
+    try:
+        ws.product_repos(text, config)
+        if ws.tomllib is None:
+            return ws.product_table_310(text, config) is not None
+    except ws.Refused as refused:
+        fail(str(refused).removeprefix("error: "))
+    return "product" in ws.tomllib.loads(text)
+
+
+def product_rows(
+    repo: str, repo_dir: Path, ws: ModuleType, gh: Callable[[list[str]], str | None] = gh_get
+) -> list[Row]:
+    """The Product row (spec 043), the first that applies: PRODUCT_LISTED, PRODUCT_SIBLINGS,
+    then PRODUCT_OK. Siblings are read only with [agents] app_id and no [product], through gh
+    reads alone, so --fix has nothing to change here"""
+    config = config_file(repo_dir)
+    if config is None:
+        return [Row("PRODUCT_OK", "no [agents] app_id: a product's repos meet through the App, siblings not read")]
+    text = config.read_text(encoding="utf-8")
+    try:
+        app_id = (ws.agents_table(text, config) or {}).get("app_id")
+    except ws.Refused as refused:
+        fail(str(refused).removeprefix("error: "))
+    if app_id is None:
+        return [Row("PRODUCT_OK", "no [agents] app_id: a product's repos meet through the App, siblings not read")]
+    if APP_ID.fullmatch(app_id) is None:
+        fail(f"{config}: [agents] app_id must be a positive integer, got {app_id}")
+    if has_product(text, config, ws):
+        return [Row("PRODUCT_OK", f"{CONFIG} sets [product]")]
+    siblings, listing, skipped = [], [], []
+    for name in owner_repos(repo, gh):
+        found = gh(["gh", "api", "-H", RAW, f"repos/{name}/contents/{CONFIG.as_posix()}"])
+        if found is None:  # no config, so no sibling
+            continue
+        where = Path(f"{name}:{CONFIG.as_posix()}")
+        try:
+            if (ws.agents_table(found, where) or {}).get("app_id") != app_id:
+                continue
+            repos = ws.product_repos(found, where)
+        except ws.Refused as refused:  # another repo's to fix: named, and skipped
+            skipped.append(str(refused).removeprefix("error: "))
+            continue
+        siblings.append(name)
+        if repos is not None and repo.lower() in {listed.lower() for listed in repos}:
+            listing.append(name)
+    unread = "".join(f"; skipped, its config can't be read: {reason}" for reason in skipped)
+    if listing:
+        homes = " or ".join(f'home = "{name}"' for name in listing)
+        pick = "; the maintainer picks one" if len(listing) > 1 else ""
+        verb = "lists" if len(listing) == 1 else "list"
+        detail = f"{', '.join(listing)} {verb} {repo} in [product] repos: write [product] {homes} in {CONFIG}{pick}"
+        return [Row("PRODUCT_LISTED", f"{detail} ({STEP}){unread}")]
+    if siblings:
+        verb = "sets" if len(siblings) == 1 else "set"
+        detail = (
+            f"{', '.join(siblings)} {verb} app_id {app_id} too and {CONFIG} has no [product]: {STEP} asks whether"
+            " they make up one product, and writes home, repos, or standalone = true"
+        )
+        return [Row("PRODUCT_SIBLINGS", f"{detail}{unread}")]
+    owner = repo.partition("/")[0]
+    return [Row("PRODUCT_OK", f"no other repo of {owner} sets app_id {app_id}{unread}")]
 
 
 # -- plugin --------------------------------------------------------------------------------
@@ -1046,6 +1192,7 @@ def main() -> int:
         agents_row(repo_dir),
         *prompt_rows(repo_dir, ws),
         *autonomy_rows(repo_dir, ws),
+        *product_rows(args.repo, repo_dir, ws),  # reads only: --fix leaves it (S-043-6)
         *plugin,
         *skill_rows(Path.home(), ws),
         labels_row(missing, wanted),
