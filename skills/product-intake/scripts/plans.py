@@ -65,12 +65,14 @@ PLAN_REF = re.compile(r"^([\w.-]+)/([\w.-]+)#([1-9][0-9]*)$")
 
 # The direction (spec 024), read as `shipmill product ids` reads it: each list section's
 # `- <prefix>-<n>: <text>` items, a section moved to docs/product/<file>.md through its one
-# `See [<section>](product/<file>.md).` line read from that file
+# `See [<section>](product/<file>.md).` line read from that file; a goal's `  measure: ...`
+# line right under its item line (spec 027) holds no id and is skipped
 DIRECTION = "docs/product.md"
 DIRECTION_DIR = "docs/product/"
 LIST_SECTIONS = {"Users": "U", "Goals": "G", "Non-goals": "N", "Quality bar": "Q"}
 DIRECTION_SECTIONS = ("Mission", *LIST_SECTIONS)
 DIRECTION_ITEM = re.compile(r"^- ([A-Za-z]+)-([1-9][0-9]*): \S.*$")
+DIRECTION_MEASURE = re.compile(r"^  measure: \S.*$")
 DIRECTION_MOVED = re.compile(r"^See \[([^\]]+)\]\(product/([A-Za-z0-9][A-Za-z0-9_-]*\.md)\)\.$")
 
 _HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$")
@@ -131,7 +133,7 @@ def goal_ids(root: Path) -> frozenset[str]:
         if prefix is None:
             continue
         lines = [(n, line) for n, line in body if line.strip()]
-        file = DIRECTION
+        file, listed = DIRECTION, body
         if len(lines) == 1 and lines[0][1].startswith("See ["):
             moved = DIRECTION_MOVED.match(lines[0][1])
             if moved is None or moved.group(1) != heading:
@@ -143,12 +145,20 @@ def goal_ids(root: Path) -> frozenset[str]:
             parts = sections(linked.read_text(encoding="utf-8"))
             if [(lv, h) for _, lv, h, _ in parts[1:]] != [(2, heading)] or any(line.strip() for _, line in parts[0][3]):
                 raise PlanError(f"{file} holds only `## {heading}`; run `shipmill product check`")
-            lines = [(n, line) for n, line in parts[1][3] if line.strip()]
-        for number, line in lines:
+            listed = parts[1][3]
+        after_goal = False  # the line before was a goal's item line, which a measure line may follow
+        for number, line in listed:
+            if not line.strip():
+                after_goal = False
+                continue
+            if after_goal and DIRECTION_MEASURE.match(line):  # spec 027: read no more from it
+                after_goal = False
+                continue
             item = DIRECTION_ITEM.match(line)
             if item is None or item.group(1) != prefix:
                 raise PlanError(f"{file}:{number}: not a `- {prefix}-<n>: <text>` item; run `shipmill product check`")
             ids.add(f"{prefix}-{item.group(2)}")
+            after_goal = prefix == "G"
     return frozenset(i for i in ids if i.startswith("G-"))
 
 
