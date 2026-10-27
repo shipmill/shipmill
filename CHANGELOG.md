@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.85.0] - 2026-10-27
+
+### Changed
+
+- Spec 040, the agent stages in `[autonomy]`, is built: its Verification section says how each criterion was checked (#655)
+
+### Fixed
+
+- `shipmill status` no longer exits 2 with no report when one of the host's own reads fails (`claude agents --json`, `claude plugin list`, or the marketplace's latest release): it reads the sessions and shipmill sections on their own, as `shipmill factory` does, so the failure is that check's error on the `factory` line, the verdict reads STUCK, and every other line still prints; `watch_state.py --no-host` leaves those rows out of the full run (#745)
+
 ## [0.84.0] - 2026-10-27
 
 ### Added
@@ -1936,7 +1946,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.84.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.85.0...HEAD
+[0.85.0]: https://github.com/shipmill/shipmill/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/shipmill/shipmill/compare/v0.83.0...v0.84.0
 [0.83.0]: https://github.com/shipmill/shipmill/compare/v0.82.0...v0.83.0
 [0.82.0]: https://github.com/shipmill/shipmill/compare/v0.81.1...v0.82.0
