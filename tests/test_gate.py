@@ -553,10 +553,10 @@ def test_s040_9_open_prs_follow_land_whatever_prs_says(checkout: Git, text: str,
 
 
 def test_s040_9_a_config_like_shipmills_own_keeps_landing(checkout: Git) -> None:
-    # .github/shipmill.toml here: prs = true, no agent stage keys, and a prompt that merges when
-    # green, which the legacy reading (S-040-6) reads as land = "act"
+    # .github/shipmill.toml here before its agent-autonomy upgrade (#684): prs = true, no agent
+    # stage keys, and a prompt that merges when green, which the legacy reading (S-040-6) reads
+    # as land = "act"
     ours = tomllib.loads((Path(__file__).parents[1] / ".github" / "shipmill.toml").read_text("utf-8"))
-    assert not {"triage", "fix", "land"} & set(ours.get("autonomy", {}))
     text = f"[agents]\nprompt = {json.dumps(ours['agents']['prompt'])}\nprs = true\n"
     action, launched = tick_config(checkout, text, [OPEN_PRS])
     assert action is Action.LAUNCH
