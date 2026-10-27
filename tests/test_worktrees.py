@@ -17,7 +17,7 @@ import pytest
 
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
-from shipmill.github import GhCli, MergedPull, PullRequest
+from shipmill.github import BRANCHES_PER_QUERY, GhCli, MergedPull, PullRequest
 from shipmill.gitrepo import Git
 from shipmill.worktrees import (
     ClaudeSessions,
@@ -546,6 +546,22 @@ def test_s002_20_merged_prs_are_read_once_for_the_branches_ahead_only(repo: Chec
     assert repo.github.merged_reads == []  # nothing ahead: no read at all
 
 
+def test_s002_20_merged_prs_are_read_only_for_worktrees_the_local_checks_leave(repo: Checkout) -> None:
+    """A worktree kept for a local reason is kept whatever GitHub says: its branch isn't asked"""
+    for rel, branch, hours in (
+        ("tmp/wt-ahead", "ahead", OLD),
+        ("tmp/wt-young", "young", 5),
+        ("tmp/wt-dirty", "dirty", OLD),
+    ):
+        tree = repo.add(rel, "-b", branch, hours=hours)
+        repo.commit(tree, {f"{branch}.py": "X = 1\n"}, branch)
+    (repo.root / "tmp/wt-dirty/new.py").write_text("Y = 1\n", encoding="utf-8")
+    reasons = repo.reasons()
+    assert (reasons["tmp/wt-young"], reasons["tmp/wt-dirty"]) == ("created 5h ago", "uncommitted changes")
+    assert reasons["tmp/wt-ahead"] == "1 commit(s) not landed"
+    assert repo.github.merged_reads == [("ahead",)]
+
+
 def test_s002_11_a_failing_merged_pr_read_judges_nothing(repo: Checkout) -> None:
     feat = repo.add(".claude/worktrees/ahead", "-b", "feat/ahead")
     repo.commit(feat, {"x.py": "X = 1\n"}, "Ahead")
@@ -597,6 +613,29 @@ def test_s002_20_gh_reads_each_merged_heads_history(tmp_path: Path) -> None:
     assert sent[:2] == ["api", "graphql"]
     assert "b0=feat/54" in sent and "b1=feat/x" in sent and "owner={owner}" in sent
     assert gh.merged_pull_requests([]) == []
+
+
+def test_s002_20_gh_reads_many_branches_in_queries_github_accepts(tmp_path: Path) -> None:
+    # 126 branches in one query asked GitHub for 506,520 nodes, over its 500,000 (shipmill status)
+    calls = tmp_path / "calls.txt"
+    script = (
+        'n=0; for a in "$@"; do case "$a" in b[0-9]*=*) n=$((n+1));; esac; done\n'
+        f'echo "$n" >> "{calls}"\n'
+        'printf \'{"data":{"repository":{\'\n'
+        'i=0; while [ "$i" -lt "$n" ]; do [ "$i" -gt 0 ] && printf ,; nodes=\n'
+        '  if [ "$n" -lt 50 ] && [ "$i" -eq 0 ]; then nodes=\'{"number":9,"headRefName":"x","baseRefName":"main",'
+        '"headRefOid":"cccccccccccccccccccccccccccccccccccccccc",'
+        '"commits":{"nodes":[{"commit":{"oid":"cccccccccccccccccccccccccccccccccccccccc"}}]},'
+        '"timelineItems":{"nodes":[]}}\'; fi\n'
+        '  printf \'"b%s":{"nodes":[%s]}\' "$i" "$nodes"; i=$((i+1)); done\n'
+        "printf '}}}'\n"
+    )
+    bin_dir = fake_tool(tmp_path, "gh", script)
+    pulls = GhCli(tmp_path, str(bin_dir / "gh")).merged_pull_requests([f"feat/{n}" for n in range(126)])
+    assert [p.number for p in pulls] == [9]
+    sizes = [int(line) for line in calls.read_text(encoding="utf-8").split()]
+    assert sizes == [BRANCHES_PER_QUERY, BRANCHES_PER_QUERY, 26]
+    assert (20 + 20 * 2 * 100) * BRANCHES_PER_QUERY <= 500_000
 
 
 @pytest.mark.parametrize(
