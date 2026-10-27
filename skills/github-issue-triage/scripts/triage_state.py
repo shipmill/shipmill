@@ -1214,6 +1214,55 @@ def fold(ref: Ref) -> Ref:
     return (ref[0].lower(), ref[1].lower(), ref[2])
 
 
+def shortest_loop(graph: dict[Ref, list[Ref]], node: Ref) -> list[Ref] | None:
+    """The shortest loop through node in graph (each issue's open holds, as folded refs, spec
+    041), rotated to start at its least ref, ties broken by the least sequence: the loop's
+    refs without the first repeated, or None when node is on no loop. Every shortest loop
+    through node is a path whose i-th ref is i steps from node and the loop's length less i
+    steps back to it, so the search keeps to those"""
+    ahead, behind = distances(graph, node), distances(reverse(graph), node)
+    lengths = [ahead[ref] + 1 for ref in reverse(graph).get(node, []) if ref in ahead]
+    if not lengths:
+        return None
+    size = min(lengths)
+    best: list[Ref] | None = None
+    paths = [[node]]
+    while paths:
+        path = paths.pop()
+        step = len(path)
+        if step == size:
+            if node in graph.get(path[-1], []):
+                start = path.index(min(path))
+                loop = path[start:] + path[:start]
+                best = loop if best is None or loop < best else best
+            continue
+        paths += [
+            [*path, ref] for ref in graph.get(path[-1], []) if ahead.get(ref) == step and behind.get(ref) == size - step
+        ]
+    return best
+
+
+def reverse(graph: dict[Ref, list[Ref]]) -> dict[Ref, list[Ref]]:
+    """graph with every edge turned round"""
+    back: dict[Ref, list[Ref]] = {}
+    for ref, holds in graph.items():
+        for hold in holds:
+            back.setdefault(hold, []).append(ref)
+    return back
+
+
+def distances(graph: dict[Ref, list[Ref]], start: Ref) -> dict[Ref, int]:
+    """Each ref graph reaches from start, with the fewest steps it takes"""
+    found = {start: 0}
+    queue = [start]
+    for ref in queue:
+        for hold in graph.get(ref, []):
+            if hold not in found:
+                found[hold] = found[ref] + 1
+                queue.append(hold)
+    return found
+
+
 def timestamp(text: str) -> dt.datetime:
     """A GitHub ISO 8601 time; tagger dates carry an offset, comment dates a "Z", which
     fromisoformat rejects before Python 3.11"""

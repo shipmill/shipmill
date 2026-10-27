@@ -30,10 +30,18 @@ link  writes a link in both forms triage_state.py reads:
       "already linked", and a refusal exits 2 with the error, there being no line to fall
       back on.
 
+      A link that would close a cycle is refused before any write (spec 041): link walks
+      what the other issue waits on, its open holds recursively as show reads them (the
+      fewest steps first), and when that reaches the issue it exits 2 with "error: linking
+      <N> to <M> closes a cycle: <N> -> <M> -> ... -> <N>". So does a link whose two halves
+      are already in place on a cycle: link never exits 0 on one. A closed item holds
+      nothing, so no cycle runs through one. With --product, the walk reads a listed repo's
+      items through `shipmill gh --product <that repo>`, any other's through plain gh.
+
       Exit 0 when the link is in place (or text only), 2 on a malformed reference, an
       issue that doesn't exist or is a pull request, an issue linked to itself (each
-      named, before any write), or any other gh failure, including a rate limit, a
-      timeout, or an internal error.
+      named, before any write), a link that closes a cycle, or any other gh failure,
+      including a rate limit, a timeout, or an internal error.
 
       Its writes (the relation and the body edit) run as the App when the checkout it runs
       from (the current folder's) sets [agents] app_id in .github/shipmill.toml: through
@@ -68,9 +76,17 @@ show prints the chain an issue belongs to, one row per item, each once (by owner
       case; with no assignee, its role:<name> labels, sorted and joined by commas, or
       "person: none" for one labelled human alone; "pull request" for a
       pull request a "Depends on" line names), and the state: CLOSED (an issue closed in
-      any way, a pull request merged or closed), BLOCKED with the holds still open, READY
-      (an open issue nothing open holds), or OPEN (a pull request still open). A hold that
-      can't be read counts as open. A READY issue whose repo has no [agents] table in
+      any way, a pull request merged or closed), CYCLE (<loop>) for an open issue on a
+      cycle, BLOCKED with the holds still open, READY (an open issue nothing open holds),
+      or OPEN (a pull request still open). A hold that can't be read counts as open.
+      A cycle (spec 041) is a loop of open issues each holding the next through an open
+      hold of any kind, among the items read; a closed, UNTRUSTED, or UNREADABLE item is on
+      none. An item's loop is the shortest through it, rotated to start at its least
+      reference (owner, repo, number, case ignored), ties broken by the least sequence,
+      printed "a -> b -> a"; an item that waits on a cycle without being on it stays
+      BLOCKED. A row whose issue has a malformed "Depends on" line (as triage_state.py
+      reads one) ends with "MALFORMED_DEPENDS line <n>: <the line>", several joined by
+      " | ", after NO_GATE. A READY issue whose repo has no [agents] table in
       .github/shipmill.toml on its default branch, or no such file (404), ends in NO_GATE:
       nothing will take it up. The config is read once per repo, only for a repo with a
       READY issue. An item that can't be read (no access, no such issue) is one row,
@@ -89,12 +105,14 @@ show prints the chain an issue belongs to, one row per item, each once (by owner
       "note: native relations unavailable: <first error line>" line to stderr.
       --json prints the rows as one JSON object, {"rows": [...]}, each row with ref, title,
       executor, state, holds (the open ones), waits_on and waited_on_by (every item it is
-      linked to, open or closed), and gate ("NO_GATE" or null).
+      linked to, open or closed), gate ("NO_GATE" or null), cycle (a CYCLE row's loop, the
+      first reference repeated at the end, else null), and malformed (its malformed
+      Depends on lines, each "line <n>: <the line>", [] without one).
 
-      Exit 1 when any row is NO_GATE, else 0; 2 on a malformed reference, a starting
-      reference that can't be read or is a pull request, an issue it follows with more
-      than 100 labels, assignees, or relations of one kind (not paged; an UNTRUSTED one's
-      are never read), a config that can't be parsed, or any gh failure other than an
+      Exit 1 when any row is NO_GATE, CYCLE, or MALFORMED_DEPENDS, else 0; 2 on a
+      malformed reference, a starting reference that can't be read or is a pull request,
+      an issue it follows with more than 100 labels, assignees, or relations of one kind
+      (not paged; an UNTRUSTED one's are never read), a config that can't be parsed, or any gh failure other than an
       unreadable item, a missing config, or a 404 from the collaborator check.
 
 Needs the gh CLI, authenticated, and for link with app_id set uvx. Python
@@ -118,7 +136,17 @@ from typing import Any, NoReturn
 
 # What a "Depends on" line is and the issues it names, and the holds GitHub records, as
 # triage_state.py reads them
-from triage_state import DEPENDS, TRUSTED, dependency_refs, login, native_holds, ref_state, same_login
+from triage_state import (
+    DEPENDS,
+    TRUSTED,
+    dependency_refs,
+    login,
+    malformed_dependencies,
+    native_holds,
+    ref_state,
+    same_login,
+    shortest_loop,
+)
 
 Variables = dict[str, str | int]
 # Runs one GraphQL query with its variables and returns the parsed response, errors and
@@ -428,6 +456,23 @@ def product_reader(product: Product, ref: Ref, run: Runner, execute: Execute = c
     return gh_runner([*session_gh(product), "--product", ref.repo], execute)
 
 
+def product_walker(product: Product, run: Runner, execute: Execute = capture) -> Callable[[Ref], Runner]:
+    """The runner --product's cycle walk reads each item through: a listed repo's through
+    `shipmill gh --product <that repo>`, one runner per repo, as product_reader; any other's
+    (the home repo's, or one a hold names outside the product) through run, plain gh, as
+    show reads it"""
+    runners: dict[str, Runner] = {}
+
+    def read_for(ref: Ref) -> Runner:
+        if not product.is_listed(ref):
+            return run
+        if ref.repo.lower() not in runners:
+            runners[ref.repo.lower()] = gh_runner([*session_gh(product), "--product", ref.repo], execute)
+        return runners[ref.repo.lower()]
+
+    return read_for
+
+
 def product_writer(product: Product, parent: Ref, execute: Execute = capture) -> Runner:
     """The runner --product's writes go through (S-038-29): the session's own `shipmill gh`,
     with no --product, when the parent is in the home repo, which [product] repos never lists;
@@ -556,15 +601,20 @@ def link(
     write: Runner,
     text: bool = True,
     run_other: Runner | None = None,
+    read_for: Callable[[Ref], Runner] | None = None,
 ) -> int:
     """Reads of target's repo go through run, those of other's (resolving it, and whether the
-    child has its parent) through run_other, run when None; the relation's mutation and the
-    body edit through write. Without text (--no-text), only the relation: no body edit, and a
-    refusal exits 2"""
+    child has its parent) through run_other, run when None; the walk of what other waits on
+    reads each item through read_for(its ref), run for each when None; the relation's mutation
+    and the body edit through write. Without text (--no-text), only the relation: no body
+    edit, and a refusal exits 2. A link that would close a cycle exits 2 before any write"""
     if target.same(other):
         fail(f"{target} can't be linked to itself")
     read_other = run if run_other is None else run_other
     issue, upstream = resolve(run, target), resolve(read_other, other)
+    loop = closed_loop(read_for or (lambda ref: run), target, other)
+    if loop is not None:
+        fail(f"linking {target} to {other} closes a cycle: {' -> '.join(str(ref) for ref in loop)}")
     lines: list[str] = []
     refused: str | None = None
     try:
@@ -669,6 +719,12 @@ class Item:
     executor: str = ""
     holds: tuple[tuple[Ref, str | None], ...] = ()
     waited_on_by: tuple[Ref, ...] = ()
+    malformed: tuple[str, ...] = ()  # its malformed Depends on lines, "line <n>: <the line>" (spec 041)
+
+    @property
+    def open_issue(self) -> bool:
+        """An open issue whose holds are read: the only items a cycle runs through (spec 041)"""
+        return self.kind == "Issue" and self.state == "OPEN"
 
 
 def ref_of(node: dict[str, Any]) -> Ref:
@@ -718,7 +774,16 @@ def parse_item(node: dict[str, Any], reader: Reader) -> Item:
     if node.get("parent"):
         waiting.append(ref_of(node["parent"]))
     downstream = {r.key: r for r in waiting if r.key != ref.key}
-    return Item(ref, "Issue", title, ref_state(node), executor, tuple(holds.values()), tuple(downstream.values()))
+    return Item(
+        ref,
+        "Issue",
+        title,
+        ref_state(node),
+        executor,
+        tuple(holds.values()),
+        tuple(downstream.values()),
+        tuple(malformed_dependencies(node)),
+    )
 
 
 def unreadable_alias(error: object, count: int) -> int | None:
@@ -826,6 +891,63 @@ def walk(reader: Reader, starts: list[Ref]) -> tuple[list[Item], dict[Key, Item]
     return list(chain.values()), items
 
 
+def no_standing(repo: str, user: str) -> bool:
+    """link's walk reads every author's item, as show does without --trusted-only"""
+    fail(f"link's walk asked whether {user} is a collaborator of {repo}")
+
+
+def closed_loop(read_for: Callable[[Ref], Runner], target: Ref, other: Ref) -> list[Ref] | None:
+    """The cycle linking target to other would close (spec 041): when other already waits on
+    target through open holds (a Depends on line, blockedBy, or a sub-issue, each an open
+    issue, as show reads them), target, other, the fewest items between them along those
+    holds, and target again; None when it doesn't. Each item is read through read_for(its
+    ref), the items of one runner in one query, each item once"""
+    readers: list[Reader] = []
+    items: dict[Key, Item] = {}
+
+    def read(refs: list[Ref]) -> None:
+        groups: list[tuple[Reader, list[Ref]]] = []
+        for ref in {r.key: r for r in refs if r.key not in items}.values():
+            run = read_for(ref)
+            reader = next((r for r in readers if r.run is run), None)
+            if reader is None:
+                reader = Reader(run, no_standing)
+                readers.append(reader)
+            group = next((g for g in groups if g[0] is reader), None)
+            if group is None:
+                group = (reader, [])
+                groups.append(group)
+            group[1].append(ref)
+        for reader, chunk in groups:
+            for key, item in read_items(reader, chunk).items():
+                items[key] = item
+                items.setdefault(item.ref.key, item)
+
+    read([other])
+    came: dict[Key, Key] = {}
+    frontier = [items[other.key]]
+    seen = {items[other.key].ref.key}
+    while frontier:
+        read([hold for item in frontier if item.open_issue for hold, _ in item.holds])
+        later: list[Item] = []
+        for item in frontier:
+            for hold in open_holds(item, items):
+                if hold.ref.key in seen:
+                    continue
+                seen.add(hold.ref.key)
+                came[hold.ref.key] = item.ref.key
+                if hold.ref.same(target):
+                    between: list[Ref] = []
+                    key = came[hold.ref.key]
+                    while key in came:
+                        between.insert(0, items[key].ref)
+                        key = came[key]
+                    return [target, other, *between, target]
+                later.append(hold)
+        frontier = later
+    return None
+
+
 def gh_contents(repo: str, execute: Execute = capture) -> str | None:
     """The repo's shipmill config on its default branch, through the contents API; None when
     GitHub answers 404 (no such file), exit 2 on any other failure"""
@@ -887,6 +1009,29 @@ def has_gate(text: str, repo: str) -> bool:
         raise SystemExit(2) from None
 
 
+def open_holds(item: Item, items: dict[Key, Item]) -> list[Item]:
+    """The open issues an open issue holds on, as read: the links a cycle runs along (spec
+    041). A closed item, a pull request, an UNTRUSTED item, and an UNREADABLE one hold
+    nothing and are held on by nothing here, so no cycle runs through one"""
+    if not item.open_issue:
+        return []
+    found = {items[hold.key].ref.key: items[hold.key] for hold, _ in item.holds if hold.key in items}
+    return [found[key] for key in sorted(found) if found[key].open_issue]
+
+
+def loops(chain: list[Item], items: dict[Key, Item]) -> dict[Key, list[Ref]]:
+    """Each item of the chain on a cycle of open issues, with its loop (triage_state.py's
+    shortest_loop over every item read), the first item repeated at the end"""
+    named = {item.ref.key: item for item in items.values() if item.open_issue}
+    graph = {key: [hold.ref.key for hold in open_holds(item, items)] for key, item in named.items()}
+    found: dict[Key, list[Ref]] = {}
+    for item in chain:
+        loop = shortest_loop(graph, item.ref.key) if item.ref.key in named else None
+        if loop is not None:
+            found[item.ref.key] = [named[key].ref for key in [*loop, loop[0]]]
+    return found
+
+
 def show_rows(chain: list[Item], items: dict[Key, Item], contents: Contents) -> list[dict[str, Any]]:
     """One row per item of the chain; a READY issue's repo config is read once per repo"""
 
@@ -907,10 +1052,12 @@ def show_rows(chain: list[Item], items: dict[Key, Item], contents: Contents) -> 
         waiting.setdefault(item.ref.key, {}).update((named(r).key, named(r)) for r in item.waited_on_by)
         for hold, _ in item.holds:
             waiting.setdefault(named(hold).key, {})[item.ref.key] = item.ref
+    cycles = loops(chain, items)
     gates: dict[str, bool] = {}
     rows: list[dict[str, Any]] = []
     for item in chain:
         shown = item.kind not in (UNREADABLE, UNTRUSTED)  # neither's text is shown
+        loop = cycles.get(item.ref.key)
         row: dict[str, Any] = {
             "ref": str(item.ref),
             "title": item.title if shown else None,
@@ -919,6 +1066,8 @@ def show_rows(chain: list[Item], items: dict[Key, Item], contents: Contents) -> 
             "waits_on": [str(named(hold)) for hold, _ in item.holds],
             "waited_on_by": [str(ref) for ref in waiting.get(item.ref.key, {}).values()],
             "gate": None,
+            "cycle": None if loop is None else [str(ref) for ref in loop],
+            "malformed": list(item.malformed),
         }
         if not shown:
             row["state"] = item.kind
@@ -928,7 +1077,7 @@ def show_rows(chain: list[Item], items: dict[Key, Item], contents: Contents) -> 
             row["state"] = "CLOSED"
         else:
             row["holds"] = [str(named(hold)) for hold, state in item.holds if state_of(hold, state) in OPEN_HOLDS]
-            row["state"] = "BLOCKED" if row["holds"] else "READY"
+            row["state"] = "CYCLE" if loop is not None else "BLOCKED" if row["holds"] else "READY"
         if row["state"] == "READY":
             repo = item.ref.repo.lower()
             if repo not in gates:
@@ -942,8 +1091,14 @@ def show_rows(chain: list[Item], items: dict[Key, Item], contents: Contents) -> 
 def show_line(row: dict[str, Any]) -> str:
     if row["state"] in (UNREADABLE, UNTRUSTED):
         return f"{row['ref']} {row['state']}"
-    state = row["state"] + (f" ({' '.join(row['holds'])})" if row["holds"] else "")
-    return "  ".join([row["ref"], row["title"], row["executor"], state, *([row["gate"]] if row["gate"] else [])])
+    if row["cycle"] is not None:
+        state = f"{row['state']} ({' -> '.join(row['cycle'])})"
+    else:
+        state = row["state"] + (f" ({' '.join(row['holds'])})" if row["holds"] else "")
+    last = [row["gate"]] if row["gate"] else []
+    if row["malformed"]:
+        last.append(f"MALFORMED_DEPENDS {' | '.join(row['malformed'])}")
+    return "  ".join([row["ref"], row["title"], row["executor"], state, *last])
 
 
 def show(reader: Reader, contents: Contents, starts: list[Ref], as_json: bool) -> int:
@@ -953,7 +1108,8 @@ def show(reader: Reader, contents: Contents, starts: list[Ref], as_json: bool) -
         print(json.dumps({"rows": rows}, sort_keys=True))
     else:
         print("\n".join(show_line(row) for row in rows))
-    return 1 if any(row["gate"] == "NO_GATE" for row in rows) else 0
+    acting = (row["gate"] == "NO_GATE" or row["state"] == "CYCLE" or row["malformed"] for row in rows)
+    return 1 if any(acting) else 0
 
 
 def main(
@@ -1015,14 +1171,18 @@ def main(
     product = product_of(here, execute)
     refuse_outside(product, (target, other), args.product)
     run_other: Runner | None = None
+    read_for: Callable[[Ref], Runner] | None = None
     if args.product and product is not None:  # refuse_outside exited 2 for --product without [product] repos
+        read_for = product_walker(product, run, execute)
         run_other = product_reader(product, other, run, execute)
         run = product_reader(product, target, run, execute)
         if write is None:
             write = product_writer(product, target, execute)
     elif write is None:
         write = gh_runner(writer(here), execute)
-    return link(run, target, other, args.child is not None, write, text=not args.no_text, run_other=run_other)
+    return link(
+        run, target, other, args.child is not None, write, text=not args.no_text, run_other=run_other, read_for=read_for
+    )
 
 
 if __name__ == "__main__":

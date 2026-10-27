@@ -49,12 +49,64 @@ class Forge:
         self.page = 100
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def add(self, ref: str, body: str = "", kind: str = "Issue") -> str:
+    def add(self, ref: str, body: str = "", kind: str = "Issue", state: str = "OPEN") -> str:
         repo, _, number = ref.partition("#")
         owner, _, name = repo.partition("/")
         node_id = f"I_{ref}"
-        self.issues[(owner.lower(), name.lower(), int(number))] = {"id": node_id, "body": body, "type": kind}
+        found = {"id": node_id, "body": body, "type": kind, "ref": ref, "state": state}
+        self.issues[(owner.lower(), name.lower(), int(number))] = found
         return node_id
+
+    def related(self, node_id: str, states: bool = True) -> dict[str, Any]:
+        found = next(i for i in self.issues.values() if i["id"] == node_id)
+        repo, _, number = found["ref"].partition("#")
+        node: dict[str, Any] = {"number": int(number), "repository": {"nameWithOwner": repo}}
+        return node | ({"state": found["state"], "stateReason": None} if states else {})
+
+    def item(self, found: dict[str, str], native: bool) -> dict[str, Any]:
+        """An item as chains.py's walk (show's query) reads it"""
+        repo, _, number = found["ref"].partition("#")
+        base = {"__typename": found["type"], "number": int(number), "title": "t", "state": found["state"]}
+        base["repository"] = {"nameWithOwner": repo}
+        if found["type"] != "Issue":
+            return base
+        none = {"pageInfo": {"hasNextPage": False}, "nodes": []}
+        fields = base | {"stateReason": None, "body": found["body"], "labels": none, "assignees": none}
+        fields |= {"author": {"__typename": "User", "login": "alice"}, "authorAssociation": "OWNER"}
+        if not native:
+            return fields
+
+        def linked(ids: list[str], states: bool = True) -> dict[str, Any]:
+            return {"pageInfo": {"hasNextPage": False}, "nodes": [self.related(i, states) for i in sorted(ids)]}
+
+        me = found["id"]
+        parent = self.parents.get(me)
+        return fields | {
+            "blockedBy": linked([b for a, b in self.blocked if a == me]),
+            "subIssues": linked([c for c, p in self.parents.items() if p == me]),
+            "blocking": linked([a for a, b in self.blocked if b == me], states=False),
+            "parent": self.related(parent, states=False) if parent else None,
+        }
+
+    def items(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        """show's item query, which link's cycle walk reads with"""
+        count = sum(1 for k in variables if k.startswith("o"))
+        native = query == self.ch.items_query(count)
+        assert native or query == self.ch.items_query(count, native=False), f"unexpected query {query}"
+        if native and self.refuse_read:
+            undefined = {"code": "undefinedField", "typeName": "Issue", "fieldName": "blockedBy"}
+            return {"errors": [{**error(self.refuse_read), "extensions": undefined}]}
+        data: dict[str, Any] = {}
+        errors = []
+        for i in range(count):
+            asked = (str(variables[f"o{i}"]).lower(), str(variables[f"n{i}"]).lower(), variables[f"k{i}"])
+            found = self.issues.get(asked)
+            if found is None:
+                data[f"i{i}"] = None
+                errors.append({"type": "NOT_FOUND", "path": [f"i{i}"], "message": "Could not resolve"})
+            else:
+                data[f"i{i}"] = {"issueOrPullRequest": self.item(found, native)}
+        return {"data": data, **({"errors": errors} if errors else {})}
 
     def body(self, ref: str) -> str:
         return next(i["body"] for i in self.issues.values() if i["id"] == f"I_{ref}")
@@ -110,7 +162,7 @@ class Forge:
         if query == ch.ADD_SUB_ISSUE:
             self.parents[str(variables["sub"])] = str(variables["issue"])
             return {"data": {"addSubIssue": {"issue": {"id": variables["issue"]}}}}
-        raise AssertionError(f"unexpected query {query}")
+        return self.items(query, variables)
 
 
 @pytest.fixture
@@ -538,6 +590,14 @@ with open(os.environ["FAKE_LOG"], "a", encoding="utf-8") as log:
 query = args[3]
 if "mutation" in query:
     print(json.dumps({{"data": {{"wrote": True}}}}))
+elif "i0: repository" in query:  # link's cycle walk: an open issue holding nothing
+    var = dict(a.split("=", 1) for a in args[4:] if "=" in a)
+    none = {{"pageInfo": {{"hasNextPage": False}}, "nodes": []}}
+    print(json.dumps({{"data": {{"i0": {{"issueOrPullRequest": {{
+        "__typename": "Issue", "number": int(var["k0"]), "title": "t", "state": "OPEN", "stateReason": None,
+        "body": "Body", "author": {{"__typename": "User", "login": "alice"}}, "authorAssociation": "OWNER",
+        "repository": {{"nameWithOwner": var["o0"] + "/" + var["n0"]}}, "labels": none, "assignees": none,
+        "blockedBy": none, "subIssues": none, "blocking": none, "parent": None}}}}}}}}))
 elif "issueOrPullRequest" in query:
     number = next(a for a in args if a.startswith("number=")).partition("=")[2]
     print(json.dumps({{"data": {{"repository": {{"issueOrPullRequest": {{
@@ -738,8 +798,9 @@ def test_s038_29_product_child_writes_through_the_session_or_the_product_token_a
     p_repo, c_repo = parent.partition("#")[0], child.partition("#")[0]
     assert git.writes() == [through(top, p_repo)] * 2  # the sub-issue, the line: never --product for the home
     assert forge.writes() == ["addSubIssue", "updateIssue"]
-    # resolving P, resolving C, C's parent: a listed repo's through the product token, never plain gh
-    reads = [through(top, p_repo), through(top, c_repo), through(top, c_repo)]
+    # resolving P, resolving C, the cycle walk reading C (spec 041), C's parent: a listed
+    # repo's through the product token, never plain gh
+    reads = [through(top, p_repo), through(top, c_repo), through(top, c_repo), through(top, c_repo)]
     listed = [r for r in reads if "--product" in r]
     assert git.reads() == listed
     on_plain_gh = len(forge.calls) - len(git.reads()) - len(git.writes())  # the runner main was given
