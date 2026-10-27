@@ -100,6 +100,7 @@ ACTION = frozenset(
         "UPGRADE_PENDING",
         "DIRECTION_PENDING",
         "CHAIN_NO_GATE",
+        "CHAIN_CYCLE",
         "CHAIN_UNREADABLE",
         "MILESTONE_OVERTAKEN",
         "UPSTREAM_DUE",

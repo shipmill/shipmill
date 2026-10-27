@@ -199,6 +199,20 @@ On hold: {why, e.g. #PR goes below the spec's default of 5 rotated files}, decid
 
 Put the same line on the held PR.
 
+## A cycle
+
+An issue that reads CYCLE is on a loop of open issues each holding the next, so none can start (spec 041). Ask on the loop's first item, the one its `cycle <loop>` note starts with, through the [needs-decision protocol](needs-decision.md) (D-21), with its marker and the `needs-decision` label: which link is wrong, one option per link of the loop, each naming its form (a `Depends on` line, a native blocked-by relation, or a sub-issue), your recommendation first with the `(recommended)` mark and why. A link that is both a line and a relation is one option. The other items on the loop read BLOCKED, waiting on this question, so ask once:
+
+```markdown
+<!-- shipmill:needs-decision -->
+@{maintainer} Decision needed: these issues wait on each other, so none can start: {owner/repo#A} -> {owner/repo#B} -> {owner/repo#A}. Which link is wrong?
+
+1. {owner/repo#A} waits on {owner/repo#B} ({a Depends on line | a blocked-by relation | a sub-issue | a Depends on line and a blocked-by relation}) (recommended): {why this link is the wrong one, such as "#B only names #A for the decision recorded there"}
+2. {owner/repo#B} waits on {owner/repo#A} ({its form})
+
+Reply here with a number or your own answer; shipmill takes this up on the tick after your reply. I remove both forms of the link you pick, the `Depends on` line and the relation.
+```
+
 ## A person's item
 
 An issue labelled `role:<name>` (or `human`, which counts as `role:maintainer`) gets no triage verdict: its assignees do it ([triage-rubric.md](triage-rubric.md), A person's item). Each comment below starts with its marker as the first line where it has one, since `triage_state.py` reads the marker only there and only from the `--bot-login` or a trusted author.
