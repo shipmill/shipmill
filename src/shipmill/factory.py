@@ -70,13 +70,26 @@ def host_command(repo: str, workspace: Path, section: str) -> list[str]:
     return [sys.executable, str(script), repo, "--repo-dir", str(workspace), "--host", section, "--json"]
 
 
-def read_rows(repo: str, workspace: Path, section: str, run: StateRunner) -> list[Row]:
+@dataclass(frozen=True, slots=True)
+class Section:
+    """A host section's rows, and watch_state.py's exit code for them: 1 when one is an
+    action row, else 0"""
+
+    rows: list[Row]
+    code: int
+
+
+def read_section(repo: str, workspace: Path, section: str, run: StateRunner) -> Section:
     proc = run(host_command(repo, workspace, section))
     if state_failed(proc):
         said = proc.stderr.strip().splitlines()
         error = said[-1] if said else "no error printed"
         raise ReleaseError(f"watch_state.py --host {section} failed (exit {proc.returncode}): {error}")
-    return parse_rows(proc.stdout)
+    return Section(parse_rows(proc.stdout), proc.returncode)
+
+
+def read_rows(repo: str, workspace: Path, section: str, run: StateRunner) -> list[Row]:
+    return read_section(repo, workspace, section, run).rows
 
 
 def stale_fix(main: Path, path: str, branch: str) -> str:

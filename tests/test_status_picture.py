@@ -268,6 +268,8 @@ class Fake:
 
     def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
         self.seen.append(cmd)
+        if cmd[1].endswith("watch_state.py") and "--host" in cmd:  # #745: the picture's host sections, read alone
+            return subprocess.CompletedProcess(cmd, 0, "", "")
         if cmd[1].endswith("watch_state.py"):
             rows = [{"state": "BOT_FAILED", "subject": REPO, "detail": "failed", "agent": True}, VERSION_JSON]
             out = "".join(json.dumps(r) + "\n" for r in rows) if "--json" in cmd else "BOT_FAILED table\n"
@@ -338,7 +340,8 @@ def test_s009_15_with_the_app_the_reads_pass_its_bot_login(tmp_path: Path, capsy
     args = _parser().parse_args(["--repo", str(root), "status"])
     api, signer = test_app.FakeApi(), test_app.FakeSigner()
     assert _status(root, args, fake, api, signer, home=home, platform="linux", now=NOW, login=host) == 0
-    reads = [c for c in fake.seen if c[1].endswith(("watch_state.py", "triage_state.py"))]
+    # the host sections' reads (#745) read no issue, so they pass no bot login
+    reads = [c for c in fake.seen if c[1].endswith(("watch_state.py", "triage_state.py")) and "--host" not in c]
     assert len(reads) == 2
     for cmd in reads:
         assert cmd[-2:] == ["--bot-login", test_app.BOT]
@@ -384,6 +387,8 @@ class Asked(Fake):
         return str(found[0])
 
     def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if "--host" in cmd:  # #745: no issue among the host's sections
+            return super().__call__(cmd)
         self.seen.append(cmd)
         if cmd[1].endswith("watch_state.py"):
             row = {"state": self.state(cmd), "subject": test_app.REPO, "detail": "#6", "agent": False}
@@ -494,7 +499,8 @@ def test_s009_27_a_failed_app_check_still_reads_with_the_bot_login(
     api, reads = test_app.FakeApi(installed=False), Asked()
     args = _parser().parse_args(["--repo", str(root), "status"])
     assert _status(root, args, reads, api, test_app.FakeSigner(), home=home, platform="linux", now=NOW, login=host) == 1
-    states = [c for c in reads.seen if c[1].endswith(("watch_state.py", "triage_state.py"))]
+    # the host sections' reads (#745) read no issue, so they pass no bot login
+    states = [c for c in reads.seen if c[1].endswith(("watch_state.py", "triage_state.py")) and "--host" not in c]
     assert len(states) == 2
     for cmd in states:
         assert cmd[-2:] == ["--bot-login", test_app.BOT]

@@ -1737,7 +1737,10 @@ def _status(
     bot = None if gate is None else gate.login
     if bot is None:  # #311: --rows, --json, or a failed check still count the App's questions
         bot = status.read_login(slug, top, home, platform, bot_login)
-    proc = run(watch_command(slug, top, StateRead(bot_login=bot, roles=resolved), json=not args.rows))
+    read = StateRead(bot_login=bot, roles=resolved)
+    # #745: the picture reads the host's sections on their own, as factory does, so a failing
+    # claude or marketplace read is its check's error; --rows and --json keep the full run
+    proc = run(watch_command(slug, top, read, json=not args.rows, host=gate is None))
     sys.stderr.write(proc.stderr)  # S-008-10: warnings on 0 and 1, the whole traceback on a failure
     if state_failed(proc):
         print(f"shipmill: watch_state.py failed (exit {proc.returncode})", file=sys.stderr)
@@ -1749,13 +1752,25 @@ def _status(
             record = status.autonomy_record(slug, autonomy, environments, rows, cli_command())
             sys.stdout.write(json.dumps(record) + "\n")
         return proc.returncode
+    rows = status.parse_rows(proc.stdout)  # spec 022's milestone rows among them (#475)
+    code = proc.returncode
+    failed: dict[str, str] = {}
+    for section in ("sessions", "shipmill"):  # S-044-4: a section that fails to run is its check's error
+        try:
+            found = factory.read_section(slug, top, section, run)
+        except status.CHECK_FAILURES as exc:
+            failed[section] = status.first_line(exc)
+            continue
+        rows += found.rows
+        code = max(code, found.code)  # spec 008: 1 when a row needs action, theirs as before
+    gate = dataclasses.replace(gate, sessions_error=failed.get("sessions"), shipmill_error=failed.get("shipmill"))
     # S-012-7, S-012-8: read only when agents write as an App
     people = agent_as_person.read(slug, run, when) if gate.agents is not None and gate.agents.app_id else None
     git = Git(top)
     main = status.read_main(git, status.landing_branch(slug, top, run))
     facts = status.Facts(
         repo=slug,
-        rows=status.parse_rows(proc.stdout),  # spec 022's milestone rows among them (#475)
+        rows=rows,
         issues=status.read_issues(slug, run, bot, resolved),
         pulls=status.read_pulls(slug, run),
         main=main,
@@ -1771,7 +1786,7 @@ def _status(
         environments=environments,
     )
     sys.stdout.write(status.report(facts).text(slug))
-    return proc.returncode  # S-009-14: spec 008's code, whatever the verdict
+    return code  # S-009-14: spec 008's code, whatever the verdict
 
 
 def _checkout(root: Path, slug: str | None, command: str) -> tuple[Path, str]:

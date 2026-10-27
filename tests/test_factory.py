@@ -30,6 +30,7 @@ from tests.test_status_picture import (
     REPO,
     SHA,
     VERSION,
+    VERSION_JSON,
     Fake,
     app_repo,
     facts,
@@ -138,6 +139,86 @@ def test_s044_4_a_check_that_fails_to_run_is_stuck_and_the_report_goes_on(
         assert any(label_of(line) == shown for line in out.splitlines()), shown
     # S-044-5: status never runs `shipmill worktrees`
     assert not any("worktrees" in cmd for cmd in fake.seen)
+
+
+BOT_OK = {"state": "BOT_OK", "subject": test_app.REPO, "detail": "release.yml ok", "agent": False}
+
+
+class HostReadFails(Fake):
+    """watch_state.py on a host where one section's read fails (#745): the full run fails on
+    it unless --no-host leaves the host's rows out, and --host <section> fails on its own"""
+
+    def __init__(self, section: str, error: str) -> None:
+        super().__init__(0)
+        self.section, self.error = section, error
+
+    def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if not cmd[1].endswith("watch_state.py"):
+            return super().__call__(cmd)
+        self.seen.append(cmd)
+        failing = subprocess.CompletedProcess(cmd, 1, "", f"Traceback (most recent call last):\n{self.error}\n")
+        if "--host" in cmd:
+            section = cmd[cmd.index("--host") + 1]
+            if section == self.section:
+                return failing
+            out = "" if section == "sessions" else json.dumps(VERSION_JSON) + "\n"
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        if "--no-host" not in cmd:
+            return failing
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(BOT_OK) + "\n", "")
+
+
+def status_with(tmp_path: Path, runner: Fake) -> int:
+    root, home = app_repo(tmp_path)  # with the App and its key: off a Mac every other check passes
+    args = _parser().parse_args(["--repo", str(root), "status"])
+    api, signer = test_app.FakeApi(), test_app.FakeSigner()
+    return _status(root, args, runner, api, signer, home=home, platform="linux", now=NOW, login=host)
+
+
+@pytest.mark.parametrize(
+    ("section", "error"),
+    [
+        ("sessions", "__main__.Refused: error: claude agents --json printed no JSON: Expecting value"),
+        ("shipmill", "__main__.Refused: error: claude plugin list --json printed no JSON: Expecting value"),
+    ],
+)
+def test_s044_4_a_failed_host_section_read_is_its_checks_error_and_the_report_goes_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], section: str, error: str
+) -> None:
+    runner = HostReadFails(section, error)
+    assert status_with(tmp_path, runner) == 0  # spec 008's code, of the rows read
+    out = capsys.readouterr().out
+    assert out.startswith(f"{test_app.REPO} (https://github.com/{test_app.REPO}): STUCK\n")
+    shown = f"{section} ERROR: watch_state.py --host {section} failed (exit 1): {error}"
+    factory_line = next(line for line in out.splitlines() if line.startswith("  factory "))
+    assert factory_line.startswith(f"  factory        1 problem(s): {shown}; ")
+    assert factory_line.endswith(" factory")
+    for label_ in ("repo", "autonomy", "to triage", "open issues", "pull requests", "mode", "landing"):
+        assert any(label_of(line) == label_ for line in out.splitlines()), label_
+    # the full run leaves the host's rows to the sections, each read once on its own
+    full = [c for c in runner.seen if c[1].endswith("watch_state.py") and "--host" not in c]
+    assert len(full) == 1 and "--no-host" in full[0]
+    assert [c[c.index("--host") + 1] for c in runner.seen if "--host" in c] == ["sessions", "shipmill"]
+
+
+def test_s044_4_the_host_sections_rows_and_exit_code_join_the_pictures(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Outdated(HostReadFails):
+        def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+            if "--host" in cmd and cmd[cmd.index("--host") + 1] == "shipmill":
+                self.seen.append(cmd)
+                row = {"state": "SHIPMILL_OUTDATED", "subject": "plugin user", "agent": False, "fix": "update it"}
+                rows = [VERSION_JSON, {**row, "detail": "0.25.0, latest v0.26.0; update it"}]
+                return subprocess.CompletedProcess(cmd, 1, "".join(json.dumps(r) + "\n" for r in rows), "")
+            return super().__call__(cmd)
+
+    assert status_with(tmp_path, Outdated("none", "")) == 1  # spec 008: an action row among a section's
+    out = capsys.readouterr().out
+    assert out.startswith(f"{test_app.REPO} (https://github.com/{test_app.REPO}): WAITS ON YOU\n")
+    factory_line = next(line for line in out.splitlines() if line.startswith("  factory "))
+    assert factory_line.startswith("  factory        1 problem(s): shipmill ")
+    assert "plugin user 0.26.0, local 0.26.0, update available: update it; " in factory_line
 
 
 def test_s044_4_a_failed_gate_cli_read_is_the_shipmill_checks_error() -> None:
