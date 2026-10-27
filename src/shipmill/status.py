@@ -128,6 +128,7 @@ ISSUE_LINES = (
             "DONE_NOT_CLOSED",
             "HANDOFF_DUE",
             "VERIFY_DUE",
+            "CHECK_FAILED",  # spec 042: a parent's ## Check failed, file the fix as a child
             "NO_ASSIGNEE",
             "ASSIGN_DUE",  # spec 036: assign a person's item to its roles' users
             "OFF_MILESTONE",  # spec 022: a build issue outside its feature's milestone

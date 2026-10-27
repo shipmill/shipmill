@@ -135,6 +135,17 @@ hold closed, one of:
                    starts with "done" in any case, by one of its assignees or an OWNER,
                    MEMBER, or COLLABORATOR or the --bot-login
 
+A parent (an open issue with a sub-issue, not a person's item; an upstream one reads
+UPSTREAM) whose body has a "## Check" section (spec 042) reads, where it would read
+UNBLOCKED, one of these; without the section it reads as before:
+  VERIFY_DUE       no check-failed comment came after the newest close among its holds:
+                   run its ## Check. Its note is the children's progress and its holds,
+                   then "run its ## Check"
+  CHECK_FAILED     a check-failed comment came after that close: file the fix as a new
+                   child. A check-failed comment's first line is
+                   <!-- shipmill:check-failed -->, by an OWNER, MEMBER, or COLLABORATOR or
+                   the --bot-login; a marker comment by anyone else never counts
+
 For the N most recently closed issues (default 20):
   SUSPECT_CLOSE    closed by a commit whose message names "#N" after a closing
                    keyword only mid-line (a quote, a test string), not as a
@@ -160,7 +171,12 @@ For the N most recently closed issues (default 20):
   VERIFY_CLOSED    a person's item, closed as completed by someone other than the
                    --bot-login, with a "## Check" section and no comment after its close
                    whose first line is <!-- shipmill:verified --> by an OWNER, MEMBER, or
-                   COLLABORATOR or the --bot-login: run its check
+                   COLLABORATOR or the --bot-login: run its check. Also a parent (an
+                   issue with a sub-issue, not a person's item, not labelled upstream)
+                   closed as completed with a "## Check" section, by a pull request, a
+                   commit, or the --bot-login, with no such verified comment after its
+                   last close (spec 042): never SUSPECT_CLOSE. One a person closed by
+                   hand reads as any issue does
 
 For each closed issue labelled decided and updated in the last 14 days (a veto comment
 updates it), read in the first query and paged past 50:
@@ -188,7 +204,7 @@ Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, 
 SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, VETOED, SUSPECT_CLOSE, HANDOFF_DUE, VERIFY_DUE,
 NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, or OFF_MILESTONE (never for NEEDS_DECISION, UNTRUSTED, UPSTREAM, or
 WITH_PERSON),
-2 on bad input (an issue with more than 100
+1 too when any is CHECK_FAILED (spec 042), 2 on bad input (an issue with more than 100
 labels) or a gh failure. It pages past 100 open issues and an issue's 50 comments, 50
 cross-references, 50 blocking issues, or 50 sub-issues, and back through tags to the
 newest stable one, with one query when nothing is capped. A page GitHub rejects for its
@@ -299,7 +315,7 @@ query($owner: String!, $name: String!, $size: Int!, $closed: Int!, $since: DateT
     open: issues(states: OPEN, first: $size, orderBy: {field: CREATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }"""
         + open_issue_fields(native)
-        + CLOSED_AND_TAGS
+        + (CLOSED_AND_TAGS.replace(CLOSED_FIELDS, CLOSED_FIELDS + CLOSED_NATIVE, 1) if native else CLOSED_AND_TAGS)
     )
 
 
@@ -338,6 +354,10 @@ query($owner: String!, $name: String!, $size: Int!, $number: Int!, $cursor: Stri
     )
 
 
+# Whether a closed issue has sub-issues, which makes it a parent whose ## Check a close may
+# owe (spec 042): a native field, so the native first query alone asks for it
+CLOSED_FIELDS = "number title stateReason body"
+CLOSED_NATIVE = " subIssues(first: 1) { totalCount }"
 CLOSED_AND_TAGS = (
     """
     }
@@ -578,6 +598,8 @@ HANDOFF_MARKER = "<!-- shipmill:handoff -->"
 VERIFIED_MARKER = "<!-- shipmill:verified -->"
 # A trusted comment after a close saying it was right: SUSPECT_CLOSE stops reading it (D-29)
 CLOSE_CONFIRMED_MARKER = "<!-- shipmill:close-confirmed -->"
+# A trusted comment saying a parent's ## Check failed: it reads CHECK_FAILED until a hold closes after it (spec 042)
+CHECK_FAILED_MARKER = "<!-- shipmill:check-failed -->"
 CHECK = re.compile(r"^[ \t]*##[ \t]+Check[ \t]*$", re.MULTILINE)  # how a person's result is checked
 ACTION = {
     "NEW",
@@ -592,6 +614,7 @@ ACTION = {
     "SUSPECT_CLOSE",
     "HANDOFF_DUE",
     "VERIFY_DUE",
+    "CHECK_FAILED",
     "NO_ASSIGNEE",
     "ASSIGN_DUE",
     "VERIFY_CLOSED",
@@ -842,6 +865,20 @@ def checkable(issue: dict[str, Any]) -> bool:
     )
 
 
+def parent_checkable(issue: dict[str, Any]) -> bool:
+    """A closed parent whose close may owe its check (spec 042): it has a sub-issue (only the
+    native query asks), is no person's item and no upstream report, closed as completed, with
+    a ## Check section"""
+    labels = {n["name"] for n in issue["labels"]["nodes"]}
+    return (
+        (issue.get("subIssues") or {}).get("totalCount", 0) > 0
+        and not person_item(issue)
+        and UPSTREAM_LABEL not in labels
+        and issue["stateReason"] == "COMPLETED"
+        and CHECK.search(issue.get("body") or "") is not None
+    )
+
+
 def closed_at(issue: dict[str, Any]) -> dt.datetime:
     """When a closed issue last closed; one without a close event can't be checked"""
     events = issue["timelineItems"]["nodes"]
@@ -874,7 +911,7 @@ def complete_closed_comments(run: Runner, base: Variables, sizes: Sizes, issue: 
     """Every comment after a closed issue's last close: a person's item may owe a check,
     and any close may have been confirmed. The first query's last few comments are enough
     unless they fill the page and all came after the close"""
-    if checkable(issue):
+    if checkable(issue) or parent_checkable(issue):
         comments_since_close(run, base, sizes, issue)
         return
     nodes = issue["comments"]["nodes"]
@@ -1259,6 +1296,8 @@ def classify_open(
         still = [r for r in waits if states.get(r) not in CLOSED_STATES]
         if still or not waits:
             return "BLOCKED", shown or "labelled blocked"
+        if not human and children and CHECK.search(issue.get("body") or ""):
+            return parent_check(comments, bot_login, [closes[r] for r in waits if r in closes], shown)
         if not human:
             return "UNBLOCKED", shown
     if postponed in labels:
@@ -1496,6 +1535,23 @@ def person_state(
     return "WITH_PERSON", f"with {who} since {comments[newest]['createdAt']}"
 
 
+def parent_check(comments: list[dict[str, Any]], bot_login: str | None, ends: list[str], shown: str) -> tuple[str, str]:
+    """A parent with a ## Check whose holds all closed (spec 042): CHECK_FAILED when a trusted
+    check-failed comment came after the newest close among its holds (``ends``), else
+    VERIFY_DUE. ``shown`` is its holds' note, starting with the children's progress"""
+    newest = max((timestamp(e) for e in ends), default=None)
+    failed = [
+        c
+        for c in comments
+        if marked(c["body"], CHECK_FAILED_MARKER)
+        and by_trusted(c, bot_login)
+        and (newest is None or timestamp(c["createdAt"]) > newest)
+    ]
+    if failed:
+        return "CHECK_FAILED", f"check failed {failed[-1]['createdAt']} {shown}"
+    return "VERIFY_DUE", f"{shown}: run its ## Check"
+
+
 def upstream_note(home: str | None, asks: bool) -> str:
     """UPSTREAM's note (spec 038): who routes the report, and whether its question to the
     maintainer still waits for a reply"""
@@ -1550,11 +1606,34 @@ def verify_closed(issue: dict[str, Any], bot_login: str | None) -> tuple[str, st
     actor = login(events[0].get("actor") if events else None)
     if bot_login is not None and same_login(actor, bot_login):
         return None
-    since = closed_at(issue)
-    for c in issue["comments"]["nodes"]:
-        if timestamp(c["createdAt"]) > since and marked(c["body"], VERIFIED_MARKER) and by_trusted(c, bot_login):
-            return None
+    if verified(issue, bot_login):
+        return None
     return "VERIFY_CLOSED", f"closed by @{actor}: run its ## Check"
+
+
+def verified(issue: dict[str, Any], bot_login: str | None) -> bool:
+    """Whether a comment after the issue's last close has the verified marker as its first
+    line, by an OWNER, MEMBER, or COLLABORATOR or the --bot-login"""
+    since = closed_at(issue)
+    return any(
+        timestamp(c["createdAt"]) > since and marked(c["body"], VERIFIED_MARKER) and by_trusted(c, bot_login)
+        for c in issue["comments"]["nodes"]
+    )
+
+
+def parent_closed(issue: dict[str, Any], bot_login: str | None) -> tuple[str, str] | None:
+    """VERIFY_CLOSED for a closed parent that owes its check (spec 042, parent_checkable) when
+    a pull request or a commit closed it, or the --bot-login, and no trusted verified comment
+    came after the close: never SUSPECT_CLOSE. None when it was verified"""
+    events = issue["timelineItems"]["nodes"]
+    closer = events[0].get("closer") if events else None
+    if verified(issue, bot_login):
+        return None
+    if closer is None:
+        return "VERIFY_CLOSED", f"closed by @{login(events[0].get('actor') if events else None)}: run its ## Check"
+    if closer["__typename"] == "PullRequest":
+        return "VERIFY_CLOSED", f"closed by #{closer['number']}: run its ## Check"
+    return "VERIFY_CLOSED", f"closed by commit {closer.get('abbreviatedOid')}: run its ## Check"
 
 
 def close_confirmed(issue: dict[str, Any], bot_login: str | None) -> bool:
@@ -1583,6 +1662,13 @@ def classify_closed(
         return verify_closed(issue, bot_login)
     if UPSTREAM_LABEL in labels:
         return None  # the coordinator, or the maintainer without one, closes a report by hand (spec 038)
+    if parent_checkable(issue):
+        # Closed by a pull request, a commit, or a session before its check ran (spec 042); a
+        # trusted person's own close by hand is their call and reads as before
+        event = (issue["timelineItems"]["nodes"] or [{}])[0]
+        by_bot = bot_login is not None and same_login(login(event.get("actor")), bot_login)
+        if event.get("closer") is not None or by_bot:
+            return parent_closed(issue, bot_login)
     if close_confirmed(issue, bot_login):
         return None  # every path below reads None or SUSPECT_CLOSE, which the marker ends (D-29)
     events = issue["timelineItems"]["nodes"]
@@ -1650,7 +1736,8 @@ def main() -> int:
             "POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED VETOED UNTRUSTED UPSTREAM OFF_MILESTONE; for an issue "
             "labelled human or role:<name> "
             "(a person's item) NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
-            "SUSPECT_CLOSE VERIFY_CLOSED VETOED. The module docstring defines each."
+            "SUSPECT_CLOSE VERIFY_CLOSED VETOED; for a parent with a ## Check VERIFY_DUE CHECK_FAILED, closed "
+            "VERIFY_CLOSED. The module docstring defines each."
         ),
     )
     parser.add_argument("repo", help="owner/name")
@@ -1762,6 +1849,7 @@ def main() -> int:
         "VETOED",
         "OFF_MILESTONE",
         "VERIFY_DUE",
+        "CHECK_FAILED",
         "ASSIGN_DUE",
         "HANDOFF_DUE",
         "NO_ASSIGNEE",
