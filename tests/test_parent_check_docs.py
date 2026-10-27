@@ -126,6 +126,25 @@ def test_s042_9_triage_skill_says_the_same_in_chains_and_reports() -> None:
     assert "one without a check reads CLOSE_DUE as before" in upstream
 
 
+def test_s042_9_the_coordinator_takes_up_a_check_question_s_answer_without_routing() -> None:
+    # upstream_state.py reads the question ASKED, then ANSWERED, before the check; the only
+    # other ANSWERED line says "route it by the answer", which a check question's answer isn't
+    skill = doc(TRIAGE / "SKILL.md")
+    reports = flat(section(skill, "## Reports from other repos"))
+    upstream = reports.split("**VERIFY_DUE, CHECK_FAILED:**", 1)[1].split("- **", 1)[0]
+    asked = upstream.split("The coordinator can't run it:", 1)[1]
+    assert "It reads ASKED until a trusted reply, then ANSWERED: remove the label, never route it" in asked
+    unchecked = asked.split('on "close it unchecked",', 1)[1]
+    assert unchecked.index("the summary comment as CLOSE_DUE says") < unchecked.index(
+        "then close the report as completed"
+    )
+    assert "no check ran." in unchecked
+    # comments.md says the same for a report: its summary, not the verified comment alone
+    comments = flat(section(doc(TRIAGE / "references" / "comments.md"), "## A parent's check"))
+    report = comments.split('On "close it unchecked"', 1)[1]
+    assert "On a report, the coordinator posts the summary comment" in report
+
+
 def test_s042_10_the_spec_gate_asks_for_a_check_and_drops_fixes_feature() -> None:
     gate = doc(TRIAGE / "references" / "spec-gate.md")
     split = flat(gate.split("### Split it into build issues", 1)[1].split("### Dispatch the build", 1)[0])

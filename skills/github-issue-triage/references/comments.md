@@ -348,7 +348,7 @@ A check the session can't run (a production log, a dashboard, a host it can't re
 Reply here with a number or your own answer; shipmill takes this up on the tick after your reply.
 ```
 
-On "close it unchecked", close the parent as completed, then post the verified comment with `Closed unchecked on @{login}'s answer: no check ran.` in place of its `Checked:` line; on "leave it open", nothing more.
+On "close it unchecked", close the parent as completed, then post the verified comment with `Closed unchecked on @{login}'s answer: no check ran.` in place of its `Checked:` line; on "leave it open", nothing more. On a report, the coordinator posts the summary comment ([Upstream report](#upstream-report)) with that line in place of its `Checked:` line, then closes the report as completed, since the waiting agent reads the summary.
 
 ## Follow-ups
 
