@@ -95,6 +95,13 @@ def test_s040_14_the_reference_copies_the_spec_stage_table() -> None:
     assert "<!-- shipmill:zone triage -->" in reference  # a proposal waits through needs-decision (D-21)
 
 
+def test_s040_14_a_proposal_adds_the_needs_decision_label_in_the_spec_and_the_reference() -> None:
+    """The maintainer's answer on #689: a proposal under propose adds needs-decision, the one
+    label it adds, and the spec's stage table says so as the reference does"""
+    assert "adds the `needs-decision` label, the one label a proposal adds (D-21)" in folded(SPEC)
+    assert "the `needs-decision` label, the one label a proposal adds" in folded(REFERENCE)
+
+
 @pytest.mark.parametrize("skill", sorted(READERS))
 def test_s040_14_each_skill_reads_its_stage_level_before_its_first_write(skill: str) -> None:
     body = folded(SKILLS / skill / "SKILL.md")
