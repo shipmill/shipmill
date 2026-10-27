@@ -167,6 +167,13 @@ UNBLOCKED, one of these; without the section it reads as before:
                    child. A check-failed comment's first line is
                    <!-- shipmill:check-failed -->, by an OWNER, MEMBER, or COLLABORATOR or
                    the --bot-login; a marker comment by anyone else never counts
+  WITH_PERSON      a check-waiting comment came after that close, and no check-failed or
+                   verified comment after it: a person runs its ## Check by hand (#740),
+                   not an action. A check-waiting comment's first line is
+                   <!-- shipmill:check-waiting -->, by the same authors; it waits on the
+                   first @login past that line, or on its author. Its note is "check waiting
+                   on @login since <date>", then the progress and its holds; with --json, its
+                   line's "assignees" is that login alone, and it has no "teams"
 
 For the N most recently closed issues (default 20):
   SUSPECT_CLOSE    closed by a commit whose message names "#N" after a closing
@@ -636,6 +643,10 @@ VERIFIED_MARKER = "<!-- shipmill:verified -->"
 CLOSE_CONFIRMED_MARKER = "<!-- shipmill:close-confirmed -->"
 # A trusted comment saying a parent's ## Check failed: it reads CHECK_FAILED until a hold closes after it (spec 042)
 CHECK_FAILED_MARKER = "<!-- shipmill:check-failed -->"
+# A trusted comment saying a person runs a parent's ## Check by hand, on the needs-decision answer
+# "leave it open" (#740): it reads WITH_PERSON until a hold closes or a check-failed or verified comment follows
+CHECK_WAITING_MARKER = "<!-- shipmill:check-waiting -->"
+MENTION = re.compile(r"(?<![\w@/-])@(" + LOGIN_PATTERN + r")(?![\w/-])")  # an @login, not an @org/team
 CHECK = re.compile(r"^[ \t]*##[ \t]+Check[ \t]*$", re.MULTILINE)  # how a person's result is checked
 ACTION = {
     "NEW",
@@ -1715,10 +1726,14 @@ def person_state(
 
 
 def parent_check(comments: list[dict[str, Any]], bot_login: str | None, ends: list[str], shown: str) -> tuple[str, str]:
-    """A parent with a ## Check whose holds all closed (spec 042): CHECK_FAILED when a trusted
-    check-failed comment came after the newest close among its holds (``ends``), else
-    VERIFY_DUE. ``shown`` is its holds' note, starting with the children's progress"""
+    """A parent with a ## Check whose holds all closed (spec 042): WITH_PERSON while a check
+    waits on a person (check_waiting, #740), else CHECK_FAILED when a trusted check-failed
+    comment came after the newest close among its holds (``ends``), else VERIFY_DUE.
+    ``shown`` is its holds' note, starting with the children's progress"""
     newest = max((timestamp(e) for e in ends), default=None)
+    waits = check_waiting(comments, bot_login, newest)
+    if waits is not None:
+        return "WITH_PERSON", f"check waiting on @{waits[0]} since {waits[1]} {shown}"
     failed = [
         c
         for c in comments
@@ -1729,6 +1744,29 @@ def parent_check(comments: list[dict[str, Any]], bot_login: str | None, ends: li
     if failed:
         return "CHECK_FAILED", f"check failed {failed[-1]['createdAt']} {shown}"
     return "VERIFY_DUE", f"{shown}: run its ## Check"
+
+
+def check_waiting(
+    comments: list[dict[str, Any]], bot_login: str | None, newest: dt.datetime | None
+) -> tuple[str, str] | None:
+    """Whom a parent's ## Check waits on and since when (#740): the newest check-waiting
+    comment after ``newest`` (the newest close among its holds; None reads them all) with no
+    check-failed or verified comment after it, each by a trusted author (D-16), as (login,
+    createdAt); None when there is none. Its login is the first @login past the comment's
+    first line, or its author's when it names none"""
+    found: dict[str, Any] | None = None
+    for c in comments:  # oldest first
+        if not by_trusted(c, bot_login) or (newest is not None and timestamp(c["createdAt"]) <= newest):
+            continue
+        if marked(c["body"], CHECK_WAITING_MARKER):
+            found = c
+        elif marked(c["body"], CHECK_FAILED_MARKER) or marked(c["body"], VERIFIED_MARKER):
+            found = None
+    if found is None:
+        return None
+    rest = found["body"].lstrip().split("\n", 1)[1:]
+    named = MENTION.search(rest[0]) if rest else None
+    return (named.group(1) if named else login(found.get("author"))), str(found["createdAt"])
 
 
 def upstream_note(home: str | None, asks: bool) -> str:
@@ -1915,8 +1953,8 @@ def main() -> int:
             "UNBLOCKED POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED VETOED UNTRUSTED UPSTREAM OFF_MILESTONE; "
             "for an issue labelled human or role:<name> "
             "(a person's item) NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
-            "SUSPECT_CLOSE VERIFY_CLOSED VETOED; for a parent with a ## Check VERIFY_DUE CHECK_FAILED, closed "
-            "VERIFY_CLOSED. The module docstring defines each."
+            "SUSPECT_CLOSE VERIFY_CLOSED VETOED; for a parent with a ## Check VERIFY_DUE CHECK_FAILED "
+            "WITH_PERSON, closed VERIFY_CLOSED. The module docstring defines each."
         ),
     )
     parser.add_argument("repo", help="owner/name")
@@ -2037,10 +2075,12 @@ def main() -> int:
         if direction_issue(issue, args.bot_login):  # spec 034: github-ship-watch's, never in its issue rows
             row["direction"] = True
         if state == "WITH_PERSON":  # whom it waits on, for github-ship-watch's ISSUES_OPEN row
-            row["assignees"] = assignees(issue)
+            # a parent's check waits on the person its check-waiting comment names (#740)
+            waits = None if person_item(issue) else check_waiting(issue["comments"]["nodes"], args.bot_login, None)
+            row["assignees"] = assignees(issue) if waits is None else [waits[0]]
         if roles is not None and state == "ASSIGN_DUE":
             row["assign"] = list(resolve(issue, roles)[0])
-        if roles is not None and state in ("HANDOFF_DUE", "WITH_PERSON"):
+        if roles is not None and state in ("HANDOFF_DUE", "WITH_PERSON") and person_item(issue):
             # Spec 036: whom the hand-off mentions, its assignees (maybe none) and its roles' teams
             row["assignees"] = assignees(issue)
             row["teams"] = list(resolve(issue, roles)[1])

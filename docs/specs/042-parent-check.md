@@ -88,7 +88,7 @@ A parent's check, and `references/comments.md`, A parent's check):
   protocol (D-21) on the parent, saying what the check is and why it can't run here, with
   the options "leave it open: I check it and close it by hand" (recommended when nothing
   else shows the result) and "close it unchecked". The parent reads NEEDS_DECISION until
-  the answer
+  the answer. On "leave it open" the session posts the check-waiting comment (below)
 - **Never a write to production.** A check only reads: it runs a command or opens a URL and
   compares what comes back. A check that needs a deploy, a rollback, a data change, or any
   other write is one the session can't run, so it goes to the maintainer. shipmill decides
@@ -100,6 +100,27 @@ parent, the check, and what came back, triages it **implement**, and makes it a 
 on the new child, and VERIFY_DUE again once it closes. When the session can't tell what the
 fix is, it asks on the parent through the needs-decision protocol instead. A failure reopens
 nothing: the children stay closed, and the fix is new work.
+
+### A check a person runs by hand
+
+Once the answer is "leave it open" the session removes the `needs-decision` label, and the
+parent would read VERIFY_DUE again, so the gate would start a session on every tick (#740).
+So the session posts a **check-waiting comment**: `<!-- shipmill:check-waiting -->` as its
+first line, then `@<login> answered "leave it open"`, naming who answered, by the
+`--bot-login` or an OWNER, MEMBER, or COLLABORATOR (D-16); one by anyone else never counts.
+
+`triage_state.py` reads a parent with a check, where it would read VERIFY_DUE or
+CHECK_FAILED, as WITH_PERSON when a trusted check-waiting comment came after the newest close
+and no trusted check-failed or verified comment came after it. WITH_PERSON isn't in `ACTION`.
+Its note reads `check waiting on @<login> since <date>`, then the progress and the holds, the
+login the first `@login` past the comment's first line, or its author's when it names none;
+its `--json` line's `assignees` is that login alone, with no `teams`, so github-ship-watch and
+`shipmill status` list it parked with whom it waits on. A child that closes after the comment
+makes it read VERIFY_DUE again, a check-failed comment after it CHECK_FAILED, and a verified
+comment after it reads as without the comment. A person's item's WITH_PERSON is unchanged.
+
+`upstream_state.py` reads an `upstream` report with a check the same way, as ASKED, not an
+action, with the same note.
 
 ### A parent closed before its check
 
@@ -187,6 +208,8 @@ comment, and the needs-decision question; the Upstream report's `## Check`), and
 - S-042-10: spec-gate.md asks for a `## Check` on the feature issue before the split when its build deploys, and says the pull request that closes the last build issue of a feature issue with a check doesn't say `Fixes #<feature>`
 - S-042-11: comments.md's Upstream report and github-issue-resolve's Phase 2 give the report an optional `## Check` for a fault that shows in production
 - S-042-12: over one scripted forge, a parent with a check and two children reads BLOCKED, then VERIFY_DUE when both close; a check-failed comment makes it CHECK_FAILED, a linked fix child BLOCKED, the fix's close VERIFY_DUE again; the session's close and verified comment leave it reading nothing among the closed issues
+- S-042-13: a parent with a check whose comments hold a `<!-- shipmill:check-waiting -->` first-line comment by the `--bot-login` or a trusted author after the newest close among its holds, with no trusted check-failed or verified comment after it, reads WITH_PERSON in `triage_state.py`, its note `check waiting on @<login> since <date>` then the progress, its `--json` line's `assignees` the login it names, and the script exits 0; the same comment by any other author, or before the newest close, changes nothing; a child closed after it reads VERIFY_DUE, a trusted check-failed comment after it CHECK_FAILED; triage-rubric.md, comments.md, and SKILL.md tell the session to post it on "leave it open"
+- S-042-14: `upstream_state.py` reads a trusted report with a `## Check` whose children all closed and a trusted check-waiting comment after the newest child close as ASKED with the same note, and exits 0; an outsider's or an earlier one leaves it VERIFY_DUE, and a trusted check-failed comment after it reads CHECK_FAILED
 
 ## Out of scope
 
@@ -214,6 +237,7 @@ The feature issue is shipmill/shipmill#678. Its build issues landed through #728
 - shipmill/shipmill#717: S-042-1, S-042-2, S-042-3, S-042-4, S-042-5, S-042-6, S-042-12
 - shipmill/shipmill#718: S-042-7, S-042-8
 - shipmill/shipmill#719: S-042-9, S-042-10, S-042-11
+- shipmill/shipmill#740: S-042-13, S-042-14
 
 ## Verification
 
@@ -229,3 +253,5 @@ The feature issue is shipmill/shipmill#678. Its build issues landed through #728
 - S-042-10: tests/test_parent_check_docs.py (test_s042_10_*): spec-gate.md asks for the feature issue's `## Check` before the split's first step when the build deploys, and its last-build rule leaves out `Fixes #<feature>` for a feature issue with a check; passes
 - S-042-11: tests/test_parent_check_docs.py (test_s042_11_*): comments.md's Upstream report template has an optional `## Check` after Suspected code, and github-issue-resolve's Phase 2 upstream row names it; passes
 - S-042-12: tests/test_parent_check.py (test_s042_12_*) drives `chains.py` and the real `triage_state.py` over one scripted forge: BLOCKED, VERIFY_DUE once both children close, CHECK_FAILED, BLOCKED on the linked fix, VERIFY_DUE on its close, and nothing among the closed issues after the close and the verified comment; passes
+- S-042-13: tests/test_parent_check.py (test_s042_13_*): a check-waiting comment by the `--bot-login`, a MEMBER, or a COLLABORATOR after the newest close reads WITH_PERSON (`check waiting on @maria since <date> children 2/2 closed ...`), one naming nobody waits on its author, and the real script exits 0 with `assignees` `["maria"]` and no `teams`, with or without `--role`; by a CONTRIBUTOR or NONE, before the newest close, or mid-comment it stays VERIFY_DUE; a later child close reads VERIFY_DUE, a trusted check-failed comment CHECK_FAILED (an outsider's changes nothing), a verified comment VERIFY_DUE; tests/test_parent_check_docs.py (test_s042_13_*) reads the template in comments.md and the "leave it open" step in the rubric and SKILL.md, the marker read from `triage_state.py`; passes
+- S-042-14: tests/test_upstream_state.py (test_s042_14_*): a check-waiting comment by the `--bot-login` or a MEMBER after the newest child close reads ASKED with the same note and exit 0; an outsider's or one before the newest close leaves VERIFY_DUE; a check-failed comment after it reads CHECK_FAILED; passes

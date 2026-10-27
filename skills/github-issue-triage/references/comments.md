@@ -348,7 +348,14 @@ A check the session can't run (a production log, a dashboard, a host it can't re
 Reply here with a number or your own answer; shipmill takes this up on the tick after your reply.
 ```
 
-On "close it unchecked", close the parent as completed, then post the verified comment with `Closed unchecked on @{login}'s answer: no check ran.` in place of its `Checked:` line; on "leave it open", nothing more. On a report, the coordinator posts the summary comment ([Upstream report](#upstream-report)) with that line in place of its `Checked:` line, then closes the report as completed, since the waiting agent reads the summary.
+On "close it unchecked", close the parent as completed, then post the verified comment with `Closed unchecked on @{login}'s answer: no check ran.` in place of its `Checked:` line. On a report, the coordinator posts the summary comment ([Upstream report](#upstream-report)) with that line in place of its `Checked:` line, then closes the report as completed, since the waiting agent reads the summary.
+
+On "leave it open", post the check-waiting comment, through `--body-file`, on the parent or the report, naming who answered with the `@{login}` right after the marker line; `triage_state.py` reads the parent as WITH_PERSON on it, and `upstream_state.py` the report as ASKED, so no session starts for it again. A child that closes after it, or a check-failed or verified comment after it, ends the wait:
+
+```markdown
+<!-- shipmill:check-waiting -->
+@{login} answered "leave it open": they run the ## Check (`{the check}`) and close this by hand.
+```
 
 ## Follow-ups
 
