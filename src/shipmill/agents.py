@@ -292,9 +292,13 @@ class ProductConfig:
         return self.home is not None
 
     @classmethod
-    def parse(cls, table: Table, app_id: int | None) -> ProductConfig:
-        """app_id is the same file's [agents] app_id: `repos` needs it"""
-        table.allow("home", "repos")
+    def parse(cls, table: Table, app_id: int | None) -> ProductConfig | None:
+        """app_id is the same file's [agents] app_id: `repos` needs it. None for a repo that
+        stands alone, `standalone = true` (spec 043), which reads as no table"""
+        table.allow("home", "repos", "standalone")
+        if "standalone" in table.raw:
+            cls._standalone(table)
+            return None
         if "home" in table.raw and "repos" in table.raw:
             raise ReleaseError(
                 f"{table.where}: home and repos can't both be set; a repo is the product's home (repos) "
@@ -319,9 +323,24 @@ class ProductConfig:
             )
         return cls(repos=repos)
 
+    @staticmethod
+    def _standalone(table: Table) -> None:
+        """S-043-1: standalone takes only true, alone in the table; it needs no [agents] app_id"""
+        if others := sorted(set(table.raw) - {"standalone"}):
+            raise ReleaseError(
+                f"{table.where}: standalone can't be set beside {others[0]}; a repo that stands alone sets "
+                "standalone = true alone, a product's repo sets home or repos instead"
+            )
+        value = table.raw["standalone"]
+        if value is not True:
+            raise ReleaseError(
+                f"{table.where}: standalone takes only true, got {value!r}; to join a product, replace it "
+                "with home (in a component) or repos (in the product's home repo)"
+            )
+
     @classmethod
     def read(cls, top: Table, app_id: int | None) -> ProductConfig | None:
-        """The config's [product] table, or None without one"""
+        """The config's [product] table, or None without one or for `standalone = true`"""
         return cls.parse(top.table("product"), app_id) if "product" in top.raw else None
 
     @classmethod

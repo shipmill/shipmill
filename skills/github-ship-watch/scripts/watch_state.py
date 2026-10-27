@@ -3233,8 +3233,9 @@ PRODUCT_HOME_VALUE = re.compile(r"^\s*[\"']?home[\"']?\s*=\s*(?:\"([^\"\\]*)\"|'
 
 def product_home(text: str, policy: Path) -> str | None:
     """[product] home of the config, the product's home repo as owner/name (spec 038); None
-    without the table or the key. The other key, repos, is the home repo's own and not read
-    here. A home that isn't owner/name by triage_state.py's rule is refused"""
+    without the table or the key, or for `standalone = true` (spec 043). The other key, repos,
+    is the home repo's own and not read here. A home that isn't owner/name by triage_state.py's
+    rule is refused, and so is standalone set to anything but true or beside another key"""
     if tomllib is None:
         return product_home_310(text, policy)
     try:
@@ -3259,7 +3260,55 @@ def product_home_toml(raw: dict[str, object], policy: Path) -> str | None:
         return None
     if not isinstance(table, dict):
         raise Refused(f"error: {policy}: product is not a table")
+    if standalone_toml(table, policy):
+        return None
     return checked_home(table.get("home"), policy)
+
+
+def standalone_toml(table: dict[str, object], policy: Path) -> bool:
+    """True for a [product] table that is `standalone = true` alone, a repo that stands alone
+    (spec 043), which reads as no table; False without the key. standalone with any other
+    value, or beside another key, is refused naming the key, as shipmill's ProductConfig does"""
+    if "standalone" not in table:
+        return False
+    others = sorted(set(table) - {"standalone"})
+    if others:
+        raise Refused(
+            f"error: {policy}: [product] standalone can't be set beside {others[0]}; a repo that stands alone"
+            " sets standalone = true alone, a product's repo sets home or repos instead"
+        )
+    if table["standalone"] is not True:
+        raise Refused(f"error: {policy}: [product] standalone takes only true; got {table['standalone']!r}")
+    return True
+
+
+PRODUCT_KEY = re.compile(r"^\s*[\"']?([A-Za-z0-9_-]+)[\"']?\s*[.=]")  # a key's line in [product], dotted or not
+PRODUCT_STANDALONE_VALUE = re.compile(r"^\s*[\"']?standalone[\"']?\s*=\s*(.*?)\s*(?:#.*)?$")
+
+
+def standalone_310(body: str, policy: Path) -> bool:
+    """standalone_toml on Python 3.10, from the body of a plain [product] table: only a line
+    `standalone = true` alone reads as standalone; a value other than true, a second standalone,
+    or another key or line beside it is refused naming it"""
+    lines = [line for line in body.splitlines() if not blank(line)]
+    keys = [PRODUCT_KEY.match(line) for line in lines]
+    if not any(key is not None and key.group(1) == "standalone" for key in keys):
+        return False
+    for line, key in zip(lines, keys, strict=True):
+        if key is None:
+            raise Refused(f"error: {policy}: can't read [product] on Python 3.10: use 3.11+ ({line.strip()!r})")
+        if key.group(1) != "standalone":
+            raise Refused(
+                f"error: {policy}: [product] standalone can't be set beside {key.group(1)}; a repo that stands"
+                " alone sets standalone = true alone, a product's repo sets home or repos instead"
+            )
+    if len(lines) > 1:
+        raise Refused(f"error: {policy}: [product] standalone is set twice")
+    found = PRODUCT_STANDALONE_VALUE.match(lines[0])
+    value = None if found is None else found.group(1)
+    if value != "true":
+        raise Refused(f"error: {policy}: [product] standalone takes only true; got {value or lines[0].strip()!r}")
+    return True
 
 
 def product_table_310(text: str, policy: Path) -> str | None:
@@ -3282,7 +3331,7 @@ def product_home_310(text: str, policy: Path) -> str | None:
     """[product] home on Python 3.10: a plain [product] table whose home is a one-line
     string; any other form of home is refused rather than misread. repos may take any form"""
     body = product_table_310(text, policy)
-    if body is None:
+    if body is None or standalone_310(body, policy):
         return None
     home = None
     for line in body.splitlines():
@@ -3295,16 +3344,17 @@ def product_home_310(text: str, policy: Path) -> str | None:
     return checked_home(home, policy)
 
 
-PRODUCT_KEYS = ("home", "repos")
+PRODUCT_KEYS = ("home", "repos", "standalone")
 PRODUCT_REPOS_VALUE = re.compile(r"^\s*[\"']?repos[\"']?\s*=\s*\[(.*)\]\s*(?:#.*)?$")
 PRODUCT_LIST_ITEM = re.compile(r"\s*(?:\"([^\"\\]*)\"|'([^']*)')\s*")
 
 
 def product_repos(text: str, policy: Path) -> tuple[str, ...] | None:
     """[product] repos of the config, the home repo's component repos (spec 038); None without
-    the table or in a component's (home set). Checked as shipmill's ProductConfig checks them:
-    only home and repos in the table, one of them and never both, and repos a non-empty list of
-    owner/name with no repo twice (case ignored); anything else is refused naming the key.
+    the table, in a component's (home set), or for `standalone = true` (spec 043). Checked as
+    shipmill's ProductConfig checks them: only home, repos, or standalone in the table, one of
+    them and never two, and repos a non-empty list of owner/name with no repo twice (case
+    ignored); anything else is refused naming the key.
     That repos needs [agents] app_id is the caller's to check, as it is the writer's"""
     if tomllib is None:
         return product_repos_310(text, policy)
@@ -3319,7 +3369,11 @@ def product_repos(text: str, policy: Path) -> tuple[str, ...] | None:
         raise Refused(f"error: {policy}: product is not a table")
     unknown = sorted(set(table) - set(PRODUCT_KEYS))
     if unknown:
-        raise Refused(f"error: {policy}: [product] has an unknown key {unknown[0]!r}; it holds home or repos")
+        raise Refused(
+            f"error: {policy}: [product] has an unknown key {unknown[0]!r}; it holds home, repos, or standalone"
+        )
+    if standalone_toml(table, policy):
+        return None
     repos = table.get("repos")
     if repos is not None and not (isinstance(repos, list) and all(isinstance(r, str) for r in repos)):
         raise Refused(f"error: {policy}: [product] repos must be a list of owner/name strings; got {repos!r}")
@@ -3359,6 +3413,8 @@ def product_repos_310(text: str, policy: Path) -> tuple[str, ...] | None:
     if sum(1 for h in headers if h is not None and h.group(1) == "[" and h.group(2).strip("\"' ") == "product") > 1:
         # toml_tables keeps the last of two [product] tables, which tomllib refuses: refused too
         raise Refused(f"error: {policy}: [product] is declared twice; keep one [product] table")
+    if standalone_310(tables["product"], policy):
+        return None
     repos: list[str] | None = None
     for line in tables["product"].splitlines():
         if blank(line) or PRODUCT_HOME.match(line):

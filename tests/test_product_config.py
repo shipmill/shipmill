@@ -104,6 +104,41 @@ def test_s038_1_a_bad_product_table_exits_2_naming_the_key_in_plan_and_the_gate(
     assert len({str(e) for e in errors}) == 1  # one message, whichever reader
 
 
+STANDALONE = "\n[product]\nstandalone = true\n"
+
+
+@pytest.mark.parametrize("agents", [AGENTS, ""])  # standalone needs no [agents] app_id
+def test_s043_1_standalone_parses_as_no_product_table(repo: Repo, agents: str) -> None:
+    text = POLICY + agents + STANDALONE
+    repo.write(repo.policy_file, text)
+    assert Policy.parse(tomllib.loads(text), "shipmill.toml").product is None
+    assert ProductConfig.load(repo.root) is None
+    assert ProductConfig.of_text(text, "acme/api:.github/shipmill.toml") is None
+    if agents:
+        assert AgentsConfig.load(repo.root, REPO).app_id == APP_ID
+
+
+@pytest.mark.parametrize(
+    ("table", "message"),
+    [
+        ("standalone = false", "[product]: standalone takes only true, got False"),
+        ('standalone = "true"', "[product]: standalone takes only true, got 'true'"),
+        ("standalone = 1", "[product]: standalone takes only true, got 1"),
+        (f'standalone = true\nhome = "{HOME}"', "[product]: standalone can't be set beside home"),
+        ('standalone = true\nrepos = ["acme/api"]', "[product]: standalone can't be set beside repos"),
+        (f'home = "{HOME}"\nstandalone = false', "[product]: standalone can't be set beside home"),
+        ("standalone = true\nowner = 1", "[product]: unknown keys ['owner']"),
+    ],
+)
+def test_s043_1_a_bad_standalone_exits_2_naming_the_key_in_plan_and_the_gate(
+    repo: Repo, table: str, message: str
+) -> None:
+    repo.write(repo.policy_file, POLICY + AGENTS + f"\n[product]\n{table}\n")
+    errors = _readers(repo)
+    assert all(message in str(e) for e in errors), errors
+    assert len({str(e) for e in errors}) == 1
+
+
 def test_s038_1_the_repo_rule_is_the_token_caches() -> None:
     assert is_plain_repo("other-org/sdk.js")
     assert not any(is_plain_repo(r) for r in ("acme", "/api", "acme/", "a/b/c", "./api", "acme/..", "a b/c"))

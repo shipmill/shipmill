@@ -45,6 +45,11 @@ SESSION = {
 }
 # Configs in no product: the App alone, and the App with every table a gate repo may have
 NO_PRODUCT = [WITH_APP, WITH_APP + '\n[hooks]\ndefault_branch = true\n\n[changelog]\nfragments = "changelog.d"\n']
+# Spec 043: a repo that stands alone, [product] standalone = true, reads as one with no table,
+# so each S-038-4 test below runs on these configs too and pins the same tokens, states, and rows
+# proves: S-043-2
+STANDALONE = [config + "\n[product]\nstandalone = true\n" for config in NO_PRODUCT]
+NO_PRODUCT += STANDALONE
 
 
 @pytest.fixture
