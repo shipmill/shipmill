@@ -7,6 +7,29 @@ bot.
 
 ## [Unreleased]
 
+## [0.82.0] - 2026-10-27
+
+### Changed
+
+- shipmill's own releases publish before they move their references (D-50): the stable and hotfix lanes list `move-major-tag.yml` under `after_publish`, so `@v0` and the plugin marketplace `ref` move only once `publish.yml`'s run passed and PyPI serves the release; the release commit no longer writes the marketplace `ref`, and `.github/shipmill.toml` sets `requires = ">=0.70.0"`. A newest-series hotfix now moves `@v0` and the `ref` too (#617)
+- Implementers and reviewers run the fast checks and the touched files' tests and leave the full suite to the PR's CI, so parallel agents no longer starve each other of CPU; in a repo whose CI doesn't run the full suite, they queue it through github-issue-triage's new `suite_lock.py`. shipmill's CI runs its tests with pytest-xdist (#657)
+- The shipmill plugin is installed per person by default (spec 033): a new `[agents] plugin` key, `"host"` when absent, says nothing in the repo turns it on; `plugin = "repo"` keeps the plugin committed to `.claude/settings.json` for everyone who opens the repo. Any other value exits 2. The setup checklist reads it: with `host` its Plugin rows read the host's installs, `PLUGIN_OK` naming the install that applies (user scope, or local or project scope for the repo's folder) or `PLUGIN_MISSING` with `claude plugin install shipmill@shipmill --scope user`, and the new `PLUGIN_COMMITTED` (not done) when `.claude/settings.json` still enables the plugin; `--fix` writes that file only with `plugin = "repo"`. A repo connected before reads `PLUGIN_COMMITTED` once and chooses. shipmill's own repo no longer commits the plugin (#698)
+- The delivery hook's `app-writes` rule applies only where the App is available to the session: a non-empty `SHIPMILL_APP_KEY` in the hook's environment, or the App's key file at `~/.config/shipmill/app-<app_id>.pem`, checked with one stat and never read (D-54). Where it isn't, such as a contributor's host, a plain `gh` write is theirs and passes; the other rules hold as before, and a command's own `NAME=value` assignments never change the answer (#698)
+- `shipmill gate` sets `SHIPMILL_APP_KEY`, the absolute path of the key it used, in every session's `--settings` env, headless and interactive. `shipmill gh` and `shipmill app-token` take the key from it before the default path, a leading `--app-key` still winning; with no key at the path, `shipmill gh` exits 2 before any token, cached or not, with a second line saying the App isn't available here and shipmill writes nothing (#698)
+- `shipmill app-token --check` says whether the App is available to the session, by the hook's test and nothing more: exit 0 naming the App and the test that held, else exit 2 naming the missing key path and `SHIPMILL_APP_KEY`, or the missing `[agents] app_id`. It mints, prints, and reads no token or key. The six skills' "Write as the App" rule runs it before their first write to GitHub, a push included, and without the App they stop there and hand over the exact text of each write (target, comment, labels, the pull request's title and body) for the person to post, never writing as the person (#698)
+- `shipmill doctor`'s hooks block says which case the host is in: `app-writes: on (the App's key is at <path>)`, `app-writes: on in gate sessions only (no key at <path> on this host; ...)`, or `app-writes: off (no [agents] app_id)`. `shipmill init` writes a commented `# plugin = "host"` line in its `[agents]` example, and `docs/install.md` gains a Contributors section for the maintainer (#698)
+- The gate tick's `--json` key `auth` is now the credential's kind, `"token-file"` or `"login"`; the preflight's verdict it held moves to a new `preflight` key, so a reader of `auth` as an object must read `preflight` instead (spec 035) (#699)
+
+### Fixed
+
+- `specs.py coverage` no longer reads the repo's root `tmp/`, where an agent's stray worktree made the coverage test fail locally (#657)
+- Tests: every repo template the suite copies turns off git's detached auto-maintenance, whose lock files vanished mid-copy and failed `pytest -n auto` runs in CI at random (#657)
+- github-ship-watch: the direction question carries the zone line `<!-- shipmill:zone direction -->` as its second line, so the retro counts it as an ask in the `direction` zone (#672)
+
+### Added
+
+- The gate's sessions authenticate with a long-lived Claude token, the one `claude setup-token` prints, read from `~/.config/shipmill/claude-token` (mode `600`) or the file `shipmill gate --claude-token <path>` names; `shipmill launchd --claude-token <path>` writes the path, never the token, into the job. The token goes only into the environment of the `claude -p` or `claude --bg` that starts a session, and of the preflight's `claude auth status --json`, as `CLAUDE_CODE_OAUTH_TOKEN` with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` and without `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`; a file the gate refuses is `CLAUDE_AUTH` with exit 2, never a fallback to the login. `shipmill status` and `shipmill doctor` print a `claude auth` line (spec 035) (#699)
+
 ## [0.81.1] - 2026-10-27
 
 ### Fixed
@@ -1878,7 +1901,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.81.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.82.0...HEAD
+[0.82.0]: https://github.com/shipmill/shipmill/compare/v0.81.1...v0.82.0
 [0.81.1]: https://github.com/shipmill/shipmill/compare/v0.81.0...v0.81.1
 [0.81.0]: https://github.com/shipmill/shipmill/compare/v0.80.1...v0.81.0
 [0.80.1]: https://github.com/shipmill/shipmill/compare/v0.80.0...v0.80.1
