@@ -702,7 +702,16 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    it once now. Its log is under `~/Library/Logs/shipmill/`. `--remove` unloads it; on
    Linux, run the same `gate` command from a systemd timer. With an App whose key isn't at
    the default path, add `--app-key <path>`: the job's gate gets it, made absolute, and
-   install refuses it when `app_id` is unset or the key is missing or readable by others
+   install refuses it when `app_id` is unset or the key is missing or readable by others.
+   Recommend the Claude token for every gate on launchd, in either mode (spec 035): the
+   interactive login can expire overnight and leave every session dead. Tell the person to
+   run `claude setup-token` themselves and save the token it prints to
+   `~/.config/shipmill/claude-token` with mode `600` (`install -m 600 /dev/null <path>`,
+   then paste it on one line). Never run `claude setup-token` yourself, never read the file,
+   and never ask for the token in the chat. A file elsewhere goes to `--claude-token
+   <path>` on `launchd`, which writes the path, never the token, into the job: the token
+   never goes in the plist or the repo. Then `$CR doctor`'s `claude auth` line should read
+   `token file`
 8. **Hand over.** Tell the user how to see a session (`claude agents`, `claude attach
    <id>`), that a session waiting on a question holds the repo until they answer, that
    such a session sends a desktop notification at once and every `remind_hours` while it

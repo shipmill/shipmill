@@ -16,6 +16,7 @@ import pytest
 from shipmill.agents import AgentsConfig
 from shipmill.autonomy import Hold
 from shipmill.claude_auth import COMMAND, ClaudeAuth, claude_auth, parse_auth
+from shipmill.claude_token import Token
 from shipmill.doctor import auth_check
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
@@ -59,9 +60,11 @@ class FakeAuth:
 
     answers: list[ClaudeAuth]
     asked: int = 0
+    tokens: list[Token | None] = field(default_factory=list)  # the token each call was given (spec 035)
 
-    def __call__(self) -> ClaudeAuth:
+    def __call__(self, token: Token | None) -> ClaudeAuth:
         self.asked += 1
+        self.tokens.append(token)
         return self.answers.pop(0)
 
 
@@ -82,7 +85,7 @@ def tick(
     git: Git,
     agents: AgentsConfig,
     claude: FakeClaude,
-    auth: Callable[[], ClaudeAuth] | None,
+    auth: Callable[[Token | None], ClaudeAuth] | None,
     notifier: FakeNotifier,
     now: dt.datetime = NOW,
     dry_run: bool = False,
@@ -206,7 +209,7 @@ def test_a_lost_login_starts_no_session_and_notifies_once_per_episode(checkout: 
 def test_claude_missing_from_the_gate_path_starts_nothing_and_names_the_install(checkout: Git) -> None:
     # not a silent skip, and not `claude auth login`, which can't run without claude
     claude, missing = FakeClaude(), claude_auth(program=None)
-    action, launched, lines = tick(checkout, headless(), claude, lambda: missing, FakeNotifier())
+    action, launched, lines = tick(checkout, headless(), claude, lambda token: missing, FakeNotifier())
     assert (action, launched, claude.started) == (Action.CLAUDE_AUTH, None, [])
     assert lines[0] == (
         "CLAUDE_AUTH: Claude Code can't authenticate on this host (claude isn't on PATH):"
@@ -262,7 +265,8 @@ def test_the_tick_record_carries_the_preflight(checkout: Git) -> None:
         auth=FakeAuth([LOGGED_OUT]),
     )
     record = tick_record(decision, launched, waiting, pruned, False)
-    assert record["auth"] == {
+    assert record["auth"] == "login"  # spec 035: the kind; the preflight's verdict moved to preflight
+    assert record["preflight"] == {
         "ok": False,
         "problem": "claude auth status says not logged in",
         "fix": "claude auth login",

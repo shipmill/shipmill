@@ -81,8 +81,11 @@ def build(
     path: str,
     skip: Callable[[str], bool] = is_temporary,
     app_key: Path | None = None,
+    claude_token: Path | None = None,
 ) -> Job:
-    """The job's plist; app_key, the App's private key, goes into the gate's arguments"""
+    """The job's plist; app_key, the App's private key, and claude_token, the Claude token
+    file's path (spec 035), go into the gate's arguments. Never the token itself: the gate
+    reads the file on each tick, and the plist has no CLAUDE_CODE_OAUTH_TOKEN"""
     if not 5 <= interval_minutes <= 24 * 60:
         raise ReleaseError(f"the interval must be 5..1440 minutes, got {interval_minutes}")
     found = [find_tool(t, path, skip) for t in TOOLS]
@@ -92,6 +95,8 @@ def build(
     args += ["--refresh"]
     if app_key is not None:
         args += ["--app-key", str(app_key)]
+    if claude_token is not None:
+        args += ["--claude-token", str(claude_token)]
     # --claude-arg=<flag>: argparse reads a separate value that starts with a dash as an option
     # and refuses it, so `--claude-arg --allowedTools` would fail every tick
     args += [f"--claude-arg={extra}" for extra in claude_args]
@@ -179,7 +184,8 @@ def cli_fix(job: dict[str, object] | None, repo: str) -> str:
     job the gate is a tool install, which uv upgrades. A job on shipmill@latest looks the
     release up on each run, so it is run again now. A job on any other source (the old
     floating tag, a pinned --tool) is written again by the latest shipmill, whose job runs
-    shipmill@latest, keeping its checkout, interval, App key, and Claude Code flags (#570)"""
+    shipmill@latest, keeping its checkout, interval, App key, Claude token file, and Claude Code
+    flags (#570)"""
     if job is None:
         return UPGRADE
     args = job_arguments(job)
@@ -194,6 +200,8 @@ def cli_fix(job: dict[str, object] | None, repo: str) -> str:
         command += ["--every", str(interval // 60)]
     if "--app-key" in args[:-1]:
         command += ["--app-key", args[args.index("--app-key") + 1]]
+    if "--claude-token" in args[:-1]:
+        command += ["--claude-token", args[args.index("--claude-token") + 1]]
     command += [a for a in args if a.startswith("--claude-arg=")]
     return shlex.join(command)
 

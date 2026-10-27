@@ -231,6 +231,27 @@ a launch ends ` as <slug>[bot]`, and `--json` reports `identity`: the bot login,
 for the host's `gh` login. `shipmill launchd --app-key <path>` puts the key, made
 absolute, in the job's gate arguments.
 
+### The session's Claude credential
+
+Spec 035. A gate on launchd authenticates its sessions with the long-lived token
+`claude setup-token` prints, saved by the person to `~/.config/shipmill/claude-token` with
+mode `600` (`--claude-token <path>` names another file; `shipmill launchd --claude-token
+<path>` writes the flag and the resolved path, never the token, into the job's arguments).
+The token never goes in the plist or the repo. Without the file, and without the flag, the
+sessions use the interactive login as before; a file that is there but wrong (not a regular
+file, not the gate's user's, any group or other mode bit, empty, more than one line,
+whitespace, a non-ASCII byte, no `sk-ant-oat` prefix), or a named path that doesn't exist,
+is `CLAUDE_AUTH` with exit 2, starting no session and stopping none, and never falls back to
+the login. The mode is checked before the file is read.
+
+The token goes only into the process env of the `claude -p` or `claude --bg` that starts a
+session, and of the preflight's `claude auth status --json`, as `CLAUDE_CODE_OAUTH_TOKEN`
+with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, dropping `ANTHROPIC_API_KEY` and
+`ANTHROPIC_AUTH_TOKEN`; never into argv, `--settings`, a log, `gate.json`, or a notification.
+`claude agents`, `claude stop`, `claude plugin`, and the hooks self-test keep the gate's own
+env. `--json` reports `"auth": "token-file"` or `"login"` (the preflight's verdict is under
+`preflight`), and a launch line ends ` as token file`.
+
 `--dry-run` prints the decision and touches nothing: it sends no notification, stops no
 session, and writes no file, and says `would notify <id>` or `would stop <id>` instead.
 `--json` lists each blocked session under `waiting`. `--claude-arg` passes flags to the

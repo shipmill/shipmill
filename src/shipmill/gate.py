@@ -32,6 +32,7 @@ from shipmill.app import AppCheck, Identity
 from shipmill.autonomy import AGENT_STAGES, Autonomy, AutonomyPolicy, Hold, Stage, StageKind
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import ClaudeAuth
+from shipmill.claude_token import Credential, Kind, Token, rejected_fix, session_env
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.github import GitHub
@@ -230,6 +231,7 @@ class Decision:
     auth: ClaudeAuth | None = None  # the Claude Code login preflight before a launch (#500); None: none ran
     auth_notice: str | None = None  # what a CLAUDE_AUTH tick did about notifying: once per episode
     dead: Dead | None = None  # the last session, when it ended dead (#500)
+    credential: Kind = Kind.LOGIN  # what the sessions authenticate with (spec 035)
 
 
 def fingerprint(work: Iterable[Finding]) -> str:
@@ -514,12 +516,27 @@ class Claude(Protocol):
         ...
 
     def sessions(self, workspace: Path, repo: str) -> list[Session]: ...
-    def launch(self, workspace: Path, name: str, text: str, env: Mapping[str, str] | None = None) -> str:
-        """Start a background session; env, when given, is its `--settings` env (spec 004)"""
+    def launch(
+        self,
+        workspace: Path,
+        name: str,
+        text: str,
+        env: Mapping[str, str] | None = None,
+        token: Token | None = None,
+    ) -> str:
+        """Start a background session; env, when given, is its `--settings` env (spec 004);
+        token, when given, goes into the process env of `claude --bg` only (spec 035)"""
         ...
 
     def start(
-        self, workspace: Path, name: str, text: str, session: uuid.UUID, log: Path, env: Mapping[str, str] | None = None
+        self,
+        workspace: Path,
+        name: str,
+        text: str,
+        session: uuid.UUID,
+        log: Path,
+        env: Mapping[str, str] | None = None,
+        token: Token | None = None,
     ) -> int:
         """Start a headless `claude -p` session detached from the tick (D-17); its pid"""
         ...
@@ -528,6 +545,7 @@ class Claude(Protocol):
 
 
 Runner = Callable[[list[str], Path], str]  # (command, cwd) -> its stdout
+EnvRunner = Callable[[list[str], Path, Mapping[str, str]], str]  # (command, cwd, env) -> its stdout
 Spawner = Callable[[list[str], Path, Path, Mapping[str, str]], int]  # (command, cwd, log, env) -> its pid
 StartTime = Callable[[int], str | None]  # pid -> its process's start time; None when no such process
 
@@ -543,9 +561,12 @@ def headless_env(environ: Mapping[str, str]) -> dict[str, str]:
     return {**environ, BG_WAIT_CEILING: environ.get(BG_WAIT_CEILING, "0")}
 
 
-def run_command(cmd: list[str], cwd: Path) -> str:
-    """Run cmd in the gate's own environment; its stdout, or ReleaseError naming the first words"""
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
+def run_command(cmd: list[str], cwd: Path, env: Mapping[str, str] | None = None) -> str:
+    """Run cmd in the gate's own environment, or in env when given (an interactive launch with a
+    token, spec 035); its stdout, or ReleaseError naming the first words"""
+    proc = subprocess.run(
+        cmd, cwd=cwd, capture_output=True, text=True, check=False, env=None if env is None else dict(env)
+    )
     if proc.returncode != 0:
         raise ReleaseError(f"{' '.join(cmd[:3])} failed: {(proc.stderr or proc.stdout).strip()[:500]}")
     return proc.stdout
@@ -602,23 +623,43 @@ class ClaudeCli:
         run: Runner = run_command,
         spawn: Spawner = spawn_detached,
         environ: Mapping[str, str] = os.environ,
+        run_in: EnvRunner = run_command,
     ) -> None:
         self.args = tuple(args)  # extra flags for the launched session, such as --permission-mode
-        self._run = run
+        self._run = run  # the gate's own env: `claude agents`, `claude stop`, a launch without a token
         self._spawn = spawn
         self._environ = environ  # the gate's own env, which a headless session inherits
+        self._run_in = run_in  # an interactive launch with a token, in the env session_env gives it
 
     def sessions(self, workspace: Path, repo: str) -> list[Session]:
         return parse_sessions(self._run(["claude", "agents", "--json", "--cwd", str(workspace)], workspace), repo)
 
-    def launch(self, workspace: Path, name: str, text: str, env: Mapping[str, str] | None = None) -> str:
+    def launch(
+        self,
+        workspace: Path,
+        name: str,
+        text: str,
+        env: Mapping[str, str] | None = None,
+        token: Token | None = None,
+    ) -> str:
         """`claude --bg`; with env, `--settings` follows the name. The settings JSON is a
-        process argument `ps` shows, so env never holds a token (spec 004)"""
+        process argument `ps` shows, so env never holds a token (spec 004); a token goes into
+        the process env of this one command (spec 035)"""
         settings = [] if env is None else ["--settings", json.dumps({"env": dict(env)})]
-        return parse_launched(self._run(["claude", "--bg", "-n", name, *settings, *self.args, text], workspace))
+        cmd = ["claude", "--bg", "-n", name, *settings, *self.args, text]
+        if token is None:
+            return parse_launched(self._run(cmd, workspace))
+        return parse_launched(self._run_in(cmd, workspace, session_env(self._environ, token)))
 
     def start(
-        self, workspace: Path, name: str, text: str, session: uuid.UUID, log: Path, env: Mapping[str, str] | None = None
+        self,
+        workspace: Path,
+        name: str,
+        text: str,
+        session: uuid.UUID,
+        log: Path,
+        env: Mapping[str, str] | None = None,
+        token: Token | None = None,
     ) -> int:
         """`claude -p` (spec 005): no prompt can block it and AskUserQuestion is gone; the tool
         lists come before --session-id, and `--` ends the options before the prompt, so a
@@ -627,7 +668,7 @@ class ClaudeCli:
         tools = ["--allowedTools", HEADLESS_TOOLS, "--disallowedTools", "AskUserQuestion"]
         head = ["claude", "-p", "--permission-prompts", "none", *tools, "--session-id", str(session)]
         cmd = [*head, *settings, "-n", name, *self.args, "--", text]
-        return self._spawn(cmd, workspace, log, headless_env(self._environ))
+        return self._spawn(cmd, workspace, log, headless_env(session_env(self._environ, token)))
 
     def stop(self, session: str) -> None:
         self._run(["claude", "stop", session], Path.cwd())
@@ -771,11 +812,12 @@ class Dead:
     last_line: str  # "" for an empty log
     deaths: Deaths  # this session and the dead ones right before it
     state: str | None = None  # an interactive session's state in `claude agents`: failed | done
+    token: Path | None = None  # the token file the gate's sessions use (spec 035); None: the login
 
     @property
     def fix(self) -> str:
-        if self.auth:
-            return AUTH_FIX
+        if self.auth:  # S-035-13: with a token, logging in can't help
+            return AUTH_FIX if self.token is None else rejected_fix(self.token)
         return f"claude logs {self.session}" if self.log is None else f"tail -n 20 {self.log}"
 
     def summary(self) -> str:
@@ -1267,7 +1309,8 @@ def self_tested(decision: Decision, hooks: Callable[[], HookTest] | None, headle
 
 def preflight(
     decision: Decision,
-    auth: Callable[[], ClaudeAuth] | None,
+    auth: Callable[[Token | None], ClaudeAuth] | None,
+    token: Token | None,
     path: Path,
     repo: str,
     agents: AgentsConfig,
@@ -1280,10 +1323,11 @@ def preflight(
     failing login is one episode, recorded in claude-auth.json (waiting.json's shape, one
     entry): with notify on, its first tick sends one desktop notification and no later tick
     sends another; a failed send is tried again next tick. A real tick whose preflight passes
-    ends the episode. A dry run writes and sends nothing. auth None runs no preflight"""
+    ends the episode. A dry run writes and sends nothing. auth None runs no preflight. With a
+    token (spec 035) the preflight runs with it, and its fix names the token's file"""
     if auth is None or decision.action is not Action.LAUNCH:
         return decision
-    found = auth()
+    found = auth(token)
     if found.ok:
         if path.exists() and not dry_run:
             path.unlink()
@@ -1356,8 +1400,9 @@ def gate(
     new_session: Callable[[], uuid.UUID] = uuid.uuid4,
     plugin: PluginHost | None = None,
     hooks: Callable[[], HookTest] | None = None,
-    auth: Callable[[], ClaudeAuth] | None = None,
+    auth: Callable[[Token | None], ClaudeAuth] | None = None,
     roles: RoleResolver | None = None,
+    credential: Callable[[], Credential] | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -1428,8 +1473,24 @@ def gate(
     maintainer included (S-036-5); a maintainer the config lists nobody for is the host's login,
     read with login, so a failed read reads no state and starts nothing. The login is read at
     most once a tick, for the roles and the prompt both. A LAUNCH's prompt then carries
-    role_line, so the session's own reads pass the same flags"""
+    role_line, so the session's own reads pass the same flags.
+
+    credential reads the Claude token file (spec 035); None, as in tests that don't exercise it,
+    reads none and the sessions use the login. It is read first, once a tick, in either mode and
+    dry run or not, so a file the gate refuses is CLAUDE_AUTH before the waiting step can stop
+    a session or the state is read: it stops none and starts none, and never falls back to the
+    login (D-14). A token goes to the preflight and into the process env of the session start
+    alone, never its arguments; a dead session's authentication failure then names the token's
+    fix"""
     check_checkout(git, repo)
+    found = None if credential is None else credential()
+    if found is not None and found.refused is not None:
+        refused = found.refused
+        auth_found = ClaudeAuth(refused.reason, token=refused.path, remedy=refused.fix)
+        refusal = Decision(Action.CLAUDE_AUTH, auth_found.reason(), (), auth=auth_found, credential=found.kind)
+        return refusal, None, (), ()
+    token = None if found is None else found.token
+    kind = Kind.LOGIN if found is None else found.kind
     config = checked(config, claude.args)
     state = state_dir(git)
     record = state / RECORD
@@ -1443,16 +1504,18 @@ def gate(
     on_hold = hold()
     stopped = held(on_hold, sessions)
     if stopped is not None:
-        return stopped, None, waiting, pruned
+        return replace(stopped, credential=kind), None, waiting, pruned
     pending = busy(sessions)
     if pending is not None:
-        return pending, None, waiting, pruned
+        return replace(pending, credential=kind), None, waiting, pruned
     last = load_launch(record)
     working = still_working(last, state, started)
     if working is not None:
-        return working, None, waiting, pruned
+        return replace(working, credential=kind), None, waiting, pruned
     # a dead session was no attempt: its findings aren't handled (#500)
     dead = ended_dead(last, state) or listed_dead(last, sessions, now)
+    if dead is not None and token is not None:
+        dead = replace(dead, token=token.path)
     detached = refresh(git, detach=True) if refresh_checkout and not dry_run else None
     agents = config()
     if app_key_named and agents.app_id is None:  # read after the refresh, so a stale checkout can't stall it
@@ -1475,12 +1538,13 @@ def gate(
         decisions=asked,
         detached=detached,
         dead=dead,
+        credential=kind,
     )
     if dead is not None and last is not None and decision.action is Action.UNCHANGED:
         again = (last.at + retry).isoformat(timespec="minutes")
         reason = f"{dead.summary()}; no session starts for the same findings until {again}; fix: {dead.fix}"
         decision = replace(decision, action=Action.SESSION_DEAD, reason=reason)
-    decision = preflight(decision, auth, state / AUTH, repo, agents, notifier, now, dry_run)
+    decision = preflight(decision, auth, token, state / AUTH, repo, agents, notifier, now, dry_run)
     if decision.action is not Action.LAUNCH:
         return decision, None, waiting, pruned
     if identity is not None:
@@ -1510,12 +1574,12 @@ def gate(
     name = f"{session_name(repo)} {now:%Y-%m-%d %H:%M}"
     deaths = None if dead is None else dead.deaths
     if not headless:
-        launched = claude.launch(git.root, name, text, env)
+        launched = claude.launch(git.root, name, text, env, token)
         save_launch(record, Launch(fingerprint(decision.work), launched, now, None, deaths))
         return decision, launched, waiting, pruned
     session_id = new_session()
     log = session_log(state, str(session_id))
-    pid = claude.start(git.root, name, text, session_id, log, env)
+    pid = claude.start(git.root, name, text, session_id, log, env, token)
     save_launch(record, Launch(fingerprint(decision.work), str(session_id), now, Process(pid, started(pid)), deaths))
     return replace(decision, follow=f"tail -f {log}"), str(session_id), waiting, pruned
 
@@ -1525,7 +1589,8 @@ def tick_record(
 ) -> dict[str, object]:
     """`shipmill gate --json`; pruned holds the paths removed, or on a dry run the ones it would
     remove; identity the App bot a launch writes as, or null for the host's gh login (and on a
-    tick that launches nothing)"""
+    tick that launches nothing); auth, token-file or login (spec 035), and preflight the Claude
+    Code login preflight's verdict (#500), null when none ran"""
     return {
         "action": decision.action.value,
         "reason": decision.reason,
@@ -1542,7 +1607,8 @@ def tick_record(
         "plugin_notice": decision.plugin_notice,
         "detached": None if decision.detached is None else decision.detached.record(),
         "hooks": None if decision.hooks is None else decision.hooks.record(),
-        "auth": None if decision.auth is None else decision.auth.record(),
+        "auth": decision.credential.value,  # token-file or login (spec 035)
+        "preflight": None if decision.auth is None else decision.auth.record(),
         "dead": None if decision.dead is None else decision.dead.record(),
     }
 
@@ -1554,6 +1620,9 @@ def tick_lines(
     branch the refresh detached the checkout from, one line per blocked session, then one
     per pruned worktree"""
     who = f" as {decision.identity}" if decision.identity is not None else ""
+    # spec 035: the kind, never the token or its path; only on LAUNCH, as SESSION_DEAD ends with its fix
+    if decision.credential is Kind.TOKEN_FILE and decision.action is Action.LAUNCH:
+        who += " as token file"
     lines = [f"{decision.action.value}: {decision.reason}{who}"]
     if decision.auth_notice is not None:
         lines.append(f"  {decision.auth_notice}")

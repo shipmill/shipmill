@@ -457,6 +457,40 @@ or reuses a token through `shipmill app-token`, cached in `shipmill/app-token.js
 never falls back to your login. The gate's own reads still use your `gh` login. Remove
 `app_id` and sessions launch as before, as your `gh` login
 
+### Give the sessions a Claude token
+
+Recommended for every gate on launchd (spec 035). Without it, the gate's sessions lean on the
+interactive Claude Code login you made by hand, which can expire overnight and leave every
+session dead within a second. `claude setup-token` prints a long-lived token for your Claude
+subscription instead; save it where the gate looks for it, readable by you alone:
+
+```bash
+claude setup-token                      # opens the browser; prints the token
+mkdir -p ~/.config/shipmill
+install -m 600 /dev/null ~/.config/shipmill/claude-token
+$EDITOR ~/.config/shipmill/claude-token # paste the token on one line
+```
+
+The gate reads `~/.config/shipmill/claude-token` on each tick; a file elsewhere goes to
+`gate --claude-token <path>`, and to `launchd --claude-token <path>`, which puts the path in
+the job's arguments. The token never goes in the plist or the repo: only the path does. With
+no file at the default path and no `--claude-token`, sessions use the login as before.
+
+The gate refuses, with `CLAUDE_AUTH` and exit 2, starting no session and stopping none, a
+file that isn't a regular file, isn't yours, has mode other than `600` or `400`, is empty,
+or holds more than one line, whitespace inside the token, a non-ASCII byte, or anything not
+starting with `sk-ant-oat` (an API key, `sk-ant-api...`, goes nowhere here); so does a
+`--claude-token` path that doesn't exist. It never falls back to the login, and no message
+shows the file's bytes.
+
+The token goes only into the environment of the `claude -p` or `claude --bg` process that
+starts a session, as `CLAUDE_CODE_OAUTH_TOKEN` with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, so
+the session's tools don't see it, and without `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`,
+which would outrank it. Before a launch, `claude auth status --json` runs with it and must
+name the token. `shipmill status` prints a `claude auth` line, and `shipmill doctor` warns
+when the gate leans on the login, and when the token file is older than 330 days: the token
+lasts a year, so run `claude setup-token` again and save it over the old one
+
 The App's identity covers the sessions you start yourself too, not only the gate's. The
 shipmill skills run every `gh` call that writes (an issue, a comment, a label, a pull
 request, a review, a merge, a release) as `shipmill gh` when `app_id` is set, in every

@@ -25,6 +25,9 @@ from shipmill.app import Identity, default_key
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold, Source, StageKind, StageLevel
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import MISSING_FIX
+from shipmill.claude_token import FIX_SHAPE as TOKEN_FIX
+from shipmill.claude_token import HOST, Credential, TokenFs, TokenSource, inspect, shown
+from shipmill.claude_token import REJECTED as TOKEN_REJECTED
 from shipmill.config import CONFIG_PATH, Table, config_path, policy_branch, read
 from shipmill.errors import ReleaseError
 from shipmill.gate import StateRunner, skills_dir
@@ -287,6 +290,8 @@ class Gate:
     app_error: str | None  # the App check's error, when it failed
     app_key: Path | None  # the key the App check would use, when it isn't on this host
     cli: GateCli | None = None  # the version the gate last ran as, with its fix (S-031-17); None: none recorded
+    credential: Credential | None = None  # what its sessions authenticate with (spec 035); None: not read
+    home: Path | None = None  # the user's home, where status shortens a path to ~/...
 
     @property
     def login(self) -> str | None:
@@ -704,20 +709,26 @@ def read_gate(
     run: StateRunner,
     app: Callable[[int, Path], Identity],
     uid: int,
+    fs: TokenFs = HOST,
 ) -> Gate:
     """[agents] from the checkout's config; on a Mac, the gate's launchd job, its log, and the
     last wake; with an app_id, the App check, with the key the job passes the gate
-    (`--app-key`), else the App's default key, unless that key isn't on this host"""
+    (`--app-key`), else the App's default key, unless that key isn't on this host. With
+    [agents], the Claude token file the gate would read (spec 035): the job's --claude-token,
+    else the default one, read with fs as the gate's user, uid"""
     raw = _raw(root)
     agents = AgentsConfig.load(root) if "agents" in raw else None
     table = raw.get("agents")
     mode_set = isinstance(table, dict) and "mode" in table
     launchd = platform == "darwin"
     job, key, woke = None, None, None
+    job_args: list[str] | None = None
     plist_path = _plist_path(repo, home)
     if agents is not None and launchd and plist_path.is_file():
         plist = _plist(plist_path)
         key = _job_key(plist)
+        found_args = plist.get("ProgramArguments")
+        job_args = [str(a) for a in found_args] if isinstance(found_args, list) else None
         proc = run(["launchctl", "print", f"gui/{uid}/{label(repo)}"])
         printed = proc.stdout if proc.returncode == 0 else None
         log_path = plist.get("StandardOutPath")
@@ -739,7 +750,8 @@ def read_gate(
                 identity = app(agents.app_id, path)
             except ReleaseError as exc:  # the check's failure is the report's finding (S-009-4)
                 error = str(exc)
-    return Gate(agents, mode_set, launchd, job, woke, identity, error, absent)
+    credential = None if agents is None else inspect(TokenSource.of_job(job_args, home), fs, uid)
+    return Gate(agents, mode_set, launchd, job, woke, identity, error, absent, credential=credential, home=home)
 
 
 # -- the report ----------------------------------------------------------------------------
@@ -912,11 +924,16 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
         found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", shown, publish_fix(Version.parse(version))))
     elif last.startswith("CLAUDE_AUTH"):  # #500: no session starts until Claude Code can authenticate
         shown = "paused: Claude Code can't authenticate"
-        fix = MISSING_FIX if last.endswith(f"; fix: {MISSING_FIX}") else AUTH_FIX
+        named = last.rpartition("; fix: ")[2]  # spec 035: a token file's fix names the file
+        fix = MISSING_FIX if named == MISSING_FIX else named if TOKEN_FIX.fullmatch(named) else AUTH_FIX
         found.append(JobProblem(Verdict.WAITS, f"the gate: {last}", shown, fix))
     elif last.startswith("SESSION_DEAD"):  # #500: the gate's sessions end right after they start
         named = last.rpartition("; fix: ")[2]  # the gate writes its fix last, after the log's line
-        gates = named == AUTH_FIX or re.fullmatch(r"tail -n 20 \S+\.log|claude logs [\w-]+", named)
+        gates = (
+            named == AUTH_FIX
+            or TOKEN_REJECTED.fullmatch(named)  # spec 035: a token's authentication failure
+            or re.fullmatch(r"tail -n 20 \S+\.log|claude logs [\w-]+", named)
+        )
         fix = named if gates else _log_fix(job, repo)  # claude logs: an interactive session leaves no log
         found.append(JobProblem(Verdict.STUCK, f"the gate: {last}", "sessions end dead", fix))
     elif last.startswith("HELD"):  # the HOLD row brings the verdict, its own line, and the fix
@@ -1321,7 +1338,20 @@ def gate_lines(facts: Facts) -> list[str]:
         _line("mode", mode),
         *_after(_line("landing", landing), [] if land is None else [land]),
         *_after(_line("github app", app), app_fixes),
+        *auth_lines(gate),
     ]
+
+
+def auth_lines(gate: Gate) -> list[str]:
+    """S-035-15: what the gate's sessions authenticate with, `token file <path>`, `login`, or
+    the refused file with its fix on the next line; never the token"""
+    found = gate.credential
+    if found is None:
+        return []
+    path = found.source.path if gate.home is None else shown(found.source.path, gate.home)
+    if found.refused is not None:
+        return _after(_line("claude auth", f"token file {path}: {found.refused.reason}"), [found.refused.fix])
+    return [_line("claude auth", "login" if found.token is None else f"token file {path}")]
 
 
 def shipmill_lines(facts: Facts) -> list[str]:

@@ -32,6 +32,8 @@ from shipmill.app import (
 from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage, StageKind
 from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
+from shipmill.claude_token import FLAG as TOKEN_FLAG
+from shipmill.claude_token import MAX_AGE, SETUP, Credential, Kind, Token
 from shipmill.config import config_path, policy_branch
 from shipmill.config import read as read_config
 from shipmill.decide import VETO_HOURS_KEY, Zone, zones
@@ -204,13 +206,16 @@ def doctor(
     repo: str | None = None,
     today: dt.date | None = None,
     hooks: HookTester | None = None,
-    auth: Callable[[], ClaudeAuth] | None = None,
+    auth: Callable[[Token | None], ClaudeAuth] | None = None,
     downstream: Reader | None = None,
     app: AppProbe | None = None,
     gate_cli: Callable[[], GateCli | None] | None = None,
     pypi: Fetch | None = None,
     product: ProductProbe | None = None,
     home_reader: HomeReader | None = None,
+    credential: Callable[[], Credential] | None = None,
+    launchd_job: bool = False,
+    now: dt.datetime | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -228,7 +233,9 @@ def doctor(
     lists and reads their configs with the product token (spec 038); None, or a probe without
     the key, warns once that they are unchecked. home_reader reads a component's home config
     with the maintainer's gh, only with [product] home (D-53); None (no gh) reports that it
-    can't"""
+    can't. credential reads the Claude token file the gate would use, only with [agents]
+    (spec 035); None reads none and the preflight asks about the login. launchd_job says the
+    repo has a launchd job on this host, and now times the token's age"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -250,8 +257,11 @@ def doctor(
     if policy.agents is not None:
         checks.append(direction_check(root))
         checks.extend(hooks_checks(policy, Git(root), hooks))
-        if auth is not None:
-            checks.append(auth_check(auth()))
+        uses = None if credential is None else credential()
+        if uses is not None:
+            checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC)))
+        if auth is not None and (uses is None or uses.refused is None):  # a refused file can't be asked about
+            checks.append(auth_check(auth(None if uses is None else uses.token)))
     checks.extend(decisions_checks(policy, raw, github))
     autonomy, hold = _autonomy(policy, github, root / CALLER)
     checks.extend(autonomy)
@@ -490,6 +500,33 @@ def auth_check(found: ClaudeAuth) -> Check:
     FAIL with its fix; a WARN when claude isn't on PATH, as nothing here runs a session then"""
     status = "PASS" if found.ok else ("WARN" if found.missing else "FAIL")
     return Check(status, "claude auth", found.line())
+
+
+def token_check(found: Credential, launchd_job: bool, now: dt.datetime) -> Check:
+    """Spec 035: the kind the gate's sessions authenticate with, never the token. A file the
+    gate refuses is a FAIL with its reason and fix; the login is a WARN on a host with a launchd
+    job, where an unattended gate leans on it; a token whose file is older than MAX_AGE is a
+    WARN, as a setup-token token lasts a year"""
+    path = found.source.path
+    if found.refused is not None:
+        return Check("FAIL", "claude auth", f"token file: {found.refused.reason}; fix: {found.refused.fix}")
+    if found.token is None:
+        if launchd_job:
+            detail = (
+                f"login: the launchd gate's sessions lean on the interactive login, which can expire overnight;"
+                f" fix: run {SETUP} and save the token to {path} with mode 600"
+            )
+            return Check("WARN", "claude auth", detail)
+        return Check("PASS", "claude auth", f"{Kind.LOGIN}: no token file at {path}")
+    age = now - found.token.written
+    if age > MAX_AGE:
+        detail = (
+            f"token file {path} was written {age.days} days ago, and a {SETUP} token lasts a year;"
+            f" fix: run {SETUP} and save the token to {path}"
+        )
+        return Check("WARN", "claude auth", detail)
+    named = f" ({TOKEN_FLAG})" if found.source.named else ""
+    return Check("PASS", "claude auth", f"token file {path}{named}")
 
 
 _DOWNSTREAM_USES = "shipmill/shipmill/.github/workflows/downstream.yml"  # the reusable workflow the caller calls
