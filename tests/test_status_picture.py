@@ -820,6 +820,15 @@ def test_a_person_items_session_work_is_listed_to_triage(state: str) -> None:
     assert report(found).verdict is Verdict.IDLE
 
 
+@pytest.mark.parametrize("state", ["VERIFY_DUE", "CHECK_FAILED"])
+def test_s042_8_a_parent_whose_check_is_due_or_failed_is_listed_to_triage(state: str) -> None:
+    # spec 042: running a parent's ## Check, or filing the fix once it failed, is a session's to do
+    found = facts(issues=[Issue(12, state, "check failed 2026-10-21T10:00:00Z children 2/2 closed")])
+    assert f"  to triage      #12 {URL}/issues/12" in lines(found)
+    assert f"  open issues    1 {URL}/issues" in lines(found)
+    assert report(found).verdict is Verdict.IDLE
+
+
 def test_a_person_item_with_its_person_is_parked_with_the_logins_it_waits_on() -> None:
     issue = Issue(7, "WITH_PERSON", "with @ann since 2026-10-09T10:00:00Z", ("ann", "bo-b"))
     found = facts(issues=[issue, Issue(4, "TRIAGED")])
