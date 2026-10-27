@@ -43,6 +43,17 @@ def named_repo(args: Sequence[str]) -> str | None:
     """The owner/name gh's `-R`/`--repo` names in args (`-R x`, `--repo x`, `--repo=x`, `-Rx`,
     `-R=x`), the last when given twice, as gh takes it; None when no flag names one. Nothing
     after `--` is a flag"""
+    found = repo_value(args)
+    if found is None:
+        return None
+    matched = _REPO.fullmatch(found)
+    if matched is None or any(part in {".", ".."} for part in matched.group(1).split("/")):
+        raise ReleaseError(f"gh's -R/--repo is {found!r}; the App's token needs owner/name on github.com")
+    return matched.group(1)
+
+
+def repo_value(args: Sequence[str]) -> str | None:
+    """The value of gh's last `-R`/`--repo` in args as written, unchecked; None without one"""
     found: str | None = None
     index = 0
     while index < len(args):
@@ -60,12 +71,7 @@ def named_repo(args: Sequence[str]) -> str | None:
         elif arg.startswith("-R") and len(arg) > 2:
             found = arg[2:].removeprefix("=")
         index += 1
-    if found is None:
-        return None
-    matched = _REPO.fullmatch(found)
-    if matched is None or any(part in {".", ".."} for part in matched.group(1).split("/")):
-        raise ReleaseError(f"gh's -R/--repo is {found!r}; the App's token needs owner/name on github.com")
-    return matched.group(1)
+    return found
 
 
 def bundled_repo_flag(args: Sequence[str]) -> str | None:
@@ -261,3 +267,79 @@ def pull_url(url: str) -> tuple[str, int]:
     if found is None:
         raise ReleaseError(f"gh pr view named the pull request {url.strip()!r}, not a github.com pull request URL")
     return found.group(1), int(found.group(2))
+
+
+# -- S-037-4, S-037-5: the reads `shipmill gh` runs as the host without an App --------------------
+
+# A group reads with the subcommands named, or with any (None). Every command not named here
+# is a write, so a gh subcommand added later is refused until it is listed: `shipmill gh` fails
+# safe, where the delivery hook's is_gh_write fails open (D-54)
+_HOST_READS: Mapping[str, frozenset[str] | None] = {
+    "help": None,
+    "version": None,
+    "status": None,
+    "search": None,
+    "issue": frozenset({"list", "view", "status"}),
+    "pr": frozenset({"list", "view", "status", "diff", "checks"}),
+    "release": frozenset({"list", "view", "download"}),
+    "label": frozenset({"list"}),
+    "run": frozenset({"list", "view", "watch", "download"}),
+    "workflow": frozenset({"list", "view"}),
+    "repo": frozenset({"view", "list", "clone"}),
+    "secret": frozenset({"list"}),
+    "variable": frozenset({"list", "get"}),
+    "cache": frozenset({"list"}),
+    "ruleset": frozenset({"list", "view", "check"}),
+    "gist": frozenset({"list", "view"}),
+    "org": frozenset({"list"}),
+    "project": frozenset({"list", "view", "field-list", "item-list"}),
+    "auth": frozenset({"status", "token"}),
+    "config": frozenset({"get", "list"}),
+    "alias": frozenset({"list"}),
+    "extension": frozenset({"list"}),
+}
+_READ_METHODS = frozenset({"GET", "HEAD"})
+_API_FIELDS = frozenset({"-f", "-F", "--field", "--raw-field"})
+
+
+def is_read(args: Sequence[str]) -> bool:
+    """Whether gh's args only read, by the list spec 037 names; anything else is a write. The
+    command comes first and its subcommand right after it, as `product_refusal` reads them, so
+    no flag can make gh run another subcommand than the one checked; `--help` makes nothing a
+    read. Only the arguments before `--` name the command"""
+    if not args:
+        return True  # gh alone prints its help
+    head = list(args[: args.index("--")]) if "--" in args else list(args)
+    if head == ["--version"]:
+        return True
+    if not head or head[0].startswith("-"):
+        return False
+    group = head[0]
+    if group == "api":
+        return _api_read(args[1:])
+    if group not in _HOST_READS:
+        return False
+    subs = _HOST_READS[group]
+    return subs is None or (len(head) > 1 and head[1] in subs)
+
+
+def _api_read(args: Sequence[str]) -> bool:
+    """`gh api`: GET or HEAD, given with -X/--method or implied (no field and no --input, which
+    make gh POST); graphql only with every query given inline and none holding a mutation, since
+    a query from a file (`-F query=@file`) or --input isn't read here"""
+    positional, flags = _scan(args, _API_LONG, _API_SHORT)
+    fields = [value for name, value in flags if name in _API_FIELDS]
+    has_input = any(name == "--input" for name, _ in flags)
+    endpoint = _API_HOST.sub("", positional[0]).strip("/").lower() if positional else ""
+    if endpoint == "graphql":
+        queries = [
+            (name, value.partition("=")[2])
+            for name, value in flags
+            if name in _API_FIELDS and value.partition("=")[0] == "query"
+        ]
+        from_file = any(name in ("-F", "--field") and query.startswith("@") for name, query in queries)
+        return not has_input and not from_file and not any("mutation" in query for _, query in queries)
+    methods = [value for name, value in flags if name in _METHOD_FLAGS]
+    if methods:
+        return methods[-1].upper() in _READ_METHODS
+    return not fields and not has_input

@@ -316,7 +316,8 @@ def test_s012_4_without_app_id_gh_runs_as_the_host_with_no_gh_token_and_no_mint(
     api = MintApi()
     signer = FakeSigner()
     runner = Runner()
-    args = ["issue", "comment", "250", "-R", REPO, "--body-file", "tmp/comment.md", "--", "--app-key", "x"]
+    # a read: spec 037 refuses a write here, and S-012-4 still holds for a read
+    args = ["issue", "view", "250", "-R", REPO, "--json", "body", "--", "--app-key", "x"]
     code = main(
         ["--repo", str(root), "gh", *args],
         api=api,
@@ -378,7 +379,7 @@ def test_without_app_id_an_app_key_is_refused(tmp_path: Path, host: Host) -> Non
 
 @pytest.mark.parametrize("args", [[], ["--help"], ["--version"], ["-R"], ["gh", "--repo", "x"]])
 def test_every_argument_after_gh_goes_to_gh(tmp_path: Path, host: Host, args: list[str]) -> None:
-    root = checkout(tmp_path, None)
+    root = checkout(tmp_path, '[agents]\nprompt = "/t"\nidentity = "host"\n')  # spec 037: the repo allows any
     runner = Runner()
     assert gh(root, args, host, MintApi(), runner) == 7
     assert runner.calls[0][0] == [host.gh, *args]

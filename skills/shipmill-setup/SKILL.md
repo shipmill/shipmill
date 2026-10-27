@@ -651,7 +651,8 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    012). `$CR gh <gh's arguments>` runs `gh` as the App when the checkout's config sets
    `app_id`: it mints or reuses the same token, limited to the `-R` repo or else `origin`'s,
    and exits with `gh`'s code; any failure to get the token exits 2 naming the fix and never
-   runs `gh`. With no `app_id` it runs `gh` as the host's login. `$CR app-token` works with
+   runs `gh`. With no `app_id` it runs a read as the host's login and refuses a write with
+   exit 2 (spec 037). `$CR app-token` works with
    no checkout too, caching under `$XDG_CACHE_HOME/shipmill/<owner>/<repo>/app-token.json`
    (`~/.cache` when `XDG_CACHE_HOME` is unset), mode `0600`. **Write as the App when the
    repo has one:** with `[agents] app_id` set, every `gh` call that writes (an issue, a
@@ -659,7 +660,11 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    <the same arguments>` (`$CR gh`) from the repo's checkout, in every session, gated or
    started by hand, this skill's own included once `app_id` merges. Reads may keep plain
    `gh`. A `shipmill gh` that exits 2 is a stop: report its message and never retry the
-   write with plain `gh`. Without the App, shipmill drafts and the person posts (spec 033,
+   write with plain `gh`. Without `app_id`, `shipmill gh` refuses a write with exit 2
+   unless the config sets `[agents] identity = "host"` (spec 037): that exit 2 is a stop
+   too, never retried with plain `gh`, and a session passes `--as-host` only for a write a
+   person approved in the chat, never on its own judgment or in a headless session, and
+   says so in its report. Without the App, shipmill drafts and the person posts (spec 033,
    D-54): with `app_id` set, the skill runs `shipmill app-token --check` before its first
    write to GitHub, a push included, from the repo's checkout and through the same pinned
    `uvx` as `shipmill gh`; reading, and local work in the checkout (the config, the

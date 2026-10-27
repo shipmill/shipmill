@@ -573,7 +573,23 @@ Everything after `gh` goes to `gh` unchanged. With `app_id` set in the checkout'
 `origin`'s, runs `gh` with it, and exits with `gh`'s code. The key is a leading `--app-key`,
 else `SHIPMILL_APP_KEY`, else the default path; a missing key (with a second line saying
 the App isn't available here), a key others can read, an App not installed on the repo, or
-a missing permission exits 2 naming the fix, and `gh` never runs. With no `app_id` it runs `gh` as your login. `shipmill app-token`
+a missing permission exits 2 naming the fix, and `gh` never runs.
+
+With no `app_id` (no `.github/shipmill.toml`, no `[agents]` section, or one without
+`app_id`, or a folder outside any checkout), `shipmill gh` runs a read (`pr view`,
+`issue list`, `api` with `GET`, and the rest spec 037 lists) as your login, untouched, and
+refuses a write: exit 2 with three lines naming the repo, the missing `[agents] app_id`,
+and the two ways to allow it, and `gh` never runs (spec 037). A command the list doesn't
+name counts as a write. To let writes go as your login:
+
+- for the repo: set `identity = "host"` in `[agents]`, so every write through `shipmill gh`
+  runs as your `gh` login, as the repo chose; it can't go with `app_id`, and setting both
+  exits 2
+- for one call: `shipmill gh --as-host <the same arguments>`, before `gh`'s first argument;
+  it exits 2 where `app_id` is set or with `--app-key`. The skills pass it only for a write
+  a person approved in the chat, never on their own and never in a headless session
+
+`shipmill app-token`
 works outside a checkout too: there it caches the token in
 `$XDG_CACHE_HOME/shipmill/<owner>/<repo>/app-token.json` (`~/.cache` when
 `XDG_CACHE_HOME` is unset), mode `0600`. `shipmill status` and `doctor` warn

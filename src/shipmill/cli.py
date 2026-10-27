@@ -56,10 +56,11 @@
                   the repo's owner (spec 038)
   gh              run gh with the arguments that follow, as the repo's GitHub App when
                   [agents] app_id is set (the token limited to gh's -R/--repo, else origin's
-                  repo), else as the host's gh login; exits with gh's code. Every gh call that
-                  writes in an agent session goes through it. A leading --product OWNER/NAME
-                  runs it with the coordinator's token, refusing commands that write code or
-                  pull requests (D-47)
+                  repo); exits with gh's code. Without app_id a read runs as the host's gh
+                  login and a write exits 2 unless [agents] identity = "host" or a leading
+                  --as-host allows it (spec 037). Every gh call that writes in an agent
+                  session goes through it. A leading --product OWNER/NAME runs it with the
+                  coordinator's token, refusing commands that write code or pull requests (D-47)
   app-create      create the gate's GitHub App in one click: owner and visibility planned from the
                   repos holding .github/shipmill.toml, the key saved with mode 0600
   app-install     guide installing the App on more repos: the App's Install App page and what to pick
@@ -94,11 +95,13 @@ import importlib.metadata
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import time
 import webbrowser
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import TextIO
@@ -116,7 +119,7 @@ from shipmill import (
     roles,
     status,
 )
-from shipmill.agents import AgentsConfig, ProductConfig, app_id_of
+from shipmill.agents import AgentsConfig, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
 from shipmill.app import (
     CACHE,
     HELPERS,
@@ -166,10 +169,12 @@ from shipmill.app_gh import (
     as_host,
     bundled_repo_flag,
     find_gh,
+    is_read,
     merge_of,
     named_repo,
     product_refusal,
     pull_url,
+    repo_value,
     run_gh,
 )
 from shipmill.app_install import WAIT_SECONDS, guide
@@ -609,11 +614,12 @@ def _parser() -> argparse.ArgumentParser:
         "gh",
         add_help=False,  # `shipmill gh --help` is gh's help: every argument after gh goes to gh
         help=(
-            "run gh with the arguments that follow, as [agents] app_id's GitHub App when set, else as the "
-            "host's gh login (spec 012); use it for every gh call that writes from an agent session. "
-            "Only a leading --app-key PATH (default: ~/.config/shipmill/app-<app_id>.pem) and --product "
-            "OWNER/NAME are shipmill's; --product runs gh with the coordinator's token for OWNER's listed repos "
-            "and refuses the commands that write code or pull requests (spec 038, D-47)"
+            "run gh with the arguments that follow, as [agents] app_id's GitHub App when set (spec 012); "
+            "without it, a read runs as the host's gh login and a write exits 2 unless [agents] identity = "
+            '"host" or the call passes --as-host (spec 037); use it for every gh call that writes from an agent '
+            "session. Only a leading --app-key PATH (default: ~/.config/shipmill/app-<app_id>.pem), --product "
+            "OWNER/NAME, and --as-host are shipmill's; --product runs gh with the coordinator's token for OWNER's "
+            "listed repos and refuses the commands that write code or pull requests (spec 038, D-47)"
         ),
     )
 
@@ -1323,13 +1329,30 @@ def _coordinator(root: Path, repo: str, what: str) -> tuple[Path, tuple[str, ...
     return top, product.coordinated(repo, what)
 
 
-def _leading(passed: list[str]) -> tuple[Path | None, str | None, list[str]]:
-    """A leading --app-key PATH and --product OWNER/NAME (or --flag=value), in either order, are
-    shipmill's, since gh has no such flags before its command; the rest goes to gh untouched"""
+@dataclass(frozen=True, slots=True)
+class _Leading:
+    """shipmill's own options before gh's first argument, and gh's arguments"""
+
+    key: Path | None  # --app-key
+    product: str | None  # --product
+    as_host: bool  # --as-host (spec 037)
+    gh_args: list[str]
+
+
+def _leading(passed: list[str]) -> _Leading:
+    """A leading --app-key PATH, --product OWNER/NAME (or --flag=value), and --as-host, in any
+    order, are shipmill's, since gh has no such flags before its command; the rest goes to gh
+    untouched, an --as-host after gh's first argument included"""
     key: Path | None = None
     product: str | None = None
+    host = False
     rest = passed
     while rest:
+        if rest[0] == AS_HOST:
+            if host:
+                raise ReleaseError(f"{AS_HOST} is given twice")
+            host, rest = True, rest[1:]
+            continue
         flag, equals, value = rest[0].partition("=")
         if flag not in ("--app-key", "--product"):
             break
@@ -1348,7 +1371,37 @@ def _leading(passed: list[str]) -> tuple[Path | None, str | None, list[str]]:
             if product is not None:
                 raise ReleaseError("--product is given twice")
             product = value
-    return key, product, rest
+    if host and key is not None:
+        raise ReleaseError(
+            f"{AS_HOST} runs gh as the host's login and --app-key names an App's key: pass one of them, not both"
+        )
+    if host and product is not None:
+        raise ReleaseError(f"{AS_HOST} can't go with --product: the product's token comes from [agents] app_id's App")
+    return _Leading(key, product, host, rest)
+
+
+AS_HOST = "--as-host"
+
+
+def _host_write_refused(
+    root: Path, top: Path | None, origin: str | None, config: bool, gh_args: list[str]
+) -> ReleaseError:
+    """S-037-1, S-037-2: the exit 2 of a write with no [agents] app_id, which neither the repo
+    ([agents] identity = "host") nor the call (--as-host) allows, naming the repo and both fixes"""
+    repo = repo_value(gh_args) or origin or (str(top) if top is not None else f"the folder {root} (no git checkout)")
+    if top is None:
+        why = f"the folder {root} is in no git checkout, so it has no {CONFIG_PATH} and no [agents] app_id"
+    elif not config:
+        why = f"{top} has no {CONFIG_PATH}, so no [agents] app_id"
+    else:
+        why = f"{CONFIG_PATH} sets no [agents] app_id"
+    command = cli_command()  # #236: the form the person can run, as every hint names it
+    return ReleaseError(
+        f"refusing a write to {repo} as the host's gh login: {why}\n"
+        f'allow it for this repo: give it an App ({command} app-create), or set [agents] identity = "host" in '
+        f"{CONFIG_PATH}\n"
+        f"allow this one call: {command} gh {AS_HOST} {shlex.join(gh_args)}"
+    )
 
 
 def _unreadable_top(root: Path) -> Path | None:
@@ -1368,19 +1421,28 @@ def _gh(
     runner: GhRunner,
     reader: MergeReader,
 ) -> int:
-    """Spec 012: gh as the App when the checkout's config sets [agents] app_id, else as the
-    host's login; gh's exit code. With app_id set any failure to get the token exits 2 and gh
-    never runs (D-14); GH_TOKEN is never set but empty. As the App, a merge of a pull request
-    with a `never` zone exits 2 and gh never runs (S-030-13)"""
-    key, coordinated, gh_args = _leading(passed)
-    if coordinated is not None:
-        return _gh_product(root, coordinated, key, gh_args, api, signer, environ, home, runner)
+    """Spec 012: gh as the App when the checkout's config sets [agents] app_id; gh's exit code.
+    With app_id set any failure to get the token exits 2 and gh never runs (D-14), and so does
+    --as-host. Without it (spec 037), a read runs as the host's login, and a write too when
+    [agents] identity = "host" or the call passes --as-host; any other write exits 2 and gh
+    never runs. GH_TOKEN is never set but empty. As the App, a merge of a pull request with a
+    `never` zone exits 2 and gh never runs (S-030-13)"""
+    leading = _leading(passed)
+    key, gh_args = leading.key, leading.gh_args
+    if leading.product is not None:
+        return _gh_product(root, leading.product, key, gh_args, api, signer, environ, home, runner)
     if not root.is_dir():  # a mistyped --repo must not read as a repo with no App
         raise ReleaseError(f"--repo {root} is not a folder")
     git = Git(root)
     readable = git.ok("rev-parse", "--show-toplevel")
     top = Path(git.run("rev-parse", "--show-toplevel").strip()) if readable else _unreadable_top(root)
-    app_id = None if top is None else app_id_of(top)
+    identity = GhIdentity(config=False) if top is None else gh_identity_of(top)
+    app_id = identity.app_id
+    if app_id is not None and leading.as_host:  # S-037-10: before any token, App or not (D-14)
+        raise ReleaseError(
+            f"{AS_HOST} is refused: {CONFIG_PATH} sets [agents] app_id, so a write here goes as the App or not at "
+            "all (D-14); drop --as-host, or, without the App's key on this host, run plain gh as yourself (spec 033)"
+        )
     product = None if top is None else ProductConfig.load(top)
     if top is not None and product is not None and readable:  # S-038-3: before any token, App or not
         product.refuse_self(_known_origin(top))
@@ -1403,6 +1465,9 @@ def _gh(
     if top is None or app_id is None:
         if key is not None:
             raise ReleaseError(f"--app-key names an App's key, but no [agents] app_id is set in {CONFIG_PATH}")
+        if not (is_read(gh_args) or identity.identity is WriteAs.HOST or leading.as_host):
+            origin = _known_origin(top) if top is not None and readable else None
+            raise _host_write_refused(root, top, origin, identity.config, gh_args)
         return runner([str(find_gh(environ)), *gh_args], as_host(environ))
     if not readable:
         raise ReleaseError(

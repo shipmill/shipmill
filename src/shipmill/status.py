@@ -20,7 +20,7 @@ from typing import Any
 
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
-from shipmill.agents import AgentsConfig, Mode
+from shipmill.agents import AgentsConfig, Mode, app_id_of
 from shipmill.app import Identity, default_key
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold, Source, StageKind, StageLevel
 from shipmill.claude_auth import FIX as AUTH_FIX
@@ -582,20 +582,22 @@ class MilestoneRow:
 
 
 def milestone_rows(
-    repo: str, findings: Sequence[MilestoneWaiting | MilestoneOvertaken], command: str
+    repo: str, findings: Sequence[MilestoneWaiting | MilestoneOvertaken], command: str, app: bool
 ) -> list[MilestoneRow]:
     """S-022-8, S-022-10: the planner's milestone findings as rows, the milestone the subject:
     a waiting goal's reasons, or the tag that overtook it, the version next, and the rename,
-    a write, so through `shipmill gh` (command is cli_command()'s form): as the App when
-    [agents] app_id is set (D-14)"""
+    a write, so through `shipmill gh` (command is cli_command()'s form) as the App when
+    [agents] app_id is set (D-14), and plain gh without it (S-037-12), where `shipmill gh`
+    refuses a write; app is whether it is set"""
     rows = []
+    writer = f"{command} gh" if app else "gh"
     for f in findings:
         if isinstance(f, MilestoneWaiting):
             rows.append(MilestoneRow(MILESTONE_WAITING, f.verdict.milestone, f.verdict.reason))
         else:
             detail = f"{f.version.tag} exists; the {f.lane} lane cuts {f.next} next"
             number, title = f.milestone.number, str(f.next)
-            rename = f"{command} gh api -X PATCH repos/{repo}/milestones/{number} -f title={title}"
+            rename = f"{writer} api -X PATCH repos/{repo}/milestones/{number} -f title={title}"
             rows.append(MilestoneRow(MILESTONE_OVERTAKEN, f.milestone.title, detail, number, title, rename))
     return rows
 
@@ -624,7 +626,7 @@ def read_milestones(
         findings = Planner(Git(root, policy.bot_name, policy.bot_email), policy, github, now).milestone_findings(head)
     except ReleaseError as error:
         return [], str(error)
-    return milestone_rows(repo, findings, command), None
+    return milestone_rows(repo, findings, command, app_id_of(root) is not None), None
 
 
 def read_branch(repo: str, run: StateRunner, pause: Callable[[float], None] = time.sleep) -> str:
