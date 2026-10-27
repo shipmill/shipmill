@@ -1,6 +1,6 @@
 # S-043: Setup connects several repos as one product
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -194,7 +194,20 @@ phrased that way reaches the skill.
 - shipmill/shipmill#721: S-043-3, S-043-4, S-043-5, S-043-6
 - shipmill/shipmill#722: S-043-7, S-043-8, S-043-9, S-043-10, S-043-11
 
+The feature is shipmill/shipmill#677. The build issues landed in shipmill/shipmill#726
+(#720), shipmill/shipmill#732 (#721), and the pull request that set this spec to `built`
+(#722).
+
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+- S-043-1: `tests/test_product_config.py` parses `[product] standalone = true` in `ProductConfig` as no table, and exits 2 naming `standalone` for `false`, a non-boolean, and `standalone` beside `home` or `repos`, in `plan` and the gate; `tests/test_watch_product_standalone.py` runs `watch_state.py`'s reader on 3.11+ and under Python 3.10's fallback with the same results
+- S-043-2: `tests/test_product_absent.py` runs every S-038-4 test (`app-token`, `shipmill gh`, the gate's helpers, `triage_state.py`, `watch_state.py`) on the no-product configs plus each with `[product] standalone = true` appended, and pins the same tokens, states, and rows for both
+- S-043-3: `tests/test_setup_state.py` reads `PRODUCT_SIBLINGS`, exit 1, naming `me/api` and `me/Web` (same `app_id`), leaving out another `app_id`, a 404, a config with no `[agents]`, an archived repo, and this repo, and listing the owner as a user, the gh login itself, or an organization; it runs under Python 3.10 too
+- S-043-4: `PRODUCT_LISTED`, exit 1, with `write [product] home = "me/product"` when a sibling's `repos` lists this repo in either case, ahead of `PRODUCT_SIBLINGS`; two homes are both named and the maintainer picks; a home on another App is no sibling
+- S-043-5: each `[product]` form, `standalone = true` included, and a config with no `app_id` read `PRODUCT_OK` with no gh call at all; no sibling found reads `PRODUCT_OK` naming the owner and the `app_id`
+- S-043-6: a sibling read failing with 403 or a network error exits 2 naming the repo, a 404 reads as no config, a sibling config that can't be parsed is named in the detail as skipped, and the Product rows make only gh reads and never take `--fix`
+- S-043-7: `tests/test_setup_product_step.py` reads `skills/shipmill-setup/SKILL.md`'s `**Product (spec 043).**` step under The gate, between Config and the App's identity, in the D-20 round: it asks "Is `<owner/repo>` one of several repos that make up one product?", asks for the home and the components on yes, writes `repos` in the home, `home` in a component, or `standalone = true` on no in the pull request with `[agents]`, and writes `home` with no question on `PRODUCT_LISTED`; the keys it writes are exactly the three `ProductConfig` allows
+- S-043-8: the step writes only this checkout's config (D-14), never a `$CR gh -R <other repo>` write, prints one line per other repo with its table and `/shipmill:shipmill-setup <repo>` to run in its checkout, and names `$CR app-install <owner/component>` for a component the App doesn't cover, `$CR` being the pinned CLI the skill defines
+- S-043-9: the step's Works today list names `shipmill app-token --product`, `shipmill gh --product`, `upstream` issues, `upstream_state.py`, and `chains.py link --product --child`, and its Not yet list holds the plan across repos, the maintainer's queue, and a component reading its home's direction; shipmill/shipmill#604 and shipmill/shipmill#596 had both closed (released in v0.81.0) when it was written, so the step names them as done under Works today, as the Behaviour's "each line goes when its issue closes" says, instead of under Not yet
+- S-043-10: the step runs no check of the links back of its own and relays doctor's `product` lines with their fixes: S-038-27's `the coordinator can't reach it: run $CR app-install <repo>`, S-038-28's `set [product] home = "<home>" in <repo>'s .github/shipmill.toml`, and S-038-30's `add "<repo>" to [product] repos in <home>'s .github/shipmill.toml`; the test checks each fix against `src/shipmill/doctor.py`'s own text
+- S-043-11: the test reads the description's "connect several repos as one product (a home repo and its components)" within 1024 characters, and the `evals/shipmill-setup/product-component` case (listed in `evals/cases.toml`, well formed under `shipmill evals check`): the prompt "connect acme/api and acme/web to acme/product as one product" with no slash command, graded on a Skill load, `[product] home = "acme/product"` in this checkout's `.github/shipmill.toml`, no `repos` or `standalone` there, no write to GitHub, and the other repos' lines printed

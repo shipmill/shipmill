@@ -1,0 +1,43 @@
+schema_version: "1.1"
+name: product-component
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # Spec 043 (S-043-11): "connect ... as one product" reaches shipmill-setup by its
+  # description alone, with no slash command in the prompt
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1
+  # This checkout is a component (acme/api): the Product step writes its half, the home
+  - type: regex
+    name: writes-the-home
+    target: {source: file, path: .github/shipmill.toml}
+    pattern: '\[product\]\s+home\s*=\s*"acme/product"'
+  # and only that half: no repos list (the home's half) and no standalone in this config
+  - type: regex
+    name: no-home-half-here
+    target: {source: file, path: .github/shipmill.toml}
+    pattern: '\n\s*(repos|standalone)\s*='
+    match: not_contains
+  # never another repo's config or pull request: no write to GitHub at all in this case
+  - type: regex
+    name: writes-nothing-on-github
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "(write|refused)"'
+    match: not_contains
+  # S-043-8: the other repos' halves are printed, not written
+  - type: llm
+    name: prints-the-other-halves
+    criteria: |
+      PASS only if the session's final report gives a line for acme/web naming
+      `[product] home = "acme/product"` and a line for acme/product naming `[product] repos`
+      with acme/api and acme/web, each saying to run `/shipmill:shipmill-setup <that repo>`
+      in that repo's checkout, and the session wrote no file for acme/web or acme/product.
+      FAIL otherwise.
