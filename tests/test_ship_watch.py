@@ -2133,28 +2133,42 @@ def test_s014_10_an_upgrade_autonomy_of_another_value_is_refused(ws: ModuleType,
         ws.upgrade_autonomy_toml(tomllib.loads(text), policy)
 
 
-SHIPPED_GH = """#!{python}
-import json, sys
+# shipped.py's batched GraphQL reads (#754) as GitHub answers them: a commit alias oN gets
+# PRS's pull requests, an issue alias nN the issue COMMENTS names, and a number COMMENTS
+# doesn't name resolves to nothing: null, a NOT_FOUND error, and gh's exit 1
+GRAPHQL_GH = """#!{python}
+import json, os, re, sys
 args = sys.argv[1:]
-if args[:2] == ["api", "graphql"]:
-    pr = {{
-        "number": 365,
-        "title": "Read the closer right",
-        "body": 'Quotes the report ("... Closes #424.") mid-line\\nFixes #5\\nCloses #777',
-        "mergedAt": "2026-10-01T00:00:00Z",
-        "closingIssuesReferences": {{"nodes": []}},
-    }}
-    print(json.dumps({{"data": {{"repository": {{"object": {{"associatedPullRequests": {{"nodes": [pr]}}}}}}}}}}))
-elif args[:3] == ["issue", "view", "5"]:
-    print(json.dumps({{"state": "CLOSED", "title": "a fix", "comments": [], "url": "https://github.com/me/demo/issues/5"}}))
-elif args[:2] == ["issue", "view"]:
-    missing = "GraphQL: Could not resolve to an issue or pull request with the number of "
-    sys.stderr.write(missing + args[2] + ". (repository.issue)\\n")
-    sys.exit(1)
-else:
+if args[:2] != ["api", "graphql"]:
     sys.stderr.write("unexpected: " + " ".join(args) + "\\n")
     sys.exit(3)
+fields = dict(args[i + 1].partition("=")[::2] for i, a in enumerate(args) if a in ("-f", "-F"))
+prs, comments = json.loads(os.environ["FAKE_PRS"]), json.loads(os.environ["FAKE_COMMENTS"])
+repository, errors = {}, []
+for key, value in fields.items():
+    if re.fullmatch(r"o\\d+", key):
+        repository["c" + key[1:]] = {"associatedPullRequests": {"nodes": prs}}
+    elif re.fullmatch(r"n\\d+", key) and value in comments:
+        nodes = [{"author": {"login": "x"}, "body": b, "createdAt": "", "url": ""} for b in comments[value]]
+        page = {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}
+        url = "https://github.com/me/demo/issues/" + value
+        repository["i" + key[1:]] = {"state": "CLOSED", "title": "a fix", "url": url, "comments": page}
+    elif re.fullmatch(r"n\\d+", key):
+        repository["i" + key[1:]] = None
+        missing = "Could not resolve to an issue or pull request with the number of " + value + "."
+        errors.append({"type": "NOT_FOUND", "path": ["repository", "i" + key[1:]], "message": missing})
+print(json.dumps({"data": {"repository": repository}, **({"errors": errors} if errors else {})}))
+if errors:
+    sys.stderr.write("gh: " + errors[0]["message"] + "\\n")
+    sys.exit(1)
 """
+CLOSER = {
+    "number": 365,
+    "title": "Read the closer right",
+    "body": 'Quotes the report ("... Closes #424.") mid-line\nFixes #5\nCloses #777',
+    "mergedAt": "2026-10-01T00:00:00Z",
+    "closingIssuesReferences": {"nodes": []},
+}
 
 
 def test_368_a_range_whose_pr_names_a_missing_number_still_lists_its_fixes(ws: ModuleType, tmp_path: Path) -> None:
@@ -2164,9 +2178,14 @@ def test_368_a_range_whose_pr_names_a_missing_number_still_lists_its_fixes(ws: M
     assert git is not None
     fakes = tmp_path / "fakes"
     fakes.mkdir()
-    (fakes / "gh").write_text(SHIPPED_GH.format(python=sys.executable), encoding="utf-8")
+    (fakes / "gh").write_text(GRAPHQL_GH.replace("{python}", sys.executable), encoding="utf-8")
     (fakes / "gh").chmod(0o700)
-    env = {"PATH": os.pathsep.join([str(fakes), str(Path(git).parent), "/usr/bin", "/bin"]), "HOME": str(tmp_path)}
+    env = {
+        "PATH": os.pathsep.join([str(fakes), str(Path(git).parent), "/usr/bin", "/bin"]),
+        "HOME": str(tmp_path),
+        "FAKE_PRS": json.dumps([CLOSER]),
+        "FAKE_COMMENTS": json.dumps({"5": []}),  # #777 resolves to nothing
+    }
     origin, work = tmp_path / "origin.git", tmp_path / "work"
 
     def sh(*cmd: str, cwd: Path = work) -> None:
@@ -2226,33 +2245,23 @@ def test_s021_4_the_row_names_the_environment_the_tag_and_where_it_counts_from(w
     assert row.json()["agent"] is True and "UNANNOUNCED" in ws.ACTION
 
 
-DEPLOYED_GH = """#!{python}
-import json, os, sys
-args = sys.argv[1:]
-if args[:2] == ["api", "graphql"]:
-    print(json.dumps({{"data": {{"repository": {{"object": {{"associatedPullRequests": {{"nodes": []}}}}}}}}}}))
-elif args[:2] == ["issue", "view"]:
-    comments = [{{"body": b}} for b in json.loads(os.environ["FAKE_COMMENTS"]).get(args[2], [])]
-    url = "https://github.com/me/demo/issues/" + args[2]
-    print(json.dumps({{"state": "CLOSED", "title": "a fix", "comments": comments, "url": url}}))
-else:
-    sys.stderr.write("unexpected: " + " ".join(args) + "\\n")
-    sys.exit(3)
-"""
-
-
 def test_s021_4_a_deployment_reports_the_fixes_the_environment_did_not_run(ws: ModuleType, tmp_path: Path) -> None:
     # staging ran v0.2.0rc1, which held #6's fix; v0.2.0 adds #5's and #7's, and #7 was told already
     git = shutil.which("git")
     assert git is not None
     fakes = tmp_path / "fakes"
     fakes.mkdir()
-    (fakes / "gh").write_text(DEPLOYED_GH.format(python=sys.executable), encoding="utf-8")
+    (fakes / "gh").write_text(GRAPHQL_GH.replace("{python}", sys.executable), encoding="utf-8")
     (fakes / "gh").chmod(0o700)
-    told = {"7": ["<!-- shipmill:available: staging v0.2.0rc1 -->\nDeployed to staging in v0.2.0rc1."]}
+    told = {
+        "5": [],
+        "6": [],
+        "7": ["<!-- shipmill:available: staging v0.2.0rc1 -->\nDeployed to staging in v0.2.0rc1."],
+    }
     env = {
         "PATH": os.pathsep.join([str(fakes), str(Path(git).parent), "/usr/bin", "/bin"]),
         "HOME": str(tmp_path),
+        "FAKE_PRS": "[]",
         "FAKE_COMMENTS": json.dumps(told),
     }
     origin, work = tmp_path / "origin.git", tmp_path / "work"

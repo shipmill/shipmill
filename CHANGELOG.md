@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-10-27
+
+### Changed
+
+- `shipped.py`, and with it `shipmill status` and the gate's watch tick: the commits' pull requests are read 50 commits per GraphQL query and the closed issues 50 per query, in place of one call each, about 30 s less on a range of 30 commits; the plan, the notices posted, and the note for a number with no issue or pull request are unchanged (#754)
+
 ## [0.85.1] - 2026-10-27
 
 ### Fixed
@@ -1953,7 +1959,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.85.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.86.0...HEAD
+[0.86.0]: https://github.com/shipmill/shipmill/compare/v0.85.1...v0.86.0
 [0.85.1]: https://github.com/shipmill/shipmill/compare/v0.85.0...v0.85.1
 [0.85.0]: https://github.com/shipmill/shipmill/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/shipmill/shipmill/compare/v0.83.0...v0.84.0

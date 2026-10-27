@@ -42,7 +42,8 @@ that a pre-release gets no command when the policy sets only `install`. When the
 checkout's .github/shipmill.toml sets [agents] app_id, each comment posts through
 `uvx shipmill==<version> gh`, as the App (spec 012), the version in the plugin's own
 .claude-plugin/plugin.json (spec 031); without it, plain gh posts as the host's login. Reads
-always use plain gh.
+always use plain gh, the commits' pull requests and the issues each in batched GraphQL
+queries (#754).
 
 Exit 0 on success (including nothing to do), 2 on bad input, a config github-ship-watch's
 watch_state.py refuses, a missing or malformed plugin.json with app_id set, or a [notices]
@@ -89,47 +90,100 @@ PLAIN_KEY = re.compile(r"^\s*(\w+)\s*=\s*(\"[^\"\\]*\"|'[^']*')\s*(?:#.*)?$")
 TRIAGE_STATE = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "triage_state.py"
 KEYWORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
 TRAILER = re.compile(rf"^\s*(?:[-*]\s*)?{KEYWORDS}:?\s+#(\d+)\b", re.IGNORECASE | re.MULTILINE)
-# gh's answer for a number with no issue or pull request behind it, and only that (#368)
-NOT_FOUND = re.compile(r"Could not resolve to an issue or pull request with the number of (\d+)\b")
-PULLS = """query($owner: String!, $name: String!, $oid: GitObjectID!) {
-  repository(owner: $owner, name: $name) {
-    object(oid: $oid) {
-      ... on Commit {
-        associatedPullRequests(first: 20) {
-          nodes {
-            number title body mergedAt
-            closingIssuesReferences(first: 50) { nodes { number repository { nameWithOwner } } }
-          }
-        }
-      }
-    }
-  }
-}"""
+# reads are batched in aliased GraphQL queries (#754); GitHub refuses a query that may ask for
+# more than 500,000 nodes, so each batch is sized from what one alias can cost
+PRS_READ, CLOSERS_READ = 20, 50  # a commit's pull requests, and each one's closing links
+COMMITS_PER_QUERY = 50  # 50 * (20 + 20 * 50) = 51,000 nodes
+COMMENTS_READ = 100  # an issue's comments per page; an issue with more is paged to the end
+ISSUES_PER_QUERY = 50  # 50 * 100 = 5,000 nodes
+NODE_LIMIT = 500_000
+PULL_FIELDS = (
+    f"associatedPullRequests(first: {PRS_READ}) {{ nodes {{ number title body mergedAt"
+    f" closingIssuesReferences(first: {CLOSERS_READ}) {{ nodes {{ number repository {{ nameWithOwner }} }} }} }} }}"
+)
 
 
-class NotFound(Exception):
-    """`gh issue view` of a number the repo has no issue or pull request for"""
+def comment_fields(after: str = "") -> str:
+    """An issue's comments, oldest first, one page after the cursor variable named, if any"""
+    cursor = f", after: {after}" if after else ""
+    return (
+        f"comments(first: {COMMENTS_READ}{cursor}) {{ pageInfo {{ hasNextPage endCursor }}"
+        " nodes { author { login } body createdAt url } }"
+    )
 
-    def __init__(self, number: int) -> None:
-        super().__init__(f"#{number} resolves to no issue or pull request")
-        self.number = number
+
+# an issue as `gh issue view --json state,title,comments,url` read it, and a pull request's url
+ISSUE_FIELDS = f"... on Issue {{ url state title {comment_fields()} }} ... on PullRequest {{ url }}"
 
 
 def run(cmd: list[str], cwd: str | None = None) -> str:
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
-        if missing(cmd, proc.stderr):
-            raise NotFound(int(cmd[3]))
+        if partial(cmd, proc.stdout):
+            return proc.stdout  # graphql() decides which of its NOT_FOUND errors are a skip
         sys.stderr.write(f"error: {' '.join(cmd[:3])}...: {proc.stderr.strip()}\n")
         raise SystemExit(2)
     return proc.stdout
 
 
-def missing(cmd: list[str], stderr: str) -> bool:
-    """A failed `gh issue view N` that says N has no issue or pull request behind it; narrow,
-    so auth, network, and every other failure still stop the run (#368)"""
-    found = NOT_FOUND.search(stderr)
-    return cmd[:3] == ["gh", "issue", "view"] and found is not None and found.group(1) == cmd[3]
+def partial(cmd: list[str], stdout: str) -> bool:
+    """A failed `gh api graphql` whose answer is data with only NOT_FOUND errors, as GitHub gives
+    for an aliased number with no issue or pull request behind it; narrow, so auth, network,
+    rate limits, and every other failure still stop the run (#368)"""
+    if cmd[:3] != ["gh", "api", "graphql"]:
+        return False
+    try:
+        out = json.loads(stdout)
+    except ValueError:
+        return False
+    errors = out.get("errors") if isinstance(out, dict) else None
+    return (
+        isinstance(errors, list)
+        and bool(errors)
+        and out.get("data") is not None
+        and all(isinstance(e, dict) and e.get("type") == "NOT_FOUND" for e in errors)
+    )
+
+
+def graphql(
+    repo: str,
+    variables: list[tuple[str, str, str]],
+    body: str,
+    gh: Callable[[list[str]], str],
+    may_miss: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """The repository of one query on repo, each variable a (name, GraphQL type, value). An
+    error stops the run (exit 2) unless it is NOT_FOUND for a field named in may_miss, whose
+    value is then null"""
+    owner, _, name = repo.partition("/")
+    declared = "".join(f", ${n}: {t}" for n, t, _ in variables)
+    query = f"query($owner: String!, $name: String!{declared}) {{"
+    query += f" repository(owner: $owner, name: $name) {{ {body} }} }}"
+    # -f, not -F: -F would turn a numeric owner or name such as 2048 into a number GraphQL refuses
+    cmd = ["gh", "api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}"]
+    for n, t, value in variables:
+        cmd += ["-F" if t == "Int!" else "-f", f"{n}={value}"]
+    out = json.loads(gh(cmd))
+    refused = [e for e in out.get("errors") or [] if not missed(e, may_miss)]
+    repository = (out.get("data") or {}).get("repository")
+    if refused or repository is None:
+        messages = "; ".join(str(e.get("message", e)) for e in refused) or f"no repository {repo}"
+        sys.stderr.write(f"error: gh api graphql...: {messages}\n")
+        raise SystemExit(2)
+    found: dict[str, Any] = repository
+    return found
+
+
+def missed(error: dict[str, Any], may_miss: frozenset[str]) -> bool:
+    """GraphQL's NOT_FOUND for one of the repository's aliased fields in may_miss, and only that"""
+    path = error.get("path")
+    return (
+        error.get("type") == "NOT_FOUND"
+        and isinstance(path, list)
+        and len(path) == 2
+        and path[0] == "repository"
+        and path[1] in may_miss
+    )
 
 
 def commits(repo_dir: str, prev: str, tag: str) -> list[tuple[str, str]]:
@@ -149,16 +203,57 @@ def log(repo_dir: str, revisions: str) -> list[tuple[str, str]]:
 
 def prs_for(repo: str, sha: str, gh: Callable[[list[str]], str] = run) -> list[dict[str, Any]]:
     """The PRs a commit belongs to, with GitHub's closing links"""
-    owner, _, name = repo.partition("/")
-    # -f, not -F: -F would turn a numeric owner or name such as 2048 into a number GraphQL refuses
-    cmd = ["gh", "api", "graphql", "-f", f"query={PULLS}", "-f", f"owner={owner}", "-f", f"name={name}"]
-    out = json.loads(gh([*cmd, "-f", f"oid={sha}"]))
-    commit = out["data"]["repository"]["object"]
-    if commit is None:
-        sys.stderr.write(f"error: {repo} has no commit {sha}\n")
-        raise SystemExit(2)
-    prs: list[dict[str, Any]] = commit["associatedPullRequests"]["nodes"]
-    return prs
+    return prs_of(repo, [sha], gh)[sha]
+
+
+def prs_of(repo: str, shas: list[str], gh: Callable[[list[str]], str] = run) -> dict[str, list[dict[str, Any]]]:
+    """The PRs each commit belongs to, with GitHub's closing links, COMMITS_PER_QUERY commits a
+    query (#754); no commits, no call"""
+    found: dict[str, list[dict[str, Any]]] = {}
+    unique = list(dict.fromkeys(shas))
+    for start in range(0, len(unique), COMMITS_PER_QUERY):
+        batch = unique[start : start + COMMITS_PER_QUERY]
+        variables = [(f"o{i}", "GitObjectID!", sha) for i, sha in enumerate(batch)]
+        body = " ".join(f"c{i}: object(oid: $o{i}) {{ ... on Commit {{ {PULL_FIELDS} }} }}" for i in range(len(batch)))
+        repository = graphql(repo, variables, body, gh)
+        for i, sha in enumerate(batch):
+            commit = repository[f"c{i}"]
+            if commit is None:
+                sys.stderr.write(f"error: {repo} has no commit {sha}\n")
+                raise SystemExit(2)
+            found[sha] = commit["associatedPullRequests"]["nodes"]
+    return found
+
+
+def views(repo: str, numbers: list[int], gh: Callable[[list[str]], str] = run) -> dict[int, dict[str, Any] | None]:
+    """Each number's issue as `gh issue view --json state,title,comments,url` read it, every
+    comment oldest first, or a pull request's url; None for a number with no issue or pull
+    request behind it (#368). ISSUES_PER_QUERY numbers a query (#754); no numbers, no call"""
+    found: dict[int, dict[str, Any] | None] = {}
+    unique = list(dict.fromkeys(numbers))
+    for start in range(0, len(unique), ISSUES_PER_QUERY):
+        batch = unique[start : start + ISSUES_PER_QUERY]
+        variables = [(f"n{i}", "Int!", str(n)) for i, n in enumerate(batch)]
+        body = " ".join(f"i{i}: issueOrPullRequest(number: $n{i}) {{ {ISSUE_FIELDS} }}" for i in range(len(batch)))
+        aliases = frozenset(f"i{i}" for i in range(len(batch)))
+        repository = graphql(repo, variables, body, gh, may_miss=aliases)
+        for i, number in enumerate(batch):
+            item = repository[f"i{i}"]
+            if item is not None and "comments" in item:
+                item = {**item, "comments": all_comments(repo, number, item["comments"], gh)}
+            found[number] = item
+    return found
+
+
+def all_comments(repo: str, number: int, page: dict[str, Any], gh: Callable[[list[str]], str]) -> list[dict[str, Any]]:
+    """The issue's comments from its first page to its last, as `gh issue view` reads them all"""
+    comments: list[dict[str, Any]] = list(page["nodes"])
+    while page["pageInfo"]["hasNextPage"]:
+        variables = [("n", "Int!", str(number)), ("after", "String!", page["pageInfo"]["endCursor"])]
+        body = f"issueOrPullRequest(number: $n) {{ ... on Issue {{ {comment_fields('$after')} }} }}"
+        page = graphql(repo, variables, body, gh)["issueOrPullRequest"]["comments"]
+        comments += page["nodes"]
+    return comments
 
 
 def pr_closes(repo: str, pr: dict[str, Any]) -> set[int]:
@@ -290,17 +385,17 @@ def tell(
 ) -> None:
     """One line per issue; with write (the --post gh), comment on each closed one not yet told
     at tag's stage, with command after its "Released in" sentence, or with environment, each
-    one not yet told of that environment, "Deployed to" it. Reads are plain gh; a failed
-    write stops the run, never retried another way"""
-    for number in sorted(issues):
+    one not yet told of that environment, "Deployed to" it. Reads are plain gh, batched before
+    the first write (#754); a failed write stops the run, never retried another way"""
+    numbers = sorted(issues)
+    read = views(repo, numbers, gh)
+    for number in numbers:
         source = ", ".join(sorted(issues[number]))
-        try:
-            out = gh(["gh", "issue", "view", str(number), "-R", repo, "--json", "state,title,comments,url"])
-        except NotFound:
+        view = read[number]
+        if view is None:
             # one bad reference must not stop the notices after it, or the watch (#368)
             sys.stderr.write(f"note: #{number} [{source}] is no issue or pull request of {repo}, skipped\n")
             continue
-        view = json.loads(out)
         if "/pull/" in view["url"]:
             continue
         if view["state"] != "CLOSED":
@@ -322,10 +417,11 @@ def collect(repo: str, pairs: list[tuple[str, str]], gh: Callable[[list[str]], s
     """Each issue the commits close, by commit trailer or merged PR, with where it was named"""
     issues: dict[int, set[str]] = {}
     seen_prs: set[int] = set()
+    prs = prs_of(repo, [sha for sha, _ in pairs], gh)
     for sha, body in pairs:
         for n in TRAILER.findall(body):
             issues.setdefault(int(n), set()).add(sha[:7])
-        for pr in prs_for(repo, sha, gh):
+        for pr in prs[sha]:
             number = int(pr["number"])
             if number in seen_prs or not pr.get("mergedAt"):
                 continue
