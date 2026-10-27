@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.85.1] - 2026-10-27
+
+### Fixed
+
+- Tests: shipmill's own config can take a config upgrade, `[autonomy]` keys or a raised `requires`, without failing CI (#684)
+- Product intake: `plans.py check` reads a direction whose goals carry a `measure:` line (spec 027) instead of refusing every plan body before reading it (#749)
+
 ## [0.85.0] - 2026-10-27
 
 ### Changed
@@ -1946,7 +1953,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.85.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.85.1...HEAD
+[0.85.1]: https://github.com/shipmill/shipmill/compare/v0.85.0...v0.85.1
 [0.85.0]: https://github.com/shipmill/shipmill/compare/v0.84.0...v0.85.0
 [0.84.0]: https://github.com/shipmill/shipmill/compare/v0.83.0...v0.84.0
 [0.83.0]: https://github.com/shipmill/shipmill/compare/v0.82.0...v0.83.0
