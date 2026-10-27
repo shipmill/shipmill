@@ -1,6 +1,6 @@
 # S-040: Agent stages in [autonomy]: triage, fix, and land at observe, propose, or act
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -265,4 +265,26 @@ reads them.
 
 ## Verification
 
-Filled in when the spec reaches `built`.
+Checked on the default branch after #689, the last build pull request, released in v0.84.0.
+The tests named below pass there (824 passed across their files); beyond them,
+`uvx shipmill==0.84.0 autonomy --json` on shipmill/shipmill, whose config sets none of the
+three keys and whose `[agents] prompt` says "merge when green", read `triage` and `fix` as `act`
+from `default` and `land` as `act` from `prompt`, with no hold.
+
+- S-040-1: `tests/test_autonomy.py` (`test_s040_1_agent_stages_default_to_act_act_propose_and_take_each_level`), passing
+- S-040-2: `tests/test_autonomy.py` (`test_s040_2_*`) and `tests/test_ship_watch.py` (`test_s040_2_a_triage_or_fix_of_another_value_is_refused`), passing
+- S-040-3: `tests/test_autonomy.py` (`test_s040_3_the_hold_turns_an_agent_stage_act_into_propose_only`), passing
+- S-040-4: `tests/test_autonomy_cli.py` (`test_s040_4_*`) and `tests/test_ship_watch.py` (`test_s040_4_*`), passing; the live run above printed every stage with `configured`, `effective`, and `source`, and an empty `hold`
+- S-040-5: `tests/test_autonomy_cli.py` (`test_s040_5_*`), passing; the live run read the config at `origin/HEAD`
+- S-040-6: `tests/test_autonomy_prompt.py` (`test_s040_6_*`), passing; the live run read `land` from the prompt
+- S-040-7: `tests/test_autonomy_prompt.py` (`test_s040_7_*`), passing; the release workflow opened #684, the `agent-autonomy` upgrade for this repo
+- S-040-8: `tests/test_gate.py` (`test_s040_8_*`), passing; this repo's gate prompts carry an `Autonomy:` line
+- S-040-9: `tests/test_gate.py`, `tests/test_autonomy_prompt.py`, and `tests/test_ship_watch.py` (`test_s040_9_*`), passing
+- S-040-10: `tests/test_status_autonomy.py` (`test_s040_10_*`), passing
+- S-040-11: `tests/test_status_autonomy.py` (`test_s040_11_*`), passing
+- S-040-12: `tests/test_decide_cli.py` and `tests/test_who_decides.py` (`test_s040_12_*`), passing; `shipmill decide levels` lists `triage`, `fix`, and `land` from `autonomy`
+- S-040-13: `tests/test_setup_state.py` (`test_s040_13_*`), passing, under Python 3.10 too
+- S-040-14: `tests/test_skills_autonomy.py` (`test_s040_14_*`): setup's Autonomy step with the four profiles, the meaning of each level and the stop switch, the reference's copy of the stage table, and the three skills reading their stage before their first write through a pin that moves with each release; passing
+- S-040-15: `tests/test_skills_autonomy.py` and `tests/test_evals_offline.py` (`test_s040_15_*`): the land-propose and hold cases in `evals/cases.toml` with their recorded autonomy, passing; CI's `evals` check passed on #689
+- S-040-16: `tests/test_init_autonomy.py` (`test_s040_16_*`), passing
+- S-040-17: `tests/test_autonomy_cli.py` (`test_s040_17_*`), passing
