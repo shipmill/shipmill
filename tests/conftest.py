@@ -395,6 +395,11 @@ def repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     _git("init", "-q", "--bare", "-b", "main", str(origin), cwd=base)
     root = base / "work"
     _git("clone", "-q", str(origin), str(root), cwd=base)
+    # No detached auto-maintenance: its lock files come and go while copy_tree copies the
+    # tree, which fails the copy (seen under pytest -n auto)
+    for repo in (origin, root):
+        for key, value in (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false")):
+            _git("config", key, value, cwd=repo)
     git = Git(root, "bot", "bot@example.com")
     r = Repo(root, git, FakeGitHub())
     r.at(T0 - dt.timedelta(days=30))

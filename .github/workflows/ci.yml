@@ -31,7 +31,7 @@ jobs:
       - run: uv run ruff check src tests skills hooks
       - run: uv run ruff format --check src tests skills hooks
       - run: uv run mypy
-      - run: uv run pytest -q
+      - run: uv run pytest -q -n auto
       - name: Check the specs, and that a test proves each criterion of a built one
         run: |
           uv run --no-project python skills/github-issue-triage/scripts/specs.py check

@@ -236,7 +236,10 @@ def linked(tmp_path: Path) -> tuple[Git, Path]:
     main = tmp_path / "r"
     main.mkdir()
     subprocess.run(["git", "init", "-q", str(main)], check=True)
-    run = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t"]
+    # No detached auto-maintenance after the commit: its worktree prune can remove the new
+    # worktree's admin folder while `worktree add` still writes it (seen under pytest -n auto)
+    run = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "maintenance.auto=false"]
+    run += ["-c", "gc.auto=0"]
     subprocess.run([*run, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
     subprocess.run([*run, "worktree", "add", "-q", "--detach", str(main / "tmp" / "shipmill-gate")], check=True)
     git = Git(main / "tmp" / "shipmill-gate")

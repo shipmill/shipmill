@@ -1,6 +1,6 @@
 ---
 name: github-pr-triage
-description: Triage a GitHub repo's open pull requests to merge or refuse. Parallel reviewer agents each rebase one PR onto the default branch in its own worktree, run the full checks, review correctness, security, and repo rules, and commit small fixes with regression tests. The verified PRs land only when every CI job is green, with stacked PRs, CHANGELOG conflicts, flaky-CI diagnosis, and other sessions merging concurrently handled along the way. Use when the user asks to "review all open PRs", "triage PRs", "merge or refuse", "review open PRs again", "review and merge #N", to review PRs that already merged unreviewed (post-merge review), to land stacked PRs, or to tag a release after merges. Not for fixing a single issue (use github-issue-resolve), triaging an issue backlog (use github-issue-triage, which hands its PRs here), or reviewing a local diff (use code-review).
+description: Triage a GitHub repo's open pull requests to merge or refuse. Parallel reviewer agents each rebase one PR onto the default branch in its own worktree, run the checks, review correctness, security, and repo rules, and commit small fixes with regression tests. The verified PRs land only when every CI job is green, with stacked PRs, CHANGELOG conflicts, flaky-CI diagnosis, and other sessions merging concurrently handled along the way. Use when the user asks to "review all open PRs", "triage PRs", "merge or refuse", "review open PRs again", "review and merge #N", to review PRs that already merged unreviewed (post-merge review), to land stacked PRs, or to tag a release after merges. Not for fixing a single issue (use github-issue-resolve), triaging an issue backlog (use github-issue-triage, which hands its PRs here), or reviewing a local diff (use code-review).
 ---
 
 # GitHub PR Triage
@@ -47,6 +47,7 @@ Judgment stays with you: which PRs to delegate, each PR's risks, whether a revie
 | `release_ready.py <repo> <sha> <version>` | Is the release commit ready to tag: CI green on it, on the default branch, tag free, version in manifest and CHANGELOG, "not additive" if Breaking, compare link? Lists open PRs to judge | Right before tagging |
 | `shipped.py <repo> <prev-tag> <tag> [--post]` | Which closed issues did this release fix, and which haven't been told yet? Dry run by default; `--post` comments through `shipmill gh` itself when `[agents] app_id` is set | After the publish is verified |
 | `../github-issue-triage/scripts/specs.py coverage --spec NNN` | For a PR that builds a spec, each acceptance criterion and the tests that name it (`test_sNNN_k_...` or a `proves: S-NNN-k` comment); exit 1 when one has none | In every reviewer brief for a spec's build PR (`{specs_script}`) |
+| `../github-issue-triage/scripts/suite_lock.py [--slots N] -- <command>` | Runs the command once a machine-wide slot is free, so parallel full test suites queue | Around a full-suite run, for a repo whose CI doesn't run it (`{suite_command}`) |
 | `../github-issue-triage/scripts/decisions.py find\|check\|add` | Which settled rules a PR's files touch; the log's format; recording a rule the user settles during review | `find` in every reviewer brief (`{decisions_script}`); `add` when a held PR's answer sets a rule |
 
 ## Workflow
@@ -61,7 +62,7 @@ git status -sb
 git worktree list
 ```
 
-Set aside every PR whose `isDraft` is true: it is its author's (hard rule 11), and the report lists it as "draft, left to its author". Also run ListAgents for other sessions working on this repo; message them before merging or tagging (see [references/landing.md](references/landing.md#other-sessions)). Find the project's check commands in AGENTS.md, CLAUDE.md, or the CI workflow, and the known flaky tests from open issues.
+Set aside every PR whose `isDraft` is true: it is its author's (hard rule 11), and the report lists it as "draft, left to its author". Also run ListAgents for other sessions working on this repo; message them before merging or tagging (see [references/landing.md](references/landing.md#other-sessions)). Find the project's check commands in AGENTS.md, CLAUDE.md, or the CI workflow, and the known flaky tests from open issues. A reviewer runs the fast ones (`{check_commands}`: lint, types, the touched files' tests) and leaves the full suite to CI; only for a repo whose CI doesn't run the full suite on a pull request, give it `{suite_command}`, the suite behind `../github-issue-triage/scripts/suite_lock.py`. Parallel agents that each ran a full suite at once starved each other of CPU and hit the tool timeout.
 
 ### 2. Review
 

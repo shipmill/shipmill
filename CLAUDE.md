@@ -22,12 +22,13 @@ uv sync --locked
 uv run ruff check src tests skills
 uv run ruff format --check src tests skills
 uv run mypy
-uv run pytest -q
+uv run pytest -q -n auto
 uv run --no-project python skills/github-issue-triage/scripts/specs.py check
 uv run --no-project python skills/github-issue-triage/scripts/specs.py coverage
 uvx --from actionlint-py actionlint .github/workflows/*.yml
 ```
 
+- An agent runs the fast checks and the touched files' tests and leaves the full suite to the PR's CI
 - Package code needs Python 3.14 and strict mypy
 - Skill scripts run with `uv run --no-project python` and must stay Python 3.10 compatible
   with no dependencies

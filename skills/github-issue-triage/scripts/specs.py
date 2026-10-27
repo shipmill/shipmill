@@ -151,6 +151,7 @@ SLASH_PROVES = re.compile(r"^[ \t]*//[ \t]*proves:[ \t]*(.+)$", re.MULTILINE)
 PROVEN_ID = re.compile(r"S-(\d{3,})-(\d+)(?!\d)")
 JS_SUFFIXES = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
 SKIP_DIRS = {"node_modules", "target", "vendor", "venv", "dist", "build", "__pycache__"}
+SKIP_ROOT_DIRS = {"tmp"}  # scratch space: agents' worktrees and drafts, whose tests aren't the repo's
 TEMPLATE = """\
 # S-NNN: <title>
 
@@ -618,7 +619,8 @@ def test_files(root: Path) -> list[tuple[Path, list[re.Pattern[str]]]]:
     """Each test file under root, with the patterns that find its proofs"""
     found = []
     for folder, dirs, files in os.walk(root):
-        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS)
+        skip = SKIP_DIRS | SKIP_ROOT_DIRS if Path(folder) == root else SKIP_DIRS
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in skip)
         for name in sorted(files):
             path = Path(folder) / name
             if name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")):
