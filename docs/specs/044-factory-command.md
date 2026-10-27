@@ -1,6 +1,6 @@
 # S-044: shipmill factory reports the host's machinery; status keeps to the pipeline
 
-status: draft
+status: approved
 serves: G-1
 
 ## Problem
