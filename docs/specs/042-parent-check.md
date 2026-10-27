@@ -209,7 +209,7 @@ comment, and the needs-decision question; the Upstream report's `## Check`), and
 ## Issues
 
 The feature issue is shipmill/shipmill#678. Its build issues landed through #728 (#717),
-#733 (#718), and the pull request that fixes #719.
+#733 (#718), and #737 (#719).
 
 - shipmill/shipmill#717: S-042-1, S-042-2, S-042-3, S-042-4, S-042-5, S-042-6, S-042-12
 - shipmill/shipmill#718: S-042-7, S-042-8
