@@ -105,9 +105,13 @@ def hooks_block(checks: list[Check]) -> list[Check]:
 
 
 def test_s026_15_one_line_per_rule_on_or_off_and_why(agents_repo: Repo) -> None:
-    found = hooks_block(doctor(agents_repo.root))
+    home = agents_repo.root.parent / "home-with-key"
+    key = home / ".config" / "shipmill" / "app-5209412.pem"
+    key.parent.mkdir(parents=True)
+    key.write_text("not a key\n", encoding="utf-8")
+    found = hooks_block(doctor(agents_repo.root, home=home))
     assert [c.status for c in found] == ["PASS"] * 5
-    assert found[0].detail.startswith("app-writes off: no [agents] app_id")
+    assert found[0].detail.startswith("app-writes: off (no [agents] app_id)")
     assert found[1].detail.startswith("default-branch-push on: [hooks] default_branch is not false")
     assert found[2].detail.startswith("rebase-merge on: always") and "(D-33)" in found[2].detail
     assert found[3].detail.startswith("force-push on: always")
@@ -115,8 +119,8 @@ def test_s026_15_one_line_per_rule_on_or_off_and_why(agents_repo: Repo) -> None:
     hooks = '\n[hooks]\ndefault_branch = false\nprivate = ["owner/**"]\n'
     text = agents_repo.read(str(CONFIG_PATH)).replace(AGENTS, APP + hooks)
     agents_repo.write(str(CONFIG_PATH), text)
-    found = hooks_block(doctor(agents_repo.root))
-    assert found[0].detail.startswith("app-writes on: [agents] app_id 5209412 is set") and "(D-14)" in found[0].detail
+    found = hooks_block(doctor(agents_repo.root, home=home))
+    assert found[0].detail.startswith(f"app-writes: on (the App's key is at {key})") and "(D-14" in found[0].detail
     assert found[1].detail.startswith("default-branch-push off: [hooks] default_branch = false")
     assert found[4].detail.startswith("private-paths on: [hooks] private holds owner/**")
 

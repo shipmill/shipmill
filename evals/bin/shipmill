@@ -11,16 +11,27 @@ write would reach the stub. This shim, on PATH as `shipmill` and (linked) as `uv
 
 to the sibling `gh` stub with <args>, which logs the call with `"via": "shipmill"`; a plain
 `gh` call lacks it, so a grader still tells a write through `shipmill gh` from a write as a
-person. Every other command (`uvx --from actionlint-py actionlint`, `shipmill product show`)
-runs the real program unchanged: the first one on PATH that isn't this shim.
+person. `shipmill [--repo PATH] app-token --check` (spec 033), in either form, answers as
+the real check would where the App is available: exit 0, and a `{"kind": "check"}` line in
+`.eval/gh.jsonl`. A case whose fixture holds a file `no-app` runs without the App: the check
+exits 2 with the real check's reason, and every `shipmill gh` call exits 2 with the real
+missing-key message, logged as `{"kind": "refused"}`, and never reaches the stub. Every
+other command (`uvx --from actionlint-py actionlint`, `shipmill product show`) runs the real
+program unchanged: the first one on PATH that isn't this shim.
 
 Python 3.10 compatible, standard library only, like the skills' scripts.
 """
 
+import json
 import os
 import shutil
 import sys
 from pathlib import Path
+
+NOT_AVAILABLE = (
+    "the App isn't available here, so shipmill writes nothing: a skill hands you its text to post, "
+    "and what you post yourself with gh is yours (spec 033)"
+)
 
 # uvx options that take a value as the next argument; any other option is a flag
 UVX_VALUES = {
@@ -105,13 +116,57 @@ def is_shipmill(command: str) -> bool:
     return command == "shipmill" or command.startswith(("shipmill==", "shipmill@"))
 
 
-def stubbed(name: str, argv: list[str]) -> list[str] | None:
+def shipmill_args(name: str, argv: list[str]) -> list[str] | None:
+    """The arguments shipmill gets, run as `shipmill` or through uvx; None for another program"""
     if name == "uvx":
         at = uvx_command(argv)
         if at is None or not is_shipmill(argv[at]):
             return None
-        return gh_args(argv[at + 1 :])
-    return gh_args(argv)
+        return argv[at + 1 :]
+    return argv
+
+
+def stubbed(name: str, argv: list[str]) -> list[str] | None:
+    args = shipmill_args(name, argv)
+    return None if args is None else gh_args(args)
+
+
+def is_check(args: list[str]) -> bool:
+    """`[--repo PATH] app-token --check`, as shipmill's CLI reads it"""
+    index = 0
+    while index < len(args) and args[index].startswith("-") and args[index] != "--":
+        index += 2 if len(args[index]) > 2 and "--repo".startswith(args[index]) else 1
+    return args[index:] == ["app-token", "--check"]
+
+
+def find_eval(start: Path) -> Path | None:
+    for directory in (start, *start.parents):
+        if (directory / ".eval").is_dir():
+            return directory / ".eval"
+    return None
+
+
+def log(eval_dir: Path, line: dict[str, object]) -> None:
+    with (eval_dir / "gh.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+
+def missing_key() -> str:
+    return str(Path(os.environ.get("HOME", "~")) / ".config" / "shipmill" / "app-<app_id>.pem")
+
+
+def answer_without_app(eval_dir: Path, args: list[str], gh: list[str] | None) -> int:
+    """The check, or a `shipmill gh` call, in a case run without the App (fixture/no-app)"""
+    if gh is None:
+        log(eval_dir, {"kind": "check", "args": args})
+        sys.stderr.write(f"shipmill: the App isn't available here: no key at {missing_key()} and no SHIPMILL_APP_KEY\n")
+        return 2
+    log(eval_dir, {"kind": "refused", "via": "shipmill", "args": gh})
+    sys.stderr.write(
+        f"shipmill: no App private key at {missing_key()}; download it from the App's settings to that path\n"
+        f"{NOT_AVAILABLE}\n"
+    )
+    return 2
 
 
 def real(name: str) -> str:
@@ -131,7 +186,16 @@ def main(argv: list[str]) -> None:
     name = Path(argv[0]).name
     if name not in ("shipmill", "uvx"):
         sys.exit(f"shim: run as shipmill or uvx, not {name}")
+    given = shipmill_args(name, argv[1:])
+    checking = given is not None and is_check(given)
     args = stubbed(name, argv[1:])
+    eval_dir = find_eval(Path.cwd()) if checking or args is not None else None
+    if eval_dir is not None and (eval_dir / "no-app").is_file():
+        sys.exit(answer_without_app(eval_dir, given or [], None if checking else args))
+    if checking and eval_dir is not None:
+        log(eval_dir, {"kind": "check", "args": given})
+        sys.stdout.write("the App is available here: SHIPMILL_APP_KEY is set (an eval run)\n")
+        sys.exit(0)
     if args is None:
         program = real(name)
         os.execv(program, [program, *argv[1:]])

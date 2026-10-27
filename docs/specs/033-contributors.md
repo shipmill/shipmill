@@ -1,6 +1,6 @@
 # S-033: Contributors in a shipmill repo: the plugin per person; without the App, shipmill drafts and the person posts
 
-status: approved
+status: built
 serves: G-1, G-2
 
 ## Problem
@@ -339,4 +339,25 @@ host is in, each a PASS line:
 
 ## Issues
 
+- shipmill/shipmill#698: S-033-1, S-033-2, S-033-3, S-033-4, S-033-5, S-033-6, S-033-7, S-033-8, S-033-9, S-033-10, S-033-11, S-033-12, S-033-13, S-033-14, S-033-15, S-033-16, S-033-17, S-033-18
+
 ## Verification
+
+- S-033-1: `AgentsConfig.parse` and `setup_state.py`'s `plugin_mode` on absent, `"host"`, `"repo"`, and six bad values, on Python 3.14 and 3.10 (`tests/test_contributors.py`), pass
+- S-033-2: `host_plugin_rows` on `claude plugin list --json` listings (user, local, project, nested, other folder, managed, none) and `setup_state.py --fix` run end to end with no settings file, another plugin's, and the plugin's, comparing bytes, pass
+- S-033-3: `PLUGIN_COMMITTED` naming `plugin = "repo"` and the `enabledPlugins` entry, exit 1, and `--fix` leaving the file unchanged end to end, pass
+- S-033-4: repo mode's `PLUGIN_MISSING`, `--fix` writing the marketplace and `enabledPlugins` keeping other keys (in process and end to end), `PLUGIN_OK`, and `PLUGIN_DISABLED` in both modes, pass
+- S-033-5: every S-026-3 write, plain and after `GH_TOKEN=...`, in four hook environments without the App (`tests/test_delivery_hooks.py`), exits 0 with no output, pass
+- S-033-6: every S-026-3 write with the key file and no variable, and with the variable and no key file, exits 2 naming `app-writes` with its `shipmill gh` Instead line, pass
+- S-033-7: `SHIPMILL_APP_KEY=`, `HOME=/tmp`, `env`, and `export` forms with the key file refused; `SHIPMILL_APP_KEY=/x` and `HOME=<a home with a key>` without either pass; the counting runner and reader see no process and one config read, and a key file of mode 000 still counts, pass
+- S-033-8: `gh pr merge 1 --rebase` without the App refused naming `rebase-merge` with `Instead: gh pr merge 1 --squash`, and the default-branch-push, force-push, and private-paths fixtures answer alike with and without the App, pass
+- S-033-9: `session_env` names the key's resolved absolute path, and the interactive (`claude --bg`) and headless (`claude -p`) launches carry it in `--settings`, from `--app-key` and from the default path, pass
+- S-033-10: the maintainer ran the probe (`SHIPMILL_CLAUDE_PROBE=1 uv run pytest -q tests/test_contributors.py -k s033_10`) on b59da0b against a real `claude` on 2026-10-26: with the prompt passed right after `-p` (`--allowedTools` takes several values and had swallowed it), a hook in a session started with `--settings` whose env sets `SHIPMILL_APP_KEY` saw the variable and refused the plain `gh` write, so the gate needs no fallback; the probe is skipped unless `SHIPMILL_CLAUDE_PROBE=1`, pass
+- S-033-11: `shipmill gh` with the variable, with a leading `--app-key` over it, and with no key (unset, empty, a missing path) exiting 2 with both lines and no gh, API call, or signature, in process and through `python -m shipmill`; `app-token` with the variable and with `--app-key` over it, pass
+- S-033-12: `app_writes` for the three cases (the key file at mode 000 included) and doctor's hooks block on a repo with `app_id` and no key, pass
+- S-033-13: `shipmill init`'s config holds `# plugin = "host"` with its comment, parses, and its uncommented example reads as `host`, pass
+- S-033-14: `shipmill init --force` and `setup_state.py --fix` leave a `CONTRIBUTING.md` byte for byte; only `setup_state.py` (a read, D-42) and shipmill-setup's SKILL.md (its "never edit" rule) name the file under `skills/` and `src/shipmill/`, pass
+- S-033-15: `docs/install.md`'s per-person default, opt-in snippet, Go live step 3, and Contributors section, `docs/release-lanes.md`'s `[agents] plugin`, and shipmill-setup's `PLUGIN_COMMITTED` and question, read by phrase, pass
+- S-033-16: `app-token --check` exits 0 naming the App and the test (variable; key file at mode 000), exits 2 naming the path and `SHIPMILL_APP_KEY` (unset, empty), exits 2 naming `[agents] app_id` (no file, no key, no `[agents]`), refuses other arguments, and makes no API call, signature, or token cache, pass
+- S-033-17: each of the six skills' "Write as the App" rule read for the check before the first write and a push, the stop on either exit 2, the hand-over of each write's target and text, and the never-as-the-person and never-the-key lines, pass
+- S-033-18: `evals/github-issue-resolve/no-app-drafts` (kind `fix`, at bd2381f, whose config sets `app_id`, with `fixture/no-app`) is well formed (`shipmill evals check`), and the eval shim answers the check and refuses `shipmill gh` without the App; the case itself runs only in the `evals` workflow, not run here

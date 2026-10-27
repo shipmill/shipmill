@@ -117,6 +117,7 @@ from shipmill.app import (
     app_check,
     app_login,
     app_token,
+    availability,
     cache_outside,
     check_key,
     credential,
@@ -125,7 +126,9 @@ from shipmill.app import (
     prepare_session,
     product_cache,
     product_token,
+    require_key,
     resolve_gh,
+    session_key,
 )
 from shipmill.app_create import (
     FLOW_SECONDS,
@@ -553,9 +556,25 @@ def _parser() -> argparse.ArgumentParser:
             "else in $XDG_CACHE_HOME/shipmill/<owner>/<repo>/ (default ~/.cache)"
         ),
     )
-    p.add_argument("slug", metavar="owner/name", help="the GitHub repo the token is limited to; --repo is its checkout")
-    p.add_argument("--app-id", type=int, required=True, help="the App's id, as [agents] app_id names it")
-    p.add_argument("--app-key", type=Path, help="the App's private key (default: ~/.config/shipmill/app-<app_id>.pem)")
+    p.add_argument(
+        "slug", metavar="owner/name", nargs="?", help="the GitHub repo the token is limited to; --repo is its checkout"
+    )
+    p.add_argument("--app-id", type=int, help="the App's id, as [agents] app_id names it; needed but with --check")
+    p.add_argument(
+        "--app-key",
+        type=Path,
+        help="the App's private key (default: $SHIPMILL_APP_KEY when set, else ~/.config/shipmill/app-<app_id>.pem)",
+    )
+    p.add_argument(
+        "--check",
+        action="store_true",
+        help=(
+            "say whether the App is available to this session, as the delivery hook tests it, and nothing more: "
+            "exit 0 with [agents] app_id set and a non-empty SHIPMILL_APP_KEY or a key file at "
+            "~/.config/shipmill/app-<app_id>.pem, else exit 2 naming why; mints, prints, and reads no token or "
+            "key (spec 033)"
+        ),
+    )
     p.add_argument(
         "--git-credential",
         metavar="OPERATION",
@@ -879,6 +898,7 @@ def main(
                 lambda: dt.datetime.now(dt.UTC),
             ),
             home_reader=GhReader(root) if has_gh else None,
+            home=user_home,
         )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")
@@ -1163,10 +1183,14 @@ def _app_token(
     home: Path,
 ) -> int:
     """Specs 004 and 012, Tokens. Never falls back to the host's gh login (D-14): any failure exits 2"""
+    if args.check:
+        return _app_check(root, args, environ, home)
+    if args.slug is None or args.app_id is None:
+        raise ReleaseError("app-token needs owner/name and --app-id, or --check alone")
     app_id: int = args.app_id
     if app_id < 1:
         raise ReleaseError(f"--app-id must be 1 or more, got {app_id}")
-    key: Path = args.app_key if args.app_key is not None else default_key(app_id, home)
+    key: Path = args.app_key if args.app_key is not None else session_key(app_id, environ, home)
     if args.product:
         if args.git_credential is not None:
             raise ReleaseError(
@@ -1192,6 +1216,36 @@ def _app_token(
         print(token())
         return 0
     sys.stdout.write(credential(args.git_credential, stdin.read(), token))
+    return 0
+
+
+def _app_check(root: Path, args: argparse.Namespace, environ: Mapping[str, str], home: Path) -> int:
+    """S-033-16: whether the App is available to the session, by the delivery hook's test: the
+    checkout's [agents] app_id, then a non-empty SHIPMILL_APP_KEY or a key file at the default
+    path. One line either way; exit 2 (ReleaseError) when it isn't. It reads the config and
+    stats one path: no token, no network, no key's bytes"""
+    passed = {
+        "owner/name": args.slug,
+        "--app-id": args.app_id,
+        "--app-key": args.app_key,
+        "--git-credential": args.git_credential,
+        "--product": args.product or None,
+    }
+    given = [flag for flag, value in passed.items() if value is not None]
+    if given:
+        raise ReleaseError(f"app-token --check takes no {', '.join(given)}: it reads [agents] app_id from the checkout")
+    if not root.is_dir():
+        raise ReleaseError(f"--repo {root} is not a folder")
+    git = Git(root)
+    top = Path(git.run("rev-parse", "--show-toplevel").strip()) if git.ok("rev-parse", "--show-toplevel") else None
+    top = top or _unreadable_top(root) or root
+    app_id = app_id_of(top)
+    if app_id is None:
+        raise ReleaseError(f"the App isn't available here: no [agents] app_id in {top / CONFIG_PATH}")
+    found = availability(app_id, environ, home)
+    if not found.available:
+        raise ReleaseError(found.reason)
+    print(found.reason)
     return 0
 
 
@@ -1327,8 +1381,11 @@ def _gh(
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo; name the repo with gh's -R owner/name")
     binary = find_gh(environ)
     cache = state_dir(Git(top)) / CACHE
+    # S-033-11: the key at --app-key, else SHIPMILL_APP_KEY, else the default path; none there
+    # exits 2 before any token, cached or not, and gh never runs (D-14)
+    path = require_key(key or session_key(app_id, environ, home))
     try:
-        token = app_token(cache, repo, app_id, key or default_key(app_id, home), dt.datetime.now(dt.UTC), signer, api)
+        token = app_token(cache, repo, app_id, path, dt.datetime.now(dt.UTC), signer, api)
     except NotInstalled as exc:
         raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {repo}`") from None
     merge = merge_of(gh_args)
@@ -1431,7 +1488,7 @@ def _gh_product(
     cache = state_dir(Git(top)) / product_cache(coordinated.partition("/")[0])
     now = dt.datetime.now(dt.UTC)
     try:
-        token = product_token(cache, repos, app_id, key or default_key(app_id, home), now, signer, api)
+        token = product_token(cache, repos, app_id, key or session_key(app_id, environ, home), now, signer, api)
     except NotInstalled as exc:
         raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {' '.join(repos)}`") from None
     return runner([str(binary), *gh_args], {**as_app(environ, token), "GH_REPO": target})

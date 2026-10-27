@@ -49,17 +49,33 @@ Skills (the home folder's user skills, which shadow the plugin's by name):
                    user's home folder
   SKILLS_OK        none
 
-Plugin (.claude/settings.json, so every session in the repo loads the skills):
+Plugin (spec 033: the config's [agents] plugin, "host" by default, says where it loads):
+  With plugin = "host" (the default, also without the key or a config): each person
+  installs the plugin on their own host, and nothing in the repo turns it on. --fix never
+  creates, writes, or changes .claude/settings.json
+  PLUGIN_OK        an install of shipmill@shipmill applies to the repo's folder, read from
+                   `claude plugin list --json`: user scope, or local or project scope keyed
+                   on the repo's main checkout; the detail names its scope and version (or
+                   says claude isn't on PATH, installs not read)
+  PLUGIN_MISSING   no install applies; the detail gives the command, which the skill runs
+                   after asking: an install changes the person's host. --fix leaves it
+  PLUGIN_COMMITTED .claude/settings.json enables shipmill@shipmill, so every contributor's
+                   Claude Code is offered it: set [agents] plugin = "repo" to keep it, or
+                   delete it from enabledPlugins. --fix leaves it
+  With plugin = "repo": .claude/settings.json enables it, so every session in the repo
+  loads the skills
   PLUGIN_MISSING   shipmill@shipmill is not enabled; --fix adds the marketplace and
                    enables it, keeping every other key
+  PLUGIN_OK        enabled
+  In either mode:
   PLUGIN_DISABLED  enabledPlugins sets it to false on purpose; --fix leaves it
-  PLUGIN_OUTDATED  enabled, but an install on this host is behind shipmill's latest
-                   release: one row per install (user scope, the repo's folder, the gate's
-                   checkout), each with the command to run in its folder, as
+  PLUGIN_OUTDATED  in place of a PLUGIN_OK, when an install on this host is behind shipmill's
+                   latest release: one row per install (user scope, the repo's folder, the
+                   gate's checkout), each with the command to run in its folder, as
                    github-ship-watch's SHIPMILL_OUTDATED reads it (#233); and a `gate:` row
                    when the install a session loads is one of them, which the gate reports
                    and still starts sessions on (spec 031). --fix leaves it
-  PLUGIN_OK        enabled, and no install is behind (or claude isn't on PATH to read them)
+  [agents] plugin other than "host" or "repo", or not a string, exits 2
 
 Labels (the triage skills and shipmill read them):
   LABELS_MISSING   some of postponed, blocked, shipmill-hold, the config's
@@ -108,7 +124,7 @@ Contributor rules (a warning, read only when the config's [changelog] sets fragm
 Exit 0 when every row is RELEASE_READY, AGENTS_OK, PLUGIN_OK, SKILLS_OK, LABELS_OK, or
 BRANCH_DELETE_ON (RUNNER_SHARED and CHANGELOG_RULES, warnings, leave the exit code alone), 1
 otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT,
-PLUGIN_OUTDATED, and SKILL_SHADOWED included), 2 on bad input, a malformed
+PLUGIN_COMMITTED, PLUGIN_OUTDATED, and SKILL_SHADOWED included), 2 on bad input, a malformed
 settings.json or config (its [agents] read as github-ship-watch reads it; its [lanes] and
 [environments] too when the runner is read; its [autonomy] with an [agents] section), both
 config files,
@@ -126,6 +142,7 @@ import argparse
 import importlib.util
 import json
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -424,6 +441,105 @@ def plugin_rows(settings: dict[str, Any], outdated: Callable[[], list[str]]) -> 
     if row.state != "PLUGIN_OK":
         return [row]
     return [Row("PLUGIN_OUTDATED", detail) for detail in outdated()] or [row]
+
+
+HOST, REPO = "host", "repo"  # [agents] plugin (spec 033): per person, or committed for the repo
+PLUGIN_MODES = (HOST, REPO)
+# An install at user scope: the command PLUGIN_MISSING gives with plugin = "host", run after asking
+INSTALL = "claude plugin marketplace add shipmill/shipmill && claude plugin install shipmill@shipmill --scope user"
+INSTALL_PRECEDENCE = ("local", "project", "user")  # the most specific install that applies is named
+
+
+def plugin_mode(repo_dir: Path, ws: ModuleType) -> str:
+    """[agents] plugin, read as watch_state.py reads [agents]: "host" without the key, the
+    section, or a config; any other value, or one that isn't a string, exits 2 (S-033-1)"""
+    config = config_file(repo_dir)
+    if config is None:
+        return HOST
+    try:
+        table = ws.agents_table(config.read_text(encoding="utf-8"), config)
+    except ws.Refused as refused:
+        fail(str(refused).removeprefix("error: "))
+    raw = (table or {}).get("plugin")
+    if raw is None:
+        return HOST
+    value = json.loads(raw) if raw.startswith('"') else None
+    if value not in PLUGIN_MODES:
+        fail(f'{config}: [agents] plugin must be "host" (the default) or "repo", got {raw}')
+    return str(value)
+
+
+def host_install(plugins: object, project: Path) -> tuple[str, str] | None:
+    """The install of the plugin that applies to the project, from `claude plugin list
+    --json`: the most specific of local or project scope keyed on the project, then user
+    scope, as (scope, version); None when none applies. A malformed listing exits 2"""
+    if not isinstance(plugins, list):
+        fail("claude plugin list --json: expected a JSON array")
+    found: dict[str, str] = {}
+    for entry in plugins:
+        if not isinstance(entry, dict) or entry.get("id") != PLUGIN:
+            continue
+        scope, version, where = entry.get("scope"), entry.get("version"), entry.get("projectPath")
+        if not isinstance(scope, str) or not isinstance(version, str) or not isinstance(where, (str, type(None))):
+            fail(f"claude plugin list --json: {PLUGIN} install {entry!r}")
+        applies = (scope == "user" and where is None) or (
+            scope in ("local", "project") and where is not None and Path(where) == project
+        )
+        if applies:
+            found.setdefault(scope, version)
+    return next(((scope, found[scope]) for scope in INSTALL_PRECEDENCE if scope in found), None)
+
+
+def host_plugin_rows(
+    settings: dict[str, Any], plugins: Callable[[], object], project: Path, outdated: Callable[[], list[str]]
+) -> list[Row]:
+    """The Plugin rows with plugin = "host" (spec 033). plugins is `claude plugin list --json`
+    parsed, None when claude isn't on PATH; it and outdated are read only when the settings
+    neither disable nor commit the plugin"""
+    enabled = settings.get("enabledPlugins", {}).get(PLUGIN)
+    if enabled is False:
+        return [Row("PLUGIN_DISABLED", f"{SETTINGS} disables {PLUGIN} on purpose")]
+    if enabled is True:
+        detail = (
+            f"{SETTINGS} enables {PLUGIN}, so every contributor's Claude Code is offered it, but [agents] plugin"
+            f' is "host" (the default): set plugin = "repo" in [agents] to keep it, or delete "{PLUGIN}" from'
+            ' enabledPlugins (and the "shipmill" entry from extraKnownMarketplaces when no other plugin uses it)'
+        )
+        return [Row("PLUGIN_COMMITTED", detail)]
+    listed = plugins()
+    if listed is None:
+        row = Row("PLUGIN_OK", "claude isn't on PATH, installs not read")
+    else:
+        install = host_install(listed, project)
+        if install is None:
+            return [Row("PLUGIN_MISSING", f"no install of {PLUGIN} applies to {project}: {INSTALL}")]
+        scope, version = install
+        keyed = "" if scope == "user" else f" for {project}"
+        row = Row("PLUGIN_OK", f"{PLUGIN} {version} is installed at {scope} scope{keyed}")
+    return [Row("PLUGIN_OUTDATED", detail) for detail in outdated()] or [row]
+
+
+def listed_plugins(ws: ModuleType) -> object:
+    """`claude plugin list --json`, parsed; None when claude isn't on PATH"""
+    claude = shutil.which("claude")
+    if claude is None:
+        return None
+    try:
+        return ws.claude_json(claude, "plugin", "list")
+    except ws.Refused as refused:
+        fail(str(refused).removeprefix("error: "))
+
+
+def fix_plugin(settings_path: Path, settings: dict[str, Any], mode: str) -> dict[str, Any]:
+    """--fix's plugin step: with plugin = "repo", the marketplace and enabledPlugins written
+    into the settings when they don't enable it, keeping every other key; with "host" the
+    settings file is never created or changed (S-033-2)"""
+    if mode != REPO or plugin_row(settings).state != "PLUGIN_MISSING":
+        return settings
+    merged = enable_plugin(settings)
+    settings_path.parent.mkdir(exist_ok=True)
+    settings_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    return merged
 
 
 def watch_module() -> ModuleType:
@@ -882,7 +998,10 @@ def main() -> int:
     parser.add_argument(
         "--fix",
         action="store_true",
-        help="enable the plugin, create the missing labels, and turn on deleting branches on merge",
+        help=(
+            'with [agents] plugin = "repo", enable the plugin in .claude/settings.json; create the missing labels,'
+            " and turn on deleting branches on merge"
+        ),
     )
     parser.add_argument("--json", action="store_true", help="JSON lines instead of a table")
     args = parser.parse_args()
@@ -893,12 +1012,11 @@ def main() -> int:
     # before any change, so a config that can't be read stops --fix with nothing made
     write = gh_writer(repo_dir, ws) if args.fix else ["gh"]
 
+    mode = plugin_mode(repo_dir, ws)  # before any change, as the config's other keys
     settings_path = repo_dir / SETTINGS
     settings = load_settings(settings_path)
-    if args.fix and plugin_row(settings).state == "PLUGIN_MISSING":
-        settings = enable_plugin(settings)
-        settings_path.parent.mkdir(exist_ok=True)
-        settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    if args.fix:
+        settings = fix_plugin(settings_path, settings, mode)
 
     wanted = wanted_labels(repo_dir, ws)
     have = existing_labels(args.repo)
@@ -907,12 +1025,20 @@ def main() -> int:
         create_labels(args.repo, wanted, missing, write)
         missing = []
 
+    def outdated() -> list[str]:
+        return outdated_installs(args.repo, repo_dir, ws)
+
+    plugin = (
+        plugin_rows(settings, outdated)
+        if mode == REPO
+        else host_plugin_rows(settings, lambda: listed_plugins(ws), ws.project_folder(repo_dir), outdated)
+    )
     rows = [
         release_row(repo_dir),
         agents_row(repo_dir),
         *prompt_rows(repo_dir, ws),
         *autonomy_rows(repo_dir, ws),
-        *plugin_rows(settings, lambda: outdated_installs(args.repo, repo_dir, ws)),
+        *plugin,
         *skill_rows(Path.home(), ws),
         labels_row(missing, wanted),
         branch_delete_row(args.repo, args.fix),

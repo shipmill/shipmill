@@ -60,7 +60,7 @@ def test_s030_19_an_unset_app_id_warns_pointing_at_the_hooks_line(repo: Repo) ->
     configure(repo, AGENTS)
     repo.github.repo_labels = {"decided"}
     checks = doctor(repo.root, repo.github)
-    off = "app-writes off: no [agents] app_id, so gh writes go as your own login"
+    off = "app-writes: off (no [agents] app_id), so gh writes go as your own login"
     assert Check("PASS", "hooks", off) in checks  # the existing line, which the WARN refers to
     (warned,) = [c for c in checks if c.name == "decisions" and c.status == "WARN"]
     assert warned.detail == (

@@ -1,6 +1,6 @@
 ---
 name: shipmill-setup
-description: Set up shipmill in a repository so releases are cut by policy on lanes (dev, rc, stable, hotfix) from its hand-written CHANGELOG. Use when the user asks to add a release bot, automate releases, set up release lanes, scheduled or nightly releases, release candidates, or hotfix releases, or to move a repo onto release lanes. Also connects the agent side, so the repo triages, fixes, and lands on its own: the plugin in the repo's settings, the labels the skills read, the config's [agents] section, and where the agents run, including `shipmill gate` on launchd. Use too when the user asks to "connect a repo to shipmill" or to make it "ship by itself". Covers prerequisites, choosing lanes with the user, writing the policy, wiring CI and publishing, a dry run, and migration from hand-made or scripted releases.
+description: Set up shipmill in a repository so releases are cut by policy on lanes (dev, rc, stable, hotfix) from its hand-written CHANGELOG. Use when the user asks to add a release bot, automate releases, set up release lanes, scheduled or nightly releases, release candidates, or hotfix releases, or to move a repo onto release lanes. Also connects the agent side, so the repo triages, fixes, and lands on its own: where the plugin loads (per person, or in the repo's settings), the labels the skills read, the config's [agents] section, and where the agents run, including `shipmill gate` on launchd. Use too when the user asks to "connect a repo to shipmill" or to make it "ship by itself". Covers prerequisites, choosing lanes with the user, writing the policy, wiring CI and publishing, a dry run, and migration from hand-made or scripted releases.
 ---
 
 # Set up shipmill
@@ -338,7 +338,7 @@ or the tags are wrong; fix those, not the version.
 2. After it merges: run the Release workflow by hand (lane empty, dry-run on) and read the
    release commit in the run summary
 3. Run the checklist: `uv run --no-project python <skill>/scripts/setup_state.py <owner/repo>`.
-   It reports releases, the `[agents]` section, the plugin in `.claude/settings.json`, and
+   It reports releases, the `[agents]` section, where the plugin loads, and
    the labels (`postponed`, `blocked`, `shipmill-hold`, the blocker label, and with an
    `[agents]` section, in either mode, `needs-decision`, `role:maintainer` and
    `role:<name>` for each role `[agents.roles]` defines, a role's item (spec 036), `human`,
@@ -349,15 +349,32 @@ or the tags are wrong; fix those, not the version.
    `BRANCH_DELETE_OFF`, the repo setting `delete_branch_on_merge`). That setting matters
    because github-pr-triage's stacked merges rely on GitHub retargeting a stacked PR when
    the branch under it is deleted, and without it merged branches pile up. `--fix`
-   enables the plugin, keeping every other key, creates the missing labels, and turns the
-   setting on, all on GitHub at once; commit the settings change in a follow-up PR. With
+   creates the missing labels and turns the setting on, all on GitHub at once, and with
+   `[agents] plugin = "repo"` enables the plugin in `.claude/settings.json`, keeping every
+   other key; commit the settings change in a follow-up PR. With
    `[agents] app_id` set it creates the labels as the App, through `shipmill gh` run by
    uvx at the version in the plugin's `plugin.json` (spec 012, spec 031); the setting stays on the host's `gh`, since the App has no
    Administration permission. A `shipmill gh` exit 2 stops `--fix`: report it, and never
-   create the labels with plain `gh` instead. A
+   create the labels with plain `gh` instead.
+
+   **Ask where the plugin loads** (spec 033): per person, the default `[agents] plugin =
+   "host"` and the one to keep for a repo that takes outside contributions, or for
+   everyone who opens the repo, `plugin = "repo"`, which commits it to
+   `.claude/settings.json` so every contributor's Claude Code is offered it and its hooks.
+   Write `plugin = "repo"` only when the user chooses it. With `host` the Plugin rows read
+   the installs on this host: `PLUGIN_OK` names the install that applies to the repo's
+   folder (user scope, or local or project scope keyed on its main checkout), and
+   `PLUGIN_MISSING` gives the command, `claude plugin marketplace add shipmill/shipmill &&
+   claude plugin install shipmill@shipmill --scope user`: run it on the maintainer's host
+   after asking, since it changes their host, never with `--fix`. `PLUGIN_COMMITTED` (not
+   done; `--fix` leaves it) says `.claude/settings.json` still enables the plugin while the
+   key is `host`, as in a repo connected before spec 033: ask, then either set `plugin =
+   "repo"` to keep it, or delete `shipmill@shipmill` from `enabledPlugins` (and the
+   `shipmill` entry from `extraKnownMarketplaces` when no other plugin uses it), each in a
+   pull request. With `host`, `--fix` never creates or changes `.claude/settings.json`. A
    plugin turned off on purpose
-   (`PLUGIN_DISABLED`) is the user's call; ask before changing it. With the plugin
-   enabled, each install on this host that is behind the latest release reads
+   (`PLUGIN_DISABLED`) is the user's call; ask before changing it. In either mode, in place
+   of a `PLUGIN_OK`, each install on this host that is behind the latest release reads
    `PLUGIN_OUTDATED` (not done; `--fix` leaves it): user scope, the repo's folder, and the
    gate's checkout are separate rows, each with the command to run in its folder. Give the
    user those commands; for the repo's folder it is a reinstall, because `claude plugin
@@ -628,7 +645,19 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    <the same arguments>` (`$CR gh`) from the repo's checkout, in every session, gated or
    started by hand, this skill's own included once `app_id` merges. Reads may keep plain
    `gh`. A `shipmill gh` that exits 2 is a stop: report its message and never retry the
-   write with plain `gh`. `shipmill status` and `doctor` flag agent text a person's login
+   write with plain `gh`. Without the App, shipmill drafts and the person posts (spec 033,
+   D-54): with `app_id` set, the skill runs `shipmill app-token --check` before its first
+   write to GitHub, a push included, from the repo's checkout and through the same pinned
+   `uvx` as `shipmill gh`; reading, and local work in the checkout (the config, the
+   workflow, a branch, a commit), come before it as they are. Exit 0: go on. On its exit
+   2, or a `shipmill gh` exit 2 naming the missing key, it stops there: its report's first
+   line says the App isn't available here, quoting the check's reason, and that shipmill
+   wrote nothing to GitHub, and it hands over the text of each write it would have made,
+   in order, each with its target and the exact text (the repo; each label's name, color,
+   and description; a pull request's base, the local branch holding the commits, its title
+   and body), final and ready to paste or to post with the person's own `gh`, a command it
+   may print and never runs. It never writes with plain `gh`, `GH_TOKEN`, or a push as the
+   person, and never asks for or fetches the key. `shipmill status` and `doctor` flag agent text a person's login
    posted in the last 7 days as `AGENT_AS_PERSON`
 4. **Interactive or headless (asked every time, D-20).** On a machine nobody watches, a
    session that asks a question holds the repo until someone attaches. Ask whether anyone

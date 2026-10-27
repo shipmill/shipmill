@@ -161,7 +161,7 @@ The person acts once, on item 3. `chains.py show acme/app#3` prints the whole ch
 - `/schedule`: a cloud routine, with the prompt below that clones shipmill
 - Status only: `python3 $S/github-ship-watch/scripts/watch_state.py <owner/repo>` (exit 1 when anything needs action)
 
-To enable the plugin in every local session of a repo, commit this to its `.claude/settings.json`:
+The plugin is installed per person by default (`[agents] plugin = "host"`, spec 033). To enable it in every local session of a repo instead, a contributor's too, set `[agents] plugin = "repo"` and commit this to its `.claude/settings.json`:
 
 ```json
 {

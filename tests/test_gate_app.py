@@ -129,6 +129,7 @@ def expected_env(git: Git, tmp_path: Path) -> dict[str, str]:
         "GIT_CONFIG_VALUE_2": "git@github.com:",
         "GIT_CONFIG_KEY_3": "url.https://github.com/.insteadOf",
         "GIT_CONFIG_VALUE_3": "ssh://git@github.com/",
+        "SHIPMILL_APP_KEY": str((tmp_path / "app.pem").resolve()),  # the key the gate used (spec 033)
     }
 
 

@@ -1,0 +1,3 @@
+This case runs without the App (spec 033): no key at ~/.config/shipmill/app-<app_id>.pem and
+no SHIPMILL_APP_KEY. evals/bin/shipmill reads this file: `shipmill app-token --check` exits 2,
+and every `shipmill gh` call exits 2 with the missing key's message.

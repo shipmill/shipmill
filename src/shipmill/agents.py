@@ -31,6 +31,21 @@ class Mode(StrEnum):
     HEADLESS = "headless"  # `claude -p`: it asks on GitHub and ends (D-17)
 
 
+class Plugin(StrEnum):
+    """Where the shipmill plugin is turned on (spec 033): per person, or for the whole repo"""
+
+    HOST = "host"  # each person installs it on their own host; nothing in the repo turns it on
+    REPO = "repo"  # .claude/settings.json enables it, so every session in the repo loads it
+
+
+def plugin_of(table: Table) -> Plugin:
+    """[agents] plugin: "host" when absent; any other value, or one that isn't a string, exits 2"""
+    value = table.raw.get("plugin", Plugin.HOST.value)
+    if not isinstance(value, str) or value not in {p.value for p in Plugin}:
+        raise ReleaseError(f'{CONFIG_PATH}: [agents] plugin must be "host" (the default) or "repo", got {value!r}')
+    return Plugin(value)
+
+
 ROLES = "[agents.roles]"
 MAINTAINER = "maintainer"  # the role every step an agent can't do falls back to (spec 036)
 _ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")  # its label, role:<name>, stays within GitHub's 50
@@ -185,6 +200,7 @@ class AgentsConfig:
     mode: Mode = Mode.INTERACTIVE  # headless: `claude -p` (spec 005); either mode asks via needs-decision (D-21)
     wip: int | None = None  # at most this many issues in progress at once, read by triage (D-32); None: no limit
     roles: RolesConfig = RolesConfig()  # [agents.roles]: who receives a step an agent can't do (spec 036)
+    plugin: Plugin = Plugin.HOST  # [agents] plugin: per person, or committed for the repo (spec 033)
     # [autonomy] with spec 040's legacy reading of the prompt, as `shipmill autonomy` reads it;
     # load and Policy.parse set it, parse alone can't, as it sees [agents] only
     autonomy: AutonomyPolicy = AutonomyPolicy()
@@ -204,6 +220,7 @@ class AgentsConfig:
             "mode",
             "wip",
             "roles",
+            "plugin",
         )
         roles = RolesConfig.parse(table.raw["roles"]) if "roles" in table.raw else RolesConfig()
         prompt = table.string("prompt").strip()
@@ -224,6 +241,7 @@ class AgentsConfig:
             mode=table.enum("mode", Mode, default=Mode.INTERACTIVE),
             wip=table.integer("wip", default=None, low=1, high=_MAX_WIP),
             roles=roles,
+            plugin=plugin_of(table),
         )
 
     @classmethod

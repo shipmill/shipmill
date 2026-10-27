@@ -87,9 +87,25 @@ installs the plugin from it:
 
 In the interactive `/plugin` menu, the marketplace source is only `shipmill/shipmill`.
 
+Or from a shell, at user scope:
+
+```bash
+claude plugin marketplace add shipmill/shipmill && claude plugin install shipmill@shipmill --scope user
+```
+
 The skills are then `/shipmill:github-issue-triage`, `/shipmill:github-pr-triage`, and so
-on; [flow.md](flow.md) shows what to say to each. To turn the plugin on for everyone who
-opens the repo, commit this to its `.claude/settings.json`:
+on; [flow.md](flow.md) shows what to say to each.
+
+The plugin is installed per person by default (spec 033): each person who wants shipmill
+installs it on their own host, at user scope or at local or project scope for the repo's
+folder, and nothing in the repo turns it on. A gate session loads the install that applies
+to its checkout, at any scope (D-50), so the maintainer's own user-scope install is enough
+for the gate. Keep this default for a repo that takes outside contributions: see
+[Contributors](#contributors).
+
+To turn the plugin on for everyone who opens the repo instead, set `[agents] plugin = "repo"`
+in `.github/shipmill.toml` and commit this to its `.claude/settings.json`. Then every
+contributor's Claude Code is offered the plugin and its hooks when they open the repo:
 
 ```json
 {
@@ -102,7 +118,9 @@ opens the repo, commit this to its `.claude/settings.json`:
 
 The delivery hooks come with the plugin (spec 026): in a repo whose `.github/shipmill.toml`
 has an `[agents]` section, they refuse with exit 2 a `gh` write without `shipmill gh` while
-`app_id` is set, a push to the default branch, a rebase merge, a force push without a lease
+`app_id` is set and the App is available to the session (its key at
+`~/.config/shipmill/app-<app_id>.pem`, or `SHIPMILL_APP_KEY` set, as in every gate session;
+spec 033), a push to the default branch, a rebase merge, a force push without a lease
 pinned to a commit, and a copy of a `[hooks] private` path out of the repo, each with the
 command to run instead. Everywhere else they allow every command. They need `uv` on your
 `PATH`, which runs them on a Python 3.11 or newer it finds or installs. When a hook can't
@@ -232,8 +250,12 @@ fix the bump lists or the tags, not the version.
    uv run --no-project python <skills>/shipmill-setup/scripts/setup_state.py <owner/repo> --fix
    ```
 
-   `<skills>` is the plugin's `skills` folder, or a checkout's. `--fix` also turns the
-   plugin on in `.claude/settings.json`; commit that in a follow-up pull request. It turns
+   `<skills>` is the plugin's `skills` folder, or a checkout's. `--fix` writes the plugin
+   into `.claude/settings.json` only with `plugin = "repo"`; commit that in a follow-up pull
+   request. With the default, `plugin = "host"`, it never touches that file: the checklist
+   reads `PLUGIN_OK` when an install applies to the repo's folder, `PLUGIN_MISSING` with the
+   install command when none does, and `PLUGIN_COMMITTED` when the file still enables the
+   plugin, so you keep it with `plugin = "repo"` or delete it. It turns
    on the repo setting that deletes a pull request's branch when it merges, too: stacked
    pull requests are retargeted only when the branch under them is deleted
 
@@ -494,8 +516,14 @@ lasts a year, so run `claude setup-token` again and save it over the old one
 The App's identity covers the sessions you start yourself too, not only the gate's. The
 shipmill skills run every `gh` call that writes (an issue, a comment, a label, a pull
 request, a review, a merge, a release) as `shipmill gh` when `app_id` is set, in every
-session, and stop rather than retry with plain `gh` when it fails. You can use it by hand
-the same way:
+session, and stop rather than retry with plain `gh` when it fails. Before its first write a
+skill runs `shipmill app-token --check`, which says whether the App is available here: its
+key at `~/.config/shipmill/app-<app_id>.pem`, or `SHIPMILL_APP_KEY` set, as the gate sets it
+on every session it starts (spec 033). Where it isn't, the skill writes nothing and hands you
+the text instead ([Contributors](#contributors)). Keep the key at its default path, or set
+`SHIPMILL_APP_KEY` to its path in your shell, so your own sessions write as the App too;
+`doctor`'s `app-writes:` line says which case your host is in. You can use it by hand the
+same way:
 
 ```bash
 shipmill gh issue comment 250 --body-file tmp/comment.md
@@ -504,9 +532,10 @@ shipmill gh pr create -R owner/repo --title "..." --body-file tmp/pr.md
 
 Everything after `gh` goes to `gh` unchanged. With `app_id` set in the checkout's
 `.github/shipmill.toml`, it mints or reuses a token limited to the `-R` repo, else to
-`origin`'s, runs `gh` with it, and exits with `gh`'s code; a missing key, a key others can
-read, an App not installed on the repo, or a missing permission exits 2 naming the fix,
-and `gh` never runs. With no `app_id` it runs `gh` as your login. `shipmill app-token`
+`origin`'s, runs `gh` with it, and exits with `gh`'s code. The key is a leading `--app-key`,
+else `SHIPMILL_APP_KEY`, else the default path; a missing key (with a second line saying
+the App isn't available here), a key others can read, an App not installed on the repo, or
+a missing permission exits 2 naming the fix, and `gh` never runs. With no `app_id` it runs `gh` as your login. `shipmill app-token`
 works outside a checkout too: there it caches the token in
 `$XDG_CACHE_HOME/shipmill/<owner>/<repo>/app-token.json` (`~/.cache` when
 `XDG_CACHE_HOME` is unset), mode `0600`. `shipmill status` and `doctor` warn
@@ -585,6 +614,40 @@ the gate's own environment to choose another ceiling.
    `unloaded`, `cli`, `requires`, and `error`), and `pypi` PyPI's answer for its version
    (`version`, `status`, `error`), each null on a tick that reached no launch. Releases up
    to 0.59.1 also gave `plugin`, the daily update of `plugin_update = true`, which is gone
+
+## Contributors
+
+For you, the maintainer: what shipmill does when someone other than you works in a repo
+connected to it (spec 033, D-54). Three kinds of contributor meet the repo:
+
+1. **With Claude Code and the shipmill plugin**, installed on their own host, or offered by
+   the repo's `.claude/settings.json` when you set `[agents] plugin = "repo"`
+2. **By hand, without Claude.** shipmill changes nothing for them
+3. **With Claude Code but without shipmill.** With the default, `plugin = "host"`, nothing
+   in the repo offers them the plugin; with `"repo"`, accepting the offer makes them the
+   first kind
+
+shipmill writes to GitHub only as the App, a separate identity, never as the person at the
+keyboard. The App's key is yours: where it isn't available, such as a contributor's host,
+shipmill's skills stop before their first write to GitHub, say the App isn't available
+here, and hand the person the text to post (each comment, label, and pull request's title
+and body, with its target), and never fetch the key or write as them.
+
+The delivery hooks' `app-writes` rule applies only where the App's key is, or in gate
+sessions, which carry `SHIPMILL_APP_KEY`. So what a contributor posts themselves, by hand
+or with their own Claude outside shipmill's skills, goes out as them, as it would without
+the plugin; the other rules (default-branch push, rebase merge, force push, private paths)
+hold for them as for you. Only your host decides: nothing a contributor's pull request adds
+turns the rule off in your sessions.
+
+A fork pull request, or an issue from someone outside the repo, waits for an interactive
+session and is never landed automatically (D-16). Telling contributors so is your choice:
+shipmill writes nothing to the repo's `CONTRIBUTING.md`, `README.md`, or other docs, and
+prints no text for them.
+
+Keep the App's key at `~/.config/shipmill/app-<app_id>.pem`, or set `SHIPMILL_APP_KEY` to its
+path in your shell: a key elsewhere, without the variable, leaves your own sessions without
+the App, so the skills draft there and a `gh` write you run yourself goes out as you.
 
 ## Pause or remove it
 

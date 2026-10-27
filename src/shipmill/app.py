@@ -99,6 +99,55 @@ def default_key(app_id: int, home: Path) -> Path:
     return home / ".config" / "shipmill" / f"app-{app_id}.pem"
 
 
+# Spec 033: the key's path, which shipmill gate sets on every session it starts. A non-empty
+# value makes the App available to the session; `shipmill gh` and `app-token` take the key
+# from it before the default path, and a leading --app-key wins over it
+APP_KEY = "SHIPMILL_APP_KEY"
+
+NOT_AVAILABLE = (
+    "the App isn't available here, so shipmill writes nothing: a skill hands you its text to post, "
+    "and what you post yourself with gh is yours (spec 033)"
+)
+
+
+def session_key(app_id: int, environ: Mapping[str, str], home: Path) -> Path:
+    """The key a session uses without --app-key: a non-empty SHIPMILL_APP_KEY, else the
+    default path (spec 033)"""
+    named = environ.get(APP_KEY, "")
+    return Path(named).expanduser() if named else default_key(app_id, home)
+
+
+def require_key(path: Path) -> Path:
+    """`shipmill gh`'s key, before any token: a missing one exits 2 with check_key's line and
+    spec 033's second; its mode is check_key's to judge when a token is minted"""
+    if not path.is_file():
+        raise ReleaseError(
+            f"no App private key at {path}; download it from the App's settings to that path\n{NOT_AVAILABLE}"
+        )
+    return path
+
+
+@dataclass(frozen=True, slots=True)
+class Availability:
+    """`shipmill app-token --check`'s answer (spec 033): whether the App is available to the
+    session, by the delivery hook's own test; the reason names it either way"""
+
+    available: bool
+    reason: str
+
+
+def availability(app_id: int, environ: Mapping[str, str], home: Path) -> Availability:
+    """The hook's test and nothing more, for a repo with [agents] app_id: a non-empty
+    SHIPMILL_APP_KEY, or a file at the default key path, checked with one stat and never read.
+    No token, no network"""
+    if environ.get(APP_KEY):
+        return Availability(True, f"the App {app_id} is available here: {APP_KEY} is set")
+    path = default_key(app_id, home)
+    if path.is_file():
+        return Availability(True, f"the App {app_id} is available here: its key is at {path}")
+    return Availability(False, f"the App {app_id} isn't available here: no key at {path} and no {APP_KEY}")
+
+
 def check_key(path: Path) -> Path:
     """The key's path once it is a file only its owner can read; its bytes are never read here"""
     if not path.is_file():
@@ -812,7 +861,9 @@ def session_env(identity: Identity, helpers: Helpers, path: str) -> dict[str, st
     """Spec 004, At launch step 5: the env a session's `--settings` carries. The helpers'
     folder goes first on PATH, the git author and committer are the App's bot, and git's
     config, through GIT_CONFIG_*, drops the host's credential helpers for github.com, adds
-    the App's, and sends SSH remotes over https. It holds no token"""
+    the App's, and sends SSH remotes over https. SHIPMILL_APP_KEY names the key's absolute path,
+    so the delivery hooks and the skills read the App as available in the session, and
+    `shipmill gh` finds the key the gate used (spec 033). It holds no token"""
     config = [
         (CREDENTIAL_KEY, ""),
         (CREDENTIAL_KEY, _helper_value(helpers.git_credential)),
@@ -829,6 +880,7 @@ def session_env(identity: Identity, helpers: Helpers, path: str) -> dict[str, st
     for index, (key, value) in enumerate(config):
         env[f"GIT_CONFIG_KEY_{index}"] = key
         env[f"GIT_CONFIG_VALUE_{index}"] = value
+    env[APP_KEY] = str(identity.key.resolve())
     return env
 
 

@@ -227,6 +227,7 @@ github_release = true
 # What the gate starts a Claude Code session for; shipmill-setup writes this section with you.
 # [agents]
 # prompt = "/shipmill:github-issue-triage {{repo}} triage the new issues; do not merge"
+# plugin = "host"  # each person installs the plugin; "repo" enables it in .claude/settings.json for everyone
 '''
 
 

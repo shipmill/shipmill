@@ -15,6 +15,11 @@ The hooks catch an agent's mistake: a command shlex can't split, and `bash -c`, 
 `$(...)`, and here-documents, pass; the trust filter (D-16) is the control against hostile
 text. No command but a `git push`, and no edit but of the direction or a REVIEW.md, may start
 a process, and each call reads a repo's config at most once.
+
+The app-writes rule applies only where the App is available to the session (spec 033, D-54):
+a non-empty SHIPMILL_APP_KEY in the hook's own environment, which shipmill gate sets on every
+session it starts, or the App's key file at $HOME/.config/shipmill/app-<app_id>.pem, checked
+with one stat and never read. A command's own NAME=value assignments are never read for it.
 """
 
 from __future__ import annotations
@@ -621,6 +626,24 @@ class Context:
     runner: Runner  # for the git push rules that read the remote's default branch, and the checks
     configs: Configs
     plugin: Path = PLUGIN_JSON  # the plugin.json whose version the CLI runs at (spec 031)
+    env: Mapping[str, str] = field(default_factory=lambda: os.environ)  # the hook's own environment (spec 033)
+
+
+APP_KEY = "SHIPMILL_APP_KEY"  # the gate sets it on every session it starts (spec 033)
+
+
+def app_available(app_id: int, env: Mapping[str, str]) -> bool:
+    """Spec 033, D-54: the App is available to the session when the hook's own environment has
+    a non-empty SHIPMILL_APP_KEY, or when the App's key file is at
+    $HOME/.config/shipmill/app-<app_id>.pem. One stat at most: the file is never opened, and
+    no process starts. A HOME that is unset or not absolute counts only the variable, so no
+    path in the repo can stand in for the host's"""
+    if env.get(APP_KEY):
+        return True
+    home = env.get("HOME", "")
+    if not os.path.isabs(home):
+        return False
+    return os.path.isfile(os.path.join(home, ".config", "shipmill", f"app-{app_id}.pem"))
 
 
 @dataclass(frozen=True)
@@ -1039,7 +1062,9 @@ def _app_guards(cmd: Simple) -> bool:
 
 
 def _app_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
-    if config.app_id is None or not _app_guards(cmd):
+    """A gh write while app_id is set and the App is available to the session (spec 033);
+    where it isn't, the person's own writes are theirs, and nothing is refused"""
+    if config.app_id is None or not _app_guards(cmd) or not app_available(config.app_id, ctx.env):
         return None
     call = gh_call(cmd)
     assert call is not None
@@ -1075,8 +1100,8 @@ RULES = (
     ),
     Rule(
         "app-writes",
-        "with [agents] app_id set, every GitHub write goes as the App through shipmill gh,"
-        " never plain gh or an inline GH_TOKEN",
+        "with [agents] app_id set and the App available here (its key on this host, or SHIPMILL_APP_KEY),"
+        " every GitHub write goes as the App through shipmill gh, never plain gh or an inline GH_TOKEN",
         "D-14",
         _app_guards,
         _app_check,
@@ -1216,7 +1241,9 @@ def main(
     runner: Runner = run,
     read_config: ReadConfig = read_text,
     plugin: Path = PLUGIN_JSON,
+    env: Mapping[str, str] | None = None,
 ) -> int:
+    """env is the hook's own environment, os.environ unless a test passes one (spec 033)"""
     if len(argv) != 1 or argv[0] not in EVENTS:
         stderr.write("usage: delivery.py pre|post, with Claude Code's hook input on stdin (spec 026)\n")
         return 1
@@ -1224,7 +1251,7 @@ def main(
         hook = parse_input(stdin.read())
         if hook.event != EVENTS[argv[0]]:
             raise BadInput(f"`{argv[0]}` reads a {EVENTS[argv[0]]} input, got {hook.event}")
-        ctx = Context(runner, Configs(read_config), plugin)
+        ctx = Context(runner, Configs(read_config), plugin, os.environ if env is None else env)
         if argv[0] == "post":
             return post(hook, stderr, ctx)
         return pre(hook, stderr, ctx)

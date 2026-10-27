@@ -1,0 +1,38 @@
+schema_version: "1.1"
+name: no-app-drafts
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # Spec 033 (S-033-18): `[agents] app_id` is set and the App isn't available (fixture/no-app:
+  # no key file, no SHIPMILL_APP_KEY), so the skill runs `shipmill app-token --check` before
+  # its first write to GitHub
+  - type: regex
+    name: checks-the-app
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "check", "args": \[([^\]]*, )?"app-token", "--check"\]'
+  # and makes no write to GitHub: no plain gh write, and no shipmill gh call it was refused
+  - type: regex
+    name: no-write-to-github
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "(write|refused)"'
+    match: not_contains
+  # the report says the App isn't available here, makes no push, and hands over the pull
+  # request's title and body and names the local branch holding the fix
+  - type: llm
+    name: hands-over-the-drafts
+    criteria: |
+      PASS only if all of these hold for the session's final report and its tool calls:
+      it says the App isn't available here (in these words or the same meaning) and that
+      nothing was written to GitHub; it ran no `git push`; it holds a pull request title
+      and a pull request body, written out in full, ready to post; and it names the local
+      branch that holds the fix's commit. FAIL otherwise.
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1
