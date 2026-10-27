@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from .conftest import copy_tree
+from .conftest import copy_tree, no_auto_maintenance
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-pr-triage" / "scripts" / "pr_gate.py"
 BOT = "shipmill-demo[bot]"
@@ -115,6 +115,7 @@ def checkout(tmp_path: Path, files: dict[str, str]) -> Path:
     git(origin, "init", "-q", "-b", "main")
     git(origin, "config", "user.email", "t@example.com")
     git(origin, "config", "user.name", "t")
+    no_auto_maintenance(origin)
     (origin / "README.md").write_text("demo\n")
     for name, text in files.items():
         (origin / name).parent.mkdir(parents=True, exist_ok=True)
