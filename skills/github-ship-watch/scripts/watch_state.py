@@ -195,11 +195,18 @@ Intake (github-issue-triage's triage_state.py):
                   nothing takes it up, so the chain stalls there. One row per item, naming it
                   and its repo; an action for a person (a gate there, or the item done by
                   hand), never an agent's
+  CHAIN_CYCLE     a cycle that same chains.py show run marks (spec 041: open issues each
+                  holding the next, so none can start) with an item outside this repo: one
+                  row per distinct cycle, its subject the loop's first item, its detail the
+                  loop ("a -> b -> a"). A cycle wholly in this repo gets none: its triage
+                  reads CYCLE and a session asks. An action for a person (which link is
+                  wrong), never an agent's
   CHAIN_UNREADABLE  the chain walk failed (a gh error, an issue past a page of labels or
-                  relations, a config it can't parse): one row naming the item the error
-                  names (else the repo) and the error's first line, in place of the
-                  CHAIN_NO_GATE rows, while the rest of the watch stands; an action for a
-                  person, never an agent's
+                  relations, a config it can't parse, a malformed reference in a row's ref
+                  or cycle): one row naming the item the error names (else the repo) and
+                  the error's first line, in place of the CHAIN_NO_GATE and CHAIN_CYCLE
+                  rows, while the rest of the watch stands; an action for a person, never
+                  an agent's
 
 Upstream reports (spec 038; only in a home repo's checkout, whose config has [product] repos,
 from github-issue-triage's `upstream_state.py <repo> --json`, run in the checkout with the
@@ -353,8 +360,8 @@ Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when an
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
 ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MISSING, GATE_SESSIONS_DEAD,
-SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE,
-MILESTONE_OVERTAKEN,
+SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_CYCLE,
+CHAIN_UNREADABLE, MILESTONE_OVERTAKEN,
 UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, or VETOED row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
 milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
@@ -416,6 +423,7 @@ TRIAGE_ACTION = {
     "UNBLOCKED",
     "UNFILLED",
     "MALFORMED_DEPENDS",  # spec 041: a Depends on line outside the strict shape
+    "CYCLE",  # spec 041: on a cycle of the repo's open issues, ask which link is wrong
     "SPEC_REFUSED",
     "REVISIT",
     "DONE_NOT_CLOSED",
@@ -506,6 +514,7 @@ ACTION = {
     "UPGRADE_PENDING",
     "DIRECTION_PENDING",
     "CHAIN_NO_GATE",
+    "CHAIN_CYCLE",
     "CHAIN_UNREADABLE",
     "MILESTONE_OVERTAKEN",
     "UPSTREAM_DUE",
@@ -3032,6 +3041,34 @@ def chain_no_gate_rows(shown: object) -> list[Row]:
     return rows
 
 
+def chain_cycle_rows(repo: str, shown: object) -> list[Row]:
+    """CHAIN_CYCLE (spec 041), one row per distinct loop `chains.py show --json` gives a row
+    in "cycle" with an item outside the repo: triage_state.py reads only the repo's own
+    issues, so it never sees that cycle. A loop wholly in the repo gets none, since its
+    triage reads CYCLE and a session asks. Each reference is checked as owner/repo#N, so the
+    row names repos and numbers, never an issue's text (D-16)"""
+    if not isinstance(shown, dict) or not isinstance(shown.get("rows"), list):
+        raise Refused('error: chains.py show --json printed no {"rows": [...]} object')
+    found: dict[tuple[str, ...], list[str]] = {}
+    for item in shown["rows"]:
+        loop = item.get("cycle") if isinstance(item, dict) else None
+        if loop is None:
+            continue
+        if not isinstance(loop, list) or len(loop) < 2:
+            raise Refused(f"error: chains.py show --json printed a malformed cycle {loop!r}")
+        for ref in loop:
+            if not isinstance(ref, str) or CHAIN_REF.match(ref) is None:
+                raise Refused(f"error: chains.py show --json printed a malformed reference {ref!r}")
+        found.setdefault(tuple(ref.lower() for ref in loop), loop)
+    rows = []
+    for loop in found.values():
+        if all(ref.partition("#")[0].lower() == repo.lower() for ref in loop):
+            continue
+        fix = f"answer which link is wrong and remove it: uv run --no-project python {CHAINS} show {loop[0]}"
+        rows.append(Row("CHAIN_CYCLE", loop[0], " -> ".join(loop), fix))
+    return rows
+
+
 def chain_unreadable_row(repo: str, starts: list[str], error: str) -> Row:
     """CHAIN_UNREADABLE: the chain walk failed (a gh error, an issue past a page of labels or
     relations, a config it can't parse), so the chains weren't checked; the rest of the
@@ -3053,10 +3090,10 @@ def chain_rows(
     bot_login: str | None = None,
     execute: Callable[[list[str]], subprocess.CompletedProcess[str]] = capture,
 ) -> list[Row]:
-    """The CHAIN_NO_GATE rows of the chains the repo's open issues belong to: one chains.py
-    show over all of them, which reads each item once and each repo's config once, and never
-    reads or follows an untrusted author's issue (--trusted-only, D-16). A walk that fails is
-    one CHAIN_UNREADABLE row instead, never the watch's exit 2"""
+    """The CHAIN_NO_GATE and CHAIN_CYCLE rows of the chains the repo's open issues belong to:
+    one chains.py show over all of them, which reads each item once and each repo's config
+    once, and never reads or follows an untrusted author's issue (--trusted-only, D-16). A
+    walk that fails is one CHAIN_UNREADABLE row instead, never the watch's exit 2"""
     starts = chain_starts(repo, triage)
     if not starts:
         return []
@@ -3066,7 +3103,8 @@ def chain_rows(
     if proc.returncode not in (0, 1):
         return [chain_unreadable_row(repo, starts, proc.stderr or f"error: chains.py show exited {proc.returncode}")]
     try:
-        return chain_no_gate_rows(json.loads(proc.stdout))
+        shown = json.loads(proc.stdout)
+        return chain_no_gate_rows(shown) + chain_cycle_rows(repo, shown)
     except json.JSONDecodeError as exc:
         return [chain_unreadable_row(repo, starts, f"error: chains.py show --json printed no JSON: {exc}")]
     except Refused as refused:

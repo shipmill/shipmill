@@ -908,6 +908,7 @@ REPORT_ROWS = [
     "GATE_NO_APP",
     "GATE_SESSIONS_DEAD",
     "CHAIN_NO_GATE",
+    "CHAIN_CYCLE",
     "CHAIN_UNREADABLE",
     "SHIPMILL_VERSION",
     "SHIPMILL_OUTDATED",
@@ -1636,6 +1637,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         *ws.chain_no_gate_rows(
             {"rows": [{"ref": "x/b#2", "gate": "NO_GATE", "waits_on": [], "waited_on_by": ["o/r#3"]}]}
         ),
+        *ws.chain_cycle_rows(REPO, {"rows": [{"ref": "o/r#3", "cycle": ["o/r#3", "x/b#2", "o/r#3"]}]}),
         ws.chain_unreadable_row(REPO, ["o/r#3"], "error: x/b#2 has more than 100 labels"),
         *ws.shadow_rows(home, SHIPMILL_SKILLS),
         *ws.hold_rows([issue(ws, 7, ("shipmill-hold",), title=TITLE)], NOW, REPO),
@@ -1695,6 +1697,7 @@ FIXES = {
     "GATE_NO_APP": ["run shipmill-setup's step 3 (app-create), then set app_id in [agents]"],
     "GATE_SESSIONS_DEAD": ["claude auth login"],
     "CHAIN_NO_GATE": ["set up a gate on x/b (/shipmill:shipmill-setup x/b), or do x/b#2 by hand"],
+    "CHAIN_CYCLE": ["answer which link is wrong and remove it: uv run --no-project python {chains} show o/r#3"],
     "CHAIN_UNREADABLE": ["see why: uv run --no-project python {chains} show --trusted-only x/b#2"],
     "SKILL_SHADOWED": ["remove it (rm -r {copy}) or call the skill as /shipmill:github-pr-triage"],
     "HOLD": ["close #7 when the factory may go on: gh issue close 7 -R o/r"],

@@ -1,6 +1,6 @@
 # S-041: Chain integrity: cycles and strict Depends on lines
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -209,11 +209,28 @@ Existing issues change state on the first pass after this ships, with no migrati
 
 ## Issues
 
+The feature issue is shipmill/shipmill#679. Its build issues landed through pull requests
+#727 (#714), #734 (#715), and #716's pull request.
+
 - shipmill/shipmill#714: S-041-1, S-041-2, S-041-3, S-041-4, S-041-5, S-041-6
 - shipmill/shipmill#715: S-041-7, S-041-8, S-041-9, S-041-10, S-041-11
 - shipmill/shipmill#716: S-041-12, S-041-13, S-041-14, S-041-15, S-041-16
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+- S-041-1: `tests/test_chain_integrity.py` (`test_s041_1_a_strict_line_holds_on_every_reference`) reads `Depends on #1, #2 and acme/api#3`, `Depends on: #1 #2`, `- depends on #1, and #2`, issue and pull URLs, and `#{B1}` placeholders as holds on every reference (placeholders through `unfilled_dependencies`), none of them malformed; `test_s041_1_a_run_of_blanks_reads_in_linear_time` reads a line of 200 blanks within the timeout
+- S-041-2: `test_s041_2_a_note_after_the_references_holds_nothing` holds `Depends on acme/api#129 (deployed)` on `acme/api#129`, `Depends on #5 (decided in #9)` on `#5` alone, and the `;` and ` — ` notes the same way, with no malformed line and no placeholder read from a note
+- S-041-3: `test_s041_3_a_line_of_680_reads_malformed_depends` reads each of #680's three lines as MALFORMED_DEPENDS with `line 3: <the line>` in the note while `dependency_refs` still returns every reference, and NEW untriaged; `test_s041_3_the_script_exits_1_on_malformed_depends` runs the script and gets exit 1
+- S-041-4: `test_s041_4_prose_and_fenced_lines_hold_nothing` reads a prose `Depends on` line and lines in ``` and ~~~ fences as no hold and no MALFORMED_DEPENDS (NEEDS_PR), and counts a fenced line in the next line's number
+- S-041-5: `test_s041_5_malformed_depends_comes_after_unfilled_and_before_the_holds` reads UNFILLED first, MALFORMED_DEPENDS over SPEC_REFUSED, BLOCKED, and UNBLOCKED, and a person's item with a malformed line and only closed holds as MALFORMED_DEPENDS, HANDOFF_DUE once the line is strict; `tests/test_cycle_states.py` (`test_s041_13_off_milestone_and_the_earlier_states_win_over_cycle`) reads it before CYCLE
+- S-041-6: `test_s041_6_link_appends_a_line_for_a_reference_only_in_a_note` appends `Depends on o/r#4` when `#4` is only in a note, and prints `already linked` with no write when a strict line names it
+- S-041-7: `tests/test_chain_cycles.py` (`test_s041_7_show_prints_cycle_with_the_shortest_loop_from_its_least_reference`, `test_s041_7_a_tie_goes_to_the_least_sequence_and_any_kind_of_hold_counts`, `test_s041_7_the_loop_search_is_deterministic`) prints `CYCLE (<loop>)` with the shortest loop from the least reference for each item on a cycle, ties to the least sequence, BLOCKED for the item waiting on it, and exit 1
+- S-041-8: `test_s041_8_show_json_gives_the_cycle_and_null_for_every_other_row` and `test_s041_8_rows_off_a_cycle_keep_their_output_with_the_two_new_keys` give a cycle's rows `"state": "CYCLE"` and the loop with its first reference repeated, and every other row `"cycle": null`
+- S-041-9: `test_s041_9_a_loop_through_a_closed_untrusted_or_unreadable_item_is_no_cycle` prints no CYCLE row for a loop through a closed item, an UNTRUSTED one with `--trusted-only`, or an UNREADABLE one
+- S-041-10: `test_s041_10_show_ends_a_row_with_its_malformed_depends_lines_and_exits_1` and `test_s041_10_malformed_depends_sits_beside_no_gate_in_the_last_column` end the row with `MALFORMED_DEPENDS line <n>: <the line>`, give `--json` a `"malformed"` list, and exit 1
+- S-041-11: `test_s041_11_link_blocked_by_refuses_a_link_that_closes_a_cycle`, `test_s041_11_link_child_refuses_a_child_that_already_waits_on_its_parent`, `test_s041_11_both_halves_in_place_on_a_cycle_are_refused_too`, and `test_s041_11_product_child_refuses_a_cycle_reading_through_the_product_token` exit 2 with `closes a cycle:` and the loop and send no write; `test_s041_11_a_closed_hold_closes_no_cycle` links through a closed hold
+- S-041-12: `tests/test_cycle_states.py` (`test_s041_12_an_issue_on_a_cycle_of_the_repos_open_issues_reads_cycle`) runs `triage_state.py` on two triaged issues holding each other: both read CYCLE with `cycle o/r#3 -> o/r#5 -> o/r#3 | <holds>`, the script exits 1, an issue waiting on the cycle reads BLOCKED, an untriaged one NEW, and a loop through blockedBy and a sub-issue cased `O/R` is a cycle too; `test_s041_12_cycles_reads_only_open_issues_whose_holds_triage_reads` finds no loop through a closed, untrusted, other-repo, or self hold; `test_s041_12_with_trusted_only_no_loop_runs_through_an_untrusted_issue` reads BLOCKED with `--trusted-only` and CYCLE without
+- S-041-13: `test_s041_13_a_loop_waits_on_its_malformed_or_needs_decision_issue` reads the others on a loop of three BLOCKED with `cycle o/r#3 -> o/r#5 -> o/r#9 -> o/r#3 waits on o/r#N` while #N reads MALFORMED_DEPENDS, NEEDS_DECISION (exit 0), or DECIDED; `test_s041_13_an_issue_on_a_cycle_reads_its_gated_state` reads UNTRUSTED, UPSTREAM, NEEDS_DECISION, DECIDED, and VETOED on a cycle; `test_s041_13_off_milestone_and_the_earlier_states_win_over_cycle` reads OFF_MILESTONE, UNFILLED, and MALFORMED_DEPENDS over CYCLE, and CYCLE over a person's HANDOFF_DUE
+- S-041-14: `test_s041_14_cycle_and_malformed_depends_are_triage_actions_in_the_watch_status_and_fleet` finds both in `TRIAGE_ACTION`, in the watch's ISSUES row (`CYCLE #3; MALFORMED_DEPENDS #4`), which `fleet.py` counts as an action (exit 1), and on `shipmill status`'s `to triage` line; `tests/test_status_picture.py` keeps `ISSUE_LINES` covering triage_state's `ACTION`, and `tests/test_ship_watch.py` keeps `TRIAGE_ACTION` equal to it
+- S-041-15: `test_s041_15_ship_watch_reports_one_chain_cycle_per_loop_through_another_repo` runs `chains.py show --json --trusted-only` on a fake forge through `chain_rows`: one `CHAIN_CYCLE o/r#3` row with the detail `o/r#3 -> x/b#2 -> o/r#3` and the fix `answer which link is wrong and remove it: ... show o/r#3`, none for the loop wholly in `o/r`, a person's action; a malformed reference in `"cycle"` reads CHAIN_UNREADABLE naming only its checked part; `test_s041_15_status_and_the_fleet_count_chain_cycle_with_the_chain_rows` shows it on status's `chain` line as WAITS ON YOU with its fix and as a fleet action
+- S-041-16: `test_s041_16_the_docs_say_the_strict_shape_cycle_and_chain_cycle` finds the strict shape, "Context goes on its own line, never on a Depends on line", and link's `closes a cycle:` in `triage-rubric.md`'s Links between issues, MALFORMED_DEPENDS and CYCLE rows in its state table, the cycle question with one option per link in `comments.md`, CYCLE, MALFORMED_DEPENDS, and link's refusal in github-issue-triage's SKILL.md, and CHAIN_CYCLE in both of github-ship-watch's SKILL.md tables

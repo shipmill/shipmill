@@ -69,9 +69,10 @@ STUCK_ROWS = (
     "INCIDENT_OPEN",
 )
 # a hold is a person stopping the factory on purpose (D-15): theirs to lift, not a fault. A
-# chain's item in a repo without a gate, or a chain walk that fails, waits on a person too
-# (spec 017): neither stops this repo's releases, and no session can clear it
-CHAIN_ROWS = ("CHAIN_NO_GATE", "CHAIN_UNREADABLE")
+# chain's item in a repo without a gate, a cycle through another repo's items (spec 041), or
+# a chain walk that fails, waits on a person too (spec 017): none stops this repo's releases,
+# and no session can clear it
+CHAIN_ROWS = ("CHAIN_NO_GATE", "CHAIN_CYCLE", "CHAIN_UNREADABLE")  # CHAIN_CYCLE: spec 041
 # spec 022's rows, which watch_state.py reads from `shipmill milestones` (#475): a goal's
 # milestone waiting on its specs (no verdict: the build work is the factory's), and one a
 # stable tag overtook, renamed to the version the lane cuts next
@@ -127,6 +128,7 @@ ISSUE_LINES = (
             "SPEC_REFUSED",
             "UNFILLED",
             "MALFORMED_DEPENDS",  # spec 041: a Depends on line outside the strict shape
+            "CYCLE",  # spec 041: on a cycle of the repo's open issues, ask which link is wrong
             "DONE_NOT_CLOSED",
             "HANDOFF_DUE",
             "VERIFY_DUE",
@@ -1193,8 +1195,8 @@ CHAIN_ITEM = re.compile(r"(?P<repo>[\w.-]+/[\w.-]+)#(?P<number>[1-9]\d*)")
 
 
 def chain_value(r: Row) -> str:
-    """A CHAIN_NO_GATE or CHAIN_UNREADABLE row in its own words, its item (owner/repo#N, which
-    may be another repo's) with its link"""
+    """A CHAIN_NO_GATE, CHAIN_CYCLE, or CHAIN_UNREADABLE row in its own words, its item
+    (owner/repo#N, which may be another repo's; a cycle's first) with its link"""
     found = CHAIN_ITEM.fullmatch(r.subject)
     subject = f"{r.subject} {github(found['repo'])}/issues/{found['number']}" if found else r.subject
     return f"{r.state} {subject}: {r.detail}"

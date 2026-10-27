@@ -45,8 +45,20 @@ For each open issue:
   MALFORMED_DEPENDS once triaged (or a person's item), a "Depends on" line of its body
                    names a reference outside the strict shape: it holds on every
                    reference it names, and its note is "line <n>: <the line>" for
-                   each, then the holds. Read right after UNFILLED, before
+                   each, then the holds. Read right after UNFILLED, before CYCLE,
                    SPEC_REFUSED, BLOCKED, UNBLOCKED, and HANDOFF_DUE: rewrite the line
+  CYCLE            once triaged (or a person's item), it is on a cycle of the repo's open
+                   issues (spec 041): each holds the next through its Depends on lines (a
+                   malformed one's included), blockedBy, or sub-issues, as read here, so
+                   none can start. Only issues whose holds are read count, and with
+                   --trusted-only none read UNTRUSTED. Its note is "cycle <loop>", the
+                   shortest loop through it from its least issue, such as "cycle o/r#3 ->
+                   o/r#5 -> o/r#3", then the holds. Read right after MALFORMED_DEPENDS,
+                   before SPEC_REFUSED, BLOCKED, UNBLOCKED, and HANDOFF_DUE: ask which link
+                   is wrong. When another issue on its loop reads MALFORMED_DEPENDS or is
+                   labelled needs-decision, it reads BLOCKED instead, its note "cycle <loop>
+                   waits on owner/repo#N" naming that issue (the first on the loop), then
+                   the holds: that question or line fix breaks the loop
   SPEC_REFUSED    a pull request it waits on (such as its spec PR) closed without
                    merging, and no triage comment came after the hold: decide again
                    (revise the spec in a new PR, postpone, or won't fix). A newer
@@ -119,7 +131,7 @@ as @<org>/<team-slug> (a malformed name or filler, an empty list, a name given t
 maintainer exits 2). A role no flag gives resolves to maintainer's fillers, and several
 roles to the union of theirs. After UNTRUSTED, UPSTREAM, NEEDS_DECISION, DECIDED, VETOED,
 and OFF_MILESTONE, it reads NO_ASSIGNEE (without --role) or ASSIGN_DUE (with it), else
-UNFILLED, MALFORMED_DEPENDS, SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue would, else, with every
+UNFILLED, MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue would, else, with every
 hold closed, one of:
   NO_ASSIGNEE      without --role flags, a person's item with no assignee: read again
                    with the flags `shipmill roles --flags` prints. With them, never read
@@ -211,8 +223,8 @@ names the product's home repo, the config's [product] home, as owner/name (lette
 ".", "-", or "_" on each side; anything else exits 2); it only words UPSTREAM's note.
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
-MALFORMED_DEPENDS, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, VETOED, SUSPECT_CLOSE, HANDOFF_DUE, VERIFY_DUE,
-NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, or OFF_MILESTONE (never for NEEDS_DECISION, UNTRUSTED, UPSTREAM, or
+MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, VETOED, SUSPECT_CLOSE, HANDOFF_DUE,
+VERIFY_DUE, NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, or OFF_MILESTONE (never for NEEDS_DECISION, UNTRUSTED, UPSTREAM, or
 WITH_PERSON),
 1 too when any is CHECK_FAILED (spec 042), 2 on bad input (an issue with more than 100
 labels) or a gh failure. It pages past 100 open issues and an issue's 50 comments, 50
@@ -617,6 +629,7 @@ ACTION = {
     "UNBLOCKED",
     "UNFILLED",
     "MALFORMED_DEPENDS",
+    "CYCLE",
     "SPEC_REFUSED",
     "REVISIT",
     "DONE_NOT_CLOSED",
@@ -1192,6 +1205,8 @@ def ref_state(node: dict[str, Any]) -> str:
 
 
 Ref = tuple[str, str, int]
+# An issue's loop on a cycle (cycles), with the issue on it that breaks it, or None (spec 041)
+Cycle = tuple[list[Ref], Ref | None]
 
 
 def native_holds(issue: dict[str, Any]) -> dict[Ref, tuple[str, str, str | None]]:
@@ -1263,6 +1278,32 @@ def distances(graph: dict[Ref, list[Ref]], start: Ref) -> dict[Ref, int]:
     return found
 
 
+def cycles(issues: list[dict[str, Any]], repo: tuple[str, str], marker: str, skipped: set[int]) -> dict[int, list[Ref]]:
+    """Each open issue of the repo on a cycle (spec 041), by number, with its loop as
+    shortest_loop reads it, each issue in the repo's spelling and the first repeated at the
+    end. The links are the holds triage reads, in one graph and with no extra query: an open
+    issue's, once triaged or a person's item, on its Depends on lines (a malformed one's
+    included) and the forge's blockedBy and sub-issues, kept to the repo's open issues. A
+    ``skipped`` issue (read as UNTRUSTED) has none, so no loop runs through one. A comment's
+    hold sentence is no link, as chains.py reads none"""
+    home = fold((*repo, 0))[:2]
+    numbers = {int(issue["number"]) for issue in issues}
+    graph: dict[Ref, list[Ref]] = {}
+    for issue in issues:
+        number = int(issue["number"])
+        triaged = any(c["body"].lstrip().startswith(marker) for c in issue["comments"]["nodes"])
+        if number in skipped or not (triaged or person_item(issue)):
+            continue
+        holds = {fold(ref) for ref in [*dependency_refs(issue, repo), *native_holds(issue)]}
+        graph[(*home, number)] = sorted(r for r in holds if r[:2] == home and r[2] in numbers and r[2] != number)
+    found: dict[int, list[Ref]] = {}
+    for key in graph:
+        loop = shortest_loop(graph, key)
+        if loop is not None:
+            found[key[2]] = [(*repo, ref[2]) for ref in [*loop, loop[0]]]
+    return found
+
+
 def timestamp(text: str) -> dt.datetime:
     """A GitHub ISO 8601 time; tagger dates carry an offset, comment dates a "Z", which
     fromisoformat rejects before Python 3.11"""
@@ -1315,11 +1356,14 @@ def classify_open(
     closes: dict[tuple[str, str, int], str] | None = None,
     milestone: bool = True,
     roles: Roles | None = None,
+    cycle: Cycle | None = None,
 ) -> tuple[str, str]:
     """An open issue's state once gated found none; ``closes`` says when each closed hold
     closed, which a person's item (labelled human or role:<name>) reads its hand-off against.
     Without ``milestone``, the state OFF_MILESTONE hides (--wip counts one hiding IN_PROGRESS).
-    ``roles``, the --role flags (None without them), turns NO_ASSIGNEE into ASSIGN_DUE"""
+    ``roles``, the --role flags (None without them), turns NO_ASSIGNEE into ASSIGN_DUE.
+    ``cycle`` is the issue's loop when it is on a cycle (cycles), with the issue on it that
+    breaks the loop, if any: it reads CYCLE, or BLOCKED waiting on that issue (spec 041)"""
     missed = off_milestone(issue, repo) if milestone else None
     if missed is not None:
         return "OFF_MILESTONE", missed
@@ -1391,6 +1435,14 @@ def classify_open(
         # Which of its references are holds is unclear, so nothing starts on it: a session
         # rewrites the line (spec 041). CYCLE is read right after this, before SPEC_REFUSED
         return "MALFORMED_DEPENDS", " | ".join([*malformed, shown] if shown else malformed)
+    if cycle is not None:
+        # Nothing on the loop can start, so a session asks which link is wrong; when another
+        # item on it already waits on a question or a line fix, that one breaks the loop (spec 041)
+        loop, breaker = cycle
+        said = f"cycle {' -> '.join(f'{o}/{n}#{k}' for o, n, k in loop)}"
+        if breaker is not None:
+            said += f" waits on {breaker[0]}/{breaker[1]}#{breaker[2]}"
+        return ("CYCLE" if breaker is None else "BLOCKED"), " | ".join([said, shown] if shown else [said])
     if waits or "blocked" in labels:
         if any(states.get(r) == "CLOSED_UNMERGED" for r in waits):
             return "SPEC_REFUSED", shown
@@ -1833,7 +1885,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         epilog=(
-            "States: NEW NEEDS_PR IN_PROGRESS DONE_NOT_CLOSED BLOCKED UNFILLED MALFORMED_DEPENDS SPEC_REFUSED "
+            "States: NEW NEEDS_PR IN_PROGRESS DONE_NOT_CLOSED BLOCKED UNFILLED MALFORMED_DEPENDS CYCLE SPEC_REFUSED "
             "UNBLOCKED POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED VETOED UNTRUSTED UPSTREAM OFF_MILESTONE; "
             "for an issue labelled human or role:<name> "
             "(a person's item) NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
@@ -1908,10 +1960,13 @@ def main() -> int:
     stable = latest_stable(data["tags"]["nodes"], stable_pattern)
     people: set[int] = set()
     busy: set[int] = set()  # OFF_MILESTONE over an open PR: still in progress under --wip
-    for issue in data["open"]["nodes"]:
-        if person_item(issue):
-            people.add(issue["number"])
-        state, note = gated(issue, args.bot_login, args.trusted_only, args.home) or classify_open(
+    issues: list[dict[str, Any]] = data["open"]["nodes"]
+    gates = {issue["number"]: gated(issue, args.bot_login, args.trusted_only, args.home) for issue in issues}
+    untrusted = {n for n, verdict in gates.items() if verdict is not None and verdict[0] == "UNTRUSTED"}
+    loops = cycles(issues, (owner, name), args.marker, untrusted)
+
+    def read(issue: dict[str, Any], cycle: Cycle | None = None) -> tuple[str, str]:
+        return gates[issue["number"]] or classify_open(
             issue,
             args.marker,
             args.postponed_label,
@@ -1921,7 +1976,23 @@ def main() -> int:
             args.bot_login,
             closes,
             roles=roles,
+            cycle=cycle,
         )
+
+    # An issue on a loop that waits on a question, or reads MALFORMED_DEPENDS (read before
+    # CYCLE, so it reads so whatever its loop), breaks the loop: the others wait on it (spec 041)
+    breakers = {
+        issue["number"]
+        for issue in issues
+        if issue["number"] in loops
+        and (DECISION_LABEL in {n["name"] for n in issue["labels"]["nodes"]} or read(issue)[0] == "MALFORMED_DEPENDS")
+    }
+    for issue in issues:
+        if person_item(issue):
+            people.add(issue["number"])
+        loop = loops.get(issue["number"])
+        breaker = None if loop is None else next((r for r in loop if r[2] in breakers - {issue["number"]}), None)
+        state, note = read(issue, None if loop is None else (loop, breaker))
         if state == "OFF_MILESTONE":
             usual = classify_open(
                 issue, args.marker, args.postponed_label, states, stable, (owner, name), args.bot_login, closes, False
@@ -1957,6 +2028,7 @@ def main() -> int:
         "UNBLOCKED",
         "UNFILLED",
         "MALFORMED_DEPENDS",
+        "CYCLE",
         "SPEC_REFUSED",
         "REVISIT",
         "NEW",
