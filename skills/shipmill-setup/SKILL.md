@@ -454,11 +454,16 @@ needs an agent when github-ship-watch's `watch_state.py` marks a row `agent: tru
 `observe` (spec 040; `[agents] prs` is deprecated, and doctor warns while it is set).
 docs/design/agent-modes.md has the details.
 
-Each tick also prunes landed worktrees, before the hold check, so it prunes under a hold
-too: it removes a worktree under `.claude/worktrees/` or `tmp/wt-*` and its local branch
+Once a tick has its decision, held or not, it also prunes landed worktrees, every
+`[agents] prune_hours` (default 6; 0: every tick; the last attempt is the state directory's
+`prune.json`): it removes a worktree under `.claude/worktrees/` or `tmp/wt-*` and its local branch
 once its commits landed on the default branch, it is clean and over a day old, and no
 open PR or live Claude Code session holds it, and prints a `pruned <path> (<branch>)` line
-for each (`would prune` under `--dry-run`). The worktrees a session leaves behind once it
+for each, after the decision's lines (`would prune` under `--dry-run`, which judges every
+time). A prune that fails prints `prune failed: <first line>` and fails no tick: the
+decision and any launch stand, and `shipmill factory`'s `prune` line shows it failing since
+when, with its fix, `shipmill worktrees --prune`, which `shipmill status` counts on its
+`factory` line (spec 045). The worktrees a session leaves behind once it
 exits are the gate's prune's to remove (D-12); never the main checkout, the gate's own
 checkout, or a worktree elsewhere. `$CR --repo tmp/shipmill-gate worktrees` lists every
 worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--prune
@@ -466,8 +471,8 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
 days with its fix, for a person to finish or remove.
 
 `$CR factory` checks the gate's host for the repo, one line per check: the gate's launchd job
-and log, its live sessions, the GitHub App, the shipmill installs, the local checkout, and
-the worktrees, each run on its own (spec 044). `shipmill status` is the pipeline: what waits
+and log, its live sessions, the GitHub App, the shipmill installs, the local checkout, the
+worktrees, and the gate's last prune, each run on its own (spec 044). `shipmill status` is the pipeline: what waits
 on whom, from GitHub, with one `factory` line summing up those checks.
 
 1. **Scope.** Ask what the session may do; the prompt carries it. Recommend triage without

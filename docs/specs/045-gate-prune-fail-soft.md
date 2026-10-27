@@ -1,6 +1,6 @@
 # S-045: The gate's worktree prune runs after the decision, now and then, and never fails a tick
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -139,4 +139,22 @@ It changes no verdict: the gate still works, and the worktrees wait.
 
 ## Issues
 
+- shipmill/shipmill#741: S-045-1, S-045-2, S-045-3, S-045-4, S-045-5, S-045-6, S-045-7, S-045-8, S-045-9, S-045-10, S-045-11
+
 ## Verification
+
+Checked on the default branch plus #731's and #741's changes, by the tests named, all
+passing; `shipmill factory` on shipmill/shipmill printed `prune  never ran here` after its
+worktrees line, since no gate of this version had pruned there yet.
+
+- S-045-1: `test_s045_1_a_held_waiting_or_running_tick_prunes_after_its_decision`, `test_s045_1_a_launch_prints_its_pruned_line_after_the_launch`
+- S-045-2: `test_s045_2_a_launch_tick_whose_prune_fails_still_launches`
+- S-045-3: `test_s045_3_a_tick_that_fails_before_its_decision_prunes_nothing`
+- S-045-4: `test_s045_4_a_tick_prunes_only_when_prune_hours_have_passed`, `test_s045_4_prune_hours_0_prunes_on_every_tick`
+- S-045-5: `test_s045_5_prune_hours_defaults_to_6_and_accepts_0_to_168`, `test_s045_5_the_config_refuses_a_prune_hours_that_is_not_an_integer_from_0_to_168`
+- S-045-6: `test_s045_6_a_failing_prune_prints_its_first_line_and_changes_nothing_else`, `test_s045_6_a_removal_git_refuses_is_the_prunes_error`, `test_s045_6_any_other_exception_still_ends_the_tick`
+- S-045-7: `test_s045_7_json_prints_whether_the_prune_ran_and_its_error`
+- S-045-8: `test_s045_8_prune_json_records_each_attempt_and_the_first_failure`, `test_s045_8_a_malformed_prune_json_is_the_prunes_error_and_stays`
+- S-045-9: `test_s045_9_a_dry_run_judges_when_not_due_removes_nothing_and_writes_no_prune_json`
+- S-045-10: `test_s045_10_factory_prints_a_prune_line_after_worktrees`; on shipmill/shipmill, `never ran here`
+- S-045-11: `test_s045_11_a_failing_prune_counts_on_the_factory_line_and_keeps_the_verdict`

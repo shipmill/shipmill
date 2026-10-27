@@ -29,9 +29,8 @@ from shipmill.app import (
 from shipmill.autonomy import Hold
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
-from shipmill.gate import RECORD, Action, Finding, gate, state_dir
+from shipmill.gate import RECORD, Action, Finding, Session, gate, state_dir
 from shipmill.gitrepo import Git
-from shipmill.worktrees import Judged
 
 from .test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier, bg, host, write_config
 
@@ -287,13 +286,15 @@ def _claims(token: str) -> dict[str, int]:
 
 
 def test_s004_4_694_a_check_10_minutes_into_the_tick_signs_with_the_calls_time(checkout: Git, tmp_path: Path) -> None:
-    """#694: the waiting step and the prune ran 10 minutes, past VALID_FOR from the tick's
-    start; the JWT GitHub gets carries the call's iat and exp, so it isn't refused as expired"""
+    """#694: the session listing and the waiting step ran 10 minutes, past VALID_FOR from the
+    tick's start (the prune ran first before spec 045); the JWT GitHub gets carries the call's
+    iat and exp, so it isn't refused as expired"""
     clock = [NOW]
 
-    def slow_prune(now: dt.datetime, dry_run: bool) -> list[Judged]:
-        clock[0] = NOW + dt.timedelta(minutes=10)
-        return []
+    class SlowClaude(FakeClaude):
+        def sessions(self, workspace: Path, repo: str) -> list[Session]:
+            clock[0] = NOW + dt.timedelta(minutes=10)
+            return super().sessions(workspace, repo)
 
     api = FakeApi()
     check = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api, clock=lambda: clock[0])
@@ -301,12 +302,12 @@ def test_s004_4_694_a_check_10_minutes_into_the_tick_signs_with_the_calls_time(c
         checkout,
         REPO,
         app_cfg,
-        FakeClaude(),
+        SlowClaude(),
         lambda _: [ISSUES],
         NOW,
         Hold,
         FakeNotifier(),
-        slow_prune,
+        NO_PRUNE,
         dry_run=True,
         app=check,
         login=host,

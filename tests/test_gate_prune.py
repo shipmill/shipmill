@@ -1,24 +1,48 @@
-"""`shipmill gate` prunes the repository's landed worktrees on each tick (spec 002, S-002-15
-and S-002-16); each test runs the gate from a detached linked gate checkout, as
-tmp/shipmill-gate is in shipmill-setup, with the real judge and prune"""
+"""`shipmill gate` prunes the repository's landed worktrees (spec 002, S-002-15 and S-002-16)
+after its decision, when a prune is due, and a prune that fails never fails the tick (spec
+045); each test runs the gate from a detached linked gate checkout, as tmp/shipmill-gate is
+in shipmill-setup, with the real judge and prune"""
 
+import dataclasses
 import datetime as dt
 import json
-import os
-import subprocess
-import sys
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from shipmill.agents import AgentsConfig
 from shipmill.autonomy import Hold
+from shipmill.cli import _gate_exit
+from shipmill.config import Table
 from shipmill.errors import ReleaseError
-from shipmill.gate import Action, Decision, Finding, Waiting, gate, pruner, tick_lines, tick_record
-from shipmill.worktrees import Judged, LiveSession
+from shipmill.gate import (
+    PRUNE,
+    Action,
+    Decision,
+    Finding,
+    PruneRecord,
+    PruneRun,
+    StateRead,
+    Waiting,
+    gate,
+    load_prune,
+    prune_step,
+    pruner,
+    save_prune,
+    state_dir,
+    tick_lines,
+    tick_record,
+)
+from shipmill.status import Verdict as StatusVerdict
+from shipmill.status import host_checks, report
+from shipmill.worktrees import Judged, LiveSession, Verdict
 
-from .test_gate import ISSUES, FakeClaude, FakeNotifier, cfg, host, on_hold
-from .test_worktrees import CHANGELOG, Checkout, branches, fake_tool, run
+from .test_factory import fake_host, run_checks, tree
+from .test_gate import ISSUES, FakeClaude, FakeNotifier, bg, cfg, host, on_hold
+from .test_status_picture import facts
+from .test_status_picture import gate as status_gate
+from .test_worktrees import CHANGELOG, Checkout, branches, run
 
 REPO = "romamo/demo"
 DONE = ".claude/worktrees/done"
@@ -42,6 +66,7 @@ KEYS = {
     "auth",  # spec 035's kind: token-file or login
     "preflight",  # #500's Claude Code login preflight
     "dead",  # #500's dead session
+    "prune",  # spec 045's prune: whether it ran, and its error
 }
 
 Tick = tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]
@@ -71,15 +96,18 @@ def tick(
     findings: tuple[Finding, ...] = (ISSUES,),
     dry_run: bool = False,
     refresh: bool = False,
+    prune_hours: int | None = None,
+    later: dt.timedelta = dt.timedelta(),
+    rows: Callable[[StateRead], list[Finding]] | None = None,
 ) -> Tick:
     git = c.git(c.root / GATE)
-    now = dt.datetime.now(dt.UTC)  # the worktrees' ages count from the real clock
+    now = dt.datetime.now(dt.UTC) + later  # the worktrees' ages count from the real clock
     return gate(
         git,
         REPO,
         lambda: cfg(),
         claude,
-        lambda _: list(findings),
+        rows or (lambda _: list(findings)),
         now,
         hold,
         FakeNotifier(),
@@ -87,7 +115,12 @@ def tick(
         refresh_checkout=refresh,
         dry_run=dry_run,
         login=host,
+        prune_hours=None if prune_hours is None else (lambda: prune_hours),
     )
+
+
+def prune_file(c: Checkout) -> Path:
+    return state_dir(c.git(c.root / GATE)) / PRUNE
 
 
 def head(path: Path) -> str:
@@ -173,66 +206,238 @@ def test_s002_16_a_dry_run_lists_what_it_would_prune_and_removes_nothing(repo: C
     assert tick_record(decision, launched, waiting, pruned, dry_run=True)["pruned"] == [DONE]
 
 
-def test_s002_16_a_failing_gh_pr_list_fails_the_tick_before_any_launch(repo: Checkout) -> None:
-    before = repo.state()
+def test_s045_1_a_held_waiting_or_running_tick_prunes_after_its_decision(repo: Checkout) -> None:
+    """The hold check, then the busy one, end the tick, and the prune still runs after them,
+    its pruned line after the decision's lines"""
+    held_tick = tick(repo, FakeClaude(), hold=on_hold)
+    assert held_tick[0].action is Action.HELD and [j.path for j in held_tick[3]] == [DONE]
+    lines = tick_lines(*held_tick, dry_run=False)
+    assert lines[-1] == f"  pruned {DONE} (feat/done)" and lines[0].startswith("HELD: ")
+    for listed, action in ((bg("a", "idle", "blocked"), Action.WAITING), (bg("a", "busy", "working"), Action.RUNNING)):
+        name = action.value.lower()
+        repo.add(f"tmp/wt-{name}", "-b", f"feat/{name}")
+        decision, launched, waiting, pruned = tick(repo, FakeClaude([listed]))
+        assert decision.action is action
+        assert [j.path for j in pruned] == [f"tmp/wt-{name}"] and not (repo.root / f"tmp/wt-{name}").exists()
+        lines = tick_lines(decision, launched, waiting, pruned, dry_run=False)
+        assert lines[0].startswith(f"{action.value}: ") and lines[-1] == f"  pruned tmp/wt-{name} (feat/{name})"
+
+
+def test_s045_1_a_launch_prints_its_pruned_line_after_the_launch(repo: Checkout) -> None:
+    decision, launched, waiting, pruned = tick(repo, FakeClaude())
+    lines = tick_lines(decision, launched, waiting, pruned, dry_run=False)
+    assert lines[-2:] == ["  launched s1: claude attach s1", f"  pruned {DONE} (feat/done)"]
+
+
+def test_s045_2_a_launch_tick_whose_prune_fails_still_launches(repo: Checkout) -> None:
     repo.github.pulls_error = "HTTP 502"
     claude = FakeClaude()
-    with pytest.raises(ReleaseError, match="gh pr list failed: HTTP 502"):
-        tick(repo, claude)
-    assert (claude.launched, claude.stopped) == ([], [])
-    assert repo.state() == before
+    decision, launched, _, pruned = tick(repo, claude)
+    assert (decision.action, launched, pruned) == (Action.LAUNCH, "s1", ())
+    assert [name for name, _ in claude.launched] != []
+    assert decision.prune == PruneRun(True, "gh pr list failed: HTTP 502")
+    assert (repo.root / DONE).is_dir()
 
 
-def test_s002_16_a_failing_claude_agents_fails_the_tick_before_any_launch(repo: Checkout) -> None:
+def test_s045_3_a_tick_that_fails_before_its_decision_prunes_nothing(repo: Checkout) -> None:
     before = repo.state()
-    git = repo.git(repo.root / GATE)
-    claude = FakeClaude()
 
-    class Broken:
-        def live(self) -> list[LiveSession]:
-            raise ReleaseError("claude agents --json failed with exit 1: boom")
+    def unreadable(_: StateRead) -> list[Finding]:
+        raise ReleaseError("watch_state.py failed (exit 2)")
 
-    with pytest.raises(ReleaseError, match="claude agents --json failed"):
-        gate(
-            git,
-            REPO,
-            lambda: cfg(),
-            claude,
-            lambda _: [ISSUES],
-            dt.datetime.now(dt.UTC),
-            Hold,
-            FakeNotifier(),
-            pruner(git, repo.github, Broken()),
-        )
-    assert claude.launched == []
-    assert repo.state() == before
+    with pytest.raises(ReleaseError, match="watch_state.py failed"):
+        tick(repo, FakeClaude(), rows=unreadable)
+    assert repo.state() == before and (repo.root / DONE).is_dir()
+    assert not prune_file(repo).exists()
 
 
-def test_s002_16_a_removal_git_refuses_fails_the_tick_before_any_launch(repo: Checkout) -> None:
+def test_s045_4_a_tick_prunes_only_when_prune_hours_have_passed(repo: Checkout) -> None:
+    first = tick(repo, FakeClaude(), hold=on_hold, prune_hours=6)
+    assert [j.path for j in first[3]] == [DONE]
+    at = load_prune(prune_file(repo))
+    assert at is not None
+    later = repo.add("tmp/wt-later", "-b", "feat/later")
+    soon = tick(repo, FakeClaude(), hold=on_hold, prune_hours=6, later=dt.timedelta(hours=5, minutes=59))
+    assert (soon[0].prune, soon[3]) == (PruneRun(False), ()) and later.is_dir()
+    assert tick_lines(*soon, dry_run=False) == [soon[0].action.value + ": " + soon[0].reason]
+    assert load_prune(prune_file(repo)) == at  # an attempt not due writes nothing
+    due = tick(repo, FakeClaude(), hold=on_hold, prune_hours=6, later=dt.timedelta(hours=6))
+    assert due[0].prune == PruneRun(True) and [j.path for j in due[3]] == ["tmp/wt-later"]
+
+
+def test_s045_4_prune_hours_0_prunes_on_every_tick(repo: Checkout) -> None:
+    assert tick(repo, FakeClaude(), hold=on_hold, prune_hours=0)[0].prune == PruneRun(True)
+    repo.add("tmp/wt-next", "-b", "feat/next")
+    again = tick(repo, FakeClaude(), hold=on_hold, prune_hours=0)
+    assert again[0].prune == PruneRun(True) and [j.path for j in again[3]] == ["tmp/wt-next"]
+
+
+def agents(**keys: object) -> AgentsConfig:
+    return AgentsConfig.parse(Table({"agents": {"prompt": "/t", **keys}}, "x").table("agents"))
+
+
+def test_s045_5_prune_hours_defaults_to_6_and_accepts_0_to_168() -> None:
+    assert agents().prune_hours == 6
+    assert (agents(prune_hours=0).prune_hours, agents(prune_hours=168).prune_hours) == (0, 168)
+
+
+@pytest.mark.parametrize("value", [-1, 169, "6", 1.5, True])
+def test_s045_5_the_config_refuses_a_prune_hours_that_is_not_an_integer_from_0_to_168(value: object) -> None:
+    with pytest.raises(ReleaseError, match="prune_hours"):
+        agents(prune_hours=value)
+
+
+def test_s045_6_a_failing_prune_prints_its_first_line_and_changes_nothing_else(repo: Checkout) -> None:
+    clean = tick(repo, FakeClaude(), hold=on_hold)
+    assert clean[0].prune == PruneRun(True)
+    repo.add("tmp/wt-again", "-b", "feat/again")
+    repo.github.pulls_error = "HTTP 502\nmore detail"
+    decision, launched, waiting, pruned = tick(repo, FakeClaude(), hold=on_hold)
+    assert pruned == () and (repo.root / "tmp/wt-again").is_dir()
+    lines = tick_lines(decision, launched, waiting, pruned, dry_run=False)
+    assert lines == [*tick_lines(*clean[:3], (), dry_run=False), "  prune failed: gh pr list failed: HTTP 502"]
+    assert not any("pruned" in line for line in lines)
+    assert dataclasses.replace(decision, prune=None) == dataclasses.replace(clean[0], prune=None)
+    assert _gate_exit(decision) == _gate_exit(clean[0]) == 0
+
+
+def test_s045_6_a_removal_git_refuses_is_the_prunes_error(repo: Checkout) -> None:
     common = Path(repo.git().run("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
     (common / "refs/heads/feat/done.lock").write_text("", encoding="utf-8")  # another git holds the ref
     claude = FakeClaude()
-    with pytest.raises(ReleaseError, match=rf"prune stopped at {DONE} \(feat/done\): git branch -D feat/done failed"):
-        tick(repo, claude)
-    assert (claude.launched, claude.stopped) == ([], [])
+    decision, launched, waiting, pruned = tick(repo, claude)
+    assert (decision.action, launched, pruned) == (Action.LAUNCH, "s1", ())
+    assert decision.prune is not None and decision.prune.error is not None
+    assert decision.prune.error.startswith(f"prune stopped at {DONE} (feat/done): git branch -D feat/done failed")
 
 
-def test_s002_16_shipmill_gate_exits_2_on_a_prune_error_and_launches_nothing(repo: Checkout, tmp_path: Path) -> None:
-    """A claude whose gate-session listing works but whose `claude agents --json` (every
-    session, which the prune reads) fails; a launch would leave launched.txt behind"""
-    launched = tmp_path / "launched.txt"
-    script = (
-        'if [ "$3" = "--cwd" ]; then echo "[]"; exit 0; fi\n'
-        f'if [ "$1" = "--bg" ]; then echo x > {launched}; echo "claude attach s1"; exit 0; fi\n'
-        "echo 'not logged in' >&2\nexit 3\n"
+def test_s045_6_any_other_exception_still_ends_the_tick(repo: Checkout) -> None:
+    git = repo.git(repo.root / GATE)
+
+    def buggy(now: dt.datetime, dry_run: bool) -> list[Judged]:
+        raise KeyError("a bug")
+
+    with pytest.raises(KeyError):
+        gate(git, REPO, lambda: cfg(), FakeClaude(), lambda _: [], dt.datetime.now(dt.UTC), Hold, FakeNotifier(), buggy)
+
+
+def test_s045_7_json_prints_whether_the_prune_ran_and_its_error(repo: Checkout) -> None:
+    ran = tick(repo, FakeClaude(), hold=on_hold, prune_hours=6)
+    record = json.loads(json.dumps(tick_record(*ran, dry_run=False)))
+    assert set(record) == KEYS and record["prune"] == {"ran": True, "error": None}
+    skipped = tick(repo, FakeClaude(), hold=on_hold, prune_hours=6)
+    record = tick_record(*skipped, dry_run=False)
+    assert (record["prune"], record["pruned"]) == ({"ran": False, "error": None}, [])
+    repo.github.pulls_error = "HTTP 502"
+    failed = tick(repo, FakeClaude(), hold=on_hold, prune_hours=0)
+    record = tick_record(*failed, dry_run=False)
+    assert (record["prune"], record["pruned"]) == ({"ran": True, "error": "gh pr list failed: HTTP 502"}, [])
+
+
+NOW = dt.datetime(2026, 10, 27, 9, 0, tzinfo=dt.UTC)
+
+
+def test_s045_8_prune_json_records_each_attempt_and_the_first_failure(tmp_path: Path) -> None:
+    path = tmp_path / PRUNE
+    removed = tree("tmp/wt-x", Verdict.REMOVED, None, 30)
+
+    def works(now: dt.datetime, dry_run: bool) -> list[Judged]:
+        return [removed, removed]
+
+    def fails(now: dt.datetime, dry_run: bool) -> list[Judged]:
+        raise ReleaseError("gh api graphql -F failed: possible nodes\nmore")
+
+    hour = dt.timedelta(hours=1)
+    assert prune_step(path, lambda: 0, fails, NOW, False)[0] == PruneRun(
+        True, "gh api graphql -F failed: possible nodes"
     )
-    bin_dir = fake_tool(tmp_path, "claude", script)
+    first = json.loads(path.read_text(encoding="utf-8"))
+    assert first == {
+        "at": NOW.isoformat(),
+        "ok": False,
+        "error": "gh api graphql -F failed: possible nodes",
+        "failing_since": NOW.isoformat(),
+        "removed": 0,
+    }
+    prune_step(path, lambda: 0, fails, NOW + hour, False)
+    assert load_prune(path) == PruneRecord(NOW + hour, False, "gh api graphql -F failed: possible nodes", NOW, 0)
+    run, pruned = prune_step(path, lambda: 0, works, NOW + 2 * hour, False)
+    assert (run, len(pruned)) == (PruneRun(True), 2)
+    assert load_prune(path) == PruneRecord(NOW + 2 * hour, True, None, None, 2)
+    prune_step(path, lambda: 0, fails, NOW + 3 * hour, False)
+    assert load_prune(path) == PruneRecord(
+        NOW + 3 * hour, False, "gh api graphql -F failed: possible nodes", NOW + 3 * hour, 0
+    )
+
+
+def test_s045_8_a_malformed_prune_json_is_the_prunes_error_and_stays(tmp_path: Path) -> None:
+    path = tmp_path / PRUNE
+    path.write_text('{"at": "2026-10-27T09:00:00+00:00", "ok": true}\n', encoding="utf-8")
+
+    def unused(now: dt.datetime, dry_run: bool) -> list[Judged]:
+        raise AssertionError("a prune.json it can't read runs no prune")
+
+    run, pruned = prune_step(path, lambda: 0, unused, NOW, False)
+    assert (run.ran, pruned) == (False, ()) and run.error is not None and "delete it to start over" in run.error
+    assert path.read_text(encoding="utf-8").startswith('{"at"')
+    with pytest.raises(ValueError, match="ok must go with"):
+        PruneRecord(NOW, True, "boom", None, 0)
+
+
+def test_s045_9_a_dry_run_judges_when_not_due_removes_nothing_and_writes_no_prune_json(repo: Checkout) -> None:
+    save_prune(prune_file(repo), PruneRecord(dt.datetime.now(dt.UTC), True, None, None, 0))  # a prune just ran
+    written = prune_file(repo).read_text(encoding="utf-8")
     before = repo.state()
-    env = {**os.environ, "PATH": str(bin_dir)}
-    cmd = [sys.executable, "-c", "from shipmill.cli import run; run()", "--repo", str(repo.root / GATE), "gate", REPO]
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    assert proc.returncode == 2, proc.stderr
-    assert proc.stderr.startswith("shipmill: claude agents --json failed with exit 3: not logged in")
-    assert proc.stdout == ""
-    assert not launched.exists()
-    assert repo.state() == before
+    decision, launched, waiting, pruned = tick(repo, FakeClaude(), dry_run=True, prune_hours=6)
+    assert [j.path for j in pruned] == [DONE] and decision.prune == PruneRun(True)
+    assert repo.state() == before and (repo.root / DONE).is_dir()
+    assert f"  would prune {DONE} (feat/done)" in tick_lines(decision, launched, waiting, pruned, dry_run=True)
+    assert prune_file(repo).read_text(encoding="utf-8") == written
+    prune_file(repo).unlink()
+    tick(repo, FakeClaude(), dry_run=True, prune_hours=6)
+    assert not prune_file(repo).exists()
+
+
+FAILING = PruneRecord(NOW, False, "gh pr list failed: HTTP 502", NOW - dt.timedelta(hours=12), 0)
+
+
+def test_s045_10_factory_prints_a_prune_line_after_worktrees() -> None:
+    def line(record: PruneRecord | None) -> tuple[bool, list[str]]:
+        found = run_checks(dataclasses.replace(fake_host(), prune=lambda: record))
+        assert [c.check for c in found][-2:] == ["worktrees", "prune"]
+        return found[-1].ok, found[-1].lines()
+
+    assert line(None) == (True, ["  prune          never ran here"])
+    assert line(PruneRecord(NOW, True, None, None, 3)) == (
+        True,
+        ["  prune          last ran 2026-10-27T09:00+00:00, removed 3"],
+    )
+    assert line(FAILING) == (
+        False,
+        [
+            "  prune          failing since 2026-10-26T21:00+00:00: gh pr list failed: HTTP 502",
+            "                 fix: shipmill worktrees --prune",
+        ],
+    )
+
+    def unreadable() -> PruneRecord | None:
+        raise ReleaseError("/x/prune.json is malformed (expected exactly at, error); delete it to start over\nmore")
+
+    (check,) = [c for c in run_checks(dataclasses.replace(fake_host(), prune=unreadable)) if c.check == "prune"]
+    assert check.lines() == [
+        "  prune          ERROR: /x/prune.json is malformed (expected exactly at, error); delete it to start over"
+    ]
+
+
+def test_s045_11_a_failing_prune_counts_on_the_factory_line_and_keeps_the_verdict() -> None:
+    clean, failing = facts(), facts(gate=status_gate(prune=FAILING))
+    assert "  factory        OK" in report(clean).text(REPO).splitlines()
+    text = report(failing).text(REPO).splitlines()
+    assert (
+        "  factory        1 problem(s): prune failing since 2026-10-26T21:00+00:00: gh pr list failed: HTTP 502;"
+        " shipmill factory"
+    ) in text
+    assert "                 fix: shipmill worktrees --prune" not in text  # no reason of the verdict's
+    assert report(failing).verdict is report(clean).verdict is not StatusVerdict.STUCK
+    assert report(failing).reasons == report(clean).reasons
+    assert [c.check for c in host_checks(failing)][-1] == "prune"

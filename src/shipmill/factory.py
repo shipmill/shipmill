@@ -1,7 +1,8 @@
 """Spec 044: `shipmill factory`, this host's machinery for the repo, one line per check: the
 gate's launchd job and log, its live sessions, the GitHub App, the shipmill installs, the
-local checkout, and the worktrees. Each check runs on its own: one that fails to run prints
-`ERROR: <its first line>` and the checks after it still run (D-55). Read-only"""
+local checkout, the worktrees, and the gate's last prune (spec 045). Each check runs on its
+own: one that fails to run prints `ERROR: <its first line>` and the checks after it still
+run (D-55). Read-only"""
 
 import datetime as dt
 import json
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from shipmill.errors import ReleaseError
-from shipmill.gate import StateRunner, skills_dir, state_failed
+from shipmill.gate import PruneRecord, StateRunner, skills_dir, state_failed
 from shipmill.plugin import GateCli
 from shipmill.status import (
     CHECK_FAILURES,
@@ -28,6 +29,7 @@ from shipmill.status import (
     github_app_check,
     guarded,
     parse_rows,
+    prune_check,
     sessions_check,
     shipmill_check,
 )
@@ -52,13 +54,14 @@ class Worktrees:
 class Host:
     """What the checks read, each on its own, as tests pass fakes: the gate's job and App
     check, the gate's own CLI, a section of watch_state.py's host rows, the checkout's branch
-    against GitHub's after a fetch, and the worktrees"""
+    against GitHub's after a fetch, the worktrees, and the gate's prune.json"""
 
     gate: Callable[[], Gate]
     gate_cli: Callable[[], GateCli | None]
     rows: Callable[[str], Sequence[Row]]
     main: Callable[[], Main]
     worktrees: Callable[[], Worktrees]
+    prune: Callable[[], PruneRecord | None]
 
 
 def host_command(repo: str, workspace: Path, section: str) -> list[str]:
@@ -140,6 +143,7 @@ def checks(repo: str, host: Host, cli: str, checkout: Path, now: dt.datetime, co
         guarded("shipmill", command, shipmill),
         guarded("checkout", command, lambda: checkout_check(host.main(), checkout)),
         guarded("worktrees", command, lambda: worktrees_check(host.worktrees())),
+        guarded("prune", command, lambda: prune_check(host.prune(), command)),
     ]
 
 

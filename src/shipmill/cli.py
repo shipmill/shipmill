@@ -208,6 +208,7 @@ from shipmill.downstream import (
 )
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
+    PRUNE,
     Action,
     ClaudeCli,
     Decision,
@@ -216,6 +217,7 @@ from shipmill.gate import (
     check_checkout,
     gate,
     host_login,
+    load_prune,
     pruner,
     refresh,
     run_command,
@@ -1175,6 +1177,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         auth=_claude_auth(os.environ),
         roles=roles.resolve,
         credential=lambda: _credential(args.claude_token, Path.home()),
+        prune_hours=lambda: AgentsConfig.load(root, args.slug).prune_hours,
     )
     if args.json:
         print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))
@@ -1727,6 +1730,10 @@ def _status(
             gate = dataclasses.replace(gate, cli=_gate_cli(top, slug, home))
         except status.CHECK_FAILURES as exc:  # S-044-4: the shipmill check's error, not the report's end
             gate = dataclasses.replace(gate, cli_error=status.first_line(exc))
+        try:  # S-045-11: the gate's last prune, counted on the factory line
+            gate = dataclasses.replace(gate, prune=load_prune(state_dir(Git(top)) / PRUNE))
+        except status.CHECK_FAILURES as exc:
+            gate = dataclasses.replace(gate, prune_error=status.first_line(exc))
     bot = None if gate is None else gate.login
     if bot is None:  # #311: --rows, --json, or a failed check still count the App's questions
         bot = status.read_login(slug, top, home, platform, bot_login)
@@ -1819,6 +1826,7 @@ def _factory(
         rows=lambda section: factory.read_rows(slug, top, section, run),
         main=main_branch,
         worktrees=worktrees,
+        prune=lambda: load_prune(state_dir(git) / PRUNE),
     )
     found = factory.checks(slug, host, importlib.metadata.version("shipmill"), top, when, cli_command())
     sys.stdout.write(factory.as_json(found) if args.json else factory.text(found))

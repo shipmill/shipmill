@@ -334,6 +334,7 @@ modes](design/agent-modes.md) has the details.
    [agents]
    prompt = "/shipmill:github-issue-triage {repo} triage the new issues; do not merge"
    retry_hours = 24   # unchanged findings start a new session after this
+   prune_hours = 6    # prune the landed worktrees this often, after the tick's decision; 0: every tick
    notify = true      # a desktop notification when a session waits on you
    remind_hours = 4   # repeat it while the session still waits
    max_wait_minutes = 15 # stop a session that waited this long; 0: never

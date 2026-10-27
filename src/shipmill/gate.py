@@ -8,9 +8,10 @@ the work changed since the last launch. Everything it knows comes from
 GitHub and from Claude Code; the files it writes, under the checkout's git directory,
 keep an unchanged state from starting a session on every tick and time how long a session,
 or in headless mode an item's needs-decision question, has waited on the user, so a
-reminder repeats only every few hours and an optional limit stops a session. Each tick
-also prunes the repository's worktrees that provably landed (spec S-002), held or not,
-before it decides anything.
+reminder repeats only every few hours and an optional limit stops a session. Once a tick
+has its decision, held or not, it also prunes the repository's worktrees that provably
+landed (spec S-002) when a prune is due, every [agents] prune_hours, and a prune that fails
+never fails the tick (spec 045, D-56).
 """
 
 import datetime as dt
@@ -61,6 +62,7 @@ PRS_OPEN = "PRS_OPEN"  # watch_state.py's open pull requests: work unless [auton
 HEAD_SHA = re.compile(r"[0-9a-f]{40}")  # a PRS_OPEN row's head SHA, as --json prints it (#546)
 SESSIONS = "sessions"  # a headless session's log, <uuid>.log, under the state directory (D-17)
 AUTH = "claude-auth.json"  # the failing Claude Code login's episode: since, and its one notification (#500)
+PRUNE = "prune.json"  # the last prune's attempt: when, whether it worked, and since when it fails (spec 045)
 # a headless session that ended this soon after its launch, by its log's last write, with no
 # result in its log, ran no work (#500)
 DEAD_WITHIN = dt.timedelta(seconds=60)
@@ -232,6 +234,7 @@ class Decision:
     auth_notice: str | None = None  # what a CLAUDE_AUTH tick did about notifying: once per episode
     dead: Dead | None = None  # the last session, when it ended dead (#500)
     credential: Kind = Kind.LOGIN  # what the sessions authenticate with (spec 035)
+    prune: PruneRun | None = None  # what the tick's prune did, after the decision (spec 045); None: no prune step
 
 
 def fingerprint(work: Iterable[Finding]) -> str:
@@ -1241,13 +1244,113 @@ def pruner(git: Git, github: GitHub, sessions: Sessions) -> Pruner:
     return run
 
 
+@dataclass(frozen=True, slots=True)
+class PruneRun:
+    """What a tick's prune did (spec 045): whether it ran, and its error's first line when it
+    failed with a shipmill error, which leaves the tick as it would be without it"""
+
+    ran: bool
+    error: str | None = None
+
+    def record(self) -> dict[str, object]:
+        return {"ran": self.ran, "error": self.error}
+
+
+@dataclass(frozen=True, slots=True)
+class PruneRecord:
+    """prune.json: the last attempt, when it started, whether it worked and its error, since
+    when the current run of failures fails (None after a success), and how many it removed"""
+
+    at: dt.datetime
+    ok: bool
+    error: str | None
+    failing_since: dt.datetime | None
+    removed: int
+
+    def __post_init__(self) -> None:
+        if self.ok != (self.error is None) or self.ok != (self.failing_since is None):
+            raise ValueError("ok must go with no error and no failing_since, a failure with both")
+        if self.removed < 0:
+            raise ValueError("removed must not be negative")
+
+
+PRUNE_KEYS = {"at", "ok", "error", "failing_since", "removed"}
+
+
+def load_prune(path: Path) -> PruneRecord | None:
+    """prune.json; None before a prune wrote one. A malformed file fails"""
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or set(data) != PRUNE_KEYS:
+            raise ValueError(f"expected exactly {', '.join(sorted(PRUNE_KEYS))}")
+        ok, error, since, removed = data["ok"], data["error"], data["failing_since"], data["removed"]
+        if not isinstance(ok, bool):
+            raise ValueError("ok must be true or false")
+        if error is not None and not isinstance(error, str):
+            raise ValueError("error must be a string or null")
+        if not isinstance(removed, int) or isinstance(removed, bool):
+            raise ValueError("removed must be an integer")
+        at = _moment(data["at"], "at")
+        return PruneRecord(at, ok, error, None if since is None else _moment(since, "failing_since"), removed)
+    except ValueError as exc:  # json.JSONDecodeError is one
+        raise ReleaseError(f"{path} is malformed ({exc}); delete it to start over") from None
+
+
+def save_prune(path: Path, record: PruneRecord) -> None:
+    """Written to a temporary file and moved into place, so a tick never leaves half a file"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    since = None if record.failing_since is None else record.failing_since.isoformat()
+    data = {"at": record.at.isoformat(), "ok": record.ok, "error": record.error, "failing_since": since}
+    temp = path.with_name(f".{path.name}.tmp")
+    temp.write_text(json.dumps(data | {"removed": record.removed}, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+
+
+def error_line(exc: ReleaseError) -> str:
+    lines = str(exc).strip().splitlines()
+    return lines[0] if lines else type(exc).__name__
+
+
+def prune_step(
+    path: Path, hours: Callable[[], int], worktrees: Pruner, now: dt.datetime, dry_run: bool
+) -> tuple[PruneRun, tuple[Judged, ...]]:
+    """Spec 045, after the tick's decision: a prune runs when prune.json records no attempt or
+    one hours() or more ago, records its attempt, and returns the worktrees it removed. A dry
+    run judges every time, removes nothing and writes nothing. A shipmill error, the prune's
+    or one reading prune.json or hours, is the run's error and removes nothing more"""
+    if dry_run:
+        try:
+            judged = worktrees(now, True)
+        except ReleaseError as exc:
+            return PruneRun(True, error_line(exc)), ()
+        return PruneRun(True), tuple(j for j in judged if j.verdict is Verdict.WOULD_REMOVE)
+    try:
+        last = load_prune(path)
+        if last is not None and now - last.at < dt.timedelta(hours=hours()):
+            return PruneRun(False), ()
+    except ReleaseError as exc:  # nothing ran, and prune.json stays for a person to read
+        return PruneRun(False, error_line(exc)), ()
+    try:
+        judged = worktrees(now, False)
+    except ReleaseError as exc:
+        error = error_line(exc)
+        since = last.failing_since if last is not None and last.failing_since is not None else now
+        save_prune(path, PruneRecord(now, False, error, since, 0))
+        return PruneRun(True, error), ()
+    pruned = tuple(j for j in judged if j.verdict is Verdict.REMOVED)
+    save_prune(path, PruneRecord(now, True, None, None, len(pruned)))
+    return PruneRun(True), pruned
+
+
 SessionEnv = Callable[[Identity], Mapping[str, str]]  # writes the helpers; the launch's --settings env
 
 
 def as_app(app_id: int, app: AppCheck | None) -> Identity:
     """D-14: with app_id set a session starts as the App or not at all, so a missing check
     refuses rather than launch as the host's gh login. The check signs its JWT when it runs,
-    not at the tick's start, which the waiting step and the prune may leave minutes behind (#694)"""
+    not at the tick's start, which the waiting step may leave minutes behind (#694)"""
     if app is None:
         raise ReleaseError(f"app_id {app_id} is set, but no App check was given; no session starts")
     return app(app_id)
@@ -1403,13 +1506,18 @@ def gate(
     auth: Callable[[Token | None], ClaudeAuth] | None = None,
     roles: RoleResolver | None = None,
     credential: Callable[[], Credential] | None = None,
+    prune_hours: Callable[[], int] | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
     session, and the worktrees the prune removed (on a dry run, the ones it would remove).
-    The waiting step runs first, then the prune, both held or not (D-15: a prune starts no
-    session), and the rest of the tick is decided without the sessions the waiting step
-    stopped. A prune error raises, so that tick starts no session. A hold, then a busy
+    The waiting step runs first, held or not, and the rest of the tick is decided without the
+    sessions the waiting step stopped. Once the tick has its decision, whatever it is, and
+    after any session it starts has started, the prune runs when due (prune_step, spec 045,
+    D-56; held or not, D-15: a prune starts no session): every prune_hours, read only then,
+    None, as in tests that don't exercise it, every tick. A prune that fails with a shipmill
+    error is the decision's prune error, and changes nothing else; a tick that fails before
+    its decision prunes nothing. A hold, then a busy
     session, ends the run before the checkout moves or the state is read; of the two, only
     a blocked session reads the config. With [agents] app_id set, app checks the App's key,
     installation, and bot account before the state is read, in either mode and dry run or
@@ -1483,12 +1591,20 @@ def gate(
     alone, never its arguments; a dead session's authentication failure then names the token's
     fix"""
     check_checkout(git, repo)
+
+    def pruned_after(
+        decision: Decision, launched: str | None, waiting: tuple[Waiting, ...]
+    ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
+        hours = (lambda: 0) if prune_hours is None else prune_hours
+        run, pruned = prune_step(state_dir(git) / PRUNE, hours, worktrees, now, dry_run)
+        return replace(decision, prune=run), launched, waiting, pruned
+
     found = None if credential is None else credential()
     if found is not None and found.refused is not None:
         refused = found.refused
         auth_found = ClaudeAuth(refused.reason, token=refused.path, remedy=refused.fix)
         refusal = Decision(Action.CLAUDE_AUTH, auth_found.reason(), (), auth=auth_found, credential=found.kind)
-        return refusal, None, (), ()
+        return pruned_after(refusal, None, ())
     token = None if found is None else found.token
     kind = Kind.LOGIN if found is None else found.kind
     config = checked(config, claude.args)
@@ -1500,18 +1616,17 @@ def gate(
     waiting = attend(state_dir(git) / WAITING, repo, sessions, config, notifier, now, dry_run, claude.stop)
     gone = {w.session for w in waiting if w.stopped}  # on a dry run, the ones a real tick would stop
     sessions = [s for s in sessions if s.id not in gone]
-    pruned = tuple(j for j in worktrees(now, dry_run) if j.verdict in (Verdict.REMOVED, Verdict.WOULD_REMOVE))
     on_hold = hold()
     stopped = held(on_hold, sessions)
     if stopped is not None:
-        return replace(stopped, credential=kind), None, waiting, pruned
+        return pruned_after(replace(stopped, credential=kind), None, waiting)
     pending = busy(sessions)
     if pending is not None:
-        return replace(pending, credential=kind), None, waiting, pruned
+        return pruned_after(replace(pending, credential=kind), None, waiting)
     last = load_launch(record)
     working = still_working(last, state, started)
     if working is not None:
-        return replace(working, credential=kind), None, waiting, pruned
+        return pruned_after(replace(working, credential=kind), None, waiting)
     # a dead session was no attempt: its findings aren't handled (#500)
     dead = ended_dead(last, state) or listed_dead(last, sessions, now)
     if dead is not None and token is not None:
@@ -1546,7 +1661,7 @@ def gate(
         decision = replace(decision, action=Action.SESSION_DEAD, reason=reason)
     decision = preflight(decision, auth, token, state / AUTH, repo, agents, notifier, now, dry_run)
     if decision.action is not Action.LAUNCH:
-        return decision, None, waiting, pruned
+        return pruned_after(decision, None, waiting)
     if identity is not None:
         decision = replace(decision, identity=identity.login)
     host = host_read()
@@ -1558,7 +1673,7 @@ def gate(
         text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login, read.roles, levels)
     if dry_run:
         checked_plugin = plugin_read(decision, git, plugin, agents.notify, notifier, dry_run)
-        return relaunching(self_tested(checked_plugin, hooks, headless)), None, waiting, pruned
+        return pruned_after(relaunching(self_tested(checked_plugin, hooks, headless)), None, waiting)
     env = None
     if identity is not None:
         if app_env is None:
@@ -1567,7 +1682,7 @@ def gate(
     decision = plugin_read(decision, git, plugin, agents.notify, notifier, dry_run)
     decision = self_tested(decision, hooks, headless)  # of the install the session loads
     if decision.action in (Action.PYPI_WAIT, Action.HOOKS_FAILED):
-        return decision, None, waiting, pruned
+        return pruned_after(decision, None, waiting)
     decision = relaunching(decision)
     for session in decision.stop:
         claude.stop(session)
@@ -1576,12 +1691,12 @@ def gate(
     if not headless:
         launched = claude.launch(git.root, name, text, env, token)
         save_launch(record, Launch(fingerprint(decision.work), launched, now, None, deaths))
-        return decision, launched, waiting, pruned
+        return pruned_after(decision, launched, waiting)
     session_id = new_session()
     log = session_log(state, str(session_id))
     pid = claude.start(git.root, name, text, session_id, log, env, token)
     save_launch(record, Launch(fingerprint(decision.work), str(session_id), now, Process(pid, started(pid)), deaths))
-    return replace(decision, follow=f"tail -f {log}"), str(session_id), waiting, pruned
+    return pruned_after(replace(decision, follow=f"tail -f {log}"), str(session_id), waiting)
 
 
 def tick_record(
@@ -1600,6 +1715,7 @@ def tick_record(
         "identity": decision.identity,
         "waiting": [w.record() for w in waiting],
         "pruned": [j.path for j in pruned],
+        "prune": (decision.prune or PruneRun(False)).record(),  # spec 045: whether it ran, and its error
         "mode": None if decision.mode is None else decision.mode.value,
         "decisions": [a.record() for a in decision.decisions],
         "loaded": None if decision.loaded is None else decision.loaded.record(),
@@ -1617,8 +1733,8 @@ def tick_lines(
     decision: Decision, launched: str | None, waiting: Sequence[Waiting], pruned: Sequence[Judged], dry_run: bool
 ) -> list[str]:
     """`shipmill gate`'s text: the decision (` as <slug>[bot]` when it launches as an App), the
-    branch the refresh detached the checkout from, one line per blocked session, then one
-    per pruned worktree"""
+    branch the refresh detached the checkout from, one line per blocked session, the work and
+    the launch, then one per pruned worktree, or the prune's failure (spec 045)"""
     who = f" as {decision.identity}" if decision.identity is not None else ""
     # spec 035: the kind, never the token or its path; only on LAUNCH, as SESSION_DEAD ends with its fix
     if decision.credential is Kind.TOKEN_FILE and decision.action is Action.LAUNCH:
@@ -1647,11 +1763,13 @@ def tick_lines(
     if decision.hooks is not None and not decision.hooks.ok and decision.action is not Action.HOOKS_FAILED:
         verb = "couldn't run" if decision.hooks.unread else "failed"
         lines.append(f"  hooks self-test {verb}, the session starts anyway: {decision.hooks.line()}")
-    verb = "would prune" if dry_run else "pruned"
-    lines += [f"  {verb} {j.path} ({j.worktree.branch})" for j in pruned]
     lines += [f"  {f.line()}" for f in decision.work]
     if dry_run and decision.identity is not None:
         lines.append(f"  would launch as {decision.identity}")
     if launched:
         lines.append(f"  launched {launched}: {decision.follow or f'claude attach {launched}'}")
+    verb = "would prune" if dry_run else "pruned"  # spec 045: the prune ran after the decision
+    lines += [f"  {verb} {j.path} ({j.worktree.branch})" for j in pruned]
+    if decision.prune is not None and decision.prune.error is not None:
+        lines.append(f"  prune failed: {decision.prune.error}")
     return lines
