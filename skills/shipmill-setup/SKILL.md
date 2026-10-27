@@ -447,12 +447,28 @@ or the tags are wrong; fix those, not the version.
 ## The gate
 
 `shipmill gate` is code that reads the repo's state and starts a Claude Code background
-session (`claude --bg`) only when something needs an agent, no session it started is still
-working or waiting on the user, and the findings changed since its last launch. Something
-needs an agent when github-ship-watch's `watch_state.py` marks a row `agent: true`
-(github-ship-watch's SKILL.md lists them), plus open PRs unless `[autonomy] land` is
-`observe` (spec 040; `[agents] prs` is deprecated, and doctor warns while it is set).
-docs/design/agent-modes.md has the details.
+session (`claude --bg`) only when something needs an agent and no session it started is still
+working or waiting on the user. Something needs an agent when github-ship-watch's
+`watch_state.py` marks a row `agent: true` (github-ship-watch's SKILL.md lists them), plus
+open PRs unless `[autonomy] land` is `observe` (spec 040; `[agents] prs` is deprecated, and
+doctor warns while it is set). docs/design/agent-modes.md has the details.
+
+A tick checks for change first (spec 046, D-57): one GraphQL query and one read of the
+newest workflow runs, against the cursor of its last walk (`cursor.json` in the state
+directory). With nothing changed it reads nothing more and prints `QUIET: no change since
+<cursor>`, a few seconds. On a change, or when a handed item's `retry_hours` ran out or the
+last session ended dead, it walks the work tiers in order and stops at the first item no
+session was handed within `retry_hours` (`handed.json`): 1 production (INCIDENT_OPEN,
+OPERATE_FAILED), 2 the release lane, 3 open PRs to land, 4 vetoes and decided items, 5
+upgrades and upstream reports, 6 the other issues triage owes, one item per triage state, 7
+direction and plans, 8 notices. It reads a tier only when every tier above it is empty or
+handed, and hands the session that one item, with its tier and its fix line, so a stuck
+item never holds back the next. The timed sections (BOT_STALLED, UPGRADE_PENDING,
+UPSTREAM_DUE, DIRECTION_PENDING, PLANS, UNANNOUNCED) come from a sweep every
+`[agents] sweep_hours` (default 6, `sweep.json`), and a new release tag checks its own notices. The
+decision line says how far the walk went (`read tiers 1-3`), and `--json` adds `walk` and
+`item`. `--walk` walks and `--sweep` sweeps whether or not they are due, for a run by hand;
+`--dry-run` writes none of these files. `shipmill status` still reads the full report.
 
 Once a tick has its decision, held or not, it also prunes landed worktrees, every
 `[agents] prune_hours` (default 6; 0: every tick; the last attempt is the state directory's

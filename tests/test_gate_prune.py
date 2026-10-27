@@ -48,6 +48,8 @@ REPO = "romamo/demo"
 DONE = ".claude/worktrees/done"
 GATE = "tmp/shipmill-gate"
 KEYS = {
+    "walk",  # spec 046
+    "item",
     "action",
     "reason",
     "work",
@@ -193,7 +195,9 @@ def test_s002_15_a_tick_with_nothing_landed_prunes_nothing(repo: Checkout) -> No
     assert (decision.action, pruned) == (Action.QUIET, ())
     assert (repo.root / DONE).is_dir() and open_.is_dir()
     assert tick_record(decision, launched, waiting, pruned, dry_run=False)["pruned"] == []
-    assert tick_lines(decision, launched, waiting, pruned, dry_run=False) == ["QUIET: nothing needs an agent"]
+    assert tick_lines(decision, launched, waiting, pruned, dry_run=False) == [
+        "QUIET: nothing needs an agent; read tiers 1-8"
+    ]
 
 
 def test_s002_16_a_dry_run_lists_what_it_would_prune_and_removes_nothing(repo: Checkout) -> None:

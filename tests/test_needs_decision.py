@@ -385,13 +385,13 @@ def test_s005_9_a_waiting_item_does_not_change_the_gates_fingerprint(ws: ModuleT
         text = "\n".join(json.dumps(r.json()) for r in ws.intake("o/r", code, out, prs, comments(asked)))
         return decide(parse_findings(text), [], last, NOW, DAY, Autonomy.ACT)
 
-    before = work(1, triage((12, "NEW")), [pr(3)], {}, None)
+    before = work(1, triage((12, "NEW")), [], {}, None)
     last = Launch(fingerprint(before.work), "s1", NOW - dt.timedelta(minutes=15))
     # #7 and #4 now wait on a decision: the findings that started s1 are unchanged
     after = work(
         1,
         triage((12, "NEW"), (7, "NEEDS_DECISION")),
-        [pr(3), pr(4, labels=("needs-decision",))],
+        [pr(4, labels=("needs-decision",))],
         {4: [("amy", "OWNER", QUESTION)]},
         last,
     )

@@ -214,6 +214,7 @@ from shipmill.gate import (
     Decision,
     StateRead,
     StateRunner,
+    WatchState,
     check_checkout,
     gate,
     host_login,
@@ -226,7 +227,6 @@ from shipmill.gate import (
     state_failed,
     tick_lines,
     tick_record,
-    watch,
     watch_command,
 )
 from shipmill.github import UPGRADE_LABEL, GhCli, GitHub
@@ -553,6 +553,8 @@ def _parser() -> argparse.ArgumentParser:
         help="decide and print; start, stop, move, or prune nothing (lists the worktrees it would prune)",
     )
     p.add_argument("--json", action="store_true", help="print the decision, with the pruned worktrees, as JSON")
+    p.add_argument("--walk", action="store_true", help="walk the work tiers whether or not anything changed (spec 046)")
+    p.add_argument("--sweep", action="store_true", help="read the timed sections whether or not a sweep is due")
     p.add_argument(
         "--app-key",
         type=Path,
@@ -1150,13 +1152,14 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         """The helpers go in the checkout's state folder and run this very shipmill"""
         return prepare_session(identity, state_dir(git) / HELPERS, Path(sys.executable), root, args.slug, path)
 
+    now = dt.datetime.now(dt.UTC)
     decision, launched, waiting, pruned = gate(
         git,
         args.slug,
         lambda: AgentsConfig.load(root, args.slug),
         ClaudeCli(args.claude_arg),
-        lambda read: watch(args.slug, root, read),
-        dt.datetime.now(dt.UTC),
+        lambda read: WatchState(args.slug, root, read, state_dir(git), now),
+        now,
         lambda: Hold.read(GhCli(root)),
         Desktop.detect(),
         pruner(git, github, sessions),
@@ -1178,6 +1181,8 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         roles=roles.resolve,
         credential=lambda: _credential(args.claude_token, Path.home()),
         prune_hours=lambda: AgentsConfig.load(root, args.slug).prune_hours,
+        walk_now=args.walk,
+        sweep_now=args.sweep,
     )
     if args.json:
         print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))

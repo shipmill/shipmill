@@ -315,7 +315,7 @@ def test_s004_7_with_app_id_unset_the_launch_is_todays(checkout: Git, tmp_path: 
 def test_s004_11_a_launch_as_the_app_names_the_bot(checkout: Git, tmp_path: Path) -> None:
     decision, launched = launch_as_app(checkout, tmp_path, FakeClaude())
     lines = tick_lines(decision, launched, (), (), dry_run=False)
-    assert lines[0] == f"LAUNCH: 1 finding(s) need an agent as {BOT}"
+    assert lines[0] == f"LAUNCH: ISSUES NEW romamo/demo needs an agent (tier 6); read tiers 1-6 as {BOT}"
     assert not any("would launch" in line for line in lines)
     assert tick_record(decision, launched, (), (), dry_run=False)["identity"] == BOT
 
@@ -333,7 +333,10 @@ def test_s004_11_with_app_id_unset_identity_is_null(checkout: Git) -> None:
         NO_PRUNE,
         login=gh_login,
     )
-    assert tick_lines(decision, launched, (), (), dry_run=False)[0] == "LAUNCH: 1 finding(s) need an agent"
+    assert (
+        tick_lines(decision, launched, (), (), dry_run=False)[0]
+        == "LAUNCH: ISSUES NEW romamo/demo needs an agent (tier 6); read tiers 1-6"
+    )
     record = json.loads(json.dumps(tick_record(decision, launched, (), (), dry_run=False)))
     assert "identity" in record and record["identity"] is None
 

@@ -36,6 +36,7 @@ from shipmill.gate import (
     tick_record,
 )
 from shipmill.gitrepo import Git
+from shipmill.walk import HANDED
 
 from .test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier
 from .test_gate_headless import LOGIN, PID, STARTED, Reads, checkout, headless, interactive, log_of
@@ -202,6 +203,7 @@ def test_a_lost_login_starts_no_session_and_notifies_once_per_episode(checkout: 
     assert action is Action.LAUNCH and launched is not None
     assert not (state_dir(checkout) / AUTH).exists()  # the passing preflight ended the episode
     (state_dir(checkout) / RECORD).unlink()  # new findings, not UNCHANGED
+    (state_dir(checkout) / HANDED).unlink()
     assert tick(checkout, agents, claude, auth, notifier, NOW + dt.timedelta(hours=1))[0] is Action.CLAUDE_AUTH
     assert len(notifier.sent) == 2  # a new episode notifies again
 
@@ -324,7 +326,7 @@ def test_a_third_dead_session_in_a_row_holds_the_same_findings_for_retry_hours(c
     since, again = first_at.isoformat(timespec="minutes"), (at + dt.timedelta(hours=24)).isoformat(timespec="minutes")
     assert lines[0] == (
         f"SESSION_DEAD: session {SECOND} ended 3 s after its launch, 3 in a row since {since}; its log is empty;"
-        f" no session starts for the same findings until {again}; fix: tail -n 20 {log_of(checkout, SECOND)}"
+        f" no session starts for the same item until {again}; fix: tail -n 20 {log_of(checkout, SECOND)}"
     )
     after = NOW + dt.timedelta(hours=24)  # past retry_hours, it tries once more and counts on
     action, launched, _ = tick(checkout, headless(), claude, FakeAuth([LOGGED_IN]), FakeNotifier(), after)
@@ -449,7 +451,7 @@ def test_a_third_dead_interactive_session_in_a_row_holds_the_same_findings_for_r
     since, again = first_at.isoformat(timespec="minutes"), (at + dt.timedelta(hours=24)).isoformat(timespec="minutes")
     assert lines[0] == (
         f"SESSION_DEAD: session {OLD} ended failed in claude agents, 3 in a row since {since};"
-        f" no session starts for the same findings until {again}; fix: claude logs {OLD}"
+        f" no session starts for the same item until {again}; fix: claude logs {OLD}"
     )
     after = NOW + dt.timedelta(hours=24)  # past retry_hours, it tries once more and counts on
     action, launched, _ = tick(checkout, interactive(), claude, FakeAuth([LOGGED_IN]), FakeNotifier(), after)
