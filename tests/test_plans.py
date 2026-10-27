@@ -204,6 +204,63 @@ def test_check_reads_a_moved_goals_section(plans: ModuleType, root: Path, capsys
     assert check(plans, root, PLAN, capsys) == (0, "")
 
 
+MEASURED = DIRECTION.replace("own\n", "own\n  measure: issue_to_release_p90 < 2d\n")
+NOT_A_GOAL = "not a `- G-<n>: <text>` item"
+
+
+def test_check_skips_a_goals_measure_line(plans: ModuleType, root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # #749: a goal's measure line (spec 027) under its item line holds no id and is skipped
+    (root / "docs" / "product.md").write_text(MEASURED, encoding="utf-8")
+    assert plans.goal_ids(root) == frozenset({"G-3", "G-6"})
+    assert check(plans, root, PLAN, capsys) == (0, "")
+
+
+def test_check_skips_a_measure_line_in_a_moved_goals_section(
+    plans: ModuleType, root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (root / "docs" / "product.md").write_text(
+        "# Example\n\n## Mission\n\nShip it.\n\n## Goals\n\nSee [Goals](product/goals.md).\n", encoding="utf-8"
+    )
+    (root / "docs" / "product").mkdir()
+    (root / "docs" / "product" / "goals.md").write_text(
+        "## Goals\n\n- G-3: Releases\n  measure: change_failure_rate <= 5%\n", encoding="utf-8"
+    )
+    assert check(plans, root, PLAN, capsys) == (0, "")
+
+
+STRAY = [
+    ("prose under a goal", MEASURED.replace("  measure:", "And more:"), f"docs/product.md:10: {NOT_A_GOAL}"),
+    ("unindented measure", MEASURED.replace("  measure:", "measure:"), f"docs/product.md:10: {NOT_A_GOAL}"),
+    ("other indented key", MEASURED.replace("  measure:", "  target:"), f"docs/product.md:10: {NOT_A_GOAL}"),
+    (
+        "measure after a blank line",
+        MEASURED.replace("\n  measure:", "\n\n  measure:"),
+        f"docs/product.md:11: {NOT_A_GOAL}",
+    ),
+    (
+        "second measure line",
+        MEASURED.replace("< 2d\n", "< 2d\n  measure: change_failure_rate <= 5%\n"),
+        f"docs/product.md:11: {NOT_A_GOAL}",
+    ),
+    (
+        "measure outside Goals",
+        MEASURED.replace("## Goals", "## Users\n\n- U-1: A maintainer\n  measure: x < 1\n\n## Goals"),
+        "docs/product.md:10: not a `- U-<n>: <text>` item",
+    ),
+]
+
+
+@pytest.mark.parametrize(("case", "direction", "error"), STRAY, ids=[c[0] for c in STRAY])
+def test_check_still_refuses_a_stray_direction_line(
+    plans: ModuleType, root: Path, capsys: pytest.CaptureFixture[str], case: str, direction: str, error: str
+) -> None:
+    (root / "docs" / "product.md").write_text(direction, encoding="utf-8")
+    with pytest.raises(SystemExit) as stopped:
+        check(plans, root, PLAN, capsys)
+    assert stopped.value.code == 2, case
+    assert error in capsys.readouterr().err
+
+
 def test_check_without_a_direction_stops(plans: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     file = tmp_path / "plan.md"
     file.write_text(PLAN, encoding="utf-8")
