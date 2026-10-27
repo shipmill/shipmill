@@ -208,7 +208,8 @@ def test_s036_5_status_passes_the_role_flags_to_both_reads(tmp_path: Path) -> No
     root = status_repo(tmp_path, '[agents.roles]\ninfra = ["ann"]\n')
     fake = Fake(0)
     assert main(["--repo", str(root), "status"], state=fake, login=lambda: HOST) == 0
-    reads = [c for c in fake.seen if c[1].endswith(("watch_state.py", "triage_state.py"))]
+    # the host sections' reads (#745) read no issue, so they pass no role flags
+    reads = [c for c in fake.seen if c[1].endswith(("watch_state.py", "triage_state.py")) and "--host" not in c]
     assert len(reads) == 2
     for cmd in reads:
         assert cmd[-4:] == ["--role", f"maintainer={HOST}", "--role", "infra=ann"]
