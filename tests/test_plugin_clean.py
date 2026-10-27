@@ -155,6 +155,19 @@ def test_s039_8_no_keyed_install_says_so(home: Path, capsys: pytest.CaptureFixtu
     assert capsys.readouterr().out == f"no project- or local-scope install of {PLUGIN} on this host\n"
 
 
+@pytest.mark.parametrize("absent", ["claude", "gh"])
+def test_s039_8_a_missing_claude_or_gh_is_a_failed_command_exit_2(home: Path, absent: str) -> None:
+    fake = FakeClaude([entry("user", "0.82.0")])
+
+    def run(cmd: list[str], cwd: Path) -> str:
+        if cmd[0] == absent:  # what subprocess raises for a program that isn't on PATH
+            raise FileNotFoundError(2, "No such file or directory", absent)
+        return fake(cmd, cwd)
+
+    with pytest.raises(ReleaseError, match=f"{absent} is not on PATH"):
+        main(["plugin-clean"], stdin=Tty(), claude=run, home=home)
+
+
 def test_s039_9_apply_without_a_terminal_refuses_before_any_change(host: dict[str, Path], home: Path) -> None:
     fake = FakeClaude([entry("user", "0.82.0"), entry("project", "0.25.0", host["other"])])
     with pytest.raises(ReleaseError, match="only from a person's terminal"):

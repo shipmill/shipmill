@@ -287,6 +287,19 @@ def _undo(created: list[Path], folder: Path, kept: dict[Path, bytes | None], had
 Printer = Callable[[str], None]
 
 
+def on_path(run: Runner) -> Runner:
+    """run, with a program that isn't on PATH (claude, or gh for the latest release) a failed
+    command, exit 2, rather than a traceback"""
+
+    def found(cmd: list[str], cwd: Path) -> str:
+        try:
+            return run(cmd, cwd)
+        except FileNotFoundError:
+            raise ReleaseError(f"{cmd[0]} is not on PATH; plugin-clean runs {' '.join(cmd[:3])}") from None
+
+    return found
+
+
 def clean(run: Runner, cwd: Path, apply: bool, terminal: bool, say: Printer) -> int:
     """The command: 0 when no keyed install is left, 1 when some are (manual lines, or a
     created folder left behind); a refusal, a failed `claude` command, a malformed listing, or
@@ -296,6 +309,7 @@ def clean(run: Runner, cwd: Path, apply: bool, terminal: bool, say: Printer) -> 
             "plugin-clean --apply runs only from a person's terminal, and standard input is not one;"
             " run it without --apply to see what it would remove"
         )
+    run = on_path(run)
     listing = parse(run(LIST, cwd))
     if apply and listing.keyed and listing.user is None:
         raise ReleaseError(
