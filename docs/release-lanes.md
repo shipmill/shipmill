@@ -657,6 +657,19 @@ no repo twice. In a component, `shipmill gh -R` and `shipmill app-token` for any
 checkout's origin exit 2 naming D-47, before a token is minted. Without `[product]` nothing
 changes.
 
+A repo that stands alone records it with a third form, so setup doesn't ask again ([spec
+043](specs/043-setup-product-mode.md)):
+
+```toml
+[product]
+standalone = true
+```
+
+Every reader treats it as no `[product]` table. `standalone` takes only `true`, needs no
+`[agents] app_id`, and is never set beside `home` or `repos`: `false`, another value, or a
+second key exits 2 naming the key. To join a product later, replace the table with `home` or
+`repos`.
+
 A repo never names itself: `shipmill gate`, `shipmill gh`, and `shipmill app-token
 --product` exit 2 when `home` is the checkout's repo or `repos` lists it.
 
