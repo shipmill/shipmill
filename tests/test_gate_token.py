@@ -348,6 +348,20 @@ def test_s035_8_a_folder_or_a_file_of_another_user_exits_2_naming_the_path(check
         assert said in lines_[0]
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason="root reads a file of any mode")
+@pytest.mark.parametrize("mode", [0o200, 0o000])
+def test_s035_8_a_file_its_owner_cant_read_exits_2_rather_than_crashing(
+    checkout: Git, tmp_path: Path, mode: int
+) -> None:
+    path = token_file(tmp_path / "home", mode=mode)
+    found = inspect(TokenSource(path))  # raised PermissionError past every caller before
+    claude = FakeClaude()
+    decision, launched, lines_, _ = tick(checkout, headless(), claude, found)
+    assert (decision.action, launched, claude.started) == (Action.CLAUDE_AUTH, None, [])
+    assert f"{path} can't be read" in lines_[0] and lines_[0].endswith(f"; fix: chmod 600 {path}")
+    assert cli._gate_exit(decision) == 2
+
+
 # S-035-9
 
 

@@ -154,7 +154,11 @@ def read_token(source: TokenSource, fs: TokenFs = HOST, uid: int | None = None) 
         mode = stat.S_IMODE(found.st_mode)
         raise TokenRefused(path, f"{path} has mode {mode:03o}, which group or others can read", f"chmod 600 {path}")
     written = dt.datetime.fromtimestamp(found.st_mtime, tz=dt.UTC)
-    return Token(path, checked(path, fs.read(path)), written)
+    try:
+        data = fs.read(path)
+    except OSError as exc:  # mode 200 or 000 passes the mode check, yet the gate's user can't read it
+        raise TokenRefused(path, f"{path} can't be read ({exc.strerror})", f"chmod 600 {path}") from None
+    return Token(path, checked(path, data), written)
 
 
 def checked(path: Path, data: bytes) -> str:
