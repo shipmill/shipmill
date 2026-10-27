@@ -447,7 +447,7 @@ def gh_get(cmd: list[str]) -> str | None:
         return proc.stdout
     if NOT_FOUND.search(proc.stderr):
         return None
-    sys.stderr.write(f"error: {' '.join(cmd[:3])}...: {proc.stderr.strip()}\n")
+    sys.stderr.write(f"error: {' '.join(cmd)}: {proc.stderr.strip()}\n")  # the whole command names the repo read
     raise SystemExit(2)
 
 

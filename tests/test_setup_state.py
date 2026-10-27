@@ -1112,6 +1112,14 @@ def test_s043_6_gh_get_reads_a_404_as_none_and_fails_on_anything_else(ss: Module
         assert exc.value.code == 2
 
 
+def test_s043_6_a_failed_sibling_read_names_the_repo(ss: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
+    script = "import sys; sys.stderr.write('gh: Forbidden (HTTP 403)'); sys.exit(1)"
+    cmd = [sys.executable, "-c", script, "-H", ss.RAW, "repos/me/api/contents/.github/shipmill.toml"]
+    with pytest.raises(SystemExit):
+        ss.gh_get(cmd)
+    assert "repos/me/api/contents/.github/shipmill.toml" in capsys.readouterr().err
+
+
 def test_s043_6_a_sibling_config_it_cant_parse_is_named_and_skipped(ss: ModuleType, tmp_path: Path) -> None:
     gh = FakeOwner({"me/api": APP, "me/broken": "[agents\napp_id = 42\n", "me/bad": APP + "\n[product]\nrepos = []\n"})
     (row,) = ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), gh)
