@@ -702,8 +702,10 @@ class StateRead:
         return arguments(self.roles) + trusted + bot
 
 
-def watch_command(repo: str, workspace: Path, read: StateRead, json: bool = True) -> list[str]:
-    """The gate reads JSON lines; `shipmill status` prints the table unless asked (S-008-7)"""
+def watch_command(repo: str, workspace: Path, read: StateRead, json: bool = True, host: bool = True) -> list[str]:
+    """The gate reads JSON lines; `shipmill status` prints the table unless asked (S-008-7).
+    Without host the host's sessions and shipmill rows are left out, for status's picture to
+    read each on its own (#745)"""
     script = skills_dir() / "github-ship-watch" / "scripts" / "watch_state.py"
     return [
         sys.executable,
@@ -712,6 +714,7 @@ def watch_command(repo: str, workspace: Path, read: StateRead, json: bool = True
         "--repo-dir",
         str(workspace),
         *(["--json"] if json else []),
+        *([] if host else ["--no-host"]),
         *read.flags(),
     ]
 

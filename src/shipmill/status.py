@@ -304,6 +304,8 @@ class Gate:
     cli_error: str | None = None  # spec 044: the gate's own CLI's read failed, the shipmill check's error
     prune: PruneRecord | None = None  # the gate's last prune, from prune.json (spec 045); None: none recorded
     prune_error: str | None = None  # spec 045: prune.json's read failed, the prune check's error
+    sessions_error: str | None = None  # #745: watch_state.py --host sessions failed, the sessions check's error
+    shipmill_error: str | None = None  # #745: watch_state.py --host shipmill failed, the shipmill check's error
 
     @property
     def login(self) -> str | None:
@@ -1526,17 +1528,25 @@ def gate_prune_check(gate: Gate, command: str) -> Check:
 
 def host_checks(facts: Facts) -> list[Check]:
     """The checks `shipmill status` reads from its facts, each on its own: every check of
-    `shipmill factory` but the worktrees (S-044-5), the prune among them (S-045-11)"""
+    `shipmill factory` but the worktrees (S-044-5), the prune among them (S-045-11). A host
+    section whose rows weren't read is its check's error, its rows' read first as factory's
+    shipmill check reads them before the gate's CLI (#745)"""
     command, gate = facts.command, facts.gate
+
+    def sessions() -> Check:
+        if gate.sessions_error is not None:
+            return failed_check("sessions", gate.sessions_error, command)
+        return sessions_check(facts.rows, gate)
+
+    def shipmill() -> Check:
+        cli_error = gate.cli_error if gate.shipmill_error is None else gate.shipmill_error
+        return shipmill_check(facts.rows, facts.cli, gate.cli, cli_error, facts.repo, command)
+
     return [
         guarded("gate", command, lambda: gate_check(gate, facts.repo, facts.now, command)),
-        guarded("sessions", command, lambda: sessions_check(facts.rows, gate)),
+        guarded("sessions", command, sessions),
         guarded("github app", command, lambda: github_app_check(gate, facts.repo, command)),
-        guarded(
-            "shipmill",
-            command,
-            lambda: shipmill_check(facts.rows, facts.cli, gate.cli, gate.cli_error, facts.repo, command),
-        ),
+        guarded("shipmill", command, shipmill),
         guarded("checkout", command, lambda: checkout_check(facts.main, facts.checkout)),
         guarded("prune", command, lambda: gate_prune_check(gate, command)),
     ]

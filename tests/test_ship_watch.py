@@ -950,6 +950,15 @@ def test_s044_5_the_watch_never_runs_shipmill_worktrees_nor_prints_worktree_stal
     assert "WORKTREE_STALE" not in ws.FIXED | ws.ACTION
 
 
+def test_s044_4_no_host_leaves_the_host_sections_to_status_and_goes_without_host(ws: ModuleType) -> None:
+    # #745: status's picture reads the sessions and shipmill sections on their own
+    assert ws.arguments().parse_args(["o/r", "--no-host"]).no_host
+    assert not ws.arguments().parse_args(["o/r"]).no_host  # github-ship-watch's own run keeps every row
+    both = [sys.executable, str(SCRIPT), "o/r", "--host", "sessions", "--no-host"]
+    proc = subprocess.run(both, capture_output=True, text=True, check=False)
+    assert proc.returncode == 2 and "--no-host goes without --host" in proc.stderr
+
+
 SKILLS = Path(__file__).resolve().parents[1] / "skills"
 
 

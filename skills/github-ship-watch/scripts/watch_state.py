@@ -5,7 +5,7 @@ recent releases, the environments shipmill operate runs, and the issue intake.
 Usage: watch_state.py <owner/repo> [--repo-dir PATH] [--releases N] [--grace MIN]
                       [--tool SPEC] [--incident-label LABEL] [--json]
                       [--bot-login LOGIN] [--trusted-only]
-                      [--role NAME=FILLER[,FILLER...] ...]
+                      [--role NAME=FILLER[,FILLER...] ...] [--no-host]
        watch_state.py <owner/repo> --host {sessions,shipmill} [--repo-dir PATH] [--json]
 
 Release bot (a repo with .github/shipmill.toml). "The default branch" in this help is the branch
@@ -374,7 +374,10 @@ and plugin installs. Python 3.10+, standard library only.
 factory` reads them (spec 044): the AGENT_SESSION (or HOST_UNKNOWN) rows, or the
 SHIPMILL_VERSION, SHIPMILL_OUTDATED, PLUGIN_SHADOWING, and SKILL_SHADOWED rows. It reads none
 of the pipeline: no fetch, no issue, pull request, or run; exit 1 when a row it prints is an
-action row, as above.
+action row, as above. --no-host is the full report without those two sections, which
+`shipmill status` reads with --host, each on its own, so a failing `claude` or marketplace
+read is one factory check's error rather than the report's end (#745); the gate's launchd
+rows (LOOP, GATE_SESSIONS_DEAD) stay in it.
 
 Every shipmill command runs as `uvx shipmill==<version>`, the version in the plugin's own
 .claude-plugin/plugin.json three folders above scripts/ (spec 031), or as `uvx --from <tool>
@@ -3524,13 +3527,17 @@ def live_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
 
 def agent_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
     """The sessions and, on a Mac, the gate's launchd job; what this host can see"""
-    rows = live_rows(repo, repo_dir, now)
+    return [*live_rows(repo, repo_dir, now), *launchd_rows(repo, now)]
+
+
+def launchd_rows(repo: str, now: dt.datetime) -> list[Row]:
+    """On a Mac, the gate's launchd job and whether its sessions die; nothing elsewhere"""
     if sys.platform != "darwin":
-        return rows
+        return []
     label = gate_label(repo)
     plist = gate_plist(repo)
     if plist is None:
-        return [*rows, loop_row(label, None, None, None, now)]
+        return [loop_row(label, None, None, None, now)]
     proc = subprocess.run(
         ["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True, text=True, check=False
     )
@@ -3538,7 +3545,7 @@ def agent_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
     log_path = plist.get("StandardOutPath")
     log = Path(log_path).read_text(errors="replace") if isinstance(log_path, str) and Path(log_path).is_file() else None
     dead = dead_rows(label, log, log_path if isinstance(log_path, str) else None)
-    return [*rows, loop_row(label, plist, printed, log, now), *dead]
+    return [loop_row(label, plist, printed, log, now), *dead]
 
 
 def dead_rows(label: str, log: str | None, log_path: str | None) -> list[Row]:
@@ -4046,6 +4053,11 @@ def arguments() -> argparse.ArgumentParser:
         help="print only this host's rows of one section, reading nothing of the pipeline (spec 044)",
     )
     parser.add_argument(
+        "--no-host",
+        action="store_true",
+        help="leave out the rows --host prints, which shipmill status reads on their own (#745)",
+    )
+    parser.add_argument(
         "--role",
         action="append",
         default=[],
@@ -4067,6 +4079,8 @@ def main() -> int:
             TRIAGE.parse_roles(args.role)
         except ValueError as exc:
             parser.error(str(exc))
+    if args.host is not None and args.no_host:
+        parser.error("--no-host goes without --host")
     if "/" not in args.repo:
         parser.error("repo must be owner/name")
     if not 1 <= args.releases <= 20:
@@ -4205,9 +4219,12 @@ def main() -> int:
         rows += chain_rows(args.repo, triage, args.bot_login)
     rows += coordinator_rows(text, policy, args.repo, repo_dir, args.bot_login)
     rows += active_rows(fetch_active(args.repo), now)
-    rows += agent_rows(args.repo, repo_dir, now)
-    rows += shipmill_rows(args.repo, repo_dir)
-    rows += shadow_rows(Path.home(), skill_names())
+    if args.no_host:  # shipmill status reads the host sections with --host, each on its own (#745)
+        rows += launchd_rows(args.repo, now)
+    else:
+        rows += agent_rows(args.repo, repo_dir, now)
+        rows += shipmill_rows(args.repo, repo_dir)
+        rows += shadow_rows(Path.home(), skill_names())
     rows = merged_waits(rows)
     for row in ordered(rows):
         print(json.dumps(row.json(), sort_keys=True) if args.json else row.text())
