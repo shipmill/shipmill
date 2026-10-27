@@ -417,6 +417,7 @@ TRIAGE_ACTION = {
     "SUSPECT_CLOSE",
     "HANDOFF_DUE",
     "VERIFY_DUE",
+    "CHECK_FAILED",  # spec 042: a parent's ## Check failed, file the fix as a child
     "NO_ASSIGNEE",
     "ASSIGN_DUE",  # spec 036: assign a person's item to its roles' users
     "VERIFY_CLOSED",
