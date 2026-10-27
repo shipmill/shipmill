@@ -5,7 +5,7 @@ Usage: triage_state.py <owner/repo> [--marker "Triage:"] [--postponed-label post
                        [--stable-tag-regex REGEX] [--hold-label release-blocker]
                        [--incident-label incident] [--closed N] [--json] [--wip N]
                        [--bot-login LOGIN] [--trusted-only] [--home OWNER/NAME]
-                       [--role NAME=FILLER[,FILLER...] ...]
+                       [--role NAME=FILLER[,FILLER...] ...] [--label LABEL ...]
 
 For each open issue:
   NEW              no comment starts with the triage marker
@@ -212,6 +212,10 @@ marker <!-- shipmill-direction --> as its body's first line, opened by an OWNER,
 COLLABORATOR or the --bot-login) carries "direction": true, whatever its state, so
 github-ship-watch keeps it out of its issue rows without reading it again.
 
+With --label LABEL (repeatable), only the open issues carrying any of the labels are read
+and classified, the recently closed ones as without it: shipmill gate's tier 4 reads the
+items labelled needs-decision or decided this way (spec 046).
+
 With --wip N (a work-in-progress limit, such as the config's [agents] wip), a last
 line says how many issues are IN_PROGRESS (counting an OFF_MILESTONE one with an open
 PR), the room left under N, and the issues
@@ -247,7 +251,7 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, NoReturn
 
 OPEN_TIMELINE = """
@@ -329,24 +333,34 @@ def open_issue_fields(native: bool) -> str:
     )
 
 
-def first_query(native: bool) -> str:
+def label_filter(labels: Sequence[str]) -> str:
+    """The open issues' filter by --label (spec 046): those carrying any of the labels; none
+    without one. Each label is a JSON string, so a quote in one can't end the query's"""
+    return f", labels: [{', '.join(json.dumps(label) for label in labels)}]" if labels else ""
+
+
+def first_query(native: bool, labels: Sequence[str] = ()) -> str:
     return (
         """
 query($owner: String!, $name: String!, $size: Int!, $closed: Int!, $since: DateTime!) {
   repository(owner: $owner, name: $name) {
-    open: issues(states: OPEN, first: $size, orderBy: {field: CREATED_AT, direction: DESC}) {
+    open: issues(states: OPEN"""
+        + label_filter(labels)
+        + """, first: $size, orderBy: {field: CREATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }"""
         + open_issue_fields(native)
         + (CLOSED_AND_TAGS.replace(CLOSED_FIELDS, CLOSED_FIELDS + CLOSED_NATIVE, 1) if native else CLOSED_AND_TAGS)
     )
 
 
-def open_page(native: bool) -> str:
+def open_page(native: bool, labels: Sequence[str] = ()) -> str:
     return (
         """
 query($owner: String!, $name: String!, $size: Int!, $cursor: String!) {
   repository(owner: $owner, name: $name) {
-    open: issues(states: OPEN, first: $size, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
+    open: issues(states: OPEN"""
+        + label_filter(labels)
+        + """, first: $size, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }"""
         + open_issue_fields(native)
         + """
@@ -963,28 +977,40 @@ def fetch(
     stable_pattern: re.Pattern[str] = STABLE,
     run: Runner = gh_graphql,
     now: dt.datetime | None = None,
+    labels: Sequence[str] = (),
 ) -> dict[str, Any]:
     """One query, plus follow-up pages only for the connections it reports as capped. When
     the forge refuses blockedBy or subIssues, one stderr note, then the text holds alone.
-    ``now`` (default: the clock) dates the window of closed decided issues it reads back"""
+    ``now`` (default: the clock) dates the window of closed decided issues it reads back;
+    ``labels`` (--label, spec 046) narrows the open issues to those carrying any of them"""
     owner, _, name = repo.partition("/")
     if not owner or not name or "/" in name:
         fail(f"repo must be owner/name, got {repo!r}")
     moment = now if now is not None else dt.datetime.now(UTC)
     since = (moment - VETO_WINDOW).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        return fetch_pages(owner, name, closed, stable_pattern, run, native=True, since=since)
+        return fetch_pages(owner, name, closed, stable_pattern, run, native=True, since=since, labels=labels)
     except NativeUnavailable as refused:
         sys.stderr.write(f"note: native relations unavailable: {refused}\n")
-    return fetch_pages(owner, name, closed, stable_pattern, run, native=False, since=since)
+    return fetch_pages(owner, name, closed, stable_pattern, run, native=False, since=since, labels=labels)
 
 
 def fetch_pages(
-    owner: str, name: str, closed: int, stable_pattern: re.Pattern[str], run: Runner, native: bool, since: str
+    owner: str,
+    name: str,
+    closed: int,
+    stable_pattern: re.Pattern[str],
+    run: Runner,
+    native: bool,
+    since: str,
+    labels: Sequence[str] = (),
 ) -> dict[str, Any]:
     base: Variables = {"owner": owner, "name": name}
     sizes = dict(SIZES)
     first, later = (QUERY, OPEN_PAGE) if native else (TEXT_QUERY, TEXT_OPEN_PAGE)
+    if labels:  # the same queries narrowed, at their page sizes
+        sizes[first_query(native, labels)], sizes[open_page(native, labels)] = sizes[first], sizes[later]
+        first, later = first_query(native, labels), open_page(native, labels)
     what = "the first query (open issues, tags, recent closes)"
     data = sized(run, first, {**base, "closed": closed, "since": since}, sizes, what)
 
@@ -1912,6 +1938,12 @@ def main() -> int:
     parser.add_argument("--closed", type=int, default=20, help="recently closed issues to check")
     parser.add_argument("--json", action="store_true", help="JSON lines instead of a table")
     parser.add_argument("--wip", type=int, help="at most N issues in progress at once: report the room left")
+    parser.add_argument(
+        "--label",
+        action="append",
+        default=[],
+        help="read only the open issues carrying this label, or any of several (repeatable, spec 046)",
+    )
     parser.add_argument("--bot-login", help="the login shipmill's sessions write as, such as <slug>[bot]")
     parser.add_argument(
         "--trusted-only", action="store_true", help="report issues by untrusted authors as UNTRUSTED (D-16)"
@@ -1940,12 +1972,14 @@ def main() -> int:
         parser.error("--wip must be at least 1")
     if args.bot_login is not None and not args.bot_login.strip():
         parser.error("--bot-login must not be empty")
+    if any(not label.strip() for label in args.label):
+        parser.error("--label must not be empty")
     try:
         stable_pattern = re.compile(args.stable_tag_regex)
     except re.error as exc:
         parser.error(f"--stable-tag-regex: {exc}")
 
-    data = fetch(args.repo, max(args.closed, 1), stable_pattern)
+    data = fetch(args.repo, max(args.closed, 1), stable_pattern, labels=args.label)
     owner, _, name = args.repo.partition("/")  # fetch checked it is owner/name
     rows: list[dict[str, Any]] = []
     refs = {r for issue in data["open"]["nodes"] for r in upstream_refs(issue, (owner, name))}
