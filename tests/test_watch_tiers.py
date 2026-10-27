@@ -209,6 +209,50 @@ def test_a_malformed_known_file_is_refused(ws: ModuleType, tmp_path: Path) -> No
         ws.read_known(path)
 
 
+@pytest.mark.parametrize(
+    "given",
+    [
+        {"prs": {}},  # an object, not a list: read as no pull request at all
+        {"incidents": ""},
+        {"runs": {}},
+        {"prs": [{**pr(3), "labels": ["needs-decision"]}]},  # gh pr list's labels are objects
+        {"prs": [{**pr(3), "number": "3"}]},
+        {"prs": [{**pr(3), "isDraft": "false"}]},
+        {
+            "incidents": [
+                {
+                    "number": 9,
+                    "title": "t",
+                    "createdAt": NOW.isoformat(),
+                    "author": "a",
+                    "labels": "incident",
+                    "closing_prs": [],
+                }
+            ]
+        },
+    ],
+)
+def test_a_known_file_of_the_wrong_shape_is_refused(ws: ModuleType, tmp_path: Path, given: dict[str, object]) -> None:
+    path = tmp_path / "known.json"
+    path.write_text(json.dumps(known(**given)), encoding="utf-8")
+    with pytest.raises(ws.Refused):
+        ws.read_known(path)
+
+
+@pytest.mark.parametrize("level", ["observe", "propose", "act"])
+def test_s046_7_tier_4_waits_on_the_upgrade_questions_the_full_report_does(ws: ModuleType, level: str) -> None:
+    body = "<!-- shipmill-upgrade: lanes v1 -->\nupgrade the config"
+
+    def issue(number: int, *labels: str, closing: tuple[int, ...] = ()) -> object:
+        upgrade = ("shipmill-upgrade", "needs-decision", *labels)
+        return ws.Issue(number, "upgrade", body, NOW, "github-actions[bot]", upgrade, closing)
+
+    issues = [issue(1), issue(2, "shipmill-upgrade-later"), issue(3, closing=(8,))]
+    full = ws.upgrade_rows(issues, level, False, lambda n: [], lambda name: [], "o/r")
+    # with no reply yet, every upgrade question the full report reads waits, and no other
+    assert ws.asked_upgrades(issues, level) == full.waiting == ([] if level == "observe" else [1])
+
+
 def test_known_runs_fall_back_only_when_the_workflow_has_none(ws: ModuleType) -> None:
     older = ws.Run("completed", "success", NOW - dt.timedelta(hours=2), "https://github.com/o/r/actions/runs/1")
     newer = ws.Run("completed", "failure", NOW, "https://github.com/o/r/actions/runs/2")

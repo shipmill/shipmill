@@ -2354,6 +2354,12 @@ def upgrade_id(issue: Issue) -> str | None:
     return name
 
 
+def upgrade_open(issue: Issue, level: str) -> bool:
+    """Whether an upgrade issue is taken up, or waits on its question, under [autonomy] upgrade
+    level: not under observe, nor once answered "not now" or closed by an open pull request"""
+    return level != "observe" and UPGRADE_LATER_LABEL not in issue.labels and not issue.closing_prs
+
+
 def upgrade_rows(
     issues: list[Issue],
     level: str,
@@ -2381,7 +2387,7 @@ def upgrade_rows(
         if name is None:
             continue  # not shipmill's proposal: triage reads it as any issue
         owned.add(issue.number)
-        if level == "observe" or UPGRADE_LATER_LABEL in issue.labels or issue.closing_prs:
+        if not upgrade_open(issue, level):
             continue
         asked = TRIAGE.DECISION_LABEL in issue.labels
         if asked and TRIAGE.waits_on_decision(comments_of(issue.number), bot_login):
@@ -4108,9 +4114,17 @@ def read_known(path: Path) -> Known:
             raise ValueError("default_branch must be a branch name")
         if not isinstance(data["held"], bool):
             raise ValueError("held must be true or false")
+        for key in ("prs", "incidents", "runs"):
+            if not isinstance(data[key], list) or not all(isinstance(item, dict) for item in data[key]):
+                raise ValueError(f"{key} must be a list of objects")
         for pr in data["prs"]:
             if set(pr) != {"number", "isDraft", "isCrossRepository", "labels", "headRefOid"}:
                 raise ValueError(f"a pull request needs exactly gh pr list's fields, got {sorted(pr)}")
+            if not known_pr(pr):
+                raise ValueError(f"pull request {pr['number']!r} is not as gh pr list prints it")
+        for i in data["incidents"]:
+            if not isinstance(i.get("labels"), list) or not isinstance(i.get("closing_prs"), list):
+                raise ValueError(f"incident {i.get('number')!r}: labels and closing_prs must be lists")
         incidents = [
             Issue(
                 int(i["number"]),
@@ -4133,6 +4147,20 @@ def read_known(path: Path) -> Known:
     except (OSError, KeyError, TypeError, ValueError) as exc:  # json.JSONDecodeError is a ValueError
         raise Refused(f"error: --known {path}: {exc}") from None
     return Known(data["default_branch"], data["held"], list(data["prs"]), incidents, runs)
+
+
+def known_pr(pr: dict[str, Any]) -> bool:
+    """Whether a --known pull request's values are gh pr list's: a number, two flags, and its
+    labels as objects with a name"""
+    number = pr["number"]
+    return (
+        isinstance(number, int)
+        and not isinstance(number, bool)
+        and isinstance(pr["isDraft"], bool)
+        and isinstance(pr["isCrossRepository"], bool)
+        and isinstance(pr["labels"], list)
+        and all(isinstance(label, dict) and isinstance(label.get("name"), str) for label in pr["labels"])
+    )
 
 
 def known_runs(known: Known | None, workflow: str, repo: str) -> list[Run]:
@@ -4316,6 +4344,13 @@ def upgrade_issues(repo: str, text: str | None) -> list[Issue]:
     return [i for i in fetch_issues(repo, "--label", UPGRADE_LABEL) if upgrade_id(i) is not None]
 
 
+def asked_upgrades(upgrades: list[Issue], level: str) -> list[int]:
+    """The upgrade issues labelled needs-decision whose question can wait on a reply, as
+    upgrade_rows reads them under [autonomy] upgrade level, so tier 4's NEEDS_DECISION is the
+    full report's"""
+    return [i.number for i in upgrades if TRIAGE.DECISION_LABEL in i.labels and upgrade_open(i, level)]
+
+
 def asked_rows(
     args: argparse.Namespace, repo_dir: Path, text: str | None, known: Known | None, now: dt.datetime
 ) -> list[Row]:
@@ -4329,7 +4364,8 @@ def asked_rows(
     home = None if text is None else product_home(text, POLICY)
     code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role, ASKED)
     upgrades = upgrade_issues(args.repo, text)
-    waiting = [i.number for i in upgrades if TRIAGE.DECISION_LABEL in i.labels]
+    level = "observe" if text is None else config(text, POLICY, args.incident_label).upgrade
+    waiting = asked_upgrades(upgrades, level)
     prs = [pr for pr in (known.prs if known is not None else open_prs(args.repo)) if asked(pr)]
     closed = decided_prs(args.repo, now)
     numbers = [*waiting, *(int(pr["number"]) for pr in prs), *(int(pr["number"]) for pr in closed)]
