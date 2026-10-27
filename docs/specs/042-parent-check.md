@@ -1,6 +1,6 @@
 # S-042: A parent closes once its check holds
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -208,11 +208,24 @@ comment, and the needs-decision question; the Upstream report's `## Check`), and
 
 ## Issues
 
+The feature issue is shipmill/shipmill#678. Its build issues landed through #728 (#717),
+#733 (#718), and #737 (#719).
+
 - shipmill/shipmill#717: S-042-1, S-042-2, S-042-3, S-042-4, S-042-5, S-042-6, S-042-12
 - shipmill/shipmill#718: S-042-7, S-042-8
 - shipmill/shipmill#719: S-042-9, S-042-10, S-042-11
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+- S-042-1: tests/test_parent_check.py (test_s042_1_*) reads a triaged parent with a `## Check` and both children closed as VERIFY_DUE with the note `children 2/2 closed ...: run its ## Check`, and the real `triage_state.py` run over that forge exits 1; passes
+- S-042-2: tests/test_parent_check.py (test_s042_2_*): the same parent without a check reads UNBLOCKED with the note it read before, and one open child makes it BLOCKED with or without a check; passes
+- S-042-3: tests/test_parent_check.py (test_s042_3_*): a `<!-- shipmill:check-failed -->` first line by the `--bot-login` or a MEMBER after the newest close reads CHECK_FAILED (`check failed <date> children 2/2 closed ...`) and the script exits 1; by a CONTRIBUTOR, before the newest close, or mid-comment it stays VERIFY_DUE; passes
+- S-042-4: tests/test_parent_check.py (test_s042_4_*): an open fix child after the check-failed comment reads BLOCKED, and its close after the comment reads VERIFY_DUE with `children 3/3 closed`; passes
+- S-042-5: tests/test_parent_check.py (test_s042_5_*): a `human` or `role:infra` item with closed children and a check-failed comment reads HANDOFF_DUE, then VERIFY_DUE on a done report, never CHECK_FAILED; an `upstream` parent reads UPSTREAM in `gated`; passes
+- S-042-6: tests/test_parent_check.py (test_s042_6_*): a closed parent with a check reads VERIFY_CLOSED when closed by a pull request, a commit, or the `--bot-login`, never SUSPECT_CLOSE; nothing with a trusted verified comment after the close; SUSPECT_CLOSE as before when closed by hand by a trusted person; and fetch reads its comments back to the close; passes
+- S-042-7: tests/test_upstream_state.py (test_s042_7_*): a trusted report with a check whose children landed reads VERIFY_DUE, CHECK_FAILED after a trusted check-failed comment (an outsider's changes nothing), CLOSE_DUE `not_planned` when a child closed not planned, VERIFY_DUE again after a fix child closes, and exits 1 on both; passes
+- S-042-8: tests/test_upstream_state.py (test_s042_8_*) puts VERIFY_DUE and CHECK_FAILED reports in the UPSTREAM_DUE row and CHECK_FAILED in `TRIAGE_ACTION`; tests/test_status_picture.py (test_s042_8_*) lists a CHECK_FAILED issue under `to triage`; `src/shipmill/status.py` and `watch_state.py` name CHECK_FAILED on main; passes
+- S-042-9: tests/test_parent_check_docs.py (test_s042_9_*) reads triage-rubric.md's and comments.md's A parent's check (the close then the verified comment with the check and what came back, the check-failed comment, the fix linked with `chains.py link <owner/repo#parent> --child <owner/repo#fix>`, no comment before production, the needs-decision question with its two options, never a write to production) and SKILL.md's Chains and Reports from other repos saying the same; the markers it asserts are read from `triage_state.py`'s constants; passes
+- S-042-10: tests/test_parent_check_docs.py (test_s042_10_*): spec-gate.md asks for the feature issue's `## Check` before the split's first step when the build deploys, and its last-build rule leaves out `Fixes #<feature>` for a feature issue with a check; passes
+- S-042-11: tests/test_parent_check_docs.py (test_s042_11_*): comments.md's Upstream report template has an optional `## Check` after Suspected code, and github-issue-resolve's Phase 2 upstream row names it; passes
+- S-042-12: tests/test_parent_check.py (test_s042_12_*) drives `chains.py` and the real `triage_state.py` over one scripted forge: BLOCKED, VERIFY_DUE once both children close, CHECK_FAILED, BLOCKED on the linked fix, VERIFY_DUE on its close, and nothing among the closed issues after the close and the verified comment; passes

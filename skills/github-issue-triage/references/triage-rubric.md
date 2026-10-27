@@ -106,6 +106,32 @@ A hand-off is a comment whose first line is `<!-- shipmill:handoff -->`, and a v
 
 A check the session's tools can't run (a host it can't reach, a command outside a headless session's allowlist) goes to the maintainer through the [needs-decision protocol](needs-decision.md), with two options: "close it on the report" and "it isn't done". Never close a person's item on a check that didn't run without that answer.
 
+## A parent's check
+
+A parent (an issue with sub-issues that isn't a person's item) may carry a `## Check` section in its body, read as a person's item's is: a command or a URL and what it must return, saying what must hold in production and how to see it (spec 042). A parent without one reads as before: UNBLOCKED once its last child closes, and the session closes it ([comments.md](comments.md), A parent's close). A feature issue gets one from the spec gate when its build deploys ([spec-gate.md](spec-gate.md), Split it into build issues).
+
+`triage_state.py` reads a parent with a check, where it would read UNBLOCKED, as:
+
+| State | Means | The session |
+|---|---|---|
+| VERIFY_DUE | Every hold closed, and no check-failed comment came after the newest close. Its note starts `children K/N closed`, then each hold, and ends `run its ## Check` | Runs the check (below) |
+| CHECK_FAILED | Every hold closed, and a check-failed comment came after the newest close. Its note starts `check failed <date>`, then the progress and the holds | Files the fix as a new child (below) |
+| VERIFY_CLOSED | Closed as completed by a pull request, a commit, or the `--bot-login`, with no verified comment after its last close (read with `--closed N`). Its note reads `closed by #N`, `closed by commit <sha>`, or `closed by @<login>`, then `run its ## Check` | Runs the check (below) on the closed parent. It never reads SUSPECT_CLOSE |
+
+A check-failed comment is a comment whose first line is `<!-- shipmill:check-failed -->`, and a verified comment one whose first line is `<!-- shipmill:verified -->`; each counts only from the `--bot-login` or an OWNER, MEMBER, or COLLABORATOR (D-16). The newest close is the latest close among the parent's holds, children and `Depends on` lines alike, so a fix child that closes after the check-failed comment makes the parent read VERIFY_DUE again. While a hold is open the parent reads BLOCKED, with or without a check. A person's item with sub-issues stays a person's item (above), and an `upstream` report reads UPSTREAM here: its check is the coordinator's (SKILL.md, Reports from other repos). A parent closed by hand by a trusted person other than the `--bot-login` is that person's call and reads as any other close.
+
+The session runs the check:
+
+- **It holds:** close the parent as completed (`gh issue close <n> --reason completed`), then post the verified comment ([comments.md](comments.md), A parent's check) with the check that ran, what came back, and each child and how it closed. It goes after the close, so `triage_state.py` dates it there and the parent doesn't read VERIFY_CLOSED. A feature issue first gets its spec verified ([spec-gate.md](spec-gate.md), Verify the whole spec). On VERIFY_CLOSED the parent is closed already: post the verified comment alone
+- **It fails:** post the check-failed comment with the check, what came back, and what it must return; on VERIFY_CLOSED, reopen the parent first (`gh issue reopen <n>`). The parent then reads CHECK_FAILED
+- **The change hasn't reached production yet** (the deploy run for the merge is still going, or the version served predates the merge): no comment and no close. It isn't a failure; the parent reads the same on the next read
+- **The session can't run it** (a production log, a dashboard, a host it can't reach, a command outside a headless session's allowlist): a question through the [needs-decision protocol](needs-decision.md) (D-21) on the parent, saying what the check is and why it can't run here, with two options: "leave it open: I check it and close it by hand" (recommended when nothing else shows the result) and "close it unchecked". The parent reads NEEDS_DECISION until the answer. Never close a parent on a check that didn't run without that answer
+- **Never a write to production.** A check only reads: it runs a command or opens a URL and compares what comes back. A check that needs a deploy, a rollback, a data change, or any other write is one the session can't run, so it goes to the maintainer as above. shipmill decides and verifies; the platform executes (D-31)
+
+On CHECK_FAILED, file the fix as a new issue in the parent's repo, naming the parent, the check, and what came back ([comments.md](comments.md), A parent's check), triage it **implement**, and make it a child: `chains.py link <owner/repo#parent> --child <owner/repo#fix>`. The parent then reads BLOCKED on the fix, and VERIFY_DUE again once it closes. When you can't tell what the fix is, ask on the parent through the needs-decision protocol instead. A failure reopens no child: the children stay closed, and the fix is new work.
+
+Taking up the answer ([needs-decision.md](needs-decision.md), Taking up an answered item): on "close it unchecked", close the parent as completed, then post the verified comment saying no check ran and who decided, which ends the state; on "leave it open", nothing more: the maintainer checks it and closes it by hand.
+
 ## Flags from `triage_state.py`
 
 | Flag | Act |
@@ -122,13 +148,14 @@ A check the session's tools can't run (a host it can't reach, a command outside 
 | MALFORMED_DEPENDS | A `Depends on` line its note names (`line <n>: <the line>`) carries other words beside its references, so it holds on all of them until fixed. Rewrite it in the body as the App: one strict `Depends on` line naming the references you read as the author's dependencies, and the rest of the old line on a line of its own after it. Which references are holds is an `interpretation` decision ([Who decides](needs-decision.md#who-decides)): at `notify`, post the decided marker naming the old and the new line; a veto puts the old line back |
 | CYCLE | It is on a cycle of the repo's open issues, each holding the next, so none can start; its note starts `cycle <loop>`, such as `cycle o/r#3 -> o/r#5 -> o/r#3`. On the loop's first item, ask the maintainer which link is wrong through the [needs-decision protocol](needs-decision.md) (D-21), one option per link of the loop, your recommendation first with its reason ([comments.md](comments.md), A cycle). Once it reads DECIDED, remove both forms of the chosen link as the App, the body's `Depends on` line and the native relation (GraphQL `removeBlockedBy` or `removeSubIssue`), then remove the label. The other items on the loop read BLOCKED with `cycle <loop> waits on owner/repo#N` while the question waits: nothing to do for them |
 | SPEC_REFUSED | The spec PR it waits on closed without merging: the spec was refused. Decide again in a new triage comment: revise the spec in a new PR (with a new hold line), postpone, or won't fix |
-| UNBLOCKED | Read the upstream outcome, update the plan on the issue, then resume. A dependency noted `:not_planned` was closed without its work: decide again whether the issue still stands. A parent whose holds are only its children (each noted `(child)`) is done: close it with a comment listing each child and how it closed ([comments.md](comments.md), A parent's close); a feature issue first gets its spec verified ([spec-gate.md](spec-gate.md), Verify the whole spec) |
+| UNBLOCKED | Read the upstream outcome, update the plan on the issue, then resume. A dependency noted `:not_planned` was closed without its work: decide again whether the issue still stands. A parent whose holds are only its children (each noted `(child)`) is done: close it with a comment listing each child and how it closed ([comments.md](comments.md), A parent's close); a feature issue first gets its spec verified ([spec-gate.md](spec-gate.md), Verify the whole spec). A parent with a `## Check` never reads UNBLOCKED: it reads VERIFY_DUE ([A parent's check](#a-parents-check)) |
 | ASSIGN_DUE | A person's item nobody is assigned to, read with the `--role` flags: assign the users its note names, with no comment (above) |
 | NO_ASSIGNEE | A person's item nobody is assigned to, read without the `--role` flags: read the state again with `shipmill roles --flags`, never ask who does it (above) |
 | HANDOFF_DUE | A person's item whose holds all closed: post the hand-off to its assignees and its roles' teams (above) |
 | WITH_PERSON | Nothing: it waits on its assignees, however long. Never mention them again |
-| VERIFY_DUE | A done report came after the hand-off: run the `## Check` (below) |
-| VERIFY_CLOSED | A person closed their item by hand: run its `## Check` (below) |
+| VERIFY_DUE | A person's item: a done report came after the hand-off, run the `## Check` (above). A parent (its note starts `children K/N closed`): its holds all closed, run its `## Check` ([A parent's check](#a-parents-check)) |
+| CHECK_FAILED | A parent's check failed after its newest close: file the fix as a new child with `chains.py link <owner/repo#parent> --child <owner/repo#fix>` ([A parent's check](#a-parents-check)) |
+| VERIFY_CLOSED | A person closed their item by hand, or a parent closed before its check ran: run its `## Check` (above, and [A parent's check](#a-parents-check)) |
 | DECIDED | A trusted person answered its needs-decision question: read the reply, remove the `needs-decision` label, and act on it ([needs-decision.md](needs-decision.md), Taking up an answered item) |
 | VETOED | A trusted person vetoed a decision an agent took at `notify` (spec 030), on an open issue or one closed in the last 14 days: take the veto up as SKILL.md's VETOED step says, ending with the `<!-- shipmill:veto-handled zone=<id> -->` comment and the `decided` label removed |
 | POSTPONED | Skip it |
