@@ -370,9 +370,18 @@ def _git(*args: str, cwd: Path) -> None:
 PATH_FILES = frozenset({"config", ".git", "gitdir"})
 
 
+def no_auto_maintenance(*repos: Path) -> None:
+    """Keep git's detached auto-maintenance out of these repos: its lock files and prunes come and
+    go while copy_tree copies a template, which fails the copy (seen under pytest -n auto)"""
+    for repo in repos:
+        for key, value in (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false")):
+            _git("config", key, value, cwd=repo)
+
+
 def copy_tree(template: Path, dest: Path) -> None:
     """Copy each entry of template into dest, moving the absolute paths git wrote from template
-    to dest: a few file copies instead of the git init, clone, and commits that built it"""
+    to dest: a few file copies instead of the git init, clone, and commits that built it; build
+    the template's repos with no_auto_maintenance"""
     dest.mkdir(parents=True, exist_ok=True)
     for entry in template.iterdir():
         if entry.is_dir():
@@ -395,11 +404,7 @@ def repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     _git("init", "-q", "--bare", "-b", "main", str(origin), cwd=base)
     root = base / "work"
     _git("clone", "-q", str(origin), str(root), cwd=base)
-    # No detached auto-maintenance: its lock files come and go while copy_tree copies the
-    # tree, which fails the copy (seen under pytest -n auto)
-    for repo in (origin, root):
-        for key, value in (("maintenance.auto", "false"), ("gc.auto", "0"), ("receive.autogc", "false")):
-            _git("config", key, value, cwd=repo)
+    no_auto_maintenance(origin, root)
     git = Git(root, "bot", "bot@example.com")
     r = Repo(root, git, FakeGitHub())
     r.at(T0 - dt.timedelta(days=30))

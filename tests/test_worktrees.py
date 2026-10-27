@@ -30,7 +30,7 @@ from shipmill.worktrees import (
     prune,
 )
 
-from .conftest import FakeGitHub, copy_tree
+from .conftest import FakeGitHub, copy_tree, no_auto_maintenance
 
 CHANGELOG = "# Changelog\n\n## [Unreleased]\n\n### Added\n\n"
 OLD = 72  # hours: past the 24-hour floor
@@ -103,6 +103,7 @@ def template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     run("git", "init", "-q", "--bare", "-b", "main", str(origin))
     root = base / "work"
     run("git", "clone", "-q", str(origin), str(root))
+    no_auto_maintenance(origin, root)
     c = Checkout(root)
     c.git().run("checkout", "-q", "-b", "main")
     c.commit(root, {"CHANGELOG.md": CHANGELOG, "app.py": "VALUE = 1\n"}, "Start")
