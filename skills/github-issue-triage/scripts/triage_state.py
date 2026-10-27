@@ -26,8 +26,13 @@ For each open issue:
                    "cf.", or "vs."), so a hold word in one sentence of a
                    paragraph doesn't hold on a link in another (#309). Or,
                    once triaged, its body has a "Depends on owner/repo#N" line (or
-                   "#N" anywhere on that line, the same repo: a build issue split
-                   from a spec) naming an issue still open. Or, once triaged, GitHub
+                   "#N", the same repo: a build issue split from a spec) naming an
+                   issue still open. A Depends on line outside a ``` or ~~~ fence
+                   reads the strict shape (spec 041): "Depends on[:]", references
+                   (owner/repo#N, an issues or pull URL, #N, or a #{key}
+                   placeholder) separated by ",", "and", or spaces, then an
+                   optional note after " (", ";", or " — " that names no hold.
+                   Or, once triaged, GitHub
                    records an open issue it is blocked by (blockedBy) or an open
                    sub-issue, in any repo: these and the text holds are one set,
                    so an issue named both ways is listed once. The note marks one
@@ -37,7 +42,12 @@ For each open issue:
                    body depends on and whatever GitHub records holds it
   UNFILLED         a "Depends on" line of its body still names a placeholder such
                    as #{B1} from specs.py split: put in the dependency's number
-  SPEC_REFUSED     a pull request it waits on (such as its spec PR) closed without
+  MALFORMED_DEPENDS once triaged (or a person's item), a "Depends on" line of its body
+                   names a reference outside the strict shape: it holds on every
+                   reference it names, and its note is "line <n>: <the line>" for
+                   each, then the holds. Read right after UNFILLED, before
+                   SPEC_REFUSED, BLOCKED, UNBLOCKED, and HANDOFF_DUE: rewrite the line
+  SPEC_REFUSED    a pull request it waits on (such as its spec PR) closed without
                    merging, and no triage comment came after the hold: decide again
                    (revise the spec in a new PR, postpone, or won't fix). A newer
                    triage comment is that decision, and the refused PR stops counting
@@ -109,7 +119,7 @@ as @<org>/<team-slug> (a malformed name or filler, an empty list, a name given t
 maintainer exits 2). A role no flag gives resolves to maintainer's fillers, and several
 roles to the union of theirs. After UNTRUSTED, UPSTREAM, NEEDS_DECISION, DECIDED, VETOED,
 and OFF_MILESTONE, it reads NO_ASSIGNEE (without --role) or ASSIGN_DUE (with it), else
-UNFILLED, SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue would, else, with every
+UNFILLED, MALFORMED_DEPENDS, SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue would, else, with every
 hold closed, one of:
   NO_ASSIGNEE      without --role flags, a person's item with no assignee: read again
                    with the flags `shipmill roles --flags` prints. With them, never read
@@ -185,7 +195,7 @@ names the product's home repo, the config's [product] home, as owner/name (lette
 ".", "-", or "_" on each side; anything else exits 2); it only words UPSTREAM's note.
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
-SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, VETOED, SUSPECT_CLOSE, HANDOFF_DUE, VERIFY_DUE,
+MALFORMED_DEPENDS, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, VETOED, SUSPECT_CLOSE, HANDOFF_DUE, VERIFY_DUE,
 NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, or OFF_MILESTONE (never for NEEDS_DECISION, UNTRUSTED, UPSTREAM, or
 WITH_PERSON),
 2 on bad input (an issue with more than 100
@@ -584,6 +594,7 @@ ACTION = {
     "NEEDS_PR",
     "UNBLOCKED",
     "UNFILLED",
+    "MALFORMED_DEPENDS",
     "SPEC_REFUSED",
     "REVISIT",
     "DONE_NOT_CLOSED",
@@ -612,15 +623,21 @@ SAME_REPO = re.compile(
     r"\b(?:waits? on|waiting on|depends on|blocked (?:by|on)|decided in|on hold until)[ \t]+#(?P<num>\d+)\b",
     re.IGNORECASE,
 )
-# A "Depends on" line of an issue body (a build issue split from a spec) and the issues it
-# names: owner/repo#N, a URL, or a plain #N for the same repo anywhere on the line, since
-# the line itself is the dependency
+# A "Depends on" line of an issue body (a build issue split from a spec), outside a code fence,
+# and the issues it names: owner/repo#N, a URL, or a plain #N for the same repo
 DEPENDS = re.compile(r"^[ \t]*(?:[-*][ \t]+)?depends on\b:?(?P<refs>.*)$", re.IGNORECASE | re.MULTILINE)
 DEPENDENCY = re.compile(
     r"(?:(?:https://github\.com/)?(?P<owner>[\w.-]+)/(?P<name>[\w.-]+)(?:#|/issues/|/pull/)|(?<![\w/])#)(?P<num>\d+)\b"
 )
 # A dependency specs.py split names by key until the issue is filed: #{B1}, o/r#{B1}
 PLACEHOLDER = re.compile(r"#\{(?P<key>[^{}\s]*)\}")
+# The strict shape of a Depends on line past "Depends on[:]" (spec 041): references separated
+# by any mix of ",", "and", and whitespace, then a note after " (", ";", or " — " that is
+# never read for references. A line naming a reference in any other shape is malformed
+STRICT_REF = r"(?:https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+|(?:[\w.-]+/[\w.-]+)?#(?:\d+|\{[^{}\s]*\}))"
+STRICT_DEPENDS = re.compile(
+    rf"[ \t]*(?P<refs>{STRICT_REF}(?:(?:[ \t]+|,|\band\b)+{STRICT_REF})*)(?:(?:[ \t]+\(|[ \t]*;|[ \t]+—[ \t]).*)?[ \t]*"
+)
 STABLE = re.compile(r"^v?\d+\.\d+\.\d+$")
 KEYWORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
 # A PR's closing keyword, the one rule github-pr-triage's shipped.py reads too (#368, #416):
@@ -1049,12 +1066,35 @@ def hold_refs(issue: dict[str, Any], repo: tuple[str, str]) -> dict[tuple[str, s
     return refs
 
 
+def depends_lines(body: str) -> list[tuple[int, str, str, bool]]:
+    """Each "Depends on" line of a body outside a ``` or ~~~ fence (spec 041): its number
+    counted from 1, the line, the text its references are read from, and whether it is
+    malformed. A strict line's text stops at its note; a malformed one, naming a reference
+    outside the strict shape, is read whole, so nothing it held starts early"""
+    found: list[tuple[int, str, str, bool]] = []
+    fenced = False
+    for n, line in enumerate(body.replace("\r\n", "\n").split("\n"), 1):
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        depends = None if fenced else DEPENDS.fullmatch(line)
+        if depends is None:
+            continue
+        strict = STRICT_DEPENDS.fullmatch(depends["refs"])
+        if strict is not None:
+            found.append((n, line, strict["refs"], False))
+        else:
+            named = DEPENDENCY.search(depends["refs"]) or PLACEHOLDER.search(depends["refs"])
+            found.append((n, line, depends["refs"], named is not None))
+    return found
+
+
 def dependency_refs(issue: dict[str, Any], repo: tuple[str, str]) -> list[tuple[str, str, int]]:
-    """The issues a "Depends on" line of the issue's body names; a plain #N is one of
-    repo's own (owner, name)"""
+    """The issues a "Depends on" line of the issue's body names (depends_lines); a plain #N
+    is one of repo's own (owner, name)"""
     found: set[tuple[str, str, int]] = set()
-    for line in DEPENDS.finditer(issue["body"]):
-        for m in DEPENDENCY.finditer(line["refs"]):
+    for _, _, text, _ in depends_lines(issue["body"]):
+        for m in DEPENDENCY.finditer(text):
             found.add((m["owner"], m["name"], int(m["num"])) if m["owner"] is not None else (*repo, int(m["num"])))
     return sorted(found)
 
@@ -1062,8 +1102,13 @@ def dependency_refs(issue: dict[str, Any], repo: tuple[str, str]) -> list[tuple[
 def unfilled_dependencies(issue: dict[str, Any]) -> list[str]:
     """The placeholders ({B1}) a "Depends on" line of the issue's body still names instead
     of an issue number: specs.py split's keys, never filled in"""
-    keys = (m["key"] for line in DEPENDS.finditer(issue["body"]) for m in PLACEHOLDER.finditer(line["refs"]))
+    keys = (m["key"] for _, _, text, _ in depends_lines(issue["body"]) for m in PLACEHOLDER.finditer(text))
     return list(dict.fromkeys(keys))
+
+
+def malformed_dependencies(issue: dict[str, Any]) -> list[str]:
+    """Each malformed "Depends on" line of the issue's body as "line <n>: <the line>" (spec 041)"""
+    return [f"line {n}: {line.strip()}" for n, line, _, malformed in depends_lines(issue["body"]) if malformed]
 
 
 def upstream_states(
@@ -1253,6 +1298,11 @@ def classify_open(
     if unfilled:
         # Which issue it waits on is unknown, so neither BLOCKED nor ready: someone fills it in
         return "UNFILLED", " ".join([*(f"unfilled dependency {{{k}}}" for k in unfilled), shown]).strip()
+    malformed = malformed_dependencies(issue) if held else []
+    if malformed:
+        # Which of its references are holds is unclear, so nothing starts on it: a session
+        # rewrites the line (spec 041). CYCLE is read right after this, before SPEC_REFUSED
+        return "MALFORMED_DEPENDS", " | ".join([*malformed, shown] if shown else malformed)
     if waits or "blocked" in labels:
         if any(states.get(r) == "CLOSED_UNMERGED" for r in waits):
             return "SPEC_REFUSED", shown
@@ -1646,9 +1696,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         epilog=(
-            "States: NEW NEEDS_PR IN_PROGRESS DONE_NOT_CLOSED BLOCKED UNFILLED SPEC_REFUSED UNBLOCKED "
-            "POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED VETOED UNTRUSTED UPSTREAM OFF_MILESTONE; for an issue "
-            "labelled human or role:<name> "
+            "States: NEW NEEDS_PR IN_PROGRESS DONE_NOT_CLOSED BLOCKED UNFILLED MALFORMED_DEPENDS SPEC_REFUSED "
+            "UNBLOCKED POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED VETOED UNTRUSTED UPSTREAM OFF_MILESTONE; "
+            "for an issue labelled human or role:<name> "
             "(a person's item) NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
             "SUSPECT_CLOSE VERIFY_CLOSED VETOED. The module docstring defines each."
         ),
@@ -1767,6 +1817,7 @@ def main() -> int:
         "NO_ASSIGNEE",
         "UNBLOCKED",
         "UNFILLED",
+        "MALFORMED_DEPENDS",
         "SPEC_REFUSED",
         "REVISIT",
         "NEW",
