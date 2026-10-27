@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.87.1] - 2026-10-27
+
+### Fixed
+
+- A parent issue or `upstream` report whose `## Check` the maintainer chose to run by hand ("leave it open") no longer starts a gate session every tick: the session posts a `<!-- shipmill:check-waiting -->` comment naming who answered, and `triage_state.py` reads the parent as WITH_PERSON (`check waiting on @login`) and `upstream_state.py` the report as ASKED, neither an action, until a child closes or a check-failed or verified comment follows (#740)
+
 ## [0.87.0] - 2026-10-27
 
 ### Added
@@ -1969,7 +1975,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.87.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.87.1...HEAD
+[0.87.1]: https://github.com/shipmill/shipmill/compare/v0.87.0...v0.87.1
 [0.87.0]: https://github.com/shipmill/shipmill/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/shipmill/shipmill/compare/v0.85.1...v0.86.0
 [0.85.1]: https://github.com/shipmill/shipmill/compare/v0.85.0...v0.85.1
