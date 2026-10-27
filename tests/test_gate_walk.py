@@ -81,7 +81,7 @@ class Source:
 
 
 def cfg(mode: Mode = Mode.INTERACTIVE, land: Autonomy = Autonomy.PROPOSE, **keys: Any) -> AgentsConfig:
-    return AgentsConfig(prompt="/t", prs=None, retry_hours=24, mode=mode, autonomy=AutonomyPolicy(land=land), **keys)
+    return AgentsConfig(prompt="/t", retry_hours=24, mode=mode, autonomy=AutonomyPolicy(land=land), **keys)
 
 
 def tick(

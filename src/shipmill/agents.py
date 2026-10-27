@@ -24,6 +24,12 @@ _MAX_WIP = 100
 # deprecated and ignored in 0.60.0 (S-031-21), refused since (S-031-22, as D-32 set for [roadmap])
 _PLUGIN_UPDATE = "plugin_update"
 PLUGIN_UPDATE_REMOVED = f"[agents] {_PLUGIN_UPDATE} was removed (spec 031); delete it"
+_PRS = "prs"
+# S-040-9: deprecated in 0.78.0 and ignored for one minor release (D-32), refused since (#735)
+PRS_REMOVED = (
+    f"[agents] {_PRS} was removed (spec 040): [autonomy] land decides whether the gate works on open pull"
+    f" requests; delete {_PRS}"
+)
 
 
 class Mode(StrEnum):
@@ -206,9 +212,6 @@ class RolesConfig:
 @dataclass(frozen=True, slots=True)
 class AgentsConfig:
     prompt: str  # the session's prompt; {repo} becomes owner/name
-    # deprecated by spec 040 and read by the gate no more: [autonomy] land decides whether open
-    # pull requests are its work; None without the key, so doctor warns only when it is set
-    prs: bool | None
     retry_hours: int  # unchanged findings start a new session after this
     prune_hours: int = _PRUNE_HOURS  # the gate prunes landed worktrees this often; 0: every tick (spec 045)
     sweep_hours: int = _SWEEP_HOURS  # the gate reads the timed sections this often (spec 046)
@@ -221,17 +224,18 @@ class AgentsConfig:
     roles: RolesConfig = RolesConfig()  # [agents.roles]: who receives a step an agent can't do (spec 036)
     plugin: Plugin = Plugin.HOST  # [agents] plugin: per person, or committed for the repo (spec 033)
     identity: WriteAs = WriteAs.APP  # [agents] identity: who `shipmill gh` writes as without app_id (spec 037)
-    # [autonomy] with spec 040's legacy reading of the prompt, as `shipmill autonomy` reads it;
-    # load and Policy.parse set it, parse alone can't, as it sees [agents] only
+    # [autonomy], as `shipmill autonomy` reads it; load and Policy.parse set it, parse alone
+    # can't, as it sees [agents] only
     autonomy: AutonomyPolicy = AutonomyPolicy()
 
     @classmethod
     def parse(cls, table: Table) -> AgentsConfig:
         if _PLUGIN_UPDATE in table.raw:  # whatever its value, before the unknown-keys error
             raise ReleaseError(PLUGIN_UPDATE_REMOVED)
+        if _PRS in table.raw:  # S-040-9, as S-031-22 refuses plugin_update
+            raise ReleaseError(PRS_REMOVED)
         table.allow(
             "prompt",
-            "prs",
             "retry_hours",
             "prune_hours",
             "sweep_hours",
@@ -265,7 +269,6 @@ class AgentsConfig:
         assert remind is not None and max_wait is not None
         return cls(
             prompt=prompt,
-            prs=table.boolean("prs", default=False) if "prs" in table.raw else None,
             retry_hours=retry,
             prune_hours=prune_hours,
             sweep_hours=sweep_hours,
@@ -298,9 +301,9 @@ class AgentsConfig:
         return agents.with_autonomy(AutonomyPolicy.parse(top.table("autonomy", optional=True)))
 
     def with_autonomy(self, autonomy: AutonomyPolicy) -> AgentsConfig:
-        """The section with the config's [autonomy], read with spec 040's legacy reading of
-        this prompt (S-040-6), so the gate's levels are the ones `shipmill autonomy` prints"""
-        return replace(self, autonomy=autonomy.read_prompt(self.prompt))
+        """The section with the config's [autonomy], so the gate's levels are the ones
+        `shipmill autonomy` prints; the prompt's words raise no stage (S-040-6)"""
+        return replace(self, autonomy=autonomy)
 
 
 def app_id_of(root: Path) -> int | None:

@@ -450,8 +450,8 @@ or the tags are wrong; fix those, not the version.
 session (`claude --bg`) only when something needs an agent and no session it started is still
 working or waiting on the user. Something needs an agent when github-ship-watch's
 `watch_state.py` marks a row `agent: true` (github-ship-watch's SKILL.md lists them), plus
-open PRs unless `[autonomy] land` is `observe` (spec 040; `[agents] prs` is deprecated, and
-doctor warns while it is set). docs/design/agent-modes.md has the details.
+open PRs unless `[autonomy] land` is `observe` (spec 040; shipmill refuses `[agents] prs`, so
+delete it). docs/design/agent-modes.md has the details.
 
 A tick checks for change first (spec 046, D-57): one GraphQL query and one read of the
 newest workflow runs, against the cursor of its last walk (`cursor.json` in the state

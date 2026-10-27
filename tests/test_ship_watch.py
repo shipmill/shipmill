@@ -1050,12 +1050,13 @@ retry_hours = 24
 
 def test_s040_4_the_triage_mode_names_the_agent_levels_not_the_prompt(ws: ModuleType) -> None:
     # #182: a status report says what the gate's sessions do; #693: the levels with their
-    # source, as `shipmill autonomy` reads them, never the prompt's words or the deprecated prs
+    # source, as `shipmill autonomy` reads them, never the prompt's words or prs; #735: a
+    # prompt that merges when green raises no stage
     row = ws.triage_mode_row(AGENTS_CONFIG, Path("shipmill.toml"))
     assert (row.state, row.subject) == ("TRIAGE_MODE", "[agents]")
-    assert row.detail == "triage act (default), fix act (default), land act (prompt); retry_hours = 24"
+    assert row.detail == "triage act (default), fix act (default), land propose (default); retry_hours = 24"
     held = ws.triage_mode_row(AGENTS_CONFIG + "app_id = 42\n", Path("shipmill.toml"), held=True)
-    levels = "triage propose (hold), fix propose (hold), land propose (hold)"
+    levels = "triage propose (hold), fix propose (hold), land propose (default)"  # the hold lowers act only
     assert held.detail == f"{levels}; app_id = 42; retry_hours = 24"
 
 
@@ -1068,9 +1069,6 @@ def shipmill_levels(text: str, held: bool) -> list[dict[str, str]]:
     """The agent stages' rows of `shipmill autonomy --json` for the config, read as status.py reads it"""
     raw = tomllib.loads(text)
     policy = AutonomyPolicy.parse(Table(raw.get("autonomy", {}), "[autonomy]"))
-    agents = raw.get("agents")
-    if isinstance(agents, dict) and isinstance(agents.get("prompt"), str):
-        policy = policy.read_prompt(agents["prompt"])
     hold = Hold(("#7 held",) if held else ())
     return [level.record() for level in policy.levels(hold)[:3]]
 
@@ -1082,14 +1080,15 @@ def shipmill_levels(text: str, held: bool) -> list[dict[str, str]]:
         "[agents]\nprs = true\n",  # default
         '[agents]\nprompt = "/t triage"\n[autonomy]\ntriage = "propose"\nfix = "observe"\nland = "act"\n',  # config
         "[agents]\nprompt = '/t triage'\n[autonomy]\nfix = 'act'  # set\n",  # config and default
-        '[agents]\nprompt = "/t triage; merge when green"\n',  # prompt
-        '[agents]\nprompt = "/t Land what is green"\n[autonomy]\nupgrade = "act"\n',  # prompt
-        '[agents]\nprompt = "/t merge when green"\n[autonomy]\ntriage = "act"\n',  # a set stage ends the prompt's
+        '[agents]\nprompt = "/t triage; merge when green"\n',  # the prompt's words raise nothing (#735)
+        '[agents]\nprompt = "/t Land what is green"\n[autonomy]\nupgrade = "act"\n',  # nor here
+        '[agents]\nprompt = "/t merge when green"\n[autonomy]\ntriage = "act"\n',  # config and default
         '[autonomy]\nland = "act"\n',  # no [agents]
     ],
 )
 def test_s040_4_the_triage_mode_levels_are_shipmills_on_3_11_and_3_10(ws: ModuleType, text: str, held: bool) -> None:
-    # proves: S-040-4
+    # proves: S-040-4, and S-040-6's closed window: no source is prompt
+    assert "prompt" not in {level.source for level in ws.agent_levels_310(text, Path("x"))}
     policy = Path(".github/shipmill.toml")
     want = shipmill_levels(text, held)
     for levels in (ws.agent_levels_toml(tomllib.loads(text), policy), ws.agent_levels_310(text, policy)):
@@ -1807,18 +1806,18 @@ GATE_CONFIG = '[agents]\nprompt = "/github-issue-triage {repo} triage the new is
     [
         ('name = "demo"\n', "propose"),
         (GATE_CONFIG, "propose"),  # absent: land's default (D-51)
-        (GATE_CONFIG + "prs = true\n", "propose"),  # #691: the deprecated prs decides nothing
+        (GATE_CONFIG + "prs = true\n", "propose"),  # #691: prs, refused by shipmill since #735, decides nothing
         (GATE_CONFIG + '[autonomy]\nland = "observe"\n', "observe"),
         (GATE_CONFIG + "[autonomy]\nland = 'propose'  # a person merges\n", "propose"),
         (GATE_CONFIG + 'prs = false\n[autonomy]\nland = "act"\n', "act"),
         ('[autonomy]\nrelease = "act"\ndeploy.production = "propose"\nland = "act"\n', "act"),
-        # S-040-6: none of triage, fix, and land set, the prompt's words read land as act
-        ('[agents]\nprompt = "/t triage; merge when green"\n', "act"),
-        ('[agents]\nprompt = "/t Land what is green"\n', "act"),
+        # S-040-6's window closed (#735): the prompt's words raise no stage
+        ('[agents]\nprompt = "/t triage; merge when green"\n', "propose"),
+        ('[agents]\nprompt = "/t Land what is green"\n', "propose"),
         ('[agents]\nprompt = "/t triage; landing later"\n', "propose"),
         ('[agents]\nprompt = "/t merge when green"\n[autonomy]\ntriage = "act"\n', "propose"),
         ('[agents]\nprompt = "/t merge when green"\n[autonomy]\nland = "observe"\n', "observe"),
-        ('[agents]\nprompt = "/t merge when green"\n[autonomy]\nupgrade = "act"\n', "act"),
+        ('[agents]\nprompt = "/t merge when green"\n[autonomy]\nupgrade = "act"\n', "propose"),
         ('prompt = "/t merge when green"\n', "propose"),  # no [agents]: no prompt to read
     ],
 )

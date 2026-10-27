@@ -231,7 +231,7 @@ def test_a_failed_notification_is_reported_and_tried_again(checkout: Git) -> Non
 
 def test_notify_off_sends_nothing(checkout: Git) -> None:
     notifier = FakeNotifier()
-    quiet = AgentsConfig(prompt="/t", prs=False, retry_hours=24, notify=False, mode=headless().mode)
+    quiet = AgentsConfig(prompt="/t", retry_hours=24, notify=False, mode=headless().mode)
     action, _, lines = tick(checkout, quiet, FakeClaude(), FakeAuth([LOGGED_OUT]), notifier)
     assert (action, notifier.sent, len(lines)) == (Action.CLAUDE_AUTH, [], 2)  # the head and the finding
 

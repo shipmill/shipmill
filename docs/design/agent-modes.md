@@ -74,7 +74,7 @@ and any checkout with tracked changes, naming the files. Each run:
    that need an agent are the ones it marks `agent: true` (a failed or stalled release
    bot, a release missing from PyPI or not announced, issues triage owes, a failed operate
    run, an open incident), plus open PRs unless `[autonomy] land` is `observe` (spec
-   040; `[agents] prs` is deprecated and ignored). A promotion waiting on a
+   040; `[agents] prs` is refused). A promotion waiting on a
    person, an unhealthy environment (operate's rollback owns it), and a postmortem due
    start nothing. None: **QUIET**, stop. No model call has happened
 7. Compares the rows with the last launch's fingerprint, which counts each open PR's head

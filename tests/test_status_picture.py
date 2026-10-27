@@ -48,12 +48,11 @@ REPO = "acme/web"
 NOW = dt.datetime(2026, 10, 7, 12, 0, tzinfo=dt.UTC)
 SHA = "a" * 40
 VERSION = Row("SHIPMILL_VERSION", "shipmill", "latest v0.26.0; plugin: user 0.26.0, local 0.26.0 (/x)", False)
-AGENTS = AgentsConfig(prompt="/triage {repo}", prs=True, retry_hours=24, app_id=7, mode=Mode.HEADLESS)
+AGENTS = AgentsConfig(prompt="/triage {repo}", retry_hours=24, app_id=7, mode=Mode.HEADLESS)
 APP = Identity(7, "acme-bot", 99, Path("/k.pem"))
 FILES = JobFiles(Path("/u/Library/LaunchAgents/web.plist"), Path("/u/gate.log"), 501)
 JOB = Job(dt.timedelta(minutes=15), True, False, "0", NOW - dt.timedelta(minutes=4), "QUIET: nothing", False, FILES)
 GATE = Gate(AGENTS, True, True, JOB, None, APP, None, None)
-NO_PRS = dataclasses.replace(AGENTS, prs=False)
 CHECKOUT = Path("/src/web")
 # spec 040: the autonomy line after the repo line, every stage at its default (S-040-10)
 AUTONOMY = (
@@ -803,10 +802,9 @@ def test_s009_24_an_unreadable_pull_request_row_fails() -> None:
 def test_s009_25_the_landing_line_says_whether_the_gate_lands_pull_requests(
     autonomy: AutonomyPolicy, shown: str
 ) -> None:
-    # spec 040: the landing line reads [autonomy] land, never [agents] prs
-    for agents in (AGENTS, NO_PRS):
-        text = lines(facts(gate=gate(agents=agents), autonomy=autonomy))
-        assert text[text.index("  mode           headless") + 1] == f"  landing        {shown}"
+    # spec 040: the landing line reads [autonomy] land; [agents] prs is refused (#735)
+    text = lines(facts(gate=gate(agents=AGENTS), autonomy=autonomy))
+    assert text[text.index("  mode           headless") + 1] == f"  landing        {shown}"
     assert not any(line.startswith("  landing") for line in lines(facts(gate=gate(agents=None))))
 
 
@@ -821,7 +819,7 @@ def test_s009_26_pull_requests_no_gate_lands_wait_on_you() -> None:
 
 
 def test_s009_26_pull_requests_the_gate_lands_are_work_not_waiting() -> None:
-    found = report(facts(Row("PRS_OPEN", REPO, "#408 #409", False), gate=gate(agents=NO_PRS)))
+    found = report(facts(Row("PRS_OPEN", REPO, "#408 #409", False), gate=gate(agents=AGENTS)))
     assert found.verdict is Verdict.WORKING
     assert (found.reasons, found.working) == ([], ["pull request #409 #408 to land"])
     assert report(facts(autonomy=OBSERVE)).verdict is Verdict.IDLE

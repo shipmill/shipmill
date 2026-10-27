@@ -51,9 +51,7 @@ def checkout(tmp_path: Path) -> Git:
 
 def cfg(notify: bool = True, remind_hours: int = 4) -> AgentsConfig:
     """Never stops, so a test of the reminders can wait for hours"""
-    return AgentsConfig(
-        prompt="/t", prs=False, retry_hours=24, notify=notify, remind_hours=remind_hours, max_wait_minutes=0
-    )
+    return AgentsConfig(prompt="/t", retry_hours=24, notify=notify, remind_hours=remind_hours, max_wait_minutes=0)
 
 
 def tick(
@@ -310,7 +308,7 @@ def test_a_held_tick_still_notifies(checkout: Git) -> None:
 
 
 def limited(max_wait_minutes: int, notify: bool = True) -> AgentsConfig:
-    return AgentsConfig(prompt="/t", prs=False, retry_hours=24, notify=notify, max_wait_minutes=max_wait_minutes)
+    return AgentsConfig(prompt="/t", retry_hours=24, notify=notify, max_wait_minutes=max_wait_minutes)
 
 
 def waited(git: Git, **hours: int) -> None:
@@ -362,7 +360,7 @@ def test_s003_10_a_session_past_max_wait_minutes_is_stopped_and_the_tick_goes_on
 
 def test_s003_17_by_default_a_session_is_stopped_after_15_minutes(checkout: Git) -> None:
     notifier = FakeNotifier()
-    agents = AgentsConfig(prompt="/t", prs=False, retry_hours=24)
+    agents = AgentsConfig(prompt="/t", retry_hours=24)
     blocked = [bg("b", "idle", "blocked")]
     for minutes in (0, 14):
         claude = FakeClaude(list(blocked))

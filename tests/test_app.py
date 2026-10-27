@@ -96,7 +96,7 @@ def key_file(tmp_path: Path, mode: int = 0o600) -> Path:
 
 
 def app_cfg(app_id: int | None = APP_ID) -> AgentsConfig:
-    return AgentsConfig(prompt="/t", prs=False, retry_hours=24, app_id=app_id)
+    return AgentsConfig(prompt="/t", retry_hours=24, app_id=app_id)
 
 
 # S-004-1

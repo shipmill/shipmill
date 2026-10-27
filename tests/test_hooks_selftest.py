@@ -343,7 +343,7 @@ Tick = tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]
 
 
 def tick(git: Git, mode: Mode, tests: FakeSelfTest, claude: FakeClaude, dry: bool = False) -> Tick:
-    agents = AgentsConfig(prompt="/t", prs=False, retry_hours=24, mode=mode)
+    agents = AgentsConfig(prompt="/t", retry_hours=24, mode=mode)
     return gate(
         git,
         "romamo/demo",

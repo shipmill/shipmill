@@ -1,0 +1,3 @@
+### Changed
+
+- Agent autonomy: spec 040's one-release window is over. shipmill no longer reads `land` from `[agents] prompt`: an absent `triage`, `fix`, or `land` takes its default (`act`, `act`, `propose`), so a repo whose prompt says "merge when green" and whose config sets no `land` stops merging on its own until it accepts the `agent-autonomy` upgrade or sets `[autonomy] land = "act"`. `shipmill autonomy` no longer shows a `prompt` source, and `doctor` and `status` drop the "from the prompt" warning and mark. `[agents] prs` is refused with exit 2 whatever its value, naming `[autonomy] land`, so a config that sets it fails to load until the key is deleted (#735)

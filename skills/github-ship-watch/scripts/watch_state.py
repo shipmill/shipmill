@@ -153,10 +153,9 @@ Intake (github-issue-triage's triage_state.py):
                   "direction": true on its line) is in neither ISSUES nor ISSUES_OPEN
   PRS_OPEN        open non-draft pull requests (reported, never an action by itself),
                   less the ones NEEDS_DECISION and UNTRUSTED list. Its fix follows the
-                  config's [autonomy] land as shipmill reads it (spec 040: default propose;
-                  with none of triage, fix, and land set, act when the [agents] prompt says
-                  "merge when green" or "land"; an open shipmill-hold issue turns act into
-                  propose): none under act, a person merges the ones labelled shipmill-ready
+                  config's [autonomy] land as shipmill reads it (spec 040: default propose,
+                  whatever the [agents] prompt says; an open shipmill-hold issue turns act
+                  into propose): none under act, a person merges the ones labelled shipmill-ready
                   under propose, [autonomy] land named under observe, and adding [agents]
                   without one
   NEEDS_DECISION  issues and pull requests labelled needs-decision whose question has no
@@ -257,9 +256,9 @@ Workflows:
 
 Agents (all reported, never an action by itself):
   TRIAGE_MODE     how far the gate's sessions go: the effective triage, fix, and land levels,
-                  each with its source as `shipmill autonomy` reads it (config, default,
-                  prompt, or hold), then the rest of [agents], less the prompt and the
-                  deprecated prs; "no [agents]" without one
+                  each with its source as `shipmill autonomy` reads it (config, default, or
+                  hold), then the rest of [agents], less the prompt and prs, which shipmill
+                  refuses; "no [agents]" without one
   AGENT_SESSION   a Claude Code session on this host working the repo, one row each, from
                   `claude agents --json`: a gate session (named "shipmill <owner/repo>") or one
                   whose folder is in the checkout, with its kind, status, and age
@@ -1542,7 +1541,7 @@ class Config:
     environments: list[Environment]
     incident_label: str
     upgrade: str = "propose"  # [autonomy] upgrade: observe, propose (the default), or act (spec 014)
-    land: str = "propose"  # [autonomy] land, with the legacy reading of [agents] prompt (spec 040)
+    land: str = "propose"  # [autonomy] land, or its default (spec 040)
 
 
 def ago(span: dt.timedelta) -> str:
@@ -1721,14 +1720,12 @@ def autonomy_string_310(text: str, policy: Path, name: str) -> str | None:
 AGENT_STAGES = ("triage", "fix", "land")  # shipmill's autonomy.AGENT_STAGES
 # shipmill's AutonomyPolicy defaults (D-51): a pull request waits for a person to merge it
 AGENT_DEFAULTS = {"triage": "act", "fix": "act", "land": "propose"}
-# the legacy reading's words (S-040-6): shipmill's autonomy._LANDS
-LANDS = re.compile(r"\b(?:merge\s+when\s+green|land)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
 class AgentLevel:
     """One agent stage's row of `shipmill autonomy`: its configured level and where that
-    comes from, config, default, or prompt (the legacy reading); the hold is applied on read"""
+    comes from, config or default; the hold is applied on read"""
 
     stage: str
     configured: str
@@ -1755,55 +1752,37 @@ def agent_level(value: object, stage: str, policy: Path) -> str:
     return value
 
 
-def agent_levels(found: dict[str, object], sets_stage: bool, prompt: object, policy: Path) -> tuple[AgentLevel, ...]:
+def agent_levels(found: dict[str, object], policy: Path) -> tuple[AgentLevel, ...]:
     """The agent stages' levels from the keys [autonomy] sets (found), each checked, the rest at
-    their default; and S-040-6, for one minor release: a config that sets none of triage, fix,
-    and land reads land as act from an [agents] prompt holding "merge when green" or "land" as a
-    word"""
-    levels = {
-        stage: AgentLevel(stage, agent_level(found[stage], stage, policy), "config")
+    their default; the [agents] prompt's words raise no stage (S-040-6)"""
+    return tuple(
+        AgentLevel(stage, agent_level(found[stage], stage, policy), "config")
         if stage in found
         else AgentLevel(stage, AGENT_DEFAULTS[stage], "default")
         for stage in AGENT_STAGES
-    }
-    if not sets_stage and isinstance(prompt, str) and LANDS.search(prompt) is not None:
-        levels["land"] = AgentLevel("land", "act", "prompt")
-    return tuple(levels[stage] for stage in AGENT_STAGES)
+    )
 
 
 def agent_levels_toml(raw: dict[str, object], policy: Path) -> tuple[AgentLevel, ...]:
-    """[autonomy] triage, fix, and land of the parsed config, with the legacy reading of
-    [agents] prompt (S-040-6)"""
+    """[autonomy] triage, fix, and land of the parsed config"""
     table = raw.get("autonomy", {})
     if not isinstance(table, dict):
         raise Refused(f"error: {policy}: autonomy is not a table")
-    found = {stage: table[stage] for stage in AGENT_STAGES if stage in table}
-    agents = raw.get("agents")
-    prompt = agents.get("prompt") if isinstance(agents, dict) else None
-    return agent_levels(found, bool(found), prompt, policy)
+    return agent_levels({stage: table[stage] for stage in AGENT_STAGES if stage in table}, policy)
 
 
 def agent_levels_310(text: str, policy: Path) -> tuple[AgentLevel, ...]:
-    """[autonomy] triage, fix, and land, each a plain string key of a plain [autonomy] table,
-    with the legacy reading of [agents] prompt (S-040-6): a triage, fix, or land key in any
-    form ends it"""
+    """[autonomy] triage, fix, and land, each a plain string key of a plain [autonomy] table"""
     found: dict[str, object] = {}
     for stage in AGENT_STAGES:
         value = autonomy_string_310(text, policy, stage)
         if value is not None:
             found[stage] = value
-    stages = "|".join(AGENT_STAGES)
-    body = toml_tables(text).get("autonomy", "")
-    sets_stage = re.search(rf"^\s*[\"']?(?:{stages})[\"']?\s*[.=]", body, re.MULTILINE) is not None
-    table = agents_table_310(text, policy)
-    prompt = table.get("prompt") if table is not None else None
-    said = json.loads(prompt) if prompt is not None and prompt.startswith('"') else None
-    return agent_levels(found, sets_stage, said, policy)
+    return agent_levels(found, policy)
 
 
 def land_autonomy_toml(raw: dict[str, object], policy: Path) -> str:
-    """[autonomy] land of the parsed config, or its default, propose, with the legacy reading
-    of [agents] prompt (S-040-6)"""
+    """[autonomy] land of the parsed config, or its default, propose"""
     return agent_levels_toml(raw, policy)[-1].configured
 
 
@@ -3191,8 +3170,8 @@ def coordinator_rows(
 def triage_mode_row(text: str, policy: Path, declined: int | None = None, held: bool = False) -> Row:
     """The agent stages' effective levels under the hold (held), each with its source as
     `shipmill autonomy` reads it (spec 040), then the config's other [agents] keys as the
-    config sets them, less the prompt, whose words are not the levels, and the deprecated prs,
-    which decides nothing; declined is the direction issue whose close declined the direction
+    config sets them, less the prompt, whose words are not the levels, and prs, which shipmill
+    refuses (S-040-9) and so decides nothing; declined is the direction issue whose close declined the direction
     (spec 034), said last"""
     table = agents_table(text, policy)
     if table is None:

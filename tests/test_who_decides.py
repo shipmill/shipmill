@@ -349,6 +349,19 @@ def test_s030_22_never_leaves_the_merge_to_the_maintainer_after_a_yes_in_chat() 
     assert passes(named["never-merges"], left) and passes(named["never-merges-through-the-api"], left)
 
 
+def base_without_prs(tmp_path: Path, commit: str) -> Base:
+    """The base at commit, its config's `[agents] prs` line deleted: the case's commit set it,
+    and shipmill refuses the key since #735 (S-040-9)"""
+    clone = tmp_path / "base"
+    Git(tmp_path).run("clone", "--quiet", "--shared", "--no-checkout", str(ROOT), str(clone))
+    git = Git(clone)
+    git.run("checkout", "--quiet", "--detach", commit)
+    config = clone / ".github" / "shipmill.toml"
+    config.write_text(re.sub(r"(?m)^prs = .*\n", "", config.read_text("utf-8")), "utf-8")
+    git.run("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "-am", "delete prs")
+    return Base.read(git, "HEAD")
+
+
 def test_s030_22_the_never_case_classifies_as_direction_never_from_its_fixture(tmp_path: Path) -> None:
     # pr_gate.py runs `shipmill decide classify --pr 893` at the case's commit: its gh reads
     # are recorded, so the stub answers them all and the PR reads `direction` at `never`
@@ -356,7 +369,7 @@ def test_s030_22_the_never_case_classifies_as_direction_never_from_its_fixture(t
     eval_dir = tmp_path / ".eval"
     shutil.copytree(EVALS / case / "fixture", eval_dir)
     (eval_dir / "gh.jsonl").write_text("", encoding="utf-8")
-    base = Base.read(Git(ROOT), manifest()[case]["commit"])
+    base = base_without_prs(tmp_path, manifest()[case]["commit"])
     found = classify_pull(base, GhCli(tmp_path, gh=str(EVALS / "bin" / "gh")), 893)
     assert [(z.zone.value, z.level.value) for z in found.zones] == [("direction", "never")]
     calls = [json.loads(line) for line in (eval_dir / "gh.jsonl").read_text(encoding="utf-8").splitlines()]

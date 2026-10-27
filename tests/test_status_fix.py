@@ -38,7 +38,6 @@ from shipmill.version import Version
 from tests.test_status_picture import (
     AGENTS,
     FILES,
-    NO_PRS,
     NOW,
     OBSERVE,
     REPO,
@@ -154,7 +153,7 @@ def test_s011_13_the_landing_line_carries_the_fix_only_when_no_gate_lands() -> N
     off = lines(facts(Row("PRS_OPEN", REPO, "#8", False), autonomy=OBSERVE))
     at = off.index("  landing        observe: the gate reviews in its session only and lands nothing")
     assert off[at + 1] == f"{FIX}{LAND}"
-    on = lines(facts(Row("PRS_OPEN", REPO, "#8", False), gate=gate(agents=NO_PRS)))  # prs is never read
+    on = lines(facts(Row("PRS_OPEN", REPO, "#8", False), gate=gate(agents=AGENTS)))
     assert not any(line.startswith(FIX) for line in on)
     assert not any(line.startswith(FIX) for line in lines(facts(autonomy=OBSERVE)))
     bare = lines(facts(Row("PRS_OPEN", REPO, "#8", False), gate=gate(agents=None)))

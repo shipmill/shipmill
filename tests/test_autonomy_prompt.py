@@ -1,27 +1,30 @@
-"""Spec 040's legacy reading of [agents] prompt, for one minor release, and the agent-autonomy
-upgrade that writes its levels into [autonomy]"""
+"""Spec 040's migration: the legacy reading of [agents] prompt, whose one minor release is over
+(S-040-6), `[agents] prs`, refused since (S-040-9), and the agent-autonomy upgrade that writes
+the levels the prompt's words gave into [autonomy] (S-040-7)"""
 
 import json
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from shipmill import cli_command
-from shipmill.autonomy import Autonomy, AutonomyPolicy, Hold, Stage, StageKind, lands
+from shipmill.agents import PRS_REMOVED, AgentsConfig, app_id_of
+from shipmill.autonomy import Autonomy, AutonomyPolicy, Hold, Source, Stage, StageKind
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH
-from shipmill.doctor import doctor
+from shipmill.doctor import Check, doctor
 from shipmill.errors import ReleaseError
 from shipmill.github import UPGRADE_LABEL
 from shipmill.policy import Policy
-from shipmill.upgrades import UpgradeId, body, find, propose, title
+from shipmill.upgrades import UpgradeId, body, find, lands, propose, title
 
 from .conftest import POLICY, FakeGitHub, Repo
 from .test_decide_cli import commit
 
-LAND = Stage(StageKind.LAND)
+ROOT = Path(__file__).resolve().parents[1]
 HELD = Hold(("#88 deploy broke login",))
 FRAGMENTS = POLICY.replace("[changelog]\n", '[changelog]\nfragments = "changelog.d"\n')  # no other upgrade pending
 
@@ -41,121 +44,118 @@ def write(root: Path, text: str) -> Path:
     return path
 
 
-# -- the legacy reading (S-040-6) ------------------------------------------------------------
+# -- the legacy reading's window closed (S-040-6, #735) --------------------------------------
+
+MERGES = [
+    "/shipmill:github-issue-triage {repo} triage the new issues; merge when green",
+    "/shipmill:github-issue-triage {repo} Merge  When\tGreen",
+    "/shipmill:github-issue-triage {repo} triage and land",
+    "/shipmill:github-issue-triage {repo} LAND the green ones, then tag 2.4.0",
+    "/shipmill:github-issue-triage {repo} land.",
+]
 
 
-@pytest.mark.parametrize(
-    "prompt",
-    [
-        "/shipmill:github-issue-triage {repo} triage the new issues; merge when green",
-        "/shipmill:github-issue-triage {repo} Merge  When\tGreen",
-        "/shipmill:github-issue-triage {repo} triage and land",
-        "/shipmill:github-issue-triage {repo} LAND the green ones, then tag 2.4.0",
-        "/shipmill:github-issue-triage {repo} land.",
-    ],
-)
-def test_s040_6_a_prompt_that_merges_when_green_or_lands_reads_land_as_act(prompt: str) -> None:
+@pytest.mark.parametrize("prompt", MERGES)
+def test_s040_6_a_prompt_that_merges_when_green_or_lands_reads_no_stage(prompt: str) -> None:
+    # the one minor release 0.78.0 opened is over: an absent key takes its default, whatever the prompt says
     autonomy = parsed(agents(prompt))
-    assert autonomy.configured(LAND) is Autonomy.ACT
-    assert autonomy.is_read_from_prompt(LAND)
-    assert (autonomy.triage, autonomy.fix) == (Autonomy.ACT, Autonomy.ACT)  # only land is read
+    assert (autonomy.triage, autonomy.fix, autonomy.land) == (Autonomy.ACT, Autonomy.ACT, Autonomy.PROPOSE)
     rows = {r.stage: r for r in autonomy.levels(Hold())}
-    assert (rows["land"].configured, rows["land"].effective, rows["land"].source.value) == ("act", "act", "prompt")
-    assert rows["triage"].source.value == "default"
+    assert (rows["land"].configured, rows["land"].effective, rows["land"].source.value) == (
+        "propose",
+        "propose",
+        "default",
+    )
+    assert {r.source.value for r in autonomy.levels(HELD)} <= {"default", "hold"}
 
 
-@pytest.mark.parametrize(
-    "prompt",
-    [
-        "/shipmill:github-issue-triage {repo} triage the new issues; do not merge",
-        "/shipmill:github-issue-triage {repo} triage the new issues",
-        "/shipmill:github-issue-triage {repo} keep landing pages; the landed fix; island; it lands",
-        "/shipmill:github-issue-triage {repo} merge when CI is green",
-    ],
-)
-def test_s040_6_other_words_read_no_stage_from_the_prompt(prompt: str) -> None:
-    autonomy = parsed(agents(prompt))
-    assert autonomy.configured(LAND) is Autonomy.PROPOSE
-    assert not autonomy.from_prompt
-    assert {r.stage: r.source.value for r in autonomy.levels(Hold())}["land"] == "default"
-
-
-def test_s040_6_the_match_is_literal_so_a_negated_land_reads_act_too() -> None:
-    # recorded as a decision for the maintainer: the spec's words, "land" in the prompt, read literally
-    assert lands("do not land")
+def test_s040_6_no_source_names_the_prompt() -> None:
+    assert [s.value for s in Source] == ["default", "config", "hold"]
 
 
 @pytest.mark.parametrize("key", ["triage", "fix", "land"])
-def test_s040_6_a_config_that_sets_any_agent_stage_reads_nothing_from_the_prompt(key: str) -> None:
-    level = "observe" if key == "land" else "act"
-    autonomy = parsed(agents("triage {repo}; merge when green") + f'\n[autonomy]\n{key} = "{level}"\n')
+def test_s040_6_a_config_that_sets_an_agent_stage_reads_the_key(key: str) -> None:
+    autonomy = parsed(agents("triage {repo}; merge when green") + f'\n[autonomy]\n{key} = "observe"\n')
+    assert autonomy.configured(Stage(StageKind(key))) is Autonomy.OBSERVE
     assert autonomy.land is (Autonomy.OBSERVE if key == "land" else Autonomy.PROPOSE)
-    assert not autonomy.from_prompt
 
 
-def test_s040_6_a_config_without_agents_reads_no_prompt() -> None:
-    autonomy = parsed("")
-    assert autonomy.land is Autonomy.PROPOSE and not autonomy.from_prompt
+def test_s040_6_the_agents_section_carries_the_configs_levels_not_the_prompts() -> None:
+    policy = Policy.parse(tomllib.loads(POLICY + agents("triage {repo}; merge when green")), "shipmill.toml")
+    assert policy.agents is not None and policy.agents.autonomy == policy.autonomy == AutonomyPolicy()
 
 
-def test_s040_6_the_hold_lowers_a_prompt_read_act_and_shows_source_hold() -> None:
-    autonomy = parsed(agents("triage {repo}; merge when green"))
-    assert autonomy.effective(LAND, HELD) is Autonomy.PROPOSE
-    row = {r.stage: r for r in autonomy.levels(HELD)}["land"]
-    assert (row.configured, row.effective, row.source.value) == ("act", "propose", "hold")
-
-
-def test_s040_6_autonomy_command_and_decide_levels_read_the_prompt(
+def test_s040_6_autonomy_command_and_decide_levels_read_no_prompt(
     repo: Repo, capsys: pytest.CaptureFixture[str]
 ) -> None:
     commit(repo, POLICY + agents("/shipmill:github-issue-triage {repo} merge when green"))
     assert main(["--repo", str(repo.root), "autonomy", "--json"], github=repo.github) == 0
     stages = {s["stage"]: s for s in json.loads(capsys.readouterr().out)["stages"]}
-    assert stages["land"] == {"stage": "land", "configured": "act", "effective": "act", "source": "prompt"}
+    assert stages["land"] == {"stage": "land", "configured": "propose", "effective": "propose", "source": "default"}
     assert main(["--repo", str(repo.root), "decide", "levels", "--json"]) == 0
     zones = {z["zone"]: z for z in json.loads(capsys.readouterr().out)["zones"]}
-    assert (zones["land"]["level"], zones["land"]["source"]) == ("act", "autonomy")
+    assert (zones["land"]["level"], zones["land"]["source"]) == ("ask", "autonomy")  # propose maps to ask
 
 
-def test_s040_6_doctor_warns_for_a_stage_read_from_the_prompt_naming_the_line(repo: Repo) -> None:
+def test_s040_6_doctor_warns_for_no_stage_from_the_prompt(repo: Repo) -> None:
     repo.write(repo.policy_file, POLICY + agents("/shipmill:github-issue-triage {repo} merge when green"))
     found = [(c.status, c.detail) for c in doctor(repo.root, repo.github) if c.name == "autonomy"]
-    assert found[0][0] == "PASS" and "land act in agent sessions" in found[0][1]
-    assert found[1:] == [
-        (
-            "WARN",
-            'land reads act from [agents] prompt ("merge when green" or "land"), which the next minor release stops'
-            f' reading: add land = "act" to [autonomy], or run `{cli_command()} upgrade --apply agent-autonomy`',
-        )
-    ]
-    repo.write(repo.policy_file, POLICY + agents("triage {repo}; merge when green") + '\n[autonomy]\nland = "act"\n')
-    assert [c.status for c in doctor(repo.root, repo.github) if c.name == "autonomy"] == ["PASS"]
+    assert [status for status, _ in found] == ["PASS"]
+    assert "land propose in agent sessions" in found[0][1]
 
 
-# -- [agents] prs, deprecated (S-040-9) ------------------------------------------------------
+# -- [agents] prs, refused (S-040-9, #735) ---------------------------------------------------
+
+PRS_REFUSED = (
+    "[agents] prs was removed (spec 040): [autonomy] land decides whether the gate works on open pull requests;"
+    " delete prs"
+)
 
 
-@pytest.mark.parametrize(("value", "land"), [("true", "propose"), ("false", "propose"), ("true", "observe")])
-def test_s040_9_prs_in_the_config_makes_doctor_warn_naming_autonomy_land(repo: Repo, value: str, land: str) -> None:
-    text = POLICY + agents("triage {repo}") + f"prs = {value}\n" + f'\n[autonomy]\nland = "{land}"\n'
-    repo.write(repo.policy_file, text)
-    found = [(c.status, c.detail) for c in doctor(repo.root, repo.github) if c.name == "autonomy"]
-    assert found[1:] == [
-        (
-            "WARN",
-            f"[agents] prs is deprecated and ignored: [autonomy] land ({land}) decides whether the gate works on"
-            " open pull requests, under propose or act, not under observe; delete prs, which the next minor"
-            " release refuses",
-        )
-    ]
-    repo.write(repo.policy_file, POLICY + agents("triage {repo}") + f'\n[autonomy]\nland = "{land}"\n')
-    assert [c.status for c in doctor(repo.root, repo.github) if c.name == "autonomy"] == ["PASS"]
+def test_s040_9_the_message_names_the_key_and_autonomy_land() -> None:
+    assert PRS_REMOVED == PRS_REFUSED
 
 
-def test_s040_9_prs_is_still_accepted_for_its_deprecation_release() -> None:
-    policy = Policy.parse(tomllib.loads(POLICY + agents("triage {repo}") + "prs = true\n"), "shipmill.toml")
-    assert policy.agents is not None and policy.agents.prs is True
-    assert policy.agents.autonomy == policy.autonomy  # the gate reads the levels doctor and status read
+@pytest.mark.parametrize("value", ["true", "false", '"yes"', "1"])
+def test_s040_9_every_reader_of_agents_refuses_prs(repo: Repo, value: str) -> None:
+    # the policy (plan, doctor, status, watch), the gate's [agents] alone, and app_id_of
+    repo.write(repo.policy_file, POLICY + agents("triage {repo}") + f"prs = {value}\n")
+    for read in (lambda: AgentsConfig.load(repo.root), lambda: app_id_of(repo.root)):
+        with pytest.raises(ReleaseError) as caught:
+            read()
+        assert str(caught.value) == PRS_REFUSED
+    with pytest.raises(ReleaseError) as caught:
+        main(["--repo", str(repo.root), "plan"], github=repo.github)
+    assert str(caught.value) == PRS_REFUSED
+
+
+def test_s040_9_prs_is_refused_before_the_unknown_keys_error() -> None:
+    text = POLICY + agents("triage {repo}") + "prs = true\nmerge = true\n"
+    with pytest.raises(ReleaseError) as caught:
+        Policy.parse(tomllib.loads(text), "shipmill.toml")
+    assert str(caught.value) == PRS_REFUSED
+
+
+@pytest.mark.parametrize("value", ["true", "false"])
+def test_s040_9_the_cli_exits_2_naming_autonomy_land(repo: Repo, value: str) -> None:
+    repo.write(repo.policy_file, POLICY + agents("triage {repo}") + f"prs = {value}\n")
+    done = subprocess.run(
+        [sys.executable, "-c", "from shipmill.cli import run; run()", "--repo", str(repo.root), "plan"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (done.returncode, done.stderr) == (2, f"shipmill: {PRS_REFUSED}\n")
+
+
+def test_s040_9_doctor_fails_the_policy_with_the_refusal(repo: Repo) -> None:
+    repo.write(repo.policy_file, POLICY + agents("triage {repo}") + 'prs = true\n\n[autonomy]\nland = "act"\n')
+    assert doctor(repo.root) == [Check("FAIL", "policy", PRS_REFUSED)]
+
+
+def test_s040_9_shipmills_own_config_sets_no_prs() -> None:
+    AgentsConfig.load(ROOT)  # refused if it did
+    assert "prs" not in tomllib.loads((ROOT / CONFIG_PATH).read_text("utf-8"))["agents"]
 
 
 # -- the agent-autonomy upgrade (S-040-7) ----------------------------------------------------
@@ -182,6 +182,28 @@ def test_s040_7_upgrade_lists_agent_autonomy_for_a_config_without_the_three_keys
         assert listed(tmp_path, capsys) == [], key
     write(tmp_path, FRAGMENTS)  # no [agents]: nothing reads the agent stages, so nothing to propose
     assert listed(tmp_path, capsys) == []
+
+
+@pytest.mark.parametrize("prompt", MERGES)
+def test_s040_7_the_upgrade_proposes_land_act_for_a_prompt_that_merged(prompt: str) -> None:
+    # accepting it keeps a repo landing as it did while the prompt was read (#735)
+    raw = tomllib.loads(FRAGMENTS + agents(prompt))
+    assert '```toml\n[autonomy]\ntriage = "act"\nfix = "act"\nland = "act"\n```' in body(
+        find(UpgradeId("agent-autonomy")), raw
+    )
+
+
+def test_s040_7_the_match_is_literal_so_a_negated_land_proposes_act_too() -> None:
+    # the spec's words, "land" in the prompt, read literally; "landing", "lands", "island" are not "land"
+    assert lands("do not land")
+    assert not lands("keep landing pages; the landed fix; island; it lands; merge when CI is green")
+
+
+def test_s040_7_the_upgrade_promises_no_later_cut_off() -> None:
+    upgrade = find(UpgradeId("agent-autonomy"))
+    text = " ".join((upgrade.changes, upgrade.why, upgrade.declined))
+    assert "next minor" not in text and "Until" not in text
+    assert "takes its default" in text
 
 
 def test_s040_7_upgrade_text_lists_each_line(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -219,7 +241,6 @@ def test_s040_7_apply_writes_the_three_keys_and_keeps_every_other_byte(
     assert after == text.replace(anchor, anchor + added, 1)  # after the table's last line, the comment below it kept
     autonomy = Policy.parse(tomllib.loads(after), "shipmill.toml").autonomy
     assert (autonomy.triage, autonomy.fix, autonomy.land) == (Autonomy.ACT, Autonomy.ACT, Autonomy.ACT)
-    assert not autonomy.from_prompt  # the keys now say it, so the prompt is read no more
     with pytest.raises(ReleaseError, match="agent-autonomy is already decided"):
         main(["--repo", str(tmp_path), "upgrade", "--apply", "agent-autonomy"])
 

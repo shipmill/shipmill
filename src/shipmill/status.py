@@ -483,11 +483,11 @@ def read_pulls(repo: str, run: StateRunner, pause: Callable[[float], None] = tim
 
 
 def read_autonomy(root: Path) -> tuple[AutonomyPolicy, tuple[EnvironmentName, ...]]:
-    """Spec 040: the checkout config's [autonomy] as `shipmill autonomy` parses it, with the
-    legacy reading of [agents] prompt (S-040-6), and the environments [environments] names;
-    a config without the file reads every default. A malformed [autonomy] or [agents] stops
-    the report, as a level that can't be read is unknown, and so does a deploy level for an
-    environment [environments] doesn't declare, as Policy.parse refuses it"""
+    """Spec 040: the checkout config's [autonomy] as `shipmill autonomy` parses it, and the
+    environments [environments] names; a config without the file reads every default. A
+    malformed [autonomy] or [agents] stops the report, as a level that can't be read is
+    unknown, and so does a deploy level for an environment [environments] doesn't declare,
+    as Policy.parse refuses it"""
     raw = _raw(root)
     top = Table(raw, Path(CONFIG_PATH).name)
     table = top.table("autonomy", optional=True)
@@ -498,7 +498,7 @@ def read_autonomy(root: Path) -> tuple[AutonomyPolicy, tuple[EnvironmentName, ..
     policy.require_environments(declared.keys(), table.where)
     environments = tuple(EnvironmentName(name) for name in declared.raw)
     if "agents" in raw:
-        policy = policy.read_prompt(AgentsConfig.load(root).prompt)
+        AgentsConfig.load(root)  # a malformed [agents] stops the report, as `shipmill autonomy` refuses it
     return policy, environments
 
 
@@ -515,35 +515,29 @@ def stage_levels(
     return policy.levels(hold_of(rows), environments)
 
 
-def stage_text(policy: AutonomyPolicy, level: StageLevel) -> str:
-    """S-040-10: a stage and its effective level, marked when the hold lowers it or the
-    legacy reading took it from the prompt"""
+def stage_text(level: StageLevel) -> str:
+    """S-040-10: a stage and its effective level, marked when the hold lowers it"""
     held = " (held)" if level.source is Source.HOLD else ""
-    prompt = " (from the prompt)" if level.stage in policy.from_prompt else ""
-    return f"{level.stage} {level.effective}{held}{prompt}"
+    return f"{level.stage} {level.effective}{held}"
 
 
-def autonomy_value(policy: AutonomyPolicy, levels: Sequence[StageLevel]) -> str:
-    return " · ".join(stage_text(policy, level) for level in levels)
-
-
-def autonomy_fix(policy: AutonomyPolicy, command: str) -> str | None:
-    """A stage read from the prompt is written into [autonomy] by spec 040's upgrade"""
-    return f"{command} upgrade --apply agent-autonomy" if policy.from_prompt else None
+def autonomy_value(levels: Sequence[StageLevel]) -> str:
+    return " · ".join(stage_text(level) for level in levels)
 
 
 def autonomy_record(
-    repo: str, policy: AutonomyPolicy, environments: Sequence[EnvironmentName], rows: Sequence[Row], command: str
+    repo: str, policy: AutonomyPolicy, environments: Sequence[EnvironmentName], rows: Sequence[Row]
 ) -> dict[str, object]:
     """S-040-10: `status --json`'s line after watch_state.py's, shaped as its rows are, with
-    the stages `shipmill autonomy --json` prints under its "autonomy" key"""
+    the stages `shipmill autonomy --json` prints under its "autonomy" key; no fix, as every
+    level is the config's or its default"""
     levels = stage_levels(policy, environments, rows)
     return {
         "state": AUTONOMY_ROW,
         "subject": repo,
-        "detail": autonomy_value(policy, levels),
+        "detail": autonomy_value(levels),
         "agent": False,
-        "fix": autonomy_fix(policy, command),
+        "fix": None,
         "autonomy": [level.record() for level in levels],
     }
 
@@ -1324,11 +1318,9 @@ def landing_value(land: StageLevel) -> str:
 
 
 def autonomy_lines(facts: Facts) -> list[str]:
-    """S-040-10: every stage's effective level, after the repo line, always shown; a stage
-    read from the prompt brings the upgrade that writes it into [autonomy]"""
+    """S-040-10: every stage's effective level, after the repo line, always shown"""
     levels = stage_levels(facts.autonomy, facts.environments, facts.rows)
-    fix = autonomy_fix(facts.autonomy, facts.command)
-    return _after(_line("autonomy", autonomy_value(facts.autonomy, levels)), [] if fix is None else [fix])
+    return [_line("autonomy", autonomy_value(levels))]
 
 
 def agents_lines(facts: Facts) -> list[str]:

@@ -8,7 +8,8 @@ included), and creates the files it owns; it commits nothing. A top-level `requi
 the upgrade's version is raised to it, in place (spec 031); a higher one stays.
 
 An upgrade may add several keys to one top-level table, with values it reads from the config
-(agent-autonomy writes triage, fix, and land as spec 040's legacy reading gives them); setting
+(agent-autonomy writes triage, fix, and land at the levels [agents] prompt's words gave them
+while spec 040's legacy reading lasted); setting
 any of them decides it, and one that creates its table appends it at the end of a file without
 its header line.
 
@@ -190,15 +191,28 @@ def _toml(value: str | bool | int) -> str:
     return ("true" if value else "false") if isinstance(value, bool) else json.dumps(value)
 
 
+_LANDS = re.compile(r"\b(?:merge\s+when\s+green|land)\b", re.IGNORECASE)
+
+
+def lands(prompt: str) -> bool:
+    """The words spec 040's legacy reading took as land = "act": "merge when green", or "land"
+    as a word, in any case. A word match, so "landing", "landed", "lands", and "island" are
+    not "land"; and a literal one, so "do not land" holds "land" too"""
+    return _LANDS.search(prompt) is not None
+
+
 def _legacy_levels(raw: Mapping[str, Any]) -> tuple[str | bool | int, ...]:
-    """triage, fix, and land as spec 040's legacy reading gives them for the config: the
-    defaults, and land act when [agents] prompt says "merge when green" or "land" """
+    """triage, fix, and land as the config ran them while spec 040's legacy reading lasted:
+    the defaults, and land act when [agents] prompt says "merge when green" or "land", so
+    accepting the upgrade keeps a repo landing as it did. shipmill reads the prompt no more
+    (S-040-6): only this proposal does"""
     agents = raw.get(AGENTS_TABLE)
     prompt = agents.get("prompt", "") if isinstance(agents, dict) else ""
     if not isinstance(prompt, str):
         raise ReleaseError(f"{CONFIG_PATH}: [{AGENTS_TABLE}] prompt must be a string, got {prompt!r}")
-    read = AutonomyPolicy().read_prompt(prompt)
-    return (read.triage.value, read.fix.value, read.land.value)
+    read = AutonomyPolicy()
+    land = Autonomy.ACT if lands(prompt) else read.land
+    return (read.triage.value, read.fix.value, land.value)
 
 
 AGENTS_TABLE = "agents"
@@ -292,17 +306,17 @@ CATALOGUE: tuple[Upgrade, ...] = (
         when=AGENTS_TABLE,
         creates=True,
         changes=(
-            "[autonomy] sets triage, fix, and land, the stages agent sessions run, to the levels they have today:"
-            ' land acts when [agents] prompt says "merge when green" or "land", and proposes otherwise'
+            "[autonomy] sets triage, fix, and land, the stages agent sessions run, to the levels the prompt's"
+            ' words gave them: land acts when [agents] prompt says "merge when green" or "land", and proposes'
+            " otherwise"
         ),
         why=(
-            "the levels move from the prompt's words, which nothing checks, to checked keys; the next minor"
-            " release stops reading the prompt, and an absent key then takes its default (spec 040)"
+            "the levels live in checked keys, not in the prompt's words, which shipmill reads no more: an absent"
+            " key takes its default (spec 040), so a prompt that merges when green lands nothing until land is set"
         ),
         off='set each key to "observe", "propose", or "act" in [autonomy]',
         declined=(
-            "Until the next minor release `land` keeps being read from the prompt; after it, an absent key"
-            " takes its default (`triage` and `fix` act, `land` proposes)."
+            "An absent key takes its default (`triage` and `fix` act, `land` proposes), whatever the prompt says."
         ),
     ),
 )

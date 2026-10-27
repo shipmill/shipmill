@@ -130,7 +130,7 @@ def markers_of(git: Git) -> Path:
 
 
 def agents(notify: bool = True, mode: Mode = Mode.INTERACTIVE) -> AgentsConfig:
-    return AgentsConfig(prompt="/t", prs=False, retry_hours=24, notify=notify, mode=mode)
+    return AgentsConfig(prompt="/t", retry_hours=24, notify=notify, mode=mode)
 
 
 def tick(git: Git, runner: FakeRunner, dry: bool = False) -> Tick:

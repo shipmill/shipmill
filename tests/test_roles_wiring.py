@@ -90,7 +90,7 @@ def agents(table: dict[str, list[str]] | None = None) -> AgentsConfig:
     roles = RolesConfig() if table is None else RolesConfig.parse(table)
     # land observe: QUIET_ROWS' open pull request is no work (S-040-9)
     observe = AutonomyPolicy(land=Autonomy.OBSERVE)
-    return AgentsConfig(prompt="/triage {repo}", prs=None, retry_hours=24, roles=roles, autonomy=observe)
+    return AgentsConfig(prompt="/triage {repo}", retry_hours=24, roles=roles, autonomy=observe)
 
 
 def tick(

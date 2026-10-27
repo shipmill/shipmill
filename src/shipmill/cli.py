@@ -1754,7 +1754,7 @@ def _status(
         sys.stdout.write(proc.stdout)
         if args.json:  # S-040-10: one more line, after watch_state.py's, its hold from their HOLD rows
             rows = status.parse_rows(proc.stdout)
-            record = status.autonomy_record(slug, autonomy, environments, rows, cli_command())
+            record = status.autonomy_record(slug, autonomy, environments, rows)
             sys.stdout.write(json.dumps(record) + "\n")
         return proc.returncode
     rows = status.parse_rows(proc.stdout)  # spec 022's milestone rows among them (#475)

@@ -92,9 +92,7 @@ def record_of(git: Git) -> dict[str, object]:
 
 
 def quiet(notify: bool = True, remind_hours: int = 4) -> AgentsConfig:
-    return AgentsConfig(
-        prompt="/t", prs=False, retry_hours=24, mode=Mode.HEADLESS, notify=notify, remind_hours=remind_hours
-    )
+    return AgentsConfig(prompt="/t", retry_hours=24, mode=Mode.HEADLESS, notify=notify, remind_hours=remind_hours)
 
 
 # S-005-12
@@ -159,7 +157,7 @@ def test_s005_12_a_tick_that_reads_no_state_neither_notifies_nor_touches_the_fil
     if case == "running":
         save_launch(state_dir(checkout) / "gate.json", Launch("f", str(SESSION), NOW, Process(PID, STARTED)))
     notifier = FakeNotifier()
-    agents = AgentsConfig(prompt="/t", prs=False, retry_hours=24, mode=Mode.HEADLESS, notify=True)
+    agents = AgentsConfig(prompt="/t", retry_hours=24, mode=Mode.HEADLESS, notify=True)
     decision = tick(checkout, agents, [waits(7)], notifier, claude=claude, hold=on_hold if case == "held" else Hold)
     expected = {"held": Action.HELD, "waiting": Action.WAITING, "running": Action.RUNNING}[case]
     assert decision.action is expected

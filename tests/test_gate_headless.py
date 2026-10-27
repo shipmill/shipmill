@@ -80,12 +80,12 @@ def checkout(tmp_path: Path) -> Git:
 
 def headless(app_id: int | None = None, max_wait_minutes: int = 15) -> AgentsConfig:
     return AgentsConfig(
-        prompt="/t", prs=False, retry_hours=24, app_id=app_id, mode=Mode.HEADLESS, max_wait_minutes=max_wait_minutes
+        prompt="/t", retry_hours=24, app_id=app_id, mode=Mode.HEADLESS, max_wait_minutes=max_wait_minutes
     )
 
 
 def interactive(app_id: int | None = None) -> AgentsConfig:
-    return AgentsConfig(prompt="/t", prs=False, retry_hours=24, app_id=app_id, mode=Mode.INTERACTIVE)
+    return AgentsConfig(prompt="/t", retry_hours=24, app_id=app_id, mode=Mode.INTERACTIVE)
 
 
 def agents(text: str) -> AgentsConfig:
@@ -226,7 +226,7 @@ def test_s005_1_mode_loads_from_the_config_file(tmp_path: Path) -> None:
 # S-005-2
 
 
-@pytest.mark.parametrize("config", [interactive(), AgentsConfig(prompt="/t", prs=False, retry_hours=24)])
+@pytest.mark.parametrize("config", [interactive(), AgentsConfig(prompt="/t", retry_hours=24)])
 def test_s005_2_interactive_launches_as_it_did_before(checkout: Git, config: AgentsConfig) -> None:
     spawned = Spawned()
     reads = Reads()

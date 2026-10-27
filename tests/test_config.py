@@ -124,10 +124,10 @@ CASES: dict[str, list[Change]] = {
     "autonomy a table": top("autonomy = 1"),
     # [agents]
     "agents unknown key": add('\n[agents]\nprompt = "/t"\nwhen = 1\n'),
-    "agents prompt required": add("\n[agents]\nprs = true\n"),
+    "agents prompt required": add("\n[agents]\nretry_hours = 24\n"),
     "agents prompt empty": add('\n[agents]\nprompt = "  "\n'),
     "agents retry range": add('\n[agents]\nprompt = "/t"\nretry_hours = 0\n'),
-    "agents prs a bool": add('\n[agents]\nprompt = "/t"\nprs = "yes"\n'),
+    "agents prs refused": add('\n[agents]\nprompt = "/t"\nprs = "yes"\n'),
     "agents a table": top("agents = 1"),
     # [roadmap]
     "roadmap unknown key": add("\n[roadmap]\nwip = 3\nvelocity = 2\n"),
@@ -222,11 +222,12 @@ MESSAGES: dict[str, str] = {
     "autonomy deploy environment name": "an environment name is letters, digits, '.', '_', or '-'; got 'pro duction'",
     "autonomy deploy unknown environment": "shipmill.toml [autonomy]: deploy.qa names no environment in [environments]; known: staging",
     "autonomy a table": "shipmill.toml: autonomy must be a table, got 1",
-    "agents unknown key": "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sweep_hours', 'wip']",
+    "agents unknown key": "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sweep_hours', 'wip']",
     "agents prompt required": "shipmill.toml [agents]: prompt is required",
     "agents prompt empty": "shipmill.toml [agents]: prompt must not be empty",
     "agents retry range": "shipmill.toml [agents]: retry_hours must be in 1..168, got 0",
-    "agents prs a bool": "shipmill.toml [agents]: prs must be true or false, got 'yes'",
+    "agents prs refused": "[agents] prs was removed (spec 040): [autonomy] land decides whether the gate works on open"
+    " pull requests; delete prs",
     "agents a table": "shipmill.toml: agents must be a table, got 1",
     "roadmap unknown key": "shipmill.toml [roadmap]: unknown keys ['velocity']; allowed: ['cadence', 'wip']",
     "roadmap wip range": "shipmill.toml [roadmap]: wip must be in 1..100, got 0",
@@ -294,7 +295,7 @@ def test_the_agents_section_alone_is_read_with_the_same_words(tmp_path: Path) ->
     assert refusal(lambda: AgentsConfig.load(tmp_path)) == "shipmill.toml: agents must be a table, got 1"
     path.write_text('[agents]\nprompt = "/t"\nwhen = 1\n', encoding="utf-8")
     assert refusal(lambda: AgentsConfig.load(tmp_path)) == (
-        "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sweep_hours', 'wip']"
+        "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sweep_hours', 'wip']"
     )
 
 
@@ -360,12 +361,12 @@ WAIT_REFUSALS = {
     'max_wait_minutes = "4"': "max_wait_minutes must be an integer, got '4'",
     "max_wait_hours = 4": (
         "unknown keys ['max_wait_hours']; allowed: "
-        "['app_id', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
+        "['app_id', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prune_hours', 'remind_hours', 'retry_hours', "
         "'roles', 'sweep_hours', 'wip']"
     ),
     "wait_hours = 4": (
         "unknown keys ['wait_hours']; allowed: "
-        "['app_id', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
+        "['app_id', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prune_hours', 'remind_hours', 'retry_hours', "
         "'roles', 'sweep_hours', 'wip']"
     ),
 }

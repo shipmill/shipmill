@@ -111,6 +111,10 @@ and not under `observe`. Following D-32's path: for one minor release `prs` is a
 ignored, and `doctor` warns naming `[autonomy] land`; the next minor refuses it with exit
 2.
 
+That window closed in shipmill/shipmill#735: `[agents] prs` exits 2 whatever its value,
+naming `[autonomy] land`, before the unknown-keys error, as S-031-22 refuses
+`plugin_update`.
+
 ### Reading the levels: `shipmill autonomy`
 
 A new command in `src/shipmill/cli.py`:
@@ -149,6 +153,11 @@ minor release, so no repo changes behaviour on upgrade:
 upgrade, `agent-autonomy` in `src/shipmill/upgrades.py`, proposes the three keys with the
 values the legacy reading gives, so the maintainer accepts the current behaviour in one
 merge. The next minor drops the legacy reading: an absent key is its default.
+
+The window closed in shipmill/shipmill#735: no stage is read from the prompt, the `prompt`
+source and doctor's warning are gone, and `status` marks no stage `(from the prompt)`. The
+`agent-autonomy` upgrade is still offered to a config without the three keys, with the
+values the prompt's words gave, so accepting it keeps a repo landing as it did.
 
 ### Setup asks the levels
 
@@ -218,10 +227,10 @@ reads them.
 - S-040-3: `AutonomyPolicy.effective` under an open `shipmill-hold` issue gives `propose` for `triage`, `fix`, and `land` configured `act`, and leaves `observe` and `propose` as they are
 - S-040-4: `shipmill autonomy --json` lists every stage with `configured`, `effective`, and `source`, where a set key reads `config`, an absent one `default`, a stage the hold lowers `hold`, and lists the open hold issues under `hold`
 - S-040-5: `shipmill autonomy --ref REF` reads the config at `REF`, defaulting to `origin/HEAD`, and exits 2 for a ref the checkout lacks
-- S-040-6: For one minor release, a config that sets none of `triage`, `fix`, and `land` and whose `[agents] prompt` holds "merge when green" or "land" reads `land` as `act` with source `prompt`; one that sets any of the three keys reads no stage from the prompt
+- S-040-6: For one minor release, a config that sets none of `triage`, `fix`, and `land` and whose `[agents] prompt` holds "merge when green" or "land" reads `land` as `act` with source `prompt`; one that sets any of the three keys reads no stage from the prompt. The window closed in shipmill/shipmill#735: since, every config reads each absent key at its default whatever its prompt says, and no stage has source `prompt`
 - S-040-7: `shipmill upgrade` lists `agent-autonomy` for a config without the three keys, and `--apply agent-autonomy` writes them with the values the legacy reading gives, leaving the rest of the file byte for byte
 - S-040-8: A gate launch prompt carries an `Autonomy:` line with each agent stage's effective level, naming the hold issue when one is open
-- S-040-9: The gate counts open pull requests as work when `land` is `propose` or `act` and not under `observe`, whatever `[agents] prs` says; `prs` in the config makes `doctor` warn naming `[autonomy] land`
+- S-040-9: The gate counts open pull requests as work when `land` is `propose` or `act` and not under `observe`, whatever `[agents] prs` says; `prs` in the config makes `doctor` warn naming `[autonomy] land`. The window closed in shipmill/shipmill#735: since, `prs` in the config exits 2 whatever its value, naming `[autonomy] land`, before the unknown-keys error
 - S-040-10: `shipmill status` prints an `autonomy` line with every stage's effective level, `(held)` beside each stage the hold lowers and `(from the prompt)` beside each stage read from the prompt, and `--json` carries the same stages
 - S-040-11: `shipmill status` reports open pull requests as waiting on you under `land = "observe"` with the `[autonomy] land` fix, lists those labelled `shipmill-ready` as waiting to merge under `propose`, and as the gate's work under `act`
 - S-040-12: `shipmill decide levels --json` lists `triage`, `fix`, and `land` with source `autonomy`, mapped as `release` is
@@ -276,10 +285,10 @@ from `default` and `land` as `act` from `prompt`, with no hold.
 - S-040-3: `tests/test_autonomy.py` (`test_s040_3_the_hold_turns_an_agent_stage_act_into_propose_only`), passing
 - S-040-4: `tests/test_autonomy_cli.py` (`test_s040_4_*`) and `tests/test_ship_watch.py` (`test_s040_4_*`), passing; the live run above printed every stage with `configured`, `effective`, and `source`, and an empty `hold`
 - S-040-5: `tests/test_autonomy_cli.py` (`test_s040_5_*`), passing; the live run read the config at `origin/HEAD`
-- S-040-6: `tests/test_autonomy_prompt.py` (`test_s040_6_*`), passing; the live run read `land` from the prompt
+- S-040-6: `tests/test_autonomy_prompt.py` (`test_s040_6_*`), passing; the live run read `land` from the prompt. Since #735 the same tests, with `tests/test_status_autonomy.py`'s, prove the closed window: no stage from the prompt
 - S-040-7: `tests/test_autonomy_prompt.py` (`test_s040_7_*`), passing; the release workflow opened #684, the `agent-autonomy` upgrade for this repo
 - S-040-8: `tests/test_gate.py` (`test_s040_8_*`), passing; this repo's gate prompts carry an `Autonomy:` line
-- S-040-9: `tests/test_gate.py`, `tests/test_autonomy_prompt.py`, and `tests/test_ship_watch.py` (`test_s040_9_*`), passing
+- S-040-9: `tests/test_gate.py`, `tests/test_autonomy_prompt.py`, and `tests/test_ship_watch.py` (`test_s040_9_*`), passing; since #735 `tests/test_autonomy_prompt.py`'s prove the refusal
 - S-040-10: `tests/test_status_autonomy.py` (`test_s040_10_*`), passing
 - S-040-11: `tests/test_status_autonomy.py` (`test_s040_11_*`), passing
 - S-040-12: `tests/test_decide_cli.py` and `tests/test_who_decides.py` (`test_s040_12_*`), passing; `shipmill decide levels` lists `triage`, `fix`, and `land` from `autonomy`

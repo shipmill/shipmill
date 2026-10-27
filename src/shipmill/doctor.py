@@ -29,7 +29,7 @@ from shipmill.app import (
     jwt,
     product_token,
 )
-from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage, StageKind
+from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage
 from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
 from shipmill.claude_token import FLAG as TOKEN_FLAG
@@ -1089,23 +1089,6 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
             f" bound agent sessions only; add [agents] or delete {them}"
         )
         checks.append(Check("WARN", "autonomy", detail))
-    if policy.agents is not None and policy.agents.prs is not None:  # S-040-9: D-32's path for a key
-        land = policy.autonomy.configured(Stage(StageKind.LAND))
-        detail = (
-            f"[agents] prs is deprecated and ignored: [autonomy] land ({land}) decides whether the gate works on"
-            " open pull requests, under propose or act, not under observe; delete prs, which the next minor"
-            " release refuses"
-        )
-        checks.append(Check("WARN", "autonomy", detail))
-    for stage in agent_stages:  # spec 040's legacy reading, for one minor release
-        if policy.autonomy.is_read_from_prompt(stage):
-            level = policy.autonomy.configured(stage)
-            detail = (
-                f'{stage} reads {level} from [agents] prompt ("merge when green" or "land"), which the next minor'
-                f' release stops reading: add {stage} = "{level}" to [autonomy], or run'
-                f" `{cli_command()} upgrade --apply agent-autonomy`"
-            )
-            checks.append(Check("WARN", "autonomy", detail))
     proposes = any(policy.autonomy.configured(stage) is Autonomy.PROPOSE for stage in policy.autonomy.stages())
     breaks = policy.can_break  # S-029-7: a breaking stable candidate is proposed, whatever the autonomy
     if (

@@ -14,7 +14,6 @@ from shipmill.status import Pull, Row, Verdict, read_autonomy, read_pulls, repor
 from tests.test_status_picture import (
     AGENTS,
     AUTONOMY,
-    NO_PRS,
     OBSERVE,
     REPO,
     URL,
@@ -51,7 +50,7 @@ def test_s040_10_the_autonomy_line_follows_the_repo_line_with_every_stage() -> N
         "  autonomy       triage propose · fix act · land propose · release act · deploy.production propose"
         " · deploy.staging act · rollback act · intake propose · upgrade propose"
     )
-    assert not shown[3].startswith(FIX)  # nothing to fix: no stage comes from the prompt
+    assert not shown[3].startswith(FIX)  # the autonomy line carries no fix
 
 
 def test_s040_10_a_held_stage_says_so_and_the_hold_line_keeps_its_fix() -> None:
@@ -64,34 +63,31 @@ def test_s040_10_a_held_stage_says_so_and_the_hold_line_keeps_its_fix() -> None:
     assert text[at + 1] == f"{FIX}gh issue close 3 -R {REPO}"
 
 
-def test_s040_10_a_stage_from_the_prompt_says_so_with_the_upgrade_as_its_fix() -> None:
-    legacy = AutonomyPolicy().read_prompt("/shipmill:github-issue-triage {repo} triage; merge when green")
-    text = lines(facts(autonomy=legacy))
-    at = autonomy_line(text)
-    assert "land act (from the prompt)" in text[at]
-    assert text[at + 1] == f"{FIX}shipmill upgrade --apply agent-autonomy"
-    held = lines(facts(HOLD, autonomy=legacy))
-    assert "land propose (held) (from the prompt)" in held[autonomy_line(held)]
+def test_s040_6_status_marks_no_stage_from_the_prompt_and_brings_no_upgrade_fix(tmp_path: Path) -> None:
+    # the legacy reading's window closed (#735): a prompt that merges when green reads land at its default
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "shipmill.toml").write_text(
+        '[agents]\nprompt = "triage, then merge when green"\n', encoding="utf-8"
+    )
+    policy, _ = read_autonomy(tmp_path)
+    assert policy == AutonomyPolicy()
+    for found in (lines(facts(autonomy=policy)), lines(facts(HOLD, autonomy=policy))):
+        at = autonomy_line(found)
+        assert "prompt" not in found[at] and " · land propose · " in found[at]
+        assert not found[at + 1].startswith(FIX)
 
 
-def test_s040_10_status_reads_the_checkouts_autonomy_and_the_prompt(tmp_path: Path) -> None:
+def test_s040_10_status_reads_the_checkouts_autonomy(tmp_path: Path) -> None:
     (tmp_path / ".github").mkdir()
     config = tmp_path / ".github" / "shipmill.toml"
     assert read_autonomy(tmp_path) == (AutonomyPolicy(), ())  # no config: every default
-    config.write_text('[agents]\nprompt = "triage, then merge when green"\n', encoding="utf-8")
-    legacy, _ = read_autonomy(tmp_path)
-    assert (legacy.land, legacy.from_prompt) == (Autonomy.ACT, frozenset({"land"}))
     config.write_text(
         '[agents]\nprompt = "merge when green"\n[autonomy]\nland = "observe"\n'
         '[environments.production]\nlane = "stable"\n',
         encoding="utf-8",
     )
     set_, environments = read_autonomy(tmp_path)
-    assert (set_.land, set_.from_prompt, environments) == (
-        Autonomy.OBSERVE,
-        frozenset(),
-        (EnvironmentName("production"),),
-    )
+    assert (set_.land, environments) == (Autonomy.OBSERVE, (EnvironmentName("production"),))
     config.write_text('[autonomy]\nland = "merge"\n', encoding="utf-8")
     with pytest.raises(ReleaseError, match="land must be one of"):
         read_autonomy(tmp_path)
@@ -135,7 +131,9 @@ def test_s040_10_json_carries_the_same_stages_after_watch_states_lines(
 ) -> None:
     root = repo_with_release(tmp_path / "repo")
     (root / ".github").mkdir()
-    (root / ".github" / "shipmill.toml").write_text('[agents]\nprompt = "land them"\n', encoding="utf-8")
+    (root / ".github" / "shipmill.toml").write_text(
+        '[agents]\nprompt = "land them"\n[autonomy]\nland = "act"\n', encoding="utf-8"
+    )
     fake = Held(0)
     assert main(["--repo", str(root), "status", "--json"], state=fake, login=host) == 0
     printed = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
@@ -147,8 +145,8 @@ def test_s040_10_json_carries_the_same_stages_after_watch_states_lines(
     assert stages["land"] == {"stage": "land", "configured": "act", "effective": "propose", "source": "hold"}
     assert stages["fix"] == {"stage": "fix", "configured": "act", "effective": "propose", "source": "hold"}
     assert stages["intake"]["source"] == "default"
-    assert "land propose (held) (from the prompt)" in last["detail"]
-    assert last["fix"].endswith("upgrade --apply agent-autonomy")
+    assert "land propose (held)" in last["detail"] and "prompt" not in last["detail"]
+    assert last.get("fix") is None
     assert len(fake.seen) == 1  # the hold comes from watch_state.py's rows: no read of its own
 
 
@@ -178,13 +176,12 @@ def test_s040_11_under_propose_the_ready_ones_wait_on_you_to_merge_and_the_rest_
     # none labelled: all the gate's work, and a repo without the label reads the same
     plain = report(facts(OPEN, pulls=[Pull(409, False, "CLEAN", "main")]))
     assert (plain.verdict, plain.working) == (Verdict.WORKING, ["pull request #409 #408 to land"])
-    # [agents] prs no longer decides it
-    assert report(facts(OPEN, gate=gate(agents=NO_PRS))).verdict is Verdict.WORKING
+    assert report(facts(OPEN, gate=gate(agents=AGENTS))).verdict is Verdict.WORKING
 
 
 def test_s040_11_under_act_every_open_pull_request_is_the_gates_work() -> None:
     pulls = [Pull(409, False, "CLEAN", "main", ready=True)]
-    found = facts(OPEN, pulls=pulls, autonomy=AutonomyPolicy(land=Autonomy.ACT), gate=gate(agents=NO_PRS))
+    found = facts(OPEN, pulls=pulls, autonomy=AutonomyPolicy(land=Autonomy.ACT), gate=gate(agents=AGENTS))
     done = report(found)
     assert (done.verdict, done.reasons, done.working) == (Verdict.WORKING, [], ["pull request #409 #408 to land"])
     assert not any(line.startswith("  to merge") for line in lines(found))

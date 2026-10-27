@@ -78,9 +78,9 @@ def watch_line(state: str, subject: str = "romamo/demo", detail: str = "", **ext
     return json.dumps({"state": state, "subject": subject, "detail": detail, **extra}, sort_keys=True)
 
 
-def cfg(text: str = "/t", land: Autonomy = OBSERVE, prs: bool | None = None) -> AgentsConfig:
+def cfg(text: str = "/t", land: Autonomy = OBSERVE) -> AgentsConfig:
     """land observe by default, so open pull requests are no work unless a test says so"""
-    return AgentsConfig(prompt=text, prs=prs, retry_hours=24, autonomy=AutonomyPolicy(land=land))
+    return AgentsConfig(prompt=text, retry_hours=24, autonomy=AutonomyPolicy(land=land))
 
 
 def bg(id: str, status: str | None, state: str | None) -> Session:
@@ -547,26 +547,33 @@ def tick_config(checkout: Git, text: str, rows: list[Finding]) -> tuple[Action, 
 @pytest.mark.parametrize(
     ("text", "action"),
     [
-        ('[agents]\nprompt = "/t"\nprs = true\n[autonomy]\nland = "observe"\n', Action.QUIET),
-        ('[agents]\nprompt = "/t"\nprs = false\n[autonomy]\nland = "propose"\n', Action.LAUNCH),
-        ('[agents]\nprompt = "/t"\nprs = false\n[autonomy]\nland = "act"\n', Action.LAUNCH),
-        ('[agents]\nprompt = "/t"\nprs = false\n', Action.LAUNCH),  # land's default, propose
-        ('[agents]\nprompt = "/t"\n', Action.LAUNCH),
+        ('[agents]\nprompt = "/t merge when green"\n[autonomy]\nland = "observe"\n', Action.QUIET),
+        ('[agents]\nprompt = "/t"\n[autonomy]\nland = "propose"\n', Action.LAUNCH),
+        ('[agents]\nprompt = "/t"\n[autonomy]\nland = "act"\n', Action.LAUNCH),
+        ('[agents]\nprompt = "/t"\n', Action.LAUNCH),  # land's default, propose
     ],
 )
-def test_s040_9_open_prs_follow_land_whatever_prs_says(checkout: Git, text: str, action: Action) -> None:
+def test_s040_9_open_prs_follow_land(checkout: Git, text: str, action: Action) -> None:
     assert tick_config(checkout, text, [OPEN_PRS])[0] is action
 
 
-def test_s040_9_a_config_like_shipmills_own_keeps_landing(checkout: Git) -> None:
-    # .github/shipmill.toml here before its agent-autonomy upgrade (#684): prs = true, no agent
-    # stage keys, and a prompt that merges when green, which the legacy reading (S-040-6) reads
-    # as land = "act"
+def test_s040_9_the_gate_refuses_a_config_with_prs(checkout: Git) -> None:
+    with pytest.raises(ReleaseError, match=r"\[agents\] prs was removed \(spec 040\): \[autonomy\] land decides"):
+        tick_config(checkout, '[agents]\nprompt = "/t"\nprs = true\n[autonomy]\nland = "act"\n', [OPEN_PRS])
+
+
+def test_s040_6_shipmills_own_config_lands_from_its_autonomy_keys(checkout: Git) -> None:
+    # .github/shipmill.toml here after its agent-autonomy upgrade (#684, #747): land = "act" set,
+    # so ending the legacy reading (#735) leaves this gate landing as it did
     ours = tomllib.loads((Path(__file__).parents[1] / ".github" / "shipmill.toml").read_text("utf-8"))
-    text = f"[agents]\nprompt = {json.dumps(ours['agents']['prompt'])}\nprs = true\n"
+    assert ours["autonomy"]["land"] == "act"
+    text = f'[agents]\nprompt = {json.dumps(ours["agents"]["prompt"])}\n[autonomy]\nland = "act"\n'
     action, launched = tick_config(checkout, text, [OPEN_PRS])
     assert action is Action.LAUNCH
     assert "\n\nAutonomy: triage act, fix act, land act\n\n" in launched[0][1]
+    # the same prompt without the key merges nothing: land takes its default, propose
+    write_config(checkout.root, f"[agents]\nprompt = {json.dumps(ours['agents']['prompt'])}\n")
+    assert AgentsConfig.load(checkout.root).autonomy.land is Autonomy.PROPOSE
 
 
 def test_s040_8_the_launch_prompt_names_each_agent_stages_level(checkout: Git) -> None:
@@ -586,9 +593,10 @@ def test_s040_8_the_autonomy_line_names_the_hold_and_its_lowered_levels() -> Non
 
 
 def test_the_agents_section_loads_without_release_keys(tmp_path: Path) -> None:
-    write_config(tmp_path, '[agents]\nprompt = "/github-issue-triage {repo} merge when green"\nprs = true\n')
-    expected = AgentsConfig("/github-issue-triage {repo} merge when green", True, 24)
+    write_config(tmp_path, '[agents]\nprompt = "/github-issue-triage {repo} merge when green"\n')
+    expected = AgentsConfig("/github-issue-triage {repo} merge when green", 24)
     assert AgentsConfig.load(tmp_path) == expected.with_autonomy(AutonomyPolicy())
+    assert AgentsConfig.load(tmp_path).autonomy.land is Autonomy.PROPOSE  # the prompt's words raise nothing
 
 
 @pytest.mark.parametrize(
@@ -598,7 +606,7 @@ def test_the_agents_section_loads_without_release_keys(tmp_path: Path) -> None:
         ('[agents]\nprompt = "  "\n', "prompt must not be empty"),
         ('[agents]\nprompt = "/t"\nretry_hours = 0\n', "retry_hours must be in 1..168"),
         ('[agents]\nprompt = "/t"\nmerge = true\n', "unknown keys \\['merge'\\]"),
-        ("[agents]\nprs = true\n", "prompt is required"),
+        ("[agents]\nretry_hours = 24\n", "prompt is required"),
     ],
 )
 def test_a_bad_agents_section_fails(tmp_path: Path, text: str, message: str) -> None:
@@ -636,7 +644,7 @@ def test_s040_9_no_doc_says_prs_decides_whether_open_prs_are_work() -> None:
 
 def test_the_release_policy_accepts_and_checks_agents() -> None:
     policy = Policy.parse(tomllib.loads(POLICY + '\n[agents]\nprompt = "/t"\n'), "policy")
-    assert policy.agents == AgentsConfig("/t", None, 24)
+    assert policy.agents == AgentsConfig("/t", 24)
     assert Policy.parse(tomllib.loads(POLICY), "policy").agents is None
     with pytest.raises(ReleaseError, match="unknown keys"):
         Policy.parse(tomllib.loads(POLICY + '\n[agents]\nprompt = "/t"\nwhen = 1\n'), "policy")

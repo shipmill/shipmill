@@ -38,8 +38,8 @@ one PR that sets app_id sets mode too. One more row follows it when it applies:
 And one more after it (spec 040):
   AUTONOMY_IMPLICIT  an [agents] section, but [autonomy] sets none of triage, fix, and
                    land: how far a session goes was never chosen, so it comes from the
-                   defaults (or, for one minor release, from the prompt's words).
-                   shipmill-setup's Autonomy step asks and writes all three. --fix leaves it
+                   defaults, whatever the prompt's words say. shipmill-setup's Autonomy
+                   step asks and writes all three. --fix leaves it
 
 Product (spec 043: whether the repo is one of several that make up one product; one row,
 after the agents rows, the first that applies):
@@ -124,7 +124,7 @@ on GitHub retargeting a stacked PR when the branch under it is deleted):
   BRANCH_DELETE_ON   GitHub deletes a PR's branch when it merges
 
 Whether the gate lands open pull requests is [autonomy] land's (spec 040), which
-AUTONOMY_IMPLICIT asks for; [agents] prs is deprecated and read here no more.
+AUTONOMY_IMPLICIT asks for; shipmill refuses [agents] prs, and it is read here no more.
 
 Runner (spec 015; a warning, read only when release.yml passes shipmill's prepare.yml or
 land.yml a runs-on other than ubuntu-latest and a lane sets quiet_minutes above 0):

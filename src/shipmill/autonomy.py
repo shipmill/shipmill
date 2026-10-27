@@ -16,7 +16,7 @@ the config upgrades a release adds."""
 
 import re
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
@@ -27,7 +27,6 @@ HOLD_LABEL = "shipmill-hold"
 INTAKE = "intake"  # the [autonomy] key of the product-intake skill: not a StageKind, it never acts
 UPGRADE = "upgrade"  # the [autonomy] key of config upgrades (spec 014): not a StageKind, it releases nothing
 _ENVIRONMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-_LANDS = re.compile(r"\b(?:merge\s+when\s+green|land)\b", re.IGNORECASE)
 
 
 class Autonomy(StrEnum):
@@ -113,11 +112,11 @@ class Hold:
 
 
 class Source(StrEnum):
-    """Where a stage's level comes from, as `shipmill autonomy` shows it (spec 040)"""
+    """Where a stage's level comes from, as `shipmill autonomy` shows it (spec 040); the legacy
+    reading of [agents] prompt and its `prompt` source ended with its one minor release (#735)"""
 
     DEFAULT = "default"
     CONFIG = "config"
-    PROMPT = "prompt"  # the legacy reading of [agents] prompt, for one minor release
     HOLD = "hold"  # the hold lowers the configured level, wherever it came from
 
 
@@ -162,8 +161,6 @@ class AutonomyPolicy:
     land: Autonomy = Autonomy.PROPOSE
     # the keys the config sets, as `shipmill autonomy` names them (deploy.<env> for a deploy level)
     explicit: frozenset[str] = field(default=frozenset(), compare=False)
-    # the agent stages read from [agents] prompt by the legacy reading (spec 040), by name
-    from_prompt: frozenset[str] = field(default=frozenset(), compare=False)
 
     @classmethod
     def parse(cls, t: Table) -> AutonomyPolicy:
@@ -227,21 +224,6 @@ class AutonomyPolicy:
         envs = sorted(self.deploy, key=str)
         return (Stage.release(), *(Stage.deploy(e) for e in envs), Stage.rollback())
 
-    def sets_agent_stage(self) -> bool:
-        """Whether the config sets any of triage, fix, and land, which ends the legacy reading"""
-        return any(kind.value in self.explicit for kind in AGENT_STAGES)
-
-    def read_prompt(self, prompt: str) -> AutonomyPolicy:
-        """S-040-6, for one minor release: a config that sets none of triage, fix, and land
-        reads land as act from a prompt that says "merge when green" or "land"; one that sets
-        any of them reads nothing from the prompt"""
-        if self.sets_agent_stage() or not lands(prompt):
-            return self
-        return replace(self, land=Autonomy.ACT, from_prompt=frozenset({StageKind.LAND.value}))
-
-    def is_read_from_prompt(self, stage: Stage) -> bool:
-        return str(stage) in self.from_prompt
-
     def is_set(self, stage: Stage) -> bool:
         """Whether the config sets the stage's key, rather than leaving it to its default"""
         return str(stage) in self.explicit
@@ -261,18 +243,9 @@ class AutonomyPolicy:
     def _row(self, stage: str, configured: Autonomy, effective: Autonomy) -> StageLevel:
         if effective is not configured:
             source = Source.HOLD
-        elif stage in self.from_prompt:
-            source = Source.PROMPT
         else:
             source = Source.CONFIG if stage in self.explicit else Source.DEFAULT
         return StageLevel(stage, configured, effective, source)
-
-
-def lands(prompt: str) -> bool:
-    """The legacy reading's words (spec 040): "merge when green", or "land" as a word, in any
-    case. A word match, so "landing", "landed", "lands", and "island" are not "land"; and a
-    literal one, so "do not land" holds "land" too"""
-    return _LANDS.search(prompt) is not None
 
 
 def _level(t: Table, key: str, default: Autonomy = Autonomy.ACT) -> Autonomy:
