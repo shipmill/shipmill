@@ -408,6 +408,18 @@ def test_s033_9_the_default_key_is_named_when_the_gate_has_no_app_key(tmp_path: 
 PROBE = os.environ.get("SHIPMILL_CLAUDE_PROBE")  # set to 1 to run the probe against the real claude
 
 
+def probe_command(prompt: str, settings: str) -> list[str]:
+    """The prompt goes right after -p: --allowedTools takes several values and swallows any
+    argument after it"""
+    return ["claude", "-p", prompt, "--plugin-dir", str(ROOT), "--settings", settings, "--allowedTools", "Bash(gh *)"]
+
+
+def test_s033_10_the_probe_passes_its_prompt_before_the_flags() -> None:
+    command = probe_command("the prompt", "{}")
+    assert command[1:3] == ["-p", "the prompt"]
+    assert command[-2:] == ["--allowedTools", "Bash(gh *)"]
+
+
 @pytest.mark.skipif(PROBE != "1" or shutil.which("claude") is None, reason="a real claude -p probe, run by hand")
 def test_s033_10_a_hook_in_a_real_claude_session_sees_the_settings_env(tmp_path: Path) -> None:
     """The spec's probe: a session started with --settings whose env sets SHIPMILL_APP_KEY, in a
@@ -424,7 +436,7 @@ def test_s033_10_a_hook_in_a_real_claude_session_sees_the_settings_env(tmp_path:
         "Then reply with SHIPMILL-HOOK-REFUSED if a PreToolUse hook blocked it naming app-writes, else RAN."
     )
     done = subprocess.run(
-        ["claude", "-p", "--plugin-dir", str(ROOT), "--settings", settings, "--allowedTools", "Bash(gh *)", prompt],
+        probe_command(prompt, settings),
         cwd=repo,
         capture_output=True,
         text=True,
