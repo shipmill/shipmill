@@ -373,12 +373,14 @@ or the tags are wrong; fix those, not the version.
    `shipmill` entry from `extraKnownMarketplaces` when no other plugin uses it), each in a
    pull request. With `host`, `--fix` never creates or changes `.claude/settings.json`. A
    plugin turned off on purpose
-   (`PLUGIN_DISABLED`) is the user's call; ask before changing it. In either mode, in place
-   of a `PLUGIN_OK`, each install on this host that is behind the latest release reads
-   `PLUGIN_OUTDATED` (not done; `--fix` leaves it): user scope, the repo's folder, and the
-   gate's checkout are separate rows, each with the command to run in its folder. Give the
-   user those commands; for the repo's folder it is a reinstall, because `claude plugin
-   update` there picks the gate checkout's nested install (a Claude Code bug). A link or
+   (`PLUGIN_DISABLED`) is the user's call; ask before changing it. A host keeps one install,
+   at user scope (spec 039): never install at project or local scope. In either mode, in
+   place of a `PLUGIN_OK`, a user install behind the latest release reads `PLUGIN_OUTDATED`
+   with its one update, run anywhere, `claude plugin marketplace update shipmill && claude
+   plugin update shipmill@shipmill --scope user`, and the host's project- and local-scope
+   installs read as one `PLUGIN_SHADOWING` row whose fix is `uvx shipmill==<version>
+   plugin-clean`, a dry run; the user removes them with `plugin-clean --apply` from their
+   own terminal (both not done; `--fix` leaves them). Give the user the fixes. A link or
    copy of a shipmill skill in `~/.claude/skills` or `~/.agents/skills` reads
    `SKILL_SHADOWED`, one row each with its fix (not done; `--fix` leaves it): a prompt's
    bare `/<skill>` loads it in place of the plugin's. Give the user the fix (remove it, or
@@ -472,10 +474,10 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    ```
 
    Gate sessions load the installed plugin, which runs the CLI release it pins (spec 031,
-   D-44); the gate never changes an install. When an install a session in its checkout
-   would load is older than the latest release, the tick reports it with its fix and the
-   session still starts. The setup checklist's `PLUGIN_OUTDATED` rows name that install
-   with a `gate:` row. `[agents] plugin_update` was removed: never write it; in a config
+   D-44); the gate never changes an install. When the user install is older than the
+   latest release, or a project- or local-scope install applies to its checkout, the tick
+   reports it with its fix and the session still starts. The setup checklist's
+   `PLUGIN_OUTDATED` rows name the install a session loads with a `gate:` row when it lags. `[agents] plugin_update` was removed: never write it; in a config
    that has it, delete it, since each shipmill command that reads the config refuses it with exit 2
 
    The delivery hooks come with the plugin (spec 026), and need `uv` on PATH. In a repo

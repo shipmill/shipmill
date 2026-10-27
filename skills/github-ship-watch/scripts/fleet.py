@@ -96,6 +96,7 @@ ACTION = frozenset(
         "DIRECTION_MISSING",
         "GATE_SESSIONS_DEAD",
         "SKILL_SHADOWED",
+        "PLUGIN_SHADOWING",
         "UPGRADE_PENDING",
         "DIRECTION_PENDING",
         "CHAIN_NO_GATE",

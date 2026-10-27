@@ -103,7 +103,19 @@ from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import TextIO
 
-from shipmill import agent_as_person, cli_command, decide, evals, fragments, product, requires, review, roles, status
+from shipmill import (
+    agent_as_person,
+    cli_command,
+    decide,
+    evals,
+    fragments,
+    plugin_clean,
+    product,
+    requires,
+    review,
+    roles,
+    status,
+)
 from shipmill.agents import AgentsConfig, ProductConfig, app_id_of
 from shipmill.app import (
     CACHE,
@@ -214,7 +226,7 @@ from shipmill.lineedit import LineText
 from shipmill.notify import Desktop
 from shipmill.operate import Http, Unreachable, UrllibHttp, approve, approve_rollback, operate, summary
 from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
-from shipmill.plugin import CLI_RECORD, MARKERS, GateCli, PluginHost, load_cli
+from shipmill.plugin import CLI_RECORD, MARKERS, GateCli, PluginHost, Runner, load_cli
 from shipmill.policy import Lane, Policy
 from shipmill.product import DIRECTION, GitRef, ItemId, Measure, Section
 from shipmill.product import check as check_product
@@ -605,6 +617,22 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
 
+    p = sub.add_parser(
+        "plugin-clean",
+        help=(
+            "list the project- and local-scope installs of shipmill@shipmill that shadow the user install;"
+            " with --apply, remove them (spec 039)"
+        ),
+    )
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "uninstall each in its folder, restoring the folder's .claude/settings.json and settings.local.json;"
+            " only from a terminal, and only with a user-scope install on the host"
+        ),
+    )
+
     p = sub.add_parser("app-create", help="create the gate's GitHub App in one click (spec 006)")
     p.add_argument(
         "--owner", help="the personal account or org that owns the App (default: asked, else your personal account)"
@@ -770,6 +798,7 @@ def main(
     pulls: Pulls | None = None,
     merge_reader: MergeReader | None = None,
     login: LoginReader | None = None,
+    claude: Runner | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -778,7 +807,8 @@ def main(
     repository `downstream start` and `collect` write checks on, downstream_reader for
     what doctor reads of the secrets and the downstream workflows, pulls for the pull
     request `decide classify --pr` reads, merge_reader for the pull request a `shipmill
-    gh` merge reads, and login for the host's gh login `roles` reads, as tests pass fakes"""
+    gh` merge reads, login for the host's gh login `roles` reads, and claude for the
+    `claude plugin` and `gh api` commands plugin-clean runs, as tests pass fakes"""
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
     root: Path = args.repo.resolve()
@@ -789,6 +819,9 @@ def main(
             raise ReleaseError("only --repo PATH may come before gh, as in `shipmill --repo PATH gh pr list`")
         reader = merge_reader or _gh_reader
         return _gh(root, passed, api or UrllibApi(), signer or Openssl(), env, user_home, gh_runner or run_gh, reader)
+    if args.command == "plugin-clean":  # needs no --repo and no config (spec 039)
+        where = stdin or sys.stdin
+        return plugin_clean.clean(claude or run_command, user_home, args.apply, where.isatty(), print)
     if args.command == "app-token":
         return _app_token(root, args, api or UrllibApi(), signer or Openssl(), stdin or sys.stdin, env, user_home)
     if args.command == "app-install":

@@ -32,7 +32,7 @@ from shipmill.plugin import (
     session_project,
     update_command,
 )
-from shipmill.requires import Requires
+from shipmill.requires import Requires, running
 from shipmill.version import Version
 from shipmill.worktrees import Judged
 
@@ -149,41 +149,23 @@ def tick(git: Git, runner: FakeRunner, dry: bool = False) -> Tick:
     )
 
 
-@pytest.mark.parametrize(
-    ("entry", "fix"),
-    [
-        (
-            {"scope": "user", "version": "0.1.0"},
-            "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user",
-        ),
-        (
-            {"scope": "project", "version": "0.1.0", "projectPath": "/w/r"},
-            "in /w/r: claude plugin marketplace update shipmill"
-            " && claude plugin update shipmill@shipmill --scope project",
-        ),
-        (
-            {"scope": "local", "version": "0.1.0", "projectPath": "/w/r"},
-            "in /w/r: claude plugin marketplace update shipmill"
-            " && claude plugin update shipmill@shipmill --scope local",
-        ),
-    ],
-)
-def test_a_stale_installs_fix_refreshes_the_marketplace_first(entry: dict[str, str], fix: str) -> None:
-    # #477: the marketplace refresh, then the update, in that order, at each scope
-    installs = listing(entry)
-    assert update_command(installs[0], installs) == fix
-
-
-def test_the_nested_install_fix_refreshes_the_marketplace_before_the_reinstall() -> None:
-    installs = listing(
-        {"scope": "project", "version": "0.1.0", "projectPath": "/w/r"},
-        {"scope": "project", "version": "0.1.0", "projectPath": "/w/r/tmp/shipmill-gate"},
-    )
+def test_a_stale_installs_fix_refreshes_the_marketplace_first() -> None:
+    # #477: the marketplace refresh, then the update, in that order; spec 039: at user scope only
+    installs = listing({"scope": "user", "version": "0.1.0"})
     assert update_command(installs[0], installs) == (
-        "in /w/r: claude plugin marketplace update shipmill && claude plugin uninstall shipmill@shipmill"
-        " --scope project && claude plugin install shipmill@shipmill --scope project"
-        " (`update` picks the nested install in /w/r/tmp/shipmill-gate, a Claude Code bug)"
+        "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user"
     )
+
+
+@pytest.mark.parametrize("scope", ["project", "local"])
+def test_a_keyed_installs_fix_is_plugin_clean_even_with_one_nested(scope: str) -> None:
+    # spec 039: no update or reinstall in a folder; #233's nested case needs no fix of its own
+    installs = listing(
+        {"scope": "user", "version": "0.1.0"},
+        {"scope": scope, "version": "0.1.0", "projectPath": "/w/r"},
+        {"scope": scope, "version": "0.1.0", "projectPath": "/w/r/tmp/shipmill-gate"},
+    )
+    assert update_command(installs[1], installs) == f"uvx shipmill=={running()} plugin-clean"
 
 
 def test_a_tick_that_launches_nothing_checks_nothing(checkout: Git) -> None:
@@ -224,7 +206,7 @@ def test_s031_21_the_gate_changes_no_install_and_runs_no_plugin_update(checkout:
     assert "plugin" not in record  # the daily update's record is gone with it
     lines = tick_lines(decision, launched, (), (), dry_run=dry)
     assert not any(line.startswith(("  plugin updated", "  plugin update failed")) for line in lines)
-    assert any("0.25.0 (project scope" in line and "lags" in line for line in lines)
+    assert any("0.25.0 (project scope" in line and "shadows the user install" in line for line in lines)
 
 
 # -- spec 031: the gate reports what lags and starts the session ------------------------------
@@ -281,21 +263,9 @@ USER_FIX = "claude plugin marketplace update shipmill && claude plugin update sh
 
 
 @pytest.mark.parametrize("mode", [Mode.INTERACTIVE, Mode.HEADLESS])
-@pytest.mark.parametrize("scope", ["user", "project", "local"])
-def test_s031_13_a_lagging_install_at_any_scope_starts_the_session_with_one_line(
-    checkout: Git, mode: Mode, scope: str
-) -> None:
-    root = checkout.root.resolve()
-    if scope == "user":
-        runner = FakeRunner(checkout.root, version=None, user="0.31.0")
-        fix, where = USER_FIX, "user scope"
-    else:
-        runner = FakeRunner(checkout.root, installs={(scope, root): "0.31.0"}, user=None)
-        fix = (
-            f"in {root}: claude plugin marketplace update shipmill"
-            f" && claude plugin update shipmill@shipmill --scope {scope}"
-        )
-        where = f"{scope} scope, keyed on {root}"
+def test_s031_13_a_lagging_user_install_starts_the_session_with_one_line(checkout: Git, mode: Mode) -> None:
+    # a keyed install that applies is S-039-7's shadowing line instead (tests/test_user_scope_plugin.py)
+    runner = FakeRunner(checkout.root, version=None, user="0.31.0")
     claude = FakeClaude([bg("old", "idle", "done")])
     decision, launched, _, _ = report_tick(
         checkout, plugin_host(runner, markers_of(checkout)), agents(mode=mode), claude
@@ -304,22 +274,22 @@ def test_s031_13_a_lagging_install_at_any_scope_starts_the_session_with_one_line
     assert decision.action is Action.LAUNCH
     assert launched is not None and (claude.launched or claude.started)  # the session starts
     assert plugin_lines(decision, launched) == [
-        f"  plugin: shipmill@shipmill 0.31.0 ({where}) lags the latest release 0.32.2; the session starts;"
-        f" update it: {fix}"
+        "  plugin: shipmill@shipmill 0.31.0 (user scope) lags the latest release 0.32.2; the session starts;"
+        f" update it: {USER_FIX}"
     ]
     assert runner.ran == READS  # reported, never updated
     record = tick_record(decision, launched, (), (), dry_run=False)["loaded"]
     assert isinstance(record, dict) and record["lags"] == [
-        {"scope": scope, "folder": None if scope == "user" else str(root), "version": "0.31.0", "fix": fix}
+        {"scope": "user", "folder": None, "version": "0.31.0", "fix": USER_FIX}
     ]
 
 
-def test_s031_13_every_lagging_install_that_applies_gets_its_line(linked: tuple[Git, Path]) -> None:
+def test_s031_13_every_install_that_applies_gets_its_line(linked: tuple[Git, Path]) -> None:
     git, main = linked
     runner = FakeRunner(git.root, installs={("local", main): "0.31.1", ("project", main): "0.30.0"}, user="0.29.0")
     decision, launched, _, _ = report_tick(git, plugin_host(runner, git.root.parent / "m"), agents())
     assert (decision.action, launched) == (Action.LAUNCH, "s1")
-    assert [line.split(" lags ")[0] for line in plugin_lines(decision, launched)] == [
+    assert [line.split(" is a ")[0].split(" lags ")[0] for line in plugin_lines(decision, launched)] == [
         f"  plugin: shipmill@shipmill 0.31.1 (local scope, keyed on {main})",
         f"  plugin: shipmill@shipmill 0.30.0 (project scope, keyed on {main})",
         "  plugin: shipmill@shipmill 0.29.0 (user scope)",
@@ -339,7 +309,7 @@ def test_s031_16_an_install_keyed_on_the_gates_linked_worktree_is_reported_as_un
     assert (decision.action, launched) == (Action.LAUNCH, "s1")
     fix = f'delete the entry with "projectPath": "{gate_dir}" under "shipmill@shipmill" in {INSTALLED}'
     assert INSTALLED == "~/.claude/plugins/installed_plugins.json"
-    assert plugin_lines(decision, launched) == [
+    assert plugin_lines(decision, launched)[1:] == [  # after the main checkout's shadowing line (S-039-7)
         f"  plugin: shipmill@shipmill 0.25.0 (local scope, keyed on {gate_dir}) is keyed on the gate's linked"
         f" worktree, which no session loads; {fix}"
     ]
@@ -355,7 +325,7 @@ def test_s031_16_a_main_checkouts_own_install_is_never_unloaded(checkout: Git) -
     runner = FakeRunner(checkout.root, installs={("local", checkout.root.resolve()): "0.32.2"}, user=None)
     decision, launched, _, _ = report_tick(checkout, plugin_host(runner, markers_of(checkout)), agents())
     assert decision.loaded is not None and decision.loaded.unloaded == ()
-    assert plugin_lines(decision, launched) == []
+    assert not any("linked worktree" in line for line in plugin_lines(decision, launched))
 
 
 def test_s031_17_the_gates_own_lagging_cli_is_reported_with_its_fix_and_the_session_starts(checkout: Git) -> None:

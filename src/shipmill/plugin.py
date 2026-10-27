@@ -18,7 +18,7 @@ from pathlib import Path
 from shipmill.errors import ReleaseError
 from shipmill.notify import Notifier, NotifyFailed
 from shipmill.requires import FILE as CONFIG_FILE
-from shipmill.requires import Requires
+from shipmill.requires import Requires, running
 from shipmill.version import Version
 
 PLUGIN = "shipmill@shipmill"  # the Claude Code plugin, in its marketplace
@@ -105,8 +105,8 @@ class Scope(enum.StrEnum):
 # settings precedence gives enabledPlugins (local over project over user). A session's project
 # is its folder, except in a linked git worktree, where it is the worktree's main checkout:
 # `claude plugin details` in the gate's linked worktree showed the main checkout's install
-# (#198), and `claude plugin update --scope local` run there changed the main checkout's
-# install, not the one keyed on the worktree (#417). So an install keyed on a linked worktree's
+# (#198), and a local-scope update run there changed the main checkout's install, not the
+# one keyed on the worktree (#417). So an install keyed on a linked worktree's
 # own folder is never the one its sessions load, and an install keyed on an enclosing folder
 # that isn't the main checkout doesn't apply either.
 PRECEDENCE = (Scope.LOCAL, Scope.PROJECT, Scope.USER, Scope.MANAGED)
@@ -185,28 +185,34 @@ def effective(installs: list[Listed], project: Path) -> Listed | None:
     return None
 
 
+# Spec 039: the one supported install is at user scope. Its update refreshes the marketplace
+# first (#477), and runs anywhere: no folder is named
+USER_UPDATE = f"{' '.join(REFRESH)} && claude plugin update {PLUGIN} --scope user"
+USER_INSTALL = f"claude plugin install {PLUGIN} --scope user"  # the fix for a host with none
+
+
+def clean_command(version: Version | str) -> str:
+    """S-039-4: the fix for the project- and local-scope installs, the dry run of plugin-clean,
+    pinned to a shipmill that has the command (spec 031)"""
+    return f"uvx shipmill=={version} plugin-clean"
+
+
+def shadow_fix(installs: list[Listed], version: Version | str) -> str:
+    """S-039-4, S-039-5: plugin-clean's dry run; on a host with no user install, that install
+    first, since removing the keyed ones would leave their folders with none"""
+    clean = clean_command(version)
+    if any(i.scope is Scope.USER for i in installs):
+        return clean
+    return f"{USER_INSTALL} && {clean}"
+
+
 def update_command(install: Listed, installs: list[Listed]) -> str:
-    """The command that updates one install, run in its folder: github-ship-watch's fix for
-    the same install (watch_state.py's plugin_fix). `claude plugin update` run in a folder picks
-    an install at the same scope keyed on a folder nested in it (#233, a Claude Code bug), so
-    with one nested the fix reinstalls the folder's own at that scope instead. Either way it
-    refreshes the marketplace first (#477); that isn't folder-specific, so it runs there too"""
-    refresh = " ".join(REFRESH)
-    update = f"{refresh} && claude plugin update {PLUGIN} --scope {install.scope}"
+    """The fix for one install (spec 039): the user install's single update, with no folder
+    (github-ship-watch's plugin_fix gives the same); a project- or local-scope install is
+    removed with plugin-clean, as this CLI pins it, rather than updated in its folder"""
     if install.folder is None:
-        return update
-    top = install.folder
-    nested = sorted(
-        i.folder for i in installs if i.scope is install.scope and i.folder is not None and top in i.folder.parents
-    )
-    if not nested:
-        return f"in {top}: {update}"
-    scope = install.scope
-    again = (
-        f"{refresh} && claude plugin uninstall {PLUGIN} --scope {scope}"
-        f" && claude plugin install {PLUGIN} --scope {scope}"
-    )
-    return f"in {top}: {again} (`update` picks the nested install in {nested[0]}, a Claude Code bug)"
+        return USER_UPDATE
+    return shadow_fix(installs, running())
 
 
 REPORTED = (Scope.LOCAL, Scope.PROJECT, Scope.USER)  # the scopes a person updates an install at
@@ -236,6 +242,21 @@ class Lag:
         return (
             f"plugin: {PLUGIN} {self.install.version} ({self.install.where()}) lags the latest release"
             f" {self.latest}; the session starts; update it: {self.fix}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Shadow:
+    """S-039-7: a project- or local-scope install that applies to the gate's checkout, at any
+    version: it shadows the user install there, and plugin-clean removes it"""
+
+    install: Listed
+    fix: str
+
+    def line(self) -> str:
+        return (
+            f"plugin: {PLUGIN} {self.install.version} ({self.install.where()}) is a {self.install.scope}-scope"
+            f" install, which shadows the user install in its folder; the session starts; fix: {self.fix}"
         )
 
 
@@ -283,15 +304,17 @@ class Loaded:
     bound: Requires | None = None
     bound_fix: str | None = None
     error: str | None = None
+    shadowing: tuple[Shadow, ...] = ()
 
     def lines(self) -> list[str]:
         """The tick's lines: a failed read, no install that applies, then each finding with its
-        fix; a current install says nothing"""
+        fix; a current user install says nothing"""
         if self.error is not None:
             return [f"plugin check failed, the session starts anyway: {self.error}"]
         lines = []
         if self.install is None:
             lines.append(f"plugin: no {PLUGIN} install applies to {self.project}; the session loads no shipmill skills")
+        lines += [shadow.line() for shadow in self.shadowing]
         lines += [lag.line() for lag in self.lags]
         lines += [
             f"plugin: {PLUGIN} {i.version} ({i.where()}) is keyed on the gate's linked worktree, which no session"
@@ -318,6 +341,7 @@ class Loaded:
             "version": None if install is None else str(install.version),
             "latest": None if self.latest is None else str(self.latest),
             "lags": [install_record(lag.install, lag.fix) for lag in self.lags],
+            "shadowing": [install_record(s.install, s.fix) for s in self.shadowing],
             "unloaded": [install_record(i, unloaded_fix(i.folder)) for i in self.unloaded if i.folder is not None],
             "cli": None if self.cli is None else {"version": str(self.cli.version), "fix": self.cli.fix},
             "requires": None if self.bound is None else {"bound": str(self.bound), "fix": self.bound_fix},
@@ -325,12 +349,13 @@ class Loaded:
         }
 
 
-def requires_fix(bound: Requires, install: Listed, installs: list[Listed], latest: Version) -> str:
-    """S-031-19: update the install sessions load when the latest release meets the bound, else
-    release one that does; or lower the bound"""
+def requires_fix(bound: Requires, latest: Version) -> str:
+    """S-031-19: update the user install when the latest release meets the bound (S-039-2: a
+    keyed install sessions load is the shadowing line's), else release one that does; or lower
+    the bound"""
     lower = f"or lower requires in {CONFIG_FILE}"
     if bound.met(latest):
-        return f"{update_command(install, installs)}; {lower}"
+        return f"{USER_UPDATE}; {lower}"
     return f"release shipmill {bound.floor[0]}.{bound.floor[1]}.{bound.floor[2]} or later, {lower}"
 
 
@@ -348,13 +373,16 @@ def loaded(checkout: Path, project: Path, run: Runner, cli: GateCli | None, boun
         (i for i in installs if i.scope in REPORTED and (i.folder is None or i.folder == project)),
         key=lambda i: PRECEDENCE.index(i.scope),
     )
-    lags = tuple(Lag(i, latest, update_command(i, installs)) for i in applies if i.version < latest)
+    # S-039-7: a keyed install that applies is reported at any version, with plugin-clean's fix;
+    # only the user install is updated
+    shadowing = tuple(Shadow(i, update_command(i, installs)) for i in applies if i.scope.keyed)
+    lags = tuple(Lag(i, latest, USER_UPDATE) for i in applies if not i.scope.keyed and i.version < latest)
     here = checkout.resolve()  # the gate's --repo may be relative; Claude Code records an absolute path
     unloaded = () if here == project else tuple(i for i in installs if i.folder == here)
     unmet = bound if bound is not None and found is not None and not bound.met(found.version) else None
-    fix = None if unmet is None or found is None else requires_fix(unmet, found, installs, latest)
+    fix = None if unmet is None else requires_fix(unmet, latest)
     lagging = cli if cli is not None and cli.owes(latest) else None
-    return Loaded(project, found, latest, lags, unloaded, lagging, unmet, fix)
+    return Loaded(project, found, latest, lags, unloaded, lagging, unmet, fix, shadowing=shadowing)
 
 
 @dataclass(frozen=True, slots=True)
@@ -406,21 +434,26 @@ def pypi(version: Version, fetch: Fetch) -> PyPI:
 
 def notify_lags(found: Loaded, markers: Path, notifier: Notifier, dry_run: bool) -> str | None:
     """S-031-20: one desktop notification per release on the host, naming each lagging install
-    and its fix: the first tick to create <markers>/<latest>.notified, an exclusive create, sends
-    it, so several gates send one. None when nothing lags or the marker was there; a dry run
-    creates and sends nothing"""
-    if not found.lags or found.latest is None:
+    and its fix, a keyed one with plugin-clean's (S-039-7): the first tick to create
+    <markers>/<latest>.notified, an exclusive create, sends it, so several gates send one. None
+    when nothing lags or the marker was there; a dry run creates and sends nothing"""
+    latest = found.latest
+    if latest is None:
         return None
-    marker = markers / f"{found.latest}.notified"
+    behind = [(s.install, s.fix) for s in found.shadowing if s.install.version < latest]
+    named = behind + [(lag.install, lag.fix) for lag in found.lags]
+    if not named:
+        return None
+    marker = markers / f"{latest}.notified"
     if dry_run:
-        return None if marker.exists() else f"would notify: {PLUGIN} lags {found.latest}"
+        return None if marker.exists() else f"would notify: {PLUGIN} lags {latest}"
     markers.mkdir(parents=True, exist_ok=True)
     try:
         with marker.open("x", encoding="utf-8"):
             pass
     except FileExistsError:
         return None
-    body = "; ".join(f"{lag.install.version} ({lag.install.where()}): {lag.fix}" for lag in found.lags)
+    body = "; ".join(f"{install.version} ({install.where()}): {fix}" for install, fix in named)
     try:
         notifier.send(f"shipmill {found.latest} is out", f"update {PLUGIN}: {body}")
     except NotifyFailed as exc:

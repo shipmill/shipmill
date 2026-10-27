@@ -55,7 +55,7 @@ from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.gitrepo import REMOTE, Git
 from shipmill.hooks import HookTest
 from shipmill.land import BLOCKING_BRANCH, WORK_PREFIX, blocked
-from shipmill.plugin import PLUGIN, Fetch, GateCli, PyPI, publish_fix
+from shipmill.plugin import PLUGIN, USER_UPDATE, Fetch, GateCli, PyPI, publish_fix
 from shipmill.plugin import pypi as ask_pypi
 from shipmill.policy import BumpFrom, Lane, Policy, VersionFiles
 from shipmill.product import DIRECTION
@@ -130,9 +130,9 @@ def plugin_checks(
     read: PluginRows, gate_cli: GateCli | None = None, bound: Requires | None = None, pypi: Fetch | None = None
 ) -> list[Check]:
     """The shipmill@shipmill installs on this host that apply to the repo, as `status` reads
-    them (spec 031): each one behind the latest release, and each keyed on the gate's linked
-    worktree, which no session loads, is a WARN with its fix (S-031-15, S-031-16); the versions
-    row, which names the install a session loads, passes. The gate's own CLI behind the latest
+    them (spec 031): the user install behind the latest release, and the project- and
+    local-scope installs on the host as one PLUGIN_SHADOWING row, are each a WARN with its fix
+    (spec 039); the versions row, which names the install a session loads, passes. The gate's own CLI behind the latest
     release is a WARN with its fix (S-031-17), and so is a config whose requires the version
     sessions load doesn't meet (S-031-19). None of them holds the gate. The one that does
     (S-031-24, D-44): pypi asks PyPI for the version sessions load, and a 404 is a WARN with
@@ -149,7 +149,7 @@ def plugin_checks(
             found = LATEST.match(row.detail)
             latest = None if found is None else Version.of_tag(found.group(1))
             loads = SESSION_LOADS.search(row.detail)
-        elif row.state == "SHIPMILL_OUTDATED":
+        elif row.state in ("SHIPMILL_OUTDATED", "PLUGIN_SHADOWING"):  # S-039-6: a person's fix, a WARN
             checks.append(Check("WARN", "plugin", f"{row.subject} {row.detail}"))
         else:
             raise ReleaseError(f"watch_state.py's shipmill_rows returned a {row.state} row")
@@ -159,7 +159,7 @@ def plugin_checks(
         scope, version = loads.group(1), loads.group(2)
         lower = f"or lower requires in {CONFIG_FILE}"
         if latest is not None and bound.met(latest):
-            fix = f"claude plugin marketplace update shipmill && claude plugin update {PLUGIN} --scope {scope}; {lower}"
+            fix = f"{USER_UPDATE}; {lower}"  # S-039-2: the user install, whatever scope sessions load
         else:
             fix = f"release shipmill {bound.floor[0]}.{bound.floor[1]}.{bound.floor[2]} or later, {lower}"
         detail = (

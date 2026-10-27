@@ -91,11 +91,8 @@ def test_s031_26_an_older_shipmill_on_path_is_a_row_with_uvs_upgrade(ws: ModuleT
     ("loaded", "fix"),
     [
         (install("user", "0.67.0"), USER_UPDATE),
-        (
-            install("local", "0.67.0", REPO),
-            f"in {REPO}: claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill"
-            " --scope local",
-        ),
+        # spec 039: a keyed install is removed with plugin-clean, after a user install when none
+        (install("local", "0.67.0", REPO), "claude plugin install shipmill@shipmill --scope user && {clean}"),
     ],
 )
 def test_s031_26_a_newer_shipmill_on_path_names_the_loaded_installs_update(
@@ -103,6 +100,7 @@ def test_s031_26_a_newer_shipmill_on_path_names_the_loaded_installs_update(
 ) -> None:
     program = fake(tmp_path / "bin", 'echo "shipmill 0.70.0"')
     rows = ws.plugin_rows([loaded], None, "v0.70.0", [REPO], [GATE], REPO, reader(ws, tmp_path / "bin", tmp_path / "e"))
+    fix = fix.format(clean=f"uvx shipmill=={ws.plugin_version()} plugin-clean")
     (row,) = person(rows)
     assert (row.detail, row.fix) == (f"{program} is 0.70.0, the plugin is 0.67.0; {fix}", fix)
 

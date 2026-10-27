@@ -159,9 +159,9 @@ def listing(*installs: tuple[str, str | None]) -> list[dict[str, Any]]:
 
 
 def host_rows(
-    ss: ModuleType, settings: dict[str, Any], plugins: object, outdated: list[str] | None = None
+    ss: ModuleType, settings: dict[str, Any], plugins: object, outdated: list[Any] | None = None
 ) -> list[Any]:
-    def unread() -> list[str]:
+    def unread() -> list[Any]:
         if outdated is None:
             raise AssertionError("installs are read only for a PLUGIN_OK")
         return outdated
@@ -203,10 +203,8 @@ def test_s033_2_host_reads_missing_with_the_user_scope_install(
 def test_s033_2_host_without_claude_reads_ok_and_outdated_installs_replace_it(ss: ModuleType) -> None:
     [row] = host_rows(ss, {}, None, [])
     assert (row.state, row.detail) == ("PLUGIN_OK", "claude isn't on PATH, installs not read")
-    behind = ["plugin user: 0.70.0, latest v0.80.1; claude plugin marketplace update shipmill && ..."]
-    assert [(r.state, r.detail) for r in host_rows(ss, {}, listing(("user", None)), behind)] == [
-        ("PLUGIN_OUTDATED", behind[0])
-    ]
+    behind = [ss.Row("PLUGIN_OUTDATED", "plugin user: 0.70.0, latest v0.80.1; claude plugin marketplace update ...")]
+    assert host_rows(ss, {}, listing(("user", None)), behind) == behind
 
 
 @pytest.mark.parametrize("plugins", [{"not": "a list"}, [{"id": "shipmill@shipmill", "scope": 1, "version": "1"}]])

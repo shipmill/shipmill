@@ -1,6 +1,6 @@
 # S-039: One user-scope install of the plugin; shadowing installs reported as one row and removed on request
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -205,3 +205,19 @@ then: claude plugin marketplace update shipmill && claude plugin update shipmill
 - shipmill/shipmill#701: S-039-1, S-039-2, S-039-3, S-039-4, S-039-5, S-039-6, S-039-7, S-039-8, S-039-9, S-039-10, S-039-11, S-039-12, S-039-13, S-039-14, S-039-15
 
 ## Verification
+
+- S-039-1: `tests/test_user_scope_plugin.py` greps `src/`, `skills/`, `hooks/`, `README.md`, and `docs/install.md`, whitespace joined, for a `claude plugin install` or `update` with `--scope project` or `--scope local` and finds none (a comment in `plugin.py` that quoted one was reworded); `gate.py` names no plugin install, update, or uninstall, and a tick with keyed installs runs only `claude plugin list` and the marketplace read
+- S-039-2: `plugin.USER_UPDATE` and `watch_state.USER_UPDATE` are the single command; a lagging user install's fix is exactly it in watch_state's row, doctor's WARN, `status`'s reason, `setup_state.py`'s `PLUGIN_OUTDATED`, and the tick's `lags` record, with no folder; `requires.unmet`, `watch_state.requires_unmet`, and doctor's `requires` WARN name `--scope user`
+- S-039-3: `tests/test_hooks_selftest.py` runs the self-test with no install that applies: it FAILs with the fix `claude plugin install shipmill@shipmill --scope user`
+- S-039-4: `watch_state.plugin_rows` with four keyed entries (two scopes on one folder, one at the latest release, one missing) prints one row, `PLUGIN_SHADOWING plugin keyed 4 project- or local-scope installs of shipmill@shipmill (0.9.0 to 0.82.0, 3 folders, 1 missing) shadow the user install; uvx shipmill==<plugin.json's version> plugin-clean`, and no `SHIPMILL_OUTDATED` or S-031-16 row; with none, no row
+- S-039-5: with no user install the row's fix is `claude plugin install shipmill@shipmill --scope user && uvx shipmill==<version> plugin-clean`
+- S-039-6: doctor shows the row as a WARN under `plugin`, and its FAILs are the same with and without it; `status` reads WAITS ON YOU with the plugin-clean fix (`PLUGIN_SHADOWING` is in `YOURS_ROWS` and in fleet.py's `ACTION`); `setup_state.py` shows `PLUGIN_SHADOWING`, exits 1 on it, and runs no `claude plugin` command but the list
+- S-039-7: a tick whose session loads a project- or local-scope install, current or behind, launches and prints `is a <scope>-scope install, which shadows the user install in its folder; the session starts; fix: uvx shipmill==<version> plugin-clean`, recorded under `loaded.shadowing`; the once-per-release notification names the same fix for a lagging one
+- S-039-8: `shipmill plugin-clean` against a fake `claude` prints one `remove` or `manual` line per keyed entry, deepest folder first, runs only `claude plugin list --json` of claude's commands, leaves the tree byte-identical, and exits 0; run on the maintainer's host it printed `no project- or local-scope install of shipmill@shipmill on this host` and exited 0
+- S-039-9: `uv run shipmill plugin-clean --apply < /dev/null` exits 2 with `plugin-clean --apply runs only from a person's terminal`; the tests show no `claude` command runs then, and a host without a user install exits 2 naming `claude plugin install shipmill@shipmill --scope user` before any uninstall
+- S-039-10: with a fake uninstall that rewrites `.claude/settings.json` and creates `settings.local.json`, each folder's files are byte-identical afterwards, or absent where they were, a `.claude/` the uninstall created included
+- S-039-11: a fake uninstall that leaves the target listed, or also drops another plugin's entry, stops the run with exit 2 naming the change, with the folder's settings restored and no further uninstall
+- S-039-12: an entry keyed on a missing `gone/deeper` is uninstalled in a created folder, and both created folders are removed; when the uninstall leaves another file there, the folder is left, named, and the exit is 1
+- S-039-13: an entry keyed on a linked git worktree is a `manual` line with the `installed_plugins.json` entry to delete; `--apply` runs no uninstall there, exits 1, and leaves that file byte-identical
+- S-039-14: with user, managed, and another plugin's installs beside a keyed one, `--apply` uninstalls only `shipmill@shipmill` at project scope, leaves the rest listed, exits 0, and ends with `then: <the S-039-2 command>` only when the user install lags
+- S-039-15: `tests/test_user_scope_plugin.py` reads `docs/install.md` and both SKILL.md files: each names user scope, `PLUGIN_SHADOWING`, `plugin-clean`, and the single update, and none has a keyed install or update, a reinstall, or a command run in a folder
