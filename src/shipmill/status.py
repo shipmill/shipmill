@@ -2,7 +2,9 @@
 verdict (STUCK, WAITS ON YOU, WORKING, IDLE), then one line per thing worth knowing, each
 reason for the verdict among them, and each item a direct link. The facts come from
 github-ship-watch's rows and a few reads of the checkout, GitHub, and this host's gate;
-the verdict and the lines are worked out from them here, with nothing read"""
+the verdict and the lines are worked out from them here, with nothing read. This host's
+machinery is read through the checks `shipmill factory` prints (spec 044), summed up on one
+`factory` line"""
 
 import datetime as dt
 import enum
@@ -84,7 +86,6 @@ YOURS_ROWS = (
     "POSTMORTEM_DUE",
     "UNTRUSTED",
     "BRANCH_DELETE_OFF",
-    "SHIPMILL_OUTDATED",
     "PLUGIN_SHADOWING",  # S-039-6: a person removes the keyed installs, with plugin-clean
     MILESTONE_OVERTAKEN,
     *CHAIN_ROWS,
@@ -106,6 +107,8 @@ PLACED = {
     "LOOP",
     "TRIAGE_MODE",
     "SHIPMILL_VERSION",
+    "SHIPMILL_OUTDATED",  # spec 044: the shipmill check's, with SKILL_SHADOWED
+    "SKILL_SHADOWED",
     "GATE_NO_APP",  # D-19's row; the github app line says the same
     "GATE_SESSIONS_DEAD",  # #500: the gate line says it, from the same SESSION_DEAD decision
     "HOST_UNKNOWN",  # the sessions line says it
@@ -297,6 +300,8 @@ class Gate:
     cli: GateCli | None = None  # the version the gate last ran as, with its fix (S-031-17); None: none recorded
     credential: Credential | None = None  # what its sessions authenticate with (spec 035); None: not read
     home: Path | None = None  # the user's home, where status shortens a path to ~/...
+    job_error: str | None = None  # spec 044: the launchd job's read failed, the gate check's error
+    cli_error: str | None = None  # spec 044: the gate's own CLI's read failed, the shipmill check's error
 
     @property
     def login(self) -> str | None:
@@ -703,7 +708,10 @@ def read_login(
     key = None
     plist_path = _plist_path(repo, home)
     if platform == "darwin" and plist_path.is_file():
-        key = _job_key(_plist(plist_path))
+        try:
+            key = _job_key(_plist(plist_path))
+        except CHECK_FAILURES:  # S-044-4: the gate check reports the job it can't read; no key is known
+            return None
     path = key if key is not None else default_key(agents.app_id, home)
     return login(agents.app_id, path) if path.is_file() else None
 
@@ -730,23 +738,27 @@ def read_gate(
     launchd = platform == "darwin"
     job, key, woke = None, None, None
     job_args: list[str] | None = None
+    job_error = None
     plist_path = _plist_path(repo, home)
     if agents is not None and launchd and plist_path.is_file():
-        plist = _plist(plist_path)
-        key = _job_key(plist)
-        found_args = plist.get("ProgramArguments")
-        job_args = [str(a) for a in found_args] if isinstance(found_args, list) else None
-        proc = run(["launchctl", "print", f"gui/{uid}/{label(repo)}"])
-        printed = proc.stdout if proc.returncode == 0 else None
-        log_path = plist.get("StandardOutPath")
-        log = Path(log_path) if isinstance(log_path, str) else None
-        files = JobFiles(plist_path, log, uid)
-        if log is not None and log.is_file():
-            written = dt.datetime.fromtimestamp(log.stat().st_mtime, tz=dt.UTC)
-            job = parse_job(plist, printed, log.read_text(errors="replace"), written, files)
-        else:
-            job = parse_job(plist, printed, None, None, files)
-        woke = parse_waketime(_checked(run(["sysctl", "-n", "kern.waketime"]), "sysctl kern.waketime"))
+        try:  # spec 044: a job that can't be read is the gate check's error, never the report's end
+            plist = _plist(plist_path)
+            key = _job_key(plist)
+            found_args = plist.get("ProgramArguments")
+            job_args = [str(a) for a in found_args] if isinstance(found_args, list) else None
+            proc = run(["launchctl", "print", f"gui/{uid}/{label(repo)}"])
+            printed = proc.stdout if proc.returncode == 0 else None
+            log_path = plist.get("StandardOutPath")
+            log = Path(log_path) if isinstance(log_path, str) else None
+            files = JobFiles(plist_path, log, uid)
+            if log is not None and log.is_file():
+                written = dt.datetime.fromtimestamp(log.stat().st_mtime, tz=dt.UTC)
+                job = parse_job(plist, printed, log.read_text(errors="replace"), written, files)
+            else:
+                job = parse_job(plist, printed, None, None, files)
+            woke = parse_waketime(_checked(run(["sysctl", "-n", "kern.waketime"]), "sysctl kern.waketime"))
+        except CHECK_FAILURES as exc:
+            job, key, job_args, woke, job_error = None, None, None, None, first_line(exc)
     identity, error, absent = None, None, None
     if agents is not None and agents.app_id is not None:
         path = key if key is not None else default_key(agents.app_id, home)
@@ -758,7 +770,19 @@ def read_gate(
             except ReleaseError as exc:  # the check's failure is the report's finding (S-009-4)
                 error = str(exc)
     credential = None if agents is None else inspect(TokenSource.of_job(job_args, home), fs, uid)
-    return Gate(agents, mode_set, launchd, job, woke, identity, error, absent, credential=credential, home=home)
+    return Gate(
+        agents,
+        mode_set,
+        launchd,
+        job,
+        woke,
+        identity,
+        error,
+        absent,
+        credential=credential,
+        home=home,
+        job_error=job_error,
+    )
 
 
 # -- the report ----------------------------------------------------------------------------
@@ -965,28 +989,22 @@ def no_job_fix(repo: str, command: str) -> str:
     return f"{command} launchd {repo}"
 
 
-def gate_reasons(gate: Gate, repo: str, now: dt.datetime, command: str) -> tuple[list[Reason], list[Reason]]:
-    """The gate's stuck reasons and its waits-on-you reasons (S-009-3, S-009-4, S-009-5)"""
+def launchd_reasons(gate: Gate, repo: str, now: dt.datetime, command: str) -> tuple[list[Reason], list[Reason]]:
+    """The gate's launchd job's stuck reasons and its waits-on-you reasons (S-009-3, S-009-5)"""
     stuck: list[Reason] = []
     yours: list[Reason] = []
-    if gate.agents is None:
+    if gate.agents is None or not gate.launchd:
         return stuck, yours
-    if gate.launchd:
-        if gate.job is None:  # another host may run it: the report reads only this one
-            launch = no_job_fix(repo, command)
-            yours.append(Reason(f"no launchd job runs the gate on this host: {launch}", launch))
-        else:
-            for p in job_problems(gate, gate.job, repo, now):
-                if p.verdict is None:
-                    continue
-                if p.fix is None:
-                    raise ValueError(f"the gate problem {p.reason!r} has no fix")
-                (stuck if p.verdict is Verdict.STUCK else yours).append(Reason(p.reason, p.fix))
-    app = app_fix(gate, repo, command)
-    if gate.app_error is not None and app is not None:
-        stuck.append(Reason(f"the App check fails: {gate.app_error}", app))
-    if gate.agents.app_id is None and app is not None:
-        yours.append(Reason("the gate has no App: sessions write as your gh login", app))
+    if gate.job is None:  # another host may run it: the report reads only this one
+        launch = no_job_fix(repo, command)
+        yours.append(Reason(f"no launchd job runs the gate on this host: {launch}", launch))
+        return stuck, yours
+    for p in job_problems(gate, gate.job, repo, now):
+        if p.verdict is None:
+            continue
+        if p.fix is None:
+            raise ValueError(f"the gate problem {p.reason!r} has no fix")
+        (stuck if p.verdict is Verdict.STUCK else yours).append(Reason(p.reason, p.fix))
     return stuck, yours
 
 
@@ -1034,23 +1052,18 @@ def verdict(facts: Facts) -> tuple[Verdict, list[Reason], list[str]]:
     """The worst verdict that applies with every reason for it, worst first, each with its
     fix (S-011-12); for WORKING or IDLE, what is going on instead"""
     rows, repo = facts.rows, facts.repo
+    checks = host_checks(facts)  # S-044-3: the host's reasons, read through the factory checks
     stuck = [Reason(r.text(), row_fix(repo, r)) for r in rows if r.state in STUCK_ROWS]
-    gate_stuck, gate_yours = gate_reasons(facts.gate, repo, facts.now, facts.command)
-    stuck += gate_stuck
+    stuck += [r for c in checks for r in c.stuck]
     wait = waiting(facts)
     yours = []
     if wait.issues:
         yours.append(Reason(f"issue {numbers(wait.issues)} waits on your decision", DECISION_FIX))
     if wait.pulls:
         yours.append(Reason(f"pull request {numbers(wait.pulls)} waits on your decision", DECISION_FIX))
-    yours += gate_yours
+    yours += [r for c in checks if c.check in GATE_CHECKS for r in c.yours]
     yours += [Reason(r.text(), row_fix(repo, r)) for r in rows if r.state in YOURS_ROWS]
-    latest, _ = latest_shipmill(rows)
-    if cli_outdated(facts.cli, latest):
-        yours.append(Reason(f"the shipmill CLI {facts.cli} is older than {latest}", cli_update(facts.command)))
-    gate_cli = facts.gate.cli
-    if latest is not None and gate_cli is not None and gate_cli.owes(Version.of_tag(latest)):  # S-031-17, #597
-        yours.append(Reason(gate_cli.line(Version.of_tag(latest)), gate_cli.fix))
+    yours += [r for c in checks if c.check not in GATE_CHECKS for r in c.yours]
     land_yours, land_working = landing_reasons(facts)
     yours += land_yours
     working = [r.text() for r in rows if r.agent and r.state not in STUCK_ROWS]
@@ -1113,21 +1126,23 @@ def repo_lines(facts: Facts) -> list[str]:
     return _after(repo_line(facts), fixes)
 
 
-def repo_line(facts: Facts) -> str:
-    m = facts.main
+def checkout_state(m: Main, checkout: Path) -> str:
+    """The local branch releases land on against GitHub's, as the repo line and the checkout
+    check read it"""
     if m.local is None:
-        state = f"no local {m.branch}"
-    elif m.ahead and m.behind:
-        state = f"diverged ({m.ahead} ahead, {m.behind} behind)"
-    elif m.behind:  # S-011-16: the pull names the checkout, so it works from any folder (D-23)
-        at = shlex.quote(str(facts.checkout))
+        return f"no local {m.branch}"
+    if m.ahead and m.behind:
+        return f"diverged ({m.ahead} ahead, {m.behind} behind)"
+    if m.behind:  # S-011-16: the pull names the checkout, so it works from any folder (D-23)
+        at = shlex.quote(str(checkout))
         # off the branch, a pull would pull the branch checked out: fast-forward the default one
         catch_up = "pull --ff-only" if m.checked_out else f"fetch origin {shlex.quote(f'{m.branch}:{m.branch}')}"
-        state = f"{m.behind} behind: git -C {at} {catch_up}"
-    elif m.ahead:
-        state = f"{m.ahead} ahead"
-    else:
-        state = "in sync"
+        return f"{m.behind} behind: git -C {at} {catch_up}"
+    return f"{m.ahead} ahead" if m.ahead else "in sync"
+
+
+def repo_line(facts: Facts) -> str:
+    state = checkout_state(facts.main, facts.checkout)
     # BOT_NONE: no release workflow or policy, so no release to call ok; no verdict reason
     problems = ["no release workflow"] if any(r.state == "BOT_NONE" for r in facts.rows) else []
     for r in facts.rows:
@@ -1150,13 +1165,13 @@ def _promotion(repo: str, r: Row) -> str:
     return f"{r.subject} {item(repo, int(proposal.group(1)), False)}" if proposal else f"{r.subject}: {r.detail}"
 
 
-def session_values(facts: Facts) -> list[str]:
+def session_values(rows: Sequence[Row], gate: Gate | None) -> list[str]:
     """The gate's sessions, counted: those `claude agents` lists, else the headless one the
     gate's log says runs; or why the sessions weren't read"""
-    unknown = [f"not read: {r.detail}" for r in facts.rows if r.state == "HOST_UNKNOWN"]
-    gates = [r for r in facts.rows if r.state == "AGENT_SESSION" and r.detail.startswith("gate ")]
+    unknown = [f"not read: {r.detail}" for r in rows if r.state == "HOST_UNKNOWN"]
+    gates = [r for r in rows if r.state == "AGENT_SESSION" and r.detail.startswith("gate ")]
     shown = [f"{r.detail.split(',')[0]} ({r.subject})" for r in gates]
-    running = headless_running(facts.gate)
+    running = None if gate is None else headless_running(gate)
     if not gates and running is not None:
         shown.append(f"gate log {running}")
     return [*unknown, *([f"{len(shown)}: {'; '.join(shown)}"] if shown else [])]
@@ -1279,7 +1294,7 @@ def item_lines(facts: Facts) -> list[str]:
     drafts = sorted((p.number for p in facts.pulls if p.draft), reverse=True)
     ready = [f"{item(repo, n, True)}: gh pr ready {n} -R {repo} once it is ready" for n in drafts]
     lines += _group("drafts", ready)  # S-011-19
-    lines += _group("sessions", session_values(facts))
+    lines += _group("sessions", session_values(facts.rows, facts.gate))
     runs = of("RUNS_ACTIVE")
     shown = ", ".join(f"{r.subject} {r.detail.rsplit(', ', 1)[-1]}" for r in runs)
     lines += _group("runs", [f"{len(runs)}: {shown}"] if runs else [])
@@ -1312,73 +1327,164 @@ def autonomy_lines(facts: Facts) -> list[str]:
     return _after(_line("autonomy", autonomy_value(facts.autonomy, levels)), [] if fix is None else [fix])
 
 
-def gate_lines(facts: Facts) -> list[str]:
-    """S-009-20, S-009-21, S-009-25: the gate, then with [agents] its mode, whether it lands
-    pull requests, and the App"""
-    gate = facts.gate
+def agents_lines(facts: Facts) -> list[str]:
+    """S-009-21, S-009-25: with [agents], the gate's mode and whether it lands pull requests"""
+    agents = facts.gate.agents
+    if agents is None:
+        return []
+    mode = str(agents.mode) if facts.gate.mode_set else f"{Mode.INTERACTIVE} (not set)"
+    land = landing_fix(facts)
+    landing = _line("landing", landing_value(land_stage(facts)))
+    return [_line("mode", mode), *_after(landing, [] if land is None else [land])]
+
+
+# -- the factory's checks (spec 044) -------------------------------------------------------
+
+# a check that fails to run: a gh, git, launchctl, or claude failure, a file it can't read,
+# or a malformed answer
+CHECK_FAILURES = (
+    ReleaseError,
+    OSError,
+    subprocess.SubprocessError,
+    json.JSONDecodeError,
+    plistlib.InvalidFileException,
+)
+CANT = "can't check here"
+GATE_CHECKS = ("gate", "sessions", "github app")  # their waits-on-you reasons come before the rows'
+
+
+def first_line(error: BaseException) -> str:
+    lines = str(error).strip().splitlines()
+    return lines[0] if lines else type(error).__name__
+
+
+@dataclass(frozen=True, slots=True)
+class Detail:
+    """A line printed after a check's own, such as a stale worktree or the claude auth line,
+    with its fix"""
+
+    label: str
+    value: str
+    fix: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Check:
+    """One check of this host's machinery for the repo (spec 044): its line's value, whether
+    it finds no problem, the fixes after its line, the lines after those, and the STUCK and
+    WAITS ON YOU reasons it gives `shipmill status`'s verdict (S-044-3)"""
+
+    check: str
+    ok: bool
+    value: str
+    fixes: tuple[str, ...] = ()
+    details: tuple[Detail, ...] = ()
+    stuck: tuple[Reason, ...] = ()
+    yours: tuple[Reason, ...] = ()
+
+    def lines(self) -> list[str]:
+        found = _after(_line(self.check, self.value), self.fixes)
+        for d in self.details:
+            found += _after(_line(d.label, d.value), [] if d.fix is None else [d.fix])
+        return found
+
+    def record(self) -> dict[str, object]:
+        """S-044-10: --json's entry, every fix the check prints among its fixes"""
+        fixes = [*self.fixes, *(d.fix for d in self.details if d.fix is not None)]
+        return {"check": self.check, "ok": self.ok, "value": self.value, "fixes": list(dict.fromkeys(fixes))}
+
+
+def failed_check(check: str, error: str, command: str) -> Check:
+    """S-044-4, S-044-8: a check that failed to run, `ERROR: <the error's first line>`, which
+    makes the status verdict STUCK; `shipmill factory` prints the check's lines"""
+    reason = Reason(f"the factory check {check} failed to run: {error}", f"{command} factory")
+    return Check(check, False, f"ERROR: {error}", stuck=(reason,))
+
+
+def guarded(check: str, command: str, build: Callable[[], Check]) -> Check:
+    """A check built on its own: one that fails to run is its error, and the next still runs"""
+    try:
+        return build()
+    except CHECK_FAILURES as exc:
+        return failed_check(check, first_line(exc), command)
+
+
+def gate_check(gate: Gate, repo: str, now: dt.datetime, command: str) -> Check:
+    """S-009-20 as the gate line, with what the gate's sessions authenticate with (S-035-15);
+    off a Mac `can't check here: no launchd`, no problem (S-044-11)"""
     if gate.agents is None:
-        return [_line("gate", "none: no [agents] in the config")]
+        return Check("gate", True, "none: no [agents] in the config")
+    if gate.job_error is not None:
+        return failed_check("gate", gate.job_error, command)
+    stuck, yours = launchd_reasons(gate, repo, now, command)
     fixes: list[str] = []
     if not gate.launchd:
-        value = "can't check here: no launchd"
+        value = f"{CANT}: no launchd"
     elif gate.job is None:
         value = "no launchd job on this Mac"
-        fixes.append(no_job_fix(facts.repo, facts.command))
+        fixes.append(no_job_fix(repo, command))
     else:
         job = gate.job
-        problems = job_problems(gate, job, facts.repo, facts.now)
+        problems = job_problems(gate, job, repo, now)
         fixes += [p.fix for p in problems if p.fix is not None]
         schedule = f"launchd every {ago(job.interval)}" if job.interval else "launchd"
         value = f"{'; '.join(p.shown for p in problems) or 'OK'}, {schedule}"
-    mode = str(gate.agents.mode) if gate.mode_set else f"{Mode.INTERACTIVE} (not set)"
-    if gate.agents.app_id is None:
-        app = "not active"
-    elif gate.app_key is not None:
-        app = f"can't check here: no key at {gate.app_key}"
-    elif gate.app is not None:
-        app = "active"
-    else:
-        app = f"not connected: {gate.app_error}"
-    landing = landing_value(land_stage(facts))
-    land = landing_fix(facts)
-    app_fixes = [] if (fix := app_fix(gate, facts.repo, facts.command)) is None else [fix]
-    return [
-        *_after(_line("gate", value), fixes),
-        _line("mode", mode),
-        *_after(_line("landing", landing), [] if land is None else [land]),
-        *_after(_line("github app", app), app_fixes),
-        *auth_lines(gate),
-    ]
+    auth = auth_detail(gate)
+    refused = gate.credential is not None and gate.credential.refused is not None
+    ok = not stuck and not yours and not refused
+    return Check("gate", ok, value, tuple(fixes), () if auth is None else (auth,), tuple(stuck), tuple(yours))
 
 
-def auth_lines(gate: Gate) -> list[str]:
-    """S-035-15: what the gate's sessions authenticate with, `token file <path>`, `login`, or
-    the refused file with its fix on the next line; never the token"""
-    found = gate.credential
-    if found is None:
-        return []
-    path = found.source.path if gate.home is None else shown(found.source.path, gate.home)
-    if found.refused is not None:
-        return _after(_line("claude auth", f"token file {path}: {found.refused.reason}"), [found.refused.fix])
-    return [_line("claude auth", "login" if found.token is None else f"token file {path}")]
+def sessions_check(rows: Sequence[Row], gate: Gate | None) -> Check:
+    """The gate's live sessions, counted, or none; or why they weren't read"""
+    values = session_values(rows, gate)
+    return Check("sessions", True, "; ".join(values) or "none")
 
 
-def shipmill_lines(facts: Facts) -> list[str]:
+def github_app_check(gate: Gate, repo: str, command: str) -> Check:
+    """S-009-21, S-009-4: the App check; a key missing on this host is no problem"""
+    agents = gate.agents
+    if agents is None:
+        return Check("github app", True, "none: no [agents] in the config")
+    fix = app_fix(gate, repo, command)
+    fixes = () if fix is None else (fix,)
+    if agents.app_id is None and fix is not None:
+        no_app = Reason("the gate has no App: sessions write as your gh login", fix)
+        return Check("github app", False, "not active", fixes, yours=(no_app,))
+    if gate.app_key is not None:
+        return Check("github app", True, f"{CANT}: no key at {gate.app_key}")
+    if gate.app is not None:
+        return Check("github app", True, "active")
+    if gate.app_error is not None and fix is not None:
+        fails = Reason(f"the App check fails: {gate.app_error}", fix)
+        return Check("github app", False, f"not connected: {gate.app_error}", fixes, stuck=(fails,))
+    raise ReleaseError("the App check gave neither an identity nor an error")
+
+
+def shipmill_check(
+    rows: Sequence[Row], cli: str, gate_cli: GateCli | None, cli_error: str | None, repo: str, command: str
+) -> Check:
     """S-009-22: the CLI's version, the plugin's when it differs, and the updates, each the
     fix for its install (S-011-15): each SHIPMILL_OUTDATED row's (S-031-15, S-031-16), this
-    CLI's, and the gate's own CLI's when it lags (S-031-17)"""
-    latest, plugin = latest_shipmill(facts.rows)
-    parts = [facts.cli]
-    if any(v != facts.cli for v in re.findall(r"\d+\.\d+\.\d+[^\s,;]*", plugin)):
+    CLI's, and the gate's own CLI's when it lags (S-031-17); then each SKILL_SHADOWED row's
+    fix (spec 044). gate_cli is the version the gate last ran as, cli_error why it wasn't read"""
+    if cli_error is not None:
+        return failed_check("shipmill", cli_error, command)
+    latest, plugin = latest_shipmill(rows)
+    parts = [cli]
+    if any(v != cli for v in re.findall(r"\d+\.\d+\.\d+[^\s,;]*", plugin)):
         parts.append(f"plugin {plugin}")
-    outdated = [r for r in facts.rows if r.state == "SHIPMILL_OUTDATED"]
+    outdated = [r for r in rows if r.state == "SHIPMILL_OUTDATED"]
+    yours = [Reason(r.text(), row_fix(repo, r)) for r in outdated]
     fixes = list(dict.fromkeys(r.detail.partition("; ")[2] for r in outdated))
     # S-031-29: the shipmill on PATH row and this CLI's own lag may name the same upgrade, once
-    if cli_outdated(facts.cli, latest) and cli_update(facts.command) not in fixes:
-        fixes.append(cli_update(facts.command))
-    after = [row_fix(facts.repo, r) for r in outdated]
-    gate_cli = facts.gate.cli
-    if latest is not None and gate_cli is not None and gate_cli.owes(Version.of_tag(latest)):
+    if cli_outdated(cli, latest):
+        yours.append(Reason(f"the shipmill CLI {cli} is older than {latest}", cli_update(command)))
+        if cli_update(command) not in fixes:
+            fixes.append(cli_update(command))
+    after = [row_fix(repo, r) for r in outdated]
+    if latest is not None and gate_cli is not None and gate_cli.owes(Version.of_tag(latest)):  # S-031-17, #597
+        yours.append(Reason(gate_cli.line(Version.of_tag(latest)), gate_cli.fix))
         parts.append(f"gate {gate_cli.version}" + ("" if gate_cli.floating is None else " on @v0"))
         if gate_cli.fix not in fixes:
             fixes.append(gate_cli.fix)
@@ -1387,7 +1493,63 @@ def shipmill_lines(facts: Facts) -> list[str]:
         parts.append(f"update available: {'; '.join(fixes)}")
     else:
         parts.append("up to date" if latest is not None else "latest not read")
-    return _after(_line("shipmill", ", ".join(parts)), after)
+    shadowed = [row_fix(repo, r) for r in rows if r.state == "SKILL_SHADOWED"]
+    value = ", ".join(parts)
+    shown = tuple(f for f in dict.fromkeys([*after, *shadowed]) if f not in _line("shipmill", value))
+    return Check("shipmill", not fixes and not shadowed, value, shown, yours=tuple(yours))
+
+
+def checkout_check(main: Main, checkout: Path) -> Check:
+    """The local branch releases land on against GitHub's, as the repo line reads it; a
+    diverged branch is a person's to sort out"""
+    return Check("checkout", not (main.ahead and main.behind), checkout_state(main, checkout))
+
+
+def host_checks(facts: Facts) -> list[Check]:
+    """The checks `shipmill status` reads from its facts, each on its own: every check of
+    `shipmill factory` but the worktrees (S-044-5)"""
+    command, gate = facts.command, facts.gate
+    return [
+        guarded("gate", command, lambda: gate_check(gate, facts.repo, facts.now, command)),
+        guarded("sessions", command, lambda: sessions_check(facts.rows, gate)),
+        guarded("github app", command, lambda: github_app_check(gate, facts.repo, command)),
+        guarded(
+            "shipmill",
+            command,
+            lambda: shipmill_check(facts.rows, facts.cli, gate.cli, gate.cli_error, facts.repo, command),
+        ),
+        guarded("checkout", command, lambda: checkout_check(facts.main, facts.checkout)),
+    ]
+
+
+def factory_value(checks: Sequence[Check], command: str) -> str:
+    """S-044-2: OK, or the problems counted with the first; `can't check here` when no check
+    found a problem and one had nothing to check on this host (S-044-11)"""
+    problems = [c for c in checks if not c.ok]
+    if problems:
+        first = problems[0]
+        return f"{len(problems)} problem(s): {first.check} {first.value}; {command} factory"
+    cant = [c.value for c in checks if c.value.startswith(CANT)]
+    return cant[0] if cant else "OK"
+
+
+def factory_lines(facts: Facts) -> list[str]:
+    """S-044-1: the one factory line, after landing, then the fix of each reason it gives"""
+    checks = host_checks(facts)
+    fixes = [r.fix for c in checks for r in (*c.stuck, *c.yours)]
+    return _after(_line("factory", factory_value(checks, facts.command)), fixes)
+
+
+def auth_detail(gate: Gate) -> Detail | None:
+    """S-035-15: what the gate's sessions authenticate with, `token file <path>`, `login`, or
+    the refused file with its fix; never the token"""
+    found = gate.credential
+    if found is None:
+        return None
+    path = found.source.path if gate.home is None else shown(found.source.path, gate.home)
+    if found.refused is not None:
+        return Detail("claude auth", f"token file {path}: {found.refused.reason}", found.refused.fix)
+    return Detail("claude auth", "login" if found.token is None else f"token file {path}")
 
 
 def agent_as_person_lines(facts: Facts) -> list[str]:
@@ -1408,8 +1570,8 @@ def report(facts: Facts) -> Report:
         *item_lines(facts),
         count_line("open issues", open_, f"{github(facts.repo)}/issues"),
         count_line("pull requests", len(facts.pulls), f"{github(facts.repo)}/pulls"),
-        *gate_lines(facts),
+        *agents_lines(facts),
+        *factory_lines(facts),
         *agent_as_person_lines(facts),
-        *shipmill_lines(facts),
     ]
     return Report(found, reasons, working, lines)

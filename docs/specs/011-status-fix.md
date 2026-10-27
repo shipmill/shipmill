@@ -40,7 +40,8 @@ a fix as today, followed by an indented line `fix: <fix>`, except when the detai
 ends with that fix (the rows that carry it in their detail today print it once).
 
 `FIXED`, a new set in the script, names the states whose every row carries a fix: every
-state in `ACTION`, plus `HOLD`, `WORKTREE_STALE`, and `UNTRUSTED`. `Row` refuses to be
+state in `ACTION`, plus `HOLD`, `WORKTREE_STALE` (moved to `shipmill factory` by spec 044), and
+`UNTRUSTED`. `Row` refuses to be
 built with a `FIXED` state and no fix (a programming error the tests catch). `PRS_OPEN`
 carries a fix only when no gate lands pull requests (below); every other state's fix is
 null.
@@ -161,8 +162,7 @@ waiting it is unchanged.
 - S-011-5: a `NOT_PUBLISHED` row's fix is `gh run rerun <id> --failed -R <repo>` when the
   newest finished run on the tag failed, and the `gh run list -R <repo> --branch <tag>`
   decision otherwise
-- S-011-6: a `WORKTREE_STALE` row's fix names `git -C <path> log origin/<branch>..HEAD` and
-  `git worktree remove <path>` with the row's path
+- S-011-6: dropped in #731, see S-044-7 (the fix moved to `shipmill factory`'s worktrees line)
 - S-011-7: a `PRS_OPEN` row's fix follows the effective `[autonomy] land` (S-040-9,
   S-040-11), whatever `[agents] prs` says: with no `[agents]` it names adding `[agents]` and
   `/shipmill:github-pr-triage <repo>`; under `observe`, `[autonomy] land` and
@@ -260,7 +260,7 @@ test for every criterion.
 - S-011-3: `test_s011_3_each_fixed_state_carries_the_fix_behaviour_names`, passing
 - S-011-4: `test_s011_4_a_failed_runs_fix_reruns_the_run_its_detail_links`, passing; `rerun_fix` reads the id from the run URL
 - S-011-5: `test_s011_5_a_missing_releases_fix_reruns_a_failed_publish_or_says_where_to_look`, passing
-- S-011-6: `test_s011_6_a_stale_worktrees_fix_shows_its_work_and_how_to_remove_it`, passing
+- S-011-6: dropped in #731; `test_s044_7_the_worktrees_line_counts_and_lists_kept_shipmill_ones_over_seven_days` checks the same fix
 - S-011-7: `test_s011_7_open_prs_carry_a_fix_by_the_land_level`, passing (amended by #693 after #691 moved the fix to `[autonomy] land`)
 - S-011-8: `test_s011_8_every_fix_names_its_target_and_quotes_no_title` and `test_s011_8_a_proposals_fix_never_copies_a_shell_word_from_its_body`, passing
 - S-011-9: `test_s011_9_the_table_prints_a_fix_line_unless_the_detail_ends_with_it`, passing; `Row.text()` skips the line when the detail ends with the fix

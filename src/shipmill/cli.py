@@ -25,8 +25,12 @@
                   the root's and their directories' merged, as Markdown or --json; add-rule, protect,
                   set-cap, and retire edit one line (--dir DIR: DIR/REVIEW.md) and print it
   status          say whether the factory works or is stuck: a verdict, then a short summary with
-                  a line per reason and a direct link per item; --rows for github-ship-watch's
-                  table, --json for its JSON lines and an AUTONOMY line with every stage's level
+                  a line per reason and a direct link per item, this host's machinery summed up
+                  on one factory line; --rows for github-ship-watch's table, --json for its JSON
+                  lines and an AUTONOMY line with every stage's level
+  factory         read-only: this host's machinery for the repo, one line per check (gate,
+                  sessions, github app, shipmill, checkout, worktrees), each run on its own;
+                  --json for one JSON object (spec 044)
   milestones      read-only: with a lane that sets milestone = true, print MILESTONE_WAITING for a goal's
                   milestone waiting on its specs and MILESTONE_OVERTAKEN for an open milestone a stable
                   tag took, with the version to rename it to and the `gh api` rename, run through
@@ -80,12 +84,13 @@
                   shipmill-id and concludes its check
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
-action, app-create or app-install left a repo without the App, product check found a broken
-rule, review check found a malformed REVIEW.md, evals check found a malformed case (or, with
---gate, a suite short of the gate's counts), evals compare found a regression or a run
-stopped at its budget, or downstream start's --sha is no longer the pull request's head; 2
-bad input or a refused state, such as an edit of a file its check refuses, a malformed
-evals/cases.toml, or a missing or malformed aggregate-result.json.
+action, factory found a problem or a check that failed to run, app-create or app-install left
+a repo without the App, product check found a broken rule, review check found a malformed
+REVIEW.md, evals check found a malformed case (or, with --gate, a suite short of the gate's
+counts), evals compare found a regression or a run stopped at its budget, or downstream
+start's --sha is no longer the pull request's head; 2 bad input or a refused state, such as an
+edit of a file its check refuses, a malformed evals/cases.toml, or a missing or malformed
+aggregate-result.json.
 """
 
 import argparse
@@ -111,6 +116,7 @@ from shipmill import (
     cli_command,
     decide,
     evals,
+    factory,
     fragments,
     plugin_clean,
     product,
@@ -459,6 +465,12 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print github-ship-watch's JSON lines instead, then an AUTONOMY line with every stage's level",
     )
+
+    p = sub.add_parser("factory", help="print this host's machinery for the repo, one line per check (spec 044)")
+    p.add_argument(
+        "slug", nargs="?", metavar="owner/name", help="the GitHub repo (default: origin's); --repo is its checkout"
+    )
+    p.add_argument("--json", action="store_true", help="print the checks as one JSON object")
 
     p = sub.add_parser(
         "milestones",
@@ -838,6 +850,9 @@ def main(
     if args.command == "status":
         host = login or (lambda: host_login(root))
         return _status(root, args, state or run_state, api or UrllibApi(), signer or Openssl(), host)
+    if args.command == "factory":
+        hub_api, hub_signer = api or UrllibApi(), signer or Openssl()
+        return _factory(root, args, state or run_state, hub_api, hub_signer, github, sessions, user_home)
     if args.command == "milestones":
         return _milestones(root, args, github)
     if args.command == "roles":
@@ -1708,7 +1723,10 @@ def _status(
     # the picture reads as the gate's App, whose needs-decision questions are its own (spec 005)
     gate = status.read_gate(slug, top, home, platform, run, check, os.getuid()) if picture else None
     if gate is not None:  # S-031-17: the gate's own CLI against the latest release
-        gate = dataclasses.replace(gate, cli=_gate_cli(top, slug, home))
+        try:
+            gate = dataclasses.replace(gate, cli=_gate_cli(top, slug, home))
+        except status.CHECK_FAILURES as exc:  # S-044-4: the shipmill check's error, not the report's end
+            gate = dataclasses.replace(gate, cli_error=status.first_line(exc))
     bot = None if gate is None else gate.login
     if bot is None:  # #311: --rows, --json, or a failed check still count the App's questions
         bot = status.read_login(slug, top, home, platform, bot_login)
@@ -1747,6 +1765,64 @@ def _status(
     )
     sys.stdout.write(status.report(facts).text(slug))
     return proc.returncode  # S-009-14: spec 008's code, whatever the verdict
+
+
+def _checkout(root: Path, slug: str | None, command: str) -> tuple[Path, str]:
+    """The checkout's top level and its repo: origin's, or slug checked against it (S-008-9)"""
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        where = "in a checkout of the repo, or pass --repo PATH"
+        raise ReleaseError(f"{root} is not a git checkout; run {command} {where}")
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    if slug is None:
+        slug = _origin_repo(top)
+        if slug is None:
+            raise ReleaseError(f"{top}'s origin isn't a GitHub repo; name the repo, such as owner/name")
+    else:
+        check_checkout(Git(top), slug)
+    return top, slug
+
+
+def _factory(
+    root: Path,
+    args: argparse.Namespace,
+    run: StateRunner,
+    api: Api,
+    signer: Signer,
+    github: GitHub | None,
+    sessions: Sessions | None,
+    home: Path,
+    platform: str = sys.platform,
+    now: dt.datetime | None = None,
+) -> int:
+    """Spec 044: this host's machinery for the checkout's repo, each check read on its own;
+    exit 0 when every check passes, 1 when one finds a problem or fails to run"""
+    top, slug = _checkout(root, args.slug, "factory")
+    when = now if now is not None else dt.datetime.now(dt.UTC)
+    git = Git(top)
+
+    def check(app_id: int, key: Path) -> Identity:
+        return app_check(slug, key, home, signer, api)(app_id)
+
+    def main_branch() -> status.Main:
+        branch = status.landing_branch(slug, top, run)
+        git.run("fetch", "-q", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+        return status.read_main(git, branch)
+
+    def worktrees() -> factory.Worktrees:
+        judged = judge(git, github or GhCli(top), sessions or ClaudeSessions(top), when)
+        return factory.Worktrees(judged, judged[0].worktree.path.resolve(), git.landing_branch())
+
+    host = factory.Host(
+        gate=lambda: status.read_gate(slug, top, home, platform, run, check, os.getuid()),
+        gate_cli=lambda: _gate_cli(top, slug, home),
+        rows=lambda section: factory.read_rows(slug, top, section, run),
+        main=main_branch,
+        worktrees=worktrees,
+    )
+    found = factory.checks(slug, host, importlib.metadata.version("shipmill"), top, when, cli_command())
+    sys.stdout.write(factory.as_json(found) if args.json else factory.text(found))
+    return factory.exit_code(found)
 
 
 def _milestones(root: Path, args: argparse.Namespace, github: GitHub | None) -> int:

@@ -80,6 +80,9 @@ version differs from the plugin's. Without the install, `uvx shipmill status` ru
 latest release from PyPI.
 
 It answers STUCK, WAITS ON YOU, WORKING, or IDLE, with a link to each item that waits on you.
+One `factory` line sums up the machinery on this machine; `shipmill factory` prints it a line
+per check: the gate's launchd job, its sessions, the GitHub App, the shipmill installs, the
+checkout, and the worktrees.
 
 Prefer to set it up by hand, or want only the release lanes without agents? Follow
 [docs/install.md](https://github.com/shipmill/shipmill/blob/main/docs/install.md).

@@ -234,12 +234,10 @@ def test_a_plan_failing_on_anything_else_still_stops_the_watch(
         ws.bot_plan(REPO, plan_checkout(tmp_path), ws.POLICY, "main", tool, "release.yml", Spawned((1, "", err)))
 
 
-def test_worktrees_and_milestones_pypi_doesnt_serve_are_the_row(ws: ModuleType, version: str, tmp_path: Path) -> None:
+def test_milestones_pypi_doesnt_serve_are_the_row(ws: ModuleType, version: str, tmp_path: Path) -> None:
     def waiting(cmd: list[str]) -> str:
         return str(ws.pinned_run(cmd, Uvx((1, "", no_version(version)), (1, "", no_version(version)))))
 
-    rows = ws.stale_worktrees(tmp_path, None, "main", waiting)
-    assert [(r.state, r.detail) for r in rows] == [("PYPI_WAIT", "waits for PyPI; not read: worktrees")]
     (tmp_path / "m").mkdir()
     policy = plan_checkout(tmp_path / "m") / ws.POLICY
     policy.write_text("[lanes.stable]\nmilestone = true\n")

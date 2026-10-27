@@ -82,6 +82,10 @@ summary (Each line):
 
 ### Each line
 
+Spec 044 moved the gate, github app, and shipmill lines (and spec 035's claude auth line) to
+`shipmill factory`, which prints them with the values below; `shipmill status` prints one
+`factory` line after landing in their place, and reads the verdict through the same checks.
+
 Always shown, in this order around the item lines:
 
 - **repo** (first): the local default branch against GitHub's, after the fetch

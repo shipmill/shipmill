@@ -462,8 +462,13 @@ for each (`would prune` under `--dry-run`). The worktrees a session leaves behin
 exits are the gate's prune's to remove (D-12); never the main checkout, the gate's own
 checkout, or a worktree elsewhere. `$CR --repo tmp/shipmill-gate worktrees` lists every
 worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--prune
---dry-run` for what a prune would remove); github-ship-watch reports a kept one older than
-7 days as WORKTREE_STALE, for a person to finish or remove.
+--dry-run` for what a prune would remove); `shipmill factory` lists a kept one older than 7
+days with its fix, for a person to finish or remove.
+
+`$CR factory` checks the gate's host for the repo, one line per check: the gate's launchd job
+and log, its live sessions, the GitHub App, the shipmill installs, the local checkout, and
+the worktrees, each run on its own (spec 044). `shipmill status` is the pipeline: what waits
+on whom, from GitHub, with one `factory` line summing up those checks.
 
 1. **Scope.** Ask what the session may do; the prompt carries it. Recommend triage without
    merges for the first week: `/shipmill:github-issue-triage {repo} triage the new issues;
