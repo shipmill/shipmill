@@ -19,7 +19,7 @@ graders:
   - type: regex
     name: writes-the-home
     target: {source: file, path: .github/shipmill.toml}
-    pattern: '\[product\]\s+home\s*=\s*"acme/product"'
+    pattern: '\[product\]\s*(#[^\n]*\s*)*home\s*=\s*"acme/product"'
   # and only that half: no repos list (the home's half) and no standalone in this config
   - type: regex
     name: no-home-half-here

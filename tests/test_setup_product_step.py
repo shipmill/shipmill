@@ -44,6 +44,15 @@ def test_s043_7_the_step_asks_whether_the_repo_is_one_of_several() -> None:
     assert "On `PRODUCT_SIBLINGS`, list the siblings the row names" in step
 
 
+def test_s043_7_a_first_setup_with_no_app_id_yet_still_asks() -> None:
+    # The step writes [product] in the pull request with [agents], so a first setup, whose
+    # config has no app_id yet, must not skip the question; only an existing [product] does
+    step = product_step()
+    assert "Skip the question only when `.github/shipmill.toml` already has a `[product]` table" in step
+    assert "A first setup asks it too, though its config has no `[agents] app_id` yet" in step
+    assert "or has no `[agents] app_id`" not in step
+
+
 def test_s043_7_on_yes_it_asks_for_the_home_and_the_components() -> None:
     step = product_step()
     assert "**On yes, ask for the home and the components.**" in step
@@ -148,7 +157,16 @@ def test_s043_11_the_eval_case_writes_home_in_the_component_only() -> None:
     assert "/shipmill:" not in body.splitlines()[1]  # reached by the description, no slash command
     case = (CASE / "case.yaml").read_text(encoding="utf-8")
     assert "tool: Skill" in case
-    assert "pattern: '\\[product\\]\\s+home\\s*=\\s*\"acme/product\"'" in case
+    home = re.search(r"name: writes-the-home\n.*\n\s+pattern: '(.+)'", case)
+    assert home is not None
+    # the grader takes the table with a comment between [product] and home too
+    for written in (
+        '[product]\nhome = "acme/product"\n',
+        '[product]  # a component of acme/product\nhome = "acme/product"\n',
+        '[product]\n# the home repo\nhome = "acme/product"\n',
+    ):
+        assert re.search(home.group(1), written), written
+    assert not re.search(home.group(1), '[product]\nrepos = ["acme/api"]\nhome2 = "acme/product"\n')
     assert "pattern: '\\n\\s*(repos|standalone)\\s*='" in case
     assert 'pattern: \'"kind": "(write|refused)"\'' in case
     assert re.search(r"name: no-miss\n\s+target: \{source: file, path: \.eval/gh\.jsonl\}", case)

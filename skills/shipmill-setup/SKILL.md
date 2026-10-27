@@ -579,10 +579,12 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
 
    **Product (spec 043).** A product may span several repos: a home, which holds planning
    and cross-repo work, and its components; the home's gate is their coordinator (D-47).
-   Skip the question when `.github/shipmill.toml` already has a `[product]` table in any
-   form, `standalone = true` included, or has no `[agents] app_id` (a product's repos meet
-   through the App). Read the checklist's Product row first (`setup_state.py
-   <owner/repo>`, step 6's item 3), then:
+   Skip the question only when `.github/shipmill.toml` already has a `[product]` table in
+   any form, `standalone = true` included. A first setup asks it too, though its config has
+   no `[agents] app_id` yet: a product's repos meet through the App, so read the
+   checklist's Product row (`setup_state.py <owner/repo>`, step 6's item 3) once the App's
+   id is in this checkout's config, which the script reads; before that the row reads
+   `PRODUCT_OK` with no sibling read. Then:
 
    - **`PRODUCT_LISTED`:** a sibling's `[product] repos` already lists this repo, so the
      maintainer answered in the home. Write the `[product] home = "<that sibling>"` line
