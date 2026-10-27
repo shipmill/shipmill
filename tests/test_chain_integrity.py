@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -142,6 +143,21 @@ def test_s041_5_malformed_depends_comes_after_unfilled_and_before_the_holds(ts: 
     assert verdict == ("MALFORMED_DEPENDS", "line 3: Depends on #3 once deployed | acme/home#3:closed")
     fixed = person(body="Reload the server.\n\nDepends on #3 (once deployed)\n")
     assert ts.classify_open(fixed, "Triage:", "postponed", closed, None, REPO, "bot[bot]", {})[0] == "HANDOFF_DUE"
+
+
+def test_s041_1_a_run_of_blanks_reads_in_linear_time() -> None:
+    # The strict shape backtracked exponentially on a run of blanks before a character
+    # outside it: 24 spaces took 3 s, so one such body stalled every gate tick. A child
+    # process with a timeout fails here instead of hanging the suite
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); import triage_state as t; "
+        "print(t.malformed_dependencies({'body': 'Depends on #1' + ' ' * 200 + 'x'}), "
+        "t.dependency_refs({'body': 'Depends on #1,' + ' \\t' * 200 + '#2 x'}, ('o', 'r')))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(SCRIPT.parent)], capture_output=True, text=True, timeout=30, check=True
+    )
+    assert proc.stdout.strip() == f"['line 1: Depends on #1{' ' * 200}x'] [('o', 'r', 1), ('o', 'r', 2)]"
 
 
 @pytest.fixture(scope="module")

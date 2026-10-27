@@ -633,10 +633,12 @@ DEPENDENCY = re.compile(
 PLACEHOLDER = re.compile(r"#\{(?P<key>[^{}\s]*)\}")
 # The strict shape of a Depends on line past "Depends on[:]" (spec 041): references separated
 # by any mix of ",", "and", and whitespace, then a note after " (", ";", or " — " that is
-# never read for references. A line naming a reference in any other shape is malformed
+# never read for references. A line naming a reference in any other shape is malformed.
+# The separator takes one blank at a time: "(?:[ \t]+|...)+" backtracks exponentially on a
+# run of blanks before a character that doesn't fit, and every gate tick reads every body
 STRICT_REF = r"(?:https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+|(?:[\w.-]+/[\w.-]+)?#(?:\d+|\{[^{}\s]*\}))"
 STRICT_DEPENDS = re.compile(
-    rf"[ \t]*(?P<refs>{STRICT_REF}(?:(?:[ \t]+|,|\band\b)+{STRICT_REF})*)(?:(?:[ \t]+\(|[ \t]*;|[ \t]+—[ \t]).*)?[ \t]*"
+    rf"[ \t]*(?P<refs>{STRICT_REF}(?:(?:[ \t]|,|\band\b)+{STRICT_REF})*)(?:(?:[ \t]+\(|[ \t]*;|[ \t]+—[ \t]).*)?[ \t]*"
 )
 STABLE = re.compile(r"^v?\d+\.\d+\.\d+$")
 KEYWORDS = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
