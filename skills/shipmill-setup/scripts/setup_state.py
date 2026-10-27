@@ -462,16 +462,19 @@ def gh_need(gh: Callable[[list[str]], str | None], cmd: list[str]) -> str:
 def owner_repos(repo: str, gh: Callable[[list[str]], str | None]) -> list[str]:
     """The owner's unarchived repos other than this one, as owner/name, sorted with case
     ignored: the gh login's own account lists its private repos through /user/repos, an
-    organization through /orgs, another user through /users. One listing, paged"""
+    organization through /orgs, another user through /users. One listing, paged. The login is
+    read for a user owner alone: a gate session's gh runs on the App's installation token,
+    which `gh api user` refuses"""
     owner = repo.partition("/")[0]
-    login = gh_need(gh, ["gh", "api", "user", "--jq", ".login"]).strip()
-    if login.lower() == owner.lower():
+    kind = gh_need(gh, ["gh", "api", f"users/{owner}", "--jq", ".type"]).strip()
+    if kind not in ("Organization", "User"):
+        fail(f"users/{owner}: expected the type Organization or User, got {kind!r}")
+    if kind == "Organization":
+        endpoint = f"orgs/{owner}/repos?per_page=100"
+    elif gh_need(gh, ["gh", "api", "user", "--jq", ".login"]).strip().lower() == owner.lower():
         endpoint = "user/repos?affiliation=owner&per_page=100"
     else:
-        kind = gh_need(gh, ["gh", "api", f"users/{owner}", "--jq", ".type"]).strip()
-        if kind not in ("Organization", "User"):
-            fail(f"users/{owner}: expected the type Organization or User, got {kind!r}")
-        endpoint = f"{'orgs' if kind == 'Organization' else 'users'}/{owner}/repos?per_page=100"
+        endpoint = f"users/{owner}/repos?per_page=100"
     listing = gh_need(gh, ["gh", "api", "--paginate", endpoint, "--jq", LISTING_JQ])
     found: dict[str, str] = {}
     for line in listing.splitlines():

@@ -960,19 +960,28 @@ WRITES = {"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"}
 
 
 class FakeOwner:
-    """gh for the sibling reads: the login, the owner's type, its listing as `<archived>
-    <owner/name>` lines, and each repo's config (None for a 404, absent for a failure)"""
+    """gh for the sibling reads: the login (None: an App's installation token, which `gh api
+    user` refuses with a 403), the owner's type, its listing as `<archived> <owner/name>`
+    lines, and each repo's config (None for a 404, absent for a failure)"""
 
-    def __init__(self, configs: dict[str, str | None], archived: tuple[str, ...] = (), login: str = "me") -> None:
-        self.configs, self.archived, self.login = configs, archived, login
+    def __init__(
+        self,
+        configs: dict[str, str | None],
+        archived: tuple[str, ...] = (),
+        login: str | None = "me",
+        kind: str = "User",
+    ) -> None:
+        self.configs, self.archived, self.login, self.kind = configs, archived, login, kind
         self.calls: list[list[str]] = []
 
     def __call__(self, cmd: list[str]) -> str | None:
         self.calls.append(cmd)
         if cmd[:3] == ["gh", "api", "user"]:
+            if self.login is None:
+                raise SystemExit(2)  # gh_get's end of "Resource not accessible by integration (HTTP 403)"
             return self.login + "\n"
         if cmd[2].startswith("users/"):
-            return "Organization\n"
+            return self.kind + "\n"
         if LISTING_CMD in cmd:
             names = ["me/demo", *self.configs, *self.archived]
             return "".join(f"{str(name in self.archived).lower()} {name}\n" for name in names)
@@ -1007,11 +1016,24 @@ def test_s043_3_siblings_are_the_owners_repos_with_the_same_app_id(ss: ModuleTyp
 def test_s043_3_the_listing_follows_the_owner(ss: ModuleType, tmp_path: Path) -> None:
     mine = FakeOwner({"me/api": APP})
     ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), mine)
-    assert mine.calls[1][:4] == ["gh", "api", "--paginate", "user/repos?affiliation=owner&per_page=100"]
-    org = FakeOwner({"me/api": APP}, login="someone")
+    assert mine.calls[0][:3] == ["gh", "api", "users/me"]
+    assert mine.calls[2][:4] == ["gh", "api", "--paginate", "user/repos?affiliation=owner&per_page=100"]
+    other = FakeOwner({"me/api": APP}, login="someone")
+    ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), other)
+    assert other.calls[2][:4] == ["gh", "api", "--paginate", "users/me/repos?per_page=100"]
+    org = FakeOwner({"me/api": APP}, login="someone", kind="Organization")
     ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), org)
-    assert org.calls[1][:3] == ["gh", "api", "users/me"]
-    assert org.calls[2][:4] == ["gh", "api", "--paginate", "orgs/me/repos?per_page=100"]
+    assert org.calls[0][:3] == ["gh", "api", "users/me"]
+    assert org.calls[1][:4] == ["gh", "api", "--paginate", "orgs/me/repos?per_page=100"]
+
+
+def test_s043_3_an_org_owner_is_listed_under_an_installation_token(ss: ModuleType, tmp_path: Path) -> None:
+    # a gate session's gh runs on the App's installation token, which `gh api user` refuses
+    # (403): an organization's listing needs no login, so the row reads as on the host's login
+    gh = FakeOwner({"me/api": APP}, login=None, kind="Organization")
+    (row,) = ss.product_rows("me/demo", product_repo(tmp_path), ss.watch_module(), gh)
+    assert row.state == "PRODUCT_SIBLINGS"
+    assert ["gh", "api", "user", "--jq", ".login"] not in gh.calls
 
 
 @pytest.mark.parametrize("listed", ["me/demo", "ME/Demo"])
@@ -1132,6 +1154,7 @@ def test_s043_3_the_product_rows_run_under_python_310(tmp_path: Path) -> None:
         "configs = json.loads(sys.argv[3])\n"
         "def gh(cmd):\n"
         "    if cmd[:3] == ['gh', 'api', 'user']: return 'me'\n"
+        "    if cmd[:3] == ['gh', 'api', 'users/me']: return 'User'\n"
         "    if '--paginate' in cmd: return ''.join(f'false {n}\\n' for n in configs)\n"
         "    return configs[cmd[-1].removeprefix('repos/').split('/contents/')[0]]\n"
         "root = Path(sys.argv[2])\n"
