@@ -125,6 +125,7 @@ ISSUE_LINES = (
             "REVISIT",
             "SPEC_REFUSED",
             "UNFILLED",
+            "MALFORMED_DEPENDS",  # spec 041: a Depends on line outside the strict shape
             "DONE_NOT_CLOSED",
             "HANDOFF_DUE",
             "VERIFY_DUE",

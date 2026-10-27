@@ -13,8 +13,9 @@ link  writes a link in both forms triage_state.py reads:
       --child       C as a sub-issue of P (GraphQL addSubIssue) and a
                     "Depends on owner/repo#C" line appended to P's body
       Each half is written only when it is missing: the relation when the forge doesn't
-      record it yet, the line when no "Depends on" line of the body names the issue
-      already (as owner/repo#M, its URL, or a plain #M of the same repo). The body is kept
+      record it yet, the line when no "Depends on" line of the body holds on the issue
+      already (as owner/repo#M, its URL, or a plain #M of the same repo, as triage_state.py
+      reads it: one only in a line's note doesn't count, spec 041). The body is kept
       byte for byte, with the line appended after it. When both are there it prints
       "already linked" and changes nothing.
 
@@ -117,7 +118,7 @@ from typing import Any, NoReturn
 
 # What a "Depends on" line is and the issues it names, and the holds GitHub records, as
 # triage_state.py reads them
-from triage_state import DEPENDENCY, DEPENDS, TRUSTED, dependency_refs, login, native_holds, ref_state, same_login
+from triage_state import DEPENDS, TRUSTED, dependency_refs, login, native_holds, ref_state, same_login
 
 Variables = dict[str, str | int]
 # Runs one GraphQL query with its variables and returns the parsed response, errors and
@@ -524,14 +525,13 @@ def is_child(run: Runner, parent: Issue, child: Issue) -> bool:
 
 
 def names(body: str, home: Ref, target: Ref) -> bool:
-    """Whether a "Depends on" line of a body in home's repo names target: owner/repo#M, its
-    URL, or a plain #M when target is in the same repo"""
-    for line in DEPENDS.finditer(body):
-        for m in DEPENDENCY.finditer(line["refs"]):
-            owner, name = (m["owner"], m["name"]) if m["owner"] is not None else (home.owner, home.name)
-            if target.same_repo(owner, name) and int(m["num"]) == target.number:
-                return True
-    return False
+    """Whether a "Depends on" line of a body in home's repo holds on target as
+    dependency_refs reads it: owner/repo#M, its URL, or a plain #M when target is in the
+    same repo, and never one only in a strict line's note (spec 041)"""
+    return any(
+        target.same_repo(owner, name) and number == target.number
+        for owner, name, number in dependency_refs({"body": body}, (home.owner, home.name))
+    )
 
 
 def appended(body: str, line: str) -> str:

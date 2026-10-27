@@ -409,6 +409,7 @@ TRIAGE_ACTION = {
     "NEEDS_PR",
     "UNBLOCKED",
     "UNFILLED",
+    "MALFORMED_DEPENDS",  # spec 041: a Depends on line outside the strict shape
     "SPEC_REFUSED",
     "REVISIT",
     "DONE_NOT_CLOSED",
