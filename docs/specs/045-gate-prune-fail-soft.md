@@ -1,6 +1,6 @@
 # S-045: The gate's worktree prune runs after the decision, now and then, and never fails a tick
 
-status: draft
+status: approved
 serves: G-1
 
 ## Problem
