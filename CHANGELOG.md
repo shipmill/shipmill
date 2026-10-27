@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.88.0] - 2026-10-27
+
+### Changed
+
+- shipmill's own config turns on agent-autonomy: `[autonomy]` sets `triage`, `fix`, and `land` to `act`, the levels its gate runs at today, so they no longer come from `[agents] prompt` (#684)
+
 ## [0.87.1] - 2026-10-27
 
 ### Fixed
@@ -1975,7 +1981,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.87.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.88.0...HEAD
+[0.88.0]: https://github.com/shipmill/shipmill/compare/v0.87.1...v0.88.0
 [0.87.1]: https://github.com/shipmill/shipmill/compare/v0.87.0...v0.87.1
 [0.87.0]: https://github.com/shipmill/shipmill/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/shipmill/shipmill/compare/v0.85.1...v0.86.0
