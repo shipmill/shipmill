@@ -50,9 +50,14 @@ def ws() -> ModuleType:
     return load("watch_state_upstream_rows", WATCH)
 
 
-def said(body: str, who: str = "amy", association: str = "OWNER", bot: bool = False) -> dict[str, Any]:
+def said(
+    body: str, who: str = "amy", association: str = "OWNER", bot: bool = False, at: str = "2026-10-01T10:00:00Z"
+) -> dict[str, Any]:
     author = {"__typename": "Bot" if bot else "User", "login": who.removesuffix("[bot]") if bot else who}
-    return {"body": body, "author": author, "authorAssociation": association}
+    return {"body": body, "createdAt": at, "author": author, "authorAssociation": association}
+
+
+CLOSED_AT = "2026-10-20T10:00:00Z"  # when a scripted child closed, unless it says otherwise
 
 
 class Forge:
@@ -79,8 +84,10 @@ class Forge:
         reason: str | None = None,
         kind: str = "Issue",
         older: tuple[list[dict[str, Any]], ...] = (),
+        closed_at: str | None = CLOSED_AT,
     ) -> None:
-        """older: pages of comments before ``comments``, oldest first, read by paging back"""
+        """older: pages of comments before ``comments``, oldest first, read by paging back;
+        closed_at: when it closed, given only once it isn't open"""
         repo, _, number = ref.partition("#")
         owner, _, name = repo.partition("/")
         self.issues[(owner.lower(), name.lower(), int(number))] = {
@@ -99,6 +106,7 @@ class Forge:
             "stateReason": reason,
             "kind": kind,
             "older": list(older),
+            "closedAt": None if state == "OPEN" else closed_at,
         }
 
     def get(self, owner: str, name: str, number: int) -> dict[str, Any]:
@@ -112,7 +120,7 @@ class Forge:
             "number": item["number"],
             "state": item["state"],
             "stateReason": item["stateReason"],
-            "closedAt": None if item["state"] == "OPEN" else "2026-10-20T10:00:00Z",
+            "closedAt": item["closedAt"],
             "repository": {"nameWithOwner": item["repo"]},
         }
 
@@ -140,7 +148,7 @@ class Forge:
                         errors.append({"type": "NOT_FOUND", "message": f"Could not resolve to an issue {wanted[2]}"})
                         continue
                     item = self.issues[wanted]
-                    node = {"__typename": item["kind"], "state": item["state"]}
+                    node = {"__typename": item["kind"], "state": item["state"], "closedAt": item["closedAt"]}
                     if item["kind"] == "Issue":
                         node["stateReason"] = item["stateReason"]
                     data[f"c{i}"] = {"issueOrPullRequest": node}
@@ -667,3 +675,179 @@ def test_s038_21_a_malformed_repos_is_refused(ws: ModuleType, tmp_path: Path, te
 def test_s038_21_the_310_reader_refuses_repos_it_cant_read(ws: ModuleType, tmp_path: Path, text: str) -> None:
     with pytest.raises(ws.Refused, match=r"can't read \[product\]"):
         ws.product_repos_310(text, tmp_path / "shipmill.toml")
+
+
+# -- S-042-7 -------------------------------------------------------------------------------
+
+CHECKED = "The index warns on a new key.\n\n## Check\n\n`curl https://api.acme.dev/health` returns no warning\n"
+FAILED = "<!-- shipmill:check-failed -->\nThe check still returns the warning."
+EARLY, LATE = "2026-10-18T10:00:00Z", "2026-10-20T10:00:00Z"  # the children's closes
+BETWEEN, AFTER = "2026-10-19T10:00:00Z", "2026-10-21T10:00:00Z"  # comments around the newest close
+
+
+def checked_forge(us: ModuleType, *comments: dict[str, Any], body: str = CHECKED, reason: str = "COMPLETED") -> Forge:
+    """A report with a sub-issue closed early and a Depends on pull request merged late"""
+    forge = Forge(us)
+    forge.add(f"{HOME}#1", *comments, body=body + f"\nDepends on {SDK}#9\n", subs=(f"{API}#40",))
+    forge.add(f"{API}#40", labels=(), state="CLOSED", reason=reason, closed_at=EARLY)
+    forge.add(f"{SDK}#9", labels=(), state="MERGED", kind="PullRequest", closed_at=LATE)
+    return forge
+
+
+CHILDREN = f"children 2/2 closed {API}#40:closed {SDK}#9:merged"
+
+
+def test_s042_7_a_report_with_a_check_whose_children_landed_reads_verify_due(
+    us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forge = checked_forge(us)
+    code, rows = run_state(us, forge, checkout(tmp_path), capsys, "--bot-login", BOT)
+    assert (code, states(rows)) == (1, {f"{HOME}#1": ("VERIFY_DUE", f"{CHILDREN}: run its ## Check")})
+    assert "VERIFY_DUE" in us.ACTION and "CHECK_FAILED" in us.ACTION
+    # the same report without a check reads CLOSE_DUE as before
+    forge = checked_forge(us, body="The index warns on a new key.\n\nCheck it in production.\n")
+    code, rows = run_state(us, forge, checkout(tmp_path / "plain"), capsys, "--bot-login", BOT)
+    assert (code, states(rows)) == (1, {f"{HOME}#1": ("CLOSE_DUE", f"completed, {CHILDREN}")})
+    # an open child still reads ROUTED with a check, and nothing is due
+    forge = checked_forge(us)
+    forge.issues[("acme", "api", 40)].update(state="OPEN", stateReason=None, closedAt=None)
+    code, rows = run_state(us, forge, checkout(tmp_path / "open"), capsys, "--bot-login", BOT)
+    assert (code, states(rows)) == (0, {f"{HOME}#1": ("ROUTED", f"children 1/2 closed {API}#40:open {SDK}#9:merged")})
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        said(FAILED, BOT, "NONE", bot=True, at=AFTER),
+        said(FAILED, "amy", "OWNER", at=AFTER),
+        said(FAILED, "max", "MEMBER", at=AFTER),
+        said(FAILED, "cat", "COLLABORATOR", at=AFTER),
+    ],
+)
+def test_s042_7_a_trusted_check_failed_comment_after_the_newest_close_reads_check_failed(
+    us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str], comment: dict[str, Any]
+) -> None:
+    forge = checked_forge(us, said("looking", at=BETWEEN), comment)
+    code, rows = run_state(us, forge, checkout(tmp_path), capsys, "--bot-login", BOT)
+    assert (code, states(rows)) == (1, {f"{HOME}#1": ("CHECK_FAILED", f"check failed {AFTER} {CHILDREN}")})
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        said(FAILED, "eve", "NONE", at=AFTER),  # an outsider's never counts (D-16, D-29)
+        said(FAILED, "eve", "CONTRIBUTOR", at=AFTER),
+        said(FAILED, "amy", "OWNER", at=BETWEEN),  # before the newest close, the Depends on pull request's
+        said("The check failed.\n" + FAILED, "amy", "OWNER", at=AFTER),  # the marker isn't its first line
+    ],
+)
+def test_s042_7_any_other_check_failed_comment_leaves_it_verify_due(
+    us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str], comment: dict[str, Any]
+) -> None:
+    forge = checked_forge(us, comment)
+    code, rows = run_state(us, forge, checkout(tmp_path), capsys, "--bot-login", BOT)
+    assert (code, states(rows)) == (1, {f"{HOME}#1": ("VERIFY_DUE", f"{CHILDREN}: run its ## Check")})
+
+
+def test_s042_7_the_bot_s_check_failed_comment_counts_only_with_the_bot_login(
+    us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forge = checked_forge(us, said(FAILED, BOT, "NONE", bot=True, at=AFTER), body=CHECKED)
+    forge.issues[("acme", "product", 1)].update(author={"__typename": "User", "login": "amy"})
+    code, rows = run_state(us, forge, checkout(tmp_path), capsys)
+    assert (code, states(rows)) == (1, {f"{HOME}#1": ("VERIFY_DUE", f"{CHILDREN}: run its ## Check")})
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_s042_7_a_child_closed_as_not_planned_reads_close_due_not_planned_over_the_check(
+    us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str], failed: bool
+) -> None:
+    comments = [said(FAILED, "amy", "OWNER", at=AFTER)] if failed else []
+    forge = checked_forge(us, *comments, reason="NOT_PLANNED")
+    code, rows = run_state(us, forge, checkout(tmp_path), capsys, "--bot-login", BOT)
+    note = f"not_planned, children 2/2 closed {API}#40:not_planned {SDK}#9:merged"
+    assert (code, states(rows)) == (1, {f"{HOME}#1": ("CLOSE_DUE", note)})
+
+
+def test_s042_7_a_fix_child_closed_after_the_check_failed_makes_it_verify_due_again(
+    us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forge = checked_forge(us, said(FAILED, "amy", "OWNER", at=AFTER))
+    forge.issues[("acme", "product", 1)]["subs"] = (f"{API}#40", f"{API}#41")
+    forge.add(f"{API}#41", labels=())
+    code, rows = run_state(us, forge, checkout(tmp_path), capsys, "--bot-login", BOT)
+    assert (code, states(rows)[f"{HOME}#1"][0]) == (0, "ROUTED")
+    forge.issues[("acme", "api", 41)].update(state="CLOSED", stateReason="COMPLETED", closedAt="2026-10-22T10:00:00Z")
+    code, rows = run_state(us, forge, checkout(tmp_path / "fixed"), capsys, "--bot-login", BOT)
+    note = f"children 3/3 closed {API}#40:closed {API}#41:closed {SDK}#9:merged: run its ## Check"
+    assert (code, states(rows)) == (1, {f"{HOME}#1": ("VERIFY_DUE", note)})
+
+
+def test_s042_7_an_untrusted_report_with_a_check_stays_untrusted(
+    us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forge = checked_forge(us, said(FAILED, "amy", "OWNER", at=AFTER))
+    forge.issues[("acme", "product", 1)].update(author={"__typename": "User", "login": "eve"}, authorAssociation="NONE")
+    code, rows = run_state(us, forge, checkout(tmp_path), capsys, "--bot-login", BOT)
+    assert (code, states(rows)) == (0, {f"{HOME}#1": ("UNTRUSTED", "opened by @eve (none)")})
+
+
+def test_s042_7_a_closed_child_without_a_close_time_exits_2(
+    us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    forge = checked_forge(us)
+    forge.issues[("other-org", "sdk", 9)]["closedAt"] = None
+    with pytest.raises(SystemExit) as stopped:
+        us.main(
+            [HOME],
+            forge.readers,
+            checkout(tmp_path),
+        )
+    assert stopped.value.code == 2
+    out, err = capsys.readouterr()
+    assert out == "" and f"no close time for its closed children {SDK}#9" in err
+
+
+def test_s042_7_the_comments_and_children_queries_ask_for_their_times(us: ModuleType) -> None:
+    # parent_check dates a check-failed comment against the newest child close
+    assert us.REPORT.count("createdAt") == 1 and us.COMMENTS.count("createdAt") == 1
+    assert "closedAt" in us.REPORT and us.children_query(1).count("closedAt") == 2
+
+
+# -- S-042-8 -------------------------------------------------------------------------------
+
+
+def test_s042_8_the_upstream_due_row_names_verify_due_and_check_failed_reports(ws: ModuleType, tmp_path: Path) -> None:
+    lines = [
+        upstream_line(f"{HOME}#1", "CHECK_FAILED"),
+        upstream_line(f"{API}#3", "VERIFY_DUE"),
+        upstream_line(f"{SDK}#5", "CLOSE_DUE"),
+        upstream_line(f"{SDK}#6", "ROUTED"),
+    ]
+    execute, _ = spawned(1, "\n".join(lines) + "\n")
+    rows = ws.coordinator_rows(CONFIG, tmp_path / "shipmill.toml", HOME, tmp_path, BOT, execute)
+    assert [(r.state, r.detail) for r in rows] == [
+        ("UPSTREAM_DUE", f"CLOSE_DUE {SDK}#5; VERIFY_DUE {API}#3; CHECK_FAILED {HOME}#1"),
+    ]
+    assert rows[0].json()["agent"] is True
+    for state in ("VERIFY_DUE", "CHECK_FAILED"):
+        # the gate starts the coordinator's session for either alone
+        execute, _ = spawned(1, upstream_line(f"{API}#3", state) + "\n")
+        found = ws.coordinator_rows(CONFIG, tmp_path / "shipmill.toml", HOME, tmp_path, BOT, execute)
+        assert [(r.state, r.detail) for r in found] == [("UPSTREAM_DUE", f"{state} {API}#3")]
+        printed = "\n".join(json.dumps(r.json(), sort_keys=True) for r in found)
+        assert decide(parse_findings(printed), [], None, NOW, dt.timedelta(hours=1)).action == Action.LAUNCH
+    # upstream_state.py's exit-1 states are the watch's, in one order
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        us = load("upstream_state_s042_8", SCRIPTS / "upstream_state.py")
+    finally:
+        sys.path.remove(str(SCRIPTS))
+    assert ws.UPSTREAM_ACTION == us.ACTION and frozenset(us.STATES) == ws.UPSTREAM_STATES
+
+
+def test_s042_8_the_watch_counts_check_failed_as_a_triage_action(ws: ModuleType) -> None:
+    line = json.dumps({"number": 12, "state": "CHECK_FAILED", "note": "check failed 2026-10-21T10:00:00Z"})
+    found = ws.intake("o/r", 1, line + "\n", [], lambda n: [])
+    assert [(r.state, r.detail, r.json()["agent"]) for r in found] == [("ISSUES", "CHECK_FAILED #12", True)]
+    assert {"VERIFY_DUE", "CHECK_FAILED"} <= ws.TRIAGE_ACTION

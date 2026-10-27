@@ -206,8 +206,10 @@ from github-issue-triage's `upstream_state.py <repo> --json`, run in the checkou
 --bot-login; never run without [product] repos, and then none of these rows appear):
   UPSTREAM_DUE    the reports the coordinator acts on, as owner/repo#N by state: ROUTE_DUE
                   (route it to the owning repos), ANSWERED (route it by the maintainer's
-                  answer), CLOSE_DUE (every child closed: close it with its summary). An
-                  agent's row: the gate starts the coordinator's session for it
+                  answer), CLOSE_DUE (every child closed: close it with its summary),
+                  VERIFY_DUE (a report with a ## Check whose children closed: run it),
+                  CHECK_FAILED (its check failed: file the fix as a new child; spec 042).
+                  An agent's row: the gate starts the coordinator's session for it
   UPSTREAM_ASKED  the reports whose needs-decision question has no reply, as owner/repo#N:
                   the maintainer owes the answer, so an action, never an agent's
   UPSTREAM_UNTRUSTED  the reports whose author is neither an OWNER, MEMBER, or COLLABORATOR
@@ -3075,7 +3077,7 @@ def chain_rows(
 
 # upstream_state.py's states: the ones that make it exit 1, the coordinator's to act on, in
 # its order, and the rest
-UPSTREAM_ACTION = ("ROUTE_DUE", "ANSWERED", "CLOSE_DUE")
+UPSTREAM_ACTION = ("ROUTE_DUE", "ANSWERED", "CLOSE_DUE", "VERIFY_DUE", "CHECK_FAILED")
 UPSTREAM_STATES = frozenset({*UPSTREAM_ACTION, "ASKED", "ROUTED", "UNTRUSTED"})
 
 
@@ -3091,7 +3093,8 @@ def upstream_unreadable_row(repo: str, repo_dir: Path, error: str) -> Row:
 
 
 def upstream_report_rows(repo: str, code: int, text: str) -> list[Row]:
-    """UPSTREAM_DUE (the reports the coordinator routes, takes the answer of, or closes),
+    """UPSTREAM_DUE (the reports the coordinator routes, takes the answer of, closes, or
+    runs or follows up the ## Check of, spec 042),
     UPSTREAM_ASKED (a question the maintainer owes), and UPSTREAM_UNTRUSTED (reports by an
     author the coordinator doesn't trust, D-16), from upstream_state.py's exit code and --json
     lines. Each names its reports as owner/repo#N, checked, never a report's text or note.

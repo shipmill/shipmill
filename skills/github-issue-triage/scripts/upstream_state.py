@@ -23,23 +23,35 @@ the coordinator's product token. One line per report, `owner/repo#N STATE note`:
               as owner/repo#N:state
   CLOSE_DUE   every child closed; the note starts "completed", or "not_planned" when any
               child closed as not planned (or is a pull request closed unmerged), then each
-              child as owner/repo#N:state
+              child as owner/repo#N:state. A report with a ## Check reads CLOSE_DUE only
+              "not_planned": its work didn't land, so there is nothing to check
+  VERIFY_DUE  a report with a ## Check section (spec 042) whose children all closed, none as
+              not planned, and no check-failed comment came after the newest child close:
+              run its ## Check. The note is "children K/N closed", each child, then
+              ": run its ## Check"
+  CHECK_FAILED  such a report with a check-failed comment (its first line
+              <!-- shipmill:check-failed -->, by an OWNER, MEMBER, or COLLABORATOR or the
+              --bot-login, D-16) after the newest child close: file the fix as a new child.
+              The note is "check failed <date>", then the children as VERIFY_DUE's
   UNTRUSTED   its author is neither an OWNER, MEMBER, or COLLABORATOR of its repo nor the
               --bot-login (D-16): its text, labels, children, and comments are never read,
-              and it is never ROUTE_DUE, ANSWERED, or CLOSE_DUE
+              and it is never ROUTE_DUE, ANSWERED, CLOSE_DUE, VERIFY_DUE, or CHECK_FAILED
 
-needs-decision is read first, then the children. A report's children are its sub-issues
-and the issues and pull requests the "Depends on" lines of its body name, as triage_state.py
-reads holds (so a link the forge refused, "text only:", still counts), each once however its
-owner and repo are cased. A child the sub-issues don't give a state for is read through the
+needs-decision is read first, then the children, then the check. The check and the
+check-failed comment are read as triage_state.py reads a parent's (CHECK, parent_check), the
+newest child close the latest closedAt among its children. A report's children are its
+sub-issues and the issues and pull requests the "Depends on" lines of its body name, as
+triage_state.py reads holds (so a link the forge refused, "text only:", still counts), each
+once however its owner and repo are cased. A child the sub-issues don't give a state for is read through the
 reader of its repo: plain gh for the home repo and any repo the product doesn't list, the
 product token for a listed one.
 
 --json prints one JSON object per line: ref, state, and note.
 
-Exit 0 when nothing needs the coordinator, 1 when any report reads ROUTE_DUE, ANSWERED, or
-CLOSE_DUE, 2 on a gh failure (any GraphQL error, a `shipmill gh` that exits 2, a child that
-can't be read), a report with more than 100 labels or sub-issues, or a config it refuses: no
+Exit 0 when nothing needs the coordinator, 1 when any report reads ROUTE_DUE, ANSWERED,
+CLOSE_DUE, VERIFY_DUE, or CHECK_FAILED, 2 on a gh failure (any GraphQL error, a `shipmill gh`
+that exits 2, a child that can't be read, a closed child of a report with a check that has
+no close time), a report with more than 100 labels or sub-issues, or a config it refuses: no
 .github/shipmill.toml, no [product] repos, a [product] repos listing the home repo, or one
 the reader refuses. Never a partial report. Needs the gh CLI, authenticated, and uvx for
 `shipmill gh`. Python 3.10+, standard library only.
@@ -60,6 +72,7 @@ from chains import Execute, Runner, Variables, capture, checkout_top, gh_runner,
 
 # Holds and trust as triage_state.py reads them: one rule for a report and for its waiting issue
 from triage_state import (
+    CHECK,
     DECISION_LABEL,
     UPSTREAM,
     UPSTREAM_LABEL,
@@ -68,6 +81,7 @@ from triage_state import (
     home_repo,
     login,
     native_holds,
+    parent_check,
     question,
     ref_state,
     replies,
@@ -76,10 +90,12 @@ from triage_state import (
 )
 
 Ref = tuple[str, str, int]
+# A child's state as ref_state reads it, and when it closed (None while open)
+Child = tuple[str, "str | None"]
 # The runner that reads a repo, owner/name, as the config spells it
 Readers = Callable[[str], Runner]
 
-ACTION = ("ROUTE_DUE", "ANSWERED", "CLOSE_DUE")
+ACTION = ("ROUTE_DUE", "ANSWERED", "CLOSE_DUE", "VERIFY_DUE", "CHECK_FAILED")
 STATES = (*ACTION, "ASKED", "ROUTED", "UNTRUSTED")
 # A child that holds nothing: closed in any way, a pull request merged or closed unmerged
 CLOSED = frozenset({"CLOSED", "NOT_PLANNED", "MERGED", "CLOSED_UNMERGED"})
@@ -113,7 +129,8 @@ query($owner: String!, $name: String!, $number: Int!) {
       number body
       labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
       comments(last: 100) {
-        pageInfo { hasPreviousPage startCursor } nodes { body author { __typename login } authorAssociation }
+        pageInfo { hasPreviousPage startCursor }
+        nodes { body createdAt author { __typename login } authorAssociation }
       }
       subIssues(first: 100) {
         pageInfo { hasNextPage } nodes { number state stateReason closedAt repository { nameWithOwner } }
@@ -127,7 +144,8 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
       comments(last: 100, before: $cursor) {
-        pageInfo { hasPreviousPage startCursor } nodes { body author { __typename login } authorAssociation }
+        pageInfo { hasPreviousPage startCursor }
+        nodes { body createdAt author { __typename login } authorAssociation }
       }
     }
   }
@@ -140,7 +158,7 @@ def children_query(count: int) -> str:
     params = ", ".join(f"$o{i}: String!, $n{i}: String!, $k{i}: Int!" for i in range(count))
     aliases = "\n".join(
         f"  c{i}: repository(owner: $o{i}, name: $n{i}) {{ issueOrPullRequest(number: $k{i}) "
-        "{ __typename ... on Issue { state stateReason } ... on PullRequest { state } } }"
+        "{ __typename ... on Issue { state stateReason closedAt } ... on PullRequest { state closedAt } } }"
         for i in range(count)
     )
     return f"query({params}) {{\n{aliases}\n}}\n"
@@ -258,14 +276,15 @@ class Product:
         return key, self.runners[key]
 
 
-def child_states(product: Product, refs: list[Ref]) -> dict[Ref, str]:
-    """Each child's state as ref_state reads it (an issue or a pull request), grouped by the
-    runner of its repo, CHUNK per query; a child that can't be read fails the run"""
+def child_states(product: Product, refs: list[Ref]) -> dict[Ref, Child]:
+    """Each child's state as ref_state reads it (an issue or a pull request) and when it
+    closed, grouped by the runner of its repo, CHUNK per query; a child that can't be read
+    fails the run"""
     groups: dict[str, list[Ref]] = {}
     for ref in refs:
         key, _ = product.reader(f"{ref[0]}/{ref[1]}")
         groups.setdefault(key, []).append(ref)
-    states: dict[Ref, str] = {}
+    states: dict[Ref, Child] = {}
     for key, group in groups.items():
         _, run = product.reader(key)
         for start in range(0, len(group), CHUNK):
@@ -279,21 +298,23 @@ def child_states(product: Product, refs: list[Ref]) -> dict[Ref, str]:
                 node = (data.get(f"c{i}") or {}).get("issueOrPullRequest")
                 if not isinstance(node, dict):
                     fail(f"reading the child {named(ref)}: no such issue or pull request")
-                states[ref] = ref_state(node)
+                closed = node.get("closedAt")
+                states[ref] = (ref_state(node), None if closed is None else str(closed))
     return states
 
 
-def children(issue: dict[str, Any], repo: str) -> tuple[dict[Ref, str], list[Ref]]:
-    """A report's children: its sub-issues with their states, and the "Depends on" refs no
-    sub-issue already names (case ignored), whose states are still to read; never itself"""
+def children(issue: dict[str, Any], repo: str) -> tuple[dict[Ref, Child], list[Ref]]:
+    """A report's children: its sub-issues with their states and close times, and the
+    "Depends on" refs no sub-issue already names (case ignored), whose states are still to
+    read; never itself"""
     owner, name = split(repo)
     own = fold((owner, name, int(issue["number"])))
-    known: dict[Ref, str] = {}
+    known: dict[Ref, Child] = {}
     keys: set[Ref] = {own}
-    for ref, (_, state, _) in native_holds(issue).items():
+    for ref, (_, state, closed) in native_holds(issue).items():
         if fold(ref) not in keys:
             keys.add(fold(ref))
-            known[ref] = state
+            known[ref] = (state, closed)
     pending = []
     for ref in dependency_refs(issue, (owner, name)):
         if fold(ref) not in keys:
@@ -317,20 +338,36 @@ def decision(issue: dict[str, Any], bot_login: str | None) -> tuple[str, str] | 
     return "ANSWERED", f"answered by @{reply[0]}"
 
 
-def classify(issue: dict[str, Any], kids: dict[Ref, str], bot_login: str | None) -> tuple[str, str]:
-    """A trusted report's state from its labels, comments, and children with their states"""
+def classify(
+    issue: dict[str, Any], kids: dict[Ref, Child], bot_login: str | None, ref: str = "the report"
+) -> tuple[str, str]:
+    """A trusted report's state from its labels, comments, and children with their states
+    and close times. A report with a ## Check whose work landed reads VERIFY_DUE or
+    CHECK_FAILED as triage_state.py reads a parent with one (spec 042)"""
     asked = decision(issue, bot_login)
     if asked is not None:
         return asked
+    body = str(issue.get("body") or "")
     if not kids:
-        links = " ".join(f"link {ref}" for ref in stand_ins(str(issue.get("body") or "")))
+        links = " ".join(f"link {link}" for link in stand_ins(body))
         return "ROUTE_DUE", links or "no children"
-    shown = " ".join(f"{named(ref)}:{state.lower()}" for ref, state in sorted(kids.items(), key=lambda k: fold(k[0])))
-    closed = sum(1 for state in kids.values() if state in CLOSED)
+    states = {child: state for child, (state, _) in kids.items()}
+    shown = " ".join(
+        f"{named(child)}:{state.lower()}" for child, state in sorted(states.items(), key=lambda k: fold(k[0]))
+    )
+    closed = sum(1 for state in states.values() if state in CLOSED)
+    progress = f"children {closed}/{len(kids)} closed {shown}"
     if closed < len(kids):
-        return "ROUTED", f"children {closed}/{len(kids)} closed {shown}"
-    verdict = "not_planned" if any(state in NOT_LANDED for state in kids.values()) else "completed"
-    return "CLOSE_DUE", f"{verdict}, children {closed}/{len(kids)} closed {shown}"
+        return "ROUTED", progress
+    if any(state in NOT_LANDED for state in states.values()):
+        return "CLOSE_DUE", f"not_planned, {progress}"
+    if CHECK.search(body) is None:
+        return "CLOSE_DUE", f"completed, {progress}"
+    untimed = sorted(named(child) for child, (_, at) in kids.items() if at is None)
+    if untimed:
+        fail(f"reading {ref}: GitHub gave no close time for its closed children {' '.join(untimed)}")
+    ends = [str(at) for _, at in kids.values()]
+    return parent_check(issue["comments"]["nodes"], bot_login, ends, progress)
 
 
 def upstream_rows(product: Product, bot_login: str | None) -> list[dict[str, str]]:
@@ -354,7 +391,7 @@ def upstream_rows(product: Product, bot_login: str | None) -> list[dict[str, str
                 continue
             found.append((repo, report(run, repo, number)))
     pending: dict[Ref, None] = {}
-    known: dict[tuple[str, int], tuple[dict[Ref, str], list[Ref]]] = {}
+    known: dict[tuple[str, int], tuple[dict[Ref, Child], list[Ref]]] = {}
     for repo, issue in found:
         kids, rest = children(issue, repo)
         known[(repo, int(issue["number"]))] = (kids, rest)
@@ -363,7 +400,7 @@ def upstream_rows(product: Product, bot_login: str | None) -> list[dict[str, str
     for repo, issue in found:
         number = int(issue["number"])
         kids, rest = known[(repo, number)]
-        state, note = classify(issue, {**kids, **{ref: states[ref] for ref in rest}}, bot_login)
+        state, note = classify(issue, {**kids, **{ref: states[ref] for ref in rest}}, bot_login, f"{repo}#{number}")
         rows[(repo, number)] = {"ref": f"{repo}#{number}", "state": state, "note": note}
     return [rows[key] for key in order]
 
