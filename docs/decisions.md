@@ -468,7 +468,7 @@ entry that supersedes it, never by editing an old one.
 
 ## D-56: The gate's prune runs after the tick's decision, every prune_hours, and never fails a tick
 
-- Decided: YYYY-MM-DD, in shipmill/shipmill#N
+- Decided: 2026-10-27, in shipmill/shipmill#712
 - Rule: shipmill gate prunes landed worktrees once the tick has its decision, whatever it is, after any session it starts, and only when a prune is due: no attempt recorded in the state directory's prune.json, or the last one prune_hours ([agents], default 6, 0 for every tick) or more ago. A prune that fails with a shipmill error prints `prune failed: <first line>` and leaves the tick's decision, launch, and exit code as they would be without it; prune.json records the failure and when the run of failures started, and shipmill factory's prune check reports it as a problem, counted on shipmill status's factory line without changing the verdict. What the prune removes and who owns orphaned worktrees are unchanged (D-24)
 - Why: The prune ran first on every tick and its error exited 2, so on 2026-10-26 one GitHub query limit in the judge (#709) stopped every tick for about 11 hours, though decide() reads no worktree; on a host with 137 worktrees it also cost about 57 s and 2,000 git calls on every tick, RUNNING and WAITING ones too. Housekeeping that starts no session can't be what stops the factory, and orphaned worktrees can wait a few hours
 - Applies to: src/shipmill/gate.py, src/shipmill/agents.py, src/shipmill/factory.py, src/shipmill/status.py, src/shipmill/cli.py, skills/shipmill-setup/SKILL.md, docs/install.md, docs/specs/002-*, shipmill gate, shipmill factory, [agents] prune_hours, prune.json

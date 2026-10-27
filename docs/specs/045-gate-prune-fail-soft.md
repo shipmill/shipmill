@@ -67,7 +67,7 @@ The next attempt is due `prune_hours` after `at`, after a failure as after a suc
 
 ### How a failing prune shows
 
-`shipmill factory` (spec 044, D-55) gains a check, **prune**, after worktrees:
+`shipmill factory` (spec 044, shipmill/shipmill#710) gains a check, **prune**, after worktrees:
 
 - `last ran <at>, removed N` when the last prune succeeded
 - `failing since <failing_since>: <error>; fix: shipmill worktrees --prune` when it failed,
@@ -133,7 +133,6 @@ It changes no verdict: the gate still works, and the worktrees wait.
 
 - D-24: the gate's prune owns a worktree once its session has exited, and removes only what
   the checks prove landed
-- D-55: `shipmill status` reports the pipeline; the host's machinery is `shipmill factory`'s
 - D-56: the gate's prune runs after the tick's decision, every `prune_hours`, and a prune
   error never fails a tick
 
