@@ -1543,3 +1543,46 @@ def test_s026_12_a_valid_hooks_section_is_read(tmp_path: Path) -> None:
     root = git_repo(tmp_path / "hooks", config)
     refused(bash("gh pr comment 7 --body hi", root), "app-writes", "D-14")
     allowed(bash("git push origin feat/x", root))
+
+
+# --- S-037-11: [agents] identity leaves the hooks as they were -----------------------------------
+
+
+@pytest.fixture(scope="module")
+def twin(tmp_path_factory: pytest.TempPathFactory) -> Sandbox:
+    """box's repos with [agents] identity set: "app" beside app_id, "host" without it"""
+    base = tmp_path_factory.mktemp("identity")
+    outside = base / "outside"
+    outside.mkdir()
+    return Sandbox(
+        app=git_repo(base / "app", APP.replace("[agents]\n", '[agents]\nidentity = "app"\n'), origin=True),
+        agents=git_repo(base / "agents", AGENTS + 'identity = "host"\n'),
+        release=git_repo(base / "release", RELEASE_ONLY),
+        bare=git_repo(base / "bare", None),
+        outside=outside,
+    )
+
+
+FIXTURE_ROOT = "/home/user/project/"
+
+
+def anywhere(result: subprocess.CompletedProcess[str], root: Path) -> tuple[int, str, str]:
+    """The hook's answer with the repo's own path taken out, so two repos compare"""
+    return result.returncode, result.stdout.replace(str(root), "<root>"), result.stderr.replace(str(root), "<root>")
+
+
+@pytest.mark.parametrize("name", sorted(p.name for p in FIXTURES.glob("*.json")))
+@pytest.mark.parametrize("where", ["app", "agents"])
+def test_s037_11_every_fixture_answers_alike_with_identity_set(
+    box: Sandbox, twin: Sandbox, stub: Stub, name: str, where: str
+) -> None:
+    answers = []
+    for sandbox in (box, twin):
+        root: Path = getattr(sandbox, where)
+        data = fixture(name, root)
+        if data["hook_event_name"] == "PostToolUse":  # the edit lands in the repo, so its checks run
+            data["tool_input"]["file_path"] = str(root / data["tool_input"]["file_path"].removeprefix(FIXTURE_ROOT))
+            answers.append(anywhere(stub.run(data), root))
+        else:
+            answers.append(anywhere(hook(data), root))
+    assert answers[0] == answers[1]

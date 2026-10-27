@@ -1,6 +1,6 @@
 # S-037: `shipmill gh` refuses a write in a repo without an App
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -256,3 +256,16 @@ The build updates every place that describes `shipmill gh` in a repo without an 
 - shipmill/shipmill#700: S-037-1, S-037-2, S-037-3, S-037-4, S-037-5, S-037-6, S-037-7, S-037-8, S-037-9, S-037-10, S-037-11, S-037-12
 
 ## Verification
+
+- S-037-1: `pr create -R owner/name` and `issue comment` in a checkout with no config raise the three-line refusal (repo, the missing file and `app_id`, `identity = "host"`, `shipmill gh --as-host` with the shell-quoted arguments, `shipmill` written as `cli_command()` names it, per #236) with no gh call, token, or signature, and `python -m shipmill` exits 2 with no gh run (`tests/test_gh_refuses_without_app.py`), pass
+- S-037-2: the same writes with only `[release]` and with `[agents]` without `app_id` give the first line `.github/shipmill.toml sets no [agents] app_id`; outside any checkout, and in one without a GitHub origin, the message names the folder or the checkout's path, pass
+- S-037-3: `pr view 1`, `issue list`, `api user --jq .login`, and `api -X GET search/issues -f q=x` in all four configs, with `GH_TOKEN` unset and empty, run the gh on `PATH` with exactly their arguments, no `GH_TOKEN`, no token minted, no output, gh's exit 7; end to end through the fake gh too, pass
+- S-037-4: `is_read` on every listed read (with `--help` on a read), every group and subcommand of `hooks/delivery.py`'s `GH_WRITES` (with and without `--help`), and unlisted commands (`gist create`, `project item-add`, `codespace create`, `pr create --help`, a flag before the subcommand, `--` first, an alias), pass
+- S-037-5: `gh api` reads (no method, `-X GET`, `-XGET`, `--method=get`, `-X HEAD` with and without fields, an inline graphql query) and writes (`POST`, `PATCH`, `PUT`, `DELETE`, each field flag and `--input` without a method, a graphql mutation, `-F query=@file`, `--input` to graphql), pass
+- S-037-6: with `identity = "host"`, `pr create` runs gh with exactly its arguments, no `GH_TOKEN` (an empty one dropped), no token, no output, gh's code, pass
+- S-037-7: six bad values (other strings, an integer, a boolean, an array) make `AgentsConfig.load` and `shipmill gh` exit 2 naming `[agents] identity` and `"app"` and `"host"`, with no gh run; absent reads as `"app"`, pass
+- S-037-8: `identity = "host"` with `app_id` exits 2 naming both keys from `shipmill gh` (no gh run) and `AgentsConfig.load`; `identity = "app"` with `app_id` parses, pass
+- S-037-9: `--as-host pr create` runs gh with the arguments after it and no `GH_TOKEN`, the next call without it is refused; `--as-host` with `--app-key` in either order and in the `=` form exits 2; an `--as-host` after gh's first argument reaches gh and allows nothing; `--as-host` twice exits 2, pass
+- S-037-10: with `app_id`, `--as-host` with a write, a read, or no arguments exits 2 naming `[agents] app_id` with no gh run or token; without it a write and a read run as the App, and a missing key still exits 2 as S-012-3 says; spec 012's tests (`tests/test_app_gh.py`) pass, S-012-4's now with a read
+- S-037-11: every fixture in `tests/fixtures/hooks` (pre and post) answers with the same exit code, stdout, and stderr in the app and agents repos with and without `identity` set (`tests/test_delivery_hooks.py`), pass
+- S-037-12: the six skills' rules name the refusal, `identity = "host"`, the exit 2 as a stop never retried with plain `gh`, and `--as-host` only for a write a person approved in the chat; the `SUSPECT_CLOSE`, `OFF_MILESTONE`, and `MILESTONE_OVERTAKEN` rows, and the rename `shipmill milestones` prints, name `shipmill gh` only with `app_id` set; `docs/install.md` and `docs/release-lanes.md` document the refusal, `identity`, and `--as-host` (`tests/test_app_gh_docs.py`, `tests/test_milestone_status.py`), pass

@@ -13,7 +13,6 @@ from types import ModuleType
 
 import pytest
 
-from shipmill import cli_command
 from shipmill import status as shipmill_status
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
@@ -151,7 +150,7 @@ def test_s022_10_an_open_milestone_a_stable_tag_took_reads_overtaken_with_the_ne
     repo, _ = repos.after(tmp_path, stable_released)
     repo.github.open = [OpenMilestone(3, "1.1.0", 1), OpenMilestone(4, "1.2.0", 1), OpenMilestone(5, "Someday", 1)]
     rows, error = read(repo, at_day(6))
-    rename = "shipmill gh api -X PATCH repos/o/demo/milestones/3 -f title=1.1.1"
+    rename = "gh api -X PATCH repos/o/demo/milestones/3 -f title=1.1.1"  # no app_id: plain gh (S-037-12)
     detail = "v1.1.0 exists; the stable lane cuts 1.1.1 next"
     assert (rows, error) == ([MilestoneRow("MILESTONE_OVERTAKEN", "1.1.0", detail, 3, "1.1.1", rename)], None)
     found = report(facts(*(r.row() for r in rows)))
@@ -159,6 +158,15 @@ def test_s022_10_an_open_milestone_a_stable_tag_took_reads_overtaken_with_the_ne
     text = lines(facts(*(r.row() for r in rows)))
     assert "  milestone      MILESTONE_OVERTAKEN 1.1.0: v1.1.0 exists; the stable lane cuts 1.1.1 next" in text
     assert f"                 fix: {rename}" in text
+
+
+def test_s037_12_the_rename_goes_through_shipmill_gh_only_with_app_id_set(repos: Repos, tmp_path: Path) -> None:
+    repo, _ = repos.after(tmp_path, stable_released)
+    repo.github.open = [OpenMilestone(3, "1.1.0", 1)]
+    config = repo.root / ".github" / "shipmill.toml"
+    config.write_text(config.read_text(encoding="utf-8") + '\n[agents]\nprompt = "/t"\napp_id = 7\n', encoding="utf-8")
+    rows, _ = read(repo, at_day(6))
+    assert [r.fix for r in rows] == ["shipmill gh api -X PATCH repos/o/demo/milestones/3 -f title=1.1.1"]
 
 
 def test_s022_10_the_next_version_is_the_lanes_candidate(repos: Repos, tmp_path: Path) -> None:
@@ -219,7 +227,7 @@ def test_s022_10_shipmill_milestones_prints_the_overtaken_row_and_the_watch_read
     repo.git.run("push", "-q", "origin", "+HEAD:refs/tags/v0")  # a moving major tag, moved on origin
     repo.git.run("tag", "-f", "v0", "HEAD~1")
     printed = milestones(repo, at_day(6), capsys, "--json")
-    rename = f"{cli_command()} gh api -X PATCH repos/o/demo/milestones/3 -f title=1.1.1"
+    rename = "gh api -X PATCH repos/o/demo/milestones/3 -f title=1.1.1"  # no app_id (S-037-12)
     detail = "v1.1.0 exists; the stable lane cuts 1.1.1 next"
     row = {"state": "MILESTONE_OVERTAKEN", "milestone": "1.1.0", "detail": detail}
     assert json.loads(printed) == {"milestones": [row | {"number": 3, "next": "1.1.1", "fix": rename}], "error": None}

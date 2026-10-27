@@ -731,6 +731,23 @@ prompt = "/shipmill:github-issue-triage {repo} triage the new issues"
 plugin = "host"   # the default; "repo" enables it in .claude/settings.json for everyone
 ```
 
+## Who `shipmill gh` writes as without an App
+
+`[agents] identity` says whom a write through `shipmill gh` goes as in a repo without
+`[agents] app_id` (spec 037). With `"app"`, the default, such a write exits 2 and `gh` never
+runs, while a read runs as the host's `gh` login; with `"host"`, writes run as the host's
+`gh` login too, as the repo chose. Any other value, or one that isn't a string, exits 2, and
+so does `identity = "host"` with `app_id`, since a repo with an App writes as the App or not
+at all (D-14). One call can allow it instead with `shipmill gh --as-host <args>`. The key
+changes no delivery hook, and setup still reads an `[agents]` prompt without `app_id` as
+unfinished (D-19).
+
+```toml
+[agents]
+prompt = "/shipmill:github-issue-triage {repo} triage the new issues"
+identity = "host"   # agent writes through shipmill gh run as the host's gh login; default "app"
+```
+
 ## Delivery hooks
 
 In a repo whose config has `[agents]`, the shipmill plugin's delivery hooks

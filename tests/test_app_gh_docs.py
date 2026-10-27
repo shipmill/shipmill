@@ -76,6 +76,52 @@ def test_s012_6_no_skill_keeps_its_own_copy_of_the_references() -> None:
         assert copies == [f"skills/github-issue-triage/references/{name}"]
 
 
+@pytest.mark.parametrize("skill", WRITING_SKILLS)
+def test_s037_12_each_skills_rule_names_the_refusal_without_app_id(skill: str) -> None:
+    text = folded("skills", skill, "SKILL.md")
+    rule = text.split("**Write as the App when the repo has one", 1)[1].split("Without the App, shipmill drafts", 1)[0]
+    for phrase in (
+        "Without `app_id`, `shipmill gh` refuses a write with exit 2",
+        'unless the config sets `[agents] identity = "host"` (spec 037)',
+        "that exit 2 is a stop too, never retried with plain `gh`",
+        "passes `--as-host` only for a write a person approved in the chat",
+        "never on its own judgment or in a headless session",
+    ):
+        assert phrase in rule, (skill, phrase)
+
+
+@pytest.mark.parametrize(
+    ("doc", "state", "write"),
+    [
+        (("skills", "github-issue-triage", "SKILL.md"), "**SUSPECT_CLOSE:**", "`shipmill gh issue comment"),
+        (("skills", "github-issue-triage", "SKILL.md"), "**OFF_MILESTONE:**", "`shipmill gh issue edit"),
+        (("skills", "github-ship-watch", "SKILL.md"), "| MILESTONE_OVERTAKEN |", "`shipmill gh api -X PATCH"),
+    ],
+)
+def test_s037_12_the_rows_name_shipmill_gh_only_with_app_id_set(doc: tuple[str, ...], state: str, write: str) -> None:
+    row = folded(*doc).split(state, 1)[1].split(" - **", 1)[0].split(" | ", 1)[0]
+    after = row.split(write, 1)[1]
+    assert after.split("`", 1)[1].startswith(" with `[agents] app_id` set, plain `gh` without it"), row
+
+
+def test_s037_12_install_documents_the_refusal_identity_and_as_host() -> None:
+    text = folded("docs", "install.md")
+    for phrase in (
+        "`shipmill gh` runs a read",
+        "refuses a write: exit 2",
+        'set `identity = "host"` in `[agents]`',
+        "`shipmill gh --as-host <the same arguments>`",
+        "only for a write a person approved in the chat",
+    ):
+        assert phrase in text, phrase
+
+
+def test_s037_12_release_lanes_lists_agents_identity() -> None:
+    text = folded("docs", "release-lanes.md")
+    assert "`[agents] identity`" in text
+    assert 'identity = "host" # agent writes through shipmill gh' in text
+
+
 @pytest.mark.parametrize("doc", [("docs", "install.md"), ("skills", "shipmill-setup", "SKILL.md")])
 def test_s012_9_the_setup_docs_document_shipmill_gh(doc: tuple[str, ...]) -> None:
     text = folded(*doc)

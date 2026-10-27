@@ -46,6 +46,21 @@ def plugin_of(table: Table) -> Plugin:
     return Plugin(value)
 
 
+class WriteAs(StrEnum):
+    """[agents] identity: whom a write through `shipmill gh` goes as (spec 037)"""
+
+    APP = "app"  # the App, when app_id is set; refused when it isn't
+    HOST = "host"  # the host's gh login, as the repo chose; never with app_id (D-14)
+
+
+def identity_of(table: Table) -> WriteAs:
+    """[agents] identity: "app" when absent; any other value, or one that isn't a string, exits 2"""
+    value = table.raw.get("identity", WriteAs.APP.value)
+    if not isinstance(value, str) or value not in {i.value for i in WriteAs}:
+        raise ReleaseError(f'{CONFIG_PATH}: [agents] identity must be "app" (the default) or "host", got {value!r}')
+    return WriteAs(value)
+
+
 ROLES = "[agents.roles]"
 MAINTAINER = "maintainer"  # the role every step an agent can't do falls back to (spec 036)
 _ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")  # its label, role:<name>, stays within GitHub's 50
@@ -201,6 +216,7 @@ class AgentsConfig:
     wip: int | None = None  # at most this many issues in progress at once, read by triage (D-32); None: no limit
     roles: RolesConfig = RolesConfig()  # [agents.roles]: who receives a step an agent can't do (spec 036)
     plugin: Plugin = Plugin.HOST  # [agents] plugin: per person, or committed for the repo (spec 033)
+    identity: WriteAs = WriteAs.APP  # [agents] identity: who `shipmill gh` writes as without app_id (spec 037)
     # [autonomy] with spec 040's legacy reading of the prompt, as `shipmill autonomy` reads it;
     # load and Policy.parse set it, parse alone can't, as it sees [agents] only
     autonomy: AutonomyPolicy = AutonomyPolicy()
@@ -221,11 +237,19 @@ class AgentsConfig:
             "wip",
             "roles",
             "plugin",
+            "identity",
         )
         roles = RolesConfig.parse(table.raw["roles"]) if "roles" in table.raw else RolesConfig()
         prompt = table.string("prompt").strip()
         if not prompt:
             raise ReleaseError(f"{table.where}: prompt must not be empty")
+        app_id = table.integer("app_id", default=None, low=1, high=None)
+        identity = identity_of(table)
+        if identity is WriteAs.HOST and app_id is not None:
+            raise ReleaseError(
+                f'{CONFIG_PATH}: [agents] identity = "host" and [agents] app_id can\'t both be set: a repo with an '
+                'App writes as the App or not at all (D-14); delete identity, or set it to "app"'
+            )
         retry = table.integer("retry_hours", default=24, low=1, high=_MAX_HOURS)
         remind = table.integer("remind_hours", default=_REMIND_HOURS, low=1, high=_MAX_HOURS)
         max_wait = table.integer("max_wait_minutes", default=_MAX_WAIT_MINUTES, low=0, high=_MAX_HOURS * 60)
@@ -237,11 +261,12 @@ class AgentsConfig:
             notify=table.boolean("notify", default=True),
             remind_hours=remind,
             max_wait_minutes=max_wait,
-            app_id=table.integer("app_id", default=None, low=1, high=None),
+            app_id=app_id,
             mode=table.enum("mode", Mode, default=Mode.INTERACTIVE),
             wip=table.integer("wip", default=None, low=1, high=_MAX_WIP),
             roles=roles,
             plugin=plugin_of(table),
+            identity=identity,
         )
 
     @classmethod
@@ -270,13 +295,30 @@ class AgentsConfig:
 def app_id_of(root: Path) -> int | None:
     """The checkout's [agents] app_id, or None with no config file, no [agents] section, or no
     app_id; a malformed [agents] section still fails"""
+    return gh_identity_of(root).app_id
+
+
+@dataclass(frozen=True, slots=True)
+class GhIdentity:
+    """What `shipmill gh` reads of a checkout's config (spec 037): [agents] app_id and identity,
+    and whether the config file exists, which the refusal names"""
+
+    config: bool  # .github/shipmill.toml exists
+    app_id: int | None = None
+    identity: WriteAs = WriteAs.APP
+
+
+def gh_identity_of(root: Path) -> GhIdentity:
+    """The checkout's [agents] app_id and identity, parsed once; the defaults with no config
+    file or no [agents] section. A malformed [agents] section still fails"""
     if not (root / CONFIG_PATH).is_file():
-        return None
+        return GhIdentity(config=False)
     path = config_path(root)
     raw = read(path)
     if "agents" not in raw:
-        return None
-    return AgentsConfig.parse(Table(raw, path.name).table("agents")).app_id
+        return GhIdentity(config=True)
+    agents = AgentsConfig.parse(Table(raw, path.name).table("agents"))
+    return GhIdentity(True, agents.app_id, agents.identity)
 
 
 @dataclass(frozen=True, slots=True)
