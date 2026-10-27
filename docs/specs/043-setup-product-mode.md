@@ -190,8 +190,9 @@ phrased that way reaches the skill.
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-NNN-1, S-NNN-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
+- shipmill/shipmill#720: S-043-1, S-043-2
+- shipmill/shipmill#721: S-043-3, S-043-4, S-043-5, S-043-6
+- shipmill/shipmill#722: S-043-7, S-043-8, S-043-9, S-043-10, S-043-11
 
 ## Verification
 

@@ -208,8 +208,9 @@ comment, and the needs-decision question; the Upstream report's `## Check`), and
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-NNN-1, S-NNN-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
+- shipmill/shipmill#717: S-042-1, S-042-2, S-042-3, S-042-4, S-042-5, S-042-6, S-042-12
+- shipmill/shipmill#718: S-042-7, S-042-8
+- shipmill/shipmill#719: S-042-9, S-042-10, S-042-11
 
 ## Verification
 
