@@ -7,6 +7,25 @@ bot.
 
 ## [Unreleased]
 
+## [0.84.0] - 2026-10-27
+
+### Added
+
+- The skills follow the agent stages' `[autonomy]` levels (spec 040): github-issue-triage, github-issue-resolve, and github-pr-triage read their stage's effective level with `shipmill autonomy --json` before their first write, so under `propose` a verdict is posted as a `Proposed verdict`, a plan as a `Proposed plan`, and a green pull request is labelled `shipmill-ready` for a person to merge, under `observe` they write nothing, and an open `shipmill-hold` issue lowers every `act` to `propose` however the session started; a prompt's "merge when green" never raises `land`. shipmill-setup's Scope step becomes an Autonomy step offering four profiles that write every stage key, and the eval suite gains a case for each, with `shipmill autonomy` answered from a case's fixture (#665)
+- `chains.py show` marks each open issue on a dependency cycle `CYCLE (a -> b -> a)`, its shortest loop from the least reference (`"cycle"` in `--json`, null on every other row), ends a row whose issue has a malformed `Depends on` line with `MALFORMED_DEPENDS line <n>: <the line>` (`"malformed"` in `--json`), and exits 1 for either; `chains.py link` refuses, before any write, a link that would close a cycle, with `closes a cycle:` and the loop (spec 041) (#715)
+- `triage_state.py` reads CYCLE, an action, for an open issue on a cycle of the repo's open issues whose holds it reads, its note `cycle <loop>`; the others on a loop wait as BLOCKED, `cycle <loop> waits on owner/repo#N`, while one of them reads MALFORMED_DEPENDS or is labelled `needs-decision`. github-ship-watch counts CYCLE and MALFORMED_DEPENDS as triage actions and reports CHAIN_CYCLE, a person's action, once per cycle through another repo's items; `shipmill status` and `fleet.py` count both (spec 041) (#716)
+- The coordinator's `upstream_state.py` reads an `upstream` report with a `## Check` whose children all landed as VERIFY_DUE in place of CLOSE_DUE `completed`, and as CHECK_FAILED after a trusted `<!-- shipmill:check-failed -->` comment newer than its newest child close; both exit 1, and the watch's UPSTREAM_DUE row names them, so the report closes when its fix is seen in production (spec 042) (#718)
+- github-issue-triage describes a parent's `## Check`: it closes the parent only once the check holds in production, with the verified comment; on a failure it posts the check-failed comment and files the fix as a new child; a check it can't run goes to the maintainer; a check never writes to production. The spec gate asks for a check on a feature issue whose build deploys and then leaves `Fixes #<feature>` out of the last build pull request, and an `upstream` report may carry a check for its coordinator (#719)
+- shipmill-setup's `setup_state.py` reads a Product row: with `[agents] app_id` and no `[product]`, it lists the owner's repos whose `.github/shipmill.toml` sets the same `app_id` as `PRODUCT_SIBLINGS`, or `PRODUCT_LISTED` with the `home` line to write when one of them lists this repo in `[product] repos`; `PRODUCT_OK` otherwise, and `--fix` leaves the row (#721)
+- shipmill-setup has a Product step under The gate: it asks whether the repo is one of several making up a product, writes this repo's half (`[product] repos` in the home, `[product] home` in a component, `[product] standalone = true` when it stands alone, or the `home` a `PRODUCT_LISTED` row names, with no question), prints the line each other repo needs to run `/shipmill:shipmill-setup <repo>` in its checkout, and relays doctor's product lines with their fixes; its description names connecting several repos as one product, and an eval case covers it (#722)
+- `shipmill factory` reports this host's machinery for the repo, one line per check (the gate's launchd job and log, its sessions, the GitHub App, the shipmill installs, the checkout, and the worktrees, with a line and its fix per kept shipmill worktree over 7 days old), each check run on its own, so one that fails prints `ERROR: <its first line>` and the rest still run; exit 1 on a problem, `--json` for one object. `shipmill status` keeps to the pipeline: one `factory` line replaces its gate, github app, and shipmill lines, a factory check that fails makes the verdict STUCK without stopping the report, and github-ship-watch no longer runs `shipmill worktrees` or prints `WORKTREE_STALE` (spec 044, #731)
+
+### Changed
+
+- `shipmill gh` in a repo without `[agents] app_id` now refuses a write with exit 2, naming the repo and the two ways to allow it, and still runs a read as your `gh` login; set `[agents] identity = "host"` to let the repo's writes go as your login, or pass `shipmill gh --as-host` for one call a person approved (spec 037) (#700)
+- Specs 002 and 011 say spec 044 moved the kept worktrees' report, `WORKTREE_STALE`, to `shipmill factory` (#731)
+- `shipmill gate` prunes landed worktrees after the tick's decision and any launch, only every `[agents] prune_hours` (default 6, 0 for every tick, recorded in the state directory's `prune.json`), and a prune that fails prints `prune failed: <first line>` and leaves the decision, the launch, and the exit code as they are, so one failing `gh` query no longer stops every tick; `--json` gains `"prune": {"ran", "error"}`, `shipmill factory` gains a `prune` line, and a failing prune counts on `shipmill status`'s `factory` line without changing the verdict (spec 045, #741)
+
 ## [0.83.0] - 2026-10-27
 
 ### Changed
@@ -1917,7 +1936,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.83.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.84.0...HEAD
+[0.84.0]: https://github.com/shipmill/shipmill/compare/v0.83.0...v0.84.0
 [0.83.0]: https://github.com/shipmill/shipmill/compare/v0.82.0...v0.83.0
 [0.82.0]: https://github.com/shipmill/shipmill/compare/v0.81.1...v0.82.0
 [0.81.1]: https://github.com/shipmill/shipmill/compare/v0.81.0...v0.81.1

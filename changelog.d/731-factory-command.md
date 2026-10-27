@@ -1,3 +1,0 @@
-### Added
-
-- `shipmill factory` reports this host's machinery for the repo, one line per check (the gate's launchd job and log, its sessions, the GitHub App, the shipmill installs, the checkout, and the worktrees, with a line and its fix per kept shipmill worktree over 7 days old), each check run on its own, so one that fails prints `ERROR: <its first line>` and the rest still run; exit 1 on a problem, `--json` for one object. `shipmill status` keeps to the pipeline: one `factory` line replaces its gate, github app, and shipmill lines, a factory check that fails makes the verdict STUCK without stopping the report, and github-ship-watch no longer runs `shipmill worktrees` or prints `WORKTREE_STALE` (spec 044, #731)
