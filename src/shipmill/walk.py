@@ -13,7 +13,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -74,7 +74,6 @@ OPERATE_USES = re.compile(
     re.MULTILINE,
 )
 GOOD = frozenset({"success", "skipped", "neutral"})
-UNFINISHED = frozenset({"queued", "in_progress", "waiting", "pending", "requested"})
 
 
 def tier_of(finding: Finding) -> int:
@@ -85,12 +84,22 @@ def tier_of(finding: Finding) -> int:
 def order(findings: Iterable[Finding]) -> list[Finding]:
     """A walk's fixed order (S-046-12): the tier, the kind's place in it, then the subject"""
 
-    def key(f: Finding) -> tuple[int, int, str, str]:
+    def key(f: Finding) -> tuple[int, int, int, str, str]:
         kinds = TIERS.get(tier_of(f), ())
         place = kinds.index(f.kind) if f.kind in kinds else len(kinds)
-        return tier_of(f), place, f.subject, f.detail
+        number = int(f.subject[1:]) if re.fullmatch(r"#\d+", f.subject) else 0  # #9 before #10
+        return tier_of(f), place, number, f.subject, f.detail
 
     return sorted(findings, key=key)
+
+
+AGEING = frozenset({"INCIDENT_OPEN"})  # a detail that names how long it has been open, so changes every tick
+
+
+def item_key(item: Finding) -> str:
+    """The fingerprint handed.json and gate.json keep for an item (S-046-13): its own, less a
+    detail that only ages, so an incident open 2 h is the item that was open 1 h"""
+    return fingerprint([replace(item, detail="") if item.state in AGEING else item])
 
 
 def span(tiers: Sequence[int]) -> str:
@@ -235,7 +244,7 @@ class Handed:
 
     def taken(self, item: Finding, now: dt.datetime, retry: dt.timedelta) -> Hand | None:
         """The hand of an item handed within retry with the same fingerprint, or None"""
-        hand = self.hands.get(fingerprint([item]))
+        hand = self.hands.get(item_key(item))
         return hand if hand is not None and now - hand.at < retry else None
 
     def expired(self, now: dt.datetime, retry: dt.timedelta) -> bool:
@@ -250,7 +259,7 @@ class Handed:
         return Handed({k: h for k, h in self.hands.items() if h.session != session})
 
     def handing(self, item: Finding, session: str, now: dt.datetime) -> Handed:
-        return Handed({**self.hands, fingerprint([item]): Hand(session, now)})
+        return Handed({**self.hands, item_key(item): Hand(session, now)})
 
 
 # -- the change check --------------------------------------------------------------------------
@@ -325,10 +334,19 @@ def change_query(names: Sequence[str], after: Mapping[str, str] | None = None, f
     connections; a later page asks only for the connections that have more"""
     pages = " ".join(connection(n, None if after is None else after.get(n)) for n in names)
     head = "defaultBranchRef { name target { oid } } latestRelease { tagName } " if first else ""
-    return (
-        "query($owner: String!, $name: String!, $since: DateTime!, $label: String!) {"
-        f" repository(owner: $owner, name: $name) {{ {head}{pages} }} }}"
-    )
+    declared = ", ".join(f"${v}: {VARIABLES[v]}" for v in query_variables(names))
+    return f"query({declared}) {{ repository(owner: $owner, name: $name) {{ {head}{pages} }} }}"
+
+
+VARIABLES = {"owner": "String!", "name": "String!", "since": "DateTime!", "label": "String!"}
+
+
+def query_variables(names: Sequence[str]) -> tuple[str, ...]:
+    """The variables a query over these connections uses: GitHub refuses one declared and
+    unused, so a later page with no updated issues or incidents declares neither"""
+    used = {"since"} if "updated" in names else set()
+    used |= {"label"} if "incidents" in names else set()
+    return ("owner", "name", *(v for v in ("since", "label") if v in used))
 
 
 def check(
@@ -351,7 +369,8 @@ def check(
     nodes = {n: list(nodes_of(data, n)) for n in names}
     more = {n: data[n]["pageInfo"] for n in names}
     while pending := {n: str(p["endCursor"]) for n, p in more.items() if p["hasNextPage"]}:
-        page = repository(graphql(change_query(tuple(pending), pending, first=False), variables), "a page")
+        wanted = {k: variables[k] for k in query_variables(tuple(pending))}
+        page = repository(graphql(change_query(tuple(pending), pending, first=False), wanted), "a page")
         for n in pending:
             nodes[n] += nodes_of(page, n)
         more = {n: page[n]["pageInfo"] for n in pending}
@@ -405,16 +424,15 @@ def workflow_runs(answer: Any, workflows: Sequence[str]) -> list[dict[str, Any]]
 
 
 def run_state(runs: Sequence[Mapping[str, Any]], workflow: str) -> list[object]:
-    """What of a workflow's runs makes a change (S-046-2): whether one is unfinished, and the
-    newest finished run that isn't cancelled, by its id when it failed. A success after a
-    success is no change, so a scheduled operate run every 10 minutes is quiet"""
+    """What of a workflow's runs makes a change (S-046-2): the newest finished run that isn't
+    cancelled, by its id when it failed. A run still going is none, and a success after a
+    success is none, so a scheduled operate run every 10 minutes is quiet"""
     mine = sorted((r for r in runs if r["workflow"] == workflow), key=lambda r: r["id"], reverse=True)
-    active = any(r["status"] in UNFINISHED for r in mine)
     done = [r for r in mine if r["status"] == "completed" and r["conclusion"] != "cancelled"]
     if not done:
-        return [workflow, active, None]
+        return [workflow, None]
     newest = done[0]
-    return [workflow, active, "ok" if newest["conclusion"] in GOOD else f"{newest['conclusion']} {newest['id']}"]
+    return [workflow, "ok" if newest["conclusion"] in GOOD else f"{newest['conclusion']} {newest['id']}"]
 
 
 def changes_of(

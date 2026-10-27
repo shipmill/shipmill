@@ -16,7 +16,7 @@ from shipmill.agents import AgentsConfig, Mode
 from shipmill.autonomy import Autonomy, AutonomyPolicy, Hold
 from shipmill.config import Table
 from shipmill.errors import ReleaseError
-from shipmill.findings import Finding, fingerprint
+from shipmill.findings import Finding
 from shipmill.gate import (
     DECISIONS,
     RECORD,
@@ -32,7 +32,7 @@ from shipmill.gate import (
     tick_record,
 )
 from shipmill.gitrepo import Git
-from shipmill.walk import CURSOR, CURSOR_OVERLAP, HANDED, SWEEP, Changes, Cursor, Hand, Handed, Swept, check
+from shipmill.walk import CURSOR, CURSOR_OVERLAP, HANDED, SWEEP, Changes, Cursor, Hand, Handed, Swept, check, item_key
 
 from .test_gate import NO_PRUNE, FakeClaude, FakeNotifier, checkout, host
 from .test_gate_headless import PID, STARTED, log_of
@@ -426,7 +426,7 @@ def test_s046_13_a_launch_names_one_item_with_its_tier_and_records_it(checkout: 
     _, text = claude.launched[0]
     assert "\n- INCIDENT_OPEN #9 (tier 1)\n  fix: resolve #9\n" in text
     assert "BOT_FAILED" not in text and "staging is down" not in text  # one item, never its detail
-    assert handed(checkout) == {fingerprint([INCIDENT]): {"session": "s1", "at": NOW.isoformat()}}
+    assert handed(checkout) == {item_key(INCIDENT): {"session": "s1", "at": NOW.isoformat()}}
 
 
 def test_s046_14_a_handed_item_gives_way_and_every_item_handed_is_unchanged(checkout: Git) -> None:
@@ -445,8 +445,8 @@ def test_s046_14_a_handed_item_gives_way_and_every_item_handed_is_unchanged(chec
 
 def dead_launch(git: Git, item: Finding, deaths: Deaths | None) -> None:
     """A headless launch of item at NOW whose session died 5 s later"""
-    save_launch(state_dir(git) / RECORD, Launch(fingerprint([item]), str(ONE), NOW, Process(PID, STARTED), deaths))
-    Handed({fingerprint([item]): Hand(str(ONE), NOW)}).save(state_dir(git) / HANDED)
+    save_launch(state_dir(git) / RECORD, Launch(item_key(item), str(ONE), NOW, Process(PID, STARTED), deaths))
+    Handed({item_key(item): Hand(str(ONE), NOW)}).save(state_dir(git) / HANDED)
     log = log_of(git, ONE)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("", encoding="utf-8")
@@ -529,3 +529,78 @@ def test_s046_2_a_handed_item_past_retry_hours_is_one_change_not_one_every_tick(
     source.reads.clear()
     after = tick(checkout, source, day + dt.timedelta(minutes=15), agents=cfg(sweep_hours=48))
     assert after.reason.startswith("no change since") and source.reads == ["changes"]
+
+
+# review findings: each a regression test
+
+
+def test_s046_3_a_later_page_declares_only_the_variables_it_uses() -> None:
+    from shipmill.walk import change_query
+
+    page = change_query(("pulls",), {"pulls": "c1"}, first=False)
+    assert "$since" not in page and "$label" not in page  # GitHub refuses a variable declared and unused
+    second = graphql_answer(pulls=[pull(4)])
+    gh = Gh([graphql_answer(pulls=[pull(3)], more=True), second], runs())
+    sent: list[Mapping[str, str]] = []
+
+    def graphql(query: str, variables: Mapping[str, str]) -> dict[str, Any]:
+        sent.append(variables)
+        return gh.graphql(query, variables)
+
+    check(REPO, NOW, "incident", (), graphql, gh.read, NOW)
+    assert set(sent[1]) == {"owner", "name"}
+
+
+def test_s046_13_an_incident_that_only_aged_is_still_handed(checkout: Git) -> None:
+    source = Source({1: [INCIDENT]})
+    tick(checkout, source)
+    older = Finding("INCIDENT_OPEN", "#9", "staging is down; open 25 min, no PR links it", True, (), "resolve #9")
+    source.tiers, source.signature = {1: [older]}, "commented"
+    assert tick(checkout, source, LATER).action is Action.UNCHANGED
+
+
+def test_s046_15_a_capped_item_is_no_change_on_every_tick_and_its_deaths_stay_its_own(checkout: Git) -> None:
+    dead_launch(checkout, INCIDENT, Deaths(2, NOW - dt.timedelta(minutes=30)))
+    source = Source({1: [INCIDENT], 2: [BOT_FAILED]})
+    first = tick(checkout, source, LATER, cfg(Mode.HEADLESS, sweep_hours=48), FakeClaude())
+    assert first.work == (BOT_FAILED,)
+    record = json.loads((state_dir(checkout) / RECORD).read_text())
+    assert "dead" not in record  # another item starts its own run of dead sessions
+
+
+def test_s046_2_a_run_still_going_is_no_change() -> None:
+    done = changed(graphql_answer(pulls=[pull(3)]), runs((1, "ops.yml", "success")))
+    going = changed(graphql_answer(pulls=[pull(3)]), runs((2, "ops.yml", None), (1, "ops.yml", "success")))
+    assert going.signature == done.signature
+
+
+def test_s046_11_a_failed_tier_4_read_for_notifications_writes_no_sweep(checkout: Git) -> None:
+    @dataclass
+    class Failing(Source):
+        def tier(self, number: int, changes: Changes) -> list[Finding]:
+            if number == 4:
+                raise ReleaseError("watch_state.py --tier 4 failed (exit 2): error")
+            return super().tier(number, changes)
+
+    with pytest.raises(ReleaseError, match="--tier 4 failed"):
+        tick(checkout, Failing({1: [INCIDENT]}, asked=True), agents=cfg(Mode.HEADLESS))
+    assert not (state_dir(checkout) / SWEEP).exists()
+
+
+def test_s046_17_an_answered_item_is_read_again_when_it_is_updated(checkout: Git) -> None:
+    source = Source({1: [INCIDENT], 4: [WAITING]}, asked=True)
+    tick(checkout, source, agents=cfg(Mode.HEADLESS))
+    # the label moved to decided: the update carries no needs-decision label, but #8 is waiting in the record
+    source.tiers = {1: [INCIDENT], 2: [BOT_FAILED], 4: []}
+    source.asked, source.updated, source.signature = False, (8,), "answered"
+    source.reads.clear()
+    decision = tick(checkout, source, LATER, agents=cfg(Mode.HEADLESS))
+    assert "tier 4" in source.reads and decision.decisions == ()
+    assert not (state_dir(checkout) / DECISIONS).exists()
+
+
+def test_s046_12_subjects_order_by_number() -> None:
+    from shipmill.walk import order
+
+    ten, nine = (Finding("INCIDENT_OPEN", f"#{n}", "", True) for n in (10, 9))
+    assert order([ten, nine]) == [nine, ten]

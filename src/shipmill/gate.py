@@ -74,6 +74,7 @@ from shipmill.walk import (
     Swept,
     Walked,
     check,
+    item_key,
     tier_of,
     walk,
     watched,
@@ -1366,7 +1367,7 @@ def tick_walk(
         or changes.signature != cursor.signature
         or bool(changes.updated)
         or handed.expired(now, retry)
-        or dead is not None
+        or (dead is not None and not capped)  # a capped one holds its item: its expiry is the change
     )
     if cursor is not None and not change and not sweeping:
         since = cursor.at.isoformat(timespec="minutes")
@@ -1383,12 +1384,13 @@ def tick_walk(
 def waiting_rows(ticked: Ticked, source: Source, path: Path, repo: str) -> list[Finding]:
     """The items waiting on a decision that a headless tick notifies for (S-046-17): tier 4's
     rows when the walk read it; else its read, when the change check shows an updated item
-    labelled needs-decision; else the items needs-decision.json holds, read from nowhere"""
+    labelled needs-decision or one needs-decision.json holds, so an answered item drops out;
+    else the items needs-decision.json holds, read from nowhere"""
     if WAITING_TIER in (ticked.decision.walk.tiers if ticked.decision.walk is not None else ()):
         return [r for r in ticked.rows if r.state == NEEDS_DECISION]
-    if ticked.changes.asked or ticked.changes.forced:
-        return [r for r in source.tier(WAITING_TIER, ticked.changes) if r.state == NEEDS_DECISION]
     stored = sorted(load_decisions(path))
+    if ticked.changes.asked or ticked.changes.forced or set(ticked.changes.updated) & set(stored):
+        return [r for r in source.tier(WAITING_TIER, ticked.changes) if r.state == NEEDS_DECISION]
     return [Finding(NEEDS_DECISION, repo, " ".join(f"#{n}" for n in stored), False)] if stored else []
 
 
@@ -1787,9 +1789,9 @@ def gate(
     ticked = tick_walk(
         source, state, sessions, last, dead, capped, now, retry, agents.sweep_hours, levels.land, walk_now, sweep_now
     )
-    if ticked.swept is not None and not dry_run:  # a sweep stands whatever the tick decides
-        ticked.swept.save(state / SWEEP)
     waits = waiting_rows(ticked, source, state / DECISIONS, repo) if headless else []
+    if ticked.swept is not None and not dry_run:  # every read went through: the sweep stands, whatever the decision
+        ticked.swept.save(state / SWEEP)
     asked = ask(state / DECISIONS, repo, waits, agents, notifier, now, dry_run) if headless else ()
     decision = replace(
         ticked.decision, mode=agents.mode, decisions=asked, detached=detached, dead=dead, credential=kind
@@ -1837,17 +1839,18 @@ def gate(
     for session in decision.stop:
         claude.stop(session)
     name = f"{session_name(repo)} {now:%Y-%m-%d %H:%M}"
-    deaths = None if dead is None else dead.deaths
     (item,) = decision.work
+    # the run of dead sessions is this item's: another item starts its own (S-046-15)
+    deaths = None if dead is None or last is None or item_key(item) != last.fingerprint else dead.deaths
     if not headless:
         launched = claude.launch(git.root, name, text, env, token)
-        save_launch(record, Launch(fingerprint(decision.work), launched, now, None, deaths))
+        save_launch(record, Launch(item_key(item), launched, now, None, deaths))
         settled(ticked.handed.handing(item, launched, now))
         return pruned_after(decision, launched, waiting)
     session_id = new_session()
     log = session_log(state, str(session_id))
     pid = claude.start(git.root, name, text, session_id, log, env, token)
-    save_launch(record, Launch(fingerprint(decision.work), str(session_id), now, Process(pid, started(pid)), deaths))
+    save_launch(record, Launch(item_key(item), str(session_id), now, Process(pid, started(pid)), deaths))
     settled(ticked.handed.handing(item, str(session_id), now))
     return pruned_after(replace(decision, follow=f"tail -f {log}"), str(session_id), waiting)
 
