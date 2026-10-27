@@ -1353,6 +1353,9 @@ def tick_walk(
     tick reads nothing more: QUIET, `no change since <cursor>` (S-046-1)"""
     cursor = Cursor.load(state / CURSOR)
     handed = Handed.load(state / HANDED)
+    # a dead session is a change until a walk drops its hand from handed.json, not on every
+    # tick while gate.json still names it: with its item gone, every tick would walk
+    unseen = dead is not None and not capped and any(h.session == dead.session for h in handed.hands.values())
     if last is not None and now - last.at < retry and last.fingerprint not in handed.hands:
         handed = Handed({**handed.hands, last.fingerprint: Hand(last.session, last.at)})
     if dead is not None and not capped:
@@ -1367,7 +1370,7 @@ def tick_walk(
         or changes.signature != cursor.signature
         or bool(changes.updated)
         or handed.expired(now, retry)
-        or (dead is not None and not capped)  # a capped one holds its item: its expiry is the change
+        or unseen  # a capped one holds its item: its expiry is the change
     )
     if cursor is not None and not change and not sweeping:
         since = cursor.at.isoformat(timespec="minutes")

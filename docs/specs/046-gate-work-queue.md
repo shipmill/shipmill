@@ -246,7 +246,7 @@ Checked on the default branch plus #756's change, by the tests named, all passin
 `tests/test_watch_tiers.py`); the full suite, ruff, and strict mypy pass.
 
 - S-046-1: `test_s046_1_no_change_reads_nothing_more_and_is_quiet`
-- S-046-2: `test_s046_2_each_change_makes_the_tick_walk`, `test_s046_2_each_github_change_moves_the_signature`, `test_s046_2_a_success_after_a_success_and_another_workflow_are_no_change`, `test_s046_2_an_updated_item_is_a_change_and_one_labelled_needs_decision_is_asked`, `test_s046_2_a_handed_item_past_retry_hours_is_one_change_not_one_every_tick`, `test_s046_2_a_run_still_going_is_no_change`
+- S-046-2: `test_s046_2_each_change_makes_the_tick_walk`, `test_s046_2_each_github_change_moves_the_signature`, `test_s046_2_a_success_after_a_success_and_another_workflow_are_no_change`, `test_s046_2_an_updated_item_is_a_change_and_one_labelled_needs_decision_is_asked`, `test_s046_2_a_handed_item_past_retry_hours_is_one_change_not_one_every_tick`, `test_s046_2_a_run_still_going_is_no_change`, `test_s046_2_a_dead_session_is_one_change_not_one_every_tick`
 - S-046-3: `test_s046_3_the_change_check_is_one_query_and_one_runs_read`, `test_s046_3_more_than_100_pull_requests_are_paged`, `test_s046_3_a_later_page_declares_only_the_variables_it_uses`
 - S-046-4: `test_s046_4_a_walk_reads_no_tier_below_the_one_with_an_untaken_item`
 - S-046-5: `test_s046_5_an_untaken_item_in_tier_3_reads_no_triage_and_no_notices`

@@ -156,12 +156,7 @@ def test_s046_2_each_change_makes_the_tick_walk(checkout: Git, change: str) -> N
     elif change == "handed past retry_hours":
         now = NOW + dt.timedelta(hours=25)
     elif change == "dead last session":
-        launch = Launch("x", str(ONE), NOW, Process(PID, STARTED))
-        save_launch(state_dir(checkout) / RECORD, launch)
-        log = log_of(checkout, ONE)
-        log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text("API Error\n", encoding="utf-8")
-        os.utime(log, (NOW.timestamp() + 5, NOW.timestamp() + 5))
+        dead_launch(checkout, INCIDENT, None)  # its launch recorded its hand, as every launch does
     else:
         (state_dir(checkout) / CURSOR).unlink()
     source.reads.clear()
@@ -566,6 +561,16 @@ def test_s046_15_a_capped_item_is_no_change_on_every_tick_and_its_deaths_stay_it
     assert first.work == (BOT_FAILED,)
     record = json.loads((state_dir(checkout) / RECORD).read_text())
     assert "dead" not in record  # another item starts its own run of dead sessions
+
+
+def test_s046_2_a_dead_session_is_one_change_not_one_every_tick(checkout: Git) -> None:
+    dead_launch(checkout, INCIDENT, None)
+    source = Source({}, signature="same")  # the dead session's incident closed: nothing to launch
+    first = tick(checkout, source, LATER, cfg(Mode.HEADLESS, sweep_hours=48), FakeClaude())
+    assert first.walk is not None and first.walk.change
+    source.reads.clear()
+    after = tick(checkout, source, LATER + dt.timedelta(minutes=15), cfg(Mode.HEADLESS, sweep_hours=48), FakeClaude())
+    assert after.reason.startswith("no change since") and source.reads == ["changes"]
 
 
 def test_s046_2_a_run_still_going_is_no_change() -> None:
