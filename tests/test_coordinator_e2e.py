@@ -264,12 +264,40 @@ class Forge:
             }
             return {"data": {"repository": {"issue": issue}}}
         count = sum(1 for key in variables if key.startswith("o"))
+        if query == ch.items_query(count):  # chains.py link's cycle walk (spec 041)
+            return {"data": {f"i{i}": {"issueOrPullRequest": self.item(variables, i)} for i in range(count)}}
         assert query == us.children_query(count), f"an unexpected query: {query[:80]}"
         data = {}
         for i in range(count):
             t = self.find(variables[f"o{i}"], variables[f"n{i}"], variables[f"k{i}"])
             data[f"c{i}"] = {"issueOrPullRequest": {"__typename": "Issue", "state": t.state, "stateReason": t.reason}}
         return {"data": data}
+
+    def item(self, variables: dict[str, Any], i: int) -> dict[str, Any]:
+        """The i-th item of chains.py's item query, as GitHub answers it"""
+        t = self.find(variables[f"o{i}"], variables[f"n{i}"], variables[f"k{i}"])
+
+        def linked(refs: list[str]) -> dict[str, Any]:
+            return {"pageInfo": {"hasNextPage": False}, "nodes": [self.native(r) for r in refs]}
+
+        parent = next((p for p in self.tickets.values() if t.ref in p.subs), None)
+        return {
+            "__typename": "Issue",
+            "number": t.number,
+            "title": t.title,
+            "state": t.state,
+            "stateReason": t.reason,
+            "body": t.body,
+            "author": self.author(t),
+            "authorAssociation": t.association,
+            "repository": {"nameWithOwner": t.repo},
+            "labels": {"pageInfo": {"hasNextPage": False}, "nodes": [{"name": n} for n in t.labels]},
+            "assignees": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+            "blockedBy": linked(t.blocked_by),
+            "subIssues": linked(t.subs),
+            "blocking": linked([b.ref for b in self.tickets.values() if t.ref in b.blocked_by]),
+            "parent": None if parent is None else self.native(parent.ref),
+        }
 
     @staticmethod
     def author(t: Ticket) -> dict[str, Any]:
