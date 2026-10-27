@@ -2,6 +2,8 @@
 `shipmill gh`, a relayed answer names who decided, and the setup docs document it"""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -114,6 +116,13 @@ def test_s037_12_install_documents_the_refusal_identity_and_as_host() -> None:
         "only for a write a person approved in the chat",
     ):
         assert phrase in text, phrase
+
+
+def test_s037_12_shipmill_help_describes_gh_without_app_id() -> None:
+    done = subprocess.run([sys.executable, "-m", "shipmill", "--help"], capture_output=True, text=True, check=True)
+    text = " ".join(done.stdout.split())
+    assert "else as the host's gh login" not in text  # spec 012's step 3, superseded by spec 037
+    assert 'a write exits 2 unless [agents] identity = "host" or a leading --as-host allows it (spec 037)' in text
 
 
 def test_s037_12_release_lanes_lists_agents_identity() -> None:

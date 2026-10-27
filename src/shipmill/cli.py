@@ -56,10 +56,11 @@
                   the repo's owner (spec 038)
   gh              run gh with the arguments that follow, as the repo's GitHub App when
                   [agents] app_id is set (the token limited to gh's -R/--repo, else origin's
-                  repo), else as the host's gh login; exits with gh's code. Every gh call that
-                  writes in an agent session goes through it. A leading --product OWNER/NAME
-                  runs it with the coordinator's token, refusing commands that write code or
-                  pull requests (D-47)
+                  repo); exits with gh's code. Without app_id a read runs as the host's gh
+                  login and a write exits 2 unless [agents] identity = "host" or a leading
+                  --as-host allows it (spec 037). Every gh call that writes in an agent
+                  session goes through it. A leading --product OWNER/NAME runs it with the
+                  coordinator's token, refusing commands that write code or pull requests (D-47)
   app-create      create the gate's GitHub App in one click: owner and visibility planned from the
                   repos holding .github/shipmill.toml, the key saved with mode 0600
   app-install     guide installing the App on more repos: the App's Install App page and what to pick
@@ -613,11 +614,12 @@ def _parser() -> argparse.ArgumentParser:
         "gh",
         add_help=False,  # `shipmill gh --help` is gh's help: every argument after gh goes to gh
         help=(
-            "run gh with the arguments that follow, as [agents] app_id's GitHub App when set, else as the "
-            "host's gh login (spec 012); use it for every gh call that writes from an agent session. "
-            "Only a leading --app-key PATH (default: ~/.config/shipmill/app-<app_id>.pem) and --product "
-            "OWNER/NAME are shipmill's; --product runs gh with the coordinator's token for OWNER's listed repos "
-            "and refuses the commands that write code or pull requests (spec 038, D-47)"
+            "run gh with the arguments that follow, as [agents] app_id's GitHub App when set (spec 012); "
+            "without it, a read runs as the host's gh login and a write exits 2 unless [agents] identity = "
+            '"host" or the call passes --as-host (spec 037); use it for every gh call that writes from an agent '
+            "session. Only a leading --app-key PATH (default: ~/.config/shipmill/app-<app_id>.pem), --product "
+            "OWNER/NAME, and --as-host are shipmill's; --product runs gh with the coordinator's token for OWNER's "
+            "listed repos and refuses the commands that write code or pull requests (spec 038, D-47)"
         ),
     )
 
