@@ -17,7 +17,12 @@ the coordinator's product token. One line per report, `owner/repo#N STATE note`:
               A "Stands in for owner/repo#N" line of its body puts "link owner/repo#N" in
               the note, the issue to make its child; without one the note is "no children"
   ASKED       labelled needs-decision and its question has no reply: it waits on the
-              maintainer (triage_state.py's NEEDS_DECISION rule, with the --bot-login)
+              maintainer (triage_state.py's NEEDS_DECISION rule, with the --bot-login).
+              Also a report with a ## Check whose children all closed, none as not
+              planned, with a check-waiting comment after the newest child close and no
+              check-failed or verified comment after it, read as triage_state.py reads a
+              parent's (check_waiting, #740): a person runs its check by hand. Its note is
+              "check waiting on @login since <date>", then the children as VERIFY_DUE's
   ANSWERED    labelled needs-decision and its question has a reply: route it by the answer
   ROUTED      a child is still open; the note starts "children K/N closed", then each child
               as owner/repo#N:state
@@ -367,7 +372,9 @@ def classify(
     if untimed:
         fail(f"reading {ref}: GitHub gave no close time for its closed children {' '.join(untimed)}")
     ends = [str(at) for _, at in kids.values()]
-    return parent_check(issue["comments"]["nodes"], bot_login, ends, progress)
+    state, note = parent_check(issue["comments"]["nodes"], bot_login, ends, progress)
+    # a check a person runs by hand waits on them as a question does (#740)
+    return ("ASKED" if state == "WITH_PERSON" else state), note
 
 
 def upstream_rows(product: Product, bot_login: str | None) -> list[dict[str, str]]:

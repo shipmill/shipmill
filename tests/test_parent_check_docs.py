@@ -145,6 +145,27 @@ def test_s042_9_the_coordinator_takes_up_a_check_question_s_answer_without_routi
     assert "On a report, the coordinator posts the summary comment" in report
 
 
+CHECK_WAITING = marker("triage_state.py", "CHECK_WAITING_MARKER")
+
+
+def test_s042_13_leave_it_open_posts_the_check_waiting_comment() -> None:
+    comments = section(doc(TRIAGE / "references" / "comments.md"), "## A parent's check")
+    blocks = re.findall(r"```markdown\n(.*?)```", comments, re.DOTALL)
+    [waiting] = [b for b in blocks if b.splitlines()[0] == CHECK_WAITING]
+    assert waiting.splitlines()[1].startswith('@{login} answered "leave it open":')
+    assert 'On "leave it open", post the check-waiting comment' in flat(comments)
+    rubric = flat(section(doc(TRIAGE / "references" / "triage-rubric.md"), "## A parent's check"))
+    assert f"`{CHECK_WAITING}`" in rubric and "| WITH_PERSON |" in rubric
+    assert 'on "leave it open", post the check-waiting comment naming who answered' in rubric
+    skill = doc(TRIAGE / "SKILL.md")
+    parent = flat(section(skill, "## Chains")).split("**A parent's check.**", 1)[1].split("- **", 1)[0]
+    assert f'on "leave it open", post the `{CHECK_WAITING}` comment naming who answered' in parent
+    reports = flat(section(skill, "## Reports from other repos"))
+    upstream = reports.split("**VERIFY_DUE, CHECK_FAILED:**", 1)[1].split("- **", 1)[0]
+    assert f'on "leave it open", the `{CHECK_WAITING}` comment naming who answered' in upstream
+    assert "nothing more" not in upstream and "nothing more" not in parent
+
+
 def test_s042_10_the_spec_gate_asks_for_a_check_and_drops_fixes_feature() -> None:
     gate = doc(TRIAGE / "references" / "spec-gate.md")
     split = flat(gate.split("### Split it into build issues", 1)[1].split("### Dispatch the build", 1)[0])

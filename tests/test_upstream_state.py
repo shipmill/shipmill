@@ -783,6 +783,46 @@ def test_s042_7_a_fix_child_closed_after_the_check_failed_makes_it_verify_due_ag
     assert (code, states(rows)) == (1, {f"{HOME}#1": ("VERIFY_DUE", note)})
 
 
+WAITING = '<!-- shipmill:check-waiting -->\n@amy answered "leave it open": she runs the ## Check and closes this.'
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [said(WAITING, BOT, "NONE", bot=True, at=AFTER), said(WAITING, "max", "MEMBER", at=AFTER)],
+)
+def test_s042_14_a_trusted_check_waiting_comment_reads_asked(
+    us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str], comment: dict[str, Any]
+) -> None:
+    forge = checked_forge(us, comment)
+    code, rows = run_state(us, forge, checkout(tmp_path), capsys, "--bot-login", BOT)
+    assert (code, states(rows)) == (0, {f"{HOME}#1": ("ASKED", f"check waiting on @amy since {AFTER} {CHILDREN}")})
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        said(WAITING, "eve", "NONE", at=AFTER),  # an outsider's never counts (D-16, D-29)
+        said(WAITING, "eve", "CONTRIBUTOR", at=AFTER),
+        said(WAITING, "amy", "OWNER", at=BETWEEN),  # before the newest close, the Depends on pull request's
+    ],
+)
+def test_s042_14_any_other_check_waiting_comment_leaves_it_verify_due(
+    us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str], comment: dict[str, Any]
+) -> None:
+    forge = checked_forge(us, comment)
+    code, rows = run_state(us, forge, checkout(tmp_path), capsys, "--bot-login", BOT)
+    assert (code, states(rows)) == (1, {f"{HOME}#1": ("VERIFY_DUE", f"{CHILDREN}: run its ## Check")})
+
+
+def test_s042_14_a_check_failed_comment_after_it_reads_check_failed(
+    us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    later = "2026-10-22T10:00:00Z"
+    forge = checked_forge(us, said(WAITING, "amy", "OWNER", at=AFTER), said(FAILED, "amy", "OWNER", at=later))
+    code, rows = run_state(us, forge, checkout(tmp_path), capsys, "--bot-login", BOT)
+    assert (code, states(rows)) == (1, {f"{HOME}#1": ("CHECK_FAILED", f"check failed {later} {CHILDREN}")})
+
+
 def test_s042_7_an_untrusted_report_with_a_check_stays_untrusted(
     us: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

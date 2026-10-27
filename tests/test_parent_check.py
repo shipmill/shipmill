@@ -127,6 +127,69 @@ def test_s042_5_a_person_s_item_and_an_upstream_parent_keep_their_states(ts: Mod
     assert ts.gated(upstream, BOT, False) == ("UPSTREAM", "no coordinator: waits for the maintainer")
 
 
+WAITING = "<!-- shipmill:check-waiting -->"
+WAITED = "2026-09-06T12:00:00Z"  # after both children's closes
+PROGRESS = "children 2/2 closed o/r#2:closed(child) o/r#3:closed(child)"
+
+
+def waiting(at: str = WAITED, text: str = '@maria answered "leave it open"', **who: Any) -> dict[str, Any]:
+    """The check-waiting comment a session posts on a "leave it open" answer (#740)"""
+    return said(f"{WAITING}\n{text}: she runs the ## Check and closes this by hand.", at, **who)
+
+
+def test_s042_13_a_trusted_check_waiting_comment_after_the_newest_close_reads_with_person(
+    ts: ModuleType, tmp_path: Path
+) -> None:
+    for comment in (waiting(), waiting(**by("ana", "MEMBER")), waiting(**by("cat", "COLLABORATOR"))):
+        assert classify(ts, parent(both_closed(), [comment])) == (
+            "WITH_PERSON",
+            f"check waiting on @maria since {WAITED} {PROGRESS}",
+        )
+    assert "WITH_PERSON" not in ts.ACTION
+    # A comment naming nobody waits on its author
+    plain = waiting(text="Left open on the answer", **by("ana", "OWNER"))
+    assert classify(ts, parent(both_closed(), [plain]))[1] == f"check waiting on @ana since {WAITED} {PROGRESS}"
+    # The script exits 0, and the --json line waits on the person named, with or without --role flags
+    for flags in ((), ("--role", "maintainer=ana")):
+        folder = tmp_path / str(len(flags))
+        folder.mkdir()
+        proc = run_script(folder, first_page([parent(both_closed(), [waiting()])]), *flags)
+        assert proc.returncode == 0, proc.stderr
+        rows = [json.loads(line) for line in proc.stdout.splitlines()]
+        assert [(r["state"], r["assignees"], r.get("teams")) for r in rows] == [("WITH_PERSON", ["maria"], None)]
+
+
+def test_s042_13_an_untrusted_early_or_quoted_check_waiting_comment_changes_nothing(ts: ModuleType) -> None:
+    for comment in (
+        waiting(**by("someone", "CONTRIBUTOR")),  # an outsider's never counts (D-16, D-29)
+        waiting(**by("someone", "NONE")),
+        waiting(at="2026-09-03T12:00:00Z"),  # before the newest close, #3's
+        said(f"Quoting {WAITING} mid-comment.", WAITED),
+    ):
+        assert classify(ts, parent(both_closed(), [comment])) == ("VERIFY_DUE", f"{PROGRESS}: run its ## Check")
+
+
+def test_s042_13_a_later_close_check_failed_or_verified_comment_re_arms_it(ts: ModuleType) -> None:
+    later = "2026-09-07T10:00:00Z"
+    # A new child that closes after the comment: its check is due again
+    fixed = [*both_closed(), node("o/r#4", "CLOSED", later)]
+    assert classify(ts, parent(fixed, [waiting()]))[0] == "VERIFY_DUE"
+    # A trusted check-failed comment after it: CHECK_FAILED; an outsider's: still waiting
+    failed = said(f"{FAILED}\nThe API returned no `colour`.", later, **by("maria", "OWNER"))
+    assert classify(ts, parent(both_closed(), [waiting(), failed])) == (
+        "CHECK_FAILED",
+        f"check failed {later} {PROGRESS}",
+    )
+    outsider = said(f"{FAILED}\nBroken.", later, **by("someone", "NONE"))
+    assert classify(ts, parent(both_closed(), [waiting(), outsider]))[0] == "WITH_PERSON"
+    # A trusted verified comment after it ends the wait: the parent reads as without the marker
+    checked = said(f"{VERIFIED}\nThe API returned `colour`.", later, **by("maria", "OWNER"))
+    assert classify(ts, parent(both_closed(), [waiting(), checked]))[0] == "VERIFY_DUE"
+    # A check-waiting comment after a check-failed one waits again
+    early_fail = said(f"{FAILED}\nNo `colour`.", "2026-09-05T10:00:00Z")
+    assert classify(ts, parent(both_closed(), [early_fail, waiting()]))[0] == "WITH_PERSON"
+
+
 def closed_parent(
     closer: dict[str, Any] | None,
     actor: tuple[str, bool] = ("shipmill-gate", True),

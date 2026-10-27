@@ -116,9 +116,10 @@ A parent (an issue with sub-issues that isn't a person's item) may carry a `## C
 |---|---|---|
 | VERIFY_DUE | Every hold closed, and no check-failed comment came after the newest close. Its note starts `children K/N closed`, then each hold, and ends `run its ## Check` | Runs the check (below) |
 | CHECK_FAILED | Every hold closed, and a check-failed comment came after the newest close. Its note starts `check failed <date>`, then the progress and the holds | Files the fix as a new child (below) |
+| WITH_PERSON | Every hold closed, and a check-waiting comment came after the newest close, with no check-failed or verified comment after it. Its note starts `check waiting on @login since <date>`, then the progress and the holds | Nothing: a person runs the check by hand (below). Not an action |
 | VERIFY_CLOSED | Closed as completed by a pull request, a commit, or the `--bot-login`, with no verified comment after its last close (read with `--closed N`). Its note reads `closed by #N`, `closed by commit <sha>`, or `closed by @<login>`, then `run its ## Check` | Runs the check (below) on the closed parent. It never reads SUSPECT_CLOSE |
 
-A check-failed comment is a comment whose first line is `<!-- shipmill:check-failed -->`, and a verified comment one whose first line is `<!-- shipmill:verified -->`; each counts only from the `--bot-login` or an OWNER, MEMBER, or COLLABORATOR (D-16). The newest close is the latest close among the parent's holds, children and `Depends on` lines alike, so a fix child that closes after the check-failed comment makes the parent read VERIFY_DUE again. While a hold is open the parent reads BLOCKED, with or without a check. A person's item with sub-issues stays a person's item (above), and an `upstream` report reads UPSTREAM here: its check is the coordinator's (SKILL.md, Reports from other repos). A parent closed by hand by a trusted person other than the `--bot-login` is that person's call and reads as any other close.
+A check-failed comment is a comment whose first line is `<!-- shipmill:check-failed -->`, a check-waiting comment one whose first line is `<!-- shipmill:check-waiting -->`, and a verified comment one whose first line is `<!-- shipmill:verified -->`; each counts only from the `--bot-login` or an OWNER, MEMBER, or COLLABORATOR (D-16). The newest close is the latest close among the parent's holds, children and `Depends on` lines alike, so a fix child that closes after the check-failed comment makes the parent read VERIFY_DUE again. While a hold is open the parent reads BLOCKED, with or without a check. A person's item with sub-issues stays a person's item (above), and an `upstream` report reads UPSTREAM here: its check is the coordinator's (SKILL.md, Reports from other repos). A parent closed by hand by a trusted person other than the `--bot-login` is that person's call and reads as any other close.
 
 The session runs the check:
 
@@ -130,7 +131,7 @@ The session runs the check:
 
 On CHECK_FAILED, file the fix as a new issue in the parent's repo, naming the parent, the check, and what came back ([comments.md](comments.md), A parent's check), triage it **implement**, and make it a child: `chains.py link <owner/repo#parent> --child <owner/repo#fix>`. The parent then reads BLOCKED on the fix, and VERIFY_DUE again once it closes. When you can't tell what the fix is, ask on the parent through the needs-decision protocol instead. A failure reopens no child: the children stay closed, and the fix is new work.
 
-Taking up the answer ([needs-decision.md](needs-decision.md), Taking up an answered item): on "close it unchecked", close the parent as completed, then post the verified comment saying no check ran and who decided, which ends the state; on "leave it open", nothing more: the maintainer checks it and closes it by hand.
+Taking up the answer ([needs-decision.md](needs-decision.md), Taking up an answered item): on "close it unchecked", close the parent as completed, then post the verified comment saying no check ran and who decided, which ends the state; on "leave it open", post the check-waiting comment naming who answered ([comments.md](comments.md), A parent's check): the parent then reads WITH_PERSON, which needs nothing, while that person checks it and closes it by hand. A child that closes after it, or a check-failed or verified comment after it, ends the wait.
 
 ## Flags from `triage_state.py`
 
@@ -152,7 +153,7 @@ Taking up the answer ([needs-decision.md](needs-decision.md), Taking up an answe
 | ASSIGN_DUE | A person's item nobody is assigned to, read with the `--role` flags: assign the users its note names, with no comment (above) |
 | NO_ASSIGNEE | A person's item nobody is assigned to, read without the `--role` flags: read the state again with `shipmill roles --flags`, never ask who does it (above) |
 | HANDOFF_DUE | A person's item whose holds all closed: post the hand-off to its assignees and its roles' teams (above) |
-| WITH_PERSON | Nothing: it waits on its assignees, however long. Never mention them again |
+| WITH_PERSON | Nothing: it waits on its assignees, however long. Never mention them again. A parent (its note starts `check waiting on @login`): it waits on that person to run its `## Check` by hand ([A parent's check](#a-parents-check)) |
 | VERIFY_DUE | A person's item: a done report came after the hand-off, run the `## Check` (above). A parent (its note starts `children K/N closed`): its holds all closed, run its `## Check` ([A parent's check](#a-parents-check)) |
 | CHECK_FAILED | A parent's check failed after its newest close: file the fix as a new child with `chains.py link <owner/repo#parent> --child <owner/repo#fix>` ([A parent's check](#a-parents-check)) |
 | VERIFY_CLOSED | A person closed their item by hand, or a parent closed before its check ran: run its `## Check` (above, and [A parent's check](#a-parents-check)) |
