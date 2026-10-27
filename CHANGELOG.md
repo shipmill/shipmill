@@ -7,6 +7,22 @@ bot.
 
 ## [Unreleased]
 
+## [0.83.0] - 2026-10-27
+
+### Changed
+
+- Plugin: one install of `shipmill@shipmill` at user scope (spec 039). Every fix shipmill prints names `--scope user`, never a per-folder update or reinstall; `doctor`, `status`, the setup checklist, and the gate's tick report every project- and local-scope install on the host as one `PLUGIN_SHADOWING` row; and the new `shipmill plugin-clean` lists them, and with `--apply`, from a person's terminal only, removes them while restoring each folder's `.claude/settings.json` and `settings.local.json` byte for byte (#701)
+- A `Depends on` line holds only on the references of its strict shape (`Depends on[:] #1, #2 and owner/repo#3`, issue or pull URLs, `#{B1}` placeholders), never on one in a note after ` (`, `;`, or ` — `, and never inside a code fence; a line that names a reference in any other shape still holds on all of them and reads the new triage state MALFORMED_DEPENDS, an action, until a session rewrites it, and `chains.py link` appends a strict line when the only mention is in a note (spec 041) (#714)
+
+### Fixed
+
+- `suite_lock.py` holds a slot until the suite itself exits, so killing the wrapper no longer lets a second suite start beside one still running, and on Windows every process locks the same byte of a slot's file (#713)
+
+### Added
+
+- A parent issue with a `## Check` section reads VERIFY_DUE, not UNBLOCKED, once its sub-issues close, CHECK_FAILED after a trusted `<!-- shipmill:check-failed -->` comment newer than its last hold's close, and, closed by a pull request, a commit, or the session's bot without a trusted `<!-- shipmill:verified -->` comment, VERIFY_CLOSED instead of SUSPECT_CLOSE, so it closes when its result is seen in production, not when its last child merges (spec 042) (#717)
+- `[product] standalone = true` records that a repo stands alone: `shipmill gh`, `shipmill app-token`, the gate, and the skills' scripts read it as no `[product]` table, and `standalone = false`, another value, or `standalone` beside `home` or `repos` exits 2 naming the key (#720)
+
 ## [0.82.0] - 2026-10-27
 
 ### Changed
@@ -1901,7 +1917,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.82.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.83.0...HEAD
+[0.83.0]: https://github.com/shipmill/shipmill/compare/v0.82.0...v0.83.0
 [0.82.0]: https://github.com/shipmill/shipmill/compare/v0.81.1...v0.82.0
 [0.81.1]: https://github.com/shipmill/shipmill/compare/v0.81.0...v0.81.1
 [0.81.0]: https://github.com/shipmill/shipmill/compare/v0.80.1...v0.81.0
