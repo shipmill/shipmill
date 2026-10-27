@@ -44,67 +44,42 @@ def checked(ws: ModuleType, plugins: object) -> list[Check]:
     return plugin_checks(lambda: [PluginRow(r.state, r.subject, r.detail) for r in rows])
 
 
-UNLOADED = (
-    f'delete the entry with "projectPath": "{GATE}" under "shipmill@shipmill"'
-    " in ~/.claude/plugins/installed_plugins.json"
-)
+def shadowing(ws: ModuleType, said: str) -> str:
+    """The PLUGIN_SHADOWING WARN's detail after its counts (S-039-4)"""
+    return f"{said}; uvx shipmill=={ws.plugin_version()} plugin-clean"
 
 
-def test_s031_16_the_repos_install_and_one_keyed_on_the_gates_worktree_warn_with_statuss_fix(ws: ModuleType) -> None:
-    """D-22: separate rows for the repo's folder and the gate's checkout, each with its fix;
-    the gate's linked worktree is no session's project, so its install is deleted by hand"""
-    found = checked(ws, [install("project", "0.31.1", REPO), install("project", "0.25.0", GATE)])
-    assert [c.status for c in found] == ["PASS", "WARN", "WARN"]
-    assert found[1] == Check(
-        "WARN",
-        "plugin",
-        "plugin project 0.31.1, latest v0.32.1; in /work/r: claude plugin marketplace update shipmill"
-        " && claude plugin uninstall shipmill@shipmill --scope project && claude plugin install shipmill@shipmill"
-        " --scope project (`update` picks the nested install in /work/r/tmp/shipmill-gate, a Claude Code bug)",
+def test_the_repos_install_and_one_keyed_on_the_gates_worktree_are_one_warn(ws: ModuleType) -> None:
+    """D-22, #233, spec 039: the repo's folder and the gate's checkout, once separate rows with a
+    reinstall and a hand edit, are one PLUGIN_SHADOWING WARN with plugin-clean's fix"""
+    found = checked(
+        ws, [install("user", "0.32.1"), install("project", "0.31.1", REPO), install("project", "0.25.0", GATE)]
     )
-    assert found[2].detail == (
-        f"plugin project 0.25.0, keyed on the gate's linked worktree {GATE}, which no session loads; {UNLOADED}"
-    )
+    assert found[1:] == [
+        Check(
+            "WARN",
+            "plugin",
+            "plugin keyed 2 project- or local-scope installs of shipmill@shipmill (0.25.0 to 0.31.1, 2 folders,"
+            + shadowing(ws, " 2 missing) shadow the user install"),
+        )
+    ]
 
 
-def test_s031_16_a_current_install_keyed_on_the_gates_worktree_still_warns(ws: ModuleType) -> None:
+def test_a_current_install_keyed_on_the_gates_worktree_still_warns(ws: ModuleType) -> None:
     found = checked(ws, [install("user", "0.32.1"), install("local", "0.32.1", GATE)])
-    assert [c.status for c in found] == ["PASS", "WARN"] and found[1].detail.endswith(UNLOADED)
+    assert [c.status for c in found] == ["PASS", "WARN"] and found[1].detail.startswith("plugin keyed 1 ")
 
 
-def test_a_current_install_passes(ws: ModuleType) -> None:
-    found = checked(ws, [install("user", "0.32.1"), install("project", "0.32.1", REPO)])
-    assert found == [Check("PASS", "plugin", f"latest v0.32.1; plugin: user 0.32.1, project 0.32.1 ({REPO})")]
+def test_a_current_user_install_passes(ws: ModuleType) -> None:
+    found = checked(ws, [install("user", "0.32.1")])
+    assert found == [Check("PASS", "plugin", "latest v0.32.1; plugin: user 0.32.1")]
 
 
-@pytest.mark.parametrize(
-    ("scope", "where", "fix"),
-    [
-        (
-            "user",
-            None,
-            "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user",
-        ),
-        (
-            "project",
-            REPO,
-            "in /work/r: claude plugin marketplace update shipmill"
-            " && claude plugin update shipmill@shipmill --scope project",
-        ),
-        (
-            "local",
-            REPO,
-            "in /work/r: claude plugin marketplace update shipmill"
-            " && claude plugin update shipmill@shipmill --scope local",
-        ),
-    ],
-)
-def test_s031_15_each_lagging_install_warns_with_its_fix_and_none_says_the_gate_pauses(
-    ws: ModuleType, scope: str, where: Path | None, fix: str
-) -> None:
-    rows = ws.plugin_rows([install(scope, "0.31.0", where)], None, "v0.32.1", [REPO], [GATE], REPO)
+def test_s031_15_a_lagging_user_install_warns_with_its_fix_and_none_says_the_gate_pauses(ws: ModuleType) -> None:
+    fix = "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user"
+    rows = ws.plugin_rows([install("user", "0.31.0")], None, "v0.32.1", [REPO], [GATE], REPO)
     found = plugin_checks(lambda: [PluginRow(r.state, r.subject, r.detail) for r in rows])
-    assert found[1] == Check("WARN", "plugin", f"plugin {scope} 0.31.0, latest v0.32.1; {fix}")
+    assert found[1] == Check("WARN", "plugin", f"plugin user 0.31.0, latest v0.32.1; {fix}")
     assert not any("starts no session" in c.detail or "D-35" in c.detail for c in found)
 
 
@@ -130,7 +105,7 @@ def test_s031_15_the_install_a_session_loads_is_named_and_its_lag_is_reported_no
         f"latest v0.32.1; plugin: user 0.32.1, local 0.31.0 ({REPO}), local 0.25.0 ({GATE}); a session loads"
         f" local 0.31.0 ({REPO}), older than v0.32.1",
     )
-    assert [c.status for c in found] == ["PASS", "WARN", "WARN"]  # the lagging install, the unloaded one
+    assert [c.status for c in found] == ["PASS", "WARN"]  # spec 039: both keyed installs, one row
     current = [install("user", "0.31.0"), install("local", "0.32.1", REPO)]
     rows = ws.plugin_rows(current, None, "v0.32.1", [REPO], [GATE], REPO)
     assert rows[0].detail.endswith(f"; a session loads local 0.32.1 ({REPO})")

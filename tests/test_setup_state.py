@@ -93,14 +93,14 @@ ENABLED = {"enabledPlugins": {"shipmill@shipmill": True}}
 
 
 def test_an_outdated_install_is_one_row_each_and_not_done(ss: ModuleType) -> None:
-    # #233: setup called a repo with a 0.31.1 project install healthy while 0.32.1 was out
+    # #233: setup called a repo with a stale install healthy while 0.32.1 was out
     found = [
-        "plugin project: 0.31.1, latest v0.32.1; in /w/r: claude plugin uninstall ... && claude plugin install ...",
-        "plugin project: 0.25.0, latest v0.32.1; in /w/r/tmp/shipmill-gate: claude plugin update ...",
+        ss.Row("PLUGIN_OUTDATED", "plugin user: 0.31.1, latest v0.32.1; claude plugin marketplace update ..."),
+        ss.Row("PLUGIN_SHADOWING", "plugin keyed: 1 project- or local-scope install of shipmill@shipmill ..."),
     ]
     rows = ss.plugin_rows(ENABLED, lambda: found)
-    assert [(r.state, r.detail) for r in rows] == [("PLUGIN_OUTDATED", d) for d in found]
-    assert "PLUGIN_OUTDATED" not in ss.DONE
+    assert rows == found
+    assert "PLUGIN_OUTDATED" not in ss.DONE and "PLUGIN_SHADOWING" not in ss.DONE
 
 
 def test_current_installs_read_as_ok(ss: ModuleType) -> None:
@@ -109,7 +109,7 @@ def test_current_installs_read_as_ok(ss: ModuleType) -> None:
 
 @pytest.mark.parametrize("settings", [{}, {"enabledPlugins": {"shipmill@shipmill": False}}])
 def test_installs_are_read_only_with_the_plugin_enabled(ss: ModuleType, settings: dict[str, object]) -> None:
-    def unread() -> list[str]:
+    def unread() -> list[object]:
         raise AssertionError("the installs should not be read")
 
     assert [r.state for r in ss.plugin_rows(settings, unread)] in (["PLUGIN_MISSING"], ["PLUGIN_DISABLED"])
@@ -125,9 +125,11 @@ def test_the_stale_install_a_session_loads_adds_a_gate_row(ss: ModuleType) -> No
     rows = ws.plugin_rows(plugins, None, "v0.50.0", [Path("/w/r")], [Path("/w/r/tmp/shipmill-gate")], Path("/w/r"))
     fake = type("Ws", (), {"Refused": ws.Refused, "shipmill_rows": staticmethod(lambda repo, root: rows)})
     found = ss.outdated_installs("o/r", Path("/w/r"), fake)
-    assert found[-1] == "gate: a session loads user 0.48.0 (/w/r), older than v0.50.0"
-    assert not any("starts no session" in line for line in found)
-    assert [r.state for r in ss.plugin_rows(ENABLED, lambda: found)] == ["PLUGIN_OUTDATED"] * 3
+    assert found[1] == ss.Row("PLUGIN_OUTDATED", "gate: a session loads user 0.48.0 (/w/r), older than v0.50.0")
+    assert not any("starts no session" in r.detail for r in found)
+    # the user install's update, the gate row, and the keyed install's one row (spec 039)
+    states = ["PLUGIN_OUTDATED", "PLUGIN_OUTDATED", "PLUGIN_SHADOWING"]
+    assert [r.state for r in ss.plugin_rows(ENABLED, lambda: found)] == states
 
 
 def test_the_installs_are_read_through_watch_state(ss: ModuleType) -> None:

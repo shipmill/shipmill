@@ -69,12 +69,15 @@ Plugin (spec 033: the config's [agents] plugin, "host" by default, says where it
   PLUGIN_OK        enabled
   In either mode:
   PLUGIN_DISABLED  enabledPlugins sets it to false on purpose; --fix leaves it
-  PLUGIN_OUTDATED  in place of a PLUGIN_OK, when an install on this host is behind shipmill's
-                   latest release: one row per install (user scope, the repo's folder, the
-                   gate's checkout), each with the command to run in its folder, as
-                   github-ship-watch's SHIPMILL_OUTDATED reads it (#233); and a `gate:` row
-                   when the install a session loads is one of them, which the gate reports
-                   and still starts sessions on (spec 031). --fix leaves it
+  PLUGIN_OUTDATED  in place of a PLUGIN_OK, when the user-scope install is behind shipmill's
+                   latest release, with its one update, as github-ship-watch's
+                   SHIPMILL_OUTDATED reads it (spec 039); and a `gate:` row when the install a
+                   session loads is behind, which the gate reports and still starts sessions
+                   on (spec 031). --fix leaves it
+  PLUGIN_SHADOWING in place of a PLUGIN_OK too, when the host has project- or local-scope
+                   installs of shipmill@shipmill, as github-ship-watch's PLUGIN_SHADOWING
+                   reads them: one row, whose fix is `uvx shipmill==<version> plugin-clean`
+                   (spec 039). --fix leaves the installs as they are
   [agents] plugin other than "host" or "repo", or not a string, exits 2
 
 Labels (the triage skills and shipmill read them):
@@ -124,7 +127,7 @@ Contributor rules (a warning, read only when the config's [changelog] sets fragm
 Exit 0 when every row is RELEASE_READY, AGENTS_OK, PLUGIN_OK, SKILLS_OK, LABELS_OK, or
 BRANCH_DELETE_ON (RUNNER_SHARED and CHANGELOG_RULES, warnings, leave the exit code alone), 1
 otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT,
-PLUGIN_COMMITTED, PLUGIN_OUTDATED, and SKILL_SHADOWED included), 2 on bad input, a malformed
+PLUGIN_COMMITTED, PLUGIN_OUTDATED, PLUGIN_SHADOWING, and SKILL_SHADOWED included), 2 on bad input, a malformed
 settings.json or config (its [agents] read as github-ship-watch reads it; its [lanes] and
 [environments] too when the runner is read; its [autonomy] with an [agents] section), both
 config files,
@@ -434,13 +437,16 @@ def plugin_row(settings: dict[str, Any]) -> Row:
     return Row("PLUGIN_MISSING", f"{SETTINGS} doesn't enable {PLUGIN}")
 
 
-def plugin_rows(settings: dict[str, Any], outdated: Callable[[], list[str]]) -> list[Row]:
-    """plugin_row, and with the plugin enabled, a PLUGIN_OUTDATED row in its place for each
-    install behind the latest release (#233); outdated reads them only then"""
+SHADOWING = "PLUGIN_SHADOWING"  # watch_state.py's row, shown as it is (S-039-6)
+
+
+def plugin_rows(settings: dict[str, Any], outdated: Callable[[], list[Row]]) -> list[Row]:
+    """plugin_row, and with the plugin enabled, the PLUGIN_OUTDATED and PLUGIN_SHADOWING rows
+    in its place (#233, spec 039); outdated reads them only then"""
     row = plugin_row(settings)
     if row.state != "PLUGIN_OK":
         return [row]
-    return [Row("PLUGIN_OUTDATED", detail) for detail in outdated()] or [row]
+    return outdated() or [row]
 
 
 HOST, REPO = "host", "repo"  # [agents] plugin (spec 033): per person, or committed for the repo
@@ -491,7 +497,7 @@ def host_install(plugins: object, project: Path) -> tuple[str, str] | None:
 
 
 def host_plugin_rows(
-    settings: dict[str, Any], plugins: Callable[[], object], project: Path, outdated: Callable[[], list[str]]
+    settings: dict[str, Any], plugins: Callable[[], object], project: Path, outdated: Callable[[], list[Row]]
 ) -> list[Row]:
     """The Plugin rows with plugin = "host" (spec 033). plugins is `claude plugin list --json`
     parsed, None when claude isn't on PATH; it and outdated are read only when the settings
@@ -516,7 +522,7 @@ def host_plugin_rows(
         scope, version = install
         keyed = "" if scope == "user" else f" for {project}"
         row = Row("PLUGIN_OK", f"{PLUGIN} {version} is installed at {scope} scope{keyed}")
-    return [Row("PLUGIN_OUTDATED", detail) for detail in outdated()] or [row]
+    return outdated() or [row]
 
 
 def listed_plugins(ws: ModuleType) -> object:
@@ -552,20 +558,22 @@ def watch_module() -> ModuleType:
     return module
 
 
-def outdated_installs(repo: str, repo_dir: Path, ws: ModuleType) -> list[str]:
-    """watch_state.py's SHIPMILL_OUTDATED rows, each as `<subject>: <detail>`: the installs that
-    apply to the repo's folder and the gate's checkout, with the fix to run in each; then, when
-    the install a session loads is one of them, SHIPMILL_VERSION's words for it: the gate's
-    sessions run that release's skills until it is updated (spec 031)"""
+def outdated_installs(repo: str, repo_dir: Path, ws: ModuleType) -> list[Row]:
+    """watch_state.py's SHIPMILL_OUTDATED rows as PLUGIN_OUTDATED, each detail `<subject>:
+    <detail>`: the user install with its single update (spec 039); then, when the install a
+    session loads is behind, SHIPMILL_VERSION's words for it: the gate's sessions run that
+    release's skills until it is updated (spec 031); then its PLUGIN_SHADOWING row, the
+    project- and local-scope installs on the host with plugin-clean's fix (S-039-6)"""
     try:
         rows = ws.shipmill_rows(repo, repo_dir)
     except ws.Refused as refused:
         fail(str(refused).removeprefix("error: "))
-    found = [f"{r.subject}: {r.detail}" for r in rows if r.state == "SHIPMILL_OUTDATED"]
+    found = [Row("PLUGIN_OUTDATED", f"{r.subject}: {r.detail}") for r in rows if r.state == "SHIPMILL_OUTDATED"]
     for r in rows:
         behind = SESSION_BEHIND.search(r.detail) if r.state == "SHIPMILL_VERSION" else None
         if behind is not None:
-            found.append(f"gate: {behind.group(1)}")
+            found.append(Row("PLUGIN_OUTDATED", f"gate: {behind.group(1)}"))
+    found += [Row(r.state, f"{r.subject}: {r.detail}") for r in rows if r.state == SHADOWING]
     return found
 
 
@@ -1025,7 +1033,7 @@ def main() -> int:
         create_labels(args.repo, wanted, missing, write)
         missing = []
 
-    def outdated() -> list[str]:
+    def outdated() -> list[Row]:
         return outdated_installs(args.repo, repo_dir, ws)
 
     plugin = (

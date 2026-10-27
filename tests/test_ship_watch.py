@@ -19,7 +19,6 @@ from shipmill import status as shipmill_status
 from shipmill.autonomy import AutonomyPolicy, Hold
 from shipmill.config import Table
 from shipmill.gate import parse_findings
-from shipmill.plugin import unloaded_fix
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-ship-watch" / "scripts" / "watch_state.py"
 NOW = dt.datetime(2026, 10, 3, 12, 0, tzinfo=dt.timezone.utc)  # noqa: UP017 (runs under 3.10 too, as the script does)
@@ -1376,31 +1375,40 @@ FOLDERS = [Path("/work/r"), Path("/work/r/tmp/shipmill-gate")]
 
 
 def test_an_install_behind_the_latest_release_needs_an_update(ws: ModuleType) -> None:
-    # #196: the gate's checkout had a local install pinned at 0.14.0 while v0.24.0 was out
-    installed = registry(install("user", "0.24.0"), install("local", "0.14.0", "/work/r/tmp/shipmill-gate"))
+    # #196: the gate's checkout had a local install pinned at 0.14.0 while v0.24.0 was out;
+    # spec 039: a keyed install is the one PLUGIN_SHADOWING row, never an update in its folder
+    installed = registry(install("user", "0.23.0"), install("local", "0.14.0", "/work/r/tmp/shipmill-gate"))
     rows = ws.plugin_rows(installed, MARKETPLACE, "v0.24.0", FOLDERS)
+    clean = f"uvx shipmill=={ws.plugin_version()} plugin-clean"
     assert [(r.state, r.subject, r.detail) for r in rows] == [
         (
             "SHIPMILL_VERSION",
             "shipmill",
-            "latest v0.24.0; plugin: user 0.24.0, local 0.14.0 (/work/r/tmp/shipmill-gate)",
+            "latest v0.24.0; plugin: user 0.23.0, local 0.14.0 (/work/r/tmp/shipmill-gate)",
         ),
         (
             "SHIPMILL_OUTDATED",
-            "plugin local",
-            "0.14.0, latest v0.24.0; in /work/r/tmp/shipmill-gate: "
-            "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope local",
+            "plugin user",
+            "0.23.0, latest v0.24.0; "
+            "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user",
+        ),
+        (
+            "PLUGIN_SHADOWING",
+            "plugin keyed",
+            "1 project- or local-scope install of shipmill@shipmill (0.14.0, 1 folder, 1 missing)"
+            f" shadows the user install; {clean}",
         ),
     ]
     assert "SHIPMILL_OUTDATED" in ws.ACTION and "SHIPMILL_OUTDATED" not in ws.AGENT
     assert "SHIPMILL_VERSION" not in ws.ACTION
 
 
-def test_installs_for_other_folders_are_left_out(ws: ModuleType) -> None:
+def test_installs_for_other_folders_are_left_out_of_the_version_row(ws: ModuleType) -> None:
     installed = registry(install("local", "0.1.0", "/elsewhere"), install("project", "0.2.0", "/work/r/.claude/wt"))
     rows = ws.plugin_rows(installed, MARKETPLACE, "v0.24.0", FOLDERS)
-    assert [(r.state, r.detail) for r in rows] == [
-        ("SHIPMILL_VERSION", "latest v0.24.0; plugin: not installed for this repo on this host")
+    assert [(r.state, r.detail.partition(" (")[0]) for r in rows] == [
+        ("SHIPMILL_VERSION", "latest v0.24.0; plugin: not installed for this repo on this host"),
+        ("PLUGIN_SHADOWING", "2 project- or local-scope installs of shipmill@shipmill"),  # S-039-4: any folder
     ]
 
 
@@ -1443,79 +1451,26 @@ def test_a_linked_worktree_is_its_main_checkouts_project(ws: ModuleType) -> None
     assert ws.main_checkout(Path("/srv/bare"), "/srv/bare\n") == Path("/srv/bare")  # a bare repo is its own
     folders = [Path("/work/r"), ws.main_checkout(gate, "/work/r/.git")]
     installed = registry(install("local", "0.24.0", "/work/r"), install("local", "0.14.0", str(gate)))
-    assert states(ws.plugin_rows(installed, MARKETPLACE, "v0.24.0", folders)) == ["SHIPMILL_VERSION"]
+    rows = ws.plugin_rows(installed, MARKETPLACE, "v0.24.0", folders)
+    assert states(rows) == ["SHIPMILL_VERSION", "PLUGIN_SHADOWING"]  # spec 039: no SHIPMILL_OUTDATED for either
 
 
 GATE = Path("/work/r/tmp/shipmill-gate")
 
 
-def test_the_repos_install_and_the_gate_checkouts_are_separate_rows(ws: ModuleType) -> None:
-    # #233: `update --scope project` in /work/r updated the nested gate install, so the repo's
-    # stayed at 0.31.1; and the gate checkout's own 0.25.0 was never reported
+@pytest.mark.parametrize("scope", ["project", "local"])
+def test_the_repos_install_and_the_gate_checkouts_are_one_shadowing_row(ws: ModuleType, scope: str) -> None:
+    # #233, #240, #485: the repo's and the gate checkout's keyed installs, once a row each with
+    # a reinstall or a hand edit, are counted in spec 039's one row, whose fix is plugin-clean
     installed = registry(
-        install("user", "0.32.1"), install("project", "0.31.1", "/work/r"), install("project", "0.25.0", str(GATE))
+        install("user", "0.32.1"), install(scope, "0.31.1", "/work/r"), install(scope, "0.25.0", str(GATE))
     )
     rows = ws.plugin_rows(installed, MARKETPLACE, "v0.32.1", [Path("/work/r")], [GATE])
-    assert [(r.state, r.detail) for r in rows if r.state == "SHIPMILL_OUTDATED"] == [
-        (
-            "SHIPMILL_OUTDATED",
-            "0.31.1, latest v0.32.1; in /work/r: claude plugin marketplace update shipmill"
-            " && claude plugin uninstall shipmill@shipmill --scope project"
-            " && claude plugin install shipmill@shipmill --scope project"
-            " (`update` picks the nested install in /work/r/tmp/shipmill-gate, a Claude Code bug)",
-        ),
-        (
-            "SHIPMILL_OUTDATED",
-            f"0.25.0, keyed on the gate's linked worktree {GATE}, which no session loads; {unloaded(GATE)}",
-        ),
-    ]
-
-
-def test_s031_16_the_repos_and_the_gate_checkouts_local_installs_are_separate_rows(ws: ModuleType) -> None:
-    # #240: shipmill's own layout, both installs at local scope; #485, spec 031: no session loads
-    # the one keyed on the gate's linked worktree and no `claude plugin` command reaches it, so its
-    # row's fix deletes its entry by hand, at any version
-    installed = registry(install("local", "0.33.1", "/work/r"), install("local", "0.25.0", str(GATE)))
-    rows = ws.plugin_rows(installed, MARKETPLACE, "v0.33.2", [Path("/work/r")], [GATE])
-    assert [(r.subject, r.detail, r.fix) for r in rows if r.state == "SHIPMILL_OUTDATED"] == [
-        (
-            "plugin local",
-            "0.33.1, latest v0.33.2; in /work/r: claude plugin marketplace update shipmill"
-            " && claude plugin uninstall shipmill@shipmill --scope local"
-            " && claude plugin install shipmill@shipmill --scope local"
-            " (`update` picks the nested install in /work/r/tmp/shipmill-gate, a Claude Code bug)",
-            "in /work/r: claude plugin marketplace update shipmill"
-            " && claude plugin uninstall shipmill@shipmill --scope local"
-            " && claude plugin install shipmill@shipmill --scope local"
-            " (`update` picks the nested install in /work/r/tmp/shipmill-gate, a Claude Code bug)",
-        ),
-        (
-            "plugin local",
-            f"0.25.0, keyed on the gate's linked worktree {GATE}, which no session loads; {unloaded(GATE)}",
-            unloaded(GATE),
-        ),
-    ]
-
-
-def unloaded(where: Path) -> str:
-    return (
-        f'delete the entry with "projectPath": "{where}" under "shipmill@shipmill"'
-        " in ~/.claude/plugins/installed_plugins.json"
+    assert [r.state for r in rows if r.state != "SHIPMILL_VERSION"] == ["PLUGIN_SHADOWING"]
+    assert rows[1].detail.startswith(
+        "2 project- or local-scope installs of shipmill@shipmill (0.25.0 to 0.31.1, 2 folders, 2 missing)"
     )
-
-
-def test_s031_16_the_unloaded_fix_is_the_gates(ws: ModuleType) -> None:
-    assert ws.unloaded_fix(str(GATE)) == unloaded_fix(GATE) == unloaded(GATE)
-
-
-def test_a_nested_install_at_another_scope_keeps_the_update(ws: ModuleType) -> None:
-    installed = registry(install("project", "0.31.1", "/work/r"), install("local", "0.32.1", str(GATE)))
-    rows = ws.plugin_rows(installed, MARKETPLACE, "v0.32.1", [Path("/work/r")], [GATE])
-    assert [r.detail for r in rows if r.state == "SHIPMILL_OUTDATED"] == [
-        "0.31.1, latest v0.32.1; in /work/r: claude plugin marketplace update shipmill"
-        " && claude plugin update shipmill@shipmill --scope project",
-        f"0.32.1, keyed on the gate's linked worktree {GATE}, which no session loads; {unloaded(GATE)}",
-    ]
+    assert rows[1].fix == f"uvx shipmill=={ws.plugin_version()} plugin-clean"
 
 
 def test_a_user_installs_fix_refreshes_the_marketplace_first(ws: ModuleType) -> None:
@@ -1553,9 +1508,10 @@ def test_the_gate_folder_is_launchds_then_the_conventional_checkout(ws: ModuleTy
     assert ws.gate_folder(tmp_path, None) == tmp_path / "tmp" / "shipmill-gate"
 
 
-def test_without_gates_a_gate_keyed_install_is_still_left_out(ws: ModuleType) -> None:
+def test_without_gates_a_gate_keyed_install_is_still_left_out_of_the_version_row(ws: ModuleType) -> None:
     installed = registry(install("project", "0.32.1", "/work/r"), install("project", "0.25.0", str(GATE)))
-    assert states(ws.plugin_rows(installed, MARKETPLACE, "v0.32.1", [Path("/work/r")])) == ["SHIPMILL_VERSION"]
+    rows = ws.plugin_rows(installed, MARKETPLACE, "v0.32.1", [Path("/work/r")])
+    assert rows[0].detail == "latest v0.32.1; plugin: project 0.32.1 (/work/r)"
 
 
 def test_a_project_path_that_is_not_a_string_is_refused(ws: ModuleType) -> None:
@@ -1589,7 +1545,8 @@ def test_s031_16_a_gate_checkout_that_is_its_own_clone_is_a_project_not_unloaded
     folders, gates = ws.plugin_folders(main, None)
     assert folders == [main, clone] and gates == [clone]
     rows = ws.plugin_rows(registry(install("local", "0.32.1", str(clone))), MARKETPLACE, "v0.32.1", folders, gates)
-    assert states(rows) == ["SHIPMILL_VERSION"]
+    assert states(rows) == ["SHIPMILL_VERSION", "PLUGIN_SHADOWING"]  # a project's install, counted (S-039-4)
+    assert rows[0].detail == f"latest v0.32.1; plugin: local 0.32.1 ({clone})"
 
 
 def test_a_folder_outside_git_is_its_own_project(ws: ModuleType, tmp_path: Path) -> None:
@@ -1654,7 +1611,8 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
     )
     incidents = [issue(ws, 3, ("incident",), closing_prs=(12,), title=TITLE), issue(ws, 4, ("incident",), title=TITLE)]
     closed = issue(ws, 5, ("incident",), closed=NOW - dt.timedelta(hours=5), title=TITLE)
-    outdated = ws.plugin_rows(registry(install("project", "0.1.0", "/work/r")), MARKETPLACE, "v0.24.0", FOLDERS)
+    keyed = registry(install("user", "0.1.0"), install("project", "0.1.0", "/work/r"))
+    outdated = ws.plugin_rows(keyed, MARKETPLACE, "v0.24.0", FOLDERS)
     shadowed_copy(home)
     stale = json.dumps({"worktrees": [worktree("tmp/wt-old", "KEPT", "2 commit(s) not landed", 200)]})
     rows: list[Any] = [
@@ -1672,7 +1630,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         *ws.incident_rows(incidents, "incident", NOW, REPO),
         *ws.postmortem_rows([closed], "incident", [], REPO, NOW),
         *ws.settings_rows(REPO, False),
-        *[r for r in outdated if r.state == "SHIPMILL_OUTDATED"],
+        *[r for r in outdated if r.state in ("SHIPMILL_OUTDATED", "PLUGIN_SHADOWING")],
         *ws.gate_app_rows({"prompt": '"/github-issue-triage {repo}"'}),
         *ws.dead_rows("dev.shipmill.gate.o.r", DEAD_AUTH_LOG, None),
         *ws.chain_no_gate_rows(
@@ -1731,9 +1689,9 @@ FIXES = {
     "NEEDS_DECISION": ["answer the needs-decision question on o/r #4"],
     "BRANCH_DELETE_OFF": ["gh repo edit o/r --delete-branch-on-merge"],
     "SHIPMILL_OUTDATED": [
-        "in /work/r: claude plugin marketplace update shipmill"
-        " && claude plugin update shipmill@shipmill --scope project"
+        "claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user"
     ],
+    "PLUGIN_SHADOWING": ["uvx shipmill=={version} plugin-clean"],
     "GATE_NO_APP": ["run shipmill-setup's step 3 (app-create), then set app_id in [agents]"],
     "GATE_SESSIONS_DEAD": ["claude auth login"],
     "CHAIN_NO_GATE": ["set up a gate on x/b (/shipmill:shipmill-setup x/b), or do x/b#2 by hand"],
@@ -1805,7 +1763,8 @@ def test_s011_3_each_fixed_state_carries_the_fix_behaviour_names(ws: ModuleType,
     found = fixed_rows(ws, tmp_path)
     copy = tmp_path / ".agents" / "skills" / "github-pr-triage"
     assert [r.fix for r in found[state]] == [
-        f.format(copy=copy, chains=ws.CHAINS, upstream=ws.UPSTREAM_STATE) for f in FIXES[state]
+        f.format(copy=copy, chains=ws.CHAINS, upstream=ws.UPSTREAM_STATE, version=ws.plugin_version())
+        for f in FIXES[state]
     ]
 
 

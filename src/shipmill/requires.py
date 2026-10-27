@@ -67,7 +67,7 @@ def unmet(bound: str, version: str) -> str:
     return (
         f"{FILE} requires shipmill {bound}; this is {version}\n"
         "update the plugin: claude plugin marketplace update shipmill"
-        " && claude plugin update shipmill@shipmill --scope <scope>\n"
+        " && claude plugin update shipmill@shipmill --scope user\n"
         "or the CLI: uv tool upgrade shipmill"
     )
 

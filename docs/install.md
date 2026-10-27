@@ -12,7 +12,7 @@ need:
 The fast path, from the root of your repo:
 
 ```bash
-claude plugin marketplace add shipmill/shipmill && claude plugin install shipmill@shipmill && claude "/shipmill:shipmill-setup"
+claude plugin marketplace add shipmill/shipmill && claude plugin install shipmill@shipmill --scope user && claude "/shipmill:shipmill-setup"
 ```
 
 It adds the marketplace, installs the plugin (both are safe to rerun), and starts Claude
@@ -97,11 +97,45 @@ The skills are then `/shipmill:github-issue-triage`, `/shipmill:github-pr-triage
 on; [flow.md](flow.md) shows what to say to each.
 
 The plugin is installed per person by default (spec 033): each person who wants shipmill
-installs it on their own host, at user scope or at local or project scope for the repo's
-folder, and nothing in the repo turns it on. A gate session loads the install that applies
-to its checkout, at any scope (D-50), so the maintainer's own user-scope install is enough
-for the gate. Keep this default for a repo that takes outside contributions: see
+installs it on their own host, and nothing in the repo turns it on. A gate session loads the
+install that applies to its checkout (D-50), so the maintainer's own install is enough for
+the gate. Keep this default for a repo that takes outside contributions: see
 [Contributors](#contributors).
+
+### One install, at user scope
+
+Keep one install of `shipmill@shipmill` on a host, at user scope (spec 039). Every folder
+loads it, gate checkouts included, and one command, run anywhere, updates it:
+
+```bash
+claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user
+```
+
+A repo's `.claude/settings.json` may enable the plugin (`enabledPlugins`, below); that turns
+it on for the repo, and the user install supplies it. An install at project or local scope
+is keyed on one folder and wins over the user install there, so that folder keeps loading
+its own release until someone updates it in that folder: with many of them, sessions run
+stale skills. shipmill never creates one or prints a command that does. `doctor`, `status`,
+the setup checklist, and the gate's tick report every project- and local-scope install on
+the host as one row, `PLUGIN_SHADOWING`, with their count, versions, folders, and how many
+of those are missing, and the fix:
+
+```bash
+shipmill plugin-clean          # a dry run: one line per install, deepest folder first
+shipmill plugin-clean --apply  # remove them, from your terminal
+```
+
+The dry run changes nothing. `--apply` runs only with a terminal on standard input, so no
+agent session runs it, and only when the host has a user-scope install (else it names
+`claude plugin install shipmill@shipmill --scope user`). For each install it runs `claude
+plugin uninstall shipmill@shipmill --scope <scope>` in its folder and writes the folder's
+`.claude/settings.json` and `.claude/settings.local.json` back byte for byte, since the
+uninstall also drops the plugin from `enabledPlugins`; it then checks `claude plugin list
+--json` and stops, exit 2, on any change beyond that install. A folder that no longer
+exists is created for the uninstall and removed again. An install keyed on a linked git
+worktree is a `manual` line: no `claude plugin` command reaches it, so you delete its entry
+in `~/.claude/plugins/installed_plugins.json` by hand, as the line says. The last line is the
+user install's update when it lags. Exit 0 when no keyed install is left, 1 when some are.
 
 To turn the plugin on for everyone who opens the repo instead, set `[agents] plugin = "repo"`
 in `.github/shipmill.toml` and commit this to its `.claude/settings.json`. Then every
@@ -223,9 +257,10 @@ $CR plan --lane stable --dry-run
   `incident_label`
 - No `[tool.uv.sources]` entry taken from a local path, which CI and users don't have
 - No branch named `shipmill` on origin, which would block the `shipmill/<tag>` work branches
-- The `shipmill@shipmill` plugin installs on this host for the repo's folder and its gate
-  checkout, as `status` reads them: a WARN with the fix for each one behind the latest
-  release (read with `gh`); without `claude` on PATH it says they weren't read
+- The `shipmill@shipmill` plugin installs on this host, as `status` reads them: a WARN with
+  the update when the user install is behind the latest release (read with `gh`), and a
+  `PLUGIN_SHADOWING` WARN naming `plugin-clean` for the project- and local-scope installs;
+  without `claude` on PATH it says they weren't read
 
 Each `plan` prints JSON; its `version` must be the next version you expect. If it isn't,
 fix the bump lists or the tags, not the version.
@@ -254,8 +289,9 @@ fix the bump lists or the tags, not the version.
    into `.claude/settings.json` only with `plugin = "repo"`; commit that in a follow-up pull
    request. With the default, `plugin = "host"`, it never touches that file: the checklist
    reads `PLUGIN_OK` when an install applies to the repo's folder, `PLUGIN_MISSING` with the
-   install command when none does, and `PLUGIN_COMMITTED` when the file still enables the
-   plugin, so you keep it with `plugin = "repo"` or delete it. It turns
+   install command when none does, `PLUGIN_COMMITTED` when the file still enables the
+   plugin, so you keep it with `plugin = "repo"` or delete it, and `PLUGIN_SHADOWING` when
+   the host has project- or local-scope installs, which `--fix` leaves. It turns
    on the repo setting that deletes a pull request's branch when it merges, too: stacked
    pull requests are retargeted only when the branch under them is deleted
 
@@ -322,22 +358,24 @@ modes](design/agent-modes.md) has the details.
    project, then user, then managed; a linked worktree's project is its main checkout, so an
    install keyed on the worktree itself is never loaded). Before it starts a session the
    gate reads that install and the latest release, and the tick prints one line, with its
-   fix, for each install that lags it, an install keyed on the gate's linked worktree, the
-   gate's own CLI when it lags, and a config whose `requires` the version sessions load
-   doesn't meet; the session starts all the same. With `notify = true` the first gate on
-   the host to find a lagging install sends one desktop notification per release. The one
-   hold is PyPI: while it answers 404 for the version sessions load (the release tag moves a
-   few minutes before the package is uploaded), the tick prints `plugin <version> waits for
-   PyPI` and the next tick tries again. A failed read is printed and the session starts.
-   `status`, `doctor`, and the setup checklist report every install that is behind, in the
-   repo's folder and in the gate's checkout, each with its own fix, and name the one a
-   session loads.
+   fix, for the user install when it lags, each project- or local-scope install that
+   applies, at any version, with `plugin-clean` as its fix, an install keyed on the gate's
+   linked worktree, the gate's own CLI when it lags, and a config whose `requires` the
+   version sessions load doesn't meet; the session starts all the same. With `notify =
+   true` the first gate on the host to find a lagging install sends one desktop
+   notification per release. The one hold is PyPI: while it answers 404 for the version
+   sessions load (the release tag moves a few minutes before the package is uploaded), the
+   tick prints `plugin <version> waits for PyPI` and the next tick tries again. A failed
+   read is printed and the session starts. `status`, `doctor`, and the setup checklist
+   report the user install when it is behind and the keyed installs as one
+   `PLUGIN_SHADOWING` row ([One install, at user scope](#one-install-at-user-scope)), and
+   name the install a session loads.
 
    `[agents] plugin_update` was removed (spec 031): 0.60.0 ignored it, and since 0.61.0 a
    config with the key, whatever its value, exits 2 with `[agents] plugin_update was removed
    (spec 031); delete it`, and `doctor` fails the policy with that line. To bring
-   an install up to date, run the fix `doctor` or `status` prints, `claude plugin
-   marketplace update shipmill && claude plugin update shipmill@shipmill --scope <scope>`
+   the install up to date, run the fix `doctor` or `status` prints, `claude plugin
+   marketplace update shipmill && claude plugin update shipmill@shipmill --scope user`
 
    A config may name the oldest shipmill it is written for with a top-level `requires =
    ">=X.Y"` ([the policy](release-lanes.md#the-policy)): an older CLI exits 2 naming the
@@ -611,7 +649,7 @@ the gate's own environment to choose another ceiling.
    (`item`, `since`, `waited_hours`, `notified`, `error`). `mode` is null on a HELD,
    WAITING, or RUNNING tick, which reads no config. `loaded` is the install a launch's
    session would load (spec 031: `project`, `scope`, `folder`, `version`, `latest`, `lags`,
-   `unloaded`, `cli`, `requires`, and `error`), and `pypi` PyPI's answer for its version
+   `shadowing` (spec 039), `unloaded`, `cli`, `requires`, and `error`), and `pypi` PyPI's answer for its version
    (`version`, `status`, `error`), each null on a tick that reached no launch. Releases up
    to 0.59.1 also gave `plugin`, the daily update of `plugin_update = true`, which is gone
 

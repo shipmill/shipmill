@@ -291,16 +291,12 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
                   than <latest>" when it lags, which the gate reports and still starts
                   sessions on, spec 031), and the marketplace's source when it isn't
                   shipmill/shipmill (reported, never an action)
-  SHIPMILL_OUTDATED  one row per install of those older than the latest release, with the
-                  command that updates it, run in its folder, after `claude plugin
-                  marketplace update shipmill` (Claude Code updates from its local copy of
-                  the marketplace, which may predate the release). When an install at the same
-                  scope is keyed on a folder nested in it (the gate's checkout in the repo),
-                  `claude plugin update` picks the nested one (a Claude Code bug), so the
-                  fix reinstalls the folder's own instead. An install keyed on a gate
-                  checkout that is a linked worktree is a row at any version: no session
-                  loads it and no `claude plugin` command reaches it, so the fix deletes its
-                  entry in ~/.claude/plugins/installed_plugins.json by hand (#485). One more
+  SHIPMILL_OUTDATED  the user-scope install when it is older than the latest release, with
+                  its one update, run anywhere: `claude plugin marketplace update shipmill &&
+                  claude plugin update shipmill@shipmill --scope user` (Claude Code updates
+                  from its local copy of the marketplace, which may predate the release; spec
+                  039). A project- or local-scope install is never this row: it is counted
+                  in PLUGIN_SHADOWING. One more
                   row, subject "shipmill on PATH" (#583), when the person's CLI differs from
                   the install a session loads: the first `shipmill` on PATH outside the
                   environment running the check (a folder whose shipmill resolves into it, or
@@ -312,6 +308,13 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
                   #628), its fix is `uv tool upgrade shipmill`, newer the install's update.
                   No row without one on PATH or without an install a session loads. An
                   action for a person, never an agent's
+  PLUGIN_SHADOWING  one row, subject "plugin keyed", for every project- and local-scope
+                  install of shipmill@shipmill on the host, keyed on any folder and at any
+                  version (spec 039): each shadows the user install in its folder. The detail
+                  gives their count, lowest and highest versions, folders, and how many of
+                  those are missing; the fix is `uvx shipmill==<the plugin's version>
+                  plugin-clean`, after `claude plugin install shipmill@shipmill --scope user`
+                  on a host with no user install. An action for a person, never an agent's
   SKILL_SHADOWED  one row per link or copy of a shipmill skill (a folder name under skills/)
                   in ~/.claude/skills or ~/.agents/skills, a folder with a SKILL.md (a broken
                   link or a plain file loads as nothing), that doesn't resolve into the
@@ -348,7 +351,8 @@ Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when an
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
 ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MISSING, GATE_SESSIONS_DEAD,
-SKILL_SHADOWED, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE, MILESTONE_OVERTAKEN,
+SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE,
+MILESTONE_OVERTAKEN,
 UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, or VETOED row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
 milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
@@ -494,6 +498,7 @@ ACTION = {
     "DIRECTION_MISSING",
     "GATE_SESSIONS_DEAD",
     "SKILL_SHADOWED",
+    "PLUGIN_SHADOWING",
     "UPGRADE_PENDING",
     "DIRECTION_PENDING",
     "CHAIN_NO_GATE",
@@ -1599,7 +1604,7 @@ def requires_unmet(bound: str, version: str) -> str:
     return (
         f"{POLICY.as_posix()} requires shipmill {bound}; this is {version}\n"
         "update the plugin: claude plugin marketplace update shipmill"
-        " && claude plugin update shipmill@shipmill --scope <scope>\n"
+        " && claude plugin update shipmill@shipmill --scope user\n"
         "or the CLI: uv tool upgrade shipmill"
     )
 
@@ -3510,35 +3515,55 @@ def dead_rows(label: str, log: str | None, log_path: str | None) -> list[Row]:
     return [Row("GATE_SESSIONS_DEAD", label, line[len(SESSION_DEAD) :], fix)]
 
 
-def plugin_fix(scope: str, where: str | None, keyed: list[tuple[str, Path]]) -> str:
-    """The command that updates one install, run in its folder. Claude Code's `plugin update
-    --scope project` picks an install at the same scope keyed on a folder nested in the cwd,
-    such as the gate's tmp/shipmill-gate, over the cwd's own (#233, a Claude Code bug); with
-    one nested, the fix reinstalls the folder's own at that scope instead. Either way it
-    refreshes the marketplace first: Claude Code updates from its local copy of it, which may
-    predate the release (#477); the refresh isn't folder-specific, so it runs there too"""
-    refresh = f"claude plugin marketplace update {PLUGIN.partition('@')[2]}"
-    update = f"{refresh} && claude plugin update {PLUGIN} --scope {scope}"
-    if where is None:
-        return update
-    folder = Path(where)
-    nested = sorted(p for s, p in keyed if s == scope and folder in p.parents)
-    if not nested:
-        return f"in {where}: {update}"
-    again = (
-        f"{refresh} && claude plugin uninstall {PLUGIN} --scope {scope}"
-        f" && claude plugin install {PLUGIN} --scope {scope}"
-    )
-    return f"in {where}: {again} (`update` picks the nested install in {nested[0]}, a Claude Code bug)"
+# Spec 039: the one supported install is at user scope; its update refreshes the marketplace
+# first (Claude Code updates from its local copy of it, #477) and names no folder. shipmill's
+# plugin.USER_UPDATE and USER_INSTALL, the same text
+USER_UPDATE = (
+    f"claude plugin marketplace update {PLUGIN.partition('@')[2]} && claude plugin update {PLUGIN} --scope user"
+)
+USER_INSTALL = f"claude plugin install {PLUGIN} --scope user"
+KEYED_SCOPES = ("local", "project")  # the scopes Claude Code keys an install on a folder at
 
 
-INSTALLED = "~/.claude/plugins/installed_plugins.json"  # Claude Code's record of installs, never written
+def shadow_fix(user: bool) -> str:
+    """S-039-4, S-039-5: plugin-clean's dry run, run as the plugin pins the CLI (spec 031);
+    without a user install, that install first"""
+    clean = " ".join([*shipmill_cli(), "plugin-clean"])
+    return clean if user else f"{USER_INSTALL} && {clean}"
 
 
-def unloaded_fix(where: str) -> str:
-    """S-031-16: an install keyed on a linked worktree is reached by no `claude plugin` command
-    run there, so its entry is deleted by hand; shipmill's plugin.unloaded_fix, the same text"""
-    return f'delete the entry with "projectPath": "{where}" under "{PLUGIN}" in {INSTALLED}'
+def plugin_fix(scope: str, user: bool) -> str:
+    """The fix for one install (spec 039): the user install's single update; a project- or
+    local-scope one is removed with plugin-clean, never updated in its folder"""
+    return shadow_fix(user) if scope in KEYED_SCOPES else USER_UPDATE
+
+
+def plural(count: int, one: str, many: str) -> str:
+    return f"{count} {one if count == 1 else many}"
+
+
+def shadowing_row(keyed: list[tuple[str, Path]], versions: dict[tuple[str, Path], str], user: bool) -> Row | None:
+    """S-039-4: every project- and local-scope install of the plugin on the host, whichever
+    folder it is keyed on and at any version, as one row: their count, lowest and highest
+    versions, folders, and how many of those are missing, with plugin-clean's fix. None without"""
+    if not keyed:
+        return None
+    keys = {}
+    for k in keyed:
+        key = version_key(f"v{versions[k]}")
+        if key is None:
+            raise Refused(f"error: {PLUGIN} {k[0]} install keyed on {k[1]} has version {versions[k]!r}")
+        keys[versions[k]] = key
+    found = sorted(keys, key=lambda v: keys[v])
+    span = found[0] if len(found) == 1 else f"{found[0]} to {found[-1]}"
+    folders = {p for _, p in keyed}
+    missing = sum(1 for p in folders if not p.is_dir())
+    installs = plural(len(keyed), "project- or local-scope install", "project- or local-scope installs")
+    what = f"{installs} of {PLUGIN} ({span}, {plural(len(folders), 'folder', 'folders')}, {missing} missing)"
+    fix = shadow_fix(user)
+    verb = "shadows" if len(keyed) == 1 else "shadow"
+    said = f"{verb} the user install" if user else "with no user install to load in their place"
+    return Row("PLUGIN_SHADOWING", "plugin keyed", f"{what} {said}; {fix}", fix)
 
 
 SESSION_PRECEDENCE = ("local", "project", "user", "managed")
@@ -3719,11 +3744,10 @@ def plugin_rows(
     """The plugin's installs that apply to the repo, against the latest release: from `claude
     plugin list --json` and `claude plugin marketplace list --json`, parsed (None when claude
     isn't on PATH). An install applies at user scope, or at local or project scope in one of
-    the folders (the projects Claude Code loads). Each install behind the release is its own
-    SHIPMILL_OUTDATED row, with the fix to run in its folder (S-031-15). An install keyed on
-    one of the gates that isn't one of the folders (a gate checkout that is a linked worktree,
-    which Claude Code keys installs of their own on, #233, but never loads, #485) is its own
-    SHIPMILL_OUTDATED row too, at any version, whose fix deletes its entry by hand (S-031-16).
+    the folders (the projects Claude Code loads) or the gates. The user install behind the
+    release is a SHIPMILL_OUTDATED row with its single update (S-039-2). Every project- and
+    local-scope install on the host, keyed on any folder and at any version, is counted in one
+    PLUGIN_SHADOWING row, whose fix is plugin-clean (S-039-4): none is a row of its own.
     session, the project a session in the gate's folder loads as, adds the install that
     session would load to SHIPMILL_VERSION, and says when it is behind; the gate reports it
     and still starts sessions (spec 031). cli, read only when a session loads an install, is
@@ -3754,18 +3778,16 @@ def plugin_rows(
             unkeyed.append((e["scope"], e["version"]))
         if e["scope"] == "user" or (where is not None and (Path(where) in folders or Path(where) in (gates or []))):
             installs.append((e["scope"], e["version"], where))
+    user = any(scope == "user" for scope, _ in unkeyed)
     rows = []
     for scope, version, where in installs:
         key = version_key(f"v{version}")
         if key is None:
             raise Refused(f"error: {PLUGIN} {scope} install has version {version!r}")
-        if where is not None and Path(where) not in folders:  # keyed on a gate checkout no session loads
-            fix = unloaded_fix(where)
-            detail = f"{version}, keyed on the gate's linked worktree {where}, which no session loads; {fix}"
-            rows.append(Row("SHIPMILL_OUTDATED", f"plugin {scope}", detail, fix))
-        elif key < newest:
-            fix = plugin_fix(scope, where, keyed)
-            rows.append(Row("SHIPMILL_OUTDATED", f"plugin {scope}", f"{version}, latest {latest}; {fix}", fix))
+        if where is None and key < newest:  # a keyed install is the shadowing row's (S-039-4)
+            rows.append(
+                Row("SHIPMILL_OUTDATED", f"plugin {scope}", f"{version}, latest {latest}; {USER_UPDATE}", USER_UPDATE)
+            )
     found = ", ".join(f"{scope} {version}" + (f" ({where})" if where else "") for scope, version, where in installs)
     detail = f"latest {latest}; plugin: {found or 'not installed for this repo on this host'}"
     if session is not None:
@@ -3780,9 +3802,10 @@ def plugin_rows(
             detail += f"; a session loads {loads[0]} {loads[1]} ({session}){behind}"
             person = None if cli is None else cli()
             if person is not None:
-                where = str(session) if loads[0] in ("local", "project") else None
-                row = path_cli_row(person, loads[1], plugin_fix(loads[0], where, keyed))
+                row = path_cli_row(person, loads[1], plugin_fix(loads[0], user))
                 rows += [] if row is None else [row]
+    shadowing = shadowing_row([k for k in keyed if k[0] in KEYED_SCOPES], versions, user)
+    rows += [] if shadowing is None else [shadowing]
     market = PLUGIN.partition("@")[2]
     for m in marketplaces if isinstance(marketplaces, list) else []:
         origin = m.get("repo") if isinstance(m, dict) and m.get("name") == market else None

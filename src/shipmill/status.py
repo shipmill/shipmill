@@ -84,6 +84,7 @@ YOURS_ROWS = (
     "UNTRUSTED",
     "BRANCH_DELETE_OFF",
     "SHIPMILL_OUTDATED",
+    "PLUGIN_SHADOWING",  # S-039-6: a person removes the keyed installs, with plugin-clean
     MILESTONE_OVERTAKEN,
     *CHAIN_ROWS,
 )
@@ -1250,6 +1251,8 @@ def item_lines(facts: Facts) -> list[str]:
         closed = sorted((i.number for i in facts.issues if i.state == state), reverse=True)
         lines += _group(name, [f"{item(repo, n, False)}{check}" for n in closed])
     lines += _fixed("branches", [("merged branches kept", fixed(r)) for r in of("BRANCH_DELETE_OFF")][:1])
+    # S-039-6: the project- and local-scope installs that shadow the user install, with plugin-clean
+    lines += _fixed("plugin", [(r.detail.partition("; ")[0], fixed(r)) for r in of("PLUGIN_SHADOWING")])
     lines += _fixed("upgrade", [upgrade_value(facts, o) for o in facts.upgrades])
     # an upgrade's issue is github-ship-watch's, listed on its upgrade line, never as triage's work
     owned = {o.issue for o in facts.upgrades if o.issue is not None}

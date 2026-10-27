@@ -23,7 +23,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from shipmill.errors import ReleaseError
-from shipmill.plugin import PLUGIN, Runner, effective, listed_installs, session_project, update_command
+from shipmill.plugin import (
+    PLUGIN,
+    USER_INSTALL,
+    Runner,
+    effective,
+    listed_installs,
+    session_project,
+    update_command,
+)
 
 REFUSED = "gh pr merge 1 --rebase"  # what the hook is shown; rebase-merge refuses it in every repo with [agents]
 REFUSAL = "shipmill hook rebase-merge: "  # the refusal's first line starts so
@@ -216,7 +224,7 @@ def self_test(
     if install is None:
         return failed(
             f"no {PLUGIN} install applies to {project}, so a session loads no hooks",
-            f"in {project}: claude plugin install {PLUGIN} --scope project",
+            USER_INSTALL,  # S-039-3: one install at user scope serves every folder
         )
     root = install.files(home)
     hooks_json = root / "hooks" / "hooks.json"

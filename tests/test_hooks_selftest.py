@@ -215,10 +215,12 @@ def test_s026_15_disable_all_hooks_in_a_settings_file_fails(agents_repo: Repo, t
     assert run_test(agents_repo.root, Host(files), home).problem != found.problem
 
 
-def test_s026_15_no_install_applies_fails(agents_repo: Repo, tmp_path: Path) -> None:
+def test_s026_15_s039_3_no_install_applies_fails_with_the_user_scope_install(agents_repo: Repo, tmp_path: Path) -> None:
+    # proves: S-039-3
     found = run_test(agents_repo.root, Host(None, installed=False), tmp_path / "home")
-    assert found.problem is not None and found.problem.startswith("no shipmill@shipmill install applies to")
-    assert found.fix is not None and "claude plugin install shipmill@shipmill --scope project" in found.fix
+    assert found.failed and found.problem is not None
+    assert found.problem.startswith("no shipmill@shipmill install applies to")
+    assert found.fix == "claude plugin install shipmill@shipmill --scope user"
 
 
 def test_s026_15_no_claude_on_path_warns(agents_repo: Repo, tmp_path: Path) -> None:
