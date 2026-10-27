@@ -22,7 +22,10 @@ MARKER = "<!-- shipmill-direction -->"
 BODY = f"{MARKER}\nWrite the product's direction ...\n"
 BOT = "shipmill-o[bot]"
 REPO = "o/r"
-QUESTION = "<!-- shipmill:needs-decision -->\n@amy Decision needed: write this repo's product direction?"
+QUESTION = (
+    "<!-- shipmill:needs-decision -->\n<!-- shipmill:zone direction -->\n"
+    "@amy Decision needed: write this repo's product direction?"
+)
 SESSION = "/shipmill:github-ship-watch o/r"
 TABLE = {"prompt": '"triage"'}
 

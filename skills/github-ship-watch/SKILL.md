@@ -185,6 +185,7 @@ A repo with `[agents]` keeps its direction in `docs/product.md`, and only the ma
 
    ```markdown
    <!-- shipmill:needs-decision -->
+   <!-- shipmill:zone direction -->
    @<login> Decision needed: write this repo's product direction, `docs/product.md`, so the agents work toward it?
 
    1. Write it (recommended): reply with the five sections below in your own words; shipmill turns them into a pull request adding the file, which waits for you to merge it
