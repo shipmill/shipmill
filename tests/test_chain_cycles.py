@@ -2,6 +2,7 @@
 refuses a link that would close a cycle, before any write"""
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -96,6 +97,23 @@ def test_s041_7_the_loop_search_is_deterministic(ch: ModuleType) -> None:
     assert ch.shortest_loop(graph, a) == [a, b, d]
     assert ch.shortest_loop({a: [b], b: []}, a) is None
     assert ch.shortest_loop({a: [a]}, a) == [a]
+
+
+def test_s041_7_the_loop_search_stays_fast_on_a_dense_backlog() -> None:
+    # 100 issues in ten layers of ten, each holding every issue of the next layer and the
+    # last the first: 10**10 shortest loops through each, which enumerating them never
+    # finished, while triage_state.py's cycles reads every open issue each gate tick. A child
+    # process with a timeout fails here instead of hanging the suite
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); import triage_state as t; "
+        "g = {('o', 'r', 1 + 10 * d + i): [('o', 'r', 1 + 10 * ((d + 1) % 10) + j) for j in range(10)] "
+        "for d in range(10) for i in range(10)}; "
+        "print([r[2] for r in t.shortest_loop(g, ('o', 'r', 100))], len([k for k in g if t.shortest_loop(g, k)]))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(SCRIPTS)], capture_output=True, text=True, timeout=30, check=True
+    )
+    assert proc.stdout.strip() == "[1, 11, 21, 31, 41, 51, 61, 71, 81, 100] 100"
 
 
 def test_s041_8_show_json_gives_the_cycle_and_null_for_every_other_row(

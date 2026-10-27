@@ -1232,29 +1232,29 @@ def fold(ref: Ref) -> Ref:
 def shortest_loop(graph: dict[Ref, list[Ref]], node: Ref) -> list[Ref] | None:
     """The shortest loop through node in graph (each issue's open holds, as folded refs, spec
     041), rotated to start at its least ref, ties broken by the least sequence: the loop's
-    refs without the first repeated, or None when node is on no loop. Every shortest loop
-    through node is a path whose i-th ref is i steps from node and the loop's length less i
-    steps back to it, so the search keeps to those"""
-    ahead, behind = distances(graph, node), distances(reverse(graph), node)
-    lengths = [ahead[ref] + 1 for ref in reverse(graph).get(node, []) if ref in ahead]
+    refs without the first repeated, or None when node is on no loop. A ref is on a shortest
+    loop through node exactly when it is i steps from node and the loop's length less i steps
+    back to it. The least loop starts at the least such ref, and is the least shortest path
+    from it to node, then the least from node back to it: each walked by taking the least
+    next ref one step nearer the end. That is linear per step, where enumerating every
+    shortest loop grows exponentially on a dense backlog"""
+    back = reverse(graph)
+    ahead, behind = distances(graph, node), distances(back, node)
+    lengths = [ahead[ref] + 1 for ref in back.get(node, []) if ref in ahead]
     if not lengths:
         return None
     size = min(lengths)
-    best: list[Ref] | None = None
-    paths = [[node]]
-    while paths:
-        path = paths.pop()
-        step = len(path)
-        if step == size:
-            if node in graph.get(path[-1], []):
-                start = path.index(min(path))
-                loop = path[start:] + path[:start]
-                best = loop if best is None or loop < best else best
-            continue
-        paths += [
-            [*path, ref] for ref in graph.get(path[-1], []) if ahead.get(ref) == step and behind.get(ref) == size - step
-        ]
-    return best
+    first = min([node, *(ref for ref, step in ahead.items() if step + behind.get(ref, size) == size and step)])
+
+    def walk(start: Ref, near: dict[Ref, int], steps: int) -> list[Ref]:
+        path = [start]
+        for left in range(steps - 1, 0, -1):
+            path.append(min(ref for ref in graph.get(path[-1], []) if near.get(ref) == left))
+        return path
+
+    if first == node:
+        return walk(node, behind, size)
+    return walk(first, behind, behind[first]) + walk(node, distances(back, first), ahead[first])
 
 
 def reverse(graph: dict[Ref, list[Ref]]) -> dict[Ref, list[Ref]]:
