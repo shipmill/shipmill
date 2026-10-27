@@ -209,8 +209,9 @@ Existing issues change state on the first pass after this ships, with no migrati
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-041-1, S-041-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
+- shipmill/shipmill#714: S-041-1, S-041-2, S-041-3, S-041-4, S-041-5, S-041-6
+- shipmill/shipmill#715: S-041-7, S-041-8, S-041-9, S-041-10, S-041-11
+- shipmill/shipmill#716: S-041-12, S-041-13, S-041-14, S-041-15, S-041-16
 
 ## Verification
 
