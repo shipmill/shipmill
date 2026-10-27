@@ -111,10 +111,11 @@ def test_s031_1_a_release_stamp_moves_plugin_json_and_leaves_the_marketplace_ref
     assert (copy / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8") == before
 
 
-def test_shipmills_own_config_requires_the_first_release_that_knows_after_publish() -> None:
+def test_shipmills_own_config_requires_a_release_that_knows_after_publish() -> None:
     raw = tomllib.loads((ROOT / ".github" / "shipmill.toml").read_text(encoding="utf-8"))
-    assert str(requires.check(raw, Version.parse("0.70.0"))) == ">=0.70.0"  # #617: 0.70.0 brought after_publish
-    with pytest.raises(ReleaseError, match=re.escape("requires shipmill >=0.70.0; this is 0.69.0")):
+    # #617: 0.70.0 brought after_publish; an upgrade may raise the bound past it (#684)
+    assert requires.check(raw, Version.parse(version())) is not None
+    with pytest.raises(ReleaseError, match=re.escape("this is 0.69.0")):
         requires.check(raw, Version.parse("0.69.0"))
 
 
