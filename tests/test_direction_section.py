@@ -30,6 +30,21 @@ def ts() -> ModuleType:
     return load("triage_state", ROOT / "skills" / "github-issue-triage" / "scripts" / "triage_state.py")
 
 
+@pytest.fixture(scope="module")
+def dm() -> ModuleType:
+    return load("shipmill_decisions", ROOT / "skills" / "github-issue-triage" / "scripts" / "decisions.py")
+
+
+@pytest.fixture(scope="module")
+def rt() -> ModuleType:
+    scripts = ROOT / "skills" / "github-ship-watch" / "scripts"
+    sys.path.insert(0, str(scripts))  # retro imports metrics, as when run from its folder
+    try:
+        return load("retro", scripts / "retro.py")
+    finally:
+        sys.path.remove(str(scripts))
+
+
 def raw_section() -> str:
     """The Direction section of the skill, as written, up to the next `## ` heading"""
     text = SKILL.read_text(encoding="utf-8")
@@ -81,6 +96,14 @@ def test_s034_8_the_question_is_the_specs_word_for_word() -> None:
     assert asked == question(SPEC.read_text(encoding="utf-8"), "The question, word for word:")
     assert asked.splitlines()[0] == "<!-- shipmill:needs-decision -->"
     assert GUIDE in asked
+
+
+def test_s034_8_the_question_carries_the_direction_zone_line(rt: ModuleType, dm: ModuleType) -> None:
+    # #672: the retro counts asks per zone from the question's second line
+    asked = question(raw_section(), "The question, word for word:")
+    assert asked.splitlines()[1] == "<!-- shipmill:zone direction -->"
+    assert "direction" in dm.ZONES
+    assert rt.marker(asked) == ("asks", "direction", False)
 
 
 def test_s034_8_the_question_goes_through_the_protocol_under_watch_only() -> None:
