@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import math
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -14,8 +16,74 @@ SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-pr-triage" / "
 # the plugin's pinned CLI (spec 031): the version in .claude-plugin/plugin.json
 PINNED = json.loads((SCRIPT.parents[3] / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
 APP_GH = ["uvx", f"shipmill=={PINNED}", "--repo"]
-CLOSED = json.dumps({"state": "CLOSED", "title": "a fix", "comments": [], "url": "https://github.com/me/demo/issues/5"})
 MARK = "<!-- shipmill:available: stable v1.2.0 -->\n"  # every notice's first line (spec 021)
+
+
+def closed(number: int = 5, *comments: str) -> dict[str, Any]:
+    """A closed issue as shipped.py reads it, with these comments, oldest first"""
+    nodes = [
+        {"author": {"login": "someone"}, "body": c, "createdAt": "2026-10-01T00:00:00Z", "url": ""} for c in comments
+    ]
+    return {
+        "state": "CLOSED",
+        "title": "a fix",
+        "comments": nodes,
+        "url": f"https://github.com/me/demo/issues/{number}",
+    }
+
+
+def variables(cmd: list[str]) -> dict[str, str]:
+    """A gh api graphql call's -f and -F fields but the query"""
+    pairs = (cmd[i + 1].partition("=") for i, a in enumerate(cmd) if a in ("-f", "-F"))
+    return {k: v for k, _, v in pairs if k != "query"}
+
+
+class Forge:
+    """A fake gh answering shipped.py's aliased GraphQL reads as GitHub does, recording each call:
+    prs by commit, issues by number (a number not among them resolves to nothing, as GitHub
+    answers: null data and a NOT_FOUND error), comments paged by `page`"""
+
+    def __init__(
+        self, prs: dict[str, list[dict[str, Any]]] | None = None, issues: dict[int, dict[str, Any]] | None = None
+    ) -> None:
+        self.prs = prs or {}
+        self.issues = issues or {}
+        self.page = 100
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd: list[str]) -> str:
+        self.calls.append(cmd)
+        if cmd[:3] != ["gh", "api", "graphql"]:
+            return ""
+        fields = variables(cmd)
+        if "after" in fields:  # the next page of one issue's comments
+            start = int(fields["after"])
+            return json.dumps({"data": {"repository": {"issueOrPullRequest": self.comments(int(fields["n"]), start)}}})
+        repository: dict[str, Any] = {}
+        errors = []
+        for key, value in fields.items():
+            if re.fullmatch(r"o\d+", key):
+                repository[f"c{key[1:]}"] = {"associatedPullRequests": {"nodes": self.prs.get(value, [])}}
+            elif re.fullmatch(r"n\d+", key):
+                alias, number = f"i{key[1:]}", int(value)
+                if number not in self.issues:
+                    repository[alias] = None
+                    errors.append({"type": "NOT_FOUND", "path": ["repository", alias], "message": f"no {number}"})
+                elif "/pull/" in self.issues[number]["url"]:
+                    repository[alias] = {"url": self.issues[number]["url"]}
+                else:
+                    repository[alias] = {**self.issues[number], **self.comments(number, 0)}
+        out: dict[str, Any] = {"data": {"repository": repository}}
+        return json.dumps({**out, "errors": errors} if errors else out)
+
+    def comments(self, number: int, start: int) -> dict[str, Any]:
+        nodes = self.issues[number]["comments"]
+        more = start + self.page < len(nodes)
+        info = {"hasNextPage": more, "endCursor": str(start + self.page) if more else None}
+        return {"comments": {"pageInfo": info, "nodes": nodes[start : start + self.page]}}
+
+    def reads(self) -> list[list[str]]:
+        return [c for c in self.calls if c[:3] == ["gh", "api", "graphql"]]
 
 
 @pytest.fixture(scope="module")
@@ -33,23 +101,14 @@ def config(root: Path, text: str) -> None:
     (root / ".github" / "shipmill.toml").write_text(text, encoding="utf-8")
 
 
-class FakeGh:
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-
-    def __call__(self, cmd: list[str]) -> str:
-        self.calls.append(cmd)
-        return CLOSED if cmd[:3] == ["gh", "issue", "view"] else ""
-
-
 def test_290_with_app_id_the_notice_posts_through_shipmill_gh(sp: ModuleType, tmp_path: Path) -> None:
     config(tmp_path, '[agents]\nprompt = "x"\napp_id = 7\n')
     write = sp.writer(tmp_path, sp.watch_module())
     assert write == [*APP_GH, str(tmp_path.resolve()), "gh"]
-    gh = FakeGh()
+    gh = Forge(issues={5: closed()})
     sp.tell("me/demo", {5: {"abc1234"}}, "v1.2.0", "", write, gh)
     view, comment = gh.calls
-    assert view[:3] == ["gh", "issue", "view"]  # reads stay on plain gh
+    assert view[:3] == ["gh", "api", "graphql"]  # reads stay on plain gh
     assert comment == [*write, "issue", "comment", "5", "-R", "me/demo", "--body", MARK + "Released in v1.2.0."]
 
 
@@ -67,7 +126,7 @@ def test_290_without_app_id_the_notice_posts_with_plain_gh(sp: ModuleType, tmp_p
         config(tmp_path, text)
     write = sp.writer(tmp_path, sp.watch_module())
     assert write == ["gh"]
-    gh = FakeGh()
+    gh = Forge(issues={5: closed()})
     sp.tell("me/demo", {5: {"abc1234"}}, "v1.2.0", "`uv add x`", write, gh)
     body = MARK + "Released in v1.2.0. `uv add x`"
     assert gh.calls[1] == ["gh", "issue", "comment", "5", "-R", "me/demo", "--body", body]
@@ -91,12 +150,13 @@ def test_290_a_malformed_config_fails_rather_than_posting_as_the_person(
 
 def test_290_a_failing_shipmill_gh_stops_and_is_never_retried(sp: ModuleType) -> None:
     calls: list[list[str]] = []
+    forge = Forge(issues={5: closed(5), 6: closed(6)})
 
     def gh(cmd: list[str]) -> str:
         calls.append(cmd)
         if cmd[0] == "uvx":
             return str(sp.run(["false"]))  # shipmill gh exits 2: no key, App not installed
-        return CLOSED
+        return forge(cmd)
 
     write = [*APP_GH, "/repo", "gh"]
     with pytest.raises(SystemExit) as exc:
@@ -106,9 +166,9 @@ def test_290_a_failing_shipmill_gh_stops_and_is_never_retried(sp: ModuleType) ->
 
 
 def test_without_post_nothing_is_written(sp: ModuleType) -> None:
-    gh = FakeGh()
+    gh = Forge(issues={5: closed()})
     sp.tell("me/demo", {5: {"abc1234"}}, "v1.2.0", "", None, gh)
-    assert [c[:3] for c in gh.calls] == [["gh", "issue", "view"]]
+    assert [c[:3] for c in gh.calls] == [["gh", "api", "graphql"]]
 
 
 def pr(
@@ -148,90 +208,173 @@ def test_368_github_s_closing_links_count_only_in_the_repo(sp: ModuleType) -> No
 
 
 def test_368_collect_reads_commit_trailers_and_merged_prs_once(sp: ModuleType) -> None:
-    calls: list[list[str]] = []
     prs = [pr('quotes ("Closes #424.")\nFixes #5'), {**pr("Fixes #8", merged=False), "number": 10}]
-
-    def gh(cmd: list[str]) -> str:
-        calls.append(cmd)
-        commit = {"associatedPullRequests": {"nodes": prs}}
-        return json.dumps({"data": {"repository": {"object": commit}}})
-
+    gh = Forge(prs={"a" * 40: prs, "b" * 40: prs})
     pairs = [("a" * 40, "a change\n\nFixes #3\nsee Fixes #4 mid-line"), ("b" * 40, "a second")]
     assert sp.collect("me/demo", pairs, gh) == {3: {"aaaaaaa"}, 5: {"PR #9"}}
-    assert [c[:3] for c in calls] == [["gh", "api", "graphql"]] * 2
-    assert f"oid={'b' * 40}" in calls[1]
+    (call,) = gh.calls
+    assert call[:3] == ["gh", "api", "graphql"]
+    assert f"o1={'b' * 40}" in call
 
 
 def test_368_an_unresolvable_number_is_skipped_and_the_rest_still_told(
     sp: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    calls: list[list[str]] = []
-
-    def gh(cmd: list[str]) -> str:
-        calls.append(cmd)
-        if cmd[:4] == ["gh", "issue", "view", "424"]:
-            raise sp.NotFound(424)
-        return CLOSED if cmd[:3] == ["gh", "issue", "view"] else ""
-
-    write = ["gh"]
-    sp.tell("me/demo", {424: {"PR #365"}, 500: {"abc1234"}}, "v1.2.0", "", write, gh)
+    gh = Forge(issues={500: closed(500)})  # 424 resolves to nothing: null, and GitHub's NOT_FOUND
+    sp.tell("me/demo", {424: {"PR #365"}, 500: {"abc1234"}}, "v1.2.0", "", ["gh"], gh)
     out = capsys.readouterr()
-    assert "#424" in out.err and "skipped" in out.err
+    assert out.err == "note: #424 [PR #365] is no issue or pull request of me/demo, skipped\n"
     assert "POSTED" in out.out
-    assert calls[-1] == ["gh", "issue", "comment", "500", "-R", "me/demo", "--body", MARK + "Released in v1.2.0."]
+    assert gh.calls[-1] == ["gh", "issue", "comment", "500", "-R", "me/demo", "--body", MARK + "Released in v1.2.0."]
 
 
-NOT_FOUND_ERR = "GraphQL: Could not resolve to an issue or pull request with the number of 424. (repository.issue)"
+def answer(errors: list[dict[str, Any]], data: dict[str, Any] | None = None) -> str:
+    return json.dumps({"data": {"repository": {"i0": None}} if data is None else data, "errors": errors})
+
+
+MISSING_I0 = {"type": "NOT_FOUND", "path": ["repository", "i0"], "message": "Could not resolve to an issue"}
 
 
 @pytest.mark.parametrize(
-    ("cmd", "stderr", "expected"),
+    ("cmd", "stdout", "expected"),
     [
-        (["gh", "issue", "view", "424", "-R", "me/demo"], NOT_FOUND_ERR, True),
-        (["gh", "issue", "view", "42", "-R", "me/demo"], NOT_FOUND_ERR, False),  # another number's answer
-        (["gh", "issue", "view", "424", "-R", "me/demo"], "HTTP 401: Bad credentials", False),
-        (["gh", "issue", "view", "424", "-R", "me/demo"], "error connecting to api.github.com", False),
-        (["gh", "issue", "comment", "424", "-R", "me/demo"], NOT_FOUND_ERR, False),  # a write never skips
+        (["gh", "api", "graphql", "-f", "query=x"], answer([MISSING_I0]), True),
+        (["gh", "api", "graphql"], answer([MISSING_I0, {"type": "RATE_LIMITED", "message": "slow down"}]), False),
+        (["gh", "api", "graphql"], json.dumps({"data": None, "errors": [MISSING_I0]}), False),  # no data at all
+        (["gh", "api", "graphql"], json.dumps({"message": "Bad credentials"}), False),
+        (["gh", "api", "graphql"], "", False),  # no answer at all: a network failure
+        (["gh", "issue", "comment", "424"], answer([MISSING_I0]), False),  # a write never skips
     ],
 )
-def test_368_only_gh_s_not_found_for_that_issue_view_is_a_skip(
-    sp: ModuleType, cmd: list[str], stderr: str, expected: bool
+def test_368_only_graphql_s_not_found_answer_passes_a_failed_gh(
+    sp: ModuleType, cmd: list[str], stdout: str, expected: bool
 ) -> None:
-    assert sp.missing(cmd, stderr) is expected
+    assert sp.partial(cmd, stdout) is expected
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {**MISSING_I0, "path": ["repository"]},  # the repository itself: never a skip
+        {**MISSING_I0, "path": ["repository", "i7"]},  # an alias the query didn't ask for
+        {**MISSING_I0, "type": "FORBIDDEN"},
+        {"message": "Something went wrong"},
+    ],
+)
+def test_368_any_other_graphql_error_stops_the_whole_batch(
+    sp: ModuleType, error: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        sp.views("me/demo", [424], lambda cmd: answer([error]))
+    assert exc.value.code == 2
+    assert capsys.readouterr().err.startswith("error: gh api graphql...")
 
 
 def test_368_a_numeric_repo_name_reaches_graphql_as_a_string(sp: ModuleType) -> None:
     # gh's -F turns "2048" into a number, and GraphQL refuses it for String!; -f keeps it a string
-    calls: list[list[str]] = []
-
-    def gh(cmd: list[str]) -> str:
-        calls.append(cmd)
-        return json.dumps({"data": {"repository": {"object": {"associatedPullRequests": {"nodes": []}}}}})
-
+    gh = Forge()
     sp.prs_for("1984/2048", "1" * 40, gh)
-    flags = {calls[0][i + 1].partition("=")[0]: calls[0][i] for i, a in enumerate(calls[0]) if a in ("-f", "-F")}
-    assert flags == {"query": "-f", "owner": "-f", "name": "-f", "oid": "-f"}
+    sp.views("1984/2048", [5], gh)
+    flags = [{c[i + 1].partition("=")[0]: a for i, a in enumerate(c) if a in ("-f", "-F")} for c in gh.calls]
+    assert flags == [
+        {"query": "-f", "owner": "-f", "name": "-f", "o0": "-f"},
+        {"query": "-f", "owner": "-f", "name": "-f", "n0": "-F"},  # an issue number is GraphQL's Int!
+    ]
+
+
+# -- #754: the reads batched in aliased GraphQL queries
+
+
+def test_754_120_commits_are_read_in_ceil_120_over_the_batch_queries(sp: ModuleType) -> None:
+    shas = [f"{i:040x}" for i in range(120)]
+    linked = pr("Fixes #5")
+    gh = Forge(prs={shas[77]: [linked]})
+    pairs = [(sha, "a change") for sha in shas]
+    assert sp.collect("me/demo", pairs, gh) == {5: {"PR #9"}}
+    assert len(gh.calls) == math.ceil(120 / sp.COMMITS_PER_QUERY) > 1
+    asked = [v for call in gh.calls for k, v in variables(call).items() if re.fullmatch(r"o\d+", k)]
+    assert asked == shas  # each commit once, in order
+    assert all("$o0: GitObjectID!" in call[4] for call in gh.calls)
+
+
+def test_754_the_closed_issues_are_read_in_one_query_and_tell_as_one_call_each_did(
+    sp: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    told = "<!-- shipmill:available: stable v1.2.0 -->\nReleased in v1.2.0."
+    issues = {
+        5: closed(5),
+        6: closed(6, told),
+        7: {**closed(7), "state": "OPEN"},
+        8: {**closed(8), "url": "https://github.com/me/demo/pull/8"},  # a pull request: skipped silently
+    }
+    gh = Forge(issues=issues)
+    sp.tell("me/demo", {5: {"a"}, 6: {"b"}, 7: {"c"}, 8: {"d"}, 9: {"e"}}, "v1.2.0", "", ["gh"], gh)
+    out = capsys.readouterr()
+    assert out.out.splitlines() == [
+        "#5     POSTED            a fix  [a]",
+        "#6     SKIP notified     a fix",
+        "#7     SKIP open         a fix  [c]",
+    ]
+    assert out.err == "note: #9 [e] is no issue or pull request of me/demo, skipped\n"
+    assert len(gh.reads()) == 1
+    assert [c[3] for c in gh.calls if c[1:3] == ["issue", "comment"]] == ["5"]
+
+
+def test_754_more_issues_than_a_query_takes_are_read_in_batches(sp: ModuleType) -> None:
+    numbers = list(range(1, 2 * sp.ISSUES_PER_QUERY + 2))
+    gh = Forge(issues={n: closed(n) for n in numbers})
+    found = sp.views("me/demo", numbers, gh)
+    assert sorted(found) == numbers and all(v is not None and v["state"] == "CLOSED" for v in found.values())
+    assert len(gh.calls) == 3
+
+
+def test_754_an_issue_with_more_comments_than_a_page_is_read_to_its_last(sp: ModuleType) -> None:
+    # the notice is the 250th comment: gh issue view read every comment, so the batch does too
+    notice = "<!-- shipmill:available: stable v1.2.0 -->\nReleased in v1.2.0."
+    gh = Forge(issues={5: closed(5, *(["Thanks!"] * 249), notice)})
+    assert posted_with(sp, gh, "v1.2.0") == []
+    assert len(gh.calls) == 3  # the batch, then two more pages of #5's comments
+    assert variables(gh.calls[2])["after"] == "200"
+
+
+def test_754_an_empty_range_makes_no_call(sp: ModuleType) -> None:
+    gh = Forge()
+    assert sp.collect("me/demo", [], gh) == {}
+    sp.tell("me/demo", {}, "v1.2.0", "", ["gh"], gh)
+    assert gh.calls == []
+
+
+def test_754_each_query_stays_well_under_github_s_node_limit(sp: ModuleType) -> None:
+    per_commit = sp.PRS_READ + sp.PRS_READ * sp.CLOSERS_READ
+    assert sp.COMMITS_PER_QUERY * per_commit <= sp.NODE_LIMIT // 5
+    assert sp.ISSUES_PER_QUERY * sp.COMMENTS_READ <= sp.NODE_LIMIT // 5
+    assert f"associatedPullRequests(first: {sp.PRS_READ})" in sp.PULL_FIELDS
+    assert f"closingIssuesReferences(first: {sp.CLOSERS_READ})" in sp.PULL_FIELDS
+    assert f"comments(first: {sp.COMMENTS_READ})" in sp.ISSUE_FIELDS
+
+
+def test_754_a_commit_github_does_not_have_stops_the_run(sp: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
+    def gh(cmd: list[str]) -> str:
+        return json.dumps({"data": {"repository": {"c0": {"associatedPullRequests": {"nodes": []}}, "c1": None}}})
+
+    with pytest.raises(SystemExit) as exc:
+        sp.prs_of("me/demo", ["a" * 40, "b" * 40], gh)
+    assert exc.value.code == 2
+    assert capsys.readouterr().err == f"error: me/demo has no commit {'b' * 40}\n"
 
 
 # -- spec 021: a notice per stage
 
 
-def viewed(*comments: str) -> str:
-    """gh issue view's JSON of a closed issue with these comments, oldest first"""
-    url = "https://github.com/me/demo/issues/5"
-    return json.dumps({"state": "CLOSED", "title": "a fix", "comments": [{"body": c} for c in comments], "url": url})
+def posted_with(sp: ModuleType, gh: Forge, tag: str, command: str = "") -> list[str]:
+    """The bodies tell posts on issue #5 as gh answers"""
+    sp.tell("me/demo", {5: {"abc1234"}}, tag, command, ["gh"], gh)
+    return [c[-1] for c in gh.calls if c[1:3] == ["issue", "comment"]]
 
 
 def posted(sp: ModuleType, tag: str, command: str, *comments: str) -> list[str]:
     """The bodies tell posts on issue #5, whose comments are these"""
-    calls: list[list[str]] = []
-
-    def gh(cmd: list[str]) -> str:
-        calls.append(cmd)
-        return viewed(*comments) if cmd[:3] == ["gh", "issue", "view"] else ""
-
-    sp.tell("me/demo", {5: {"abc1234"}}, tag, command, ["gh"], gh)
-    return [c[-1] for c in calls if c[1:3] == ["issue", "comment"]]
+    return posted_with(sp, Forge(issues={5: closed(5, *comments)}), tag, command)
 
 
 @pytest.mark.parametrize("tag", ["v1.0.0rc1", "v1.1.0.dev3", "v1.0.0rc2.dev1", "v2.0.0b1"])
@@ -287,12 +430,8 @@ def test_s021_2_a_stable_promotion_tells_every_fix_its_rc_held(sp: ModuleType, t
     stamp(repo, "main", "v1.0.0rc2")
     stamp(repo, rc1_base, "v1.0.0")
     assert [body for _, body in sp.commits(str(repo), "v1.0.0rc2", "v1.0.0")] == ["Release 1.0.0"]
-
-    def no_prs(cmd: list[str]) -> str:
-        return json.dumps({"data": {"repository": {"object": {"associatedPullRequests": {"nodes": []}}}}})
-
     pairs = sp.release_commits(str(repo), "v1.0.0rc2", "v1.0.0")
-    assert sp.collect("me/demo", pairs, no_prs) == {5: {rc1_base[:7]}}  # not #6: rc2's fix isn't held
+    assert sp.collect("me/demo", pairs, Forge()) == {5: {rc1_base[:7]}}  # not #6: rc2's fix isn't held
     # #5 was told of rc1 in the form before spec 021; the stable notice still posts
     (body,) = posted(sp, "v1.0.0", "", "Released in v1.0.0rc1. `uv add 'demo==1.0.0rc1'`")
     assert body == "<!-- shipmill:available: stable v1.0.0 -->\nReleased in v1.0.0."
@@ -328,12 +467,8 @@ def test_s021_2_a_first_stable_tells_the_fixes_its_oldest_rc_held(sp: ModuleType
     git(repo, "commit", "-q", "--allow-empty", "-m", "Fix another\n\nFixes #6")
     stamp(repo, "main", "v1.0.0rc2")
     stamp(repo, rc1_base, "v1.0.0")
-
-    def no_prs(cmd: list[str]) -> str:
-        return json.dumps({"data": {"repository": {"object": {"associatedPullRequests": {"nodes": []}}}}})
-
     for prev in ("v1.0.0rc1", "v1.0.0rc2"):
-        assert sp.collect("me/demo", sp.release_commits(str(repo), prev, "v1.0.0"), no_prs) == {5: {rc1_base[:7]}}
+        assert sp.collect("me/demo", sp.release_commits(str(repo), prev, "v1.0.0"), Forge()) == {5: {rc1_base[:7]}}
 
 
 def test_s021_3_a_second_run_posts_nothing(sp: ModuleType) -> None:
@@ -369,14 +504,9 @@ def test_s021_3_an_existing_notice_counts_as_told_for_its_tag_and_stage(
 
 def deployed(sp: ModuleType, environment: str, tag: str, *comments: str) -> list[str]:
     """The bodies tell posts on issue #5, whose comments are these, for tag's deployment"""
-    calls: list[list[str]] = []
-
-    def gh(cmd: list[str]) -> str:
-        calls.append(cmd)
-        return viewed(*comments) if cmd[:3] == ["gh", "issue", "view"] else ""
-
+    gh = Forge(issues={5: closed(5, *comments)})
     sp.tell("me/demo", {5: {"abc1234"}}, tag, "`uv add demo`", ["gh"], gh, environment=environment)
-    return [c[-1] for c in calls if c[1:3] == ["issue", "comment"]]
+    return [c[-1] for c in gh.calls if c[1:3] == ["issue", "comment"]]
 
 
 @pytest.mark.parametrize(
