@@ -55,6 +55,13 @@ source = "shipmill/shipmill#698"
 commit = "bd2381f"
 
 [[case]]
+path = "shipmill-setup/product-component"
+skill = "shipmill-setup"
+kind = "fix"
+source = "shipmill/shipmill#722"
+commit = "2438e1e"
+
+[[case]]
 path = "github-pr-triage/never-approved-in-chat"
 skill = "github-pr-triage"
 kind = "decision"

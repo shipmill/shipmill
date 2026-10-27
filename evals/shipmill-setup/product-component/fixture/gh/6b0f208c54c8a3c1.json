@@ -1,0 +1,11 @@
+{
+  "args": [
+    "repo",
+    "view",
+    "--json",
+    "nameWithOwner"
+  ],
+  "stdout": "{\"nameWithOwner\":\"acme/api\"}\n",
+  "stderr": "",
+  "exit": 0
+}

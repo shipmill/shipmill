@@ -1,6 +1,6 @@
 ---
 name: shipmill-setup
-description: Set up shipmill in a repository so releases are cut by policy on lanes (dev, rc, stable, hotfix) from its hand-written CHANGELOG. Use when the user asks to add a release bot, automate releases, set up release lanes, scheduled or nightly releases, release candidates, or hotfix releases, or to move a repo onto release lanes. Also connects the agent side, so the repo triages, fixes, and lands on its own: where the plugin loads (per person, or in the repo's settings), the labels the skills read, the config's [agents] section, and where the agents run, including `shipmill gate` on launchd. Use too when the user asks to "connect a repo to shipmill" or to make it "ship by itself". Covers prerequisites, choosing lanes with the user, writing the policy, wiring CI and publishing, a dry run, and migration from hand-made or scripted releases.
+description: Set up shipmill in a repository so releases are cut by policy on lanes (dev, rc, stable, hotfix) from its hand-written CHANGELOG. Use when the user asks to add a release bot, automate releases, set up release lanes, scheduled or nightly releases, release candidates, or hotfix releases, or to move a repo onto release lanes. Also connects the agent side, so the repo triages, fixes, and lands on its own: where the plugin loads (per person, or in the repo's settings), the labels the skills read, the config's [agents] section, and where the agents run, including `shipmill gate` on launchd. Use too when the user asks to "connect a repo to shipmill" or to make it "ship by itself", or to connect several repos as one product (a home repo and its components). Covers prerequisites, choosing lanes with the user, writing the policy, wiring CI and publishing, a dry run, and migration from hand-made or scripted releases.
 ---
 
 # Set up shipmill
@@ -403,7 +403,8 @@ or the tags are wrong; fix those, not the version.
    `PRODUCT_OK` is done: `[product]` is set in any form, there is no `app_id`, or no
    sibling exists. `--fix` leaves the row: each answer is a config change in a pull
    request. A sibling config the script can't read is named in the detail and skipped;
-   it is that repo's to fix
+   it is that repo's to fix. The Product step under [The gate](#the-gate) answers both
+   rows
 
    A warning row may follow: `RUNNER_SHARED` when `release.yml` passes a `runs-on` other
    than `ubuntu-latest`, a lane sets `quiet_minutes` above 0, and a workflow an
@@ -504,7 +505,8 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
 
    Every time you set up the gate, ask two questions together, before writing the
    section: who should own the gate's GitHub App (step 3), and whether anyone watches
-   this machine, which picks `mode` (step 4). Write both answers into `[agents]`: `app_id`
+   this machine, which picks `mode` (step 4); the Product step's question below joins
+   that round. Write both answers into `[agents]`: `app_id`
    and `mode = "interactive"` or `mode = "headless"`, never left to the default (D-20).
    A session that waits on a question holds the repo, so by default the gate stops it
    after 15 minutes. Ask whether the user answers questions sooner or later than that; set
@@ -574,6 +576,87 @@ worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--pru
    never merge an edit to it on their own. A repo without `[agents]`, where shipmill only
    cuts releases, needs none. Offer a starter `REVIEW.md` at the root too (Important
    rules, a `cap:` under Nits, Protected areas; `$CR review check`); it is optional
+
+   **Product (spec 043).** A product may span several repos: a home, which holds planning
+   and cross-repo work, and its components; the home's gate is their coordinator (D-47).
+   Skip the question only when `.github/shipmill.toml` already has a `[product]` table in
+   any form, `standalone = true` included. A first setup asks it too, though its config has
+   no `[agents] app_id` yet: a product's repos meet through the App, so read the
+   checklist's Product row (`setup_state.py <owner/repo>`, step 6's item 3) once the App's
+   id is in this checkout's config, which the script reads; before that the row reads
+   `PRODUCT_OK` with no sibling read. Then:
+
+   - **`PRODUCT_LISTED`:** a sibling's `[product] repos` already lists this repo, so the
+     maintainer answered in the home. Write the `[product] home = "<that sibling>"` line
+     the row names, with no question. When two siblings list it, the row names both: ask
+     which one is the home
+   - **Otherwise ask, once,** in the same round as the App and mode questions (D-20), with
+     AskUserQuestion, or through the needs-decision protocol in a gate session (D-21): "Is
+     `<owner/repo>` one of several repos that make up one product?" On
+     `PRODUCT_SIBLINGS`, list the siblings the row names as the likely other repos.
+     Options: "No, it stands alone" (recommended when no sibling was found) and "Yes"
+     (recommended when one was)
+   - **On yes, ask for the home and the components.** The home is the repo whose
+     `docs/product.md` describes the product as a whole (D-46); the components are the
+     other repos. Offer the siblings found; the maintainer may name other repos, of any
+     owner
+   - **Write this repo's half** into `.github/shipmill.toml` (D-4), in the same pull
+     request as the `[agents]` section:
+     - In the home: `[product] repos = ["<owner/component>", ...]`, the components, which
+       needs `[agents] app_id` in the same file
+     - In a component: `[product] home = "<owner/home>"`
+     - On "No, it stands alone": `[product] standalone = true`, alone in the table, so the
+       question is not asked again. Joining a product later replaces it with `home` or
+       `repos`
+   - **Write only this checkout's config** (D-14): never another repo's config, its pull
+     request, or a `$CR gh -R <other repo>` write. For each other repo of the product,
+     print one line naming the table that repo needs and `/shipmill:shipmill-setup <repo>`
+     to run in its checkout, and show the list to the maintainer before the pull request
+     opens:
+
+     ```
+     acme/api: [product] home = "acme/product"  run /shipmill:shipmill-setup acme/api in its checkout
+     acme/product: [product] repos = ["acme/api", "acme/web"]  run /shipmill:shipmill-setup acme/product in its checkout
+     ```
+
+     Run in a component once the home's `repos` has merged, the checklist reads
+     `PRODUCT_LISTED` and this step writes its `home` with no question
+   - **The App on every repo:** for each component the App doesn't cover yet, run `$CR
+     app-install <owner/component>`, as for any repo connected later (step 3). The
+     coordinator's product permissions (contents, issues, and pull requests read, issues
+     write, metadata read) are a subset of a session's, so an installation made for
+     sessions covers them
+
+   Then tell the maintainer what works today and what doesn't yet:
+
+   - **Works today:** the home's gate is the coordinator, with a token over the listed
+     repos (`shipmill app-token --product`, `shipmill gh --product`); a component's agent
+     reports a fault in another repo as an `upstream` issue in its own repo, and the
+     coordinator routes it (`upstream_state.py`, `chains.py link --product --child`) and
+     closes it. `doctor` checks the product's repos and their links back
+     (shipmill/shipmill#604, closed), and the coordinator routes a report filed in the
+     home repo itself (shipmill/shipmill#596, closed)
+   - **Not yet:** a plan across repos (D-46, on hold); the maintainer's queue across
+     repos; a component reading its home's direction (shipmill/shipmill#579). Each line
+     goes when its issue closes
+
+   **With `[product]` set, the links back are doctor's.** Run no check of the links back
+   of your own. The `$CR doctor` run before you report the agent side connected prints a
+   `product` block: relay each of its lines with its fix.
+
+   - In the home, per repo `[product] repos` lists (S-038-27): a FAIL `<repo>: ...; the
+     coordinator can't reach it: run $CR app-install <repo>` when the App isn't installed
+     there or lacks a product permission; run it, as above
+   - In the home, per listed repo (S-038-28): a WARN `<repo>'s .github/shipmill.toml has
+     no [product] home`, `<repo> has no .github/shipmill.toml`, or `<repo>'s [product]
+     home names <other>, not this home <home>`, each with the fix `set [product] home =
+     "<home>" in <repo>'s .github/shipmill.toml`: give the maintainer that repo's line
+     above, to run in its checkout
+   - In a component (S-038-30): a WARN `<home>'s [product] repos doesn't list <repo>`,
+     with the fix `add "<repo>" to [product] repos in <home>'s .github/shipmill.toml`:
+     give the maintainer the home's line, to run in its checkout
+   - A WARN that the App's key isn't on this host, or that a config can't be read, names
+     what was left unchecked: pass it on as it is
 3. **Its own identity (required for the gate, D-19).** Every gate gets a GitHub App, so its
    sessions' pull requests, comments, merges, and commits are made by the App's bot
    (D-14). Without `app_id`, a session writes as the host's `gh` login: its work reads as
