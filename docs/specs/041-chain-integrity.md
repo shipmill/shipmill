@@ -210,7 +210,7 @@ Existing issues change state on the first pass after this ships, with no migrati
 ## Issues
 
 The feature issue is shipmill/shipmill#679. Its build issues landed through pull requests
-#727 (#714), #734 (#715), and #716's pull request.
+#727 (#714), #734 (#715), and #739 (#716).
 
 - shipmill/shipmill#714: S-041-1, S-041-2, S-041-3, S-041-4, S-041-5, S-041-6
 - shipmill/shipmill#715: S-041-7, S-041-8, S-041-9, S-041-10, S-041-11
