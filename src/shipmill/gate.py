@@ -16,7 +16,6 @@ never fails the tick (spec 045, D-56).
 
 import datetime as dt
 import enum
-import hashlib
 import json
 import os
 import re
@@ -34,8 +33,15 @@ from shipmill.autonomy import AGENT_STAGES, Autonomy, AutonomyPolicy, Hold, Stag
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import ClaudeAuth
 from shipmill.claude_token import Credential, Kind, Token, rejected_fix, session_env
-from shipmill.config import CONFIG_PATH
+from shipmill.config import CONFIG_PATH, Table, config_path, read
+from shipmill.environments import OperateConfig
 from shipmill.errors import ReleaseError
+from shipmill.findings import HEAD_SHA as HEAD_SHA
+from shipmill.findings import NEEDS_DECISION as NEEDS_DECISION
+from shipmill.findings import PRS_OPEN as PRS_OPEN
+from shipmill.findings import Finding as Finding
+from shipmill.findings import fingerprint as fingerprint
+from shipmill.findings import parse_findings as parse_findings
 from shipmill.github import GitHub
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
@@ -52,14 +58,33 @@ from shipmill.plugin import (
     session_project,
 )
 from shipmill.roles import LoginReader, ResolvedRole, arguments
+from shipmill.walk import (
+    CURSOR,
+    CURSOR_OVERLAP,
+    HANDED,
+    KNOWN,
+    SWEEP,
+    WAITING_TIER,
+    Changes,
+    Cursor,
+    Hand,
+    Handed,
+    Rows,
+    Source,
+    Swept,
+    Walked,
+    check,
+    item_key,
+    tier_of,
+    walk,
+    watched,
+)
+from shipmill.walk import span as tier_span
 from shipmill.worktrees import Judged, Sessions, Verdict, judge, prune
 
 RECORD = "gate.json"
 WAITING = "waiting.json"  # one entry per blocked gate session (spec 003)
 DECISIONS = "needs-decision.json"  # one entry per item that waits on a decision (spec 005)
-NEEDS_DECISION = "NEEDS_DECISION"  # watch_state.py's items waiting on a reply, `#N` only (S-005-9)
-PRS_OPEN = "PRS_OPEN"  # watch_state.py's open pull requests: work unless [autonomy] land is observe (S-040-9)
-HEAD_SHA = re.compile(r"[0-9a-f]{40}")  # a PRS_OPEN row's head SHA, as --json prints it (#546)
 SESSIONS = "sessions"  # a headless session's log, <uuid>.log, under the state directory (D-17)
 AUTH = "claude-auth.json"  # the failing Claude Code login's episode: since, and its one notification (#500)
 PRUNE = "prune.json"  # the last prune's attempt: when, whether it worked, and since when it fails (spec 045)
@@ -97,26 +122,6 @@ HEADLESS_REFUSED = (
     "--background",
     "--session-id",
 )
-
-
-@dataclass(frozen=True, slots=True)
-class Finding:
-    """One watch_state.py row; agent is its own verdict that the row needs an agent. heads,
-    on a PRS_OPEN row only, is each listed pull request's head SHA by number (#546), so a
-    push to one is new work; () for every other row and for a watch_state.py before it"""
-
-    state: str
-    subject: str
-    detail: str
-    agent: bool
-    heads: tuple[tuple[int, str], ...] = ()
-
-    def line(self) -> str:
-        return f"{self.state} {self.subject}: {self.detail}" if self.detail else f"{self.state} {self.subject}"
-
-    def brief(self) -> str:
-        """State and subject only: a detail can carry text anyone who edits an issue controls"""
-        return f"{self.state} {self.subject}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,17 +240,8 @@ class Decision:
     dead: Dead | None = None  # the last session, when it ended dead (#500)
     credential: Kind = Kind.LOGIN  # what the sessions authenticate with (spec 035)
     prune: PruneRun | None = None  # what the tick's prune did, after the decision (spec 045); None: no prune step
-
-
-def fingerprint(work: Iterable[Finding]) -> str:
-    """A finding's heads join its line only when it has some (#546), so a row without them
-    hashes as it did before"""
-    lines = sorted(f"{f.state}\x00{f.subject}\x00{f.detail}{heads_part(f.heads)}" for f in work)
-    return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:16]
-
-
-def heads_part(heads: tuple[tuple[int, str], ...]) -> str:
-    return "".join(f"\x00#{number}={sha}" for number, sha in heads)
+    walk: WalkRun | None = None  # how far the tick's walk went (spec 046); None: the tick read no state
+    tier: int | None = None  # the tier of the item a LAUNCH hands (spec 046)
 
 
 def held(hold: Hold, sessions: Sequence[Session]) -> Decision | None:
@@ -289,25 +285,43 @@ def decide(
     retry: dt.timedelta,
     land: Autonomy = Autonomy.PROPOSE,  # land's default (D-51)
 ) -> Decision:
-    """land, the effective [autonomy] land level (S-040-9): open pull requests are work under
-    propose (a session reviews and labels them) and act (it merges them), never under observe,
-    whatever the deprecated [agents] prs says"""
+    """A walk over rows read whole (spec 046), the last launch's item the one handed: the first
+    item in the walk's order no session was handed within retry. land, the effective
+    [autonomy] land level (S-040-9): open pull requests are work under propose (a session
+    reviews and labels them) and act (it merges them), never under observe, whatever the
+    deprecated [agents] prs says"""
     pending = busy(sessions)
     if pending is not None:
         return pending
-    lands = land is not Autonomy.OBSERVE
-    work = tuple(f for f in findings if f.agent or (lands and f.state == PRS_OPEN))
-    if not work:
-        waiting = () if lands else unlanded(findings)
-        landing = (
-            f"; {len(waiting)} pull request(s) wait to land, landing off ([autonomy] land = observe)" if waiting else ""
-        )
-        return Decision(Action.QUIET, f"nothing needs an agent{landing}", work)
-    if last is not None and last.fingerprint == fingerprint(work) and now - last.at < retry:
-        again = (last.at + retry).isoformat(timespec="minutes")
-        return Decision(Action.UNCHANGED, f"same findings as session {last.session}; retried after {again}", work)
-    finished = tuple(s.id for s in sessions if s.finished)
-    return Decision(Action.LAUNCH, f"{len(work)} finding(s) need an agent", work, finished)
+    handed = Handed() if last is None else Handed({last.fingerprint: Hand(last.session, last.at)})
+    rows = Rows(tuple(findings))
+    changes = rows.changes(None)
+    found = walk(rows, changes, Swept(now, tuple(rows.sweep(changes)), None), handed, now, retry, lands(land))
+    return walked_decision(found, sessions, retry, land)
+
+
+def lands(land: Autonomy) -> bool:
+    return land is not Autonomy.OBSERVE
+
+
+def walked_decision(found: Walked, sessions: Sequence[Session], retry: dt.timedelta, land: Autonomy) -> Decision:
+    """A walk's decision, its line naming how far it went (S-046-18): LAUNCH for the item it
+    found, UNCHANGED naming the first item when every one was handed within retry, else QUIET"""
+    read = f"read tiers {tier_span(found.tiers)}"
+    if found.item is not None:
+        finished = tuple(s.id for s in sessions if s.finished)
+        reason = f"{found.item.brief()} needs an agent (tier {found.tier}); {read}"
+        return Decision(Action.LAUNCH, reason, (found.item,), finished, tier=found.tier)
+    if found.taken is not None and found.hand is not None:
+        again = (found.hand.at + retry).isoformat(timespec="minutes")
+        first = f"{found.taken.brief()} (tier {tier_of(found.taken)})"
+        reason = f"every item was handed; the first, {first}, went to session {found.hand.session}"
+        return Decision(Action.UNCHANGED, f"{reason}; retried after {again}; {read}", (found.taken,))
+    waiting = () if lands(land) else unlanded(found.rows)
+    landing = (
+        f"; {len(waiting)} pull request(s) wait to land, landing off ([autonomy] land = observe)" if waiting else ""
+    )
+    return Decision(Action.QUIET, f"nothing needs an agent{landing}; {read}", ())
 
 
 UNTRUSTED = (
@@ -366,10 +380,13 @@ def prompt(
     levels: Levels = DEFAULT_LEVELS,
 ) -> str:
     """The session's prompt lists each finding by state and subject only, never its detail
-    (#114); bot, the App's <slug>[bot] when [agents] app_id is set, adds bot_line; roles, the
-    resolved roles the state read passed (spec 036), add role_line; levels, the agent stages'
-    levels (spec 040), add their Autonomy: line after it, in every prompt"""
-    found = "\n".join(f"- {f.brief()}" for f in work)
+    (#114), with its tier and its fix line, built from trusted values only (spec 046); bot,
+    the App's <slug>[bot] when [agents] app_id is set, adds bot_line; roles, the resolved
+    roles the state read passed (spec 036), add role_line; levels, the agent stages' levels
+    (spec 040), add their Autonomy: line after it, in every prompt"""
+    found = "\n".join(
+        f"- {f.brief()} (tier {tier_of(f)})" + ("" if f.fix is None else f"\n  fix: {f.fix}") for f in work
+    )
     stamp = now.isoformat(timespec="minutes")
     head = template.replace("{repo}", repo)
     app = "" if bot is None else f"\n\n{bot_line(bot)}"
@@ -468,48 +485,6 @@ def parse_launched(text: str) -> str:
     if found is None:
         raise ReleaseError(f"claude --bg printed no session id: {text.strip()[:300]}")
     return found.group(1)
-
-
-def parse_findings(text: str) -> list[Finding]:
-    """watch_state.py --json's rows; a row without a boolean agent is refused, never guessed"""
-    findings = []
-    for line in text.splitlines():
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ReleaseError(f"watch_state.py printed {line[:200]!r}, not JSON: {exc}") from None
-        if not isinstance(row, dict):
-            raise ReleaseError(f"watch_state.py printed {line[:200]!r}, not a row")
-        texts = [row.get(key) for key in ("state", "subject", "detail")]
-        if not all(isinstance(t, str) for t in texts) or not isinstance(row.get("agent"), bool):
-            raise ReleaseError(
-                f"watch_state.py printed {line[:200]!r}: a row needs string state, subject, and detail,"
-                " and a boolean agent"
-            )
-        heads = parse_heads(row, line) if "heads" in row else ()
-        findings.append(Finding(row["state"], row["subject"], row["detail"], row["agent"], heads))
-    return findings
-
-
-def parse_heads(row: Mapping[str, object], line: str) -> tuple[tuple[int, str], ...]:
-    """A PRS_OPEN row's heads (#546): an object mapping each pull request its detail lists, as
-    a number string, to its 40-hex head SHA, and nothing else; anything else is refused"""
-    found = row["heads"]
-    shown = f"watch_state.py printed {line[:200]!r}"
-    if row["state"] != PRS_OPEN:
-        raise ReleaseError(f"{shown}: only a {PRS_OPEN} row has heads")
-    if not isinstance(found, dict):
-        raise ReleaseError(f"{shown}: heads must be an object of pull request numbers to head SHAs")
-    heads = []
-    for key, sha in found.items():
-        if re.fullmatch(r"[1-9][0-9]*", key) is None or not isinstance(sha, str) or HEAD_SHA.fullmatch(sha) is None:
-            raise ReleaseError(f"{shown}: heads maps {key[:50]!r} to {str(sha)[:50]!r}, not a number to a head SHA")
-        heads.append((int(key), sha))
-    listed = re.fullmatch(r"#[0-9]+(?: #[0-9]+)*", str(row["detail"]))
-    numbers = {int(n) for n in re.findall(r"#([0-9]+)", str(row["detail"]))} if listed else None
-    if numbers != {number for number, _ in heads}:
-        raise ReleaseError(f"{shown}: heads must name exactly the pull requests its detail lists")
-    return tuple(sorted(heads))
 
 
 class Claude(Protocol):
@@ -702,10 +677,20 @@ class StateRead:
         return arguments(self.roles) + trusted + bot
 
 
-def watch_command(repo: str, workspace: Path, read: StateRead, json: bool = True, host: bool = True) -> list[str]:
+def watch_command(
+    repo: str,
+    workspace: Path,
+    read: StateRead,
+    json: bool = True,
+    host: bool = True,
+    tier: int | None = None,
+    sweep: bool = False,
+    known: Path | None = None,
+) -> list[str]:
     """The gate reads JSON lines; `shipmill status` prints the table unless asked (S-008-7).
     Without host the host's sessions and shipmill rows are left out, for status's picture to
-    read each on its own (#745)"""
+    read each on its own (#745). The gate's walk reads one tier, given what its change check
+    read as known, or the sweep (spec 046); status passes neither and reads every section"""
     script = skills_dir() / "github-ship-watch" / "scripts" / "watch_state.py"
     return [
         sys.executable,
@@ -714,7 +699,10 @@ def watch_command(repo: str, workspace: Path, read: StateRead, json: bool = True
         "--repo-dir",
         str(workspace),
         *(["--json"] if json else []),
-        *([] if host else ["--no-host"]),
+        *([] if host or tier is not None or sweep else ["--no-host"]),
+        *([] if tier is None else ["--tier", str(tier)]),
+        *(["--known", str(known)] if known is not None else []),
+        *(["--sweep"] if sweep else []),
         *read.flags(),
     ]
 
@@ -732,13 +720,68 @@ def run_state(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 StateRunner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
 
-def watch(repo: str, workspace: Path, read: StateRead, run: StateRunner = run_state) -> list[Finding]:
-    """watch_state.py's rows for the repo; it exits 1 when any needs action"""
-    proc = run(watch_command(repo, workspace, read))
-    if state_failed(proc):
-        # the end, where a traceback names its exception
-        raise ReleaseError(f"watch_state.py failed (exit {proc.returncode}): {proc.stderr.strip()[-500:]}")
-    return parse_findings(proc.stdout)
+GhRunner = Callable[[list[str], Path], str]  # (command, cwd) -> its stdout
+
+
+def incident_label(root: Path) -> str:
+    """[operate] incident_label, or its default: the change check reads the open incidents"""
+    path = config_path(root)
+    return OperateConfig.parse(Table(read(path), str(path)).table("operate", optional=True)).incident_label
+
+
+class WatchState:
+    """The gate's state read (spec 046): the change check through gh, and each tier and the
+    sweep through watch_state.py, a tier given what the change check read (known.json in the
+    state directory) so it reads none of it again"""
+
+    def __init__(
+        self,
+        repo: str,
+        workspace: Path,
+        read: StateRead,
+        state: Path,
+        now: dt.datetime,
+        gh: GhRunner = run_command,
+        run: StateRunner = run_state,
+    ) -> None:
+        self._repo, self._workspace, self._read, self._state, self._now = repo, workspace, read, state, now
+        self._gh, self._run = gh, run
+
+    def _graphql(self, query: str, variables: Mapping[str, str]) -> dict[str, object]:
+        fields = [arg for key, value in variables.items() for arg in ("-f", f"{key}={value}")]
+        found = json.loads(self._gh(["gh", "api", "graphql", "-f", f"query={query}", *fields], self._workspace))
+        if not isinstance(found, dict):
+            raise ReleaseError(f"gh api graphql printed {str(found)[:200]}, not an object")
+        return found
+
+    def _rest(self, path: str) -> object:
+        return json.loads(self._gh(["gh", "api", path], self._workspace))
+
+    def changes(self, since: dt.datetime | None) -> Changes:
+        label = incident_label(self._workspace)
+        workflows = watched(self._workspace)
+        return check(self._repo, since, label, workflows, self._graphql, self._rest, self._now)
+
+    def _rows(self, cmd: list[str], what: str) -> list[Finding]:
+        proc = self._run(cmd)
+        if state_failed(proc):
+            raise ReleaseError(f"watch_state.py {what} failed (exit {proc.returncode}): {proc.stderr.strip()[-500:]}")
+        return parse_findings(proc.stdout)
+
+    def tier(self, number: int, changes: Changes) -> list[Finding]:
+        known = self._state / KNOWN
+        known.parent.mkdir(parents=True, exist_ok=True)
+        known.write_text(json.dumps(changes.known, indent=2) + "\n", encoding="utf-8")
+        cmd = watch_command(self._repo, self._workspace, self._read, tier=number, known=known)
+        return self._rows(cmd, f"--tier {number}")
+
+    def sweep(self, changes: Changes) -> list[Finding]:
+        return self._rows(watch_command(self._repo, self._workspace, self._read, sweep=True), "--sweep")
+
+
+def as_source(found: Source | Sequence[Finding]) -> Source:
+    """A state read's source; rows read whole, as a test hands them, read as Rows"""
+    return Rows(tuple(found)) if isinstance(found, Sequence) else found
 
 
 def state_dir(git: Git) -> Path:
@@ -1260,6 +1303,101 @@ class PruneRun:
 
 
 @dataclass(frozen=True, slots=True)
+class WalkRun:
+    """How far a tick's walk went (spec 046): whether the change check found a change, the
+    tiers it read, in order, and whether it swept"""
+
+    change: bool
+    tiers: tuple[int, ...]
+    sweep: bool
+
+    def record(self) -> dict[str, object]:
+        return {"change": self.change, "tiers": list(self.tiers), "sweep": self.sweep}
+
+
+@dataclass(frozen=True, slots=True)
+class Ticked:
+    """A tick's change check and walk (spec 046): its decision, and what a tick that stands by
+    it records: the cursor, the sweep when it swept or a new tag's check added a row, the
+    handed items, every row its tiers printed, and the hand of the first handed item"""
+
+    decision: Decision
+    changes: Changes
+    cursor: Cursor | None
+    swept: Swept | None
+    handed: Handed
+    rows: tuple[Finding, ...]
+    hand: Hand | None
+
+
+def tick_walk(
+    source: Source,
+    state: Path,
+    sessions: Sequence[Session],
+    last: Launch | None,
+    dead: Dead | None,
+    capped: bool,
+    now: dt.datetime,
+    retry: dt.timedelta,
+    sweep_hours: int,
+    land: Autonomy,
+    walk_now: bool = False,
+    sweep_now: bool = False,
+) -> Ticked:
+    """The change check, then the sweep when due, then the walk (spec 046). A change is a new
+    signature or an item updated since the cursor, and on the gate's side no cursor, a handed
+    item past retry, or a dead last session (S-046-2); walk_now and sweep_now force a walk and
+    a sweep. A dead session's item is handed again, until DEAD_STREAK of them (capped) hold it
+    for retry (S-046-15). The last launch's item, gate.json's fingerprint, counts as handed
+    within retry too, as one gate.json recorded before handed.json did. With no change and no sweep due the
+    tick reads nothing more: QUIET, `no change since <cursor>` (S-046-1)"""
+    cursor = Cursor.load(state / CURSOR)
+    handed = Handed.load(state / HANDED)
+    # a dead session is a change until a walk drops its hand from handed.json, not on every
+    # tick while gate.json still names it: with its item gone, every tick would walk
+    unseen = dead is not None and not capped and any(h.session == dead.session for h in handed.hands.values())
+    if last is not None and now - last.at < retry and last.fingerprint not in handed.hands:
+        handed = Handed({**handed.hands, last.fingerprint: Hand(last.session, last.at)})
+    if dead is not None and not capped:
+        handed = handed.without(dead.session)
+    known = Swept.load(state / SWEEP)
+    changes = source.changes(None if cursor is None else cursor.at)
+    sweeping = sweep_now or known is None or known.due(now, sweep_hours)
+    change = (
+        walk_now
+        or changes.forced
+        or cursor is None
+        or changes.signature != cursor.signature
+        or bool(changes.updated)
+        or handed.expired(now, retry)
+        or unseen  # a capped one holds its item: its expiry is the change
+    )
+    if cursor is not None and not change and not sweeping:
+        since = cursor.at.isoformat(timespec="minutes")
+        quiet = Decision(Action.QUIET, f"no change since {since}", (), walk=WalkRun(False, (), False))
+        return Ticked(quiet, changes, None, None, handed, (), None)
+    swept = Swept(now, tuple(source.sweep(changes)), changes.tag) if sweeping or known is None else known
+    found: Walked = walk(source, changes, swept, handed.kept(now, retry), now, retry, lands(land))
+    decision = replace(walked_decision(found, sessions, retry, land), walk=WalkRun(change, found.tiers, sweeping))
+    stored = found.swept if sweeping or found.swept != known else None
+    after = Cursor(now - CURSOR_OVERLAP, changes.signature)
+    return Ticked(decision, changes, after, stored, handed.kept(now, retry), found.rows, found.hand)
+
+
+def waiting_rows(ticked: Ticked, source: Source, path: Path, repo: str) -> list[Finding]:
+    """The items waiting on a decision that a headless tick notifies for (S-046-17): tier 4's
+    rows when the walk read it; else its read, when the change check shows an updated item
+    labelled needs-decision or one needs-decision.json holds, so an answered item drops out;
+    else the items needs-decision.json holds, read from nowhere"""
+    if WAITING_TIER in (ticked.decision.walk.tiers if ticked.decision.walk is not None else ()):
+        return [r for r in ticked.rows if r.state == NEEDS_DECISION]
+    stored = sorted(load_decisions(path))
+    if ticked.changes.asked or ticked.changes.forced or set(ticked.changes.updated) & set(stored):
+        return [r for r in source.tier(WAITING_TIER, ticked.changes) if r.state == NEEDS_DECISION]
+    return [Finding(NEEDS_DECISION, repo, " ".join(f"#{n}" for n in stored), False)] if stored else []
+
+
+@dataclass(frozen=True, slots=True)
 class PruneRecord:
     """prune.json: the last attempt, when it started, whether it worked and its error, since
     when the current run of failures fails (None after a success), and how many it removed"""
@@ -1491,7 +1629,7 @@ def gate(
     repo: str,
     config: Callable[[], AgentsConfig],
     claude: Claude,
-    findings: Callable[[StateRead], list[Finding]],
+    findings: Callable[[StateRead], Source | Sequence[Finding]],
     now: dt.datetime,
     hold: Callable[[], Hold],
     notifier: Notifier,
@@ -1510,6 +1648,8 @@ def gate(
     roles: RoleResolver | None = None,
     credential: Callable[[], Credential] | None = None,
     prune_hours: Callable[[], int] | None = None,
+    walk_now: bool = False,
+    sweep_now: bool = False,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -1647,23 +1787,35 @@ def gate(
     read = StateRead(trusted_only=headless, bot_login=None if identity is None else identity.login, roles=resolved)
     retry = dt.timedelta(hours=agents.retry_hours)
     levels = Levels(agents.autonomy, on_hold)
-    rows = findings(read)
-    asked = ask(state / DECISIONS, repo, rows, agents, notifier, now, dry_run) if headless else ()
-    capped = dead is not None and dead.deaths.count >= DEAD_STREAK  # retry_hours holds the findings again
-    decision = replace(
-        decide(rows, sessions, last if dead is None or capped else None, now, retry, levels.land),
-        mode=agents.mode,
-        decisions=asked,
-        detached=detached,
-        dead=dead,
-        credential=kind,
+    capped = dead is not None and dead.deaths.count >= DEAD_STREAK  # retry_hours holds the item again
+    source = as_source(findings(read))
+    ticked = tick_walk(
+        source, state, sessions, last, dead, capped, now, retry, agents.sweep_hours, levels.land, walk_now, sweep_now
     )
-    if dead is not None and last is not None and decision.action is Action.UNCHANGED:
-        again = (last.at + retry).isoformat(timespec="minutes")
-        reason = f"{dead.summary()}; no session starts for the same findings until {again}; fix: {dead.fix}"
+    waits = waiting_rows(ticked, source, state / DECISIONS, repo) if headless else []
+    if ticked.swept is not None and not dry_run:  # every read went through: the sweep stands, whatever the decision
+        ticked.swept.save(state / SWEEP)
+    asked = ask(state / DECISIONS, repo, waits, agents, notifier, now, dry_run) if headless else ()
+    decision = replace(
+        ticked.decision, mode=agents.mode, decisions=asked, detached=detached, dead=dead, credential=kind
+    )
+    if dead is not None and ticked.hand is not None and decision.action is Action.UNCHANGED:
+        again = (ticked.hand.at + retry).isoformat(timespec="minutes")
+        reason = f"{dead.summary()}; no session starts for the same item until {again}; fix: {dead.fix}"
         decision = replace(decision, action=Action.SESSION_DEAD, reason=reason)
+
+    def settled(handed: Handed) -> None:
+        """A tick that stands by its walk records it; one whose launch didn't start doesn't,
+        so the next tick walks again (S-046-11)"""
+        if dry_run or ticked.cursor is None:
+            return
+        ticked.cursor.save(state / CURSOR)
+        handed.save(state / HANDED)
+
     decision = preflight(decision, auth, token, state / AUTH, repo, agents, notifier, now, dry_run)
     if decision.action is not Action.LAUNCH:
+        if decision.action in (Action.QUIET, Action.UNCHANGED, Action.SESSION_DEAD):
+            settled(ticked.handed)
         return pruned_after(decision, None, waiting)
     if identity is not None:
         decision = replace(decision, identity=identity.login)
@@ -1690,15 +1842,19 @@ def gate(
     for session in decision.stop:
         claude.stop(session)
     name = f"{session_name(repo)} {now:%Y-%m-%d %H:%M}"
-    deaths = None if dead is None else dead.deaths
+    (item,) = decision.work
+    # the run of dead sessions is this item's: another item starts its own (S-046-15)
+    deaths = None if dead is None or last is None or item_key(item) != last.fingerprint else dead.deaths
     if not headless:
         launched = claude.launch(git.root, name, text, env, token)
-        save_launch(record, Launch(fingerprint(decision.work), launched, now, None, deaths))
+        save_launch(record, Launch(item_key(item), launched, now, None, deaths))
+        settled(ticked.handed.handing(item, launched, now))
         return pruned_after(decision, launched, waiting)
     session_id = new_session()
     log = session_log(state, str(session_id))
     pid = claude.start(git.root, name, text, session_id, log, env, token)
-    save_launch(record, Launch(fingerprint(decision.work), str(session_id), now, Process(pid, started(pid)), deaths))
+    save_launch(record, Launch(item_key(item), str(session_id), now, Process(pid, started(pid)), deaths))
+    settled(ticked.handed.handing(item, str(session_id), now))
     return pruned_after(replace(decision, follow=f"tail -f {log}"), str(session_id), waiting)
 
 
@@ -1729,6 +1885,8 @@ def tick_record(
         "auth": decision.credential.value,  # token-file or login (spec 035)
         "preflight": None if decision.auth is None else decision.auth.record(),
         "dead": None if decision.dead is None else decision.dead.record(),
+        "walk": None if decision.walk is None else decision.walk.record(),  # spec 046: how far the walk went
+        "item": decision.work[0].brief() if len(decision.work) == 1 else None,
     }
 
 

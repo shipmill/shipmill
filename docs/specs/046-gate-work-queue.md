@@ -1,6 +1,6 @@
 # S-046: A gate tick checks for change first, then walks the work tiers to the next untaken item
 
-status: draft
+status: built
 serves: G-1
 
 ## Problem
@@ -241,3 +241,27 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
 - shipmill/shipmill#757: S-046-1, S-046-2, S-046-3, S-046-4, S-046-5, S-046-6, S-046-8, S-046-9, S-046-10, S-046-11, S-046-12, S-046-13, S-046-14, S-046-15, S-046-16, S-046-17, S-046-18, S-046-19
 
 ## Verification
+
+Checked on the default branch plus #756's change, by the tests named, all passing (`tests/test_gate_walk.py`,
+`tests/test_watch_tiers.py`); the full suite, ruff, and strict mypy pass.
+
+- S-046-1: `test_s046_1_no_change_reads_nothing_more_and_is_quiet`
+- S-046-2: `test_s046_2_each_change_makes_the_tick_walk`, `test_s046_2_each_github_change_moves_the_signature`, `test_s046_2_a_success_after_a_success_and_another_workflow_are_no_change`, `test_s046_2_an_updated_item_is_a_change_and_one_labelled_needs_decision_is_asked`, `test_s046_2_a_handed_item_past_retry_hours_is_one_change_not_one_every_tick`, `test_s046_2_a_run_still_going_is_no_change`, `test_s046_2_a_dead_session_is_one_change_not_one_every_tick`
+- S-046-3: `test_s046_3_the_change_check_is_one_query_and_one_runs_read`, `test_s046_3_more_than_100_pull_requests_are_paged`, `test_s046_3_a_later_page_declares_only_the_variables_it_uses`
+- S-046-4: `test_s046_4_a_walk_reads_no_tier_below_the_one_with_an_untaken_item`
+- S-046-5: `test_s046_5_an_untaken_item_in_tier_3_reads_no_triage_and_no_notices`
+- S-046-6: `test_s046_6_tiers_1_and_3_get_the_change_checks_data`
+- S-046-7: `test_s046_7_tier_1_prints_its_rows_alone`, `test_s046_7_tier_3_prints_open_and_waiting_pull_requests_alone`, `test_s046_7_the_rows_a_tier_prints_read_as_the_gates_findings`, `test_s046_7_no_tier_prints_a_host_or_report_only_row`, `test_s046_7_a_tier_or_sweep_read_refuses_the_host_flags`
+- S-046-8: `test_s046_8_a_sweep_runs_when_due_and_its_rows_serve_tiers_2_5_7_and_8`
+- S-046-9: `test_s046_9_a_new_tag_checks_its_notices_alone_and_stores_them`
+- S-046-10: `test_s046_10_sweep_hours_defaults_to_6_and_is_refused_outside_1_to_168`
+- S-046-11: `test_s046_11_the_cursor_is_the_walks_start_less_5_minutes`, `test_s046_11_a_failed_read_writes_no_cursor_or_sweep`, `test_s046_11_a_failed_tier_4_read_for_notifications_writes_no_sweep`
+- S-046-12: `test_s046_12_tiers_4_and_6_hold_one_item_per_triage_state`, `test_s046_12_subjects_order_by_number`, `test_s046_12_the_issues_row_splits_by_triage_state`
+- S-046-13: `test_s046_13_a_launch_names_one_item_with_its_tier_and_records_it`, `test_s046_13_an_incident_that_only_aged_is_still_handed`
+- S-046-14: `test_s046_14_a_handed_item_gives_way_and_every_item_handed_is_unchanged`
+- S-046-15: `test_s046_15_a_dead_sessions_item_is_handed_again`, `test_s046_15_after_dead_streak_dead_sessions_the_walk_goes_past_the_item`, `test_s046_15_a_capped_item_is_no_change_on_every_tick_and_its_deaths_stay_its_own`
+- S-046-16: `test_s046_16_untrusted_and_waiting_items_are_never_items`
+- S-046-17: `test_s046_17_a_walk_above_tier_4_reads_it_only_for_an_updated_needs_decision_item`, `test_s046_17_an_answered_item_is_read_again_when_it_is_updated`
+- S-046-18: `test_s046_18_json_prints_walk_and_item_and_the_line_names_how_far`
+- S-046-19: `test_s046_19_a_dry_run_writes_no_record_and_walk_and_sweep_force_them`
+- S-046-20: `test_s046_20_status_reads_every_section_without_a_tier_or_sweep`, `test_s046_20_the_full_report_still_reads_the_host_rows`

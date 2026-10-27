@@ -1,5 +1,6 @@
 """Spec 008: `shipmill status`, github-ship-watch's report from the CLI"""
 
+import datetime as dt
 import importlib.util
 import json
 import subprocess
@@ -11,7 +12,11 @@ import pytest
 import shipmill.cli
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
-from shipmill.gate import StateRead, skills_dir, watch, watch_command
+from shipmill.gate import StateRead, WatchState, skills_dir, watch_command
+from shipmill.walk import Changes
+
+NOW = dt.datetime(2026, 10, 27, 12, 0, tzinfo=dt.UTC)
+CHANGES = Changes("x", known={"default_branch": "main", "held": False, "prs": [], "incidents": [], "runs": []})
 
 REPO = "acme/web"
 SCRIPT = skills_dir() / "github-ship-watch" / "scripts" / "watch_state.py"
@@ -130,8 +135,8 @@ def test_s008_7_the_gate_and_status_share_watch_command(tmp_path: Path) -> None:
         "x[bot]",
     ]
     script = Script(stdout=ROW)
-    watch(REPO, root, StateRead(), script)
-    assert script.seen == [[*base, "--json"]]
+    WatchState(REPO, root, StateRead(), tmp_path / "state", NOW, run=script).sweep(Changes("x"))
+    assert script.seen == [[*base, "--json", "--sweep"]]  # spec 046: the gate's reads are a tier or the sweep
 
 
 def test_s008_8_the_docstring_names_status_and_its_exit_1() -> None:
@@ -171,13 +176,19 @@ def test_s008_11_the_gate_fails_on_a_crashed_script_with_the_end_of_stderr(tmp_p
     trace = (
         "Traceback (most recent call last):\n" + "  frame\n" * 200 + "urllib.error.URLError: <urlopen error timed out>"
     )
+
+    def read(script: Script) -> list[str]:
+        return [
+            f.state for f in WatchState(REPO, root, StateRead(), tmp_path / "state", NOW, run=script).tier(2, CHANGES)
+        ]
+
     with pytest.raises(
-        ReleaseError, match=r"(?s)watch_state\.py failed \(exit 1\): .*URLError: <urlopen error timed out>$"
+        ReleaseError, match=r"(?s)watch_state\.py --tier 2 failed \(exit 1\): .*URLError: <urlopen error timed out>$"
     ):
-        watch(REPO, root, StateRead(), Script(code=1, stdout="", stderr=trace))
+        read(Script(code=1, stdout="", stderr=trace))
     with pytest.raises(ReleaseError, match=r"failed \(exit 2\)"):
-        watch(REPO, root, StateRead(), Script(code=2, stdout="", stderr="error"))
-    assert [f.state for f in watch(REPO, root, StateRead(), Script(code=1, stdout=ROW))] == ["BOT_FAILED"]
+        read(Script(code=2, stdout="", stderr="error"))
+    assert read(Script(code=1, stdout=ROW)) == ["BOT_FAILED"]
 
 
 def test_s008_12_the_docs_name_shipmill_status() -> None:

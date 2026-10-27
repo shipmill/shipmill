@@ -55,6 +55,7 @@ from shipmill.gate import (
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
 from shipmill.launchd import build, cli_fix
+from shipmill.walk import HANDED
 from tests.conftest import Repo
 from tests.test_agent_as_person import add_agents
 from tests.test_status_picture import checked, facts, job, lines
@@ -195,6 +196,7 @@ def test_s035_1_without_a_token_file_sessions_get_the_gates_env_unchanged_and_au
     [(_, env)] = runner.spawned
     assert env == headless_env(GATE_ENV)  # the env every headless session got before spec 035
     (state_dir(checkout) / RECORD).unlink()
+    (state_dir(checkout) / HANDED).unlink()
     runner = Launcher()
     decision, launched, _, record = tick(checkout, interactive(), runner.claude(), found)
     assert (decision.action, launched, record["auth"]) == (Action.LAUNCH, "s9", "login")
@@ -697,6 +699,7 @@ def test_s035_18_a_token_file_drops_the_api_key_and_auth_token_from_sessions_and
         assert decision.action is Action.LAUNCH
         envs += [env for _, env in runner.spawned] + [env for _, env in runner.run_in_calls]
         (state_dir(checkout) / RECORD).unlink()
+        (state_dir(checkout) / HANDED).unlink()
     assert len(envs) == 2 and len(preflights) == 2
     for env in envs + preflights:
         assert env[OAUTH] == SENTINEL and not set(OUTRANKING) & set(env)

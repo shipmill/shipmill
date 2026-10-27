@@ -257,7 +257,7 @@ def test_s005_14_with_app_id_no_desktop_notification_for_an_item(checkout: Git, 
     assert decision.action is Action.QUIET
     assert notifier.sent == []
     assert [(a.item, a.notified, a.error) for a in decision.decisions] == [(7, False, None)]
-    assert tick_lines(decision, None, (), (), dry_run=False) == ["QUIET: nothing needs an agent"]
+    assert tick_lines(decision, None, (), (), dry_run=False) == ["QUIET: nothing needs an agent; read tiers 1-8"]
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

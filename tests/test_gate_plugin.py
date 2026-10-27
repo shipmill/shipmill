@@ -34,6 +34,7 @@ from shipmill.plugin import (
 )
 from shipmill.requires import Requires, running
 from shipmill.version import Version
+from shipmill.walk import HANDED
 from shipmill.worktrees import Judged
 
 from .test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier, bg, host
@@ -501,6 +502,7 @@ def test_s031_24_a_served_version_says_nothing_and_no_install_asks_nothing(check
     assert plugin_lines(decision, launched) == [] and len(pypi.asked) == 1
     none = FakePyPI(status=404)
     (state_dir(checkout) / "gate.json").unlink()
+    (state_dir(checkout) / HANDED).unlink()  # spec 046: the item was handed
     bare = FakeRunner(checkout.root, version=None, user=None)
     decision, _, _, _ = report_tick(checkout, plugin_host(bare, markers_of(checkout), pypi=none), agents())
     assert decision.action is Action.LAUNCH and none.asked == []  # no version sessions load: nothing to wait for

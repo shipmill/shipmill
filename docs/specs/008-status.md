@@ -108,6 +108,7 @@ The module docstring's command list and exit codes in `src/shipmill/cli.py` name
   with any code but 0 or 1, or exits 1 with no row printed
 - S-008-7: the gate and `status` build the `watch_state.py` command through
   `watch_command`, whose `json` parameter decides `--json`; the gate's command is unchanged
+  - Amended by spec 046 (D-57): the gate's command now reads one tier (`--tier N --known FILE`) or the sweep (`--sweep`); `status` passes neither and reads every section (S-046-20)
 - S-008-8: the `src/shipmill/cli.py` docstring lists `status` and its exit code 1
 - S-008-9: `shipmill status` outside a git checkout exits 2 saying to run it in a checkout or
   pass `--repo`, with or without a named repo

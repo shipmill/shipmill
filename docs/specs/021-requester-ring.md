@@ -112,6 +112,7 @@ It is reported, never a gate.
 - S-021-2: For a stable tag that promotes an rc, `shipped.py` finds every closed issue whose fix the rc held and posts its `stable` notice, even when the range from the previous tag to the stable tag holds no fix commit
 - S-021-3: A second run posts nothing; an issue with an existing `Released in <tag>` comment counts as told for that tag and stage
 - S-021-4: After a successful deployment of a tag to an environment, the watch reports UNANNOUNCED for each closed issue whose fix the tag holds and that has no `<environment>` notice, and posting it writes `Deployed to <environment> in <tag>.`
+  - Amended by spec 046 (D-57): the gate reads UNANNOUNCED from its sweep, every `[agents] sweep_hours`, and for a new release tag from that tag's own check (S-046-8, S-046-9); the watch's full report is unchanged
 - S-021-5: `[notices] pin` and `install` substitute `{version}`, `{tag}`, and `{name}`; an unknown key under `[notices]` fails the policy with exit 2; without `install`, `--install` text is used as today
 - S-021-6: `watch_state.py` reports REQUESTER_CONFIRMED when the issue's author reacted 👍 to its pre-release notice, and nothing for a 👍 by anyone else
 - S-021-7: `watch_state.py` reports REQUESTER_REPORT when the issue's author commented after its pre-release notice or reacted 👎 to it; no label, hold, or reopen follows from the row alone

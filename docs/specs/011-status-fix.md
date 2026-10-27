@@ -175,6 +175,7 @@ waiting it is unchanged.
   fix, and doesn't when the row's detail already ends with that fix
 - S-011-10: `fleet.py` reads `watch_state.py --json` lines with the `fix` key, and the
   gate's fingerprint and session prompt are the same with or without a `fix` on the rows
+  - Amended by spec 046 (D-57): the prompt names its one item with the item's fix line, built from trusted values only (S-046-13); the fingerprint is still the same with or without a fix
 - S-011-11: a `gh` read in `watch_state.py` that fails with an `HTTP 5xx`, timeout, or
   connection error on stderr is run once more; a second failure exits 2 with an error line
   ending `transient GitHub API error: rerun`; an auth or not-found failure is not retried.
@@ -206,6 +207,7 @@ waiting it is unchanged.
   reads `QUIET: nothing needs an agent; N pull request(s) wait to land, landing off
   ([agents] prs = false)`, and with none waiting reads `QUIET: nothing needs an agent` as
   before
+  - Amended by spec 046 (D-57): the line ends with how far the walk went, `; read tiers 1-8` (S-046-18)
 
 ## Out of scope
 
