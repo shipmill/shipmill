@@ -195,8 +195,8 @@ phrased that way reaches the skill.
 - shipmill/shipmill#722: S-043-7, S-043-8, S-043-9, S-043-10, S-043-11
 
 The feature is shipmill/shipmill#677. The build issues landed in shipmill/shipmill#726
-(#720), shipmill/shipmill#732 (#721), and the pull request that set this spec to `built`
-(#722).
+(#720), shipmill/shipmill#732 (#721), and shipmill/shipmill#738 (#722), which set this
+spec to `built`.
 
 ## Verification
 
