@@ -115,7 +115,10 @@ def test_s010_3_builds_the_tag_smoke_tests_the_wheel_then_publishes() -> None:
 def test_s010_4_stable_and_hotfix_dispatch_publish_and_doctor_passes(tmp_path: Path) -> None:
     policy = Policy.load(ROOT / ".github" / "shipmill.toml")
     dispatched = {lane: rule.dispatch for lane, rule in policy.lanes.items()}
-    assert dispatched == {Lane.STABLE: ("move-major-tag.yml", "publish.yml"), Lane.HOTFIX: ("publish.yml",)}
+    assert dispatched == {Lane.STABLE: ("publish.yml",), Lane.HOTFIX: ("publish.yml",)}
+    # #617, D-50: the references move only once publish.yml's run passed and PyPI serves it
+    moved = {lane: rule.after_publish for lane, rule in policy.lanes.items()}
+    assert moved == {Lane.STABLE: ("move-major-tag.yml",), Lane.HOTFIX: ("move-major-tag.yml",)}
     # doctor on a copy of the repo's release files: no origin to ask, no tags to count from
     for name in (".github", ".claude-plugin", "changelog.d", "skills"):  # skills: their pinned CLI lines
         shutil.copytree(ROOT / name, tmp_path / name)
@@ -126,10 +129,11 @@ def test_s010_4_stable_and_hotfix_dispatch_publish_and_doctor_passes(tmp_path: P
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
     checks = doctor(tmp_path)
     assert {c.name for c in checks if c.status == "FAIL"} == {"remote"}
-    assert [(c.status, c.detail) for c in checks if c.name == "dispatch"] == [
-        ("PASS", "move-major-tag.yml (stable) runs on workflow_dispatch with a 'tag' input"),
-        ("PASS", "publish.yml (stable) runs on workflow_dispatch with a 'tag' input"),
-        ("PASS", "publish.yml (hotfix) runs on workflow_dispatch with a 'tag' input"),
+    assert [(c.status, c.name, c.detail) for c in checks if c.name in ("dispatch", "after_publish")] == [
+        ("PASS", "dispatch", "publish.yml (stable) runs on workflow_dispatch with a 'tag' input"),
+        ("PASS", "after_publish", "move-major-tag.yml (stable) runs on workflow_dispatch with a 'tag' input"),
+        ("PASS", "dispatch", "publish.yml (hotfix) runs on workflow_dispatch with a 'tag' input"),
+        ("PASS", "after_publish", "move-major-tag.yml (hotfix) runs on workflow_dispatch with a 'tag' input"),
     ]
 
 

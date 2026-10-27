@@ -100,9 +100,11 @@ stable release.
 
 D-50 (#598) moves the `ref` after publish instead. The land step supports it through a
 lane's `after_publish` (docs/release-lanes.md), and `move-major-tag.yml` now moves the `ref`
-with `@v0`. shipmill's own config turns it on, dropping the version line above, in a
-follow-up, once a release that knows `after_publish` is on PyPI and the plugin installs
-have it: until then a pinned older plugin would refuse the key.
+with `@v0`. shipmill's own config turns it on (#617): its stable and hotfix lanes list
+`move-major-tag.yml` under `after_publish`, the version line above is dropped, and
+`requires = ">=0.70.0"` names the first release that knows the key. So the release commit
+moves `plugin.json` and leaves the `ref` on the previous release until PyPI serves the new
+one.
 
 Everywhere shipmill compares an install against "the latest release" (the gate, `doctor`,
 `status`, and `skills/github-ship-watch/scripts/watch_state.py`), the latest is the
@@ -323,7 +325,7 @@ It follows the path D-32 set for `[roadmap]`:
 
 ## Acceptance criteria
 
-- S-031-1: `.claude-plugin/marketplace.json` on main names the plugin's source as `{"source": "github", "repo": "shipmill/shipmill", "ref": "v<version>"}` with `<version>` equal to `.claude-plugin/plugin.json`'s `version`, and a release's stamp moves both to the new version (a `shipmill stamp` test on a copy of the repo's config)
+- S-031-1: `.claude-plugin/marketplace.json` on main names the plugin's source as `{"source": "github", "repo": "shipmill/shipmill", "ref": "v<version>"}` with `<version>` no newer than `.claude-plugin/plugin.json`'s `version`, and a release's stamp moves `plugin.json` to the new version and leaves the `ref`, which `move-major-tag.yml` moves after publish (D-50, #617; a `shipmill stamp` test on a copy of the repo's config)
 - S-031-2: The latest release the gate, `doctor`, `status`, and `watch_state.py` compare against is the version in the marketplace entry's `ref` read from shipmill/shipmill's default branch; a marketplace entry without a `github` source or with a `ref` not of the form `vX.Y.Z` exits 2 naming the file and the entry
 - S-031-3: No file under `skills/` or `hooks/` contains `git+https://github.com/shipmill/shipmill@v0`, and every `uvx shipmill==<version>` under `skills/` names the version in `.claude-plugin/plugin.json`; a release's stamp moves each of them
 - S-031-4: `watch_state.py`, `setup_state.py`, `shipped.py`, and `hooks/delivery.py` run the CLI as `uvx shipmill==<version>` with the version read from the `.claude-plugin/plugin.json` of their own plugin, both in the repo's layout and from the built wheel; a missing or malformed `plugin.json`, or a `version` not of the form `X.Y.Z`, exits 2 naming the path; they run under Python 3.10 with no dependencies

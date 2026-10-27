@@ -1,4 +1,5 @@
 # shipmill releases itself with its own workflows, at the commit being released
+requires = ">=0.70.0"  # after_publish (D-50); an older shipmill refuses the key
 name = "shipmill"
 mode = "release"
 branch = "main"
@@ -19,15 +20,19 @@ patch = ["Fixed", "Security"]
 blocker_label = "release-blocker"
 blocker_lanes = ["stable"]
 
-# A stable release after every batch of merges, and hotfixes by hand
+# A stable release after every batch of merges, and hotfixes by hand. Each publishes before it
+# moves its references (D-50): move-major-tag.yml points @v0 and the marketplace ref at the
+# release only once publish.yml's run passed and PyPI serves the version
 [lanes.stable]
 quiet_minutes = 30
 github_release = true
-dispatch = ["move-major-tag.yml", "publish.yml"]  # publish.yml: PyPI (spec 010)
+dispatch = ["publish.yml"]  # PyPI (spec 010)
+after_publish = ["move-major-tag.yml"]
 
 [lanes.hotfix]
 github_release = true
 dispatch = ["publish.yml"]
+after_publish = ["move-major-tag.yml"]  # moves nothing for a hotfix on an older series
 
 # The plugin's version follows the package's, so a plugin update ships with each release
 [[version_lines]]
@@ -35,11 +40,8 @@ file = ".claude-plugin/plugin.json"
 pattern = '"version": "[^"]+"'
 replace = '"version": "{version}"'
 
-# The marketplace serves the release's tag, never main's unreleased commits (spec 031)
-[[version_lines]]
-file = ".claude-plugin/marketplace.json"
-pattern = '"ref": "v[^"]+"'
-replace = '"ref": "v{version}"'
+# The marketplace serves the release's tag, never main's unreleased commits (spec 031); its ref
+# moves after publish, in move-major-tag.yml, not in the release commit (D-50)
 
 # The skills run the CLI the plugin pins, `uvx shipmill==<plugin.json's version>` (spec 031):
 # one entry per place the prose writes it out, each matching exactly once

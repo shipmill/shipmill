@@ -2,7 +2,7 @@
 workflows start only once each dispatch run succeeded and PyPI serves the version; a publish
 that fails or never ends leaves them unstarted and names the run. A lane without
 after_publish lands as before, waiting on nothing. shipmill's own move-major-tag.yml moves
-@v0 and the marketplace ref; shipmill's own config turns after_publish on in a follow-up."""
+@v0 and the marketplace ref; shipmill's own config turns after_publish on (#617)."""
 
 import json
 import os

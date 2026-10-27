@@ -28,8 +28,8 @@ MARKETPLACE = PLUGIN.partition("@")[2]  # the marketplace Claude Code installs t
 REFRESH = ["claude", "plugin", "marketplace", "update", MARKETPLACE]
 SHIPMILL_REPO = "shipmill/shipmill"  # where shipmill releases
 # The latest release is the marketplace's (spec 031): the ref its entry names on the default
-# branch, which the release's stamp moves with plugin.json, and move-major-tag.yml moves too, after
-# publish once the lanes set after_publish (D-50); never `gh release view`
+# branch, which move-major-tag.yml moves after publish on shipmill's after_publish lanes (D-50,
+# #617), not the release's stamp; never `gh release view`
 MARKETPLACE_FILE = ".claude-plugin/marketplace.json"
 READ_MARKETPLACE = [
     "gh",
