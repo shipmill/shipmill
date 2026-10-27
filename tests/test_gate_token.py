@@ -57,7 +57,7 @@ from shipmill.hooks import HookTest
 from shipmill.launchd import build, cli_fix
 from tests.conftest import Repo
 from tests.test_agent_as_person import add_agents
-from tests.test_status_picture import facts, job, lines
+from tests.test_status_picture import checked, facts, job, lines
 from tests.test_status_picture import gate as status_gate
 
 from .test_app import REPO
@@ -573,16 +573,16 @@ def test_s035_14_a_tick_with_a_sentinel_token_writes_none_of_it_anywhere(checkou
 def test_s035_15_status_names_the_kind_or_the_refusal_never_the_token(tmp_path: Path) -> None:
     home = tmp_path / "home"
     with_token = facts(gate=status_gate(credential=credential_of(home), home=home))
-    assert "  claude auth    login" in lines(with_token)
+    assert "  claude auth    login" in checked(with_token)
     path = token_file(home)
     found = facts(gate=status_gate(credential=credential_of(home), home=home))
-    assert "  claude auth    token file ~/.config/shipmill/claude-token" in lines(found)
+    assert "  claude auth    token file ~/.config/shipmill/claude-token" in checked(found)
     path.chmod(0o644)
-    refused = lines(facts(gate=status_gate(credential=credential_of(home), home=home)))
+    refused = checked(facts(gate=status_gate(credential=credential_of(home), home=home)))
     said = f"{path} has mode 644, which group or others can read"
     at = refused.index(f"  claude auth    token file ~/.config/shipmill/claude-token: {said}")
     assert refused[at + 1] == f"                 fix: chmod 600 {path}"
-    assert leaks("\n".join(lines(found) + refused)) == set()
+    assert leaks("\n".join(lines(found) + checked(found) + refused)) == set()
 
 
 def test_s035_15_status_reads_the_token_file_the_launchd_job_names(tmp_path: Path) -> None:

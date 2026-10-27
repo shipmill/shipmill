@@ -35,7 +35,20 @@ from shipmill.status import (
     report,
 )
 from shipmill.version import Version
-from tests.test_status_picture import AGENTS, FILES, NO_PRS, NOW, OBSERVE, REPO, URL, facts, gate, job, lines
+from tests.test_status_picture import (
+    AGENTS,
+    FILES,
+    NO_PRS,
+    NOW,
+    OBSERVE,
+    REPO,
+    URL,
+    facts,
+    gate,
+    job,
+    lines,
+    shipmill_line,
+)
 
 FIX = "                 fix: "
 DECISION = "answer the needs-decision question on each item named"
@@ -184,7 +197,7 @@ def test_s031_15_a_lagging_install_is_a_row_with_its_fix_and_no_gate_pause() -> 
     found = facts(outdated)
     assert [(r.text, r.fix) for r in report(found).reasons] == [(outdated.text(), USER_FIX)]
     text = lines(found)
-    assert text[-1] == f"  shipmill       0.26.0, update available: {USER_FIX}"
+    assert shipmill_line(found) == f"  shipmill       0.26.0, update available: {USER_FIX}"
     assert not any("no session" in line or "paused" in line for line in text)
     # an older gate's last PLUGIN_STALE line no longer reads as a pause
     stale = "PLUGIN_STALE: a session here would load shipmill@shipmill 0.48.0 (user scope)"
@@ -199,7 +212,7 @@ def test_s031_16_status_names_the_unloaded_install_with_the_entry_to_delete() ->
     detail = f"0.25.0, keyed on the gate's linked worktree /w/r/tmp/shipmill-gate, which no session loads; {fix}"
     found = facts(Row("SHIPMILL_OUTDATED", "plugin local", detail, False, fix))
     assert fix in [r.fix for r in report(found).reasons]
-    assert lines(found)[-1] == f"  shipmill       0.26.0, update available: {fix}"
+    assert shipmill_line(found) == f"  shipmill       0.26.0, update available: {fix}"
 
 
 @pytest.mark.parametrize(
@@ -211,9 +224,9 @@ def test_s031_17_status_reports_the_gates_lagging_cli_with_its_fix(fix: str) -> 
     assert [(r.text, r.fix) for r in reasons] == [
         (f"the gate's CLI, shipmill 0.25.0, lags the latest release 0.26.0: {fix}", fix)
     ]
-    assert lines(lagging)[-1] == f"  shipmill       0.26.0, gate 0.25.0, update available: {fix}"
+    assert shipmill_line(lagging) == f"  shipmill       0.26.0, gate 0.25.0, update available: {fix}"
     current = facts(gate=gate(cli=GateCli(Version.parse("0.26.0"), fix)))
-    assert report(current).reasons == [] and lines(current)[-1].endswith("up to date")
+    assert report(current).reasons == [] and shipmill_line(current).endswith("up to date")
 
 
 def test_597_status_reports_a_current_gate_on_v0_with_its_rewrite() -> None:
@@ -224,7 +237,7 @@ def test_597_status_reports_a_current_gate_on_v0_with_its_rewrite() -> None:
         gate=gate(cli=GateCli(Version.parse("0.26.0"), fix, "git+https://github.com/shipmill/shipmill@v0"))
     )
     assert [r.fix for r in report(floating).reasons] == [fix]
-    assert lines(floating)[-1] == f"  shipmill       0.26.0, gate 0.26.0 on @v0, update available: {fix}"
+    assert shipmill_line(floating) == f"  shipmill       0.26.0, gate 0.26.0 on @v0, update available: {fix}"
 
 
 def test_s026_16_a_gate_paused_on_a_failed_hook_self_test_waits_on_you_with_the_fix() -> None:
@@ -309,10 +322,10 @@ def test_s011_15_an_outdated_cli_names_the_form_installed() -> None:
     assert cli_update(UVX) == "uv tool install shipmill"
     tool = facts(cli="0.25.0")
     assert [r.fix for r in report(tool).reasons] == ["uv tool upgrade shipmill"]
-    assert lines(tool)[-1].endswith("update available: uv tool upgrade shipmill")
+    assert shipmill_line(tool).endswith("update available: uv tool upgrade shipmill")
     uvx = dataclasses.replace(tool, command=UVX)
     assert [r.fix for r in report(uvx).reasons] == ["uv tool install shipmill"]
-    assert lines(uvx)[-1].endswith("update available: uv tool install shipmill")
+    assert shipmill_line(uvx).endswith("update available: uv tool install shipmill")
 
 
 def test_s011_16_the_repo_line_pulls_in_the_checkout_named() -> None:

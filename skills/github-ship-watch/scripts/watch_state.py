@@ -6,6 +6,7 @@ Usage: watch_state.py <owner/repo> [--repo-dir PATH] [--releases N] [--grace MIN
                       [--tool SPEC] [--incident-label LABEL] [--json]
                       [--bot-login LOGIN] [--trusted-only]
                       [--role NAME=FILLER[,FILLER...] ...]
+       watch_state.py <owner/repo> --host {sessions,shipmill} [--repo-dir PATH] [--json]
 
 Release bot (a repo with .github/shipmill.toml). "The default branch" in this help is the branch
 releases land on: the config's top-level branch, else GitHub's default branch (#694); it is the
@@ -24,11 +25,8 @@ one branch fetched, and every read at origin/<branch> reads it.
                   the workflow is unfinished (asked by status, however old), so no run owns it: a
                   run cancelled before its cleanup job left it, and each later run stops
                   at it unless its prepare job may list the runs (actions: read)
-  WORKTREE_STALE  for a shipmill bot: a worktree `shipmill worktrees` keeps, under
-                  .claude/worktrees/ or tmp/wt-*, created over 7 days ago, with why it is
-                  kept (reported, never an action: a person finishes, pushes, or removes
-                  the work; the main checkout, the --repo-dir checkout, and worktrees that
-                  aren't shipmill's are never reported)
+
+The watch never reads worktrees (spec 044): `shipmill factory` reports the kept ones.
 
 Milestones (spec 022; for a shipmill bot whose config has a lane with milestone = true, from
 `uvx shipmill==<version> --repo <repo-dir> milestones --json`, never run without one):
@@ -339,7 +337,7 @@ session for. A waiting
 item is in no agent row, so it neither starts a session nor changes the gate's fingerprint.
 Each line has a fix too (spec 011): the one line that clears the row, an exact command where
 one exists (every gh naming the repo, every git its checkout with -C), else the decision to
-make; null for a row with nothing to clear. Every action row, HOLD, WORKTREE_STALE,
+make; null for a row with nothing to clear. Every action row, HOLD,
 UNTRUSTED, and UPSTREAM_UNTRUSTED carry one, and PRS_OPEN unless [autonomy] land is act with [agents].
 A fix is built from the repo, numbers, run ids, tags, paths, and config keys, never from an
 issue's or a pull request's text (D-16). The table prints it on an indented "fix:" line
@@ -354,15 +352,20 @@ NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MIS
 SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_UNREADABLE,
 MILESTONE_OVERTAKEN,
 UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, or VETOED row is present, 2
-on bad input or a git, gh, or uvx failure (a failing `shipmill worktrees` or `shipmill
+on bad input or a git, gh, or uvx failure (a failing `shipmill
 milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
 `shipmill: ` error is the BOT_PLAN_FAILED row instead, and uv finding no pinned version the
 PYPI_WAIT row), and on a missing or malformed
 .claude-plugin/plugin.json (spec 031).
-Needs git, an authenticated gh, and uvx (for a shipmill bot's plan, worktrees, and milestones,
-a direction's check and its plans; `shipmill
-worktrees` needs claude on PATH too, to see the live sessions). Python 3.10+,
-standard library only.
+Needs git, an authenticated gh, and uvx (for a shipmill bot's plan and milestones, a
+direction's check and its plans); claude on PATH only for the rows that read live sessions
+and plugin installs. Python 3.10+, standard library only.
+
+--host sessions or --host shipmill prints only that section's rows of this host, as `shipmill
+factory` reads them (spec 044): the AGENT_SESSION (or HOST_UNKNOWN) rows, or the
+SHIPMILL_VERSION, SHIPMILL_OUTDATED, PLUGIN_SHADOWING, and SKILL_SHADOWED rows. It reads none
+of the pipeline: no fetch, no issue, pull request, or run; exit 1 when a row it prints is an
+action row, as above.
 
 Every shipmill command runs as `uvx shipmill==<version>`, the version in the plugin's own
 .claude-plugin/plugin.json three folders above scripts/ (spec 031), or as `uvx --from <tool>
@@ -531,13 +534,10 @@ AGENT = {
 # the states whose every row carries a fix, the one line that clears it (spec 011): every
 # action, and the report-only rows a person still has to act on. PRS_OPEN carries one unless
 # a gate lands pull requests ([autonomy] land act, land_fix); every other state's fix is None
-FIXED = ACTION | {"HOLD", "WORKTREE_STALE", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT"}
+FIXED = ACTION | {"HOLD", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT"}
 FIX_INDENT = " " * 15  # the table's fix line starts under the subject column
 RUN_ID = re.compile(r"/actions/runs/(\d+)(?:/|$)")  # a workflow run's URL names its id
 HEAD_SHA = re.compile(r"[0-9a-f]{40}")  # a pull request's headRefOid (#546)
-STALE = dt.timedelta(days=7)  # a kept shipmill worktree older than this is reported
-# the reasons `shipmill worktrees` keeps a worktree that isn't a shipmill worktree at all
-NOT_SHIPMILL = {"main checkout", "current checkout", "not a shipmill worktree"}
 LEAD = ("INCIDENT_OPEN", "HOLD")  # the report starts with these, in this order
 # the statuses of a run that hasn't finished: shipmill's github.ACTIVE_STATUSES, in its order
 UNFINISHED = ("queued", "in_progress", "waiting", "pending", "requested")
@@ -1070,57 +1070,6 @@ def bot_plan(
         return None, [plan_failed_row(failed, workflow, repo_dir, branch, tool)]
     except PypiWait as wait:
         return None, [pypi_wait_row(wait.version, "the release plan")]
-
-
-def stale_rows(text: str, main: Path, branch: str) -> list[Row]:
-    """`shipmill worktrees --json`'s kept shipmill worktrees created over STALE ago; main is
-    the main checkout its paths are relative to, and branch the default branch, for the fix
-    that shows the work not landed on it (D-24: the person finishes or removes it)"""
-    try:
-        report = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise Refused(f"error: shipmill worktrees --json printed no JSON: {exc}") from None
-    trees = report.get("worktrees") if isinstance(report, dict) else None
-    if not isinstance(trees, list):
-        raise Refused(f"error: shipmill worktrees --json printed {text[:200]!r}, not a worktrees list")
-    rows = []
-    for tree in trees:
-        if not isinstance(tree, dict) or not all(isinstance(tree.get(k), str) for k in ("path", "verdict")):
-            raise Refused(f"error: shipmill worktrees --json printed a row without a path and verdict: {tree!r}")
-        if tree["verdict"] != "KEPT" or tree.get("reason") in NOT_SHIPMILL:
-            continue
-        reason, age = tree.get("reason"), tree.get("age_hours")
-        if not isinstance(reason, str) or not isinstance(age, int) or isinstance(age, bool):
-            raise Refused(f"error: shipmill worktrees --json printed a kept row without a reason and age: {tree!r}")
-        if dt.timedelta(hours=age) > STALE:
-            rows.append(
-                Row(
-                    "WORKTREE_STALE",
-                    tree["path"],
-                    f"{reason}; created {age // 24}d ago",
-                    stale_fix(main, tree["path"], branch),
-                )
-            )
-    return rows
-
-
-def stale_fix(main: Path, path: str, branch: str) -> str:
-    where = shlex.quote(str(main / path))
-    see = f"git -C {where} log origin/{branch}..HEAD"
-    remove = f"git -C {shlex.quote(str(main))} worktree remove {where}"
-    return f"see the work not landed: {see}; then push it and open a pull request, or remove it: {remove}"
-
-
-def stale_worktrees(
-    repo_dir: Path, tool: str | None, branch: str, execute: Callable[[list[str]], str] = pinned_run
-) -> list[Row]:
-    """The kept shipmill worktrees of the checkout's repository created over STALE ago; the
-    PYPI_WAIT row in their place while PyPI doesn't serve the pinned shipmill (#597)"""
-    try:
-        out = execute([*shipmill_cli(tool), "--repo", str(repo_dir), "worktrees", "--json"])
-    except PypiWait as wait:
-        return [pypi_wait_row(wait.version, "worktrees")]
-    return stale_rows(out, project_folder(repo_dir), branch)
 
 
 def milestone_lanes(text: str, policy: Path) -> bool:
@@ -3524,13 +3473,17 @@ def gate_plist(repo: str) -> dict[str, object] | None:
     return found
 
 
-def agent_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
-    """The sessions and, on a Mac, the gate's launchd job; what this host can see"""
+def live_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
+    """The sessions working the repo on this host, or HOST_UNKNOWN without claude on PATH"""
     claude = shutil.which("claude")
     if claude is None:
-        rows = [Row("HOST_UNKNOWN", "claude", "not on PATH: the agent sessions weren't read")]
-    else:
-        rows = session_rows(run([claude, "agents", "--json"]), repo, repo_dir, now)
+        return [Row("HOST_UNKNOWN", "claude", "not on PATH: the agent sessions weren't read")]
+    return session_rows(run([claude, "agents", "--json"]), repo, repo_dir, now)
+
+
+def agent_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
+    """The sessions and, on a Mac, the gate's launchd job; what this host can see"""
+    rows = live_rows(repo, repo_dir, now)
     if sys.platform != "darwin":
         return rows
     label = gate_label(repo)
@@ -4020,6 +3973,17 @@ def fetch_active(repo: str) -> list[ActiveRun]:
     ]
 
 
+# spec 044: the host's rows `shipmill factory` reads, a section at a time, so one check's
+# failure leaves the others: the live sessions, and the shipmill installs and skill copies
+HOST_SECTIONS = ("sessions", "shipmill")
+
+
+def host_rows(section: str, repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
+    if section == "sessions":
+        return live_rows(repo, repo_dir, now)
+    return [*shipmill_rows(repo, repo_dir), *shadow_rows(Path.home(), skill_names())]
+
+
 def arguments() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("repo", help="owner/name")
@@ -4034,6 +3998,11 @@ def arguments() -> argparse.ArgumentParser:
     parser.add_argument("--bot-login", help="the login shipmill's sessions write as, such as <slug>[bot]")
     parser.add_argument(
         "--trusted-only", action="store_true", help="leave untrusted issues and fork pull requests to UNTRUSTED (D-16)"
+    )
+    parser.add_argument(
+        "--host",
+        choices=HOST_SECTIONS,
+        help="print only this host's rows of one section, reading nothing of the pipeline (spec 044)",
     )
     parser.add_argument(
         "--role",
@@ -4062,6 +4031,11 @@ def main() -> int:
     if not 1 <= args.releases <= 20:
         parser.error("--releases must be 1..20")
     repo_dir = Path(args.repo_dir).resolve()
+    if args.host is not None:
+        found = host_rows(args.host, args.repo, repo_dir, dt.datetime.now(dt.timezone.utc))  # noqa: UP017
+        for row in found:
+            print(json.dumps(row.json(), sort_keys=True) if args.json else row.text())
+        return 1 if any(r.state in ACTION for r in found) else 0
     if policy_file(repo_dir) is not None:  # first, as shipmill checks it before the config's other keys
         check_requires((repo_dir / POLICY).read_text(encoding="utf-8"), POLICY)
     now = dt.datetime.now(dt.timezone.utc)  # noqa: UP017 (dt.UTC needs 3.11)
@@ -4089,8 +4063,7 @@ def main() -> int:
         # are asked by status; only with a branch, so a normal pass makes no extra call
         owners = fetch_unfinished(args.repo, workflow) if branches else []
         rows += work_branch_rows(branches, owners, workflow, args.repo)
-        if shipmill:  # after the plan, whose own worktree is gone by then
-            rows += stale_worktrees(repo_dir, args.tool, branch)
+        if shipmill:
             rows += milestones(repo_dir, policy, args.tool)
 
     tags = version_tags(repo_dir)

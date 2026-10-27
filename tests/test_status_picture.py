@@ -34,6 +34,7 @@ from shipmill.status import (
     Report,
     Row,
     Verdict,
+    host_checks,
     parse_issues,
     parse_job,
     parse_waketime,
@@ -95,6 +96,17 @@ def lines(found: Facts) -> list[str]:
     return report(found).text(REPO).splitlines()
 
 
+def checked(found: Facts) -> list[str]:
+    """The lines `shipmill factory` prints for the checks status reads from the same facts
+    (spec 044): the gate, github app, and shipmill lines spec 009 defines moved there"""
+    return [line for c in host_checks(found) for line in c.lines()]
+
+
+def shipmill_line(found: Facts) -> str:
+    (line,) = [line for line in checked(found) if line.startswith("  shipmill ")]
+    return line
+
+
 @pytest.mark.parametrize(
     "state",
     ["BOT_FAILED", "BOT_STALLED", "WORK_BRANCH_STALE", "NOT_PUBLISHED", "OPERATE_FAILED", "UNHEALTHY", "INCIDENT_OPEN"],
@@ -126,7 +138,7 @@ def test_s009_3_a_gate_after_sleep_or_before_its_first_run_isnt_stuck() -> None:
     assert report(facts(gate=gate(job=job(last_run=NOW - dt.timedelta(hours=8), running=True)))).verdict is Verdict.IDLE
     off_mac = gate(launchd=False, job=None)
     assert report(facts(gate=off_mac)).verdict is Verdict.IDLE
-    assert "  gate           can't check here: no launchd" in lines(facts(gate=off_mac))
+    assert "  gate           can't check here: no launchd" in checked(facts(gate=off_mac))
 
 
 def test_s009_3_no_job_on_this_host_waits_on_you_rather_than_stuck() -> None:
@@ -168,8 +180,8 @@ def test_s009_3_a_traceback_shows_its_error_and_a_named_exit_code_is_still_a_num
 def test_s009_4_a_failed_app_check_is_stuck_and_shown() -> None:
     found = facts(gate=gate(app=None, app_error="the App isn't installed on acme/web"))
     assert report(found).verdict is Verdict.STUCK
-    assert "  github app     not connected: the App isn't installed on acme/web" in lines(found)
-    assert "  github app     active" in lines(facts())
+    assert "  github app     not connected: the App isn't installed on acme/web" in checked(found)
+    assert "  github app     active" in checked(facts())
 
 
 def test_s009_4_an_app_key_missing_on_this_host_is_not_a_failure(tmp_path: Path) -> None:
@@ -186,7 +198,7 @@ def test_s009_4_an_app_key_missing_on_this_host_is_not_a_failure(tmp_path: Path)
     assert (found.app, found.app_error, found.mode_set) == (None, None, False)
     assert found.app_key is not None
     text = lines(facts(gate=found))
-    assert f"  github app     can't check here: no key at {found.app_key}" in text
+    assert f"  github app     can't check here: no key at {found.app_key}" in checked(facts(gate=found))
     assert "  mode           interactive (not set)" in text
     assert report(facts(gate=found)).verdict is Verdict.IDLE
 
@@ -331,7 +343,7 @@ def test_s009_15_with_the_app_the_reads_pass_its_bot_login(tmp_path: Path, capsy
     for cmd in reads:
         assert cmd[-2:] == ["--bot-login", test_app.BOT]
         assert "--trusted-only" not in cmd
-    assert "  github app     active" in capsys.readouterr().out
+    assert "  factory        can't check here: no launchd\n" in capsys.readouterr().out
 
 
 TRIAGE_STATE = skills_dir() / "github-issue-triage" / "scripts" / "triage_state.py"
@@ -487,7 +499,9 @@ def test_s009_27_a_failed_app_check_still_reads_with_the_bot_login(
     for cmd in states:
         assert cmd[-2:] == ["--bot-login", test_app.BOT]
     out, err = capsys.readouterr()
-    assert "  github app     not connected: app demo-agent is not installed on romamo/demo" in out
+    assert (
+        "  factory        1 problem(s): github app not connected: app demo-agent is not installed on romamo/demo" in out
+    )
     assert "needs decision" not in out
     assert err == ""
 
@@ -523,11 +537,9 @@ def test_s009_16_the_whole_summary_reads_as_the_spec_shows_it() -> None:
             f"  parked         #26 {URL}/issues/26 postponed",
             f"  open issues    2 {URL}/issues",
             "  pull requests  none",
-            "  gate           OK, launchd every 15 min",
             "  mode           interactive",
             "  landing        propose: the gate reviews and labels shipmill-ready, a person merges",
-            "  github app     active",
-            "  shipmill       0.26.0, up to date",
+            "  factory        OK",
             "",
         ]
     )
@@ -552,7 +564,7 @@ def test_s009_16_the_whole_summary_reads_as_the_spec_shows_it() -> None:
         (Row("BRANCH_DELETE_OFF", REPO, "turn it on: gh api x", False), "  branches       merged branches kept"),
         (
             Row("SHIPMILL_OUTDATED", "plugin user", "0.25.0, latest v0.26.0; claude plugin update x", False),
-            "  shipmill       0.26.0, update available: claude plugin update x",
+            "  factory        1 problem(s): shipmill 0.26.0, update available: claude plugin update x",
         ),
     ],
 )
@@ -565,13 +577,13 @@ def test_s009_16_each_reason_is_a_line_of_the_summary(row: Row, shown: str) -> N
 def test_s009_16_the_gate_reasons_are_lines_too() -> None:
     no_job = facts(gate=gate(job=None))
     assert report(no_job).verdict is Verdict.WAITS
-    assert "  gate           no launchd job on this Mac" in lines(no_job)
+    assert "  factory        1 problem(s): gate no launchd job on this Mac; shipmill factory" in lines(no_job)
     no_app = facts(gate=gate(agents=dataclasses.replace(AGENTS, app_id=None), app=None))
     assert report(no_app).verdict is Verdict.WAITS
-    assert "  github app     not active" in lines(no_app)
+    assert "  factory        1 problem(s): github app not active; shipmill factory" in lines(no_app)
     old_cli = facts(cli="0.25.0")
     assert report(old_cli).verdict is Verdict.WAITS
-    assert lines(old_cli)[-1] == (
+    assert shipmill_line(old_cli) == (
         "  shipmill       0.25.0, plugin user 0.26.0, local 0.26.0, update available: uv tool upgrade shipmill"
     )
 
@@ -701,27 +713,27 @@ def test_s009_19_open_issues_and_pull_requests_are_counted_with_the_list_link() 
     ],
 )
 def test_s009_20_the_gate_line_reads_ok_or_the_problem(changed: Gate, shown: str) -> None:
-    assert f"  gate           {shown}" in lines(facts(gate=changed))
+    assert f"  gate           {shown}" in checked(facts(gate=changed))
 
 
 def test_s009_21_the_mode_and_github_app_lines() -> None:
     assert "  mode           headless" in lines(facts())
     assert "  mode           interactive (not set)" in lines(facts(gate=gate(mode_set=False)))
-    assert "  github app     active" in lines(facts())
+    assert "  github app     active" in checked(facts())
     no_app = gate(agents=dataclasses.replace(AGENTS, app_id=None), app=None)
-    assert "  github app     not active" in lines(facts(gate=no_app))
+    assert "  github app     not active" in checked(facts(gate=no_app))
     failed = gate(app=None, app_error="the App isn't installed")
-    assert "  github app     not connected: the App isn't installed" in lines(facts(gate=failed))
+    assert "  github app     not connected: the App isn't installed" in checked(facts(gate=failed))
 
 
 def test_s009_22_the_shipmill_line_shows_the_version_and_the_updates() -> None:
-    assert lines(facts())[-1] == "  shipmill       0.26.0, up to date"
+    assert shipmill_line(facts()) == "  shipmill       0.26.0, up to date"
     old = Row(
         "SHIPMILL_OUTDATED", "plugin user", "0.25.0, latest v0.26.0; claude plugin update shipmill@shipmill", False
     )
     plugin = Row("SHIPMILL_VERSION", "shipmill", "latest v0.26.0; plugin: user 0.25.0 (/x)", False)
     found = dataclasses.replace(facts(cli="0.25.0"), rows=[old, plugin])
-    assert lines(found)[-1] == (
+    assert shipmill_line(found) == (
         "  shipmill       0.25.0, update available: claude plugin update shipmill@shipmill; uv tool upgrade shipmill"
     )
 
@@ -733,14 +745,12 @@ def test_s009_23_empty_lines_are_dropped_and_the_fixed_ones_always_shown() -> No
         "autonomy",
         "open issues",
         "pull requests",
-        "gate",
         "mode",
         "landing",
-        "github app",
-        "shipmill",
+        "factory",
     ]
     bare = [line[2:16].strip() for line in lines(facts(gate=gate(agents=None)))[1:]]
-    assert bare == ["repo", "autonomy", "open issues", "pull requests", "gate", "shipmill"]
+    assert bare == ["repo", "autonomy", "open issues", "pull requests", "factory"]
 
 
 def test_s009_23_gate_sessions_and_runs_are_counted_with_their_links() -> None:

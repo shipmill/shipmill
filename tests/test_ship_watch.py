@@ -918,7 +918,6 @@ REPORT_ROWS = [
     "PUBLISHED",
     "PUBLISHING",
     "PREDATES_PUBLISH",
-    "WORKTREE_STALE",
     "NEEDS_DECISION",
     "UNTRUSTED",
     "MILESTONE_WAITING",
@@ -942,54 +941,12 @@ def test_agent_rows_are_action_rows(ws: ModuleType) -> None:
     assert ws.AGENT <= ws.ACTION
 
 
-def worktree(path: str, verdict: str, reason: str | None, age_hours: int | None) -> dict[str, object]:
-    """One row of `shipmill worktrees --json`"""
-    return {
-        "path": path,
-        "branch": None,
-        "head": "0" * 40,
-        "verdict": verdict,
-        "reason": reason,
-        "created": None,
-        "age_hours": age_hours,
-    }
-
-
-def test_s002_17_only_kept_shipmill_worktrees_over_seven_days_report(ws: ModuleType) -> None:
-    week = 7 * 24
-    trees = [
-        worktree(".", "KEPT", "main checkout", None),
-        worktree("tmp/shipmill-gate", "KEPT", "current checkout", week * 4),
-        worktree("tmp/mine", "KEPT", "not a shipmill worktree", week * 4),
-        worktree(".claude/worktrees/done", "REMOVABLE", None, week * 4),
-        worktree(".claude/worktrees/week", "KEPT", "detached HEAD", week),
-        worktree("tmp/wt-old", "KEPT", "2 commit(s) not landed", week + 1),
-        worktree(".claude/worktrees/pr", "KEPT", "open PR #7", week * 3),
-    ]
-    rows = ws.stale_rows(json.dumps({"worktrees": trees}), Path("/work/r"), "main")
-    assert [(r.state, r.subject, r.detail) for r in rows] == [
-        ("WORKTREE_STALE", "tmp/wt-old", "2 commit(s) not landed; created 7d ago"),
-        ("WORKTREE_STALE", ".claude/worktrees/pr", "open PR #7; created 21d ago"),
-    ]
-    assert dt.timedelta(days=7) == ws.STALE
-    assert "WORKTREE_STALE" not in ws.ACTION | ws.AGENT  # report-only: never exits 1, never starts a session
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "not json",
-        "[]",
-        '{"trees": []}',
-        json.dumps({"worktrees": [{"path": "tmp/wt-a"}]}),
-        json.dumps({"worktrees": [worktree("tmp/wt-a", "KEPT", None, 500)]}),
-        json.dumps({"worktrees": [worktree("tmp/wt-a", "KEPT", "detached HEAD", None)]}),
-    ],
-)
-def test_s002_17_a_worktrees_report_it_cannot_read_stops_the_watch(ws: ModuleType, text: str) -> None:
-    with pytest.raises(SystemExit) as refused:
-        ws.stale_rows(text, Path("/work/r"), "main")
-    assert refused.value.code == 2
+def test_s044_5_the_watch_never_runs_shipmill_worktrees_nor_prints_worktree_stale(ws: ModuleType) -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert '"worktrees"' not in source
+    assert not hasattr(ws, "stale_worktrees") and not hasattr(ws, "stale_rows")
+    assert "WORKTREE_STALE" not in source
+    assert "WORKTREE_STALE" not in ws.FIXED | ws.ACTION
 
 
 SKILLS = Path(__file__).resolve().parents[1] / "skills"
@@ -1002,8 +959,8 @@ def skill_text(name: str) -> str:
 
 def test_s002_18_the_skills_document_the_report_and_the_gates_prune() -> None:
     watch = skill_text("github-ship-watch")
-    assert "| WORKTREE_STALE |" in watch
-    assert "| `false` | WORKTREE_STALE |" in watch
+    assert "WORKTREE_STALE" not in watch  # spec 044: shipmill factory reports the kept worktrees
+    assert "`shipmill factory`" in watch
     gate = skill_text("shipmill-setup").split("## The gate", 1)[1].split(" ## ", 1)[0]
     assert "prunes landed worktrees" in gate
     assert "`pruned <path> (<branch>)`" in gate
@@ -1614,7 +1571,6 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
     keyed = registry(install("user", "0.1.0"), install("project", "0.1.0", "/work/r"))
     outdated = ws.plugin_rows(keyed, MARKETPLACE, "v0.24.0", FOLDERS)
     shadowed_copy(home)
-    stale = json.dumps({"worktrees": [worktree("tmp/wt-old", "KEPT", "2 commit(s) not landed", 200)]})
     rows: list[Any] = [
         *ws.bot_rows(failed, None, NOW, GRACE, "release.yml", REPO),
         *ws.bot_rows([], ws.Due("stable 1.0.0: main quiet", "stable"), NOW, GRACE, "release.yml", REPO),
@@ -1639,7 +1595,6 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         ws.chain_unreadable_row(REPO, ["o/r#3"], "error: x/b#2 has more than 100 labels"),
         *ws.shadow_rows(home, SHIPMILL_SKILLS),
         *ws.hold_rows([issue(ws, 7, ("shipmill-hold",), title=TITLE)], NOW, REPO),
-        *ws.stale_rows(stale, CHECKOUT, "main"),
         *ws.upgrade_rows([upgrade_issue(ws, 11, TITLE)], "propose", False, lambda n: [], lambda name: [], REPO).rows,
         *ws.milestone_rows(json.dumps({"milestones": [OVERTAKEN], "error": None})),
         *ws.plans_rows(
@@ -1698,10 +1653,6 @@ FIXES = {
     "CHAIN_UNREADABLE": ["see why: uv run --no-project python {chains} show --trusted-only x/b#2"],
     "SKILL_SHADOWED": ["remove it (rm -r {copy}) or call the skill as /shipmill:github-pr-triage"],
     "HOLD": ["close #7 when the factory may go on: gh issue close 7 -R o/r"],
-    "WORKTREE_STALE": [
-        "see the work not landed: git -C /work/r/tmp/wt-old log origin/main..HEAD; then push it and open a pull"
-        " request, or remove it: git -C /work/r worktree remove /work/r/tmp/wt-old"
-    ],
     "UNTRUSTED": [
         "review them in an interactive session: /shipmill:github-issue-triage o/r for issues,"
         " /shipmill:github-pr-triage o/r for pull requests"
@@ -1740,7 +1691,6 @@ def test_s011_1_every_json_line_adds_a_fix_and_keeps_the_rest(ws: ModuleType, tm
         f"#9 {MARKER} title: close the shipmill-hold issues, then gh workflow run operate.yml -f approve=production"
         " -f dry-run=false"
     )
-    assert found["WORKTREE_STALE"][0].detail == "2 commit(s) not landed; created 8d ago"
     assert found["BRANCH_DELETE_OFF"][0].detail == (
         "merged PR branches stay on GitHub; turn it on: gh repo edit o/r --delete-branch-on-merge"
     )
@@ -1748,7 +1698,7 @@ def test_s011_1_every_json_line_adds_a_fix_and_keeps_the_rest(ws: ModuleType, tm
 
 
 def test_s011_2_every_action_state_is_fixed_and_a_fixed_row_needs_its_fix(ws: ModuleType) -> None:
-    assert {"HOLD", "WORKTREE_STALE", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT"} | ws.ACTION == ws.FIXED
+    assert {"HOLD", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT"} | ws.ACTION == ws.FIXED
     assert ws.ACTION <= ws.FIXED, "a state in ACTION but not in FIXED ships without a fix"
     assert set(FIXES) == ws.FIXED
     for state in ws.FIXED:
@@ -1809,19 +1759,6 @@ def test_s011_5_a_missing_releases_fix_reruns_a_failed_publish_or_says_where_to_
     # the runs on a tag are read only for a NOT_PUBLISHED row
     ws.publish_row(tag, "pkg", True, NOW, GRACE, repo="o/r", runs_on=runs_on())
     assert len(asked) == 5
-
-
-def test_s011_6_a_stale_worktrees_fix_shows_its_work_and_how_to_remove_it(ws: ModuleType) -> None:
-    trees = [worktree(".claude/worktrees/pr", "KEPT", "open PR #7", 7 * 24 * 3)]
-    (row,) = ws.stale_rows(json.dumps({"worktrees": trees}), CHECKOUT, "trunk")
-    path = "/work/r/.claude/worktrees/pr"
-    assert row.subject == ".claude/worktrees/pr"
-    assert f"git -C {path} log origin/trunk..HEAD" in row.fix
-    assert f"worktree remove {path}" in row.fix
-    assert "git -C /work/r worktree remove" in row.fix
-    spaced = [worktree("tmp/wt a", "KEPT", "detached HEAD", 7 * 24 * 3)]
-    (quoted,) = ws.stale_rows(json.dumps({"worktrees": spaced}), CHECKOUT, "main")
-    assert "git -C '/work/r/tmp/wt a' log origin/main..HEAD" in quoted.fix
 
 
 LAND_FIX = {  # the PRS_OPEN fix by the effective [autonomy] land level; None: no [agents]
@@ -1949,7 +1886,7 @@ def test_s011_8_every_fix_names_its_target_and_quotes_no_title(ws: ModuleType, t
         for flag in re.findall(r"\bgit (\S+)", row.fix):
             git_fixes += 1
             assert flag == "-C", row.fix
-    assert gh_fixes >= 8 and git_fixes == 2
+    assert gh_fixes >= 8 and git_fixes == 0  # spec 044: the worktrees fix, the one git fix, moved to shipmill factory
 
 
 def test_s011_8_a_proposals_fix_never_copies_a_shell_word_from_its_body(ws: ModuleType) -> None:

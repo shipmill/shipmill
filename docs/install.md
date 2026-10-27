@@ -174,7 +174,7 @@ for s in ~/src/shipmill/skills/*/; do ln -sfn "$s" ~/.agents/skills/; done
 
 A linked skill answers its name without the plugin's prefix on this machine in place of
 the plugin's, so a gate session whose prompt leaves the prefix out runs the checkout,
-behind or on a feature branch. Prompts call the plugin's as `/shipmill:<skill>`, and `shipmill status`
+behind or on a feature branch. Prompts call the plugin's as `/shipmill:<skill>`, and `shipmill factory`
 and the setup checklist report each link or copy in `~/.claude/skills` or
 `~/.agents/skills` as `SKILL_SHADOWED`, with its fix.
 
@@ -414,6 +414,11 @@ modes](design/agent-modes.md) has the details.
    and runs it once now; the log is under `~/Library/Logs/shipmill/`. On Linux, run
    `$CR --repo tmp/shipmill-gate gate <owner/repo> --refresh` from a systemd timer
 
+   `$CR factory` checks this machine's side, one line per check: the launchd job and its
+   log, the gate's sessions, the App, the shipmill installs, the checkout, and the
+   worktrees, each read on its own (`--json` for a record). `$CR status` is the pipeline,
+   with one `factory` line summing those checks up
+
 5. **Watch a session** with `claude agents` and `claude attach <id>`. A session waiting on
    your answer holds the repo until you give it; on a machine nobody watches,
    [run it headless](#run-it-headless)
@@ -547,7 +552,7 @@ The token goes only into the environment of the `claude -p` or `claude --bg` pro
 starts a session, as `CLAUDE_CODE_OAUTH_TOKEN` with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, so
 the session's tools don't see it, and without `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`,
 which would outrank it. Before a launch, `claude auth status --json` runs with it and must
-name the token. `shipmill status` prints a `claude auth` line, and `shipmill doctor` warns
+name the token. `shipmill factory` prints a `claude auth` line under the gate's, and `shipmill doctor` warns
 when the gate leans on the login, and when the token file is older than 330 days: the token
 lasts a year, so run `claude setup-token` again and save it over the old one
 

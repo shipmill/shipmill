@@ -1,6 +1,6 @@
 # S-044: shipmill factory reports the host's machinery; status keeps to the pipeline
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -120,4 +120,21 @@ check here: no launchd`, which is no problem.
 
 ## Issues
 
+- shipmill/shipmill#731: S-044-1, S-044-2, S-044-3, S-044-4, S-044-5, S-044-6, S-044-7, S-044-8, S-044-9, S-044-10, S-044-11
+
 ## Verification
+
+Checked on the default branch plus #731's change, on the gate's Mac, against
+shipmill/shipmill, beyond the tests named.
+
+- S-044-1: `test_s044_1_status_prints_a_factory_line_after_landing_and_no_gate_app_or_shipmill_line`, passing; `shipmill status` on shipmill/shipmill printed `factory` as its last line after `landing`, and no gate, github app, shipmill, or claude auth line
+- S-044-2: `test_s044_2_the_factory_line_reads_ok_or_the_problems_with_the_first`, passing
+- S-044-3: `test_s044_3_the_verdict_is_spec_009s_read_through_the_factory_checks`, passing, with spec 009's own tests (S-009-3, S-009-4, S-009-5) unchanged and passing
+- S-044-4: `test_s044_4_a_check_that_fails_to_run_is_stuck_and_the_report_goes_on` (a launchd plist that isn't one) and `test_s044_4_a_failed_gate_cli_read_is_the_shipmill_checks_error`, passing
+- S-044-5: `test_s044_5_the_watch_never_runs_shipmill_worktrees_nor_prints_worktree_stale`, `test_s044_5_status_reads_no_worktree_row`, and the command list in `test_s044_4_a_check_that_fails_to_run_is_stuck_and_the_report_goes_on`, passing
+- S-044-6: `test_s044_6_factory_prints_its_checks_in_order_with_spec_009s_values`, passing; `shipmill factory` on shipmill/shipmill printed gate, claude auth, sessions, github app, shipmill, checkout, and worktrees in that order
+- S-044-7: `test_s044_7_the_worktrees_line_counts_and_lists_kept_shipmill_ones_over_seven_days` and `test_s044_7_the_factory_lists_kept_shipmill_worktrees_over_seven_days` (real worktrees), passing; on the gate's host it read `0 removable, 139 kept` with 40 stale lines, each with its fix
+- S-044-8: `test_s044_8_a_check_that_fails_to_run_prints_its_error_and_the_rest_still_run` and `test_s044_8_watch_states_host_rows_that_fail_are_the_checks_error`, passing
+- S-044-9: `test_s044_9_factory_exits_1_on_a_problem_or_a_failed_check`, passing; the run above exited 1 on the stale worktrees
+- S-044-10: `test_s044_10_json_prints_each_check_with_ok_value_and_fixes_in_order`, passing
+- S-044-11: `test_s044_11_off_a_mac_the_launchd_checks_cant_check_here_and_are_no_problem`, passing

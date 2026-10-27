@@ -139,6 +139,10 @@ other gate error, and the gate starts no session on that tick.
 
 ### The report
 
+Spec 044 moved this report: `watch_state.py` no longer reads worktrees, and `shipmill
+factory`'s worktrees line lists each kept shipmill worktree over 7 days old with its fix
+(S-044-7).
+
 `skills/github-ship-watch/scripts/watch_state.py`, for a repo whose release workflow is
 shipmill's (where it already runs `uvx --from <tool> shipmill plan`), runs
 `uvx --from <tool> shipmill --repo <repo-dir> worktrees --json` and adds one
@@ -177,7 +181,7 @@ a failing plan does.
 - S-002-14: when `git worktree remove` or the branch deletion fails for a worktree, `--prune` exits 2 naming that worktree and git's error, and removes no worktree after it
 - S-002-15: `shipmill gate` prunes on each tick, including a tick that reports HELD while a `shipmill-hold` issue is open, prints a `pruned <path> (<branch>)` line per removed worktree, and lists them under `pruned` in `--json`
 - S-002-16: `shipmill gate --dry-run` removes no worktree and lists the worktrees it would prune; a prune error makes `shipmill gate` exit 2 without launching a session
-- S-002-17: `watch_state.py` reports one report-only `WORKTREE_STALE` row (agent false, not an action) per KEPT shipmill worktree older than 7 days, naming its path and reason, and none for the main checkout, the current checkout, or a worktree that is not a shipmill worktree
+- S-002-17: dropped in #731, see S-044-7 (`shipmill factory` lists the kept shipmill worktrees older than 7 days)
 - S-002-18: `skills/github-ship-watch/SKILL.md` documents the `WORKTREE_STALE` row, and `skills/shipmill-setup/SKILL.md`'s gate section documents the gate's prune and `shipmill worktrees`, and the github-issue-resolve, github-pr-triage, and github-issue-triage skills each say that the worktrees a session leaves behind once it exits are the gate's prune's to remove
 - S-002-19: a candidate worktree that holds another worktree of the repository inside it, even under an ignored path, is KEPT as `holds worktree <path>`, its path relative to the main checkout (added in #131)
 - S-002-20: a candidate worktree whose branch tip is, or was before a force-push, the head of a pull request merged into the default branch whose head branch is its branch or that branch's upstream, matched by commit SHA, and that passes every other check, is REMOVABLE; one with commits after such a head is KEPT as `<N> commit(s) not landed`, counting only those commits; the merged pull requests are read in one request before judging, and a failing read exits 2 and removes nothing (added in #244)
@@ -227,7 +231,7 @@ so `gh pr list` and `claude agents --json` ran for real) with one worktree per c
 - S-002-14: by the tests only (a branch git can't delete, a worktree changed after the check), each stopping the prune with exit 2 naming the worktree and git's error and touching nothing after it; holds in the tests
 - S-002-15: `shipmill --repo <scratch>/tmp/shipmill-gate gate shipmill/shipmill --dry-run` listed `would prune .claude/worktrees/landed (landed)` and `--json` `"pruned": [".claude/worktrees/landed"]`; a real tick's `pruned` line and the held tick by the tests, since a real tick would start a session; holds
 - S-002-16: that dry-run removed nothing; with `GH_TOKEN=invalid` the gate exited 2 on the prune's `gh pr list` before any launch; holds
-- S-002-17: `watch_state.py shipmill/shipmill --repo-dir <scratch>/tmp/shipmill-gate --json` printed `WORKTREE_STALE` rows with `agent: false` for `tmp/wt-dirty` (`uncommitted changes; created 9d ago`) and `tmp/wt-wip` (`1 commit(s) not landed; created 10d ago`) and none for `.`, `tmp/shipmill-gate`, the 2-day-old detached worktree, or the REMOVABLE one; WORKTREE_STALE is in neither `ACTION` nor `AGENT`, and the gate's dry run counted it as no work; holds
+- S-002-17: dropped in #731; before it, `watch_state.py shipmill/shipmill --repo-dir <scratch>/tmp/shipmill-gate --json` printed `WORKTREE_STALE` rows with `agent: false` for `tmp/wt-dirty` (`uncommitted changes; created 9d ago`) and `tmp/wt-wip` (`1 commit(s) not landed; created 10d ago`) and none for `.`, `tmp/shipmill-gate`, the 2-day-old detached worktree, or the REMOVABLE one; WORKTREE_STALE is in neither `ACTION` nor `AGENT`, and the gate's dry run counted it as no work; holds
 - S-002-18: `test_s002_18_the_skills_document_the_report_and_the_gates_prune` reads the five SKILL.md files: github-ship-watch's repair and agent tables list WORKTREE_STALE, shipmill-setup's The gate describes the prune and `shipmill worktrees`, and github-issue-resolve, github-pr-triage, and github-issue-triage each say the worktrees a session leaves behind once it exits are the gate's prune's to remove (D-12); holds
 - S-002-19: `tmp/wt-outer` holding the worktree `tmp/wt-outer/tmp/wt-inner` (under the ignored `tmp/`) read `holds worktree tmp/wt-outer/tmp/wt-inner`; holds
 - S-002-20: the GraphQL read against romamo/treaty for `feat/54-audit-false` returned #75 with heads `7a275f8` and the force-pushed-away `b2e3b25`, the worktree's only commit; the treaty case, a rebased and review-fixed squash merge through an upstream of another name, a commit after the merged head (`1 commit(s) not landed`), a reused branch name, and a failing read, by the tests; holds

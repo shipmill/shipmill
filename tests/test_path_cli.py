@@ -16,7 +16,7 @@ import pytest
 
 from shipmill.doctor import PluginRow, plugin_checks
 from shipmill.status import Row, Verdict, report
-from tests.test_status_picture import facts, lines
+from tests.test_status_picture import facts, lines, shipmill_line
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-ship-watch" / "scripts" / "watch_state.py"
 REPO = Path("/work/r")
@@ -316,7 +316,7 @@ def test_s031_29_status_waits_on_you_and_names_uvs_upgrade_once(ws: ModuleType, 
     lagging = facts(row, cli="0.20.0")
     assert UPGRADE in [r.fix for r in report(lagging).reasons]
     assert "\n".join(lines(lagging)).count(UPGRADE) == 1
-    assert lines(lagging)[-1].endswith(f", update available: {UPGRADE}")
+    assert shipmill_line(lagging).endswith(f", update available: {UPGRADE}")
 
 
 def test_s031_29_no_gate_holds_a_session_on_the_row(ws: ModuleType, tmp_path: Path) -> None:
