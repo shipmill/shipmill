@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.87.0] - 2026-10-27
+
+### Added
+
+- github-ship-watch: `watch_state.py --tier N` prints one of the gate's eight work tiers and `--sweep` the timed sections, neither with a host or report-only row, and `--known FILE` takes what the gate's change check read already; github-issue-triage's `triage_state.py --label` reads only the open issues carrying a label (spec 046, #756)
+
+### Changed
+
+- Gate: a tick checks GitHub for a change first (one GraphQL query and one read of the newest runs, against the cursor in `cursor.json`) and reads nothing more when nothing changed; on a change it walks the eight work tiers in order and hands a session the first item no session was handed within `retry_hours` (`handed.json`), with its tier and fix line, so one stuck item never holds back the next. The timed sections come from a sweep every `[agents] sweep_hours` (default 6); `--json` adds `walk` and `item`, and `--walk` and `--sweep` force them (spec 046, #757)
+
 ## [0.86.0] - 2026-10-27
 
 ### Changed
@@ -1959,7 +1969,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.86.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.87.0...HEAD
+[0.87.0]: https://github.com/shipmill/shipmill/compare/v0.86.0...v0.87.0
 [0.86.0]: https://github.com/shipmill/shipmill/compare/v0.85.1...v0.86.0
 [0.85.1]: https://github.com/shipmill/shipmill/compare/v0.85.0...v0.85.1
 [0.85.0]: https://github.com/shipmill/shipmill/compare/v0.84.0...v0.85.0
