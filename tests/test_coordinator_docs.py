@@ -75,7 +75,8 @@ def test_s038_23_comments_has_the_upstream_report_and_clarify_files_nothing_upst
     assert variants == [
         "Triage: **upstream**. Routed by {owner/home}, the product's coordinator: it files the work in the "
         "repos that own it and closes this with what changed.",
-        "Triage: **upstream**. No coordinator routes it: it waits for @{maintainer}, who reports it to the "
+        # the maintainer in a code span: a verdict emails nobody (D-61, #771)
+        "Triage: **upstream**. No coordinator routes it: it waits for `@{maintainer}`, who reports it to the "
         "owning repo and closes this with what changed.",
     ]
     assert all("implement" not in v for v in variants)  # triage_state.py would read NEEDS_PR

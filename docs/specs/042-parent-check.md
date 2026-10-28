@@ -108,6 +108,8 @@ parent would read VERIFY_DUE again, so the gate would start a session on every t
 So the session posts a **check-waiting comment**: `<!-- shipmill:check-waiting -->` as its
 first line, then `@<login> answered "leave it open"`, naming who answered, by the
 `--bot-login` or an OWNER, MEMBER, or COLLABORATOR (D-16); one by anyone else never counts.
+(Note, #771: since D-61 the login is written in a code span, `` `@<login>` answered ``, so
+the comment emails nobody; the script reads both forms.)
 
 `triage_state.py` reads a parent with a check, where it would read VERIFY_DUE or
 CHECK_FAILED, as WITH_PERSON when a trusted check-waiting comment came after the newest close

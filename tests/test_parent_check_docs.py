@@ -152,7 +152,8 @@ def test_s042_13_leave_it_open_posts_the_check_waiting_comment() -> None:
     comments = section(doc(TRIAGE / "references" / "comments.md"), "## A parent's check")
     blocks = re.findall(r"```markdown\n(.*?)```", comments, re.DOTALL)
     [waiting] = [b for b in blocks if b.splitlines()[0] == CHECK_WAITING]
-    assert waiting.splitlines()[1].startswith('@{login} answered "leave it open":')
+    # the login in a code span, which triage_state.py reads as it reads a bare one (D-61, #771)
+    assert waiting.splitlines()[1].startswith('`@{login}` answered "leave it open":')
     assert 'On "leave it open", post the check-waiting comment' in flat(comments)
     rubric = flat(section(doc(TRIAGE / "references" / "triage-rubric.md"), "## A parent's check"))
     assert f"`{CHECK_WAITING}`" in rubric and "| WITH_PERSON |" in rubric

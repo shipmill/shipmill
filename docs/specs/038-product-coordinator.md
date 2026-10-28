@@ -114,7 +114,8 @@ An agent that traces a fault to a module another repo owns reports it in its own
 - It posts the report's triage comment: `Triage: **upstream**`, then "Routed by
   {owner/home}, the product's coordinator" when the config sets `[product] home`, else "No
   coordinator routes it: it waits for @{maintainer}, who reports it to the owning repo and
-  closes this with what changed"
+  closes this with what changed" (note, #771: since D-61 the maintainer is written in a code
+  span, `` `@{maintainer}` ``, so the verdict emails nobody)
 - It never files an issue in another repo, never vendors the other module, patches an
   installed dependency, or opens a pull request elsewhere. A workaround in its own code is
   fine when it is a real change there, said to be temporary in its pull request

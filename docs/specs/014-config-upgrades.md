@@ -135,7 +135,9 @@ Accepted (or under `act`, at once), the session runs `shipmill upgrade --apply <
 branch `shipmill/upgrade-<id>`, adds a CHANGELOG entry when the repo's rules ask for one,
 and opens the pull request as the App (spec 012) with `Closes #<issue>` and a line naming
 the decision it carries out (`Accepted by @<login> in #<issue>`, or `[autonomy] upgrade =
-"act"`). `skills/github-ship-watch/SKILL.md` gives the steps.
+"act"`). `skills/github-ship-watch/SKILL.md` gives the steps. (Note, #771: since D-61 the
+login in the accepted line is written in a code span, ``Accepted by `@<login>` in #<issue>``,
+so the line emails nobody.)
 
 github-pr-triage (`skills/github-pr-triage/SKILL.md`) merges an upgrade pull request on
 green CI when its issue holds an accepting answer from an OWNER, MEMBER, or COLLABORATOR,

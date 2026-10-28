@@ -173,7 +173,8 @@ UNBLOCKED, one of these; without the section it reads as before:
                    verified comment after it: a person runs its ## Check by hand (#740),
                    not an action. A check-waiting comment's first line is
                    <!-- shipmill:check-waiting -->, by the same authors; it waits on the
-                   first @login past that line, or on its author. Its note is "check waiting
+                   first @login past that line, bare or in a code span (`@login`, D-61),
+                   or on its author. Its note is "check waiting
                    on @login since <date>", then the progress and its holds; with --json, its
                    line's "assignees" is that login alone, and it has no "teams"
 
@@ -653,7 +654,8 @@ CHECK_FAILED_MARKER = "<!-- shipmill:check-failed -->"
 # A trusted comment saying a person runs a parent's ## Check by hand, on the needs-decision answer
 # "leave it open" (#740): it reads WITH_PERSON until a hold closes or a check-failed or verified comment follows
 CHECK_WAITING_MARKER = "<!-- shipmill:check-waiting -->"
-MENTION = re.compile(r"(?<![\w@/-])@(" + LOGIN_PATTERN + r")(?![\w/-])")  # an @login, not an @org/team
+# An @login, not an @org/team, bare or in a code span (`@login`, D-61): a backtick is no word character
+MENTION = re.compile(r"(?<![\w@/-])@(" + LOGIN_PATTERN + r")(?![\w/-])")
 CHECK = re.compile(r"^[ \t]*##[ \t]+Check[ \t]*$", re.MULTILINE)  # how a person's result is checked
 ACTION = {
     "NEW",
