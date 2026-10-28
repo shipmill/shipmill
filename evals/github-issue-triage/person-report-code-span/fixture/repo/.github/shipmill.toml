@@ -1,0 +1,22 @@
+# acme/ops (the eval case's state)
+name = "acme-ops"
+mode = "release"
+branch = "main"
+version_files = "pyproject"
+
+[changelog]
+style = "keep-a-changelog"
+
+[lanes.stable]
+quiet_minutes = 30
+
+[agents]
+prompt = "/shipmill:github-issue-triage {repo} triage the open issues"
+prs = true
+app_id = 5209412
+mode = "headless"
+
+[autonomy]
+triage = "act"
+fix = "act"
+land = "act"

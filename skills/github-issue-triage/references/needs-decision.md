@@ -68,7 +68,9 @@ Not taken: <the other option, and what it would have meant for users>
 Reply with a comment starting with `veto` before 2026-10-20 14:00 UTC to reverse it, adding what you want instead if you like. A later veto still counts and gets a follow-up.
 ```
 
-`zone` is the decision's zone id, and `until` the post time plus `veto_hours`, in UTC. `<login>` is the person the gate's prompt names, as for a question, so GitHub notifies them.
+`zone` is the decision's zone id, and `until` the post time plus `veto_hours`, in UTC. `<login>` is the person the gate's prompt names, as for a question, so GitHub notifies them: it stays a bare mention because the veto window runs from this comment, and a person who never hears of the decision can't veto it in time (D-61).
+
+**Mentions (D-61).** A bare `@login` is an email, so shipmill writes one only in a needs-decision question, the hand-off of a person's item, and a decided comment, each of which waits on that person. Every other comment, pull request body, or commit message names a login in a code span, `` `@login` ``: a verdict on an answer, a verified or check-waiting line, an accepted or direction line, a login named inside a question.
 
 - **The work doesn't wait.** The session goes on at once, and a pull request carrying a `notify` decision merges when it is otherwise ready, inside the window too. `pr_gate.py` prints a `notify: <zone>: <reason>` line for one: post the decided comment before the merge, unless one for that zone is already on the pull request
 - **A rule goes to the log.** When the decision sets something later work must respect (a format for a new output, a reading of a criterion the next pull request relies on), also record it with `decisions.py add --zone <id>`, which writes its `- Zone: <id> (notify, veto until <until>)` line; one decisions pull request per pass still holds ([design-gate.md](design-gate.md#recording-a-decision)). A decision that sets no rule is recorded by the comment alone
@@ -111,7 +113,7 @@ Every place github-issue-triage, github-issue-resolve, and github-pr-triage woul
    Reply here with a number or your own answer; shipmill takes this up on the tick after your reply.
    ```
 
-   The marker is the comment's first line, with or without an App: it is how `triage_state.py` and `watch_state.py` tell the question from the reply when the session posts as the maintainer. `<login>` is the person the gate's prompt names (the host's `gh` login). Put the recommendation first, and say in each option what it means for users and what it costs, in words a user of the tool knows. Name `D-n` entries and `S-NNN-k` criteria when the question is a departure from one. With `[agents]` in the config, the question's zone goes on the second line, right under the marker ([The zone line](#the-zone-line))
+   This mention stays bare: the question waits on that person, so GitHub's notification is how they hear of it. The marker is the comment's first line, with or without an App: it is how `triage_state.py` and `watch_state.py` tell the question from the reply when the session posts as the maintainer. `<login>` is the person the gate's prompt names (the host's `gh` login). Put the recommendation first, and say in each option what it means for users and what it costs, in words a user of the tool knows. Name `D-n` entries and `S-NNN-k` criteria when the question is a departure from one. With `[agents]` in the config, the question's zone goes on the second line, right under the marker ([The zone line](#the-zone-line))
 2. Add the `needs-decision` label to the item: `gh issue edit <n> --add-label needs-decision` (or `gh pr edit`). From now on the scripts read the item as waiting, not as work, so the gate doesn't start a session for it again
 3. **Interactive (`Gate session:`) only:** ask the same question, with the same options in the same order, with AskUserQuestion. An answer in the session: follow [Answered in the session](#answered-in-the-session). No answer: the item already waits on GitHub, and the gate's `max_wait_minutes` stops the waiting session (D-15); whoever answers on GitHub later is read as below
 4. **Headless:** Leave the item: don't build, push, merge, or comment on it further in this session. Go on with the other items, and report this one under the decisions you left
@@ -130,7 +132,7 @@ An interactive gate session that gets the answer through AskUserQuestion puts th
    Answered in the session: <the option or the user's own words>
    ```
 
-   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`)
+   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`). A reader takes the line with the login bare or in a code span, ``Decision by `@<login>`, relayed by <agent>``, as the same answer (D-61)
 2. Remove the `needs-decision` label: `gh issue edit <n> --remove-label needs-decision` (or `gh pr edit`)
 3. Record the answer with `decisions.py add` when it sets a rule, as the [design gate](design-gate.md) says, and go on
 

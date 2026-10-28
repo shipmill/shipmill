@@ -88,3 +88,10 @@ skill = "github-issue-resolve"
 kind = "decision"
 source = "shipmill/shipmill#665"
 commit = "c48559b"
+
+[[case]]
+path = "github-issue-triage/person-report-code-span"
+skill = "github-issue-triage"
+kind = "fix"
+source = "shipmill/shipmill#771"
+commit = "b7ffc41"
