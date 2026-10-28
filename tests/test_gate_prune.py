@@ -441,8 +441,11 @@ def test_s045_9_a_dry_run_whose_prune_is_due_lists_what_it_would_prune_and_write
     assert fresh[0].prune == PruneRun(True, due=PruneDue(True, None)) and [j.path for j in fresh[3]] == [DONE]
     assert tick_record(*fresh, dry_run=True)["prune"] == {"ran": True, "error": None, "due": True, "at": None}
     assert not prune_file(repo).exists()
+    save_prune(prune_file(repo), PruneRecord(dt.datetime.now(dt.UTC), True, None, None, 0))  # a prune just ran
+    written = prune_file(repo).read_text(encoding="utf-8")
     every = tick(repo, FakeClaude(), dry_run=True, prune_hours=0)  # prune_hours = 0: due on every run
-    assert [j.path for j in every[3]] == [DONE] and not prune_file(repo).exists()
+    assert every[0].prune is not None and every[0].prune.ran and [j.path for j in every[3]] == [DONE]
+    assert prune_file(repo).read_text(encoding="utf-8") == written
 
 
 FAILING = PruneRecord(NOW, False, "gh pr list failed: HTTP 502", NOW - dt.timedelta(hours=12), 0)
