@@ -1757,7 +1757,7 @@ def agent_level(value: object, stage: str, policy: Path) -> str:
 
 def agent_levels(found: dict[str, object], sets_stage: bool, prompt: object, policy: Path) -> tuple[AgentLevel, ...]:
     """The agent stages' levels from the keys [autonomy] sets (found), each checked, the rest at
-    their default; and S-040-6, for one minor release: a config that sets none of triage, fix,
+    their default; and S-040-6, with no end date (D-58): a config that sets none of triage, fix,
     and land reads land as act from an [agents] prompt holding "merge when green" or "land" as a
     word"""
     levels = {

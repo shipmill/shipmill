@@ -117,7 +117,7 @@ class Source(StrEnum):
 
     DEFAULT = "default"
     CONFIG = "config"
-    PROMPT = "prompt"  # the legacy reading of [agents] prompt, for one minor release
+    PROMPT = "prompt"  # the legacy reading of [agents] prompt, with no end date (D-58)
     HOLD = "hold"  # the hold lowers the configured level, wherever it came from
 
 
@@ -232,7 +232,7 @@ class AutonomyPolicy:
         return any(kind.value in self.explicit for kind in AGENT_STAGES)
 
     def read_prompt(self, prompt: str) -> AutonomyPolicy:
-        """S-040-6, for one minor release: a config that sets none of triage, fix, and land
+        """S-040-6, with no end date (D-58): a config that sets none of triage, fix, and land
         reads land as act from a prompt that says "merge when green" or "land"; one that sets
         any of them reads nothing from the prompt"""
         if self.sets_agent_stage() or not lands(prompt):

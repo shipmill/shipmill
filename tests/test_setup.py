@@ -515,7 +515,7 @@ def test_doctor_warns_the_roadmap_is_deprecated_and_names_agents_wip(repo: Repo)
     assert checks["roadmap"].status == "WARN"
     assert checks["roadmap"].detail == (
         "[roadmap] is deprecated (D-32) and read by nothing: the work-in-progress limit is [agents] wip;"
-        " move wip there and delete [roadmap], which the next minor release refuses"
+        " move wip there and delete [roadmap]"
     )
     assert Policy.load(config_path(repo.root)).roadmap == RoadmapConfig(wip=3, cadence=2)
     repo.write(repo.policy_file, repo.read(repo.policy_file).replace("wip = 3", "wip = 3\ncadence = 1\nteam = 2"))

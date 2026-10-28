@@ -1,4 +1,4 @@
-"""Spec 040's legacy reading of [agents] prompt, for one minor release, and the agent-autonomy
+"""Spec 040's legacy reading of [agents] prompt, with no end date (D-58), and the agent-autonomy
 upgrade that writes its levels into [autonomy]"""
 
 import json
@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from shipmill import cli_command
+from shipmill.agents import AgentsConfig
 from shipmill.autonomy import Autonomy, AutonomyPolicy, Hold, Stage, StageKind, lands
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH
@@ -124,8 +125,8 @@ def test_s040_6_doctor_warns_for_a_stage_read_from_the_prompt_naming_the_line(re
     assert found[1:] == [
         (
             "WARN",
-            'land reads act from [agents] prompt ("merge when green" or "land"), which the next minor release stops'
-            f' reading: add land = "act" to [autonomy], or run `{cli_command()} upgrade --apply agent-autonomy`',
+            'land reads act from [agents] prompt ("merge when green" or "land"), which nothing checks: add'
+            f' land = "act" to [autonomy], or run `{cli_command()} upgrade --apply agent-autonomy`',
         )
     ]
     repo.write(repo.policy_file, POLICY + agents("triage {repo}; merge when green") + '\n[autonomy]\nland = "act"\n')
@@ -144,18 +145,26 @@ def test_s040_9_prs_in_the_config_makes_doctor_warn_naming_autonomy_land(repo: R
         (
             "WARN",
             f"[agents] prs is deprecated and ignored: [autonomy] land ({land}) decides whether the gate works on"
-            " open pull requests, under propose or act, not under observe; delete prs, which the next minor"
-            " release refuses",
+            " open pull requests, under propose or act, not under observe; delete prs",
         )
     ]
     repo.write(repo.policy_file, POLICY + agents("triage {repo}") + f'\n[autonomy]\nland = "{land}"\n')
     assert [c.status for c in doctor(repo.root, repo.github) if c.name == "autonomy"] == ["PASS"]
 
 
-def test_s040_9_prs_is_still_accepted_for_its_deprecation_release() -> None:
+def test_s040_9_prs_is_accepted_and_ignored() -> None:
     policy = Policy.parse(tomllib.loads(POLICY + agents("triage {repo}") + "prs = true\n"), "shipmill.toml")
     assert policy.agents is not None and policy.agents.prs is True
     assert policy.agents.autonomy == policy.autonomy  # the gate reads the levels doctor and status read
+
+
+@pytest.mark.parametrize("value", ["true", "false"])
+def test_d58_a_config_from_before_spec_040_keeps_loading_and_landing(tmp_path: Path, value: str) -> None:
+    # a connected repo that never took the agent-autonomy upgrade: prs set, the levels in the prompt
+    write(tmp_path, POLICY + agents("/shipmill:github-issue-triage {repo} merge when green") + f"prs = {value}\n")
+    loaded = AgentsConfig.load(tmp_path)
+    assert loaded.autonomy.configured(LAND) is Autonomy.ACT
+    assert loaded.autonomy.is_read_from_prompt(LAND)
 
 
 # -- the agent-autonomy upgrade (S-040-7) ----------------------------------------------------
