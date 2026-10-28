@@ -1,0 +1,25 @@
+# acme/api, a component of the product whose home is acme/product (the eval case's state)
+name = "acme-api"
+mode = "release"
+branch = "main"
+version_files = "pyproject"
+
+[changelog]
+style = "keep-a-changelog"
+
+[lanes.stable]
+quiet_minutes = 30
+
+[agents]
+prompt = "/shipmill:github-issue-triage {repo} triage the new issues; merge when green"
+prs = true
+app_id = 5209412
+mode = "headless"
+
+[autonomy]
+triage = "act"
+fix = "act"
+land = "act"
+
+[product]
+home = "acme/product"

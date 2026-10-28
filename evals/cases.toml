@@ -76,6 +76,13 @@ source = "shipmill/shipmill#665"
 commit = "de1d180"
 
 [[case]]
+path = "github-issue-triage/component-home-hold-asks-nobody"
+skill = "github-issue-triage"
+kind = "decision"
+source = "shipmill/shipmill#773"
+commit = "b7ffc41"
+
+[[case]]
 path = "github-issue-resolve/hold-proposes-verdict"
 skill = "github-issue-resolve"
 kind = "decision"

@@ -63,7 +63,7 @@ A spec PR's needs-decision question (comments.md, Feature) offers to take every 
 
 ## When the spec merges
 
-The issue reads UNBLOCKED. Edit its body to link the merged spec, then split the spec into build issues.
+The issue reads UNBLOCKED. Edit its body to link the merged spec, then split the spec into build issues. In a product's home, the components' parts are filed now too, and not before ([A feature that spans the product's repos](#a-feature-that-spans-the-products-repos)).
 
 ### Split it into build issues
 
@@ -77,6 +77,10 @@ A build issue is sized for one PR. Group the criteria that change the same code 
 4. **Put each under the feature issue.** `chains.py link <owner/repo>#<feature> --child <owner/repo>#<build issue>` makes it a sub-issue and adds a `Depends on` line for it to the feature issue's body, so the feature issue reads BLOCKED while the build runs, with `children K/N closed` in its note, and UNBLOCKED when the last build issue closes (VERIFY_DUE with a `## Check`)
 5. **Record the assignment.** Fill the spec's Issues section with the lines `split` printed, numbers filled in, in one docs PR: `- owner/repo#N: S-NNN-1, S-NNN-2`. `specs.py check` then holds every criterion of an approved or built spec to exactly one build issue there; an approved spec with no Issues lines hasn't been split yet and passes
 6. **Comment implement** on each build issue, naming the spec, and dispatch as below
+
+### A feature that spans the product's repos
+
+In the product's home (its config has `[product] repos`), a feature whose spec is in the home may need work in the components. The coordinator files each component's part (an issue in that repo, through `shipmill gh --product`, naming the merged spec and the criteria it delivers) only after the spec pull request merges, here at the split, never while the spec PR is open (D-60). It never holds a component issue on an item of the home: no `Depends on` line naming a home item, no relation to one, no hold sentence naming the spec PR. The component's session can't read the home, so it would read such a hold as `unknown`; with the spec merged first there is nothing to hold on. Parts of one component that depend on each other hold on each other in that repo (D-47).
 
 ### Dispatch the build
 

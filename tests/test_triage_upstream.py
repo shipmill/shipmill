@@ -294,6 +294,66 @@ def test_s038_25_a_hold_on_another_repo_reads_as_spec_017_says(ts: ModuleType, h
     assert state_of(ts, closed, home) == ("UNBLOCKED", "other/lib#9:closed(native)")
 
 
+# -- #773 (D-60): a component's hold on an item of its home that it can't read -------------
+
+COORDINATOR = f"the coordinator's hold on the home {HOME}: waits for the coordinator, ask nobody"
+HELD = ("acme", "product", 11)  # the home's spec PR, which the component's tokens get a 404 for
+
+
+def component_part(hold: str) -> dict[str, Any]:
+    """o/r#7, a component's part of a home-repo feature, triaged implement and held on the
+    home's spec PR, by a hold sentence or a Depends on line"""
+    if hold == "comment":
+        item = waiting("", [])
+        item["comments"]["nodes"].append(comment(f"On hold until {HOME}#11 merges."))
+        return item
+    return waiting(f"Depends on {HOME}#11\n", [])
+
+
+@pytest.mark.parametrize("hold", ["comment", "depends"])
+def test_773_a_hold_on_the_home_it_cant_read_is_the_coordinators(ts: ModuleType, hold: str) -> None:
+    item = component_part(hold)
+
+    def read(states: dict[tuple[str, str, int], str], home: str | None) -> Any:
+        return ts.classify_open(item, "Triage:", "postponed", states, None, REPO, BOT, home=home)
+
+    # with --home, the state stays BLOCKED (no new state, no action) and the note says whose hold it is
+    assert read({HELD: "UNKNOWN"}, HOME) == ("BLOCKED", f"{HOME}#11:unknown | {COORDINATOR}")
+    assert read({}, HOME) == ("BLOCKED", f"{HOME}#11:? | {COORDINATOR}")
+    assert read({("ACME", "Product", 11): "UNKNOWN"}, "Acme/PRODUCT")[1].endswith(
+        "waits for the coordinator, ask nobody"
+    )
+    # without --home, as before
+    assert read({HELD: "UNKNOWN"}, None) == ("BLOCKED", f"{HOME}#11:unknown")
+    # a hold on the home it can read reads as any hold does
+    assert read({HELD: "OPEN"}, HOME) == ("BLOCKED", f"{HOME}#11:open")
+    assert read({HELD: "MERGED"}, HOME) == ("UNBLOCKED", f"{HOME}#11:merged")
+    # an unreadable hold on a repo other than the home gets no coordinator note
+    other = waiting("Depends on other/lib#9\n", [])
+    unread = ts.classify_open(
+        other, "Triage:", "postponed", {("other", "lib", 9): "UNKNOWN"}, None, REPO, BOT, home=HOME
+    )
+    assert unread == ("BLOCKED", "other/lib#9:unknown")
+
+
+def test_773_the_home_repo_itself_gets_no_coordinator_note(ts: ModuleType) -> None:
+    item = waiting("Depends on o/r#11\n", [])
+    found = ts.classify_open(item, "Triage:", "postponed", {("o", "r", 11): "UNKNOWN"}, None, REPO, BOT, home="o/r")
+    assert found == ("BLOCKED", "o/r#11:unknown")
+
+
+def test_773_the_script_prints_the_coordinator_note_with_home(tmp_path: Path) -> None:
+    # the fake gh answers the hold's query with no node for it, as GitHub does for a repo it 404s
+    proc = run_triage(tmp_path, [component_part("comment")], "--home", HOME)
+    assert proc.returncode == 0, proc.stderr  # BLOCKED is no action, as before
+    rows = [json.loads(line) for line in proc.stdout.splitlines()]
+    assert rows == [{"number": 7, "state": "BLOCKED", "title": "issue 7", "note": f"{HOME}#11:unknown | {COORDINATOR}"}]
+    assert "needs-decision" not in proc.stdout
+    plain = run_triage(tmp_path, [component_part("comment")])
+    assert plain.returncode == 0, plain.stderr
+    assert [json.loads(line)["note"] for line in plain.stdout.splitlines()] == [f"{HOME}#11:unknown"]
+
+
 # -- S-038-17 ------------------------------------------------------------------------------
 
 
