@@ -35,8 +35,13 @@ It prunes only when a prune is due: when `prune.json` in the gate's state direct
 `gate.json`) records no attempt, or its last attempt started `prune_hours` or more ago. A new
 `[agents]` key, `prune_hours` (`src/shipmill/agents.py`), an integer from 0 to 168 (a
 week, the bound `retry_hours` has), defaults to 6; 0 prunes on every tick, as today. A tick that is not due
-prunes nothing and prints nothing about it. `shipmill gate --dry-run` judges on every run,
-due or not, lists what it would prune as today, and writes no `prune.json`.
+prunes nothing and prints nothing about it. `shipmill gate --dry-run` reads `prune.json` and
+`prune_hours` through the same due check (#763): when a prune is not due it judges nothing
+and prints one line, `prune due at <time>`; when it is due, or there is no `prune.json`, it
+judges and lists what it would prune as today. Either way it removes nothing and writes no
+`prune.json`. Its `--json` `"prune"` object adds `"due": <bool>` and `"at": <when it is due,
+or null with no prune.json>`, and a `prune.json` it can't read is the prune's error line,
+as on a tick. `shipmill worktrees --prune --dry-run` lists what a prune would remove anytime.
 
 What the prune removes is unchanged (spec 002, D-24): it is `shipmill worktrees --prune`'s
 code, and still runs on a held tick, since it starts no session and removes only landed,
@@ -106,8 +111,9 @@ It changes no verdict: the gate still works, and the worktrees wait.
   tick that is not due
 - S-045-8: a due prune writes `prune.json` with at, ok, error, failing_since, and removed; a
   success clears failing_since, and a failure after a failure keeps the first one's
-- S-045-9: `shipmill gate --dry-run` judges whether or not a prune is due, removes nothing,
-  and writes no `prune.json`
+- S-045-9: `shipmill gate --dry-run` follows the prune's schedule: not due, it judges no
+  worktree and prints `prune due at <time>`; due, it lists what it would prune; either way
+  it removes nothing and writes no `prune.json` (#763)
 - S-045-10: `shipmill factory` prints a prune line after worktrees: `last ran`, `failing
   since ...` as a problem, or `never ran here`
 - S-045-11: a failing prune counts as a problem on `shipmill status`'s `factory` line and
@@ -155,6 +161,6 @@ worktrees line, since no gate of this version had pruned there yet.
 - S-045-6: `test_s045_6_a_failing_prune_prints_its_first_line_and_changes_nothing_else`, `test_s045_6_a_removal_git_refuses_is_the_prunes_error`, `test_s045_6_any_other_exception_still_ends_the_tick`
 - S-045-7: `test_s045_7_json_prints_whether_the_prune_ran_and_its_error`
 - S-045-8: `test_s045_8_prune_json_records_each_attempt_and_the_first_failure`, `test_s045_8_a_malformed_prune_json_is_the_prunes_error_and_stays`
-- S-045-9: `test_s045_9_a_dry_run_judges_when_not_due_removes_nothing_and_writes_no_prune_json`
+- S-045-9: `test_s045_9_a_dry_run_whose_prune_is_not_due_judges_nothing_and_says_when_it_is_due`, `test_s045_9_a_dry_run_tick_whose_prune_is_not_due_lists_nothing`, `test_s045_9_a_dry_run_whose_prune_is_due_lists_what_it_would_prune_and_writes_nothing`
 - S-045-10: `test_s045_10_factory_prints_a_prune_line_after_worktrees`; on shipmill/shipmill, `never ran here`
 - S-045-11: `test_s045_11_a_failing_prune_counts_on_the_factory_line_and_keeps_the_verdict`

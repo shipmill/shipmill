@@ -903,7 +903,9 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    and prints `would launch as <slug>[bot]`: that line proves the App's setup. A tick
    that would launch nothing checks no App; then `$CR app-install <owner/repo>` printing
    `already installed on <owner/repo>` confirms at least the installation. Don't go on to
-   step 7 until `app_id` is set and one of the two has passed
+   step 7 until `app_id` is set and one of the two has passed. For the prune it follows
+   the tick's schedule: `prune due at <time>` when not due, else the `would prune` lines;
+   `$CR worktrees --prune --dry-run` lists them anytime
 7. **Schedule it.** `$CR --repo tmp/shipmill-gate launchd <owner/repo> --every 15` writes
    `~/Library/LaunchAgents/dev.shipmill.gate.<owner>.<repo>.plist`, loads it, and runs
    it once now. Its log is under `~/Library/Logs/shipmill/`. `--remove` unloads it; on

@@ -21,6 +21,7 @@ from shipmill.gate import (
     Action,
     Decision,
     Finding,
+    PruneDue,
     PruneRecord,
     PruneRun,
     StateRead,
@@ -388,18 +389,60 @@ def test_s045_8_a_malformed_prune_json_is_the_prunes_error_and_stays(tmp_path: P
         PruneRecord(NOW, True, "boom", None, 0)
 
 
-def test_s045_9_a_dry_run_judges_when_not_due_removes_nothing_and_writes_no_prune_json(repo: Checkout) -> None:
+def test_s045_9_a_dry_run_whose_prune_is_not_due_judges_nothing_and_says_when_it_is_due(tmp_path: Path) -> None:
+    """#763: the injected judge raises, so a not-due dry run that judged would fail here"""
+    path = tmp_path / PRUNE
+    save_prune(path, PruneRecord(NOW, True, None, None, 0))
+    written = path.read_text(encoding="utf-8")
+
+    def unused(now: dt.datetime, dry_run: bool) -> list[Judged]:
+        raise AssertionError("a dry run whose prune isn't due judges nothing")
+
+    run, pruned = prune_step(path, lambda: 6, unused, NOW + dt.timedelta(hours=5, minutes=59), True)
+    at = NOW + dt.timedelta(hours=6)
+    assert (run, pruned) == (PruneRun(False, due=PruneDue(False, at)), ())
+    assert path.read_text(encoding="utf-8") == written
+    decision = Decision(Action.QUIET, "nothing needs an agent", (), prune=run)
+    assert tick_lines(decision, None, (), pruned, dry_run=True)[1:] == ["  prune due at 2026-10-27T15:00+00:00"]
+    record = json.loads(json.dumps(tick_record(decision, None, (), pruned, dry_run=True)))
+    assert (record["prune"], record["pruned"]) == (
+        {"ran": False, "error": None, "due": False, "at": at.isoformat()},
+        [],
+    )
+    path.write_text('{"at": "2026-10-27T09:00:00+00:00"}\n', encoding="utf-8")  # malformed: the prune's error
+    broken, _ = prune_step(path, lambda: 6, unused, NOW, True)
+    assert broken.error is not None and "delete it to start over" in broken.error and not broken.ran
+
+
+def test_s045_9_a_dry_run_tick_whose_prune_is_not_due_lists_nothing(repo: Checkout) -> None:
     save_prune(prune_file(repo), PruneRecord(dt.datetime.now(dt.UTC), True, None, None, 0))  # a prune just ran
+    decision, launched, waiting, pruned = tick(repo, FakeClaude(), dry_run=True, prune_hours=6)
+    assert pruned == () and decision.prune is not None and decision.prune.due is not None
+    lines = tick_lines(decision, launched, waiting, pruned, dry_run=True)
+    assert not any("would prune" in line for line in lines) and lines[-1].startswith("  prune due at ")
+    assert (repo.root / DONE).is_dir()
+
+
+def test_s045_9_a_dry_run_whose_prune_is_due_lists_what_it_would_prune_and_writes_nothing(repo: Checkout) -> None:
+    ran = dt.datetime.now(dt.UTC) - dt.timedelta(hours=6, minutes=1)
+    save_prune(prune_file(repo), PruneRecord(ran, True, None, None, 0))  # due since a minute ago
     written = prune_file(repo).read_text(encoding="utf-8")
     before = repo.state()
     decision, launched, waiting, pruned = tick(repo, FakeClaude(), dry_run=True, prune_hours=6)
-    assert [j.path for j in pruned] == [DONE] and decision.prune == PruneRun(True)
+    assert [j.path for j in pruned] == [DONE]
+    assert decision.prune == PruneRun(True, due=PruneDue(True, ran + dt.timedelta(hours=6)))
     assert repo.state() == before and (repo.root / DONE).is_dir()
-    assert f"  would prune {DONE} (feat/done)" in tick_lines(decision, launched, waiting, pruned, dry_run=True)
+    lines = tick_lines(decision, launched, waiting, pruned, dry_run=True)
+    assert f"  would prune {DONE} (feat/done)" in lines and not any("prune due at" in line for line in lines)
+    assert tick_record(decision, launched, waiting, pruned, dry_run=True)["prune"]["due"] is True  # type: ignore[index]
     assert prune_file(repo).read_text(encoding="utf-8") == written
-    prune_file(repo).unlink()
-    tick(repo, FakeClaude(), dry_run=True, prune_hours=6)
+    prune_file(repo).unlink()  # no prune.json: due, and the dry run writes none
+    fresh = tick(repo, FakeClaude(), dry_run=True, prune_hours=6)
+    assert fresh[0].prune == PruneRun(True, due=PruneDue(True, None)) and [j.path for j in fresh[3]] == [DONE]
+    assert tick_record(*fresh, dry_run=True)["prune"] == {"ran": True, "error": None, "due": True, "at": None}
     assert not prune_file(repo).exists()
+    every = tick(repo, FakeClaude(), dry_run=True, prune_hours=0)  # prune_hours = 0: due on every run
+    assert [j.path for j in every[3]] == [DONE] and not prune_file(repo).exists()
 
 
 FAILING = PruneRecord(NOW, False, "gh pr list failed: HTTP 502", NOW - dt.timedelta(hours=12), 0)
