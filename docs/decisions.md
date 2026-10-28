@@ -492,7 +492,7 @@ entry that supersedes it, never by editing an old one.
 - Enforced by: the tests of spec 046, S-046-3's in tests/test_gate_walk.py
 - Supersedes: D-57
 
-## D-60: Setup removes a committed shipmill plugin unless the repo opts in
+## D-59: Setup removes a committed shipmill plugin unless the repo opts in
 
 - Decided: 2026-10-28, in shipmill/shipmill#702
 - Rule: shipmill is each person's choice, not a requirement of the repo. With [agents] plugin = "host" (the default, also without the key), shipmill-setup's setup_state.py --fix removes a committed shipmill@shipmill from .claude/settings.json: it deletes the enabledPlugins entry, and the shipmill entry from extraKnownMarketplaces when no other enabled <name>@shipmill uses it, keeps every other key, the indent, and the trailing newline, drops an object left empty, and deletes the file when no key is left. A repo keeps it only with [agents] plugin = "repo". A plugin set to false on purpose (PLUGIN_DISABLED) is left in either mode. This replaces only spec 039's sentence "A repo keeps enabledPlugins in its .claude/settings.json" (and its supported-layout line); D-42, D-44/D-50, and D-54 are unchanged

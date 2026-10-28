@@ -293,7 +293,7 @@ fix the bump lists or the tags, not the version.
    install command when none does, `PLUGIN_COMMITTED` when the file still enables the
    plugin, which `--fix` removes (with its marketplace when no other plugin uses it, and the
    file when nothing else is left; commit that too) unless you keep it with `plugin =
-   "repo"` (D-60), and `PLUGIN_SHADOWING` when
+   "repo"` (D-59), and `PLUGIN_SHADOWING` when
    the host has project- or local-scope installs, which `--fix` leaves. It turns
    on the repo setting that deletes a pull request's branch when it merges, too: stacked
    pull requests are retargeted only when the branch under them is deleted

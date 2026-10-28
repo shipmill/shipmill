@@ -28,7 +28,7 @@ claude plugin marketplace update shipmill && claude plugin update shipmill@shipm
 ```
 
 A repo keeps `enabledPlugins` in its `.claude/settings.json`: that enables the plugin, and
-the user install supplies it (superseded by D-60: with `[agents] plugin = "host"` setup
+the user install supplies it (superseded by D-59: with `[agents] plugin = "host"` setup
 removes a committed `shipmill@shipmill`). The removal has a trap: `claude plugin uninstall
 shipmill@shipmill --scope project` also rewrites the folder's `.claude/settings.json` and
 drops `"shipmill@shipmill": true` from `enabledPlugins`, turning the plugin off for the
@@ -47,7 +47,7 @@ keeps a keyed install alive, or creates one, where the user install would serve.
 
 The supported layout on a host is one install of `shipmill@shipmill` at user scope, and
 `enabledPlugins` with the marketplace in each repo's `.claude/settings.json` (the second
-part superseded by D-60: only a repo with `[agents] plugin = "repo"` keeps them). shipmill never
+part superseded by D-59: only a repo with `[agents] plugin = "repo"` keeps them). shipmill never
 creates a project- or local-scope install, and never prints a command that creates or
 updates one:
 

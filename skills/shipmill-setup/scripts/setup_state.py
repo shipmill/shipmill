@@ -78,7 +78,7 @@ Plugin (spec 033: the config's [agents] plugin, "host" by default, says where it
   PLUGIN_MISSING   no install applies; the detail gives the command, which the skill runs
                    after asking: an install changes the person's host. --fix leaves it
   PLUGIN_COMMITTED .claude/settings.json enables shipmill@shipmill, so every contributor's
-                   Claude Code is offered it (D-60, #778): --fix removes it from
+                   Claude Code is offered it (D-59, #778): --fix removes it from
                    enabledPlugins, and the shipmill entry from extraKnownMarketplaces when
                    no other enabled <name>@shipmill uses it, keeping every other key, the
                    indent, and the trailing newline; it drops an object left empty, and

@@ -370,7 +370,7 @@ or the tags are wrong; fix those, not the version.
    after asking, since it changes their host, never with `--fix`. `PLUGIN_COMMITTED` (not
    done) says `.claude/settings.json` still enables the plugin while the key is `host`, as
    in a repo connected before spec 033. shipmill is each person's choice, not the repo's
-   (D-60): `--fix` deletes `shipmill@shipmill` from `enabledPlugins`, and the `shipmill`
+   (D-59): `--fix` deletes `shipmill@shipmill` from `enabledPlugins`, and the `shipmill`
    entry from `extraKnownMarketplaces` when no other enabled `<name>@shipmill` uses it,
    keeping every other key; it drops an object left empty and deletes the file when no key
    is left; commit that change in the follow-up PR, as above. Only a maintainer who wants it for
