@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.89.1] - 2026-10-28
+
+### Fixed
+
+- The test that doctor asks origin, not the clone's refs, no longer fails under git 2.56, whose push to origin's URL also pruned the stale `origin/shipmill` the test sets up (#770)
+- The Feature verdict's hold line in github-issue-triage's comment templates is now a whole sentence that names the spec PR alone, and the templates and the spec gate say that context such as the issue the spec is for goes in a sentence of its own; an agent that finished the old line with the parent issue held a part on its own parent (#772)
+
 ## [0.89.0] - 2026-10-28
 
 ### Changed
@@ -1989,7 +1996,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.89.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.89.1...HEAD
+[0.89.1]: https://github.com/shipmill/shipmill/compare/v0.89.0...v0.89.1
 [0.89.0]: https://github.com/shipmill/shipmill/compare/v0.88.0...v0.89.0
 [0.88.0]: https://github.com/shipmill/shipmill/compare/v0.87.1...v0.88.0
 [0.87.1]: https://github.com/shipmill/shipmill/compare/v0.87.0...v0.87.1
