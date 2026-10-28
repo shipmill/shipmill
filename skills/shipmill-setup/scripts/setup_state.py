@@ -711,7 +711,7 @@ def outdated_installs(repo: str, repo_dir: Path, ws: ModuleType) -> list[Row]:
     release's skills until it is updated (spec 031); then its PLUGIN_SHADOWING row, the
     project- and local-scope installs on the host with plugin-clean's fix (S-039-6)"""
     try:
-        rows = ws.shipmill_rows(repo, repo_dir)
+        rows = ws.shipmill_rows(repo, repo_dir, host_wide=False)  # the repo's keyed installs (#764)
     except ws.Refused as refused:
         fail(str(refused).removeprefix("error: "))
     found = [Row("PLUGIN_OUTDATED", f"{r.subject}: {r.detail}") for r in rows if r.state == "SHIPMILL_OUTDATED"]

@@ -123,7 +123,7 @@ def test_the_stale_install_a_session_loads_adds_a_gate_row(ss: ModuleType) -> No
         {"id": "shipmill@shipmill", "scope": "local", "version": "0.25.0", "projectPath": "/w/r/tmp/shipmill-gate"},
     ]
     rows = ws.plugin_rows(plugins, None, "v0.50.0", [Path("/w/r")], [Path("/w/r/tmp/shipmill-gate")], Path("/w/r"))
-    fake = type("Ws", (), {"Refused": ws.Refused, "shipmill_rows": staticmethod(lambda repo, root: rows)})
+    fake = type("Ws", (), {"Refused": ws.Refused, "shipmill_rows": staticmethod(lambda repo, root, *, host_wide: rows)})
     found = ss.outdated_installs("o/r", Path("/w/r"), fake)
     assert found[1] == ss.Row("PLUGIN_OUTDATED", "gate: a session loads user 0.48.0 (/w/r), older than v0.50.0")
     assert not any("starts no session" in r.detail for r in found)

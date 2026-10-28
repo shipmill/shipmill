@@ -199,6 +199,7 @@ def test_s044_4_a_failed_host_section_read_is_its_checks_error_and_the_report_go
     full = [c for c in runner.seen if c[1].endswith("watch_state.py") and "--host" not in c]
     assert len(full) == 1 and "--no-host" in full[0]
     assert [c[c.index("--host") + 1] for c in runner.seen if "--host" in c] == ["sessions", "shipmill"]
+    assert not any("--host-wide" in c for c in runner.seen)  # status reads the repo's shadowing row (#764)
 
 
 def test_s044_4_the_host_sections_rows_and_exit_code_join_the_pictures(
@@ -323,8 +324,8 @@ def test_s044_8_watch_states_host_rows_that_fail_are_the_checks_error() -> None:
         return subprocess.CompletedProcess(cmd, 2, "", "Traceback\nerror: claude agents --json printed no JSON\n")
 
     with pytest.raises(ReleaseError, match="--host sessions failed \\(exit 2\\): error: claude agents"):
-        factory.read_rows(REPO, CHECKOUT, "sessions", failing)
-    assert factory.host_command(REPO, CHECKOUT, "shipmill")[0] == sys.executable
+        factory.read_rows(REPO, CHECKOUT, "sessions", failing, wide=True)
+    assert factory.host_command(REPO, CHECKOUT, "shipmill", wide=True)[0] == sys.executable
 
 
 @pytest.mark.parametrize(

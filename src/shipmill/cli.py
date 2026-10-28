@@ -1762,7 +1762,7 @@ def _status(
     failed: dict[str, str] = {}
     for section in ("sessions", "shipmill"):  # S-044-4: a section that fails to run is its check's error
         try:
-            found = factory.read_section(slug, top, section, run)
+            found = factory.read_section(slug, top, section, run, wide=False)  # the repo's shadowing row (#764)
         except status.CHECK_FAILURES as exc:
             failed[section] = status.first_line(exc)
             continue
@@ -1843,7 +1843,7 @@ def _factory(
     host = factory.Host(
         gate=lambda: status.read_gate(slug, top, home, platform, run, check, os.getuid()),
         gate_cli=lambda: _gate_cli(top, slug, home),
-        rows=lambda section: factory.read_rows(slug, top, section, run),
+        rows=lambda section: factory.read_rows(slug, top, section, run, wide=True),  # the host's (#764)
         main=main_branch,
         worktrees=worktrees,
         prune=lambda: load_prune(state_dir(git) / PRUNE),

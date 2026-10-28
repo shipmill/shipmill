@@ -116,8 +116,9 @@ it on for the repo, and the user install supplies it. An install at project or l
 is keyed on one folder and wins over the user install there, so that folder keeps loading
 its own release until someone updates it in that folder: with many of them, sessions run
 stale skills. shipmill never creates one or prints a command that does. `doctor`, `status`,
-the setup checklist, and the gate's tick report every project- and local-scope install on
-the host as one row, `PLUGIN_SHADOWING`, with their count, versions, folders, and how many
+the setup checklist, and the gate's tick report the project- and local-scope installs keyed
+on the repo's checkout, its linked worktrees, or its gate checkouts, and `shipmill factory`
+every one on the host, as one row, `PLUGIN_SHADOWING`, with their count, versions, folders, and how many
 of those are missing, and the fix:
 
 ```bash
