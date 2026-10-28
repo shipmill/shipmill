@@ -499,3 +499,19 @@ entry that supersedes it, never by editing an old one.
 - Why: Spec 033 made committing the plugin opt-in, but a repo connected before it kept enabledPlugins and the shipmill marketplace, since --fix left the file (S-033-3), so every contributor's Claude Code was still offered the plugin and its hooks (#778). The maintainer (@romamo, on shipmill/shipmill#702) decided that setup removes it unless the repo opts in
 - Applies to: skills/shipmill-setup/scripts/setup_state.py, skills/shipmill-setup/SKILL.md, docs/specs/033-*, docs/specs/039-*, docs/install.md, .claude/settings.json, [agents] plugin, PLUGIN_COMMITTED
 - Enforced by: tests/test_contributors.py's S-033-3 tests
+
+## D-60: A component's part of a home-repo feature is filed after its spec merges; no component item waits on a home-repo item
+
+- Decided: 2026-10-28, in shipmill/shipmill#773
+- Rule: When a product feature's spec is in the home repo, the coordinator files each component's part of it only after the spec pull request merges (the spec gate's order), and never holds a component issue on an item of the home repo, by a Depends on line, a relation, or a hold sentence. A component session that reads a hold on an item of its [product] home as unknown asks nobody: it says the hold is the coordinator's and leaves the item. This applies D-47 as written and adds no cross-repo hold to release
+- Why: A component's session can't read its home repo (D-47), so a part held on a home-repo spec PR stayed BLOCKED after the spec merged and its session asked the maintainer a question the coordinator could answer (#773). Filing the parts after the merge means nothing waits across repos, at the cost of a part showing up in its repo only once the spec is approved; the maintainer chose that over a coordinator step that releases its own holds (option 1 on #773)
+- Applies to: skills/github-issue-triage/SKILL.md, skills/github-issue-triage/references/spec-gate.md, skills/github-issue-triage/references/triage-rubric.md, skills/github-issue-triage/references/comments.md, skills/github-issue-triage/scripts/triage_state.py, coordinator, home repo, [product] home
+- Enforced by: review, until the implementing PR for #773 adds its test
+
+## D-61: shipmill mentions a person only where they have to act or may veto; elsewhere their login goes in a code span
+
+- Decided: 2026-10-28, in shipmill/shipmill#771
+- Rule: In a comment, pull request body, or commit message shipmill writes on GitHub, a bare @login (one GitHub notifies) appears only in a needs-decision question (@login Decision needed), the hand-off of a person's item (HANDOFF_DUE), and the decided comment of a notify decision (@login Decided without waiting); everywhere else, such as a relayed decision, a triage verdict on an answer, a verified, check-waiting, or unchecked-close line, and an accepted or direction line, the login is written in a code span (`@login`). Readers accept both forms: a Decision by line with the login bare or in a code span reads as the answer, and triage_state.py's check-waiting mention reads @login with or without backticks
+- Why: A mention from the App is someone else's mention to GitHub, so each record of an answer already given emailed the maintainer two or three more times (#771). The maintainer chose option 2 on #771: records stop notifying, but a decision taken without them keeps its email, since its veto window is short and the email is how they hear of it
+- Applies to: skills/github-issue-triage/references/comments.md, skills/github-issue-triage/references/needs-decision.md, skills/github-issue-triage/references/spec-gate.md, skills/github-issue-triage/SKILL.md, skills/github-issue-resolve/SKILL.md, skills/github-pr-triage/SKILL.md, skills/github-ship-watch/SKILL.md, skills/github-issue-triage/scripts/triage_state.py, mentions, Decision by
+- Enforced by: review, until the implementing PR for #771 adds its template test
