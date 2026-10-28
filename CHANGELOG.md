@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.91.0] - 2026-10-28
+
+### Changed
+
+- The skills' GitHub text mentions a login bare, which GitHub turns into an email, only in a needs-decision question, a person's hand-off, and a notify decision's decided comment (D-61); every other template names it in a code span (`` `@login` ``): the verified, close, and check-waiting lines, an upstream report's verdict without a coordinator, a login named inside a question, and an upgrade pull request's `Accepted by` line. Each skill that posts states the rule, and the readers (`Decision by`, `triage_state.py`'s check-waiting login) take both forms, so older comments read as before (#771)
+
+### Fixed
+
+- In a product, github-issue-triage's coordinator files a component's part of a home-repo feature only after the spec pull request merges and never holds a component issue on a home-repo item (D-60); a component's `triage_state.py --home <owner/home>` reads a hold on a home item it can't read (`:unknown`) as BLOCKED with the note `the coordinator's hold on the home <owner/home>: waits for the coordinator, ask nobody`, and the skill leaves such an item rather than asking the maintainer whether the home's spec merged (#773)
+
 ## [0.90.0] - 2026-10-28
 
 ### Changed
@@ -2002,7 +2012,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.90.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.91.0...HEAD
+[0.91.0]: https://github.com/shipmill/shipmill/compare/v0.90.0...v0.91.0
 [0.90.0]: https://github.com/shipmill/shipmill/compare/v0.89.1...v0.90.0
 [0.89.1]: https://github.com/shipmill/shipmill/compare/v0.89.0...v0.89.1
 [0.89.0]: https://github.com/shipmill/shipmill/compare/v0.88.0...v0.89.0

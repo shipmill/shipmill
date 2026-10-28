@@ -1,3 +1,0 @@
-### Changed
-
-- The skills' GitHub text mentions a login bare, which GitHub turns into an email, only in a needs-decision question, a person's hand-off, and a notify decision's decided comment (D-61); every other template names it in a code span (`` `@login` ``): the verified, close, and check-waiting lines, an upstream report's verdict without a coordinator, a login named inside a question, and an upgrade pull request's `Accepted by` line. Each skill that posts states the rule, and the readers (`Decision by`, `triage_state.py`'s check-waiting login) take both forms, so older comments read as before (#771)
