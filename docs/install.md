@@ -288,10 +288,12 @@ fix the bump lists or the tags, not the version.
 
    `<skills>` is the plugin's `skills` folder, or a checkout's. `--fix` writes the plugin
    into `.claude/settings.json` only with `plugin = "repo"`; commit that in a follow-up pull
-   request. With the default, `plugin = "host"`, it never touches that file: the checklist
+   request. With the default, `plugin = "host"`, it never creates that file: the checklist
    reads `PLUGIN_OK` when an install applies to the repo's folder, `PLUGIN_MISSING` with the
    install command when none does, `PLUGIN_COMMITTED` when the file still enables the
-   plugin, so you keep it with `plugin = "repo"` or delete it, and `PLUGIN_SHADOWING` when
+   plugin, which `--fix` removes (with its marketplace when no other plugin uses it, and the
+   file when nothing else is left; commit that too) unless you keep it with `plugin =
+   "repo"` (D-59), and `PLUGIN_SHADOWING` when
    the host has project- or local-scope installs, which `--fix` leaves. It turns
    on the repo setting that deletes a pull request's branch when it merges, too: stacked
    pull requests are retargeted only when the branch under them is deleted

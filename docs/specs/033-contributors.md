@@ -92,15 +92,17 @@ saying what `"repo"` does, to the commented `[agents]` block it writes.
 |---|---|---|---|
 | `host` | `PLUGIN_OK` | An install of `shipmill@shipmill` applies to the repo's folder: user scope, or local or project scope keyed on the repo's folder (its main checkout, as watch_state.py's `plugin_rows` reads `claude plugin list --json`); the detail names its scope and version | Nothing to do |
 | `host` | `PLUGIN_MISSING` | No install applies | Leaves it: an install changes the person's host. The detail gives the command, `claude plugin marketplace add shipmill/shipmill && claude plugin install shipmill@shipmill --scope user`, which the skill runs after asking |
-| `host` | `PLUGIN_COMMITTED` | `.claude/settings.json` enables `shipmill@shipmill` | Leaves it. The detail names both ways out: set `[agents] plugin = "repo"` to keep it, or delete `shipmill@shipmill` from `enabledPlugins` (and the `shipmill` entry from `extraKnownMarketplaces` when no other plugin uses it) |
+| `host` | `PLUGIN_COMMITTED` | `.claude/settings.json` enables `shipmill@shipmill` | Removes it (D-59, shipmill/shipmill#778): deletes `shipmill@shipmill` from `enabledPlugins`, and the `shipmill` entry from `extraKnownMarketplaces` when no other enabled `<name>@shipmill` uses it, keeping every other key, the file's indent, and its trailing newline; drops an object left empty, and deletes the file when no key is left. The detail says so, and that `[agents] plugin = "repo"` keeps it |
 | `repo` | `PLUGIN_OK`, `PLUGIN_MISSING` | As today: whether `.claude/settings.json` enables it | `PLUGIN_MISSING`: writes the marketplace and `enabledPlugins`, keeping every other key, as today |
 | either | `PLUGIN_DISABLED` | `enabledPlugins` sets it to `false` | Leaves it, as today |
 
 `PLUGIN_COMMITTED` is not done (exit 1), so a repo connected before this spec hears once
-that the default changed and chooses. `PLUGIN_OUTDATED` rows replace a `PLUGIN_OK` in both
+that the default changed; since D-59 setup's `--fix` removes the committed plugin unless
+the maintainer sets `plugin = "repo"`. `PLUGIN_OUTDATED` rows replace a `PLUGIN_OK` in both
 modes, as today. Without `claude` on PATH a `host` repo reads `PLUGIN_OK` with "claude
 isn't on PATH, installs not read", as the `repo` mode's outdated check does today. With
-`host`, `--fix` never creates, reads for writing, or changes `.claude/settings.json`.
+`host`, `--fix` never creates `.claude/settings.json`, and changes it only to remove a
+committed plugin (D-59).
 
 `skills/shipmill-setup/SKILL.md` asks where the plugin loads: per person (the default, and
 the one to keep for a repo that takes outside contributions) or for everyone who opens the
@@ -294,8 +296,8 @@ host is in, each a PASS line:
 ## Acceptance criteria
 
 - S-033-1: `src/shipmill/agents.py` reads `[agents] plugin` as `"host"` (also when absent) or `"repo"`, and any other value or a non-string exits 2 naming `[agents] plugin` and both values; `setup_state.py` refuses the same values with exit 2
-- S-033-2: With `plugin` absent or `"host"`, `setup_state.py` reads `PLUGIN_OK` naming the scope and version when `claude plugin list --json` lists `shipmill@shipmill` at user scope, or at local or project scope keyed on the repo's main checkout, and `PLUGIN_MISSING` with the `claude plugin install shipmill@shipmill --scope user` command when none applies; `--fix` leaves `.claude/settings.json` byte for byte as it was, and absent when it was absent
-- S-033-3: With `plugin` absent or `"host"` and `.claude/settings.json` enabling `shipmill@shipmill`, `setup_state.py` reads `PLUGIN_COMMITTED` naming `plugin = "repo"` and the `enabledPlugins` entry to delete, exits 1, and `--fix` leaves the file unchanged
+- S-033-2: With `plugin` absent or `"host"`, `setup_state.py` reads `PLUGIN_OK` naming the scope and version when `claude plugin list --json` lists `shipmill@shipmill` at user scope, or at local or project scope keyed on the repo's main checkout, and `PLUGIN_MISSING` with the `claude plugin install shipmill@shipmill --scope user` command when none applies; `--fix` leaves `.claude/settings.json` byte for byte as it was when it doesn't enable `shipmill@shipmill`, and absent when it was absent
+- S-033-3: With `plugin` absent or `"host"` and `.claude/settings.json` enabling `shipmill@shipmill`, `setup_state.py` reads `PLUGIN_COMMITTED` naming `plugin = "repo"` and the `enabledPlugins` entry `--fix` removes, and exits 1; `--fix` deletes `shipmill@shipmill` from `enabledPlugins`, and the `shipmill` entry from `extraKnownMarketplaces` when no other enabled `<name>@shipmill` uses it, keeping every other key, the indent, and the trailing newline, drops an object left empty, and deletes the file when no key is left (D-59, shipmill/shipmill#778)
 - S-033-4: With `plugin = "repo"`, `setup_state.py` reads `PLUGIN_MISSING` when the settings don't enable the plugin and `--fix` writes the marketplace and `enabledPlugins` keeping every other key, and `PLUGIN_OK` when they do; in either mode `enabledPlugins` set to false reads `PLUGIN_DISABLED` and `--fix` leaves it
 - S-033-5: With `[agents] app_id` set, `SHIPMILL_APP_KEY` unset or empty in the hook's environment, and no file at `$HOME/.config/shipmill/app-<app_id>.pem`, every `gh` write S-026-3 lists, plain or after `GH_TOKEN=...`, exits 0 with no output
 - S-033-6: With `[agents] app_id` set, every `gh` write S-026-3 lists exits 2 naming `app-writes` with its `shipmill gh` `Instead:` line both when the key file exists at `$HOME/.config/shipmill/app-<app_id>.pem` and `SHIPMILL_APP_KEY` is unset, and when `SHIPMILL_APP_KEY` is non-empty and no key file exists
@@ -320,7 +322,8 @@ host is in, each a PASS line:
   `README.md`, or other docs (shipmill/shipmill#502)
 - Removing the committed plugin from a connected repo's `.claude/settings.json`: setup
   reports `PLUGIN_COMMITTED` and the maintainer chooses; shipmill's own repo makes the same
-  choice in the build
+  choice in the build. Superseded by D-59 (shipmill/shipmill#778): `--fix` removes it
+  unless `plugin = "repo"`
 - Finding a key at a path other than the default in a person's own session without
   `SHIPMILL_APP_KEY`: the variable, or the default path, is the way
 - Changing which items an unattended session works on: D-16 stays as it is
@@ -336,6 +339,7 @@ host is in, each a PASS line:
 - D-37: the skills' new rule changes the agents' instructions, so it lands with S-033-18's eval case and only when the evals don't regress
 - D-50 (superseding D-44, which superseded D-43, which superseded D-35): a gate session loads the install of `shipmill@shipmill` that applies to its checkout, at any scope, so a user-scope install is enough for the gate
 - D-54 (superseding D-40): shipmill writes to GitHub only as the App; where the App isn't available, read from the host alone, a skill drafts and the person posts, and the `app-writes` rule refuses nothing; the other rules, the switches, the fail-open start, and the headless self-test pause are D-40's, unchanged; spec 037 (shipmill/shipmill#577) covers `shipmill gh` in a repo without `[agents] app_id`, whose exit 2 there is this spec's step 4 stop
+- D-59: shipmill is each person's choice, not the repo's; with `plugin = "host"` setup's `--fix` removes a committed `shipmill@shipmill` (and its marketplace when unused)
 
 ## Issues
 
@@ -344,8 +348,8 @@ host is in, each a PASS line:
 ## Verification
 
 - S-033-1: `AgentsConfig.parse` and `setup_state.py`'s `plugin_mode` on absent, `"host"`, `"repo"`, and six bad values, on Python 3.14 and 3.10 (`tests/test_contributors.py`), pass
-- S-033-2: `host_plugin_rows` on `claude plugin list --json` listings (user, local, project, nested, other folder, managed, none) and `setup_state.py --fix` run end to end with no settings file, another plugin's, and the plugin's, comparing bytes, pass
-- S-033-3: `PLUGIN_COMMITTED` naming `plugin = "repo"` and the `enabledPlugins` entry, exit 1, and `--fix` leaving the file unchanged end to end, pass
+- S-033-2: `host_plugin_rows` on `claude plugin list --json` listings (user, local, project, nested, other folder, managed, none) and `setup_state.py --fix` run end to end with no settings file and another plugin's, comparing bytes, pass
+- S-033-3: `PLUGIN_COMMITTED` naming `plugin = "repo"` and the `enabledPlugins` entry `--fix` removes, exit 1; `--fix` removing it keeping other keys, plugins, and marketplaces and the indent (four spaces, a tab, one line) and trailing newline, the marketplace kept while another `<name>@shipmill` is on and dropped when only a disabled one names it, empty objects dropped, the file deleted when empty (in process and end to end, D-59), and repo mode leaving a committed plugin byte for byte, pass
 - S-033-4: repo mode's `PLUGIN_MISSING`, `--fix` writing the marketplace and `enabledPlugins` keeping other keys (in process and end to end), `PLUGIN_OK`, and `PLUGIN_DISABLED` in both modes, pass
 - S-033-5: every S-026-3 write, plain and after `GH_TOKEN=...`, in four hook environments without the App (`tests/test_delivery_hooks.py`), exits 0 with no output, pass
 - S-033-6: every S-026-3 write with the key file and no variable, and with the variable and no key file, exits 2 naming `app-writes` with its `shipmill gh` Instead line, pass
