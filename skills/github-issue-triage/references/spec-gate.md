@@ -80,7 +80,7 @@ A build issue is sized for one PR. Group the criteria that change the same code 
 
 ### A feature that spans the product's repos
 
-In the product's home (its config has `[product] repos`), a feature whose spec is in the home may need work in the components. The coordinator files each component's part (an issue in that repo, through `shipmill gh --product`, naming the merged spec and the criteria it delivers) only after the spec pull request merges, here at the split, never while the spec PR is open (D-60). It never holds a component issue on an item of the home: no `Depends on` line naming a home item, no relation to one, no hold sentence naming the spec PR. The component's session can't read the home, so it would read such a hold as `unknown`; with the spec merged first there is nothing to hold on. Parts of one component that depend on each other hold on each other in that repo (D-47).
+In the product's home (its config has `[product] repos`), a feature whose spec is in the home may need work in the components. The coordinator files each component's part (an issue in that repo, through `uvx shipmill==0.90.0 gh --product`, naming the merged spec and the criteria it delivers) only after the spec pull request merges, here at the split, never while the spec PR is open (D-60). It never holds a component issue on an item of the home: no `Depends on` line naming a home item, no relation to one, no hold sentence naming the spec PR. The component's session can't read the home, so it would read such a hold as `unknown`; with the spec merged first there is nothing to hold on. Parts of one component that depend on each other hold on each other in that repo (D-47).
 
 ### Dispatch the build
 
