@@ -142,7 +142,7 @@ Taking up the answer ([needs-decision.md](needs-decision.md), Taking up an answe
 | IN_PROGRESS | Nothing, unless the PR stalled |
 | DONE_NOT_CLOSED | Close it and cite the merged PR |
 | SUSPECT_CLOSE | Check the fix is on the default branch. If it isn't, reopen and explain; if the close is right, post the close-confirmed comment (comments.md, Follow-ups) |
-| BLOCKED | Nothing, until the upstream issue closes or the spec PR merges |
+| BLOCKED | Nothing, until the upstream issue closes or the spec PR merges. In a component, a note ending `the coordinator's hold on the home <owner/home>: waits for the coordinator, ask nobody` is a hold on a home item this session can't read: leave it and ask nobody, never a needs-decision question about whether it merged (D-60) |
 | UPSTREAM | Nothing: an upstream report waits outside, for the coordinator its note names or, with `no coordinator`, the maintainer, who closes it with what changed |
 | OFF_MILESTONE | A build issue isn't in its feature issue's milestone (spec 022): set its milestone to the parent's, as the note names it |
 | UNFILLED | A `Depends on #{Bk}` placeholder from `specs.py split` was never filled in: edit the issue body to name the dependency's number |
