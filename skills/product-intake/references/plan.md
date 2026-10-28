@@ -1,6 +1,6 @@
 # Goal plans and the comments around them
 
-Write each body to a file in the repo's `tmp/` and post it with `--body-file`, as for an opportunity ([opportunity.md](opportunity.md)). Every write runs as `shipmill gh` (SKILL.md, rule 7), as `uvx shipmill==0.89.1 gh ...`, the release this plugin pins (spec 031), in every session. Every comment intake writes on a plan issue starts with `Triage:` or a `<!-- shipmill:... -->` marker, so `intake_state.py` never reads it as the maintainer's answer, even where the session writes as the maintainer's own login.
+Write each body to a file in the repo's `tmp/` and post it with `--body-file`, as for an opportunity ([opportunity.md](opportunity.md)). Every write runs as `shipmill gh` (SKILL.md, rule 7), as `uvx shipmill==0.90.0 gh ...`, the release this plugin pins (spec 031), in every session. Every comment intake writes on a plan issue starts with `Triage:` or a `<!-- shipmill:... -->` marker, so `intake_state.py` never reads it as the maintainer's answer, even where the session writes as the maintainer's own login.
 
 ## The plan issue
 

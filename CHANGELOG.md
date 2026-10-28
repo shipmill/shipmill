@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.90.0] - 2026-10-28
+
+### Changed
+
+- shipmill-setup's `setup_state.py --fix` now removes a committed `shipmill@shipmill` from `.claude/settings.json` in a repo whose `[agents] plugin` is `"host"` (the default): it deletes the `enabledPlugins` entry and, when no other enabled `<name>@shipmill` uses it, the `shipmill` marketplace, keeps every other key and the file's indent, and deletes the file when nothing is left; set `plugin = "repo"` to keep it (D-59) (#778)
+
 ## [0.89.1] - 2026-10-28
 
 ### Fixed
@@ -1996,7 +2002,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.89.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.90.0...HEAD
+[0.90.0]: https://github.com/shipmill/shipmill/compare/v0.89.1...v0.90.0
 [0.89.1]: https://github.com/shipmill/shipmill/compare/v0.89.0...v0.89.1
 [0.89.0]: https://github.com/shipmill/shipmill/compare/v0.88.0...v0.89.0
 [0.88.0]: https://github.com/shipmill/shipmill/compare/v0.87.1...v0.88.0
