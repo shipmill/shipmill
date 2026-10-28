@@ -300,7 +300,7 @@ CATALOGUE: tuple[Upgrade, ...] = (
             " stops warning (spec 040)"
         ),
         off='set each key to "observe", "propose", or "act" in [autonomy]',
-        declined="`land` keeps being read from the prompt, and doctor keeps warning (D-58).",
+        declined="`land` keeps being read from the prompt, and doctor keeps warning (D-59).",
     ),
 )
 

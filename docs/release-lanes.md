@@ -527,7 +527,7 @@ otherwise each stage takes its default. A config that sets any of the three keys
 nothing from the prompt. `doctor` warns for a stage read from the prompt, naming the line
 to add, and `shipmill upgrade --apply agent-autonomy` writes the three keys with the levels
 the prompt gives today, at the end of `[autonomy]` (or as a new `[autonomy]` table at the
-end of the file), keeping every other byte. The reading has no end date (D-58): a config
+end of the file), keeping every other byte. The reading has no end date (D-59): a config
 that was valid keeps working, and `doctor` keeps warning until the keys are set. Each `deploy.<name>`
 must name an environment in `[environments]`. `deploy` and `rollback` take effect in
 `shipmill operate` (see Operate above).
@@ -705,7 +705,7 @@ wip = 3       # at most 3 issues in progress at once (1..100)
 
 `[roadmap]` is deprecated (D-32): shipmill no longer plans milestones, so nothing reads it.
 A config with it still loads and `doctor` warns, naming `[agents] wip`; move `wip` there
-and delete the section. It is never refused on a release count (D-58). A milestone
+and delete the section. It is never refused on a release count (D-59). A milestone
 is the maintainer's own list of what a version must hold, and `milestone = true` keeps
 making a lane due by it.
 

@@ -1089,14 +1089,14 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
             f" bound agent sessions only; add [agents] or delete {them}"
         )
         checks.append(Check("WARN", "autonomy", detail))
-    if policy.agents is not None and policy.agents.prs is not None:  # S-040-9: warned, never refused (D-58)
+    if policy.agents is not None and policy.agents.prs is not None:  # S-040-9: warned, never refused (D-59)
         land = policy.autonomy.configured(Stage(StageKind.LAND))
         detail = (
             f"[agents] prs is deprecated and ignored: [autonomy] land ({land}) decides whether the gate works on"
             " open pull requests, under propose or act, not under observe; delete prs"
         )
         checks.append(Check("WARN", "autonomy", detail))
-    for stage in agent_stages:  # spec 040's legacy reading, with no end date (D-58)
+    for stage in agent_stages:  # spec 040's legacy reading, with no end date (D-59)
         if policy.autonomy.is_read_from_prompt(stage):
             level = policy.autonomy.configured(stage)
             detail = (

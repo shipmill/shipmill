@@ -1,7 +1,7 @@
 """The [roadmap] section of the config, deprecated by D-32: shipmill no longer plans
 milestones, so nothing reads it. The policy still accepts and validates it, and doctor warns
 that the work-in-progress limit is now [agents] wip; it is never refused on a release count
-(D-58)"""
+(D-59)"""
 
 from dataclasses import dataclass
 

@@ -1,7 +1,7 @@
-"""A gate tick's change check and its walk of the work tiers (spec 046, D-57).
+"""A gate tick's change check and its walk of the work tiers (spec 046, D-58).
 
-The change check asks GitHub, in one GraphQL query and one read of the newest workflow runs,
-whether anything changed since the cursor of the last walk (cursor.json in the gate's state
+The change check asks GitHub, in one GraphQL query and one read of each watched workflow's
+newest runs, whether anything changed since the cursor of the last walk (cursor.json in the gate's state
 directory). Only on a change does the tick read the state, and then tier by tier, in order,
 stopping at the first item no session was handed within retry_hours (handed.json); the timed
 sections it reads from the last sweep (sweep.json), which runs every [agents] sweep_hours.
@@ -13,6 +13,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -26,7 +27,8 @@ HANDED = "handed.json"  # each handed item's fingerprint, its session, and when
 KNOWN = "known.json"  # what the change check read, for watch_state.py --known
 CURSOR_OVERLAP = dt.timedelta(minutes=5)  # an update GitHub indexed late is seen next tick
 PAGE = 100  # the change check's page of open issues, pull requests, and incidents
-RUNS = 100  # the newest workflow runs the change check reads
+RUNS = 10  # the newest runs of each watched workflow the change check reads
+SEQUENTIAL = 2  # at most this many watched workflows are read one after the other
 
 # The tiers a walk reads in order, each its kinds in the order a walk takes them: the state,
 # or ISSUES and its triage state. A kind no tier names is read in tier 6 (S-046-12)
@@ -359,7 +361,7 @@ def check(
     now: dt.datetime,
 ) -> Changes:
     """The change check: one GraphQL query, paged only past PAGE open issues, pull requests, or
-    incidents, and one read of the newest workflow runs. Without a cursor, every item is new
+    incidents, and one read of each watched workflow's newest runs. Without a cursor, every item is new
     and none is read as updated: the tick walks anyway"""
     owner, _, name = repo.partition("/")
     stamp = (now if since is None else since).astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -374,8 +376,23 @@ def check(
         for n in pending:
             nodes[n] += nodes_of(page, n)
         more = {n: page[n]["pageInfo"] for n in pending}
-    runs = workflow_runs(rest(f"repos/{repo}/actions/runs?per_page={RUNS}"), workflows)
-    return changes_of(data, nodes, runs, since)
+    return changes_of(data, nodes, watched_runs(repo, workflows, rest), since)
+
+
+def watched_runs(repo: str, workflows: Sequence[str], rest: RestRead) -> list[dict[str, Any]]:
+    """Each watched workflow's newest RUNS runs, one read of its own runs each (S-046-3), so a
+    burst of other workflows' runs never hides them; more than two are read concurrently. A
+    failed read, such as a workflow file GitHub doesn't know, fails the check"""
+
+    def read(workflow: str) -> list[dict[str, Any]]:
+        return workflow_runs(rest(f"repos/{repo}/actions/workflows/{workflow}/runs?per_page={RUNS}"), (workflow,))
+
+    if len(workflows) <= SEQUENTIAL:
+        answers = [read(w) for w in workflows]
+    else:
+        with ThreadPoolExecutor(max_workers=len(workflows)) as pool:
+            answers = list(pool.map(read, workflows))
+    return [run for answer in answers for run in answer]
 
 
 def repository(answer: dict[str, Any], what: str) -> dict[str, Any]:
@@ -405,7 +422,7 @@ def rollup(node: Mapping[str, Any]) -> str | None:
 def workflow_runs(answer: Any, workflows: Sequence[str]) -> list[dict[str, Any]]:
     """The newest runs of the watched workflows, as watch_state.py --known reads them"""
     if not isinstance(answer, dict) or not isinstance(answer.get("workflow_runs"), list):
-        raise ReleaseError(f"gh api .../actions/runs printed no workflow_runs: {str(answer)[:300]}")
+        raise ReleaseError(f"gh api .../runs printed no workflow_runs: {str(answer)[:300]}")
     runs = []
     for run in answer["workflow_runs"]:
         workflow = Path(str(run["path"]).split("@", 1)[0]).name
