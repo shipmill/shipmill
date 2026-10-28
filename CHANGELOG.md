@@ -7,6 +7,14 @@ bot.
 
 ## [Unreleased]
 
+## [0.89.0] - 2026-10-28
+
+### Changed
+
+- The gate's change check reads each watched workflow's own 10 newest runs (the release workflow and each `[operate]` workflow), concurrently when there are more than two, instead of the repo's 100 newest runs of every workflow: a quiet tick spends about 2 s less on it, and a release run that finished behind 100 newer CI runs is now seen as a change (#762)
+- `shipmill gate --dry-run` follows the prune's schedule, every `prune_hours`: when a prune isn't due it judges no worktree and prints `prune due at <time>`, so a dry run no longer spends most of its time judging worktrees or lists removals a tick wouldn't make; when one is due it lists `would prune` as before, and `--json`'s `"prune"` adds `"due"` and `"at"` on a dry run (#763)
+- Plugin: a repo's `PLUGIN_SHADOWING` row in `doctor`, `status`, the setup checklist, and the watch counts only the project- and local-scope installs keyed on the repo's checkout, its linked worktrees, or its gate checkouts; `shipmill factory` still counts every one on the host, so a stray install is reported once, there (#764)
+
 ## [0.88.0] - 2026-10-27
 
 ### Changed
@@ -1981,7 +1989,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.88.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.89.0...HEAD
+[0.89.0]: https://github.com/shipmill/shipmill/compare/v0.88.0...v0.89.0
 [0.88.0]: https://github.com/shipmill/shipmill/compare/v0.87.1...v0.88.0
 [0.87.1]: https://github.com/shipmill/shipmill/compare/v0.87.0...v0.87.1
 [0.87.0]: https://github.com/shipmill/shipmill/compare/v0.86.0...v0.87.0
