@@ -65,16 +65,20 @@ Triage: **feature**.{ Serves: G-n.} {What the new behaviour is, in one or two se
 
 The spec is in #{spec PR} (`docs/specs/{NNN}-{slug}.md`), with its acceptance criteria. Merging it is the approval, as is an answer on it that takes every recommendation, after which shipmill merges it once it is green; the build starts once it merges.
 
-On hold: the build waits on {owner/repo}#{spec PR}, the spec
+On hold: the build waits on {owner/repo}#{spec PR}, the spec PR.
 ```
+
+The hold sentence names the spec PR alone: `triage_state.py` holds the issue on every reference in a sentence that says "On hold", "blocked" or "waits on". Context such as the issue the spec is for goes in a sentence of its own, with no hold phrase, or the issue also holds on that issue, which can be its own parent.
 
 A request an accepted opportunity covers is built under that opportunity: its spec is the opportunity's, so the request holds on the opportunity issue, which closes when the build does. Add the request to the opportunity's Evidence section too.
 
 ```markdown
 Triage: **feature**.{ Serves: G-n.} This asks for the outcome of #{opportunity}, which the maintainer accepted; it's built under that issue{, whose spec is in #{spec PR}}, and this one closes with it.
 
-On hold: built under {owner/repo}#{opportunity}, the accepted opportunity
+On hold: built under {owner/repo}#{opportunity}, the accepted opportunity.
 ```
+
+This hold sentence names the opportunity alone, the same way.
 
 In a gate session, the spec PR asks for its approval with the [needs-decision protocol](needs-decision.md), on the spec PR itself, with these options (D-49). Option 1 never asks the maintainer to merge by hand: a trusted answer taking it is the approval, and github-pr-triage lands the spec PR once it is green ([spec-gate.md](spec-gate.md), Approved by an answer). A spec PR that edits `docs/product.md` says instead that the maintainer merges it, since only they change the direction (D-34).
 
