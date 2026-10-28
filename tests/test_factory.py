@@ -328,6 +328,18 @@ def test_s044_8_watch_states_host_rows_that_fail_are_the_checks_error() -> None:
     assert factory.host_command(REPO, CHECKOUT, "shipmill", wide=True)[0] == sys.executable
 
 
+def test_s039_4_factory_shows_the_host_wide_shadowing_row() -> None:
+    # #764: the repo's report narrowed its row to its own folders; factory is where a stray
+    # install keyed on any other folder of the host is reported, once
+    fix = "uvx shipmill==0.82.0 plugin-clean"
+    detail = f"3 project- or local-scope installs of shipmill@shipmill (0.9.0 to 0.73.1, 3 folders, 0 missing); {fix}"
+    shadow = Row("PLUGIN_SHADOWING", "plugin keyed", detail, False, fix)
+    found = run_checks(fake_host(rows=(VERSION, shadow)))
+    text = factory.text(found)
+    assert "3 project- or local-scope installs" in text and fix in text
+    assert factory.exit_code(found) == 1
+
+
 @pytest.mark.parametrize(
     ("changed", "code"),
     [

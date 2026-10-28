@@ -4,6 +4,7 @@ local checkout, the worktrees, and the gate's last prune (spec 045). Each check 
 own: one that fails to run prints `ERROR: <its first line>` and the checks after it still
 run (D-55). Read-only"""
 
+import dataclasses
 import datetime as dt
 import json
 import shlex
@@ -30,6 +31,7 @@ from shipmill.status import (
     guarded,
     parse_rows,
     prune_check,
+    row_fix,
     sessions_check,
     shipmill_check,
 )
@@ -150,7 +152,17 @@ def checks(repo: str, host: Host, cli: str, checkout: Path, now: dt.datetime, co
             gate_cli, cli_error = host.gate_cli(), None
         except CHECK_FAILURES as exc:
             gate_cli, cli_error = None, first_line(exc)
-        return shipmill_check(rows, cli, gate_cli, cli_error, repo, command)
+        found = shipmill_check(rows, cli, gate_cli, cli_error, repo, command)
+        # S-039-4, #764: the host-wide PLUGIN_SHADOWING row, which a repo's report narrows to
+        # its own folders, is shown here once, a problem with plugin-clean's fix
+        keyed = tuple(
+            Detail("plugin keyed", r.detail.partition("; ")[0], row_fix(repo, r))
+            for r in rows
+            if r.state == "PLUGIN_SHADOWING"
+        )
+        if not keyed:
+            return found
+        return dataclasses.replace(found, ok=False, details=(*found.details, *keyed))
 
     return [
         with_gate("gate", lambda g: gate_check(g, repo, now, command)),
