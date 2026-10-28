@@ -35,8 +35,8 @@ The full picture stays in `shipmill status`.
 
 ### The change check
 
-The tick first asks GitHub whether anything changed since the last walk it recorded, in two
-reads:
+The tick first asks GitHub whether anything changed since the last walk it recorded, in one
+query and one runs read per watched workflow:
 
 - one GraphQL query (`src/shipmill/github.py`): the default branch's head SHA; the newest
   release's tag; the open issues and pull requests updated at or after the cursor
@@ -44,8 +44,12 @@ reads:
   the open pull requests' number, labels, draft state, whether the head is in the repo, head
   SHA, and head commit's check rollup state; and the open issues labelled `[operate]
   incident_label`. At most 100 of each, paged past that
-- one `gh api repos/<repo>/actions/runs` read of the newest runs: the id, status, conclusion,
-  and URL of each run of the policy's release workflow and of an `[operate]` workflow
+- one `gh api repos/<repo>/actions/workflows/<file>/runs?per_page=10` read per watched
+  workflow, the policy's release workflow and each `[operate]` workflow: the id, status,
+  conclusion, and URL of its 10 newest runs. Read concurrently when there are more than two.
+  No repo-wide `actions/runs` read: a burst of CI runs would push a release run out of its
+  page (#762). A failed read, such as a workflow file GitHub doesn't know (404), fails the
+  tick like any failed read
 
 A change is any of: an issue or pull request updated at or after the cursor; a different
 default head, newest release tag, open pull request set, head SHA, draft state, check rollup
@@ -63,8 +67,8 @@ missed one waits for the next sweep. The gate's own sessions' writes are changes
 rule below keeps them from relaunching the same item.
 
 With no change and no sweep due, the tick reads nothing else from GitHub and decides QUIET,
-`no change since <cursor>`. A quiet tick takes the hold read, the session list, and the two
-change reads: a few seconds.
+`no change since <cursor>`. A quiet tick takes the hold read, the session list, and the
+change check's reads: a few seconds.
 
 ### The tiers
 
@@ -172,8 +176,10 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
   default head, a new release tag, a new open incident, a finished release or operate run, a
   handed item past `retry_hours`, and a dead last session counts as a change and makes the
   tick walk
-- S-046-3: the change check is one GraphQL query and one `gh api .../actions/runs` read, paged
-  only past 100 open issues or pull requests
+- S-046-3: the change check is one GraphQL query, paged only past 100 open issues or pull
+  requests, and one `gh api .../actions/workflows/<file>/runs` read per watched workflow,
+  each with `per_page` of at most 10, and no repo-wide `actions/runs` read (revised in #762,
+  D-58)
 - S-046-4: a walk reads the tiers in order and reads no tier below the one where it finds an
   item not handed within `retry_hours`
 - S-046-5: with an untaken item in tier 3, a tick reads no `triage_state.py` and runs no
@@ -232,8 +238,9 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
 - D-16: unattended agent sessions work only on trusted authors' items
 - D-55: `shipmill status` reports the pipeline; the host's machinery is `shipmill factory`'s
 - D-56: the gate's prune runs after the tick's decision
-- D-57: a gate tick checks for change before it reads the state, then walks the work tiers in
-  order and hands a session the first item no session has taken
+- D-58: a gate tick checks for change before it reads the state, then walks the work tiers in
+  order and hands a session the first item no session has taken; the change check reads each
+  watched workflow's runs on its own (#762, superseding D-57)
 
 ## Issues
 
@@ -246,8 +253,8 @@ Checked on the default branch plus #756's change, by the tests named, all passin
 `tests/test_watch_tiers.py`); the full suite, ruff, and strict mypy pass.
 
 - S-046-1: `test_s046_1_no_change_reads_nothing_more_and_is_quiet`
-- S-046-2: `test_s046_2_each_change_makes_the_tick_walk`, `test_s046_2_each_github_change_moves_the_signature`, `test_s046_2_a_success_after_a_success_and_another_workflow_are_no_change`, `test_s046_2_an_updated_item_is_a_change_and_one_labelled_needs_decision_is_asked`, `test_s046_2_a_handed_item_past_retry_hours_is_one_change_not_one_every_tick`, `test_s046_2_a_run_still_going_is_no_change`, `test_s046_2_a_dead_session_is_one_change_not_one_every_tick`
-- S-046-3: `test_s046_3_the_change_check_is_one_query_and_one_runs_read`, `test_s046_3_more_than_100_pull_requests_are_paged`, `test_s046_3_a_later_page_declares_only_the_variables_it_uses`
+- S-046-2: `test_s046_2_each_change_makes_the_tick_walk`, `test_s046_2_each_github_change_moves_the_signature`, `test_s046_2_a_success_after_a_success_and_another_workflow_are_no_change`, `test_s046_2_an_updated_item_is_a_change_and_one_labelled_needs_decision_is_asked`, `test_s046_2_a_handed_item_past_retry_hours_is_one_change_not_one_every_tick`, `test_s046_2_a_run_still_going_is_no_change`, `test_s046_2_a_dead_session_is_one_change_not_one_every_tick`, `test_s046_2_a_release_run_behind_100_newer_ci_runs_is_still_a_change`
+- S-046-3: `test_s046_3_the_change_check_is_one_query_and_one_runs_read_per_watched_workflow`, `test_s046_3_each_watched_workflow_is_read_once_with_at_most_10_runs`, `test_s046_3_a_watched_workflow_github_doesnt_know_fails_the_check`, `test_s046_3_more_than_100_pull_requests_are_paged`, `test_s046_3_a_later_page_declares_only_the_variables_it_uses`
 - S-046-4: `test_s046_4_a_walk_reads_no_tier_below_the_one_with_an_untaken_item`
 - S-046-5: `test_s046_5_an_untaken_item_in_tier_3_reads_no_triage_and_no_notices`
 - S-046-6: `test_s046_6_tiers_1_and_3_get_the_change_checks_data`
