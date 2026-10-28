@@ -377,9 +377,10 @@ or the tags are wrong; fix those, not the version.
    at user scope (spec 039): never install at project or local scope. In either mode, in
    place of a `PLUGIN_OK`, a user install behind the latest release reads `PLUGIN_OUTDATED`
    with its one update, run anywhere, `claude plugin marketplace update shipmill && claude
-   plugin update shipmill@shipmill --scope user`, and the host's project- and local-scope
-   installs read as one `PLUGIN_SHADOWING` row whose fix is `uvx shipmill==<version>
-   plugin-clean`, a dry run; the user removes them with `plugin-clean --apply` from their
+   plugin update shipmill@shipmill --scope user`, and the project- and local-scope installs
+   keyed on the repo's checkout, its linked worktrees, or its gate checkouts (`shipmill
+   factory` counts every one on the host) read as one `PLUGIN_SHADOWING` row whose fix is
+   `uvx shipmill==<version> plugin-clean`, a dry run; the user removes them with `plugin-clean --apply` from their
    own terminal (both not done; `--fix` leaves them). Give the user the fixes. A link or
    copy of a shipmill skill in `~/.claude/skills` or `~/.agents/skills` reads
    `SKILL_SHADOWED`, one row each with its fix (not done; `--fix` leaves it): a prompt's

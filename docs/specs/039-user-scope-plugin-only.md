@@ -74,10 +74,21 @@ finds none.
 
 ### One shadowing row
 
-`watch_state.py`'s `shipmill_rows` reads every project- and local-scope entry for
-`shipmill@shipmill` that `claude plugin list --json` lists on the host, whichever folder it
-is keyed on, and reports them as one row, in place of a `SHIPMILL_OUTDATED` row per keyed
-install and the S-031-16 row for a gate's linked worktree:
+`watch_state.py`'s `shipmill_rows` reads the project- and local-scope entries for
+`shipmill@shipmill` that `claude plugin list --json` lists, and reports them as one row, in
+place of a `SHIPMILL_OUTDATED` row per keyed install and the S-031-16 row for a gate's
+linked worktree. Which entries it counts depends on the report (amended by shipmill/shipmill#764):
+
+- **A repo's report** (`doctor`, `setup_state.py`, `shipmill status`, and `watch_state.py`
+  for the repo) counts only the entries keyed on the repo's main checkout, its linked
+  worktrees (`git worktree list`), or its gate checkouts, folders compared with symlinks
+  resolved on both sides. An entry keyed on another repo's folder is not this repo's
+  maintainer's to act on there, so it is left to the host's report
+- **The host's report**, `shipmill factory`, counts every entry on the host, whichever folder
+  it is keyed on (`watch_state.py --host shipmill --host-wide`), so a stray install is
+  reported once, there
+- `shipmill_rows` takes the choice from every caller, with no default; `plugin-clean` is
+  unchanged and still lists every keyed install on the host
 
 ```
 PLUGIN_SHADOWING  plugin keyed  16 project- or local-scope installs of shipmill@shipmill (0.25.0 to 0.73.1, 12 folders, 4 missing) shadow the user install; uvx shipmill==0.73.1 plugin-clean
@@ -88,7 +99,7 @@ PLUGIN_SHADOWING  plugin keyed  16 project- or local-scope installs of shipmill@
 - **Its fix** is `uvx shipmill==<version> plugin-clean` (the dry run, below), with
   `<version>` the plugin's own, as spec 031 pins it; with no user install the fix first
   names `claude plugin install shipmill@shipmill --scope user`
-- **No keyed install, no row.** The user install keeps its own `SHIPMILL_OUTDATED` row when
+- **No keyed install it counts, no row.** The user install keeps its own `SHIPMILL_OUTDATED` row when
   it lags, whose fix is the single command above
 - **Any version.** A keyed install at the latest release still shadows the user install and
   goes stale on the next release, so it is reported too
@@ -165,7 +176,7 @@ then: claude plugin marketplace update shipmill && claude plugin update shipmill
 - S-039-1: No file under `src/`, `skills/`, or `hooks/`, nor `README.md` or `docs/install.md`, contains a `claude plugin install` or `claude plugin update` command with `--scope project` or `--scope local`; the gate's commands include no `claude plugin install`, `update`, or `uninstall`
 - S-039-2: The fix `doctor`, `status`, `setup_state.py`, and the tick print for a lagging user-scope install is exactly `claude plugin marketplace update shipmill && claude plugin update shipmill@shipmill --scope user`, with no folder named; the `requires` message of `src/shipmill/requires.py` and `watch_state.py`, and `doctor`'s `requires` WARN, name `--scope user`
 - S-039-3: The hooks self-test, finding no install that applies to the checkout, FAILs with the fix `claude plugin install shipmill@shipmill --scope user`
-- S-039-4: With one or more project- or local-scope entries of `shipmill@shipmill` in `claude plugin list --json`, at any version and keyed on any folder, `watch_state.py` prints exactly one `PLUGIN_SHADOWING` row whose detail gives their count, their lowest and highest versions, the number of folders, and how many are missing, and whose fix is `uvx shipmill==<the plugin's version> plugin-clean`; it prints no `SHIPMILL_OUTDATED` row for a keyed install and no S-031-16 row; with none it prints no `PLUGIN_SHADOWING` row
+- S-039-4: With one or more project- or local-scope entries of `shipmill@shipmill` in `claude plugin list --json` that a report counts, at any version, `watch_state.py` prints exactly one `PLUGIN_SHADOWING` row whose detail gives their count, their lowest and highest versions, the number of folders, and how many are missing, and whose fix is `uvx shipmill==<the plugin's version> plugin-clean`; it prints no `SHIPMILL_OUTDATED` row for a keyed install and no S-031-16 row; with none it prints no `PLUGIN_SHADOWING` row. A repo's report (`doctor`, `setup_state.py`, `status`, `watch_state.py` for the repo) counts the entries keyed on the repo's main checkout, its linked worktrees, or its gate checkouts; `shipmill factory`'s (`--host shipmill --host-wide`) counts every entry on the host, keyed on any folder (#764)
 - S-039-5: With no user-scope install and a keyed one, the `PLUGIN_SHADOWING` row's fix names `claude plugin install shipmill@shipmill --scope user` before `plugin-clean`
 - S-039-6: `doctor` shows the `PLUGIN_SHADOWING` row as a WARN under `plugin` that alone leaves its exit code 0; `shipmill status` lists it among the reasons waiting on the person with its fix; `setup_state.py` prints `PLUGIN_SHADOWING`, exits 1 on it, and `--fix` leaves the installs as they were
 - S-039-7: A tick whose session loads a project- or local-scope install reports it with the `plugin-clean` fix and starts the session
@@ -209,7 +220,7 @@ then: claude plugin marketplace update shipmill && claude plugin update shipmill
 - S-039-1: `tests/test_user_scope_plugin.py` greps `src/`, `skills/`, `hooks/`, `README.md`, and `docs/install.md`, whitespace joined, for a `claude plugin install` or `update` with `--scope project` or `--scope local` and finds none (a comment in `plugin.py` that quoted one was reworded); `gate.py` names no plugin install, update, or uninstall, and a tick with keyed installs runs only `claude plugin list` and the marketplace read
 - S-039-2: `plugin.USER_UPDATE` and `watch_state.USER_UPDATE` are the single command; a lagging user install's fix is exactly it in watch_state's row, doctor's WARN, `status`'s reason, `setup_state.py`'s `PLUGIN_OUTDATED`, and the tick's `lags` record, with no folder; `requires.unmet`, `watch_state.requires_unmet`, and doctor's `requires` WARN name `--scope user`
 - S-039-3: `tests/test_hooks_selftest.py` runs the self-test with no install that applies: it FAILs with the fix `claude plugin install shipmill@shipmill --scope user`
-- S-039-4: `watch_state.plugin_rows` with four keyed entries (two scopes on one folder, one at the latest release, one missing) prints one row, `PLUGIN_SHADOWING plugin keyed 4 project- or local-scope installs of shipmill@shipmill (0.9.0 to 0.82.0, 3 folders, 1 missing) shadow the user install; uvx shipmill==<plugin.json's version> plugin-clean`, and no `SHIPMILL_OUTDATED` or S-031-16 row; with none, no row
+- S-039-4: `watch_state.plugin_rows` with four keyed entries (two scopes on one folder, one at the latest release, one missing) prints one row, `PLUGIN_SHADOWING plugin keyed 4 project- or local-scope installs of shipmill@shipmill (0.9.0 to 0.82.0, 3 folders, 1 missing) shadow the user install; uvx shipmill==<plugin.json's version> plugin-clean`, and no `SHIPMILL_OUTDATED` or S-031-16 row; with none, no row. With entries keyed on the repo's main checkout, on one of its linked worktrees (named through a symlink), and on an unrelated folder, the repo's row counts the first two and the host's all three; with entries only on unrelated folders the repo's report has no row; only factory's read passes `--host-wide`, status's doesn't, and `doctor` and `setup_state.py` pass the repo's scope explicitly
 - S-039-5: with no user install the row's fix is `claude plugin install shipmill@shipmill --scope user && uvx shipmill==<version> plugin-clean`
 - S-039-6: doctor shows the row as a WARN under `plugin`, and its FAILs are the same with and without it; `status` reads WAITS ON YOU with the plugin-clean fix (`PLUGIN_SHADOWING` is in `YOURS_ROWS` and in fleet.py's `ACTION`); `setup_state.py` shows `PLUGIN_SHADOWING`, exits 1 on it, and runs no `claude plugin` command but the list
 - S-039-7: a tick whose session loads a project- or local-scope install, current or behind, launches and prints `is a <scope>-scope install, which shadows the user install in its folder; the session starts; fix: uvx shipmill==<version> plugin-clean`, recorded under `loaded.shadowing`; the once-per-release notification names the same fix for a lagging one

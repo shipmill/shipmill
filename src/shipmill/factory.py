@@ -4,6 +4,7 @@ local checkout, the worktrees, and the gate's last prune (spec 045). Each check 
 own: one that fails to run prints `ERROR: <its first line>` and the checks after it still
 run (D-55). Read-only"""
 
+import dataclasses
 import datetime as dt
 import json
 import shlex
@@ -30,6 +31,7 @@ from shipmill.status import (
     guarded,
     parse_rows,
     prune_check,
+    row_fix,
     sessions_check,
     shipmill_check,
 )
@@ -64,10 +66,13 @@ class Host:
     prune: Callable[[], PruneRecord | None]
 
 
-def host_command(repo: str, workspace: Path, section: str) -> list[str]:
-    """watch_state.py's rows of one host section, reading nothing of the pipeline (S-044-5)"""
+def host_command(repo: str, workspace: Path, section: str, *, wide: bool) -> list[str]:
+    """watch_state.py's rows of one host section, reading nothing of the pipeline (S-044-5).
+    wide: factory's read, whose shipmill section counts every keyed install on the host in
+    PLUGIN_SHADOWING; status reads the repo's (#764)"""
     script = skills_dir() / "github-ship-watch" / "scripts" / "watch_state.py"
-    return [sys.executable, str(script), repo, "--repo-dir", str(workspace), "--host", section, "--json"]
+    flags = ["--host-wide"] if wide and section == "shipmill" else []
+    return [sys.executable, str(script), repo, "--repo-dir", str(workspace), *flags, "--host", section, "--json"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,8 +84,8 @@ class Section:
     code: int
 
 
-def read_section(repo: str, workspace: Path, section: str, run: StateRunner) -> Section:
-    proc = run(host_command(repo, workspace, section))
+def read_section(repo: str, workspace: Path, section: str, run: StateRunner, *, wide: bool) -> Section:
+    proc = run(host_command(repo, workspace, section, wide=wide))
     if state_failed(proc):
         said = proc.stderr.strip().splitlines()
         error = said[-1] if said else "no error printed"
@@ -88,8 +93,8 @@ def read_section(repo: str, workspace: Path, section: str, run: StateRunner) -> 
     return Section(parse_rows(proc.stdout), proc.returncode)
 
 
-def read_rows(repo: str, workspace: Path, section: str, run: StateRunner) -> list[Row]:
-    return read_section(repo, workspace, section, run).rows
+def read_rows(repo: str, workspace: Path, section: str, run: StateRunner, *, wide: bool) -> list[Row]:
+    return read_section(repo, workspace, section, run, wide=wide).rows
 
 
 def stale_fix(main: Path, path: str, branch: str) -> str:
@@ -147,7 +152,17 @@ def checks(repo: str, host: Host, cli: str, checkout: Path, now: dt.datetime, co
             gate_cli, cli_error = host.gate_cli(), None
         except CHECK_FAILURES as exc:
             gate_cli, cli_error = None, first_line(exc)
-        return shipmill_check(rows, cli, gate_cli, cli_error, repo, command)
+        found = shipmill_check(rows, cli, gate_cli, cli_error, repo, command)
+        # S-039-4, #764: the host-wide PLUGIN_SHADOWING row, which a repo's report narrows to
+        # its own folders, is shown here once, a problem with plugin-clean's fix
+        keyed = tuple(
+            Detail("plugin keyed", r.detail.partition("; ")[0], row_fix(repo, r))
+            for r in rows
+            if r.state == "PLUGIN_SHADOWING"
+        )
+        if not keyed:
+            return found
+        return dataclasses.replace(found, ok=False, details=(*found.details, *keyed))
 
     return [
         with_gate("gate", lambda g: gate_check(g, repo, now, command)),

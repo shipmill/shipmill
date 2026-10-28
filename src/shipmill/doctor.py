@@ -118,7 +118,7 @@ def read_plugin_rows(repo: str, root: Path) -> list[PluginRow]:
     sys.modules[spec.name] = module  # its dataclasses look their module up by name
     spec.loader.exec_module(module)
     try:
-        rows = module.shipmill_rows(repo, root)
+        rows = module.shipmill_rows(repo, root, host_wide=False)  # the repo's keyed installs (#764)
     except SystemExit as exc:  # watch_state's way to refuse input or report a failed command
         raise ReleaseError(f"watch_state.py stopped: {exc if str(exc) != '2' else 'see the error above'}") from None
     except OSError as exc:  # gh or git missing

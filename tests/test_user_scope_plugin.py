@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -112,7 +113,7 @@ def test_s039_2_a_lagging_user_installs_fix_is_the_single_command_everywhere(
     assert status.row_fix("o/r", row) == USER_FIX
     assert f"                 fix: {USER_FIX}" in lines(facts(row)) or any(USER_FIX in x for x in lines(facts(row)))
     # setup_state.py
-    fake = type("Ws", (), {"Refused": ws.Refused, "shipmill_rows": staticmethod(lambda repo, root: rows)})
+    fake = type("Ws", (), {"Refused": ws.Refused, "shipmill_rows": staticmethod(lambda repo, root, *, host_wide: rows)})
     (shown, *_) = ss.outdated_installs("o/r", REPO, fake)
     assert shown.state == "PLUGIN_OUTDATED" and shown.detail.endswith(f"; {USER_FIX}")
     assert " in /" not in shown.detail.partition("; ")[2]  # no folder named
@@ -178,6 +179,81 @@ def test_s039_4_no_keyed_install_no_row(ws: ModuleType) -> None:
     assert ws.plugin_rows(None, None, "v0.82.0", [REPO], [GATE])[0].state == "SHIPMILL_VERSION"
 
 
+def shadowing(rows: list[Any]) -> list[str]:
+    return [r.detail for r in rows if r.state == "PLUGIN_SHADOWING"]
+
+
+def test_s039_4_a_repos_row_counts_its_own_keyed_installs_and_the_hosts_counts_all(
+    ws: ModuleType, repo: Repo, tmp_path: Path
+) -> None:
+    # #764: in another repo the row counted 3 installs keyed on shipmill's linked worktrees
+    linked, elsewhere = tmp_path / "linked", tmp_path / "elsewhere"
+    repo.git.run("worktree", "add", "-q", "--detach", str(linked))
+    elsewhere.mkdir()
+    through = tmp_path / "through"
+    through.symlink_to(linked)  # a path that resolves into the worktree is the worktree's (/var and /private/var)
+    keyed = [
+        install("project", "0.25.0", repo.root),
+        install("local", "0.73.1", through),
+        install("project", "0.9.0", elsewhere),
+    ]
+    plugins = [install("user", "0.82.0"), *keyed]
+    folders, gates = ws.plugin_folders(repo.root, None)
+    own = ws.repo_folders(folders, gates)
+    assert linked.resolve() in own and elsewhere.resolve() not in own
+    mine = ws.plugin_rows(plugins, None, "v0.82.0", folders, gates, repo.root, counted=own)
+    host = ws.plugin_rows(plugins, None, "v0.82.0", folders, gates, repo.root, counted=None)
+    said = f" shadow the user install; {clean(ws)}"
+    assert shadowing(mine) == [
+        f"2 project- or local-scope installs of shipmill@shipmill (0.25.0 to 0.73.1, 2 folders, 0 missing){said}"
+    ]
+    assert shadowing(host) == [
+        f"3 project- or local-scope installs of shipmill@shipmill (0.9.0 to 0.73.1, 3 folders, 0 missing){said}"
+    ]
+    # none on the repo, no row in its report; the host's still names the stray one, once
+    stray = [
+        install("user", "0.82.0"),
+        install("project", "0.9.0", elsewhere),
+        install("local", "0.1.0", tmp_path / "x"),
+    ]
+    assert shadowing(ws.plugin_rows(stray, None, "v0.82.0", folders, gates, repo.root, counted=own)) == []
+    assert shadowing(ws.plugin_rows(stray, None, "v0.82.0", folders, gates, repo.root, counted=None)) == [
+        "2 project- or local-scope installs of shipmill@shipmill (0.1.0 to 0.9.0, 2 folders, 1 missing)"
+        f" shadow the user install; {clean(ws)}"
+    ]
+
+
+def test_s039_4_a_repos_folders_are_its_main_checkout_worktrees_and_gates(ws: ModuleType, repo: Repo) -> None:
+    gate = repo.root / "tmp" / "shipmill-gate"
+    repo.git.run("worktree", "add", "-q", "--detach", str(gate))
+    linked = repo.root / ".claude" / "worktrees" / "agent-x"
+    repo.git.run("worktree", "add", "-q", "--detach", str(linked))
+    folders, gates = ws.plugin_folders(linked, None)  # read from one of its linked worktrees
+    own = ws.repo_folders(folders, gates)
+    assert {repo.root.resolve(), gate.resolve(), linked.resolve()} <= set(own)
+    assert ws.repo_worktrees(repo.root.parent / "not-a-checkout") == []
+
+
+def test_s039_4_only_shipmill_factory_reads_the_host_wide_row(ws: ModuleType) -> None:
+    from shipmill import factory
+
+    parsed = ws.arguments().parse_args(["o/r", "--host", "shipmill", "--host-wide"])
+    assert parsed.host_wide and not ws.arguments().parse_args(["o/r", "--host", "shipmill"]).host_wide
+    wide = factory.host_command("o/r", REPO, "shipmill", wide=True)
+    assert "--host-wide" in wide and wide[-3:] == ["--host", "shipmill", "--json"]
+    assert "--host-wide" not in factory.host_command("o/r", REPO, "shipmill", wide=False)  # status's read
+    assert "--host-wide" not in factory.host_command("o/r", REPO, "sessions", wide=True)
+    script = SKILLS / "github-ship-watch" / "scripts" / "watch_state.py"
+    for alone in (["o/r", "--host-wide"], ["o/r", "--host", "sessions", "--host-wide"]):
+        proc = subprocess.run([sys.executable, str(script), *alone], capture_output=True, text=True, check=False)
+        assert proc.returncode == 2 and "--host-wide goes with --host shipmill" in proc.stderr
+    source = script.read_text(encoding="utf-8")
+    calls = re.findall(r"shipmill_rows\(([^)]*)\)", source)  # its definition and every call name the scope
+    assert len(calls) >= 3 and all("host_wide" in c for c in calls)
+    for path in (ROOT / "src" / "shipmill" / "doctor.py", SKILLS / "shipmill-setup" / "scripts" / "setup_state.py"):
+        assert re.search(r"shipmill_rows\([^)]*host_wide=False\)", path.read_text(encoding="utf-8")), path
+
+
 def test_s039_5_without_a_user_install_the_fix_installs_it_first(ws: ModuleType) -> None:
     rows = ws.plugin_rows([install("local", "0.25.0", REPO)], None, "v0.82.0", [REPO], [GATE], REPO)
     (row,) = [r for r in rows if r.state == "PLUGIN_SHADOWING"]
@@ -218,7 +294,7 @@ def test_s039_6_status_lists_it_as_waiting_on_you_with_its_fix(ws: ModuleType) -
 def test_s039_6_setup_state_shows_it_not_done_and_fix_runs_no_plugin_command(ws: ModuleType, ss: ModuleType) -> None:
     plugins = [install("user", "0.82.0"), install("project", "0.25.0", REPO)]
     rows = ws.plugin_rows(plugins, None, "v0.82.0", [REPO], [GATE])
-    fake = type("Ws", (), {"Refused": ws.Refused, "shipmill_rows": staticmethod(lambda repo, root: rows)})
+    fake = type("Ws", (), {"Refused": ws.Refused, "shipmill_rows": staticmethod(lambda repo, root, *, host_wide: rows)})
     found = ss.outdated_installs("o/r", REPO, fake)
     assert [r.state for r in found] == ["PLUGIN_SHADOWING"]
     assert found[0].text().startswith("PLUGIN_SHADOWING")
