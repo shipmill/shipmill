@@ -1291,15 +1291,29 @@ def pruner(git: Git, github: GitHub, sessions: Sessions) -> Pruner:
 
 
 @dataclass(frozen=True, slots=True)
+class PruneDue:
+    """Whether a prune is due (spec 045, #763), and when: prune_hours after prune.json's last
+    attempt, or None before a prune wrote one, when it is due at once"""
+
+    due: bool
+    at: dt.datetime | None
+
+
+@dataclass(frozen=True, slots=True)
 class PruneRun:
     """What a tick's prune did (spec 045): whether it ran, and its error's first line when it
-    failed with a shipmill error, which leaves the tick as it would be without it"""
+    failed with a shipmill error, which leaves the tick as it would be without it. A dry run
+    also carries whether the prune is due, and when (S-045-9); a tick, None"""
 
     ran: bool
     error: str | None = None
+    due: PruneDue | None = None
 
     def record(self) -> dict[str, object]:
-        return {"ran": self.ran, "error": self.error}
+        record: dict[str, object] = {"ran": self.ran, "error": self.error}
+        if self.due is not None:
+            record |= {"due": self.due.due, "at": None if self.due.at is None else self.due.at.isoformat()}
+        return record
 
 
 @dataclass(frozen=True, slots=True)
@@ -1454,22 +1468,38 @@ def error_line(exc: ReleaseError) -> str:
     return lines[0] if lines else type(exc).__name__
 
 
+def prune_due(last: PruneRecord | None, hours: Callable[[], int], now: dt.datetime) -> PruneDue:
+    """Due with no attempt recorded, else hours() or more after the last one; hours() is read
+    only when there is one"""
+    if last is None:
+        return PruneDue(True, None)
+    at = last.at + dt.timedelta(hours=hours())
+    return PruneDue(now >= at, at)
+
+
 def prune_step(
     path: Path, hours: Callable[[], int], worktrees: Pruner, now: dt.datetime, dry_run: bool
 ) -> tuple[PruneRun, tuple[Judged, ...]]:
     """Spec 045, after the tick's decision: a prune runs when prune.json records no attempt or
     one hours() or more ago, records its attempt, and returns the worktrees it removed. A dry
-    run judges every time, removes nothing and writes nothing. A shipmill error, the prune's
-    or one reading prune.json or hours, is the run's error and removes nothing more"""
+    run checks the same schedule: not due, it judges nothing; due, it judges, removes nothing,
+    and writes nothing either way (S-045-9, #763). A shipmill error, the prune's or one
+    reading prune.json or hours, is the run's error and removes nothing more"""
     if dry_run:
+        try:
+            due = prune_due(load_prune(path), hours, now)
+        except ReleaseError as exc:
+            return PruneRun(False, error_line(exc)), ()
+        if not due.due:
+            return PruneRun(False, due=due), ()
         try:
             judged = worktrees(now, True)
         except ReleaseError as exc:
-            return PruneRun(True, error_line(exc)), ()
-        return PruneRun(True), tuple(j for j in judged if j.verdict is Verdict.WOULD_REMOVE)
+            return PruneRun(True, error_line(exc), due), ()
+        return PruneRun(True, due=due), tuple(j for j in judged if j.verdict is Verdict.WOULD_REMOVE)
     try:
         last = load_prune(path)
-        if last is not None and now - last.at < dt.timedelta(hours=hours()):
+        if not prune_due(last, hours, now).due:
             return PruneRun(False), ()
     except ReleaseError as exc:  # nothing ran, and prune.json stays for a person to read
         return PruneRun(False, error_line(exc)), ()
@@ -1931,6 +1961,9 @@ def tick_lines(
         lines.append(f"  launched {launched}: {decision.follow or f'claude attach {launched}'}")
     verb = "would prune" if dry_run else "pruned"  # spec 045: the prune ran after the decision
     lines += [f"  {verb} {j.path} ({j.worktree.branch})" for j in pruned]
+    due = None if decision.prune is None else decision.prune.due
+    if due is not None and not due.due and due.at is not None:  # a dry run's prune not due (S-045-9)
+        lines.append(f"  prune due at {due.at.isoformat(timespec='minutes')}")
     if decision.prune is not None and decision.prune.error is not None:
         lines.append(f"  prune failed: {decision.prune.error}")
     return lines

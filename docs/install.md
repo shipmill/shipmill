@@ -407,6 +407,10 @@ modes](design/agent-modes.md) has the details.
    $CR --repo tmp/shipmill-gate gate <owner/repo> --dry-run
    ```
 
+   Its prune follows the tick's schedule, every `prune_hours`: when one isn't due it
+   prints `prune due at <time>` and judges no worktree, else the `would prune` lines.
+   `$CR worktrees --prune --dry-run` lists what a prune would remove anytime
+
 4. **Schedule it.** On a Mac:
 
    ```bash

@@ -550,7 +550,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="decide and print; start, stop, move, or prune nothing (lists the worktrees it would prune)",
+        help="decide and print; start, stop, move, or prune nothing (lists what it would prune when due)",
     )
     p.add_argument("--json", action="store_true", help="print the decision, with the pruned worktrees, as JSON")
     p.add_argument("--walk", action="store_true", help="walk the work tiers whether or not anything changed (spec 046)")
