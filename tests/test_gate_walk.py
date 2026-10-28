@@ -5,6 +5,7 @@ fake GraphQL and REST reader"""
 import datetime as dt
 import json
 import os
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -240,8 +241,15 @@ class Gh:
         return self.answers.pop(0)
 
     def read(self, path: str) -> Any:
+        """GitHub's runs reads: the newest per_page runs of one workflow's file, or of every
+        workflow for the repo-wide read"""
         self.paths.append(path)
-        return self.rest
+        found = re.fullmatch(rf"repos/{REPO}/actions/(?:workflows/(?P<file>[^/]+)/)?runs\?per_page=(?P<n>\d+)", path)
+        if found is None:
+            raise ReleaseError(f"gh api {path} failed: HTTP 404")
+        mine = [r for r in self.rest["workflow_runs"] if found["file"] in (None, r["path"].rsplit("/", 1)[-1])]
+        newest = sorted(mine, key=lambda r: r["id"], reverse=True)[: int(found["n"])]
+        return {"total_count": len(mine), "workflow_runs": newest}
 
 
 def changed(answer: dict[str, Any], found: dict[str, Any] | None = None) -> Changes:
@@ -284,13 +292,46 @@ def test_s046_2_an_updated_item_is_a_change_and_one_labelled_needs_decision_is_a
     assert changed(answer).asked
 
 
-def test_s046_3_the_change_check_is_one_query_and_one_runs_read() -> None:
+def test_s046_3_the_change_check_is_one_query_and_one_runs_read_per_watched_workflow() -> None:
     gh = Gh([graphql_answer(pulls=[pull(3)], incidents=[9])], runs((1, "release.yml", "success")))
     found = check(REPO, NOW, "incident", ("release.yml",), gh.graphql, gh.read, NOW)
-    assert len(gh.queries) == 1 and gh.paths == [f"repos/{REPO}/actions/runs?per_page=100"]
+    assert len(gh.queries) == 1 and gh.paths == [f"repos/{REPO}/actions/workflows/release.yml/runs?per_page=10"]
     assert "pullRequests(states: OPEN, first: 100" in gh.queries[0] and "latestRelease" in gh.queries[0]
     assert [p["number"] for p in prs_of(found)] == [3]
     assert json.loads(json.dumps(found.known))["runs"][0]["workflow"] == "release.yml"
+
+
+@pytest.mark.parametrize(
+    "watched", [(), ("release.yml",), ("release.yml", "ops.yml"), ("release.yml", "a.yml", "b.yml")]
+)
+def test_s046_3_each_watched_workflow_is_read_once_with_at_most_10_runs(watched: tuple[str, ...]) -> None:
+    # #762: no repo-wide actions/runs read; three or more workflows are read concurrently
+    found = runs(*((n, w, "success") for n, w in enumerate(watched, start=1)), (99, "ci.yml", "failure"))
+    gh = Gh([graphql_answer()], found)
+    changes = check(REPO, NOW, "incident", watched, gh.graphql, gh.read, NOW)
+    assert sorted(gh.paths) == sorted(f"repos/{REPO}/actions/workflows/{w}/runs?per_page=10" for w in watched)
+    assert not any("/actions/runs" in p for p in gh.paths)
+    assert sorted(r["workflow"] for r in json.loads(json.dumps(changes.known))["runs"]) == sorted(watched)
+
+
+def test_s046_2_a_release_run_behind_100_newer_ci_runs_is_still_a_change() -> None:
+    # #762: the repo-wide read of the newest 100 runs never saw the release run finish
+    ci = [(n, "ci.yml", "success") for n in range(3, 103)]
+    going = changed(graphql_answer(), runs((2, "release.yml", None), *ci))
+    failed = changed(graphql_answer(), runs((2, "release.yml", "failure"), *ci))
+    assert failed.signature != going.signature
+
+
+def test_s046_3_a_watched_workflow_github_doesnt_know_fails_the_check() -> None:
+    gh = Gh([graphql_answer()], runs())
+
+    def read(path: str) -> Any:
+        if "/workflows/gone.yml/" in path:
+            raise ReleaseError(f"gh api {path} failed: gh: Not Found (HTTP 404)")
+        return gh.read(path)
+
+    with pytest.raises(ReleaseError, match=r"workflows/gone\.yml/runs.*HTTP 404"):
+        check(REPO, NOW, "incident", ("release.yml", "gone.yml", "ops.yml"), gh.graphql, read, NOW)
 
 
 def test_s046_3_more_than_100_pull_requests_are_paged() -> None:

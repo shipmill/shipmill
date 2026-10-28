@@ -453,9 +453,9 @@ working or waiting on the user. Something needs an agent when github-ship-watch'
 open PRs unless `[autonomy] land` is `observe` (spec 040; `[agents] prs` is deprecated, and
 doctor warns while it is set). docs/design/agent-modes.md has the details.
 
-A tick checks for change first (spec 046, D-57): one GraphQL query and one read of the
-newest workflow runs, against the cursor of its last walk (`cursor.json` in the state
-directory). With nothing changed it reads nothing more and prints `QUIET: no change since
+A tick checks for change first (spec 046, D-58): one GraphQL query and one read of each
+watched workflow's 10 newest runs (the release workflow and each `[operate]` workflow),
+against the cursor of its last walk (`cursor.json` in the state directory). With nothing changed it reads nothing more and prints `QUIET: no change since
 <cursor>`, a few seconds. On a change, or when a handed item's `retry_hours` ran out or the
 last session ended dead, it walks the work tiers in order and stops at the first item no
 session was handed within `retry_hours` (`handed.json`): 1 production (INCIDENT_OPEN,
