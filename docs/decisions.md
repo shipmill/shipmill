@@ -491,3 +491,11 @@ entry that supersedes it, never by editing an old one.
 - Applies to: src/shipmill/walk.py, src/shipmill/gate.py, src/shipmill/agents.py, src/shipmill/github.py, src/shipmill/cli.py, skills/github-ship-watch/scripts/watch_state.py, skills/github-ship-watch/SKILL.md, skills/shipmill-setup/SKILL.md, docs/install.md, docs/specs/046-*, shipmill gate, [agents] sweep_hours, cursor.json, sweep.json, handed.json
 - Enforced by: the tests of spec 046, S-046-3's in tests/test_gate_walk.py
 - Supersedes: D-57
+
+## D-60: Setup removes a committed shipmill plugin unless the repo opts in
+
+- Decided: 2026-10-28, in shipmill/shipmill#702
+- Rule: shipmill is each person's choice, not a requirement of the repo. With [agents] plugin = "host" (the default, also without the key), shipmill-setup's setup_state.py --fix removes a committed shipmill@shipmill from .claude/settings.json: it deletes the enabledPlugins entry, and the shipmill entry from extraKnownMarketplaces when no other enabled <name>@shipmill uses it, keeps every other key, the indent, and the trailing newline, drops an object left empty, and deletes the file when no key is left. A repo keeps it only with [agents] plugin = "repo". A plugin set to false on purpose (PLUGIN_DISABLED) is left in either mode. This replaces only spec 039's sentence "A repo keeps enabledPlugins in its .claude/settings.json" (and its supported-layout line); D-42, D-44/D-50, and D-54 are unchanged
+- Why: Spec 033 made committing the plugin opt-in, but a repo connected before it kept enabledPlugins and the shipmill marketplace, since --fix left the file (S-033-3), so every contributor's Claude Code was still offered the plugin and its hooks (#778). The maintainer (@romamo, on shipmill/shipmill#702) decided that setup removes it unless the repo opts in
+- Applies to: skills/shipmill-setup/scripts/setup_state.py, skills/shipmill-setup/SKILL.md, docs/specs/033-*, docs/specs/039-*, docs/install.md, .claude/settings.json, [agents] plugin, PLUGIN_COMMITTED
+- Enforced by: tests/test_contributors.py's S-033-3 tests

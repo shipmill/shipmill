@@ -351,7 +351,8 @@ or the tags are wrong; fix those, not the version.
    the branch under it is deleted, and without it merged branches pile up. `--fix`
    creates the missing labels and turns the setting on, all on GitHub at once, and with
    `[agents] plugin = "repo"` enables the plugin in `.claude/settings.json`, keeping every
-   other key; commit the settings change in a follow-up PR. With
+   other key (with `host` it removes a committed one, below); commit the settings change in
+   a follow-up PR. With
    `[agents] app_id` set it creates the labels as the App, through `shipmill gh` run by
    uvx at the version in the plugin's `plugin.json` (spec 012, spec 031); the setting stays on the host's `gh`, since the App has no
    Administration permission. A `shipmill gh` exit 2 stops `--fix`: report it, and never
@@ -367,12 +368,15 @@ or the tags are wrong; fix those, not the version.
    `PLUGIN_MISSING` gives the command, `claude plugin marketplace add shipmill/shipmill &&
    claude plugin install shipmill@shipmill --scope user`: run it on the maintainer's host
    after asking, since it changes their host, never with `--fix`. `PLUGIN_COMMITTED` (not
-   done; `--fix` leaves it) says `.claude/settings.json` still enables the plugin while the
-   key is `host`, as in a repo connected before spec 033: ask, then either set `plugin =
-   "repo"` to keep it, or delete `shipmill@shipmill` from `enabledPlugins` (and the
-   `shipmill` entry from `extraKnownMarketplaces` when no other plugin uses it), each in a
-   pull request. With `host`, `--fix` never creates or changes `.claude/settings.json`. A
-   plugin turned off on purpose
+   done) says `.claude/settings.json` still enables the plugin while the key is `host`, as
+   in a repo connected before spec 033. shipmill is each person's choice, not the repo's
+   (D-60): `--fix` deletes `shipmill@shipmill` from `enabledPlugins`, and the `shipmill`
+   entry from `extraKnownMarketplaces` when no other enabled `<name>@shipmill` uses it,
+   keeping every other key; it drops an object left empty and deletes the file when no key
+   is left; commit that change in the follow-up PR, as above. Only a maintainer who wants it for
+   everyone sets `plugin = "repo"` instead. With `host`, `--fix` never creates
+   `.claude/settings.json` and changes it only for that removal. A plugin turned off on
+   purpose
    (`PLUGIN_DISABLED`) is the user's call; ask before changing it. A host keeps one install,
    at user scope (spec 039): never install at project or local scope. In either mode, in
    place of a `PLUGIN_OK`, a user install behind the latest release reads `PLUGIN_OUTDATED`

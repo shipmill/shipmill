@@ -723,7 +723,7 @@ default, each person installs it on their own host and nothing in the repo turns
 a contributor's too. Any other value, or one that isn't a string, exits 2. It changes nothing
 the gate loads: a gate session loads the install that applies to its checkout, at any scope
 (D-50). The setup checklist reads it: `PLUGIN_COMMITTED` says the repo still commits the
-plugin while the key is `"host"`.
+plugin while the key is `"host"`, and setup's `--fix` removes it (D-60).
 
 ```toml
 [agents]
