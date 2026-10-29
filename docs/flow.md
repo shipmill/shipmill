@@ -183,6 +183,8 @@ Clone https://github.com/shipmill/shipmill into tmp/shipmill (or pull it if pres
 tmp/shipmill/skills/github-ship-watch/SKILL.md for <owner/repo> — watch and triage
 ```
 
+A merge the App makes is authored by its bot, so your contribution graph doesn't show the change you decided to land. `[agents] credit = "decider"` (spec 049) has `shipmill gh pr merge` add a `Co-authored-by` trailer for each trusted person a record shows decided it: an approving review, an answer to a needs-decision question, the issue it closes, or the `planned` label on its opportunity. The trailer means the person decided the change, not that they wrote it. The default is `"off"`: every merge is written as GitHub writes it, and `shipmill doctor` shows which in its `credit` row
+
 ## Safeguards
 
 - A change to a flag, format, default, public API, or stored state is designed in its issue first and checked against the repo's decisions log (`DECISIONS.md` or `docs/decisions.md`); what you settle is recorded there, so it isn't asked again

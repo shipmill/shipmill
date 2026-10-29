@@ -594,6 +594,15 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    `max_wait_minutes` (0..10080) to match, or 0 to never stop one. `app_id` is a
    placeholder until step 3 replaces it; never merge `123456` itself
 
+   **Credit (spec 049).** A merge the App makes is authored by its bot, so the maintainer's
+   contribution graph loses the changes they decided to land. `[agents] credit =
+   "decider"` has `shipmill gh pr merge` add a `Co-authored-by` trailer for each trusted
+   person a record shows decided the change (an approving review, a needs-decision answer,
+   the issue it closes, the `planned` label on its opportunity); the trailer means the
+   person decided the change, not that they wrote it. The default is `"off"`, which writes
+   every merge as GitHub does. Write the key only when the user asks for it; `$CR doctor`
+   shows the setting in its `credit` row
+
    **Roles (spec 036).** A step an agent can't do (a DNS record, a new repository, a
    provider key, a sign-off) goes to a role, and the session files it labelled
    `role:<name>` and assigned that role's users at once, without asking who does it. Ask

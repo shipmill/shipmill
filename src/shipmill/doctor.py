@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from shipmill import cli_command, fragments, ticks
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
-from shipmill.agents import ProductConfig, RolesError
+from shipmill.agents import AgentsConfig, Credit, ProductConfig, RolesError
 from shipmill.app import (
     PRODUCT_PERMISSIONS,
     Api,
@@ -259,6 +259,7 @@ def doctor(
     if policy.agents is not None:
         checks.append(direction_check(root))
         checks.extend(hooks_checks(policy, Git(root), hooks, Path.home() if home is None else home))
+        checks.append(credit_check(policy.agents))
         uses = None if credential is None else credential()
         if uses is not None:
             checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC)))
@@ -900,6 +901,14 @@ def app_writes(app_id: int | None, home: Path) -> str:
         f"app-writes: on in gate sessions only (no key at {path} on this host; in your own sessions shipmill's"
         " skills draft and you post, or set SHIPMILL_APP_KEY)"
     )
+
+
+def credit_check(agents: AgentsConfig) -> Check:
+    """S-049-11: the credit row, for a repo with [agents]: whom a merge through `shipmill gh`
+    names in Co-authored-by, a setting rather than a fault, so a PASS either way"""
+    if agents.credit is Credit.DECIDER:
+        return Check("PASS", "credit", "decider, a merge names who decided it in Co-authored-by (spec 049)")
+    return Check("PASS", "credit", "off")
 
 
 def hooks_checks(policy: Policy, git: Git, test: HookTester | None, home: Path) -> list[Check]:
