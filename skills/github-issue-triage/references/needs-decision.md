@@ -127,12 +127,12 @@ An interactive gate session that gets the answer through AskUserQuestion puts th
 1. Post the answer on the item as a comment without the needs-decision marker, through `--body-file`. Posted as the App (`shipmill gh` with `[agents] app_id` set) or as the host's login (`shipmill gh` with `[agents] identity = "host"`), its first line names who decided and who relayed it, so the thread tells a person's decision from agent text:
 
    ```markdown
-   Decision by @<login>, relayed by <agent>
+   Decision by `@<login>`, relayed by <agent>
 
    Answered in the session: <the option or the user's own words>
    ```
 
-   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`). A reader takes the line with the login bare or in a code span, ``Decision by `@<login>`, relayed by <agent>``, as the same answer (D-61). `shipmill gh` ends the relay with the [agent marker](#the-agent-marker), so the relay is no reply: removing the label in the next step is what moves the item
+   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`). The login sits in a code span so the record doesn't email the person; a reader takes an older line with the login bare, `Decision by @<login>, relayed by <agent>`, as the same answer (D-61). `shipmill gh` ends the relay with the [agent marker](#the-agent-marker), so the relay is no reply: removing the label in the next step is what moves the item
 2. Remove the `needs-decision` label: `gh issue edit <n> --remove-label needs-decision` (or `gh pr edit`)
 3. Record the answer with `decisions.py add` when it sets a rule, as the [design gate](design-gate.md) says, and go on
 

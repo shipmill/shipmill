@@ -44,7 +44,7 @@ def test_s050_14_the_relay_line_is_written_in_both_modes_and_is_no_reply() -> No
         "Posted as the App (`shipmill gh` with `[agents] app_id` set) or as the host's login"
         ' (`shipmill gh` with `[agents] identity = "host"`), its first line names who decided' in answered
     )
-    assert "```markdown Decision by @<login>, relayed by <agent> Answered in the session:" in answered
+    assert "```markdown Decision by `@<login>`, relayed by <agent> Answered in the session:" in answered
     assert "so the relay is no reply: removing the label in the next step is what moves the item" in answered
 
 
