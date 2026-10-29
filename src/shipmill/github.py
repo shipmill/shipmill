@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote
 
-from shipmill.credit import Account, Commit, Messages, Pull, Review
+from shipmill.credit import CLOSES_QUERY, Account, Comment, Commit, Filed, Messages, Person, Pull, Review, closes_of
 from shipmill.errors import ReleaseError
 
 PROPOSAL_LABEL = "shipmill-proposal"  # on every issue proposing a release or a deploy
@@ -695,6 +695,28 @@ class GhCli:
 
     def credit_messages(self) -> Messages:
         return Messages.parse(self._api("repos/{owner}/{repo}"))
+
+    def credit_closes(self, number: int) -> list[Filed]:
+        found = self._gh(
+            "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", f"number={number}",
+            "-f", f"query={CLOSES_QUERY}",
+        )  # fmt: skip
+        return closes_of(json.loads(found), number)
+
+    def credit_comments(self, number: int) -> list[Comment]:
+        found = self._pages(f"repos/{{owner}}/{{repo}}/issues/{number}/comments?per_page=100")
+        return [Comment.parse(c) for c in found]
+
+    def credit_labelers(self, number: int, label: str) -> list[Person | None]:
+        found = self._pages(f"repos/{{owner}}/{{repo}}/issues/{number}/events?per_page=100")
+        return [
+            None if e["actor"] is None else Person.parse(e["actor"])
+            for e in found
+            if e["event"] == "labeled" and str(e["label"]["name"]).lower() == label.lower()
+        ]
+
+    def credit_permission(self, login: str) -> str:
+        return str(self._api(f"repos/{{owner}}/{{repo}}/collaborators/{quote(login)}/permission")["permission"])
 
     def text_at(self, sha: str, path: str) -> str:
         """The file's text at a commit, through the contents API; a missing file fails"""
