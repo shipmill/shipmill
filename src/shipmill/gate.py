@@ -65,12 +65,15 @@ from shipmill.walk import (
     CURSOR_OVERLAP,
     HANDED,
     KNOWN,
+    LANDED,
     SWEEP,
     WAITING_TIER,
     Changes,
     Cursor,
+    Flight,
     Hand,
     Handed,
+    Landed,
     Rows,
     Source,
     Swept,
@@ -81,6 +84,7 @@ from shipmill.walk import (
     tier_of,
     walk,
     watched,
+    write,
 )
 from shipmill.walk import span as tier_span
 from shipmill.worktrees import Judged, Sessions, Verdict, judge, prune
@@ -92,6 +96,7 @@ SESSIONS = "sessions"  # a headless session's log, <uuid>.log, under the state d
 AUTH = "claude-auth.json"  # the failing Claude Code login's episode: since, and its one notification (#500)
 PRUNE = "prune.json"  # the last prune's attempt: when, whether it worked, and since when it fails (spec 045)
 TICK = "tick.json"  # the last real tick's decision or error, its fix, and its run of failing ticks (spec 048)
+LAST_RESULT = "last-result.json"  # the last session that ended with a result: its id, item, and end (spec 048)
 ERROR = "ERROR"  # tick.json's action for a tick a ReleaseError ended (S-048-9)
 DRY_RUN_FIX = "shipmill gate --dry-run"  # an error's fix when it names none: the same tick, printing it again
 # a headless session that ended this soon after its launch, by its log's last write, with no
@@ -238,6 +243,87 @@ class Running:
         return {"session": self.session, "item": self.item, "minutes": self.minutes, "log_grew": self.log_grew}
 
 
+def ago(span: dt.timedelta) -> str:
+    """How long ago, as `shipmill status` says it: minutes, then hours, then days"""
+    minutes = int(span.total_seconds() // 60)
+    if minutes < 60:
+        return f"{max(minutes, 0)} min"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} h"
+    return f"{minutes // (24 * 60)} days"
+
+
+@dataclass(frozen=True, slots=True)
+class LastResult:
+    """last-result.json (spec 048): the last session that ended with a result, the item it was
+    handed (its brief() line), and when it ended"""
+
+    session: str
+    item: str
+    at: dt.datetime
+
+    def record(self) -> dict[str, object]:
+        return {"session": self.session, "item": self.item, "at": self.at.isoformat()}
+
+
+def counted_pulls(numbers: Sequence[int], one: str, many: str) -> str:
+    """`2 wait on CI (#771, #773)`, its verb agreeing with how many"""
+    return f"{len(numbers)} {one if len(numbers) == 1 else many} ({', '.join(f'#{n}' for n in numbers)})"
+
+
+@dataclass(frozen=True, slots=True)
+class InFlight:
+    """What a QUIET tick says is in flight (spec 048), from the change check and the state
+    directory alone: the open pull requests waiting on CI, waiting to land, and failing CI, the
+    last landed pull request, and the last session that ended with a result"""
+
+    ci: tuple[int, ...]
+    landing: tuple[int, ...]
+    failing: tuple[int, ...]
+    landed: Landed | None
+    result: LastResult | None
+
+    @classmethod
+    def of(cls, flight: Flight, result: LastResult | None) -> InFlight:
+        return cls(flight.ci, flight.landing, flight.failing, flight.landed, result)
+
+    def line(self, now: dt.datetime) -> str:
+        """`in flight: 2 wait on CI (#771, #773), 1 waits to land (#772); last landed #770 3 h
+        ago; last result: ...`, each part with its own wording when there is none (S-048-22)"""
+        groups = [
+            counted_pulls(numbers, one, many)
+            for numbers, one, many in (
+                (self.ci, "waits on CI", "wait on CI"),
+                (self.landing, "waits to land", "wait to land"),
+                (self.failing, "fails CI", "fail CI"),
+            )
+            if numbers
+        ]
+        pulls = ", ".join(groups) or "no open pull request"
+        landed = (
+            f"no landed pull request in the last {LANDED} commits"
+            if self.landed is None
+            else f"last landed #{self.landed.number} {ago(now - self.landed.at)} ago"
+        )
+        found = self.result
+        result = (
+            "no session has ended with a result yet"
+            if found is None
+            else f"last result: session {found.session} on {found.item}, ended {ago(now - found.at)} ago"
+        )
+        return f"in flight: {pulls}; {landed}; {result}"
+
+    def record(self) -> dict[str, object]:
+        """`shipmill gate --json`'s in_flight, and tick.json's (S-048-25)"""
+        return {
+            "ci": list(self.ci),
+            "landing": list(self.landing),
+            "failing": list(self.failing),
+            "landed": None if self.landed is None else self.landed.record(),
+            "result": None if self.result is None else self.result.record(),
+        }
+
+
 class Action(enum.Enum):
     HELD = "HELD"  # an open shipmill-hold issue stops every launch (D-15)
     QUIET = "QUIET"  # nothing needs an agent
@@ -293,6 +379,7 @@ class Decision:
     walk: WalkRun | None = None  # how far the tick's walk went (spec 046); None: the tick read no state
     tier: int | None = None  # the tier of the item a LAUNCH hands (spec 046)
     running: Running | None = None  # the session a RUNNING or STALLED tick waits on (S-048-16); None otherwise
+    in_flight: InFlight | None = None  # what a QUIET tick says is in flight (spec 048); None otherwise
 
 
 def held(hold: Hold, sessions: Sequence[Session]) -> Decision | None:
@@ -1164,6 +1251,50 @@ def listed_dead(last: Launch | None, sessions: Sequence[Session], now: dt.dateti
     return Dead(last.session, None, seconds, False, "", counted(last), found.state)
 
 
+def ended_with_result(
+    last: Launch | None, state: Path, sessions: Sequence[Session], now: dt.datetime
+) -> LastResult | None:
+    """Spec 048: the last launch, once it ended, when it ended with a result: a headless one
+    whose stream-json log holds a successful `result` event, ended at the log's last write; an
+    interactive one `claude agents` lists done, ended by now, the tick that saw it. The caller
+    asks only when it didn't end dead (ended_dead, listed_dead), which a quick done is"""
+    if last is None:
+        return None
+    if last.process is not None:
+        log = session_log(state, last.session)
+        if not log.is_file() or not is_stream_json(log) or not has_result(tail_lines(log)):
+            return None
+        return LastResult(last.session, last.named, log_written(log, last))
+    found = next((s for s in sessions if s.id == last.session), None)
+    if found is None or not found.finished or found.state != "done":
+        return None
+    return LastResult(last.session, last.named, now)
+
+
+LAST_RESULT_KEYS = {"session", "item", "at"}
+
+
+def load_last_result(path: Path) -> LastResult | None:
+    """last-result.json; None before a session ended with a result. A malformed file fails, as
+    the gate's other state files do, and stays for a person to read"""
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or set(data) != LAST_RESULT_KEYS:
+            raise ValueError(f"expected exactly {', '.join(sorted(LAST_RESULT_KEYS))}")
+        return _last_result(data)
+    except ValueError as exc:  # json.JSONDecodeError is one
+        raise malformed(path, exc) from None
+
+
+def _last_result(data: Mapping[str, object]) -> LastResult:
+    session, item = _text(data["session"], "session"), _text(data["item"], "item")
+    if not session or not item:
+        raise ValueError("session and item must be non-empty")
+    return LastResult(session, item, _moment(data["at"], "at"))
+
+
 @dataclass(frozen=True, slots=True)
 class Wait:
     """A blocked session's entry in waiting.json: since is the first tick that saw it
@@ -1762,8 +1893,8 @@ TICK_ACTIONS = frozenset({a.value for a in Action} | {ERROR})
 class TickRecord:
     """tick.json (spec 048): when the tick started, its decision or ERROR, the reason or the
     error's first line, the fix, the run of failing ticks it belongs to (None on a tick that
-    doesn't fail), and the session a RUNNING or STALLED tick waits on. in_flight is written
-    null until QUIET's in-flight part exists (#818)"""
+    doesn't fail), the session a RUNNING or STALLED tick waits on, and what a QUIET tick says
+    is in flight, as `shipmill gate --json` prints them"""
 
     at: dt.datetime
     action: str
@@ -1771,6 +1902,7 @@ class TickRecord:
     fix: str | None
     failing: Failing | None
     running: Running | None = None
+    in_flight: InFlight | None = None
 
     def __post_init__(self) -> None:
         if self.action not in TICK_ACTIONS:
@@ -1784,7 +1916,7 @@ class TickRecord:
             "fix": self.fix,
             "failing": None if self.failing is None else self.failing.record(),
             "running": None if self.running is None else self.running.record(),
-            "in_flight": None,
+            "in_flight": None if self.in_flight is None else self.in_flight.record(),
         }
 
 
@@ -1818,6 +1950,47 @@ def _running(value: object) -> Running | None:
     )
 
 
+IN_FLIGHT_KEYS = {"ci", "landing", "failing", "landed", "result"}
+
+
+def _number(value: object, what: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{what} must be a pull request number")
+    return value
+
+
+def _numbers(value: object, what: str) -> tuple[int, ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"{what} must be a list of pull request numbers")
+    return tuple(_number(n, what) for n in value)
+
+
+def _landed(value: object) -> Landed | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"number", "at"}:
+        raise ValueError("in_flight.landed: expected exactly number and at, or null")
+    return Landed(_number(value["number"], "in_flight.landed.number"), _moment(value["at"], "in_flight.landed.at"))
+
+
+def _in_flight(value: object) -> InFlight | None:
+    """tick.json's in_flight: --json's own (S-048-25), or null"""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != IN_FLIGHT_KEYS:
+        raise ValueError(f"in_flight: expected exactly {', '.join(sorted(IN_FLIGHT_KEYS))}, or null")
+    result = value["result"]
+    if result is not None and (not isinstance(result, dict) or set(result) != LAST_RESULT_KEYS):
+        raise ValueError("in_flight.result: expected exactly session, item, and at, or null")
+    return InFlight(
+        _numbers(value["ci"], "in_flight.ci"),
+        _numbers(value["landing"], "in_flight.landing"),
+        _numbers(value["failing"], "in_flight.failing"),
+        _landed(value["landed"]),
+        None if result is None else _last_result(result),
+    )
+
+
 def load_tick(path: Path) -> TickRecord | None:
     """tick.json; None before a real tick wrote one. A malformed file fails, as the gate's other
     state files do, and stays for a person to read"""
@@ -1831,8 +2004,6 @@ def load_tick(path: Path) -> TickRecord | None:
         if run is not None and (not isinstance(run, dict) or set(run) != {"since", "count"}):
             raise ValueError("failing: expected exactly since and count, or null")
         found = None if run is None else Failing(_moment(run["since"], "failing.since"), run["count"])
-        if data["in_flight"] is not None and not isinstance(data["in_flight"], dict):
-            raise ValueError("in_flight must be an object or null")
         fix = data["fix"]
         return TickRecord(
             _moment(data["at"], "at"),
@@ -1841,6 +2012,7 @@ def load_tick(path: Path) -> TickRecord | None:
             None if fix is None else _text(fix, "fix"),
             found,
             _running(data["running"]),
+            _in_flight(data["in_flight"]),
         )
     except ValueError as exc:  # json.JSONDecodeError is one
         raise malformed(path, exc) from None
@@ -1863,6 +2035,7 @@ def record_tick(
     fix: str | None,
     fails: bool,
     running: Running | None,
+    in_flight: InFlight | None = None,
 ) -> TickRecord:
     """Spec 048: write this tick's tick.json after previous, the one load_tick read when the
     tick started. A failing tick after a failing one keeps its since and counts one more; one
@@ -1871,7 +2044,7 @@ def record_tick(
     if fails:
         before = None if previous is None else previous.failing
         run = Failing(now, 1) if before is None else Failing(before.since, before.count + 1)
-    record = TickRecord(now, action, reason, fix, run, running)
+    record = TickRecord(now, action, reason, fix, run, running, in_flight)
     save_tick(path, record)
     return record
 
@@ -2163,7 +2336,14 @@ def gate(
     A tick that a ReleaseError ends records ERROR with the error's first line and its fix, else
     DRY_RUN_FIX, and the error propagates; any other exception records nothing. A dry run
     writes no tick.json. The previous tick.json is read before the tick acts, so a malformed
-    one fails the tick, as the gate's other state files do, before it starts or stops anything"""
+    one fails the tick, as the gate's other state files do, before it starts or stops anything.
+
+    Both QUIET lines end with what is in flight (spec 048, InFlight), built from the change
+    check's own data and last-result.json alone, with no other read: the open pull requests by
+    their head's rollup, the last landed one, and the last session that ended with a result.
+    The first real tick that finds the last launch ended with a result, not dead
+    (ended_with_result), writes last-result.json; a dry run writes none. last-result.json is
+    read before the tick acts too"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
     previous = None if dry_run else load_tick(tick)
     try:
@@ -2201,7 +2381,8 @@ def gate(
     if not dry_run:
         fix = decision_fix(decision)
         action = decision.action.value
-        record_tick(tick, previous, now, action, decision.reason, fix, failing(decision), decision.running)
+        fails = failing(decision)
+        record_tick(tick, previous, now, action, decision.reason, fix, fails, decision.running, decision.in_flight)
     hours = (lambda: 0) if prune_hours is None else prune_hours
     run, pruned = prune_step(state_dir(git) / PRUNE, hours, worktrees, now, dry_run)
     return replace(decision, prune=run), launched, waiting, pruned
@@ -2248,6 +2429,7 @@ def decided(
     config = checked(config, claude.args)
     state = state_dir(git)
     record = state / RECORD
+    result = load_last_result(state / LAST_RESULT)  # before the tick acts: a malformed one stops nothing
     if plugin is not None and not dry_run:  # S-031-17: doctor and status compare it with the latest
         save_cli(state / CLI_RECORD, plugin.cli.version)
     sessions = claude.sessions(git.root, repo)
@@ -2273,6 +2455,13 @@ def decided(
     dead = ended_dead(last, state) or listed_dead(last, sessions, now)
     if dead is not None and token is not None:
         dead = replace(dead, token=token.path)
+    # spec 048: the first tick that finds the last launch ended with a result records it
+    if dead is None and last is not None and (result is None or result.session != last.session):
+        ended = ended_with_result(last, state, sessions, now)
+        if ended is not None:
+            result = ended
+            if not dry_run:
+                write(state / LAST_RESULT, ended.record())
     detached = refresh(git, detach=True) if refresh_checkout and not dry_run else None
     agents = config()
     if app_key_named and agents.app_id is None:  # read after the refresh, so a stale checkout can't stall it
@@ -2317,6 +2506,9 @@ def decided(
     decision = replace(
         ticked.decision, mode=agents.mode, decisions=asked, detached=detached, dead=dead, credential=kind
     )
+    if decision.action is Action.QUIET and ticked.changes.flight is not None:  # spec 048: from no other read
+        flight = InFlight.of(ticked.changes.flight, result)
+        decision = replace(decision, reason=f"{decision.reason}; {flight.line(now)}", in_flight=flight)
     if dead is not None and ticked.hand is not None and decision.action is Action.UNCHANGED:
         again = (ticked.hand.at + retry).isoformat(timespec="minutes")
         reason = f"{dead.summary()}; no session starts for the same item until {again}; fix: {dead.fix}"
@@ -2382,8 +2574,9 @@ def tick_record(
 ) -> dict[str, object]:
     """`shipmill gate --json`; pruned holds the paths removed, or on a dry run the ones it would
     remove; identity the App bot a launch writes as, or null for the host's gh login (and on a
-    tick that launches nothing); auth, token-file or login (spec 035), and preflight the Claude
-    Code login preflight's verdict (#500), null when none ran"""
+    tick that launches nothing); auth, token-file or login (spec 035), preflight the Claude
+    Code login preflight's verdict (#500), null when none ran, and in_flight what a QUIET tick
+    says is in flight (S-048-25), null on any other decision"""
     return {
         "action": decision.action.value,
         "reason": decision.reason,
@@ -2407,6 +2600,7 @@ def tick_record(
         "walk": None if decision.walk is None else decision.walk.record(),  # spec 046: how far the walk went
         "item": decision.work[0].brief() if len(decision.work) == 1 else None,
         "running": None if decision.running is None else decision.running.record(),  # S-048-16
+        "in_flight": None if decision.in_flight is None else decision.in_flight.record(),  # S-048-25
     }
 
 

@@ -461,7 +461,7 @@ doctor warns while it is set). docs/design/agent-modes.md has the details.
 A tick checks for change first (spec 046, D-58): one GraphQL query and one read of each
 watched workflow's 10 newest runs (the release workflow and each `[operate]` workflow),
 against the cursor of its last walk (`cursor.json` in the state directory). With nothing changed it reads nothing more and prints `QUIET: no change since
-<cursor>`, a few seconds. On a change, or when a handed item's `retry_hours` ran out or the
+<cursor>`, a few seconds. Both QUIET lines end with what is in flight, from that query and the state directory alone (spec 048): the open PRs waiting on CI, waiting to land, and failing CI, the last landed PR, and the last session that ended with a result (`last-result.json`). On a change, or when a handed item's `retry_hours` ran out or the
 last session ended dead, it walks the work tiers in order and stops at the first item no
 session was handed within `retry_hours` (`handed.json`): 1 production (INCIDENT_OPEN,
 OPERATE_FAILED), 2 the release lane, 3 open PRs to land, 4 vetoes and decided items, 5

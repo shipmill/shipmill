@@ -70,6 +70,10 @@ With no change and no sweep due, the tick reads nothing else from GitHub and dec
 `no change since <cursor>`. A quiet tick takes the hold read, the session list, and the
 change check's reads: a few seconds.
 
+Spec 048 changed the change check's query and the QUIET line: the query also reads the
+default branch's last 10 commits' merged pull requests, kept out of the signature, and both
+QUIET lines end with what is in flight.
+
 ### The tiers
 
 On a change the tick reads tier 1, and only when that tier holds no item outside
