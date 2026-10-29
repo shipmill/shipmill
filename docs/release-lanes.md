@@ -520,15 +520,15 @@ level, its level under the hold, and where it comes from (`default`, `config`, `
 read from the config at `origin/HEAD` (or `--ref`), so a pull request that raises a level
 is read by the level it would replace; `--json` lists the open hold issues too.
 
-For one minor release, a config with `[agents]` that sets none of `triage`, `fix`, and
+A config with `[agents]` that sets none of `triage`, `fix`, and
 `land` reads `land` from `[agents] prompt`: "merge when green", or "land" as a word, in any
 case, reads `land = "act"` with source `prompt`, so no repo changes behaviour on upgrade;
 otherwise each stage takes its default. A config that sets any of the three keys reads
 nothing from the prompt. `doctor` warns for a stage read from the prompt, naming the line
 to add, and `shipmill upgrade --apply agent-autonomy` writes the three keys with the levels
 the prompt gives today, at the end of `[autonomy]` (or as a new `[autonomy]` table at the
-end of the file), keeping every other byte. The next minor release drops the reading: an
-absent key is its default. Each `deploy.<name>`
+end of the file), keeping every other byte. The reading has no end date (D-63): a config
+that was valid keeps working, and `doctor` keeps warning until the keys are set. Each `deploy.<name>`
 must name an environment in `[environments]`. `deploy` and `rollback` take effect in
 `shipmill operate` (see Operate above).
 
@@ -704,8 +704,8 @@ wip = 3       # at most 3 issues in progress at once (1..100)
 ```
 
 `[roadmap]` is deprecated (D-32): shipmill no longer plans milestones, so nothing reads it.
-For one minor release a config with it still loads and `doctor` warns, naming `[agents]
-wip`; move `wip` there and delete the section, since the next minor refuses it. A milestone
+A config with it still loads and `doctor` warns, naming `[agents] wip`; move `wip` there
+and delete the section. It is never refused on a release count (D-63). A milestone
 is the maintainer's own list of what a version must hold, and `milestone = true` keeps
 making a lane due by it.
 

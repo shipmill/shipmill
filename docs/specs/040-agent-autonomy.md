@@ -107,9 +107,9 @@ it: under `land = "propose"`, "merge when green" in the prompt merges nothing, a
 session says so once in the gate log as `SCOPE_CAPPED: land is propose`.
 
 `[agents] prs` goes. Open pull requests count as work when `land` is `propose` or `act`,
-and not under `observe`. Following D-32's path: for one minor release `prs` is accepted,
-ignored, and `doctor` warns naming `[autonomy] land`; the next minor refuses it with exit
-2.
+and not under `observe`. `prs` is accepted, ignored, and `doctor` warns naming `[autonomy]
+land`. It is never refused on a release count (D-63, which replaces D-32's path here): a
+config that sets it keeps loading.
 
 ### Reading the levels: `shipmill autonomy`
 
@@ -137,10 +137,10 @@ shipmill-hold #88)` under a hold.
 `shipmill decide levels` (spec 030) lists `triage`, `fix`, and `land` beside the
 release-side zones with source `autonomy`, mapped as `release` is.
 
-### Legacy reading for one minor release
+### Legacy reading
 
-A config that sets none of `triage`, `fix`, and `land` reads them from the prompt for one
-minor release, so no repo changes behaviour on upgrade:
+A config that sets none of `triage`, `fix`, and `land` reads them from the prompt, so no
+repo changes behaviour on upgrade:
 
 - "merge when green" or "land" in the prompt: `land = "act"`, source `prompt`
 - otherwise every stage takes its default
@@ -148,7 +148,9 @@ minor release, so no repo changes behaviour on upgrade:
 `doctor` warns for each stage whose source is `prompt`, naming the line to add. A spec 014
 upgrade, `agent-autonomy` in `src/shipmill/upgrades.py`, proposes the three keys with the
 values the legacy reading gives, so the maintainer accepts the current behaviour in one
-merge. The next minor drops the legacy reading: an absent key is its default.
+merge. The reading has no end date (D-63): it stops for a repo once its config sets any of
+the three keys, and for every repo only by a later decision taken once no connected repo
+relies on it.
 
 ### Setup asks the levels
 
@@ -198,7 +200,7 @@ on you to merge, each a link; under `act` they are the gate's work.
 ### `doctor`
 
 `src/shipmill/doctor.py`'s autonomy check adds the three stages to its PASS line, warns
-for each stage read from the prompt, warns for `prs` during its deprecation release, and
+for each stage read from the prompt, warns for `prs`, and
 warns when `[agents]` is absent while `triage`, `fix`, or `land` is set, since nothing
 reads them.
 
@@ -218,10 +220,10 @@ reads them.
 - S-040-3: `AutonomyPolicy.effective` under an open `shipmill-hold` issue gives `propose` for `triage`, `fix`, and `land` configured `act`, and leaves `observe` and `propose` as they are
 - S-040-4: `shipmill autonomy --json` lists every stage with `configured`, `effective`, and `source`, where a set key reads `config`, an absent one `default`, a stage the hold lowers `hold`, and lists the open hold issues under `hold`
 - S-040-5: `shipmill autonomy --ref REF` reads the config at `REF`, defaulting to `origin/HEAD`, and exits 2 for a ref the checkout lacks
-- S-040-6: For one minor release, a config that sets none of `triage`, `fix`, and `land` and whose `[agents] prompt` holds "merge when green" or "land" reads `land` as `act` with source `prompt`; one that sets any of the three keys reads no stage from the prompt
+- S-040-6: A config that sets none of `triage`, `fix`, and `land` and whose `[agents] prompt` holds "merge when green" or "land" reads `land` as `act` with source `prompt`; one that sets any of the three keys reads no stage from the prompt. The reading has no end date (D-63)
 - S-040-7: `shipmill upgrade` lists `agent-autonomy` for a config without the three keys, and `--apply agent-autonomy` writes them with the values the legacy reading gives, leaving the rest of the file byte for byte
 - S-040-8: A gate launch prompt carries an `Autonomy:` line with each agent stage's effective level, naming the hold issue when one is open
-- S-040-9: The gate counts open pull requests as work when `land` is `propose` or `act` and not under `observe`, whatever `[agents] prs` says; `prs` in the config makes `doctor` warn naming `[autonomy] land`
+- S-040-9: The gate counts open pull requests as work when `land` is `propose` or `act` and not under `observe`, whatever `[agents] prs` says; `prs` in the config makes `doctor` warn naming `[autonomy] land`, and the config still loads (D-63)
 - S-040-10: `shipmill status` prints an `autonomy` line with every stage's effective level, `(held)` beside each stage the hold lowers and `(from the prompt)` beside each stage read from the prompt, and `--json` carries the same stages
 - S-040-11: `shipmill status` reports open pull requests as waiting on you under `land = "observe"` with the `[autonomy] land` fix, lists those labelled `shipmill-ready` as waiting to merge under `propose`, and as the gate's work under `act`
 - S-040-12: `shipmill decide levels --json` lists `triage`, `fix`, and `land` with source `autonomy`, mapped as `release` is
@@ -249,7 +251,7 @@ reads them.
 - D-10: intake stays `observe` or `propose`
 - D-15: the gate starts nothing under a hold; this spec extends the hold to the skills
 - D-21: a `propose` step that needs an answer uses the needs-decision protocol
-- D-32: `[agents] prs` is deprecated for one minor release, then refused
+- D-63: a deprecated key or reading warns and is never refused on a release count; it replaces D-32's path for `prs` and the prompt reading
 - D-48: `[decisions]` keeps deciding inside a stage; `[autonomy]` stays the stage-level switch
 - D-50: the skills run the CLI as `uvx shipmill==<version>`
 

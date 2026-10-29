@@ -297,14 +297,11 @@ CATALOGUE: tuple[Upgrade, ...] = (
             ' land acts when [agents] prompt says "merge when green" or "land", and proposes otherwise'
         ),
         why=(
-            "the levels move from the prompt's words, which nothing checks, to checked keys; the next minor"
-            " release stops reading the prompt, and an absent key then takes its default (spec 040)"
+            "the levels move from the prompt's words, which nothing checks, to checked keys, and doctor"
+            " stops warning (spec 040)"
         ),
         off='set each key to "observe", "propose", or "act" in [autonomy]',
-        declined=(
-            "Until the next minor release `land` keeps being read from the prompt; after it, an absent key"
-            " takes its default (`triage` and `fix` act, `land` proposes)."
-        ),
+        declined="`land` keeps being read from the prompt, and doctor keeps warning (D-63).",
     ),
 )
 

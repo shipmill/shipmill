@@ -76,7 +76,7 @@ DECISIONS_SECTION = "decisions"  # the config's [decisions] section, and doctor'
 DECIDED_LABEL = "decided"  # a notify decision's label, as triage_state.py reads it (spec 030)
 _ROADMAP_DEPRECATED = (
     "[roadmap] is deprecated (D-32) and read by nothing: the work-in-progress limit is [agents] wip;"
-    " move wip there and delete [roadmap], which the next minor release refuses"
+    " move wip there and delete [roadmap]"
 )
 _BREAKING = "the stable lane can hold a breaking change ([bump] major), which waits for the maintainer"
 _LOCAL_USES = re.compile(r"uses:\s*\./\.github/workflows/(?P<file>[\w.-]+\.ya?ml)")
@@ -1098,20 +1098,19 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
             f" bound agent sessions only; add [agents] or delete {them}"
         )
         checks.append(Check("WARN", "autonomy", detail))
-    if policy.agents is not None and policy.agents.prs is not None:  # S-040-9: D-32's path for a key
+    if policy.agents is not None and policy.agents.prs is not None:  # S-040-9: warned, never refused (D-63)
         land = policy.autonomy.configured(Stage(StageKind.LAND))
         detail = (
             f"[agents] prs is deprecated and ignored: [autonomy] land ({land}) decides whether the gate works on"
-            " open pull requests, under propose or act, not under observe; delete prs, which the next minor"
-            " release refuses"
+            " open pull requests, under propose or act, not under observe; delete prs"
         )
         checks.append(Check("WARN", "autonomy", detail))
-    for stage in agent_stages:  # spec 040's legacy reading, for one minor release
+    for stage in agent_stages:  # spec 040's legacy reading, with no end date (D-63)
         if policy.autonomy.is_read_from_prompt(stage):
             level = policy.autonomy.configured(stage)
             detail = (
-                f'{stage} reads {level} from [agents] prompt ("merge when green" or "land"), which the next minor'
-                f' release stops reading: add {stage} = "{level}" to [autonomy], or run'
+                f'{stage} reads {level} from [agents] prompt ("merge when green" or "land"), which nothing'
+                f' checks: add {stage} = "{level}" to [autonomy], or run'
                 f" `{cli_command()} upgrade --apply agent-autonomy`"
             )
             checks.append(Check("WARN", "autonomy", detail))
