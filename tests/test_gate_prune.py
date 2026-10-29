@@ -52,6 +52,7 @@ KEYS = {
     "walk",  # spec 046
     "item",
     "running",  # S-048-16
+    "in_flight",  # S-048-25
     "action",
     "reason",
     "work",

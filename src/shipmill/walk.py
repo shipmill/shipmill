@@ -28,6 +28,7 @@ KNOWN = "known.json"  # what the change check read, for watch_state.py --known
 CURSOR_OVERLAP = dt.timedelta(minutes=5)  # an update GitHub indexed late is seen next tick
 PAGE = 100  # the change check's page of open issues, pull requests, and incidents
 RUNS = 10  # the newest runs of each watched workflow the change check reads
+LANDED = 10  # the default branch's newest commits whose merged pull requests the change check reads (spec 048)
 SEQUENTIAL = 2  # at most this many watched workflows are read one after the other
 
 # The tiers a walk reads in order, each its kinds in the order a walk takes them: the state,
@@ -269,11 +270,35 @@ class Handed:
 
 
 @dataclass(frozen=True, slots=True)
+class Landed:
+    """A pull request merged into the default branch, and when"""
+
+    number: int
+    at: dt.datetime
+
+    def record(self) -> dict[str, object]:
+        return {"number": self.number, "at": self.at.isoformat()}
+
+
+@dataclass(frozen=True, slots=True)
+class Flight:
+    """What the change check read of the work in flight (spec 048): the open non-draft pull
+    requests whose head is in the repo, by their head's check rollup (waiting on CI, waiting to
+    land, failing CI), and the newest merged among the default branch's last LANDED commits"""
+
+    ci: tuple[int, ...] = ()
+    landing: tuple[int, ...] = ()
+    failing: tuple[int, ...] = ()
+    landed: Landed | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Changes:
     """What the change check found: the signature (everything but the updated items), the open
     issues and pull requests updated at or after the cursor, whether one of them is labelled
     needs-decision, the newest release's tag, and what watch_state.py --known reads. forced: a
-    source that can't tell, so every tick is a change"""
+    source that can't tell, so every tick is a change. flight: the work in flight, from the
+    same query (spec 048); None from a source that reads no pull requests, as rows a test hands"""
 
     signature: str
     updated: tuple[int, ...] = ()
@@ -281,6 +306,7 @@ class Changes:
     tag: str | None = None
     known: Mapping[str, object] = field(default_factory=dict)
     forced: bool = False
+    flight: Flight | None = None
 
 
 GraphQL = Callable[[str, Mapping[str, str]], dict[str, Any]]  # (query, variables) -> its data
@@ -332,11 +358,19 @@ def connection(name: str, after: str | None) -> str:
     )
 
 
+# the default branch's last LANDED commits, each with the pull request it came in by (spec 048)
+HISTORY = (
+    f"... on Commit {{ history(first: {LANDED}) {{ nodes {{ associatedPullRequests(first: 1)"
+    " { nodes { number mergedAt } } } } }"
+)
+
+
 def change_query(names: Sequence[str], after: Mapping[str, str] | None = None, first: bool = True) -> str:
-    """The change check's one query (S-046-3): the default branch, the newest release, and the
-    connections; a later page asks only for the connections that have more"""
+    """The change check's one query (S-046-3): the default branch with its last LANDED commits'
+    merged pull requests (S-048-21), the newest release, and the connections; a later page asks
+    only for the connections that have more"""
     pages = " ".join(connection(n, None if after is None else after.get(n)) for n in names)
-    head = "defaultBranchRef { name target { oid } } latestRelease { tagName } " if first else ""
+    head = f"defaultBranchRef {{ name target {{ oid {HISTORY} }} }} latestRelease {{ tagName }} " if first else ""
     declared = ", ".join(f"${v}: {VARIABLES[v]}" for v in query_variables(names))
     return f"query({declared}) {{ repository(owner: $owner, name: $name) {{ {head}{pages} }} }}"
 
@@ -509,7 +543,53 @@ def changes_of(
         "runs": [{k: r[k] for k in ("workflow", "status", "conclusion", "createdAt", "url")} for r in runs],
     }
     numbers = tuple(sorted({int(n["number"]) for n in updated}))
-    return Changes(signature, numbers, asked, tag, known)
+    return Changes(signature, numbers, asked, tag, known, flight=flight_of(pulls, default))
+
+
+WAITS_ON_CI = frozenset({None, "PENDING", "EXPECTED"})  # a head with no checks yet waits on them too
+LANDS = frozenset({"SUCCESS"})
+FAILS_CI = frozenset({"FAILURE", "ERROR"})
+
+
+def flight_of(pulls: Sequence[Mapping[str, Any]], default: Mapping[str, Any]) -> Flight:
+    """The work in flight, from what the change check read and nothing more (S-048-22, D-58):
+    the open pull requests a session can land, by their head's rollup, and the last landed one.
+    It is kept out of the signature: the commits move only with the default head, already in it"""
+    ci: list[int] = []
+    landing: list[int] = []
+    failing: list[int] = []
+    for p in pulls:
+        if p["isDraft"] or p["isCrossRepository"]:
+            continue
+        state = rollup(p)
+        if state in WAITS_ON_CI:
+            ci.append(int(p["number"]))
+        elif state in LANDS:
+            landing.append(int(p["number"]))
+        elif state in FAILS_CI:
+            failing.append(int(p["number"]))
+        else:
+            raise ReleaseError(f"gh api graphql printed check rollup {state!r} for #{p['number']}")
+    return Flight(tuple(ci), tuple(landing), tuple(failing), last_landed(default))
+
+
+def last_landed(default: Mapping[str, Any]) -> Landed | None:
+    """The newest mergedAt among the merged pull requests of the default branch's last LANDED
+    commits (S-048-21); None when none of them came in by one"""
+    history = default["target"].get("history")
+    if not isinstance(history, dict) or not isinstance(history.get("nodes"), list):
+        raise ReleaseError(f"gh api graphql printed no history for the default branch: {str(default)[:300]}")
+    merged = []
+    for commit in history["nodes"]:
+        try:
+            for pr in commit["associatedPullRequests"]["nodes"]:
+                if pr["mergedAt"] is not None:
+                    merged.append(Landed(int(pr["number"]), moment(pr["mergedAt"], "mergedAt")))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ReleaseError(
+                f"gh api graphql printed {str(commit)[:300]} for a commit of the default branch"
+            ) from exc
+    return max(merged, key=lambda found: found.at, default=None)
 
 
 # -- the walk ----------------------------------------------------------------------------------
