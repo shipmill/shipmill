@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from shipmill import cli_command
 from shipmill.errors import ReleaseError
 
 API = "https://api.github.com"
@@ -148,12 +149,38 @@ def availability(app_id: int, environ: Mapping[str, str], home: Path) -> Availab
     return Availability(False, f"the App {app_id} isn't available here: no key at {path} and no {APP_KEY}")
 
 
+class AuthFailure(ReleaseError):
+    """A failure of the identity a gated session writes as, one row of spec 048's GITHUB_AUTH
+    table: problem names what failed, fix what to run; the message is the one the error read
+    before spec 048, so a caller that prints it is unchanged"""
+
+    def __init__(self, problem: str, fix: str, message: str | None = None) -> None:
+        super().__init__(problem if message is None else message)
+        self.problem = problem
+        self.fix = fix
+
+
+class KeyRefused(AuthFailure):
+    """The App's private key is missing, or readable by group or others"""
+
+
+class JwtRefused(AuthFailure):
+    """GitHub answered 401 to the App's JWT"""
+
+
+class MintRefused(AuthFailure):
+    """GitHub refused to mint an installation token"""
+
+
 def check_key(path: Path) -> Path:
     """The key's path once it is a file only its owner can read; its bytes are never read here"""
     if not path.is_file():
-        raise ReleaseError(f"no App private key at {path}; download it from the App's settings to that path")
+        problem = f"no App private key at {path}"
+        fix = f"download the App's private key to {path}, or create an App with `{cli_command()} app-create`"
+        raise KeyRefused(problem, fix, f"{problem}; download it from the App's settings to that path")
     if path.stat().st_mode & (stat.S_IRGRP | stat.S_IROTH):
-        raise ReleaseError(f"the App private key {path} is readable by group or others; run `chmod 600 {path}`")
+        problem = f"the App private key {path} is readable by group or others"
+        raise KeyRefused(problem, f"chmod 600 {path}", f"{problem}; run `chmod 600 {path}`")
     return path
 
 
@@ -261,9 +288,11 @@ def _ok(answer: Answer, path: str, app_id: int, method: str = "GET", status: int
         return _json(answer, path, method)
     message = answer.body.strip()[:300]
     if answer.status == 401:
-        raise ReleaseError(
-            f"GitHub refused the JWT for app_id {app_id} ({method} {path}: 401 {message}); "
-            f"check that the private key is App {app_id}'s and the host's clock is right"
+        problem = f"GitHub refused the JWT for app_id {app_id} ({method} {path}: 401 {message})"
+        raise JwtRefused(
+            problem,
+            f"set the host's clock (`sntp -sS time.apple.com`), or use App {app_id}'s own private key",
+            f"{problem}; check that the private key is App {app_id}'s and the host's clock is right",
         )
     raise ReleaseError(f"{method} {path} for app_id {app_id} answered {answer.status}: {message}")
 
@@ -302,12 +331,17 @@ def _permissions(raw: object, path: str) -> dict[str, Access]:
     return granted
 
 
-class NotInstalled(ReleaseError):
-    """The App has no installation on the repo; the message is spec 004's, S-004-5"""
+class NotInstalled(AuthFailure):
+    """The App has no installation on the repo, or its installation is suspended; the message
+    is spec 004's, S-004-5"""
 
 
-class Lacks(ReleaseError):
+class Lacks(AuthFailure):
     """The App's installation on the repo lacks a permission the table asks for"""
+
+
+def install_fix(repo: str) -> str:
+    return f"{cli_command()} app-install {repo}"
 
 
 def app_slug(app_id: int, token: str, api: Api) -> str:
@@ -331,22 +365,26 @@ def installed(
     app_id: int, slug: str, repo: str, token: str, api: Api, table: tuple[Permission, ...] = PERMISSIONS
 ) -> Installation:
     """`installation` once the App's slug is known: its installation on repo, granting every
-    permission in the table; NotInstalled and Lacks name the repo"""
+    permission in the table; NotInstalled and Lacks name the repo. A suspended installation is
+    none (spec 048): it can't mint a token"""
     path = f"/repos/{repo}/installation"
     answer = api.get(path, token)
     if answer.status == 404:
-        raise NotInstalled(f"app {slug} is not installed on {repo}")
+        raise NotInstalled(f"app {slug} is not installed on {repo}", install_fix(repo))
     found = _ok(answer, path, app_id)
     number = found.get("id")
     if not isinstance(number, int) or isinstance(number, bool):
         raise ReleaseError(f"GET {path} gave no installation id")
+    if found.get("suspended_at") is not None:
+        raise NotInstalled(f"app {slug}'s installation on {repo} is suspended", install_fix(repo))
     granted = _permissions(found.get("permissions"), path)
     if lacking := missing(granted, table):
         names = ", ".join(f"{p.label}: {p.access}" for p in lacking)
-        raise Lacks(
-            f"app {slug} on {repo} lacks these permissions: {names}; grant them in the App's settings, "
-            "then accept them on the installation"
-        )
+        page = found.get("html_url")
+        settings = page if isinstance(page, str) and page else f"https://github.com/settings/installations/{number}"
+        problem = f"app {slug} on {repo} lacks these permissions: {names}"
+        fix = f"grant them in the App's settings, then accept them at {settings}"
+        raise Lacks(problem, fix, f"{problem}; {fix}")
     return Installation(slug, number, granted)
 
 
@@ -590,7 +628,11 @@ def mint(
     found = installation(app_id, repo, bearer, api, table)
     path = f"/app/installations/{found.id}/access_tokens"
     body = {"repositories": [name], "permissions": {p.key: str(p.access) for p in table}}
-    data = _ok(api.post(path, bearer, body), path, app_id, "POST", 201)
+    answer = api.post(path, bearer, body)
+    if answer.status not in (201, 401):  # a 401 is the JWT's, which _ok names
+        problem = f"POST {path} for app_id {app_id} answered {answer.status}: {answer.body.strip()[:300]}"
+        raise MintRefused(problem, install_fix(repo))
+    data = _ok(answer, path, app_id, "POST", 201)
     value = data.get("token")
     if not isinstance(value, str) or not value or any(c.isspace() for c in value):
         raise ReleaseError(f"POST {path} gave no token")

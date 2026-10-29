@@ -254,9 +254,14 @@ def test_s004_3_a_bad_key_launches_and_stops_nothing(checkout: Git, tmp_path: Pa
     key = tmp_path / "missing.pem" if problem == "missing" else key_file(tmp_path, 0o644)
     claude = FakeClaude([bg("old", "idle", "done")])
     check = app_check(REPO, key, tmp_path, FakeSigner(), FakeApi())
-    with pytest.raises(ReleaseError, match=str(key)) as raised:
-        gate(checkout, REPO, app_cfg, claude, lambda _: [ISSUES], NOW, Hold, FakeNotifier(), NO_PRUNE, app=check)
-    assert "not a real key" not in str(raised.value)
+    with pytest.raises(ReleaseError, match=str(key)):
+        check(APP_ID)
+    # spec 048: the gate names it as GITHUB_AUTH, naming the key's path and never its bytes
+    decision, *_ = gate(
+        checkout, REPO, app_cfg, claude, lambda _: [ISSUES], NOW, Hold, FakeNotifier(), NO_PRUNE, app=check
+    )
+    assert decision.action is Action.GITHUB_AUTH and str(key) in decision.reason
+    assert "not a real key" not in decision.reason
     assert (claude.launched, claude.stopped) == ([], [])
     assert not (state_dir(checkout) / RECORD).exists()
 
@@ -351,8 +356,11 @@ def test_s004_4_a_missing_openssl_is_named(checkout: Git, tmp_path: Path) -> Non
         Openssl(missing).sign(key_file(tmp_path), b"data")
     claude = FakeClaude([bg("old", "idle", "done")])
     check = app_check(REPO, key_file(tmp_path), tmp_path, Openssl(missing), FakeApi())
-    with pytest.raises(ReleaseError, match="openssl not found"):
-        gate(checkout, REPO, app_cfg, claude, lambda _: [ISSUES], NOW, Hold, FakeNotifier(), NO_PRUNE, app=check)
+    # spec 048: the gate names it as GITHUB_AUTH
+    decision, *_ = gate(
+        checkout, REPO, app_cfg, claude, lambda _: [ISSUES], NOW, Hold, FakeNotifier(), NO_PRUNE, app=check
+    )
+    assert decision.action is Action.GITHUB_AUTH and f"{missing} not found" in decision.reason
     assert (claude.launched, claude.stopped) == ([], [])
 
 
@@ -363,7 +371,13 @@ def test_s004_5_an_app_not_installed_on_the_repo_is_named(checkout: Git, tmp_pat
     claude = FakeClaude([bg("old", "idle", "done")])
     check = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), FakeApi(installed=False))
     with pytest.raises(ReleaseError, match=f"^app demo-agent is not installed on {REPO}$"):
-        gate(checkout, REPO, app_cfg, claude, lambda _: [ISSUES], NOW, Hold, FakeNotifier(), NO_PRUNE, app=check)
+        check(APP_ID)
+    # spec 048: the gate names it as GITHUB_AUTH, with its fix
+    decision, *_ = gate(
+        checkout, REPO, app_cfg, claude, lambda _: [ISSUES], NOW, Hold, FakeNotifier(), NO_PRUNE, app=check
+    )
+    assert decision.action is Action.GITHUB_AUTH
+    assert decision.reason.startswith(f"app demo-agent is not installed on {REPO}: no session starts; fix: ")
     assert (claude.launched, claude.stopped) == ([], [])
 
 
@@ -373,9 +387,17 @@ def test_s004_5_each_missing_permission_is_named_with_its_access(checkout: Git, 
     claude = FakeClaude([bg("old", "idle", "done")])
     check = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), FakeApi(permissions=granted))
     with pytest.raises(ReleaseError) as raised:
-        gate(checkout, REPO, app_cfg, claude, lambda _: [ISSUES], NOW, Hold, FakeNotifier(), NO_PRUNE, app=check)
-    assert str(raised.value).startswith(
-        f"app demo-agent on {REPO} lacks these permissions: Contents: write, Workflows: write, Commit statuses: read;"
+        check(APP_ID)
+    lacking = (
+        f"app demo-agent on {REPO} lacks these permissions: Contents: write, Workflows: write, Commit statuses: read"
+    )
+    assert str(raised.value).startswith(f"{lacking};")
+    decision, *_ = gate(
+        checkout, REPO, app_cfg, claude, lambda _: [ISSUES], NOW, Hold, FakeNotifier(), NO_PRUNE, app=check
+    )
+    assert (decision.action, decision.reason.startswith(f"{lacking}: no session starts; fix: ")) == (
+        Action.GITHUB_AUTH,
+        True,
     )
     assert (claude.launched, claude.stopped) == ([], [])
 

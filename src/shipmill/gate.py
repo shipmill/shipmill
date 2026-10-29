@@ -43,6 +43,7 @@ from shipmill.findings import Finding as Finding
 from shipmill.findings import fingerprint as fingerprint
 from shipmill.findings import parse_findings as parse_findings
 from shipmill.github import GitHub
+from shipmill.github_auth import GitHubAuth, GitHubPreflight
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
 from shipmill.notify import Notifier, NotifyFailed
@@ -221,6 +222,7 @@ class Action(enum.Enum):
     PYPI_WAIT = "PYPI_WAIT"  # PyPI answers 404 for the plugin version a session would load (S-031-24)
     HOOKS_FAILED = "HOOKS_FAILED"  # headless: the delivery hooks' self-test failed (spec 026, S-026-16)
     CLAUDE_AUTH = "CLAUDE_AUTH"  # Claude Code can't authenticate on this host: no session starts (#500)
+    GITHUB_AUTH = "GITHUB_AUTH"  # the identity sessions write as can't reach the repo: no session starts (spec 048)
     SESSION_DEAD = "SESSION_DEAD"  # the last session ended dead, and another starts (#500)
     LAUNCH = "LAUNCH"
 
@@ -258,6 +260,7 @@ class Decision:
     hooks: HookTest | None = None  # the delivery hooks' self-test before a launch (spec 026); None: none ran
     auth: ClaudeAuth | None = None  # the Claude Code login preflight before a launch (#500); None: none ran
     auth_notice: str | None = None  # what a CLAUDE_AUTH tick did about notifying: once per episode
+    github: GitHubAuth | None = None  # the GitHub preflight or the failed App check (spec 048); None: neither
     dead: Dead | None = None  # the last session, when it ended dead (#500)
     credential: Kind = Kind.LOGIN  # what the sessions authenticate with (spec 035)
     prune: PruneRun | None = None  # what the tick's prune did, after the decision (spec 045); None: no prune step
@@ -1738,6 +1741,21 @@ def preflight(
     )
 
 
+def reached(decision: Decision, github: GitHubPreflight | None, identity: Identity | None) -> Decision:
+    """Spec 048: a LAUNCH still standing after the Claude Code preflight, in either mode and dry
+    run or not, asks whether the identity the session writes with reaches the repo: the App's
+    token when it has one, else the host's gh login. A failure makes the tick GITHUB_AUTH,
+    stopping no session and starting none, with the fix. github None asks nothing"""
+    if github is None or decision.action is not Action.LAUNCH:
+        return decision
+    found = github(identity)
+    if found.ok:
+        return replace(decision, github=found)
+    return replace(
+        decision, action=Action.GITHUB_AUTH, reason=found.reason(), stop=(), identity=None, asks_as=None, github=found
+    )
+
+
 def relaunching(decision: Decision) -> Decision:
     """#500: a LAUNCH after a session that ended dead reads SESSION_DEAD, naming the dead one,
     so sessions that die one after another read as one failure, not LAUNCH after LAUNCH"""
@@ -1792,6 +1810,7 @@ def gate(
     prune_hours: Callable[[], int] | None = None,
     walk_now: bool = False,
     sweep_now: bool = False,
+    github: GitHubPreflight | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -1874,7 +1893,15 @@ def gate(
     a session or the state is read: it stops none and starts none, and never falls back to the
     login (D-14). A token goes to the preflight and into the process env of the session start
     alone, never its arguments; a dead session's authentication failure then names the token's
-    fix"""
+    fix.
+
+    github asks whether the identity a session writes with reaches the repo (spec 048, reached);
+    None, as in tests that don't exercise it, asks nothing. A LAUNCH, in either mode and dry run
+    or not, asks it right after the Claude Code preflight passes: any failure is GITHUB_AUTH. An
+    App check that fails with a shipmill error is GITHUB_AUTH too, the table's reason and fix
+    when it names the failure, else the error's first line with `app-install`; it runs before
+    the state, so it runs no state read and no change check (D-14). Neither writes cursor.json
+    or handed.json, so the next tick walks again"""
     check_checkout(git, repo)
 
     def pruned_after(
@@ -1923,7 +1950,23 @@ def gate(
     headless = agents.mode is Mode.HEADLESS
     # the App first, in either mode: a failure reads no state and launches nothing (D-14), and
     # its bot's needs-decision questions read as questions (D-21, #206)
-    identity = None if agents.app_id is None else as_app(agents.app_id, app)
+    try:
+        identity = None if agents.app_id is None else as_app(agents.app_id, app)
+    except ReleaseError as exc:  # spec 048: any failure, named with its fix, before any state read
+        if app is None or agents.app_id is None:  # no App check given: the CLI's wiring, not the App's (D-14)
+            raise
+        failed = GitHubAuth.app_failed(exc, agents.app_id, repo)
+        refusal = Decision(
+            Action.GITHUB_AUTH,
+            failed.reason(),
+            (),
+            mode=agents.mode,
+            detached=detached,
+            dead=dead,
+            credential=kind,
+            github=failed,
+        )
+        return pruned_after(refusal, None, waiting)
     host_read = once(login)
     resolved = () if roles is None else roles(agents.roles, host_read)
     read = StateRead(trusted_only=headless, bot_login=None if identity is None else identity.login, roles=resolved)
@@ -1955,6 +1998,7 @@ def gate(
         handed.save(state / HANDED)
 
     decision = preflight(decision, auth, token, state / AUTH, repo, agents, notifier, now, dry_run)
+    decision = reached(decision, github, identity)
     if decision.action is not Action.LAUNCH:
         if decision.action in (Action.QUIET, Action.UNCHANGED, Action.SESSION_DEAD):
             settled(ticked.handed)

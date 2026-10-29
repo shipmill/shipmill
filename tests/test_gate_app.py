@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import os
 import plistlib
+import re
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -26,6 +27,7 @@ from shipmill.app import (
     session_env,
 )
 from shipmill.autonomy import Hold
+from shipmill.cli import _gate_exit
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
     RECORD,
@@ -182,8 +184,10 @@ def test_s004_6_a_bad_bot_account_exits_2_and_starts_nothing(
     checkout: Git, tmp_path: Path, answer: Answer, message: str
 ) -> None:
     claude = FakeClaude([bg("old", "idle", "done")])
-    with pytest.raises(ReleaseError, match=message):
-        launch_as_app(checkout, tmp_path, claude, FakeApi(bot=answer))
+    # spec 048: any failed App check reads GITHUB_AUTH, which exits 2 as the bare error did
+    decision, launched = launch_as_app(checkout, tmp_path, claude, FakeApi(bot=answer))
+    assert (decision.action, launched, _gate_exit(decision)) == (Action.GITHUB_AUTH, None, 2)
+    assert re.search(message, decision.reason) is not None
     assert (claude.launched, claude.stopped) == ([], [])
     assert not helpers_of(checkout).exists()
 
@@ -354,8 +358,10 @@ def test_s004_11_a_dry_run_checks_the_app_and_writes_nothing(checkout: Git, tmp_
 
 
 def test_s004_11_a_dry_run_still_exits_2_on_a_failed_check(checkout: Git, tmp_path: Path) -> None:
-    with pytest.raises(ReleaseError, match=f"^app demo-agent is not installed on {REPO}$"):
-        launch_as_app(checkout, tmp_path, FakeClaude(), FakeApi(installed=False), dry_run=True)
+    # spec 048: the failed check reads GITHUB_AUTH, which exits 2 as the bare error did
+    decision, launched = launch_as_app(checkout, tmp_path, FakeClaude(), FakeApi(installed=False), dry_run=True)
+    assert (decision.action, launched, _gate_exit(decision)) == (Action.GITHUB_AUTH, None, 2)
+    assert decision.reason.startswith(f"app demo-agent is not installed on {REPO}: no session starts")
     assert not state_dir(checkout).exists()
 
 

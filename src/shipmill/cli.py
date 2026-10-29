@@ -242,6 +242,7 @@ from shipmill.gate import (
     watch_command,
 )
 from shipmill.github import UPGRADE_LABEL, GhCli, GitHub
+from shipmill.github_auth import github_auth
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
@@ -1201,6 +1202,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         prune_hours=lambda: AgentsConfig.load(root, args.slug).prune_hours,
         walk_now=args.walk,
         sweep_now=args.sweep,
+        github=github_auth(args.slug, root, Openssl(), UrllibApi()),
     )
     if args.json:
         print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))
@@ -1216,9 +1218,10 @@ def _credential(given: Path | None, home: Path) -> Credential:
 
 def _gate_exit(decision: Decision) -> int:
     """Spec 035, Q-1: a tick whose token file, or the token in it, fails exits 2 after printing
-    CLAUDE_AUTH; every other tick, #500's login preflight's CLAUDE_AUTH included, exits 0"""
+    CLAUDE_AUTH; so does GITHUB_AUTH (spec 048), as the App check's failure did before it
+    (D-14); every other tick, #500's login preflight's CLAUDE_AUTH included, exits 0"""
     failed = decision.action is Action.CLAUDE_AUTH and decision.credential is Kind.TOKEN_FILE
-    return 2 if failed else 0
+    return 2 if failed or decision.action is Action.GITHUB_AUTH else 0
 
 
 def _product_repos(root: Path) -> tuple[str, ...]:
