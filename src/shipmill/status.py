@@ -925,10 +925,15 @@ def current_tick(record: TickRecord | None, job: Job) -> TickRecord | None:
     else None. The log's lines carry no time, so the record is current when that line is its
     own: `<action>: <reason>` for a decision, `shipmill: <reason>` for ERROR. A later tick that
     wrote none (a shipmill before spec 048, or a crash, S-048-10) left another line, so the
-    record is older than it and the log reads as spec 009 does"""
+    record is older than it and the log reads as spec 009 does. A reason with a newline in it
+    (GitHub's answer body in GITHUB_AUTH's) is printed over several lines, the first of which is
+    the log's decision line"""
     if record is None or job.last is None:
         return None
     own = f"shipmill: {record.reason}" if record.action == ERROR else f"{record.action}: {record.reason}"
+    first, newline, _ = own.partition("\n")
+    if newline:
+        return record if job.last == first else None
     return record if job.last == own or job.last.startswith(f"{own} as ") else None
 
 
@@ -962,7 +967,8 @@ def tick_problem(record: TickRecord, job: Job, repo: str, now: dt.datetime) -> J
     session, no problem. None for any other tick"""
     if record.failing is not None:
         since = record.failing.since.isoformat(timespec="minutes")
-        cause = f"{record.action}: {_without_fix(record.reason, record.fix)}"
+        reason = _without_fix(record.reason, record.fix).partition("\n")[0]  # the line the log holds
+        cause = f"{record.action}: {reason}"
         shown = f"failing since {since} ({record.failing.count} ticks): {cause}"
         verdict = Verdict.WAITS if record.action in TICK_WAITS else Verdict.STUCK
         return JobProblem(verdict, f"the gate: {shown}", shown, record.fix or _log_fix(job, repo))

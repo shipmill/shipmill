@@ -12,11 +12,11 @@ import pytest
 
 from shipmill.cli import _with_tick
 from shipmill.factory import as_json
-from shipmill.gate import ERROR, TICK, Failing, Running, TickRecord, state_dir
+from shipmill.gate import DRY_RUN_FIX, ERROR, TICK, Failing, Running, TickRecord, state_dir
 from shipmill.gitrepo import Git
-from shipmill.status import Check, Gate, Verdict, host_checks, report
+from shipmill.status import Check, Gate, Verdict, host_checks, parse_job, report
 from tests.test_factory import fake_host, run_checks
-from tests.test_status_picture import NOW, facts, gate, job, lines
+from tests.test_status_picture import FILES, NOW, facts, gate, job, lines
 
 SINCE = NOW - dt.timedelta(minutes=45)
 AT = NOW - dt.timedelta(minutes=5)
@@ -78,6 +78,23 @@ def test_s048_12_a_record_older_than_the_logs_last_line_is_ignored(last: str) ->
     assert "failing since" not in stale.value
     assert "failed: exit 2" in stale.value
     assert LOG in stale.fixes
+
+
+def test_s048_12_a_multi_line_reason_is_current_by_the_first_line_the_log_holds() -> None:
+    # GitHub's answer body (a 502's HTML page) goes into GITHUB_AUTH's reason whole, newlines too;
+    # the log reads only its first line as the decision line
+    reason = "the token of web[bot] can't read acme/web (GET /repos/acme/web answered 502: <html>\n<p>bad gateway</p>)"
+    reason += ": no session starts; fix: shipmill app-install acme/web"
+    record = TickRecord(AT, "GITHUB_AUTH", reason, "shipmill app-install acme/web", Failing(SINCE, 2))
+    printed = parse_job({}, None, f"GITHUB_AUTH: {reason}\n", None, FILES)
+    check = gate_line(ticked(record, printed.last or ""))
+    assert check.value.startswith("failing since 2026-10-07T11:15+00:00 (2 ticks): GITHUB_AUTH: the token of web[bot]")
+    assert "\n" not in check.value
+    assert check.fixes == ("shipmill app-install acme/web",)
+    message = "the state file is malformed\nits second line"
+    errored = TickRecord(AT, ERROR, "the state file is malformed", DRY_RUN_FIX, Failing(SINCE, 2))
+    printed = parse_job({}, None, f"shipmill: {message}\n", None, FILES)
+    assert gate_line(ticked(errored, printed.last or "", failed=True)).value.startswith("failing since ")
 
 
 def test_s048_12_a_crash_after_the_record_reads_the_traceback_as_spec_009_does() -> None:
