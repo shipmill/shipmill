@@ -349,6 +349,8 @@ def test_s033_4_disabled_reads_disabled_in_either_mode_and_fix_leaves_it(
 FAKE_SETUP_GH = """#!{python}
 import json, sys
 args = sys.argv[1:]
+if args[:1] and args[0].startswith("shipmill=="):  # as uvx: `shipmill gh`, the writer with [agents] (spec 050)
+    args = args[args.index("gh") + 1 :]
 if args[:2] == ["label", "list"]:
     print("[]")
 elif any(a.endswith("marketplace.json") for a in args):
@@ -380,6 +382,7 @@ def run_setup(tmp_path: Path, root: Path, *flags: str) -> subprocess.CompletedPr
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     executable(fakes / "gh", FAKE_SETUP_GH.format(python=sys.executable))
+    executable(fakes / "uvx", FAKE_SETUP_GH.format(python=sys.executable))
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     env = {"PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]), "HOME": str(home)}
