@@ -261,6 +261,90 @@ def merge_of(args: Sequence[str]) -> Merge | None:
     return Merge("gh api -X PUT .../merge", int(number), None, f"{owner}/{name}")
 
 
+# -- S-049-8: the flags of `gh pr merge` the credit reads and rewrites ---------------------------
+
+_BODY_LONG = frozenset({"--body", "--body-file"})
+_BODY_SHORT = frozenset("bF")
+_METHODS = {
+    "-s": "squash",
+    "--squash": "squash",
+    "-m": "merge",
+    "--merge": "merge",
+    "-r": "rebase",
+    "--rebase": "rebase",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class MergeFlags:
+    """What the credit reads of `gh pr merge`'s flags: the method, the body given by --body or
+    by --body-file (its path, `-` for stdin), and whether it only turns auto-merge off"""
+
+    method: str | None  # squash, merge, or rebase; None when no flag names one
+    body: str | None
+    body_file: str | None
+    disable_auto: bool
+
+
+def merge_flags(args: Sequence[str]) -> MergeFlags:
+    """The flags of `gh pr merge` in args, read as `merge_of` reads them; the last of a flag
+    given twice counts, as gh takes it. Two methods, or --body with --body-file, exit 2, as
+    gh refuses them too"""
+    _, flags = _scan(args[1:], _PR_MERGE_LONG, _PR_MERGE_SHORT)
+    switched = [(name, value) for name, value in flags if value.lower() != "false"]  # --squash=false is off
+    methods = {_METHODS[name] for name, _ in switched if name in _METHODS}
+    if len(methods) > 1:
+        raise ReleaseError(f"gh pr merge takes one of --merge, --rebase, or --squash; got {sorted(methods)}")
+    bodies = [value for name, value in flags if name in ("--body", "-b")]
+    files = [value for name, value in flags if name in ("--body-file", "-F")]
+    if bodies and files:
+        raise ReleaseError("gh pr merge takes --body or --body-file, not both")
+    return MergeFlags(
+        next(iter(methods), None),
+        bodies[-1] if bodies else None,
+        files[-1] if files else None,
+        any(name == "--disable-auto" for name, _ in switched),
+    )
+
+
+def with_body(args: Sequence[str], body: str) -> list[str]:
+    """args with every --body/-b and --body-file/-F and its value dropped, as `_scan` reads
+    them, and one `--body <body>` in their place, before any `--`; every other argument is
+    kept as written, a short flag bundled with a dropped one too (`-sb x` keeps `-s`)"""
+    kept: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if arg == "--":
+            index -= 1
+            break
+        if arg.startswith("--"):
+            name, equals, _ = arg.partition("=")
+            takes = name in _PR_MERGE_LONG and not equals and index < len(args)
+            if name not in _BODY_LONG:
+                kept.append(arg)
+                kept.extend(args[index : index + 1] if takes else [])
+            index += 1 if takes else 0
+        elif arg.startswith("-") and len(arg) > 1:
+            for at, letter in enumerate(arg[1:], start=2):
+                if letter not in _PR_MERGE_SHORT:
+                    continue
+                takes = not arg[at:] and index < len(args)
+                if letter in _BODY_SHORT:
+                    kept.extend([arg[: at - 1]] if at > 2 else [])
+                else:
+                    kept.append(arg)
+                    kept.extend(args[index : index + 1] if takes else [])
+                index += 1 if takes else 0
+                break
+            else:
+                kept.append(arg)
+        else:
+            kept.append(arg)
+    return [*kept, "--body", body, *args[index:]]
+
+
 def pull_url(url: str) -> tuple[str, int]:
     """owner/name and the number of a pull request's URL on github.com"""
     found = _PULL_URL.fullmatch(url.strip())

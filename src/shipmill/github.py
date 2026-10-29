@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote
 
+from shipmill.credit import Account, Commit, Messages, Pull, Review
 from shipmill.errors import ReleaseError
 
 PROPOSAL_LABEL = "shipmill-proposal"  # on every issue proposing a release or a deploy
@@ -672,6 +673,28 @@ class GhCli:
         """The URL of the pull request gh resolves selector to (a branch; None for the current
         branch's), as `gh pr view` does for `gh pr merge`"""
         return self._gh("pr", "view", *([] if selector is None else [selector]), "--json", "url", "--jq", ".url")
+
+    def _pages(self, path: str) -> list[Any]:
+        """Every entry of a listing, across its pages, one JSON value a line"""
+        listed = self._gh("api", "--paginate", path, "--jq", ".[]")
+        return [json.loads(line) for line in listed.splitlines() if line.strip()]
+
+    def credit_pull(self, number: int) -> Pull:
+        """The pull request's author, title, and body (spec 049)"""
+        return Pull.parse(self._api(f"repos/{{owner}}/{{repo}}/pulls/{number}"))
+
+    def credit_reviews(self, number: int) -> list[Review]:
+        found = self._pages(f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews?per_page=100")
+        return [Review.parse(r) for r in found if r["state"] != "PENDING"]  # a draft review isn't one yet
+
+    def credit_commits(self, number: int) -> list[Commit]:
+        return [Commit.parse(c) for c in self._pages(f"repos/{{owner}}/{{repo}}/pulls/{number}/commits?per_page=100")]
+
+    def credit_account(self, login: str) -> Account:
+        return Account.parse(self._api(f"users/{quote(login)}"))
+
+    def credit_messages(self) -> Messages:
+        return Messages.parse(self._api("repos/{owner}/{repo}"))
 
     def text_at(self, sha: str, path: str) -> str:
         """The file's text at a commit, through the contents API; a missing file fails"""
