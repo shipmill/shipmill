@@ -77,6 +77,7 @@ from shipmill.walk import (
     Walked,
     check,
     item_key,
+    malformed,
     tier_of,
     walk,
     watched,
@@ -90,6 +91,10 @@ DECISIONS = "needs-decision.json"  # one entry per item that waits on a decision
 SESSIONS = "sessions"  # a headless session's log, <uuid>.log, under the state directory (D-17)
 AUTH = "claude-auth.json"  # the failing Claude Code login's episode: since, and its one notification (#500)
 PRUNE = "prune.json"  # the last prune's attempt: when, whether it worked, and since when it fails (spec 045)
+TICK = "tick.json"  # the last real tick's decision or error, its fix, and its run of failing ticks (spec 048)
+ERROR = "ERROR"  # tick.json's action for a tick a ReleaseError ended (S-048-9)
+DRY_RUN_FIX = "shipmill gate --dry-run"  # an error's fix when it names none: the same tick, printing it again
+GH_FIX = "install gh, then run `shipmill launchd` again so the job's PATH finds it"
 # a headless session that ended this soon after its launch, by its log's last write, with no
 # result in its log, ran no work (#500)
 DEAD_WITHIN = dt.timedelta(seconds=60)
@@ -655,7 +660,7 @@ def host_login(workspace: Path, run: Runner = run_command) -> str:
     try:
         login = run(["gh", "api", "user", "-q", ".login"], workspace).strip()
     except FileNotFoundError:
-        raise ReleaseError("gh is not on PATH; the gate reads your login with it") from None
+        raise ReleaseError("gh is not on PATH; the gate reads your login with it", GH_FIX) from None
     if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", login):
         raise ReleaseError(f"gh api user -q .login printed {login[:100]!r}, not a GitHub login")
     return login
@@ -888,7 +893,7 @@ def load_launch(path: Path) -> Launch | None:
         stopped = _moment(data["stopped"], "stopped") if "stopped" in data else None
         return Launch(str(data["fingerprint"]), str(data["session"]), at, process, deaths, item, stopped)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        raise ReleaseError(f"{path} is malformed ({exc}); delete it to start over") from None
+        raise malformed(path, exc) from None
 
 
 def save_launch(path: Path, launch: Launch) -> None:
@@ -1256,7 +1261,7 @@ def load_waiting(path: Path) -> dict[str, Wait]:
             )
         return waits
     except ValueError as exc:  # json.JSONDecodeError is one
-        raise ReleaseError(f"{path} is malformed ({exc}); delete it to start over") from None
+        raise malformed(path, exc) from None
 
 
 def save_waiting(path: Path, waits: dict[str, Wait]) -> None:
@@ -1372,7 +1377,7 @@ def load_decisions(path: Path) -> dict[int, Wait]:
     waits = load_waiting(path)
     for key in waits:
         if not re.fullmatch(r"[1-9][0-9]*", key):
-            raise ReleaseError(f"{path} is malformed ({key[:50]!r} is not an item number); delete it to start over")
+            raise malformed(path, ValueError(f"{key[:50]!r} is not an item number"))
     return {int(key): wait for key, wait in waits.items()}
 
 
@@ -1425,7 +1430,7 @@ def check_checkout(git: Git, repo: str) -> None:
         raise ReleaseError(f"repo must be owner/name, got {repo!r}")
     origin = git.run("remote", "get-url", "origin").strip()
     if not re.search(rf"[:/]{re.escape(repo)}(\.git)?/?$", origin, re.IGNORECASE):
-        raise ReleaseError(f"{git.root}'s origin is {origin}, not {repo}")
+        raise ReleaseError(f"{git.root}'s origin is {origin}, not {repo}", f"run the gate in a checkout of {repo}")
 
 
 def linked(git: Git) -> bool:
@@ -1449,7 +1454,8 @@ def require_dedicated(git: Git, default: str, detach: bool = False) -> str | Non
         shown = ", ".join(changed[:3]) + (f" and {len(changed) - 3} more" if len(changed) > 3 else "")
         raise ReleaseError(
             f"the gate needs a clean checkout; {git.root} has tracked changes ({shown}): "
-            f"commit them on a branch or remove them{own}"
+            f"commit them on a branch or remove them{own}",
+            f"commit them on a branch or remove them{own}",
         )
     branch = git.run("rev-parse", "--abbrev-ref", "HEAD").strip()
     if branch == "HEAD":
@@ -1457,7 +1463,10 @@ def require_dedicated(git: Git, default: str, detach: bool = False) -> str | Non
     if is_linked and detach:
         return branch
     fix = f"`git -C {git.root} switch --detach origin/{default}`{own}"
-    raise ReleaseError(f"the gate needs a detached checkout; {git.root} is on branch {branch} (detach it with {fix})")
+    raise ReleaseError(
+        f"the gate needs a detached checkout; {git.root} is on branch {branch} (detach it with {fix})",
+        f"git -C {git.root} switch --detach origin/{default}",
+    )
 
 
 def refresh(git: Git, detach: bool = False) -> Detached | None:
@@ -1647,7 +1656,7 @@ def load_prune(path: Path) -> PruneRecord | None:
         at = _moment(data["at"], "at")
         return PruneRecord(at, ok, error, None if since is None else _moment(since, "failing_since"), removed)
     except ValueError as exc:  # json.JSONDecodeError is one
-        raise ReleaseError(f"{path} is malformed ({exc}); delete it to start over") from None
+        raise malformed(path, exc) from None
 
 
 def save_prune(path: Path, record: PruneRecord) -> None:
@@ -1710,6 +1719,157 @@ def prune_step(
     pruned = tuple(j for j in judged if j.verdict is Verdict.REMOVED)
     save_prune(path, PruneRecord(now, True, None, None, len(pruned)))
     return PruneRun(True), pruned
+
+
+# spec 048: a tick with one of these decisions fails, exits 2, and counts in tick.json's run
+FAILING = frozenset({Action.CLAUDE_AUTH, Action.GITHUB_AUTH, Action.HOOKS_FAILED})
+
+
+def failing(decision: Decision) -> bool:
+    return decision.action in FAILING
+
+
+def decision_fix(decision: Decision) -> str | None:
+    """A failing decision's fix, as its reason ends with it; None for any other decision"""
+    if decision.action is Action.CLAUDE_AUTH and decision.auth is not None:
+        return decision.auth.fix
+    if decision.action is Action.GITHUB_AUTH and decision.github is not None:
+        return decision.github.fix
+    if decision.action is Action.HOOKS_FAILED and decision.hooks is not None:
+        return decision.hooks.fix
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class Failing:
+    """A run of failing ticks in a row (spec 048): the first one's start, and how many"""
+
+    since: dt.datetime
+    count: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.count, bool) or not isinstance(self.count, int) or self.count < 1:
+            raise ValueError(f"failing count must be a positive integer, got {self.count!r}")
+
+    def record(self) -> dict[str, object]:
+        return {"since": self.since.isoformat(), "count": self.count}
+
+
+TICK_KEYS = {"at", "action", "reason", "fix", "failing", "running", "in_flight"}
+TICK_ACTIONS = frozenset({a.value for a in Action} | {ERROR})
+
+
+@dataclass(frozen=True, slots=True)
+class TickRecord:
+    """tick.json (spec 048): when the tick started, its decision or ERROR, the reason or the
+    error's first line, the fix, the run of failing ticks it belongs to (None on a tick that
+    doesn't fail), and the session a RUNNING or STALLED tick waits on. in_flight is written
+    null until QUIET's in-flight part exists (#818)"""
+
+    at: dt.datetime
+    action: str
+    reason: str
+    fix: str | None
+    failing: Failing | None
+    running: Running | None = None
+
+    def __post_init__(self) -> None:
+        if self.action not in TICK_ACTIONS:
+            raise ValueError(f"action must be a decision or {ERROR}, got {self.action!r}")
+
+    def record(self) -> dict[str, object]:
+        return {
+            "at": self.at.isoformat(),
+            "action": self.action,
+            "reason": self.reason,
+            "fix": self.fix,
+            "failing": None if self.failing is None else self.failing.record(),
+            "running": None if self.running is None else self.running.record(),
+            "in_flight": None,
+        }
+
+
+def _text(value: object, what: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{what} must be a string")
+    return value
+
+
+def _minutes(value: object, what: str) -> int | None:
+    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+        raise ValueError(f"{what} must be a whole number of minutes or null")
+    return value
+
+
+RUNNING_KEYS = {"session", "item", "minutes", "log_grew"}
+
+
+def _running(value: object) -> Running | None:
+    """tick.json's running: --json's own (S-048-16), or null"""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != RUNNING_KEYS:
+        raise ValueError(f"running: expected exactly {', '.join(sorted(RUNNING_KEYS))}, or null")
+    item = value["item"]
+    return Running(
+        _text(value["session"], "running.session"),
+        None if item is None else _text(item, "running.item"),
+        _minutes(value["minutes"], "running.minutes"),
+        _minutes(value["log_grew"], "running.log_grew"),
+    )
+
+
+def load_tick(path: Path) -> TickRecord | None:
+    """tick.json; None before a real tick wrote one. A malformed file fails, as the gate's other
+    state files do, and stays for a person to read"""
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or set(data) != TICK_KEYS:
+            raise ValueError(f"expected exactly {', '.join(sorted(TICK_KEYS))}")
+        run = data["failing"]
+        if run is not None and (not isinstance(run, dict) or set(run) != {"since", "count"}):
+            raise ValueError("failing: expected exactly since and count, or null")
+        found = None if run is None else Failing(_moment(run["since"], "failing.since"), run["count"])
+        if data["in_flight"] is not None and not isinstance(data["in_flight"], dict):
+            raise ValueError("in_flight must be an object or null")
+        fix = data["fix"]
+        return TickRecord(
+            _moment(data["at"], "at"),
+            _text(data["action"], "action"),
+            _text(data["reason"], "reason"),
+            None if fix is None else _text(fix, "fix"),
+            found,
+            _running(data["running"]),
+        )
+    except ValueError as exc:  # json.JSONDecodeError is one
+        raise malformed(path, exc) from None
+
+
+def save_tick(path: Path, record: TickRecord) -> None:
+    """Written to a temporary file and moved into place, so a reader never sees half of one"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.tmp")
+    temp.write_text(json.dumps(record.record(), indent=2) + "\n", encoding="utf-8")
+    os.replace(temp, path)
+
+
+def record_tick(
+    path: Path, now: dt.datetime, action: str, reason: str, fix: str | None, fails: bool, running: Running | None
+) -> TickRecord:
+    """Spec 048: write this tick's tick.json. A failing tick after a failing one keeps its
+    since and counts one more; one after any other tick starts a run at now; a tick that
+    doesn't fail ends the run. The previous tick.json is read on every tick, so a malformed
+    one fails the tick, as the gate's other state files do"""
+    previous = load_tick(path)
+    run = None
+    if fails:
+        before = None if previous is None else previous.failing
+        run = Failing(now, 1) if before is None else Failing(before.since, before.count + 1)
+    record = TickRecord(now, action, reason, fix, run, running)
+    save_tick(path, record)
+    return record
 
 
 SessionEnv = Callable[[Identity], Mapping[str, str]]  # writes the helpers; the launch's --settings env
@@ -1992,22 +2152,90 @@ def gate(
     stall_minutes or more, the config read only then, is STALLED: a real tick stops it while
     its start time still matches (stalled) and records when in gate.json, a dry run stops
     nothing. It starts no session, runs neither preflight, and writes no cursor.json or
-    handed.json, so its item stays handed and is retried after retry_hours"""
+    handed.json, so its item stays handed and is retried after retry_hours.
+
+    A real tick records its decision in tick.json (spec 048, record_tick) once it has it, before
+    the prune, so the prune's own failure changes neither the record nor the exit code (D-56).
+    A tick that a ReleaseError ends records ERROR with the error's first line and its fix, else
+    DRY_RUN_FIX, and the error propagates; any other exception records nothing. A dry run
+    writes no tick.json"""
+    tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
+    try:
+        decision, launched, waiting = decided(
+            git,
+            repo,
+            config,
+            claude,
+            findings,
+            now,
+            hold,
+            notifier,
+            refresh_checkout=refresh_checkout,
+            dry_run=dry_run,
+            app=app,
+            app_key_named=app_key_named,
+            app_env=app_env,
+            login=login,
+            started=started,
+            new_session=new_session,
+            plugin=plugin,
+            hooks=hooks,
+            auth=auth,
+            roles=roles,
+            credential=credential,
+            walk_now=walk_now,
+            sweep_now=sweep_now,
+            github=github,
+            stop=stop,
+        )
+    except ReleaseError as exc:
+        if not dry_run:
+            record_tick(tick, now, ERROR, error_line(exc), exc.fix or DRY_RUN_FIX, True, None)
+        raise
+    if not dry_run:
+        fix = decision_fix(decision)
+        record_tick(tick, now, decision.action.value, decision.reason, fix, failing(decision), decision.running)
+    hours = (lambda: 0) if prune_hours is None else prune_hours
+    run, pruned = prune_step(state_dir(git) / PRUNE, hours, worktrees, now, dry_run)
+    return replace(decision, prune=run), launched, waiting, pruned
+
+
+def decided(
+    git: Git,
+    repo: str,
+    config: Callable[[], AgentsConfig],
+    claude: Claude,
+    findings: Callable[[StateRead], Source | Sequence[Finding]],
+    now: dt.datetime,
+    hold: Callable[[], Hold],
+    notifier: Notifier,
+    refresh_checkout: bool = False,
+    dry_run: bool = False,
+    app: AppCheck | None = None,
+    app_key_named: bool = False,
+    app_env: SessionEnv | None = None,
+    login: Callable[[], str] | None = None,
+    started: StartTime = start_time,
+    new_session: Callable[[], uuid.UUID] = uuid.uuid4,
+    plugin: PluginHost | None = None,
+    hooks: Callable[[], HookTest] | None = None,
+    auth: Callable[[Token | None], ClaudeAuth] | None = None,
+    roles: RoleResolver | None = None,
+    credential: Callable[[], Credential] | None = None,
+    walk_now: bool = False,
+    sweep_now: bool = False,
+    github: GitHubPreflight | None = None,
+    stop: Stop | None = None,
+) -> tuple[Decision, str | None, tuple[Waiting, ...]]:
+    """gate's tick up to its decision, as gate describes it: the decision, the launched
+    session's id, and what the waiting step did; gate records it and prunes after it"""
     check_checkout(git, repo)
-
-    def pruned_after(
-        decision: Decision, launched: str | None, waiting: tuple[Waiting, ...]
-    ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
-        hours = (lambda: 0) if prune_hours is None else prune_hours
-        run, pruned = prune_step(state_dir(git) / PRUNE, hours, worktrees, now, dry_run)
-        return replace(decision, prune=run), launched, waiting, pruned
-
     found = None if credential is None else credential()
     if found is not None and found.refused is not None:
         refused = found.refused
         auth_found = ClaudeAuth(refused.reason, token=refused.path, remedy=refused.fix)
         refusal = Decision(Action.CLAUDE_AUTH, auth_found.reason(), (), auth=auth_found, credential=found.kind)
-        return pruned_after(refusal, None, ())
+        return refusal, None, ()
     token = None if found is None else found.token
     kind = Kind.LOGIN if found is None else found.kind
     config = checked(config, claude.args)
@@ -2022,18 +2250,18 @@ def gate(
     on_hold = hold()
     stopped = held(on_hold, sessions)
     if stopped is not None:
-        return pruned_after(replace(stopped, credential=kind), None, waiting)
+        return replace(stopped, credential=kind), None, waiting
     last = load_launch(record)  # before busy: its RUNNING line names the last launch's item (S-048-15)
     pending = busy(sessions, last, now)
     if pending is not None:
-        return pruned_after(replace(pending, credential=kind), None, waiting)
+        return replace(pending, credential=kind), None, waiting
     working = still_working(last, state, started, now, lambda: config().stall_minutes)
     if working is not None and working.action is Action.STALLED and last is not None:
         working, first_stop = stalled(working, last, state, started, stop, now, dry_run)
         if first_stop is not None:
             save_launch(record, first_stop)
     if working is not None:
-        return pruned_after(replace(working, credential=kind), None, waiting)
+        return replace(working, credential=kind), None, waiting
     # a dead session was no attempt: its findings aren't handled (#500)
     dead = ended_dead(last, state) or listed_dead(last, sessions, now)
     if dead is not None and token is not None:
@@ -2041,7 +2269,10 @@ def gate(
     detached = refresh(git, detach=True) if refresh_checkout and not dry_run else None
     agents = config()
     if app_key_named and agents.app_id is None:  # read after the refresh, so a stale checkout can't stall it
-        raise ReleaseError(f"--app-key names an App's key, but [agents] in {CONFIG_PATH} sets no app_id")
+        raise ReleaseError(
+            f"--app-key names an App's key, but [agents] in {CONFIG_PATH} sets no app_id",
+            f"set [agents] app_id in {CONFIG_PATH}, or drop --app-key",
+        )
     headless = agents.mode is Mode.HEADLESS
     # the App first, in either mode: a failure reads no state and launches nothing (D-14), and
     # its bot's needs-decision questions read as questions (D-21, #206)
@@ -2061,7 +2292,7 @@ def gate(
             credential=kind,
             github=failed,
         )
-        return pruned_after(refusal, None, waiting)
+        return refusal, None, waiting
     host_read = once(login)
     resolved = () if roles is None else roles(agents.roles, host_read)
     read = StateRead(trusted_only=headless, bot_login=None if identity is None else identity.login, roles=resolved)
@@ -2097,7 +2328,7 @@ def gate(
     if decision.action is not Action.LAUNCH:
         if decision.action in (Action.QUIET, Action.UNCHANGED, Action.SESSION_DEAD):
             settled(ticked.handed)
-        return pruned_after(decision, None, waiting)
+        return decision, None, waiting
     if identity is not None:
         decision = replace(decision, identity=identity.login)
     host = host_read()
@@ -2109,7 +2340,7 @@ def gate(
         text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login, read.roles, levels)
     if dry_run:
         checked_plugin = plugin_read(decision, git, plugin, agents.notify, notifier, dry_run)
-        return pruned_after(relaunching(self_tested(checked_plugin, hooks, headless)), None, waiting)
+        return relaunching(self_tested(checked_plugin, hooks, headless)), None, waiting
     env = None
     if identity is not None:
         if app_env is None:
@@ -2118,7 +2349,7 @@ def gate(
     decision = plugin_read(decision, git, plugin, agents.notify, notifier, dry_run)
     decision = self_tested(decision, hooks, headless)  # of the install the session loads
     if decision.action in (Action.PYPI_WAIT, Action.HOOKS_FAILED):
-        return pruned_after(decision, None, waiting)
+        return decision, None, waiting
     decision = relaunching(decision)
     for session in decision.stop:
         claude.stop(session)
@@ -2130,13 +2361,13 @@ def gate(
         launched = claude.launch(git.root, name, text, env, token)
         save_launch(record, Launch(item_key(item), launched, now, None, deaths, item.brief()))
         settled(ticked.handed.handing(item, launched, now))
-        return pruned_after(decision, launched, waiting)
+        return decision, launched, waiting
     session_id = new_session()
     log = session_log(state, str(session_id))
     pid = claude.start(git.root, name, text, session_id, log, env, token)
     save_launch(record, Launch(item_key(item), str(session_id), now, Process(pid, started(pid)), deaths, item.brief()))
     settled(ticked.handed.handing(item, str(session_id), now))
-    return pruned_after(replace(decision, follow=f"tail -f {log}"), str(session_id), waiting)
+    return replace(decision, follow=f"tail -f {log}"), str(session_id), waiting
 
 
 def tick_record(
