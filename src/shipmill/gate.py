@@ -1013,9 +1013,12 @@ def event_text(event: Mapping[str, object]) -> str:
 
 def stream_last_line(lines: Sequence[str]) -> str:
     """A stream-json log's last line as a person reads it, cut as last_line cuts it: the last
-    line that isn't an event, or the last event with text to read"""
+    line that isn't an event, or the last event with text to read. A line that starts as JSON
+    but doesn't parse is an event cut off mid-write, possibly a tool's output, and never shown"""
     for line in reversed([line for line in lines if line.strip()]):
         found = stream_event(line)
+        if found is None and line.lstrip().startswith("{"):
+            continue
         text = line if found is None else event_text(found)
         if text.strip():
             return last_line(text)

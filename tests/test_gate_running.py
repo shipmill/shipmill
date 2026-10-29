@@ -56,6 +56,7 @@ SAID: Event = {"type": "assistant", "message": {"content": [{"type": "text", "te
 TOOL: Event = {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {}}]}}
 DONE: Event = {"type": "result", "subtype": "success", "is_error": False, "result": "Done: triaged #12"}
 FAILED: Event = {"type": "result", "subtype": "error_during_execution", "is_error": True}
+TOOL_OUTPUT: Event = {"type": "user", "message": {"content": [{"type": "tool_result", "content": "GH_TOKEN=ghs_x"}]}}
 
 
 def headless_launch(item: str | None = ITEM, at: dt.datetime = NOW) -> Launch:
@@ -176,6 +177,7 @@ QUICK = NOW + DEAD_WITHIN / 2  # a log last written within DEAD_WITHIN of the la
         (stream(INIT, {**DONE, "is_error": None}), "Done: triaged #12"),  # only false is a result
         (stream(INIT, TOOL), ""),
         (stream(INIT, SAID, after="API Error: 529 Overloaded\n"), "API Error: 529 Overloaded"),
+        (stream(INIT, SAID, after=json.dumps(TOOL_OUTPUT)[:-5]), "Triaging #12"),  # a cut-off event isn't shown
     ],
 )
 def test_s048_17_a_stream_json_log_without_a_successful_result_ended_dead(
