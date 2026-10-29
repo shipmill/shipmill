@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.93.0] - 2026-10-29
+
+### Added
+
+- `[agents] credit = "decider"` also credits, after the approvers: the trusted answerer of a needs-decision question on the pull request, an issue it closes, or that issue's parent (a reply after the question's marker, or the login an App comment's `Decision by @<login>` line names), the trusted author of an issue it closes or of that issue's parent, and whoever with write, maintain, or admin permission added `planned` to an `opportunity` issue it closes or to that issue's parent; each person once, the first record naming them giving the stderr line's reason (spec 049) (#786)
+- `shipmill doctor` prints a `credit` row for a repo with `[agents]`: `decider` when `[agents] credit = "decider"`, `off` otherwise; the shipmill-setup skill and the flow guide name the key, its `"off"` default, and that a `Co-authored-by` trailer it adds means the person decided the change, not that they wrote it (spec 049) (#787)
+
 ## [0.92.0] - 2026-10-29
 
 ### Added
@@ -2018,7 +2025,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.92.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.93.0...HEAD
+[0.93.0]: https://github.com/shipmill/shipmill/compare/v0.92.0...v0.93.0
 [0.92.0]: https://github.com/shipmill/shipmill/compare/v0.91.0...v0.92.0
 [0.91.0]: https://github.com/shipmill/shipmill/compare/v0.90.0...v0.91.0
 [0.90.0]: https://github.com/shipmill/shipmill/compare/v0.89.1...v0.90.0
