@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from shipmill.agent_marker import MARKER
 from shipmill.agents import AgentsConfig, ProductConfig
 from shipmill.app import (
     CACHE,
@@ -34,7 +35,7 @@ from shipmill.errors import ReleaseError
 from shipmill.gate import gate, state_dir
 from shipmill.gitrepo import Git
 
-from .test_agent_marker import sent
+from .test_agent_marker import AGENTS, Current, sent
 from .test_app import APP_ID, BOT, BOT_ID, BOT_PATH, GRANTED, REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout
 from .test_app_token import FAKE_GH, FAKE_PYTHON, MintApi, executable
@@ -456,6 +457,27 @@ def test_s038_9_gh_product_runs_gh_with_the_product_token(
     assert (env["GH_TOKEN"], env["GH_REPO"]) == ("token-1", target)
     assert [path for path, _ in api.posts] == ["/app/installations/55/access_tokens"]
     assert product_cache_of(root).is_file() and not (state_dir(Git(root)) / CACHE).exists()
+
+
+def test_s050_3_under_product_the_edit_reads_with_the_product_token(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOME)
+    current, runner = Current(body=AGENTS), Runner()
+    args = ["--app-key", str(key_file(tmp_path)), "--product", "romamo/api", "issue", "edit", "2", "-b", "x"]
+    code = main(
+        ["--repo", str(root), "gh", *args],
+        api=ProductApi(),
+        signer=FakeSigner(),
+        environ=host.env(),
+        home=host.home,
+        gh_runner=runner,
+        gh_capture=current,
+    )
+    assert code == 7
+    [(read, read_env)] = current.calls
+    [(argv, env)] = runner.calls
+    assert read == [host.gh, "api", "repos/romamo/api/issues/2"]
+    assert argv == [host.gh, "issue", "edit", "2", "--body", f"x\n\n{MARKER}"]
+    assert read_env == env and (env["GH_TOKEN"], env["GH_REPO"]) == ("token-1", "romamo/api")
 
 
 def test_s038_9_gh_product_in_the_coordinators_session_skips_the_sessions_gh_helper(tmp_path: Path, host: Host) -> None:

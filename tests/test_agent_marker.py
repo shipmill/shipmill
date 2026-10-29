@@ -3,14 +3,17 @@ the host's login, and refuses a create it can't mark; GhCli's own writes end wit
 test reaches the network: gh is a Runner, GitHub is MintApi and openssl FakeSigner"""
 
 import io
+import json
 import subprocess
 import sys
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
-from shipmill.agent_marker import BODY_LIMIT, MARKER, carries, marked, unmarked
-from shipmill.app_gh import body_reader, marked_args
+from shipmill.agent_marker import BODY_LIMIT, MARKER, carries, marked, stripped, unmarked
+from shipmill.app_gh import BodyEdit, BodyRead, body_edit, body_reader, current_body, marked_args
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
 from shipmill.github import CUT_MARK, PROPOSAL_LABEL
@@ -289,6 +292,271 @@ def test_s050_2_the_refusal_exits_2(tmp_path: Path, host: Host) -> None:
     assert not (host.record / "gh-args").exists()
 
 
+# -- S-050-3 -------------------------------------------------------------------------------------
+
+
+@dataclass
+class Current:
+    """Stands in for the gh that reads an edit's current body: records each argv and env, and
+    answers code with out, or with a REST record holding body"""
+
+    body: object = ""
+    code: int = 0
+    out: str | None = None
+    calls: list[tuple[list[str], dict[str, str]]] = field(default_factory=list)
+
+    def __call__(self, argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
+        self.calls.append((list(argv), dict(env)))
+        return self.code, json.dumps({"id": 1, "body": self.body}) if self.out is None else self.out
+
+
+def edit_of(args: list[str], read: BodyRead = no_read) -> BodyEdit:
+    found = body_edit(args, read)
+    assert found is not None
+    return found
+
+
+AGENTS = f"Filed by an agent.\n\n{MARKER}"
+
+
+@pytest.mark.parametrize(
+    ("args", "path", "body"),
+    [
+        (["issue", "edit", "5", "--body", "new"], "issues/5", "new"),
+        (["issue", "edit", "#5", "-b", "new", "--add-label", "ready"], "issues/5", "new"),
+        (["issue", "edit", "-R", REPO, "--body=new", "5"], "issues/5", "new"),
+        (["issue", "edit", f"https://github.com/{REPO}/issues/5", "-bnew"], "issues/5", "new"),
+        (["pr", "edit", "7", "--title", "t", "--body", "new"], "pulls/7", "new"),
+        (["pr", "edit", "7", "-B", "main", "-b", "first", "-b", "new"], "pulls/7", "new"),  # the last, as gh takes it
+    ],
+)
+def test_s050_3_an_edit_names_its_record_and_its_new_body(args: list[str], path: str, body: str) -> None:
+    edit = edit_of(args)
+    assert (edit.record(REPO), edit.body) == (f"repos/{REPO}/{path}", body)
+    marked_out, plain = edit.args(carried=True), edit.args(carried=False)
+    assert marked_out[-2:] == ["--body", f"{body}\n\n{MARKER}"]
+    assert [a for a in marked_out if a in ("--body", "-b") or a.startswith(("--body=", "-bn"))] == ["--body"]
+    assert not any(carries(a) for a in plain)
+    assert plain == args or plain[-2:] == ["--body", body]  # one body flag needing no change: as given
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        f"repos/{REPO}/issues/5",
+        f"repos/{REPO}/pulls/7",
+        f"repos/{REPO}/issues/comments/9",
+        f"repos/{REPO}/pulls/comments/9",
+        f"repos/{REPO}/pulls/7/reviews/3",
+    ],
+)
+@pytest.mark.parametrize(
+    "method", [["-X", "PATCH"], ["--method", "PATCH"], ["--method=patch"], ["-XPATCH"]], ids=lambda m: "".join(m)
+)
+def test_s050_3_an_api_patch_on_a_body_endpoint_is_an_edit(endpoint: str, method: list[str]) -> None:
+    args = ["api", *method, endpoint, "-f", "body=new", "-f", "title=t"]
+    edit = edit_of(args)
+    assert edit.record(None) == endpoint  # the endpoint names its repo: no default needed
+    assert edit.args(carried=True) == ["api", *method, endpoint, "-f", "title=t", "-f", f"body=new\n\n{MARKER}"]
+    assert edit.args(carried=False) == args  # nothing to change: the args as given
+
+
+@pytest.mark.parametrize(
+    ("field_flag", "value"),
+    [("-f", "body=new"), ("-F", "body=new"), ("--field", "body=new"), ("--raw-field", "body=new")],
+)
+def test_s050_3_every_body_field_form_is_read(field_flag: str, value: str) -> None:
+    edit = edit_of(["api", "-X", "PATCH", f"repos/{REPO}/issues/5", field_flag, value])
+    assert edit.body == "new"
+
+
+def test_s050_3_a_body_file_and_stdin_are_read_once(tmp_path: Path) -> None:
+    path = tmp_path / "body.md"
+    path.write_text("from a file\r\n\r\nDepends on o/r#4", encoding="utf-8")
+    endpoint = f"repos/{REPO}/issues/5"
+    edit = edit_of(["api", "-X", "PATCH", endpoint, "-F", f"body=@{path}"], body_reader(io.StringIO()))
+    # a person's record: the file goes to gh as given, byte for byte
+    assert edit.args(carried=False) == ["api", "-X", "PATCH", endpoint, "-F", f"body=@{path}"]
+    assert edit.args(carried=True) == [  # an agent's: read as text, as a create's file is
+        "api",
+        "-X",
+        "PATCH",
+        endpoint,
+        "-f",
+        f"body=from a file\n\nDepends on o/r#4\n\n{MARKER}",
+    ]
+    stdin = edit_of(["issue", "edit", "5", "--body-file", "-"], body_reader(io.StringIO("from stdin")))
+    assert stdin.args(carried=False) == ["issue", "edit", "5", "--body", "from stdin"]  # gh can't read stdin again
+    filed = edit_of(["pr", "edit", "7", "-F", str(path)], body_reader(io.StringIO()))
+    assert filed.args(carried=False) == ["pr", "edit", "7", "-F", str(path)]
+
+
+def test_s050_3_an_edit_never_marks_a_persons_record_nor_unmarks_an_agents() -> None:
+    """the new body carries the marker exactly when the current one does, whatever the new text"""
+    session_marked = edit_of(["issue", "edit", "5", "--body", f"{MARKER}\n\nDepends on o/r#4"])
+    assert session_marked.args(carried=False) == ["issue", "edit", "5", "--body", "Depends on o/r#4"]
+    assert session_marked.args(carried=True) == ["issue", "edit", "5", "--body", f"Depends on o/r#4\n\n{MARKER}"]
+    appended = edit_of(["issue", "edit", "5", "--body", f"{AGENTS}\n\nDepends on o/r#4"])  # link's append
+    assert appended.args(carried=True)[-1] == f"Filed by an agent.\n\nDepends on o/r#4\n\n{MARKER}"
+    assert stripped("text\n<!-- shipmill:agent via=gh -->\n") == "text"
+    assert stripped("no marker\n") == "no marker\n"
+
+
+def test_s050_3_placeholders_and_a_missing_repo_take_the_repo_gh_works_on() -> None:
+    edit = edit_of(["api", "-X", "PATCH", "repos/{owner}/{repo}/issues/5", "-f", "body=x"])
+    assert edit.record("o/r") == "repos/o/r/issues/5"
+    assert edit_of(["issue", "edit", "5", "-b", "x"]).record("o/r") == "repos/o/r/issues/5"
+    assert edit_of(["issue", "edit", "5", "-b", "x", "-R", "a/b"]).record("o/r") == "repos/a/b/issues/5"
+    with pytest.raises(ReleaseError, match="can't tell its repo here; name it with -R owner/name"):
+        edit_of(["issue", "edit", "5", "-b", "x"]).record(None)
+
+
+@pytest.mark.parametrize(
+    ("args", "match"),
+    [
+        (["issue", "edit", "--body", "x"], "gh issue edit with a body flag names none"),
+        (["issue", "edit", "5", "6", "--body", "x"], "names 5 6.*one issue by its number or URL"),
+        (["pr", "edit", "my-branch", "--body", "x"], "names my-branch.*one pull request"),
+        (["pr", "edit", "-b", "x"], "names none"),
+        (["issue", "edit", "5", "--body", "x", "--body-file", "f"], "--body or --body-file, not both"),
+        (["api", "-X", "PATCH", f"repos/{REPO}/issues/5", "--input", "b.json"], "--input is refused.*-F body=@<file>"),
+        (["api", "-X", "PATCH", f"repos/{REPO}/pulls/7", "--input", "-", "-f", "x=y"], "--input is refused"),
+    ],
+)
+def test_s050_3_an_edit_whose_record_cant_be_named_exits_2(args: list[str], match: str) -> None:
+    with pytest.raises(ReleaseError, match=match):
+        body_edit(args, no_read)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["issue", "edit", "5", "--add-label", "ready"],
+        ["pr", "edit", "7", "--title", "t", "--milestone", "m"],
+        ["issue", "edit", "5", "--title", "--body"],  # a value is never a flag
+        ["issue", "edit", "--help", "--body", "x"],
+        ["api", "-X", "PATCH", f"repos/{REPO}/issues/5", "-f", "state=closed"],
+        ["api", "-X", "PATCH", f"repos/{REPO}/milestones/3", "-f", "title=1.1.1"],
+        ["api", f"repos/{REPO}/issues/5"],
+        ["api", "-X", "POST", f"repos/{REPO}/issues/5/comments", "-f", "body=b"],  # a create: S-050-4
+        ["issue", "comment", "5", "--body", "b"],
+    ],
+)
+def test_s050_3_other_calls_are_no_edit(args: list[str]) -> None:
+    assert body_edit(args, no_read) is None
+
+
+@pytest.mark.parametrize(
+    ("current", "match"),
+    [
+        (Current(code=1, out=""), "exited 1"),
+        (Current(out="not json"), "isn't JSON"),
+        (Current(out="[]"), "has no body"),
+        (Current(out='{"id": 1}'), "has no body"),
+        (Current(body=7), "its body is int, not text"),
+        (Current(body={"text": "x"}), "its body is dict"),
+    ],
+)
+def test_s050_3_a_current_body_that_cant_be_read_exits_2(current: Current, match: str) -> None:
+    with pytest.raises(ReleaseError, match=f"current body of repos/o/r/issues/5 can't be read.*{match}"):
+        current_body(current, Path("/gh"), {}, "repos/o/r/issues/5", "gh issue edit")
+
+
+def test_s050_3_a_record_written_with_no_body_reads_empty() -> None:
+    """GitHub gives null for it: a person's issue filed with no body stays theirs"""
+    assert current_body(Current(body=None), Path("/gh"), {}, "repos/o/r/issues/5", "gh issue edit") == ""
+    assert current_body(Current(body=AGENTS), Path("/gh"), {"GH_TOKEN": "t"}, "repos/o/r/issues/5", "x") == AGENTS
+
+
+def run_edit(root: Path, args: list[str], host: Host, current: Current, stdin: str = "") -> Runner:
+    runner = Runner()
+    code = main(
+        ["--repo", str(root), "gh", *args],
+        api=MintApi(),
+        signer=FakeSigner(),
+        environ=host.env(),
+        home=host.home,
+        gh_runner=runner,
+        stdin=io.StringIO(stdin),
+        gh_capture=current,
+    )
+    assert code == 7
+    return runner
+
+
+@pytest.mark.parametrize(
+    ("config", "leading"), [(WITH_APP, ["--app-key", "{key}"]), (HOST_IDENTITY, []), (AGENTS_NO_APP, ["--as-host"])]
+)
+@pytest.mark.parametrize(("was", "now"), [(AGENTS, f"new\n\n{MARKER}"), ("A person's issue.", "new")])
+def test_s050_3_through_shipmill_gh_the_edit_reads_first_with_the_same_identity(
+    tmp_path: Path, host: Host, config: str, leading: list[str], was: str, now: str
+) -> None:
+    root = checkout(tmp_path, config)
+    key = key_file(tmp_path)
+    current = Current(body=was)
+    args = ["issue", "edit", "250", "--body-file", "-", "--add-label", "ready"]
+    runner = run_edit(root, [*(a.format(key=key) for a in leading), *args], host, current, stdin="new")
+    [(read, read_env)] = current.calls
+    [(argv, env)] = runner.calls
+    assert read == [host.gh, "api", f"repos/{REPO}/issues/250"]
+    assert argv == [host.gh, "issue", "edit", "250", "--add-label", "ready", "--body", now]
+    assert read_env == env  # the same token, or the same host login
+    assert ("GH_TOKEN" in env) is (config == WITH_APP)
+
+
+def test_s050_3_an_api_edit_through_shipmill_gh_fills_the_repo_from_the_checkout(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    current = Current(body=AGENTS)
+    args = ["api", "-X", "PATCH", "repos/{owner}/{repo}/issues/comments/9", "-f", "body=fixed"]
+    runner = run_edit(root, args, host, current)
+    assert current.calls[0][0] == [host.gh, "api", f"repos/{REPO}/issues/comments/9"]
+    assert runner.calls[0][0] == [host.gh, *args[:4], "-f", f"body=fixed\n\n{MARKER}"]
+
+
+@pytest.mark.parametrize("current", [Current(code=1, out=""), Current(out="null")])
+def test_s050_3_when_the_current_body_cant_be_read_the_edit_doesnt_run(
+    tmp_path: Path, host: Host, current: Current
+) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    runner = Runner()
+    with pytest.raises(ReleaseError, match="can't be read.*the edit didn't run"):
+        main(
+            ["--repo", str(root), "gh", "pr", "edit", "7", "--body", "x"],
+            api=MintApi(),
+            signer=FakeSigner(),
+            environ=host.env(),
+            home=host.home,
+            gh_runner=runner,
+            stdin=io.StringIO(""),
+            gh_capture=current,
+        )
+    assert len(current.calls) == 1 and runner.calls == []
+
+
+def test_s050_3_an_agents_edit_marked_past_the_limit_exits_2_and_runs_no_edit(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    runner = Runner()
+    with pytest.raises(ReleaseError, match="over GitHub's limit"):
+        main(
+            ["--repo", str(root), "gh", "issue", "edit", "5", "--body", "x" * BODY_LIMIT],
+            api=MintApi(),
+            signer=FakeSigner(),
+            environ=host.env(),
+            home=host.home,
+            gh_runner=runner,
+            gh_capture=Current(body=AGENTS),
+        )
+    assert runner.calls == []
+
+
+def test_s050_3_an_edit_without_a_body_flag_reads_nothing(tmp_path: Path, host: Host) -> None:
+    """S-050-6: labels, a title, assignees reach gh as given, with no read before them"""
+    current = Current()
+    args = ["issue", "edit", "5", "--add-label", "ready", "--title", "t"]
+    runner = run_edit(checkout(tmp_path, HOST_IDENTITY), args, host, current)
+    assert current.calls == [] and runner.calls[0][0] == [host.gh, *args]
+
+
 # -- S-050-4 -------------------------------------------------------------------------------------
 
 COMMENTS = f"repos/{REPO}/issues/250/comments"
@@ -406,7 +674,7 @@ def test_s050_4_the_api_refusals_run_no_gh(tmp_path: Path, host: Host) -> None:
         ["api", "graphql", "-f", "query=mutation { addBlockedBy(input: {}) { issue { id } } }"],  # chains.py's
         ["api", COMMENTS],  # a read
         ["api", "-X", "GET", COMMENTS, "-f", "per_page=100"],
-        ["api", "-X", "PATCH", f"repos/{REPO}/issues/comments/9", "-f", "body=b"],  # an edit: #798
+        ["api", "-X", "PATCH", f"repos/{REPO}/issues/comments/9", "-f", "body=b"],  # an edit: body_edit's (S-050-3)
         ["api", "-X", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=x"],
     ],
 )

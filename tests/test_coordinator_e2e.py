@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from shipmill.agent_marker import MARKER, carries
 from shipmill.app_gh import named_repo, product_refusal
 from shipmill.cli import main
 
@@ -176,14 +177,33 @@ class Forge:
 
         return run
 
+    def capture(self) -> Any:
+        """The gh `shipmill gh` reads an edit's current body with (spec 050), as a GhCapture:
+        recorded with its token like every other gh command, answering GitHub's REST issue"""
+
+        def read(argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
+            args = list(argv[1:])
+            self.calls.append(Call(env["GH_TOKEN"], env.get("GH_REPO"), tuple(args)))
+            assert len(args) == 2 and args[0] == "api", args
+            owner, name, kind, number = args[1].removeprefix("repos/").split("/")
+            assert kind == "issues", args
+            return 0, json.dumps({"number": int(number), "body": self.find(owner, name, int(number)).body or None})
+
+        return read
+
     def command(self, repo: str, args: list[str]) -> int:
         if args[:2] == ["api", "graphql"]:
             response = self.graphql(*gh_call(args))
             print(json.dumps(response))
             return 1 if response.get("errors") else 0
         if args[:3] == ["api", "-X", "PATCH"]:  # chains.py's body edit (spec 050)
-            _, variables = gh_call(args)
-            self.find(*variables["ref"]).body = edited(variables)
+            if args[4] == "-f":  # an agent's record: shipmill gh handed gh the body inline, marked
+                owner, name, _, at = args[3].removeprefix("repos/").split("/")
+                assert len(args) == 6 and args[5].startswith("body="), args
+                self.find(owner, name, int(at)).body = args[5].removeprefix("body=")
+            else:  # a person's: the args as chains.py gave them
+                _, variables = gh_call(args)
+                self.find(*variables["ref"]).body = edited(variables)
             print("{}")
             return 0
         if args[0] == "api":  # a REST read, such as a file's contents
@@ -392,6 +412,7 @@ class Product:
             environ=self.environ(),
             home=self.home,
             gh_runner=self.forge.gh(repo),
+            gh_capture=self.forge.capture(),
         )
         return code
 
@@ -604,8 +625,8 @@ def test_s038_26_a_fault_in_one_component_is_routed_to_another_and_closed_back(
             assert query == ch.ADD_SUB_ISSUE or not query.lstrip().startswith("mutation"), c
         elif c.args[:3] == ("api", "-X", "PATCH"):  # the body edit, through REST (spec 050)
             assert c.args[3].startswith(f"repos/{A}/issues/"), c
-        elif c.args[0] == "api":
-            assert "/contents/" in c.args[1] and len(c.args) == 2  # a GET: no -X, -f, or --input
+        elif c.args[0] == "api":  # a GET: no -X, -f, or --input; a file, or the body an edit reads first
+            assert len(c.args) == 2 and ("/contents/" in c.args[1] or c.args[1].startswith(f"repos/{A}/issues/")), c
         else:
             assert c.args[1] in ("create", "comment", "close"), c
 
@@ -616,6 +637,16 @@ def test_s038_26_a_fault_in_one_component_is_routed_to_another_and_closed_back(
 
     assert mutations(a_calls) == [ch.ADD_BLOCKED_BY, "PATCH"]  # A's link, in A
     assert mutations(product_calls) == [ch.ADD_SUB_ISSUE, "PATCH"]  # the coordinator's link, on A's report
+    # S-050-3: each body edit read its record's current body first, with the token it wrote with
+    for at, c in enumerate(forge.calls):
+        if c.args[:3] == ("api", "-X", "PATCH"):
+            assert forge.calls[at - 1] == Call(c.token, c.target, ("api", c.args[3])), c
+    # and kept its origin: maria's issue stays hers, the report A's session filed stays an agent's
+    assert not carries(forge.tickets[waiting].body)
+    assert forge.tickets[waiting].body == f"Depends on {report}"
+    edited_report = forge.tickets[report].body
+    assert edited_report.startswith(REPORT.rstrip()) and edited_report.endswith(f"Depends on {fix}\n\n{MARKER}")
+    assert edited_report.count(MARKER) == 1  # moved to the last line, once
     issue_writes = [c.args[:2] for c in product_calls if c.args[0] == "issue"]
     assert issue_writes == [("issue", "create"), ("issue", "comment"), ("issue", "close")]
     # upstream_state.py read each component's reports with the product token, the home repo's with plain gh
