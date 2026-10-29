@@ -1577,6 +1577,8 @@ def _credit(
     for named in found:  # S-049-9: a code span, so no email goes out for it (D-61)
         print(f"credit: `@{named.person.login}` {named.why}", file=sys.stderr)
     body = credited_body(base, accounts)
+    if body is None and flags.body_file == "-":  # stdin is read to its end: gh can't read it again
+        body = base
     return gh_args if body is None else with_body(gh_args, body)
 
 

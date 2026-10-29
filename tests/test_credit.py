@@ -363,6 +363,17 @@ def test_s049_8_a_body_file_or_stdin_is_the_body(
     ]
 
 
+def test_s049_8_a_stdin_body_already_naming_the_decider_still_reaches_gh(
+    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """shipmill read stdin to its end, so gh can't read it again: the body goes as --body"""
+    key = connected(repo, tmp_path, POLICY + ON)
+    credit, runner = CreditReader(FakeCredit(reviews=[approved("octocat")])), Runner(capsys)
+    piped = f"Piped.\n\n{OCTOCAT_TRAILER}"
+    assert gh(repo, tmp_path, key, ["pr", "merge", "7", "-s", "--body-file", "-"], runner, credit, stdin=piped) == 0
+    assert [argv[1:] for argv in runner.calls] == [["pr", "merge", "7", "-s", "--body", piped]]
+
+
 def test_s049_8_a_missing_body_file_exits_2(repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     key = connected(repo, tmp_path, POLICY + ON)
     credit, runner = CreditReader(FakeCredit(reviews=[approved("octocat")])), Runner(capsys)
