@@ -1,6 +1,6 @@
 # S-049: Credit the decider
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -146,3 +146,16 @@ person decided the change, which is not a claim they wrote it.
 - shipmill/shipmill#787: S-049-11, S-049-12
 
 ## Verification
+
+- S-049-1: in a scratch checkout with main's config plus `credit = "maybe"`, `shipmill gh pr list` exits 2 with `[agents] credit must be "off" (the default) or "decider", got 'maybe'`; `credit_of` in `src/shipmill/agents.py` reads a missing key as off
+- S-049-2: read `_credit` in `src/shipmill/cli.py`: with credit off it returns before any `CreditReads` call, and gh gets argv as given; `tests/test_credit.py` passes
+- S-049-3: read `approvers` and `Account.trailer` in `src/shipmill/credit.py`: a person's latest review that isn't COMMENTED or PENDING decides, and the trailer is `<name or login> <<id>+<login>@users.noreply.github.com>`; tests pass
+- S-049-4: read `answers` and `answerers`: replies after the marker by a trusted non-bot, and `Decision by` lines only from the App's own login (read with `app_login`), on the pull request, the issues it closes, and their parents; tests pass
+- S-049-5: read `authors` and `closes_of`: trusted authors of the closing issues and their sub-issue parents, issues in other repos skipped; tests pass
+- S-049-6: read `accepters`: the last actor to label `planned` on an `opportunity` issue, trusted by `write`, `maintain`, or `admin` permission; tests pass
+- S-049-7: read `deciders`: bots, the App's login, and the pull request's author dropped, each person once by the first source; no decider leaves argv unchanged; tests pass
+- S-049-8: read `default_body`, `credited_body`, and `with_body`: the given body, else GitHub's default per setting with its co-author trailers on a squash, one `--body` replacing the given ones, `--subject` kept; tests pass. Not checked against a live merge: no repo has credit on yet
+- S-049-9: read `_credit`: one ``credit: `@<login>` <why>`` stderr line per decider before gh runs; tests pass
+- S-049-10: in a scratch checkout with `credit = "decider"`, `shipmill gh api -X PUT repos/shipmill/shipmill/pulls/1/merge` exits 2 naming `uvx shipmill==0.92.0 gh pr merge 1 --squash`, with no gh call
+- S-049-11: `shipmill doctor` in a scratch checkout prints `PASS credit: decider, a merge names who decided it in Co-authored-by (spec 049)` with the key on, and in this checkout (no key) `PASS credit: off`
+- S-049-12: `docs/flow.md` ("Keeping it running") and `skills/shipmill-setup/SKILL.md` (the `[agents]` step) name `[agents] credit = "decider"`, the `"off"` default, and that the trailer means the person decided the change, not that they wrote it
