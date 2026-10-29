@@ -3469,23 +3469,32 @@ def product_repos_310(text: str, policy: Path) -> tuple[str, ...] | None:
     return checked_repos(home is not None, repos, policy)
 
 
+# a root key that opens [agents] as a dotted key or an inline table, which 3.10's reader skips
+AGENTS_ROOT_KEY = re.compile(r"^\s*[\"']?agents[\"']?\s*[.=]", re.MULTILINE)
+
+
 def gh_writer(repo_dir: Path) -> list[str]:
-    """The command a skill script's writing gh call starts with (spec 012, #290): with [agents]
-    app_id set in the checkout's config, `shipmill gh` run as `uvx shipmill==<the plugin's
-    version>`, as the skills run it (spec 031), so
-    the write posts as the App; else plain gh, the host's login. A config this reader refuses
-    raises Refused rather than reading as no App, and so does an app_id key the reader didn't
-    find in [agents] (Python 3.10's fallback skips a header it can't parse). Reads keep plain gh.
-    The config is the checkout's, found from a subfolder as `shipmill gh` finds it"""
+    """The command a skill script's writing gh call starts with (spec 012, #290, spec 050):
+    for a checkout whose config has an [agents] section, `shipmill gh` run as
+    `uvx shipmill==<the plugin's version>`, as the skills run it (spec 031), whether or not
+    it sets app_id: with app_id the write posts as the App, with `identity = "host"` as the
+    host's login with the agent marker, and with neither `shipmill gh` exits 2 (D-54). Plain
+    gh only for a checkout with no config or no [agents] section. A config this reader refuses
+    raises Refused rather than reading as no [agents], and so does an app_id or agents key the
+    reader didn't find in [agents] (Python 3.10's fallback skips a header it can't parse and a
+    root dotted key). Reads keep plain gh. The config is the checkout's, found from a
+    subfolder as `shipmill gh` finds it"""
     here = repo_dir.resolve()
     top = next((folder for folder in (here, *here.parents) if (folder / ".git").exists()), here)
     path = top / POLICY
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
     table = agents_table(text, path) if text else None
-    if table is None or "app_id" not in table:
-        if APP_ID_KEY.search(text):
-            raise Refused(f"error: {path}: app_id is set but not read from a plain [agents] table; fix the file")
+    if table is None:
+        if APP_ID_KEY.search(text) or AGENTS_ROOT_KEY.search(toml_tables(text).get("", "")):
+            raise Refused(f"error: {path}: [agents] is set but not read as a plain [agents] table; fix the file")
         return ["gh"]
+    if "app_id" not in table and APP_ID_KEY.search(text):
+        raise Refused(f"error: {path}: app_id is set but not read from a plain [agents] table; fix the file")
     return [*shipmill_cli(), "--repo", str(top), "gh"]
 
 

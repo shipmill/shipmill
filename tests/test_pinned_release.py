@@ -332,6 +332,58 @@ def test_s031_4_retro_and_intake_run_the_pinned_cli_too(tmp_path: Path) -> None:
     assert refused.value.code == 2
 
 
+AGENTS_CONFIGS: list[str | None] = [
+    APP,  # with app_id: the App's writes
+    '[agents]\nprompt = "/t"\nidentity = "host"\n',  # the host's login, marked (spec 050)
+    '[agents]\nprompt = "/t"\n',  # neither: shipmill gh exits 2 (D-54)
+]
+NO_AGENTS_CONFIGS: list[str | None] = [None, 'mode = "release"\n', '[release]\nmode = "release"\n']
+
+
+def checkout_with(tmp_path: Path, text: str | None) -> Path:
+    root = tmp_path / "checkout"
+    (root / ".git").mkdir(parents=True)
+    if text is not None:
+        (root / ".github").mkdir()
+        (root / ".github" / "shipmill.toml").write_text(text, encoding="utf-8")
+    return root.resolve()
+
+
+@pytest.mark.parametrize("text", AGENTS_CONFIGS + NO_AGENTS_CONFIGS)
+def test_s050_7_every_writer_is_shipmill_gh_with_agents_and_plain_gh_without(tmp_path: Path, text: str | None) -> None:
+    """Every script's writing gh, under Python 3.10's reader and this Python's tomllib alike:
+    `shipmill gh` for any [agents] section, with app_id, identity = "host", or neither; plain
+    gh only without a config or an [agents] section"""
+    checkout = checkout_with(tmp_path, text)
+    want = ["uvx", f"shipmill=={version()}", "--repo", str(checkout), "gh"] if text in AGENTS_CONFIGS else ["gh"]
+    done = writers(ROOT, checkout)
+    assert done.returncode == 0, done.stderr
+    found = json.loads(done.stdout)
+    assert found.pop("python") == [3, 10]
+    assert found == dict.fromkeys(SCRIPTS, want)
+    assert load("watch_state", WATCH / "watch_state.py").gh_writer(checkout) == want  # tomllib
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[agents\nprompt = "/t"\n',  # TOML's syntax error
+        'agents.prompt = "/t"\n',  # [agents] as a root dotted key, which 3.10's table reader skips
+        'agents = { prompt = "/t" }\n',  # and as an inline table
+        "[release]\napp_id = 7\n",  # an app_id outside [agents]
+    ],
+)
+def test_s050_7_a_config_the_reader_cannot_place_fails_rather_than_writing_with_plain_gh(
+    tmp_path: Path, text: str
+) -> None:
+    checkout = checkout_with(tmp_path, text)
+    for script in SCRIPTS:
+        done = writers(ROOT, checkout, script)
+        assert done.returncode != 0, (script, done.stdout)
+        assert "error:" in done.stderr, (script, done.stderr)
+        assert done.stdout == "", (script, done.stdout)
+
+
 BROKEN = [
     (None, "is missing"),
     ("{not json", "is not JSON"),

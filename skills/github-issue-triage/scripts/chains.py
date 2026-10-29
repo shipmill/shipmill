@@ -45,13 +45,16 @@ link  writes a link in both forms triage_state.py reads:
       named, before any write), a link that closes a cycle, or any other gh failure,
       including a rate limit, a timeout, or an internal error.
 
-      Its writes (the relation and the body edit) run as the App when the checkout it runs
-      from (the current folder's) sets [agents] app_id in .github/shipmill.toml: through
-      `shipmill gh` with the same arguments, as `uvx shipmill==<version> gh`, the version in
-      the plugin's .claude-plugin/plugin.json (spec 012, D-14, #526, spec 031).
+      Its writes (the relation and the body edit) run through `shipmill gh` with the same
+      arguments, as `uvx shipmill==<version> gh`, the version in the plugin's
+      .claude-plugin/plugin.json, when the checkout it runs from (the current folder's) has
+      an [agents] section in .github/shipmill.toml (spec 012, D-14, #526, spec 031, spec
+      050): as the App with app_id, as the host's login with the agent marker with
+      identity = "host", and exit 2 from `shipmill gh` with neither (D-54).
       A `shipmill gh` that fails (exit 2: no App identity) stops the link with its message
-      and exit 2, never retried with plain gh. Without app_id, plain gh writes as the host's
-      login. Reads use plain gh, save --product's of a listed repo.
+      and exit 2, never retried with plain gh. Without a config or an [agents] section,
+      plain gh writes as the host's login. Reads use plain gh, save --product's of a listed
+      repo.
 
       In a product (spec 038, D-47), the checkout's [product] table decides more, before any
       read or write. In a component ([product] home), a reference to another repo than the
@@ -117,7 +120,7 @@ show prints the chain an issue belongs to, one row per item, each once (by owner
       (not paged; an UNTRUSTED one's are never read), a config that can't be parsed, or any gh failure other than an
       unreadable item, a missing config, or a 404 from the collaborator check.
 
-Needs the gh CLI, authenticated, and for link with app_id set uvx. Python
+Needs the gh CLI, authenticated, and for link with an [agents] section uvx. Python
 3.10+, standard library only.
 """
 
@@ -351,10 +354,11 @@ def gh_editor(gh: Sequence[str], execute: Execute = capture) -> Edit:
 
 
 def writer(checkout: Path) -> list[str]:
-    """The gh command link's writes go through (#526, D-14): with [agents] app_id set in the
-    checkout's .github/shipmill.toml, `shipmill gh` as `uvx shipmill==<the plugin's version>`
-    (spec 031), so the relation and the body edit are the App's; without it, plain gh, the
-    host's login. It is watch_state.py's gh_writer, the one reading every skill script's
+    """The gh command link's writes go through (#526, D-14, spec 050): with an [agents]
+    section in the checkout's .github/shipmill.toml, `shipmill gh` as `uvx shipmill==<the
+    plugin's version>` (spec 031), so the relation and the body edit are the App's, or the
+    host's with the agent marker under identity = "host"; without one, plain gh, the host's
+    login. It is watch_state.py's gh_writer, the one reading every skill script's
     writes share; a config it refuses, or a broken plugin.json, exits 2 before any write"""
     ws = watch_module()
     try:

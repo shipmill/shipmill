@@ -534,13 +534,17 @@ class AppGh:
         return subprocess.CompletedProcess(cmd, 1 if response.get("errors") else 0, json.dumps(response), "")
 
 
-def test_526_the_writer_is_shipmill_gh_with_app_id_and_plain_gh_without(ch: ModuleType, tmp_path: Path) -> None:
+# proves: S-050-7
+def test_526_the_writer_is_shipmill_gh_with_agents_and_plain_gh_without(ch: ModuleType, tmp_path: Path) -> None:
     app = checkout(tmp_path / "app", APP_CONFIG)
-    plain = checkout(tmp_path / "plain", '[agents]\nprompt = "Triage the repo"\n')
+    no_app = checkout(tmp_path / "no_app", '[agents]\nprompt = "Triage the repo"\n')
+    no_agents = checkout(tmp_path / "no_agents", 'mode = "release"\n')
     bare = checkout(tmp_path / "bare", None)
     assert ch.writer(app) == [*UVX, "--repo", str(app.resolve()), "gh"]
     assert ch.writer(app / ".github") == [*UVX, "--repo", str(app.resolve()), "gh"]  # from a subfolder too
-    assert ch.writer(plain) == ["gh"]
+    # [agents] without app_id: shipmill gh still, which marks or refuses the write (spec 050, D-54)
+    assert ch.writer(no_app) == [*UVX, "--repo", str(no_app.resolve()), "gh"]
+    assert ch.writer(no_agents) == ["gh"]
     assert ch.writer(bare) == ["gh"]
 
 
@@ -708,8 +712,19 @@ def test_526_run_from_a_checkout_with_app_id_the_script_writes_through_shipmill_
     assert all("mutation" not in c[4] for c in calls if c[0] == "gh")  # reads only, never a plain-gh write
 
 
-def test_526_run_from_a_checkout_without_app_id_the_script_writes_with_plain_gh(tmp_path: Path) -> None:
+# proves: S-050-7
+def test_s050_7_run_from_a_checkout_with_agents_but_no_app_id_the_write_stops_at_shipmill_gh(tmp_path: Path) -> None:
+    # neither app_id nor identity = "host": shipmill gh exits 2 (D-54), never a plain-gh write
     proc, calls = run_script(tmp_path, '[agents]\nprompt = "Triage the repo"\n')
+    assert proc.returncode == 2
+    shipmill = [c for c in calls if c[0] == "uvx"]
+    top = str((tmp_path / "repo").resolve())
+    assert len(shipmill) == 1 and shipmill[0][1:5] == [UVX[1], "--repo", top, "gh"]
+    assert all("mutation" not in c[4] and c[1:4] != ["api", "-X", "PATCH"] for c in calls if c[0] == "gh")
+
+
+def test_526_run_from_a_checkout_without_agents_the_script_writes_with_plain_gh(tmp_path: Path) -> None:
+    proc, calls = run_script(tmp_path, 'mode = "release"\n')
     assert proc.returncode == 0, proc.stderr
     assert [c[0] for c in calls] == ["gh"] * len(calls)
     assert sum("mutation" in c[4] for c in calls) == 1  # the relation

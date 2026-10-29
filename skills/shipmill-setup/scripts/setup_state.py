@@ -114,9 +114,10 @@ Labels (the triage skills and shipmill read them):
                    038), decided (a notify decision, spec 030), and
                    shipmill-direction (the question for a missing direction,
                    spec 034) don't exist; --fix creates
-                   them on GitHub, as the App through `uvx shipmill==<version> gh`
-                   (the version in the plugin's .claude-plugin/plugin.json, spec 031) when
-                   [agents] sets app_id (spec 012), else with plain gh; a `shipmill gh`
+                   them on GitHub through `uvx shipmill==<version> gh` (the version in
+                   the plugin's .claude-plugin/plugin.json, spec 031) when the config has
+                   an [agents] section (spec 012, spec 050), as the App with app_id,
+                   else with plain gh; a `shipmill gh`
                    exit 2 stops --fix, never retried with plain gh, and a missing or
                    malformed plugin.json exits 2 naming it
   LABELS_OK        all exist
@@ -158,7 +159,7 @@ config files,
 a runs-on in release.yml that isn't a label or a quoted JSON list of labels, a git or gh
 failure (a failed read of the repo setting never reads as off), or a malformed
 `claude plugin list --json`.
-Needs git and an authenticated gh, uvx for --fix's labels with app_id set, and claude on PATH
+Needs git and an authenticated gh, uvx for --fix's labels with an [agents] section, and claude on PATH
 to read the plugin's installs. Python
 3.10+, standard library only.
 """
@@ -880,7 +881,7 @@ def create_labels(
     gh: Callable[[list[str]], str] = run,
 ) -> None:
     """--fix: create each missing label with its color and description, through write (the
-    writing gh, `shipmill gh` with [agents] app_id set); a failure stops, never retried"""
+    writing gh, `shipmill gh` with an [agents] section); a failure stops, never retried"""
     for name in missing:
         color, description = wanted[name]
         gh([*write, "label", "create", name, "-R", repo, "--color", color, "--description", description])
