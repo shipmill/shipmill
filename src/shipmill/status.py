@@ -32,7 +32,7 @@ from shipmill.claude_token import HOST, Credential, TokenFs, TokenSource, inspec
 from shipmill.claude_token import REJECTED as TOKEN_REJECTED
 from shipmill.config import CONFIG_PATH, Table, config_path, policy_branch, read
 from shipmill.errors import ReleaseError
-from shipmill.gate import PruneRecord, StateRunner, skills_dir
+from shipmill.gate import ERROR, Action, PruneRecord, StateRunner, TickRecord, minutes_between, skills_dir
 from shipmill.github import UPGRADE_LABEL, GitHub, labelled_command, parse_labelled
 from shipmill.gitrepo import Git
 from shipmill.launchd import label
@@ -306,6 +306,8 @@ class Gate:
     prune_error: str | None = None  # spec 045: prune.json's read failed, the prune check's error
     sessions_error: str | None = None  # #745: watch_state.py --host sessions failed, the sessions check's error
     shipmill_error: str | None = None  # #745: watch_state.py --host shipmill failed, the shipmill check's error
+    tick: TickRecord | None = None  # the gate's last real tick, from tick.json (spec 048); None: none recorded
+    tick_error: str | None = None  # spec 048: tick.json's read failed, the gate check's error
 
     @property
     def login(self) -> str | None:
@@ -913,13 +915,79 @@ def _log_fix(job: Job, repo: str) -> str:
     return f"tail -n 50 {shlex.quote(str(job.files.log))}"
 
 
+FAILING_EXIT = 2  # a failing tick's exit code (spec 048, cli._gate_exit)
+# spec 048: a failing tick's decisions that wait on the maintainer; ERROR, a ReleaseError, is STUCK
+TICK_WAITS = frozenset({Action.CLAUDE_AUTH.value, Action.GITHUB_AUTH.value, Action.HOOKS_FAILED.value})
+
+
+def current_tick(record: TickRecord | None, job: Job) -> TickRecord | None:
+    """S-048-12: tick.json when it is the tick behind the log's last decision or failure line,
+    else None. The log's lines carry no time, so the record is current when that line is its
+    own: `<action>: <reason>` for a decision, `shipmill: <reason>` for ERROR. A later tick that
+    wrote none (a shipmill before spec 048, or a crash, S-048-10) left another line, so the
+    record is older than it and the log reads as spec 009 does"""
+    if record is None or job.last is None:
+        return None
+    own = f"shipmill: {record.reason}" if record.action == ERROR else f"{record.action}: {record.reason}"
+    return record if job.last == own or job.last.startswith(f"{own} as ") else None
+
+
+def _without_fix(reason: str, fix: str | None) -> str:
+    """A decision's reason without the `; fix: <fix>` it ends with, which the line shows after it"""
+    end = f"; fix: {fix}"
+    return reason.removesuffix(end) if fix is not None else reason
+
+
+def running_shown(record: TickRecord, now: dt.datetime) -> str | None:
+    """Spec 048: a RUNNING tick's session as the gate line names it, `running: <item>, <ran
+    for>, log grew <ago>` (headless) or without the log (interactive), aged from the tick to
+    now; a session the gate didn't launch by its id. None without the record's session"""
+    found = record.running
+    if found is None:
+        return None
+    if found.minutes is None:
+        return f"running: session {found.session}"
+    since = minutes_between(record.at, now)
+    parts = [found.item or "item not recorded", f"{found.minutes + since} min"]
+    if found.log_grew is not None:
+        parts.append(f"log grew {found.log_grew + since} min ago")
+    return f"running: {', '.join(parts)}"
+
+
+def tick_problem(record: TickRecord, job: Job, repo: str, now: dt.datetime) -> JobProblem | None:
+    """Spec 048: the current tick.json's own line on the gate line. A failing tick's cause, `failing
+    since <since> (<count> ticks): <action>: <reason>` with the record's fix (S-048-11),
+    waiting on the maintainer for CLAUDE_AUTH, GITHUB_AUTH, and HOOKS_FAILED and STUCK for
+    ERROR (S-048-13); STALLED's line, STUCK, its fix the one its reason ends with; RUNNING's
+    session, no problem. None for any other tick"""
+    if record.failing is not None:
+        since = record.failing.since.isoformat(timespec="minutes")
+        cause = f"{record.action}: {_without_fix(record.reason, record.fix)}"
+        shown = f"failing since {since} ({record.failing.count} ticks): {cause}"
+        verdict = Verdict.WAITS if record.action in TICK_WAITS else Verdict.STUCK
+        return JobProblem(verdict, f"the gate: {shown}", shown, record.fix or _log_fix(job, repo))
+    if record.action == Action.STALLED.value:
+        line, _, fix = record.reason.rpartition("; fix: ")
+        shown = f"stalled: {line or record.reason}"
+        return JobProblem(Verdict.STUCK, f"the gate: {shown}", shown, fix if line else _log_fix(job, repo))
+    if record.action == Action.RUNNING.value and (running := running_shown(record, now)) is not None:
+        return JobProblem(None, "", running, None)
+    return None
+
+
 def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobProblem]:
     if not job.loaded:
         load = f"launchctl bootstrap gui/{job.files.uid} {shlex.quote(str(job.files.plist))}"
         return [JobProblem(Verdict.STUCK, "the gate's launchd job is installed but not loaded", "not loaded", load)]
     found = []
+    record = current_tick(gate.tick, job)
+    ticked = None if record is None else tick_problem(record, job, repo, now)
+    if ticked is not None:  # S-048-13: the tick's own cause comes first
+        found.append(ticked)
+    failing = record is not None and record.failing is not None
     code = re.match(r"^-?\d+", job.last_exit or "")  # launchctl may add a name: "78: EX_CONFIG"
-    if code is not None and int(code.group()) != 0:
+    # S-048-11: a failing tick's exit 2 is the cause above, shown once
+    if code is not None and int(code.group()) != 0 and not (failing and int(code.group()) == FAILING_EXIT):
         reason = f"the gate's last run exited {job.last_exit}"
         found.append(JobProblem(Verdict.STUCK, reason, f"failed: exit {job.last_exit}", _log_fix(job, repo)))
     if job.interval is not None and job.last_run is not None and not job.running:
@@ -929,6 +997,8 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
             reason = f"the gate last ran {age} ago, every {ago(job.interval)}"
             kick = f"launchctl kickstart gui/{job.files.uid}/{label(repo)}"
             found.append(JobProblem(Verdict.STUCK, reason, f"stale: last run {age} ago", kick))
+    if ticked is not None:  # the record shows the log's last line, its own, with its cause and fix
+        return found
     last = job.last or ""
     if job.failed:
         found.append(
@@ -1415,11 +1485,15 @@ def guarded(check: str, command: str, build: Callable[[], Check]) -> Check:
 
 def gate_check(gate: Gate, repo: str, now: dt.datetime, command: str) -> Check:
     """S-009-20 as the gate line, with what the gate's sessions authenticate with (S-035-15);
-    off a Mac `can't check here: no launchd`, no problem (S-044-11)"""
+    off a Mac `can't check here: no launchd`, no problem (S-044-11). The job's tick.json, when
+    current, names a failing tick's cause and fix, STALLED, or RUNNING's session (spec 048); a
+    tick.json that can't be read is the check's error"""
     if gate.agents is None:
         return Check("gate", True, "none: no [agents] in the config")
     if gate.job_error is not None:
         return failed_check("gate", gate.job_error, command)
+    if gate.tick_error is not None and gate.job is not None:  # spec 048: read beside the job, only for it
+        return failed_check("gate", gate.tick_error, command)
     stuck, yours = launchd_reasons(gate, repo, now, command)
     fixes: list[str] = []
     if not gate.launchd:
