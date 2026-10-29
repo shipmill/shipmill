@@ -222,7 +222,7 @@ MESSAGES: dict[str, str] = {
     "autonomy deploy environment name": "an environment name is letters, digits, '.', '_', or '-'; got 'pro duction'",
     "autonomy deploy unknown environment": "shipmill.toml [autonomy]: deploy.qa names no environment in [environments]; known: staging",
     "autonomy a table": "shipmill.toml: autonomy must be a table, got 1",
-    "agents unknown key": "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'credit', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sweep_hours', 'wip']",
+    "agents unknown key": "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'credit', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'stall_minutes', 'sweep_hours', 'wip']",
     "agents prompt required": "shipmill.toml [agents]: prompt is required",
     "agents prompt empty": "shipmill.toml [agents]: prompt must not be empty",
     "agents retry range": "shipmill.toml [agents]: retry_hours must be in 1..168, got 0",
@@ -294,7 +294,7 @@ def test_the_agents_section_alone_is_read_with_the_same_words(tmp_path: Path) ->
     assert refusal(lambda: AgentsConfig.load(tmp_path)) == "shipmill.toml: agents must be a table, got 1"
     path.write_text('[agents]\nprompt = "/t"\nwhen = 1\n', encoding="utf-8")
     assert refusal(lambda: AgentsConfig.load(tmp_path)) == (
-        "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'credit', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'sweep_hours', 'wip']"
+        "shipmill.toml [agents]: unknown keys ['when']; allowed: ['app_id', 'credit', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', 'roles', 'stall_minutes', 'sweep_hours', 'wip']"
     )
 
 
@@ -310,6 +310,25 @@ def test_s003_1_the_wait_keys_default_and_read_what_is_given() -> None:
     edges = agents("notify = true\nremind_hours = 168\nmax_wait_minutes = 0\n")
     assert (edges.notify, edges.remind_hours, edges.max_wait_minutes) == (True, 168, 0)
     assert agents("remind_hours = 24\nmax_wait_minutes = 120\n").remind_hours == 24  # larger than the stop is allowed
+
+
+def test_s048_18_stall_minutes_defaults_to_30_and_reads_0_to_1440() -> None:
+    assert agents("").stall_minutes == 30
+    assert (agents("stall_minutes = 0\n").stall_minutes, agents("stall_minutes = 1440\n").stall_minutes) == (0, 1440)
+
+
+@pytest.mark.parametrize(
+    ("line", "refused"),
+    [
+        ("stall_minutes = -1", "stall_minutes must be in 0..1440, got -1"),
+        ("stall_minutes = 1441", "stall_minutes must be in 0..1440, got 1441"),
+        ("stall_minutes = true", "stall_minutes must be an integer, got True"),
+        ('stall_minutes = "30"', "stall_minutes must be an integer, got '30'"),
+        ("stall_minutes = 2.5", "stall_minutes must be an integer, got 2.5"),
+    ],
+)
+def test_s048_18_a_stall_minutes_that_isnt_an_integer_from_0_to_1440_is_refused(line: str, refused: str) -> None:
+    assert refusal(lambda: agents(line + "\n")) == f"shipmill.toml [agents]: {refused}"
 
 
 def test_the_wip_limit_is_read_from_agents_and_is_none_when_omitted() -> None:
@@ -361,12 +380,12 @@ WAIT_REFUSALS = {
     "max_wait_hours = 4": (
         "unknown keys ['max_wait_hours']; allowed: "
         "['app_id', 'credit', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
-        "'roles', 'sweep_hours', 'wip']"
+        "'roles', 'stall_minutes', 'sweep_hours', 'wip']"
     ),
     "wait_hours = 4": (
         "unknown keys ['wait_hours']; allowed: "
         "['app_id', 'credit', 'identity', 'max_wait_minutes', 'mode', 'notify', 'plugin', 'prompt', 'prs', 'prune_hours', 'remind_hours', 'retry_hours', "
-        "'roles', 'sweep_hours', 'wip']"
+        "'roles', 'stall_minutes', 'sweep_hours', 'wip']"
     ),
 }
 

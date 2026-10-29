@@ -116,10 +116,10 @@ def test_s048_14_a_record_whose_item_isnt_text_exits_2(tmp_path: Path, item: obj
 
 def test_s048_15_a_headless_running_line_names_its_item_run_and_log(checkout: Git) -> None:
     save_launch(state_dir(checkout) / RECORD, headless_launch())
-    log = written(log_of(checkout), stream(INIT, SAID), NOW + dt.timedelta(minutes=10))
+    log = written(log_of(checkout), stream(INIT, SAID), NOW + dt.timedelta(minutes=30))
     decision, *_ = tick(checkout, headless(), FakeClaude(), Reads(), now=NOW + dt.timedelta(minutes=42))
     assert decision.action is Action.RUNNING
-    assert decision.reason == (f"session {SESSION} on {ITEM}, running 42 min, log grew 32 min ago: tail -f {log}")
+    assert decision.reason == (f"session {SESSION} on {ITEM}, running 42 min, log grew 12 min ago: tail -f {log}")
 
 
 def test_s048_15_a_headless_record_without_its_item_says_so(tmp_path: Path) -> None:

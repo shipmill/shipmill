@@ -51,6 +51,7 @@ GATE = "tmp/shipmill-gate"
 KEYS = {
     "walk",  # spec 046
     "item",
+    "running",  # S-048-16
     "action",
     "reason",
     "work",
