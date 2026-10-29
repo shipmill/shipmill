@@ -25,9 +25,6 @@ POSTING = ["github-issue-triage", "github-issue-resolve", "github-pr-triage", "g
 BARE = re.compile(r"(?<!`)@(?:\{[^}\n]+\}|<[^>\n]+>)")
 # The markers of the three comments a bare mention may lead (D-61)
 MENTIONING = ("<!-- shipmill:needs-decision -->", "<!-- shipmill:handoff -->", "<!-- shipmill:decided")
-# Templates an approved criterion still fixes in the bare form, left for the maintainer's call:
-# S-012-6, the relayed answer's first line
-PENDING = {"Decision by @{login}, relayed by {agent}", "Decision by @<login>, relayed by <agent>"}
 
 
 def load(name: str, path: Path) -> ModuleType:
@@ -62,8 +59,6 @@ def stray(block: list[str]) -> list[str]:
     allowed = any(line.startswith(MENTIONING) for line in block)
     bad = []
     for line in block:
-        if line in PENDING:
-            continue
         rest = re.sub(r"^(?:@(?:\{[^}]+\}|<[^>]+>)[ ,]*)+", "", line) if allowed else line
         if BARE.search(rest):
             bad.append(line)
@@ -99,9 +94,14 @@ FORMER = {
         "it waits for @{maintainer}",
         "I hand it back to @{assignee}",
         "Decision needed: @{login} reported",
+        "Decision by @{login}, relayed by {agent}\n",
     ],
-    WATCH: ["Accepted by @<login> in #<issue>"],
-    SKILLS / "github-issue-triage" / "SKILL.md": ["Closed unchecked on @{login}'s answer"],
+    NEEDS_DECISION: ["   Decision by @<login>, relayed by <agent>\n"],
+    WATCH: ["Accepted by @<login> in #<issue>", "Direction from @<login> in #<issue>"],
+    SKILLS / "github-issue-triage" / "SKILL.md": [
+        "Closed unchecked on @{login}'s answer",
+        "`Decision by @<login>, relayed by <agent>`, stays as S-012-6",
+    ],
 }
 NOW = {
     COMMENTS: [
@@ -112,9 +112,14 @@ NOW = {
         "it waits for `@{maintainer}`",
         "I hand it back to `@{assignee}`",
         "Decision needed: `@{login}` reported",
+        "Decision by `@{login}`, relayed by {agent}\n",
     ],
-    WATCH: ["Accepted by `@<login>` in #<issue>"],
-    SKILLS / "github-issue-triage" / "SKILL.md": ["Closed unchecked on `@{login}`'s answer"],
+    NEEDS_DECISION: ["   Decision by `@<login>`, relayed by <agent>\n"],
+    WATCH: ["Accepted by `@<login>` in #<issue>", "Direction from `@<login>` in #<issue>"],
+    SKILLS / "github-issue-triage" / "SKILL.md": [
+        "Closed unchecked on `@{login}`'s answer",
+        "``Decision by `@<login>`, relayed by <agent>``, S-012-6",
+    ],
 }
 
 

@@ -17,7 +17,8 @@ WRITING_SKILLS = (
     "product-intake",
     "shipmill-setup",
 )
-RELAYED = "Decision by @<login>, relayed by <agent>"
+RELAYED = "Decision by `@<login>`, relayed by <agent>"  # the login in a code span (D-61, #771)
+BARE_RELAYED = "Decision by @<login>, relayed by <agent>"
 
 
 def folded(*parts: str) -> str:
@@ -59,7 +60,8 @@ def test_s012_5_a_headless_session_gets_a_form_its_allowlist_allows(skill: str) 
 @pytest.mark.parametrize("name", ["needs-decision.md", "comments.md"])
 def test_s012_6_a_relayed_answer_names_who_decided(name: str) -> None:
     text = folded("skills", "github-issue-triage", "references", name)
-    assert f"`{RELAYED}`" in text or f"```markdown {RELAYED} " in text
+    assert f"``{RELAYED}``" in text or f"```markdown {RELAYED} " in text
+    assert "```markdown Decision by @" not in text, "the template writes the login in a code span"
     assert "(`Claude Code`)" in text
     assert "`shipmill gh` with `[agents] app_id` set" in text
 
@@ -69,7 +71,14 @@ def test_s012_6_the_relayed_line_is_the_answer_comments_first_line() -> None:
     answered = ref.split("## Answered in the session", 1)[1].split(" ## ", 1)[0]
     assert f"```markdown {RELAYED} Answered in the session:" in answered
     comments = folded("skills", "github-issue-triage", "references", "comments.md")
-    assert "```markdown Decision by @{login}, relayed by {agent} {The option chosen" in comments
+    assert "```markdown Decision by `@{login}`, relayed by {agent} {The option chosen" in comments
+
+
+@pytest.mark.parametrize("name", ["needs-decision.md", "comments.md"])
+def test_s012_6_an_older_bare_relay_line_still_reads_as_the_answer(name: str) -> None:
+    text = folded("skills", "github-issue-triage", "references", name)
+    assert "a reader" in text and "older line with the login bare" in text
+    assert f"`{BARE_RELAYED}`" in text or "`Decision by @<login>`" in text
 
 
 def test_s012_6_no_skill_keeps_its_own_copy_of_the_references() -> None:

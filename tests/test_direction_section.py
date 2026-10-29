@@ -163,7 +163,8 @@ def test_s034_9_the_pull_request_opens_as_the_app_and_is_never_merged() -> None:
     writing = step(4)
     assert "on the branch `shipmill/direction`" in writing
     assert "open the pull request as the App (hard rule 7) through `--body-file`" in writing
-    assert "holds `Closes #<issue>` and the line `Direction from @<login> in #<issue>`" in writing
+    assert "holds `Closes #<issue>` and the line ``Direction from `@<login>` in #<issue>``" in writing
+    assert "Direction from @" not in writing, "the login sits in a code span (D-61, #771)"
     assert "The watch never merges it" in writing
     assert "github-pr-triage never merges an edit of `docs/product.md` on its own judgment (S-024-11)" in writing
 

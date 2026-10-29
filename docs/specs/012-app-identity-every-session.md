@@ -68,8 +68,10 @@ retries the write with plain `gh`.
 
 When a person answers a question in the session (a needs-decision answer, a "decision for
 you" on a PR) and the session posts that answer on GitHub as the App, the comment's first
-line is `Decision by @<login>, relayed by <agent>`, where `<agent>` names the tool (`Claude
-Code`). `skills/github-issue-triage/references/needs-decision.md` and
+line is ``Decision by `@<login>`, relayed by <agent>``, where `<agent>` names the tool
+(`Claude Code`); the login sits in a code span so the line doesn't email the person (D-61),
+and a reader still takes an older line with the login bare as the same answer.
+`skills/github-issue-triage/references/needs-decision.md` and
 `skills/github-issue-triage/references/comments.md` carry the line in their templates.
 
 ### `status` and `doctor`
@@ -96,7 +98,7 @@ when its author is the App. With `app_id` unset neither reads anything for this.
 - S-012-3: with `app_id` set, a missing key, a key readable by group or others, an App not installed on the repo, or a missing permission makes `shipmill gh` exit 2 naming the cause and its fix, and `gh` is never run
 - S-012-4: with `app_id` unset or no `.github/shipmill.toml`, `shipmill gh <args>` runs `gh` with `<args>` and no `GH_TOKEN`, even when its own environment had `GH_TOKEN` set to an empty string, and mints no token
 - S-012-5: each of the six skills' `SKILL.md` says that with `[agents] app_id` set every `gh` call that writes runs as `shipmill gh`, in every session, and that a `shipmill gh` exit 2 is never retried with plain `gh`
-- S-012-6: `needs-decision.md` and `comments.md` give a relayed answer's first line as `Decision by @<login>, relayed by <agent>`
+- S-012-6: `needs-decision.md` and `comments.md` give a relayed answer's first line as ``Decision by `@<login>`, relayed by <agent>``
 - S-012-7: with `app_id` set, `shipmill status` prints a WARN row `AGENT_AS_PERSON` and `shipmill doctor` a `WARN AGENT_AS_PERSON` check when an issue, pull request, or issue comment of the last 7 days carries an agent marker and has a `User` author, each naming the count, at most three URLs, and the fix; one written by a `Bot`, or older than 7 days, isn't counted
 - S-012-8: with `app_id` unset, `status` and `doctor` make no request for the `AGENT_AS_PERSON` check and print no such row
 - S-012-9: `docs/install.md` and `skills/shipmill-setup/SKILL.md` document `shipmill gh`, the no-checkout cache folder, and that the App's identity covers sessions a person starts
@@ -126,7 +128,7 @@ when its author is the App. With `app_id` unset neither reads anything for this.
 - S-012-3: ran the `test_s012_3` tests, a missing key, a key readable by group or others, an App not installed, and a missing permission each raise naming the cause and the fix, `python -m shipmill gh` exits 2, `gh` never runs
 - S-012-4: ran `test_s012_4_without_app_id_gh_runs_as_the_host_with_no_gh_token_and_no_mint` with no config, `[agents]` without `app_id`, `[release]` only, and no checkout, `gh` gets the arguments, no `GH_TOKEN` though the caller's was empty, no token minted, nothing printed
 - S-012-5: read the six `SKILL.md` files, each says it once under "Write as the App when the repo has one", with the uvx form for headless gate sessions; the `test_s012_5` tests in `tests/test_app_gh_docs.py` pass and check these six are every skill
-- S-012-6: read `needs-decision.md` and `comments.md` under `skills/github-issue-triage/references/`, the only copies, each gives the answer comment's first line as `Decision by @<login>, relayed by <agent>`; the `test_s012_6` tests pass
+- S-012-6: read `needs-decision.md` and `comments.md` under `skills/github-issue-triage/references/`, the only copies, each gives the answer comment's first line as ``Decision by `@<login>`, relayed by <agent>``; the `test_s012_6` tests pass
 - S-012-7: read `src/shipmill/agent_as_person.py` and ran the `test_s012_7` tests, `status` prints the WARN row and `doctor` the WARN check with the count, at most three URLs, and the `shipmill gh` fix; a `Bot` author or an item older than 7 days isn't counted
 - S-012-8: ran the `test_s012_8` tests, with no `app_id` neither `status` nor `doctor` makes the search or prints the row
 - S-012-9: read `docs/install.md` (Give the sessions their own identity) and shipmill-setup's The gate, step 3, both document `shipmill gh`, the no-checkout cache folder, and that the App covers sessions a person starts; `test_s012_9_the_setup_docs_document_shipmill_gh` passes
