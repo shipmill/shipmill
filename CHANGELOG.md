@@ -7,6 +7,17 @@ bot.
 
 ## [Unreleased]
 
+## [0.96.0] - 2026-10-29
+
+### Added
+
+- `shipmill gate` checks the GitHub identity a session writes as before it starts one: on a LAUNCH, after the Claude Code preflight, it mints the App's installation token and reads the repo with it (never cached), or reads `gh api repos/<repo>` as the host's login without an App. A failure, or a failing App check before the state read, is the new `GITHUB_AUTH` decision with the reason and fix spec 048 gives, starts and stops no session, and exits 2 as the bare App check error did (#813)
+- `shipmill gate` stops a hung headless session: one whose log hasn't grown for the new `[agents] stall_minutes` (30 by default, 0..1440, 0 never) reads `STALLED`, gets SIGTERM to its process group while its start time still matches `gate.json`, starts nothing, and its item is retried after `retry_hours`; `shipmill gate --json` adds `running` (session, item, minutes, `log_grew`) on RUNNING and STALLED (#815)
+
+### Changed
+
+- A RUNNING tick names the session's item, how long it has run, and, for a headless session, how many minutes ago its log last grew; `gate.json` records the launch's item, and one written before reads `item not recorded`. Headless sessions start with `--output-format stream-json --verbose`, so their log grows while they work, and a session ended with a result only when its log's `result` event has `is_error` false; a log written before is read as before (S-048-14, S-048-15, S-048-17) (#814)
+
 ## [0.95.0] - 2026-10-29
 
 ### Changed
@@ -2044,7 +2055,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.95.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.96.0...HEAD
+[0.96.0]: https://github.com/shipmill/shipmill/compare/v0.95.0...v0.96.0
 [0.95.0]: https://github.com/shipmill/shipmill/compare/v0.94.0...v0.95.0
 [0.94.0]: https://github.com/shipmill/shipmill/compare/v0.93.0...v0.94.0
 [0.93.0]: https://github.com/shipmill/shipmill/compare/v0.92.0...v0.93.0
