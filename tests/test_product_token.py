@@ -32,7 +32,7 @@ from shipmill.app_gh import product_refusal, run_gh
 from shipmill.autonomy import Hold
 from shipmill.cli import _product_repos, main
 from shipmill.errors import ReleaseError
-from shipmill.gate import gate, state_dir
+from shipmill.gate import Action, gate, state_dir
 from shipmill.gitrepo import Git
 
 from .test_agent_marker import AGENTS, Current, sent
@@ -319,19 +319,20 @@ def test_s038_7_the_home_repos_gate_starts_no_session_without_the_coordinators_a
     product = ProductConfig.load(root)
     assert product is not None
     check = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), github, lambda: product.repos)
-    with pytest.raises(ReleaseError, match=message):
-        gate(
-            Git(root),
-            REPO,
-            lambda: AgentsConfig.load(root, REPO),
-            claude,
-            lambda _: [ISSUES],
-            NOW,
-            Hold,
-            FakeNotifier(),
-            NO_PRUNE,
-            app=check,
-        )
+    decision, *_ = gate(
+        Git(root),
+        REPO,
+        lambda: AgentsConfig.load(root, REPO),
+        claude,
+        lambda _: [ISSUES],
+        NOW,
+        Hold,
+        FakeNotifier(),
+        NO_PRUNE,
+        app=check,
+    )
+    # spec 048: the failed App check reads GITHUB_AUTH, naming the listed repo
+    assert decision.action is Action.GITHUB_AUTH and decision.reason.startswith(f"{message}: no session starts")
     assert (claude.launched, claude.stopped, github.posts) == ([], [], [])
 
 

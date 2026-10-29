@@ -275,8 +275,10 @@ def test_d21_interactive_passes_bot_login_with_an_app_and_not_without(checkout: 
 def test_d21_an_interactive_tick_whose_app_check_fails_reads_no_state(checkout: Git, tmp_path: Path) -> None:
     reads = Reads()
     claude = FakeClaude()
-    with pytest.raises(ReleaseError):
-        tick(checkout, interactive(APP_ID), claude, reads, app=app_check_for(tmp_path, FakeApi(installed=False)))
+    decision, *_ = tick(
+        checkout, interactive(APP_ID), claude, reads, app=app_check_for(tmp_path, FakeApi(installed=False))
+    )
+    assert decision.action is Action.GITHUB_AUTH  # spec 048
     assert reads.seen == [] and claude.launched == []
 
 
@@ -607,8 +609,10 @@ def test_s005_11_watch_state_takes_the_flags_the_gate_passes(checkout: Git) -> N
 
 def test_s005_11_a_failing_app_check_reads_no_state_and_launches_nothing(checkout: Git, tmp_path: Path) -> None:
     claude = FakeClaude([bg("old", "idle", "done")])
-    with pytest.raises(ReleaseError, match="not installed on romamo/demo"):
-        tick(checkout, headless(APP_ID), claude, unread, app=app_check_for(tmp_path, FakeApi(installed=False)))
+    decision, *_ = tick(
+        checkout, headless(APP_ID), claude, unread, app=app_check_for(tmp_path, FakeApi(installed=False))
+    )
+    assert decision.action is Action.GITHUB_AUTH and "not installed on romamo/demo" in decision.reason  # spec 048
     assert (claude.started, claude.launched, claude.stopped) == ([], [], [])
     assert not (state_dir(checkout) / RECORD).exists()
 
