@@ -38,7 +38,7 @@ one PR that sets app_id sets mode too. One more row follows it when it applies:
 And one more after it (spec 040):
   AUTONOMY_IMPLICIT  an [agents] section, but [autonomy] sets none of triage, fix, and
                    land: how far a session goes was never chosen, so it comes from the
-                   defaults (or, for one minor release, from the prompt's words).
+                   defaults (or from the prompt's words, with no end date: D-63).
                    shipmill-setup's Autonomy step asks and writes all three. --fix leaves it
 
 Product (spec 043: whether the repo is one of several that make up one product; one row,

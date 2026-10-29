@@ -167,6 +167,24 @@ def test_d63_a_config_from_before_spec_040_keeps_loading_and_landing(tmp_path: P
     assert loaded.autonomy.is_read_from_prompt(LAND)
 
 
+ROOT = Path(__file__).parent.parent
+_TELLS_THE_PROMPT_READING = (
+    ROOT / "src" / "shipmill" / "autonomy.py",
+    ROOT / "src" / "shipmill" / "doctor.py",
+    ROOT / "src" / "shipmill" / "upgrades.py",
+    ROOT / "skills" / "github-ship-watch" / "scripts" / "watch_state.py",
+    ROOT / "skills" / "shipmill-setup" / "scripts" / "setup_state.py",
+    ROOT / "docs" / "specs" / "040-agent-autonomy.md",
+)
+
+
+@pytest.mark.parametrize("path", _TELLS_THE_PROMPT_READING, ids=lambda p: p.relative_to(ROOT).as_posix())
+def test_d63_nothing_promises_the_prompt_reading_ends_on_a_release_count(path: Path) -> None:
+    text = " ".join(path.read_text(encoding="utf-8").split()).lower()
+    assert "for one minor release" not in text
+    assert "next minor" not in text
+
+
 # -- the agent-autonomy upgrade (S-040-7) ----------------------------------------------------
 
 
