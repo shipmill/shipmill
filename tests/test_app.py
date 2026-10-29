@@ -356,8 +356,11 @@ def test_s004_4_a_missing_openssl_is_named(checkout: Git, tmp_path: Path) -> Non
         Openssl(missing).sign(key_file(tmp_path), b"data")
     claude = FakeClaude([bg("old", "idle", "done")])
     check = app_check(REPO, key_file(tmp_path), tmp_path, Openssl(missing), FakeApi())
-    with pytest.raises(ReleaseError, match="openssl not found"):
-        gate(checkout, REPO, app_cfg, claude, lambda _: [ISSUES], NOW, Hold, FakeNotifier(), NO_PRUNE, app=check)
+    # spec 048: the gate names it as GITHUB_AUTH
+    decision, *_ = gate(
+        checkout, REPO, app_cfg, claude, lambda _: [ISSUES], NOW, Hold, FakeNotifier(), NO_PRUNE, app=check
+    )
+    assert decision.action is Action.GITHUB_AUTH and f"{missing} not found" in decision.reason
     assert (claude.launched, claude.stopped) == ([], [])
 
 

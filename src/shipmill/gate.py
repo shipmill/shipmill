@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Protocol
 
 from shipmill.agents import AgentsConfig, Mode, RolesConfig
-from shipmill.app import AppCheck, AuthFailure, Identity
+from shipmill.app import AppCheck, Identity
 from shipmill.autonomy import AGENT_STAGES, Autonomy, AutonomyPolicy, Hold, Stage, StageKind
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import ClaudeAuth
@@ -1897,8 +1897,9 @@ def gate(
 
     github asks whether the identity a session writes with reaches the repo (spec 048, reached);
     None, as in tests that don't exercise it, asks nothing. A LAUNCH, in either mode and dry run
-    or not, asks it right after the Claude Code preflight passes: a failure is GITHUB_AUTH. An
-    App check that fails with a failure spec 048's table names is GITHUB_AUTH too, read before
+    or not, asks it right after the Claude Code preflight passes: any failure is GITHUB_AUTH. An
+    App check that fails with a shipmill error is GITHUB_AUTH too, the table's reason and fix
+    when it names the failure, else the error's first line with `app-install`; it runs before
     the state, so it runs no state read and no change check (D-14). Neither writes cursor.json
     or handed.json, so the next tick walks again"""
     check_checkout(git, repo)
@@ -1951,8 +1952,10 @@ def gate(
     # its bot's needs-decision questions read as questions (D-21, #206)
     try:
         identity = None if agents.app_id is None else as_app(agents.app_id, app)
-    except AuthFailure as exc:  # spec 048: named with its fix, before any state read
-        failed = GitHubAuth.of(exc)
+    except ReleaseError as exc:  # spec 048: any failure, named with its fix, before any state read
+        if app is None or agents.app_id is None:  # no App check given: the CLI's wiring, not the App's (D-14)
+            raise
+        failed = GitHubAuth.app_failed(exc, agents.app_id, repo)
         refusal = Decision(
             Action.GITHUB_AUTH,
             failed.reason(),

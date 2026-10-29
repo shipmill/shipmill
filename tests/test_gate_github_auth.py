@@ -30,7 +30,7 @@ from shipmill.gate import (
     save_launch,
     state_dir,
 )
-from shipmill.github_auth import HOST_FIX, GitHubAuth, github_auth, host_reach
+from shipmill.github_auth import GH_MISSING_FIX, HOST_FIX, GitHubAuth, github_auth, host_reach
 from shipmill.gitrepo import Git
 from shipmill.walk import CURSOR, HANDED
 
@@ -264,12 +264,59 @@ def test_s048_3_a_host_login_that_cant_read_the_repo_is_github_auth(checkout: Gi
     )
 
 
-def test_s048_3_gh_missing_is_an_error_not_a_verdict(tmp_path: Path) -> None:
+def test_s048_3_gh_missing_is_github_auth_naming_its_install(checkout: Git, tmp_path: Path) -> None:
+    claude = FakeClaude([bg("old", "idle", "done")])
+
     def missing(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         raise FileNotFoundError(cmd[0])
 
-    with pytest.raises(ReleaseError, match="gh is not on PATH"):
-        host_reach(REPO, tmp_path, missing)
+    preflight = github_auth(REPO, checkout.root, FakeSigner(), ReachApi(), run=missing)
+    decision = tick(checkout, tmp_path, config(Mode.HEADLESS, None), claude, preflight, auth_of([]))
+    assert decision.action is Action.GITHUB_AUTH and _gate_exit(decision) == 2
+    assert decision.reason == (
+        f"gh isn't on PATH, so the host's gh login can't read {REPO}: no session starts; fix: {GH_MISSING_FIX}"
+    )
+    assert (claude.started, claude.stopped) == ([], [])
+
+
+def test_s048_3_gh_that_doesnt_answer_is_github_auth_with_the_login_fix(tmp_path: Path) -> None:
+    def hangs(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd, 60)
+
+    assert host_reach(REPO, tmp_path, hangs) == GitHubAuth(
+        f"the host's gh login can't reach {REPO}: gh api repos/{REPO} didn't answer in 60 s", HOST_FIX
+    )
+
+
+class UnreachableRepo(ReachApi):
+    """GitHub unreachable once the token is minted, as UrllibApi raises it"""
+
+    def get(self, path: str, token: str | None) -> Answer:
+        if path == REPO_PATH:
+            raise ReleaseError(f"GitHub's API is unreachable for GET {path}: timed out")
+        return super().get(path, token)
+
+
+@pytest.mark.parametrize(
+    ("api", "error"),
+    [
+        (UnreachableRepo(), f"GitHub's API is unreachable for GET {REPO_PATH}: timed out"),
+        (
+            ReachApi(mint=Answer(201, json.dumps({"token": SECRET, "expires_at": "2026-10-04T13:00:00Z"}))),
+            f"POST {ACCESS} gave a token not limited to {REPO}; refusing it",
+        ),
+        (ReachApi(mint=Answer(201, "not json")), f"POST {ACCESS} answered 201 without JSON"),
+    ],
+)
+def test_s048_3_any_other_failure_is_github_auth_naming_the_app_and_the_repo(
+    checkout: Git, tmp_path: Path, api: ReachApi, error: str
+) -> None:
+    decision = launch_failing(checkout, tmp_path, api, APP_ID)
+    assert decision.action is Action.GITHUB_AUTH
+    assert (
+        decision.reason == f"the App {APP_ID} can't reach {REPO}: {error}: no session starts; fix: {install_fix(REPO)}"
+    )
+    assert SECRET not in decision.reason
 
 
 # S-048-4
@@ -321,6 +368,40 @@ def test_s048_4_a_failed_app_check_is_github_auth_and_reads_no_state(
     assert decision.reason == f"{problem}: no session starts; fix: {fix}"
     assert (claude.started, claude.launched, claude.stopped) == ([], [], [])
     assert nothing_walked(checkout) and _gate_exit(decision) == 2
+
+
+class UnreachableApp(ReachApi):
+    """GitHub unreachable for the App check's first call, as UrllibApi raises it"""
+
+    def get(self, path: str, token: str | None) -> Answer:
+        if path == "/app":
+            raise ReleaseError("GitHub's API is unreachable for GET /app: nodename nor servname provided")
+        return super().get(path, token)
+
+
+@pytest.mark.parametrize(
+    ("api", "error"),
+    [
+        (UnreachableApp(), "GitHub's API is unreachable for GET /app: nodename nor servname provided"),
+        (
+            ReachApi(bot=Answer(404, '{"message": "Not Found"}')),
+            f"GitHub has no bot account {BOT} for app_id {APP_ID}",
+        ),
+        (ReachApi(app=Answer(200, "[]")), "GET /app answered 200 with JSON that is not an object"),
+    ],
+)
+def test_s048_4_any_other_app_check_failure_is_github_auth_and_reads_no_state(
+    checkout: Git, tmp_path: Path, api: ReachApi, error: str
+) -> None:
+    claude = FakeClaude([bg("old", "idle", "done")])
+    agents = config(Mode.HEADLESS, APP_ID)
+    decision = tick(checkout, tmp_path, agents, claude, unasked_github, unasked_auth, api, unread)
+    assert decision.action is Action.GITHUB_AUTH and _gate_exit(decision) == 2
+    assert (
+        decision.reason == f"the App {APP_ID} can't reach {REPO}: {error}: no session starts; fix: {install_fix(REPO)}"
+    )
+    assert (claude.started, claude.launched, claude.stopped) == ([], [], [])
+    assert nothing_walked(checkout)
 
 
 def test_s048_4_a_missing_key_names_its_path_and_app_create(checkout: Git, tmp_path: Path) -> None:

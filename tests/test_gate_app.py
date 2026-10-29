@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import os
 import plistlib
+import re
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -183,8 +184,10 @@ def test_s004_6_a_bad_bot_account_exits_2_and_starts_nothing(
     checkout: Git, tmp_path: Path, answer: Answer, message: str
 ) -> None:
     claude = FakeClaude([bg("old", "idle", "done")])
-    with pytest.raises(ReleaseError, match=message):
-        launch_as_app(checkout, tmp_path, claude, FakeApi(bot=answer))
+    # spec 048: any failed App check reads GITHUB_AUTH, which exits 2 as the bare error did
+    decision, launched = launch_as_app(checkout, tmp_path, claude, FakeApi(bot=answer))
+    assert (decision.action, launched, _gate_exit(decision)) == (Action.GITHUB_AUTH, None, 2)
+    assert re.search(message, decision.reason) is not None
     assert (claude.launched, claude.stopped) == ([], [])
     assert not helpers_of(checkout).exists()
 
