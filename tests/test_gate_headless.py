@@ -78,9 +78,15 @@ def checkout(tmp_path: Path) -> Git:
     return repo
 
 
-def headless(app_id: int | None = None, max_wait_minutes: int = 15) -> AgentsConfig:
+def headless(app_id: int | None = None, max_wait_minutes: int = 15, stall_minutes: int = 30) -> AgentsConfig:
     return AgentsConfig(
-        prompt="/t", prs=False, retry_hours=24, app_id=app_id, mode=Mode.HEADLESS, max_wait_minutes=max_wait_minutes
+        prompt="/t",
+        prs=False,
+        retry_hours=24,
+        app_id=app_id,
+        mode=Mode.HEADLESS,
+        max_wait_minutes=max_wait_minutes,
+        stall_minutes=stall_minutes,
     )
 
 
@@ -140,6 +146,7 @@ def tick(
     who: Callable[[], str] = login,
     app: AppCheck | None = None,
     app_env: SessionEnv | None = None,
+    stop: Callable[[int], bool] | None = None,
 ) -> Tick:
     return gate(
         git,
@@ -157,6 +164,7 @@ def tick(
         app=app,
         app_env=app_env,
         new_session=lambda: SESSION,
+        stop=stop,
     )
 
 
@@ -700,7 +708,10 @@ def write_headless_record(git: Git, started: str | None = STARTED) -> None:
 def test_s005_20_a_running_headless_session_reads_running(checkout: Git) -> None:
     write_headless_record(checkout)
     claude = FakeClaude()
-    decision, launched, waiting, _ = tick(checkout, headless(), claude, unread, now=NOW + dt.timedelta(days=3))
+    # stall_minutes = 0: spec 048 stops a session whose log was silent this long (STALLED)
+    decision, launched, waiting, _ = tick(
+        checkout, headless(stall_minutes=0), claude, unread, now=NOW + dt.timedelta(days=3)
+    )
     assert (decision.action, launched, waiting) == (Action.RUNNING, None, ())
     assert decision.reason == (  # S-048-15: a record from before spec 048, and no log yet
         f"session {SESSION} on item not recorded, running 4320 min, log grew 4320 min ago: tail -f {log_of(checkout)}"
@@ -738,9 +749,9 @@ def test_s005_20_a_session_whose_start_time_wasnt_read_is_not_running(checkout: 
 def test_s005_20_a_headless_session_never_waits_and_is_never_stopped(checkout: Git) -> None:
     write_headless_record(checkout)
     claude = FakeClaude()
-    for hours in (1, 5, 30):  # far past max_wait_minutes = 1
+    for hours in (1, 5, 30):  # far past max_wait_minutes = 1; stall_minutes = 0 never reads it STALLED (spec 048)
         decision, _, waiting, _ = tick(
-            checkout, headless(max_wait_minutes=1), claude, unread, now=NOW + dt.timedelta(hours=hours)
+            checkout, headless(max_wait_minutes=1, stall_minutes=0), claude, unread, now=NOW + dt.timedelta(hours=hours)
         )
         assert (decision.action, waiting) == (Action.RUNNING, ())
     assert claude.stopped == []

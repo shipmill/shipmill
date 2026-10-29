@@ -342,6 +342,7 @@ modes](design/agent-modes.md) has the details.
    notify = true      # a desktop notification when a session waits on you
    remind_hours = 4   # repeat it while the session still waits
    max_wait_minutes = 15 # stop a session that waited this long; 0: never
+   stall_minutes = 30 # stop a headless session whose log was silent this long (STALLED); 0..1440, 0: never
    # app_id = 123456  # sessions write as this GitHub App; unset: as your gh login
    # mode = "headless" # interactive (default): sessions ask you; headless: `claude -p`, they ask on GitHub
    # wip = 3          # at most 3 issues in progress at once (1..100); unset: no limit

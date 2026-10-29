@@ -19,6 +19,7 @@ import enum
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import uuid
@@ -181,7 +182,8 @@ class Launch:
     """The last session the gate started, and the findings it started it for; process is set
     for a headless launch (D-17) and None for an interactive one; deaths, the dead sessions in
     a row right before it (#500), None when the one before it ran; item, the item's brief()
-    line (`NEW #774`), None in a gate.json written before spec 048 (S-048-14)"""
+    line (`NEW #774`), None in a gate.json written before spec 048 (S-048-14); stopped, when a
+    STALLED tick first sent its process group SIGTERM (spec 048), None while the gate never did"""
 
     fingerprint: str
     session: str
@@ -189,10 +191,13 @@ class Launch:
     process: Process | None = None
     deaths: Deaths | None = None
     item: str | None = None
+    stopped: dt.datetime | None = None
 
     def __post_init__(self) -> None:
         if self.item is not None and (not isinstance(self.item, str) or not self.item.strip()):
             raise ValueError(f"item must be a non-empty string, got {self.item!r}")
+        if self.stopped is not None and self.process is None:
+            raise ValueError("stopped needs a headless launch's process; an interactive session is never STALLED")
 
     @property
     def mode(self) -> Mode:
@@ -213,10 +218,27 @@ def minutes_between(start: dt.datetime, end: dt.datetime) -> int:
     return max(0, int((end - start).total_seconds() // 60))
 
 
+@dataclass(frozen=True, slots=True)
+class Running:
+    """The session a RUNNING or STALLED tick waits on, as `shipmill gate --json` prints it
+    (S-048-16): item and minutes are None for a session the gate didn't launch, item for a
+    gate.json written before spec 048, and log_grew, the minutes since its log's last write,
+    for an interactive session, which has no log the gate writes"""
+
+    session: str
+    item: str | None
+    minutes: int | None
+    log_grew: int | None
+
+    def record(self) -> dict[str, object]:
+        return {"session": self.session, "item": self.item, "minutes": self.minutes, "log_grew": self.log_grew}
+
+
 class Action(enum.Enum):
     HELD = "HELD"  # an open shipmill-hold issue stops every launch (D-15)
     QUIET = "QUIET"  # nothing needs an agent
     RUNNING = "RUNNING"  # a session is still working
+    STALLED = "STALLED"  # a headless session's log was silent for stall_minutes: the gate stops it (spec 048)
     WAITING = "WAITING"  # a session waits on the user
     UNCHANGED = "UNCHANGED"  # the same findings already got a session
     PYPI_WAIT = "PYPI_WAIT"  # PyPI answers 404 for the plugin version a session would load (S-031-24)
@@ -266,6 +288,7 @@ class Decision:
     prune: PruneRun | None = None  # what the tick's prune did, after the decision (spec 045); None: no prune step
     walk: WalkRun | None = None  # how far the tick's walk went (spec 046); None: the tick read no state
     tier: int | None = None  # the tier of the item a LAUNCH hands (spec 046)
+    running: Running | None = None  # the session a RUNNING or STALLED tick waits on (S-048-16); None otherwise
 
 
 def held(hold: Hold, sessions: Sequence[Session]) -> Decision | None:
@@ -289,8 +312,10 @@ def busy(sessions: Sequence[Session], last: Launch | None = None, now: dt.dateti
         if s.running:
             if last is not None and now is not None and s.id == last.session:
                 ran = f"session {s.id} on {last.named}, running {last.minutes(now)} min"
-                return Decision(Action.RUNNING, f"{ran}: claude attach {s.id}", ())
-            return Decision(Action.RUNNING, f"session {s.id} is still working: claude attach {s.id}", ())
+                running = Running(s.id, last.item, last.minutes(now), None)
+                return Decision(Action.RUNNING, f"{ran}: claude attach {s.id}", (), running=running)
+            line = f"session {s.id} is still working: claude attach {s.id}"
+            return Decision(Action.RUNNING, line, (), running=Running(s.id, None, None, None))
     return None
 
 
@@ -555,6 +580,7 @@ Runner = Callable[[list[str], Path], str]  # (command, cwd) -> its stdout
 EnvRunner = Callable[[list[str], Path, Mapping[str, str]], str]  # (command, cwd, env) -> its stdout
 Spawner = Callable[[list[str], Path, Path, Mapping[str, str]], int]  # (command, cwd, log, env) -> its pid
 StartTime = Callable[[int], str | None]  # pid -> its process's start time; None when no such process
+Stop = Callable[[int], bool]  # pid -> SIGTERM sent to the process group it leads; False when no such group
 
 # Claude Code stops a `claude -p` session's background subagents this long after its last
 # turn; "0" waits for them however long they run (#246)
@@ -609,6 +635,18 @@ def start_time(pid: int) -> str | None:
     if proc.returncode != 0 or not started:
         return None
     return started
+
+
+def stop_group(pid: int) -> bool:
+    """SIGTERM to the process group pid leads: a headless session's own, as spawn_detached
+    starts it in a new session (spec 048, STALLED); False when no such group is left"""
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return False
+    except PermissionError as exc:
+        raise ReleaseError(f"the gate can't stop process group {pid} ({exc}); fix: kill -TERM -{pid}") from None
+    return True
 
 
 def host_login(workspace: Path, run: Runner = run_command) -> str:
@@ -824,8 +862,9 @@ def state_dir(git: Git) -> Path:
 
 def load_launch(path: Path) -> Launch | None:
     """gate.json; one without mode, as written before headless mode, is an interactive launch,
-    one without dead, as written before #500, follows a session that ran, and one without
-    item, as written before spec 048, names no item (S-048-14)"""
+    one without dead, as written before #500, follows a session that ran, one without
+    item, as written before spec 048, names no item (S-048-14), and one without stopped
+    follows a session the gate never stopped"""
     if not path.is_file():
         return None
     try:
@@ -846,14 +885,15 @@ def load_launch(path: Path) -> Launch | None:
             deaths = Deaths(dead["count"], _moment(dead["since"], "dead.since"))
         at = dt.datetime.fromisoformat(data["at"])
         item = data.get("item")  # S-048-14: absent in one written before spec 048
-        return Launch(str(data["fingerprint"]), str(data["session"]), at, process, deaths, item)
+        stopped = _moment(data["stopped"], "stopped") if "stopped" in data else None
+        return Launch(str(data["fingerprint"]), str(data["session"]), at, process, deaths, item, stopped)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise ReleaseError(f"{path} is malformed ({exc}); delete it to start over") from None
 
 
 def save_launch(path: Path, launch: Launch) -> None:
     """An interactive launch's record is the one written before headless mode; dead is written
-    only after a run of dead sessions (#500)"""
+    only after a run of dead sessions (#500), and stopped only once a STALLED tick stopped it"""
     path.parent.mkdir(parents=True, exist_ok=True)
     record: dict[str, object] = {"fingerprint": launch.fingerprint, "session": launch.session}
     if launch.item is not None:  # S-048-14: beside its fingerprint
@@ -863,6 +903,8 @@ def save_launch(path: Path, launch: Launch) -> None:
         record |= {"mode": launch.mode.value, "pid": launch.process.pid, "started": launch.process.started}
     if launch.deaths is not None:
         record["dead"] = {"count": launch.deaths.count, "since": launch.deaths.since.isoformat()}
+    if launch.stopped is not None:
+        record["stopped"] = launch.stopped.isoformat()
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
 
 
@@ -879,18 +921,57 @@ def log_written(log: Path, launch: Launch) -> dt.datetime:
     return dt.datetime.fromtimestamp(log.stat().st_mtime, tz=dt.UTC)
 
 
-def still_working(last: Launch | None, state: Path, started: StartTime, now: dt.datetime) -> Decision | None:
+def still_working(
+    last: Launch | None, state: Path, started: StartTime, now: dt.datetime, stall: Callable[[], int] | None = None
+) -> Decision | None:
     """D-17: a headless session runs while a process with its pid and recorded start time
     exists; another start time means the pid was reused. It never reads as waiting. Its line
-    names its item, how long it ran, and when its log last grew, as of now (S-048-15)"""
+    names its item, how long it ran, and when its log last grew, as of now (S-048-15). stall
+    reads [agents] stall_minutes, only once the process is found running; a log silent that
+    many minutes or more makes it STALLED (S-048-19), which stalled() then stops. None, or 0,
+    never reads it as stalled"""
     if last is None or last.process is None or last.process.started is None:
         return None
     if started(last.process.pid) != last.process.started:
         return None
     log = session_log(state, last.session)
     grew = minutes_between(log_written(log, last), now)
+    running = Running(last.session, last.item, last.minutes(now), grew)
+    limit = 0 if stall is None else stall()
+    if limit > 0 and grew >= limit:
+        silent = (
+            f"session {last.session} on {last.named}, running {last.minutes(now)} min, its log silent for {grew} min"
+        )
+        return Decision(Action.STALLED, silent, (), running=running)
     ran = f"session {last.session} on {last.named}, running {last.minutes(now)} min, log grew {grew} min ago"
-    return Decision(Action.RUNNING, f"{ran}: tail -f {log}", ())
+    return Decision(Action.RUNNING, f"{ran}: tail -f {log}", (), running=running)
+
+
+def stalled(
+    decision: Decision,
+    last: Launch,
+    state: Path,
+    started: StartTime,
+    stop: Stop | None,
+    now: dt.datetime,
+    dry_run: bool,
+) -> tuple[Decision, Launch | None]:
+    """Spec 048: a STALLED tick reads the process's start time again and, only while it still
+    matches gate.json, sends SIGTERM to the session's process group, so a reused pid is never
+    signalled. A dry run stops nothing and says it would. Returns the decision, its reason
+    finished, and the launch to record with when it was first stopped, so ended_dead never
+    reads it as dead (DEAD_STREAK); None when there is nothing to record"""
+    if last.process is None:
+        raise ValueError("an interactive session is never STALLED")
+    fix = f"fix: tail -n 20 {session_log(state, last.session)}"
+    if dry_run:
+        return replace(decision, reason=f"{decision.reason}; would stop it; {fix}"), None
+    if stop is None:
+        raise ReleaseError(f"session {last.session} is stalled, but no way to stop it was given; nothing is stopped")
+    if started(last.process.pid) != last.process.started or not stop(last.process.pid):
+        return replace(decision, reason=f"{decision.reason}; it ended before the gate stopped it; {fix}"), None
+    first = None if last.stopped is not None else replace(last, stopped=now)  # a later tick sends SIGTERM again
+    return replace(decision, reason=f"{decision.reason}; stopped it; {fix}"), first
 
 
 @dataclass(frozen=True, slots=True)
@@ -1035,8 +1116,9 @@ def ended_dead(last: Launch | None, state: Path) -> Dead | None:
     its log's modification time, the log's last write; a launch without a log reads as one that
     ran. An interactive launch has no log: listed_dead reads it. A stream-json log's result is
     its `result` event (S-048-17); a text log, written before spec 048, is read as before. The
-    authentication failure check reads the tail of either"""
-    if last is None or last.process is None:
+    authentication failure check reads the tail of either. One a STALLED tick stopped ran (spec
+    048), even when its log fell silent within DEAD_WITHIN of its launch"""
+    if last is None or last.process is None or last.stopped is not None:
         return None
     log = session_log(state, last.session)
     if not log.is_file():
@@ -1811,6 +1893,7 @@ def gate(
     walk_now: bool = False,
     sweep_now: bool = False,
     github: GitHubPreflight | None = None,
+    stop: Stop | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -1901,7 +1984,15 @@ def gate(
     App check that fails with a shipmill error is GITHUB_AUTH too, the table's reason and fix
     when it names the failure, else the error's first line with `app-install`; it runs before
     the state, so it runs no state read and no change check (D-14). Neither writes cursor.json
-    or handed.json, so the next tick walks again"""
+    or handed.json, so the next tick walks again.
+
+    stop sends SIGTERM to a stalled headless session's process group (spec 048, stop_group);
+    None, as in tests that don't exercise it, refuses a real STALLED tick rather than stop
+    nothing. A last headless launch still running whose log was silent for [agents]
+    stall_minutes or more, the config read only then, is STALLED: a real tick stops it while
+    its start time still matches (stalled) and records when in gate.json, a dry run stops
+    nothing. It starts no session, runs neither preflight, and writes no cursor.json or
+    handed.json, so its item stays handed and is retried after retry_hours"""
     check_checkout(git, repo)
 
     def pruned_after(
@@ -1936,7 +2027,11 @@ def gate(
     pending = busy(sessions, last, now)
     if pending is not None:
         return pruned_after(replace(pending, credential=kind), None, waiting)
-    working = still_working(last, state, started, now)
+    working = still_working(last, state, started, now, lambda: config().stall_minutes)
+    if working is not None and working.action is Action.STALLED and last is not None:
+        working, first_stop = stalled(working, last, state, started, stop, now, dry_run)
+        if first_stop is not None:
+            save_launch(record, first_stop)
     if working is not None:
         return pruned_after(replace(working, credential=kind), None, waiting)
     # a dead session was no attempt: its findings aren't handled (#500)
@@ -2073,6 +2168,7 @@ def tick_record(
         "dead": None if decision.dead is None else decision.dead.record(),
         "walk": None if decision.walk is None else decision.walk.record(),  # spec 046: how far the walk went
         "item": decision.work[0].brief() if len(decision.work) == 1 else None,
+        "running": None if decision.running is None else decision.running.record(),  # S-048-16
     }
 
 

@@ -20,6 +20,8 @@ _PRUNE_HOURS = 6  # the gate's prune runs this often by default (spec 045, D-56)
 _SWEEP_HOURS = 6  # the gate reads the timed sections this often by default (spec 046, D-57)
 _REMIND_HOURS = 4
 _MAX_WAIT_MINUTES = 15
+_STALL_MINUTES = 30  # a headless session whose log is silent this long is stopped (spec 048)
+_MAX_STALL_MINUTES = 24 * 60  # a day
 _MAX_WIP = 100
 # deprecated and ignored in 0.60.0 (S-031-21), refused since (S-031-22, as D-32 set for [roadmap])
 _PLUGIN_UPDATE = "plugin_update"
@@ -230,6 +232,8 @@ class AgentsConfig:
     notify: bool = True  # a desktop notification when a session waits on you
     remind_hours: int = _REMIND_HOURS  # repeat it while the session still waits
     max_wait_minutes: int = _MAX_WAIT_MINUTES  # stop a session that waited this long; 0: never
+    # stop a headless session whose log was silent this long; 0: never (spec 048, STALLED)
+    stall_minutes: int = _STALL_MINUTES
     app_id: int | None = None  # sessions write as this GitHub App (spec 004, D-14); None: the host's gh login
     mode: Mode = Mode.INTERACTIVE  # headless: `claude -p` (spec 005); either mode asks via needs-decision (D-21)
     wip: int | None = None  # at most this many issues in progress at once, read by triage (D-32); None: no limit
@@ -254,6 +258,7 @@ class AgentsConfig:
             "notify",
             "remind_hours",
             "max_wait_minutes",
+            "stall_minutes",
             "app_id",
             "mode",
             "wip",
@@ -278,8 +283,9 @@ class AgentsConfig:
         sweep_hours = table.integer("sweep_hours", default=_SWEEP_HOURS, low=1, high=_MAX_HOURS)
         remind = table.integer("remind_hours", default=_REMIND_HOURS, low=1, high=_MAX_HOURS)
         max_wait = table.integer("max_wait_minutes", default=_MAX_WAIT_MINUTES, low=0, high=_MAX_HOURS * 60)
+        stall = table.integer("stall_minutes", default=_STALL_MINUTES, low=0, high=_MAX_STALL_MINUTES)
         assert retry is not None and prune_hours is not None and sweep_hours is not None  # defaults were given
-        assert remind is not None and max_wait is not None
+        assert remind is not None and max_wait is not None and stall is not None
         return cls(
             prompt=prompt,
             prs=table.boolean("prs", default=False) if "prs" in table.raw else None,
@@ -289,6 +295,7 @@ class AgentsConfig:
             notify=table.boolean("notify", default=True),
             remind_hours=remind,
             max_wait_minutes=max_wait,
+            stall_minutes=stall,
             app_id=app_id,
             mode=table.enum("mode", Mode, default=Mode.INTERACTIVE),
             wip=table.integer("wip", default=None, low=1, high=_MAX_WIP),

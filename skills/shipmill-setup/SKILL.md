@@ -904,7 +904,12 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      `notify = true` the gate sends a desktop notification, `#<n> waits on your decision:
      <url>`, at once and every `remind_hours` while the item waits. Either way it records
      waiting items in `shipmill/needs-decision.json`, and `gate --json` reports `mode` (null
-     on a HELD, WAITING, or RUNNING tick, which reads no config) and `decisions`
+     on a HELD, WAITING, RUNNING, or STALLED tick) and `decisions`
+   - **A silent session** (spec 048): a headless session whose log hasn't grown for
+     `[agents] stall_minutes` (30 by default, 0..1440; 0 never) is hung. The tick reads
+     `STALLED`, sends SIGTERM to the session's process group while its start time still
+     matches `gate.json`, starts nothing, and exits 0; its item is retried after
+     `retry_hours`. `gate --json` names the session in `running` on RUNNING and STALLED
 5. **A dedicated checkout.** The session branches and commits where it starts, so never
    use the user's working copy: `git worktree add --detach tmp/shipmill-gate
    origin/<default>` inside the trusted checkout (a worktree outside it would need its

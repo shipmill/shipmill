@@ -237,6 +237,7 @@ from shipmill.gate import (
     run_state,
     state_dir,
     state_failed,
+    stop_group,
     tick_lines,
     tick_record,
     watch_command,
@@ -1203,6 +1204,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         walk_now=args.walk,
         sweep_now=args.sweep,
         github=github_auth(args.slug, root, Openssl(), UrllibApi()),
+        stop=stop_group,
     )
     if args.json:
         print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))
