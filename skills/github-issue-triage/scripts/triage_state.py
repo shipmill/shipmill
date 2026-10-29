@@ -83,9 +83,11 @@ For each open issue:
                    or with --bot-login the newest such comment by that login, unless an
                    OWNER, MEMBER, or COLLABORATOR wrote a newer one (then there is no
                    question); a reply is a newer comment without the marker by an OWNER,
-                   MEMBER, or COLLABORATOR (other than the --bot-login). A marker comment
-                   by anyone else never counts. A labelled issue with no question waits
-                   too, until the label comes off
+                   MEMBER, or COLLABORATOR (other than the --bot-login) that carries no
+                   agent marker, <!-- shipmill:agent --> on any line (spec 050); a
+                   deleted account's comment is never one. A marker comment by anyone
+                   else never counts. A labelled issue with no question waits too, until
+                   the label comes off
   DECIDED          labelled needs-decision and its question has a reply: act on the
                    reply and remove the label (references/needs-decision.md), after
                    which the issue reads its usual state. Read right after
@@ -98,8 +100,9 @@ For each open issue:
                    comment by such an author answering it: take the veto up
                    (references/needs-decision.md). A veto is a comment by an OWNER,
                    MEMBER, or COLLABORATOR other than the --bot-login whose first word is
-                   "veto" in any case; an outsider's, or a "veto" further into a comment,
-                   never counts. Read right after DECIDED, before any other state; an
+                   "veto" in any case; an outsider's, a deleted account's, one carrying
+                   the agent marker, or a "veto" further into a comment never counts.
+                   Read right after DECIDED, before any other state; an
                    item labelled decided without such a veto reads its usual state
   UNTRUSTED       with --trusted-only, an issue whose author is neither an OWNER,
                    MEMBER, or COLLABORATOR nor the --bot-login, whatever it would read
@@ -612,6 +615,10 @@ DECISION_MARKER = "<!-- shipmill:needs-decision -->"  # the first line of a sess
 DECIDED_MARKER = re.compile(r"^<!-- shipmill:decided(?:\s[^>]*)?-->$")
 VETO_HANDLED_MARKER = re.compile(r"^<!-- shipmill:veto-handled(?:\s[^>]*)?-->$")
 VETO = re.compile(r"veto\b", re.IGNORECASE)  # a veto's first word, in any case
+# An agent's record (spec 050, D-62): `shipmill gh` adds this line to every body it writes, so
+# a body carrying it on any line, stripped, is never a person's reply or veto
+AGENT_MARKER = re.compile(r"<!-- shipmill:agent(?:\s[^>]*)?-->")
+GHOST = "ghost"  # the login GitHub gives a deleted account, and login() a null author
 # A report of a fault another repo owns, or a stand-in for another repo's work (spec 038): it
 # waits outside, for the product's coordinator or, without one, the maintainer
 UPSTREAM_LABEL = "upstream"
@@ -1526,8 +1533,8 @@ def login(author: dict[str, Any] | None) -> str:
     """An author's login as REST and --bot-login spell it: a Bot's with "[bot]", a deleted
     account's as ghost"""
     if not author:
-        return "ghost"
-    name = str(author.get("login") or "ghost")
+        return GHOST
+    name = str(author.get("login") or GHOST)
     if author.get("__typename") == "Bot" and not name.endswith("[bot]"):
         name += "[bot]"
     return name
@@ -1566,13 +1573,26 @@ def question(comments: list[tuple[str, str, str]], bot_login: str | None) -> int
     return None
 
 
-def replies(comment: tuple[str, str, str], bot_login: str | None) -> bool:
-    """A reply: a comment without the marker by an OWNER, MEMBER, or COLLABORATOR other
-    than the --bot-login"""
-    author, association, body = comment
-    if bot_login is not None and same_login(author, bot_login):
+def by_agent(body: str) -> bool:
+    """Whether a body carries the agent marker (spec 050): any line, stripped, is
+    <!-- shipmill:agent --> or the marker with attributes after a space"""
+    return any(AGENT_MARKER.fullmatch(line.strip()) for line in body.splitlines())
+
+
+def by_person(author: str, association: str, body: str, bot_login: str | None) -> bool:
+    """Whether a comment can be a person's decision (D-62): by an OWNER, MEMBER, or
+    COLLABORATOR other than the --bot-login, with a readable author (a deleted account's
+    counts as an agent's) and no agent marker"""
+    if same_login(author, GHOST) or (bot_login is not None and same_login(author, bot_login)):
         return False
-    return association in TRUSTED and not marked(body)
+    return association in TRUSTED and not by_agent(body)
+
+
+def replies(comment: tuple[str, str, str], bot_login: str | None) -> bool:
+    """A reply: a comment without the needs-decision marker by a person, as by_person reads
+    one: an OWNER, MEMBER, or COLLABORATOR other than the --bot-login, without the agent marker"""
+    author, association, body = comment
+    return by_person(author, association, body, bot_login) and not marked(body)
 
 
 def waits_on_decision(comments: list[tuple[str, str, str]], bot_login: str | None) -> bool:
@@ -1593,11 +1613,10 @@ def trusted(author: str, association: str, bot_login: str | None) -> bool:
 def vetoes(comment: tuple[str, str, str], bot_login: str | None) -> bool:
     """A veto (spec 030): a comment by an OWNER, MEMBER, or COLLABORATOR other than the
     --bot-login whose first word is "veto" in any case; an outsider's never counts (D-16),
-    nor does a "veto" further into a comment"""
+    nor does a "veto" further into a comment, one carrying the agent marker, or a deleted
+    account's (spec 050)"""
     author, association, body = comment
-    if bot_login is not None and same_login(author, bot_login):
-        return False
-    return association in TRUSTED and VETO.match(first_line(body)) is not None
+    return by_person(author, association, body, bot_login) and VETO.match(first_line(body)) is not None
 
 
 def vetoed(comments: list[tuple[str, str, str]], bot_login: str | None) -> str | None:
