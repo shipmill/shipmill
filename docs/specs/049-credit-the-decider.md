@@ -141,4 +141,8 @@ person decided the change, which is not a claim they wrote it.
 
 ## Issues
 
+- shipmill/shipmill#785: S-049-1, S-049-2, S-049-3, S-049-7, S-049-8, S-049-9, S-049-10
+- shipmill/shipmill#786: S-049-4, S-049-5, S-049-6
+- shipmill/shipmill#787: S-049-11, S-049-12
+
 ## Verification

@@ -125,7 +125,7 @@ from shipmill import (
     roles,
     status,
 )
-from shipmill.agents import AgentsConfig, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
+from shipmill.agents import AgentsConfig, Credit, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
 from shipmill.app import (
     CACHE,
     HELPERS,
@@ -176,12 +176,14 @@ from shipmill.app_gh import (
     bundled_repo_flag,
     find_gh,
     is_read,
+    merge_flags,
     merge_of,
     named_repo,
     product_refusal,
     pull_url,
     repo_value,
     run_gh,
+    with_body,
 )
 from shipmill.app_install import WAIT_SECONDS, guide
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold
@@ -191,6 +193,7 @@ from shipmill.claude_token import FLAG as TOKEN_FLAG
 from shipmill.claude_token import Credential, Kind, Token, TokenSource, inspect, read_token
 from shipmill.config import CONFIG_PATH, Table, config_path
 from shipmill.config import read as read_config
+from shipmill.credit import CreditReader, CreditReads, credited_body, deciders, default_body
 from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER, doctor, product_on_host, read_plugin_rows
 from shipmill.downstream import (
     AppDispatcher,
@@ -819,6 +822,7 @@ def main(
     downstream_reader: Reader | None = None,
     pulls: Pulls | None = None,
     merge_reader: MergeReader | None = None,
+    credit_reader: CreditReader | None = None,
     login: LoginReader | None = None,
     claude: Runner | None = None,
 ) -> int:
@@ -829,8 +833,9 @@ def main(
     repository `downstream start` and `collect` write checks on, downstream_reader for
     what doctor reads of the secrets and the downstream workflows, pulls for the pull
     request `decide classify --pr` reads, merge_reader for the pull request a `shipmill
-    gh` merge reads, login for the host's gh login `roles` reads, and claude for the
-    `claude plugin` and `gh api` commands plugin-clean runs, as tests pass fakes"""
+    gh` merge reads, credit_reader for what its credit reads (spec 049), login for the
+    host's gh login `roles` reads, and claude for the `claude plugin` and `gh api` commands
+    plugin-clean runs, as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -"""
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
     root: Path = args.repo.resolve()
@@ -839,8 +844,8 @@ def main(
     if args.command == "gh":
         if passed is None:  # such as `shipmill -- gh ...`
             raise ReleaseError("only --repo PATH may come before gh, as in `shipmill --repo PATH gh pr list`")
-        reader = merge_reader or _gh_reader
-        return _gh(root, passed, api or UrllibApi(), signer or Openssl(), env, user_home, gh_runner or run_gh, reader)
+        readers = _GhReaders(merge_reader or _gh_reader, credit_reader or _credit_reader, stdin or sys.stdin)
+        return _gh(root, passed, api or UrllibApi(), signer or Openssl(), env, user_home, gh_runner or run_gh, readers)
     if args.command == "plugin-clean":  # needs no --repo and no config (spec 039)
         where = stdin or sys.stdin
         return plugin_clean.clean(claude or run_command, user_home, args.apply, where.isatty(), print)
@@ -1442,14 +1447,15 @@ def _gh(
     environ: Mapping[str, str],
     home: Path,
     runner: GhRunner,
-    reader: MergeReader,
+    readers: _GhReaders,
 ) -> int:
     """Spec 012: gh as the App when the checkout's config sets [agents] app_id; gh's exit code.
     With app_id set any failure to get the token exits 2 and gh never runs (D-14), and so does
     --as-host. Without it (spec 037), a read runs as the host's login, and a write too when
     [agents] identity = "host" or the call passes --as-host; any other write exits 2 and gh
     never runs. GH_TOKEN is never set but empty. As the App, a merge of a pull request with a
-    `never` zone exits 2 and gh never runs (S-030-13)"""
+    `never` zone exits 2 and gh never runs (S-030-13), and with [agents] credit = "decider" it
+    names who decided it (spec 049)"""
     leading = _leading(passed)
     key, gh_args = leading.key, leading.gh_args
     if leading.product is not None:
@@ -1500,6 +1506,12 @@ def _gh(
     repo = named_repo(gh_args) or _origin_repo(top)
     if repo is None:
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo; name the repo with gh's -R owner/name")
+    merge = merge_of(gh_args)
+    if merge is not None and gh_args[0] == "api" and identity.credit is Credit.DECIDER:  # S-049-10, before any token
+        raise ReleaseError(
+            f'{merge.command} is refused: [agents] credit = "decider" in {CONFIG_PATH}, and a merge through the API '
+            f"leaves out who decided it (spec 049); run `{cli_command()} gh pr merge {merge.number} --squash` instead"
+        )
     binary = find_gh(environ)
     cache = state_dir(Git(top)) / CACHE
     # S-033-11: the key at --app-key, else SHIPMILL_APP_KEY, else the default path; none there
@@ -1509,10 +1521,70 @@ def _gh(
         token = app_token(cache, repo, app_id, path, dt.datetime.now(dt.UTC), signer, api)
     except NotInstalled as exc:
         raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {repo}`") from None
-    merge = merge_of(gh_args)
     if merge is not None:
-        _hold_never(top, merge, as_app(environ, token), binary, reader)
+        pull = _hold_never(top, merge, as_app(environ, token), binary, readers.merge)
+        if identity.credit is Credit.DECIDER:
+            gh_args = _credit(top, pull, gh_args, as_app(environ, token), binary, readers)
     return runner([str(binary), *gh_args], as_app(environ, token))
+
+
+@dataclass(frozen=True, slots=True)
+class _GhReaders:
+    """What `shipmill gh` reads besides gh's arguments: the pull request a merge names (spec
+    030), its deciders (spec 049), and stdin, for a `--body-file -`"""
+
+    merge: MergeReader
+    credit: CreditReader
+    stdin: TextIO
+
+
+def _credit_reader(top: Path, binary: Path, env: Mapping[str, str]) -> CreditReads:
+    """The records a merge's credit reads, through the gh shipmill runs, with its env"""
+    return GhCli(top, gh=str(binary), env=env)
+
+
+def _credit(
+    top: Path, pull: tuple[str, int], gh_args: list[str], env: Mapping[str, str], binary: Path, readers: _GhReaders
+) -> list[str]:
+    """Spec 049: gh's arguments for `gh pr merge` of the pull request (repo, number) with one
+    `--body` in place of any given, the body it would have had followed by a Co-authored-by
+    trailer for each decider it doesn't name yet, and one stderr line per decider; unchanged
+    when no record names one, for a rebase (spec 026 refuses it), and for --disable-auto"""
+    repo, number = pull
+    flags = merge_flags(gh_args)
+    if flags.disable_auto or flags.method == "rebase":
+        return gh_args
+    reads = readers.credit(top, binary, {**env, "GH_REPO": repo})
+    record = reads.credit_pull(number)
+    found = deciders(reads, record)
+    if not found:
+        return gh_args
+    if flags.body is not None:
+        base = flags.body
+    elif flags.body_file is not None:
+        base = readers.stdin.read() if flags.body_file == "-" else _body_file(flags.body_file)
+    elif flags.method is None:
+        raise ReleaseError(
+            f'gh pr merge names no method, and [agents] credit = "decider" in {CONFIG_PATH} needs it to write the '
+            f"body GitHub would: add --squash (or --merge for a stack's base, D-33)"
+        )
+    else:
+        squash = flags.method == "squash"
+        messages = reads.credit_messages()
+        setting = messages.squash if squash else messages.merge
+        base = default_body(setting, record, reads.credit_commits(number), squash)
+    accounts = [reads.credit_account(named.person.login) for named in found]
+    for named in found:  # S-049-9: a code span, so no email goes out for it (D-61)
+        print(f"credit: `@{named.person.login}` {named.why}", file=sys.stderr)
+    body = credited_body(base, accounts)
+    return gh_args if body is None else with_body(gh_args, body)
+
+
+def _body_file(path: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReleaseError(f"gh pr merge's --body-file {path} can't be read: {exc.strerror}") from None
 
 
 def _gh_reader(top: Path, binary: Path, env: Mapping[str, str]) -> MergeReads:
@@ -1520,11 +1592,11 @@ def _gh_reader(top: Path, binary: Path, env: Mapping[str, str]) -> MergeReads:
     return GhCli(top, gh=str(binary), env=env)
 
 
-def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, reader: MergeReader) -> None:
+def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, reader: MergeReader) -> tuple[str, int]:
     """S-030-13: a merge of a pull request whose classification, by the levels at origin/HEAD,
     has a `never` zone exits 2, naming the zone and the maintainer's hand merge; approval in
     chat changes nothing, since nothing here reads it (D-48). Read with the App's token, in the
-    checkout's own repo only, whose levels it holds"""
+    checkout's own repo only, whose levels it holds. The pull request held, repo and number"""
     origin = _origin_repo(top)
     if origin is None:
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so {merge.command}'s pull request can't be classified")
@@ -1560,6 +1632,7 @@ def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, r
             "merges it, by hand; an approval in chat doesn't change that (spec 030, D-48). Assign it to the "
             "maintainer and leave it"
         )
+    return target, number
 
 
 def _gh_product(

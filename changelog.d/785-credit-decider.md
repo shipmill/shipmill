@@ -1,0 +1,3 @@
+### Added
+
+- `[agents] credit = "decider"` (off by default): `shipmill gh pr merge` names each trusted person whose latest review approved the pull request in a `Co-authored-by: <name> <<id>+<login>@users.noreply.github.com>` trailer after the body the merge would have had (the given `--body` or `--body-file`, else GitHub's default for the repo's merge message setting), so the merge shows on their profile; bots, the App, and the pull request's author never get one, a stderr line names each decider in a code span, and `shipmill gh api -X PUT .../pulls/<n>/merge` exits 2 naming `shipmill gh pr merge <n> --squash` instead (spec 049) (#785)
