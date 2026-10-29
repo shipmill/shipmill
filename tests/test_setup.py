@@ -466,7 +466,9 @@ def test_doctor_asks_origin_not_the_clones_refs(repo: Repo) -> None:
     assert check(shallow) == "FAIL"
 
     repo.git.run("fetch", "-q", "origin")
-    repo.git.run("push", "-q", str(origin), ":refs/heads/shipmill")  # leaves origin/shipmill behind
+    # Delete the branch in origin itself, not by a push: git 2.56 maps a push to origin's URL
+    # onto the configured origin and prunes origin/shipmill with it (#770)
+    Git(origin).run("update-ref", "-d", "refs/heads/shipmill")  # leaves origin/shipmill behind
     assert repo.git.ok("show-ref", "--verify", "-q", "refs/remotes/origin/shipmill")
     assert check(repo.root) == "PASS"
 

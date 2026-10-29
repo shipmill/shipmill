@@ -6,6 +6,8 @@ Write each body to a file and post it with `gh issue comment <n> --body-file <fi
 
 **Who decides a verdict.** In a repo whose config has `[agents]`, won't fix, duplicate, postpone, and close as done are the `triage-verdict` zone, and its level says whether the verdict also gets a decided comment and the `decided` label (`notify`, the default) or waits on a question (`ask`), as [Who decides](needs-decision.md#who-decides) says.
 
+**A login in a code span** (D-61). A bare `@login` is an email to that person, so a template here leads with one only in a needs-decision question, a person's hand-off, and a decided comment. Every other comment names the login in a code span, `` `@{login}` ``, as the templates below do, and so does a verdict that names whose answer it follows (``Triage: implement, on `@{login}`'s answer``). An older comment with the bare form reads the same to every reader.
+
 ## Implement
 
 ```markdown
@@ -34,7 +36,7 @@ Write the decision block for the person who owes the answer, not for the impleme
 
 In a gate session (its prompt carries the gate's `Gate session:` or `Headless:` paragraph), the block never sits in the verdict: the verdict keeps "Waits on your decision below" and the question follows as its own comment, the [needs-decision protocol](needs-decision.md)'s, with the marker as its first line and the `needs-decision` label on the issue (D-21). Without the marker and the label, the scripts read the issue as work and the gate keeps starting sessions for it.
 
-An answer the user gives in the session (to this block, to a PR's "decisions for you", or to a needs-decision question) goes on the item before you act on it. Posted as the App (`shipmill gh` with `[agents] app_id` set), its first line is `Decision by @<login>, relayed by <agent>`, so the thread tells the person's decision from agent text; `<login>` is the person who answered and `<agent>` names the tool (`Claude Code`):
+An answer the user gives in the session (to this block, to a PR's "decisions for you", or to a needs-decision question) goes on the item before you act on it. Posted as the App (`shipmill gh` with `[agents] app_id` set), its first line is `Decision by @<login>, relayed by <agent>`, so the thread tells the person's decision from agent text; `<login>` is the person who answered and `<agent>` names the tool (`Claude Code`); a reader takes ``Decision by `@<login>` `` the same:
 
 ```markdown
 Decision by @{login}, relayed by {agent}
@@ -65,16 +67,20 @@ Triage: **feature**.{ Serves: G-n.} {What the new behaviour is, in one or two se
 
 The spec is in #{spec PR} (`docs/specs/{NNN}-{slug}.md`), with its acceptance criteria. Merging it is the approval, as is an answer on it that takes every recommendation, after which shipmill merges it once it is green; the build starts once it merges.
 
-On hold: the build waits on {owner/repo}#{spec PR}, the spec
+On hold: the build waits on {owner/repo}#{spec PR}, the spec PR.
 ```
+
+The hold sentence names the spec PR alone: `triage_state.py` holds the issue on every reference in a sentence that says "On hold", "blocked" or "waits on". Context such as the issue the spec is for goes in a sentence of its own, with no hold phrase, or the issue also holds on that issue, which can be its own parent.
 
 A request an accepted opportunity covers is built under that opportunity: its spec is the opportunity's, so the request holds on the opportunity issue, which closes when the build does. Add the request to the opportunity's Evidence section too.
 
 ```markdown
 Triage: **feature**.{ Serves: G-n.} This asks for the outcome of #{opportunity}, which the maintainer accepted; it's built under that issue{, whose spec is in #{spec PR}}, and this one closes with it.
 
-On hold: built under {owner/repo}#{opportunity}, the accepted opportunity
+On hold: built under {owner/repo}#{opportunity}, the accepted opportunity.
 ```
+
+This hold sentence names the opportunity alone, the same way.
 
 In a gate session, the spec PR asks for its approval with the [needs-decision protocol](needs-decision.md), on the spec PR itself, with these options (D-49). Option 1 never asks the maintainer to merge by hand: a trusted answer taking it is the approval, and github-pr-triage lands the spec PR once it is green ([spec-gate.md](spec-gate.md), Approved by an answer). A spec PR that edits `docs/product.md` says instead that the maintainer merges it, since only they change the direction (D-34).
 
@@ -181,7 +187,7 @@ Triage: **upstream**. Routed by {owner/home}, the product's coordinator: it file
 ```
 
 ```markdown
-Triage: **upstream**. No coordinator routes it: it waits for @{maintainer}, who reports it to the owning repo and closes this with what changed.
+Triage: **upstream**. No coordinator routes it: it waits for `@{maintainer}`, who reports it to the owning repo and closes this with what changed.
 ```
 
 The coordinator's close, once every child closed (SKILL.md, Reports from other repos), written with the product token; then it closes the report as completed, or as not planned when a child closed as not planned:
@@ -245,7 +251,7 @@ What to do, from this issue:
 Reply `done` here when it's finished, or close the issue.
 ```
 
-**VERIFY_DUE**, the check holds: say what was checked and what came back, then close the issue as completed (`gh issue close <n> --reason completed`), which unblocks whatever it held. With no `## Check`, say "Closed on @{login}'s report: this issue has no ## Check" instead.
+**VERIFY_DUE**, the check holds: say what was checked and what came back, then close the issue as completed (`gh issue close <n> --reason completed`), which unblocks whatever it held. With no `## Check`, say "Closed on `@{login}`'s report: this issue has no ## Check" instead.
 
 ```markdown
 Checked: `{the check}` returned {what came back}, as the ## Check asks. Closing as done.
@@ -264,7 +270,7 @@ Reply `done` here when it's fixed, or close the issue.
 
 ```markdown
 <!-- shipmill:verified -->
-Checked after @{login} closed this: `{the check}` returned {what came back}.
+Checked after `@{login}` closed this: `{the check}` returned {what came back}.
 ```
 
 **VERIFY_CLOSED**, the check fails: reopen it (`gh issue reopen <n>`), then post a hand-off through `--body-file`; the open issue holds everything it blocks again.
@@ -282,10 +288,10 @@ A check the session can't run: a question through the [needs-decision protocol](
 
 ```markdown
 <!-- shipmill:needs-decision -->
-@{maintainer} Decision needed: @{login} reported this done, and I can't run its check here (`{the check}`: {why, such as "the host isn't reachable from this machine"}).
+@{maintainer} Decision needed: `@{login}` reported this done, and I can't run its check here (`{the check}`: {why, such as "the host isn't reachable from this machine"}).
 
 1. Close it on the report (recommended): {the evidence beyond the report}; what waits on it starts now, unchecked
-2. It isn't done: I hand it back to @{assignee}, and what waits on it keeps waiting
+2. It isn't done: I hand it back to `@{assignee}`, and what waits on it keeps waiting
 
 Reply here with a number or your own answer; shipmill takes this up on the tick after your reply.
 ```
@@ -348,13 +354,13 @@ A check the session can't run (a production log, a dashboard, a host it can't re
 Reply here with a number or your own answer; shipmill takes this up on the tick after your reply.
 ```
 
-On "close it unchecked", close the parent as completed, then post the verified comment with `Closed unchecked on @{login}'s answer: no check ran.` in place of its `Checked:` line. On a report, the coordinator posts the summary comment ([Upstream report](#upstream-report)) with that line in place of its `Checked:` line, then closes the report as completed, since the waiting agent reads the summary.
+On "close it unchecked", close the parent as completed, then post the verified comment with `` Closed unchecked on `@{login}`'s answer: no check ran. `` in place of its `Checked:` line. On a report, the coordinator posts the summary comment ([Upstream report](#upstream-report)) with that line in place of its `Checked:` line, then closes the report as completed, since the waiting agent reads the summary.
 
-On "leave it open", post the check-waiting comment, through `--body-file`, on the parent or the report, naming who answered with the `@{login}` right after the marker line; `triage_state.py` reads the parent as WITH_PERSON on it, and `upstream_state.py` the report as ASKED, so no session starts for it again. A child that closes after it, or a check-failed or verified comment after it, ends the wait:
+On "leave it open", post the check-waiting comment, through `--body-file`, on the parent or the report, naming who answered with the login in a code span, `` `@{login}` ``, right after the marker line (an older comment's bare `@{login}` reads the same); `triage_state.py` reads the parent as WITH_PERSON on it, and `upstream_state.py` the report as ASKED, so no session starts for it again. A child that closes after it, or a check-failed or verified comment after it, ends the wait:
 
 ```markdown
 <!-- shipmill:check-waiting -->
-@{login} answered "leave it open": they run the ## Check (`{the check}`) and close this by hand.
+`@{login}` answered "leave it open": they run the ## Check (`{the check}`) and close this by hand.
 ```
 
 ## Follow-ups

@@ -123,7 +123,7 @@ def test_the_stale_install_a_session_loads_adds_a_gate_row(ss: ModuleType) -> No
         {"id": "shipmill@shipmill", "scope": "local", "version": "0.25.0", "projectPath": "/w/r/tmp/shipmill-gate"},
     ]
     rows = ws.plugin_rows(plugins, None, "v0.50.0", [Path("/w/r")], [Path("/w/r/tmp/shipmill-gate")], Path("/w/r"))
-    fake = type("Ws", (), {"Refused": ws.Refused, "shipmill_rows": staticmethod(lambda repo, root: rows)})
+    fake = type("Ws", (), {"Refused": ws.Refused, "shipmill_rows": staticmethod(lambda repo, root, *, host_wide: rows)})
     found = ss.outdated_installs("o/r", Path("/w/r"), fake)
     assert found[1] == ss.Row("PLUGIN_OUTDATED", "gate: a session loads user 0.48.0 (/w/r), older than v0.50.0")
     assert not any("starts no session" in r.detail for r in found)
@@ -413,11 +413,19 @@ def test_290_fix_creates_labels_through_shipmill_gh_with_app_id(ss: ModuleType, 
     assert gh.calls[0][: len(write_gh) + 3] == [*write_gh, "label", "create", "needs-decision"]
 
 
-@pytest.mark.parametrize("text", [None, 'mode = "release"\n', '[agents]\nprompt = "x"\n'])
-def test_290_fix_creates_labels_with_plain_gh_without_app_id(ss: ModuleType, tmp_path: Path, text: str | None) -> None:
+@pytest.mark.parametrize("text", [None, 'mode = "release"\n'])
+def test_290_fix_creates_labels_with_plain_gh_without_agents(ss: ModuleType, tmp_path: Path, text: str | None) -> None:
     if text is not None:
         write(tmp_path, ".github/shipmill.toml", text)
     assert ss.gh_writer(tmp_path, ss.watch_module()) == ["gh"]
+
+
+# proves: S-050-7
+def test_s050_7_fix_creates_labels_through_shipmill_gh_with_agents_but_no_app_id(
+    ss: ModuleType, tmp_path: Path
+) -> None:
+    write(tmp_path, ".github/shipmill.toml", '[agents]\nprompt = "x"\n')
+    assert ss.gh_writer(tmp_path, ss.watch_module()) == [*APP_GH, str(tmp_path.resolve()), "gh"]
 
 
 def test_290_a_malformed_config_fails_rather_than_writing_as_the_person(ss: ModuleType, tmp_path: Path) -> None:

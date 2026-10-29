@@ -39,18 +39,20 @@ posts the notices; the command a notice carries comes from the config's [notices
 for a pre-release, `install` for a stable release, each taking {version}, {tag}, and
 {name}. Without the policy's command, --install text is used, as before spec 021, except
 that a pre-release gets no command when the policy sets only `install`. When the
-checkout's .github/shipmill.toml sets [agents] app_id, each comment posts through
-`uvx shipmill==<version> gh`, as the App (spec 012), the version in the plugin's own
-.claude-plugin/plugin.json (spec 031); without it, plain gh posts as the host's login. Reads
+checkout's .github/shipmill.toml has an [agents] section, each comment posts through
+`uvx shipmill==<version> gh` (spec 012, spec 050), the version in the plugin's own
+.claude-plugin/plugin.json (spec 031): as the App with app_id, as the host's login with the
+agent marker with identity = "host", and exit 2 from `shipmill gh` with neither (D-54);
+without a config or an [agents] section, plain gh posts as the host's login. Reads
 always use plain gh, the commits' pull requests and the issues each in batched GraphQL
 queries (#754).
 
 Exit 0 on success (including nothing to do), 2 on bad input, a config github-ship-watch's
-watch_state.py refuses, a missing or malformed plugin.json with app_id set, or a [notices]
+watch_state.py refuses, a missing or malformed plugin.json with [agents] set, or a [notices]
 section with --post that isn't the one the policy
 accepts, or a git/gh failure (a `shipmill gh` exit 2 among them: the comment
-is never retried with plain gh). Needs git and an authenticated gh CLI, and uvx with app_id
-set. Python 3.10+, standard library only.
+is never retried with plain gh). Needs git and an authenticated gh CLI, and uvx with an
+[agents] section. Python 3.10+, standard library only.
 """
 
 from __future__ import annotations
@@ -287,7 +289,7 @@ TRIAGE = load("shipmill_triage_state", TRIAGE_STATE)
 
 
 def writer(repo_dir: Path, ws: ModuleType) -> list[str]:
-    """The comment's gh: `shipmill gh` with [agents] app_id set, else plain gh (spec 012)"""
+    """The comment's gh: `shipmill gh` with an [agents] section, else plain gh (spec 012, 050)"""
     try:
         found: list[str] = ws.gh_writer(repo_dir)
     except ws.Refused as refused:

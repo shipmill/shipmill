@@ -99,7 +99,9 @@ def test_s014_12_the_pull_request_is_the_apps_on_its_branch_closing_the_issue_an
         "on a branch `shipmill/upgrade-<id>`, run `shipmill upgrade --apply <id>`",
         "open the pull request as the App (hard rule 7) through `--body-file`",
         "holds `Closes #<issue>`",
-        '`Accepted by @<login> in #<issue>`, the person who answered, or `[autonomy] upgrade = "act"`',
+        # the login in a code span, so the line emails nobody (D-61, #771)
+        "``Accepted by `@<login>` in #<issue>``, the person who answered, in a code span (hard rule 8), or "
+        '`[autonomy] upgrade = "act"`',
         'setting `upgrade = "act"` once takes every future upgrade without a question',
         "The watch never merges it",
     ):

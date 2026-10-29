@@ -70,7 +70,7 @@ Skills (the home folder's user skills, which shadow the plugin's by name):
 Plugin (spec 033: the config's [agents] plugin, "host" by default, says where it loads):
   With plugin = "host" (the default, also without the key or a config): each person
   installs the plugin on their own host, and nothing in the repo turns it on. --fix never
-  creates, writes, or changes .claude/settings.json
+  creates .claude/settings.json, and changes it only to remove a committed plugin
   PLUGIN_OK        an install of shipmill@shipmill applies to the repo's folder, read from
                    `claude plugin list --json`: user scope, or local or project scope keyed
                    on the repo's main checkout; the detail names its scope and version (or
@@ -78,8 +78,12 @@ Plugin (spec 033: the config's [agents] plugin, "host" by default, says where it
   PLUGIN_MISSING   no install applies; the detail gives the command, which the skill runs
                    after asking: an install changes the person's host. --fix leaves it
   PLUGIN_COMMITTED .claude/settings.json enables shipmill@shipmill, so every contributor's
-                   Claude Code is offered it: set [agents] plugin = "repo" to keep it, or
-                   delete it from enabledPlugins. --fix leaves it
+                   Claude Code is offered it (D-59, #778): --fix removes it from
+                   enabledPlugins, and the shipmill entry from extraKnownMarketplaces when
+                   no other enabled <name>@shipmill uses it, keeping every other key, the
+                   indent, and the trailing newline; it drops an object left empty, and
+                   deletes the file when no key is left. Set [agents] plugin = "repo" to
+                   keep it instead
   With plugin = "repo": .claude/settings.json enables it, so every session in the repo
   loads the skills
   PLUGIN_MISSING   shipmill@shipmill is not enabled; --fix adds the marketplace and
@@ -110,9 +114,10 @@ Labels (the triage skills and shipmill read them):
                    038), decided (a notify decision, spec 030), and
                    shipmill-direction (the question for a missing direction,
                    spec 034) don't exist; --fix creates
-                   them on GitHub, as the App through `uvx shipmill==<version> gh`
-                   (the version in the plugin's .claude-plugin/plugin.json, spec 031) when
-                   [agents] sets app_id (spec 012), else with plain gh; a `shipmill gh`
+                   them on GitHub through `uvx shipmill==<version> gh` (the version in
+                   the plugin's .claude-plugin/plugin.json, spec 031) when the config has
+                   an [agents] section (spec 012, spec 050), as the App with app_id,
+                   else with plain gh; a `shipmill gh`
                    exit 2 stops --fix, never retried with plain gh, and a missing or
                    malformed plugin.json exits 2 naming it
   LABELS_OK        all exist
@@ -146,14 +151,15 @@ Exit 0 when every row is RELEASE_READY, AGENTS_OK, PRODUCT_OK, PLUGIN_OK, SKILLS
 LABELS_OK, or BRANCH_DELETE_ON (RUNNER_SHARED and CHANGELOG_RULES, warnings, leave the exit
 code alone), 1 otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT,
 PRODUCT_LISTED, PRODUCT_SIBLINGS, PLUGIN_COMMITTED, PLUGIN_OUTDATED, PLUGIN_SHADOWING, and
-SKILL_SHADOWED included), 2 on bad input, a malformed
+SKILL_SHADOWED included; --fix reads the rows after its changes, so a PLUGIN_COMMITTED it
+removed reads as the host's install), 2 on bad input, a malformed
 settings.json or config (its [agents] read as github-ship-watch reads it; its [lanes] and
 [environments] too when the runner is read; its [autonomy] with an [agents] section), both
 config files,
 a runs-on in release.yml that isn't a label or a quoted JSON list of labels, a git or gh
 failure (a failed read of the repo setting never reads as off), or a malformed
 `claude plugin list --json`.
-Needs git and an authenticated gh, uvx for --fix's labels with app_id set, and claude on PATH
+Needs git and an authenticated gh, uvx for --fix's labels with an [agents] section, and claude on PATH
 to read the plugin's installs. Python
 3.10+, standard library only.
 """
@@ -654,8 +660,9 @@ def host_plugin_rows(
     if enabled is True:
         detail = (
             f"{SETTINGS} enables {PLUGIN}, so every contributor's Claude Code is offered it, but [agents] plugin"
-            f' is "host" (the default): set plugin = "repo" in [agents] to keep it, or delete "{PLUGIN}" from'
-            ' enabledPlugins (and the "shipmill" entry from extraKnownMarketplaces when no other plugin uses it)'
+            f' is "host" (the default): --fix removes "{PLUGIN}" from enabledPlugins (and the "shipmill" entry'
+            ' from extraKnownMarketplaces when no other plugin uses it), or set plugin = "repo" in [agents] to'
+            " keep it"
         )
         return [Row("PLUGIN_COMMITTED", detail)]
     listed = plugins()
@@ -684,14 +691,54 @@ def listed_plugins(ws: ModuleType) -> object:
 
 def fix_plugin(settings_path: Path, settings: dict[str, Any], mode: str) -> dict[str, Any]:
     """--fix's plugin step: with plugin = "repo", the marketplace and enabledPlugins written
-    into the settings when they don't enable it, keeping every other key; with "host" the
-    settings file is never created or changed (S-033-2)"""
-    if mode != REPO or plugin_row(settings).state != "PLUGIN_MISSING":
+    into the settings when they don't enable it, keeping every other key; with "host", a
+    committed plugin removed (S-033-3, #778), and otherwise the settings file never created
+    or changed (S-033-2). A plugin disabled on purpose is left in either mode"""
+    if mode == HOST:
+        if settings.get("enabledPlugins", {}).get(PLUGIN) is not True:
+            return settings
+        kept = remove_plugin(settings)
+        if kept:
+            text = settings_path.read_text(encoding="utf-8")
+            settings_path.write_text(json_like(kept, text), encoding="utf-8")
+        else:
+            settings_path.unlink()
+        return kept
+    if plugin_row(settings).state != "PLUGIN_MISSING":
         return settings
     merged = enable_plugin(settings)
     settings_path.parent.mkdir(exist_ok=True)
     settings_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
     return merged
+
+
+def remove_plugin(settings: dict[str, Any]) -> dict[str, Any]:
+    """The settings without shipmill@shipmill in enabledPlugins, and without the shipmill
+    marketplace when no other enabled <name>@shipmill uses it; an object left empty is
+    dropped, and every other key keeps its place"""
+    marketplace = PLUGIN.partition("@")[2]
+    plugins = {name: on for name, on in settings["enabledPlugins"].items() if name != PLUGIN}
+    used = any(on is True and name.partition("@")[2] == marketplace for name, on in plugins.items())
+    known = dict(settings.get("extraKnownMarketplaces", {}))
+    if not used:
+        known.pop(marketplace, None)
+    kept = dict(settings)
+    for key, value in (("enabledPlugins", plugins), ("extraKnownMarketplaces", known)):
+        if key not in kept:
+            continue
+        if value:
+            kept[key] = value
+        else:
+            del kept[key]
+    return kept
+
+
+def json_like(data: dict[str, Any], original: str) -> str:
+    """data as JSON in the original's layout: its indent (none for a file on one line) and
+    its trailing newline, or none"""
+    found = re.search(r'^([ \t]+)"', original, re.MULTILINE)
+    text = json.dumps(data, indent=found.group(1) if found else None, ensure_ascii=False)
+    return text + "\n" if original.endswith("\n") else text
 
 
 def watch_module() -> ModuleType:
@@ -711,7 +758,7 @@ def outdated_installs(repo: str, repo_dir: Path, ws: ModuleType) -> list[Row]:
     release's skills until it is updated (spec 031); then its PLUGIN_SHADOWING row, the
     project- and local-scope installs on the host with plugin-clean's fix (S-039-6)"""
     try:
-        rows = ws.shipmill_rows(repo, repo_dir)
+        rows = ws.shipmill_rows(repo, repo_dir, host_wide=False)  # the repo's keyed installs (#764)
     except ws.Refused as refused:
         fail(str(refused).removeprefix("error: "))
     found = [Row("PLUGIN_OUTDATED", f"{r.subject}: {r.detail}") for r in rows if r.state == "SHIPMILL_OUTDATED"]
@@ -834,7 +881,7 @@ def create_labels(
     gh: Callable[[list[str]], str] = run,
 ) -> None:
     """--fix: create each missing label with its color and description, through write (the
-    writing gh, `shipmill gh` with [agents] app_id set); a failure stops, never retried"""
+    writing gh, `shipmill gh` with an [agents] section); a failure stops, never retried"""
     for name in missing:
         color, description = wanted[name]
         gh([*write, "label", "create", name, "-R", repo, "--color", color, "--description", description])
@@ -1153,8 +1200,8 @@ def main() -> int:
         "--fix",
         action="store_true",
         help=(
-            'with [agents] plugin = "repo", enable the plugin in .claude/settings.json; create the missing labels,'
-            " and turn on deleting branches on merge"
+            'with [agents] plugin = "repo", enable the plugin in .claude/settings.json, else remove it from there;'
+            " create the missing labels, and turn on deleting branches on merge"
         ),
     )
     parser.add_argument("--json", action="store_true", help="JSON lines instead of a table")

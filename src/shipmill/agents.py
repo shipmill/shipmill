@@ -63,6 +63,21 @@ def identity_of(table: Table) -> WriteAs:
     return WriteAs(value)
 
 
+class Credit(StrEnum):
+    """[agents] credit: whom a merge through `shipmill gh` names in Co-authored-by (spec 049)"""
+
+    OFF = "off"  # nobody: every merge is written as GitHub writes it
+    DECIDER = "decider"  # the trusted people a record shows decided the change
+
+
+def credit_of(table: Table) -> Credit:
+    """[agents] credit: "off" when absent; any other value, or one that isn't a string, exits 2"""
+    value = table.raw.get("credit", Credit.OFF.value)
+    if not isinstance(value, str) or value not in {c.value for c in Credit}:
+        raise ReleaseError(f'{CONFIG_PATH}: [agents] credit must be "off" (the default) or "decider", got {value!r}')
+    return Credit(value)
+
+
 ROLES = "[agents.roles]"
 MAINTAINER = "maintainer"  # the role every step an agent can't do falls back to (spec 036)
 _ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")  # its label, role:<name>, stays within GitHub's 50
@@ -221,6 +236,7 @@ class AgentsConfig:
     roles: RolesConfig = RolesConfig()  # [agents.roles]: who receives a step an agent can't do (spec 036)
     plugin: Plugin = Plugin.HOST  # [agents] plugin: per person, or committed for the repo (spec 033)
     identity: WriteAs = WriteAs.APP  # [agents] identity: who `shipmill gh` writes as without app_id (spec 037)
+    credit: Credit = Credit.OFF  # [agents] credit: whom a `shipmill gh` merge names as co-author (spec 049)
     # [autonomy] with spec 040's legacy reading of the prompt, as `shipmill autonomy` reads it;
     # load and Policy.parse set it, parse alone can't, as it sees [agents] only
     autonomy: AutonomyPolicy = AutonomyPolicy()
@@ -244,6 +260,7 @@ class AgentsConfig:
             "roles",
             "plugin",
             "identity",
+            "credit",
         )
         roles = RolesConfig.parse(table.raw["roles"]) if "roles" in table.raw else RolesConfig()
         prompt = table.string("prompt").strip()
@@ -278,6 +295,7 @@ class AgentsConfig:
             roles=roles,
             plugin=plugin_of(table),
             identity=identity,
+            credit=credit_of(table),
         )
 
     @classmethod
@@ -311,12 +329,13 @@ def app_id_of(root: Path) -> int | None:
 
 @dataclass(frozen=True, slots=True)
 class GhIdentity:
-    """What `shipmill gh` reads of a checkout's config (spec 037): [agents] app_id and identity,
-    and whether the config file exists, which the refusal names"""
+    """What `shipmill gh` reads of a checkout's config (spec 037): [agents] app_id, identity, and
+    credit (spec 049), and whether the config file exists, which the refusal names"""
 
     config: bool  # .github/shipmill.toml exists
     app_id: int | None = None
     identity: WriteAs = WriteAs.APP
+    credit: Credit = Credit.OFF
 
 
 def gh_identity_of(root: Path) -> GhIdentity:
@@ -329,7 +348,7 @@ def gh_identity_of(root: Path) -> GhIdentity:
     if "agents" not in raw:
         return GhIdentity(config=True)
     agents = AgentsConfig.parse(Table(raw, path.name).table("agents"))
-    return GhIdentity(True, agents.app_id, agents.identity)
+    return GhIdentity(True, agents.app_id, agents.identity, agents.credit)
 
 
 @dataclass(frozen=True, slots=True)

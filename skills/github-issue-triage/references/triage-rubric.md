@@ -6,7 +6,7 @@
 |---|---|---|
 | **implement** | A confirmed bug; or behaviour the docs already promise but the code breaks; or a small additive feature that fits the release phase | The plan in 2 to 4 bullets; "I'll link the PR here" |
 | **opportunity** | A user's request for a new capability (a new command, layer, or workflow) that no accepted opportunity covers yet. Product intake groups it with the requests for the same outcome, and the maintainer accepts or declines the group (D-10); triage doesn't group or write a spec for it | That it goes to product intake, and what happens there ([comments.md](comments.md), Opportunity) |
-| **feature** | New behaviour beyond a bug fix or a contract tweak (a new command, layer, or workflow) that fits the release phase, and that the maintainer already wants: an accepted opportunity (labelled `planned`), a request an accepted opportunity covers, or an issue the maintainer filed. A small additive feature such as a new flag stays **implement**, through the design gate | The spec PR's link and a hold line naming it; implementers start once it merges ([spec-gate.md](spec-gate.md)) |
+| **feature** | New behaviour beyond a bug fix or a contract tweak (a new command, layer, or workflow) that fits the release phase, and that the maintainer already wants: an accepted opportunity (labelled `planned`), a request an accepted opportunity covers, or an issue the maintainer filed (one whose body carries the agent marker `<!-- shipmill:agent -->` is not the maintainer's filing, whatever its author association). A small additive feature such as a new flag stays **implement**, through the design gate | The spec PR's link and a hold line naming it; implementers start once it merges ([spec-gate.md](spec-gate.md)) |
 | **postpone** | A new capability, a new wire contract, or a design that must land with sibling issues; or a feature that serves no goal of the direction ([below](#the-direction-the-goal-it-serves)) | Why now is the wrong time, the plan, and what it waits on; for no goal, the goal it would need. Add the `postponed` label |
 | **clarify** | You can't reproduce it, or it needs a product or spec decision | The exact question, with options and your recommendation |
 | **duplicate** | Same root cause as another issue | A link; close it |
@@ -14,7 +14,7 @@
 
 ## The direction: the goal it serves
 
-When the default branch has `docs/product.md` (D-34, spec 024), new behaviour is judged against it. Read only the sections each step needs, from the checkout after `git fetch`, each as `uvx shipmill==0.88.0 product show ...`, the release this plugin pins, in every session:
+When the default branch has `docs/product.md` (D-34, spec 024), new behaviour is judged against it. Read only the sections each step needs, from the checkout after `git fetch`, each as `uvx shipmill==0.94.0 product show ...`, the release this plugin pins, in every session:
 
 | Step | Sections | Read them with |
 |---|---|---|
@@ -37,7 +37,7 @@ A reporter's open questions get answers in the comment. If the code can settle o
 Bugs, contract tweaks, and small additive features keep their verdicts. For a request for a new capability, read who wants it before writing a spec:
 
 1. **An accepted opportunity covers it** (an issue labelled `opportunity` and `planned` whose outcome is the request's): the verdict is **feature**. The spec is the opportunity's: run the spec gate on the opportunity issue if triage hasn't yet, add the request to the opportunity's Evidence section, and hold the request on the opportunity issue ([comments.md](comments.md), Feature, covered by an opportunity)
-2. **The issue is an accepted opportunity**, or the maintainer filed it (`gh api repos/<owner>/<repo>/issues/<n> -q .author_association` says OWNER, MEMBER, or COLLABORATOR): **feature**, through the spec gate. The maintainer's own issue is already their decision
+2. **The issue is an accepted opportunity**, or the maintainer filed it (`gh api repos/<owner>/<repo>/issues/<n> -q .author_association` says OWNER, MEMBER, or COLLABORATOR): **feature**, through the spec gate. The maintainer's own issue is already their decision. An issue whose body carries the agent marker (`<!-- shipmill:agent -->` on any line, which `shipmill gh` adds) is not the maintainer's filing, whatever its author association: an agent wrote it, so unless it is an accepted opportunity it goes to step 3
 3. **Anything else**, an open or declined opportunity's outcome included: **opportunity**. Intake adds it to the matching opportunity or opens a new one, and records a decline's reason on it; the maintainer's accept is what makes it a feature
 
 `intake_state.py <owner/repo>` (product-intake's script) lists the opportunities and which are ACCEPTED; read the open and planned ones before deciding.
@@ -142,7 +142,7 @@ Taking up the answer ([needs-decision.md](needs-decision.md), Taking up an answe
 | IN_PROGRESS | Nothing, unless the PR stalled |
 | DONE_NOT_CLOSED | Close it and cite the merged PR |
 | SUSPECT_CLOSE | Check the fix is on the default branch. If it isn't, reopen and explain; if the close is right, post the close-confirmed comment (comments.md, Follow-ups) |
-| BLOCKED | Nothing, until the upstream issue closes or the spec PR merges |
+| BLOCKED | Nothing, until the upstream issue closes or the spec PR merges. In a component, a note ending `the coordinator's hold on the home <owner/home>: waits for the coordinator, ask nobody` is a hold on a home item this session can't read: leave it and ask nobody, never a needs-decision question about whether it merged (D-60) |
 | UPSTREAM | Nothing: an upstream report waits outside, for the coordinator its note names or, with `no coordinator`, the maintainer, who closes it with what changed |
 | OFF_MILESTONE | A build issue isn't in its feature issue's milestone (spec 022): set its milestone to the parent's, as the note names it |
 | UNFILLED | A `Depends on #{Bk}` placeholder from `specs.py split` was never filled in: edit the issue body to name the dependency's number |

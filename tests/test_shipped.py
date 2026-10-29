@@ -120,8 +120,15 @@ def test_290_run_from_a_subfolder_the_notice_still_posts_as_the_app(sp: ModuleTy
     assert sp.writer(tmp_path / "docs", sp.watch_module()) == [*APP_GH, str(tmp_path.resolve()), "gh"]
 
 
-@pytest.mark.parametrize("text", [None, 'mode = "release"\n', '[agents]\nprompt = "x"\n'])
-def test_290_without_app_id_the_notice_posts_with_plain_gh(sp: ModuleType, tmp_path: Path, text: str | None) -> None:
+# proves: S-050-7
+@pytest.mark.parametrize("text", ['[agents]\nprompt = "x"\n', '[agents]\nprompt = "x"\nidentity = "host"\n'])
+def test_s050_7_agents_without_app_id_posts_through_shipmill_gh(sp: ModuleType, tmp_path: Path, text: str) -> None:
+    config(tmp_path, text)
+    assert sp.writer(tmp_path, sp.watch_module()) == [*APP_GH, str(tmp_path.resolve()), "gh"]
+
+
+@pytest.mark.parametrize("text", [None, 'mode = "release"\n'])
+def test_290_without_agents_the_notice_posts_with_plain_gh(sp: ModuleType, tmp_path: Path, text: str | None) -> None:
     if text is not None:
         config(tmp_path, text)
     write = sp.writer(tmp_path, sp.watch_module())

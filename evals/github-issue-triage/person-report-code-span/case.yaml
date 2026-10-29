@@ -1,0 +1,36 @@
+schema_version: "1.1"
+name: person-report-code-span
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # #771, D-61: a person's item with no ## Check closes on the person's report, and the
+  # comment names the reporter in a code span, so it emails nobody
+  - type: regex
+    name: closes-on-the-report
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"args": \["issue", "close"[^\]]*"12"'
+  - type: regex
+    name: names-the-reporter-in-a-code-span
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '`@amy`'
+  - type: regex
+    name: no-bare-mention
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '(^|[^`])@amy\b'
+    match: not_contains
+  # Every write goes through `shipmill gh` as the App (D-14): no plain gh write
+  - type: regex
+    name: writes-as-the-app
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "write", "args"'
+    match: not_contains
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1

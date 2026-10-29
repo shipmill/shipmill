@@ -1,4 +1,4 @@
-"""Spec 040's legacy reading of [agents] prompt, with no end date (D-59), and the agent-autonomy
+"""Spec 040's legacy reading of [agents] prompt, with no end date (D-63), and the agent-autonomy
 upgrade that writes its levels into [autonomy]"""
 
 import json
@@ -159,7 +159,7 @@ def test_s040_9_prs_is_accepted_and_ignored() -> None:
 
 
 @pytest.mark.parametrize("value", ["true", "false"])
-def test_d59_a_config_from_before_spec_040_keeps_loading_and_landing(tmp_path: Path, value: str) -> None:
+def test_d63_a_config_from_before_spec_040_keeps_loading_and_landing(tmp_path: Path, value: str) -> None:
     # a connected repo that never took the agent-autonomy upgrade: prs set, the levels in the prompt
     write(tmp_path, POLICY + agents("/shipmill:github-issue-triage {repo} merge when green") + f"prs = {value}\n")
     loaded = AgentsConfig.load(tmp_path)

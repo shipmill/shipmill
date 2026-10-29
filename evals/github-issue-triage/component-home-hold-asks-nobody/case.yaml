@@ -1,0 +1,35 @@
+schema_version: "1.1"
+name: component-home-hold-asks-nobody
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # #773, D-60: a component's hold on a home item it can't read is the coordinator's, so the
+  # session asks nobody: no needs-decision question and no label
+  - type: regex
+    name: asks-nobody
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'needs-decision'
+    match: not_contains
+  # and leaves the item: no comment, label, or edit on acme/api#3, and nothing in acme/product
+  - type: regex
+    name: leaves-the-item
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "(write|refused)"'
+    match: not_contains
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1
+  - type: llm
+    name: says-whose-hold-it-is
+    criteria: |
+      PASS only if the session's final report lists acme/api#3 as left alone because its hold
+      on acme/product#11 is the coordinator's (the home's) and waits for the coordinator, and
+      it neither asks the maintainer whether the spec merged nor names a decision for the
+      user about it. FAIL otherwise.

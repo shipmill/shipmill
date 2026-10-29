@@ -13,7 +13,7 @@ passed, and a breaking change waits for the maintainer's hand start.
 Run the tool with:
 
 ```bash
-CR="uvx shipmill==0.88.0"
+CR="uvx shipmill==0.94.0"
 ```
 
 the release this plugin pins, from PyPI (spec 031), in every session, a headless gate's
@@ -351,7 +351,8 @@ or the tags are wrong; fix those, not the version.
    the branch under it is deleted, and without it merged branches pile up. `--fix`
    creates the missing labels and turns the setting on, all on GitHub at once, and with
    `[agents] plugin = "repo"` enables the plugin in `.claude/settings.json`, keeping every
-   other key; commit the settings change in a follow-up PR. With
+   other key (with `host` it removes a committed one, below); commit the settings change in
+   a follow-up PR. With
    `[agents] app_id` set it creates the labels as the App, through `shipmill gh` run by
    uvx at the version in the plugin's `plugin.json` (spec 012, spec 031); the setting stays on the host's `gh`, since the App has no
    Administration permission. A `shipmill gh` exit 2 stops `--fix`: report it, and never
@@ -367,19 +368,23 @@ or the tags are wrong; fix those, not the version.
    `PLUGIN_MISSING` gives the command, `claude plugin marketplace add shipmill/shipmill &&
    claude plugin install shipmill@shipmill --scope user`: run it on the maintainer's host
    after asking, since it changes their host, never with `--fix`. `PLUGIN_COMMITTED` (not
-   done; `--fix` leaves it) says `.claude/settings.json` still enables the plugin while the
-   key is `host`, as in a repo connected before spec 033: ask, then either set `plugin =
-   "repo"` to keep it, or delete `shipmill@shipmill` from `enabledPlugins` (and the
-   `shipmill` entry from `extraKnownMarketplaces` when no other plugin uses it), each in a
-   pull request. With `host`, `--fix` never creates or changes `.claude/settings.json`. A
-   plugin turned off on purpose
+   done) says `.claude/settings.json` still enables the plugin while the key is `host`, as
+   in a repo connected before spec 033. shipmill is each person's choice, not the repo's
+   (D-59): `--fix` deletes `shipmill@shipmill` from `enabledPlugins`, and the `shipmill`
+   entry from `extraKnownMarketplaces` when no other enabled `<name>@shipmill` uses it,
+   keeping every other key; it drops an object left empty and deletes the file when no key
+   is left; commit that change in the follow-up PR, as above. Only a maintainer who wants it for
+   everyone sets `plugin = "repo"` instead. With `host`, `--fix` never creates
+   `.claude/settings.json` and changes it only for that removal. A plugin turned off on
+   purpose
    (`PLUGIN_DISABLED`) is the user's call; ask before changing it. A host keeps one install,
    at user scope (spec 039): never install at project or local scope. In either mode, in
    place of a `PLUGIN_OK`, a user install behind the latest release reads `PLUGIN_OUTDATED`
    with its one update, run anywhere, `claude plugin marketplace update shipmill && claude
-   plugin update shipmill@shipmill --scope user`, and the host's project- and local-scope
-   installs read as one `PLUGIN_SHADOWING` row whose fix is `uvx shipmill==<version>
-   plugin-clean`, a dry run; the user removes them with `plugin-clean --apply` from their
+   plugin update shipmill@shipmill --scope user`, and the project- and local-scope installs
+   keyed on the repo's checkout, its linked worktrees, or its gate checkouts (`shipmill
+   factory` counts every one on the host) read as one `PLUGIN_SHADOWING` row whose fix is
+   `uvx shipmill==<version> plugin-clean`, a dry run; the user removes them with `plugin-clean --apply` from their
    own terminal (both not done; `--fix` leaves them). Give the user the fixes. A link or
    copy of a shipmill skill in `~/.claude/skills` or `~/.agents/skills` reads
    `SKILL_SHADOWED`, one row each with its fix (not done; `--fix` leaves it): a prompt's
@@ -588,6 +593,15 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    after 15 minutes. Ask whether the user answers questions sooner or later than that; set
    `max_wait_minutes` (0..10080) to match, or 0 to never stop one. `app_id` is a
    placeholder until step 3 replaces it; never merge `123456` itself
+
+   **Credit (spec 049).** A merge the App makes is authored by its bot, so the maintainer's
+   contribution graph loses the changes they decided to land. `[agents] credit =
+   "decider"` has `shipmill gh pr merge` add a `Co-authored-by` trailer for each trusted
+   person a record shows decided the change (an approving review, a needs-decision answer,
+   the issue it closes, the `planned` label on its opportunity); the trailer means the
+   person decided the change, not that they wrote it. The default is `"off"`, which writes
+   every merge as GitHub does. Write the key only when the user asks for it; `$CR doctor`
+   shows the setting in its `credit` row
 
    **Roles (spec 036).** A step an agent can't do (a DNS record, a new repository, a
    provider key, a sign-off) goes to a role, and the session files it labelled
@@ -903,7 +917,9 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    and prints `would launch as <slug>[bot]`: that line proves the App's setup. A tick
    that would launch nothing checks no App; then `$CR app-install <owner/repo>` printing
    `already installed on <owner/repo>` confirms at least the installation. Don't go on to
-   step 7 until `app_id` is set and one of the two has passed
+   step 7 until `app_id` is set and one of the two has passed. For the prune it follows
+   the tick's schedule: `prune due at <time>` when not due, else the `would prune` lines;
+   `$CR worktrees --prune --dry-run` lists them anytime
 7. **Schedule it.** `$CR --repo tmp/shipmill-gate launchd <owner/repo> --every 15` writes
    `~/Library/LaunchAgents/dev.shipmill.gate.<owner>.<repo>.plist`, loads it, and runs
    it once now. Its log is under `~/Library/Logs/shipmill/`. `--remove` unloads it; on

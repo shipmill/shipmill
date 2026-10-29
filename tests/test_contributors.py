@@ -217,7 +217,7 @@ def test_s033_2_a_malformed_listing_exits_2(ss: ModuleType, plugins: object) -> 
 SETTINGS_TEXT = '{\n  "permissions": {"allow": ["Bash(ls)"]},\n  "enabledPlugins": {"other@mine": true}\n}'
 
 
-@pytest.mark.parametrize("text", [None, SETTINGS_TEXT, '{"enabledPlugins": {"shipmill@shipmill": true}}'])
+@pytest.mark.parametrize("text", [None, SETTINGS_TEXT, '{"enabledPlugins": {"other@shipmill": true}}'])
 def test_s033_2_host_fix_leaves_the_settings_byte_for_byte(ss: ModuleType, tmp_path: Path, text: str | None) -> None:
     path = tmp_path / ".claude" / "settings.json"
     if text is not None:
@@ -233,9 +233,85 @@ def test_s033_2_host_fix_leaves_the_settings_byte_for_byte(ss: ModuleType, tmp_p
 def test_s033_3_a_committed_plugin_in_host_mode_reads_committed_and_is_not_done(ss: ModuleType) -> None:
     [row] = host_rows(ss, {"enabledPlugins": {"shipmill@shipmill": True}}, listing(("user", None)))
     assert row.state == "PLUGIN_COMMITTED"
-    assert 'set plugin = "repo" in [agents] to keep it' in row.detail
-    assert 'delete "shipmill@shipmill" from enabledPlugins' in row.detail
+    assert '--fix removes "shipmill@shipmill" from enabledPlugins' in row.detail
+    assert 'or set plugin = "repo" in [agents] to keep it' in row.detail
     assert ss.exit_code([row]) == 1
+
+
+MARKET = {"source": {"source": "github", "repo": "shipmill/shipmill"}, "autoUpdate": True}
+
+
+def committed(**extra: Any) -> dict[str, Any]:
+    """Settings that commit the plugin and its marketplace, with extra keys first"""
+    return {**extra, "extraKnownMarketplaces": {"shipmill": MARKET}, "enabledPlugins": {"shipmill@shipmill": True}}
+
+
+def test_s033_3_host_fix_removes_the_plugin_and_keeps_every_other_key_and_the_layout(
+    ss: ModuleType, tmp_path: Path
+) -> None:
+    settings = committed(permissions={"allow": ["Bash(ls)"]}, model="opus")
+    settings["enabledPlugins"]["other@mine"] = True
+    settings["extraKnownMarketplaces"]["mine"] = {"source": {"source": "github", "repo": "me/mine"}}
+    path = write(tmp_path, ".claude/settings.json", json.dumps(settings, indent=4))  # no trailing newline
+    kept = ss.fix_plugin(path, ss.load_settings(path), "host")
+    expected = {
+        "permissions": {"allow": ["Bash(ls)"]},
+        "model": "opus",
+        "extraKnownMarketplaces": {"mine": {"source": {"source": "github", "repo": "me/mine"}}},
+        "enabledPlugins": {"other@mine": True},
+    }
+    assert kept == expected
+    assert path.read_text(encoding="utf-8") == json.dumps(expected, indent=4)
+    [row] = host_rows(ss, kept, listing(("user", None)), [])
+    assert row.state == "PLUGIN_OK"
+
+
+def test_s033_3_host_fix_keeps_the_marketplace_while_another_shipmill_plugin_is_on(
+    ss: ModuleType, tmp_path: Path
+) -> None:
+    settings = committed()
+    settings["enabledPlugins"]["extra@shipmill"] = True
+    path = write(tmp_path, ".claude/settings.json", json.dumps(settings, indent="\t") + "\n")
+    kept = ss.fix_plugin(path, ss.load_settings(path), "host")
+    expected = {"extraKnownMarketplaces": {"shipmill": MARKET}, "enabledPlugins": {"extra@shipmill": True}}
+    assert kept == expected
+    assert path.read_text(encoding="utf-8") == json.dumps(expected, indent="\t") + "\n"
+
+
+def test_s033_3_host_fix_drops_the_marketplace_when_only_a_disabled_one_names_it(
+    ss: ModuleType, tmp_path: Path
+) -> None:
+    settings = committed(permissions={"deny": []})
+    settings["enabledPlugins"]["extra@shipmill"] = False
+    path = write(tmp_path, ".claude/settings.json", json.dumps(settings) + "\n")  # one line
+    kept = ss.fix_plugin(path, ss.load_settings(path), "host")
+    expected = {"permissions": {"deny": []}, "enabledPlugins": {"extra@shipmill": False}}
+    assert kept == expected
+    assert path.read_text(encoding="utf-8") == json.dumps(expected) + "\n"
+
+
+def test_s033_3_host_fix_drops_the_objects_left_empty(ss: ModuleType, tmp_path: Path) -> None:
+    path = write(tmp_path, ".claude/settings.json", json.dumps(committed(permissions={}), indent=2) + "\n")
+    kept = ss.fix_plugin(path, ss.load_settings(path), "host")
+    assert kept == {"permissions": {}}
+    assert path.read_text(encoding="utf-8") == '{\n  "permissions": {}\n}\n'
+
+
+@pytest.mark.parametrize("settings", [committed(), {"enabledPlugins": {"shipmill@shipmill": True}}])
+def test_s033_3_host_fix_deletes_the_file_left_with_no_keys(
+    ss: ModuleType, tmp_path: Path, settings: dict[str, Any]
+) -> None:
+    path = write(tmp_path, ".claude/settings.json", json.dumps(settings, indent=2) + "\n")
+    assert ss.fix_plugin(path, ss.load_settings(path), "host") == {}
+    assert not path.exists()
+
+
+def test_s033_4_repo_mode_fix_leaves_a_committed_plugin_byte_for_byte(ss: ModuleType, tmp_path: Path) -> None:
+    text = json.dumps(committed(permissions={"allow": []}), indent=4)
+    path = write(tmp_path, ".claude/settings.json", text)
+    settings = ss.load_settings(path)
+    assert ss.fix_plugin(path, settings, "repo") == settings
+    assert path.read_text(encoding="utf-8") == text
 
 
 def test_s033_4_repo_mode_reads_the_settings_and_fix_writes_them(ss: ModuleType, tmp_path: Path) -> None:
@@ -273,6 +349,8 @@ def test_s033_4_disabled_reads_disabled_in_either_mode_and_fix_leaves_it(
 FAKE_SETUP_GH = """#!{python}
 import json, sys
 args = sys.argv[1:]
+if args[:1] and args[0].startswith("shipmill=="):  # as uvx: `shipmill gh`, the writer with [agents] (spec 050)
+    args = args[args.index("gh") + 1 :]
 if args[:2] == ["label", "list"]:
     print("[]")
 elif any(a.endswith("marketplace.json") for a in args):
@@ -304,6 +382,7 @@ def run_setup(tmp_path: Path, root: Path, *flags: str) -> subprocess.CompletedPr
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     executable(fakes / "gh", FAKE_SETUP_GH.format(python=sys.executable))
+    executable(fakes / "uvx", FAKE_SETUP_GH.format(python=sys.executable))
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     env = {"PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]), "HOME": str(home)}
@@ -319,18 +398,46 @@ def states(done: subprocess.CompletedProcess[str]) -> dict[str, str]:
 GATE = '[agents]\nprompt = "/shipmill:github-issue-triage {repo}"\nmode = "headless"\n'
 
 
-@pytest.mark.parametrize("settings", [None, SETTINGS_TEXT, '{"enabledPlugins": {"shipmill@shipmill": true}}'])
-def test_s033_2_s033_3_fix_in_host_mode_never_touches_the_settings(tmp_path: Path, settings: str | None) -> None:
+@pytest.mark.parametrize("settings", [None, SETTINGS_TEXT])
+def test_s033_2_fix_in_host_mode_never_touches_settings_without_the_plugin(
+    tmp_path: Path, settings: str | None
+) -> None:
     root = setup_repo(tmp_path, GATE, settings)
     found = states(run_setup(tmp_path, root, "--fix"))
     path = root / ".claude" / "settings.json"
     if settings is None:
         assert not (root / ".claude").exists()
-        assert found["PLUGIN_OK"] == "claude isn't on PATH, installs not read"
     else:
         assert path.read_text(encoding="utf-8") == settings
-    if settings is not None and "shipmill@shipmill" in settings:
-        assert 'set plugin = "repo"' in found["PLUGIN_COMMITTED"]
+    assert found["PLUGIN_OK"] == "claude isn't on PATH, installs not read"
+
+
+COMMITTED_TEXT = (
+    '{\n  "permissions": {\n    "allow": ["Bash(ls)"]\n  },\n  "extraKnownMarketplaces": {\n'
+    '    "shipmill": {"source": {"source": "github", "repo": "shipmill/shipmill"}}\n  },\n'
+    '  "enabledPlugins": {\n    "shipmill@shipmill": true\n  }\n}\n'
+)
+LEFT_TEXT = '{\n  "permissions": {\n    "allow": [\n      "Bash(ls)"\n    ]\n  }\n}\n'
+
+
+def test_s033_3_fix_in_host_mode_removes_the_committed_plugin_end_to_end(tmp_path: Path) -> None:
+    root = setup_repo(tmp_path, GATE, COMMITTED_TEXT)
+    before = run_setup(tmp_path, root)
+    assert before.returncode == 1
+    assert '--fix removes "shipmill@shipmill"' in states(before)["PLUGIN_COMMITTED"]
+    path = root / ".claude" / "settings.json"
+    assert path.read_text(encoding="utf-8") == COMMITTED_TEXT  # a read changes nothing
+    found = states(run_setup(tmp_path, root, "--fix"))
+    assert "PLUGIN_COMMITTED" not in found
+    assert found["PLUGIN_OK"] == "claude isn't on PATH, installs not read"
+    assert path.read_text(encoding="utf-8") == LEFT_TEXT
+
+
+def test_s033_3_fix_in_host_mode_deletes_a_settings_file_left_empty_end_to_end(tmp_path: Path) -> None:
+    root = setup_repo(tmp_path, GATE, '{"enabledPlugins": {"shipmill@shipmill": true}}')
+    found = states(run_setup(tmp_path, root, "--fix"))
+    assert not (root / ".claude" / "settings.json").exists()
+    assert found["PLUGIN_OK"] == "claude isn't on PATH, installs not read"
 
 
 def test_s033_4_fix_in_repo_mode_writes_the_settings(tmp_path: Path) -> None:

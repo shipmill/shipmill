@@ -68,14 +68,16 @@ Not taken: <the other option, and what it would have meant for users>
 Reply with a comment starting with `veto` before 2026-10-20 14:00 UTC to reverse it, adding what you want instead if you like. A later veto still counts and gets a follow-up.
 ```
 
-`zone` is the decision's zone id, and `until` the post time plus `veto_hours`, in UTC. `<login>` is the person the gate's prompt names, as for a question, so GitHub notifies them.
+`zone` is the decision's zone id, and `until` the post time plus `veto_hours`, in UTC. `<login>` is the person the gate's prompt names, as for a question, so GitHub notifies them: it stays a bare mention because the veto window runs from this comment, and a person who never hears of the decision can't veto it in time (D-61).
+
+**Mentions (D-61).** A bare `@login` is an email, so shipmill writes one only in a needs-decision question, the hand-off of a person's item, and a decided comment, each of which waits on that person. Every other comment, pull request body, or commit message names a login in a code span, `` `@login` ``: a verdict on an answer, a verified or check-waiting line, an accepted or direction line, a login named inside a question.
 
 - **The work doesn't wait.** The session goes on at once, and a pull request carrying a `notify` decision merges when it is otherwise ready, inside the window too. `pr_gate.py` prints a `notify: <zone>: <reason>` line for one: post the decided comment before the merge, unless one for that zone is already on the pull request
 - **A rule goes to the log.** When the decision sets something later work must respect (a format for a new output, a reading of a criterion the next pull request relies on), also record it with `decisions.py add --zone <id>`, which writes its `- Zone: <id> (notify, veto until <until>)` line; one decisions pull request per pass still holds ([design-gate.md](design-gate.md#recording-a-decision)). A decision that sets no rule is recorded by the comment alone
 
 ### Taking up a veto
 
-A veto is a comment newer than the decided marker, by an OWNER, MEMBER, or COLLABORATOR other than the App, whose first word is `veto` in any case; an outsider's comment, or a `veto` in the middle of a comment, never counts (D-16). `triage_state.py` reads such an item as VETOED until a newer `<!-- shipmill:veto-handled ... -->` comment by the App answers it, closed issues of the last 14 days included, and `watch_state.py` lists it in its VETOED row, which starts a session. That session:
+A veto is a comment newer than the decided marker, by an OWNER, MEMBER, or COLLABORATOR other than the App, whose first word is `veto` in any case and which doesn't carry the [agent marker](#the-agent-marker); an outsider's comment, a comment carrying the agent marker, a deleted account's comment, or a `veto` in the middle of a comment, never counts (D-16). `triage_state.py` reads such an item as VETOED until a newer `<!-- shipmill:veto-handled ... -->` comment by the App answers it, closed issues of the last 14 days included, and `watch_state.py` lists it in its VETOED row, which starts a session. That session:
 
 1. Reads the veto. When it says what to do instead, that is the maintainer's decision: do it. When it doesn't, the decision moves to `ask`: post the needs-decision question with the options, the vetoed one last
 2. Undoes what it can. Not landed (a pull request or an issue still open): revise or close the pull request, restore the issue's labels. Landed: open a revert pull request for a merged change (`implementation`, its plan citing the veto), reopen a closed issue. A published release is never unpublished: file a follow-up issue to fix forward
@@ -111,7 +113,7 @@ Every place github-issue-triage, github-issue-resolve, and github-pr-triage woul
    Reply here with a number or your own answer; shipmill takes this up on the tick after your reply.
    ```
 
-   The marker is the comment's first line, with or without an App: it is how `triage_state.py` and `watch_state.py` tell the question from the reply when the session posts as the maintainer. `<login>` is the person the gate's prompt names (the host's `gh` login). Put the recommendation first, and say in each option what it means for users and what it costs, in words a user of the tool knows. Name `D-n` entries and `S-NNN-k` criteria when the question is a departure from one. With `[agents]` in the config, the question's zone goes on the second line, right under the marker ([The zone line](#the-zone-line))
+   This mention stays bare: the question waits on that person, so GitHub's notification is how they hear of it. The marker is the comment's first line, with or without an App: it is how `triage_state.py` and `watch_state.py` tell the question from the reply when the session posts as the maintainer. `<login>` is the person the gate's prompt names (the host's `gh` login). Put the recommendation first, and say in each option what it means for users and what it costs, in words a user of the tool knows. Name `D-n` entries and `S-NNN-k` criteria when the question is a departure from one. With `[agents]` in the config, the question's zone goes on the second line, right under the marker ([The zone line](#the-zone-line))
 2. Add the `needs-decision` label to the item: `gh issue edit <n> --add-label needs-decision` (or `gh pr edit`). From now on the scripts read the item as waiting, not as work, so the gate doesn't start a session for it again
 3. **Interactive (`Gate session:`) only:** ask the same question, with the same options in the same order, with AskUserQuestion. An answer in the session: follow [Answered in the session](#answered-in-the-session). No answer: the item already waits on GitHub, and the gate's `max_wait_minutes` stops the waiting session (D-15); whoever answers on GitHub later is read as below
 4. **Headless:** Leave the item: don't build, push, merge, or comment on it further in this session. Go on with the other items, and report this one under the decisions you left
@@ -122,7 +124,7 @@ A triage verdict that waits on a decision says so in its first line ("Waits on y
 
 An interactive gate session that gets the answer through AskUserQuestion puts the record on GitHub before it acts, so the item doesn't wait on a question already answered and the thread shows who decided:
 
-1. Post the answer on the item as a comment without the marker, through `--body-file`. Posted as the App (`shipmill gh` with `[agents] app_id` set), its first line names who decided and who relayed it, so the thread tells a person's decision from agent text:
+1. Post the answer on the item as a comment without the needs-decision marker, through `--body-file`. Posted as the App (`shipmill gh` with `[agents] app_id` set) or as the host's login (`shipmill gh` with `[agents] identity = "host"`), its first line names who decided and who relayed it, so the thread tells a person's decision from agent text:
 
    ```markdown
    Decision by @<login>, relayed by <agent>
@@ -130,7 +132,7 @@ An interactive gate session that gets the answer through AskUserQuestion puts th
    Answered in the session: <the option or the user's own words>
    ```
 
-   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`)
+   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`). A reader takes the line with the login bare or in a code span, ``Decision by `@<login>`, relayed by <agent>``, as the same answer (D-61). `shipmill gh` ends the relay with the [agent marker](#the-agent-marker), so the relay is no reply: removing the label in the next step is what moves the item
 2. Remove the `needs-decision` label: `gh issue edit <n> --remove-label needs-decision` (or `gh pr edit`)
 3. Record the answer with `decisions.py add` when it sets a rule, as the [design gate](design-gate.md) says, and go on
 
@@ -142,14 +144,18 @@ A headless session runs with an allowlist of tools and can't prompt for more, so
 
 A command that isn't on the list is different. Don't retry it in another form or route around it. Treat the denial as a decision for the user: post the comment above on the item you were working on, naming the tool and the command you tried, with the options (widen the gate's allowlist with `--claude-arg=--allowedTools --claude-arg "<tool>"` on `shipmill gate` or `shipmill launchd`, or do that step by hand), add the label, and leave the item. The allowlist grows from these comments, in review, instead of from guesses.
 
+## The agent marker
+
+`shipmill gh` ends every body it writes with the line `<!-- shipmill:agent -->`, after a blank line, as the App and as the host's login alike (spec 050, D-62). A session never writes the marker itself and never removes it: it posts through `shipmill gh`, and an edit keeps the marker the record has. A comment carrying the marker is an agent's, whoever its author, so it is never a reply and never a veto. A comment whose author GitHub gives as null (a deleted account) is neither a reply nor a veto either, since its origin can't be read.
+
 ## While it waits
 
 The scripts read a labelled item as waiting, not as work: `triage_state.py` reports it as NEEDS_DECISION (no action, so it doesn't make the script exit 1), and `watch_state.py` leaves it out of ISSUES and PRS_OPEN and lists it as `#N` in its NEEDS_DECISION row, which starts no session. It waits until a reply comes:
 
 | | The question | A reply |
 |---|---|---|
-| With `--bot-login` (the gate's App, spec 004) | The newest comment by that login whose first line is the marker | A newer comment by an OWNER, MEMBER, or COLLABORATOR other than that login, without the marker |
-| Without it | The newest comment whose first line is the marker, by an OWNER, MEMBER, or COLLABORATOR | A newer comment by an OWNER, MEMBER, or COLLABORATOR without the marker |
+| With `--bot-login` (the gate's App, spec 004) | The newest comment by that login whose first line is the marker | A newer comment by an OWNER, MEMBER, or COLLABORATOR other than that login, without the marker and without the [agent marker](#the-agent-marker) |
+| Without it | The newest comment whose first line is the marker, by an OWNER, MEMBER, or COLLABORATOR | A newer comment by an OWNER, MEMBER, or COLLABORATOR without the marker and without the [agent marker](#the-agent-marker) |
 
 A marker comment from any other author never counts, so an outsider can't re-park an answered item, and with `--bot-login` the bot's comment without the marker (a triage comment) is no question. With `--bot-login`, when an OWNER, MEMBER, or COLLABORATOR posts a marker comment after the bot's, the person asked after the bot did, and the item reads as labelled with no question. A comment from any other author association never counts as a reply, so an outsider can't wake an item. A labelled item with no question waits until a person takes the label off: someone parked it on purpose.
 

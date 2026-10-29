@@ -10,6 +10,7 @@ import pytest
 
 from shipmill import agent_as_person, cli_command
 from shipmill.agent_as_person import Flagged, read
+from shipmill.agent_marker import MARKER
 from shipmill.app import default_key
 from shipmill.cli import _parser, _status
 from shipmill.config import CONFIG_PATH
@@ -124,6 +125,42 @@ def test_s012_7_one_search_counts_marked_items_by_a_user_in_the_last_7_days() ->
     assert FLAGGED[3] not in detail
     assert detail.endswith(
         f"fix: post the agents' GitHub writes through `{cli_command()} gh ...` so they run as the App"
+    )
+
+
+def test_s050_13_a_users_body_carrying_the_agent_marker_on_any_line_is_flagged() -> None:
+    marked = {
+        "data": {
+            "search": {
+                "nodes": [
+                    node(
+                        f"{URL}/issues/7",
+                        1,
+                        "User",
+                        f"A plain first line\n\nmore text\n\n{MARKER}",  # the last line, as shipmill gh writes it
+                        comment(
+                            f"{URL}/issues/7#issuecomment-71", 0.5, "User", f"first\n  {MARKER}  \nlast"
+                        ),  # any line
+                        comment(
+                            f"{URL}/issues/7#issuecomment-72", 0.4, "User", "text\n\n<!-- shipmill:agent via=gh -->"
+                        ),
+                        comment(
+                            f"{URL}/issues/7#issuecomment-73", 0.3, "User", f"a person quoting `{MARKER}` mid-line"
+                        ),
+                        comment(f"{URL}/issues/7#issuecomment-74", 0.2, "Bot", f"the App's\n\n{MARKER}"),
+                        comment(f"{URL}/issues/7#issuecomment-75", 0.1, None, f"a deleted account's\n\n{MARKER}"),
+                    ),
+                    node(f"{URL}/pull/8", 2, "User", f"Summary\n\n{MARKER}"),
+                    node(f"{URL}/issues/9", 9, "User", f"older than 7 days\n\n{MARKER}"),
+                ]
+            }
+        }
+    }
+    assert read("acme/web", Gh(marked), NOW).urls == (
+        f"{URL}/issues/7#issuecomment-72",
+        f"{URL}/issues/7#issuecomment-71",
+        f"{URL}/issues/7",
+        f"{URL}/pull/8",
     )
 
 

@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from shipmill import cli_command
+from shipmill import agent_marker, cli_command
 from shipmill.errors import ReleaseError
 from shipmill.gate import StateRunner
 
@@ -54,9 +54,10 @@ class Flagged:
 
 
 def marked(body: str) -> bool:
-    """An agent's marker: the Claude Code line anywhere, or a Triage: or needs-decision first line"""
+    """An agent's marker: the Claude Code line anywhere, a Triage: or needs-decision first line,
+    or the agent marker on any line (spec 050)"""
     first = body.lstrip().partition("\n")[0]
-    return GENERATED in body or first.startswith(FIRST_LINES)
+    return GENERATED in body or first.startswith(FIRST_LINES) or agent_marker.carries(body)
 
 
 def search(repo: str, since: dt.datetime) -> str:

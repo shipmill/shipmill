@@ -39,7 +39,9 @@ For each open issue:
                    only GitHub records with (native) and a sub-issue with (child),
                    such as o/r#12:open(child), and a parent's note starts with
                    "children K/N closed". An untriaged issue reads NEW whatever its
-                   body depends on and whatever GitHub records holds it
+                   body depends on and whatever GitHub records holds it. With --home,
+                   a hold on an item of the home it can't read adds the coordinator's
+                   note (below)
   UNFILLED         a "Depends on" line of its body still names a placeholder such
                    as #{B1} from specs.py split: put in the dependency's number
   MALFORMED_DEPENDS once triaged (or a person's item), a "Depends on" line of its body
@@ -81,9 +83,11 @@ For each open issue:
                    or with --bot-login the newest such comment by that login, unless an
                    OWNER, MEMBER, or COLLABORATOR wrote a newer one (then there is no
                    question); a reply is a newer comment without the marker by an OWNER,
-                   MEMBER, or COLLABORATOR (other than the --bot-login). A marker comment
-                   by anyone else never counts. A labelled issue with no question waits
-                   too, until the label comes off
+                   MEMBER, or COLLABORATOR (other than the --bot-login) that carries no
+                   agent marker, <!-- shipmill:agent --> on any line (spec 050); a
+                   deleted account's comment is never one. A marker comment by anyone
+                   else never counts. A labelled issue with no question waits too, until
+                   the label comes off
   DECIDED          labelled needs-decision and its question has a reply: act on the
                    reply and remove the label (references/needs-decision.md), after
                    which the issue reads its usual state. Read right after
@@ -96,8 +100,9 @@ For each open issue:
                    comment by such an author answering it: take the veto up
                    (references/needs-decision.md). A veto is a comment by an OWNER,
                    MEMBER, or COLLABORATOR other than the --bot-login whose first word is
-                   "veto" in any case; an outsider's, or a "veto" further into a comment,
-                   never counts. Read right after DECIDED, before any other state; an
+                   "veto" in any case; an outsider's, a deleted account's, one carrying
+                   the agent marker, or a "veto" further into a comment never counts.
+                   Read right after DECIDED, before any other state; an
                    item labelled decided without such a veto reads its usual state
   UNTRUSTED       with --trusted-only, an issue whose author is neither an OWNER,
                    MEMBER, or COLLABORATOR nor the --bot-login, whatever it would read
@@ -171,7 +176,8 @@ UNBLOCKED, one of these; without the section it reads as before:
                    verified comment after it: a person runs its ## Check by hand (#740),
                    not an action. A check-waiting comment's first line is
                    <!-- shipmill:check-waiting -->, by the same authors; it waits on the
-                   first @login past that line, or on its author. Its note is "check waiting
+                   first @login past that line, bare or in a code span (`@login`, D-61),
+                   or on its author. Its note is "check waiting
                    on @login since <date>", then the progress and its holds; with --json, its
                    line's "assignees" is that login alone, and it has no "teams"
 
@@ -231,7 +237,12 @@ A person's item never counts as in progress or ready: the limit is on agents' wo
 
 --bot-login names the login shipmill's sessions write as (an App's <slug>[bot]). --home
 names the product's home repo, the config's [product] home, as owner/name (letters, digits,
-".", "-", or "_" on each side; anything else exits 2); it only words UPSTREAM's note.
+".", "-", or "_" on each side; anything else exits 2); it only words notes: UPSTREAM's, and
+in a component (a repo other than the home) BLOCKED's when a hold still open is on an item
+of the home this session can't read (its state shows as :unknown): the note ends " | the
+coordinator's hold on the home OWNER/NAME: waits for the coordinator, ask nobody" (D-60,
+#773). The coordinator never holds a component's issue on a home item, so such a hold is
+its to clear: the session leaves the item and asks nobody. The state stays BLOCKED.
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
 MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, VETOED, SUSPECT_CLOSE, HANDOFF_DUE,
@@ -604,6 +615,10 @@ DECISION_MARKER = "<!-- shipmill:needs-decision -->"  # the first line of a sess
 DECIDED_MARKER = re.compile(r"^<!-- shipmill:decided(?:\s[^>]*)?-->$")
 VETO_HANDLED_MARKER = re.compile(r"^<!-- shipmill:veto-handled(?:\s[^>]*)?-->$")
 VETO = re.compile(r"veto\b", re.IGNORECASE)  # a veto's first word, in any case
+# An agent's record (spec 050, D-62): `shipmill gh` adds this line to every body it writes, so
+# a body carrying it on any line, stripped, is never a person's reply or veto
+AGENT_MARKER = re.compile(r"<!-- shipmill:agent(?:\s[^>]*)?-->")
+GHOST = "ghost"  # the login GitHub gives a deleted account, and login() a null author
 # A report of a fault another repo owns, or a stand-in for another repo's work (spec 038): it
 # waits outside, for the product's coordinator or, without one, the maintainer
 UPSTREAM_LABEL = "upstream"
@@ -646,7 +661,8 @@ CHECK_FAILED_MARKER = "<!-- shipmill:check-failed -->"
 # A trusted comment saying a person runs a parent's ## Check by hand, on the needs-decision answer
 # "leave it open" (#740): it reads WITH_PERSON until a hold closes or a check-failed or verified comment follows
 CHECK_WAITING_MARKER = "<!-- shipmill:check-waiting -->"
-MENTION = re.compile(r"(?<![\w@/-])@(" + LOGIN_PATTERN + r")(?![\w/-])")  # an @login, not an @org/team
+# An @login, not an @org/team, bare or in a code span (`@login`, D-61): a backtick is no word character
+MENTION = re.compile(r"(?<![\w@/-])@(" + LOGIN_PATTERN + r")(?![\w/-])")
 CHECK = re.compile(r"^[ \t]*##[ \t]+Check[ \t]*$", re.MULTILINE)  # how a person's result is checked
 ACTION = {
     "NEW",
@@ -1394,13 +1410,16 @@ def classify_open(
     milestone: bool = True,
     roles: Roles | None = None,
     cycle: Cycle | None = None,
+    home: str | None = None,
 ) -> tuple[str, str]:
     """An open issue's state once gated found none; ``closes`` says when each closed hold
     closed, which a person's item (labelled human or role:<name>) reads its hand-off against.
     Without ``milestone``, the state OFF_MILESTONE hides (--wip counts one hiding IN_PROGRESS).
     ``roles``, the --role flags (None without them), turns NO_ASSIGNEE into ASSIGN_DUE.
     ``cycle`` is the issue's loop when it is on a cycle (cycles), with the issue on it that
-    breaks the loop, if any: it reads CYCLE, or BLOCKED waiting on that issue (spec 041)"""
+    breaks the loop, if any: it reads CYCLE, or BLOCKED waiting on that issue (spec 041).
+    ``home``, the --home, adds the coordinator's note to a BLOCKED one held on an item of the
+    home this session can't read (home_hold_note, D-60)"""
     missed = off_milestone(issue, repo) if milestone else None
     if missed is not None:
         return "OFF_MILESTONE", missed
@@ -1485,7 +1504,8 @@ def classify_open(
             return "SPEC_REFUSED", shown
         still = [r for r in waits if states.get(r) not in CLOSED_STATES]
         if still or not waits:
-            return "BLOCKED", shown or "labelled blocked"
+            coordinator = home_hold_note(still, states, repo, home)
+            return "BLOCKED", " | ".join([shown, coordinator]) if coordinator else (shown or "labelled blocked")
         if not human and children and CHECK.search(issue.get("body") or ""):
             return parent_check(comments, bot_login, [closes[r] for r in waits if r in closes], shown)
         if not human:
@@ -1513,8 +1533,8 @@ def login(author: dict[str, Any] | None) -> str:
     """An author's login as REST and --bot-login spell it: a Bot's with "[bot]", a deleted
     account's as ghost"""
     if not author:
-        return "ghost"
-    name = str(author.get("login") or "ghost")
+        return GHOST
+    name = str(author.get("login") or GHOST)
     if author.get("__typename") == "Bot" and not name.endswith("[bot]"):
         name += "[bot]"
     return name
@@ -1553,13 +1573,26 @@ def question(comments: list[tuple[str, str, str]], bot_login: str | None) -> int
     return None
 
 
-def replies(comment: tuple[str, str, str], bot_login: str | None) -> bool:
-    """A reply: a comment without the marker by an OWNER, MEMBER, or COLLABORATOR other
-    than the --bot-login"""
-    author, association, body = comment
-    if bot_login is not None and same_login(author, bot_login):
+def by_agent(body: str) -> bool:
+    """Whether a body carries the agent marker (spec 050): any line, stripped, is
+    <!-- shipmill:agent --> or the marker with attributes after a space"""
+    return any(AGENT_MARKER.fullmatch(line.strip()) for line in body.splitlines())
+
+
+def by_person(author: str, association: str, body: str, bot_login: str | None) -> bool:
+    """Whether a comment can be a person's decision (D-62): by an OWNER, MEMBER, or
+    COLLABORATOR other than the --bot-login, with a readable author (a deleted account's
+    counts as an agent's) and no agent marker"""
+    if same_login(author, GHOST) or (bot_login is not None and same_login(author, bot_login)):
         return False
-    return association in TRUSTED and not marked(body)
+    return association in TRUSTED and not by_agent(body)
+
+
+def replies(comment: tuple[str, str, str], bot_login: str | None) -> bool:
+    """A reply: a comment without the needs-decision marker by a person, as by_person reads
+    one: an OWNER, MEMBER, or COLLABORATOR other than the --bot-login, without the agent marker"""
+    author, association, body = comment
+    return by_person(author, association, body, bot_login) and not marked(body)
 
 
 def waits_on_decision(comments: list[tuple[str, str, str]], bot_login: str | None) -> bool:
@@ -1580,11 +1613,10 @@ def trusted(author: str, association: str, bot_login: str | None) -> bool:
 def vetoes(comment: tuple[str, str, str], bot_login: str | None) -> bool:
     """A veto (spec 030): a comment by an OWNER, MEMBER, or COLLABORATOR other than the
     --bot-login whose first word is "veto" in any case; an outsider's never counts (D-16),
-    nor does a "veto" further into a comment"""
+    nor does a "veto" further into a comment, one carrying the agent marker, or a deleted
+    account's (spec 050)"""
     author, association, body = comment
-    if bot_login is not None and same_login(author, bot_login):
-        return False
-    return association in TRUSTED and VETO.match(first_line(body)) is not None
+    return by_person(author, association, body, bot_login) and VETO.match(first_line(body)) is not None
 
 
 def vetoed(comments: list[tuple[str, str, str]], bot_login: str | None) -> str | None:
@@ -1774,6 +1806,19 @@ def upstream_note(home: str | None, asks: bool) -> str:
     maintainer still waits for a reply"""
     note = f"routed by {home}" if home is not None else "no coordinator: waits for the maintainer"
     return f"{note}, asks the maintainer" if asks else note
+
+
+def home_hold_note(still: list[Ref], states: dict[Ref, str], repo: tuple[str, str], home: str | None) -> str | None:
+    """BLOCKED's added note in a component (D-60, #773): a hold still open on an item of the
+    product's home that this session can't read (no state came back, as for a repo the
+    component's tokens get a 404 for) is the coordinator's, so the session asks nobody about
+    it and leaves the item. None without --home, in the home repo itself, or when every such
+    hold was read"""
+    if home is None or home.lower() == "/".join(repo).lower():
+        return None
+    owner, _, name = home.lower().partition("/")
+    unread = [r for r in still if fold(r)[:2] == (owner, name) and states.get(r, "UNKNOWN") == "UNKNOWN"]
+    return f"the coordinator's hold on the home {home}: waits for the coordinator, ask nobody" if unread else None
 
 
 def home_repo(text: str) -> bool:
@@ -1987,7 +2032,9 @@ def main() -> int:
         "--trusted-only", action="store_true", help="report issues by untrusted authors as UNTRUSTED (D-16)"
     )
     parser.add_argument(
-        "--home", metavar="OWNER/NAME", help="the config's [product] home, which routes upstream reports (spec 038)"
+        "--home",
+        metavar="OWNER/NAME",
+        help="the config's [product] home, which routes upstream reports (spec 038) and clears its own holds (D-60)",
     )
     parser.add_argument(
         "--role",
@@ -2049,6 +2096,7 @@ def main() -> int:
             closes,
             roles=roles,
             cycle=cycle,
+            home=args.home,
         )
 
     # An issue on a loop that waits on a question, or reads MALFORMED_DEPENDS (read before

@@ -6,7 +6,7 @@ Usage: watch_state.py <owner/repo> [--repo-dir PATH] [--releases N] [--grace MIN
                       [--tool SPEC] [--incident-label LABEL] [--json]
                       [--bot-login LOGIN] [--trusted-only]
                       [--role NAME=FILLER[,FILLER...] ...] [--no-host]
-       watch_state.py <owner/repo> --host {sessions,shipmill} [--repo-dir PATH] [--json]
+       watch_state.py <owner/repo> --host {sessions,shipmill} [--host-wide] [--repo-dir PATH] [--json]
        watch_state.py <owner/repo> (--tier N [--known FILE] | --sweep) [--repo-dir PATH] [--json] ...
 
 Release bot (a repo with .github/shipmill.toml). "The default branch" in this help is the branch
@@ -316,9 +316,11 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
                   #628), its fix is `uv tool upgrade shipmill`, newer the install's update.
                   No row without one on PATH or without an install a session loads. An
                   action for a person, never an agent's
-  PLUGIN_SHADOWING  one row, subject "plugin keyed", for every project- and local-scope
-                  install of shipmill@shipmill on the host, keyed on any folder and at any
-                  version (spec 039): each shadows the user install in its folder. The detail
+  PLUGIN_SHADOWING  one row, subject "plugin keyed", for the project- and local-scope
+                  installs of shipmill@shipmill keyed on the repo's main checkout, its linked
+                  worktrees, or its gate checkouts, at any version; with --host shipmill
+                  --host-wide, on any folder of the host (spec 039, #764); none, no row. Each
+                  shadows the user install in its folder. The detail
                   gives their count, lowest and highest versions, folders, and how many of
                   those are missing; the fix is `uvx shipmill==<the plugin's version>
                   plugin-clean`, after `claude plugin install shipmill@shipmill --scope user`
@@ -375,7 +377,10 @@ and plugin installs. Python 3.10+, standard library only.
 factory` reads them (spec 044): the AGENT_SESSION (or HOST_UNKNOWN) rows, or the
 SHIPMILL_VERSION, SHIPMILL_OUTDATED, PLUGIN_SHADOWING, and SKILL_SHADOWED rows. It reads none
 of the pipeline: no fetch, no issue, pull request, or run; exit 1 when a row it prints is an
-action row, as above. --no-host is the full report without those two sections, which
+action row, as above. PLUGIN_SHADOWING counts only the keyed installs on the repo's main
+checkout, its linked worktrees, and its gate checkouts; --host-wide, with --host shipmill,
+counts every one on the host, as `shipmill factory` reads it (#764). --no-host is the full
+report without those two sections, which
 `shipmill status` reads with --host, each on its own, so a failing `claude` or marketplace
 read is one factory check's error rather than the report's end (#745); the gate's launchd
 rows (LOOP, GATE_SESSIONS_DEAD) stay in it.
@@ -1757,7 +1762,7 @@ def agent_level(value: object, stage: str, policy: Path) -> str:
 
 def agent_levels(found: dict[str, object], sets_stage: bool, prompt: object, policy: Path) -> tuple[AgentLevel, ...]:
     """The agent stages' levels from the keys [autonomy] sets (found), each checked, the rest at
-    their default; and S-040-6, with no end date (D-59): a config that sets none of triage, fix,
+    their default; and S-040-6, with no end date (D-63): a config that sets none of triage, fix,
     and land reads land as act from an [agents] prompt holding "merge when green" or "land" as a
     word"""
     levels = {
@@ -3464,23 +3469,32 @@ def product_repos_310(text: str, policy: Path) -> tuple[str, ...] | None:
     return checked_repos(home is not None, repos, policy)
 
 
+# a root key that opens [agents] as a dotted key or an inline table, which 3.10's reader skips
+AGENTS_ROOT_KEY = re.compile(r"^\s*[\"']?agents[\"']?\s*[.=]", re.MULTILINE)
+
+
 def gh_writer(repo_dir: Path) -> list[str]:
-    """The command a skill script's writing gh call starts with (spec 012, #290): with [agents]
-    app_id set in the checkout's config, `shipmill gh` run as `uvx shipmill==<the plugin's
-    version>`, as the skills run it (spec 031), so
-    the write posts as the App; else plain gh, the host's login. A config this reader refuses
-    raises Refused rather than reading as no App, and so does an app_id key the reader didn't
-    find in [agents] (Python 3.10's fallback skips a header it can't parse). Reads keep plain gh.
-    The config is the checkout's, found from a subfolder as `shipmill gh` finds it"""
+    """The command a skill script's writing gh call starts with (spec 012, #290, spec 050):
+    for a checkout whose config has an [agents] section, `shipmill gh` run as
+    `uvx shipmill==<the plugin's version>`, as the skills run it (spec 031), whether or not
+    it sets app_id: with app_id the write posts as the App, with `identity = "host"` as the
+    host's login with the agent marker, and with neither `shipmill gh` exits 2 (D-54). Plain
+    gh only for a checkout with no config or no [agents] section. A config this reader refuses
+    raises Refused rather than reading as no [agents], and so does an app_id or agents key the
+    reader didn't find in [agents] (Python 3.10's fallback skips a header it can't parse and a
+    root dotted key). Reads keep plain gh. The config is the checkout's, found from a
+    subfolder as `shipmill gh` finds it"""
     here = repo_dir.resolve()
     top = next((folder for folder in (here, *here.parents) if (folder / ".git").exists()), here)
     path = top / POLICY
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
     table = agents_table(text, path) if text else None
-    if table is None or "app_id" not in table:
-        if APP_ID_KEY.search(text):
-            raise Refused(f"error: {path}: app_id is set but not read from a plain [agents] table; fix the file")
+    if table is None:
+        if APP_ID_KEY.search(text) or AGENTS_ROOT_KEY.search(toml_tables(text).get("", "")):
+            raise Refused(f"error: {path}: [agents] is set but not read as a plain [agents] table; fix the file")
         return ["gh"]
+    if "app_id" not in table and APP_ID_KEY.search(text):
+        raise Refused(f"error: {path}: app_id is set but not read from a plain [agents] table; fix the file")
     return [*shipmill_cli(), "--repo", str(top), "gh"]
 
 
@@ -3636,8 +3650,8 @@ def plural(count: int, one: str, many: str) -> str:
 
 
 def shadowing_row(keyed: list[tuple[str, Path]], versions: dict[tuple[str, Path], str], user: bool) -> Row | None:
-    """S-039-4: every project- and local-scope install of the plugin on the host, whichever
-    folder it is keyed on and at any version, as one row: their count, lowest and highest
+    """S-039-4: the project- and local-scope installs of the plugin given, the repo's or every
+    one on the host (#764), at any version, as one row: their count, lowest and highest
     versions, folders, and how many of those are missing, with plugin-clean's fix. None without"""
     if not keyed:
         return None
@@ -3833,14 +3847,17 @@ def plugin_rows(
     gates: list[Path] | None = None,
     session: Path | None = None,
     cli: Callable[[], PathCli | None] | None = None,
+    counted: Sequence[Path] | None = None,
 ) -> list[Row]:
     """The plugin's installs that apply to the repo, against the latest release: from `claude
     plugin list --json` and `claude plugin marketplace list --json`, parsed (None when claude
     isn't on PATH). An install applies at user scope, or at local or project scope in one of
     the folders (the projects Claude Code loads) or the gates. The user install behind the
-    release is a SHIPMILL_OUTDATED row with its single update (S-039-2). Every project- and
-    local-scope install on the host, keyed on any folder and at any version, is counted in one
-    PLUGIN_SHADOWING row, whose fix is plugin-clean (S-039-4): none is a row of its own.
+    release is a SHIPMILL_OUTDATED row with its single update (S-039-2). The project- and
+    local-scope installs keyed on a folder of counted (repo_folders, a repo's report), or with
+    counted None on any folder of the host (shipmill factory's), at any version, are counted in
+    one PLUGIN_SHADOWING row, whose fix is plugin-clean (S-039-4, #764): none is a row of its
+    own. A folder is matched with symlinks resolved on both sides.
     session, the project a session in the gate's folder loads as, adds the install that
     session would load to SHIPMILL_VERSION, and says when it is behind; the gate reports it
     and still starts sessions (spec 031). cli, read only when a session loads an install, is
@@ -3897,7 +3914,9 @@ def plugin_rows(
             if person is not None:
                 row = path_cli_row(person, loads[1], plugin_fix(loads[0], user))
                 rows += [] if row is None else [row]
-    shadowing = shadowing_row([k for k in keyed if k[0] in KEYED_SCOPES], versions, user)
+    own = None if counted is None else {p.resolve() for p in counted}
+    shadows = [k for k in keyed if k[0] in KEYED_SCOPES and (own is None or k[1].resolve() in own)]
+    shadowing = shadowing_row(shadows, versions, user)
     rows += [] if shadowing is None else [shadowing]
     market = PLUGIN.partition("@")[2]
     for m in marketplaces if isinstance(marketplaces, list) else []:
@@ -3966,8 +3985,41 @@ def latest_release(execute: Callable[[list[str]], str] = run) -> str:
     return marketplace_release(execute(READ_MARKETPLACE))
 
 
-def shipmill_rows(repo: str, repo_dir: Path) -> list[Row]:
-    """The host's shipmill plugin against shipmill's latest release, the marketplace's (S-031-2)"""
+def repo_worktrees(folder: Path) -> list[Path]:
+    """The checkouts of folder's repository, as `git worktree list --porcelain` lists them: its
+    main checkout and each linked worktree, one gone from disk included until git prunes it;
+    none for a missing folder or one outside git"""
+    if not folder.is_dir():
+        return []
+    cmd = ["git", "-C", str(folder), "worktree", "list", "--porcelain"]
+    # LC_ALL=C: the "not a git repository" check reads git's message, which a localized git translates
+    env = {**os.environ, "LC_ALL": "C"}
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    if proc.returncode != 0 and "not a git repository" in proc.stderr:
+        return []
+    if proc.returncode != 0:
+        sys.stderr.write(f"error: git worktree list in {folder}: {proc.stderr.strip()}\n")
+        raise SystemExit(2)
+    return [Path(line[len("worktree ") :]) for line in proc.stdout.splitlines() if line.startswith("worktree ")]
+
+
+def repo_folders(folders: Sequence[Path], gates: Sequence[Path]) -> list[Path]:
+    """#764: the folders a repo's report counts keyed installs on: plugin_folders' projects and
+    gate checkouts, and every checkout of their repositories (the main checkout's linked
+    worktrees among them), symlinks resolved"""
+    found: list[Path] = []
+    for folder in [*folders, *gates, *(t for f in folders for t in repo_worktrees(f))]:
+        resolved = folder.resolve()
+        if resolved not in found:
+            found.append(resolved)
+    return found
+
+
+def shipmill_rows(repo: str, repo_dir: Path, *, host_wide: bool) -> list[Row]:
+    """The host's shipmill plugin against shipmill's latest release, the marketplace's (S-031-2).
+    host_wide counts every keyed install on the host in PLUGIN_SHADOWING, as shipmill factory
+    reports it; a repo's report (doctor, setup_state.py, status, the watch) counts only those
+    keyed on the repo's folders (repo_folders, #764)"""
     latest = latest_release()
     plist = gate_plist(repo)
     workdir = plist.get("WorkingDirectory") if plist else None
@@ -3978,7 +4030,8 @@ def shipmill_rows(repo: str, repo_dir: Path) -> list[Row]:
         return plugin_rows(None, None, latest, folders, gates)
     plugins = claude_json(claude, "plugin", "list")
     market = claude_json(claude, "plugin", "marketplace", "list")
-    return plugin_rows(plugins, market, latest, folders, gates, session, path_cli)
+    counted = None if host_wide else repo_folders(folders, gates)
+    return plugin_rows(plugins, market, latest, folders, gates, session, path_cli, counted)
 
 
 def gate_folder(repo_dir: Path, workdir: str | None) -> Path:
@@ -4060,10 +4113,12 @@ def fetch_active(repo: str) -> list[ActiveRun]:
 HOST_SECTIONS = ("sessions", "shipmill")
 
 
-def host_rows(section: str, repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
+def host_rows(section: str, repo: str, repo_dir: Path, now: dt.datetime, *, host_wide: bool) -> list[Row]:
+    """host_wide: shipmill factory's read of the shipmill section, whose PLUGIN_SHADOWING counts
+    every keyed install on the host; shipmill status reads the repo's (#764)"""
     if section == "sessions":
         return live_rows(repo, repo_dir, now)
-    return [*shipmill_rows(repo, repo_dir), *shadow_rows(Path.home(), skill_names())]
+    return [*shipmill_rows(repo, repo_dir, host_wide=host_wide), *shadow_rows(Path.home(), skill_names())]
 
 
 # -- the gate's tiers (spec 046) -------------------------------------------------------------
@@ -4477,6 +4532,12 @@ def arguments() -> argparse.ArgumentParser:
         help="print only this host's rows of one section, reading nothing of the pipeline (spec 044)",
     )
     parser.add_argument(
+        "--host-wide",
+        action="store_true",
+        help="with --host shipmill: count every keyed install on the host in PLUGIN_SHADOWING, as shipmill"
+        " factory reads it; without, only those keyed on the repo's folders (#764)",
+    )
+    parser.add_argument(
         "--no-host",
         action="store_true",
         help="leave out the rows --host prints, which shipmill status reads on their own (#745)",
@@ -4641,7 +4702,7 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         rows += launchd_rows(args.repo, now)
     else:
         rows += agent_rows(args.repo, repo_dir, now)
-        rows += shipmill_rows(args.repo, repo_dir)
+        rows += shipmill_rows(args.repo, repo_dir, host_wide=False)
         rows += shadow_rows(Path.home(), skill_names())
     return merged_waits(rows)
 
@@ -4660,6 +4721,8 @@ def main() -> int:
             parser.error(str(exc))
     if args.host is not None and args.no_host:
         parser.error("--no-host goes without --host")
+    if args.host_wide and args.host != "shipmill":
+        parser.error("--host-wide goes with --host shipmill")
     if args.tier is not None and args.sweep:
         parser.error("--tier and --sweep go alone")
     if (args.tier is not None or args.sweep) and (args.host is not None or args.no_host):
@@ -4672,7 +4735,8 @@ def main() -> int:
         parser.error("--releases must be 1..20")
     repo_dir = Path(args.repo_dir).resolve()
     if args.host is not None:
-        found = host_rows(args.host, args.repo, repo_dir, dt.datetime.now(dt.timezone.utc))  # noqa: UP017
+        now = dt.datetime.now(dt.timezone.utc)  # noqa: UP017
+        found = host_rows(args.host, args.repo, repo_dir, now, host_wide=args.host_wide)
         for row in found:
             print(json.dumps(row.json(), sort_keys=True) if args.json else row.text())
         return 1 if any(r.state in ACTION for r in found) else 0

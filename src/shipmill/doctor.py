@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from shipmill import cli_command, fragments, ticks
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
-from shipmill.agents import ProductConfig, RolesError
+from shipmill.agents import AgentsConfig, Credit, ProductConfig, RolesError
 from shipmill.app import (
     PRODUCT_PERMISSIONS,
     Api,
@@ -118,7 +118,7 @@ def read_plugin_rows(repo: str, root: Path) -> list[PluginRow]:
     sys.modules[spec.name] = module  # its dataclasses look their module up by name
     spec.loader.exec_module(module)
     try:
-        rows = module.shipmill_rows(repo, root)
+        rows = module.shipmill_rows(repo, root, host_wide=False)  # the repo's keyed installs (#764)
     except SystemExit as exc:  # watch_state's way to refuse input or report a failed command
         raise ReleaseError(f"watch_state.py stopped: {exc if str(exc) != '2' else 'see the error above'}") from None
     except OSError as exc:  # gh or git missing
@@ -259,6 +259,7 @@ def doctor(
     if policy.agents is not None:
         checks.append(direction_check(root))
         checks.extend(hooks_checks(policy, Git(root), hooks, Path.home() if home is None else home))
+        checks.append(credit_check(policy.agents))
         uses = None if credential is None else credential()
         if uses is not None:
             checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC)))
@@ -902,6 +903,14 @@ def app_writes(app_id: int | None, home: Path) -> str:
     )
 
 
+def credit_check(agents: AgentsConfig) -> Check:
+    """S-049-11: the credit row, for a repo with [agents]: whom a merge through `shipmill gh`
+    names in Co-authored-by, a setting rather than a fault, so a PASS either way"""
+    if agents.credit is Credit.DECIDER:
+        return Check("PASS", "credit", "decider, a merge names who decided it in Co-authored-by (spec 049)")
+    return Check("PASS", "credit", "off")
+
+
 def hooks_checks(policy: Policy, git: Git, test: HookTester | None, home: Path) -> list[Check]:
     """S-026-15: the delivery hooks' block, for a repo with [agents]: one line per rule the hook
     holds, on or off and why (app-writes by where the App's key is, S-033-12); the self-test
@@ -1089,14 +1098,14 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
             f" bound agent sessions only; add [agents] or delete {them}"
         )
         checks.append(Check("WARN", "autonomy", detail))
-    if policy.agents is not None and policy.agents.prs is not None:  # S-040-9: warned, never refused (D-59)
+    if policy.agents is not None and policy.agents.prs is not None:  # S-040-9: warned, never refused (D-63)
         land = policy.autonomy.configured(Stage(StageKind.LAND))
         detail = (
             f"[agents] prs is deprecated and ignored: [autonomy] land ({land}) decides whether the gate works on"
             " open pull requests, under propose or act, not under observe; delete prs"
         )
         checks.append(Check("WARN", "autonomy", detail))
-    for stage in agent_stages:  # spec 040's legacy reading, with no end date (D-59)
+    for stage in agent_stages:  # spec 040's legacy reading, with no end date (D-63)
         if policy.autonomy.is_read_from_prompt(stage):
             level = policy.autonomy.configured(stage)
             detail = (

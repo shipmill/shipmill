@@ -7,6 +7,62 @@ bot.
 
 ## [Unreleased]
 
+## [0.94.0] - 2026-10-29
+
+### Changed
+
+- `shipmill gh` ends every body it creates with the agent marker `<!-- shipmill:agent -->`, after a blank line, as the App and as the host's login: `issue create`, `issue comment`, `pr create`, `pr comment`, `pr review` (an `--approve` alone gets the marker as its body), `issue|pr close|reopen --comment`, and `gh api` creates of issues, pull requests, comments, review comments, replies, and reviews (their `body` field, or one holding the marker alone); a body that carries the marker already gets no second one. Those creates with no `--body` or `--body-file`, with `--web`, `--editor`, or `--edit-last`, a `gh api` create with `--input`, a `gh api graphql` mutation that writes a body (a create or an edit, such as `updateIssue`, naming the REST form), and a marked body over 65,536 characters exit 2 before gh runs; the release and operate workflows' issues and comments end with the marker too, a cut body included (spec 050) (#797)
+- The github-issue-triage skill's `chains.py link` appends its `Depends on` line through REST, `gh api -X PATCH repos/<owner>/<repo>/issues/<n> -F body=@<file>`, instead of GraphQL's `updateIssue`, which `shipmill gh` now refuses; the body stays byte for byte, and `--no-text` and the `text only:` fallback are unchanged (spec 050) (#797)
+- `shipmill gh` keeps the origin of every body it edits: `issue edit` and `pr edit` with `--body` or `--body-file`, and `gh api -X PATCH` on an issue, pull request, comment, review comment, or review with a `body` field, first read the record's current body with the same identity (the App's token, the host's login, or the `--product` token), then hand gh the new body ending with the agent marker when the current one carries it and with any marker removed when it doesn't, so an edit never marks a person's record nor unmarks an agent's. An edit whose current body can't be read, one that names no single issue or pull request by number or URL, and a `gh api -X PATCH` edit with `--input` exit 2 and the edit doesn't run; an edit without a body flag reaches gh as given, with no read (spec 050) (#798)
+- The skills' scripts (`chains.py link`, `shipped.py --post`, `setup_state.py --fix`) write through `shipmill gh` in every repo whose `.github/shipmill.toml` has an `[agents]` section, with or without `app_id`, so a write without an App goes out as the host's login with the agent marker under `identity = "host"` and exits 2 otherwise; plain `gh` is left for a repo with no config or no `[agents]` (#799)
+- `triage_state.py` and `watch_state.py` no longer read a comment carrying the agent marker `<!-- shipmill:agent -->` on any line, or a deleted account's comment, as a reply to a needs-decision question or as a veto, so without the App an agent's comment after the question no longer reads as the maintainer's decision (spec 050) (#800)
+- Credit: with `credit = "decider"`, an issue, reply, or approving review whose body carries the agent marker `<!-- shipmill:agent -->`, or isn't a string, names no decider, while the App's `Decision by @<login>` relay still names `<login>`, as spec 050 has it (#801)
+- `shipmill doctor` and `shipmill status` flag, under AGENT_AS_PERSON, a person's issue, pull request, or comment whose body carries the agent marker `<!-- shipmill:agent -->` on any line, and the needs-decision protocol, the spec gate, the triage rubric, and `docs/flow.md` say a record carrying the marker is never a reply, a veto, or the maintainer's filing; a decision answered in the session is relayed with its `Decision by` line with or without the App (#802)
+
+## [0.93.0] - 2026-10-29
+
+### Added
+
+- `[agents] credit = "decider"` also credits, after the approvers: the trusted answerer of a needs-decision question on the pull request, an issue it closes, or that issue's parent (a reply after the question's marker, or the login an App comment's `Decision by @<login>` line names), the trusted author of an issue it closes or of that issue's parent, and whoever with write, maintain, or admin permission added `planned` to an `opportunity` issue it closes or to that issue's parent; each person once, the first record naming them giving the stderr line's reason (spec 049) (#786)
+- `shipmill doctor` prints a `credit` row for a repo with `[agents]`: `decider` when `[agents] credit = "decider"`, `off` otherwise; the shipmill-setup skill and the flow guide name the key, its `"off"` default, and that a `Co-authored-by` trailer it adds means the person decided the change, not that they wrote it (spec 049) (#787)
+
+## [0.92.0] - 2026-10-29
+
+### Added
+
+- `[agents] credit = "decider"` (off by default): `shipmill gh pr merge` names each trusted person whose latest review approved the pull request in a `Co-authored-by: <name> <<id>+<login>@users.noreply.github.com>` trailer after the body the merge would have had (the given `--body` or `--body-file`, else GitHub's default for the repo's merge message setting), so the merge shows on their profile; bots, the App, and the pull request's author never get one, a stderr line names each decider in a code span, and `shipmill gh api -X PUT .../pulls/<n>/merge` exits 2 naming `shipmill gh pr merge <n> --squash` instead (spec 049) (#785)
+
+## [0.91.0] - 2026-10-28
+
+### Changed
+
+- The skills' GitHub text mentions a login bare, which GitHub turns into an email, only in a needs-decision question, a person's hand-off, and a notify decision's decided comment (D-61); every other template names it in a code span (`` `@login` ``): the verified, close, and check-waiting lines, an upstream report's verdict without a coordinator, a login named inside a question, and an upgrade pull request's `Accepted by` line. Each skill that posts states the rule, and the readers (`Decision by`, `triage_state.py`'s check-waiting login) take both forms, so older comments read as before (#771)
+
+### Fixed
+
+- In a product, github-issue-triage's coordinator files a component's part of a home-repo feature only after the spec pull request merges and never holds a component issue on a home-repo item (D-60); a component's `triage_state.py --home <owner/home>` reads a hold on a home item it can't read (`:unknown`) as BLOCKED with the note `the coordinator's hold on the home <owner/home>: waits for the coordinator, ask nobody`, and the skill leaves such an item rather than asking the maintainer whether the home's spec merged (#773)
+
+## [0.90.0] - 2026-10-28
+
+### Changed
+
+- shipmill-setup's `setup_state.py --fix` now removes a committed `shipmill@shipmill` from `.claude/settings.json` in a repo whose `[agents] plugin` is `"host"` (the default): it deletes the `enabledPlugins` entry and, when no other enabled `<name>@shipmill` uses it, the `shipmill` marketplace, keeps every other key and the file's indent, and deletes the file when nothing is left; set `plugin = "repo"` to keep it (D-59) (#778)
+
+## [0.89.1] - 2026-10-28
+
+### Fixed
+
+- The test that doctor asks origin, not the clone's refs, no longer fails under git 2.56, whose push to origin's URL also pruned the stale `origin/shipmill` the test sets up (#770)
+- The Feature verdict's hold line in github-issue-triage's comment templates is now a whole sentence that names the spec PR alone, and the templates and the spec gate say that context such as the issue the spec is for goes in a sentence of its own; an agent that finished the old line with the parent issue held a part on its own parent (#772)
+
+## [0.89.0] - 2026-10-28
+
+### Changed
+
+- The gate's change check reads each watched workflow's own 10 newest runs (the release workflow and each `[operate]` workflow), concurrently when there are more than two, instead of the repo's 100 newest runs of every workflow: a quiet tick spends about 2 s less on it, and a release run that finished behind 100 newer CI runs is now seen as a change (#762)
+- `shipmill gate --dry-run` follows the prune's schedule, every `prune_hours`: when a prune isn't due it judges no worktree and prints `prune due at <time>`, so a dry run no longer spends most of its time judging worktrees or lists removals a tick wouldn't make; when one is due it lists `would prune` as before, and `--json`'s `"prune"` adds `"due"` and `"at"` on a dry run (#763)
+- Plugin: a repo's `PLUGIN_SHADOWING` row in `doctor`, `status`, the setup checklist, and the watch counts only the project- and local-scope installs keyed on the repo's checkout, its linked worktrees, or its gate checkouts; `shipmill factory` still counts every one on the host, so a stray install is reported once, there (#764)
+
 ## [0.88.0] - 2026-10-27
 
 ### Changed
@@ -1981,7 +2037,14 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.88.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.94.0...HEAD
+[0.94.0]: https://github.com/shipmill/shipmill/compare/v0.93.0...v0.94.0
+[0.93.0]: https://github.com/shipmill/shipmill/compare/v0.92.0...v0.93.0
+[0.92.0]: https://github.com/shipmill/shipmill/compare/v0.91.0...v0.92.0
+[0.91.0]: https://github.com/shipmill/shipmill/compare/v0.90.0...v0.91.0
+[0.90.0]: https://github.com/shipmill/shipmill/compare/v0.89.1...v0.90.0
+[0.89.1]: https://github.com/shipmill/shipmill/compare/v0.89.0...v0.89.1
+[0.89.0]: https://github.com/shipmill/shipmill/compare/v0.88.0...v0.89.0
 [0.88.0]: https://github.com/shipmill/shipmill/compare/v0.87.1...v0.88.0
 [0.87.1]: https://github.com/shipmill/shipmill/compare/v0.87.0...v0.87.1
 [0.87.0]: https://github.com/shipmill/shipmill/compare/v0.86.0...v0.87.0

@@ -284,7 +284,7 @@ def test_s041_11_a_closed_hold_closes_no_cycle(ch: ModuleType, capsys: pytest.Ca
     c = forge.add("o/r#3", state="CLOSED" if why == "closed" else "OPEN")
     forge.blocked.add((c, a))
     assert link(ch, forge, "o/r#1", "--blocked-by", "o/r#2") == 0
-    assert forge.writes() == ["addBlockedBy", "updateIssue"]
+    assert forge.writes() == ["addBlockedBy", "PATCH"]
     assert "closes a cycle" not in capsys.readouterr().err
 
 

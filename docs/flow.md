@@ -107,6 +107,8 @@ contract-addition = "act"         # a zone id = a level; an absent zone keeps it
 
 The release side's stages keep their levels in `[autonomy]` ([release-lanes.md](release-lanes.md#autonomy-and-the-stop-switch)), which `[decisions]` can't set, and so do the agent stages `triage`, `fix`, and `land` (spec 040): `release`, `deploy`, `rollback`, `intake`, `upgrade`, `triage`, `fix`, and `land` read `act` for `act`, `ask` for `propose` (the proposal issue is the question), and no level for `observe`, and `breaking-release` is always `ask`, since a breaking stable release waits for a person's hand start (D-39). `shipmill decide levels` shows both: every zone with its level, its floor, and where the level comes from. `shipmill decide classify`, given a pull request's number, names the zones code detects in its change, read from the default branch's config, so a pull request can't lower its own levels. A session asks the code first, then places what code doesn't see itself, and the strictest level among a decision's zones wins: the sessions' steps are in github-issue-triage's [needs-decision.md](../skills/github-issue-triage/references/needs-decision.md#who-decides).
 
+An agent's text is told from a person's by its marker, never by its author (spec 050, D-62): `shipmill gh` ends every body it writes with `<!-- shipmill:agent -->`, and a record carrying it is never a reply, a veto, a decider's credit, or the maintainer's filing.
+
 ## Issue states
 
 `triage_state.py` sorts every issue into one state and exits 1 when any need action.
@@ -182,6 +184,8 @@ A cloud routine may not apply a repo's plugin keys ([plugins for organizations](
 Clone https://github.com/shipmill/shipmill into tmp/shipmill (or pull it if present), then follow
 tmp/shipmill/skills/github-ship-watch/SKILL.md for <owner/repo> — watch and triage
 ```
+
+A merge the App makes is authored by its bot, so your contribution graph doesn't show the change you decided to land. `[agents] credit = "decider"` (spec 049) has `shipmill gh pr merge` add a `Co-authored-by` trailer for each trusted person a record shows decided it: an approving review, an answer to a needs-decision question, the issue it closes, or the `planned` label on its opportunity. The trailer means the person decided the change, not that they wrote it. The default is `"off"`: every merge is written as GitHub writes it, and `shipmill doctor` shows which in its `credit` row
 
 ## Safeguards
 

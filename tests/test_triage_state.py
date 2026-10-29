@@ -1,6 +1,7 @@
 """The github-issue-triage skill's classification, without gh or the network"""
 
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -791,6 +792,30 @@ def test_309_the_documented_hold_lines_still_hold(ts: ModuleType, line: str, hel
 
 def test_309_the_feature_templates_hold_line_still_holds(ts: ModuleType) -> None:
     item = issue(("2026-09-01T10:00:00Z", template("Feature")))
+    assert ts.upstream_refs(item, REPO) == [("o", "r", 41)]
+
+
+# #772: the Feature hold line ended mid-phrase ("..., the spec"), so an agent finished it with
+# the issue the spec is for, and the part held on its own parent
+HOLD_LINE = re.compile(r"^On hold: .*$", re.MULTILINE)
+
+
+def test_772_the_feature_hold_lines_end_after_naming_what_they_wait_on() -> None:
+    lines = [HOLD_LINE.findall(template("Feature", i)) for i in (0, 1)]
+    assert lines == [
+        ["On hold: the build waits on o/r#41, the spec PR."],
+        ["On hold: built under o/r#40, the accepted opportunity."],
+    ]
+
+
+def test_772_a_hold_sentence_holds_on_every_reference_in_it(ts: ModuleType) -> None:
+    line = "On hold: the build waits on o/home#11, the spec for o/home#10, which waits on @maintainer's approval."
+    assert ts.upstream_refs(issue(("2026-10-28T10:00:00Z", line)), REPO) == [("o", "home", 10), ("o", "home", 11)]
+
+
+def test_772_the_parent_named_in_a_sentence_of_its_own_holds_nothing(ts: ModuleType) -> None:
+    body = f"{template('Feature')} It is the spec for o/home#10."
+    item = issue(("2026-10-28T10:00:00Z", body))
     assert ts.upstream_refs(item, REPO) == [("o", "r", 41)]
 
 
