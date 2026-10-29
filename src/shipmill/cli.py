@@ -221,6 +221,7 @@ from shipmill.downstream import (
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
     PRUNE,
+    TICK,
     ClaudeCli,
     Decision,
     StateRead,
@@ -231,6 +232,7 @@ from shipmill.gate import (
     gate,
     host_login,
     load_prune,
+    load_tick,
     pruner,
     refresh,
     run_command,
@@ -1885,6 +1887,7 @@ def _status(
             gate = dataclasses.replace(gate, prune=load_prune(state_dir(Git(top)) / PRUNE))
         except status.CHECK_FAILURES as exc:
             gate = dataclasses.replace(gate, prune_error=status.first_line(exc))
+        gate = _with_tick(gate, Git(top))  # S-048-13: the gate check's record, as factory reads it
     bot = None if gate is None else gate.login
     if bot is None:  # #311: --rows, --json, or a failed check still count the App's questions
         bot = status.read_login(slug, top, home, platform, bot_login)
@@ -1940,6 +1943,15 @@ def _status(
     return code  # S-009-14: spec 008's code, whatever the verdict
 
 
+def _with_tick(gate: status.Gate, git: Git) -> status.Gate:
+    """Spec 048: the gate's last real tick, tick.json in its state directory, for the gate
+    check; one that can't be read is that check's error, never the report's end (D-55)"""
+    try:
+        return dataclasses.replace(gate, tick=load_tick(state_dir(git) / TICK))
+    except status.CHECK_FAILURES as exc:
+        return dataclasses.replace(gate, tick_error=status.first_line(exc))
+
+
 def _checkout(root: Path, slug: str | None, command: str) -> tuple[Path, str]:
     """The checkout's top level and its repo: origin's, or slug checked against it (S-008-9)"""
     git = Git(root)
@@ -1987,7 +1999,7 @@ def _factory(
         return factory.Worktrees(judged, judged[0].worktree.path.resolve(), git.landing_branch())
 
     host = factory.Host(
-        gate=lambda: status.read_gate(slug, top, home, platform, run, check, os.getuid()),
+        gate=lambda: _with_tick(status.read_gate(slug, top, home, platform, run, check, os.getuid()), git),
         gate_cli=lambda: _gate_cli(top, slug, home),
         rows=lambda section: factory.read_rows(slug, top, section, run, wide=True),  # the host's (#764)
         main=main_branch,
