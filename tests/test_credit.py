@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from shipmill.agent_marker import carries
 from shipmill.agents import AgentsConfig, Credit, gh_identity_of
 from shipmill.app import Answer
 from shipmill.app_gh import with_body
@@ -34,7 +35,6 @@ from shipmill.credit import (
     approvers,
     authors,
     by_agent,
-    carries_agent_marker,
     closes_of,
     credited_body,
     deciders,
@@ -1015,7 +1015,7 @@ AGENT = "<!-- shipmill:agent -->"
 
 
 @pytest.mark.parametrize(
-    ("body", "carries"),
+    ("body", "carried"),
     [
         (f"Triage: ok\n\n{AGENT}", True),
         (f"{AGENT}\nfirst line", True),
@@ -1031,9 +1031,9 @@ AGENT = "<!-- shipmill:agent -->"
         ("", False),
     ],
 )
-def test_s050_11_a_body_carries_the_marker_when_a_stripped_line_matches_it(body: str, carries: bool) -> None:
-    assert carries_agent_marker(body) is carries
-    assert by_agent(body) is carries
+def test_s050_11_a_body_carries_the_marker_when_a_stripped_line_matches_it(body: str, carried: bool) -> None:
+    assert carries(body) is carried
+    assert by_agent(body) is carried
 
 
 @pytest.mark.parametrize("body", [None, 7, ["x"], {"text": AGENT}])

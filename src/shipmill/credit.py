@@ -14,6 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 
+from shipmill.agent_marker import carries
 from shipmill.errors import ReleaseError
 
 # The author associations a record's author is trusted by, as needs-decision reads replies
@@ -36,22 +37,14 @@ _DECISION_BY = re.compile(
 WRITERS = frozenset({"admin", "maintain", "write"})
 OPPORTUNITY = "opportunity"  # product-intake's opportunity issue, and the label that accepts it
 PLANNED = "planned"
-# Spec 050: an agent's record carries this line; a body carries it when any line, stripped,
-# matches _AGENT_LINE, so a later attribute (`<!-- shipmill:agent via=gh -->`) reads the same
-AGENT_MARKER = "<!-- shipmill:agent -->"
-_AGENT_LINE = re.compile(r"<!-- shipmill:agent(?:\s[^>]*)?-->")
-
-
-def carries_agent_marker(body: str) -> bool:
-    """Whether any line of body, stripped of surrounding whitespace, is the agent marker"""
-    return any(_AGENT_LINE.fullmatch(line.strip()) for line in body.splitlines())
 
 
 def by_agent(body: object) -> bool:
-    """D-62: a record is an agent's when its body carries the agent marker, and when its body
-    isn't a string in GitHub's answer, since a record whose origin can't be read counts as an
-    agent's: a failure is a missed decision, never an invented one"""
-    return not isinstance(body, str) or carries_agent_marker(body)
+    """D-62: a record is an agent's when its body carries the agent marker (spec 050, as
+    agent_marker.carries reads it), and when its body isn't a string in GitHub's answer, since
+    a record whose origin can't be read counts as an agent's: a failure is a missed decision,
+    never an invented one"""
+    return not isinstance(body, str) or carries(body)
 
 
 @dataclass(frozen=True, slots=True)
