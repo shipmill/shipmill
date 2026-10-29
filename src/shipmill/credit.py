@@ -294,10 +294,11 @@ class Named:
     why: str  # such as "approved the pull request"
 
 
-Source = Callable[[CreditReads, Pull], list[Named]]
+# A source reads the records of the pull request, knowing the App's bot login (`<slug>[bot]`)
+Source = Callable[[CreditReads, Pull, str], list[Named]]
 
 
-def approvers(reads: CreditReads, pull: Pull) -> list[Named]:
+def approvers(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
     """S-049-3: each person whose latest review is APPROVED, trusted by that review's author
     association, in the order of their reviews. As GitHub reads a review's state, a comment
     doesn't count: an approval stands until a later DISMISSED or CHANGES_REQUESTED"""
@@ -329,12 +330,13 @@ def filed(reads: CreditReads, pull: Pull) -> list[Filed]:
     return list(found.values())
 
 
-def answers(comments: Sequence[Comment], where: str) -> list[Named]:
+def answers(comments: Sequence[Comment], where: str, app: str) -> list[Named]:
     """S-049-4: who answered a needs-decision question in comments, by the protocol's reply
-    rules: a question is a comment whose first line is the marker, by the App (a bot) or an
-    OWNER, MEMBER, or COLLABORATOR; a reply is a later comment without the marker by a person,
-    trusted by its author association. A comment of the App's whose first line is `Decision
-    by @<login>` or ``Decision by `@<login>` `` relays the answer of <login>, given in a session"""
+    rules: a question is a comment whose first line is the marker, by the App (its bot login,
+    app) or an OWNER, MEMBER, or COLLABORATOR other than a bot; a reply is a later comment
+    without the marker by a person, trusted by its author association. A comment of the App's
+    whose first line is `Decision by @<login>` or ``Decision by `@<login>` `` relays the answer
+    of <login>, given in a session; another bot's comment is neither a question nor a relay"""
     why = f"answered the decision on {where}"
     found: list[Named] = []
     asked = False
@@ -342,10 +344,11 @@ def answers(comments: Sequence[Comment], where: str) -> list[Named]:
         if comment.user is None:
             continue
         line = first_line(comment.body)
+        by_app = comment.user.login.lower() == app.lower()
         if line == MARKER:
-            asked = asked or comment.user.bot or comment.association in TRUSTED
+            asked = asked or by_app or (not comment.user.bot and comment.association in TRUSTED)
         elif comment.user.bot:
-            relayed = _DECISION_BY.match(line)
+            relayed = _DECISION_BY.match(line) if by_app else None
             if relayed is not None:
                 found.append(Named(Person(relayed["bare"] or relayed["span"], False), True, why))
         elif asked:
@@ -353,16 +356,16 @@ def answers(comments: Sequence[Comment], where: str) -> list[Named]:
     return found
 
 
-def answerers(reads: CreditReads, pull: Pull) -> list[Named]:
+def answerers(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
     """S-049-4: the answerers of needs-decision questions on the pull request, then on each
     issue it closes and that issue's parent"""
-    found = answers(reads.credit_comments(pull.number), "the pull request")
+    found = answers(reads.credit_comments(pull.number), "the pull request", app)
     for issue in filed(reads, pull):
-        found.extend(answers(reads.credit_comments(issue.number), f"#{issue.number}"))
+        found.extend(answers(reads.credit_comments(issue.number), f"#{issue.number}", app))
     return found
 
 
-def authors(reads: CreditReads, pull: Pull) -> list[Named]:
+def authors(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
     """S-049-5: the author of each issue the pull request closes and of its parent, trusted by
     the issue's author association, since the filing is the decision"""
     return [
@@ -372,7 +375,7 @@ def authors(reads: CreditReads, pull: Pull) -> list[Named]:
     ]
 
 
-def accepters(reads: CreditReads, pull: Pull) -> list[Named]:
+def accepters(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
     """S-049-6: for each opportunity issue labelled planned that the pull request closes, or
     that is the parent of one, the person whose `labeled` event added planned last, trusted by
     a write, maintain, or admin permission on the repo"""
@@ -393,13 +396,13 @@ def accepters(reads: CreditReads, pull: Pull) -> list[Named]:
 SOURCES: tuple[Source, ...] = (approvers, answerers, authors, accepters)
 
 
-def deciders(reads: CreditReads, pull: Pull, sources: Sequence[Source] = SOURCES) -> list[Named]:
+def deciders(reads: CreditReads, pull: Pull, app: str, sources: Sequence[Source] = SOURCES) -> list[Named]:
     """S-049-7: the trusted people the sources name, in order, each once; never a bot, the App
-    (a bot too), or the pull request's author, whom the commit already credits"""
-    seen = {pull.author.login.lower()}
+    (app, its bot login), or the pull request's author, whom the commit already credits"""
+    seen = {pull.author.login.lower(), app.lower()}
     found: list[Named] = []
     for source in sources:
-        for named in source(reads, pull):
+        for named in source(reads, pull, app):
             key = named.person.login.lower()
             if named.trusted and not named.person.bot and key not in seen:
                 seen.add(key)

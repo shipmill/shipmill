@@ -96,6 +96,7 @@ aggregate-result.json.
 import argparse
 import dataclasses
 import datetime as dt
+import functools
 import importlib.metadata
 import json
 import os
@@ -130,6 +131,7 @@ from shipmill.app import (
     CACHE,
     HELPERS,
     Api,
+    AppLogin,
     Identity,
     NotInstalled,
     Openssl,
@@ -1524,7 +1526,8 @@ def _gh(
     if merge is not None:
         pull = _hold_never(top, merge, as_app(environ, token), binary, readers.merge)
         if identity.credit is Credit.DECIDER:
-            gh_args = _credit(top, pull, gh_args, as_app(environ, token), binary, readers)
+            app = functools.partial(_app_login, app_login(signer, api), app_id, path)
+            gh_args = _credit(top, pull, gh_args, as_app(environ, token), binary, readers, app)
     return runner([str(binary), *gh_args], as_app(environ, token))
 
 
@@ -1543,20 +1546,38 @@ def _credit_reader(top: Path, binary: Path, env: Mapping[str, str]) -> CreditRea
     return GhCli(top, gh=str(binary), env=env)
 
 
+def _app_login(login: AppLogin, app_id: int, key: Path) -> str:
+    """The App's bot login, whose comments alone ask and relay a decision (S-049-4); exit 2
+    when it can't be read, since the credit can't then tell the App from another bot"""
+    try:
+        return login(app_id, key)
+    except ReleaseError as exc:
+        raise ReleaseError(
+            f"[agents] credit = \"decider\" in {CONFIG_PATH} needs the App's bot login, which can't be read: {exc}"
+        ) from None
+
+
 def _credit(
-    top: Path, pull: tuple[str, int], gh_args: list[str], env: Mapping[str, str], binary: Path, readers: _GhReaders
+    top: Path,
+    pull: tuple[str, int],
+    gh_args: list[str],
+    env: Mapping[str, str],
+    binary: Path,
+    readers: _GhReaders,
+    app: Callable[[], str],
 ) -> list[str]:
     """Spec 049: gh's arguments for `gh pr merge` of the pull request (repo, number) with one
     `--body` in place of any given, the body it would have had followed by a Co-authored-by
     trailer for each decider it doesn't name yet, and one stderr line per decider; unchanged
-    when no record names one, for a rebase (spec 026 refuses it), and for --disable-auto"""
+    when no record names one, for a rebase (spec 026 refuses it), and for --disable-auto. app
+    reads the App's bot login, once the merge's records are read"""
     repo, number = pull
     flags = merge_flags(gh_args)
     if flags.disable_auto or flags.method == "rebase":
         return gh_args
     reads = readers.credit(top, binary, {**env, "GH_REPO": repo})
     record = reads.credit_pull(number)
-    found = deciders(reads, record)
+    found = deciders(reads, record, app())
     if not found:
         return gh_args
     if flags.body is not None:

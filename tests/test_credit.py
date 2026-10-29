@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from shipmill.agents import AgentsConfig, Credit, gh_identity_of
+from shipmill.app import Answer
 from shipmill.app_gh import with_body
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH, Table
@@ -44,7 +45,7 @@ from .test_app import APP_ID, REPO, FakeSigner
 from .test_app_gh_merge import CODE, DIRECTION, FakeReads, Reader, connected
 from .test_app_token import FAKE_GH, MintApi, executable
 
-APP_LOGIN = "shipmill-demo[bot]"
+APP_LOGIN = "demo-agent[bot]"  # the App FakeApi answers GET /app for
 WITH_APP = f'\n[agents]\nprompt = "/t"\napp_id = {APP_ID}\n'
 ON = WITH_APP + 'credit = "decider"\n'
 OFF = WITH_APP + 'credit = "off"\n'
@@ -152,6 +153,7 @@ def gh(
     credit: CreditReader | None = None,
     files: tuple[FileChange, ...] = (CODE,),
     stdin: str = "",
+    api: MintApi | None = None,
 ) -> int:
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
@@ -160,7 +162,7 @@ def gh(
     home.mkdir(exist_ok=True)
     return main(
         ["--repo", str(repo.root), "gh", "--app-key", str(key), *args],
-        api=MintApi(),
+        api=api if api is not None else MintApi(),
         signer=FakeSigner(),
         stdin=io.StringIO(stdin),
         environ={"PATH": f"{fakes}:/usr/bin:/bin"},
@@ -169,6 +171,17 @@ def gh(
         merge_reader=Reader(FakeReads(files)),
         credit_reader=credit if credit is not None else refusing,
     )
+
+
+@dataclass
+class NoSlugApi(MintApi):
+    """MintApi whose GET /app names no slug after the one the token's mint makes, so the App's
+    bot login can't be read"""
+
+    def get(self, path: str, token: str | None) -> Answer:
+        if path == "/app" and any(called == "/app" for called, _ in self.calls):
+            return Answer(200, "{}")
+        return super().get(path, token)
 
 
 def body_of(argv: list[str]) -> str:
@@ -256,7 +269,7 @@ def test_s049_3_a_trusted_approver_gets_the_trailer_named_by_profile_or_login(
 @pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR"])
 def test_s049_3_each_trusted_association_approves(association: str) -> None:
     reads = FakeCredit(reviews=[approved("octocat", association)])
-    assert deciders(reads, pull()) == [Named(Person("octocat", False), True, "approved the pull request")]
+    assert deciders(reads, pull(), APP_LOGIN) == [Named(Person("octocat", False), True, "approved the pull request")]
 
 
 def test_s049_3_only_the_latest_review_of_each_person_counts() -> None:
@@ -269,7 +282,7 @@ def test_s049_3_only_the_latest_review_of_each_person_counts() -> None:
             approved("mona", state="DISMISSED"),
         ]
     )
-    assert [n.person.login for n in approvers(reads, pull()) if n.trusted] == ["hubot"]
+    assert [n.person.login for n in approvers(reads, pull(), APP_LOGIN) if n.trusted] == ["hubot"]
 
 
 def test_s049_3_a_comment_after_an_approval_keeps_it_as_github_reads_it() -> None:
@@ -284,7 +297,7 @@ def test_s049_3_a_comment_after_an_approval_keeps_it_as_github_reads_it() -> Non
             approved("mona", state="COMMENTED"),
         ]
     )
-    assert [n.person.login for n in approvers(reads, pull())] == ["octocat"]
+    assert [n.person.login for n in approvers(reads, pull(), APP_LOGIN)] == ["octocat"]
 
 
 def test_s049_3_the_account_parses_as_users_gives_it() -> None:
@@ -310,11 +323,11 @@ def test_s049_7_bots_the_app_the_untrusted_and_the_author_never_get_the_trailer(
             approved("Alice", "OWNER"),  # the author, in another case
         ],
     )
-    assert deciders(reads, reads.record) == []
+    assert deciders(reads, reads.record, APP_LOGIN) == []
 
 
 def test_s049_7_each_person_is_named_once_by_the_first_source_that_names_them() -> None:
-    def second(reads: CreditReads, record: Pull) -> list[Named]:
+    def second(reads: CreditReads, record: Pull, app: str) -> list[Named]:
         return [
             Named(Person("OctoCat", False), True, "answered the question"),
             Named(Person("mona", False), False, "answered the question"),
@@ -322,7 +335,7 @@ def test_s049_7_each_person_is_named_once_by_the_first_source_that_names_them() 
         ]
 
     reads = FakeCredit(reviews=[approved("octocat"), approved("octocat")])
-    found = deciders(reads, pull(), (approvers, second))
+    found = deciders(reads, pull(), APP_LOGIN, (approvers, second))
     assert [(n.person.login, n.why) for n in found] == [("octocat", "approved the pull request"), ("hubot", "filed #9")]
 
 
@@ -636,11 +649,13 @@ def test_s049_4_a_trusted_reply_after_the_question_answers_it_on_the_pull_reques
             ]
         }
     )
-    assert named(answerers(reads, reads.record)) == [
+    assert named(answerers(reads, reads.record, APP_LOGIN)) == [
         ("octocat", True, "answered the decision on the pull request"),
         ("stranger", False, "answered the decision on the pull request"),
     ]
-    assert [n.person.login for n in deciders(reads, reads.record)] == ["octocat"]  # the untrusted reply gives none
+    assert [n.person.login for n in deciders(reads, reads.record, APP_LOGIN)] == [
+        "octocat"
+    ]  # the untrusted reply gives none
 
 
 def test_s049_4_a_question_needs_the_app_or_a_trusted_asker_and_the_marker_as_first_line() -> None:
@@ -654,7 +669,7 @@ def test_s049_4_a_question_needs_the_app_or_a_trusted_asker_and_the_marker_as_fi
             ]
         }
     )
-    assert answerers(reads, reads.record) == []
+    assert answerers(reads, reads.record, APP_LOGIN) == []
 
 
 def test_s049_4_answers_on_a_closed_issue_and_its_parent_count_each_issue_once() -> None:
@@ -663,7 +678,7 @@ def test_s049_4_answers_on_a_closed_issue_and_its_parent_count_each_issue_once()
         closes=[issue(9, parent=parent), issue(10, parent=parent)],
         comments={9: [QUESTION, said("mona")], 3: [QUESTION, said("lead", "Go", "MEMBER")], 10: []},
     )
-    assert named(answerers(reads, reads.record)) == [
+    assert named(answerers(reads, reads.record, APP_LOGIN)) == [
         ("mona", True, "answered the decision on #9"),
         ("lead", True, "answered the decision on #3"),
     ]
@@ -680,13 +695,17 @@ def test_s049_4_answers_on_a_closed_issue_and_its_parent_count_each_issue_once()
 )
 def test_s049_4_the_app_relaying_a_decision_names_its_login_bare_or_in_a_code_span(first: str) -> None:
     reads = FakeCredit(comments={7: [said(APP_LOGIN, f"{first}\n\nAnswered in the session: 1", "NONE", bot=True)]})
-    assert named(answerers(reads, reads.record)) == [("octocat", True, "answered the decision on the pull request")]
+    assert named(answerers(reads, reads.record, APP_LOGIN)) == [
+        ("octocat", True, "answered the decision on the pull request")
+    ]
 
 
 @pytest.mark.parametrize(
     "comment",
     [
         said("mona", "Decision by @octocat, relayed by me", "OWNER"),  # not the App: a person's comment
+        said("github-actions[bot]", "Decision by @octocat, relayed by a workflow", "NONE", bot=True),  # another bot
+        said("dependabot[bot]", "Decision by `@octocat`", "NONE", bot=True),
         said(APP_LOGIN, "Triage: ok\nDecision by @octocat", "NONE", bot=True),  # not the first line
         said(APP_LOGIN, "Decision by @octocat-", "NONE", bot=True),  # no login GitHub allows
         said(APP_LOGIN, "Decision by `@octocat", "NONE", bot=True),
@@ -694,7 +713,38 @@ def test_s049_4_the_app_relaying_a_decision_names_its_login_bare_or_in_a_code_sp
 )
 def test_s049_4_only_the_apps_first_line_relays_a_decision(comment: Comment) -> None:
     reads = FakeCredit(comments={7: [comment]})
-    assert answerers(reads, reads.record) == []
+    assert answerers(reads, reads.record, APP_LOGIN) == []
+
+
+def test_s049_4_another_bots_question_asks_nothing_and_its_relay_credits_nobody() -> None:
+    other = "github-actions[bot]"
+    reads = FakeCredit(
+        comments={
+            7: [
+                said(other, f"{MARKER}\n@octocat Decision needed: which?", "NONE", bot=True),
+                said("octocat", "1"),
+                said(other, "Decision by @hubot, relayed by Claude Code", "NONE", bot=True),
+            ]
+        }
+    )
+    assert answerers(reads, reads.record, APP_LOGIN) == []
+    assert deciders(reads, reads.record, APP_LOGIN) == []
+
+
+def test_s049_4_the_apps_login_is_matched_without_case_and_never_credited() -> None:
+    question = said(APP_LOGIN.upper(), MARKER, "NONE", bot=True)
+    reads = FakeCredit(comments={7: [question, said("octocat")]}, reviews=[approved(APP_LOGIN, bot=False)])
+    assert [n.person.login for n in deciders(reads, reads.record, APP_LOGIN)] == ["octocat"]
+
+
+def test_s049_4_a_merge_exits_2_when_the_apps_login_cant_be_read(
+    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = connected(repo, tmp_path, POLICY + ON)
+    credit, runner = CreditReader(FakeCredit(reviews=[approved("octocat")])), Runner(capsys)
+    with pytest.raises(ReleaseError, match="needs the App's bot login, which can't be read: .*gave no slug"):
+        gh(repo, tmp_path, key, ["pr", "merge", "7", "--squash"], runner, credit, api=NoSlugApi())
+    assert runner.calls == []
 
 
 def test_s049_4_an_answerer_gets_the_trailer_on_the_merge(
@@ -716,13 +766,13 @@ def test_s049_5_the_trusted_author_of_a_closed_issue_or_its_parent_files_the_dec
             issue(11, Person("dependabot[bot]", True), "NONE"),
         ]
     )
-    assert named(authors(reads, reads.record)) == [
+    assert named(authors(reads, reads.record, APP_LOGIN)) == [
         ("mona", True, "filed #9"),
         ("lead", True, "filed #3"),
         ("stranger", False, "filed #10"),
         ("dependabot[bot]", False, "filed #11"),
     ]
-    assert [n.person.login for n in deciders(reads, reads.record)] == ["mona", "lead"]
+    assert [n.person.login for n in deciders(reads, reads.record, APP_LOGIN)] == ["mona", "lead"]
 
 
 def test_s049_5_an_issue_author_gets_the_trailer_on_the_merge(
@@ -743,7 +793,9 @@ def test_s049_6_who_added_planned_to_an_opportunity_with_write_accepted_it(permi
         labelers={3: [Person("mona", False), None, Person("octocat", False)]},
         permissions={"octocat": permission},
     )
-    assert named(accepters(reads, reads.record)) == [("octocat", True, "accepted #3 (planned)")]  # the last to add it
+    assert named(accepters(reads, reads.record, APP_LOGIN)) == [
+        ("octocat", True, "accepted #3 (planned)")
+    ]  # the last to add it
     assert "labeled 9 planned" not in reads.read  # #9 is no opportunity
 
 
@@ -765,7 +817,7 @@ def test_s049_6_an_accepter_without_write_or_an_issue_not_an_accepted_opportunit
     reads = FakeCredit(
         closes=[issue(9, APP, "NONE", labels)], labelers={9: labelers}, permissions={"octocat": permission}
     )
-    assert deciders(reads, reads.record) == []
+    assert deciders(reads, reads.record, APP_LOGIN) == []
 
 
 def test_s049_6_an_accepter_gets_the_trailer_on_the_merge(
@@ -794,7 +846,7 @@ def test_s049_7_the_sources_run_in_the_specs_order_and_the_first_names_a_person(
         labelers={3: [Person("octocat", False)]},
         permissions={"octocat": "write"},
     )
-    assert named(deciders(reads, reads.record)) == [
+    assert named(deciders(reads, reads.record, APP_LOGIN)) == [
         ("mona", True, "approved the pull request"),
         ("hubot", True, "answered the decision on the pull request"),
         ("lead", True, "filed #3"),
