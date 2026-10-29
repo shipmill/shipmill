@@ -129,7 +129,8 @@ def write(path: Path, data: object) -> None:
 
 
 def malformed(path: Path, exc: Exception) -> ReleaseError:
-    return ReleaseError(f"{path} is malformed ({exc}); delete it to start over")
+    """A state file the gate can't read; its fix, deleting it, goes in tick.json (spec 048)"""
+    return ReleaseError(f"{path} is malformed ({exc}); delete it to start over", f"rm {path}")
 
 
 # -- the records ------------------------------------------------------------------------------

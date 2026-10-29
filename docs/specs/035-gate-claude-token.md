@@ -101,6 +101,9 @@ its bytes ever entering the gate's memory.
 
 Without a token file the preflight is #500's, unchanged.
 
+Spec 048 changed the login's `CLAUDE_AUTH` exit code: it exits 2 as a token file's does,
+where #500's login failure exited 0, and every failing tick records its cause in `tick.json`.
+
 ### What `doctor` and `status` print
 
 Both name the auth kind and never the token or any part of it:

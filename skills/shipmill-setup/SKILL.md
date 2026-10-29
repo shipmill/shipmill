@@ -910,6 +910,10 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      `STALLED`, sends SIGTERM to the session's process group while its start time still
      matches `gate.json`, starts nothing, and exits 0; its item is retried after
      `retry_hours`. `gate --json` names the session in `running` on RUNNING and STALLED
+   - **A failing tick** (spec 048): `CLAUDE_AUTH` (a login's or a token file's),
+     `GITHUB_AUTH`, `HOOKS_FAILED`, or a shipmill error exits 2; every other tick exits 0.
+     Each real tick writes `shipmill/tick.json` beside `gate.json`: its decision, or `ERROR`
+     with the error's first line, its fix, and since when and how many ticks in a row failed
 5. **A dedicated checkout.** The session branches and commits where it starts, so never
    use the user's working copy: `git worktree add --detach tmp/shipmill-gate
    origin/<default>` inside the trusted checkout (a worktree outside it would need its

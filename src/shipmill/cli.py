@@ -199,7 +199,7 @@ from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold
 from shipmill.classify import DEFAULT_REF, Base, Pulls, RepoPath, classify_paths, classify_pull, policy_at
 from shipmill.claude_auth import ClaudeAuth, preflight_auth
 from shipmill.claude_token import FLAG as TOKEN_FLAG
-from shipmill.claude_token import Credential, Kind, Token, TokenSource, inspect, read_token
+from shipmill.claude_token import Credential, Token, TokenSource, inspect, read_token
 from shipmill.config import CONFIG_PATH, Table, config_path
 from shipmill.config import read as read_config
 from shipmill.credit import CreditReader, CreditReads, credited_body, deciders, default_body
@@ -221,13 +221,13 @@ from shipmill.downstream import (
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
     PRUNE,
-    Action,
     ClaudeCli,
     Decision,
     StateRead,
     StateRunner,
     WatchState,
     check_checkout,
+    failing,
     gate,
     host_login,
     load_prune,
@@ -1219,11 +1219,11 @@ def _credential(given: Path | None, home: Path) -> Credential:
 
 
 def _gate_exit(decision: Decision) -> int:
-    """Spec 035, Q-1: a tick whose token file, or the token in it, fails exits 2 after printing
-    CLAUDE_AUTH; so does GITHUB_AUTH (spec 048), as the App check's failure did before it
-    (D-14); every other tick, #500's login preflight's CLAUDE_AUTH included, exits 0"""
-    failed = decision.action is Action.CLAUDE_AUTH and decision.credential is Kind.TOKEN_FILE
-    return 2 if failed or decision.action is Action.GITHUB_AUTH else 0
+    """Spec 048, Q-1: a failing tick exits 2 after printing its decision: CLAUDE_AUTH, the
+    login's (#500) as well as a token file's (spec 035), GITHUB_AUTH, as the App check's
+    failure did before it (D-14), and HOOKS_FAILED; every other tick, PYPI_WAIT and STALLED
+    included, exits 0. A tick a ReleaseError ends exits 2 in run"""
+    return 2 if failing(decision) else 0
 
 
 def _product_repos(root: Path) -> tuple[str, ...]:
