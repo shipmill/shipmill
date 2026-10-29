@@ -16,6 +16,7 @@ from shipmill.app_gh import with_body
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH, Table
 from shipmill.credit import (
+    CLOSES_QUERY,
     MARKER,
     Account,
     Comment,
@@ -32,6 +33,8 @@ from shipmill.credit import (
     answerers,
     approvers,
     authors,
+    by_agent,
+    carries_agent_marker,
     closes_of,
     credited_body,
     deciders,
@@ -56,8 +59,10 @@ HUBOT_TRAILER = "Co-authored-by: hubot <7+hubot@users.noreply.github.com>"
 APP = Person(APP_LOGIN, True)
 
 
-def approved(login: str, association: str = "OWNER", state: str = "APPROVED", bot: bool = False) -> Review:
-    return Review(Person(login, bot), state, association)
+def approved(
+    login: str, association: str = "OWNER", state: str = "APPROVED", bot: bool = False, body: str = ""
+) -> Review:
+    return Review(Person(login, bot), state, association, by_agent(body))
 
 
 def pull(body: str = "The change.\n\nFixes #9", author: Person = APP) -> Pull:
@@ -615,11 +620,12 @@ def test_s049_10_the_never_zone_hold_still_comes_first(
 # -- S-049-4, S-049-5, S-049-6: answerers, issue authors, accepters ------------------------------
 
 OCTO = Person("octocat", False)
-QUESTION = Comment(APP, "NONE", f"{MARKER}\n<!-- shipmill:zone scope -->\n@octocat Decision needed: which?")
+QUESTION_BODY = f"{MARKER}\n<!-- shipmill:zone scope -->\n@octocat Decision needed: which?"
+QUESTION = Comment(APP, "NONE", QUESTION_BODY, False)
 
 
 def said(login: str, body: str = "1", association: str = "OWNER", bot: bool = False) -> Comment:
-    return Comment(Person(login, bot), association, body)
+    return Comment(Person(login, bot), association, body, by_agent(body))
 
 
 def issue(
@@ -628,8 +634,9 @@ def issue(
     association: str = "OWNER",
     labels: tuple[str, ...] = (),
     parent: Filed | None = None,
+    agent: bool = False,
 ) -> Filed:
-    return Filed(number, author, association, frozenset(labels), parent)
+    return Filed(number, author, association, frozenset(labels), parent, agent)
 
 
 def named(found: list[Named]) -> list[tuple[str, bool, str]]:
@@ -872,6 +879,7 @@ def filed_node(
         "repository": {"nameWithOwner": repo},
         "authorAssociation": "OWNER",
         "author": author,
+        "body": "",
         "labels": {"pageInfo": {"hasNextPage": False}, "nodes": [{"name": n} for n in labels]},
         **more,
     }
@@ -895,9 +903,10 @@ def test_s049_5_closing_references_parse_with_parents_in_the_repo_only() -> None
             OCTO,
             "OWNER",
             frozenset({"opportunity"}),
-            Filed(3, Person("renovate[bot]", True), "OWNER", frozenset(), None),
+            Filed(3, Person("renovate[bot]", True), "OWNER", frozenset(), None, False),
+            False,
         ),
-        Filed(10, None, "OWNER", frozenset(), None),
+        Filed(10, None, "OWNER", frozenset(), None, False),
     ]
 
 
@@ -925,9 +934,14 @@ def test_s049_3_gh_reads_the_pull_request_its_reviews_commits_accounts_and_setti
     answers = {
         "pulls/7/reviews": [
             json.dumps(
-                {"user": {"login": "octocat", "type": "User"}, "state": "APPROVED", "author_association": "OWNER"}
+                {
+                    "user": {"login": "octocat", "type": "User"},
+                    "state": "APPROVED",
+                    "author_association": "OWNER",
+                    "body": "",
+                }
             ),
-            json.dumps({"user": None, "state": "APPROVED", "author_association": "NONE"}),
+            json.dumps({"user": None, "state": "APPROVED", "author_association": "NONE", "body": "Fine."}),
             json.dumps({"user": {"login": "mona", "type": "User"}, "state": "PENDING", "author_association": "OWNER"}),
         ],
         "pulls/7/commits": [
@@ -954,7 +968,7 @@ def test_s049_3_gh_reads_the_pull_request_its_reviews_commits_accounts_and_setti
     script.chmod(0o755)
     hub = GhCli(tmp_path, gh=str(script))
     assert hub.credit_pull(7) == Pull(7, APP, "Add it", "")
-    assert hub.credit_reviews(7) == [approved("octocat"), Review(None, "APPROVED", "NONE")]  # a draft isn't one
+    assert hub.credit_reviews(7) == [approved("octocat"), Review(None, "APPROVED", "NONE", False)]  # no draft
     assert hub.credit_commits(7) == [Commit("Add it", "A", "a@x", None)]
     assert hub.credit_account("octocat") == OCTOCAT
     assert hub.credit_messages() == Messages(Message.COMMIT_MESSAGES, Message.PR_TITLE)
@@ -989,7 +1003,170 @@ def test_s049_4_gh_reads_the_comments_closing_issues_label_events_and_permission
     )
     script.chmod(0o755)
     hub = GhCli(tmp_path, gh=str(script))
-    assert hub.credit_comments(7) == [Comment(OCTO, "OWNER", "")]
-    assert hub.credit_closes(7) == [Filed(9, OCTO, "OWNER", frozenset(), None)]
+    assert hub.credit_comments(7) == [Comment(OCTO, "OWNER", "", True)]  # a null body can't be read: an agent's
+    assert hub.credit_closes(7) == [Filed(9, OCTO, "OWNER", frozenset(), None, False)]
     assert hub.credit_labelers(9, "planned") == [OCTO, None]
     assert hub.credit_permission("octocat") == "write"
+
+
+# -- S-050-11, S-050-12: an agent's record names no decider --------------------------------------
+
+AGENT = "<!-- shipmill:agent -->"
+
+
+@pytest.mark.parametrize(
+    ("body", "carries"),
+    [
+        (f"Triage: ok\n\n{AGENT}", True),
+        (f"{AGENT}\nfirst line", True),
+        (f"Text\n   {AGENT}  \r\nmore", True),  # any line, stripped
+        ("Text\n\n<!-- shipmill:agent via=gh -->", True),  # a later attribute reads the same
+        ("Text\n\n<!-- shipmill:agent\tvia=gh -->", True),
+        (AGENT, True),
+        ("Text", False),
+        (f"Text {AGENT}", False),  # not a line of its own
+        ("<!-- shipmill:agents -->", False),
+        ("<!-- shipmill:agent>-->", False),
+        ("<!-- shipmill:needs-decision -->", False),
+        ("", False),
+    ],
+)
+def test_s050_11_a_body_carries_the_marker_when_a_stripped_line_matches_it(body: str, carries: bool) -> None:
+    assert carries_agent_marker(body) is carries
+    assert by_agent(body) is carries
+
+
+@pytest.mark.parametrize("body", [None, 7, ["x"], {"text": AGENT}])
+def test_s050_11_a_body_that_isnt_a_string_is_an_agents(body: object) -> None:
+    assert by_agent(body)
+
+
+def test_s050_11_a_marked_closed_issue_or_parent_names_no_decider_whatever_its_author() -> None:
+    reads = FakeCredit(
+        closes=[
+            issue(9, Person("mona", False), "MEMBER", agent=True, parent=issue(3, Person("lead", False), agent=True)),
+            issue(10, Person("hubot", False), "OWNER", parent=issue(4, Person("lead2", False), "COLLABORATOR")),
+            issue(11, OCTO, "OWNER", parent=issue(5, Person("boss", False), "OWNER", agent=True)),
+        ]
+    )
+    assert named(authors(reads, reads.record, APP_LOGIN)) == [
+        ("hubot", True, "filed #10"),
+        ("lead2", True, "filed #4"),
+        ("octocat", True, "filed #11"),
+    ]
+
+
+def test_s050_11_closing_references_read_each_issues_and_parents_body() -> None:
+    assert " body " in CLOSES_QUERY.partition("fragment filed on Issue")[2]  # the issue and its parent alike
+    nodes: list[object] = [
+        filed_node(9, body=f"Please do it.\n\n{AGENT}", parent=filed_node(3, body="The plan.")),
+        filed_node(10, body="Mine.", parent=filed_node(4, body="Epic\n<!-- shipmill:agent via=gh -->")),
+        filed_node(11, body=None),  # GitHub gave no string: an agent's, and no refusal
+        {key: value for key, value in filed_node(12).items() if key != "body"},  # no body at all
+        filed_node(13, body=7),
+    ]
+    found = closes_of(answer(nodes), 7)
+    assert [(f.number, f.agent, None if f.parent is None else (f.parent.number, f.parent.agent)) for f in found] == [
+        (9, True, (3, False)),
+        (10, False, (4, True)),
+        (11, True, None),
+        (12, True, None),
+        (13, True, None),
+    ]
+
+
+def test_s050_11_an_unreadable_issue_body_names_none_and_the_merge_credits_the_others(
+    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = connected(repo, tmp_path, POLICY + ON)
+    closes = closes_of(
+        answer([filed_node(9, body=None), filed_node(10, author={"login": "hubot", "__typename": "User"})]), 7
+    )
+    credit, runner = CreditReader(FakeCredit(closes=closes)), Runner(capsys)
+    assert gh(repo, tmp_path, key, ["pr", "merge", "7", "--squash", "--body", "Given."], runner, credit) == 0
+    assert body_of(runner.calls[0]) == f"Given.\n\n{HUBOT_TRAILER}"  # #9's octocat is not credited
+    assert runner.stderr == ["credit: `@hubot` filed #10\n"]
+
+
+def test_s050_12_a_reply_carrying_the_marker_names_no_one() -> None:
+    reads = FakeCredit(
+        comments={
+            7: [
+                QUESTION,
+                said("octocat", f"Triage: implement\n\n{AGENT}"),  # an agent writing as the maintainer
+                said("mona", "Going with 2.\n\n<!-- shipmill:agent via=gh -->", "MEMBER"),
+                said("hubot", "2, please", "MEMBER"),  # a person's reply still answers
+            ]
+        }
+    )
+    assert named(answerers(reads, reads.record, APP_LOGIN)) == [
+        ("hubot", True, "answered the decision on the pull request")
+    ]
+
+
+def test_s050_12_a_comment_whose_body_isnt_a_string_is_no_reply() -> None:
+    comment = Comment.parse({"user": {"login": "octocat", "type": "User"}, "author_association": "OWNER", "body": None})
+    assert answerers(FakeCredit(comments={7: [QUESTION, comment]}), pull(), APP_LOGIN) == []
+
+
+@pytest.mark.parametrize(
+    "first", ["Decision by @octocat, relayed by Claude Code", "Decision by `@octocat`, relayed by Claude Code"]
+)
+def test_s050_12_the_apps_marked_relay_still_names_its_login(first: str) -> None:
+    relay = said(APP_LOGIN, f"{first}\n\nAnswered in the session: 1\n\n{AGENT}", "NONE", bot=True)
+    assert relay.agent
+    reads = FakeCredit(comments={7: [QUESTION, relay]})
+    assert named(deciders(reads, reads.record, APP_LOGIN)) == [
+        ("octocat", True, "answered the decision on the pull request")
+    ]
+
+
+def test_s050_12_an_approving_review_carrying_the_marker_names_no_one() -> None:
+    reads = FakeCredit(
+        reviews=[
+            approved("octocat", body=AGENT),  # an --approve with no body gets the marker alone
+            approved("mona", "MEMBER", body=f"LGTM\n\n{AGENT}"),
+            approved("hubot", "COLLABORATOR", body="LGTM"),
+        ]
+    )
+    assert [n.person.login for n in deciders(reads, reads.record, APP_LOGIN)] == ["hubot"]
+
+
+def test_s050_12_a_review_is_parsed_an_agents_by_its_body() -> None:
+    user = {"login": "octocat", "type": "User"}
+
+    def review(**body: object) -> Review:
+        return Review.parse({"user": user, "state": "APPROVED", "author_association": "OWNER", **body})
+
+    assert not review(body="").agent
+    assert not review(body="LGTM").agent
+    assert review(body=f"LGTM\n\n{AGENT}").agent
+    assert review(body=None).agent  # can't be read: an agent's
+    assert review().agent
+
+
+def test_s050_12_a_persons_unmarked_issue_still_credits_its_trusted_author() -> None:
+    nodes: list[object] = [filed_node(9, body="Please add it.\n\n<!-- shipmill:needs-decision -->")]
+    reads = FakeCredit(closes=closes_of(answer(nodes), 7))
+    assert named(deciders(reads, reads.record, APP_LOGIN)) == [("octocat", True, "filed #9")]
+
+
+def test_s050_12_only_the_unmarked_records_get_the_trailer_on_the_merge(
+    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = connected(repo, tmp_path, POLICY + ON)
+    reads = FakeCredit(
+        reviews=[approved("mona", body=AGENT)],
+        closes=[issue(9, Person("lead", False), agent=True)],
+        comments={
+            9: [
+                QUESTION,
+                said("stray", f"Noted.\n\n{AGENT}"),
+                said(APP_LOGIN, f"Decision by @octocat, relayed by Claude Code\n\n{AGENT}", "NONE", bot=True),
+            ]
+        },
+    )
+    credit, runner = CreditReader(reads), Runner(capsys)
+    assert gh(repo, tmp_path, key, ["pr", "merge", "7", "--squash", "--body", "Given."], runner, credit) == 0
+    assert body_of(runner.calls[0]) == f"Given.\n\n{OCTOCAT_TRAILER}"
+    assert runner.stderr == ["credit: `@octocat` answered the decision on #9\n"]

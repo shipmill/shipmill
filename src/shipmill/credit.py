@@ -36,6 +36,22 @@ _DECISION_BY = re.compile(
 WRITERS = frozenset({"admin", "maintain", "write"})
 OPPORTUNITY = "opportunity"  # product-intake's opportunity issue, and the label that accepts it
 PLANNED = "planned"
+# Spec 050: an agent's record carries this line; a body carries it when any line, stripped,
+# matches _AGENT_LINE, so a later attribute (`<!-- shipmill:agent via=gh -->`) reads the same
+AGENT_MARKER = "<!-- shipmill:agent -->"
+_AGENT_LINE = re.compile(r"<!-- shipmill:agent(?:\s[^>]*)?-->")
+
+
+def carries_agent_marker(body: str) -> bool:
+    """Whether any line of body, stripped of surrounding whitespace, is the agent marker"""
+    return any(_AGENT_LINE.fullmatch(line.strip()) for line in body.splitlines())
+
+
+def by_agent(body: object) -> bool:
+    """D-62: a record is an agent's when its body carries the agent marker, and when its body
+    isn't a string in GitHub's answer, since a record whose origin can't be read counts as an
+    agent's: a failure is a missed decision, never an invented one"""
+    return not isinstance(body, str) or carries_agent_marker(body)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,17 +83,22 @@ class Pull:
 
 @dataclass(frozen=True, slots=True)
 class Review:
-    """A submitted review; user None for a deleted account"""
+    """A submitted review; user None for a deleted account; agent when its body is an agent's
+    (by_agent)"""
 
     user: Person | None
     state: str  # APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED
     association: str
+    agent: bool
 
     @classmethod
     def parse(cls, review: Mapping[str, Any]) -> Review:
         user = review["user"]
         return cls(
-            None if user is None else Person.parse(user), str(review["state"]), str(review["author_association"])
+            None if user is None else Person.parse(user),
+            str(review["state"]),
+            str(review["author_association"]),
+            by_agent(review.get("body")),
         )
 
 
@@ -155,30 +176,37 @@ class Messages:
 @dataclass(frozen=True, slots=True)
 class Comment:
     """A comment on an issue or a pull request, as `GET .../issues/<n>/comments` gives it;
-    user None for a deleted account"""
+    user None for a deleted account; body "" when GitHub gives none, and agent when the body is
+    an agent's (by_agent)"""
 
     user: Person | None
     association: str
     body: str
+    agent: bool
 
     @classmethod
     def parse(cls, comment: Mapping[str, Any]) -> Comment:
-        user = comment["user"]
+        user, body = comment["user"], comment.get("body")
         return cls(
-            None if user is None else Person.parse(user), str(comment["author_association"]), comment["body"] or ""
+            None if user is None else Person.parse(user),
+            str(comment["author_association"]),
+            body if isinstance(body, str) else "",
+            by_agent(body),
         )
 
 
 @dataclass(frozen=True, slots=True)
 class Filed:
     """An issue the pull request closes, or its sub-issue parent (parent None for a parent,
-    whose own parent isn't read); author None for a deleted account; labels lowercased"""
+    whose own parent isn't read); author None for a deleted account; labels lowercased; agent
+    when its body is an agent's (by_agent), so its filing is no person's decision"""
 
     number: int
     author: Person | None
     association: str
     labels: frozenset[str]
     parent: Filed | None
+    agent: bool
 
 
 # The GraphQL query of the issues a pull request closes and their parents (credit_closes)
@@ -186,7 +214,7 @@ CLOSES_QUERY = (
     "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { "
     "nameWithOwner pullRequest(number: $number) { closingIssuesReferences(first: 100) { "
     "pageInfo { hasNextPage } nodes { ...filed parent { ...filed } } } } } } "
-    "fragment filed on Issue { number repository { nameWithOwner } authorAssociation "
+    "fragment filed on Issue { number repository { nameWithOwner } authorAssociation body "
     "author { login __typename } labels(first: 100) { pageInfo { hasNextPage } nodes { name } } }"
 )
 
@@ -194,7 +222,8 @@ CLOSES_QUERY = (
 def closes_of(found: Any, number: int) -> list[Filed]:
     """CLOSES_QUERY's answer for pull request number: the issues of its repo it closes, each
     with its parent when that is of the repo too. Anything malformed, or a list past one page,
-    is refused, since a misread would credit the wrong person"""
+    is refused, since a misread would credit the wrong person; a body that isn't a string is
+    not refused but makes that issue an agent's (S-050-11), so the merge goes on without it"""
 
     def refuse(what: str) -> ReleaseError:
         return ReleaseError(f"gh api graphql printed {what} for #{number}'s closing issues: {str(found)[:300]}")
@@ -224,7 +253,8 @@ def closes_of(found: Any, number: int) -> list[Filed]:
         if not all(isinstance(label, dict) and isinstance(label.get("name"), str) for label in labels):
             raise refuse(f"a label without a name on #{node['number']}")
         names = frozenset(str(label["name"]).lower() for label in labels)
-        return Filed(int(node["number"]), person, str(node.get("authorAssociation")), names, parent)
+        association = str(node.get("authorAssociation"))
+        return Filed(int(node["number"]), person, association, names, parent, by_agent(node.get("body")))
 
     def home(node: Any) -> str:
         where = node.get("repository") if isinstance(node, dict) else None
@@ -305,7 +335,8 @@ Source = Callable[[CreditReads, Pull, str], list[Named]]
 def approvers(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
     """S-049-3: each person whose latest review is APPROVED, trusted by that review's author
     association, in the order of their reviews. As GitHub reads a review's state, a comment
-    doesn't count: an approval stands until a later DISMISSED or CHANGES_REQUESTED"""
+    doesn't count: an approval stands until a later DISMISSED or CHANGES_REQUESTED. An approval
+    whose body is an agent's names no one (S-050-12)"""
     latest: dict[str, tuple[Person, Review]] = {}
     for review in reads.credit_reviews(pull.number):
         if review.user is not None and review.state not in _NO_STATE:
@@ -314,7 +345,7 @@ def approvers(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
     return [
         Named(person, review.association in TRUSTED, "approved the pull request")
         for person, review in latest.values()
-        if review.state == "APPROVED"
+        if review.state == "APPROVED" and not review.agent
     ]
 
 
@@ -338,9 +369,11 @@ def answers(comments: Sequence[Comment], where: str, app: str) -> list[Named]:
     """S-049-4: who answered a needs-decision question in comments, by the protocol's reply
     rules: a question is a comment whose first line is the marker, by the App (its bot login,
     app) or an OWNER, MEMBER, or COLLABORATOR other than a bot; a reply is a later comment
-    without the marker by a person, trusted by its author association. A comment of the App's
-    whose first line is `Decision by @<login>` or ``Decision by `@<login>` `` relays the answer
-    of <login>, given in a session; another bot's comment is neither a question nor a relay"""
+    without the marker by a person, trusted by its author association, and whose body is no
+    agent's (S-050-12). A comment of the App's whose first line is `Decision by @<login>` or
+    ``Decision by `@<login>` `` relays the answer of <login>, given in a session, read by its
+    author and first line whatever agent marker it carries; another bot's comment is neither a
+    question nor a relay"""
     why = f"answered the decision on {where}"
     found: list[Named] = []
     asked = False
@@ -355,7 +388,7 @@ def answers(comments: Sequence[Comment], where: str, app: str) -> list[Named]:
             relayed = _DECISION_BY.match(line) if by_app else None
             if relayed is not None:
                 found.append(Named(Person(relayed["bare"] or relayed["span"], False), True, why))
-        elif asked:
+        elif asked and not comment.agent:
             found.append(Named(comment.user, comment.association in TRUSTED, why))
     return found
 
@@ -371,11 +404,12 @@ def answerers(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
 
 def authors(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
     """S-049-5: the author of each issue the pull request closes and of its parent, trusted by
-    the issue's author association, since the filing is the decision"""
+    the issue's author association, since the filing is the decision; an issue whose body is an
+    agent's names no one, whoever its author (S-050-11)"""
     return [
         Named(issue.author, issue.association in TRUSTED, f"filed #{issue.number}")
         for issue in filed(reads, pull)
-        if issue.author is not None
+        if issue.author is not None and not issue.agent
     ]
 
 
