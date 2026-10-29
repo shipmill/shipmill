@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.95.0] - 2026-10-29
+
+### Changed
+
+- Config deprecations no longer end on a release count (D-63): `[agents] prs` and `[roadmap]` keep loading with a `doctor` warning, and a config that sets none of `triage`, `fix`, and `land` keeps reading `land` from `[agents] prompt` ("merge when green" or "land"), so a connected repo that never took the `agent-autonomy` upgrade keeps landing. The warnings name the replacement instead of a release that refuses (#735)
+- The relayed answer's first line, ``Decision by `@<login>`, relayed by <agent>``, and the direction pull request's ``Direction from `@<login>` in #<issue>`` line name the login in a code span, so they no longer email the person (D-61); spec 012's S-012-6 and spec 034's S-034-9 say so, and a `Decision by` line with the login bare still reads as the answer (#771)
+
 ## [0.94.0] - 2026-10-29
 
 ### Changed
@@ -2037,7 +2044,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.94.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.95.0...HEAD
+[0.95.0]: https://github.com/shipmill/shipmill/compare/v0.94.0...v0.95.0
 [0.94.0]: https://github.com/shipmill/shipmill/compare/v0.93.0...v0.94.0
 [0.93.0]: https://github.com/shipmill/shipmill/compare/v0.92.0...v0.93.0
 [0.92.0]: https://github.com/shipmill/shipmill/compare/v0.91.0...v0.92.0
