@@ -15,16 +15,23 @@ from shipmill.app_gh import with_body
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH, Table
 from shipmill.credit import (
+    MARKER,
     Account,
+    Comment,
     Commit,
     CreditReads,
+    Filed,
     Message,
     Messages,
     Named,
     Person,
     Pull,
     Review,
+    accepters,
+    answerers,
     approvers,
+    authors,
+    closes_of,
     credited_body,
     deciders,
     default_body,
@@ -65,6 +72,10 @@ class FakeCredit:
     commits: list[Commit] = field(default_factory=lambda: [Commit("Add the thing\n\nIts body.", "A", "a@x", None)])
     accounts: dict[str, Account] = field(default_factory=lambda: {"octocat": OCTOCAT, "hubot": HUBOT})
     messages: Messages = Messages(Message.PR_BODY, Message.PR_TITLE)
+    closes: list[Filed] = field(default_factory=list)
+    comments: dict[int, list[Comment]] = field(default_factory=dict)
+    labelers: dict[int, list[Person | None]] = field(default_factory=dict)
+    permissions: dict[str, str] = field(default_factory=dict)
     read: list[str] = field(default_factory=list)
 
     def credit_pull(self, number: int) -> Pull:
@@ -86,6 +97,22 @@ class FakeCredit:
     def credit_messages(self) -> Messages:
         self.read.append("repo")
         return self.messages
+
+    def credit_closes(self, number: int) -> list[Filed]:
+        self.read.append(f"closes {number}")
+        return self.closes
+
+    def credit_comments(self, number: int) -> list[Comment]:
+        self.read.append(f"comments {number}")
+        return self.comments.get(number, [])
+
+    def credit_labelers(self, number: int, label: str) -> list[Person | None]:
+        self.read.append(f"labeled {number} {label}")
+        return self.labelers.get(number, [])
+
+    def credit_permission(self, login: str) -> str:
+        self.read.append(f"permission {login}")
+        return self.permissions.get(login, "read")
 
 
 @dataclass
@@ -317,7 +344,8 @@ def test_s049_7_a_pull_request_no_record_names_merges_with_its_arguments_unchang
     assert gh(repo, tmp_path, key, args, runner, credit) == 0
     assert [argv[1:] for argv in runner.calls] == [args]
     assert runner.stderr == [""]
-    assert credit.reads.read == ["pull 7", "reviews 7"]  # no account is looked up
+    # no account is looked up
+    assert credit.reads.read == ["pull 7", "reviews 7", "comments 7", "closes 7", "closes 7", "closes 7"]
 
 
 # -- S-049-8: the body ---------------------------------------------------------------------------
@@ -571,6 +599,264 @@ def test_s049_10_the_never_zone_hold_still_comes_first(
     assert (runner.calls, credit.envs) == ([], [])
 
 
+# -- S-049-4, S-049-5, S-049-6: answerers, issue authors, accepters ------------------------------
+
+OCTO = Person("octocat", False)
+QUESTION = Comment(APP, "NONE", f"{MARKER}\n<!-- shipmill:zone scope -->\n@octocat Decision needed: which?")
+
+
+def said(login: str, body: str = "1", association: str = "OWNER", bot: bool = False) -> Comment:
+    return Comment(Person(login, bot), association, body)
+
+
+def issue(
+    number: int,
+    author: Person | None = OCTO,
+    association: str = "OWNER",
+    labels: tuple[str, ...] = (),
+    parent: Filed | None = None,
+) -> Filed:
+    return Filed(number, author, association, frozenset(labels), parent)
+
+
+def named(found: list[Named]) -> list[tuple[str, bool, str]]:
+    return [(n.person.login, n.trusted, n.why) for n in found]
+
+
+def test_s049_4_a_trusted_reply_after_the_question_answers_it_on_the_pull_request() -> None:
+    reads = FakeCredit(
+        comments={
+            7: [
+                said("early", "I'd go with 1"),  # before the question: no answer
+                QUESTION,
+                said("octocat", "2, please"),
+                said("stranger", "1", "CONTRIBUTOR"),
+                said(APP_LOGIN, "Triage: noted", "NONE", bot=True),  # the App's own comment is no reply
+                said("hubot", f"{MARKER}\n@octocat again?", "MEMBER"),  # a question, not a reply
+            ]
+        }
+    )
+    assert named(answerers(reads, reads.record)) == [
+        ("octocat", True, "answered the decision on the pull request"),
+        ("stranger", False, "answered the decision on the pull request"),
+    ]
+    assert [n.person.login for n in deciders(reads, reads.record)] == ["octocat"]  # the untrusted reply gives none
+
+
+def test_s049_4_a_question_needs_the_app_or_a_trusted_asker_and_the_marker_as_first_line() -> None:
+    reads = FakeCredit(
+        comments={
+            7: [
+                said("stranger", MARKER, "NONE"),  # an outsider's marker asks nothing
+                said("octocat", "1"),
+                said(APP_LOGIN, f"Triage: see below\n{MARKER}", "NONE", bot=True),  # a quote of it, not a question
+                said("hubot", "2", "MEMBER"),
+            ]
+        }
+    )
+    assert answerers(reads, reads.record) == []
+
+
+def test_s049_4_answers_on_a_closed_issue_and_its_parent_count_each_issue_once() -> None:
+    parent = issue(3, Person("lead", False))
+    reads = FakeCredit(
+        closes=[issue(9, parent=parent), issue(10, parent=parent)],
+        comments={9: [QUESTION, said("mona")], 3: [QUESTION, said("lead", "Go", "MEMBER")], 10: []},
+    )
+    assert named(answerers(reads, reads.record)) == [
+        ("mona", True, "answered the decision on #9"),
+        ("lead", True, "answered the decision on #3"),
+    ]
+    assert reads.read == ["comments 7", "closes 7", "comments 9", "comments 3", "comments 10"]
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        "Decision by @octocat, relayed by Claude Code",
+        "Decision by `@octocat`, relayed by Claude Code",
+        "Decision by @octocat",
+    ],
+)
+def test_s049_4_the_app_relaying_a_decision_names_its_login_bare_or_in_a_code_span(first: str) -> None:
+    reads = FakeCredit(comments={7: [said(APP_LOGIN, f"{first}\n\nAnswered in the session: 1", "NONE", bot=True)]})
+    assert named(answerers(reads, reads.record)) == [("octocat", True, "answered the decision on the pull request")]
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        said("mona", "Decision by @octocat, relayed by me", "OWNER"),  # not the App: a person's comment
+        said(APP_LOGIN, "Triage: ok\nDecision by @octocat", "NONE", bot=True),  # not the first line
+        said(APP_LOGIN, "Decision by @octocat-", "NONE", bot=True),  # no login GitHub allows
+        said(APP_LOGIN, "Decision by `@octocat", "NONE", bot=True),
+    ],
+)
+def test_s049_4_only_the_apps_first_line_relays_a_decision(comment: Comment) -> None:
+    reads = FakeCredit(comments={7: [comment]})
+    assert answerers(reads, reads.record) == []
+
+
+def test_s049_4_an_answerer_gets_the_trailer_on_the_merge(
+    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = connected(repo, tmp_path, POLICY + ON)
+    reads = FakeCredit(closes=[issue(9, author=APP, association="NONE")], comments={9: [QUESTION, said("octocat")]})
+    credit, runner = CreditReader(reads), Runner(capsys)
+    assert gh(repo, tmp_path, key, ["pr", "merge", "7", "--squash", "--body", "Given."], runner, credit) == 0
+    assert body_of(runner.calls[0]) == f"Given.\n\n{OCTOCAT_TRAILER}"
+    assert runner.stderr == ["credit: `@octocat` answered the decision on #9\n"]
+
+
+def test_s049_5_the_trusted_author_of_a_closed_issue_or_its_parent_files_the_decision() -> None:
+    reads = FakeCredit(
+        closes=[
+            issue(9, Person("mona", False), "MEMBER", parent=issue(3, Person("lead", False), "COLLABORATOR")),
+            issue(10, Person("stranger", False), "CONTRIBUTOR", parent=issue(4, None, "NONE")),
+            issue(11, Person("dependabot[bot]", True), "NONE"),
+        ]
+    )
+    assert named(authors(reads, reads.record)) == [
+        ("mona", True, "filed #9"),
+        ("lead", True, "filed #3"),
+        ("stranger", False, "filed #10"),
+        ("dependabot[bot]", False, "filed #11"),
+    ]
+    assert [n.person.login for n in deciders(reads, reads.record)] == ["mona", "lead"]
+
+
+def test_s049_5_an_issue_author_gets_the_trailer_on_the_merge(
+    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = connected(repo, tmp_path, POLICY + ON)
+    credit, runner = CreditReader(FakeCredit(closes=[issue(9, Person("hubot", False))])), Runner(capsys)
+    assert gh(repo, tmp_path, key, ["pr", "merge", "7", "--squash", "--body", "Given."], runner, credit) == 0
+    assert body_of(runner.calls[0]) == f"Given.\n\n{HUBOT_TRAILER}"
+    assert runner.stderr == ["credit: `@hubot` filed #9\n"]
+
+
+@pytest.mark.parametrize("permission", ["write", "maintain", "admin"])
+def test_s049_6_who_added_planned_to_an_opportunity_with_write_accepted_it(permission: str) -> None:
+    opportunity = issue(3, APP, "NONE", ("opportunity", "planned"))
+    reads = FakeCredit(
+        closes=[issue(9, APP, "NONE", parent=opportunity)],
+        labelers={3: [Person("mona", False), None, Person("octocat", False)]},
+        permissions={"octocat": permission},
+    )
+    assert named(accepters(reads, reads.record)) == [("octocat", True, "accepted #3 (planned)")]  # the last to add it
+    assert "labeled 9 planned" not in reads.read  # #9 is no opportunity
+
+
+@pytest.mark.parametrize(
+    ("labels", "labelers", "permission"),
+    [
+        (("opportunity", "planned"), [Person("octocat", False)], "read"),
+        (("opportunity", "planned"), [Person("octocat", False)], "none"),
+        (("opportunity", "planned"), [Person("renovate", True)], "write"),  # a bot never accepts
+        (("opportunity", "planned"), [None], "write"),  # a deleted account
+        (("opportunity", "planned"), [], "write"),
+        (("planned",), [Person("octocat", False)], "write"),  # no opportunity
+        (("opportunity",), [Person("octocat", False)], "write"),  # not accepted
+    ],
+)
+def test_s049_6_an_accepter_without_write_or_an_issue_not_an_accepted_opportunity_gives_none(
+    labels: tuple[str, ...], labelers: list[Person | None], permission: str
+) -> None:
+    reads = FakeCredit(
+        closes=[issue(9, APP, "NONE", labels)], labelers={9: labelers}, permissions={"octocat": permission}
+    )
+    assert deciders(reads, reads.record) == []
+
+
+def test_s049_6_an_accepter_gets_the_trailer_on_the_merge(
+    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = connected(repo, tmp_path, POLICY + ON)
+    reads = FakeCredit(
+        closes=[issue(9, APP, "NONE", ("opportunity", "planned"))],
+        labelers={9: [OCTO]},
+        permissions={"octocat": "admin"},
+    )
+    credit, runner = CreditReader(reads), Runner(capsys)
+    assert gh(repo, tmp_path, key, ["pr", "merge", "7", "--squash", "--body", "Given."], runner, credit) == 0
+    assert body_of(runner.calls[0]) == f"Given.\n\n{OCTOCAT_TRAILER}"
+    assert runner.stderr == ["credit: `@octocat` accepted #9 (planned)\n"]
+
+
+def test_s049_7_the_sources_run_in_the_specs_order_and_the_first_names_a_person() -> None:
+    """proves: S-049-4, S-049-5, S-049-6"""
+    reads = FakeCredit(
+        reviews=[approved("mona")],
+        closes=[
+            issue(9, Person("mona", False), parent=issue(3, Person("lead", False), labels=("opportunity", "planned")))
+        ],
+        comments={7: [QUESTION, said("hubot"), said("mona")]},
+        labelers={3: [Person("octocat", False)]},
+        permissions={"octocat": "write"},
+    )
+    assert named(deciders(reads, reads.record)) == [
+        ("mona", True, "approved the pull request"),
+        ("hubot", True, "answered the decision on the pull request"),
+        ("lead", True, "filed #3"),
+        ("octocat", True, "accepted #3 (planned)"),
+    ]
+
+
+USER_NODE = {"login": "octocat", "__typename": "User"}
+
+
+def filed_node(
+    number: int, repo: str = REPO, author: object = USER_NODE, labels: tuple[str, ...] = (), **more: object
+) -> dict[str, object]:
+    return {
+        "number": number,
+        "repository": {"nameWithOwner": repo},
+        "authorAssociation": "OWNER",
+        "author": author,
+        "labels": {"pageInfo": {"hasNextPage": False}, "nodes": [{"name": n} for n in labels]},
+        **more,
+    }
+
+
+def answer(nodes: list[object], more: bool = False) -> dict[str, object]:
+    references = {"pageInfo": {"hasNextPage": more}, "nodes": nodes}
+    pr = {"closingIssuesReferences": references}
+    return {"data": {"repository": {"nameWithOwner": REPO.upper(), "pullRequest": pr}}}
+
+
+def test_s049_5_closing_references_parse_with_parents_in_the_repo_only() -> None:
+    nodes: list[object] = [
+        filed_node(9, labels=("Opportunity",), parent=filed_node(3, author={"login": "renovate", "__typename": "Bot"})),
+        filed_node(5, repo="other/repo"),  # another repo's issue: its records aren't this repo's
+        filed_node(10, author=None, parent=filed_node(4, repo="other/repo")),  # a deleted author
+    ]
+    assert closes_of(answer(nodes), 7) == [
+        Filed(
+            9,
+            OCTO,
+            "OWNER",
+            frozenset({"opportunity"}),
+            Filed(3, Person("renovate[bot]", True), "OWNER", frozenset(), None),
+        ),
+        Filed(10, None, "OWNER", frozenset(), None),
+    ]
+
+
+@pytest.mark.parametrize(
+    "found",
+    [
+        answer([], more=True),
+        answer([filed_node(9, labels=())]) | {"errors": [{"message": "no"}]},
+        answer([{"number": 9}]),
+        answer([filed_node(9, author="octocat")]),
+        {"data": {"repository": None}},
+    ],
+)
+def test_s049_5_a_malformed_or_cut_closing_reference_answer_exits_2(found: dict[str, object]) -> None:
+    with pytest.raises(ReleaseError, match="closing issues"):
+        closes_of(found, 7)
+
+
 # -- GhCli reads the records ---------------------------------------------------------------------
 
 
@@ -618,3 +904,33 @@ def test_s049_3_gh_reads_the_pull_request_its_reviews_commits_accounts_and_setti
 def test_s049_8_an_unknown_merge_message_setting_exits_2() -> None:
     with pytest.raises(ReleaseError, match="squash_merge_commit_message as 'NEW'"):
         Messages.parse({"squash_merge_commit_message": "NEW", "merge_commit_message": "PR_TITLE"})
+
+
+def test_s049_4_gh_reads_the_comments_closing_issues_label_events_and_permission(tmp_path: Path) -> None:
+    """GhCli's reads for answerers, issue authors, and accepters; proves: S-049-4, S-049-5, S-049-6"""
+    comment = {"user": {"login": "octocat", "type": "User"}, "author_association": "OWNER", "body": None}
+    events = [
+        {"event": "labeled", "label": {"name": "Planned"}, "actor": {"login": "octocat", "type": "User"}},
+        {"event": "labeled", "label": {"name": "opportunity"}, "actor": {"login": "mona", "type": "User"}},
+        {"event": "unlabeled", "label": {"name": "planned"}, "actor": {"login": "mona", "type": "User"}},
+        {"event": "labeled", "label": {"name": "planned"}, "actor": None},
+    ]
+    graphql = json.dumps(answer([filed_node(9)]))
+    script = tmp_path / "gh"
+    script.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        f"  *'number=7'*closingIssuesReferences*) echo '{graphql}' ;;\n"
+        f"  *issues/7/comments*) printf '%s\\n' '{json.dumps(comment)}' ;;\n"
+        f"  *issues/9/events*) printf '%s\\n' {' '.join(repr(json.dumps(e)) for e in events)} ;;\n"
+        """  *collaborators/octocat/permission) echo '{"permission": "write", "role_name": "maintain"}' ;;\n"""
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    hub = GhCli(tmp_path, gh=str(script))
+    assert hub.credit_comments(7) == [Comment(OCTO, "OWNER", "")]
+    assert hub.credit_closes(7) == [Filed(9, OCTO, "OWNER", frozenset(), None)]
+    assert hub.credit_labelers(9, "planned") == [OCTO, None]
+    assert hub.credit_permission("octocat") == "write"
