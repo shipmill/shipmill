@@ -102,6 +102,7 @@ AUTH_FAILURE = re.compile(
     re.IGNORECASE,
 )
 LOG_TAIL = 64 * 1024  # how much of a session's log the gate reads, from its end
+STREAM_HEAD = 256 * 1024  # how much of a session's log's start tells stream-json from text (S-048-17)
 
 # The tools a headless session may use without a prompt (spec 005): the file tools, skills and
 # subagents, peer messages, and gh, git, and uv. Not a sandbox: the trust filter is (D-16)
@@ -178,17 +179,37 @@ class Deaths:
 class Launch:
     """The last session the gate started, and the findings it started it for; process is set
     for a headless launch (D-17) and None for an interactive one; deaths, the dead sessions in
-    a row right before it (#500), None when the one before it ran"""
+    a row right before it (#500), None when the one before it ran; item, the item's brief()
+    line (`NEW #774`), None in a gate.json written before spec 048 (S-048-14)"""
 
     fingerprint: str
     session: str
     at: dt.datetime
     process: Process | None = None
     deaths: Deaths | None = None
+    item: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.item is not None and (not isinstance(self.item, str) or not self.item.strip()):
+            raise ValueError(f"item must be a non-empty string, got {self.item!r}")
 
     @property
     def mode(self) -> Mode:
         return Mode.INTERACTIVE if self.process is None else Mode.HEADLESS
+
+    @property
+    def named(self) -> str:
+        """The item as a RUNNING line names it"""
+        return "item not recorded" if self.item is None else self.item
+
+    def minutes(self, now: dt.datetime) -> int:
+        """Whole minutes since the launch, as of now"""
+        return minutes_between(self.at, now)
+
+
+def minutes_between(start: dt.datetime, end: dt.datetime) -> int:
+    """Whole minutes from start to end, never below 0"""
+    return max(0, int((end - start).total_seconds() // 60))
 
 
 class Action(enum.Enum):
@@ -254,13 +275,18 @@ def held(hold: Hold, sessions: Sequence[Session]) -> Decision | None:
     return Decision(Action.HELD, f"{hold.reason}: no session starts{still}", ())
 
 
-def busy(sessions: Sequence[Session]) -> Decision | None:
-    """A session that is still working or waits on the user holds the repo"""
+def busy(sessions: Sequence[Session], last: Launch | None = None, now: dt.datetime | None = None) -> Decision | None:
+    """A session that is still working or waits on the user holds the repo. A running one
+    that is the gate's last launch names its item and how long it ran (S-048-15), as of now;
+    one the gate didn't launch keeps the line it had before"""
     for s in sessions:
         if s.blocked:
             return Decision(Action.WAITING, f"session {s.id} waits on you: claude attach {s.id}", ())
     for s in sessions:
         if s.running:
+            if last is not None and now is not None and s.id == last.session:
+                ran = f"session {s.id} on {last.named}, running {last.minutes(now)} min"
+                return Decision(Action.RUNNING, f"{ran}: claude attach {s.id}", ())
             return Decision(Action.RUNNING, f"session {s.id} is still working: claude attach {s.id}", ())
     return None
 
@@ -290,7 +316,7 @@ def decide(
     [autonomy] land level (S-040-9): open pull requests are work under propose (a session
     reviews and labels them) and act (it merges them), never under observe, whatever the
     deprecated [agents] prs says"""
-    pending = busy(sessions)
+    pending = busy(sessions, last, now)
     if pending is not None:
         return pending
     handed = Handed() if last is None else Handed({last.fingerprint: Hand(last.session, last.at)})
@@ -641,10 +667,13 @@ class ClaudeCli:
     ) -> int:
         """`claude -p` (spec 005): no prompt can block it and AskUserQuestion is gone; the tool
         lists come before --session-id, and `--` ends the options before the prompt, so a
-        --claude-arg tool list that widens the allowlist never reads the prompt as a tool name"""
+        --claude-arg tool list that widens the allowlist never reads the prompt as a tool name.
+        Its output is stream-json (S-048-17), so its log grows with each message it sends or
+        receives, not only at its end"""
         settings = [] if env is None else ["--settings", json.dumps({"env": dict(env)})]
         tools = ["--allowedTools", HEADLESS_TOOLS, "--disallowedTools", "AskUserQuestion"]
-        head = ["claude", "-p", "--permission-prompts", "none", *tools, "--session-id", str(session)]
+        stream = ["--output-format", "stream-json", "--verbose"]
+        head = ["claude", "-p", "--permission-prompts", "none", *stream, *tools, "--session-id", str(session)]
         cmd = [*head, *settings, "-n", name, *self.args, "--", text]
         return self._spawn(cmd, workspace, log, headless_env(session_env(self._environ, token)))
 
@@ -792,7 +821,8 @@ def state_dir(git: Git) -> Path:
 
 def load_launch(path: Path) -> Launch | None:
     """gate.json; one without mode, as written before headless mode, is an interactive launch,
-    and one without dead, as written before #500, follows a session that ran"""
+    one without dead, as written before #500, follows a session that ran, and one without
+    item, as written before spec 048, names no item (S-048-14)"""
     if not path.is_file():
         return None
     try:
@@ -812,7 +842,8 @@ def load_launch(path: Path) -> Launch | None:
                 raise ValueError("dead: expected exactly count and since")
             deaths = Deaths(dead["count"], _moment(dead["since"], "dead.since"))
         at = dt.datetime.fromisoformat(data["at"])
-        return Launch(str(data["fingerprint"]), str(data["session"]), at, process, deaths)
+        item = data.get("item")  # S-048-14: absent in one written before spec 048
+        return Launch(str(data["fingerprint"]), str(data["session"]), at, process, deaths, item)
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise ReleaseError(f"{path} is malformed ({exc}); delete it to start over") from None
 
@@ -822,6 +853,8 @@ def save_launch(path: Path, launch: Launch) -> None:
     only after a run of dead sessions (#500)"""
     path.parent.mkdir(parents=True, exist_ok=True)
     record: dict[str, object] = {"fingerprint": launch.fingerprint, "session": launch.session}
+    if launch.item is not None:  # S-048-14: beside its fingerprint
+        record["item"] = launch.item
     record["at"] = launch.at.isoformat()
     if launch.process is not None:
         record |= {"mode": launch.mode.value, "pid": launch.process.pid, "started": launch.process.started}
@@ -835,24 +868,36 @@ def session_log(state: Path, session: str) -> Path:
     return state / SESSIONS / f"{session}.log"
 
 
-def still_working(last: Launch | None, state: Path, started: StartTime) -> Decision | None:
+def log_written(log: Path, launch: Launch) -> dt.datetime:
+    """A headless session's log's last write, its modification time; the launch itself when
+    the log is gone, as the gate creates it when it starts the session"""
+    if not log.is_file():
+        return launch.at
+    return dt.datetime.fromtimestamp(log.stat().st_mtime, tz=dt.UTC)
+
+
+def still_working(last: Launch | None, state: Path, started: StartTime, now: dt.datetime) -> Decision | None:
     """D-17: a headless session runs while a process with its pid and recorded start time
-    exists; another start time means the pid was reused. It never reads as waiting"""
+    exists; another start time means the pid was reused. It never reads as waiting. Its line
+    names its item, how long it ran, and when its log last grew, as of now (S-048-15)"""
     if last is None or last.process is None or last.process.started is None:
         return None
     if started(last.process.pid) != last.process.started:
         return None
     log = session_log(state, last.session)
-    return Decision(Action.RUNNING, f"session {last.session} is still working: tail -f {log}", ())
+    grew = minutes_between(log_written(log, last), now)
+    ran = f"session {last.session} on {last.named}, running {last.minutes(now)} min, log grew {grew} min ago"
+    return Decision(Action.RUNNING, f"{ran}: tail -f {log}", ())
 
 
 @dataclass(frozen=True, slots=True)
 class Dead:
     """A session that ended dead (#500); it doesn't count toward retry_hours. A headless one:
     its log's last write came within DEAD_WITHIN of its launch, or its log holds an
-    authentication failure; last_line is the log's last line, cut short, the only text of it
-    ever shown. An interactive one leaves no log, so state is how `claude agents` lists it
-    (listed_dead), log is None and last_line "", and seconds is None when it can't tell"""
+    authentication failure; last_line is the log's last line, cut short (a stream-json log's
+    as a person reads it, stream_last_line), the only text of it ever shown. An interactive
+    one leaves no log, so state is how `claude agents` lists it (listed_dead), log is None
+    and last_line "", and seconds is None when it can't tell"""
 
     session: str
     log: Path | None  # None: an interactive session
@@ -919,24 +964,91 @@ def no_result(text: str) -> bool:
     return not lines or (len(lines) == 1 and NO_RESULT.match(lines[0]) is not None)
 
 
+def stream_event(line: str) -> dict[str, object] | None:
+    """A stream-json line's event, a JSON object with a string type; None for any other line,
+    such as one Claude Code wrote to stderr, which goes to the same log"""
+    try:
+        found = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return found if isinstance(found, dict) and isinstance(found.get("type"), str) else None
+
+
+def is_stream_json(log: Path) -> bool:
+    """A log written with --output-format stream-json (S-048-17): a line of its head is an
+    event. One written before spec 048 is the text `claude -p` prints at its end, none is"""
+    with log.open("rb") as handle:
+        head = handle.read(STREAM_HEAD).decode("utf-8", errors="replace")
+    return any(stream_event(line) is not None for line in head.splitlines())
+
+
+def tail_lines(log: Path) -> list[str]:
+    """The log's tail as whole lines: the first is left out when the tail cut it"""
+    lines = log_tail(log).splitlines()
+    return lines[1:] if log.stat().st_size > LOG_TAIL else lines
+
+
+def has_result(lines: Sequence[str]) -> bool:
+    """A stream-json log ended with a result: its last `result` event has is_error false; none,
+    or one with is_error true or missing, is no result (S-048-17)"""
+    results = [found for line in lines if (found := stream_event(line)) is not None and found["type"] == "result"]
+    return bool(results) and results[-1].get("is_error") is False
+
+
+def event_text(event: Mapping[str, object]) -> str:
+    """What a person reads of an event: a result's text, or its subtype when it carries none,
+    and an assistant message's text; "" for every other event"""
+    if event["type"] == "result":
+        for key in ("result", "subtype"):
+            text = event.get(key)
+            if isinstance(text, str) and text.strip():
+                return text
+        return ""
+    message = event.get("message")
+    if event["type"] != "assistant" or not isinstance(message, dict) or not isinstance(message.get("content"), list):
+        return ""
+    blocks = message["content"]
+    return "\n".join(b["text"] for b in blocks if isinstance(b, dict) and isinstance(b.get("text"), str))
+
+
+def stream_last_line(lines: Sequence[str]) -> str:
+    """A stream-json log's last line as a person reads it, cut as last_line cuts it: the last
+    line that isn't an event, or the last event with text to read. A line that starts as JSON
+    but doesn't parse is an event cut off mid-write, possibly a tool's output, and never shown"""
+    for line in reversed([line for line in lines if line.strip()]):
+        found = stream_event(line)
+        if found is None and line.lstrip().startswith("{"):
+            continue
+        text = line if found is None else event_text(found)
+        if text.strip():
+            return last_line(text)
+    return ""
+
+
 def ended_dead(last: Launch | None, state: Path) -> Dead | None:
     """#500: the last headless launch, once still_working found its process gone, when it ended
     dead: its log holds an authentication failure, or it ended within DEAD_WITHIN of its launch
     with no result in its log, so a healthy session that finishes fast still counts. Its end is
     its log's modification time, the log's last write; a launch without a log reads as one that
-    ran. An interactive launch has no log: listed_dead reads it"""
+    ran. An interactive launch has no log: listed_dead reads it. A stream-json log's result is
+    its `result` event (S-048-17); a text log, written before spec 048, is read as before. The
+    authentication failure check reads the tail of either"""
     if last is None or last.process is None:
         return None
     log = session_log(state, last.session)
     if not log.is_file():
         return None
-    written = dt.datetime.fromtimestamp(log.stat().st_mtime, tz=dt.UTC)
+    written = log_written(log, last)
     tail = log_tail(log)
     auth = AUTH_FAILURE.search(tail) is not None
     seconds = max(0, int((written - last.at).total_seconds()))
-    if not auth and (seconds > DEAD_WITHIN.total_seconds() or not no_result(tail)):
+    streamed = is_stream_json(log)
+    lines = tail_lines(log) if streamed else []
+    result = has_result(lines) if streamed else not no_result(tail)
+    if not auth and (seconds > DEAD_WITHIN.total_seconds() or result):
         return None
-    return Dead(last.session, log, seconds, auth, last_line(tail), counted(last))
+    shown = stream_last_line(lines) if streamed else last_line(tail)
+    return Dead(last.session, log, seconds, auth, shown, counted(last))
 
 
 def counted(last: Launch) -> Deaths:
@@ -1793,11 +1905,11 @@ def gate(
     stopped = held(on_hold, sessions)
     if stopped is not None:
         return pruned_after(replace(stopped, credential=kind), None, waiting)
-    pending = busy(sessions)
+    last = load_launch(record)  # before busy: its RUNNING line names the last launch's item (S-048-15)
+    pending = busy(sessions, last, now)
     if pending is not None:
         return pruned_after(replace(pending, credential=kind), None, waiting)
-    last = load_launch(record)
-    working = still_working(last, state, started)
+    working = still_working(last, state, started, now)
     if working is not None:
         return pruned_after(replace(working, credential=kind), None, waiting)
     # a dead session was no attempt: its findings aren't handled (#500)
@@ -1877,13 +1989,13 @@ def gate(
     deaths = None if dead is None or last is None or item_key(item) != last.fingerprint else dead.deaths
     if not headless:
         launched = claude.launch(git.root, name, text, env, token)
-        save_launch(record, Launch(item_key(item), launched, now, None, deaths))
+        save_launch(record, Launch(item_key(item), launched, now, None, deaths, item.brief()))
         settled(ticked.handed.handing(item, launched, now))
         return pruned_after(decision, launched, waiting)
     session_id = new_session()
     log = session_log(state, str(session_id))
     pid = claude.start(git.root, name, text, session_id, log, env, token)
-    save_launch(record, Launch(item_key(item), str(session_id), now, Process(pid, started(pid)), deaths))
+    save_launch(record, Launch(item_key(item), str(session_id), now, Process(pid, started(pid)), deaths, item.brief()))
     settled(ticked.handed.handing(item, str(session_id), now))
     return pruned_after(replace(decision, follow=f"tail -f {log}"), str(session_id), waiting)
 
