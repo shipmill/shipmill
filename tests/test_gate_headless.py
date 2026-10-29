@@ -237,7 +237,12 @@ def test_s005_2_interactive_launches_as_it_did_before(checkout: Git, config: Age
     assert spawned.run[1] == ["claude", "--bg", "-n", NAME, "--permission-mode=auto", text]
     assert decision.asks_as is None  # the no app_id line stays headless's (S-005-14)
     assert reads.seen == [StateRead()]
-    assert record_of(checkout) == {"fingerprint": fingerprint([ISSUES]), "session": "s9", "at": NOW.isoformat()}
+    assert record_of(checkout) == {
+        "fingerprint": fingerprint([ISSUES]),
+        "session": "s9",
+        "item": ISSUES.brief(),  # S-048-14
+        "at": NOW.isoformat(),
+    }
     assert tick_lines(decision, launched, (), (), dry_run=False)[-1] == "  launched s9: claude attach s9"
 
 
@@ -360,6 +365,9 @@ def test_s005_3_headless_runs_claude_p_with_the_allowlist(checkout: Git) -> None
         "-p",
         "--permission-prompts",
         "none",
+        "--output-format",  # S-048-17
+        "stream-json",
+        "--verbose",
         "--allowedTools",
         HEADLESS_TOOLS,
         "--disallowedTools",
@@ -622,6 +630,7 @@ def test_s005_19_a_headless_launch_is_detached_logged_and_recorded(checkout: Git
     assert record_of(checkout) == {
         "fingerprint": fingerprint([ISSUES]),
         "session": str(SESSION),
+        "item": ISSUES.brief(),  # S-048-14
         "at": NOW.isoformat(),
         "mode": "headless",
         "pid": PID,
@@ -689,7 +698,9 @@ def test_s005_20_a_running_headless_session_reads_running(checkout: Git) -> None
     claude = FakeClaude()
     decision, launched, waiting, _ = tick(checkout, headless(), claude, unread, now=NOW + dt.timedelta(days=3))
     assert (decision.action, launched, waiting) == (Action.RUNNING, None, ())
-    assert decision.reason == f"session {SESSION} is still working: tail -f {log_of(checkout)}"
+    assert decision.reason == (  # S-048-15: a record from before spec 048, and no log yet
+        f"session {SESSION} on item not recorded, running 4320 min, log grew 4320 min ago: tail -f {log_of(checkout)}"
+    )
     assert (claude.started, claude.stopped) == ([], [])
 
 

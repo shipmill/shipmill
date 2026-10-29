@@ -311,7 +311,7 @@ def test_sessions_dying_one_after_another_read_as_one_run(checkout: Git) -> None
         f" its log is empty; starting another for 1 finding(s); fix: tail -n 20 {log}"
     )
     assert load_launch(state_dir(checkout) / RECORD) == Launch(
-        fingerprint([ISSUES]), str(FIRST), NOW, Process(PID, None), Deaths(2, first_at)
+        fingerprint([ISSUES]), str(FIRST), NOW, Process(PID, None), Deaths(2, first_at), ISSUES.brief()
     )
 
 
@@ -332,7 +332,7 @@ def test_a_third_dead_session_in_a_row_holds_the_same_findings_for_retry_hours(c
     action, launched, _ = tick(checkout, headless(), claude, FakeAuth([LOGGED_IN]), FakeNotifier(), after)
     assert (action, launched) == (Action.SESSION_DEAD, str(FIRST))
     assert load_launch(state_dir(checkout) / RECORD) == Launch(
-        fingerprint([ISSUES]), str(FIRST), after, Process(PID, None), Deaths(3, first_at)
+        fingerprint([ISSUES]), str(FIRST), after, Process(PID, None), Deaths(3, first_at), ISSUES.brief()
     )
 
 
@@ -457,7 +457,7 @@ def test_a_third_dead_interactive_session_in_a_row_holds_the_same_findings_for_r
     action, launched, _ = tick(checkout, interactive(), claude, FakeAuth([LOGGED_IN]), FakeNotifier(), after)
     assert (action, launched) == (Action.SESSION_DEAD, "s1")
     assert load_launch(state_dir(checkout) / RECORD) == Launch(
-        fingerprint([ISSUES]), "s1", after, None, Deaths(3, first_at)
+        fingerprint([ISSUES]), "s1", after, None, Deaths(3, first_at), ISSUES.brief()
     )
 
 
