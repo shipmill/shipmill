@@ -315,4 +315,11 @@ on PRS_OPEN #770, ended 3 h ago`. `shipmill gate --json` adds `"in_flight": {"ci
 
 ## Issues
 
+- shipmill/shipmill#813: S-048-1, S-048-2, S-048-3, S-048-4, S-048-5
+- shipmill/shipmill#814: S-048-14, S-048-15, S-048-17
+- shipmill/shipmill#815: S-048-16, S-048-18, S-048-19, S-048-20
+- shipmill/shipmill#816: S-048-6, S-048-7, S-048-8, S-048-9, S-048-10
+- shipmill/shipmill#817: S-048-11, S-048-12, S-048-13
+- shipmill/shipmill#818: S-048-21, S-048-22, S-048-23, S-048-24, S-048-25
+
 ## Verification
