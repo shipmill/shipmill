@@ -691,6 +691,8 @@ def test_s049_4_answers_on_a_closed_issue_and_its_parent_count_each_issue_once()
         "Decision by @octocat, relayed by Claude Code",
         "Decision by `@octocat`, relayed by Claude Code",
         "Decision by @octocat",
+        "Decision by @octocat.",
+        "Decision by @octocat; relayed by Claude Code",
     ],
 )
 def test_s049_4_the_app_relaying_a_decision_names_its_login_bare_or_in_a_code_span(first: str) -> None:
@@ -709,6 +711,11 @@ def test_s049_4_the_app_relaying_a_decision_names_its_login_bare_or_in_a_code_sp
         said(APP_LOGIN, "Triage: ok\nDecision by @octocat", "NONE", bot=True),  # not the first line
         said(APP_LOGIN, "Decision by @octocat-", "NONE", bot=True),  # no login GitHub allows
         said(APP_LOGIN, "Decision by `@octocat", "NONE", bot=True),
+        # a login whose first part spells another account: a bot, a team, a dotted name
+        said(APP_LOGIN, "Decision by @renovate[bot], relayed by Claude Code", "NONE", bot=True),
+        said(APP_LOGIN, "Decision by @shipmill/maintainers", "NONE", bot=True),
+        said(APP_LOGIN, "Decision by @octo.cat", "NONE", bot=True),
+        said(APP_LOGIN, "Decision by @octocat's call", "NONE", bot=True),
     ],
 )
 def test_s049_4_only_the_apps_first_line_relays_a_decision(comment: Comment) -> None:

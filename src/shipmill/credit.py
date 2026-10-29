@@ -23,10 +23,14 @@ _NO_STATE = frozenset({"COMMENTED", "PENDING"})  # reviews that leave a person's
 _TRAILER_LINE = re.compile(r"[A-Za-z0-9-]+: .+")
 # The needs-decision protocol (skills/github-issue-triage/references/needs-decision.md): a
 # question's first line, and the first line of an answer the App relays from a session, which
-# names the person bare or in a code span (D-61); a login as GitHub allows one
+# names the person bare or in a code span (D-61); a login as GitHub allows one, a bare one
+# ending the line or followed by a space or punctuation, so `@app[bot]` or `@org/team` names
+# nobody rather than the account its first part spells
 MARKER = "<!-- shipmill:needs-decision -->"
 _LOGIN = r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}"
-_DECISION_BY = re.compile(rf"Decision by (?:@(?P<bare>{_LOGIN})|`@(?P<span>{_LOGIN})`)(?![\w`-])")
+_DECISION_BY = re.compile(
+    rf"Decision by (?:@(?P<bare>{_LOGIN})(?=$|\s|[,;:)]|[.!?](?:\s|$))|`@(?P<span>{_LOGIN})`(?![\w`-]))"
+)
 # The permissions on the repo a label event's author is trusted by; GitHub's legacy
 # `permission` field reads maintain as write, and a custom role as the one it builds on
 WRITERS = frozenset({"admin", "maintain", "write"})
