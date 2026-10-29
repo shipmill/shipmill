@@ -103,7 +103,9 @@ With `mode = "headless"` (spec 005, D-17) the steps change in four places:
 - After step 4, a last launch that was headless and whose process still runs (its `pid`
   with the start time `ps -p <pid> -o lstart=` recorded at launch; another start time means
   the pid was reused) reads **RUNNING**, `session <uuid> is still working: tail -f <log>`.
-  It never reads WAITING, so `max_wait_minutes` doesn't apply to it
+  It never reads WAITING, so `max_wait_minutes` doesn't apply to it. Spec 048 changed that
+  line to `session <uuid> on <item>, running <N> min, log grew <M> min ago: tail -f <log>`,
+  and starts the session with `--output-format stream-json --verbose`
 - Step 6 calls `watch_state.py` with `--trusted-only` (D-16), and with `app_id` set first
   runs the App's checks, then passes `--bot-login <slug>[bot]`; a failed check reads no
   state and launches nothing

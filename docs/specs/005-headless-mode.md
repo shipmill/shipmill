@@ -91,6 +91,8 @@ claude -p --permission-prompts none --allowedTools <ALLOWED> --disallowedTools A
 
 `<uuid>` is a new random UUID per launch. The tool lists come before `--session-id`, so
 the prompt is never read as a tool name.
+Spec 048 changed this command: it adds `--output-format stream-json --verbose` after
+`--permission-prompts none`, so the session's log grows with each message, not only at its end.
 `<ALLOWED>` is one argument, a fixed constant `HEADLESS_TOOLS` in `src/shipmill/gate.py`:
 
 ```
@@ -148,7 +150,8 @@ session reads RUNNING, reason
 `session <uuid> is still working: tail -f <log>`. An ended one is gone: there is nothing
 to stop before the next launch, and `claude --resume <uuid>` reopens its conversation. A
 headless session never reads WAITING, so spec 003's waiting step and `max_wait_minutes`
-don't apply to it.
+don't apply to it. Spec 048 changed the RUNNING line to `session <uuid> on <item>, running
+<N> min, log grew <M> min ago: tail -f <log>`, and the log to stream-json.
 
 The gate still reads `claude agents --json` every tick, so a `--bg` session left over
 from interactive mode is still handled as spec 003 says. A
