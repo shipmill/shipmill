@@ -7,6 +7,18 @@ bot.
 
 ## [Unreleased]
 
+## [0.94.0] - 2026-10-29
+
+### Changed
+
+- `shipmill gh` ends every body it creates with the agent marker `<!-- shipmill:agent -->`, after a blank line, as the App and as the host's login: `issue create`, `issue comment`, `pr create`, `pr comment`, `pr review` (an `--approve` alone gets the marker as its body), `issue|pr close|reopen --comment`, and `gh api` creates of issues, pull requests, comments, review comments, replies, and reviews (their `body` field, or one holding the marker alone); a body that carries the marker already gets no second one. Those creates with no `--body` or `--body-file`, with `--web`, `--editor`, or `--edit-last`, a `gh api` create with `--input`, a `gh api graphql` mutation that writes a body (a create or an edit, such as `updateIssue`, naming the REST form), and a marked body over 65,536 characters exit 2 before gh runs; the release and operate workflows' issues and comments end with the marker too, a cut body included (spec 050) (#797)
+- The github-issue-triage skill's `chains.py link` appends its `Depends on` line through REST, `gh api -X PATCH repos/<owner>/<repo>/issues/<n> -F body=@<file>`, instead of GraphQL's `updateIssue`, which `shipmill gh` now refuses; the body stays byte for byte, and `--no-text` and the `text only:` fallback are unchanged (spec 050) (#797)
+- `shipmill gh` keeps the origin of every body it edits: `issue edit` and `pr edit` with `--body` or `--body-file`, and `gh api -X PATCH` on an issue, pull request, comment, review comment, or review with a `body` field, first read the record's current body with the same identity (the App's token, the host's login, or the `--product` token), then hand gh the new body ending with the agent marker when the current one carries it and with any marker removed when it doesn't, so an edit never marks a person's record nor unmarks an agent's. An edit whose current body can't be read, one that names no single issue or pull request by number or URL, and a `gh api -X PATCH` edit with `--input` exit 2 and the edit doesn't run; an edit without a body flag reaches gh as given, with no read (spec 050) (#798)
+- The skills' scripts (`chains.py link`, `shipped.py --post`, `setup_state.py --fix`) write through `shipmill gh` in every repo whose `.github/shipmill.toml` has an `[agents]` section, with or without `app_id`, so a write without an App goes out as the host's login with the agent marker under `identity = "host"` and exits 2 otherwise; plain `gh` is left for a repo with no config or no `[agents]` (#799)
+- `triage_state.py` and `watch_state.py` no longer read a comment carrying the agent marker `<!-- shipmill:agent -->` on any line, or a deleted account's comment, as a reply to a needs-decision question or as a veto, so without the App an agent's comment after the question no longer reads as the maintainer's decision (spec 050) (#800)
+- Credit: with `credit = "decider"`, an issue, reply, or approving review whose body carries the agent marker `<!-- shipmill:agent -->`, or isn't a string, names no decider, while the App's `Decision by @<login>` relay still names `<login>`, as spec 050 has it (#801)
+- `shipmill doctor` and `shipmill status` flag, under AGENT_AS_PERSON, a person's issue, pull request, or comment whose body carries the agent marker `<!-- shipmill:agent -->` on any line, and the needs-decision protocol, the spec gate, the triage rubric, and `docs/flow.md` say a record carrying the marker is never a reply, a veto, or the maintainer's filing; a decision answered in the session is relayed with its `Decision by` line with or without the App (#802)
+
 ## [0.93.0] - 2026-10-29
 
 ### Added
@@ -2025,7 +2037,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.93.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.94.0...HEAD
+[0.94.0]: https://github.com/shipmill/shipmill/compare/v0.93.0...v0.94.0
 [0.93.0]: https://github.com/shipmill/shipmill/compare/v0.92.0...v0.93.0
 [0.92.0]: https://github.com/shipmill/shipmill/compare/v0.91.0...v0.92.0
 [0.91.0]: https://github.com/shipmill/shipmill/compare/v0.90.0...v0.91.0
