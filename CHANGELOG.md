@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.97.0] - 2026-10-29
+
+### Added
+
+- `shipmill gate` says why a tick failed where status can read it: every real tick writes `tick.json` beside `gate.json` with its decision, or `ERROR` and a shipmill error's first line, its fix, and since when and how many ticks in a row failed; a failing tick (`CLAUDE_AUTH`, now the login's too, `GITHUB_AUTH`, `HOOKS_FAILED`, or a shipmill error) exits 2, every other tick 0 (#816)
+
 ## [0.96.0] - 2026-10-29
 
 ### Added
@@ -2055,7 +2061,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.96.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.97.0...HEAD
+[0.97.0]: https://github.com/shipmill/shipmill/compare/v0.96.0...v0.97.0
 [0.96.0]: https://github.com/shipmill/shipmill/compare/v0.95.0...v0.96.0
 [0.95.0]: https://github.com/shipmill/shipmill/compare/v0.94.0...v0.95.0
 [0.94.0]: https://github.com/shipmill/shipmill/compare/v0.93.0...v0.94.0
