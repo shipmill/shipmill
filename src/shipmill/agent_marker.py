@@ -26,6 +26,23 @@ def marked(body: str) -> str:
     return f"{text}\n\n{MARKER}" if text else MARKER
 
 
+def stripped(body: str) -> str:
+    """body with every line that is the marker removed, with the blank lines after it when a
+    blank line comes before it, and the blank lines that leaves at its end; a body that doesn't
+    carry the marker is returned as it is"""
+    if not carries(body):
+        return body
+    kept: list[str] = []
+    dropping = False  # past a removed marker, with a blank line (or the start) before it
+    for line in body.splitlines(keepends=True):
+        if _LINE.fullmatch(line.strip()):
+            dropping = not kept or not kept[-1].strip()
+        elif not (dropping and not line.strip()):
+            kept.append(line)
+            dropping = False
+    return "".join(kept).rstrip()
+
+
 def unmarked(body: str) -> str:
     """body less the marker `marked` ended it with, for comparing a stored body with the text
     it was written from; a body without one is returned as it is"""

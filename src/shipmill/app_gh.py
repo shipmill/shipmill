@@ -2,12 +2,14 @@
 sets [agents] app_id, so a session a person starts writes as the App too (D-14).
 
 The arguments reach gh as given, but for the bodies a create writes, which end with the agent
-marker (spec 050, `marked_args`). Only the repo gh's `-R`/`--repo` names is read from them
+marker (spec 050, `marked_args`), and those an edit writes, which carry it exactly when the
+record's current body does (`body_edit`). Only the repo gh's `-R`/`--repo` names is read from them
 besides, to limit the token to it, and a merge they ask for (`merge_of`), which spec 030
 holds when the pull request has a `never` zone. The token goes to gh in GH_TOKEN, never to
 output.
 """
 
+import json
 import re
 import shutil
 import subprocess
@@ -17,7 +19,7 @@ from pathlib import Path
 from typing import Protocol, TextIO
 from urllib.parse import unquote
 
-from shipmill.agent_marker import BODY_LIMIT, marked
+from shipmill.agent_marker import BODY_LIMIT, carries, marked, stripped
 from shipmill.classify import Pulls
 from shipmill.errors import ReleaseError
 
@@ -493,11 +495,36 @@ _CREATES: Mapping[tuple[str, str], _Flags] = {
 }
 _REVIEW = _COMMENT_FLAGS  # -a, -c, and -r are switches of `gh pr review`: approve, comment, request changes
 _CLOSES = frozenset({("issue", "close"), ("issue", "reopen"), ("pr", "close"), ("pr", "reopen")})
+_EDIT_FLAGS = _Flags(  # `gh issue edit` and `gh pr edit` (S-050-3)
+    frozenset(
+        {
+            "--add-assignee",
+            "--add-label",
+            "--add-project",
+            "--add-reviewer",
+            "--base",
+            "--body",
+            "--body-file",
+            "--milestone",
+            "--remove-assignee",
+            "--remove-label",
+            "--remove-project",
+            "--remove-reviewer",
+            "--repo",
+            "--title",
+        }
+    ),
+    frozenset("BbFmRt"),
+)
 # what finds the subcommand when a flag comes before it: every flag of the group's commands
 _GROUP_FLAGS = {
     group: _Flags(
-        frozenset().union(*(f.long for (g, _), f in _CREATES.items() if g == group), _CLOSE_FLAGS.long),
-        frozenset().union(*(f.short for (g, _), f in _CREATES.items() if g == group), _CLOSE_FLAGS.short),
+        frozenset().union(
+            *(f.long for (g, _), f in _CREATES.items() if g == group), _CLOSE_FLAGS.long, _EDIT_FLAGS.long
+        ),
+        frozenset().union(
+            *(f.short for (g, _), f in _CREATES.items() if g == group), _CLOSE_FLAGS.short, _EDIT_FLAGS.short
+        ),
     )
     for group in ("issue", "pr")
 }
@@ -714,3 +741,192 @@ def _marked_api(args: Sequence[str], read: BodyRead) -> list[str]:
     if name in ("-F", "--field") and body.startswith("@"):
         body = read(name, body[1:])
     return [*kept, "-f", f"body={_sized(body, what)}", *tail]
+
+
+# -- S-050-3: an edit keeps the marker its record was created with, or its lack ------------------
+
+GhCapture = Callable[[Sequence[str], Mapping[str, str]], tuple[int, str]]  # argv and env in, exit code and stdout out
+
+
+def capture_gh(argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
+    """Run gh with no stdin and the terminal's stderr, its stdout captured as text; a signal's
+    death is 128 + its number, as `run_gh` reports it"""
+    done = subprocess.run(
+        list(argv), env=dict(env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, encoding="utf-8", check=False
+    )
+    code = done.returncode
+    return (code if code >= 0 else 128 - code), done.stdout
+
+
+_EDITS = {"issue": "issues", "pr": "pulls"}  # `gh <group> edit`, and the REST path of its record
+_ITEM_URL = re.compile(
+    r"https?://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/(?:issues|pull)/([1-9][0-9]*)(?:[/?#].*)?"
+)
+# The REST endpoints that edit a record with a body: its repo, and its path past the repo
+_API_EDITS = re.compile(
+    r"repos/([^/]+/[^/]+)/(issues/[0-9]+|pulls/[0-9]+|issues/comments/[0-9]+|pulls/comments/[0-9]+"
+    r"|pulls/[0-9]+/reviews/[0-9]+)/?",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BodyEdit:
+    """S-050-3: an edit of a record's body that gh's args ask for: the record's repo as the args
+    name it (None for the repo gh picks; gh api's {owner} and {repo} kept, for `record` to
+    fill) and its REST path past the repo; the new body as given; and gh's args around it"""
+
+    what: str  # as a refusal names it, such as `gh issue edit`
+    repo: str | None
+    path: str  # such as issues/5 or pulls/comments/9
+    body: str
+    given: tuple[str, ...]  # gh's args as given
+    kept: tuple[str, ...]  # gh's args less every body flag, before any `--`
+    tail: tuple[str, ...]  # gh's args from `--` on
+    field: bool  # the body goes to gh as gh api's `-f body=`, else as `--body`
+    as_given: bool  # one body flag, from no stdin: args as given carry a body that needs no change
+
+    def record(self, default: str | None) -> str:
+        """The record's REST path, `repos/<owner>/<name>/<path>`, a repo the args leave to gh
+        (or a placeholder) filled from default, the repo gh works on; exit 2 without one"""
+        repo = self.repo
+        if repo is None or PLACEHOLDER[0] in repo.split("/") or PLACEHOLDER[1] in repo.split("/"):
+            if default is None:
+                raise ReleaseError(
+                    f"{self.what} is refused: shipmill gh reads the record's current body before an edit (spec 050), "
+                    "and can't tell its repo here; name it with -R owner/name, or owner/name in the endpoint"
+                )
+            if repo is None:
+                repo = default
+            else:
+                owner, name = repo.split("/")
+                default_owner, default_name = default.split("/")
+                repo = f"{default_owner if owner == PLACEHOLDER[0] else owner}/"
+                repo += default_name if name == PLACEHOLDER[1] else name
+        return f"repos/{repo}/{self.path}"
+
+    def args(self, carried: bool) -> list[str]:
+        """gh's args with the new body ending with the marker when the record's current body
+        carries it, and with any marker removed when it doesn't: an edit never marks a
+        person's record nor unmarks an agent's. A body that needs no change keeps its args"""
+        text = _sized(stripped(self.body), self.what) if carried else stripped(self.body)
+        if text == self.body and self.as_given:
+            return list(self.given)
+        body = ["-f", f"body={text}"] if self.field else ["--body", text]
+        return [*self.kept, *body, *self.tail]
+
+
+def body_edit(args: Sequence[str], read: BodyRead) -> BodyEdit | None:
+    """S-050-3: the body edit gh's args ask for: `issue edit` or `pr edit` of one record with
+    --body/-b or --body-file/-F, or `api -X PATCH` on an issue, pull request, comment, review
+    comment, or review with a `body` field; None for every other call, whose args reach gh as
+    given (S-050-6). read gives a body file's text. An edit whose record shipmill gh can't name,
+    and an api edit with --input, exit 2 before gh runs"""
+    if not args or args[0] == "--":
+        return None
+    if args[0] == "api":
+        return _api_edit(args, read)
+    if args[0] not in _EDITS:
+        return None
+    group = _GROUP_FLAGS[args[0]]
+    positional, _ = _scan(args[1:], group.long, group.short)
+    if not positional or positional[0] != "edit":
+        return None
+    what = f"gh {args[0]} edit"
+    positional, flags = _scan(args[1:], _EDIT_FLAGS.long, _EDIT_FLAGS.short)
+    if _helped(flags):
+        return None
+    kept, taken, tail = _split(args, _EDIT_FLAGS, lambda name, _: name in _BODY_FLAGS)
+    if not taken:
+        return None  # no body written: labels, a title, assignees
+    names = {name for name, _ in taken}
+    if names & {"--body", "-b"} and names & {"--body-file", "-F"}:
+        raise ReleaseError(f"{what} takes --body or --body-file, not both")
+    targets = positional[1:]
+    kind = "issue" if args[0] == "issue" else "pull request"
+    url = _ITEM_URL.fullmatch(targets[0]) if len(targets) == 1 else None
+    numbered = _NUMBER.fullmatch(targets[0]) if len(targets) == 1 else None
+    if url is not None:
+        repo, number = url.group(1), int(url.group(2))
+    elif numbered is not None:
+        repo, number = named_repo(args), int(numbered.group(1))
+    else:
+        named = "names none" if not targets else f"names {' '.join(targets)}"
+        raise ReleaseError(
+            f"{what} with a body flag {named}: shipmill gh reads the {kind}'s current body before it edits it "
+            f"(spec 050), and needs one {kind} by its number or URL; edit each on its own"
+        )
+    name, value = taken[-1]
+    stdin = name in ("--body-file", "-F") and value == "-"
+    body = value if name in ("--body", "-b") else read(name, value)
+    path = f"{_EDITS[args[0]]}/{number}"
+    return BodyEdit(what, repo, path, body, tuple(args), tuple(kept), tuple(tail), False, len(taken) == 1 and not stdin)
+
+
+def _api_edit(args: Sequence[str], read: BodyRead) -> BodyEdit | None:
+    """`gh api -X PATCH` on a body endpoint with a `body` field, as `body_edit` reads it"""
+    positional, flags = _scan(args[1:], _API_LONG, _API_SHORT)
+    methods = [value for name, value in flags if name in _METHOD_FLAGS]
+    if not positional or not methods or methods[-1].upper() != "PATCH":
+        return None
+    found = _API_EDITS.fullmatch(unquote(_API_HOST.sub("", positional[0]).lstrip("/").partition("?")[0]))
+    if found is None:
+        return None
+    what = f"gh api -X PATCH {positional[0]}"
+    if any(name == "--input" for name, _ in flags):
+        raise ReleaseError(
+            f"{what} with --input is refused: shipmill gh keeps the agent marker an edit's record was created with, "
+            "or its lack (spec 050), and can't read a body from --input; pass it with -F body=@<file> instead"
+        )
+    kept, taken, tail = _split(
+        args[1:], _Flags(_API_LONG, _API_SHORT), lambda name, value: _field(name, value) == "body"
+    )
+    if not taken:
+        return None  # no body written: a state, a title
+    name, value = taken[-1]
+    body = value.partition("=")[2]
+    stdin = False
+    if name in ("-F", "--field") and body.startswith("@"):
+        stdin = body == "@-"
+        body = read(name, body[1:])
+    as_given = len(taken) == 1 and not stdin
+    return BodyEdit(
+        what, found.group(1), found.group(2), body, tuple(args), ("api", *kept), tuple(tail), True, as_given
+    )
+
+
+def current_body(capture: GhCapture, binary: Path, env: Mapping[str, str], record: str, what: str) -> str:
+    """S-050-3: the current body of the record at REST path record, read through gh with env,
+    the identity the edit writes with; GitHub's null, a record written with no body, is empty.
+    A body that can't be read exits 2, so the edit doesn't run"""
+
+    def refused(why: str) -> ReleaseError:
+        return ReleaseError(
+            f"{what} is refused: the current body of {record} can't be read ({why}), and shipmill gh keeps the agent "
+            "marker an edit's record was created with, or its lack (spec 050); the edit didn't run"
+        )
+
+    code, out = capture([str(binary), "api", record], env)
+    if code != 0:
+        raise refused(f"gh api {record} exited {code}")
+    try:
+        found = json.loads(out)
+    except json.JSONDecodeError:
+        raise refused("gh's answer isn't JSON") from None
+    if not isinstance(found, dict) or "body" not in found:
+        raise refused("gh's answer has no body")
+    body = found["body"]
+    if body is None:
+        return ""
+    if not isinstance(body, str):
+        raise refused(f"its body is {type(body).__name__}, not text")
+    return body
+
+
+def edited_args(
+    edit: BodyEdit, default: str | None, binary: Path, env: Mapping[str, str], capture: GhCapture
+) -> list[str]:
+    """S-050-3: gh's args for edit, once the record's current body is read with env; default is
+    the repo gh works on when the args name none"""
+    record = edit.record(default)
+    return edit.args(carries(current_body(capture, binary, env, record, edit.what)))

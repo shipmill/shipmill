@@ -170,14 +170,18 @@ from shipmill.app_create import (
 )
 from shipmill.app_gh import (
     BodyRead,
+    GhCapture,
     GhRunner,
     Merge,
     MergeReader,
     MergeReads,
     as_app,
     as_host,
+    body_edit,
     body_reader,
     bundled_repo_flag,
+    capture_gh,
+    edited_args,
     find_gh,
     is_read,
     marked_args,
@@ -830,6 +834,7 @@ def main(
     credit_reader: CreditReader | None = None,
     login: LoginReader | None = None,
     claude: Runner | None = None,
+    gh_capture: GhCapture | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -839,8 +844,9 @@ def main(
     what doctor reads of the secrets and the downstream workflows, pulls for the pull
     request `decide classify --pr` reads, merge_reader for the pull request a `shipmill
     gh` merge reads, credit_reader for what its credit reads (spec 049), login for the
-    host's gh login `roles` reads, and claude for the `claude plugin` and `gh api` commands
-    plugin-clean runs, as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -"""
+    host's gh login `roles` reads, claude for the `claude plugin` and `gh api` commands
+    plugin-clean runs, and gh_capture for the gh that reads an edit's current body (spec 050),
+    as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -"""
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
     root: Path = args.repo.resolve()
@@ -849,7 +855,9 @@ def main(
     if args.command == "gh":
         if passed is None:  # such as `shipmill -- gh ...`
             raise ReleaseError("only --repo PATH may come before gh, as in `shipmill --repo PATH gh pr list`")
-        readers = _GhReaders(merge_reader or _gh_reader, credit_reader or _credit_reader, stdin or sys.stdin)
+        readers = _GhReaders(
+            merge_reader or _gh_reader, credit_reader or _credit_reader, stdin or sys.stdin, gh_capture or capture_gh
+        )
         return _gh(root, passed, api or UrllibApi(), signer or Openssl(), env, user_home, gh_runner or run_gh, readers)
     if args.command == "plugin-clean":  # needs no --repo and no config (spec 039)
         where = stdin or sys.stdin
@@ -1461,12 +1469,16 @@ def _gh(
     never runs. GH_TOKEN is never set but empty. As the App, a merge of a pull request with a
     `never` zone exits 2 and gh never runs (S-030-13), and with [agents] credit = "decider" it
     names who decided it (spec 049). In every mode, the body a create writes ends with the agent
-    marker, and one that can't be marked exits 2 and gh never runs (spec 050)"""
+    marker, and one that can't be marked exits 2 and gh never runs; an edit's body carries it
+    exactly when the record's current body does, read first with the same token, and one whose
+    current body can't be read exits 2 and gh never edits (spec 050)"""
     leading = _leading(passed)
     key, gh_args = leading.key, leading.gh_args
     read = body_reader(readers.stdin)
     if leading.product is not None:
-        return _gh_product(root, leading.product, key, gh_args, read, api, signer, environ, home, runner)
+        return _gh_product(
+            root, leading.product, key, gh_args, read, api, signer, environ, home, runner, readers.current
+        )
     if not root.is_dir():  # a mistyped --repo must not read as a repo with no App
         raise ReleaseError(f"--repo {root} is not a folder")
     git = Git(root)
@@ -1504,7 +1516,13 @@ def _gh(
         if not (is_read(gh_args) or identity.identity is WriteAs.HOST or leading.as_host):
             origin = _known_origin(top) if top is not None and readable else None
             raise _host_write_refused(root, top, origin, identity.config, gh_args)
-        return runner([str(find_gh(environ)), *marked_args(gh_args, read)], as_host(environ))
+        edit = body_edit(gh_args, read)
+        gh_args = marked_args(gh_args, read) if edit is None else gh_args
+        binary, env = find_gh(environ), as_host(environ)
+        if edit is not None:
+            origin = _known_origin(top) if top is not None and readable else None
+            gh_args = edited_args(edit, _gh_default(environ, origin), binary, env, readers.current)
+        return runner([str(binary), *gh_args], env)
     if not readable:
         raise ReleaseError(
             f"git can't read the checkout at {top}, which sets [agents] app_id, so the App's token can't be had; "
@@ -1524,11 +1542,16 @@ def _gh(
     # S-033-11: the key at --app-key, else SHIPMILL_APP_KEY, else the default path; none there
     # exits 2 before any token, cached or not, and gh never runs (D-14)
     path = require_key(key or session_key(app_id, environ, home))
-    gh_args = marked_args(gh_args, read)  # spec 050: before any token; a merge's args pass as given
+    # spec 050: before any token; a merge's args pass as given, and an edit's wait for its record
+    edit = body_edit(gh_args, read)
+    gh_args = marked_args(gh_args, read) if edit is None else gh_args
     try:
         token = app_token(cache, repo, app_id, path, dt.datetime.now(dt.UTC), signer, api)
     except NotInstalled as exc:
         raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {repo}`") from None
+    if edit is not None:
+        default = _gh_default(environ, _known_origin(top))
+        gh_args = edited_args(edit, default, binary, as_app(environ, token), readers.current)
     if merge is not None:
         pull = _hold_never(top, merge, as_app(environ, token), binary, readers.merge)
         if identity.credit is Credit.DECIDER:
@@ -1540,11 +1563,13 @@ def _gh(
 @dataclass(frozen=True, slots=True)
 class _GhReaders:
     """What `shipmill gh` reads besides gh's arguments: the pull request a merge names (spec
-    030), its deciders (spec 049), and stdin, for a `--body-file -`"""
+    030), its deciders (spec 049), stdin, for a `--body-file -`, and an edit's current body
+    through gh (spec 050)"""
 
     merge: MergeReader
     credit: CreditReader
     stdin: TextIO
+    current: GhCapture
 
 
 def _credit_reader(top: Path, binary: Path, env: Mapping[str, str]) -> CreditReads:
@@ -1675,6 +1700,7 @@ def _gh_product(
     environ: Mapping[str, str],
     home: Path,
     runner: GhRunner,
+    current: GhCapture,
 ) -> int:
     """S-038-9: gh with the coordinator's token over the listed repos of coordinated's owner.
     Before any token is minted it exits 2 in a component, without [product] repos, for a repo
@@ -1706,7 +1732,8 @@ def _gh_product(
     app_id = app_id_of(top)
     if app_id is None:
         raise ReleaseError(f"{what} needs [agents] app_id in {CONFIG_PATH}; the product's token comes from that App")
-    gh_args = marked_args(gh_args, read)  # spec 050: before any token
+    edit = body_edit(gh_args, read)  # spec 050: before any token
+    gh_args = marked_args(gh_args, read) if edit is None else gh_args
     # In the coordinator's session the session's gh helper comes first on PATH, and would put
     # the session's token over the product token: skip it, as the helper itself does
     binary = resolve_gh(state_dir(Git(top)) / HELPERS, environ.get("PATH", ""))
@@ -1716,7 +1743,17 @@ def _gh_product(
         token = product_token(cache, repos, app_id, key or session_key(app_id, environ, home), now, signer, api)
     except NotInstalled as exc:
         raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {' '.join(repos)}`") from None
-    return runner([str(binary), *gh_args], {**as_app(environ, token), "GH_REPO": target})
+    env = {**as_app(environ, token), "GH_REPO": target}
+    if edit is not None:
+        gh_args = edited_args(edit, target, binary, env, current)
+    return runner([str(binary), *gh_args], env)
+
+
+def _gh_default(environ: Mapping[str, str], origin: str | None) -> str | None:
+    """The repo gh works on when its arguments name none: GH_REPO's ([HOST/]OWNER/REPO), else
+    the checkout's origin; None when neither names one"""
+    gh_repo = environ.get("GH_REPO")
+    return (named_repo(["-R", gh_repo]) if gh_repo else None) or origin
 
 
 def _app_create(
