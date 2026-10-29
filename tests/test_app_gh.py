@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from shipmill.agent_marker import MARKER
 from shipmill.app import CACHE, cache_outside, load_token
 from shipmill.app_gh import named_repo
 from shipmill.cli import main
@@ -176,7 +177,8 @@ def test_s012_2_gh_runs_with_exactly_its_arguments_and_origins_token(
     runner = Runner()
     assert gh(root, ["--app-key", str(tmp_path / "app.pem"), *args], host, api, runner) == 7
     [(argv, env)] = runner.calls
-    assert argv == [host.gh, *args]  # past `--` nothing is read as a flag
+    # past `--` nothing is read as a flag; the body ends with the agent marker (spec 050)
+    assert argv == [host.gh, *args[:5], MARKER, *args[6:]]
     assert env["GH_TOKEN"] == "token-1"
     assert env["PATH"] == host.env()["PATH"]
     [(_, _, body)] = api.posts
@@ -191,7 +193,7 @@ def test_s012_2_gh_runs_with_exactly_its_arguments_and_origins_token(
 def test_s012_2_the_token_is_limited_to_the_repo_gh_names(tmp_path: Path, host: Host, flag: list[str]) -> None:
     root = checkout(tmp_path, WITH_APP, origin=ORIGIN_ELSEWHERE)
     key_file(tmp_path)
-    args = ["issue", "comment", "250", *flag, "--body-file", "tmp/comment.md"]
+    args = ["issue", "edit", "250", *flag, "--add-label", "ready"]
     api = MintApi()
     runner = Runner()
     assert gh(root, ["--app-key", str(tmp_path / "app.pem"), *args], host, api, runner) == 7
@@ -226,7 +228,8 @@ def test_s012_2_the_real_gh_on_path_gets_the_token_and_its_code_is_shipmills(tmp
         home=host.home,
     )
     assert code == 7
-    assert (host.record / "gh-args").read_text() == "".join(f"{a}\n" for a in args)
+    sent = [*args[:-1], f"{args[-1]}\n\n{MARKER}"]  # spec 050
+    assert (host.record / "gh-args").read_text() == "".join(f"{a}\n" for a in sent)
     assert (host.record / "gh-token").read_text() == "token-1"
 
 

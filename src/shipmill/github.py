@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote
 
+from shipmill.agent_marker import BODY_LIMIT as AGENT_BODY_LIMIT
+from shipmill.agent_marker import ROOM as MARKER_ROOM
+from shipmill.agent_marker import marked
 from shipmill.credit import CLOSES_QUERY, Account, Comment, Commit, Filed, Messages, Person, Pull, Review, closes_of
 from shipmill.errors import ReleaseError
 
@@ -62,7 +65,7 @@ _LABEL_DESCRIPTIONS = {
     UPGRADE_LABEL: "Opened by shipmill: a config upgrade waiting for the maintainer's decision",
 }
 # GitHub's limits, in characters: an issue's body or a comment, and a release's notes (#499)
-BODY_LIMIT = 65_536
+BODY_LIMIT = AGENT_BODY_LIMIT
 NOTES_LIMIT = 125_000
 CUT_MARK = "<!-- shipmill:cut -->"  # opens the line ending a text cut to fit
 # the statuses of a run not finished yet, each listed with its own query: GitHub filters runs
@@ -381,24 +384,26 @@ def _time(text: str) -> dt.datetime:
     return when
 
 
-def fit(text: str, limit: int, link: str) -> str:
-    """The text whole when it is within limit characters; else cut at a line's end where one
-    is near, and ended with a line saying so that links the full text, the two within limit"""
-    if len(text) <= limit:
+def fit(text: str, limit: int, link: str, kept: int = 0) -> str:
+    """The text whole when it is within limit characters less kept; else cut at a line's end
+    where one is near, and ended with a line saying so that links the full text, the two within
+    limit less kept, which leaves kept characters for what follows (the agent marker, spec 050)"""
+    if len(text) <= limit - kept:
         return text
     tail = f"\n\n{CUT_MARK}\n_Cut to fit GitHub's limit of {limit:,} characters: the full text is at {link}_\n"
-    room = limit - len(tail)
+    room = limit - kept - len(tail)
     if room <= 0:
         raise ReleaseError(f"the line ending a cut text is {len(tail)} characters, over the limit of {limit}")
     end = text.rfind("\n", 0, room)
     return text[: end if end > room // 2 else room] + tail
 
 
-def cut_from(stored: str, wanted: str, limit: int) -> bool:
-    """Whether stored is wanted as fit cut it to limit, with the link its last line gives"""
+def cut_from(stored: str, wanted: str, limit: int, kept: int = 0) -> bool:
+    """Whether stored is wanted as fit cut it to limit less kept, with the link its last line
+    gives"""
     _, mark, line = stored.partition(f"\n\n{CUT_MARK}\n")
     link = line.rpartition(" the full text is at ")[2].removesuffix("_")
-    return bool(mark) and len(wanted) > limit and stored == fit(wanted, limit, link).strip()
+    return bool(mark) and len(wanted) > limit - kept and stored == fit(wanted, limit, link, kept).strip()
 
 
 def labelled_command(label: str) -> tuple[str, ...]:
@@ -454,8 +459,13 @@ class GhCli:
             self._url = url
         return f"{self._url}/blob/{ref}/{self.changelog}"
 
-    def _fit(self, text: str, limit: int, ref: str = "HEAD") -> str:
-        return text if len(text) <= limit else fit(text, limit, self._changelog_at(ref))
+    def _fit(self, text: str, limit: int, ref: str = "HEAD", kept: int = 0) -> str:
+        return text if len(text) <= limit - kept else fit(text, limit, self._changelog_at(ref), kept)
+
+    def _marked(self, body: str) -> str:
+        """An issue's body or a comment as shipmill writes it: cut to leave room for the agent
+        marker, then ended with it (spec 050), so a cut body keeps it too"""
+        return marked(self._fit(body, BODY_LIMIT, kept=MARKER_ROOM))
 
     def _gh(self, *args: str, stdin: str | None = None) -> str:
         proc = self._run(*args, stdin=stdin)
@@ -598,9 +608,7 @@ class GhCli:
     def create_issue(self, title: str, body: str, labels: Sequence[str] = ()) -> int:
         self._create_labels(labels)
         args = [a for label in labels for a in ("--label", label)]
-        url = self._gh(
-            "issue", "create", "--title", title, "--body-file", "-", *args, stdin=self._fit(body, BODY_LIMIT)
-        )
+        url = self._gh("issue", "create", "--title", title, "--body-file", "-", *args, stdin=self._marked(body))
         url = url.strip()
         number = url.rsplit("/", 1)[-1]
         if not number.isdigit():
@@ -610,9 +618,7 @@ class GhCli:
     def update_issue(self, number: int, title: str, body: str, labels: Sequence[str] = ()) -> None:
         self._create_labels(labels)
         args = [a for label in labels for a in ("--add-label", label)]
-        self._gh(
-            "issue", "edit", str(number), "--title", title, "--body-file", "-", *args, stdin=self._fit(body, BODY_LIMIT)
-        )
+        self._gh("issue", "edit", str(number), "--title", title, "--body-file", "-", *args, stdin=self._marked(body))
 
     def close_issue(self, number: int, comment: str) -> None:
         # `gh issue close --comment` takes the text in argv only: comment first, as it does
@@ -620,7 +626,7 @@ class GhCli:
         self._gh("issue", "close", str(number))
 
     def comment_issue(self, number: int, body: str) -> None:
-        self._gh("issue", "comment", str(number), "--body-file", "-", stdin=self._fit(body, BODY_LIMIT))
+        self._gh("issue", "comment", str(number), "--body-file", "-", stdin=self._marked(body))
 
     def remove_label(self, number: int, label: str) -> None:
         self._gh("issue", "edit", str(number), "--remove-label", label)

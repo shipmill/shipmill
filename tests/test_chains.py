@@ -28,6 +28,18 @@ def ch() -> ModuleType:
     return module
 
 
+# The body edit as the fake forge records it: REST's PATCH, never a GraphQL mutation (spec
+# 050), classed with the writes as the mutations are
+EDIT = "rest mutation: PATCH repos/<owner>/<repo>/issues/<n>"
+
+
+def edited(variables: dict[str, Any]) -> str:
+    """The body an EDIT sets: given, or read byte for byte from its file while the edit runs"""
+    if "body" in variables:
+        return str(variables["body"])
+    return Path(variables["file"]).read_text(encoding="utf-8", newline="")
+
+
 def error(message: str, kind: str | None = None) -> dict[str, Any]:
     return {"message": message, **({"type": kind} if kind else {})}
 
@@ -113,8 +125,13 @@ class Forge:
 
     def writes(self) -> list[str]:
         mutations = {self.ch.ADD_BLOCKED_BY: "addBlockedBy", self.ch.ADD_SUB_ISSUE: "addSubIssue"}
-        mutations[self.ch.UPDATE_BODY] = "updateIssue"
+        mutations[EDIT] = "PATCH"
         return [mutations[q] for q, _ in self.calls if q in mutations]
+
+    def edit(self, ref: Any, body: str) -> None:
+        """chains.py's Edit: the body set through REST"""
+        response = self(EDIT, {"ref": (ref.owner, ref.name, ref.number), "body": body})
+        assert not response.get("errors"), response
 
     def __call__(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((query, variables))
@@ -131,10 +148,10 @@ class Forge:
             if found["type"] == "Issue":
                 node |= {"id": found["id"], "body": found["body"]}
             return {"data": {"repository": {"issueOrPullRequest": node}}}
-        if query == ch.UPDATE_BODY:
-            issue = next(i for i in self.issues.values() if i["id"] == variables["id"])
-            issue["body"] = variables["body"]
-            return {"data": {"updateIssue": {"issue": {"id": variables["id"]}}}}
+        if query == EDIT:
+            owner, name, number = variables["ref"]
+            self.issues[(owner.lower(), name.lower(), number)]["body"] = edited(variables)
+            return {"data": {}}
         reads, writes = (ch.BLOCKED_BY, ch.PARENT), (ch.ADD_BLOCKED_BY, ch.ADD_SUB_ISSUE)
         if self.relation_error and query in {"read": reads, "write": writes}[self.relation_error[0]]:
             return {"data": None, "errors": [self.relation_error[1]]}
@@ -171,7 +188,7 @@ def forge(ch: ModuleType) -> Forge:
 
 
 def link(ch: ModuleType, forge: Forge, *argv: str) -> int:
-    result: int = ch.main(["link", *argv], run=forge, write=forge)
+    result: int = ch.main(["link", *argv], run=forge, write=forge, edit=forge.edit)
     return result
 
 
@@ -218,7 +235,7 @@ def test_s017_6_only_the_missing_half_is_written(
     b = forge.add("o/r#4")
     forge.blocked.add((a, b))
     assert link(ch, forge, "o/r#5", "--blocked-by", "o/r#4") == 0
-    assert forge.writes() == ["updateIssue"]
+    assert forge.writes() == ["PATCH"]
     assert "already linked" not in capsys.readouterr().out
 
     # The line names it as a plain #4 of the same repo, the relation isn't there: only it is added
@@ -274,7 +291,7 @@ def test_s017_8_a_forge_without_the_relation_still_gets_the_text_line(
     forge.add("o/r#5", "Body\n")
     forge.add("o/r#4")
     assert link(ch, forge, "o/r#5", "--blocked-by", "o/r#4") == 0
-    assert forge.writes() == ["updateIssue"]
+    assert forge.writes() == ["PATCH"]
     assert forge.body("o/r#5") == "Body\n\nDepends on o/r#4"
     out = capsys.readouterr().out
     assert "text only: Field 'blockedBy' doesn't exist on type 'Issue'\n" in out + "\n"
@@ -423,7 +440,7 @@ def test_s028_15_no_text_fails_when_the_forge_refuses_the_relation(
     assert named in captured.err and "--no-text" in captured.err
     assert "text only" not in captured.out
     assert forge.body("o/r#1") == "Plan\n"
-    assert "updateIssue" not in forge.writes()
+    assert "PATCH" not in forge.writes()
 
 
 def test_s028_15_no_text_with_product_writes_the_sub_issue_alone_through_the_product_token(
@@ -485,7 +502,13 @@ def checkout(root: Path, config: str | None) -> Path:
 
 
 def gh_call(cmd: list[str]) -> tuple[str, dict[str, Any]]:
-    """The query and variables of a `gh api graphql` command line as chains.py builds it"""
+    """The query and variables of a `gh api graphql` command line as chains.py builds it; its
+    REST body edit, `gh api -X PATCH repos/<owner>/<repo>/issues/<n> -F body=@<file>`, as EDIT
+    with the issue and the file, which is gone once the edit ran"""
+    if cmd[:3] == ["api", "-X", "PATCH"]:
+        _, owner, name, kind, number = cmd[3].split("/")
+        assert kind == "issues" and cmd[4] == "-F" and cmd[5].startswith("body=@") and len(cmd) == 6, cmd
+        return EDIT, {"ref": (owner, name, int(number)), "file": cmd[5].removeprefix("body=@")}
     assert cmd[:3] == ["api", "graphql", "-f"] and cmd[3].startswith("query="), cmd
     query, variables = cmd[3].removeprefix("query="), {}
     for flag, pair in zip(cmd[4::2], cmd[5::2], strict=True):
@@ -540,13 +563,14 @@ def test_526_with_app_id_the_relation_and_the_body_edit_go_through_shipmill_gh(
     prefix = ch.writer(checkout(tmp_path, APP_CONFIG))
     app = AppGh(forge, prefix)
     how = "--child" if child else "--blocked-by"
-    assert ch.main(["link", "o/r#5", how, "o/r#4"], run=forge, write=ch.gh_runner(prefix, app)) == 0
+    write, edit = ch.gh_runner(prefix, app), ch.gh_editor(prefix, app)
+    assert ch.main(["link", "o/r#5", how, "o/r#4"], run=forge, write=write, edit=edit) == 0
     assert (forge.parents[b] == a) if child else ((a, b) in forge.blocked)
     assert forge.body("o/r#5") == "Build the page.\r\n\r\nDepends on o/r#4"  # byte for byte, then the line
     mutation = "addSubIssue" if child else "addBlockedBy"
     written = [gh_call(cmd[len(prefix) :])[0] for cmd in app.ran]
-    assert written == [ch.ADD_SUB_ISSUE if child else ch.ADD_BLOCKED_BY, ch.UPDATE_BODY]
-    assert forge.writes() == [mutation, "updateIssue"]
+    assert written == [ch.ADD_SUB_ISSUE if child else ch.ADD_BLOCKED_BY, EDIT]
+    assert forge.writes() == [mutation, "PATCH"]
     reads = [q for q, _ in forge.calls if q not in written]
     assert reads and len(forge.calls) == len(reads) + 2  # the reads stayed on the plain runner
     assert "added to o/r#5: Depends on o/r#4" in capsys.readouterr().out
@@ -560,7 +584,8 @@ def test_526_a_refused_relation_still_writes_the_line_as_the_app(
     forge.add("someone/else#2")
     prefix = ch.writer(checkout(tmp_path, APP_CONFIG))
     app = AppGh(forge, prefix)
-    assert ch.main(["link", "o/r#1", "--child", "someone/else#2"], run=forge, write=ch.gh_runner(prefix, app)) == 0
+    write, edit = ch.gh_runner(prefix, app), ch.gh_editor(prefix, app)
+    assert ch.main(["link", "o/r#1", "--child", "someone/else#2"], run=forge, write=write, edit=edit) == 0
     assert forge.body("o/r#1") == "Depends on someone/else#2"
     assert len(app.ran) == 2
     assert "text only: Issues must belong to the same owner" in capsys.readouterr().out
@@ -574,12 +599,49 @@ def test_526_an_exit_2_from_shipmill_gh_stops_the_link_with_no_fallback(
     prefix = ch.writer(checkout(tmp_path, APP_CONFIG))
     app = AppGh(forge, prefix, code=2)
     with pytest.raises(SystemExit) as exit_:
-        ch.main(["link", "o/r#5", "--blocked-by", "o/r#4"], run=forge, write=ch.gh_runner(prefix, app))
+        ch.main(
+            ["link", "o/r#5", "--blocked-by", "o/r#4"],
+            run=forge,
+            write=ch.gh_runner(prefix, app),
+            edit=ch.gh_editor(prefix, app),
+        )
     assert exit_.value.code == 2
     assert "the App's private key is missing" in capsys.readouterr().err
     assert len(app.ran) == 1  # the relation's mutation, not retried, and no body edit after it
     assert forge.writes() == []
     assert forge.body("o/r#5") == "Body"
+
+
+def test_the_body_edit_is_a_rest_patch_with_the_body_byte_for_byte_from_a_file(
+    ch: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Spec 050: `shipmill gh` refuses GraphQL's updateIssue, so link edits through REST"""
+    ran: list[tuple[list[str], str]] = []
+
+    def execute(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        ran.append((cmd, edited(gh_call(cmd[1:])[1])))
+        return subprocess.CompletedProcess(cmd, 0, "{}", "")
+
+    body = "Plan\r\n\r\nDepends on o/r#4 — é" + "x" * 300_000  # past any argument limit
+    ch.gh_editor(["gh"], execute)(ch.Ref("O", "r", 5), body)
+    [(cmd, sent)] = ran
+    assert cmd[:6] == ["gh", "api", "-X", "PATCH", "repos/O/r/issues/5", "-F"] and cmd[6].startswith("body=@")
+    assert sent == body
+    assert not Path(cmd[6].removeprefix("body=@")).exists()  # the file is gone once the edit ran
+
+    def refuse(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, "", "gh: Not Found (HTTP 404)\n")
+
+    with pytest.raises(SystemExit) as exit_:
+        ch.gh_editor(["gh"], refuse)(ch.Ref("o", "r", 5), "x")
+    assert exit_.value.code == 2
+    err = capsys.readouterr().err
+    assert "gh: Not Found (HTTP 404)" in err and "editing the body of o/r#5 failed" in err
+
+
+def test_main_takes_write_and_edit_together(ch: ModuleType, forge: Forge) -> None:
+    with pytest.raises(ValueError, match="together"):
+        ch.main(["link", "o/r#5", "--blocked-by", "o/r#4"], run=forge, write=forge)
 
 
 FAKE_GH = """#!{python}
@@ -650,7 +712,10 @@ def test_526_run_from_a_checkout_without_app_id_the_script_writes_with_plain_gh(
     proc, calls = run_script(tmp_path, '[agents]\nprompt = "Triage the repo"\n')
     assert proc.returncode == 0, proc.stderr
     assert [c[0] for c in calls] == ["gh"] * len(calls)
-    assert sum("mutation" in c[4] for c in calls) == 2  # the relation and the body edit
+    assert sum("mutation" in c[4] for c in calls) == 1  # the relation
+    edits = [c for c in calls if c[1:4] == ["api", "-X", "PATCH"]]  # the body edit, through REST (spec 050)
+    assert [c[4:6] for c in edits] == [["repos/o/r/issues/5", "-F"]]
+    assert edits[0][6].startswith("body=@")
 
 
 # -- spec 038: a component links within its repo; the coordinator links with --product (D-47)
@@ -797,7 +862,7 @@ def test_s038_29_product_child_writes_through_the_session_or_the_product_token_a
     top = (tmp_path / "repo").resolve()
     p_repo, c_repo = parent.partition("#")[0], child.partition("#")[0]
     assert git.writes() == [through(top, p_repo)] * 2  # the sub-issue, the line: never --product for the home
-    assert forge.writes() == ["addSubIssue", "updateIssue"]
+    assert forge.writes() == ["addSubIssue", "PATCH"]
     # resolving P, resolving C, the cycle walk reading C (spec 041), C's parent: a listed
     # repo's through the product token, never plain gh
     reads = [through(top, p_repo), through(top, c_repo), through(top, c_repo), through(top, c_repo)]

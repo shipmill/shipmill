@@ -266,9 +266,6 @@ class World:
         if query == ch.ADD_BLOCKED_BY:
             self.tickets[self.ids[variables["issue"]]].blocked_by.append(self.ids[variables["blocking"]])
             return {"data": {"addBlockedBy": {"issue": {"id": variables["issue"]}}}}
-        if query == ch.UPDATE_BODY:
-            self.tickets[self.ids[variables["id"]]].body = variables["body"]
-            return {"data": {"updateIssue": {"issue": {"id": variables["id"]}}}}
         count = 0
         while f"o{count}" in variables:
             count += 1
@@ -278,6 +275,10 @@ class World:
             ticket = self.tickets[f"{variables[f'o{i}']}/{variables[f'n{i}']}#{variables[f'k{i}']}"]
             data[f"i{i}"] = {"issueOrPullRequest": self.item(ticket)}
         return {"data": data}
+
+    def edit(self, ref: Any, body: str) -> None:
+        """chains.py's body edit, REST's PATCH (spec 050)"""
+        self.tickets[str(ref)].body = body
 
     def item(self, ticket: Ticket) -> dict[str, Any]:
         def linked(refs: list[str]) -> dict[str, Any]:
@@ -307,7 +308,12 @@ class World:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code: int = self.ch.main(
-                list(argv), run=self, contents=lambda repo: GATED, standing=self.standing, write=self
+                list(argv),
+                run=self,
+                contents=lambda repo: GATED,
+                standing=self.standing,
+                write=self,
+                edit=self.edit,
             )
         return code, out.getvalue()
 

@@ -14,6 +14,7 @@ from shipmill.errors import ReleaseError
 from shipmill.github import FileChange, PullChange
 
 from .conftest import POLICY, Repo
+from .test_agent_marker import sent
 from .test_app import APP_ID, REPO, FakeSigner, key_file
 from .test_app_token import FAKE_GH, MintApi, executable
 
@@ -228,7 +229,8 @@ def test_s030_13_other_gh_calls_read_nothing(repo: Repo, tmp_path: Path, args: l
     reader, runner = Reader(FakeReads((DIRECTION,))), Runner()
     assert gh(repo, tmp_path, key, args, reader, runner) == 0
     assert reader.envs == []
-    assert [argv[1:] for argv in runner.calls] == [args]
+    # a create gets its body marked (spec 050), and nothing else changes
+    assert [argv[1:] for argv in runner.calls] == [sent(args) if "--body" in args else args]
 
 
 @pytest.mark.parametrize(

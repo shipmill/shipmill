@@ -1,8 +1,9 @@
 """`shipmill gh` (spec 012): run the `gh` on PATH as the repo's GitHub App when its config
 sets [agents] app_id, so a session a person starts writes as the App too (D-14).
 
-The arguments reach gh exactly as given. Only the repo gh's `-R`/`--repo` names is read
-from them, to limit the token to it, and a merge they ask for (`merge_of`), which spec 030
+The arguments reach gh as given, but for the bodies a create writes, which end with the agent
+marker (spec 050, `marked_args`). Only the repo gh's `-R`/`--repo` names is read from them
+besides, to limit the token to it, and a merge they ask for (`merge_of`), which spec 030
 holds when the pull request has a `never` zone. The token goes to gh in GH_TOKEN, never to
 output.
 """
@@ -13,9 +14,10 @@ import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TextIO
 from urllib.parse import unquote
 
+from shipmill.agent_marker import BODY_LIMIT, marked
 from shipmill.classify import Pulls
 from shipmill.errors import ReleaseError
 
@@ -427,3 +429,288 @@ def _api_read(args: Sequence[str]) -> bool:
     if methods:
         return methods[-1].upper() in _READ_METHODS
     return not fields and not has_input
+
+
+# -- Spec 050: the agent marker on every body `shipmill gh` creates ------------------------------
+
+BodyRead = Callable[[str, str], str]  # a body flag and its path (`-` for stdin) in, the text out
+
+
+def body_reader(stdin: TextIO) -> BodyRead:
+    """The text a body flag's path names: stdin for `-`, else the file's; a file that can't be
+    read exits 2, so a body is never written empty for a typo"""
+
+    def read(flag: str, path: str) -> str:
+        if path == "-":
+            return stdin.read()
+        try:
+            return Path(path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            why = exc.strerror if isinstance(exc, OSError) else str(exc)
+            raise ReleaseError(f"gh's {flag} {path} can't be read: {why}") from None
+
+    return read
+
+
+@dataclass(frozen=True, slots=True)
+class _Flags:
+    """The flags of one gh command that take a value, long and short; any other is a switch"""
+
+    long: frozenset[str]
+    short: frozenset[str]
+
+
+_COMMENT_FLAGS = _Flags(frozenset({"--body", "--body-file", "--repo"}), frozenset("bFR"))
+_ISSUE_CREATE = _Flags(
+    frozenset(
+        {
+            "--assignee",
+            "--body",
+            "--body-file",
+            "--label",
+            "--milestone",
+            "--project",
+            "--recover",
+            "--repo",
+            "--template",
+            "--title",
+        }
+    ),
+    frozenset("abFlmpRTt"),
+)
+_PR_CREATE = _Flags(
+    _ISSUE_CREATE.long | {"--base", "--head", "--reviewer"},
+    _ISSUE_CREATE.short | frozenset("BHr"),
+)
+_CLOSE_FLAGS = _Flags(frozenset({"--comment", "--reason", "--duplicate-of", "--repo"}), frozenset("crR"))
+_CREATES: Mapping[tuple[str, str], _Flags] = {
+    ("issue", "create"): _ISSUE_CREATE,
+    ("issue", "new"): _ISSUE_CREATE,
+    ("issue", "comment"): _COMMENT_FLAGS,
+    ("pr", "create"): _PR_CREATE,
+    ("pr", "new"): _PR_CREATE,
+    ("pr", "comment"): _COMMENT_FLAGS,
+}
+_REVIEW = _COMMENT_FLAGS  # -a, -c, and -r are switches of `gh pr review`: approve, comment, request changes
+_CLOSES = frozenset({("issue", "close"), ("issue", "reopen"), ("pr", "close"), ("pr", "reopen")})
+# what finds the subcommand when a flag comes before it: every flag of the group's commands
+_GROUP_FLAGS = {
+    group: _Flags(
+        frozenset().union(*(f.long for (g, _), f in _CREATES.items() if g == group), _CLOSE_FLAGS.long),
+        frozenset().union(*(f.short for (g, _), f in _CREATES.items() if g == group), _CLOSE_FLAGS.short),
+    )
+    for group in ("issue", "pr")
+}
+_BODY_FLAGS = frozenset({"--body", "-b", "--body-file", "-F"})
+_COMMENT_FLAG = frozenset({"--comment", "-c"})
+_HELP = frozenset({"-h", "--help"})
+# The REST endpoints that create a record with a body, past `repos/<owner>/<repo>/`
+_API_CREATES = re.compile(
+    r"repos/[^/]+/[^/]+/(?:issues|issues/[0-9]+/comments|pulls|pulls/[0-9]+/comments"
+    r"|pulls/[0-9]+/comments/[0-9]+/replies|pulls/[0-9]+/reviews)/?",
+    re.IGNORECASE,
+)
+# The GraphQL mutations that write a body, a create or an edit: shipmill gh can neither mark
+# the one nor keep the other's origin, so each takes the REST form (spec 050)
+_MUTATIONS = re.compile(
+    r"\b(addComment|updateIssueComment|createIssue|updateIssue|createPullRequest|updatePullRequest"
+    r"|addPullRequestReview|submitPullRequestReview|updatePullRequestReview|addPullRequestReviewComment"
+    r"|addPullRequestReviewThread|addDiscussionComment|updateDiscussionComment|createDiscussion"
+    r"|updateDiscussion)\b"
+)
+_REST_FORM = (
+    "the REST form instead, such as `gh api repos/<owner>/<repo>/issues/<n>/comments -f body=...` for a comment or "
+    "`gh api -X PATCH repos/<owner>/<repo>/issues/<n> -F body=@<file>` for an edit"
+)
+
+
+def _split(
+    args: Sequence[str], flags: _Flags, take: Callable[[str, str], bool]
+) -> tuple[list[str], list[tuple[str, str]], list[str]]:
+    """args before any `--` less the flags take picks, with their values, read as `_scan` reads
+    them; the flags picked, in order; and args from `--` on. A short flag bundled with a picked
+    one is kept (`-wb x` keeps `-w`). A picked flag with no value left exits 2, as gh would"""
+    kept: list[str] = []
+    taken: list[tuple[str, str]] = []
+    index = 0
+    while index < len(args) and args[index] != "--":
+        arg = args[index]
+        index += 1
+        if arg.startswith("--"):
+            name, equals, value = arg.partition("=")
+            takes = name in flags.long and not equals
+            if takes and index == len(args):
+                raise ReleaseError(f"gh's {name} needs a value")
+            value = args[index] if takes else value
+            if take(name, value):
+                taken.append((name, value))
+            else:
+                kept.extend([arg, args[index]] if takes else [arg])
+            index += 1 if takes else 0
+            continue
+        if not arg.startswith("-") or len(arg) == 1:
+            kept.append(arg)
+            continue
+        for at, letter in enumerate(arg[1:], start=2):
+            if letter not in flags.short:
+                continue
+            rest = arg[at:]
+            if not rest and index == len(args):
+                raise ReleaseError(f"gh's -{letter} needs a value")
+            value = rest.removeprefix("=") if rest else args[index]
+            if take(f"-{letter}", value):
+                taken.append((f"-{letter}", value))
+                kept.extend([arg[: at - 1]] if at > 2 else [])
+            else:
+                kept.extend([arg] if rest else [arg, args[index]])
+            index += 0 if rest else 1
+            break
+        else:
+            kept.append(arg)
+    return kept, taken, list(args[index:])
+
+
+def _on(flags: Sequence[tuple[str, str]], *names: str) -> bool:
+    """Whether a switch in names is given and not turned off (`--web=false`)"""
+    return any(name in names and value.lower() != "false" for name, value in flags)
+
+
+def _helped(flags: Sequence[tuple[str, str]]) -> bool:
+    """Whether -h/--help is given as a flag, not as a flag's value: gh prints help, writing nothing"""
+    return _on(flags, *_HELP)
+
+
+def _sized(body: str, what: str) -> str:
+    """body marked, refused when GitHub would cut the marker off"""
+    text = marked(body)
+    if len(text) > BODY_LIMIT:
+        raise ReleaseError(
+            f"{what}'s body, marked as an agent's (spec 050), is {len(text):,} characters, over GitHub's limit of "
+            f"{BODY_LIMIT:,}, which would cut the marker off; shorten it"
+        )
+    return text
+
+
+def marked_args(args: Sequence[str], read: BodyRead) -> list[str]:
+    """Spec 050: gh's args with the agent marker ending every body they create: `issue create`,
+    `issue comment`, `pr create`, `pr comment`, `pr review`, `issue|pr close|reopen --comment`,
+    and the `gh api` creates; every other command's args as given (S-050-6). A create whose body
+    can't be marked exits 2 before gh runs. read gives a body file's text"""
+    if not args or args[0] == "--":
+        return list(args)
+    if args[0] == "api":
+        return ["api", *_marked_api(args[1:], read)]
+    if args[0] not in _GROUP_FLAGS:
+        return list(args)
+    positional, _ = _scan(args[1:], _GROUP_FLAGS[args[0]].long, _GROUP_FLAGS[args[0]].short)
+    if not positional:
+        return list(args)
+    command = (args[0], positional[0])
+    what = f"gh {' '.join(command)}"
+    if command in _CLOSES:
+        _, flags = _scan(args[1:], _CLOSE_FLAGS.long, _CLOSE_FLAGS.short)
+        comments = [value for name, value in flags if name in _COMMENT_FLAG]
+        if not comments or _helped(flags):
+            return list(args)  # no comment: no body written
+        kept, _, tail = _split(args, _CLOSE_FLAGS, lambda name, _: name in _COMMENT_FLAG)
+        return [*kept, "--comment", _sized(comments[-1], what), *tail]
+    review = command == ("pr", "review")
+    if not review and command not in _CREATES:
+        return list(args)
+    table = _REVIEW if review else _CREATES[command]
+    _, flags = _scan(args[1:], table.long, table.short)
+    if _helped(flags):
+        return list(args)
+    if not review:
+        _refuse_unmarkable(what, flags)
+    if command[1] == "comment" and _on(flags, "--delete-last"):
+        return list(args)  # deletes the last comment: no body written
+    kept, taken, tail = _split(args, table, lambda name, _: name in _BODY_FLAGS)
+    names = {name for name, _ in taken}
+    if names & {"--body", "-b"} and names & {"--body-file", "-F"}:
+        raise ReleaseError(f"{what} takes --body or --body-file, not both")
+    if not taken:
+        if review and _on(flags, "--approve", "-a"):
+            return [*kept, "--body", marked(""), *tail]
+        raise ReleaseError(
+            f"{what} with no --body or --body-file is refused: shipmill gh marks the body it writes as an agent's "
+            "(spec 050), and gh would ask for it in an editor or prompt; write it to a file and pass --body-file"
+        )
+    name, value = taken[-1]
+    body = value if name in ("--body", "-b") else read(name, value)
+    return [*kept, "--body", _sized(body, what), *tail]
+
+
+def _refuse_unmarkable(what: str, flags: Sequence[tuple[str, str]]) -> None:
+    """S-050-2: a create whose body gh would take from an editor, a browser, or an edit of the
+    last comment, which shipmill gh can't mark"""
+    if _on(flags, "--edit-last"):
+        raise ReleaseError(
+            f"{what} --edit-last is refused: it edits a comment shipmill gh can't mark (spec 050); edit it with "
+            "`gh api -X PATCH repos/<owner>/<repo>/issues/comments/<id> -f body=...` instead"
+        )
+    given = [name for name in ("--web", "-w", "--editor", "-e") if _on(flags, name)]
+    if given:
+        raise ReleaseError(
+            f"{what} {given[0]} is refused: shipmill gh marks the body it writes as an agent's (spec 050), and "
+            "can't mark one written in a browser or an editor; write it to a file and pass --body-file"
+        )
+
+
+def _field(name: str, value: str) -> str | None:
+    """The key of a gh api field flag's `key=value`; None for any other flag"""
+    if name not in _API_FIELDS or "=" not in value:
+        return None
+    return value.partition("=")[0]
+
+
+def _marked_api(args: Sequence[str], read: BodyRead) -> list[str]:
+    """`gh api`'s args past `api`: a create on a body endpoint gets its `body` field marked, or
+    one holding the marker alone; such a create with --input, and a graphql mutation that
+    writes a body, exit 2"""
+    positional, flags = _scan(args, _API_LONG, _API_SHORT)
+    if not positional:
+        return list(args)
+    endpoint = unquote(_API_HOST.sub("", positional[0]).lstrip("/").partition("?")[0])
+    has_input = [value for name, value in flags if name == "--input"]
+    if endpoint.strip("/").lower() == "graphql":
+        queries = [
+            (name, value.partition("=")[2]) for name, value in flags if _field(name, value) in ("query", "mutation")
+        ]
+        if "-" in has_input or any(name in ("-F", "--field") and query == "@-" for name, query in queries):
+            raise ReleaseError(
+                "gh api graphql reading its query from stdin is refused: shipmill gh reads it first for a mutation "
+                "that writes a body it can't mark (spec 050), and gh couldn't read stdin again; pass the query "
+                "inline (-f query=...) or from a file (-F query=@<file>)"
+            )
+        texts = [
+            read(name, query[1:]) if name in ("-F", "--field") and query.startswith("@") else query
+            for name, query in queries
+        ]
+        texts.extend(read("--input", path) for path in has_input)
+        found = next((m.group(1) for m in map(_MUTATIONS.search, texts) if m is not None), None)
+        if found is not None:
+            raise ReleaseError(
+                f"gh api graphql with {found} is refused: it writes a body shipmill gh can't mark as an agent's "
+                f"or keep as its record's (spec 050); use {_REST_FORM}"
+            )
+        return list(args)
+    methods = [value for name, value in flags if name in _METHOD_FLAGS]
+    fields = [value for name, value in flags if name in _API_FIELDS]
+    method = methods[-1].upper() if methods else ("POST" if fields or has_input else "GET")
+    if method != "POST" or _API_CREATES.fullmatch(endpoint) is None:
+        return list(args)
+    what = f"gh api {positional[0]}"
+    if has_input:
+        raise ReleaseError(
+            f"{what} with --input is refused: shipmill gh marks the body it creates as an agent's (spec 050) and "
+            "can't read one from --input; pass the body with -F body=@<file> instead"
+        )
+    kept, taken, tail = _split(args, _Flags(_API_LONG, _API_SHORT), lambda name, value: _field(name, value) == "body")
+    if not taken:
+        return [*kept, "-f", f"body={marked('')}", *tail]
+    name, value = taken[-1]
+    body = value.partition("=")[2]
+    if name in ("-F", "--field") and body.startswith("@"):
+        body = read(name, body[1:])
+    return [*kept, "-f", f"body={_sized(body, what)}", *tail]
