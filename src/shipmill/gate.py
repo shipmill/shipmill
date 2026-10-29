@@ -1855,13 +1855,18 @@ def save_tick(path: Path, record: TickRecord) -> None:
 
 
 def record_tick(
-    path: Path, now: dt.datetime, action: str, reason: str, fix: str | None, fails: bool, running: Running | None
+    path: Path,
+    previous: TickRecord | None,
+    now: dt.datetime,
+    action: str,
+    reason: str,
+    fix: str | None,
+    fails: bool,
+    running: Running | None,
 ) -> TickRecord:
-    """Spec 048: write this tick's tick.json. A failing tick after a failing one keeps its
-    since and counts one more; one after any other tick starts a run at now; a tick that
-    doesn't fail ends the run. The previous tick.json is read on every tick, so a malformed
-    one fails the tick, as the gate's other state files do"""
-    previous = load_tick(path)
+    """Spec 048: write this tick's tick.json after previous, the one load_tick read when the
+    tick started. A failing tick after a failing one keeps its since and counts one more; one
+    after any other tick starts a run at now; a tick that doesn't fail ends the run"""
     run = None
     if fails:
         before = None if previous is None else previous.failing
@@ -2157,8 +2162,10 @@ def gate(
     the prune, so the prune's own failure changes neither the record nor the exit code (D-56).
     A tick that a ReleaseError ends records ERROR with the error's first line and its fix, else
     DRY_RUN_FIX, and the error propagates; any other exception records nothing. A dry run
-    writes no tick.json"""
+    writes no tick.json. The previous tick.json is read before the tick acts, so a malformed
+    one fails the tick, as the gate's other state files do, before it starts or stops anything"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
+    previous = None if dry_run else load_tick(tick)
     try:
         decision, launched, waiting = decided(
             git,
@@ -2189,11 +2196,12 @@ def gate(
         )
     except ReleaseError as exc:
         if not dry_run:
-            record_tick(tick, now, ERROR, error_line(exc), exc.fix or DRY_RUN_FIX, True, None)
+            record_tick(tick, previous, now, ERROR, error_line(exc), exc.fix or DRY_RUN_FIX, True, None)
         raise
     if not dry_run:
         fix = decision_fix(decision)
-        record_tick(tick, now, decision.action.value, decision.reason, fix, failing(decision), decision.running)
+        action = decision.action.value
+        record_tick(tick, previous, now, action, decision.reason, fix, failing(decision), decision.running)
     hours = (lambda: 0) if prune_hours is None else prune_hours
     run, pruned = prune_step(state_dir(git) / PRUNE, hours, worktrees, now, dry_run)
     return replace(decision, prune=run), launched, waiting, pruned

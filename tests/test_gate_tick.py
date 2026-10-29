@@ -208,6 +208,18 @@ def test_s048_8_a_malformed_tick_json_fails_the_tick_and_stays(checkout: Git) ->
     assert path.read_text(encoding="utf-8") == '{"at": "2026-10-04T12:00:00+00:00"}\n'
 
 
+def test_s048_8_a_malformed_tick_json_fails_the_tick_before_it_launches(checkout: Git) -> None:
+    """Read before the tick acts: a tick that started a session must not then end on its record"""
+    path = state_dir(checkout) / TICK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[]\n", encoding="utf-8")
+    claude = FakeClaude()
+    with pytest.raises(ReleaseError, match="tick.json is malformed"):
+        gate(checkout, REPO, cfg, claude, issues, NOW, Hold, FakeNotifier(), NO_PRUNE, login=host)
+    assert (claude.launched, claude.started) == ([], [])
+    assert not (state_dir(checkout) / RECORD).exists()
+
+
 def test_s048_8_tick_json_round_trips() -> None:
     record = TickRecord(NOW, "GITHUB_AUTH", "r", "f", Failing(NOW, 3))
     with pytest.raises(ValueError, match="positive"):
