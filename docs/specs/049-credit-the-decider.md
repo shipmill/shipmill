@@ -1,6 +1,6 @@
 # S-049: Credit the decider
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -146,3 +146,18 @@ person decided the change, which is not a claim they wrote it.
 - shipmill/shipmill#787: S-049-11, S-049-12
 
 ## Verification
+
+Checked on main at e6f729a (#789 and #790 merged): `tests/test_credit.py` and `tests/test_credit_doctor_docs.py` pass (115 tests), and `specs.py coverage --spec 049` lists a test for every criterion.
+
+- S-049-1: `agents.py` reads `credit` as the `Credit` enum, off without the key; the tests load another value and a non-string, each exit 2 naming the key and both values, and an absent key as off
+- S-049-2: this repo sets no `credit`, and #789 and #790 merged through `shipmill gh pr merge` with GitHub's own body and trailers; the test asserts gh gets its arguments unchanged and the fake reads no record
+- S-049-3: `credit.approvers` takes each person's latest review that isn't a comment; the tests merge end to end and read the trailer with the profile name, or the login without one
+- S-049-4: `credit.answers` reads a question by the marker on its first line from the App or a trusted person, and trusted replies after it, on the pull request, its closed issues, and their parents; the App's `Decision by` line names a login bare or in a code span, and since #790's review never the first part of `@bot[bot]`, `@org/team`, or `@a.b`
+- S-049-5: `credit.authors` names the trusted author of each closed issue and its parent, skipping another repo's issues; a cut or malformed GraphQL answer exits 2
+- S-049-6: `credit.accepters` names who last added `planned` to an `opportunity` issue, trusted by write, maintain, or admin permission; the tests give none for a reader or for an issue that isn't an accepted opportunity
+- S-049-7: `credit.deciders` drops bots, the App's login, and the author, and keeps the first source to name a person; `SOURCES` runs approvers, answerers, authors, accepters, the spec's order
+- S-049-8: the tests merge with `--body`, `--body-file`, stdin, and each merge message setting; a decider already named by email gets no second trailer, and `--subject` reaches gh unchanged
+- S-049-9: the test reads one stderr line per decider, its login in a code span and its record, before gh runs
+- S-049-10: the test runs `shipmill gh api -X PUT repos/<owner>/<repo>/pulls/<n>/merge` with credit on: exit 2 naming `shipmill gh pr merge <n> --squash`, gh not run
+- S-049-11: `shipmill doctor` in this repo prints `PASS credit: off`; the tests read `decider, a merge names who decided it in Co-authored-by (spec 049)` with the key on, and no row without `[agents]`
+- S-049-12: `skills/shipmill-setup/SKILL.md` and `docs/flow.md` name `[agents] credit = "decider"`, its `"off"` default, and that the trailer means the person decided the change, not that they wrote it
