@@ -1,6 +1,6 @@
 # S-050: Tell an agent's text from a person's by its marker, never by its author
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -210,9 +210,6 @@ and D-16's reading of replies and vetoes without replacing them.
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-050-1, S-050-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
-
 - shipmill/shipmill#797: S-050-1, S-050-2, S-050-4, S-050-5, S-050-6
 - shipmill/shipmill#798: S-050-3
 - shipmill/shipmill#799: S-050-7
@@ -222,5 +219,19 @@ line, naming the criteria that issue delivers. Each criterion belongs to exactly
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+Checked on main at 3ba01ca (#806, #804, #805, #809, #808, and #807 merged): the spec's test files pass (901 tests), `specs.py coverage --spec 050` lists a test for every criterion, and `marked_args` was run directly on the arguments below.
+
+- S-050-1: `issue comment --body-file <file>`, `issue close -c`, and `pr review --approve` with no body each reach gh as one `--body`/`--comment` ending in a blank line and the marker; a body already marked reaches gh unchanged; as the App and as the host, `_gh` passes the marked arguments
+- S-050-2: `issue create --web`, `issue comment --edit-last`, and `issue comment` with no body exit 2 before gh runs, naming `--body-file` and, for `--edit-last`, `gh api -X PATCH repos/<owner>/<repo>/issues/comments/<id>`
+- S-050-3: `body_edit` and `edited_args` read the record's current body through gh with the same token (App, host, or `--product`) before the edit, mark the new body exactly when the current one carries the marker, and exit 2 without running the edit when the read fails; a body GitHub gives as null reads as empty, a person's record
+- S-050-4: `gh api repos/o/r/issues/5/comments -f body=hi` reaches gh with the body marked, a `pulls/5/reviews` POST without a body gets `body=<!-- shipmill:agent -->`, and `--input` on a create and `gh api graphql` with `updateIssue` exit 2 naming the REST form
+- S-050-5: a 65,520-character comment exits 2, its marked length 65,545 over GitHub's 65,536; `GhCli` bodies end with the marker, `fit` keeping room for it when it cuts
+- S-050-6: `issue edit --add-label`, `pr merge --squash --body msg`, and `api repos/o/r/issues/5` reach gh exactly as given
+- S-050-7: `gh_writer` returns `shipmill gh` for `[agents]` with `app_id`, with `identity = "host"`, and with neither, and plain `gh` without `[agents]` or without a config; `chains.py`, `shipped.py`, and `setup_state.py --fix` write through it
+- S-050-8: `replies` in `triage_state.py` skips a trusted comment carrying the marker on any line, so the item reads NEEDS_DECISION until an unmarked one comes; `watch_state.py` reads through the same function
+- S-050-9: `vetoes` skips a marked `veto` and, through `by_person`, a comment by `ghost`, the login GitHub and `login()` give a deleted account
+- S-050-10: with `--bot-login`, the reply and veto cases read the same with the App's comments marked or not, and a person's unmarked reply after the App's question reads DECIDED
+- S-050-11: `CLOSES_QUERY` reads `body`; `authors` skips a closed issue or parent whose body carries the marker or isn't a string, and the other deciders are still credited
+- S-050-12: `answers` skips a marked reply and `approvers` a marked approval; the App's `Decision by @<login>` relay still names `<login>`, and a person's unmarked issue still credits its author
+- S-050-13: `marked()` in `agent_as_person.py` counts a User's body carrying the marker on any line, through `agent_marker.carries`
+- S-050-14: `needs-decision.md` has "The agent marker" section, names it in both reply rows and the veto rule, and writes the relay line as the App or the host; `spec-gate.md` and `triage-rubric.md` say a marked issue is not the maintainer's filing, short of an accepted opportunity or a plan item
