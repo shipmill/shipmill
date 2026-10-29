@@ -1,6 +1,6 @@
 # S-048: The gate says why it isn't working: a failing tick names its cause, RUNNING and QUIET say what they wait on
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -119,7 +119,8 @@ Every real tick (never a dry run) writes `tick.json` in the gate's state directo
 - **RUNNING**: `running: <item>, <ran for>, log grew <ago>` (headless) or `running: <item>,
   <ran for>` (interactive), no problem
 - **STALLED**: the stalled line below, a problem with its fix
-- **QUIET**: `quiet: <the in-flight summary>`, no problem
+- **QUIET**: `quiet: <the in-flight summary>`, no problem: the gate's own in-flight line
+  (`InFlight.line`), its `ago` parts aged to the time `shipmill factory` runs, as RUNNING's are
 
 The verdict (S-009-3, S-009-5, S-044-3) is unchanged for what spec 009 already names:
 CLAUDE_AUTH and HOOKS_FAILED wait on the maintainer, a failed tick is STUCK. GITHUB_AUTH
@@ -175,7 +176,7 @@ maintainer attaches to it.
 
 ### QUIET says what is in flight
 
-The change check's one GraphQL query (`src/shipmill/github.py`, S-046-3) also reads the
+The change check's one GraphQL query (`src/shipmill/walk.py`, S-046-3) also reads the
 default branch's last 10 commits with the merged pull request each is associated with (its
 number and `mergedAt`). That field is not in the signature: it moves only with the default
 head, which already is.
@@ -276,6 +277,8 @@ on PRS_OPEN #770, ended 3 h ago`. `shipmill gate --json` adds `"in_flight": {"ci
   none
 - S-048-25: `shipmill gate --json` prints `in_flight` with ci, landing, failing, landed, and
   result on QUIET, and null otherwise
+- S-048-26: `shipmill factory`'s gate line reads `quiet: <the in-flight summary>` from a
+  current QUIET `tick.json`, with no problem
 
 ## Out of scope
 
@@ -321,5 +324,37 @@ on PRS_OPEN #770, ended 3 h ago`. `shipmill gate --json` adds `"in_flight": {"ci
 - shipmill/shipmill#816: S-048-6, S-048-7, S-048-8, S-048-9, S-048-10
 - shipmill/shipmill#817: S-048-11, S-048-12, S-048-13
 - shipmill/shipmill#818: S-048-21, S-048-22, S-048-23, S-048-24, S-048-25
+- shipmill/shipmill#828: S-048-26
 
 ## Verification
+
+Checked on main plus #828's change on 2026-10-29: the code read at each named place, the
+named tests run (all pass), and on this host `shipmill factory` and `shipmill gate --dry-run
+--json` run against the gate's checkout while its headless session ran.
+
+- S-048-1: read `gate.reached` (after `preflight`, before the dry-run return in `decided`) and `github_auth.app_reach` (`app.mint` with the session's `PERMISSIONS`, then `GET /repos/<repo>`, no `app_token`, no cache), wired in `cli.py`'s gate; `test_s048_1_*` in `tests/test_gate_github_auth.py`; holds
+- S-048-2: read `github_auth.host_reach` (`gh api repos/<repo>` when the identity is None); `test_s048_2_*`; holds
+- S-048-3: read `GitHubAuth.of`/`app_failed`, `app.py`'s `KeyRefused`, `JwtRefused` (the `sntp` fix), `NotInstalled`, `Lacks` (the settings URL), `MintRefused`, and `app_reach`/`host_reach`'s read failures; `reached` sets `stop=()` and starts nothing; `test_s048_3_*`; holds
+- S-048-4: read `decided`: `as_app`'s `ReleaseError` becomes GITHUB_AUTH and returns before `findings(read)`, so no `watch_state.py` and no change check; `test_s048_4_*`; holds
+- S-048-5: read `preflight` and `reached`, both only on LAUNCH, and `app.app_check`, which mints nothing; `shipmill gate --dry-run --json` on a RUNNING tick printed `"preflight": null`; `test_s048_5_*`; holds
+- S-048-6: read `cli._gate_exit` (2 for `gate.FAILING`: CLAUDE_AUTH, GITHUB_AUTH, HOOKS_FAILED) and the `ReleaseError` exit 2 in `run`; `test_s048_6_*` in `tests/test_gate_tick.py`; holds
+- S-048-7: read `gate` (`record_tick` only when not a dry run) and `TickRecord.record`; the host's `tick.json` holds all seven keys, and a dry run left its `at` unchanged; `test_s048_7_*`; holds
+- S-048-8: read `record_tick` (keeps `since`, `count + 1`, null on a tick that doesn't fail); `test_s048_8_*`; holds
+- S-048-9: read the `except ReleaseError` in `gate` (`ERROR`, `error_line`, `exc.fix or DRY_RUN_FIX`, re-raised) and the fixes `walk.malformed`, `check_checkout`, the branch check, `host_login`'s gh-missing, and the `--app-key` error carry; `test_s048_9_*`; holds
+- S-048-10: read `gate`: only `ReleaseError` is caught; `test_s048_10_*`; holds
+- S-048-11: read `status.tick_problem` and `job_problems` (exit 2 dropped for a failing record); `test_s048_11_*` in `tests/test_gate_tick_report.py`; holds
+- S-048-12: read `status.current_tick` (the log's last line must be the record's own); `test_s048_12_*`; holds
+- S-048-13: read `tick_problem` (`TICK_WAITS` waits, ERROR and STALLED STUCK) and `job_problems` (its problem first); `test_s048_13_*`; holds
+- S-048-14: read `save_launch`/`load_launch` (`item` beside the fingerprint, absent reads `item not recorded` through `Launch.named`); the host's `tick.json` names the running launch's item, `ISSUES UNBLOCKED shipmill/shipmill`; `test_s048_14_*` in `tests/test_gate_running.py`; holds
+- S-048-15: read `still_working` and `busy`; `shipmill gate --dry-run --json` printed `session 510becb1-… on ISSUES UNBLOCKED shipmill/shipmill, running 51 min, log grew 0 min ago: tail -f …`; `test_s048_15_*`; holds
+- S-048-16: read `tick_record` (`running`, set only on RUNNING and STALLED decisions); the dry run printed `running` with session, item, minutes, and log_grew; `test_s048_16_*` in `tests/test_gate_stalled.py`; holds
+- S-048-17: read `ClaudeCli.start` (`--output-format stream-json --verbose`), `has_result` and `ended_dead`; `test_s048_17_*`; holds
+- S-048-18: read `agents.py` (`stall_minutes` default 30, `table.integer` 0 to 1440); `test_s048_18_*` in `tests/test_config.py`; holds
+- S-048-19: read `still_working` (STALLED when the log's silence reaches a limit above 0); `test_s048_19_*`; holds
+- S-048-20: read `stalled` (start time read again before `stop_group`'s SIGTERM to the group, `would stop it` on a dry run) and `decided` (returns before the walk, so no `cursor.json` or `handed.json`); `test_s048_20_*`; holds
+- S-048-21: read `walk.py`'s query (`history(first: 10)` with `associatedPullRequests { number mergedAt }`, one query) and `changes_of` (history kept out of `signed`); `test_s048_21_*` in `tests/test_gate_in_flight.py`; holds
+- S-048-22: read `InFlight.line` and `walk.flight_of`, appended to both QUIET lines in `decided`; `test_s048_22_*`; holds
+- S-048-23: read `decided` (`InFlight.of` from the change check's `flight` and `last-result.json` alone); `test_s048_23_*`; holds
+- S-048-24: read `decided` (`ended_with_result` only when not dead and for a new session, written on a real tick); `test_s048_24_*`; holds
+- S-048-25: read `tick_record` (`in_flight` only on QUIET) and `InFlight.record`; the dry run on a RUNNING tick printed `"in_flight": null`; `test_s048_25_*`; holds
+- S-048-26: read `status.tick_problem` (a current QUIET record with `in_flight` shows `quiet: ` and `InFlight.line(now)`, no verdict, no fix); `test_s048_26_a_quiet_tick_reads_its_in_flight_summary_and_is_no_problem`; holds

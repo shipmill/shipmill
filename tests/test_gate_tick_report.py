@@ -1,6 +1,6 @@
 """Spec 048 (#817): `shipmill factory`'s gate line and `shipmill status`'s factory line read the
-gate's tick.json: a failing tick's cause and fix with since when, STALLED, and RUNNING's
-session, unless the launchd log has a later tick's line"""
+gate's tick.json: a failing tick's cause and fix with since when, STALLED, RUNNING's session,
+and what QUIET says is in flight (#828), unless the launchd log has a later tick's line"""
 
 import dataclasses
 import datetime as dt
@@ -12,9 +12,10 @@ import pytest
 
 from shipmill.cli import _with_tick
 from shipmill.factory import as_json
-from shipmill.gate import DRY_RUN_FIX, ERROR, TICK, Failing, Running, TickRecord, state_dir
+from shipmill.gate import DRY_RUN_FIX, ERROR, TICK, Failing, InFlight, LastResult, Running, TickRecord, state_dir
 from shipmill.gitrepo import Git
 from shipmill.status import Check, Gate, Verdict, host_checks, parse_job, report
+from shipmill.walk import Landed
 from tests.test_factory import fake_host, run_checks
 from tests.test_status_picture import FILES, NOW, facts, gate, job, lines
 
@@ -195,6 +196,28 @@ def test_a_record_of_a_tick_that_doesnt_fail_adds_no_problem() -> None:
     assert check.value == "OK, launchd every 15 min"
     held = TickRecord(AT, "HELD", "#5 holds: no session starts", None, None)
     assert "held by" in gate_line(ticked(held, "HELD: #5 holds: no session starts", exit_code="0")).value
+
+
+LANDED = Landed(770, AT - dt.timedelta(hours=3))
+FLIGHT = InFlight((771, 773), (772,), (), LANDED, LastResult("s5", "PRS_OPEN #770", SINCE))
+
+
+def test_s048_26_a_quiet_tick_reads_its_in_flight_summary_and_is_no_problem() -> None:
+    # the gate's own in-flight line, aged to now: landed 3 h before the tick is 3 h ago 5 min later too
+    reason = f"no change since 2026-10-07T09:00; {FLIGHT.line(AT)}"
+    record = TickRecord(AT, "QUIET", reason, None, None, None, FLIGHT)
+    found = ticked(record, f"QUIET: {reason}", exit_code="0")
+    check = gate_line(found)
+    summary = (
+        "in flight: 2 wait on CI (#771, #773), 1 waits to land (#772); last landed #770 3 h ago; "
+        "last result: session s5 on PRS_OPEN #770, ended 45 min ago"
+    )
+    assert FLIGHT.line(NOW) == summary  # the very function the gate's QUIET line uses
+    assert check.value == f"quiet: {summary}, launchd every 15 min"
+    assert check.ok and check.fixes == ()
+    assert report(facts(gate=found)).verdict is not Verdict.STUCK
+    stale = ticked(record, "QUIET: nothing needs an agent", exit_code="0")  # a later tick's line: S-048-12
+    assert gate_line(stale) == gate_line(ticked(None, "QUIET: nothing needs an agent", exit_code="0"))
 
 
 def checkout(tmp_path: Path) -> Git:

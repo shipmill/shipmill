@@ -964,7 +964,8 @@ def tick_problem(record: TickRecord, job: Job, repo: str, now: dt.datetime) -> J
     since <since> (<count> ticks): <action>: <reason>` with the record's fix (S-048-11),
     waiting on the maintainer for CLAUDE_AUTH, GITHUB_AUTH, and HOOKS_FAILED and STUCK for
     ERROR (S-048-13); STALLED's line, STUCK, its fix the one its reason ends with; RUNNING's
-    session, no problem. None for any other tick"""
+    session, no problem; QUIET's in-flight part, the gate's own line for it aged to now, no
+    problem (S-048-26). None for any other tick"""
     if record.failing is not None:
         since = record.failing.since.isoformat(timespec="minutes")
         reason = _without_fix(record.reason, record.fix).partition("\n")[0]  # the line the log holds
@@ -978,6 +979,8 @@ def tick_problem(record: TickRecord, job: Job, repo: str, now: dt.datetime) -> J
         return JobProblem(Verdict.STUCK, f"the gate: {shown}", shown, fix if line else _log_fix(job, repo))
     if record.action == Action.RUNNING.value and (running := running_shown(record, now)) is not None:
         return JobProblem(None, "", running, None)
+    if record.action == Action.QUIET.value and record.in_flight is not None:
+        return JobProblem(None, "", f"quiet: {record.in_flight.line(now)}", None)
     return None
 
 
@@ -1492,7 +1495,8 @@ def guarded(check: str, command: str, build: Callable[[], Check]) -> Check:
 def gate_check(gate: Gate, repo: str, now: dt.datetime, command: str) -> Check:
     """S-009-20 as the gate line, with what the gate's sessions authenticate with (S-035-15);
     off a Mac `can't check here: no launchd`, no problem (S-044-11). The job's tick.json, when
-    current, names a failing tick's cause and fix, STALLED, or RUNNING's session (spec 048); a
+    current, names a failing tick's cause and fix, STALLED, RUNNING's session, or what QUIET
+    says is in flight (spec 048); a
     tick.json that can't be read is the check's error"""
     if gate.agents is None:
         return Check("gate", True, "none: no [agents] in the config")

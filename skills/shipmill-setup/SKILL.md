@@ -914,6 +914,12 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      `GITHUB_AUTH`, `HOOKS_FAILED`, or a shipmill error exits 2; every other tick exits 0.
      Each real tick writes `shipmill/tick.json` beside `gate.json`: its decision, or `ERROR`
      with the error's first line, its fix, and since when and how many ticks in a row failed
+   - **GITHUB_AUTH** (spec 048): before a launch, after the Claude Code preflight, the gate
+     reads the repo as its sessions will write: with `app_id` a token it mints and caches
+     nowhere, else the host's gh login. A failure, or a failed App check before the state
+     read, is `GITHUB_AUTH` with the fix (the key, the clock, `$CR app-install`, or `gh auth
+     login`). `$CR factory`'s gate line reads `tick.json`: a failing tick's cause and fix,
+     STALLED, RUNNING's session, and QUIET's in-flight part
 5. **A dedicated checkout.** The session branches and commits where it starts, so never
    use the user's working copy: `git worktree add --detach tmp/shipmill-gate
    origin/<default>` inside the trusted checkout (a worktree outside it would need its
