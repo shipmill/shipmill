@@ -27,6 +27,7 @@ below.
 - G-5: Agents keep to the written direction: work outside the goals is postponed or declined with its reason
 - G-6: Agents pursue a goal: they propose the work that reaches it, and the maintainer approves it
 - G-7: The loop knows whether each goal is met, from a measure, and proposes changing the direction when it is
+- G-8: Each person's profile credits the work they decided, and the record still tells their words from their agents'
 
 ## Non-goals
 
