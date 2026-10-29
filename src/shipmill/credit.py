@@ -19,6 +19,7 @@ from shipmill.errors import ReleaseError
 # The author associations a record's author is trusted by, as needs-decision reads replies
 TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 _TRAILER_EMAIL = re.compile(r"^co-authored-by:.*<([^<>\s]+)>\s*$", re.IGNORECASE | re.MULTILINE)
+_NO_STATE = frozenset({"COMMENTED", "PENDING"})  # reviews that leave a person's state as it was
 _TRAILER_LINE = re.compile(r"[A-Za-z0-9-]+: .+")
 
 
@@ -172,10 +173,11 @@ Source = Callable[[CreditReads, Pull], list[Named]]
 
 def approvers(reads: CreditReads, pull: Pull) -> list[Named]:
     """S-049-3: each person whose latest review is APPROVED, trusted by that review's author
-    association, in the order of their reviews"""
+    association, in the order of their reviews. As GitHub reads a review's state, a comment
+    doesn't count: an approval stands until a later DISMISSED or CHANGES_REQUESTED"""
     latest: dict[str, tuple[Person, Review]] = {}
     for review in reads.credit_reviews(pull.number):
-        if review.user is not None:
+        if review.user is not None and review.state not in _NO_STATE:
             latest.pop(review.user.login.lower(), None)  # a later review moves them to its place
             latest[review.user.login.lower()] = (review.user, review)
     return [

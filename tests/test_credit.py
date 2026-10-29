@@ -245,6 +245,21 @@ def test_s049_3_only_the_latest_review_of_each_person_counts() -> None:
     assert [n.person.login for n in approvers(reads, pull()) if n.trusted] == ["hubot"]
 
 
+def test_s049_3_a_comment_after_an_approval_keeps_it_as_github_reads_it() -> None:
+    reads = FakeCredit(
+        reviews=[
+            approved("octocat"),
+            approved("octocat", state="COMMENTED"),
+            approved("octocat", state="PENDING"),
+            approved("hubot"),
+            approved("hubot", state="DISMISSED"),
+            approved("hubot", state="COMMENTED"),
+            approved("mona", state="COMMENTED"),
+        ]
+    )
+    assert [n.person.login for n in approvers(reads, pull())] == ["octocat"]
+
+
 def test_s049_3_the_account_parses_as_users_gives_it() -> None:
     assert Account.parse({"id": 583231, "login": "octocat", "name": "The Octocat"}).trailer == OCTOCAT_TRAILER
     assert Account.parse({"id": 7, "login": "hubot", "name": None}).trailer == HUBOT_TRAILER
