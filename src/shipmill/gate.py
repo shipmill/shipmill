@@ -44,7 +44,7 @@ from shipmill.findings import Finding as Finding
 from shipmill.findings import fingerprint as fingerprint
 from shipmill.findings import parse_findings as parse_findings
 from shipmill.github import GitHub
-from shipmill.github_auth import GitHubAuth, GitHubPreflight
+from shipmill.github_auth import GH_MISSING_FIX, GitHubAuth, GitHubPreflight
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
 from shipmill.notify import Notifier, NotifyFailed
@@ -94,7 +94,6 @@ PRUNE = "prune.json"  # the last prune's attempt: when, whether it worked, and s
 TICK = "tick.json"  # the last real tick's decision or error, its fix, and its run of failing ticks (spec 048)
 ERROR = "ERROR"  # tick.json's action for a tick a ReleaseError ended (S-048-9)
 DRY_RUN_FIX = "shipmill gate --dry-run"  # an error's fix when it names none: the same tick, printing it again
-GH_FIX = "install gh, then run `shipmill launchd` again so the job's PATH finds it"
 # a headless session that ended this soon after its launch, by its log's last write, with no
 # result in its log, ran no work (#500)
 DEAD_WITHIN = dt.timedelta(seconds=60)
@@ -660,7 +659,7 @@ def host_login(workspace: Path, run: Runner = run_command) -> str:
     try:
         login = run(["gh", "api", "user", "-q", ".login"], workspace).strip()
     except FileNotFoundError:
-        raise ReleaseError("gh is not on PATH; the gate reads your login with it", GH_FIX) from None
+        raise ReleaseError("gh is not on PATH; the gate reads your login with it", GH_MISSING_FIX) from None
     if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", login):
         raise ReleaseError(f"gh api user -q .login printed {login[:100]!r}, not a GitHub login")
     return login
