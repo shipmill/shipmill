@@ -16,7 +16,9 @@ link  writes a link in both forms triage_state.py reads:
       record it yet, the line when no "Depends on" line of the body holds on the issue
       already (as owner/repo#M, its URL, or a plain #M of the same repo, as triage_state.py
       reads it: one only in a line's note doesn't count, spec 041). The body is kept
-      byte for byte, with the line appended after it. When both are there it prints
+      byte for byte, with the line appended after it, through REST's `gh api -X PATCH
+      repos/<owner>/<repo>/issues/<n>` (never GraphQL's updateIssue, which `shipmill gh`
+      refuses, spec 050). When both are there it prints
       "already linked" and changes nothing.
 
       When the forge refuses the native relation (no issue dependencies or sub-issues
@@ -128,6 +130,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -159,6 +162,8 @@ Contents = Callable[[str], str | None]
 # failure other than GitHub's answer
 Standing = Callable[[str, str], bool]
 Execute = Callable[[list[str]], subprocess.CompletedProcess[str]]
+# Sets an issue's body to the text given; any failure exits 2
+Edit = Callable[["Ref", str], None]
 
 REFERENCE = re.compile(r"^(?P<owner>[\w.-]+)/(?P<name>[\w.-]+)#(?P<num>[1-9]\d*)$")
 # a user's login, as a URL path segment; an Enterprise Managed User's is handle_shortcode
@@ -201,11 +206,6 @@ mutation($issue: ID!, $blocking: ID!) {
 ADD_SUB_ISSUE = """
 mutation($issue: ID!, $sub: ID!) {
   addSubIssue(input: {issueId: $issue, subIssueId: $sub}) { issue { id } }
-}
-"""
-UPDATE_BODY = """
-mutation($id: ID!, $body: String!) {
-  updateIssue(input: {id: $id, body: $body}) { issue { id } }
 }
 """
 
@@ -328,6 +328,26 @@ def gh_graphql(
 def gh_runner(gh: Sequence[str], execute: Execute = capture) -> Runner:
     """A runner whose every call goes through the gh command gh names"""
     return lambda query, variables: gh_graphql(query, variables, gh, execute)
+
+
+def gh_editor(gh: Sequence[str], execute: Execute = capture) -> Edit:
+    """The body edit through the gh command gh names: one REST `gh api -X PATCH
+    repos/<owner>/<repo>/issues/<n> -F body=@<file>`, the body written to a file byte for byte,
+    so no size meets the argument limit. Not GraphQL's updateIssue, which `shipmill gh` refuses
+    since it can't keep the record's origin (spec 050). A failure, a `shipmill gh` exit 2 among
+    them, prints gh's message and exits 2"""
+
+    def edit(ref: Ref, body: str) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "body.md"
+            path.write_text(body, encoding="utf-8", newline="")
+            endpoint = f"repos/{ref.owner}/{ref.name}/issues/{ref.number}"
+            proc = execute([*gh, "api", "-X", "PATCH", endpoint, "-F", f"body=@{path}"])
+        if proc.returncode != 0:
+            sys.stderr.write(proc.stderr or f"error: {' '.join(gh)} api -X PATCH {endpoint} exited {proc.returncode}\n")
+            fail(f"editing the body of {ref} failed")
+
+    return edit
 
 
 def writer(checkout: Path) -> list[str]:
@@ -473,13 +493,13 @@ def product_walker(product: Product, run: Runner, execute: Execute = capture) ->
     return read_for
 
 
-def product_writer(product: Product, parent: Ref, execute: Execute = capture) -> Runner:
-    """The runner --product's writes go through (S-038-29): the session's own `shipmill gh`,
+def product_writer(product: Product, parent: Ref) -> list[str]:
+    """The gh command --product's writes go through (S-038-29): the session's own `shipmill gh`,
     with no --product, when the parent is in the home repo, which [product] repos never lists;
     `shipmill gh --product <the parent's repo>`, the token over the product's repos, when it
     is in a listed repo"""
     command = session_gh(product)
-    return gh_runner(command if product.is_origin(parent) else [*command, "--product", parent.repo], execute)
+    return command if product.is_origin(parent) else [*command, "--product", parent.repo]
 
 
 def parse_ref(text: str) -> Ref:
@@ -599,6 +619,7 @@ def link(
     other: Ref,
     child: bool,
     write: Runner,
+    edit: Edit,
     text: bool = True,
     run_other: Runner | None = None,
     read_for: Callable[[Ref], Runner] | None = None,
@@ -606,8 +627,9 @@ def link(
     """Reads of target's repo go through run, those of other's (resolving it, and whether the
     child has its parent) through run_other, run when None; the walk of what other waits on
     reads each item through read_for(its ref), run for each when None; the relation's mutation
-    and the body edit through write. Without text (--no-text), only the relation: no body
-    edit, and a refusal exits 2. A link that would close a cycle exits 2 before any write"""
+    through write, and the body edit through edit. Without text (--no-text), only the
+    relation: no body edit, and a refusal exits 2. A link that would close a cycle exits 2
+    before any write"""
     if target.same(other):
         fail(f"{target} can't be linked to itself")
     read_other = run if run_other is None else run_other
@@ -639,10 +661,7 @@ def link(
     have_text = names(issue.body, target, other)
     if not have_text:
         line = f"Depends on {other}"
-        response = write(UPDATE_BODY, {"id": issue.id, "body": appended(issue.body, line)})
-        errors = errors_of(response)
-        if errors:
-            fail(f"editing the body of {target}: {first_line(errors)}")
+        edit(target, appended(issue.body, line))
         lines.append(f"added to {target}: {line}")
     if refused is not None:
         lines.append(f"text only: {refused}")
@@ -1120,9 +1139,11 @@ def main(
     write: Runner | None = None,
     checkout: Path | None = None,
     execute: Execute = capture,
+    edit: Edit | None = None,
 ) -> int:
-    """write is link's runner for its writes; None reads the checkout for it (see writer and
-    product_writer). checkout is the folder whose config link reads, the current one when
+    """write is link's runner for the relation's mutation and edit its body edit, given
+    together; None for both reads the checkout for the gh command they go through (see writer
+    and product_writer). checkout is the folder whose config link reads, the current one when
     None; execute runs git (its origin) and the writes' gh"""
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1172,16 +1193,25 @@ def main(
     refuse_outside(product, (target, other), args.product)
     run_other: Runner | None = None
     read_for: Callable[[Ref], Runner] | None = None
+    if (write is None) != (edit is None):
+        raise ValueError("main takes write and edit together, or neither")
     if args.product and product is not None:  # refuse_outside exited 2 for --product without [product] repos
         read_for = product_walker(product, run, execute)
         run_other = product_reader(product, other, run, execute)
         run = product_reader(product, target, run, execute)
-        if write is None:
-            write = product_writer(product, target, execute)
-    elif write is None:
-        write = gh_runner(writer(here), execute)
+    if write is None or edit is None:  # neither, as the check above has it
+        command = product_writer(product, target) if args.product and product is not None else writer(here)
+        write, edit = gh_runner(command, execute), gh_editor(command, execute)
     return link(
-        run, target, other, args.child is not None, write, text=not args.no_text, run_other=run_other, read_for=read_for
+        run,
+        target,
+        other,
+        args.child is not None,
+        write,
+        edit,
+        text=not args.no_text,
+        run_other=run_other,
+        read_for=read_for,
     )
 
 

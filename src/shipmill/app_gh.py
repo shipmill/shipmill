@@ -510,15 +510,18 @@ _API_CREATES = re.compile(
     r"|pulls/[0-9]+/comments/[0-9]+/replies|pulls/[0-9]+/reviews)/?",
     re.IGNORECASE,
 )
-# The GraphQL mutations that create a record with a body. The ones that edit one
-# (updateIssue, updateIssueComment, updatePullRequest, updatePullRequestReview,
-# updateDiscussion, updateDiscussionComment) pass as today, as every edit does until an edit
-# keeps the record's origin (S-050-3): chains.py's link appends its line with updateIssue
+# The GraphQL mutations that write a body, a create or an edit: shipmill gh can neither mark
+# the one nor keep the other's origin, so each takes the REST form (spec 050)
 _MUTATIONS = re.compile(
-    r"\b(addComment|createIssue|createPullRequest|addPullRequestReview|submitPullRequestReview"
-    r"|addPullRequestReviewComment|addPullRequestReviewThread|addDiscussionComment|createDiscussion)\b"
+    r"\b(addComment|updateIssueComment|createIssue|updateIssue|createPullRequest|updatePullRequest"
+    r"|addPullRequestReview|submitPullRequestReview|updatePullRequestReview|addPullRequestReviewComment"
+    r"|addPullRequestReviewThread|addDiscussionComment|updateDiscussionComment|createDiscussion"
+    r"|updateDiscussion)\b"
 )
-_REST_FORM = "the REST form, `gh api repos/<owner>/<repo>/issues/<n>/comments -f body=...`, which it marks"
+_REST_FORM = (
+    "the REST form instead, such as `gh api repos/<owner>/<repo>/issues/<n>/comments -f body=...` for a comment or "
+    "`gh api -X PATCH repos/<owner>/<repo>/issues/<n> -F body=@<file>` for an edit"
+)
 
 
 def _split(
@@ -689,7 +692,7 @@ def _marked_api(args: Sequence[str], read: BodyRead) -> list[str]:
         if found is not None:
             raise ReleaseError(
                 f"gh api graphql with {found} is refused: it writes a body shipmill gh can't mark as an agent's "
-                f"(spec 050); use {_REST_FORM}"
+                f"or keep as its record's (spec 050); use {_REST_FORM}"
             )
         return list(args)
     methods = [value for name, value in flags if name in _METHOD_FLAGS]

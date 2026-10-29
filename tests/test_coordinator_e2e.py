@@ -30,7 +30,7 @@ from .test_app import APP_ID, GRANTED, REPO, FakeSigner
 from .test_app_gh import WITH_APP, checkout
 from .test_app_token import FAKE_GH as RECORDING_GH
 from .test_app_token import executable
-from .test_chains import UVX, gh_call
+from .test_chains import UVX, edited, gh_call
 from .test_chains_e2e import FAKE_GH
 from .test_product_token import ASKED, ProductApi
 
@@ -181,6 +181,11 @@ class Forge:
             response = self.graphql(*gh_call(args))
             print(json.dumps(response))
             return 1 if response.get("errors") else 0
+        if args[:3] == ["api", "-X", "PATCH"]:  # chains.py's body edit (spec 050)
+            _, variables = gh_call(args)
+            self.find(*variables["ref"]).body = edited(variables)
+            print("{}")
+            return 0
         if args[0] == "api":  # a REST read, such as a file's contents
             owner, name, rest = args[1].removeprefix("repos/").split("/", 2)
             path = rest.removeprefix("contents/")
@@ -239,9 +244,6 @@ class Forge:
         if query == ch.ADD_SUB_ISSUE:
             self.by_id(variables["issue"]).subs.append(self.by_id(variables["sub"]).ref)
             return {"data": {"addSubIssue": {"issue": {"id": variables["issue"]}}}}
-        if query == ch.UPDATE_BODY:
-            self.by_id(variables["id"]).body = variables["body"]
-            return {"data": {"updateIssue": {"issue": {"id": variables["id"]}}}}
         if query == us.REPORTS:
             repo = f"{variables['owner']}/{variables['name']}".lower()
             found: list[dict[str, Any]] = [
@@ -591,13 +593,17 @@ def test_s038_26_a_fault_in_one_component_is_routed_to_another_and_closed_back(
             query, variables = gh_call(list(c.args))
             ids = [v for k, v in variables.items() if k in ("id", "issue", "blocking", "sub")]
             assert ids and all(forge.by_id(str(i)).repo == A for i in ids), c
+        elif c.args[:3] == ("api", "-X", "PATCH"):
+            assert c.args[3].startswith(f"repos/{A}/issues/"), c
     # the product token: issues and reads only, never contents or a pull request
     assert {c.args[0] for c in product_calls} == {"issue", "api"}
     for c in product_calls:
         assert product_refusal(list(c.args)) is None and c.target in (A, B)
         if c.args[:2] == ("api", "graphql"):
             query, _ = gh_call(list(c.args))
-            assert query in (ch.ADD_SUB_ISSUE, ch.UPDATE_BODY) or not query.lstrip().startswith("mutation"), c
+            assert query == ch.ADD_SUB_ISSUE or not query.lstrip().startswith("mutation"), c
+        elif c.args[:3] == ("api", "-X", "PATCH"):  # the body edit, through REST (spec 050)
+            assert c.args[3].startswith(f"repos/{A}/issues/"), c
         elif c.args[0] == "api":
             assert "/contents/" in c.args[1] and len(c.args) == 2  # a GET: no -X, -f, or --input
         else:
@@ -605,10 +611,11 @@ def test_s038_26_a_fault_in_one_component_is_routed_to_another_and_closed_back(
 
     def mutations(calls: list[Call]) -> list[str]:
         queries = [gh_call(list(c.args))[0] for c in calls if c.args[:2] == ("api", "graphql")]
-        return [q for q in queries if q.lstrip().startswith("mutation")]
+        mutated = [q for q in queries if q.lstrip().startswith("mutation")]
+        return mutated + ["PATCH" for c in calls if c.args[:3] == ("api", "-X", "PATCH")]
 
-    assert mutations(a_calls) == [ch.ADD_BLOCKED_BY, ch.UPDATE_BODY]  # A's link, in A
-    assert mutations(product_calls) == [ch.ADD_SUB_ISSUE, ch.UPDATE_BODY]  # the coordinator's link, on A's report
+    assert mutations(a_calls) == [ch.ADD_BLOCKED_BY, "PATCH"]  # A's link, in A
+    assert mutations(product_calls) == [ch.ADD_SUB_ISSUE, "PATCH"]  # the coordinator's link, on A's report
     issue_writes = [c.args[:2] for c in product_calls if c.args[0] == "issue"]
     assert issue_writes == [("issue", "create"), ("issue", "comment"), ("issue", "close")]
     # upstream_state.py read each component's reports with the product token, the home repo's with plain gh

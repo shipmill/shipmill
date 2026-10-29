@@ -360,9 +360,26 @@ def test_s050_4_an_api_create_with_input_exits_2() -> None:
         marked_args(["api", COMMENTS, "--input", "body.json"], no_read)
 
 
-@pytest.mark.parametrize(
-    "mutation", ["addComment", "createIssue", "createPullRequest", "addPullRequestReview", "addDiscussionComment"]
-)
+MUTATIONS = [
+    "addComment",
+    "updateIssueComment",
+    "createIssue",
+    "updateIssue",
+    "createPullRequest",
+    "updatePullRequest",
+    "addPullRequestReview",
+    "submitPullRequestReview",
+    "updatePullRequestReview",
+    "addPullRequestReviewComment",
+    "addPullRequestReviewThread",
+    "addDiscussionComment",
+    "updateDiscussionComment",
+    "createDiscussion",
+    "updateDiscussion",
+]
+
+
+@pytest.mark.parametrize("mutation", MUTATIONS)
 def test_s050_4_a_graphql_mutation_writing_a_body_exits_2_naming_rest(tmp_path: Path, mutation: str) -> None:
     query = f"mutation {{ {mutation}(input: {{subjectId: $id, body: $b}}) {{ clientMutationId }} }}"
     with pytest.raises(ReleaseError, match=f"{mutation} is refused.*REST form"):
@@ -386,8 +403,7 @@ def test_s050_4_the_api_refusals_run_no_gh(tmp_path: Path, host: Host) -> None:
     [
         ["api", "graphql", "-f", "query={ viewer { login } }"],
         ["api", "graphql", "-f", "query=mutation { addLabelsToLabelable(input: {}) { x } }"],
-        # an edit, as chains.py's link writes it: edits pass as today until S-050-3 (#798)
-        ["api", "graphql", "-f", "query=mutation($id: ID!) { updateIssue(input: {id: $id, body: $b}) { x } }"],
+        ["api", "graphql", "-f", "query=mutation { addBlockedBy(input: {}) { issue { id } } }"],  # chains.py's
         ["api", COMMENTS],  # a read
         ["api", "-X", "GET", COMMENTS, "-f", "per_page=100"],
         ["api", "-X", "PATCH", f"repos/{REPO}/issues/comments/9", "-f", "body=b"],  # an edit: #798
