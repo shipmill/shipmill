@@ -7,6 +7,17 @@ bot.
 
 ## [Unreleased]
 
+## [0.98.0] - 2026-10-29
+
+### Changed
+
+- `shipmill factory`'s gate line reads the gate's `tick.json`: a failing tick shows `failing since <since> (<count> ticks): <action>: <reason>` with the gate's own fix in place of `failed: exit 2` and `tail -n 50 <log>`, a STALLED tick is a problem with its fix, and a RUNNING tick names its session's item, how long it ran, and when its log last grew; `shipmill status`'s factory line shows the cause first, waiting on you for CLAUDE_AUTH, GITHUB_AUTH, and HOOKS_FAILED and STUCK for an error or STALLED. A `tick.json` the log's last line isn't from is ignored, and one that can't be read is the gate check's error (#817)
+
+### Added
+
+- `shipmill gate`'s QUIET line ends with what is in flight: the open pull requests waiting on CI, waiting to land, and failing CI, the last landed pull request, and the last session that ended with a result (`last-result.json`), all from the change check's one query, which now also reads the default branch's last 10 commits' merged pull requests; `--json` and `tick.json` carry it as `in_flight` (#818)
+- `shipmill factory`'s gate line reads `quiet: <the in-flight summary>` from a current QUIET `tick.json`: the open pull requests waiting on CI, waiting to land, and failing CI, the last landed pull request, and the last session that ended with a result, aged to now, with no problem (#828)
+
 ## [0.97.0] - 2026-10-29
 
 ### Added
@@ -2061,7 +2072,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.97.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.98.0...HEAD
+[0.98.0]: https://github.com/shipmill/shipmill/compare/v0.97.0...v0.98.0
 [0.97.0]: https://github.com/shipmill/shipmill/compare/v0.96.0...v0.97.0
 [0.96.0]: https://github.com/shipmill/shipmill/compare/v0.95.0...v0.96.0
 [0.95.0]: https://github.com/shipmill/shipmill/compare/v0.94.0...v0.95.0

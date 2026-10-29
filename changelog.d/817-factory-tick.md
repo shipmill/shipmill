@@ -1,3 +1,0 @@
-### Changed
-
-- `shipmill factory`'s gate line reads the gate's `tick.json`: a failing tick shows `failing since <since> (<count> ticks): <action>: <reason>` with the gate's own fix in place of `failed: exit 2` and `tail -n 50 <log>`, a STALLED tick is a problem with its fix, and a RUNNING tick names its session's item, how long it ran, and when its log last grew; `shipmill status`'s factory line shows the cause first, waiting on you for CLAUDE_AUTH, GITHUB_AUTH, and HOOKS_FAILED and STUCK for an error or STALLED. A `tick.json` the log's last line isn't from is ignored, and one that can't be read is the gate check's error (#817)
