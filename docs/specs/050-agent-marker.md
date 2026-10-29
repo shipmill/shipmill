@@ -213,6 +213,13 @@ and D-16's reading of replies and vetoes without replacing them.
 The build issues, filled in once they are filed: one `- owner/repo#N: S-050-1, S-050-2` per
 line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
 
+- shipmill/shipmill#797: S-050-1, S-050-2, S-050-4, S-050-5, S-050-6
+- shipmill/shipmill#798: S-050-3
+- shipmill/shipmill#799: S-050-7
+- shipmill/shipmill#800: S-050-8, S-050-9, S-050-10
+- shipmill/shipmill#801: S-050-11, S-050-12
+- shipmill/shipmill#802: S-050-13, S-050-14
+
 ## Verification
 
 Filled in when the spec reaches `built`: one line per criterion id, saying how it was
