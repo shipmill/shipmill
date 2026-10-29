@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from shipmill.agent_marker import MARKER
 from shipmill.changelog import Changelog, Entry
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
@@ -491,7 +492,7 @@ class TestLongBodies:
         sent = self.sent(tmp_path)
         assert len(sent) <= BODY_LIMIT
         assert sent.startswith(marker(Lane.STABLE) + "\n- change 0\n")
-        assert sent.endswith(f"the full text is at {self.URL}/blob/HEAD/CHANGELOG.md_\n")
+        assert sent.endswith(f"the full text is at {self.URL}/blob/HEAD/CHANGELOG.md_\n\n{MARKER}")  # S-050-5
         args = (tmp_path / "args").read_text(encoding="utf-8")
         assert "- change 0" not in args
         assert "issue create --title t --body-file - --label shipmill-proposal" in args
@@ -524,7 +525,7 @@ class TestLongBodies:
         env |= {"LC_ALL": "en_US.ISO8859-1", "LANG": "en_US.ISO8859-1"}
         proc = subprocess.run([sys.executable, "-c", code, str(tmp_path), str(gh)], env=env, capture_output=True)
         assert proc.returncode == 0, proc.stderr
-        assert (tmp_path / "stdin").read_bytes() == "café ✓".encode()
+        assert (tmp_path / "stdin").read_bytes() == f"café ✓\n\n{MARKER}".encode()
 
     @pytest.mark.parametrize("limit", [BODY_LIMIT, NOTES_LIMIT])
     def test_a_text_at_the_limit_is_whole(self, limit: int) -> None:
@@ -541,7 +542,7 @@ class TestLongBodies:
         self.gh(tmp_path).update_issue(7, "t", self.big(BODY_LIMIT + 1), (PROPOSAL_LABEL,))
         sent = self.sent(tmp_path)
         assert len(sent) <= BODY_LIMIT
-        assert sent.endswith(f"{self.URL}/blob/HEAD/CHANGELOG.md_\n")
+        assert sent.endswith(f"{self.URL}/blob/HEAD/CHANGELOG.md_\n\n{MARKER}")  # S-050-5
         edit = f"issue edit 7 --title t --body-file - --add-label {PROPOSAL_LABEL}"
         assert edit in (tmp_path / "args").read_text(encoding="utf-8")
 
@@ -553,7 +554,7 @@ class TestLongBodies:
 
     def test_a_closing_comment_goes_on_stdin(self, tmp_path: Path) -> None:
         self.gh(tmp_path).close_issue(7, "Released v1.0.0.")
-        assert self.sent(tmp_path) == "Released v1.0.0."
+        assert self.sent(tmp_path) == f"Released v1.0.0.\n\n{MARKER}"  # S-050-5
         args = (tmp_path / "args").read_text(encoding="utf-8").splitlines()
         assert args == ["issue comment 7 --body-file -", "issue close 7"]
 

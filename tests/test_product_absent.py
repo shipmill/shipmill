@@ -20,6 +20,7 @@ from shipmill.cli import main
 from shipmill.gate import state_dir
 from shipmill.gitrepo import Git
 
+from .test_agent_marker import sent
 from .test_app import APP_ID, BOT_PATH, REPO, FakeApi, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout, gh
 from .test_app_token import FAKE_GH, FAKE_PYTHON, GET, MintApi, executable
@@ -102,9 +103,9 @@ def test_s038_4_app_token_mints_the_one_repo_session_token_as_before(
 @pytest.mark.parametrize(
     ("origin", "args"),
     [
-        (f"https://github.com/{REPO}.git", ["issue", "comment", "250", "--body-file", "tmp/c.md"]),
+        (f"https://github.com/{REPO}.git", ["issue", "comment", "250", "--body", "c"]),
         (f"https://github.com/{REPO}.git", ["issue", "list", "-R", REPO]),
-        (ELSEWHERE, ["issue", "comment", "3", "-R", REPO, "--body-file", "tmp/c.md"]),  # a repo not its origin
+        (ELSEWHERE, ["issue", "comment", "3", "-R", REPO, "--body", "c"]),  # a repo not its origin
         # --product's refusals aren't read; a merge is classified first (S-030-13, tests/test_app_gh_merge.py)
         (f"https://github.com/{REPO}.git", ["pr", "edit", "1", "--title", "x"]),
         (f"https://github.com/{REPO}.git", ["workflow", "run", "ci.yml"]),
@@ -118,7 +119,7 @@ def test_s038_4_shipmill_gh_runs_gh_with_the_session_token_as_before(
     api, runner = MintApi(), Runner()
     assert gh(root, ["--app-key", str(tmp_path / "app.pem"), *args], host, api, runner) == 7
     [(argv, env)] = runner.calls
-    assert argv == [host.gh, *args]
+    assert argv == [host.gh, *(sent(args) if "--body" in args else args)]  # spec 050 marks a body
     assert env["GH_TOKEN"] == "token-1" and "GH_REPO" not in env
     assert [body for _, _, body in api.posts] == [{"repositories": ["demo"], "permissions": SESSION}]
     assert sorted(p.name for p in state_dir(Git(root)).iterdir()) == [CACHE]

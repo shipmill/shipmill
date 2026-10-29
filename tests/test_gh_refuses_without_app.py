@@ -15,6 +15,7 @@ from shipmill.app_gh import is_read
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
 
+from .test_agent_marker import sent
 from .test_app import APP_ID, REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout, outside
 from .test_app_token import FAKE_GH, MintApi, executable
@@ -35,8 +36,8 @@ def host(tmp_path: Path) -> Host:
 
 AGENTS_NO_APP = '[agents]\nprompt = "/t"\n'
 HOST_IDENTITY = '[agents]\nprompt = "/t"\nidentity = "host"\n'
-PR_CREATE = ["pr", "create", "-R", "owner/name", "--title", "t", "--body-file", "f"]
-COMMENT = ["issue", "comment", "1", "--body-file", "f"]
+PR_CREATE = ["pr", "create", "-R", "owner/name", "--title", "t", "--body", "b"]
+COMMENT = ["issue", "comment", "1", "--body", "b"]
 WRITES = [PR_CREATE, COMMENT]
 READS = [
     ["pr", "view", "1"],
@@ -319,7 +320,7 @@ def test_s037_6_identity_host_runs_a_write_as_the_host(
     code, runner = run(root, PR_CREATE, host, api, signer, GH_TOKEN="")
     assert code == 7
     [(argv, env)] = runner.calls
-    assert argv == [host.gh, *PR_CREATE]
+    assert argv == [host.gh, *sent(PR_CREATE)]  # spec 050 marks the body
     assert "GH_TOKEN" not in env
     assert (api.calls, api.posts, signer.signed) == ([], [], [])
     assert capsys.readouterr() == ("", "")
@@ -388,7 +389,7 @@ def test_s037_9_as_host_allows_one_write_and_the_next_is_refused(tmp_path: Path,
     code, runner = run(root, ["--as-host", *PR_CREATE], host, api, signer, GH_TOKEN="")
     assert code == 7
     [(argv, env)] = runner.calls
-    assert argv == [host.gh, *PR_CREATE]
+    assert argv == [host.gh, *sent(PR_CREATE)]  # spec 050 marks the body
     assert "GH_TOKEN" not in env
     assert (api.calls, signer.signed) == ([], [])
     refusal(root, PR_CREATE, host)
@@ -419,9 +420,9 @@ def test_s037_9_as_host_with_app_key_exits_2_in_either_order(tmp_path: Path, hos
 
 def test_s037_9_as_host_after_ghs_first_argument_reaches_gh(tmp_path: Path, host: Host) -> None:
     root = checkout(tmp_path, HOST_IDENTITY)
-    args = ["pr", "create", "--as-host", "--title", "t"]
+    args = ["pr", "create", "--as-host", "--title", "t", "--body", "b"]
     _, runner = run(root, args, host)
-    assert runner.calls[0][0] == [host.gh, *args]
+    assert runner.calls[0][0] == [host.gh, *sent(args)]
     # without the repo's allowance, an --as-host past gh's first argument allows nothing
     other = tmp_path / "other"
     other.mkdir()
@@ -461,7 +462,7 @@ def test_s037_10_with_app_id_reads_and_writes_run_as_the_app(tmp_path: Path, hos
     code, runner = run(root, ["--app-key", str(tmp_path / "app.pem"), *args], host)
     assert code == 7
     [(argv, env)] = runner.calls
-    assert (argv, env["GH_TOKEN"]) == ([host.gh, *args], "token-1")
+    assert (argv, env["GH_TOKEN"]) == ([host.gh, *(sent(args) if "--body" in args else args)], "token-1")
 
 
 def test_s037_10_with_app_id_a_token_failure_still_exits_2(tmp_path: Path, host: Host) -> None:

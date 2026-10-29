@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from shipmill import fragments
+from shipmill.agent_marker import ROOM as MARKER_ROOM
+from shipmill.agent_marker import unmarked
 from shipmill.autonomy import HOLD_LABEL, Autonomy
 from shipmill.changelog import Changelog, Entry
 from shipmill.doctor import CALLER
@@ -139,9 +141,15 @@ def upsert(github: GitHub, mark: str, title: str, body: str, fix: str) -> tuple[
         if found is None:
             return github.create_issue(title, body, (PROPOSAL_LABEL,)), Outcome.OPENED
         issue, labelled = found
-        stored = issue.body.replace("\r\n", "\n").strip()
-        # a body over GitHub's limit is stored cut (#499): unchanged while what it shows is
-        same = stored == body.strip() or cut_from(stored, body, BODY_LIMIT)
+        # less the agent marker GhCli ends it with (spec 050); one written before has none
+        stored = unmarked(issue.body.replace("\r\n", "\n")).strip()
+        # a body over GitHub's limit is stored cut (#499), leaving room for the marker since
+        # spec 050: unchanged while what it shows is
+        same = (
+            stored == body.strip()
+            or cut_from(stored, body, BODY_LIMIT, MARKER_ROOM)
+            or cut_from(stored, body, BODY_LIMIT)
+        )
         if labelled and issue.title == title and same:
             return issue.number, Outcome.UNCHANGED
         github.update_issue(issue.number, title, body, () if labelled else (PROPOSAL_LABEL,))

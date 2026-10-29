@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from shipmill import UVX, requires
+from shipmill.agent_marker import unmarked
 from shipmill.autonomy import Autonomy, AutonomyPolicy, StageKind
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
@@ -532,7 +533,8 @@ def propose(raw: Mapping[str, Any], level: Autonomy, github: GitHub, fix: str) -
             renew = renewed(upgrade, issue)
             if renew:  # first: a failed update after it leaves the old marker to compare again
                 github.remove_label(issue.number, UPGRADE_LATER_LABEL)
-            same = (issue.title, issue.body.replace("\r\n", "\n").strip()) == (wanted_title, wanted.strip())
+            stored = unmarked(issue.body.replace("\r\n", "\n")).strip()  # less GhCli's marker (spec 050)
+            same = (issue.title, stored) == (wanted_title, wanted.strip())
             if not same:
                 github.update_issue(issue.number, wanted_title, wanted)
             outcome = Outcome.RENEWED if renew else Outcome.UNCHANGED if same else Outcome.UPDATED

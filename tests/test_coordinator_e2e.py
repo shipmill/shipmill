@@ -188,7 +188,7 @@ class Forge:
             return 0
         flags = dict(zip(args[2::2], args[3::2], strict=False))
         if args[:2] == ["issue", "create"]:
-            body = Path(flags["--body-file"]).read_text(encoding="utf-8")
+            body = flags["--body"]  # shipmill gh hands gh the body file's text, marked (spec 050)
             labels = [flags["--label"]] if "--label" in flags else []
             ticket = self.open(repo, flags["--title"], body, labels, SLUG, True, "NONE")
             print(f"https://github.com/{repo}/issues/{ticket.number}")
@@ -198,7 +198,7 @@ class Forge:
         ticket = self.find(owner, name, number)
         flags = dict(zip(args[3::2], args[4::2], strict=False))
         if args[:2] == ["issue", "comment"]:
-            body = Path(flags["--body-file"]).read_text(encoding="utf-8")
+            body = flags["--body"]  # shipmill gh hands gh the body file's text, marked (spec 050)
             ticket.comments.append(Note(body, self.now(), SLUG, True, "NONE"))
             return 0
         if args[:2] == ["issue", "close"]:

@@ -169,15 +169,18 @@ from shipmill.app_create import (
     plan,
 )
 from shipmill.app_gh import (
+    BodyRead,
     GhRunner,
     Merge,
     MergeReader,
     MergeReads,
     as_app,
     as_host,
+    body_reader,
     bundled_repo_flag,
     find_gh,
     is_read,
+    marked_args,
     merge_flags,
     merge_of,
     named_repo,
@@ -1457,11 +1460,13 @@ def _gh(
     [agents] identity = "host" or the call passes --as-host; any other write exits 2 and gh
     never runs. GH_TOKEN is never set but empty. As the App, a merge of a pull request with a
     `never` zone exits 2 and gh never runs (S-030-13), and with [agents] credit = "decider" it
-    names who decided it (spec 049)"""
+    names who decided it (spec 049). In every mode, the body a create writes ends with the agent
+    marker, and one that can't be marked exits 2 and gh never runs (spec 050)"""
     leading = _leading(passed)
     key, gh_args = leading.key, leading.gh_args
+    read = body_reader(readers.stdin)
     if leading.product is not None:
-        return _gh_product(root, leading.product, key, gh_args, api, signer, environ, home, runner)
+        return _gh_product(root, leading.product, key, gh_args, read, api, signer, environ, home, runner)
     if not root.is_dir():  # a mistyped --repo must not read as a repo with no App
         raise ReleaseError(f"--repo {root} is not a folder")
     git = Git(root)
@@ -1499,7 +1504,7 @@ def _gh(
         if not (is_read(gh_args) or identity.identity is WriteAs.HOST or leading.as_host):
             origin = _known_origin(top) if top is not None and readable else None
             raise _host_write_refused(root, top, origin, identity.config, gh_args)
-        return runner([str(find_gh(environ)), *gh_args], as_host(environ))
+        return runner([str(find_gh(environ)), *marked_args(gh_args, read)], as_host(environ))
     if not readable:
         raise ReleaseError(
             f"git can't read the checkout at {top}, which sets [agents] app_id, so the App's token can't be had; "
@@ -1519,6 +1524,7 @@ def _gh(
     # S-033-11: the key at --app-key, else SHIPMILL_APP_KEY, else the default path; none there
     # exits 2 before any token, cached or not, and gh never runs (D-14)
     path = require_key(key or session_key(app_id, environ, home))
+    gh_args = marked_args(gh_args, read)  # spec 050: before any token; a merge's args pass as given
     try:
         token = app_token(cache, repo, app_id, path, dt.datetime.now(dt.UTC), signer, api)
     except NotInstalled as exc:
@@ -1663,6 +1669,7 @@ def _gh_product(
     coordinated: str,
     key: Path | None,
     gh_args: list[str],
+    read: BodyRead,
     api: Api,
     signer: Signer,
     environ: Mapping[str, str],
@@ -1699,6 +1706,7 @@ def _gh_product(
     app_id = app_id_of(top)
     if app_id is None:
         raise ReleaseError(f"{what} needs [agents] app_id in {CONFIG_PATH}; the product's token comes from that App")
+    gh_args = marked_args(gh_args, read)  # spec 050: before any token
     # In the coordinator's session the session's gh helper comes first on PATH, and would put
     # the session's token over the product token: skip it, as the helper itself does
     binary = resolve_gh(state_dir(Git(top)) / HELPERS, environ.get("PATH", ""))

@@ -34,6 +34,7 @@ from shipmill.errors import ReleaseError
 from shipmill.gate import gate, state_dir
 from shipmill.gitrepo import Git
 
+from .test_agent_marker import sent
 from .test_app import APP_ID, BOT, BOT_ID, BOT_PATH, GRANTED, REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout
 from .test_app_token import FAKE_GH, FAKE_PYTHON, MintApi, executable
@@ -438,7 +439,7 @@ def test_s038_8_a_malformed_product_cache_exits_2_naming_it(tmp_path: Path, host
 @pytest.mark.parametrize(
     ("args", "target"),
     [
-        (["issue", "create", "-t", "x"], "romamo/api"),
+        (["issue", "create", "-t", "x", "--body", "y"], "romamo/api"),
         (["issue", "list", "-R", "romamo/web"], "romamo/web"),
         (["pr", "view", "3", "--repo=github.com/romamo/web"], "romamo/web"),
         (["api", "repos/romamo/api/contents/README.md"], "romamo/api"),
@@ -451,7 +452,7 @@ def test_s038_9_gh_product_runs_gh_with_the_product_token(
     api, runner = ProductApi(), Runner()
     assert gh(root, tmp_path, ["--product", "romamo/api", *args], host, api, runner) == 7
     [(argv, env)] = runner.calls
-    assert argv == [host.gh, *args]
+    assert argv == [host.gh, *(sent(args) if "--body" in args else args)]  # spec 050 marks a body
     assert (env["GH_TOKEN"], env["GH_REPO"]) == ("token-1", target)
     assert [path for path, _ in api.posts] == ["/app/installations/55/access_tokens"]
     assert product_cache_of(root).is_file() and not (state_dir(Git(root)) / CACHE).exists()
