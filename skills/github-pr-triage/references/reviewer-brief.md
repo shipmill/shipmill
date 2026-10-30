@@ -44,7 +44,7 @@ Review GitHub PR #{N} of {owner/repo} ("{title}", fixes #{issue}). The repo is a
    - {When the brief holds a plan:} Whether the diff departs from the plan (files it didn't name, steps it skipped, proof it doesn't hold) without the plan saying why: a finding
    - {When the brief holds the direction:} A change that hits a non-goal (cite `N-n`), or breaks a quality-bar item (cite `Q-n`): a finding
    - {When the brief holds a rubric:} A change that breaks an Important rule: a finding citing its id (`I-n`, or `skills/I-2` for a subdirectory's). A nit never blocks the verdict: report at most {cap} nits, the rubric's `cap:`, and drop the rest
-4. Reproduce each real bug before fixing it. Commit each small fix with a regression test that fails on the old code, on review-{N}, and rerun the affected checks. Leave larger problems as findings.
+4. Reproduce each real bug before fixing it. Commit each small fix with proof that fails on the old code, by github-issue-resolve's [test gate](../../github-issue-resolve/references/test-gate.md) (a new regression test only when no existing test, type check or boundary model catches it), on review-{N}, and rerun the affected checks. Leave larger problems as findings.
 5. Final report, under 250 words: verdict (MERGE / MERGE AFTER SMALL FIX / REFUSE), rebase status, test results, findings with file:line (fixed or not){ and the `I-n`, `N-n`, or `Q-n` each cites}{, at most {cap} nits}, and the HEAD SHA of review-{N}.
 ```
 
@@ -57,7 +57,7 @@ Post-merge review of GitHub PR #{N} of {owner/repo} ("{title}"). It is already m
 
 1. `git fetch origin`, then `git checkout -B review-{N} origin/{default}`. Find what landed: `gh pr view {N} --json commits,mergeCommit,body`, plus any follow-up commits touching the same code ({follow_ups}).
 2. {pr_specific_risks}. Also check it composes with PRs that merged next to it and touched the same code ({neighbours}).
-3. Run the project's checks, then fix each real bug on review-{N} with a regression test (the CHANGELOG entry goes under Unreleased → Fixed, or in a new fragment under `### Fixed` when `.github/shipmill.toml` sets `[changelog] fragments`).
+3. Run the project's checks, then fix each real bug on review-{N} with proof by the test gate (the CHANGELOG entry goes under Unreleased → Fixed, or in a new fragment under `### Fixed` when `.github/shipmill.toml` sets `[changelog] fragments`).
 4. Final report, under 250 words: CLEAN / BUGS FOUND, findings with file:line, test results, HEAD SHA.
 ```
 
