@@ -592,6 +592,7 @@ AUTONOMY = ("observe", "propose", "act")
 RELEASE_TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?(?:\.dev(\d+))?")  # shipmill's version.PATTERN
 PRE_RANK = {"a": 1, "b": 2, "rc": 3}
 POSTMORTEMS = "docs/postmortems"  # one file per incident, named in an "Incident: owner/repo#N" line
+SYMLINK_MODE = 0o120000  # a tree entry's git mode for a symlink, whose blob text is its target, not the file
 # "Incident: owner/repo#N", the issue's URL, or "#N" for the repo itself; one per line
 POSTMORTEM_NAMES = re.compile(
     r"^Incident:[ \t]*(?:https://github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)|([\w.-]+/[\w.-]+)?#(\d+))[ \t]*$",
@@ -2180,30 +2181,41 @@ def postmortem_rows(issues: list[Issue], label: str, texts: list[str], repo: str
     return rows
 
 
-def postmortem_texts(repo: str, branch: str) -> list[str]:
-    """Every docs/postmortems/*.md on the default branch, through the contents API; none
-    without the folder"""
-    listing = ["gh", "api", "-X", "GET", f"repos/{repo}/contents/{POSTMORTEMS}", "-f", f"ref={branch}"]
-    proc = capture(listing)
-    raw = ["gh", "api", "-X", "GET", "-H", "Accept: application/vnd.github.raw+json"]
-    return [
-        run([*raw, f"repos/{repo}/contents/{path}", "-f", f"ref={branch}"])
-        for path in postmortem_paths(proc, repo, branch)
-    ]
-
-
-def postmortem_paths(proc: subprocess.CompletedProcess[str], repo: str, branch: str) -> list[str]:
-    """The *.md files of the folder listing; none when the folder is missing. Any other
-    failure, a missing ref included, stops the watch"""
-    if proc.returncode != 0 and "Not Found (HTTP 404)" in proc.stderr:
-        return []
-    if proc.returncode != 0:
-        sys.stderr.write(f"error: gh api {POSTMORTEMS}: {failure(proc.args, proc)}\n")
+def postmortem_texts(repo: str, branch: str, read: Callable[[list[str]], str] = run) -> list[str]:
+    """Every docs/postmortems/*.md on the default branch, the folder and its files' texts in
+    one GraphQL query (#842); none without the folder. A file the query holds no whole text
+    of (a symlink, binary, or truncated blob) is read through the contents API, as before. A
+    branch GitHub doesn't have stops the watch"""
+    owner, _, name = repo.partition("/")
+    entries = "entries { name path type mode object { ... on Blob { text isBinary isTruncated } } }"
+    query = (
+        "query($owner: String!, $name: String!, $ref: String!, $folder: String!) "
+        "{ repository(owner: $owner, name: $name) { ref: object(expression: $ref) { oid } "
+        f"folder: object(expression: $folder) {{ __typename ... on Tree {{ {entries} }} }} }} }}"
+    )
+    fields = ["-f", f"owner={owner}", "-f", f"name={name}", "-f", f"ref={branch}"]
+    cmd = ["gh", "api", "graphql", "-f", f"query={query}", *fields, "-f", f"folder={branch}:{POSTMORTEMS}"]
+    found = json.loads(read(cmd))["data"]["repository"]
+    if found["ref"] is None:
+        sys.stderr.write(f"error: gh api {POSTMORTEMS}: no branch {branch} on {repo}\n")
         raise SystemExit(2)
-    entries = json.loads(proc.stdout)
-    if not isinstance(entries, list):
+    folder = found["folder"]
+    if folder is None:
+        return []
+    if folder["__typename"] != "Tree":
         raise Refused(f"error: {repo}: {POSTMORTEMS} on {branch} is not a folder")
-    return [e["path"] for e in entries if e["type"] == "file" and e["name"].endswith(".md")]
+    raw = ["gh", "api", "-X", "GET", "-H", "Accept: application/vnd.github.raw+json"]
+    texts = []
+    for entry in folder["entries"]:
+        if entry["type"] != "blob" or not entry["name"].endswith(".md"):
+            continue
+        blob = entry["object"] or {}
+        whole = entry["mode"] != SYMLINK_MODE and not blob.get("isBinary") and not blob.get("isTruncated")
+        if whole and isinstance(blob.get("text"), str):
+            texts.append(blob["text"])
+        else:
+            texts.append(read([*raw, f"repos/{repo}/contents/{entry['path']}", "-f", f"ref={branch}"]))
+    return texts
 
 
 def hold_rows(issues: list[Issue], now: dt.datetime, repo: str) -> list[Row]:
@@ -2852,24 +2864,26 @@ def intake_rows(
     untrusted_plans: frozenset[int],
     now: dt.datetime,
     directions: frozenset[int] = frozenset(),
+    read: Callable[[list[str]], str] = run,
 ) -> list[Row]:
     """The intake rows from triage_run's exit code and lines, the open pull requests, and the
     closed and merged ones labelled decided and updated in the veto window (spec 030);
     land is the effective [autonomy] land level, None without [agents]; directions are the
-    open direction issues, never in the issue rows (spec 034)"""
+    open direction issues, never in the issue rows (spec 034). The comments of every pull
+    request intake may ask about, a labelled open one or a closed one, save a fork's with
+    trusted_only, are one batched read, not one read each (#842)"""
     fields = "number,isDraft,isCrossRepository,labels,headRefOid"
-    prs = json.loads(run(["gh", "pr", "list", "-R", repo, "--json", fields, "-L", "100"]))
-
-    def comments_of(number: int) -> Comments:
-        return pr_comments(repo, number)
-
-    closed = decided_prs(repo, now)
+    prs = json.loads(read(["gh", "pr", "list", "-R", repo, "--json", fields, "-L", "100"]))
+    closed = decided_prs(repo, now, read)
+    wanted = [pr for pr in prs if asked(pr)] + list(closed)
+    numbers = [int(pr["number"]) for pr in wanted if not (trusted_only and pr["isCrossRepository"])]
+    comments = batched_comments(repo, numbers, read)
     return intake(
         repo,
         code,
         triage,
         prs,
-        comments_of,
+        comments.__getitem__,
         bot_login,
         trusted_only,
         land,
@@ -2889,9 +2903,9 @@ def decided_prs_command(repo: str, now: dt.datetime) -> list[str]:
     return [*cmd, "--search", f"updated:>={since}", "--json", "number,isCrossRepository", "-L", str(ISSUE_LIMIT)]
 
 
-def decided_prs(repo: str, now: dt.datetime) -> list[dict[str, Any]]:
+def decided_prs(repo: str, now: dt.datetime, read: Callable[[list[str]], str] = run) -> list[dict[str, Any]]:
     """The pull requests decided_prs_command lists; as many as its limit is refused"""
-    found: list[dict[str, Any]] = json.loads(run(decided_prs_command(repo, now)))
+    found: list[dict[str, Any]] = json.loads(read(decided_prs_command(repo, now)))
     if len(found) >= ISSUE_LIMIT:
         raise Refused(f"error: {repo} has {ISSUE_LIMIT}+ closed pull requests labelled {TRIAGE.DECIDED_LABEL}")
     return found
@@ -4142,6 +4156,7 @@ SWEPT = ("BOT_STALLED", "UPGRADE_PENDING", "UPSTREAM_DUE", "DIRECTION_PENDING", 
 DECIDED_STATES = frozenset({"DECIDED"})  # triage_state.py's states in tier 4; VETOED has its own row
 ASKED = (TRIAGE.DECISION_LABEL, TRIAGE.DECIDED_LABEL)  # tier 4's items; tier 3 reads these pull requests' comments
 COMMENTS_LAST = 100  # comments a batched read takes of each item; one with more is read whole
+COMMENTS_CHUNK = 50  # items one batched comment query reads, so a long list never asks too much of one query
 
 
 @dataclass(frozen=True)
@@ -4250,11 +4265,17 @@ def comment_login(author: dict[str, Any] | None) -> str:
 
 def batched_comments(repo: str, numbers: Sequence[int], read: Callable[[list[str]], str] = run) -> dict[int, Comments]:
     """Each issue's or pull request's conversation comments, oldest first, in one GraphQL
-    query (spec 046): the last COMMENTS_LAST of each, and one with more read whole with
-    pr_comments. No query without a number"""
+    query per COMMENTS_CHUNK items (spec 046): the last COMMENTS_LAST of each, and one with
+    more read whole with pr_comments. No query without a number"""
     wanted = sorted(set(numbers))
-    if not wanted:
-        return {}
+    found: dict[int, Comments] = {}
+    for start in range(0, len(wanted), COMMENTS_CHUNK):
+        found.update(comments_chunk(repo, wanted[start : start + COMMENTS_CHUNK], read))
+    return found
+
+
+def comments_chunk(repo: str, wanted: list[int], read: Callable[[list[str]], str]) -> dict[int, Comments]:
+    """batched_comments' one query, for at most COMMENTS_CHUNK items"""
     owner, _, name = repo.partition("/")
     nodes = "nodes { author { __typename login } authorAssociation body }"
     fields = f"comments(last: {COMMENTS_LAST}) {{ pageInfo {{ hasPreviousPage }} {nodes} }}"
