@@ -5,6 +5,7 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -156,6 +157,48 @@ def test_s046_7_tier_3_prints_open_and_waiting_pull_requests_alone(tmp_path: Pat
     # the one batched comment read, of the pull requests labelled needs-decision or decided
     assert len(calls) == 1 and calls[0][:2] == ["api", "graphql"]
     assert "n5: issueOrPullRequest" in calls[0][3] and "n7: issueOrPullRequest" in calls[0][3]
+
+
+@pytest.mark.parametrize(("closed", "queries"), [(2, 1), (60, 2)])
+def test_842_the_full_report_reads_the_pull_requests_comments_in_batches(
+    ws: ModuleType, closed: int, queries: int
+) -> None:
+    # #842: the comments of every pull request intake may ask about are one GraphQL query per
+    # COMMENTS_CHUNK items, never one REST read each; this pins the full report's intake reads
+    prs = [pr(3), pr(5, "needs-decision"), pr(6, "decided", fork=True), pr(7, "decided")]
+    decided = [{"number": 100 + n, "isCrossRepository": n == 1} for n in range(closed)]
+    comments = {5: [(BOT, "NONE", QUESTION)]}
+    ran: list[list[str]] = []
+
+    def read(cmd: list[str]) -> str:
+        ran.append(cmd)
+        if cmd[1:3] == ["api", "graphql"]:
+            query = next(a for a in cmd if a.startswith("query="))
+            repository = {}
+            for n in map(int, re.findall(r"n(\d+): issueOrPullRequest", query)):
+                nodes = [
+                    {
+                        "author": {"__typename": "Bot", "login": who.removesuffix("[bot]")},
+                        "authorAssociation": a,
+                        "body": b,
+                    }
+                    for who, a, b in comments.get(n, [])
+                ]
+                repository[f"n{n}"] = {"comments": {"pageInfo": {"hasPreviousPage": False}, "nodes": nodes}}
+            return json.dumps({"data": {"repository": repository}})
+        assert cmd[1:3] == ["pr", "list"], cmd
+        return json.dumps(decided if "closed" in cmd else prs)
+
+    rows = ws.intake_rows("o/r", 0, "", BOT, True, None, None, frozenset(), NOW, read=read)
+    assert [(r.state, r.detail) for r in rows] == [
+        ("PRS_OPEN", "#3 #7"),
+        ("NEEDS_DECISION", "#5"),
+        ("UNTRUSTED", "#6"),
+    ]
+    assert len(ran) == 2 + queries  # the open and the closed pull requests, then the batched comments
+    asked = sorted(int(n) for c in ran[2:] for n in re.findall(r"n(\d+): issueOrPullRequest", c[4]))
+    # a fork's pull request is never read under --trusted-only: neither #6 nor #101
+    assert asked == sorted([5, 7, *(100 + n for n in range(closed) if n != 1)])
 
 
 def test_s046_7_the_rows_a_tier_prints_read_as_the_gates_findings(tmp_path: Path) -> None:

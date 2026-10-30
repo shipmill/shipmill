@@ -411,23 +411,51 @@ def test_a_postmortem_names_an_incident_by_url_or_plain_number(ws: ModuleType) -
     assert ws.postmortem_named([text], "romamo/shipmill") == {9, 10}
 
 
-def test_only_a_missing_postmortems_folder_reads_as_none(ws: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
-    def gh(code: int, out: str = "", err: str = "") -> Any:
-        return ws.subprocess.CompletedProcess([], code, out, err)
+def postmortem_folder(ref: object, folder: object) -> str:
+    """postmortem_texts' GraphQL answer: the branch's commit, and the folder at it"""
+    return json.dumps({"data": {"repository": {"ref": ref, "folder": folder}}})
 
-    assert ws.postmortem_paths(gh(1, err="gh: Not Found (HTTP 404)"), "o/r", "main") == []
-    listing = '[{"type": "file", "name": "a.md", "path": "docs/postmortems/a.md"},'
-    listing += ' {"type": "file", "name": "a.txt", "path": "docs/postmortems/a.txt"},'
-    listing += ' {"type": "dir", "name": "b.md", "path": "docs/postmortems/b.md"}]'
-    assert ws.postmortem_paths(gh(0, listing), "o/r", "main") == ["docs/postmortems/a.md"]
+
+def tree_entry(name: str, kind: str = "blob", text: object = "", mode: int = 0o100644, **blob: bool) -> object:
+    obj = {"text": text, "isBinary": False, "isTruncated": False, **blob} if kind == "blob" else {}
+    return {"name": name, "path": f"docs/postmortems/{name}", "type": kind, "mode": mode, "object": obj}
+
+
+def test_only_a_missing_postmortems_folder_reads_as_none(ws: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
+    commit = {"oid": "a" * 40}
+    assert ws.postmortem_texts("o/r", "main", lambda cmd: postmortem_folder(commit, None)) == []
     with pytest.raises(SystemExit) as stopped:
-        ws.postmortem_paths(gh(1, err="gh: No commit found for the ref main (HTTP 404)"), "o/r", "main")
+        ws.postmortem_texts("o/r", "main", lambda cmd: postmortem_folder(None, None))
     assert stopped.value.code == 2
-    assert "No commit found" in capsys.readouterr().err
-    with pytest.raises(SystemExit):
-        ws.postmortem_paths(gh(1, err="gh: Server Error (HTTP 502)"), "o/r", "main")
+    assert "no branch main on o/r" in capsys.readouterr().err
     with pytest.raises(ws.Refused):
-        ws.postmortem_paths(gh(0, '{"type": "file"}'), "o/r", "main")
+        ws.postmortem_texts("o/r", "main", lambda cmd: postmortem_folder(commit, {"__typename": "Blob"}))
+
+
+def test_842_the_postmortems_are_one_query_and_only_a_partial_blob_is_read_again(ws: ModuleType) -> None:
+    entries = [
+        tree_entry("a.md", text="Incident: #1"),
+        tree_entry("a.txt", text="Incident: #2"),  # not markdown
+        tree_entry("b.md", kind="tree"),  # a folder named like one
+        tree_entry("c.md", text=None, isTruncated=True),  # too big for the query's text
+        tree_entry("d.md", text="../elsewhere.md", mode=0o120000),  # a symlink: its blob is the target
+    ]
+    answers = {"graphql": postmortem_folder({"oid": "a" * 40}, {"__typename": "Tree", "entries": entries})}
+    ran: list[list[str]] = []
+
+    def read(cmd: list[str]) -> str:
+        ran.append(cmd)
+        return answers["graphql"] if cmd[1:3] == ["api", "graphql"] else f"Incident: {cmd[-3]}"
+
+    texts = ws.postmortem_texts("o/r", "main", read)
+    assert texts == [
+        "Incident: #1",
+        "Incident: repos/o/r/contents/docs/postmortems/c.md",
+        "Incident: repos/o/r/contents/docs/postmortems/d.md",
+    ]
+    # one query for the folder and its texts, then the contents API for each file it holds no whole text of
+    assert [c[1:3] for c in ran] == [["api", "graphql"], ["api", "-X"], ["api", "-X"]]
+    assert "folder=main:docs/postmortems" in ran[0] and ran[1][-2:] == ["-f", "ref=main"]
 
 
 TRANSIENT_ERRORS = [
@@ -541,10 +569,10 @@ def test_s011_11_every_gh_call_the_watch_makes_is_a_read(ws: ModuleType) -> None
 
 
 def test_s011_11_a_transient_postmortem_listing_says_rerun(ws: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
-    listing = ["gh", "api", "-X", "GET", "repos/o/r/contents/docs/postmortems", "-f", "ref=main"]
-    proc = subprocess.CompletedProcess(listing, 1, "", "gh: Server Error (HTTP 502)")
+    answers = Answers((1, "gh: Server Error (HTTP 502)"), (1, "gh: Server Error (HTTP 502)"))
     with pytest.raises(SystemExit):
-        ws.postmortem_paths(proc, "o/r", "main")
+        ws.postmortem_texts("o/r", "main", lambda cmd: ws.checked(cmd, ws.retried(cmd, answers, answers.pause)))
+    assert len(answers.ran) == 2 and answers.ran[0][1:3] == ["api", "graphql"]
     assert capsys.readouterr().err.endswith("transient GitHub API error: rerun\n")
 
 
