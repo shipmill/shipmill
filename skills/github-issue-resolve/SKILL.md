@@ -1,6 +1,6 @@
 ---
 name: github-issue-resolve
-description: Read a GitHub issue, triage it against the code, comment the verdict on the issue, and when a fix is warranted implement it with a regression test, commit, push, and open a PR. Use when the user links or numbers a GitHub issue and asks to triage, resolve, fix, or "implement if required". For a whole backlog or "the new issues", use github-issue-triage, which runs this skill per issue. Merging is a separate step, done only on explicit request, through the github-pr-triage skill.
+description: Read a GitHub issue, triage it against the code, comment the verdict on the issue, and when a fix is warranted implement it with proof that fails without the fix (an existing test, the type checker, or a new regression test only when nothing cheaper catches it), commit, push, and open a PR. Use when the user links or numbers a GitHub issue and asks to triage, resolve, fix, or "implement if required". For a whole backlog or "the new issues", use github-issue-triage, which runs this skill per issue. Merging is a separate step, done only on explicit request, through the github-pr-triage skill.
 ---
 
 # GitHub Issue Resolve
@@ -92,7 +92,7 @@ A gate session (its prompt carries the `Gate session:` or `Headless:` paragraph)
 
 - Serves: {G-n, or several as G-2, G-3; quality bar, as two plain words, for a bug fix or a contract tweak}
 - Files: {the files you expect to change}
-- Order: {the steps; for a bug fix the failing test first}
+- Order: {the steps; for a bug fix the failing proof first}
 - Proof: {the tests or checks that show it works; a spec's criterion ids}
 ```
 
@@ -100,7 +100,7 @@ Each of the four lines appears once, with its label exactly as above: github-pr-
 
 1. Make the smallest change that fixes the root cause; match surrounding style
 2. If a dependency floor must rise, update the manifest and lockfile (`uv lock`)
-3. Add a regression test that fails before the fix and passes after, using the issue's repro shape (e.g. both the old-behaviour and new-behaviour cases)
+3. Prove the fix with the [test gate](references/test-gate.md): an existing test, the type checker or a boundary model that fails on the old code is the proof; add a regression test only when none does. A new test fails before the fix and passes after, using the issue's repro shape (e.g. both the old-behaviour and new-behaviour cases), and extends an existing test or table before adding a new one
 4. Follow project and global rules (fail fast, no monkeypatching, `uv run`)
 5. If the repo keeps a CHANGELOG, add the change's entry, ending with the issue ref `(#N)`. When `.github/shipmill.toml` sets `[changelog] fragments` (such as `fragments = "changelog.d"`), write it as a new fragment, `<folder>/<issue>-<slug>.md`, holding what would have gone under Unreleased in the CHANGELOG's style (a `### Fixed` heading and its `- ` entry), and leave `CHANGELOG.md` alone: a stable release writes the fragments into it. Otherwise add it under the CHANGELOG's Unreleased heading, in the right subsection
 
