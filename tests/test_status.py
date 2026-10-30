@@ -3,13 +3,16 @@
 import datetime as dt
 import importlib.util
 import json
+import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 import shipmill.cli
+from shipmill.app import INSTEAD_OF, SSH_REMOTES
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
 from shipmill.gate import StateRead, WatchState, skills_dir, watch_command
@@ -34,6 +37,21 @@ class Script:
     def __call__(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
         self.seen.append(cmd)
         return subprocess.CompletedProcess(cmd, self.code, self.stdout, self.stderr)
+
+
+def plain_git(monkeypatch: pytest.MonkeyPatch) -> None:
+    """git without the host's config: no GIT_CONFIG_* pairs, no global or system file"""
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture(autouse=True)
+def _plain_git(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #833: the gate runs its agents with SSH remotes rewritten to https (app.session_env), and
+    # `git remote get-url` prints the rewrite, so the origins these tests assert on would follow
+    # the host's config
+    plain_git(monkeypatch)
 
 
 def checkout(root: Path, origin: str = f"git@github.com:{REPO}.git") -> Path:
@@ -77,6 +95,35 @@ def test_s008_3_a_named_repo_must_be_the_checkouts_origin(tmp_path: Path) -> Non
     assert script.seen == []
     assert status(root, script, REPO) == 0
     assert script.seen[0][2] == REPO
+
+
+def gate_rewrite(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The env the gate launches an agent with: SSH remotes go over https"""
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", INSTEAD_OF)
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", SSH_REMOTES[0])
+
+
+def global_rewrite(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A host whose ~/.gitconfig rewrites SSH remotes to https"""
+    config = tmp_path / "gitconfig"
+    config.write_text(f'[url "https://github.com/"]\n\tinsteadOf = {SSH_REMOTES[0]}\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+
+
+@pytest.mark.parametrize("host", [gate_rewrite, global_rewrite])
+def test_s008_3_holds_under_the_hosts_url_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: Callable[[pytest.MonkeyPatch, Path], None]
+) -> None:
+    # #833: the host's rewrite really reaches git, and plain_git keeps it from the checkouts
+    root = checkout(tmp_path / "repo")
+    host(monkeypatch, tmp_path)
+    get_url = ["git", "-C", str(root), "remote", "get-url", "origin"]
+    rewritten = subprocess.run(get_url, check=True, capture_output=True, text=True).stdout
+    assert rewritten == f"https://github.com/{REPO}.git\n"
+    plain_git(monkeypatch)
+    (tmp_path / "plain").mkdir()
+    test_s008_3_a_named_repo_must_be_the_checkouts_origin(tmp_path / "plain")
 
 
 def test_s008_4_the_table_and_the_json_lines_are_printed_unchanged(
