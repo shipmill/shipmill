@@ -15,7 +15,7 @@ Without a `REVIEW.md`, a `docs/product.md`, and a plan, the brief is as before: 
 
 ```text
 Review GitHub PR #{N} of {owner/repo} ("{title}", fixes #{issue}). The repo is at {repo_path}, and you are in an isolated worktree of it. Goal: a merge-or-refuse verdict. Do NOT push, comment on GitHub, or merge.
-{In a headless gate session:} Run one allowlisted command per Bash call: `git -C <dir>`, not `cd <dir> &&`; no variable assignments, `;` or `&&` chains, or pipes into tools not on the list. A chained call is denied whole when any part isn't on the list; rerun its commands as separate calls. A command that isn't on the list at all is a finding: stop that step and report it (github-issue-triage's needs-decision.md, A denied tool call is a decision).
+{In a headless gate session:} Run one allowlisted command per Bash call: `git -C <dir>`, not `cd <dir> &&`; no variable assignments, `;` or `&&` chains, or pipes into tools not on the list. Set a variable with `uv run env VAR=value <command>`, never a `VAR=value uv run` or `env VAR=value` prefix, and import the package through the project's install (`uv run pytest`), not `PYTHONPATH=.`. A chained call is denied whole when any part isn't on the list; rerun its commands as separate calls. A command that isn't on the list at all is a finding: stop that step and report it (github-issue-triage's needs-decision.md, A denied tool call is a decision).
 
 {context: what the PR claims, what it's stacked on, whether the default branch has moved, and any peer session working near it (don't touch its worktree)}
 
