@@ -125,6 +125,14 @@ def test_s015_6_the_year_from_the_given_date_decides_the_offsets() -> None:
     assert Window.parse("Mon 01:00 Asia/Tokyo").start_on(dt.date(2026, 10, 13)) is None
 
 
+def test_s015_6_the_days_after_the_given_date_decide_the_offsets_not_those_before() -> None:
+    """America/Mexico_City left daylight saving time on 2022-10-30: from 2023-03-01 on, a
+    Monday 07:00 there is 13:00 UTC only, though the year before it also gave 12:00"""
+    policy = Policy.parse(_raw('[lanes.rc]\nschedule = ["Mon 07:00 America/Mexico_City"]\n'), "x")
+    assert needed(policy, dt.date(2023, 3, 1)).lines() == ("0 13 * * 1",)
+    assert needed(policy, dt.date(2022, 3, 1)).lines() == ("0 12 * * 1", "0 13 * * 1")
+
+
 def _raw(lanes: str) -> dict[str, Any]:
     return tomllib.loads(HEAD + lanes)
 
@@ -283,3 +291,18 @@ def test_a_cron_of_another_form_covers_no_window() -> None:
     assert missing(needs, ["0 7 * * 7-7", "0 8 * * 1"]) == ("0 7 * * 1",)
     assert missing(needs, ["0 7 * * 0-1"]) == ()
     assert missing(needs, ["*/10 * * * *"]) == ()
+
+
+def test_a_cron_off_the_clock_covers_no_tick_but_the_last_minute_of_the_day_does() -> None:
+    """A workflow's cron at minute 60 or hour 24 is no time of day: it covers nothing, not
+    even a tick written the same, and doctor still names the line the policy needs"""
+    seven = Ticks(hourly=False, windows=(Tick(0, 7, (1,)),))
+    assert missing(seven, ["60 7 * * *", "0 24 * * *"]) == ("0 7 * * 1",)
+    same = Ticks(hourly=False, windows=(Tick(60, 7, (1,)), Tick(0, 24, (1,)), Tick(59, 23, (1,))))
+    assert missing(same, ["60 7 * * *", "0 24 * * *", "59 23 * * *"]) == ("60 7 * * 1", "0 24 * * 1")
+
+
+@pytest.mark.parametrize("weekdays", ["1-7", "0-7", "5-7", "5,6,7"])
+def test_a_weekday_7_in_a_cron_reads_as_sunday(weekdays: str) -> None:
+    needs = Ticks(hourly=False, windows=(Tick(0, 7, (0, 5, 6)),))
+    assert missing(needs, [f"0 7 * * {weekdays}"]) == ()
