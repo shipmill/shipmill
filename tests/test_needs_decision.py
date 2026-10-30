@@ -609,6 +609,23 @@ def test_each_skill_and_brief_carries_the_one_command_per_call_rule(path: str) -
     assert "&& git" not in text  # the briefs' own examples run one command per call
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "github-issue-triage/references/needs-decision.md",
+        "github-issue-resolve/SKILL.md",
+        "github-issue-triage/references/implementer-brief.md",
+        "github-pr-triage/references/reviewer-brief.md",
+    ],
+)
+def test_the_headless_rule_names_the_variable_form_that_passes(path: str) -> None:
+    # #842: `env VAR=... uv run` and `PYTHONPATH=. uv run` were refused 26 times; `uv run env` passes `Bash(uv *)`
+    text = folded(SKILLS / path)
+    assert "Set a variable with `uv run env VAR=value <command>`" in text
+    assert "never a `VAR=value uv run` or `env VAR=value` prefix" in text
+    assert "(`uv run pytest`), not `PYTHONPATH=.`" in text
+
+
 def test_d21_the_reference_covers_interactive_gate_sessions() -> None:
     ref = folded(SKILLS / "github-issue-triage" / "references" / "needs-decision.md")
     assert "**`Gate session:`** an interactive session" in ref
