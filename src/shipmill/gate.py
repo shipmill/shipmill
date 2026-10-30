@@ -1200,6 +1200,22 @@ def stream_last_line(lines: Sequence[str]) -> str:
     return ""
 
 
+def stream_auth_failed(lines: Sequence[str]) -> bool:
+    """#822: a stream-json log's tail holds an authentication failure on a line that isn't an
+    event, Claude Code's own stderr, or in a `result` event's text. A tool's result or an
+    assistant message that quotes one doesn't count, nor does a line that starts as JSON but
+    doesn't parse, an event cut off mid-write"""
+    for line in lines:
+        found = stream_event(line)
+        if found is None and line.lstrip().startswith("{"):
+            continue
+        if found is not None and found["type"] != "result":
+            continue
+        if AUTH_FAILURE.search(line if found is None else event_text(found)) is not None:
+            return True
+    return False
+
+
 def ended_dead(last: Launch | None, state: Path) -> Dead | None:
     """#500: the last headless launch, once still_working found its process gone, when it ended
     dead: its log holds an authentication failure, or it ended within DEAD_WITHIN of its launch
@@ -1207,8 +1223,9 @@ def ended_dead(last: Launch | None, state: Path) -> Dead | None:
     its log's modification time, the log's last write; a launch without a log reads as one that
     ran. An interactive launch has no log: listed_dead reads it. A stream-json log's result is
     its `result` event (S-048-17); a text log, written before spec 048, is read as before. The
-    authentication failure check reads the tail of either. One a STALLED tick stopped ran (spec
-    048), even when its log fell silent within DEAD_WITHIN of its launch"""
+    authentication failure check reads a stream-json tail's lines that aren't events and its
+    `result` events' text (#822), and a text log's whole tail. One a STALLED tick stopped ran
+    (spec 048), even when its log fell silent within DEAD_WITHIN of its launch"""
     if last is None or last.process is None or last.stopped is not None:
         return None
     log = session_log(state, last.session)
@@ -1216,10 +1233,10 @@ def ended_dead(last: Launch | None, state: Path) -> Dead | None:
         return None
     written = log_written(log, last)
     tail = log_tail(log)
-    auth = AUTH_FAILURE.search(tail) is not None
     seconds = max(0, int((written - last.at).total_seconds()))
     streamed = is_stream_json(log)
     lines = tail_lines(log) if streamed else []
+    auth = stream_auth_failed(lines) if streamed else AUTH_FAILURE.search(tail) is not None
     result = has_result(lines) if streamed else not no_result(tail)
     if not auth and (seconds > DEAD_WITHIN.total_seconds() or result):
         return None

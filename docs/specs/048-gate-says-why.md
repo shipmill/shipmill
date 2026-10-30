@@ -149,8 +149,10 @@ writes only at the end. The gate starts headless sessions with `--output-format 
 the log. `ended_dead` and `Dead.last_line` read the log as stream-json: a session ended with
 a result when its log holds a `result` event whose `is_error` is false, and the line shown is
 that event's `result` text, cut as `last_line` cuts it; the authentication failure check
-reads the log's tail as today. A log written before this spec, not stream-json, is read as
-today.
+reads only the tail's lines that aren't events (Claude Code's own stderr) and its `result`
+events' text, so a tool's result that quotes the message, such as a read of
+`src/shipmill/gate.py`, is no authentication failure (#822). A log written before this
+spec, not stream-json, is read as today.
 
 ### STALLED: a headless session past its limit with a silent log
 
@@ -255,7 +257,8 @@ on PRS_OPEN #770, ended 3 h ago`. `shipmill gate --json` adds `"in_flight": {"ci
   `log_grew` on RUNNING and STALLED, and null otherwise
 - S-048-17: a headless session starts with `--output-format stream-json --verbose`, and
   `ended_dead` reads a stream-json log's `result` event: none, or one with `is_error` true,
-  is no result
+  is no result; on a stream-json log the authentication failure check reads only the lines
+  that aren't events and the `result` events' text
 - S-048-18: `[agents] stall_minutes` defaults to 30, and the config refuses a value that is
   not an integer from 0 to 1440
 - S-048-19: a headless session whose process runs and whose log's last write is

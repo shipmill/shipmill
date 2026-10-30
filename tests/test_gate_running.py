@@ -194,12 +194,45 @@ def test_s048_17_a_stream_json_log_with_a_result_is_an_attempt(tmp_path: Path) -
     assert ended_dead(headless_launch(), tmp_path) is None
 
 
-def test_s048_17_an_auth_failure_reads_the_tail_as_before(tmp_path: Path) -> None:
+def test_s048_17_an_auth_failure_on_a_line_that_isnt_an_event_reads_auth(tmp_path: Path) -> None:
     expired = "Failed to authenticate: OAuth session expired"
     log = written(session_log(tmp_path, str(SESSION)), stream(INIT, after=f"{expired}\n"), NOW + dt.timedelta(hours=2))
     dead = ended_dead(headless_launch(), tmp_path)
     assert dead is not None and dead.auth and dead.log == log
     assert dead.last_line == expired
+
+
+LONG = NOW + dt.timedelta(hours=2)  # a log last written past DEAD_WITHIN of the launch
+# #822: an event that quotes AUTH_FAILURE, as a session reading gate.py writes one
+READ_AUTH: Event = {
+    "type": "user",
+    "message": {"content": [{"type": "tool_result", "content": "r'Failed to authenticate|Invalid API key'"}]},
+}
+SAID_AUTH: Event = {"type": "assistant", "message": {"content": [{"type": "text", "text": "Invalid API key"}]}}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        stream(INIT, READ_AUTH, DONE),
+        stream(INIT, SAID_AUTH, DONE),
+        stream(INIT, DONE, after=json.dumps(READ_AUTH)[:-5]),  # a cut-off event doesn't count
+    ],
+    ids=["tool-result", "assistant", "cut-off"],
+)
+def test_s048_17_an_auth_string_in_an_event_other_than_a_result_isnt_an_auth_failure(tmp_path: Path, text: str) -> None:
+    written(session_log(tmp_path, str(SESSION)), text, LONG)
+    assert ended_dead(headless_launch(), tmp_path) is None
+    written(session_log(tmp_path, str(SESSION)), text, QUICK)
+    assert ended_dead(headless_launch(), tmp_path) is None  # its result makes it an attempt
+
+
+def test_s048_17_an_auth_failure_in_a_result_event_reads_auth(tmp_path: Path) -> None:
+    failed = {**FAILED, "result": "Invalid API key · Please run /login"}
+    written(session_log(tmp_path, str(SESSION)), stream(INIT, READ_AUTH, failed), LONG)
+    dead = ended_dead(headless_launch(), tmp_path)
+    assert dead is not None and dead.auth
+    assert dead.last_line == "Invalid API key · Please run /login"
 
 
 def test_s048_17_the_result_text_is_cut_as_last_line_cuts_it(tmp_path: Path) -> None:
