@@ -7,6 +7,14 @@ bot.
 
 ## [Unreleased]
 
+## [0.100.0] - 2026-10-30
+
+### Changed
+
+- `github-issue-resolve` and `github-pr-triage`'s reviewers prove a fix with the cheapest check that fails on the old code, by a new test gate (`references/test-gate.md`): an existing test that fails on the revert, the repo's type checker, or a strict model at the boundary, and a new regression test only when none of them catches the bug; the PR's Test plan names the proof and shows it failing (#838)
+- A headless gate session's rule of one allowlisted command per Bash call names the form that passes: set a variable with `uv run env VAR=value <command>`, never a `VAR=value uv run` or `env VAR=value` prefix, and import the package through `uv run pytest`, not `PYTHONPATH=.`; the implementer and reviewer briefs, `github-issue-resolve`, and the needs-decision reference carry it (#842)
+- `watch_state.py`'s full report makes fewer `gh` calls: the comments of the pull requests labelled needs-decision or decided, open and closed, are one GraphQL query per 50 items instead of one REST read each, and the postmortems folder and its files' texts are one query instead of a listing and a read per file; on shipmill's own repo a run went from 45 calls in 54 s to 37 in 46 s, with the same rows (#842)
+
 ## [0.99.0] - 2026-10-30
 
 ### Fixed
@@ -2088,7 +2096,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.99.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.100.0...HEAD
+[0.100.0]: https://github.com/shipmill/shipmill/compare/v0.99.0...v0.100.0
 [0.99.0]: https://github.com/shipmill/shipmill/compare/v0.98.1...v0.99.0
 [0.98.1]: https://github.com/shipmill/shipmill/compare/v0.98.0...v0.98.1
 [0.98.0]: https://github.com/shipmill/shipmill/compare/v0.97.0...v0.98.0
