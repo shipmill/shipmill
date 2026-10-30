@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.98.1] - 2026-10-30
+
+### Fixed
+
+- `shipmill gate` no longer reads a headless session as dead from an authentication failure when only a tool's result or an assistant message in its stream-json log quotes one, such as a session that read `src/shipmill/gate.py`: the check reads only the log's lines that aren't events and its `result` events' text; a text log written before spec 048 is read as before (#822)
+
 ## [0.98.0] - 2026-10-29
 
 ### Changed
@@ -2072,7 +2078,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.98.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.98.1...HEAD
+[0.98.1]: https://github.com/shipmill/shipmill/compare/v0.98.0...v0.98.1
 [0.98.0]: https://github.com/shipmill/shipmill/compare/v0.97.0...v0.98.0
 [0.97.0]: https://github.com/shipmill/shipmill/compare/v0.96.0...v0.97.0
 [0.96.0]: https://github.com/shipmill/shipmill/compare/v0.95.0...v0.96.0
