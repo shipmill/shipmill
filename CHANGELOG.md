@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.99.0] - 2026-10-30
+
+### Fixed
+
+- The `shipmill status` tests run git without the host's config, so S-008-3's origin check passes under the gate, whose agents rewrite SSH remotes to https (#833)
+
+### Changed
+
+- Tests: the schedule check's reading of a workflow's crons is pinned at its boundaries (minute 60, hour 24, weekday 7 as Sunday), `needed` at the 366 days after the given date, and a policy window at `24:00` or `07:60` at its `is not a time of day` error (#835)
+
 ## [0.98.1] - 2026-10-30
 
 ### Fixed
@@ -2078,7 +2088,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.98.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.99.0...HEAD
+[0.99.0]: https://github.com/shipmill/shipmill/compare/v0.98.1...v0.99.0
 [0.98.1]: https://github.com/shipmill/shipmill/compare/v0.98.0...v0.98.1
 [0.98.0]: https://github.com/shipmill/shipmill/compare/v0.97.0...v0.98.0
 [0.97.0]: https://github.com/shipmill/shipmill/compare/v0.96.0...v0.97.0
