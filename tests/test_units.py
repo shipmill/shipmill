@@ -64,6 +64,12 @@ class TestSchedule:
         with pytest.raises(ReleaseError):
             Window.parse(text)
 
+    @pytest.mark.parametrize("time", ["24:00", "07:60"])
+    def test_rejects_a_time_past_the_clock(self, time: str) -> None:
+        with pytest.raises(ReleaseError, match=f"window 'Mon {time} UTC': {time} is not a time of day"):
+            Window.parse(f"Mon {time} UTC")
+        assert Window.parse("Mon 23:59 UTC").time == dt.time(23, 59)
+
     def test_freeze(self) -> None:
         freeze = Freeze.parse("2026-12-24..2027-01-02")
         assert freeze.holds(dt.datetime(2026, 12, 31, tzinfo=dt.UTC))
