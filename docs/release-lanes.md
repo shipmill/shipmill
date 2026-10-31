@@ -147,6 +147,13 @@ pin = "uv add 'demo=={version}'"  # a pre-release notice's; also {tag} and {name
 install = "uv add demo"           # a stable notice's
 ```
 
+With `mode = "release"` or `"dry-run"`, `version_files`, `[changelog]` (and its `style`),
+`[bump]` (and its `from`), and at least one `[lanes.*]` are required. With `mode = "off"`,
+such as a repo that uses only the agent side, each may be left out (#856): a table that is
+there is still checked as above, and a command that releases (`prepare`, `land`, `notes`,
+`sync`, `init --caller`) exits 2 naming the table it needs. `doctor` passes the checks of a
+table left out with a note, such as `releases off (mode = "off"): no [changelog]`.
+
 `requires` takes `">=X.Y"` or `">=X.Y.Z"`. A shipmill older than it exits 2 before it reads
 any other key, naming the bound, its own version, and the commands that update the plugin and
 the CLI, so a config that uses a newer key says "update" rather than "unknown keys".

@@ -11,9 +11,11 @@ from pathlib import Path
 import pytest
 
 from shipmill.agents import AgentsConfig
+from shipmill.classify import _changelog as classify_changelog
 from shipmill.config import Table
 from shipmill.errors import ReleaseError
-from shipmill.policy import HooksConfig, NoticesConfig, Policy
+from shipmill.policy import BumpFrom, HooksConfig, Lane, NoticesConfig, Policy, Style, VersionFiles
+from shipmill.version import Part
 
 from .conftest import POLICY
 
@@ -55,6 +57,7 @@ CASES: dict[str, list[Change]] = {
     "top after_stamp a list": top('after_stamp = "x"'),
     "top after_stamp non-empty strings": top('after_stamp = [""]'),
     "top after_stamp empty command": top('after_stamp = ["  "]'),
+    "top version_files required": [('version_files = "pyproject"\n', "")],
     # [changelog]
     "changelog unknown key": [(CHANGELOG, CHANGELOG + "colour = 1\n")],
     "changelog fragments a string": [(CHANGELOG, CHANGELOG + "fragments = 1\n")],
@@ -75,6 +78,7 @@ CASES: dict[str, list[Change]] = {
     "bump paths unknown key": [('from = "headings"', 'from = "paths"\nminor_paths = ["src"]')],
     "bump paths required": [('from = "headings"', 'from = "paths"'), (HEADINGS, "")],
     "bump paths empty": [('from = "headings"', 'from = "paths"\nminor_paths = []'), (HEADINGS, "")],
+    "bump required": [(BUMP + HEADINGS, "")],
     # [gates]
     "gates unknown key": add("\n[gates]\ncolour = 1\n"),
     "gates blocker_lanes enums": add('\n[gates]\nblocker_lanes = ["beta"]\n'),
@@ -89,6 +93,7 @@ CASES: dict[str, list[Change]] = {
     "lanes unknown lane": [("[lanes.dev]", "[lanes.beta]")],
     "lanes stable promotes without rc": [('[lanes.rc]\nschedule = ["daily 07:00 UTC"]\ngithub_release = true\n', "")],
     "lanes none": [(POLICY[POLICY.index("[lanes.dev]") : POLICY.index("[[version_lines]]")], "[lanes]\n\n")],
+    "lanes required": [(POLICY[POLICY.index("[lanes.dev]") : POLICY.index("[[version_lines]]")], "")],
     "lane hotfix unknown key": [("[lanes.hotfix]\n", "[lanes.hotfix]\nschedule = ['Mon 07:00 UTC']\n")],
     "lane dev unknown key": [("quiet_minutes = 30", "quiet_minutes = 30\nmarker = 'a'")],
     "lane quiet range": [("quiet_minutes = 30", "quiet_minutes = 301")],
@@ -161,6 +166,7 @@ MESSAGES: dict[str, str] = {
     "top after_stamp a list": "shipmill.toml: after_stamp must be a list of strings, got 'x'",
     "top after_stamp non-empty strings": "shipmill.toml: after_stamp must be a list of non-empty strings",
     "top after_stamp empty command": "shipmill.toml: after_stamp holds an empty command",
+    "top version_files required": "shipmill.toml: version_files is required",
     "changelog unknown key": "shipmill.toml [changelog]: unknown keys ['colour']; allowed: ['fragments', 'path', 'style']",
     "changelog fragments a string": "shipmill.toml [changelog]: fragments must be a string, got 1",
     "changelog fragments absolute": "shipmill.toml [changelog]: fragments is a folder relative to the repo root, such as 'changelog.d'; got '/tmp/changelog.d'",
@@ -179,6 +185,7 @@ MESSAGES: dict[str, str] = {
     "bump paths unknown key": "shipmill.toml [bump]: unknown keys ['major', 'minor', 'patch']; allowed: ['from', 'minor_paths']",
     "bump paths required": "shipmill.toml [bump]: minor_paths is required",
     "bump paths empty": "shipmill.toml: [bump] from = 'paths' needs a non-empty minor_paths",
+    "bump required": "shipmill.toml: bump is required",
     "gates unknown key": "shipmill.toml [gates]: unknown keys ['colour']; allowed: ['blocker_label', 'blocker_lanes', 'freeze', 'freeze_lanes']",
     "gates blocker_lanes enums": "shipmill.toml [gates]: blocker_lanes holds values outside ['dev', 'rc', 'stable', 'hotfix']",
     "gates freeze strings": "shipmill.toml [gates]: freeze must be a list of strings, got 1",
@@ -190,6 +197,7 @@ MESSAGES: dict[str, str] = {
     "lanes unknown lane": "shipmill.toml [lanes]: unknown keys ['beta']; allowed: ['dev', 'hotfix', 'rc', 'stable']",
     "lanes stable promotes without rc": "shipmill.toml: lanes.stable promotes from rc, but lanes.rc is not enabled",
     "lanes none": "shipmill.toml: [lanes] enables no lane",
+    "lanes required": "shipmill.toml: lanes is required",
     "lane hotfix unknown key": "shipmill.toml [lanes] [hotfix]: unknown keys ['schedule']; allowed: ['after_publish', 'dispatch', 'github_release']",
     "lane dev unknown key": "shipmill.toml [lanes] [dev]: unknown keys ['marker']; allowed: ['after_publish', 'dispatch', 'github_release', 'milestone', 'quiet_minutes', 'schedule']",
     "lane quiet range": "shipmill.toml [lanes] [dev]: quiet_minutes must be in 0..300, got 301",
@@ -257,6 +265,85 @@ def test_the_config_refuses_with_the_same_words(name: str) -> None:
     with pytest.raises(ReleaseError) as caught:
         Policy.parse(tomllib.loads(apply(POLICY, CASES[name])), "shipmill.toml")
     assert str(caught.value) == MESSAGES[name]
+
+
+AGENTS_ONLY = (
+    'name = "demo"\nmode = "off"\n\n[agents]\nprompt = "/github-issue-triage"\nmode = "headless"\napp_id = 1\n'
+)
+MISSING = ("changelog required", "bump required", "top version_files required", "lanes required")
+RELEASE_SIDE = [
+    n for n in CASES if n.startswith(("changelog", "bump", "lane", "top version_files")) and n not in MISSING
+]
+
+
+def test_856_an_agents_only_config_loads_without_the_release_tables() -> None:
+    policy = Policy.parse(tomllib.loads(AGENTS_ONLY), "shipmill.toml")
+    assert (policy.changelog_config, policy.bump_config, policy.version_files_config) == (None, None, None)
+    assert policy.lanes == {}
+    assert (policy.settle_minutes, policy.quiet_minutes, policy.can_break) == (0, 0, False)
+    assert policy.major_headings == frozenset()
+    assert policy.agents is not None
+    # the contract-change zone reads no changelog and no [bump] major heading here, and doesn't crash
+    assert not classify_changelog(policy, "CHANGELOG.md")
+
+
+@pytest.mark.parametrize(
+    ("read", "table"),
+    [
+        (lambda p: p.changelog, "[changelog]"),
+        (lambda p: p.style, "[changelog]"),
+        (lambda p: p.fragments, "[changelog]"),
+        (lambda p: p.bump_from, "[bump]"),
+        (lambda p: p.bump_headings, "[bump]"),
+        (lambda p: p.minor_paths, "[bump]"),
+        (lambda p: p.version_files, "version_files"),
+        (lambda p: p.rule(Lane.STABLE), "[lanes]"),
+    ],
+)
+def test_856_a_release_setting_left_out_refuses_where_it_is_read(read: Callable[[Policy], object], table: str) -> None:
+    policy = Policy.parse(tomllib.loads(AGENTS_ONLY), "shipmill.toml")
+    with pytest.raises(ReleaseError) as caught:
+        read(policy)
+    assert str(caught.value) == (
+        f'releases off (mode = "off"): the config has no {table}, which this command reads; add {table} to release'
+    )
+
+
+@pytest.mark.parametrize("missing", MISSING)
+def test_856_releases_off_leaves_each_release_table_optional(missing: str) -> None:
+    text = apply(POLICY.replace('mode = "release"', 'mode = "off"'), CASES[missing])
+    Policy.parse(tomllib.loads(text), "shipmill.toml")
+
+
+@pytest.mark.parametrize("name", RELEASE_SIDE)
+def test_856_a_release_table_there_under_releases_off_refuses_with_the_same_words(name: str) -> None:
+    text = apply(POLICY.replace('mode = "release"', 'mode = "off"'), CASES[name])
+    with pytest.raises(ReleaseError) as caught:
+        Policy.parse(tomllib.loads(text), "shipmill.toml")
+    assert str(caught.value) == MESSAGES[name]
+
+
+def test_856_an_environment_naming_a_lane_still_refuses_with_releases_off() -> None:
+    with pytest.raises(ReleaseError) as caught:
+        Policy.parse(tomllib.loads(AGENTS_ONLY + STAGING), "shipmill.toml")
+    assert str(caught.value) == "shipmill.toml [environments] [staging]: lane rc is not enabled in [lanes]"
+
+
+def test_856_a_config_that_releases_reads_its_tables_as_before() -> None:
+    policy = Policy.parse(tomllib.loads(POLICY), "shipmill.toml")
+    assert (policy.changelog, policy.style, policy.fragments) == ("CHANGELOG.md", Style.KEEP_A_CHANGELOG, None)
+    assert (policy.bump_from, policy.minor_paths, policy.version_files) == (
+        BumpFrom.HEADINGS,
+        (),
+        VersionFiles.PYPROJECT,
+    )
+    assert dict(policy.bump_headings) == {
+        "Breaking": Part.MAJOR,
+        "Added": Part.MINOR,
+        "Changed": Part.MINOR,
+        "Fixed": Part.PATCH,
+    }
+    assert list(policy.lanes) == [Lane.DEV, Lane.RC, Lane.STABLE, Lane.HOTFIX]
 
 
 def refusal(load: Callable[[], object]) -> str:
