@@ -85,13 +85,16 @@ def checkout(tmp_path: Path) -> Path:
     return work
 
 
-def pr(number: int, *labels: str, draft: bool = False, fork: bool = False) -> dict[str, object]:
+def pr(
+    number: int, *labels: str, draft: bool = False, fork: bool = False, assignees: tuple[str, ...] = ()
+) -> dict[str, object]:
     return {
         "number": number,
         "isDraft": draft,
         "isCrossRepository": fork,
         "labels": [{"name": label} for label in labels],
         "headRefOid": HEAD,
+        "assignees": [{"login": login} for login in assignees],
     }
 
 
@@ -157,6 +160,82 @@ def test_s046_7_tier_3_prints_open_and_waiting_pull_requests_alone(tmp_path: Pat
     # the one batched comment read, of the pull requests labelled needs-decision or decided
     assert len(calls) == 1 and calls[0][:2] == ["api", "graphql"]
     assert "n5: issueOrPullRequest" in calls[0][3] and "n7: issueOrPullRequest" in calls[0][3]
+
+
+def test_853_a_persons_assigned_pull_request_is_no_tier_3_item(tmp_path: Path) -> None:
+    # "hold it: I merge it by hand", taken up: labelled role:maintainer and assigned; one labelled
+    # without an assignee (human reads as role:maintainer, in any case) stays for a session to assign
+    held = pr(160, "role:maintainer", assignees=("romamo",))
+    prs = [pr(3), held, pr(161, "Human"), pr(162, "ROLE:Infra", draft=True, assignees=("amy",))]
+    rows, _ = tier(tmp_path, 3, known(prs=prs))
+    assert [(r["state"], r["detail"]) for r in rows] == [("PRS_OPEN", "#3 #161")]
+    only, _ = tier(tmp_path / "held", 3, known(prs=[held]))
+    assert only == []  # no row in tier 3 at all, so the gate's walk hands no session for it
+
+
+def test_853_the_full_report_lists_a_persons_pull_request_as_with_person(ws: ModuleType) -> None:
+    prs = [pr(3), pr(160, "role:maintainer", assignees=("romamo",)), pr(158, "human", assignees=("ann", "bo-b"))]
+    rows = ws.intake("o/r", 0, "", [*prs, pr(161, "role:maintainer")], lambda n: [])
+    assert [(r.state, r.detail) for r in rows] == [
+        ("PRS_OPEN", "#3 #161"),
+        ("PRS_PARKED", "WITH_PERSON #158 (@ann @bo-b) #160 (@romamo)"),
+    ]
+    assert "PRS_PARKED" not in ws.AGENT | ws.ACTION and rows[1].fix is None  # report only
+    malformed = {**prs[1], "assignees": [{"name": "Rom"}]}
+    with pytest.raises(ws.Refused, match="#160's assignees"):
+        ws.intake("o/r", 0, "", [malformed], lambda n: [])
+
+
+def test_853_known_needs_each_pull_requests_assignees(tmp_path: Path) -> None:
+    without = {k: v for k, v in pr(3).items() if k != "assignees"}
+    path = tmp_path / "known.json"
+    path.write_text(json.dumps(known(prs=[without])), encoding="utf-8")
+    cmd = [sys.executable, str(SCRIPT), "o/r", "--repo-dir", str(checkout(tmp_path)), "--json", "--tier", "3"]
+    proc = subprocess.run([*cmd, "--known", str(path)], capture_output=True, text=True, check=False)
+    assert proc.returncode == 2 and "gh pr list's fields" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("cmd", "shown"),
+    [
+        (
+            ["gh", "api", "-X", "GET", "repos/o/r/actions/runs", "-f", "per_page=100"],
+            "gh api -X GET repos/o/r/actions/runs -f per_page=...",
+        ),
+        (
+            ["gh", "api", "graphql", "-f", "query=query { viewer { login } }", "-F", "owner=o", "-Hx:y"],
+            "gh api graphql -f query=... -F owner=... -Hx:...",
+        ),
+        (
+            ["gh", "api", "--paginate", f"repos/o/r/{'x' * 300}", "--field=token=ghs_secret", "--jq", ".[]"],
+            f"gh api --paginate repos/o/r/{'x' * 300} ...",
+        ),
+        (["git", "-C", "/tmp/a b", "fetch"], "git -C '/tmp/a b' fetch"),
+        (
+            # a header's value is cut at its name's colon, even when the value holds an `=`
+            [
+                "gh",
+                "api",
+                "-H",
+                "Authorization: Basic Z2hzX3NlY3JldA==",
+                "--header=Authorization: Basic Z2hzX3NlY3JldA==",
+                "-HAuthorization: Basic Z2hzX3NlY3JldA==",
+                "repos/o/r",
+            ],
+            "gh api -H Authorization:... --header=Authorization:... -HAuthorization:... repos/o/r",
+        ),
+    ],
+    ids=["get", "graphql", "long", "git", "header"],
+)
+def test_853_the_error_line_names_the_whole_command_and_no_field_value(
+    ws: ModuleType, capsys: pytest.CaptureFixture[str], cmd: list[str], shown: str
+) -> None:
+    failed = subprocess.CompletedProcess(cmd, 1, "", "HTTP 403: Resource not accessible by integration")
+    with pytest.raises(SystemExit):
+        ws.checked(cmd, failed)
+    err = capsys.readouterr().err
+    assert err == f"error: {shown}: HTTP 403: Resource not accessible by integration\n"
+    assert "ghs_secret" not in err and "viewer" not in err and "Z2hz" not in err
 
 
 @pytest.mark.parametrize(("closed", "queries"), [(2, 1), (60, 2)])

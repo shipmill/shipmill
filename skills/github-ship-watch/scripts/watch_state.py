@@ -153,13 +153,17 @@ Intake (github-issue-triage's triage_state.py):
                   MEMBER, or COLLABORATOR or the --bot-login, which triage_state.py marks
                   "direction": true on its line) is in neither ISSUES nor ISSUES_OPEN
   PRS_OPEN        open non-draft pull requests (reported, never an action by itself),
-                  less the ones NEEDS_DECISION and UNTRUSTED list. Its fix follows the
+                  less the ones NEEDS_DECISION, UNTRUSTED, and PRS_PARKED list. Its fix follows the
                   config's [autonomy] land as shipmill reads it (spec 040: default propose;
                   with none of triage, fix, and land set, act when the [agents] prompt says
                   "merge when green" or "land"; an open shipmill-hold issue turns act into
                   propose): none under act, a person merges the ones labelled shipmill-ready
                   under propose, [autonomy] land named under observe, and adding [agents]
                   without one
+  PRS_PARKED      open non-draft pull requests that are a person's item, labelled human or
+                  role:<name> with an assignee, as WITH_PERSON #N (@login ...) (reported,
+                  never an action: no session starts for one, #853); one with the label and
+                  no assignee stays in PRS_OPEN, for a session to assign
   NEEDS_DECISION  issues and pull requests labelled needs-decision whose question has no
                   reply, as #N only (triage_state.py's rule, applied to pull requests'
                   comments too): a person owes the answer, so an action, but never an
@@ -861,9 +865,56 @@ def failure(cmd: Sequence[str], proc: subprocess.CompletedProcess[str]) -> str:
 def checked(cmd: list[str], proc: subprocess.CompletedProcess[str]) -> str:
     """The command's output; a failed command stops the watch (exit 2)"""
     if proc.returncode != 0:
-        sys.stderr.write(f"error: {' '.join(cmd[:3])}...: {failure(cmd, proc)}\n")
+        sys.stderr.write(f"error: {shown_command(cmd)}: {failure(cmd, proc)}\n")
         raise SystemExit(2)
     return proc.stdout
+
+
+SHOWN_LIMIT = 200  # characters of a failed command an error line shows, its endpoint always whole
+GH_VALUES = (*GH_FIELDS, "-H", "--header")  # gh flags whose value a body or a header carries
+
+
+def shown_command(cmd: Sequence[str]) -> str:
+    """#853: a failed command as its error line names it, shlex-joined, so a gh api read names
+    its endpoint. A gh field's or header's value is left out (`-f query=...`, `-H Accept:...`),
+    since a request body or a header can carry a token; past SHOWN_LIMIT characters the words
+    after the endpoint (gh api's first positional word, else the third word) are cut, a whole
+    word at a time, and the line ends `...`"""
+    words = [shlex.quote(w) for w in (hidden_values(cmd) if list(cmd[:1]) == ["gh"] else list(cmd))]
+    endpoint = min(2, len(words) - 1)
+    if list(cmd[:1]) == ["gh"] and list(cmd[1:2]) == ["api"]:
+        at = 2
+        while at < len(cmd) and cmd[at].startswith("-"):
+            at += 2 if cmd[at] in (*GH_VALUES, "-X", "--method", "-q", "--jq", "-t", "--template") else 1
+        endpoint = min(at, len(words) - 1)
+    kept = words[: endpoint + 1]
+    for word in words[endpoint + 1 :]:
+        if len(" ".join([*kept, word])) > SHOWN_LIMIT:
+            return f"{' '.join(kept)} ..."
+        kept.append(word)
+    return " ".join(kept)
+
+
+def hidden_values(cmd: Sequence[str]) -> list[str]:
+    """A gh command's words with each field's and header's value replaced by `...`, keeping a
+    field's key and a header's name"""
+
+    def hide(value: str) -> str:
+        # kept up to the first `=` or `:`, whichever comes first: a header's value may hold an `=`
+        cuts = [at for at in (value.find("="), value.find(":")) if at >= 0]
+        return f"{value[: min(cuts) + 1]}..." if cuts else "..."
+
+    words: list[str] = []
+    for at, word in enumerate(cmd):
+        if at and cmd[at - 1] in GH_VALUES:
+            words.append(hide(word))
+        elif word.startswith("--") and word.partition("=")[0] in GH_VALUES and "=" in word:
+            words.append(f"{word.partition('=')[0]}={hide(word.partition('=')[2])}")
+        elif word[:2] in ("-f", "-F", "-H") and len(word) > 2:
+            words.append(word[:2] + hide(word[2:]))
+        else:
+            words.append(word)
+    return words
 
 
 class PypiWait(Exception):
@@ -2701,17 +2752,18 @@ def intake(
     directions: frozenset[int] = frozenset(),
 ) -> list[Row]:
     """The intake rows from triage_state.py's exit code and --json lines, and the open pull
-    requests (number, isDraft, isCrossRepository, labels, headRefOid). Each pull request is UNTRUSTED
-    (with trusted_only, a head in a fork), else waiting on a decision (labelled, no reply;
-    its comments are read only then), else VETOED (labelled decided with an unanswered
-    trusted veto, triage_state.py's rule; its comments are read only then), else in PRS_OPEN
-    unless a draft. closed_prs are the closed and merged pull requests labelled decided in the
-    veto window (number, isCrossRepository): each with such a veto is VETOED too, save a
-    fork's with trusted_only. VETOED issues and pull requests share one row, an agent's
-    (spec 030), and an issue in it is in no other row. land is the effective [autonomy] land
-    level, None without [agents]: PRS_OPEN's fix (land_fix) follows it. upgrades
-    are the shipmill-upgrade issues: their UPGRADE_PENDING rows come first, none is in the
-    issue rows, and the ones waiting on a reply join NEEDS_DECISION. One triage_state.py
+    requests (number, isDraft, isCrossRepository, labels, headRefOid, assignees). Each pull
+    request is UNTRUSTED (with trusted_only, a head in a fork), else waiting on a decision
+    (labelled, no reply; its comments are read only then), else VETOED (labelled decided with
+    an unanswered trusted veto, triage_state.py's rule; its comments are read only then), else
+    in no row when a draft, else in PRS_PARKED as WITH_PERSON #N (@login ...) when a person's
+    item with an assignee (pr_people, #853), else in PRS_OPEN. closed_prs are the closed and
+    merged pull requests labelled decided in the veto window (number, isCrossRepository):
+    each with such a veto is VETOED too, save a fork's with trusted_only. VETOED issues and
+    pull requests share one row, an agent's (spec 030), and an issue in it is in no other
+    row. land is the effective [autonomy] land level, None without [agents]: PRS_OPEN's fix
+    (land_fix) follows it. upgrades are the shipmill-upgrade issues: their UPGRADE_PENDING
+    rows come first, none is in the issue rows, and the ones waiting on a reply join NEEDS_DECISION. One triage_state.py
     reads as UNTRUSTED (with trusted_only, an author who is neither trusted nor the
     --bot-login; the release workflow's github-actions[bot] upgrade issue, label and marker
     both, is trusted, D-30) stays UNTRUSTED and nothing else: an unattended session never
@@ -2762,6 +2814,7 @@ def intake(
     waiting += [n for n in (upgrades.waiting if upgrades is not None else []) if n not in untrusted_upgrades]
     vetoed = list(counts.get(VETOED, []))
     ready: list[tuple[int, str]] = []
+    parked: list[tuple[int, list[str]]] = []  # #853: a person's pull request, with whom it waits on
     for pr in prs:
         number = int(pr["number"])
         labels = {label["name"] for label in pr["labels"]}
@@ -2771,7 +2824,11 @@ def intake(
             waiting.append(number)
         elif TRIAGE.DECIDED_LABEL in labels and TRIAGE.vetoed(comments_of(number), bot_login) is not None:
             vetoed.append(number)
-        elif not pr["isDraft"]:  # a draft is its author's until marked ready: it starts no session (D-52)
+        elif pr["isDraft"]:
+            continue  # a draft is its author's until marked ready: it starts no session (D-52)
+        elif people := pr_people(pr):
+            parked.append((number, people))
+        else:
             ready.append((number, head_sha(pr)))
     for pr in closed_prs:
         number = int(pr["number"])
@@ -2782,6 +2839,9 @@ def intake(
     if ready:
         listed = " ".join(f"#{n}" for n, _ in ready)
         rows.append(Row("PRS_OPEN", repo, listed, land_fix(land, repo), tuple(sorted(ready))))
+    if parked:
+        named = " ".join(f"#{n} ({' '.join(people)})" for n, people in sorted(parked))
+        rows.append(Row("PRS_PARKED", repo, f"WITH_PERSON {named}"))
     if vetoed:
         named = " ".join(f"#{n}" for n in sorted(set(vetoed)))
         take_up = f"take up each veto (needs-decision.md): {skill_fix('github-issue-triage', repo)}"
@@ -2804,6 +2864,23 @@ def head_sha(pr: dict[str, Any]) -> str:
     if not isinstance(sha, str) or HEAD_SHA.fullmatch(sha) is None:
         raise Refused(f"error: gh pr list printed #{pr['number']} with headRefOid {sha!r}, not a commit SHA")
     return sha
+
+
+def pr_people(pr: dict[str, Any]) -> list[str]:
+    """#853: whom an open pull request waits on as a person's item, as @login: its assignees
+    when it is labelled human or role:<name> (triage_state.py's rule, compared
+    case-insensitively); empty for one without the label, or with it and no assignee yet, which
+    stays a session's to assign. Its assignees are read only then, as gh pr list prints them,
+    objects with a login; anything else is refused"""
+    if not TRIAGE.item_roles({"labels": {"nodes": pr["labels"]}}):
+        return []
+    found = pr.get("assignees")
+    logins = isinstance(found, list) and all(
+        isinstance(a, dict) and isinstance(a.get("login"), str) and LOGIN.match(a["login"]) for a in found
+    )
+    if not logins:
+        raise Refused(f"error: gh pr list printed #{pr['number']}'s assignees as something other than a list of logins")
+    return [f"@{a['login']}" for a in found]
 
 
 def person_logins(row: dict[str, Any]) -> list[str]:
@@ -2899,8 +2976,7 @@ def intake_rows(
     open direction issues, never in the issue rows (spec 034). The comments of every pull
     request intake may ask about, a labelled open one or a closed one, save a fork's with
     trusted_only, are one batched read, not one read each (#842)"""
-    fields = "number,isDraft,isCrossRepository,labels,headRefOid"
-    prs = json.loads(read(["gh", "pr", "list", "-R", repo, "--json", fields, "-L", "100"]))
+    prs = json.loads(read(["gh", "pr", "list", "-R", repo, "--json", PR_FIELDS, "-L", "100"]))
     closed = decided_prs(repo, now, read)
     wanted = [pr for pr in prs if asked(pr)] + list(closed)
     numbers = [int(pr["number"]) for pr in wanted if not (trusted_only and pr["isCrossRepository"])]
@@ -4184,6 +4260,8 @@ DECIDED_STATES = frozenset({"DECIDED"})  # triage_state.py's states in tier 4; V
 ASKED = (TRIAGE.DECISION_LABEL, TRIAGE.DECIDED_LABEL)  # tier 4's items; tier 3 reads these pull requests' comments
 COMMENTS_LAST = 100  # comments a batched read takes of each item; one with more is read whole
 COMMENTS_CHUNK = 50  # items one batched comment query reads, so a long list never asks too much of one query
+# the open pull requests' fields gh pr list reads, and --known holds; assignees: whom a person's one waits on (#853)
+PR_FIELDS = "number,isDraft,isCrossRepository,labels,headRefOid,assignees"
 
 
 @dataclass(frozen=True)
@@ -4191,7 +4269,7 @@ class Known:
     """What shipmill gate's change check read already (--known FILE), so a tier reads none of
     it again (spec 046): GitHub's default branch, whether a shipmill-hold is open (the gate
     walks only without one, D-15), the open pull requests as `gh pr list --json
-    number,isDraft,isCrossRepository,labels,headRefOid` prints them, the open incidents, and
+    number,isDraft,isCrossRepository,labels,headRefOid,assignees` prints them, the open incidents, and
     the newest workflow runs, each with its workflow's file name"""
 
     default_branch: str
@@ -4215,7 +4293,7 @@ def read_known(path: Path) -> Known:
             if not isinstance(data[key], list) or not all(isinstance(item, dict) for item in data[key]):
                 raise ValueError(f"{key} must be a list of objects")
         for pr in data["prs"]:
-            if set(pr) != {"number", "isDraft", "isCrossRepository", "labels", "headRefOid"}:
+            if set(pr) != set(PR_FIELDS.split(",")):
                 raise ValueError(f"a pull request needs exactly gh pr list's fields, got {sorted(pr)}")
             if not known_pr(pr):
                 raise ValueError(f"pull request {pr['number']!r} is not as gh pr list prints it")
@@ -4247,8 +4325,8 @@ def read_known(path: Path) -> Known:
 
 
 def known_pr(pr: dict[str, Any]) -> bool:
-    """Whether a --known pull request's values are gh pr list's: a number, two flags, and its
-    labels as objects with a name"""
+    """Whether a --known pull request's values are gh pr list's: a number, two flags, its
+    labels as objects with a name, and its assignees as objects with a login"""
     number = pr["number"]
     return (
         isinstance(number, int)
@@ -4257,6 +4335,8 @@ def known_pr(pr: dict[str, Any]) -> bool:
         and isinstance(pr["isCrossRepository"], bool)
         and isinstance(pr["labels"], list)
         and all(isinstance(label, dict) and isinstance(label.get("name"), str) for label in pr["labels"])
+        and isinstance(pr["assignees"], list)
+        and all(isinstance(a, dict) and isinstance(a.get("login"), str) for a in pr["assignees"])
     )
 
 
@@ -4335,8 +4415,7 @@ def asked(item: dict[str, Any]) -> bool:
 
 
 def open_prs(repo: str) -> list[dict[str, Any]]:
-    fields = "number,isDraft,isCrossRepository,labels,headRefOid"
-    found: list[dict[str, Any]] = json.loads(run(["gh", "pr", "list", "-R", repo, "--json", fields, "-L", "100"]))
+    found: list[dict[str, Any]] = json.loads(run(["gh", "pr", "list", "-R", repo, "--json", PR_FIELDS, "-L", "100"]))
     return found
 
 
