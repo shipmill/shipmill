@@ -395,7 +395,8 @@ headless notifications read it; its ISSUES rows are one per triage state, `STATE
 Tier 2 reads NOT_PUBLISHED for the newest tag alone and leaves BOT_STALLED to the sweep;
 tier 3 reads the open pull requests and one batched GraphQL read of the comments of those
 labelled needs-decision or decided; tier 4 runs triage_state.py --label needs-decision
---label decided; tier 6 runs triage_state.py on every open issue; tier 8 reads UNANNOUNCED
+--label decided; tier 6 runs triage_state.py on every open issue, and gives its DECIDED read
+from a relay with the label off, which tier 4 never reads; tier 8 reads UNANNOUNCED
 for the newest tag alone; tiers 5 and 7 run their sections whole. --sweep prints the timed
 sections' rows, read whole: BOT_STALLED, UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING,
 PLANS, and UNANNOUNCED over every --releases tag and environment. --known FILE (with --tier)
@@ -2389,11 +2390,12 @@ def upgrade_rows(
     """The open shipmill-upgrade issues (S-014-10): level is [autonomy] upgrade, held whether
     a shipmill-hold issue is open (act then reads as propose, D-8). Under observe none is
     taken up. One answered "not now" (shipmill-upgrade-later) or with an open pull request
-    closing it waits; one labelled needs-decision waits too until a trusted reply (its
-    comments read only then, by triage_state.py's rule); any other is UPGRADE_PENDING. Its
-    detail says what the session does: close it as not planned when a pull request on its
-    branch closed unmerged (declined_of, read only then; a merged one closed the issue
-    already), take up the answer, open the pull request (act), or ask. The id comes from the
+    closing it waits; one labelled needs-decision waits too until a trusted reply (by
+    triage_state.py's rule); any other is UPGRADE_PENDING. Its detail says what the session
+    does: close it as not planned when a pull request on its branch closed unmerged
+    (declined_of, read only then; a merged one closed the issue already), take up the answer
+    (a reply, or with the label off an answer relayed from a session after the question,
+    triage_state.py's relayed), open the pull request (act), or ask. The id comes from the
     marker only; the fix never holds issue text (D-16)"""
     rows: list[Row] = []
     waiting: list[int] = []
@@ -2414,7 +2416,7 @@ def upgrade_rows(
         if declined:
             pr = f"#{max(declined)}"
             detail = f"{name}: pull request {pr} closed unmerged, a decline: close #{issue.number} as not planned"
-        elif asked:
+        elif asked or TRIAGE.relayed(comments_of(issue.number), bot_login) is not None:
             detail = f"{name}: answered; take up the answer"
         elif level == "act" and not held:
             detail = f"{name}: open the pull request (upgrade = act)"
@@ -2559,9 +2561,11 @@ def direction_rows(
     names there, is read only then. Otherwise found, the direction issues, is read: none at
     all asks for the question; a closed one with none open is a decline, no row; an open one
     (the oldest) reads prs, from the repo's own shipmill/direction only (never a fork's, D-16):
-    an open one waits on the maintainer's merge, no DIRECTION_PENDING. comments_of is read only
-    for an issue labelled needs-decision: with no trusted reply after its question it waits,
-    in NEEDS_DECISION, no DIRECTION_PENDING. Each fix is built from the repo, the numbers, and
+    an open one waits on the maintainer's merge, no DIRECTION_PENDING. comments_of is read for
+    an issue labelled needs-decision: with no trusted reply after its question it waits, in
+    NEEDS_DECISION, no DIRECTION_PENDING. With the label off it is read unless a pull request
+    declined the direction: an answer relayed from a session after the question
+    (triage_state.py's relayed) is the maintainer's answer too. Each fix is built from the repo, the numbers, and
     the path, never from an issue's text (D-16)"""
     subject = DIRECTION.as_posix()
     absent = f"no {subject} on origin/{branch}"
@@ -2601,7 +2605,7 @@ def direction_rows(
         pr = declined_own[-1]
         stands = f"pull request #{pr} for #{number} closed unmerged"
         pending = f"pull request #{pr} closed unmerged, a decline: close #{number} as not planned"
-    elif asked:
+    elif asked or TRIAGE.relayed(comments_of(number), bot_login) is not None:
         stands, pending = f"#{number} has the maintainer's answer", "answered; take up the answer"
     else:
         stands, pending = f"#{number} is open, its question not asked", "ask the maintainer"
@@ -4483,7 +4487,26 @@ def issue_rows(args: argparse.Namespace, repo_dir: Path, text: str | None) -> li
     rows = intake(
         args.repo, code, triage, [], unread, args.bot_login, args.trusted_only, None, owned, untrusted, (), directions
     )
-    return [r for r in split_issues(rows, decided=False) if r.state == "ISSUES"]
+    return [r for r in split_issues(rows, decided=False) if r.state == "ISSUES"] + relayed_rows(rows, triage)
+
+
+def relayed_rows(rows: list[Row], triage: str) -> list[Row]:
+    """Tier 6's DECIDED: the issues triage_state.py reads DECIDED from an answer relayed from a
+    session (its note ends "relayed"), whose label is off, so tier 4 never reads them, as an
+    ISSUES row `DECIDED #N ...`; an issue the intake left out of ISSUES stays out"""
+    relays = set()
+    for line in triage.splitlines():
+        row = json.loads(line)
+        if row["state"] == "DECIDED" and str(row.get("note", "")).endswith(f", {TRIAGE.RELAYED}"):
+            relays.add(f"#{row['number']}")
+    found: list[Row] = []
+    for row in rows:
+        for part in row.detail.split("; ") if row.state == "ISSUES" else []:
+            state, *numbers = part.split(" ")
+            kept = [n for n in numbers if state in DECIDED_STATES and n in relays]
+            if kept:
+                found.append(Row("ISSUES", row.subject, " ".join([state, *kept]), row.fix))
+    return found
 
 
 def notice_rows(

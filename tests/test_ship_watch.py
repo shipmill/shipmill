@@ -1972,7 +1972,8 @@ class Upgrades:
     ) -> None:
         self.asked: list[str] = []
         self.declined = declined or []
-        self.found = ws.upgrade_rows(issues, level, held, (comments or {}).__getitem__, self.declined_of, "o/r", BOT)
+        threads = comments or {}  # an issue left out has no comments
+        self.found = ws.upgrade_rows(issues, level, held, lambda n: threads.get(n, []), self.declined_of, "o/r", BOT)
 
     def declined_of(self, name: str) -> list[int]:
         self.asked.append(name)

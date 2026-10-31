@@ -655,8 +655,10 @@ def walk(
     taken: tuple[Finding, Hand] | None = None
     for number in TIERS:
         found: list[Finding] = []
+        own: list[Finding] = []  # this tier's own read, which may hold an earlier tier's kind
         if number in READ:
-            found += source.tier(number, changes)
+            own = source.tier(number, changes)
+            found += own
         if number == 8 and changes.tag is not None and changes.tag != swept.tag:
             fresh = [r for r in source.tier(8, changes) if r.state == "UNANNOUNCED"]
             kept = [r for r in swept.rows if not (r.state == "UNANNOUNCED" and r.subject == changes.tag)]
@@ -664,7 +666,10 @@ def walk(
         found += [r for r in swept.rows if tier_of(r) == number]
         read.append(number)
         rows += found
-        items = order(f for f in found if tier_of(f) == number and (f.agent or (lands and f.state == PRS_OPEN)))
+        # A tier's read may name an earlier tier's kind (tier 6's DECIDED, relayed with the label
+        # off, which tier 4 never reads): it is taken here; the sweep's rows only in their own tier
+        mine = [f for f in found if tier_of(f) == number or (f in own and tier_of(f) < number)]
+        items = order(f for f in mine if f.agent or (lands and f.state == PRS_OPEN))
         for item in items:
             hand = handed.taken(item, now, retry)
             if hand is None:
