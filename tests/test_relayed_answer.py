@@ -157,6 +157,18 @@ def test_tier_6_reads_a_relayed_decided_that_tier_4_never_reads(ws: ModuleType) 
     assert ws.relayed_rows([ws.Row("ISSUES", "o/r", "NEW #5", "fix")], triage) == []
 
 
+def test_a_relay_on_an_issue_labelled_decided_is_tier_6s_alone(ts: ModuleType, ws: ModuleType) -> None:
+    # labelled decided (spec 030) with needs-decision off: tier 4's --label decided read reads
+    # the relay too, so tier 4 leaves it to tier 6, or a tick hands #7 from both tiers (D-58)
+    item = issue(VERDICT, comment(QUESTION, BOT, "NONE"), comment(SPAN, BOT, "NONE"), labels=("decided",))
+    assert state(ts, item) == ("DECIDED", "answered by @romamo, relayed")
+    triage = "\n".join([line(4, "DECIDED", "answered by @amy"), line(7, "DECIDED", "answered by @romamo, relayed")])
+    found = [ws.Row("ISSUES", "o/r", "DECIDED #4 #7", "fix"), ws.Row("VETOED", "o/r", "#2", "fix")]
+    assert [(r.state, r.detail) for r in ws.asked_issues(found, triage)] == [("ISSUES", "DECIDED #4"), ("VETOED", "#2")]
+    assert ws.asked_issues([ws.Row("ISSUES", "o/r", "DECIDED #7", "fix")], triage) == []
+    assert [r.detail for r in ws.relayed_rows(found, triage)] == ["DECIDED #7"]
+
+
 def test_the_walk_hands_a_decided_item_from_tier_6s_own_read() -> None:
     relayed = Finding("ISSUES", "o/r", "DECIDED #7", True, (), "triage")
     walked = walk(

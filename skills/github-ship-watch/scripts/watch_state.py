@@ -395,8 +395,8 @@ headless notifications read it; its ISSUES rows are one per triage state, `STATE
 Tier 2 reads NOT_PUBLISHED for the newest tag alone and leaves BOT_STALLED to the sweep;
 tier 3 reads the open pull requests and one batched GraphQL read of the comments of those
 labelled needs-decision or decided; tier 4 runs triage_state.py --label needs-decision
---label decided; tier 6 runs triage_state.py on every open issue, and gives its DECIDED read
-from a relay with the label off, which tier 4 never reads; tier 8 reads UNANNOUNCED
+--label decided, less a DECIDED read from a relay; tier 6 runs triage_state.py on every open
+issue, and gives its DECIDED read from a relay with the label off; tier 8 reads UNANNOUNCED
 for the newest tag alone; tiers 5 and 7 run their sections whole. --sweep prints the timed
 sections' rows, read whole: BOT_STALLED, UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING,
 PLANS, and UNANNOUNCED over every --releases tag and environment. --known FILE (with --tier)
@@ -4467,7 +4467,35 @@ def asked_rows(
         closed,
         directions,
     )
-    return [r for r in split_issues(rows, decided=True) if r.state in TIERS[4]]
+    return [r for r in asked_issues(split_issues(rows, decided=True), triage) if r.state in TIERS[4]]
+
+
+def asked_issues(rows: list[Row], triage: str) -> list[Row]:
+    """Tier 4's rows less a DECIDED read from a relay (an issue labelled decided with the
+    needs-decision label off reads one too), which tier 6 alone gives, so no tick hands it from
+    both tiers (D-58)"""
+    relays = relayed_numbers(triage)
+    kept: list[Row] = []
+    for row in rows:
+        state, *numbers = row.detail.split(" ")
+        if row.state != "ISSUES" or state not in DECIDED_STATES:
+            kept.append(row)
+            continue
+        left = [n for n in numbers if n not in relays]
+        if left:
+            kept.append(Row(row.state, row.subject, " ".join([state, *left]), row.fix))
+    return kept
+
+
+def relayed_numbers(triage: str) -> frozenset[str]:
+    """The issues triage_state.py reads DECIDED from an answer relayed from a session (its note
+    ends "relayed"), as #N"""
+    found = set()
+    for line in triage.splitlines():
+        row = json.loads(line)
+        if row["state"] == "DECIDED" and str(row.get("note", "")).endswith(f", {TRIAGE.RELAYED}"):
+            found.add(f"#{row['number']}")
+    return frozenset(found)
 
 
 def issue_rows(args: argparse.Namespace, repo_dir: Path, text: str | None) -> list[Row]:
@@ -4494,11 +4522,7 @@ def relayed_rows(rows: list[Row], triage: str) -> list[Row]:
     """Tier 6's DECIDED: the issues triage_state.py reads DECIDED from an answer relayed from a
     session (its note ends "relayed"), whose label is off, so tier 4 never reads them, as an
     ISSUES row `DECIDED #N ...`; an issue the intake left out of ISSUES stays out"""
-    relays = set()
-    for line in triage.splitlines():
-        row = json.loads(line)
-        if row["state"] == "DECIDED" and str(row.get("note", "")).endswith(f", {TRIAGE.RELAYED}"):
-            relays.add(f"#{row['number']}")
+    relays = relayed_numbers(triage)
     found: list[Row] = []
     for row in rows:
         for part in row.detail.split("; ") if row.state == "ISSUES" else []:
