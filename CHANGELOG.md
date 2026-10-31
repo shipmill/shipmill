@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.100.1] - 2026-10-31
+
+### Fixed
+
+- The gate's launchd job gives uv 8 HTTP retries (`UV_HTTP_RETRIES`, about a minute), so the first tick after a FileVault login still reaches PyPI, and a run whose uvx found no network (uv's `Failed to fetch` on a DNS or connect error) reads `offline at last tick, next in N min` with `launchctl kickstart` as its fix instead of STUCK `failed: exit 2`; run `shipmill launchd <repo>` again to give an existing job the retries (#848)
+
 ## [0.100.0] - 2026-10-30
 
 ### Changed
@@ -2096,7 +2102,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.100.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.100.1...HEAD
+[0.100.1]: https://github.com/shipmill/shipmill/compare/v0.100.0...v0.100.1
 [0.100.0]: https://github.com/shipmill/shipmill/compare/v0.99.0...v0.100.0
 [0.99.0]: https://github.com/shipmill/shipmill/compare/v0.98.1...v0.99.0
 [0.98.1]: https://github.com/shipmill/shipmill/compare/v0.98.0...v0.98.1
