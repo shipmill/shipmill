@@ -157,7 +157,7 @@ Taking up the answer ([needs-decision.md](needs-decision.md), Taking up an answe
 | VERIFY_DUE | A person's item: a done report came after the hand-off, run the `## Check` (above). A parent (its note starts `children K/N closed`): its holds all closed, run its `## Check` ([A parent's check](#a-parents-check)) |
 | CHECK_FAILED | A parent's check failed after its newest close: file the fix as a new child with `chains.py link <owner/repo#parent> --child <owner/repo#fix>` ([A parent's check](#a-parents-check)) |
 | VERIFY_CLOSED | A person closed their item by hand, or a parent closed before its check ran: run its `## Check` (above, and [A parent's check](#a-parents-check)) |
-| DECIDED | A trusted person answered its needs-decision question: read the reply, remove the `needs-decision` label, and act on it ([needs-decision.md](needs-decision.md), Taking up an answered item) |
+| DECIDED | A trusted person answered its needs-decision question: read the reply, remove the `needs-decision` label, and act on it ([needs-decision.md](needs-decision.md), Taking up an answered item). With its note ending "relayed", the answer is the App's relay of a session's answer and the label is off already: act on the relay, then post the triage comment for the answer, which ends the state |
 | VETOED | A trusted person vetoed a decision an agent took at `notify` (spec 030), on an open issue or one closed in the last 14 days: take the veto up as SKILL.md's VETOED step says, ending with the `<!-- shipmill:veto-handled zone=<id> -->` comment and the `decided` label removed |
 | POSTPONED | Skip it |
 | REVISIT | A stable release came out after it was postponed. Apply this rubric again under the new phase |

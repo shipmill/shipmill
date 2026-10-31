@@ -92,7 +92,12 @@ For each open issue:
                    reply and remove the label (references/needs-decision.md), after
                    which the issue reads its usual state. Read right after
                    NEEDS_DECISION, before any other state, so an answer that links an
-                   open issue doesn't read BLOCKED (#309)
+                   open issue doesn't read BLOCKED (#309). An issue with the label
+                   off reads DECIDED too, its note ending "relayed", where it would
+                   read NEW, NEEDS_PR, or TRIAGED, when a relay by the --bot-login
+                   came after its question and no triage comment after the relay: a
+                   comment whose first line is "Decision by @<login>" or
+                   "Decision by `@<login>`" (D-61), an answer given in a session
   VETOED           labelled decided (spec 030, a decision taken at notify) and a veto
                    came after its first decided marker, the comment whose first line is
                    <!-- shipmill:decided ... --> by the --bot-login or an OWNER, MEMBER,
@@ -663,6 +668,12 @@ CHECK_FAILED_MARKER = "<!-- shipmill:check-failed -->"
 CHECK_WAITING_MARKER = "<!-- shipmill:check-waiting -->"
 # An @login, not an @org/team, bare or in a code span (`@login`, D-61): a backtick is no word character
 MENTION = re.compile(r"(?<![\w@/-])@(" + LOGIN_PATTERN + r")(?![\w/-])")
+# A relayed answer's first line (needs-decision.md, Answered in the session), the login bare or
+# in a code span (D-61), as shipmill's credit._DECISION_BY reads it
+DECISION_BY = re.compile(
+    r"Decision by (?:@(" + LOGIN_PATTERN + r")(?=$|\s|[,;:)]|[.!?](?:\s|$))|`@(" + LOGIN_PATTERN + r")`(?![\w`-]))"
+)
+RELAYED = "relayed"  # the end of a DECIDED note read from a relay, which tier 6 of the watch keeps
 CHECK = re.compile(r"^[ \t]*##[ \t]+Check[ \t]*$", re.MULTILINE)  # how a person's result is checked
 ACTION = {
     "NEW",
@@ -1520,6 +1531,11 @@ def classify_open(
         ends = [timestamp(closes[r]) for r in waits if r in closes and states.get(r) in CLOSED_STATES]
         since = max(ends, default=None)
         return person_state(issue["comments"]["nodes"], people, bot_login, since, shown, teams)
+    # An answer relayed from a session after the label came off, no triage comment after it: it
+    # still waits to be taken up, as a reply does while the label is on
+    relay = relayed(comment_tuples(issue), bot_login)
+    if relay is not None and relay[0] > verdict:
+        return "DECIDED", f"answered by @{relay[1]}, {RELAYED}"
     if not triage:
         return "NEW", note
     if PLAN_LABEL in labels and triage[-1].lstrip()[len(marker) :].lstrip().lower().startswith(PLAN_VERDICT):
@@ -1603,6 +1619,24 @@ def waits_on_decision(comments: list[tuple[str, str, str]], bot_login: str | Non
     if asked is None:
         return True
     return not any(replies(c, bot_login) for c in comments[asked + 1 :])
+
+
+def relayed(comments: list[tuple[str, str, str]], bot_login: str | None) -> tuple[int, str] | None:
+    """The newest relay after an item's question, as (its index, who answered), or None;
+    comments are (login, author association, body), oldest first. A relay is a comment by the
+    --bot-login whose first line is `Decision by @<login>` or ``Decision by `@<login>` ``
+    (D-61): an answer given in a session, which carries the agent marker, so it is no reply,
+    and the session that posts it removes the label (needs-decision.md). Without --bot-login
+    nothing is a relay"""
+    asked = question(comments, bot_login)
+    if asked is None or bot_login is None:
+        return None
+    for i in range(len(comments) - 1, asked, -1):
+        author, _, body = comments[i]
+        found = DECISION_BY.match(first_line(body)) if same_login(author, bot_login) else None
+        if found is not None:
+            return i, found[1] or found[2]
+    return None
 
 
 def trusted(author: str, association: str, bot_login: str | None) -> bool:
