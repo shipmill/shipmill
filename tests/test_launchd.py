@@ -82,6 +82,14 @@ def test_the_job_runs_the_gate_with_a_stable_path(tmp_path: Path) -> None:
     assert data["StandardOutPath"] == data["StandardErrorPath"] == str(job.log)
 
 
+def test_848_the_job_gives_uv_a_minute_of_retries_for_the_network(tmp_path: Path) -> None:
+    """#848: the first tick after a FileVault login runs before DNS is back; uv's default 3
+    retries end in about 7 s, so the job asks for 8, about a minute of backoff"""
+    path = str(tools(tmp_path / "bin", "claude", "gh", "git", "uvx"))
+    job = build("romamo/treaty", tmp_path / "treaty-gate", 15, "shipmill@latest", [], tmp_path, path, nothing)
+    assert plistlib.loads(job.document)["EnvironmentVariables"]["UV_HTTP_RETRIES"] == "8"
+
+
 @pytest.mark.parametrize(
     "extra", [["--permission-mode=auto"], ["--allowedTools", "Bash(npm *)"], ["--model", "opus", "-v"]]
 )

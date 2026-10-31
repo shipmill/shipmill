@@ -30,6 +30,9 @@ OLD_TOOL = "git+https://github.com/shipmill/shipmill@v0"
 FLOATING = (OLD_TOOL, "git+https://github.com/romamo/shipmill@v0")  # the @v0 sources, the pre-org URL too
 UPGRADE = "uv tool upgrade shipmill"  # the fix for a lagging `uv tool install shipmill`
 DEFAULT_EVERY = 15  # minutes between runs, `shipmill launchd --every`'s default
+# #848: the first tick after a FileVault login runs before DNS is back; uv's default 3 HTTP
+# retries give up in about 7 s, 8 back off for about a minute
+UV_HTTP_RETRIES = "8"
 _TEMP_ROOTS = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
 
 
@@ -108,7 +111,7 @@ def build(
             "StartInterval": interval_minutes * 60,
             "RunAtLoad": True,
             "AbandonProcessGroup": True,  # a headless session outlives the tick that started it (D-17)
-            "EnvironmentVariables": {"PATH": job_path(found)},
+            "EnvironmentVariables": {"PATH": job_path(found), "UV_HTTP_RETRIES": UV_HTTP_RETRIES},
             "StandardOutPath": str(log),
             "StandardErrorPath": str(log),
         }

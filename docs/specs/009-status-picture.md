@@ -106,7 +106,10 @@ Always shown, in this order around the item lines:
   the last wake), last exited 0, and the log's last line is no failed tick and no
   `UNCHANGED` decision; otherwise the problem in place of `OK`, with the schedule after
   it: `not loaded`, `stale: last run <age> ago`, `failed: exit <code>`, `failed: <the
-  error line>` (a failed tick's `shipmill:`, `error:`, or traceback line), `cooldown: same
+  error line>` (a failed tick's `shipmill:`, `error:`, or traceback line), `offline at last
+  tick, next in <N> min` (no problem, fix `launchctl kickstart`) for a non-zero exit whose
+  log ends in uv's `Failed to fetch` caused by a `dns error` or `client error (Connect)`
+  (#848), `cooldown: same
   findings, retry <when the line names>`, or `waiting on you: claude attach <id>` for a
   `WAITING` decision. `HELD` reads `held by #N <link>`. Off a Mac it reads `can't check
   here: no launchd`; on a Mac with no job for the repo, `no launchd job on this Mac`.
