@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.101.0] - 2026-10-31
+
+### Changed
+
+- With `mode = "off"`, `.github/shipmill.toml` may leave out `[changelog]`, `[bump]`, `version_files`, and `[lanes]`, so a repo that uses only the agent side loads in `shipmill doctor` and the gate; a table that is there is checked as before, a command that releases exits 2 naming the table it needs, and doctor notes each one left out, such as `releases off (mode = "off"): no [changelog]`; under `mode = "release"` or `"dry-run"` they stay required with the same messages (#856)
+
 ## [0.100.2] - 2026-10-31
 
 ### Fixed
@@ -2110,7 +2116,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.100.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.101.0...HEAD
+[0.101.0]: https://github.com/shipmill/shipmill/compare/v0.100.2...v0.101.0
 [0.100.2]: https://github.com/shipmill/shipmill/compare/v0.100.1...v0.100.2
 [0.100.1]: https://github.com/shipmill/shipmill/compare/v0.100.0...v0.100.1
 [0.100.0]: https://github.com/shipmill/shipmill/compare/v0.99.0...v0.100.0
