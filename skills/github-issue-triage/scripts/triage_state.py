@@ -98,7 +98,7 @@ For each open issue:
                    came after its question and no triage comment after the relay: a
                    comment whose first line is "Decision by @<login>" or
                    "Decision by `@<login>`" (D-61), an answer given in a session
-  VETOED          labelled decided (spec 030, a decision taken at notify) and a veto
+  VETOED           labelled decided (spec 030, a decision taken at notify) and a veto
                    came after its first decided marker, the comment whose first line is
                    <!-- shipmill:decided ... --> by the --bot-login or an OWNER, MEMBER,
                    or COLLABORATOR, with no newer <!-- shipmill:veto-handled ... -->
