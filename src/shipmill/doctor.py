@@ -72,6 +72,7 @@ DIRECTION_GUIDE = "https://github.com/shipmill/shipmill/blob/main/docs/direction
 OPERATE_CALLER = Path(".github") / "workflows" / "operate.yml"  # calls shipmill's operate.yml on a schedule
 DOWNSTREAM_CALLER = Path(".github") / "workflows" / "downstream.yml"  # calls shipmill's downstream.yml (spec 032)
 _BOT_WORKFLOWS = ("prepare.yml", "land.yml")
+RELEASES_OFF = 'releases off (mode = "off")'  # a check's note on what an agents-only repo needs no more (#852, #856)
 DECISIONS_SECTION = "decisions"  # the config's [decisions] section, and doctor's block for it (spec 030)
 DECIDED_LABEL = "decided"  # a notify decision's label, as triage_state.py reads it (spec 030)
 _ROADMAP_DEPRECATED = (
@@ -252,7 +253,7 @@ def doctor(
         add(False, "policy", str(exc))
         return checks
     read = found.relative_to(root)
-    add(True, "policy", f"{read}, mode {policy.mode}, lanes {', '.join(policy.lanes)}")
+    add(True, "policy", f"{read}, mode {policy.mode}, lanes {', '.join(policy.lanes) or 'none'}")
     if policy.roadmap is not None:
         add(False, "roadmap", _ROADMAP_DEPRECATED, warn=True)
     raw = read_config(found)
@@ -288,14 +289,16 @@ def doctor(
         f"latest stable {max(stable).tag}" if stable else "no stable vX.Y.Z tag yet",
         warn=True,
     )
-    if policy.bump_from is BumpFrom.PATHS and not stable:
+    if policy.bump_config is not None and policy.bump_from is BumpFrom.PATHS and not stable:
         add(False, "bump", "bump from = 'paths' diffs against the last stable tag; tag one first")
 
-    path = root / policy.changelog
-    if policy.fragments is not None and not (root / policy.fragments).is_dir():
+    # D-9: releases off may leave out the tables only a release reads (#856)
+    if policy.changelog_config is None:
+        add(True, "changelog", f"{RELEASES_OFF}: no [changelog]")
+    elif policy.fragments is not None and not (root / policy.fragments).is_dir():
         # S-013-2: a policy naming a folder that isn't there is broken, not a check to report
         raise ReleaseError(f"[changelog] fragments names {policy.fragments}, which is not a folder in {root}")
-    if not path.is_file():
+    elif not (path := root / policy.changelog).is_file():
         add(False, "changelog", f"no {policy.changelog}")
     else:
         try:
@@ -304,7 +307,7 @@ def doctor(
             pending = changelog.pending(fragments.entries(pieces))
             unknown = (
                 sorted({str(e.heading) for e in pending if e.heading not in policy.bump_headings})
-                if policy.bump_from is BumpFrom.HEADINGS
+                if policy.bump_config is not None and policy.bump_from is BumpFrom.HEADINGS
                 else []
             )
             held = (
@@ -330,7 +333,9 @@ def doctor(
         except ReleaseError as exc:
             add(False, "changelog", str(exc))
 
-    if policy.version_files is VersionFiles.PYPROJECT:
+    if policy.version_files_config is None:
+        add(True, "version", f"{RELEASES_OFF}: no version_files")
+    elif policy.version_files is VersionFiles.PYPROJECT:
         try:
             _, version = project_version(root)
             tagged = {max(t.version for t in tags), max(stable)} if stable else set()
@@ -364,7 +369,7 @@ def doctor(
 
     caller = root / CALLER
     if not caller.is_file() and policy.mode is Mode.OFF:  # D-9: an agents-only repo cuts no release (#852)
-        add(True, "workflow", f'releases off (mode = "off"): no {CALLER} needed')
+        add(True, "workflow", f"{RELEASES_OFF}: no {CALLER} needed")
     elif not caller.is_file():
         add(False, "workflow", f"no {CALLER}; `{cli_command()} init` writes one")
     else:

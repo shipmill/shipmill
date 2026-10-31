@@ -55,6 +55,56 @@ class BumpFrom(StrEnum):
     PATHS = "paths"  # whether files matching minor_paths changed since the last stable tag
 
 
+def releases_off(table: str) -> str:
+    """The refusal of a release command whose table a config with releases off leaves out (#856)"""
+    return f'releases off (mode = "off"): the config has no {table}, which this command reads; add {table} to release'
+
+
+@dataclass(frozen=True, slots=True)
+class ChangelogConfig:
+    """[changelog]: the file a release stamps, its style, and its fragments folder (spec 013)"""
+
+    path: str
+    style: Style
+    fragments: str | None  # the changelog fragments folder, or None
+
+    @classmethod
+    def parse(cls, t: Table) -> ChangelogConfig:
+        t.allow("path", "style", "fragments")
+        fragments = _fragments(t) if "fragments" in t.raw else None
+        return cls(t.string("path", default="CHANGELOG.md"), t.enum("style", Style), fragments)
+
+
+@dataclass(frozen=True, slots=True)
+class BumpConfig:
+    """[bump]: what decides the part a stable release bumps"""
+
+    source: BumpFrom
+    headings: Mapping[str, Part]
+    minor_paths: tuple[str, ...]
+
+    @classmethod
+    def parse(cls, t: Table, where: str) -> BumpConfig:
+        source = t.enum("from", BumpFrom)
+        headings: dict[str, Part] = {}
+        minor_paths: tuple[str, ...] = ()
+        if source is BumpFrom.HEADINGS:
+            t.allow("from", *Part)
+            for part in Part:
+                for heading in t.strings(part.value, default=()):
+                    if heading in headings:
+                        raise ReleaseError(f"{where}: [bump] lists heading {heading!r} twice")
+                    headings[heading] = part
+            if not headings:
+                raise ReleaseError(f"{where}: [bump] from = 'headings' needs major, minor, or patch lists")
+        else:
+            t.allow("from", "minor_paths")
+            minor_paths = t.strings("minor_paths")
+            if not minor_paths:
+                raise ReleaseError(f"{where}: [bump] from = 'paths' needs a non-empty minor_paths")
+        return cls(source, headings, minor_paths)
+
+
 @dataclass(frozen=True, slots=True)
 class VersionLine:
     file: str
@@ -125,12 +175,11 @@ class Policy:
     name: str
     mode: Mode
     branch: str
-    version_files: VersionFiles
-    changelog: str
-    style: Style
-    bump_from: BumpFrom
-    bump_headings: Mapping[str, Part]
-    minor_paths: tuple[str, ...]
+    # the release side's settings: None, and no lane, only under mode = "off" without the
+    # table (#856); the properties below read them and refuse a command that needs one
+    version_files_config: VersionFiles | None
+    changelog_config: ChangelogConfig | None
+    bump_config: BumpConfig | None
     lanes: Mapping[Lane, LaneRule]
     blocker_label: str | None
     blocker_lanes: frozenset[Lane]
@@ -147,7 +196,6 @@ class Policy:
     autonomy: AutonomyPolicy = AutonomyPolicy()
     agents: AgentsConfig | None = None  # the gate's [agents] section; validated here, read by the gate
     roadmap: RoadmapConfig | None = None  # the deprecated [roadmap] section (D-32): validated, read by nothing
-    fragments: str | None = None  # [changelog] fragments: the changelog fragments folder, or None (spec 013)
     notices: NoticesConfig = NoticesConfig()  # [notices]: validated here, read by shipped.py (spec 021)
     hooks: HooksConfig = HooksConfig()  # [hooks]: validated here, read by the plugin's hook (spec 026)
     downstream: DownstreamConfig | None = None  # [downstream]: the repos tested on a pull request (spec 032)
@@ -161,6 +209,49 @@ class Policy:
         if not any(e.health for e in self.environments.values()):
             return None
         return self.operate.incident_label
+
+    @property
+    def _changelog(self) -> ChangelogConfig:
+        if self.changelog_config is None:
+            raise ReleaseError(releases_off("[changelog]"))
+        return self.changelog_config
+
+    @property
+    def _bump(self) -> BumpConfig:
+        if self.bump_config is None:
+            raise ReleaseError(releases_off("[bump]"))
+        return self.bump_config
+
+    @property
+    def version_files(self) -> VersionFiles:
+        if self.version_files_config is None:
+            raise ReleaseError(releases_off("version_files"))
+        return self.version_files_config
+
+    @property
+    def changelog(self) -> str:
+        return self._changelog.path
+
+    @property
+    def style(self) -> Style:
+        return self._changelog.style
+
+    @property
+    def fragments(self) -> str | None:
+        """[changelog] fragments: the changelog fragments folder, or None (spec 013)"""
+        return self._changelog.fragments
+
+    @property
+    def bump_from(self) -> BumpFrom:
+        return self._bump.source
+
+    @property
+    def bump_headings(self) -> Mapping[str, Part]:
+        return self._bump.headings
+
+    @property
+    def minor_paths(self) -> tuple[str, ...]:
+        return self._bump.minor_paths
 
     @classmethod
     def load(cls, path: Path) -> Policy:
@@ -197,38 +288,25 @@ class Policy:
             "product",
             "decisions",
         )
-        changelog = top.table("changelog")
-        changelog.allow("path", "style", "fragments")
-        fragments = _fragments(changelog) if "fragments" in changelog.raw else None
-        bump = top.table("bump")
-        bump_from = bump.enum("from", BumpFrom)
-        headings: dict[str, Part] = {}
-        minor_paths: tuple[str, ...] = ()
-        if bump_from is BumpFrom.HEADINGS:
-            bump.allow("from", *Part)
-            for part in Part:
-                for heading in bump.strings(part.value, default=()):
-                    if heading in headings:
-                        raise ReleaseError(f"{where}: [bump] lists heading {heading!r} twice")
-                    headings[heading] = part
-            if not headings:
-                raise ReleaseError(f"{where}: [bump] from = 'headings' needs major, minor, or patch lists")
-        else:
-            bump.allow("from", "minor_paths")
-            minor_paths = bump.strings("minor_paths")
-            if not minor_paths:
-                raise ReleaseError(f"{where}: [bump] from = 'paths' needs a non-empty minor_paths")
+        mode = top.enum("mode", Mode)
+        # releases off: the release side's tables may be left out, and one that is there is read as ever (#856)
+        needed = mode is not Mode.OFF
+        changelog = ChangelogConfig.parse(top.table("changelog")) if needed or "changelog" in raw else None
+        bump = BumpConfig.parse(top.table("bump"), where) if needed or "bump" in raw else None
+        version_files = top.enum("version_files", VersionFiles) if needed or "version_files" in raw else None
         gates = top.table("gates", optional=True)
         gates.allow("blocker_label", "blocker_lanes", "freeze", "freeze_lanes")
         publish = top.table("publish", optional=True)
         publish.allow("tag_message", "release_title")
         bot = top.table("bot", optional=True)
         bot.allow("name", "email")
-        lanes_table = top.table("lanes")
-        lanes_table.allow(*Lane)
-        lanes = {Lane(k): _lane(Lane(k), lanes_table.table(k)) for k in lanes_table.raw}
-        if not lanes:
-            raise ReleaseError(f"{where}: [lanes] enables no lane")
+        lanes: dict[Lane, LaneRule] = {}
+        if needed or "lanes" in raw:
+            lanes_table = top.table("lanes")
+            lanes_table.allow(*Lane)
+            lanes = {Lane(k): _lane(Lane(k), lanes_table.table(k)) for k in lanes_table.raw}
+            if not lanes:
+                raise ReleaseError(f"{where}: [lanes] enables no lane")
         if Lane.STABLE in lanes and lanes[Lane.STABLE].promote and Lane.RC not in lanes:
             raise ReleaseError(f"{where}: lanes.stable promotes from rc, but lanes.rc is not enabled")
         declared = environments.parse(top.table("environments", optional=True), lanes)
@@ -248,14 +326,11 @@ class Policy:
         decisions = DecisionPolicy.parse(top.table("decisions", optional=True))
         return cls(
             name=top.string("name"),
-            mode=top.enum("mode", Mode),
+            mode=mode,
             branch=top.string("branch", default="main"),
-            version_files=top.enum("version_files", VersionFiles),
-            changelog=changelog.string("path", default="CHANGELOG.md"),
-            style=changelog.enum("style", Style),
-            bump_from=bump_from,
-            bump_headings=headings,
-            minor_paths=minor_paths,
+            version_files_config=version_files,
+            changelog_config=changelog,
+            bump_config=bump,
             lanes=lanes,
             blocker_label=gates.string("blocker_label", default="release-blocker") or None,
             blocker_lanes=frozenset(gates.enums("blocker_lanes", Lane, default=(Lane.RC, Lane.STABLE))),
@@ -272,7 +347,6 @@ class Policy:
             agents=agents,
             operate=operate,
             roadmap=roadmap,
-            fragments=fragments,
             notices=notices,
             hooks=hooks,
             downstream=downstream,
@@ -281,6 +355,8 @@ class Policy:
         )
 
     def rule(self, lane: Lane) -> LaneRule:
+        if not self.lanes:  # only under mode = "off" without [lanes]
+            raise ReleaseError(releases_off("[lanes]"))
         if lane not in self.lanes:
             raise ReleaseError(f"lane {lane} is not enabled in the policy's [lanes]")
         return self.lanes[lane]
@@ -288,10 +364,10 @@ class Policy:
     @property
     def major_headings(self) -> frozenset[str]:
         """The headings whose entries bump the major part: a stable candidate holding one is
-        breaking and waits for the maintainer (spec 029); none under from = 'paths'"""
-        if self.bump_from is not BumpFrom.HEADINGS:
+        breaking and waits for the maintainer (spec 029); none under from = 'paths' or without [bump]"""
+        if self.bump_config is None or self.bump_config.source is not BumpFrom.HEADINGS:
             return frozenset()
-        return frozenset(h for h, part in self.bump_headings.items() if part is Part.MAJOR)
+        return frozenset(h for h, part in self.bump_config.headings.items() if part is Part.MAJOR)
 
     @property
     def can_break(self) -> bool:

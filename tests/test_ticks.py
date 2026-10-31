@@ -291,6 +291,46 @@ def test_852_doctor_needs_no_release_workflow_with_releases_off(repo: Repo) -> N
     assert [c.status for c in checks if c.name == "workflow"] == ["FAIL"]
 
 
+AGENTS_ONLY = (
+    'name = "demo"\nmode = "off"\n\n[agents]\nprompt = "/github-issue-triage"\nmode = "headless"\napp_id = 1\n'
+)
+
+
+def test_856_doctor_passes_an_agents_only_config_with_a_note_for_each_release_table(repo: Repo) -> None:
+    repo.write(str(CONFIG_PATH), AGENTS_ONLY)
+    checks = doctor(repo.root, repo.github, today=TODAY)
+    found = {c.name: (c.status, c.detail) for c in checks}
+    assert not [c for c in checks if "changelog-fragments" in c.detail]  # an upgrade that has no [changelog] to add to
+    assert found["policy"] == ("PASS", ".github/shipmill.toml, mode off, lanes none")
+    assert found["changelog"] == ("PASS", 'releases off (mode = "off"): no [changelog]')
+    assert found["version"] == ("PASS", 'releases off (mode = "off"): no version_files')
+    assert found["workflow"] == ("PASS", f'releases off (mode = "off"): no {CALLER} needed')
+    assert "bump" not in found
+
+
+def test_856_doctor_checks_a_changelog_that_is_there_with_releases_off(repo: Repo) -> None:
+    _policy(repo, "[lanes.dev]\nquiet_minutes = 30\n", HEAD.replace('mode = "release"', 'mode = "off"'))
+    (repo.root / "CHANGELOG.md").unlink()
+    found = [(c.status, c.detail) for c in doctor(repo.root, repo.github, today=TODAY) if c.name == "changelog"]
+    assert found == [("FAIL", "no CHANGELOG.md")]
+
+
+def test_856_a_release_command_refuses_naming_the_table_releases_off_leaves_out(repo: Repo) -> None:
+    repo.write(str(CONFIG_PATH), AGENTS_ONLY)
+    repo.git.run("commit", "-qam", "agents only")
+    refusal = 'shipmill: releases off (mode = "off"): the config has no [changelog], which this command reads'
+    prepare = ["prepare", "--lane", "dev", "--version", "1.0.1.dev1", "--base", "HEAD"]
+    for command in (["notes", "--version", "1.0.0"], prepare):
+        argv = [sys.executable, "-m", "shipmill", "--repo", str(repo.root), *command]
+        out = subprocess.run(argv, capture_output=True, text=True, check=False)
+        assert (out.returncode, out.stderr) == (2, refusal + "; add [changelog] to release\n")
+    # settle-minutes, run as the workflow does (gh links the default changelog), prints 0, and plan skips
+    argv = [sys.executable, "-m", "shipmill", "--repo", str(repo.root), "settle-minutes"]
+    out = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert (out.returncode, out.stdout) == (0, "0\n"), out.stderr
+    assert main(["--repo", str(repo.root), "plan", "--event", "push"], repo.github) == 0
+
+
 def test_crons_reads_quoted_and_bare_lines_with_comments() -> None:
     text = "on:\n  schedule:\n    - cron: \"7 * * * *\" # hourly\n    - cron: '0  4 * * 1'\n    - cron: 30 2 * * 6\n"
     assert crons(text) == ("7 * * * *", "0 4 * * 1", "30 2 * * 6")

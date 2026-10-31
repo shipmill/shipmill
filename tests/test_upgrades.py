@@ -258,7 +258,11 @@ def test_apply_refuses_a_table_without_a_header_line_it_can_edit(tmp_path: Path,
             "changelog-fragments",
             "upgrade changelog-fragments is already decided: [changelog] fragments is set",
         ),
-        ('name = "demo"\n', "changelog-fragments", "upgrade changelog-fragments: .github/shipmill.toml has no"),
+        (  # #856: releases off may leave [changelog] out, and the upgrade then doesn't apply
+            'name = "demo"\n',
+            "changelog-fragments",
+            "upgrade changelog-fragments doesn't apply: .github/shipmill.toml has no [changelog] section",
+        ),
     ],
 )
 def test_s014_3_apply_exits_2_naming_the_id(tmp_path: Path, config: str, upgrade: str, error: str) -> None:

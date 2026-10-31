@@ -315,7 +315,9 @@ def _rest(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _changelog(policy: Policy, path: str) -> bool:
-    """The changelog, or a changelog fragment (spec 013)"""
+    """The changelog, or a changelog fragment (spec 013); none without [changelog] (#856)"""
+    if policy.changelog_config is None:
+        return False
     if path == policy.changelog:
         return True
     if policy.fragments is None:

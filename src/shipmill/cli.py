@@ -998,8 +998,8 @@ def main(
         return 0
 
     policy = Policy.load(config_path(root))
-    if github is None:  # a body cut to fit links the policy's changelog (#499)
-        hub = GhCli(root, changelog=policy.changelog)
+    if github is None:  # a body cut to fit links the policy's changelog (#499), the default one without [changelog]
+        hub = GhCli(root) if policy.changelog_config is None else GhCli(root, changelog=policy.changelog)
     git = Git(root, policy.bot_name, policy.bot_email)
     today = dt.datetime.now(dt.UTC).date()
     if args.command == "settle-minutes":
