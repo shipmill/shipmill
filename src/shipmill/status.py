@@ -47,6 +47,9 @@ from shipmill.version import Version
 # cli.run's "shipmill: <error>", uvx's "error: ...", or a traceback
 DECISION = re.compile(r"^[A-Z][A-Z_]*: ")
 FAILURE = re.compile(r"^(?:shipmill: |error: |Traceback )")
+UV_CAUSE = re.compile(r"^\s+Caused by: (.*)$")  # the chain uv prints under its `error:` line
+# #848: uv couldn't reach the index: its fetch failed on DNS or on the connection itself
+UV_OFFLINE = re.compile(r"^(?:dns error\b|client error \(Connect\)$)")
 PYPI_WAIT = re.compile(r"^PYPI_WAIT: plugin (\d+\.\d+\.\d+\S*) waits for PyPI\b")  # gate.Action.PYPI_WAIT's line
 NEVER_EXITED = "(never exited)"  # launchctl's last exit code before a job's first run
 # a gh read failing on one of these is run once more (S-011-11): watch_state.py's
@@ -283,6 +286,7 @@ class Job:
     last: str | None  # the log's last decision line, or the failure after it
     failed: bool  # last is a failed tick's line
     files: JobFiles
+    offline: bool = False  # #848: last is uv's `error:` line for a fetch the network refused
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,11 +409,17 @@ def parse_job(
     state = re.search(r"^\tstate = (.+)$", printed or "", re.MULTILINE)
     code = re.search(r"^\tlast exit code = (.+)$", printed or "", re.MULTILINE)
     last, traceback = None, False
+    causes: list[str] | None = None  # an `error:` line's `Caused by:` chain, as uv prints it
     for line in (log or "").splitlines():
         if DECISION.match(line) or FAILURE.match(line):
             last, traceback = line, line.startswith("Traceback ")
+            causes = [line.removeprefix("error: ")] if line.startswith("error: ") else None
+        elif causes is not None and (cause := UV_CAUSE.match(line)):
+            causes.append(cause.group(1))
         elif traceback and line.strip() and not line[0].isspace():
             last = line  # a traceback's last unindented line is its error
+        elif line.strip() and not line[0].isspace():
+            causes = None  # the chain ended: whatever printed this line came after uv
     return Job(
         interval=dt.timedelta(seconds=interval) if isinstance(interval, int) else None,
         loaded=printed is not None,
@@ -419,7 +429,14 @@ def parse_job(
         last=last,
         failed=traceback or (last is not None and FAILURE.match(last) is not None),
         files=files,
+        offline=causes is not None and uv_offline(causes),
     )
+
+
+def uv_offline(causes: Sequence[str]) -> bool:
+    """#848: uv's error chain says it couldn't fetch from the index for want of a network:
+    `Failed to fetch: <url>` caused by a DNS or a connect error, never an HTTP status"""
+    return any(c.startswith("Failed to fetch: ") for c in causes) and any(UV_OFFLINE.match(c) for c in causes)
 
 
 def parse_waketime(text: str) -> dt.datetime | None:
@@ -984,6 +1001,15 @@ def tick_problem(record: TickRecord, job: Job, repo: str, now: dt.datetime) -> J
     return None
 
 
+def offline_shown(job: Job, now: dt.datetime) -> str:
+    """#848: the gate line for a run whose uvx couldn't reach the index, with when launchd runs
+    it next, as far as the job's interval and the log's last write tell"""
+    if job.interval is None or job.last_run is None:
+        return "offline at last tick"
+    due = job.last_run + job.interval
+    return f"offline at last tick, next in {ago(due - now)}" if due > now else "offline at last tick, next run due now"
+
+
 def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobProblem]:
     if not job.loaded:
         load = f"launchctl bootstrap gui/{job.files.uid} {shlex.quote(str(job.files.plist))}"
@@ -995,8 +1021,10 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
         found.append(ticked)
     failing = record is not None and record.failing is not None
     code = re.match(r"^-?\d+", job.last_exit or "")  # launchctl may add a name: "78: EX_CONFIG"
+    exited = code is not None and int(code.group()) != 0
+    offline = exited and job.offline  # #848: uvx found no network, so shipmill never started
     # S-048-11: a failing tick's exit 2 is the cause above, shown once
-    if code is not None and int(code.group()) != 0 and not (failing and int(code.group()) == FAILING_EXIT):
+    if exited and code is not None and not offline and not (failing and int(code.group()) == FAILING_EXIT):
         reason = f"the gate's last run exited {job.last_exit}"
         found.append(JobProblem(Verdict.STUCK, reason, f"failed: exit {job.last_exit}", _log_fix(job, repo)))
     if job.interval is not None and job.last_run is not None and not job.running:
@@ -1009,7 +1037,10 @@ def job_problems(gate: Gate, job: Job, repo: str, now: dt.datetime) -> list[JobP
     if ticked is not None:  # the record shows the log's last line, its own, with its cause and fix
         return found
     last = job.last or ""
-    if job.failed:
+    if offline:  # transient: the next run retries by itself, and stale fires if it never comes
+        kick = f"launchctl kickstart gui/{job.files.uid}/{label(repo)}"
+        found.append(JobProblem(None, "", offline_shown(job, now), kick))
+    elif job.failed:
         found.append(
             JobProblem(Verdict.STUCK, f"the gate's last tick failed: {last}", f"failed: {last}", _log_fix(job, repo))
         )

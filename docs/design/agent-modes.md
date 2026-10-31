@@ -266,7 +266,8 @@ headless session when the tick that started it exits; a job installed before it 
 `shipmill launchd` run once more), and a log under `~/Library/Logs/shipmill/`. launchd gives
 jobs a minimal PATH, so the job carries one built from where claude, gh, git, and uvx live,
 skipping temporary folders: cmux, for one, puts a `claude` shim in one that vanishes when
-the app restarts. Install refuses a checkout that isn't dedicated or has no `[agents]`
+the app restarts. It also sets `UV_HTTP_RETRIES=8`, about a minute of uv backoff, so the
+first tick after a login, before the network is back, still reaches PyPI (#848). Install refuses a checkout that isn't dedicated or has no `[agents]`
 section, so a job never fails the same way on every tick.
 
 ### What Claude Code provides
