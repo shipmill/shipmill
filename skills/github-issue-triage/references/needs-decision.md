@@ -132,7 +132,7 @@ An interactive gate session that gets the answer through AskUserQuestion puts th
    Answered in the session: <the option or the user's own words>
    ```
 
-   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`). The login sits in a code span so the record doesn't email the person; a reader takes an older line with the login bare, `Decision by @<login>, relayed by <agent>`, as the same answer (D-61). `shipmill gh` ends the relay with the [agent marker](#the-agent-marker), so the relay is no reply: removing the label in the next step is what moves the item
+   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`). The login sits in a code span so the record doesn't email the person; a reader takes an older line with the login bare, `Decision by @<login>, relayed by <agent>`, as the same answer (D-61). `shipmill gh` ends the relay with the [agent marker](#the-agent-marker), so the relay is no reply: removing the label in the next step is what moves the item. With the label off, the scripts read a relay by the App after the question as the answer still to take up, until a newer triage comment or the item's next state shows it was: `watch_state.py`'s UPGRADE_PENDING and DIRECTION_PENDING say "answered; take up the answer", and `triage_state.py` reads any other issue as DECIDED, its note ending "relayed", where it would read NEW, NEEDS_PR, or TRIAGED
 2. Remove the `needs-decision` label: `gh issue edit <n> --remove-label needs-decision` (or `gh pr edit`)
 3. Record the answer with `decisions.py add` when it sets a rule, as the [design gate](design-gate.md) says, and go on
 
@@ -161,7 +161,7 @@ A marker comment from any other author never counts, so an outsider can't re-par
 
 ## Taking up an answered item
 
-Once a trusted person replies, `triage_state.py` reads an issue as DECIDED, an action read before any other state, so `watch_state.py` lists it in ISSUES and the gate starts a session on the next tick, whatever the reply links. A pull request reads as open work again (PRS_OPEN). Once the label is off, the item reads its usual state (NEW, NEEDS_PR, UNBLOCKED, and so on). The session that takes it up:
+Once a trusted person replies, `triage_state.py` reads an issue as DECIDED, an action read before any other state, so `watch_state.py` lists it in ISSUES and the gate starts a session on the next tick, whatever the reply links. A pull request reads as open work again (PRS_OPEN). Once the label is off, the item reads its usual state (NEW, NEEDS_PR, UNBLOCKED, and so on), save one answered by a relay (see [Answered in the session](#answered-in-the-session)), which reads DECIDED until a triage comment after the relay takes it up. The session that takes it up:
 
 1. Reads the reply. A reply that answers none of the options, or asks something back, is a new question: ask again with this protocol
 2. Removes the `needs-decision` label before it acts on the answer: `gh issue edit <n> --remove-label needs-decision` (or `gh pr edit`)

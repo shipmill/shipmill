@@ -83,7 +83,7 @@ def rows(
         problems,
         never if found is None else lambda: found,
         never if prs is None else lambda: prs,
-        never if comments is None else lambda n: comments,
+        lambda n: [] if comments is None else comments,  # no comments unless given
         BOT,
         reopened,
     )
@@ -290,7 +290,7 @@ def pending(direction: Any) -> list[tuple[str, str]]:
 
 
 def test_s034_6_an_open_issue_without_the_label_reads_ask_the_maintainer(ws: ModuleType) -> None:
-    # comments are never read without the label; the oldest open issue is the question
+    # the oldest open issue is the question
     direction = rows(ws, found=[issue(15), issue(12)], prs=[])
     assert pending(direction) == [("#12", "ask the maintainer")]
     assert direction.rows[0].detail == "no docs/product.md on origin/main; #12 is open, its question not asked"
@@ -377,7 +377,7 @@ def test_s034_7_reopened_after_its_pull_request_closed_asks_again(ws: ModuleType
 
     found = [issue(12, created_at="2026-10-01T00:00:00Z")]
     direction = ws.direction_rows(
-        REPO, "main", False, never, lambda: found, lambda: [pr(30, "CLOSED")], never, BOT, reopened
+        REPO, "main", False, never, lambda: found, lambda: [pr(30, "CLOSED")], lambda n: [], BOT, reopened
     )
     assert pending(direction) == [("#12", "ask the maintainer")]
     assert asked == [12]
@@ -387,7 +387,7 @@ def test_s034_7_a_pull_request_closed_before_the_issue_was_opened_never_declines
     # a second direction issue opened after an older one's pull request closed: no events read
     found = [issue(20, created_at="2026-10-05T00:00:00Z")]
     prs = lambda: [pr(30, "CLOSED")]  # noqa: E731
-    direction = ws.direction_rows(REPO, "main", False, never, lambda: found, prs, never, BOT, never)
+    direction = ws.direction_rows(REPO, "main", False, never, lambda: found, prs, lambda n: [], BOT, never)
     assert pending(direction) == [("#20", "ask the maintainer")]
 
 
