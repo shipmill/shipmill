@@ -1,6 +1,6 @@
 # S-047: The gate's sweep proposes config upgrades, and a fleet report shows who relies on a deprecated key
 
-status: draft
+status: approved
 serves: G-1
 
 ## Problem
