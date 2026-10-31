@@ -1,3 +1,0 @@
-### Fixed
-
-- A pull request that is a person's item (labelled `role:<name>` or `human`, with an assignee), such as one the maintainer holds for their own merge, now waits on that person: `watch_state.py` lists it as `WITH_PERSON #N (@login)` in a new PRS_PARKED row instead of PRS_OPEN, so the gate's tier 3 starts no session for it every `retry_hours`; the gate's in-flight line says `1 waits on @login (#N)` instead of `waits to land`, and `shipmill status` lists it on the parked line. Taking up a "hold: I merge it by hand" answer on a pull request labels it `role:maintainer` and assigns the maintainer. `watch_state.py`'s error line for a failed command names the whole command, its endpoint included, with gh field and header values left out (#853)

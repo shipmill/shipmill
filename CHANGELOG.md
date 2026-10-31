@@ -7,6 +7,14 @@ bot.
 
 ## [Unreleased]
 
+## [0.100.2] - 2026-10-31
+
+### Fixed
+
+- Gate: an answer relayed from a session (`Decision by @<login>, relayed by ...`, the label removed) reads as answered, so the gate takes it up rather than asking again, on an upgrade issue, a direction issue, and any other issue (#849)
+- A repo that uses only the agent side (`mode = "off"` and no release workflow) runs a gate: the ship watch reads it as having no release bot (`BOT_NONE`, `releases off`) instead of stopping with `neither release.yml nor release-bot.yml calls a bot`, and `shipmill doctor`'s `workflow` check passes with a note that no release workflow is needed; a missing release workflow under `mode = "release"` or `"dry-run"` still stops the watch and fails doctor (#852)
+- A pull request that is a person's item (labelled `role:<name>` or `human`, with an assignee), such as one the maintainer holds for their own merge, now waits on that person: `watch_state.py` lists it as `WITH_PERSON #N (@login)` in a new PRS_PARKED row instead of PRS_OPEN, so the gate's tier 3 starts no session for it every `retry_hours`; the gate's in-flight line says `1 waits on @login (#N)` instead of `waits to land`, and `shipmill status` lists it on the parked line. Taking up a "hold: I merge it by hand" answer on a pull request labels it `role:maintainer` and assigns the maintainer. `watch_state.py`'s error line for a failed command names the whole command, its endpoint included, with gh field and header values left out (#853)
+
 ## [0.100.1] - 2026-10-31
 
 ### Fixed
@@ -2102,7 +2110,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.100.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.100.2...HEAD
+[0.100.2]: https://github.com/shipmill/shipmill/compare/v0.100.1...v0.100.2
 [0.100.1]: https://github.com/shipmill/shipmill/compare/v0.100.0...v0.100.1
 [0.100.0]: https://github.com/shipmill/shipmill/compare/v0.99.0...v0.100.0
 [0.99.0]: https://github.com/shipmill/shipmill/compare/v0.98.1...v0.99.0
