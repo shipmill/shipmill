@@ -280,6 +280,17 @@ def test_doctor_leaves_a_missing_release_workflow_to_the_workflow_check(repo: Re
     assert not [c for c in checks if c.name == "schedule"]
 
 
+def test_852_doctor_needs_no_release_workflow_with_releases_off(repo: Repo) -> None:
+    _policy(repo, "[lanes.dev]\nquiet_minutes = 30\n", HEAD.replace('mode = "release"', 'mode = "off"'))
+    checks = doctor(repo.root, repo.github, today=TODAY)
+    workflow = [(c.status, c.detail) for c in checks if c.name == "workflow"]
+    assert workflow == [("PASS", f'releases off (mode = "off"): no {CALLER} needed')]
+    # a release.yml that exists is checked as before under mode = "off"
+    repo.write(str(CALLER), "on: push\n")
+    checks = doctor(repo.root, repo.github, today=TODAY)
+    assert [c.status for c in checks if c.name == "workflow"] == ["FAIL"]
+
+
 def test_crons_reads_quoted_and_bare_lines_with_comments() -> None:
     text = "on:\n  schedule:\n    - cron: \"7 * * * *\" # hourly\n    - cron: '0  4 * * 1'\n    - cron: 30 2 * * 6\n"
     assert crons(text) == ("7 * * * *", "0 4 * * 1", "30 2 * * 6")
