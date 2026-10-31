@@ -211,8 +211,21 @@ def test_853_known_needs_each_pull_requests_assignees(tmp_path: Path) -> None:
             f"gh api --paginate repos/o/r/{'x' * 300} ...",
         ),
         (["git", "-C", "/tmp/a b", "fetch"], "git -C '/tmp/a b' fetch"),
+        (
+            # a header's value is cut at its name's colon, even when the value holds an `=`
+            [
+                "gh",
+                "api",
+                "-H",
+                "Authorization: Basic Z2hzX3NlY3JldA==",
+                "--header=Authorization: Basic Z2hzX3NlY3JldA==",
+                "-HAuthorization: Basic Z2hzX3NlY3JldA==",
+                "repos/o/r",
+            ],
+            "gh api -H Authorization:... --header=Authorization:... -HAuthorization:... repos/o/r",
+        ),
     ],
-    ids=["get", "graphql", "long", "git"],
+    ids=["get", "graphql", "long", "git", "header"],
 )
 def test_853_the_error_line_names_the_whole_command_and_no_field_value(
     ws: ModuleType, capsys: pytest.CaptureFixture[str], cmd: list[str], shown: str
@@ -222,7 +235,7 @@ def test_853_the_error_line_names_the_whole_command_and_no_field_value(
         ws.checked(cmd, failed)
     err = capsys.readouterr().err
     assert err == f"error: {shown}: HTTP 403: Resource not accessible by integration\n"
-    assert "ghs_secret" not in err and "viewer" not in err
+    assert "ghs_secret" not in err and "viewer" not in err and "Z2hz" not in err
 
 
 @pytest.mark.parametrize(("closed", "queries"), [(2, 1), (60, 2)])

@@ -898,10 +898,9 @@ def hidden_values(cmd: Sequence[str]) -> list[str]:
     field's key and a header's name"""
 
     def hide(value: str) -> str:
-        for mark in ("=", ":"):
-            if mark in value:
-                return f"{value.partition(mark)[0]}{mark}..."
-        return "..."
+        # kept up to the first `=` or `:`, whichever comes first: a header's value may hold an `=`
+        cuts = [at for at in (value.find("="), value.find(":")) if at >= 0]
+        return f"{value[: min(cuts) + 1]}..." if cuts else "..."
 
     words: list[str] = []
     for at, word in enumerate(cmd):
