@@ -57,7 +57,7 @@ from shipmill.hooks import HookTest
 from shipmill.land import BLOCKING_BRANCH, WORK_PREFIX, blocked
 from shipmill.plugin import PLUGIN, USER_UPDATE, Fetch, GateCli, PyPI, publish_fix
 from shipmill.plugin import pypi as ask_pypi
-from shipmill.policy import BumpFrom, Lane, Policy, VersionFiles
+from shipmill.policy import BumpFrom, Lane, Mode, Policy, VersionFiles
 from shipmill.product import DIRECTION
 from shipmill.product import check as check_product
 from shipmill.requires import FILE as CONFIG_FILE
@@ -363,7 +363,9 @@ def doctor(
         add(hits == 1, "version_lines", f"{line.file}: {line.pattern.pattern!r} matches {hits} time(s)")
 
     caller = root / CALLER
-    if not caller.is_file():
+    if not caller.is_file() and policy.mode is Mode.OFF:  # D-9: an agents-only repo cuts no release (#852)
+        add(True, "workflow", f'releases off (mode = "off"): no {CALLER} needed')
+    elif not caller.is_file():
         add(False, "workflow", f"no {CALLER}; `{cli_command()} init` writes one")
     else:
         text = caller.read_text(encoding="utf-8")

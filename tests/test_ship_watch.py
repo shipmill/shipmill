@@ -294,6 +294,36 @@ def test_bot_detection(ws: ModuleType, tmp_path: Path) -> None:
     assert ws.bot_workflow(tmp_path) == ("release.yml", True)
 
 
+AGENTS_ONLY = 'name = "demo"\nmode = "off"\n\n[agents]\nmode = "headless"\napp_id = 1\n'
+
+
+@pytest.mark.parametrize("mode", ["release", "dry-run"])
+def test_852_a_missing_release_workflow_still_stops_a_watch_with_releases_on(
+    ws: ModuleType, tmp_path: Path, mode: str
+) -> None:
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "shipmill.toml").write_text(AGENTS_ONLY.replace('"off"', f'"{mode}"', 1))
+    with pytest.raises(SystemExit):
+        ws.bot_workflow(tmp_path)
+
+
+def test_852_releases_off_without_a_release_workflow_has_no_bot(ws: ModuleType, tmp_path: Path) -> None:
+    """An agents-only repo (mode = "off", no release workflow) runs the gate's agent tiers"""
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "shipmill.toml").write_text(AGENTS_ONLY)
+    assert ws.bot_workflow(tmp_path) is None
+    # a release workflow that exists is read as before, whatever the mode
+    (tmp_path / ".github" / "workflows").mkdir()
+    (tmp_path / ".github" / "workflows" / "release-bot.yml").write_text("name: Release bot\n")
+    assert ws.bot_workflow(tmp_path) == ("release-bot.yml", False)
+
+
+def test_852_the_release_mode_reads_under_python_310(ws: ModuleType) -> None:
+    assert ws.release_mode_310(AGENTS_ONLY) == "off"
+    assert ws.release_mode_310("mode = 'release'  # on\n") == "release"
+    assert ws.release_mode_310('[agents]\nmode = "headless"\n') is None  # never [agents]' mode
+
+
 def test_package_name_reads_the_project_table(ws: ModuleType, tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text('[tool.x]\nname = "not-it"\n\n[project]\nname = "pkg"\nversion = "1"\n')
     assert ws.package_name(tmp_path) == "pkg"

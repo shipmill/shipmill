@@ -21,7 +21,8 @@ one branch fetched, and every read at origin/<branch> reads it.
                   any other failure, such as uvx's, still exits 2): that error line, and the
                   plan to run in the checkout to see it. The watch reads the plan as no release
                   due and reads the rest; the release workflow's own plan stops at the same error
-  BOT_OK          none of these; BOT_NONE when the repo has no bot (it releases by "tag X")
+  BOT_OK          none of these; BOT_NONE when the repo has no bot (it releases by "tag X",
+                  or its config sets mode = "off" and it has no release workflow)
   WORK_BRANCH_STALE  for a shipmill bot: a shipmill/v* work branch on origin while no run of
                   the workflow is unfinished (asked by status, however old), so no run owns it: a
                   run cancelled before its cleanup job left it, and each later run stops
@@ -948,7 +949,9 @@ def policy_file(repo_dir: Path) -> Path | None:
 
 
 def bot_workflow(repo_dir: Path) -> tuple[str, bool] | None:
-    """The bot's workflow file and whether it is a shipmill bot, or None without a bot"""
+    """The bot's workflow file and whether it is a shipmill bot, or None without a bot: no
+    policy, or a policy with releases off (mode = "off") and no release workflow, which an
+    agents-only repo is (#852). A release workflow that exists is read whatever the mode"""
     policy = policy_file(repo_dir)
     if policy is None:
         return None
@@ -958,7 +961,27 @@ def bot_workflow(repo_dir: Path) -> tuple[str, bool] | None:
         return "release.yml", True
     if (workflows / "release-bot.yml").is_file():
         return "release-bot.yml", False
+    if releases_off(repo_dir, policy):
+        return None
     raise Refused(f"error: {policy} exists but neither release.yml nor release-bot.yml calls a bot")
+
+
+def releases_off(repo_dir: Path, policy: Path) -> bool:
+    """Whether the config's top-level mode is "off", read as shipmill reads it: tomllib on
+    3.11+, a plain string line before the first table on 3.10"""
+    text = (repo_dir / policy).read_text(encoding="utf-8")
+    if tomllib is None:
+        return release_mode_310(text) == "off"
+    try:
+        return tomllib.loads(text).get("mode") == "off"
+    except tomllib.TOMLDecodeError as exc:
+        raise Refused(f"error: {policy}: {exc}") from None
+
+
+def release_mode_310(text: str) -> str | None:
+    """mode on Python 3.10: the plain string before the first table, so never [agents]' mode;
+    None without one, which reads as releases on"""
+    return toml_string(toml_tables(text).get("", ""), "mode")
 
 
 @dataclass(frozen=True)
@@ -4602,8 +4625,10 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
 
     rows: list[Row] = settings_rows(args.repo, view["deleteBranchOnMerge"])
     bot = bot_workflow(repo_dir)
-    if bot is None or policy is None:
+    if policy is None:
         rows.append(Row("BOT_NONE", args.repo, 'no release policy: releases by "tag X"'))
+    elif bot is None:  # releases off and no release workflow: an agents-only repo (#852)
+        rows.append(Row("BOT_NONE", args.repo, f'releases off: mode = "off" in {policy}'))
     else:
         workflow, shipmill = bot
         due, failed = bot_plan(args.repo, repo_dir, policy, branch, args.tool, workflow) if shipmill else (None, [])
