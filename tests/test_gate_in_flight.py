@@ -299,6 +299,7 @@ def test_s048_25_json_prints_in_flight_on_quiet_and_null_otherwise(checkout: Git
         "failing": [774],
         "landed": {"number": 770, "at": dt.datetime.fromisoformat(MERGED).isoformat()},
         "result": None,
+        "with_person": [],
     }
     written = json.loads((state_dir(checkout) / TICK).read_text(encoding="utf-8"))
     assert written["in_flight"] == tick_record(quiet, None, (), (), dry_run=False)["in_flight"]
@@ -318,4 +319,59 @@ def test_s048_25_tick_json_round_trips_in_flight(tmp_path: Path) -> None:
     data["in_flight"]["ci"] = ["#771"]
     path.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ReleaseError, match=r"tick\.json is malformed \(in_flight\.ci must be a pull request number\)"):
+        load_tick(path)
+
+
+# -- #853: a person's pull request waits on that person, not to land
+
+
+def held(number: int, *logins: str, label: str = "role:maintainer") -> dict[str, Any]:
+    """An open pull request the maintainer holds for their own merge: labelled and assigned"""
+    found: dict[str, Any] = pull(number)
+    found["labels"]["nodes"] = [{"name": label}]
+    found["assignees"]["nodes"] = [{"login": login} for login in logins]
+    return found
+
+
+def test_853_a_persons_pull_request_is_in_flight_as_waiting_on_them(checkout: Git) -> None:
+    pulls = [pull(772), held(160, "romamo"), held(158, "romamo", label="Human"), held(161), held(159, "ann", "bo")]
+    quiet = tick(checkout, answering(graphql_answer(pulls=pulls)))
+    assert quiet.action is Action.QUIET  # watch_state.py's tier 3 prints no item for them (test_watch_tiers)
+    assert quiet.reason.endswith(
+        "in flight: 2 wait to land (#161, #772), 2 wait on @romamo (#158, #160), 1 waits on @ann @bo (#159);"
+        " no landed pull request in the last 10 commits; no session has ended with a result yet"
+    )
+    found = changed(graphql_answer(pulls=pulls))
+    assert found.flight is not None
+    assert found.flight.with_person == ((158, ("romamo",)), (159, ("ann", "bo")), (160, ("romamo",)))
+    assert 160 not in found.flight.landing and 161 in found.flight.landing  # labelled, no assignee: a session's
+    assert prs_assignees(found) == {158: ["romamo"], 159: ["ann", "bo"], 160: ["romamo"], 161: [], 772: []}
+    assert quiet.in_flight is not None and quiet.in_flight.record()["with_person"] == [
+        {"number": 158, "assignees": ["romamo"]},
+        {"number": 159, "assignees": ["ann", "bo"]},
+        {"number": 160, "assignees": ["romamo"]},
+    ]
+
+
+def prs_assignees(changes: Changes) -> dict[int, list[str]]:
+    """watch_state.py --known's pull requests' assignees, as gh pr list prints them"""
+    found: list[dict[str, Any]] = json.loads(json.dumps(changes.known))["prs"]
+    return {int(p["number"]): [a["login"] for a in p["assignees"]] for p in found}
+
+
+def test_853_tick_json_round_trips_with_person_and_reads_one_written_before_it(tmp_path: Path) -> None:
+    flight = InFlight((), (772,), (), None, None, ((160, ("romamo",)),))
+    record = TickRecord(NOW, "QUIET", "no change since x; in flight: ...", None, None, None, flight)
+    path = tmp_path / TICK
+    save_tick(path, record)
+    assert load_tick(path) == record
+    assert flight.line(NOW).startswith("in flight: 1 waits to land (#772), 1 waits on @romamo (#160);")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["in_flight"]["with_person"]  # a tick.json a shipmill before #853 wrote
+    path.write_text(json.dumps(data), encoding="utf-8")
+    loaded = load_tick(path)
+    assert loaded is not None and loaded.in_flight == InFlight((), (772,), (), None, None)
+    data["in_flight"]["with_person"] = [{"number": 160, "assignees": ["not a login"]}]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ReleaseError, match=r"in_flight\.with_person\.assignees must be a list of logins"):
         load_tick(path)

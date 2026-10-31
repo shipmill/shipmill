@@ -83,6 +83,7 @@ CHAIN_ROWS = ("CHAIN_NO_GATE", "CHAIN_CYCLE", "CHAIN_UNREADABLE")  # CHAIN_CYCLE
 # stable tag overtook, renamed to the version the lane cuts next
 MILESTONE_WAITING = "MILESTONE_WAITING"
 MILESTONE_OVERTAKEN = "MILESTONE_OVERTAKEN"
+PRS_PARKED = "PRS_PARKED"  # #853: a person's open pull requests, each waiting on its assignees
 YOURS_ROWS = (
     "HOLD",
     "PROMOTION_DUE",
@@ -104,6 +105,7 @@ PLACED = {
     "ISSUES",
     "ISSUES_OPEN",
     "PRS_OPEN",
+    PRS_PARKED,  # #853: the parked line says it, with whom each waits on
     "NEEDS_DECISION",
     "RUNS_ACTIVE",
     "AGENT_SESSION",
@@ -847,6 +849,25 @@ def to_land(rows: Sequence[Row]) -> list[int]:
     return sorted(set(_row_numbers(rows, "PRS_OPEN")), reverse=True)
 
 
+PARKED_PULL = re.compile(r" #(\d+) \((@[^()]+)\)")
+
+
+def parked_pulls(rows: Sequence[Row]) -> list[tuple[int, str]]:
+    """#853: the PRS_PARKED row's pull requests, newest first, each with whom it waits on as
+    watch_state.py names them; its detail is `WITH_PERSON #N (@login ...) ...` and nothing else"""
+    found: list[tuple[int, str]] = []
+    for r in rows:
+        if r.state != PRS_PARKED:
+            continue
+        rest = r.detail.removeprefix("WITH_PERSON")
+        pulls = PARKED_PULL.findall(rest)
+        named = all(p[:1] == "@" and LOGIN.match(p[1:]) for _, people in pulls for p in people.split(" "))
+        if rest == r.detail or not pulls or "".join(f" #{n} ({p})" for n, p in pulls) != rest or not named:
+            raise ReleaseError(f"watch_state.py's {PRS_PARKED} row is unreadable: {r.detail!r}")
+        found += [(int(n), people) for n, people in pulls]
+    return sorted(found, reverse=True)
+
+
 def land_stage(facts: Facts) -> StageLevel:
     """The land stage as `shipmill autonomy` lists it, under the hold (spec 040)"""
     for level in stage_levels(facts.autonomy, facts.environments, facts.rows):
@@ -1397,7 +1418,10 @@ def item_lines(facts: Facts) -> list[str]:
             key=lambda i: i.number,
             reverse=True,
         )
-        lines += _group(name, [issue_value(repo, i) for i in found])
+        values = [issue_value(repo, i) for i in found]
+        if name == "parked":  # #853: a person's pull requests wait on their assignees, as an issue does
+            values += [f"{item(repo, n, True)} ({people})" for n, people in parked_pulls(rows)]
+        lines += _group(name, values)
         if name == "in progress":  # S-009-24: the pull requests waiting to land follow the work
             merge = to_merge(facts)  # S-040-11: shipmill-ready ones under propose are yours to merge
             land = [pull_value(facts, n) for n in to_land(rows) if n not in merge]

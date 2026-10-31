@@ -66,6 +66,7 @@ from shipmill.walk import (
     HANDED,
     KNOWN,
     LANDED,
+    LOGIN,
     SWEEP,
     WAITING_TIER,
     Changes,
@@ -275,27 +276,34 @@ def counted_pulls(numbers: Sequence[int], one: str, many: str) -> str:
 class InFlight:
     """What a QUIET tick says is in flight (spec 048), from the change check and the state
     directory alone: the open pull requests waiting on CI, waiting to land, and failing CI, the
-    last landed pull request, and the last session that ended with a result"""
+    last landed pull request, and the last session that ended with a result. with_person: a
+    person's pull requests, each with the logins it waits on (#853)"""
 
     ci: tuple[int, ...]
     landing: tuple[int, ...]
     failing: tuple[int, ...]
     landed: Landed | None
     result: LastResult | None
+    with_person: tuple[tuple[int, tuple[str, ...]], ...] = ()
 
     @classmethod
     def of(cls, flight: Flight, result: LastResult | None) -> InFlight:
-        return cls(flight.ci, flight.landing, flight.failing, flight.landed, result)
+        return cls(flight.ci, flight.landing, flight.failing, flight.landed, result, flight.with_person)
 
     def line(self, now: dt.datetime) -> str:
-        """`in flight: 2 wait on CI (#771, #773), 1 waits to land (#772); last landed #770 3 h
-        ago; last result: ...`, each part with its own wording when there is none (S-048-22)"""
+        """`in flight: 2 wait on CI (#771, #773), 1 waits to land (#772), 1 waits on @amy
+        (#775); last landed #770 3 h ago; last result: ...`, each part with its own wording when
+        there is none (S-048-22)"""
+        people: dict[str, list[int]] = {}
+        for number, logins in self.with_person:
+            people.setdefault(" ".join(f"@{login}" for login in logins), []).append(number)
         groups = [
             counted_pulls(numbers, one, many)
             for numbers, one, many in (
                 (self.ci, "waits on CI", "wait on CI"),
                 (self.landing, "waits to land", "wait to land"),
                 (self.failing, "fails CI", "fail CI"),
+                *((tuple(n), f"waits on {who}", f"wait on {who}") for who, n in people.items()),
             )
             if numbers
         ]
@@ -321,6 +329,7 @@ class InFlight:
             "failing": list(self.failing),
             "landed": None if self.landed is None else self.landed.record(),
             "result": None if self.result is None else self.result.record(),
+            "with_person": [{"number": n, "assignees": list(logins)} for n, logins in self.with_person],
         }
 
 
@@ -1968,6 +1977,7 @@ def _running(value: object) -> Running | None:
 
 
 IN_FLIGHT_KEYS = {"ci", "landing", "failing", "landed", "result"}
+WITH_PERSON = "with_person"  # #853: in_flight's key a tick.json written before it lacks
 
 
 def _number(value: object, what: str) -> int:
@@ -1994,7 +2004,7 @@ def _in_flight(value: object) -> InFlight | None:
     """tick.json's in_flight: --json's own (S-048-25), or null"""
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != IN_FLIGHT_KEYS:
+    if not isinstance(value, dict) or set(value) - {WITH_PERSON} != IN_FLIGHT_KEYS:
         raise ValueError(f"in_flight: expected exactly {', '.join(sorted(IN_FLIGHT_KEYS))}, or null")
     result = value["result"]
     if result is not None and (not isinstance(result, dict) or set(result) != LAST_RESULT_KEYS):
@@ -2005,7 +2015,28 @@ def _in_flight(value: object) -> InFlight | None:
         _numbers(value["failing"], "in_flight.failing"),
         _landed(value["landed"]),
         None if result is None else _last_result(result),
+        _with_person(value.get(WITH_PERSON, [])),
     )
+
+
+def _with_person(value: object) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    """in_flight.with_person (#853): each pull request's number and assignees' logins"""
+    what = "in_flight.with_person"
+    if not isinstance(value, list):
+        raise ValueError(f"{what} must be a list of pull requests with their assignees")
+    found = []
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) != {"number", "assignees"}:
+            raise ValueError(f"{what}: expected exactly number and assignees")
+        logins = entry["assignees"]
+        if (
+            not isinstance(logins, list)
+            or not logins
+            or not all(isinstance(x, str) and LOGIN.fullmatch(x) for x in logins)
+        ):
+            raise ValueError(f"{what}.assignees must be a list of logins")
+        found.append((_number(entry["number"], f"{what}.number"), tuple(logins)))
+    return tuple(found)
 
 
 def load_tick(path: Path) -> TickRecord | None:

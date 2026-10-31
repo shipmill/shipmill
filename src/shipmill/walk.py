@@ -30,6 +30,10 @@ PAGE = 100  # the change check's page of open issues, pull requests, and inciden
 RUNS = 10  # the newest runs of each watched workflow the change check reads
 LANDED = 10  # the default branch's newest commits whose merged pull requests the change check reads (spec 048)
 SEQUENTIAL = 2  # at most this many watched workflows are read one after the other
+# #853: a person's item, as triage_state.py's HUMAN_LABEL and ROLE_PREFIX read it (spec 017, spec 036)
+HUMAN_LABEL = "human"
+ROLE_PREFIX = "role:"
+LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?")  # watch_state.py's LOGIN
 
 # The tiers a walk reads in order, each its kinds in the order a walk takes them: the state,
 # or ISSUES and its triage state. A kind no tier names is read in tier 6 (S-046-12)
@@ -284,12 +288,15 @@ class Landed:
 class Flight:
     """What the change check read of the work in flight (spec 048): the open non-draft pull
     requests whose head is in the repo, by their head's check rollup (waiting on CI, waiting to
-    land, failing CI), and the newest merged among the default branch's last LANDED commits"""
+    land, failing CI), and the newest merged among the default branch's last LANDED commits.
+    with_person: the ones that are a person's item with an assignee, each with its assignees'
+    logins (#853): they wait on that person, not on CI or a session"""
 
     ci: tuple[int, ...] = ()
     landing: tuple[int, ...] = ()
     failing: tuple[int, ...] = ()
     landed: Landed | None = None
+    with_person: tuple[tuple[int, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,6 +339,7 @@ def watched(root: Path) -> tuple[str, ...]:
 
 
 LABELS = "labels(first: 50) { nodes { name } }"
+ASSIGNEES = "assignees(first: 10) { nodes { login } }"  # GitHub allows 10 per item
 CONNECTIONS = {
     "updated": (
         "issues(states: OPEN, first: {page}{after}, filterBy: {{since: $since}})",
@@ -339,7 +347,7 @@ CONNECTIONS = {
     ),
     "pulls": (
         "pullRequests(states: OPEN, first: {page}{after}, orderBy: {{field: CREATED_AT, direction: DESC}})",
-        f"number updatedAt isDraft isCrossRepository headRefOid {LABELS}"
+        f"number updatedAt isDraft isCrossRepository headRefOid {LABELS} {ASSIGNEES}"
         " commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }",
     ),
     "incidents": (
@@ -448,6 +456,19 @@ def label_names(node: Mapping[str, Any]) -> list[str]:
     return sorted(str(label["name"]) for label in node["labels"]["nodes"])
 
 
+def assignee_logins(node: Mapping[str, Any]) -> list[str]:
+    found = node["assignees"]["nodes"]
+    if not all(isinstance(a, dict) and isinstance(a.get("login"), str) and LOGIN.fullmatch(a["login"]) for a in found):
+        raise ReleaseError(f"gh api graphql printed #{node['number']}'s assignees as something other than logins")
+    return [str(a["login"]) for a in found]
+
+
+def person_item(node: Mapping[str, Any]) -> bool:
+    """#853: a pull request that is a person's item, as triage_state.py reads an issue: labelled
+    human or role:<name>, compared case-insensitively"""
+    return any(n.lower() == HUMAN_LABEL or n.lower().startswith(ROLE_PREFIX) for n in label_names(node))
+
+
 def rollup(node: Mapping[str, Any]) -> str | None:
     commits = node["commits"]["nodes"]
     status = commits[0]["commit"]["statusCheckRollup"] if commits else None
@@ -526,6 +547,7 @@ def changes_of(
                 "isCrossRepository": p["isCrossRepository"],
                 "labels": [{"name": n} for n in label_names(p)],
                 "headRefOid": p["headRefOid"],
+                "assignees": [{"login": login} for login in assignee_logins(p)],
             }
             for p in pulls
         ],
@@ -553,13 +575,18 @@ FAILS_CI = frozenset({"FAILURE", "ERROR"})
 
 def flight_of(pulls: Sequence[Mapping[str, Any]], default: Mapping[str, Any]) -> Flight:
     """The work in flight, from what the change check read and nothing more (S-048-22, D-58):
-    the open pull requests a session can land, by their head's rollup, and the last landed one.
+    the open pull requests a session can land, by their head's rollup, a person's with whom it
+    waits on (#853), and the last landed one.
     It is kept out of the signature: the commits move only with the default head, already in it"""
     ci: list[int] = []
     landing: list[int] = []
     failing: list[int] = []
+    people: list[tuple[int, tuple[str, ...]]] = []
     for p in pulls:
         if p["isDraft"] or p["isCrossRepository"]:
+            continue
+        if person_item(p) and (logins := assignee_logins(p)):
+            people.append((int(p["number"]), tuple(logins)))  # #853: it waits on them, as watch_state.py reads it
             continue
         state = rollup(p)
         if state in WAITS_ON_CI:
@@ -570,7 +597,7 @@ def flight_of(pulls: Sequence[Mapping[str, Any]], default: Mapping[str, Any]) ->
             failing.append(int(p["number"]))
         else:
             raise ReleaseError(f"gh api graphql printed check rollup {state!r} for #{p['number']}")
-    return Flight(tuple(ci), tuple(landing), tuple(failing), last_landed(default))
+    return Flight(tuple(ci), tuple(landing), tuple(failing), last_landed(default), tuple(people))
 
 
 def last_landed(default: Mapping[str, Any]) -> Landed | None:

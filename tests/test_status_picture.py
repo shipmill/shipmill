@@ -859,6 +859,23 @@ def test_a_person_item_with_its_person_is_parked_with_the_logins_it_waits_on() -
     assert report(found).verdict is Verdict.IDLE  # never an action, never waits on you
 
 
+def test_853_a_persons_pull_request_is_parked_with_whom_it_waits_on_not_to_land() -> None:
+    # a pull request the maintainer holds for their own merge: labelled role:maintainer and assigned
+    held = Row("PRS_PARKED", REPO, "WITH_PERSON #160 (@romamo) #158 (@ann @bo-b)", False)
+    found = facts(held, Row("PRS_OPEN", REPO, "#161", False), issues=[Issue(4, "TRIAGED")])
+    text = lines(found)
+    assert text[3:7] == [
+        f"  to land        #161 {URL}/pull/161",
+        f"  parked         #4 {URL}/issues/4 triaged",
+        f"                 #160 {URL}/pull/160 (@romamo)",
+        f"                 #158 {URL}/pull/158 (@ann @bo-b)",
+    ]
+    assert not any("160" in line for line in text if "to land" in line) and "PRS_PARKED" not in "\n".join(text)
+    for detail in ("#160 (@romamo)", "WITH_PERSON #160", "WITH_PERSON #160 (@romamo) trailing", "WITH_PERSON #1 (x y)"):
+        with pytest.raises(ReleaseError, match="PRS_PARKED row is unreadable"):
+            lines(facts(Row("PRS_PARKED", REPO, detail, False)))
+
+
 def test_a_person_items_close_to_check_is_listed_with_suspect_close_and_not_open() -> None:
     issues = [Issue(9, "VERIFY_CLOSED", "closed by @ann: run its ## Check"), Issue(1, "SUSPECT_CLOSE"), Issue(5, "NEW")]
     text = lines(facts(issues=issues))
