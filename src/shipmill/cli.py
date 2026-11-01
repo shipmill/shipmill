@@ -1043,7 +1043,7 @@ def main(
     if args.command == "settle-minutes":
         print(policy.settle_minutes)
     elif args.command == "plan":
-        event = Event(args.event or os.environ.get("GITHUB_EVENT_NAME") or Event.MANUAL.value)
+        event = Event(args.event or env.get("GITHUB_EVENT_NAME") or Event.MANUAL.value)
         lane = Lane(args.lane) if args.lane else None
         hotfix = Hotfix(_ints(args.hotfix_prs), args.hotfix_from or None) if lane is Lane.HOTFIX else None
         if hotfix is None and (args.hotfix_prs or args.hotfix_from):

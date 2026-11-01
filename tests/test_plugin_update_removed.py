@@ -34,7 +34,8 @@ def test_every_reader_of_agents_drops_the_key(repo: Repo, value: str) -> None:
     repo.write(repo.policy_file, POLICY + AGENTS + f"plugin_update = {value}\n")
     assert AgentsConfig.load(repo.root).refused == (PLUGIN_UPDATE,)
     assert app_id_of(repo.root) is None
-    assert main(["--repo", str(repo.root), "plan"], github=repo.github) == 0
+    # environ={}: plan reads $GITHUB_EVENT_NAME, which CI sets to pull_request, not a plan event
+    assert main(["--repo", str(repo.root), "plan"], github=repo.github, environ={}) == 0
 
 
 def test_a_config_without_the_key_reads_as_before(repo: Repo) -> None:
