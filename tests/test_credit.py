@@ -217,12 +217,13 @@ def test_s049_1_a_credit_that_isnt_a_string_fails_to_load() -> None:
 
 
 def test_s049_1_credit_reads_as_off_without_the_key_and_as_set_with_it(tmp_path: Path) -> None:
-    assert AgentsConfig.parse(agents(None)).credit is Credit.OFF
+    assert AgentsConfig.parse(agents(None)).credit is None  # unset reads as off; spec 051's doctor warns when set
+    assert AgentsConfig.parse(agents(None)).trailer is None
     assert AgentsConfig.parse(agents("off")).credit is Credit.OFF
     assert AgentsConfig.parse(agents("decider")).credit is Credit.DECIDER
     (tmp_path / CONFIG_PATH).parent.mkdir()
     (tmp_path / CONFIG_PATH).write_text(POLICY + '\n[agents]\nprompt = "/t"\n', encoding="utf-8")
-    assert gh_identity_of(tmp_path).credit is Credit.OFF
+    assert gh_identity_of(tmp_path).credit is None
     (tmp_path / CONFIG_PATH).write_text(POLICY + ON, encoding="utf-8")
     assert gh_identity_of(tmp_path).credit is Credit.DECIDER
     (tmp_path / CONFIG_PATH).write_text(POLICY + ON.replace("decider", "yes"), encoding="utf-8")

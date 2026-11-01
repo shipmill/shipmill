@@ -22,16 +22,27 @@ def credit_rows(repo: Repo) -> list[Check]:
     return [c for c in doctor(repo.root, repo.github) if c.name == "credit"]
 
 
+DEPRECATED = (
+    '; [agents] credit is deprecated (spec 051): set [agents] author = "app" instead, the same as credit = '
+    '"decider", or, for a repo that wants no trailer, leave both unset'
+)
+
+
 def test_s049_11_doctor_says_decider_with_spec_049_when_credit_is_on(repo: Repo) -> None:
+    # spec 051 deprecates credit: the row keeps spec 049's reading and WARNs (S-051-4)
     configure(repo, AGENTS + 'credit = "decider"\n')
     assert credit_rows(repo) == [
-        Check("PASS", "credit", "decider, a merge names who decided it in Co-authored-by (spec 049)")
+        Check("WARN", "credit", "decider, a merge names who decided it in Co-authored-by (spec 049)" + DEPRECATED)
     ]
 
 
-@pytest.mark.parametrize("line", ['credit = "off"\n', ""])
-def test_s049_11_doctor_says_off_when_credit_is_off_or_unset(repo: Repo, line: str) -> None:
-    configure(repo, AGENTS + line)
+def test_s049_11_doctor_says_off_when_credit_is_off(repo: Repo) -> None:
+    configure(repo, AGENTS + 'credit = "off"\n')
+    assert credit_rows(repo) == [Check("WARN", "credit", "off" + DEPRECATED)]  # S-051-4: set, so deprecated
+
+
+def test_s049_11_doctor_says_off_when_credit_is_unset(repo: Repo) -> None:
+    configure(repo, AGENTS)
     assert credit_rows(repo) == [Check("PASS", "credit", "off")]
 
 

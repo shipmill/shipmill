@@ -912,9 +912,27 @@ def app_writes(app_id: int | None, home: Path) -> str:
 
 def credit_check(agents: AgentsConfig) -> Check:
     """S-049-11: the credit row, for a repo with [agents]: whom a merge through `shipmill gh`
-    names in Co-authored-by, a setting rather than a fault, so a PASS either way"""
-    if agents.credit is Credit.DECIDER:
-        return Check("PASS", "credit", "decider, a merge names who decided it in Co-authored-by (spec 049)")
+    names in Co-authored-by, a setting rather than a fault, so a PASS when credit is unset. Spec
+    051 folds credit into [agents] author (D-63): a WARN that author replaces credit when both
+    are set (S-051-3), and that credit is deprecated when it alone is (S-051-4)"""
+    decider = "decider, a merge names who decided it in Co-authored-by"
+    if agents.author is not None and agents.credit is not None:
+        return Check(
+            "WARN",
+            "credit",
+            f'{decider} ([agents] author = "{agents.author}", spec 051); [agents] author replaces [agents] credit, '
+            "which is ignored: delete credit",
+        )
+    if agents.author is not None:
+        return Check("PASS", "credit", f'{decider} ([agents] author = "{agents.author}", spec 051)')
+    if agents.credit is not None:
+        reading = f"{decider} (spec 049)" if agents.credit is Credit.DECIDER else "off"
+        return Check(
+            "WARN",
+            "credit",
+            f'{reading}; [agents] credit is deprecated (spec 051): set [agents] author = "app" instead, the same as '
+            'credit = "decider", or, for a repo that wants no trailer, leave both unset',
+        )
     return Check("PASS", "credit", "off")
 
 

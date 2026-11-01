@@ -72,12 +72,51 @@ class Credit(StrEnum):
     DECIDER = "decider"  # the trusted people a record shows decided the change
 
 
-def credit_of(table: Table) -> Credit:
-    """[agents] credit: "off" when absent; any other value, or one that isn't a string, exits 2"""
-    value = table.raw.get("credit", Credit.OFF.value)
+def credit_of(table: Table) -> Credit | None:
+    """[agents] credit: None when absent, which reads as "off"; any other value, or one that
+    isn't a string, exits 2. Deprecated by spec 051's author, and still read as spec 049 reads
+    it while author is unset (D-63)"""
+    if "credit" not in table.raw:
+        return None
+    value = table.raw["credit"]
     if not isinstance(value, str) or value not in {c.value for c in Credit}:
         raise ReleaseError(f'{CONFIG_PATH}: [agents] credit must be "off" (the default) or "decider", got {value!r}')
     return Credit(value)
+
+
+class Author(StrEnum):
+    """[agents] author: whose account an agent's issue, pull request, and merge go out as
+    (spec 051, D-65); either value names the decider in a merge's Co-authored-by"""
+
+    APP = "app"  # autonomous: the App writes, and names the decider (spec 049's trailer)
+    DECIDER = "decider"  # assisted: the decider who authorized the App, else the App
+
+
+def author_of(table: Table, app_id: int | None) -> Author | None:
+    """[agents] author: None when absent; any other value, one that isn't a string, or author
+    without app_id exits 2 naming the key and both values (S-051-1)"""
+    if "author" not in table.raw:
+        return None
+    value = table.raw["author"]
+    if not isinstance(value, str) or value not in {a.value for a in Author}:
+        raise ReleaseError(f'{CONFIG_PATH}: [agents] author must be "app" or "decider", got {value!r}')
+    if app_id is None:
+        raise ReleaseError(
+            f'{CONFIG_PATH}: [agents] author = "{value}" needs [agents] app_id: "app" and "decider" both choose '
+            "how the App writes (spec 051); set app_id, or delete author"
+        )
+    return Author(value)
+
+
+def trailer_setting(author: Author | None, credit: Credit | None) -> str | None:
+    """The setting that makes a merge through `shipmill gh` name its deciders in Co-authored-by,
+    as a refusal names it: author when set, whatever credit says (S-051-3), else credit =
+    "decider" (S-051-4); None when neither does, and the merge runs as before (S-051-2)"""
+    if author is not None:
+        return f'[agents] author = "{author}"'
+    if credit is Credit.DECIDER:
+        return '[agents] credit = "decider"'
+    return None
 
 
 ROLES = "[agents.roles]"
@@ -240,7 +279,10 @@ class AgentsConfig:
     roles: RolesConfig = RolesConfig()  # [agents.roles]: who receives a step an agent can't do (spec 036)
     plugin: Plugin = Plugin.HOST  # [agents] plugin: per person, or committed for the repo (spec 033)
     identity: WriteAs = WriteAs.APP  # [agents] identity: who `shipmill gh` writes as without app_id (spec 037)
-    credit: Credit = Credit.OFF  # [agents] credit: whom a `shipmill gh` merge names as co-author (spec 049)
+    # [agents] credit: whom a `shipmill gh` merge names as co-author (spec 049); None without the
+    # key, which reads as off, so doctor warns only when it is set (spec 051 deprecates it)
+    credit: Credit | None = None
+    author: Author | None = None  # [agents] author: whose account an agent writes as (spec 051)
     # [autonomy] with spec 040's legacy reading of the prompt, as `shipmill autonomy` reads it;
     # load and Policy.parse set it, parse alone can't, as it sees [agents] only
     autonomy: AutonomyPolicy = AutonomyPolicy()
@@ -266,6 +308,7 @@ class AgentsConfig:
             "plugin",
             "identity",
             "credit",
+            "author",
         )
         roles = RolesConfig.parse(table.raw["roles"]) if "roles" in table.raw else RolesConfig()
         prompt = table.string("prompt").strip()
@@ -303,7 +346,13 @@ class AgentsConfig:
             plugin=plugin_of(table),
             identity=identity,
             credit=credit_of(table),
+            author=author_of(table, app_id),
         )
+
+    @property
+    def trailer(self) -> str | None:
+        """The setting that names a merge's deciders in Co-authored-by; None: no trailer"""
+        return trailer_setting(self.author, self.credit)
 
     @classmethod
     def load(cls, root: Path, repo: str | None = None) -> AgentsConfig:
@@ -336,13 +385,20 @@ def app_id_of(root: Path) -> int | None:
 
 @dataclass(frozen=True, slots=True)
 class GhIdentity:
-    """What `shipmill gh` reads of a checkout's config (spec 037): [agents] app_id, identity, and
-    credit (spec 049), and whether the config file exists, which the refusal names"""
+    """What `shipmill gh` reads of a checkout's config (spec 037): [agents] app_id, identity,
+    credit (spec 049), and author (spec 051), and whether the config file exists, which the
+    refusal names"""
 
     config: bool  # .github/shipmill.toml exists
     app_id: int | None = None
     identity: WriteAs = WriteAs.APP
-    credit: Credit = Credit.OFF
+    credit: Credit | None = None
+    author: Author | None = None
+
+    @property
+    def trailer(self) -> str | None:
+        """The setting that names a merge's deciders in Co-authored-by; None: no trailer"""
+        return trailer_setting(self.author, self.credit)
 
 
 def gh_identity_of(root: Path) -> GhIdentity:
@@ -355,7 +411,7 @@ def gh_identity_of(root: Path) -> GhIdentity:
     if "agents" not in raw:
         return GhIdentity(config=True)
     agents = AgentsConfig.parse(Table(raw, path.name).table("agents"))
-    return GhIdentity(True, agents.app_id, agents.identity, agents.credit)
+    return GhIdentity(True, agents.app_id, agents.identity, agents.credit, agents.author)
 
 
 @dataclass(frozen=True, slots=True)
