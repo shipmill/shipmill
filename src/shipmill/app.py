@@ -570,7 +570,7 @@ def load_token(path: Path) -> Token | None:
     return Token(value, expires, repo, app_id)
 
 
-def _write_atomic(path: Path, data: bytes, mode: int) -> None:
+def write_atomic(path: Path, data: bytes, mode: int) -> None:
     """Write path through a sibling created with mode (never wider, so no chmod follows) and
     renamed over it, so a reader sees the old file or the new one, never part of one"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -598,7 +598,7 @@ def save_token(path: Path, token: Token) -> None:
         "expires_at": token.expires.isoformat(),
         "token": token.value,
     }
-    _write_atomic(path, (json.dumps(record, indent=2) + "\n").encode(), 0o600)
+    write_atomic(path, (json.dumps(record, indent=2) + "\n").encode(), 0o600)
 
 
 def _scope(data: Mapping[str, object], repo: str, path: str) -> None:
@@ -714,7 +714,7 @@ def save_product_token(path: Path, token: ProductToken) -> None:
         "expires_at": token.expires.isoformat(),
         "token": token.value,
     }
-    _write_atomic(path, (json.dumps(record, indent=2) + "\n").encode(), 0o600)
+    write_atomic(path, (json.dumps(record, indent=2) + "\n").encode(), 0o600)
 
 
 def _product_scope(data: Mapping[str, object], repos: tuple[str, ...], path: str) -> None:
@@ -882,8 +882,8 @@ def write_helpers(folder: Path, python: Path, checkout: Path, repo: str, app_id:
     )
     credential_helper = header + f'exec {command} --git-credential "$1"\n'
     helpers = Helpers(folder, folder / GH_HELPER, folder / CREDENTIAL_HELPER, real_gh)
-    _write_atomic(helpers.gh, gh.encode(), 0o700)
-    _write_atomic(helpers.git_credential, credential_helper.encode(), 0o700)
+    write_atomic(helpers.gh, gh.encode(), 0o700)
+    write_atomic(helpers.git_credential, credential_helper.encode(), 0o700)
     return helpers
 
 

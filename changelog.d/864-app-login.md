@@ -1,0 +1,3 @@
+### Added
+
+- `shipmill app-login` lets the repo's App write as you (spec 051): it runs GitHub's device flow for the App in `[agents] app_id`, prints the verification URL and the one-time code you enter on github.com, and stores your user access token and refresh token in `~/.config/shipmill/user-<app_id>-<login>.json` with mode `0600`, printing the login it stored; an App with device flow off exits 2 naming its "Enable Device Flow" setting. `shipmill app-logout <login>` deletes that file and revokes the token when `SHIPMILL_APP_CLIENT_SECRET` is set, and otherwise, or when GitHub refuses, says to revoke the App under your GitHub settings (Applications, Authorized GitHub Apps). Nothing writes with the stored token yet (#864)

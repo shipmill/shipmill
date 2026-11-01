@@ -68,6 +68,11 @@
   app-create      create the gate's GitHub App in one click: owner and visibility planned from the
                   repos holding .github/shipmill.toml, the key saved with mode 0600
   app-install     guide installing the App on more repos: the App's Install App page and what to pick
+  app-login       let the App write as you (spec 051): GitHub's device flow for [agents] app_id's App,
+                  your user access token and refresh token stored in
+                  ~/.config/shipmill/user-<app_id>-<login>.json with mode 0600; prints the login
+  app-logout      delete a login's stored user token and revoke it (with SHIPMILL_APP_CLIENT_SECRET
+                  set), else say where to revoke the App in GitHub's settings; exit 1 unrevoked
   product         read the product's direction, docs/product.md (spec 024): check its grammar, show it
                   or one section (--section, --json), list its ids; add, edit, and retire an item,
                   printing its line, an added one with an id its history never held; write,
@@ -85,12 +90,12 @@
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
 action, factory found a problem or a check that failed to run, app-create or app-install left
-a repo without the App, product check found a broken rule, review check found a malformed
-REVIEW.md, evals check found a malformed case (or, with --gate, a suite short of the gate's
-counts), evals compare found a regression or a run stopped at its budget, or downstream
-start's --sha is no longer the pull request's head; 2 bad input or a refused state, such as an
-edit of a file its check refuses, a malformed evals/cases.toml, or a missing or malformed
-aggregate-result.json.
+a repo without the App, app-logout deleted a token it couldn't revoke, product check found a
+broken rule, review check found a malformed REVIEW.md, evals check found a malformed case (or,
+with --gate, a suite short of the gate's counts), evals compare found a regression or a run
+stopped at its budget, or downstream start's --sha is no longer the pull request's head; 2 bad
+input or a refused state, such as an edit of a file its check refuses, a malformed
+evals/cases.toml, or a missing or malformed aggregate-result.json.
 """
 
 import argparse
@@ -195,6 +200,7 @@ from shipmill.app_gh import (
     with_body,
 )
 from shipmill.app_install import WAIT_SECONDS, guide
+from shipmill.app_login import UrllibWeb, UserLogin, Web, remove_login, store_login
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold
 from shipmill.classify import DEFAULT_REF, Base, Pulls, RepoPath, classify_paths, classify_pull, policy_at
 from shipmill.claude_auth import ClaudeAuth, preflight_auth
@@ -695,6 +701,28 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--no-browser", action="store_true", help="print the page instead of opening it")
     p.add_argument("--json", action="store_true", help="print the result as one JSON object")
 
+    p = sub.add_parser(
+        "app-login",
+        help=(
+            "let [agents] app_id's GitHub App write as you: GitHub's device flow, your user access token stored "
+            "in ~/.config/shipmill/user-<app_id>-<login>.json with mode 0600 (spec 051)"
+        ),
+    )
+    p.add_argument(
+        "--app-key",
+        type=Path,
+        help="the App's private key (default: $SHIPMILL_APP_KEY when set, else ~/.config/shipmill/app-<app_id>.pem)",
+    )
+
+    p = sub.add_parser(
+        "app-logout",
+        help=(
+            "delete a login's stored user token and revoke it when SHIPMILL_APP_CLIENT_SECRET is set; else say "
+            "where to revoke the App in GitHub's settings (spec 051)"
+        ),
+    )
+    p.add_argument("login", help="the GitHub login app-login stored, such as octocat")
+
     p = sub.add_parser("product", help=f"read or edit the product's direction, {DIRECTION} (spec 024)")
     acting = p.add_subparsers(dest="product", required=True)
     checking = acting.add_parser("check", help=f"exit 1 naming the file, line, and rule {DIRECTION} breaks")
@@ -839,6 +867,7 @@ def main(
     login: LoginReader | None = None,
     claude: Runner | None = None,
     gh_capture: GhCapture | None = None,
+    web: Web | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -849,8 +878,9 @@ def main(
     request `decide classify --pr` reads, merge_reader for the pull request a `shipmill
     gh` merge reads, credit_reader for what its credit reads (spec 049), login for the
     host's gh login `roles` reads, claude for the `claude plugin` and `gh api` commands
-    plugin-clean runs, and gh_capture for the gh that reads an edit's current body (spec 050),
-    as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -"""
+    plugin-clean runs, gh_capture for the gh that reads an edit's current body (spec 050), and
+    web for github.com's device flow and the token revoke app-login and app-logout send (spec
+    051), as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -"""
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
     root: Path = args.repo.resolve()
@@ -870,6 +900,10 @@ def main(
         return _app_token(root, args, api or UrllibApi(), signer or Openssl(), stdin or sys.stdin, env, user_home)
     if args.command == "app-install":
         return _app_install(root, args, api or UrllibApi(), signer or Openssl())
+    if args.command == "app-login":
+        return _user_login(root, args, api or UrllibApi(), web or UrllibWeb(), signer or Openssl(), env, user_home)
+    if args.command == "app-logout":
+        return _user_logout(root, args, web or UrllibWeb(), env, user_home)
     if args.command == "app-create":
         ask = input if sys.stdin.isatty() and not args.owner else None
         return _app_create(root, args, api or UrllibApi(), signer or Openssl(), ask=ask)
@@ -2171,6 +2205,51 @@ def _app_install(
     if args.json:
         print(json.dumps(guided.record(app_id, repos), indent=2))
     return 1 if missing else 0
+
+
+def _login_app_id(root: Path, command: str) -> int:
+    """The App app-login and app-logout act for, `[agents] app_id`; exit 2 without it"""
+    app_id = app_id_of(root)
+    if app_id is None:
+        raise ReleaseError(f"{command} needs [agents] app_id in {root / CONFIG_PATH}: it names the App you authorize")
+    return app_id
+
+
+def _user_login(
+    root: Path,
+    args: argparse.Namespace,
+    api: Api,
+    web: Web,
+    signer: Signer,
+    environ: Mapping[str, str],
+    home: Path,
+    clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC),
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """S-051-5: the device flow's code on stderr, the stored login on stdout; no token reaches either"""
+    app_id = _login_app_id(root, "app-login")
+    key = args.app_key if args.app_key is not None else session_key(app_id, environ, home)
+
+    def say(line: str) -> None:
+        print(line, file=sys.stderr, flush=True)
+
+    login, path = store_login(app_id, key, home, api, web, signer, say, clock, sleep)
+    print(f"stored the user access token of `@{login}` for the App {app_id} in {path}")
+    return 0
+
+
+def _user_logout(root: Path, args: argparse.Namespace, web: Web, environ: Mapping[str, str], home: Path) -> int:
+    """S-051-6: exit 0 once the token is deleted and revoked, 1 when deleted but not revoked"""
+    app_id = _login_app_id(root, "app-logout")
+    login = UserLogin.given(args.login)
+
+    def say(line: str) -> None:
+        print(line, file=sys.stderr, flush=True)
+
+    if not remove_login(app_id, login, home, web, environ, say):
+        return 1
+    print(f"deleted and revoked the user access token of `@{login}` for the App {app_id}")
+    return 0
 
 
 def _decide(root: Path, args: argparse.Namespace, pulls: Pulls) -> int:
