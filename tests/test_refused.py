@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from shipmill import refused
-from shipmill.agents import PLUGIN_UPDATE_REMOVED, AgentsConfig
+from shipmill.agents import PLUGIN_UPDATE_REMOVED, AgentsConfig, Author, gh_identity_of
 from shipmill.cli import main
 from shipmill.config import Table, config_path
 from shipmill.errors import ReleaseError
@@ -116,6 +116,23 @@ def test_s052_3_agents_config_parse_alone_drops_it_too(value: str) -> None:
     assert agents.refused == (PLUGIN_UPDATE,)
     assert replace(agents, refused=()) == without
     assert agents.retry_hours == 12
+
+
+def test_s052_3_author_beside_plugin_update_reads_and_only_plugin_update_is_refused(repo: Repo) -> None:
+    repo.write(repo.policy_file, POLICY + AGENTS + 'app_id = 7\nauthor = "decider"\nplugin_update = true\n')
+    refused.begin()
+    identity = gh_identity_of(repo.root)
+    assert (identity.app_id, identity.author) == (7, Author.DECIDER)
+    assert repo.policy.refused == (PLUGIN_UPDATE,)
+
+
+def test_s052_5_app_login_says_the_refusal_once(repo: Repo) -> None:
+    # app-login reads [agents] app_id through gh_identity_of; without app_id it exits 2 as before
+    repo.write(repo.policy_file, POLICY + AGENTS + "plugin_update = true\n")
+    done = shipmill(repo, "app-login")
+    assert done.returncode == 2
+    assert done.stderr.count(f"shipmill: refused: {PLUGIN_UPDATE_REMOVED}\n") == 1
+    assert "app-login needs [agents] app_id" in done.stderr
 
 
 def test_s052_3_both_keys_in_one_config_are_both_named(repo: Repo) -> None:
