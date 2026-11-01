@@ -1,6 +1,6 @@
 # S-052: A refused config key stops only the feature it configures
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -135,5 +135,19 @@ line, naming the criteria that issue delivers. Each criterion belongs to exactly
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+Checked on main at `bb98fe1e` (after #877 and #880), with `[lanes.stable] min_soak_days = 3`
+and `[agents] plugin_update = true` added to shipmill's own config for the run.
+
+- S-052-1: read `src/shipmill/refused.py`: both entries with table, key, spec, what they turn off, and the fix as the spec's table gives them; holds
+- S-052-2: `uv run shipmill plan --dry-run` loaded the config with `min_soak_days` set and the rest of `[lanes.stable]` read (`quiet_minutes`, `github_release`); holds
+- S-052-3: the same run loaded with `plugin_update` set, and `shipmill doctor` read every other `[agents]` key (`author: unset`, `credit: off`, hooks, decisions); holds
+- S-052-4: `tests/test_refused.py` covers an unknown key in both tables exiting 2 naming it; not rerun by hand; holds by its test
+- S-052-5: `shipmill plan --dry-run` printed each `shipmill: refused: <message>` line once on stderr before its JSON; holds
+- S-052-6: the same run's JSON read `skip` with `stable: off: <message>`, no stable release planned; holds
+- S-052-7: `shipmill plan --dry-run --lane stable` exited 2 with `stable: off: <message>`; holds
+- S-052-8: `shipmill doctor` printed `PASS policy`, then one `FAIL refused` row per key with its message, then every other check; holds
+- S-052-9: `tests/test_refused_rows.py` drives `shipmill status`'s FAIL row and its fix; not run by hand, since status reads GitHub; holds by its test
+- S-052-10: `tests/test_gate_refused.py` compares a tick with and without `plugin_update` (same decision and launch, the `; refused: [agents] plugin_update (spec 031)` suffix, `tick.json`'s `"refused"`, no ERROR); a tick that reads no config (RUNNING, HELD) names none, as #877 reads it; holds
+- S-052-11: `shipmill decide levels --json` carried `"refused"` with both keys as `{key, spec, off, fix}`; `shipmill autonomy --json` carried `"refused": []`, since it reads the default branch's config, which sets neither; holds
+- S-052-12: read `docs/release-lanes.md`'s Retired keys section: the three facts and the table of refused keys; holds
+- S-052-13: read specs 029 and 031: S-029-9 and S-031-22 are marked dropped, naming this spec's criteria; holds
