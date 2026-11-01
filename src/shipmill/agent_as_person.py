@@ -1,7 +1,13 @@
 """Spec 012: the AGENT_AS_PERSON check. With [agents] app_id set, agents write as the App, so
 an issue, pull request, or issue comment of the last 7 days that carries an agent's marker but
 a person (a `User`, not a `Bot`) wrote went out under that person's login. One GraphQL search
-reads them all; only URLs are shown, never titles or bodies (untrusted text)"""
+reads them all; only URLs are shown, never titles or bodies (untrusted text).
+
+Spec 051 (S-051-14): assisted mode writes as a person through the repo's App, and GitHub
+records that App in the record's `performed_via_github_app`. GraphQL's Issue, PullRequest,
+and IssueComment don't expose it, so each record the search would flag is read once more over
+REST, and one whose `performed_via_github_app.id` is the repo's `[agents] app_id` is skipped.
+A record that can't be read that way stays flagged, as does one another App or no App made"""
 
 import datetime as dt
 import json
@@ -24,8 +30,8 @@ _FIELDS = "url createdAt body author { __typename }"
 QUERY = f"""query($q: String!) {{
   search(query: $q, type: ISSUE, first: {ITEMS}) {{
     nodes {{
-      ... on Issue {{ {_FIELDS} comments(last: {COMMENTS}) {{ nodes {{ {_FIELDS} }} }} }}
-      ... on PullRequest {{ {_FIELDS} comments(last: {COMMENTS}) {{ nodes {{ {_FIELDS} }} }} }}
+      ... on Issue {{ {_FIELDS} number comments(last: {COMMENTS}) {{ nodes {{ {_FIELDS} databaseId }} }} }}
+      ... on PullRequest {{ {_FIELDS} number comments(last: {COMMENTS}) {{ nodes {{ {_FIELDS} databaseId }} }} }}
     }}
   }}
 }}"""
@@ -51,6 +57,15 @@ class Flagged:
     def detail(self) -> str:
         """doctor's one line: the summary and the fix"""
         return f"{self.summary()}; fix: {self.fix(cli_command())}"
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate:
+    """A marked record a User wrote in the window: flagged unless REST shows the repo's App made it"""
+
+    when: dt.datetime
+    url: str
+    path: str  # the record's REST path, which carries performed_via_github_app
 
 
 def marked(body: str) -> bool:
@@ -85,12 +100,17 @@ def _get(holder: Any, key: str) -> Any:
     return holder.get(key) if isinstance(holder, dict) else None
 
 
-def _node(node: Any, since: dt.datetime) -> tuple[dt.datetime, str] | None:
-    """The node's time and URL when it is flagged, else None"""
-    if not isinstance(node, dict) or not {"url", "createdAt", "body", "author"} <= node.keys():
+def _count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _node(node: Any, since: dt.datetime, key: str, path: str) -> Candidate | None:
+    """The node as a candidate when it is marked, a User's, and in the window, else None; key
+    names its REST id (number or databaseId), appended to path"""
+    if not isinstance(node, dict) or not {"url", "createdAt", "body", "author", key} <= node.keys():
         raise _refuse(node)
-    url, created, body, author = node["url"], node["createdAt"], node["body"], node["author"]
-    if not isinstance(url, str) or not isinstance(created, str) or not isinstance(body, str):
+    url, created, body, author, ident = node["url"], node["createdAt"], node["body"], node["author"], node[key]
+    if not isinstance(url, str) or not isinstance(created, str) or not isinstance(body, str) or not _count(ident):
         raise _refuse(node)
     if author is not None and not (isinstance(author, dict) and isinstance(author.get("__typename"), str)):
         raise _refuse(node)
@@ -101,10 +121,10 @@ def _node(node: Any, since: dt.datetime) -> tuple[dt.datetime, str] | None:
     if when.tzinfo is None:
         raise _refuse(node)
     person = author is not None and author["__typename"] == "User"  # a deleted account (None) is no one's
-    return (when, url) if person and when >= since and marked(body) else None
+    return Candidate(when, url, f"{path}/{ident}") if person and when >= since and marked(body) else None
 
 
-def parse(found: Any, since: dt.datetime) -> Flagged:
+def candidates(found: Any, since: dt.datetime, repo: str) -> tuple[Candidate, ...]:
     """The search's answer: the issues, pull requests, and comments created since `since`,
     with a marker and a User author"""
     if not isinstance(found, dict) or found.get("errors"):
@@ -112,19 +132,42 @@ def parse(found: Any, since: dt.datetime) -> Flagged:
     nodes = _get(_get(_get(found, "data"), "search"), "nodes")
     if not isinstance(nodes, list):
         raise _refuse(found)
-    hits: list[tuple[dt.datetime, str]] = []
+    hits: list[Candidate] = []
     for node in nodes:
         comments = _get(_get(node, "comments"), "nodes")
         if not isinstance(comments, list):
             raise _refuse(node)
-        for each in [node, *comments]:
-            if (hit := _node(each, since)) is not None:
+        if (hit := _node(node, since, "number", f"repos/{repo}/issues")) is not None:
+            hits.append(hit)
+        for each in comments:
+            if (hit := _node(each, since, "databaseId", f"repos/{repo}/issues/comments")) is not None:
                 hits.append(hit)
-    return Flagged(tuple(url for _, url in sorted(hits, reverse=True)))
+    return tuple(hits)
 
 
-def read(repo: str, run: StateRunner, now: dt.datetime) -> Flagged:
-    """One `gh api graphql` search for the repo's items updated in the last 7 days"""
+def via_app(path: str, run: StateRunner, app_id: int) -> bool:
+    """True only when REST reads the record and its performed_via_github_app's id is app_id; a
+    failed read, an answer that isn't JSON, or a missing or malformed field is False, so the
+    record stays flagged (D-62: a failure is never a skipped agent record)"""
+    try:
+        proc = run(["gh", "api", path])
+    except OSError as exc:  # gh missing
+        raise ReleaseError(f"can't run gh: {exc}") from None
+    if proc.returncode != 0:
+        return False
+    try:
+        record = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(record, dict) or "performed_via_github_app" not in record:
+        return False
+    found = _get(record["performed_via_github_app"], "id")
+    return isinstance(found, int) and not isinstance(found, bool) and found == app_id
+
+
+def read(repo: str, run: StateRunner, now: dt.datetime, app_id: int) -> Flagged:
+    """One `gh api graphql` search for the repo's items updated in the last 7 days, then one
+    `gh api` read of each candidate's performed_via_github_app; the repo's App's are skipped"""
     since = now - WINDOW
     try:
         proc = run(command(repo, since))
@@ -136,4 +179,5 @@ def read(repo: str, run: StateRunner, now: dt.datetime) -> Flagged:
         found = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise ReleaseError(f"gh api graphql printed no JSON for the {NAME} check: {exc}") from None
-    return parse(found, since)
+    hits = [(c.when, c.url) for c in candidates(found, since, repo) if not via_app(c.path, run, app_id)]
+    return Flagged(tuple(url for _, url in sorted(hits, reverse=True)))
