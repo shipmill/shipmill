@@ -215,8 +215,9 @@ Refusing a deprecated key is the maintainer's decision under D-63, made on evide
 connected repo still relies on it, never on a release count, and no sooner than 14 days after the release that deprecated it (D-64). A refused key
 turns off only its feature: the config still loads without the key, every other lane and
 agent runs as it would, each command that loads the config prints
-`shipmill: refused: <message>` once on stderr, and each gate tick's line ends with
-`; refused: <key> (spec NNN)` (spec 052). The refusal is an entry in `src/shipmill/refused.py`,
+`shipmill: refused: <message>` once on stderr, and on a gate tick that reads the `[agents]`
+config, the tick's line ends with `; refused: <key> (spec NNN)` (spec 052); since the gate
+reads `[agents]` alone, `[agents] plugin_update` is the key a tick names. The refusal is an entry in `src/shipmill/refused.py`,
 which names the key, the spec that removed it, what it turns off, and the fix, not a load
 that raises. The keys refused today:
 
