@@ -274,3 +274,11 @@ def test_s052_13_specs_029_and_031_mark_the_exit_2_dropped(
     assert line.startswith(f"- {criterion}: dropped in #859, see "), line
     for replacement in replaced_by:
         assert replacement in line
+
+
+@pytest.mark.parametrize("skill", sorted((ROOT / "skills").glob("*/SKILL.md")), ids=lambda p: p.parent.name)
+def test_s052_5_no_skill_tells_an_agent_a_refused_key_exits_2(skill: Path) -> None:
+    # an agent reading a skill expects the config to load with the key dropped, not exit 2
+    text = " ".join(skill.read_text(encoding="utf-8").split())
+    for entry in CATALOGUE:
+        assert not re.search(rf"{entry.key}[^|]{{0,120}}exits? 2", text), (skill, entry.key)
