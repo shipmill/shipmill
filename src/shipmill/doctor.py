@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from shipmill import cli_command, fragments, ticks
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
-from shipmill.agents import AgentsConfig, Credit, ProductConfig, RolesError
+from shipmill.agents import AgentsConfig, Author, Credit, ProductConfig, RolesError
 from shipmill.app import (
     PRODUCT_PERMISSIONS,
     Api,
@@ -29,6 +29,7 @@ from shipmill.app import (
     jwt,
     product_token,
 )
+from shipmill.app_login import stored_logins
 from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage, StageKind
 from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
@@ -261,6 +262,7 @@ def doctor(
         checks.append(direction_check(root))
         checks.extend(hooks_checks(policy, Git(root), hooks, Path.home() if home is None else home))
         checks.append(credit_check(policy.agents))
+        checks.append(author_check(policy.agents, Path.home() if home is None else home))
         uses = None if credential is None else credential()
         if uses is not None:
             checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC)))
@@ -934,6 +936,36 @@ def credit_check(agents: AgentsConfig) -> Check:
             'credit = "decider", or, for a repo that wants no trailer, leave both unset',
         )
     return Check("PASS", "credit", "off")
+
+
+def author_check(agents: AgentsConfig, home: Path) -> Check:
+    """S-051-15: the author row, for a repo with [agents]: the mode, a setting rather than a
+    fault, so a PASS. Assisted mode lists the logins with a stored user access token for the
+    App on this host, read from the files' names alone; none stored is still a PASS, as every
+    write then goes as the App, and a store it can't read is a WARN"""
+    if agents.author is Author.DECIDER and agents.app_id is not None:
+        try:
+            logins = stored_logins(agents.app_id, home)
+        except ReleaseError as exc:
+            return Check("WARN", "author", f"decider (spec 051); can't read the stored logins: {exc}")
+        if not logins:
+            return Check(
+                "PASS",
+                "author",
+                f"decider, 0 people authorized (spec 051): every write goes as the App until a person runs "
+                f"`{cli_command()} app-login`",
+            )
+        people = "1 person" if len(logins) == 1 else f"{len(logins)} people"
+        return Check(
+            "PASS", "author", f"decider, {people} authorized (spec 051): {', '.join(f'`@{x}`' for x in logins)}"
+        )
+    if agents.author is Author.APP:
+        return Check("PASS", "author", "app, the App writes and names the decider (spec 051)")
+    if agents.credit is not None:
+        reading = "a merge names the decider in Co-authored-by" if agents.credit is Credit.DECIDER else "no trailer"
+        detail = f'unset (spec 051); the deprecated [agents] credit = "{agents.credit}" reads as {reading} (spec 049)'
+        return Check("PASS", "author", detail)
+    return Check("PASS", "author", "unset (spec 051)")
 
 
 def hooks_checks(policy: Policy, git: Git, test: HookTester | None, home: Path) -> list[Check]:
