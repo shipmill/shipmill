@@ -32,7 +32,16 @@ from shipmill.claude_token import HOST, Credential, TokenFs, TokenSource, inspec
 from shipmill.claude_token import REJECTED as TOKEN_REJECTED
 from shipmill.config import CONFIG_PATH, Table, config_path, policy_branch, read
 from shipmill.errors import ReleaseError
-from shipmill.gate import ERROR, Action, PruneRecord, StateRunner, TickRecord, minutes_between, skills_dir
+from shipmill.gate import (
+    ERROR,
+    Action,
+    PruneRecord,
+    StateRunner,
+    TickRecord,
+    minutes_between,
+    refused_suffix,
+    skills_dir,
+)
 from shipmill.github import UPGRADE_LABEL, GitHub, labelled_command, parse_labelled
 from shipmill.gitrepo import Git
 from shipmill.launchd import label
@@ -967,14 +976,15 @@ def current_tick(record: TickRecord | None, job: Job) -> TickRecord | None:
     wrote none (a shipmill before spec 048, or a crash, S-048-10) left another line, so the
     record is older than it and the log reads as spec 009 does. A reason with a newline in it
     (GitHub's answer body in GITHUB_AUTH's) is printed over several lines, the first of which is
-    the log's decision line"""
+    the log's decision line. A decision line ends with the record's refused keys (S-052-10)"""
     if record is None or job.last is None:
         return None
     own = f"shipmill: {record.reason}" if record.action == ERROR else f"{record.action}: {record.reason}"
     first, newline, _ = own.partition("\n")
     if newline:
         return record if job.last == first else None
-    return record if job.last == own or job.last.startswith(f"{own} as ") else None
+    last = job.last.removesuffix(refused_suffix(record.refused)) if record.refused else job.last
+    return record if last == own or last.startswith(f"{own} as ") else None
 
 
 def _without_fix(reason: str, fix: str | None) -> str:

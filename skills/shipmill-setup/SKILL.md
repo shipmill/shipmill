@@ -915,6 +915,9 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      `GITHUB_AUTH`, `HOOKS_FAILED`, or a shipmill error exits 2; every other tick exits 0.
      Each real tick writes `shipmill/tick.json` beside `gate.json`: its decision, or `ERROR`
      with the error's first line, its fix, and since when and how many ticks in a row failed
+   - **A refused key** (spec 052): a tick on a config that sets one runs as it would without
+     it; its decision line ends with `; refused: <key> (spec NNN)`, and `tick.json` and
+     `gate --json` list it under `refused`. It never fails the tick: delete the key
    - **GITHUB_AUTH** (spec 048): before a launch, after the Claude Code preflight, the gate
      reads the repo as its sessions will write: with `app_id` a token it mints and caches
      nowhere, else the host's gh login. A failure, or a failed App check before the state

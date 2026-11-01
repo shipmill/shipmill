@@ -72,6 +72,7 @@ KEYS = {
     "preflight",  # #500's Claude Code login preflight
     "dead",  # #500's dead session
     "prune",  # spec 045's prune: whether it ran, and its error
+    "refused",  # S-052-10: the refused keys the tick ran without
 }
 
 Tick = tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]

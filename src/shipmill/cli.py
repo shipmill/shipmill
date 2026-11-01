@@ -1247,6 +1247,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         sweep_now=args.sweep,
         github=github_auth(args.slug, root, Openssl(), UrllibApi()),
         stop=stop_group,
+        refusals=lambda: refused.in_checkout(root),
     )
     if args.json:
         refusals = refused.records(_refused_or_none(root))  # S-052-11
