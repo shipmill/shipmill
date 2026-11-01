@@ -73,6 +73,7 @@ DIRECTION_GUIDE = "https://github.com/shipmill/shipmill/blob/main/docs/direction
 OPERATE_CALLER = Path(".github") / "workflows" / "operate.yml"  # calls shipmill's operate.yml on a schedule
 DOWNSTREAM_CALLER = Path(".github") / "workflows" / "downstream.yml"  # calls shipmill's downstream.yml (spec 032)
 _BOT_WORKFLOWS = ("prepare.yml", "land.yml")
+REFUSED = "refused"  # doctor's row for a key shipmill refuses (spec 052)
 RELEASES_OFF = 'releases off (mode = "off")'  # a check's note on what an agents-only repo needs no more (#852, #856)
 DECISIONS_SECTION = "decisions"  # the config's [decisions] section, and doctor's block for it (spec 030)
 DECIDED_LABEL = "decided"  # a notify decision's label, as triage_state.py reads it (spec 030)
@@ -255,6 +256,8 @@ def doctor(
         return checks
     read = found.relative_to(root)
     add(True, "policy", f"{read}, mode {policy.mode}, lanes {', '.join(policy.lanes) or 'none'}")
+    for refusal in policy.refused:  # S-052-8: a FAIL each, after which every other check still runs
+        add(False, REFUSED, refusal.message)
     if policy.roadmap is not None:
         add(False, "roadmap", _ROADMAP_DEPRECATED, warn=True)
     raw = read_config(found)

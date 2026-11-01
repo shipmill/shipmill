@@ -126,7 +126,7 @@ def test_a_goal_the_plan_cant_read_is_shown_not_dropped(
     assert rows == [] and error is not None and "Could not resolve" in error
     on_github(repo)
     printed = milestones(repo, at_day(5), capsys, "--json")
-    assert json.loads(printed) == {"milestones": [], "error": error}
+    assert json.loads(printed) == {"milestones": [], "error": error, "refused": []}
     assert f"not read: {error}" in milestones(repo, at_day(5), capsys)
     assert watch_state().milestone_rows(printed) == []
     warned = capsys.readouterr().err
@@ -230,7 +230,11 @@ def test_s022_10_shipmill_milestones_prints_the_overtaken_row_and_the_watch_read
     rename = "gh api -X PATCH repos/o/demo/milestones/3 -f title=1.1.1"  # no app_id (S-037-12)
     detail = "v1.1.0 exists; the stable lane cuts 1.1.1 next"
     row = {"state": "MILESTONE_OVERTAKEN", "milestone": "1.1.0", "detail": detail}
-    assert json.loads(printed) == {"milestones": [row | {"number": 3, "next": "1.1.1", "fix": rename}], "error": None}
+    assert json.loads(printed) == {
+        "milestones": [row | {"number": 3, "next": "1.1.1", "fix": rename}],
+        "error": None,
+        "refused": [],
+    }
     assert milestones(repo, at_day(6), capsys) == f"MILESTONE_OVERTAKEN 1.1.0: {detail}\n  fix: {rename}\n"
     ws = watch_state()
     (found,) = ws.milestone_rows(printed)
@@ -265,7 +269,7 @@ def test_s022_8_without_a_milestone_lane_nothing_is_run_or_read(repo: Repo, caps
     """#475: no lane sets milestone = true: the watch runs no `shipmill milestones`, and the
     command itself reads no milestone"""
     on_github(repo)
-    assert json.loads(milestones(repo, at_day(5), capsys, "--json")) == {"milestones": [], "error": None}
+    assert json.loads(milestones(repo, at_day(5), capsys, "--json")) == {"milestones": [], "error": None, "refused": []}
     assert milestones(repo, at_day(5), capsys) == "no milestone waits or was overtaken\n"
     assert repo.github.milestone_reads == [] and repo.github.open_reads == 0
     ran: list[list[str]] = []
