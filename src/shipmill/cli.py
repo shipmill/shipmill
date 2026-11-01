@@ -126,6 +126,7 @@ from shipmill import (
     fragments,
     plugin_clean,
     product,
+    refused,
     requires,
     review,
     roles,
@@ -881,6 +882,7 @@ def main(
     plugin-clean runs, gh_capture for the gh that reads an edit's current body (spec 050), and
     web for github.com's device flow and the token revoke app-login and app-logout send (spec
     051), as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -"""
+    refused.begin()  # each refused key is said once per command, however often it loads the config
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
     root: Path = args.repo.resolve()

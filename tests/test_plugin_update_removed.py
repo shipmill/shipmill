@@ -1,18 +1,16 @@
 """Spec 031: `[agents] plugin_update`, deprecated and ignored in 0.60.0 (S-031-21), is refused
-since (S-031-22, D-32, D-44), and the docs describe the pinned release without a gate paused
-on a stale plugin"""
+since: dropped on load, it turns nothing off (spec 052, D-64); and the docs describe the pinned
+release without a gate paused on a stale plugin"""
 
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from shipmill.agents import PLUGIN_UPDATE_REMOVED, AgentsConfig, app_id_of
 from shipmill.cli import main
-from shipmill.doctor import Check, doctor
-from shipmill.errors import ReleaseError
+from shipmill.doctor import doctor
+from shipmill.refused import PLUGIN_UPDATE
 
 from .conftest import POLICY, Repo
 
@@ -22,50 +20,33 @@ REMOVED = "[agents] plugin_update was removed (spec 031); delete it"
 VALUES = ["true", "false", '"yes"', "1"]  # either bool, and a value of the wrong type too
 
 
-def test_s031_22_the_message_names_the_key_and_spec_031() -> None:
-    assert PLUGIN_UPDATE_REMOVED == REMOVED  # the spec's text
+# S-031-22's exit 2 was dropped in #859: a config that sets the key loads, reads as without it,
+# and says the refusal once on stderr (spec 052, tests/test_refused.py)
+
+
+def test_the_refusal_keeps_spec_031s_words() -> None:
+    assert PLUGIN_UPDATE_REMOVED == REMOVED  # the line the docs quote
 
 
 @pytest.mark.parametrize("value", VALUES)
-def test_s031_22_every_reader_of_agents_refuses_the_key(repo: Repo, value: str) -> None:
+def test_every_reader_of_agents_drops_the_key(repo: Repo, value: str) -> None:
     # the policy (plan, doctor, status, watch), the gate's and launchd's [agents] alone, and app_id_of
     repo.write(repo.policy_file, POLICY + AGENTS + f"plugin_update = {value}\n")
-    for read in (lambda: AgentsConfig.load(repo.root), lambda: app_id_of(repo.root)):
-        with pytest.raises(ReleaseError) as caught:
-            read()
-        assert str(caught.value) == REMOVED
-    with pytest.raises(ReleaseError) as caught:
-        main(["--repo", str(repo.root), "plan"], github=repo.github)
-    assert str(caught.value) == REMOVED
+    assert AgentsConfig.load(repo.root).refused == (PLUGIN_UPDATE,)
+    assert app_id_of(repo.root) is None
+    assert main(["--repo", str(repo.root), "plan"], github=repo.github) == 0
 
 
-@pytest.mark.parametrize("value", ["true", "false"])
-def test_s031_22_the_cli_exits_2_naming_the_key(repo: Repo, value: str) -> None:
-    repo.write(repo.policy_file, POLICY + AGENTS + f"plugin_update = {value}\n")
-    done = subprocess.run(
-        [sys.executable, "-c", "from shipmill.cli import run; run()", "--repo", str(repo.root), "plan"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert (done.returncode, done.stderr) == (2, f"shipmill: {REMOVED}\n")
-
-
-@pytest.mark.parametrize("value", ["true", "false"])
-def test_s031_22_doctor_fails_the_policy_with_the_refusal_and_warns_no_deprecation(repo: Repo, value: str) -> None:
-    # as doctor reports any config the policy refuses: one FAIL, the checks that need it skipped
-    repo.write(repo.policy_file, POLICY + AGENTS + f"plugin_update = {value}\n")
-    assert doctor(repo.root) == [Check("FAIL", "policy", REMOVED)]
-
-
-def test_s031_22_a_config_without_the_key_reads_as_before(repo: Repo) -> None:
+def test_a_config_without_the_key_reads_as_before(repo: Repo) -> None:
     repo.write(repo.policy_file, POLICY + AGENTS)
-    assert AgentsConfig.load(repo.root).prompt.startswith("/shipmill:github-issue-triage")
+    agents = AgentsConfig.load(repo.root)
+    assert agents.prompt.startswith("/shipmill:github-issue-triage")
+    assert agents.refused == ()
     assert "plugin_update" not in {c.name for c in doctor(repo.root)}
 
 
-def test_s031_22_shipmills_own_config_sets_no_plugin_update() -> None:
-    AgentsConfig.load(ROOT)  # refused if it did
+def test_shipmills_own_config_sets_no_plugin_update() -> None:
+    assert AgentsConfig.load(ROOT).refused == ()
 
 
 # -- S-031-23: the docs ----------------------------------------------------------------------

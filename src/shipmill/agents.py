@@ -10,6 +10,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from shipmill import refused as catalogue
 from shipmill.app import is_plain_repo
 from shipmill.autonomy import AutonomyPolicy
 from shipmill.config import CONFIG_PATH, Table, config_path, loads_unchecked, read, read_unchecked
@@ -23,9 +24,9 @@ _MAX_WAIT_MINUTES = 15
 _STALL_MINUTES = 30  # a headless session whose log is silent this long is stopped (spec 048)
 _MAX_STALL_MINUTES = 24 * 60  # a day
 _MAX_WIP = 100
-# deprecated and ignored in 0.60.0 (S-031-21), refused since (S-031-22, as D-32 set for [roadmap])
-_PLUGIN_UPDATE = "plugin_update"
-PLUGIN_UPDATE_REMOVED = f"[agents] {_PLUGIN_UPDATE} was removed (spec 031); delete it"
+# deprecated and ignored in 0.60.0 (S-031-21), refused since: dropped on load, it turns nothing
+# off (spec 052, D-64)
+PLUGIN_UPDATE_REMOVED = catalogue.PLUGIN_UPDATE.removed
 
 
 class Mode(StrEnum):
@@ -286,11 +287,13 @@ class AgentsConfig:
     # [autonomy] with spec 040's legacy reading of the prompt, as `shipmill autonomy` reads it;
     # load and Policy.parse set it, parse alone can't, as it sees [agents] only
     autonomy: AutonomyPolicy = AutonomyPolicy()
+    # the catalogued keys the table set, dropped before it was read (spec 052, D-64)
+    refused: tuple[catalogue.Refusal, ...] = ()
 
     @classmethod
     def parse(cls, table: Table) -> AgentsConfig:
-        if _PLUGIN_UPDATE in table.raw:  # whatever its value, before the unknown-keys error
-            raise ReleaseError(PLUGIN_UPDATE_REMOVED)
+        # a refused key, whatever its value, is dropped before the unknown-keys check (S-052-3)
+        table, refusals = catalogue.drop(table, "[agents]")
         table.allow(
             "prompt",
             "prs",
@@ -347,6 +350,7 @@ class AgentsConfig:
             identity=identity,
             credit=credit_of(table),
             author=author_of(table, app_id),
+            refused=refusals,
         )
 
     @property
@@ -366,6 +370,7 @@ class AgentsConfig:
             raise ReleaseError(f"{path} has no [agents] section; add one with a prompt to use the gate")
         top = Table(raw, path.name)
         agents = cls.parse(top.table("agents"))
+        catalogue.report(agents.refused)
         product = ProductConfig.read(top, agents.app_id)  # the gate refuses a bad [product] too
         if product is not None:
             product.refuse_self(repo)
@@ -411,6 +416,7 @@ def gh_identity_of(root: Path) -> GhIdentity:
     if "agents" not in raw:
         return GhIdentity(config=True)
     agents = AgentsConfig.parse(Table(raw, path.name).table("agents"))
+    catalogue.report(agents.refused)
     return GhIdentity(True, agents.app_id, agents.identity, agents.credit, agents.author)
 
 
