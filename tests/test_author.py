@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from shipmill.agents import AgentsConfig, Author, gh_identity_of
+from shipmill.app_login import UserLogin, UserToken, save_user_token
 from shipmill.config import CONFIG_PATH, Table
 from shipmill.doctor import Check, doctor
 from shipmill.errors import ReleaseError
@@ -191,3 +192,77 @@ def test_s051_4_doctor_warns_that_credit_is_deprecated_naming_author_app(repo: R
 def test_s051_2_doctor_passes_off_with_neither_key(repo: Repo) -> None:
     configure(repo, AGENTS)
     assert credit_rows(repo) == [Check("PASS", "credit", "off")]
+
+
+# -- S-051-15: doctor's author row -------------------------------------------------------------
+
+
+def author_rows(repo: Repo, home: Path) -> list[Check]:
+    return [c for c in doctor(repo.root, repo.github, home=home) if c.name == "author"]
+
+
+def store(home: Path, app_id: int, login: str) -> None:
+    """A stored token's file as app-login names it, its value a secret doctor must never print"""
+    save_user_token(home, UserToken(app_id, "Iv1.client", UserLogin(login), "ghu_SECRET", None, "ghr_SECRET", None))
+
+
+def test_s051_15_doctor_names_autonomous_mode(repo: Repo, tmp_path: Path) -> None:
+    configure(repo, AGENTS + 'author = "app"\n')
+    assert author_rows(repo, tmp_path) == [
+        Check("PASS", "author", "app, the App writes and names the decider (spec 051)")
+    ]
+
+
+def test_s051_15_doctor_lists_the_logins_with_a_stored_token_in_assisted_mode(repo: Repo, tmp_path: Path) -> None:
+    configure(repo, AGENTS + 'author = "decider"\n')
+    store(tmp_path, APP_ID, "Octocat")
+    store(tmp_path, APP_ID, "hubot")
+    store(tmp_path, APP_ID + 1, "monalisa")  # another App's token is not this App's consent
+    [row] = author_rows(repo, tmp_path)
+    assert row == Check("PASS", "author", "decider, 2 people authorized (spec 051): `@hubot`, `@octocat`")
+    assert "SECRET" not in row.detail
+
+
+def test_s051_15_doctor_names_one_person_authorized(repo: Repo, tmp_path: Path) -> None:
+    configure(repo, AGENTS + 'author = "decider"\n')
+    store(tmp_path, APP_ID, "octocat")
+    assert author_rows(repo, tmp_path) == [
+        Check("PASS", "author", "decider, 1 person authorized (spec 051): `@octocat`")
+    ]
+
+
+def test_s051_15_doctor_says_no_one_authorized_in_assisted_mode(repo: Repo, tmp_path: Path) -> None:
+    configure(repo, AGENTS + 'author = "decider"\n')
+    [row] = author_rows(repo, tmp_path)
+    assert (row.status, row.name) == ("PASS", "author")
+    assert row.detail.startswith("decider, 0 people authorized (spec 051): every write goes as the App")
+    assert "app-login" in row.detail
+
+
+def test_s051_15_doctor_warns_on_a_stored_file_named_without_a_login(repo: Repo, tmp_path: Path) -> None:
+    configure(repo, AGENTS + 'author = "decider"\n')
+    folder = tmp_path / ".config" / "shipmill"
+    folder.mkdir(parents=True)
+    (folder / f"user-{APP_ID}-not_a_login.json").write_text("{}")
+    [row] = author_rows(repo, tmp_path)
+    assert (row.status, row.name) == ("WARN", "author")
+    assert row.detail.startswith("decider (spec 051); can't read the stored logins:")
+
+
+@pytest.mark.parametrize(
+    ("config", "detail"),
+    [
+        ("", "unset (spec 051)"),
+        (
+            'credit = "decider"\n',
+            'unset (spec 051); the deprecated [agents] credit = "decider" reads as a merge names the decider in '
+            "Co-authored-by (spec 049)",
+        ),
+        ('credit = "off"\n', 'unset (spec 051); the deprecated [agents] credit = "off" reads as no trailer (spec 049)'),
+    ],
+)
+def test_s051_15_doctor_names_author_unset_with_the_credit_reading(
+    repo: Repo, tmp_path: Path, config: str, detail: str
+) -> None:
+    configure(repo, AGENTS + config)
+    assert author_rows(repo, tmp_path) == [Check("PASS", "author", detail)]
