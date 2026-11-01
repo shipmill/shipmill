@@ -5,7 +5,8 @@ The arguments reach gh as given, but for the bodies a create writes, which end w
 marker (spec 050, `marked_args`), and those an edit writes, which carry it exactly when the
 record's current body does (`body_edit`). Only the repo gh's `-R`/`--repo` names is read from them
 besides, to limit the token to it, and a merge they ask for (`merge_of`), which spec 030
-holds when the pull request has a `never` zone. The token goes to gh in GH_TOKEN, never to
+holds when the pull request has a `never` zone. shipmill's own `--decided-in <n>` of `issue
+create` is taken out (spec 051, `decided_in`). The token goes to gh in GH_TOKEN, never to
 output.
 """
 
@@ -741,6 +742,73 @@ def _marked_api(args: Sequence[str], read: BodyRead) -> list[str]:
     if name in ("-F", "--field") and body.startswith("@"):
         body = read(name, body[1:])
     return [*kept, "-f", f"body={_sized(body, what)}", *tail]
+
+
+# -- S-051-7, S-051-12: the three writes assisted mode makes as the decider ----------------------
+
+DECIDED_IN = "--decided-in"  # shipmill's own flag of `gh issue create`, never passed to gh
+ISSUE_CREATE = "issue create"
+PR_CREATE = "pr create"
+PR_MERGE = "pr merge"
+_SUBCOMMANDS = {"create": "create", "new": "create"}  # gh's alias of create
+
+
+def write_command(args: Sequence[str]) -> str | None:
+    """The write gh's args run that assisted mode makes as the decider: ISSUE_CREATE (or `issue
+    new`), PR_CREATE (or `pr new`), or PR_MERGE, read as `marked_args` and `merge_of` read the
+    command; None for any other command, and for one asking for help, which writes nothing"""
+    if not args or args[0] not in _GROUP_FLAGS:
+        return None
+    if args[0] == "pr" and merge_of(args) is not None:
+        _, flags = _scan(args[1:], _PR_MERGE_LONG, _PR_MERGE_SHORT)
+        return None if _helped(flags) else PR_MERGE
+    group = _GROUP_FLAGS[args[0]]
+    positional, flags = _scan(args[1:], group.long, group.short)
+    if not positional or positional[0] not in _SUBCOMMANDS or _helped(flags):
+        return None
+    return f"{args[0]} {_SUBCOMMANDS[positional[0]]}"
+
+
+def decided_in(args: Sequence[str]) -> tuple[int | None, list[str]]:
+    """Spec 051: the issue or pull request shipmill's `--decided-in <n>` (or `--decided-in=<n>`,
+    `#n` too) names, and gh's args without it, the other flags' values read as gh reads them;
+    None and args as given without the flag. Given to any command but `gh issue create`, given
+    twice, or with no number, it exits 2 before gh runs. Nothing after `--` is a flag"""
+    head = list(args[: args.index("--")]) if "--" in args else list(args)
+    if not any(arg == DECIDED_IN or arg.startswith(f"{DECIDED_IN}=") for arg in head):
+        return None, list(args)
+    refused = ReleaseError(
+        f"{DECIDED_IN} is refused on gh {' '.join(a for a in head[:2] if not a.startswith(DECIDED_IN))}: it names the "
+        "record that decided an issue, and only `gh issue create` takes it (spec 051); a pull request's decider comes "
+        "from the issues its body closes, a merge's from its pull request"
+    )
+    if head[0] != "issue":
+        raise refused
+    flags = _Flags(_ISSUE_CREATE.long | {DECIDED_IN}, _ISSUE_CREATE.short)
+    kept, taken, tail = _split(args, flags, lambda name, _: name == DECIDED_IN)
+    if not taken:  # only another flag's value, such as a title
+        return None, list(args)
+    rest = [*kept, *tail]
+    if write_command(rest) != ISSUE_CREATE:
+        raise refused
+    if len(taken) > 1:
+        raise ReleaseError(f"{DECIDED_IN} is given {len(taken)} times; name the one record that decided this issue")
+    number = _NUMBER.fullmatch(taken[0][1])
+    if number is None:
+        raise ReleaseError(
+            f"{DECIDED_IN} is {taken[0][1]!r}; it takes the number of the issue or pull request that decided this "
+            "issue, such as 793"
+        )
+    return int(number.group(1)), rest
+
+
+def created_body(args: Sequence[str]) -> str:
+    """The body `gh pr create`'s args give once `marked_args` made them: its last --body"""
+    _, flags = _scan(args[1:], _PR_CREATE.long, _PR_CREATE.short)
+    bodies = [value for name, value in flags if name in ("--body", "-b")]
+    if not bodies:
+        raise ReleaseError("gh pr create has no --body to read the issues it closes from")
+    return bodies[-1]
 
 
 # -- S-050-3: an edit keeps the marker its record was created with, or its lack ------------------

@@ -1,7 +1,7 @@
 """Spec 051, the modes and credit folding into them: [agents] author takes "app" or "decider"
 and needs app_id; with it set a `shipmill gh pr merge` names the decider as credit = "decider"
-does, whatever credit says; with neither key it runs as before (D-63). Both values still write
-as the App here: the assisted write is a later build"""
+does, whatever credit says; with neither key it runs as before (D-63). The assisted write, as
+the decider, is tests/test_decider_token.py's"""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from shipmill import cli_command
 from shipmill.agents import AgentsConfig, Author, gh_identity_of
 from shipmill.config import CONFIG_PATH, Table
 from shipmill.doctor import Check, doctor
@@ -106,9 +107,11 @@ def test_s051_3_author_names_the_decider_in_co_authored_by_whatever_credit_says(
     [argv] = runner.calls
     assert argv[1:5] == MERGE
     assert body_of(argv) == CREDITED
-    assert runner.stderr == ["credit: `@octocat` approved the pull request\n"]
+    # S-051-9: author = "decider" writes as the App when the decider stored no token, saying so
+    fallback = "" if author == "app" else f"author: the App; `@octocat` has not run {cli_command()} app-login\n"
+    assert runner.stderr == ["credit: `@octocat` approved the pull request\n" + fallback]
     [env] = runner.envs
-    assert env["GH_TOKEN"] == "token-1"  # author = "decider" still writes as the App until the assisted write
+    assert env["GH_TOKEN"] == "token-1"
 
 
 def test_s051_3_the_apis_merge_refusal_names_author(

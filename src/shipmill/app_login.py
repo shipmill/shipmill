@@ -390,6 +390,99 @@ def store_login(
     return login, save_user_token(home, token)
 
 
+REFRESH_GRANT = "refresh_token"
+REFRESH_AHEAD = dt.timedelta(minutes=5)  # a token this close to its expiry is refreshed first, so it lasts the write
+
+
+class AsApp(ReleaseError):
+    """Spec 051: why a write goes as the App rather than as the decider; the message names the
+    login in a code span (D-61), and never a token"""
+
+
+def _again(login: UserLogin) -> str:
+    return f"`@{login}` runs `{cli_command()} app-login` again to write as themselves"
+
+
+def refreshed(token: UserToken, home: Path, web: Web, environ: Mapping[str, str], now: dt.datetime) -> UserToken:
+    """S-051-8: the token refreshed with its refresh token and stored again in home's file,
+    atomically and 0600. A refresh token that is gone or expired, and a refresh GitHub refuses,
+    delete the stored file and raise AsApp; GitHub out of reach raises AsApp and keeps the
+    file. The App's client secret goes with the request when SHIPMILL_APP_CLIENT_SECRET is set"""
+    login = token.login
+    path = user_file(token.app_id, login, home)
+    if token.refresh_token is None or (
+        token.refresh_token_expires_at is not None and token.refresh_token_expires_at <= now
+    ):
+        path.unlink()
+        raise AsApp(
+            f"`@{login}`'s token expired and can't be refreshed, so its stored file is deleted; {_again(login)}"
+        )
+    fields = {"client_id": token.client_id, "grant_type": REFRESH_GRANT, "refresh_token": token.refresh_token}
+    secret = environ.get(CLIENT_SECRET, "")
+    if secret:
+        fields["client_secret"] = secret
+    headers = {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}
+    try:
+        answer = web.send("POST", ACCESS_TOKEN, headers, urllib.parse.urlencode(fields).encode())
+    except Unreachable:
+        raise AsApp(f"GitHub couldn't be reached to refresh `@{login}`'s expired token") from None
+    try:
+        data = _object(answer, f"POST {ACCESS_TOKEN}")
+        error = _error(data) if answer.status == 200 else f"status {answer.status}"
+        granted = None if error is not None else _granted(data, now)
+    except ReleaseError:  # an answer with no token in it: the refresh token may be spent, so the file is no use
+        error, granted = "no token in its answer", None
+    if granted is None:
+        path.unlink()
+        raise AsApp(
+            f"GitHub refused to refresh `@{login}`'s token ({error}), so its stored file is deleted; {_again(login)}"
+        )
+    renewed = UserToken(
+        token.app_id,
+        token.client_id,
+        login,
+        granted.access_token,
+        granted.expires_at,
+        granted.refresh_token,
+        granted.refresh_token_expires_at,
+    )
+    save_user_token(home, renewed)
+    return renewed
+
+
+def decider_token(
+    app_id: int, login: UserLogin, home: Path, api: Api, web: Web, environ: Mapping[str, str], now: dt.datetime
+) -> UserToken:
+    """S-051-7 to S-051-9: the user access token login stored for the App with app-login,
+    refreshed first when it has expired or is about to, and checked with GET /user to be
+    login's and taken by GitHub. Raises AsApp, saying why, when there is none, its file is
+    malformed or another's, it can't be refreshed, or GitHub refuses it"""
+    path = user_file(app_id, login, home)
+    if not path.is_file():
+        raise AsApp(f"`@{login}` has not run {cli_command()} app-login")
+    try:
+        token = load_user_token(path)
+    except ReleaseError as exc:
+        raise AsApp(f"`@{login}`'s stored token can't be used: {exc}") from None
+    if token.app_id != app_id or token.login.key != login.key:
+        raise AsApp(f"`@{login}`'s stored token at {path} is for another App or login; {_again(login)}")
+    if token.expires_at is not None and token.expires_at - REFRESH_AHEAD <= now:
+        token = refreshed(token, home, web, environ, now)
+    try:
+        answer = api.get("/user", token.access_token)
+    except ReleaseError:
+        raise AsApp(f"GitHub couldn't be reached to check `@{login}`'s token") from None
+    if answer.status != 200:
+        raise AsApp(f"GitHub refused `@{login}`'s stored token (status {answer.status}); {_again(login)}")
+    try:
+        found = _object(answer, "GET /user").get("login")
+    except ReleaseError:
+        found = None
+    if not isinstance(found, str) or found.lower() != login.key:
+        raise AsApp(f"`@{login}`'s stored token isn't theirs by GET /user; {_again(login)}")
+    return token
+
+
 def revoke_elsewhere(login: UserLogin, why: str) -> str:
     """The line app-logout says when it couldn't revoke the token"""
     return (

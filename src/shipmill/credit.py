@@ -7,8 +7,9 @@ keeps the trusted ones, once each, never a bot, the App, or the pull request's a
 body the merge would have had is rebuilt as GitHub writes it, and the trailers go after it.
 """
 
+import functools
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -202,14 +203,82 @@ class Filed:
     agent: bool
 
 
+_FILED = (
+    "fragment filed on Issue { number repository { nameWithOwner } authorAssociation body "
+    "author { login __typename } labels(first: 100) { pageInfo { hasNextPage } nodes { name } } }"
+)
 # The GraphQL query of the issues a pull request closes and their parents (credit_closes)
 CLOSES_QUERY = (
     "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { "
     "nameWithOwner pullRequest(number: $number) { closingIssuesReferences(first: 100) { "
-    "pageInfo { hasNextPage } nodes { ...filed parent { ...filed } } } } } } "
-    "fragment filed on Issue { number repository { nameWithOwner } authorAssociation body "
-    "author { login __typename } labels(first: 100) { pageInfo { hasNextPage } nodes { name } } }"
+    "pageInfo { hasNextPage } nodes { ...filed parent { ...filed } } } } } } " + _FILED
 )
+# The GraphQL query of one issue and its parent, or of the pull request its number names (credit_issue)
+ISSUE_QUERY = (
+    "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { "
+    "nameWithOwner issueOrPullRequest(number: $number) { __typename ... on Issue { ...filed parent { ...filed } } } "
+    "} } " + _FILED
+)
+
+Refuse = Callable[[str], ReleaseError]
+
+
+def _page(holder: Any, key: str, refuse: Refuse) -> list[Any]:
+    """A connection's nodes; one past a page is refused, since a misread would credit the wrong person"""
+    connection = holder.get(key) if isinstance(holder, dict) else None
+    if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+        raise refuse(f"no {key}")
+    info = connection.get("pageInfo")
+    if not isinstance(info, dict):
+        raise refuse(f"no {key}")
+    if info.get("hasNextPage") is not False:
+        raise refuse(f"more than one page of {key}")
+    return list(connection["nodes"])
+
+
+def _filed(node: Any, parent: Filed | None, refuse: Refuse) -> Filed:
+    """An issue as the `filed` fragment gives it; a body that isn't a string makes it an agent's"""
+    if not isinstance(node, dict) or not isinstance(node.get("number"), int):
+        raise refuse("an issue without a number")
+    author = node.get("author")
+    person = None
+    if isinstance(author, dict) and isinstance(author.get("login"), str):
+        login, bot = author["login"], author.get("__typename") == "Bot"
+        person = Person(login + "[bot]" if bot and not login.endswith("[bot]") else login, bot)
+    elif author is not None:
+        raise refuse(f"an author {author!r} of #{node['number']}")
+    labels = _page(node, "labels", refuse)
+    if not all(isinstance(label, dict) and isinstance(label.get("name"), str) for label in labels):
+        raise refuse(f"a label without a name on #{node['number']}")
+    names = frozenset(str(label["name"]).lower() for label in labels)
+    association = str(node.get("authorAssociation"))
+    return Filed(int(node["number"]), person, association, names, parent, by_agent(node.get("body")))
+
+
+def _home(node: Any, refuse: Refuse) -> str:
+    where = node.get("repository") if isinstance(node, dict) else None
+    name = where.get("nameWithOwner") if isinstance(where, dict) else None
+    if not isinstance(name, str):
+        raise refuse("an issue without its repository")
+    return name.lower()
+
+
+def _repository(found: Any, refuse: Refuse) -> dict[str, Any]:
+    if not isinstance(found, dict) or found.get("errors"):
+        raise refuse("errors or no object")
+    data = found.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
+    if not isinstance(repository, dict) or not isinstance(repository.get("nameWithOwner"), str):
+        raise refuse("no repository")
+    return repository
+
+
+def _with_parent(node: Any, repo: str, refuse: Refuse) -> Filed:
+    """The issue, with its parent when that is of repo too"""
+    parent = node.get("parent")
+    return _filed(
+        node, None if parent is None or _home(parent, refuse) != repo else _filed(parent, None, refuse), refuse
+    )
 
 
 def closes_of(found: Any, number: int) -> list[Filed]:
@@ -221,55 +290,32 @@ def closes_of(found: Any, number: int) -> list[Filed]:
     def refuse(what: str) -> ReleaseError:
         return ReleaseError(f"gh api graphql printed {what} for #{number}'s closing issues: {str(found)[:300]}")
 
-    def page(holder: Any, key: str) -> list[Any]:
-        connection = holder.get(key) if isinstance(holder, dict) else None
-        if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
-            raise refuse(f"no {key}")
-        info = connection.get("pageInfo")
-        if not isinstance(info, dict):
-            raise refuse(f"no {key}")
-        if info.get("hasNextPage") is not False:
-            raise refuse(f"more than one page of {key}")
-        return list(connection["nodes"])
-
-    def issue(node: Any, parent: Filed | None) -> Filed:
-        if not isinstance(node, dict) or not isinstance(node.get("number"), int):
-            raise refuse("an issue without a number")
-        author = node.get("author")
-        person = None
-        if isinstance(author, dict) and isinstance(author.get("login"), str):
-            login, bot = author["login"], author.get("__typename") == "Bot"
-            person = Person(login + "[bot]" if bot and not login.endswith("[bot]") else login, bot)
-        elif author is not None:
-            raise refuse(f"an author {author!r} of #{node['number']}")
-        labels = page(node, "labels")
-        if not all(isinstance(label, dict) and isinstance(label.get("name"), str) for label in labels):
-            raise refuse(f"a label without a name on #{node['number']}")
-        names = frozenset(str(label["name"]).lower() for label in labels)
-        association = str(node.get("authorAssociation"))
-        return Filed(int(node["number"]), person, association, names, parent, by_agent(node.get("body")))
-
-    def home(node: Any) -> str:
-        where = node.get("repository") if isinstance(node, dict) else None
-        name = where.get("nameWithOwner") if isinstance(where, dict) else None
-        if not isinstance(name, str):
-            raise refuse("an issue without its repository")
-        return name.lower()
-
-    if not isinstance(found, dict) or found.get("errors"):
-        raise refuse("errors or no object")
-    data = found.get("data")
-    repository = data.get("repository") if isinstance(data, dict) else None
-    if not isinstance(repository, dict) or not isinstance(repository.get("nameWithOwner"), str):
-        raise refuse("no repository")
+    repository = _repository(found, refuse)
     repo = repository["nameWithOwner"].lower()
     closes: list[Filed] = []
-    for node in page(repository.get("pullRequest"), "closingIssuesReferences"):
-        if home(node) != repo:
+    for node in _page(repository.get("pullRequest"), "closingIssuesReferences", refuse):
+        if _home(node, refuse) != repo:
             continue  # an issue of another repo: its records are that repo's, not this one's
-        parent = node.get("parent")
-        closes.append(issue(node, None if parent is None or home(parent) != repo else issue(parent, None)))
+        closes.append(_with_parent(node, repo, refuse))
     return closes
+
+
+def issue_of(found: Any, number: int) -> Filed | None:
+    """ISSUE_QUERY's answer for number: the issue, with its parent when that is of the repo
+    too; None when number is a pull request. Anything malformed is refused, as closes_of
+    refuses it"""
+
+    def refuse(what: str) -> ReleaseError:
+        return ReleaseError(f"gh api graphql printed {what} for #{number}: {str(found)[:300]}")
+
+    repository = _repository(found, refuse)
+    node = repository.get("issueOrPullRequest")
+    kind = node.get("__typename") if isinstance(node, dict) else None
+    if kind == "PullRequest":
+        return None
+    if kind != "Issue":
+        raise refuse("no issue or pull request")
+    return _with_parent(node, repository["nameWithOwner"].lower(), refuse)
 
 
 class CreditReads(Protocol):
@@ -292,6 +338,11 @@ class CreditReads(Protocol):
     def credit_closes(self, number: int) -> list[Filed]:
         """The issues of the pull request's repo it closes, by GitHub's closing references, in
         GitHub's order, each with its sub-issue parent when that is in the repo too"""
+        ...
+
+    def credit_issue(self, number: int) -> Filed | None:
+        """The repo's issue number, with its sub-issue parent when that is in the repo too;
+        None when number is a pull request (spec 051)"""
         ...
 
     def credit_comments(self, number: int) -> list[Comment]:
@@ -350,12 +401,7 @@ def first_line(body: str) -> str:
 def filed(reads: CreditReads, pull: Pull) -> list[Filed]:
     """The issues the pull request closes and their parents, each once: an issue, then its
     parent, in the order of the closing references"""
-    found: dict[int, Filed] = {}
-    for issue in reads.credit_closes(pull.number):
-        for one in (issue, issue.parent):
-            if one is not None and one.number not in found:
-                found[one.number] = one
-    return list(found.values())
+    return with_parents(reads.credit_closes(pull.number))
 
 
 def answers(comments: Sequence[Comment], where: str, app: str) -> list[Named]:
@@ -390,28 +436,43 @@ def answerers(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
     """S-049-4: the answerers of needs-decision questions on the pull request, then on each
     issue it closes and that issue's parent"""
     found = answers(reads.credit_comments(pull.number), "the pull request", app)
-    for issue in filed(reads, pull):
+    return found + issue_answerers(reads, filed(reads, pull), app)
+
+
+def issue_answerers(reads: CreditReads, issues: Sequence[Filed], app: str) -> list[Named]:
+    """S-049-4: the answerers of needs-decision questions on each issue, in order"""
+    found: list[Named] = []
+    for issue in issues:
         found.extend(answers(reads.credit_comments(issue.number), f"#{issue.number}", app))
     return found
 
 
 def authors(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
-    """S-049-5: the author of each issue the pull request closes and of its parent, trusted by
-    the issue's author association, since the filing is the decision; an issue whose body is an
-    agent's names no one, whoever its author (S-050-11)"""
+    """S-049-5: the author of each issue the pull request closes and of its parent"""
+    return issue_authors(filed(reads, pull))
+
+
+def issue_authors(issues: Sequence[Filed]) -> list[Named]:
+    """S-049-5: the author of each issue, trusted by the issue's author association, since the
+    filing is the decision; an issue whose body is an agent's names no one, whoever its author
+    (S-050-11)"""
     return [
         Named(issue.author, issue.association in TRUSTED, f"filed #{issue.number}")
-        for issue in filed(reads, pull)
+        for issue in issues
         if issue.author is not None and not issue.agent
     ]
 
 
 def accepters(reads: CreditReads, pull: Pull, app: str) -> list[Named]:
-    """S-049-6: for each opportunity issue labelled planned that the pull request closes, or
-    that is the parent of one, the person whose `labeled` event added planned last, trusted by
-    a write, maintain, or admin permission on the repo"""
+    """S-049-6: the accepters of the issues the pull request closes and their parents"""
+    return issue_accepters(reads, filed(reads, pull))
+
+
+def issue_accepters(reads: CreditReads, issues: Sequence[Filed]) -> list[Named]:
+    """S-049-6: for each opportunity issue labelled planned, the person whose `labeled` event
+    added planned last, trusted by a write, maintain, or admin permission on the repo"""
     found: list[Named] = []
-    for issue in filed(reads, pull):
+    for issue in issues:
         if not {OPPORTUNITY, PLANNED} <= issue.labels:
             continue
         added = reads.credit_labelers(issue.number, PLANNED)
@@ -430,14 +491,70 @@ SOURCES: tuple[Source, ...] = (approvers, answerers, authors, accepters)
 def deciders(reads: CreditReads, pull: Pull, app: str, sources: Sequence[Source] = SOURCES) -> list[Named]:
     """S-049-7: the trusted people the sources name, in order, each once; never a bot, the App
     (app, its bot login), or the pull request's author, whom the commit already credits"""
-    seen = {pull.author.login.lower(), app.lower()}
-    found: list[Named] = []
-    for source in sources:
-        for named in source(reads, pull, app):
-            key = named.person.login.lower()
-            if named.trusted and not named.person.bot and key not in seen:
-                seen.add(key)
-                found.append(named)
+    return _first_named(functools.partial(source, reads, pull, app) for source in sources)(
+        {pull.author.login.lower(), app.lower()}
+    )
+
+
+def _first_named(named_by: Iterable[Callable[[], list[Named]]]) -> Callable[[set[str]], list[Named]]:
+    """The trusted people each reader names, in order, each once, never a bot or a login seen
+    (lowercase); each reader runs only once those before it have"""
+
+    def keep(seen: set[str]) -> list[Named]:
+        found: list[Named] = []
+        for read in named_by:
+            for named in read():
+                key = named.person.login.lower()
+                if named.trusted and not named.person.bot and key not in seen:
+                    seen.add(key)
+                    found.append(named)
+        return found
+
+    return keep
+
+
+def issue_deciders(reads: CreditReads, issues: Sequence[Filed], app: str) -> list[Named]:
+    """Spec 051: the deciders of issues alone, by spec 049's sources 2 to 4 in its order (their
+    needs-decision answerers, their authors, the accepters of the planned opportunities among
+    them), each once, never a bot or the App (app, its bot login)"""
+    return _first_named(
+        (
+            lambda: issue_answerers(reads, issues, app),
+            lambda: issue_authors(issues),
+            lambda: issue_accepters(reads, issues),
+        )
+    )({app.lower()})
+
+
+def with_parents(issues: Iterable[Filed]) -> list[Filed]:
+    """Each issue, then its parent, each once, in order"""
+    found: dict[int, Filed] = {}
+    for issue in issues:
+        for one in (issue, issue.parent):
+            if one is not None and one.number not in found:
+                found[one.number] = one
+    return list(found.values())
+
+
+# GitHub's closing keywords, before an issue of the repo by #n, owner/name#n, or its URL
+_CLOSING = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+"
+    r"(?:#|(?P<repo>[A-Za-z0-9-]+/[A-Za-z0-9._-]+)#|https://github\.com/(?P<url>[A-Za-z0-9-]+/[A-Za-z0-9._-]+)/issues/)"
+    r"(?P<number>[1-9][0-9]*)\b",
+    re.IGNORECASE,
+)
+
+
+def closed_by(body: str, repo: str) -> list[int]:
+    """The numbers of repo's issues a pull request's body closes with GitHub's keywords
+    (`Fixes #9`, `closes owner/name#9`, `Resolves <issue URL>`), each once, in order; an issue
+    of another repo is left out, since its records are that repo's"""
+    found: list[int] = []
+    for match in _CLOSING.finditer(body):
+        named = match["repo"] or match["url"]
+        number = int(match["number"])
+        if (named is None or named.lower() == repo.lower()) and number not in found:
+            found.append(number)
     return found
 
 

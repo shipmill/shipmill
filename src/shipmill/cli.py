@@ -111,7 +111,7 @@ import shutil
 import sys
 import time
 import webbrowser
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path, PurePosixPath
@@ -132,7 +132,7 @@ from shipmill import (
     roles,
     status,
 )
-from shipmill.agents import AgentsConfig, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
+from shipmill.agents import AgentsConfig, Author, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
 from shipmill.app import (
     CACHE,
     HELPERS,
@@ -175,6 +175,9 @@ from shipmill.app_create import (
     plan,
 )
 from shipmill.app_gh import (
+    DECIDED_IN,
+    ISSUE_CREATE,
+    PR_CREATE,
     BodyRead,
     GhCapture,
     GhRunner,
@@ -187,6 +190,8 @@ from shipmill.app_gh import (
     body_reader,
     bundled_repo_flag,
     capture_gh,
+    created_body,
+    decided_in,
     edited_args,
     find_gh,
     is_read,
@@ -199,9 +204,10 @@ from shipmill.app_gh import (
     repo_value,
     run_gh,
     with_body,
+    write_command,
 )
 from shipmill.app_install import WAIT_SECONDS, guide
-from shipmill.app_login import UrllibWeb, UserLogin, Web, remove_login, store_login
+from shipmill.app_login import AsApp, UrllibWeb, UserLogin, Web, decider_token, remove_login, store_login
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold
 from shipmill.classify import DEFAULT_REF, Base, Pulls, RepoPath, classify_paths, classify_pull, policy_at
 from shipmill.claude_auth import ClaudeAuth, preflight_auth
@@ -209,7 +215,17 @@ from shipmill.claude_token import FLAG as TOKEN_FLAG
 from shipmill.claude_token import Credential, Token, TokenSource, inspect, read_token
 from shipmill.config import CONFIG_PATH, Table, config_path
 from shipmill.config import read as read_config
-from shipmill.credit import CreditReader, CreditReads, credited_body, deciders, default_body
+from shipmill.credit import (
+    CreditReader,
+    CreditReads,
+    Named,
+    closed_by,
+    credited_body,
+    deciders,
+    default_body,
+    issue_deciders,
+    with_parents,
+)
 from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER, doctor, product_on_host, read_plugin_rows
 from shipmill.downstream import (
     AppDispatcher,
@@ -894,7 +910,8 @@ def main(
         readers = _GhReaders(
             merge_reader or _gh_reader, credit_reader or _credit_reader, stdin or sys.stdin, gh_capture or capture_gh
         )
-        return _gh(root, passed, api or UrllibApi(), signer or Openssl(), env, user_home, gh_runner or run_gh, readers)
+        reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
+        return _gh(root, passed, reach, env, user_home, gh_runner or run_gh, readers)
     if args.command == "plugin-clean":  # needs no --repo and no config (spec 039)
         where = stdin or sys.stdin
         return plugin_clean.clean(claude or run_command, user_home, args.apply, where.isatty(), print)
@@ -1497,11 +1514,20 @@ def _unreadable_top(root: Path) -> Path | None:
     return next((folder for folder in (root, *root.parents) if (folder / ".git").exists()), None)
 
 
+@dataclass(frozen=True, slots=True)
+class _GhHub:
+    """How `shipmill gh` reaches GitHub besides gh: its REST API, openssl for the App's JWT, and
+    github.com for a decider's token refresh (spec 051)"""
+
+    api: Api
+    signer: Signer
+    web: Web
+
+
 def _gh(
     root: Path,
     passed: list[str],
-    api: Api,
-    signer: Signer,
+    hub: _GhHub,
     environ: Mapping[str, str],
     home: Path,
     runner: GhRunner,
@@ -1513,13 +1539,18 @@ def _gh(
     [agents] identity = "host" or the call passes --as-host; any other write exits 2 and gh
     never runs. GH_TOKEN is never set but empty. As the App, a merge of a pull request with a
     `never` zone exits 2 and gh never runs (S-030-13), and with [agents] author set, or without
-    it the deprecated credit = "decider", it names who decided it (specs 049, 051); either
-    author still writes as the App here. In every mode, the body a create writes ends with the agent
+    it the deprecated credit = "decider", it names who decided it (specs 049, 051). With author =
+    "decider", `issue create`, `pr create`, and `pr merge` run with the decider's stored user
+    access token, and as the App after one stderr line saying why when there is none; every
+    other command runs as the App (spec 051). shipmill's own `--decided-in <n>` of `issue
+    create` never reaches gh, in any mode. In every mode, the body a create writes ends with the agent
     marker, and one that can't be marked exits 2 and gh never runs; an edit's body carries it
     exactly when the record's current body does, read first with the same token, and one whose
     current body can't be read exits 2 and gh never edits (spec 050)"""
+    api, signer = hub.api, hub.signer
     leading = _leading(passed)
-    key, gh_args = leading.key, leading.gh_args
+    key = leading.key
+    decided, gh_args = decided_in(leading.gh_args)  # S-051-7: before anything reads gh's args
     read = body_reader(readers.stdin)
     if leading.product is not None:
         return _gh_product(
@@ -1599,12 +1630,72 @@ def _gh(
     if edit is not None:
         default = _gh_default(environ, _known_origin(top))
         gh_args = edited_args(edit, default, binary, as_app(environ, token), readers.current)
+    env = as_app(environ, token)
+    app = functools.partial(_app_login, app_login(signer, api), app_id, path, trailer) if trailer else None
+    assisted = identity.author is Author.DECIDER  # whose trailer is set (S-051-3)
     if merge is not None:
-        pull = _hold_never(top, merge, as_app(environ, token), binary, readers.merge)
-        if trailer is not None:
-            app = functools.partial(_app_login, app_login(signer, api), app_id, path, trailer)
-            gh_args = _credit(top, pull, gh_args, as_app(environ, token), binary, readers, app, trailer)
-    return runner([str(binary), *gh_args], as_app(environ, token))
+        pull = _hold_never(top, merge, env, binary, readers.merge)
+        if trailer is not None and app is not None:
+            gh_args, found = _credit(top, pull, gh_args, env, binary, readers, app, trailer)
+            if assisted:  # S-051-7: the pull request's deciders, by spec 049
+                env = _as_decider(found, f"no trusted person decided pull request #{pull[1]}", app_id, home, hub, env)
+    elif assisted and app is not None and write_command(gh_args) in (ISSUE_CREATE, PR_CREATE):
+        credit = readers.credit(top, binary, {**env, "GH_REPO": repo})
+        found, none = _create_deciders(credit, gh_args, decided, repo, app)
+        env = _as_decider(found, none, app_id, home, hub, env)
+    return runner([str(binary), *gh_args], env)  # S-051-12: every other command as the App
+
+
+def _create_deciders(
+    reads: CreditReads, gh_args: list[str], decided: int | None, repo: str, app: Callable[[], str]
+) -> tuple[list[Named], str]:
+    """S-051-7: the deciders of `gh issue create` (the record --decided-in names: a pull
+    request's by spec 049, an issue's and its parent's by its sources 2 to 4) or of `gh pr
+    create` (those of the issues of repo its body closes, and their parents), and why there
+    are none, for the stderr line. A record that can't be read names none, so the write goes
+    as the App, never as the host's login"""
+    try:
+        if write_command(gh_args) == PR_CREATE:
+            numbers = closed_by(created_body(gh_args), repo)
+            if not numbers:
+                return [], "the pull request's body closes no issue of the repo"
+            issues = [issue for issue in map(reads.credit_issue, numbers) if issue is not None]
+            listed = ", ".join(f"#{n}" for n in numbers)
+            return issue_deciders(reads, with_parents(issues), app()), f"no trusted person decided {listed}"
+        if decided is None:
+            return [], f"no {DECIDED_IN} names the issue or pull request that decided it"
+        issue = reads.credit_issue(decided)
+        if issue is None:
+            found = deciders(reads, reads.credit_pull(decided), app())
+            return found, f"no trusted person decided pull request #{decided}"
+        return issue_deciders(reads, with_parents([issue]), app()), f"no trusted person decided #{decided}"
+    except ReleaseError as exc:
+        return [], f"its decider can't be read: {exc}"
+
+
+def _as_decider(
+    found: Sequence[Named], none: str, app_id: int, home: Path, hub: _GhHub, env: Mapping[str, str]
+) -> dict[str, str]:
+    """S-051-7 to S-051-9: gh's env as the first decider found, with their stored user access
+    token, refreshed when it has expired, and one stderr line naming them and why; env, the
+    App's, after one stderr line saying why when there is no decider (none) or no token of
+    theirs GitHub takes. Neither line ever holds a token"""
+    if not found:
+        print(f"author: the App; {none}", file=sys.stderr)
+        return dict(env)
+    first = found[0]
+    try:
+        login = UserLogin(first.person.login)
+    except ReleaseError:  # a login no user can have stores no token
+        print(f"author: the App; `@{first.person.login}` is no user who can run app-login", file=sys.stderr)
+        return dict(env)
+    try:
+        user = decider_token(app_id, login, home, hub.api, hub.web, env, dt.datetime.now(dt.UTC))
+    except AsApp as exc:
+        print(f"author: the App; {exc}", file=sys.stderr)
+        return dict(env)
+    print(f"author: `@{login}`, who {first.why}", file=sys.stderr)
+    return {**env, "GH_TOKEN": user.access_token}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1645,22 +1736,22 @@ def _credit(
     readers: _GhReaders,
     app: Callable[[], str],
     trailer: str,
-) -> list[str]:
+) -> tuple[list[str], list[Named]]:
     """Spec 049: gh's arguments for `gh pr merge` of the pull request (repo, number) with one
     `--body` in place of any given, the body it would have had followed by a Co-authored-by
     trailer for each decider it doesn't name yet, and one stderr line per decider; unchanged
     when no record names one, for a rebase (spec 026 refuses it), and for --disable-auto. app
     reads the App's bot login, once the merge's records are read; trailer names the setting
-    that asked for the credit (spec 051)"""
+    that asked for the credit (spec 051). Also the deciders, in order; none when not read"""
     repo, number = pull
     flags = merge_flags(gh_args)
     if flags.disable_auto or flags.method == "rebase":
-        return gh_args
+        return gh_args, []
     reads = readers.credit(top, binary, {**env, "GH_REPO": repo})
     record = reads.credit_pull(number)
     found = deciders(reads, record, app())
     if not found:
-        return gh_args
+        return gh_args, []
     if flags.body is not None:
         base = flags.body
     elif flags.body_file is not None:
@@ -1681,7 +1772,7 @@ def _credit(
     body = credited_body(base, accounts)
     if body is None and flags.body_file == "-":  # stdin is read to its end: gh can't read it again
         body = base
-    return gh_args if body is None else with_body(gh_args, body)
+    return (gh_args if body is None else with_body(gh_args, body)), found
 
 
 def _body_file(path: str) -> str:
