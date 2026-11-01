@@ -126,7 +126,7 @@ from shipmill import (
     roles,
     status,
 )
-from shipmill.agents import AgentsConfig, Credit, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
+from shipmill.agents import AgentsConfig, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
 from shipmill.app import (
     CACHE,
     HELPERS,
@@ -1474,8 +1474,9 @@ def _gh(
     --as-host. Without it (spec 037), a read runs as the host's login, and a write too when
     [agents] identity = "host" or the call passes --as-host; any other write exits 2 and gh
     never runs. GH_TOKEN is never set but empty. As the App, a merge of a pull request with a
-    `never` zone exits 2 and gh never runs (S-030-13), and with [agents] credit = "decider" it
-    names who decided it (spec 049). In every mode, the body a create writes ends with the agent
+    `never` zone exits 2 and gh never runs (S-030-13), and with [agents] author set, or without
+    it the deprecated credit = "decider", it names who decided it (specs 049, 051); either
+    author still writes as the App here. In every mode, the body a create writes ends with the agent
     marker, and one that can't be marked exits 2 and gh never runs; an edit's body carries it
     exactly when the record's current body does, read first with the same token, and one whose
     current body can't be read exits 2 and gh never edits (spec 050)"""
@@ -1539,9 +1540,10 @@ def _gh(
     if repo is None:
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo; name the repo with gh's -R owner/name")
     merge = merge_of(gh_args)
-    if merge is not None and gh_args[0] == "api" and identity.credit is Credit.DECIDER:  # S-049-10, before any token
+    trailer = identity.trailer  # S-051-3, S-051-4: author, else the deprecated credit; None: as before (S-051-2)
+    if merge is not None and gh_args[0] == "api" and trailer is not None:  # S-049-10, before any token
         raise ReleaseError(
-            f'{merge.command} is refused: [agents] credit = "decider" in {CONFIG_PATH}, and a merge through the API '
+            f"{merge.command} is refused: {trailer} in {CONFIG_PATH}, and a merge through the API "
             f"leaves out who decided it (spec 049); run `{cli_command()} gh pr merge {merge.number} --squash` instead"
         )
     binary = find_gh(environ)
@@ -1561,9 +1563,9 @@ def _gh(
         gh_args = edited_args(edit, default, binary, as_app(environ, token), readers.current)
     if merge is not None:
         pull = _hold_never(top, merge, as_app(environ, token), binary, readers.merge)
-        if identity.credit is Credit.DECIDER:
-            app = functools.partial(_app_login, app_login(signer, api), app_id, path)
-            gh_args = _credit(top, pull, gh_args, as_app(environ, token), binary, readers, app)
+        if trailer is not None:
+            app = functools.partial(_app_login, app_login(signer, api), app_id, path, trailer)
+            gh_args = _credit(top, pull, gh_args, as_app(environ, token), binary, readers, app, trailer)
     return runner([str(binary), *gh_args], as_app(environ, token))
 
 
@@ -1584,14 +1586,15 @@ def _credit_reader(top: Path, binary: Path, env: Mapping[str, str]) -> CreditRea
     return GhCli(top, gh=str(binary), env=env)
 
 
-def _app_login(login: AppLogin, app_id: int, key: Path) -> str:
+def _app_login(login: AppLogin, app_id: int, key: Path, trailer: str) -> str:
     """The App's bot login, whose comments alone ask and relay a decision (S-049-4); exit 2
-    when it can't be read, since the credit can't then tell the App from another bot"""
+    when it can't be read, since the credit can't then tell the App from another bot. trailer
+    names the setting that asked for the credit"""
     try:
         return login(app_id, key)
     except ReleaseError as exc:
         raise ReleaseError(
-            f"[agents] credit = \"decider\" in {CONFIG_PATH} needs the App's bot login, which can't be read: {exc}"
+            f"{trailer} in {CONFIG_PATH} needs the App's bot login, which can't be read: {exc}"
         ) from None
 
 
@@ -1603,12 +1606,14 @@ def _credit(
     binary: Path,
     readers: _GhReaders,
     app: Callable[[], str],
+    trailer: str,
 ) -> list[str]:
     """Spec 049: gh's arguments for `gh pr merge` of the pull request (repo, number) with one
     `--body` in place of any given, the body it would have had followed by a Co-authored-by
     trailer for each decider it doesn't name yet, and one stderr line per decider; unchanged
     when no record names one, for a rebase (spec 026 refuses it), and for --disable-auto. app
-    reads the App's bot login, once the merge's records are read"""
+    reads the App's bot login, once the merge's records are read; trailer names the setting
+    that asked for the credit (spec 051)"""
     repo, number = pull
     flags = merge_flags(gh_args)
     if flags.disable_auto or flags.method == "rebase":
@@ -1624,7 +1629,7 @@ def _credit(
         base = readers.stdin.read() if flags.body_file == "-" else _body_file(flags.body_file)
     elif flags.method is None:
         raise ReleaseError(
-            f'gh pr merge names no method, and [agents] credit = "decider" in {CONFIG_PATH} needs it to write the '
+            f"gh pr merge names no method, and {trailer} in {CONFIG_PATH} needs it to write the "
             f"body GitHub would: add --squash (or --merge for a stack's base, D-33)"
         )
     else:
