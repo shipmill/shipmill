@@ -418,7 +418,7 @@ def remove_login(app_id: int, login: UserLogin, home: Path, web: Web, environ: M
         "Content-Type": "application/json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    url = f"{API}/applications/{urllib.parse.quote(token.client_id)}/token"
+    url = f"{API}/applications/{urllib.parse.quote(token.client_id, safe='')}/token"
     body = json.dumps({"access_token": token.access_token}).encode()
     try:
         answer = web.send("DELETE", url, headers, body)

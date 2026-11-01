@@ -359,6 +359,17 @@ def test_s051_6_a_malformed_file_is_named_and_never_quoted(tmp_path: Path, home:
     assert str(path) in str(raised.value) and ACCESS not in str(raised.value)
 
 
+def test_s051_6_a_stored_client_id_cannot_steer_the_revoke_path(tmp_path: Path, home: Path, key: Path) -> None:
+    root, path = logged_in(tmp_path, home, key)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["client_id"] = "Iv1/../../user/repos?x="
+    path.write_text(json.dumps(record), encoding="utf-8")
+    web = FakeWeb()
+    main(["--repo", str(root), "app-logout", "octocat"], web=web, home=home, environ={CLIENT_SECRET: SECRET})
+    ((_, url, _, _),) = web.sent
+    assert url == "https://api.github.com/applications/Iv1%2F..%2F..%2Fuser%2Frepos%3Fx%3D/token"
+
+
 def test_both_subcommands_are_registered() -> None:
     parser = _parser()
     assert parser.parse_args(["app-login"]).command == "app-login"
