@@ -2682,9 +2682,9 @@ def tick_record(
     """`shipmill gate --json`; pruned holds the paths removed, or on a dry run the ones it would
     remove; identity the App bot a launch writes as, or null for the host's gh login (and on a
     tick that launches nothing); auth, token-file or login (spec 035), preflight the Claude
-    Code login preflight's verdict (#500), null when none ran, in_flight what a QUIET tick
-    says is in flight (S-048-25), null on any other decision, and refused the refused keys the
-    tick ran without, as tick.json records them (S-052-10), an empty list without one"""
+    Code login preflight's verdict (#500), null when none ran, and in_flight what a QUIET tick
+    says is in flight (S-048-25), null on any other decision. The CLI adds refused, the
+    checkout's refused keys (S-052-11); tick.json's refused is the tick's own (S-052-10)"""
     return {
         "action": decision.action.value,
         "reason": decision.reason,
@@ -2709,7 +2709,6 @@ def tick_record(
         "item": decision.work[0].brief() if len(decision.work) == 1 else None,
         "running": None if decision.running is None else decision.running.record(),  # S-048-16
         "in_flight": None if decision.in_flight is None else decision.in_flight.record(),  # S-048-25
-        "refused": [r.record() for r in decision.refused],  # S-052-10
     }
 
 

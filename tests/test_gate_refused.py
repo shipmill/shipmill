@@ -27,7 +27,6 @@ from shipmill.gate import (
     load_tick,
     state_dir,
     tick_lines,
-    tick_record,
 )
 from shipmill.gitrepo import Git
 from shipmill.refused import PLUGIN_UPDATE
@@ -101,8 +100,6 @@ def test_s052_10_a_tick_with_plugin_update_launches_as_without_it_and_names_the_
     assert written["refused"] == [RECORDED]
     assert written["reason"] == tick_json(plain)["reason"]  # the line's suffix is not the reason's
     assert "refused" not in tick_json(plain)  # a tick.json without a refusal reads as before
-    assert tick_record(with_key, launched_with, (), (), dry_run=False)["refused"] == [RECORDED]
-    assert tick_record(without, launched_without, (), (), dry_run=False)["refused"] == []
     loaded = load_tick(state_dir(refused) / TICK)
     assert loaded is not None and loaded.refused == (PLUGIN_UPDATE,)
 
