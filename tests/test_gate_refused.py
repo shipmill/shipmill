@@ -1,11 +1,14 @@
 """S-052-10: a gate tick on a config that sets a refused key runs as it would without the key,
 its decision line ends with the refusal, and tick.json records it; the tick is never an ERROR
-tick, and `shipmill status` and `shipmill factory` read its tick.json as they do any other"""
+tick, and `shipmill status` and `shipmill factory` read its tick.json as they do any other.
+The refusals come from the config the tick reads: a tick that reads no config (RUNNING, HELD)
+names none and still reads none"""
 
 import dataclasses
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -27,12 +30,13 @@ from shipmill.gate import (
     tick_record,
 )
 from shipmill.gitrepo import Git
-from shipmill.refused import MIN_SOAK_DAYS, PLUGIN_UPDATE, in_checkout
+from shipmill.refused import PLUGIN_UPDATE
 from tests.test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier, bg, host
 from tests.test_gate_tick_report import AT, SINCE, gate_line, ticked
 
 REPO = "romamo/demo"
 AGENTS = '[agents]\nprompt = "/t"\n'
+REFUSED = f"{AGENTS}plugin_update = true\n"
 SUFFIX = "; refused: [agents] plugin_update (spec 031)"
 RECORDED = {
     "key": "[agents] plugin_update",
@@ -40,6 +44,8 @@ RECORDED = {
     "off": "nothing: gate sessions load the installed plugin",
     "fix": "delete it",
 }
+NO_HOLD = Hold()
+HELD = Hold(("#5 hold the releases",))
 
 
 def checkout(root: Path, config: str) -> Git:
@@ -52,10 +58,7 @@ def checkout(root: Path, config: str) -> Git:
     return git
 
 
-NO_HOLD = Hold()
-
-
-def run(git: Git, claude: FakeClaude, hold: Hold = NO_HOLD) -> tuple[Decision, str | None]:
+def run(git: Git, claude: FakeClaude, hold: Hold = NO_HOLD, **flags: Any) -> tuple[Decision, str | None]:
     """A real tick on the checkout's own config, as `shipmill gate` reads it"""
     decision, launched, _, _ = gate(
         git,
@@ -68,7 +71,7 @@ def run(git: Git, claude: FakeClaude, hold: Hold = NO_HOLD) -> tuple[Decision, s
         FakeNotifier(),
         NO_PRUNE,
         login=host,
-        refusals=lambda: in_checkout(git.root),
+        **flags,
     )
     return decision, launched
 
@@ -80,7 +83,7 @@ def tick_json(git: Git) -> dict[str, object]:
 
 def test_s052_10_a_tick_with_plugin_update_launches_as_without_it_and_names_the_refusal(tmp_path: Path) -> None:
     plain = checkout(tmp_path / "plain", AGENTS)
-    refused = checkout(tmp_path / "refused", f"{AGENTS}plugin_update = true\n")
+    refused = checkout(tmp_path / "refused", REFUSED)
     plain_claude, refused_claude = FakeClaude(), FakeClaude()
     without, launched_without = run(plain, plain_claude)
     with_key, launched_with = run(refused, refused_claude)
@@ -107,47 +110,38 @@ def test_s052_10_a_tick_with_plugin_update_launches_as_without_it_and_names_the_
 @pytest.mark.parametrize(
     ("claude", "hold", "action"),
     [
-        (FakeClaude([bg("a", "busy", "working")]), Hold(), Action.RUNNING),  # a tick that reads no config
-        (FakeClaude(), Hold(("#5 hold the releases",)), Action.HELD),
+        (FakeClaude([bg("a", "busy", "working")]), NO_HOLD, Action.RUNNING),
+        (FakeClaude(), HELD, Action.HELD),
     ],
 )
-def test_s052_10_every_decision_line_ends_with_the_refusal(
+def test_s052_10_a_tick_that_reads_no_config_names_no_refusal(
     tmp_path: Path, claude: FakeClaude, hold: Hold, action: Action
 ) -> None:
-    git = checkout(tmp_path / "demo", f"{AGENTS}plugin_update = true\n")
+    git = checkout(tmp_path / "demo", REFUSED)
     decision, launched = run(git, claude, hold)
-    assert decision.action is action
+    assert decision.action is action and decision.refused == ()
+    assert not tick_lines(decision, launched, (), (), dry_run=False)[0].endswith(SUFFIX)
+    assert "refused" not in tick_json(git) and tick_json(git)["failing"] is None
+
+
+def test_s052_10_a_running_tick_on_a_config_with_a_toml_error_keeps_todays_result(tmp_path: Path) -> None:
+    git = checkout(tmp_path / "demo", f"{REFUSED}this is not toml\n")
+    decision, launched = run(git, FakeClaude([bg("a", "busy", "working")]))
+    assert (decision.action, launched, decision.refused) == (Action.RUNNING, None, ())
+    assert tick_json(git)["action"] == "RUNNING"
+
+
+def test_s052_10_a_blocked_session_tick_reads_the_config_and_names_the_refusal(tmp_path: Path) -> None:
+    git = checkout(tmp_path / "demo", REFUSED)
+    decision, launched = run(git, FakeClaude([bg("a", "idle", "blocked")]))
+    assert decision.action is Action.WAITING and decision.refused == (PLUGIN_UPDATE,)
     assert tick_lines(decision, launched, (), (), dry_run=False)[0].endswith(SUFFIX)
-    assert tick_json(git)["refused"] == [RECORDED] and tick_json(git)["failing"] is None
 
 
-def test_s052_10_each_refusal_ends_the_line_in_catalogue_order(tmp_path: Path) -> None:
-    config = f"{AGENTS}plugin_update = false\n\n[lanes.stable]\nmin_soak_days = 3\n"
-    git = checkout(tmp_path / "demo", config)
-    assert in_checkout(git.root) == (MIN_SOAK_DAYS, PLUGIN_UPDATE)
-    decision, launched = run(git, FakeClaude())
-    first = tick_lines(decision, launched, (), (), dry_run=False)[0]
-    assert first.endswith(f"; refused: [lanes.stable] min_soak_days (spec 029){SUFFIX}")
-    loaded = load_tick(state_dir(git) / TICK)
-    assert loaded is not None and loaded.refused == (MIN_SOAK_DAYS, PLUGIN_UPDATE)
-
-
-def test_s052_10_a_config_without_the_file_or_the_key_refuses_nothing(tmp_path: Path) -> None:
-    assert in_checkout(tmp_path) == ()
-    assert in_checkout(checkout(tmp_path / "demo", AGENTS).root) == ()
-
-
-def test_s052_10_an_error_tick_still_records_its_refusals(tmp_path: Path) -> None:
-    git = checkout(tmp_path / "demo", f"{AGENTS}plugin_update = true\n")
-
-    def broken() -> AgentsConfig:
-        raise ReleaseError("the config is broken", "fix it")
-
-    with pytest.raises(ReleaseError):
-        gate(
-            git, REPO, broken, FakeClaude(), lambda _: [ISSUES], NOW, Hold, FakeNotifier(), NO_PRUNE,
-            refusals=lambda: in_checkout(git.root),
-        )  # fmt: skip
+def test_s052_10_an_error_tick_after_the_config_read_records_its_refusals(tmp_path: Path) -> None:
+    git = checkout(tmp_path / "demo", REFUSED)
+    with pytest.raises(ReleaseError, match="--app-key names an App's key"):
+        run(git, FakeClaude(), app_key_named=True)  # refused after the config read: no app_id
     written = tick_json(git)
     assert written["action"] == ERROR and written["refused"] == [RECORDED]  # the error is another key's
 

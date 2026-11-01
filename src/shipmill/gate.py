@@ -2320,7 +2320,6 @@ def gate(
     sweep_now: bool = False,
     github: GitHubPreflight | None = None,
     stop: Stop | None = None,
-    refusals: Callable[[], tuple[Refusal, ...]] | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -2435,21 +2434,26 @@ def gate(
     (ended_with_result), writes last-result.json; a dry run writes none. last-result.json is
     read before the tick acts too.
 
-    refusals reads the catalogued keys the config sets (spec 052, D-64); None, as in tests that
-    don't exercise it, reads none. It is read first, on every tick, whether or not the tick
-    reads the config, and before the tick acts, so its own failure is an ERROR tick that starts
-    and stops nothing. A refusal changes no decision: the tick runs as it would without the key,
-    its decision carries the refusals, its line ends with one `; refused: <key> (spec NNN)` for
-    each, and tick.json records them; it is never an ERROR tick and never a failing one (S-052-10)"""
+    A tick that reads the config takes the refused keys its [agents] table set from that read
+    (AgentsConfig.refused, spec 052, D-64); a tick that reads no config, RUNNING or HELD, reads
+    none for them, and names none. A refusal changes no decision: the tick runs as it would
+    without the key, its decision carries the refusals, its line ends with one
+    `; refused: <key> (spec NNN)` for each, and tick.json records them; it is never an ERROR
+    tick and never a failing one (S-052-10)"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
     previous = None if dry_run else load_tick(tick)
-    found: tuple[Refusal, ...] = ()
+    read: list[tuple[Refusal, ...]] = []  # the refusals of the tick's last config read, if it read one
+
+    def reading() -> AgentsConfig:
+        agents = config()
+        read[:] = [agents.refused]
+        return agents
+
     try:
-        found = () if refusals is None else refusals()
         decision, launched, waiting = decided(
             git,
             repo,
-            config,
+            reading,
             claude,
             findings,
             now,
@@ -2475,8 +2479,10 @@ def gate(
         )
     except ReleaseError as exc:
         if not dry_run:
+            found = read[0] if read else ()
             record_tick(tick, previous, now, ERROR, error_line(exc), exc.fix or DRY_RUN_FIX, True, None, None, found)
         raise
+    found = read[0] if read else ()
     decision = replace(decision, refused=found)
     if not dry_run:
         fix = decision_fix(decision)
