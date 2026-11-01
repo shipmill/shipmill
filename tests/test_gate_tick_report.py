@@ -46,7 +46,7 @@ def test_s048_11_a_failing_tick_is_the_gate_line_with_its_fix_and_no_exit_2() ->
     assert check.fixes == (AUTH_FIX,)
     assert not check.ok
     assert "failed" not in check.value  # neither `failed: exit 2` nor the log's line again
-    (entry,) = [c for c in json.loads(as_json([check]))["checks"]]
+    (entry,) = [c for c in json.loads(as_json([check], ()))["checks"]]
     assert entry == {"check": "gate", "ok": False, "value": check.value, "fixes": [AUTH_FIX]}
 
 

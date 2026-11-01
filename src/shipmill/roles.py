@@ -89,8 +89,10 @@ def text(roles: tuple[ResolvedRole, ...]) -> str:
     return "".join(f"{r.line()}\n" for r in roles)
 
 
-def as_json(roles: tuple[ResolvedRole, ...]) -> str:
-    return json.dumps({"roles": {str(r.name): r.record() for r in roles}}, indent=2) + "\n"
+def as_json(roles: tuple[ResolvedRole, ...], refusals: Sequence[refused.Refusal]) -> str:
+    """The roles, and the config's refused keys (S-052-11)"""
+    record = {"roles": {str(r.name): r.record() for r in roles}, "refused": refused.records(refusals)}
+    return json.dumps(record, indent=2) + "\n"
 
 
 def flags(roles: tuple[ResolvedRole, ...]) -> str:

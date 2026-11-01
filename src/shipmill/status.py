@@ -39,6 +39,7 @@ from shipmill.launchd import label
 from shipmill.planner import MilestoneOvertaken, MilestoneWaiting, Planner
 from shipmill.plugin import GateCli, publish_fix
 from shipmill.policy import Policy
+from shipmill.refused import Refusal
 from shipmill.roles import ResolvedRole, arguments
 from shipmill.upgrades import Offer, offers, pending
 from shipmill.version import Version
@@ -340,6 +341,7 @@ class Facts:
     # and the environments [environments] declares; the hold comes from the HOLD rows
     autonomy: AutonomyPolicy = field(default_factory=AutonomyPolicy)
     environments: tuple[EnvironmentName, ...] = ()
+    refused: tuple[Refusal, ...] = ()  # spec 052: the refused keys the checkout's config sets
 
 
 @dataclass(frozen=True, slots=True)
@@ -1730,6 +1732,12 @@ def agent_as_person_lines(facts: Facts) -> list[str]:
     return _after(_line("WARN", f"{AGENT_AS_PERSON}: {found.summary()}"), [found.fix(facts.command)])
 
 
+def refused_lines(facts: Facts) -> list[str]:
+    """S-052-9: a FAIL row for each refused key the config sets, its catalogue entry's fix on
+    an indented `fix:` line (S-011-12); beside the verdict, as the key stops only its feature"""
+    return [line for r in facts.refused for line in _after(_line("FAIL", f"refused: {r.what}"), [r.fix])]
+
+
 def report(facts: Facts) -> Report:
     found, reasons, working = verdict(facts)
     open_ = sum(1 for i in facts.issues if i.state not in CLOSED_STATES and not i.closed)
@@ -1741,6 +1749,7 @@ def report(facts: Facts) -> Report:
         count_line("pull requests", len(facts.pulls), f"{github(facts.repo)}/pulls"),
         *agents_lines(facts),
         *factory_lines(facts),
+        *refused_lines(facts),
         *agent_as_person_lines(facts),
     ]
     return Report(found, reasons, working, lines)

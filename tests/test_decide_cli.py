@@ -210,7 +210,7 @@ def test_s030_6_classify_files_detects_direction_and_security_and_nothing_for_co
     assert zones_of(found) == {"security": "ask"}
     assert found["level"] == "ask"
     found = run(repo, capsys, "classify", "--files", "src/x.py")
-    assert found == {"level": None, "zones": [], "candidates": []}
+    assert found == {"level": None, "zones": [], "candidates": [], "refused": []}
 
 
 def test_s030_6_the_strictest_level_wins_and_each_zone_has_its_reason(
@@ -280,7 +280,7 @@ def test_s030_7_a_comment_in_decisions_is_neither(repo: Repo, capsys: pytest.Cap
     before = POLICY + '\n[decisions]\ntriage-verdict = "ask"\n'
     after = POLICY + '\n[decisions]\n# the maintainer wants to see each verdict\ntriage-verdict = "ask"  # for now\n'
     found = run(repo, capsys, "classify", "--pr", "7", pulls=config_change(before, after))
-    assert found == {"level": None, "zones": [], "candidates": []}
+    assert found == {"level": None, "zones": [], "candidates": [], "refused": []}
 
 
 def test_s030_7_an_added_or_unparseable_config_counts_as_both(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
@@ -453,7 +453,7 @@ def test_s030_10_candidates_list_active_decisions_covering_a_changed_path_and_ne
     assert zones_of(found) == {"direction": "never"}
     assert not any(z["zone"].startswith("D-") or z["zone"] == "rule-departure" for z in found["zones"])
     code = run(repo, capsys, "classify", "--pr", "12", pulls=FakePulls((FileChange("src/x.py", "modified", "x"),)))
-    assert code == {"level": None, "zones": [], "candidates": []}
+    assert code == {"level": None, "zones": [], "candidates": [], "refused": []}
 
 
 def test_s030_10_without_a_log_there_are_no_candidates(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
