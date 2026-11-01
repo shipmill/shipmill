@@ -128,6 +128,11 @@ behaviour.
 The build issues, filled in once they are filed: one `- owner/repo#N: S-NNN-1, S-NNN-2` per
 line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
 
+- shipmill/shipmill#859: S-052-1, S-052-2, S-052-3, S-052-4, S-052-5, S-052-6, S-052-7, S-052-13
+- shipmill/shipmill#860: S-052-8, S-052-9, S-052-11
+- shipmill/shipmill#861: S-052-10
+- shipmill/shipmill#862: S-052-12
+
 ## Verification
 
 Filled in when the spec reaches `built`: one line per criterion id, saying how it was

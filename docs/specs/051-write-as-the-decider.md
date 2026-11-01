@@ -180,4 +180,14 @@ approved the work, never an outside author of a request.
 
 ## Issues
 
+- shipmill/shipmill#863: S-051-1, S-051-2, S-051-3, S-051-4
+- shipmill/shipmill#864: S-051-5, S-051-6
+- shipmill/shipmill#865: S-051-14
+- shipmill/shipmill#866: S-051-7, S-051-8, S-051-9, S-051-12
+- shipmill/shipmill#868: S-051-10, S-051-11, S-051-13
+- shipmill/shipmill#867: S-051-15
+- shipmill/shipmill#869: S-051-16
+
+The live check the Out of scope names is shipmill/shipmill#870, a `role:maintainer` step.
+
 ## Verification
