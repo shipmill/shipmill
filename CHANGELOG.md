@@ -7,6 +7,19 @@ bot.
 
 ## [Unreleased]
 
+## [0.103.0] - 2026-11-01
+
+### Changed
+
+- Docs: spec 052 (a refused config key stops only its feature) is built, each criterion verified on the default branch (#575)
+- Gate: a tick that reads a config whose `[agents]` sets a refused key runs as it would without it; its decision line ends with `; refused: <key> (spec NNN)` for each, `tick.json` and `shipmill gate --json` list them under `"refused"`, and the tick is never an ERROR tick (spec 052) (#861)
+- Docs: `docs/release-lanes.md` says how shipmill retires a config key: a refused key turns off only its feature, refusing one is the maintainer's decision under D-63 no sooner than 14 days after its deprecating release (D-64), and a refusal is an entry in `src/shipmill/refused.py`; the `min_soak_days` and `plugin_update` paragraphs no longer describe an exit 2 (spec 052) (#862)
+
+### Added
+
+- A refused config key now shows where you look: `shipmill doctor` prints a FAIL row named `refused` with its message, beside a PASS `policy` row, and runs every other check; `shipmill status` prints a FAIL row with the key's fix; and every `--json` that prints an object (`decide levels`, `decide classify`, `autonomy`, `roles`, `milestones`, `factory`, `gate`, `app-install`, `upgrade --apply`) carries a `"refused"` list of `{"key", "spec", "off", "fix"}`, empty without one (spec 052) (#860)
+- `shipmill doctor` prints an `author` row naming the mode of `[agents] author` (spec 051): `app`, `decider` with the logins that stored a token through `shipmill app-login` on this host, or `unset` with the deprecated `credit` reading (#867)
+
 ## [0.102.0] - 2026-11-01
 
 ### Changed
@@ -2128,7 +2141,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.102.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.103.0...HEAD
+[0.103.0]: https://github.com/shipmill/shipmill/compare/v0.102.0...v0.103.0
 [0.102.0]: https://github.com/shipmill/shipmill/compare/v0.101.0...v0.102.0
 [0.101.0]: https://github.com/shipmill/shipmill/compare/v0.100.2...v0.101.0
 [0.100.2]: https://github.com/shipmill/shipmill/compare/v0.100.1...v0.100.2
