@@ -1,17 +1,12 @@
 """Spec 029's doctor checks: the `issues: write` a breaking stable candidate's proposal needs
-(S-029-7), and min_soak_days, deprecated in 0.53.0 (S-029-8) and refused since (S-029-9)"""
-
-import subprocess
-import sys
-
-import pytest
+(S-029-7), and min_soak_days, deprecated in 0.53.0 (S-029-8) and refused since, the stable lane
+off while it is set (spec 052)"""
 
 from shipmill.cli import main
-from shipmill.config import config_path
 from shipmill.doctor import CALLER, doctor
-from shipmill.errors import ReleaseError
 from shipmill.planner import Event
-from shipmill.policy import SOAK_REMOVED, Lane, Policy
+from shipmill.policy import Lane
+from shipmill.refused import MIN_SOAK_DAYS
 
 from .conftest import POLICY, Repo, at_day
 from .test_lanes import plan, release
@@ -86,39 +81,17 @@ def soaked(days: int = 3, promote: bool = True) -> str:
     return text if promote else text.replace('promote_from = "rc"\n', "")
 
 
-def test_s029_9_the_policy_refuses_min_soak_days_whatever_its_value(repo: Repo) -> None:
-    for text in (soaked(3), soaked(0), soaked(3, promote=False)):
-        repo.write(repo.policy_file, text)
-        with pytest.raises(ReleaseError) as refused:
-            Policy.load(config_path(repo.root))
-        assert str(refused.value) == SOAK_REMOVED
-    repo.write(repo.policy_file, POLICY)
-    assert repo.policy.rule(Lane.STABLE).promote  # promote_from stays, with no age (S-029-10)
-
-
-def test_s029_9_a_command_on_the_refused_key_exits_2_naming_the_key_the_spec_and_the_upgrade(repo: Repo) -> None:
-    repo.write(repo.policy_file, soaked())
-    done = subprocess.run(
-        [sys.executable, "-m", "shipmill", "--repo", str(repo.root), "plan", "--dry-run"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert done.returncode == 2
-    assert done.stderr == f"shipmill: {SOAK_REMOVED}\n"
-    for named in ("min_soak_days", "spec 029", "shipmill upgrade --apply stable-every-batch"):
-        assert named in done.stderr
-
-
-# S-029-8's deprecation window, 0.53.0, is over: doctor's WARN is now the policy check's FAIL
+# S-029-9's exit 2 was dropped in #859: the policy loads with the stable lane off (spec 052,
+# tests/test_refused.py). S-029-8's deprecation window, 0.53.0, is over; the upgrade it names
+# still takes the refused key out
 # proves: S-029-8
-def test_s029_9_doctor_fails_the_policy_with_the_refusal_and_the_upgrade_fixes_it(repo: Repo) -> None:
+def test_s029_8_the_upgrade_takes_the_refused_key_out(repo: Repo) -> None:
     repo.write(repo.policy_file, soaked(0))
-    checks = doctor(repo.root)
-    assert [(c.status, c.name, c.detail) for c in checks] == [("FAIL", "policy", SOAK_REMOVED)]
-    # shipmill upgrade reads the raw TOML, not the policy, so it fixes the config the policy refuses
+    assert repo.policy.refused == (MIN_SOAK_DAYS,)
     assert main(["--repo", str(repo.root), "upgrade", "--apply", "stable-every-batch"]) == 0
     assert "min_soak_days" not in repo.read(repo.policy_file)
+    assert not repo.policy.refused
+    assert repo.policy.rule(Lane.STABLE).promote  # promote_from stays, with no age (S-029-10)
     assert {c.name: c.status for c in doctor(repo.root)}["policy"] == "PASS"
 
 

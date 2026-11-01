@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from shipmill import environments, requires
+from shipmill import refused as catalogue
 from shipmill.agents import AgentsConfig, ProductConfig
 from shipmill.autonomy import AutonomyPolicy
 from shipmill.config import Table, read
@@ -24,11 +25,9 @@ from shipmill.schedule import Freeze, Window
 from shipmill.version import Part
 
 _MAX_QUIET = 300  # a GitHub job runs at most 6 hours; leave room for the rest of the run
-# deprecated in 0.53.0, honoured through 0.55.0, refused since (S-029-9, as D-32 set for [roadmap])
-_SOAK_KEY = "min_soak_days"
-SOAK_REMOVED = (
-    f"[lanes.stable] {_SOAK_KEY} was removed (spec 029); delete it, or run shipmill upgrade --apply stable-every-batch"
-)
+# deprecated in 0.53.0, honoured through 0.55.0, refused since: dropped on load, it turns the
+# stable lane off (spec 052, D-64)
+SOAK_REMOVED = catalogue.MIN_SOAK_DAYS.removed
 
 # When several lanes are due in one run, the first one here releases; the next run takes the rest
 PRIORITY = (Lane.HOTFIX, Lane.STABLE, Lane.RC, Lane.DEV)
@@ -201,6 +200,12 @@ class Policy:
     downstream: DownstreamConfig | None = None  # [downstream]: the repos tested on a pull request (spec 032)
     product: ProductConfig | None = None  # [product]: the product's home or components (spec 038, D-47)
     decisions: DecisionPolicy = DecisionPolicy()  # [decisions]: each zone's level, or its default (spec 030, D-48)
+    # the catalogued keys the config sets, [agents]'s included, each dropped on load (spec 052, D-64)
+    refused: tuple[catalogue.Refusal, ...] = ()
+
+    def lane_off(self, lane: Lane) -> catalogue.Refusal | None:
+        """The refusal that turns the lane off, configured as it is (S-052-6), or None"""
+        return next((r for r in self.refused if r.lane is lane), None)
 
     @property
     def incident_label(self) -> str | None:
@@ -257,7 +262,9 @@ class Policy:
     def load(cls, path: Path) -> Policy:
         if not path.is_file():
             raise ReleaseError(f"no release policy at {path}")
-        return cls.parse(read(path), path.name)
+        policy = cls.parse(read(path), path.name)
+        catalogue.report(policy.refused)  # once per command, on stderr (S-052-5)
+        return policy
 
     @classmethod
     def parse(cls, raw: Mapping[str, Any], where: str) -> Policy:
@@ -301,10 +308,15 @@ class Policy:
         bot = top.table("bot", optional=True)
         bot.allow("name", "email")
         lanes: dict[Lane, LaneRule] = {}
+        refusals: list[catalogue.Refusal] = []
         if needed or "lanes" in raw:
             lanes_table = top.table("lanes")
             lanes_table.allow(*Lane)
-            lanes = {Lane(k): _lane(Lane(k), lanes_table.table(k)) for k in lanes_table.raw}
+            for k in lanes_table.raw:
+                # a refused key, whatever its value, is dropped and its refusal kept (S-052-2)
+                lane_table, found = catalogue.drop(lanes_table.table(k), f"[lanes.{k}]")
+                refusals += found
+                lanes[Lane(k)] = _lane(Lane(k), lane_table)
             if not lanes:
                 raise ReleaseError(f"{where}: [lanes] enables no lane")
         if Lane.STABLE in lanes and lanes[Lane.STABLE].promote and Lane.RC not in lanes:
@@ -352,6 +364,7 @@ class Policy:
             downstream=downstream,
             product=product,
             decisions=decisions,
+            refused=(*refusals, *(agents.refused if agents is not None else ())),
         )
 
     def rule(self, lane: Lane) -> LaneRule:
@@ -389,8 +402,6 @@ class Policy:
 def _lane(lane: Lane, t: Table) -> LaneRule:
     triggers = ("quiet_minutes", "schedule", "milestone")
     extra = {Lane.RC: ("marker",), Lane.STABLE: ("promote_from",)}.get(lane, ())
-    if lane is Lane.STABLE and _SOAK_KEY in t.raw:
-        raise ReleaseError(SOAK_REMOVED)
     if lane is Lane.HOTFIX:
         t.allow("github_release", "dispatch", "after_publish")  # a hotfix is cut by hand only
     else:

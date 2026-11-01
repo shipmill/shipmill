@@ -377,9 +377,10 @@ modes](design/agent-modes.md) has the details.
    `PLUGIN_SHADOWING` row ([One install, at user scope](#one-install-at-user-scope)), and
    name the install a session loads.
 
-   `[agents] plugin_update` was removed (spec 031): 0.60.0 ignored it, and since 0.61.0 a
-   config with the key, whatever its value, exits 2 with `[agents] plugin_update was removed
-   (spec 031); delete it`, and `doctor` fails the policy with that line. To bring
+   `[agents] plugin_update` was removed (spec 031): 0.60.0 ignored it, and since 0.61.0
+   shipmill refuses it, whatever its value. A config with the key still loads without it, and
+   every command that reads the config says `shipmill: refused: [agents] plugin_update was
+   removed (spec 031); delete it` on stderr (spec 052). To bring
    the install up to date, run the fix `doctor` or `status` prints, `claude plugin
    marketplace update shipmill && claude plugin update shipmill@shipmill --scope user`
 

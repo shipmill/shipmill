@@ -466,6 +466,14 @@ class Planner:
         notes = []  # why a lane before the releasing one skipped, named in the release's reason
         for current in lanes:
             self.policy.rule(current)
+            if (off := self.policy.lane_off(current)) is not None:
+                # configured but off while a refused key is set: no trigger releases it, and
+                # neither does a hand start (S-052-6, S-052-7)
+                if lane is not None:
+                    raise ReleaseError(f"{current}: off: {off.message}")
+                skipped.append(f"{current}: off: {off.message}")
+                notes.append(f"{current}: off: {off.message}")
+                continue
             if hotfix:
                 candidate: _Candidate | _Deferred | str = self._hotfix(hotfix)
             elif current is Lane.STABLE and lane is None:

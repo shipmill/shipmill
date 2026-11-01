@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from shipmill import refused
 from shipmill.agents import MAINTAINER, ROLES, AgentsConfig, Filler, Login, RoleName, RolesConfig, Team
 from shipmill.config import CONFIG_PATH, Table, config_path, read
 from shipmill.errors import ReleaseError
@@ -53,7 +54,9 @@ def configured(root: Path) -> RolesConfig:
     raw = read(path)
     if "agents" not in raw:
         return RolesConfig()
-    return AgentsConfig.parse(Table(raw, path.name).table("agents")).roles
+    agents = AgentsConfig.parse(Table(raw, path.name).table("agents"))
+    refused.report(agents.refused)
+    return agents.roles
 
 
 def resolve(config: RolesConfig, login: LoginReader) -> tuple[ResolvedRole, ...]:

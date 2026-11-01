@@ -572,7 +572,8 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    latest release, or a project- or local-scope install applies to its checkout, the tick
    reports it with its fix and the session still starts. The setup checklist's
    `PLUGIN_OUTDATED` rows name the install a session loads with a `gate:` row when it lags. `[agents] plugin_update` was removed: never write it; in a config
-   that has it, delete it, since each shipmill command that reads the config refuses it with exit 2
+   that has it, delete it: each shipmill command that reads the config drops it and says
+   `shipmill: refused: ...` on stderr (spec 052)
 
    The delivery hooks come with the plugin (spec 026), and need `uv` on PATH. In a repo
    whose config has `[agents]`, they refuse with exit 2 a plain `gh` write while `app_id`
