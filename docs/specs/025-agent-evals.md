@@ -158,8 +158,9 @@ it passes:
   model update changes behaviour with no change here, and this run is the baseline the
   pull requests compare against
 - **Not for a pull request from a fork:** a case's scaffold runs the repository's bash and
-  the run needs the API key, so as with unattended sessions (D-16) the job runs only for a
-  head in the repository. On a fork's pull request the job fails, never skips, with the
+  the run needs an Anthropic token, so as with unattended sessions (D-16) the job runs only
+  for a head in the repository. A fork's pull request gets no OIDC token from GitHub anyway,
+  and the refusal below comes before any token step. On a fork's pull request the job fails, never skips, with the
   line `evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f
   pr=<N> -f sha=<head SHA>`, the number and the event's head SHA filled in, so the change
   can't land unevaluated; the maintainer
@@ -170,7 +171,7 @@ it passes:
 
 The maintainer reads a fork's change at one commit and dispatches the run some time later.
 If the run took the pull request as it is when it starts, the fork's author could push in
-between, and the commit nobody read would run with `ANTHROPIC_API_KEY` (shipmill/shipmill#545).
+between, and the commit nobody read would run with an Anthropic token (shipmill/shipmill#545).
 So a dispatched run names the commit it is for:
 
 - `.github/workflows/evals.yml` gains a `sha` input beside `pr`. A dispatch with `pr` needs
@@ -178,14 +179,14 @@ So a dispatched run names the commit it is for:
   pr=<N> -f sha=<head SHA>`. A dispatch with `pr` and no `sha`, with a `sha` that is not 40
   hexadecimal characters, or with `sha` and no `pr` exits 1 naming the input; a plain
   dispatch without either stays the baseline run
-- **Before any checkout, and before any step that has the secret**, the run reads the pull
-  request's current head SHA (`gh api repos/<repo>/pulls/<N>`, with the job's own token)
-  and compares it with `sha`. When they differ it runs no case and exits 1 with `evals: the
+- **Before any checkout, and before the step that mints the Anthropic token**, the run
+  reads the pull request's current head SHA (`gh api repos/<repo>/pulls/<N>`, with the
+  job's own token) and compares it with `sha`. When they differ it runs no case and exits 1 with `evals: the
   head of #<N> is <current SHA>, not <sha>; read the new commits and dispatch again with
   -f sha=<current SHA>`, written as the job's error and to its summary
 - **After the checkout**, the run confirms that the head parent of the checked-out
   `refs/pull/<N>/merge` (`HEAD^2`) is `sha`, and exits 1 with the same line naming both
-  commits when it isn't, still before the step that has `ANTHROPIC_API_KEY`: a push between
+  commits when it isn't, still before the step that mints the Anthropic token: a push between
   the read and the checkout is refused too
 - **The run records what it measured:** the job summary's first line is `evals: measured
   <sha> of #<N>`, and the run's `meta.json` in its artifact holds `"pr"` and `"head"` beside
@@ -195,10 +196,68 @@ So a dispatched run names the commit it is for:
 
 The job runs `claude plugin eval . --trust-plugin --scaffold --allow-tools <the case's
 tools> --ablation none --no-publish --model <pinned> --runs 3 -j 4 --max-cost-usd 15
---json <out>`, with the API key from the repository secret `ANTHROPIC_API_KEY` and no GitHub
+--json <out>`, authenticated through Workload Identity Federation (below) and with no GitHub
 token in the run's environment, uploads the JSON and the HTML report as the run's
 artifact, and writes the summary below to the job's summary. `--ablation none` skips the
 no-plugin arm, which would double the cost to measure something the gate doesn't use.
+
+### The Anthropic token comes from Workload Identity Federation
+
+The job stores no Anthropic credential: it trades GitHub's OIDC token for a short-lived
+Anthropic one through Anthropic's Workload Identity Federation (shipmill/shipmill#442). No
+step of `evals.yml` reads `secrets.ANTHROPIC_API_KEY`, and no API key secret is used, not
+even as a fallback when federation fails.
+
+- **The permission:** the `evals` job gets `permissions: id-token: write`, the job and not
+  the workflow, beside the permissions it has today
+- **The ids, in `env`:** the workflow names the organization (`ANTHROPIC_ORGANIZATION_ID`),
+  the service account `shipmill-evals` (`ANTHROPIC_SERVICE_ACCOUNT_ID`), and the federation
+  rule (`ANTHROPIC_FEDERATION_RULE_ID`) as plain values in `env`, never as a repository
+  secret or variable: they are not secrets, since a token is minted only for a GitHub OIDC
+  token the rule matches. Both rules cover the Default workspace only, so the job sets no
+  `ANTHROPIC_WORKSPACE_ID`
+- **The rule is chosen by the event:** the schedule and every `workflow_dispatch` on the
+  default branch, a fork's pinned `pr` and `sha` run included, use `shipmill-evals-main`
+  (`fdrl_01Pk7bGkjpHPcaWhVmDNMffp`, subject `repo:shipmill/shipmill:ref:refs/heads/main`);
+  a same-repo `pull_request` run uses the pull-request rule of shipmill/shipmill#846
+  (subject `repo:shipmill/shipmill:pull_request`), whose id the workflow writes once #846
+  posts it
+- **The step that mints the Anthropic token** runs after the S-025-20 and S-025-21 checks
+  and after `shipmill evals check`, where "Check the API key" ran. It requests GitHub's
+  OIDC token with audience `https://api.anthropic.com` (from `ACTIONS_ID_TOKEN_REQUEST_URL`
+  with `ACTIONS_ID_TOKEN_REQUEST_TOKEN` as the bearer, as Anthropic's GitHub Actions guide
+  shows), writes it to a file in `$RUNNER_TEMP`, never in the checkout the cases clone, and
+  exchanges it once at `POST /v1/oauth/token` with the rule, organization, and service
+  account ids, so a rule that doesn't match shows before any case runs
+- **The eval run** gets `ANTHROPIC_IDENTITY_TOKEN_FILE` pointing at that file and the three
+  ids; Claude Code selects federation credentials when `ANTHROPIC_FEDERATION_RULE_ID` and
+  `ANTHROPIC_ORGANIZATION_ID` are both set and exchanges the file's token itself. Its
+  environment holds neither `ANTHROPIC_API_KEY` nor `ANTHROPIC_AUTH_TOKEN`, which outrank
+  federation, nor `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, which
+  would let a case mint a GitHub OIDC token for any audience; every other command that runs
+  the checkout's code drops those two as well, as the GitHub token is kept out today
+- **The file stays fresh:** GitHub's OIDC token expires about 5 minutes after it is issued,
+  the minted Anthropic token lasts the rule's 10 minutes, and each identity token is
+  single-use (its `jti`), while a run takes far longer. Anthropic's guide says the client
+  re-reads `ANTHROPIC_IDENTITY_TOKEN_FILE` on each refresh, so the file must hold a new
+  token before each one: the run step writes a fresh OIDC token to the file in the
+  background, from a process outside the eval run's environment, for as long as the run
+  lasts
+
+When there is no OIDC token (the request variables are unset, or the request fails) or the
+exchange fails, the job runs no case and writes one line, `evals: no Anthropic token from
+Workload Identity Federation (<reason>), so no case ran`, to its summary: on a pull request
+while the gate is off as a warning with exit 0, else as its error with exit 1, the rule
+"Check the API key" follows today. The reason says which part failed and the HTTP status
+of a refused exchange, never a token. A run the runner stops with `partialReason:
+auth_failed` writes the same line, its reason naming the runner, and compares nothing.
+
+A fork's pull request still fails before any token step with the S-025-18 line. The
+accepted trade-off of the pull-request rule (#846): a same-repo branch's own `evals.yml`
+runs on its pull request, so anyone who can push a branch here, collaborators and the App,
+can mint a 10-minute Developer token that spends from the Default workspace's budget. The
+`--max-cost-usd 15` cap holds for the workflow as written; a branch that edits `evals.yml`
+can drop it, so the workspace's spend limit is the bound that holds.
 
 The pinned model is the one the gate's sessions run, written once in `evals.yml` as the
 `EVALS_MODEL` value, so the suite measures the agents as they work; every case runs 3
@@ -260,7 +319,8 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - `evals/`: the cases, `cases.toml`, `scaffold.sh`, `bin/gh`, and its `bin/shipmill` and `bin/uvx` shims
 - `src/shipmill/evals.py` and `src/shipmill/cli.py`: `shipmill evals check` and
   `shipmill evals compare`
-- `.github/workflows/evals.yml`: the runs; `.github/workflows/ci.yml`: `shipmill evals check`
+- `.github/workflows/evals.yml`: the runs and their federation ids; `.github/workflows/ci.yml`:
+  `shipmill evals check`
 - `docs/evals.md`: how to run a case locally, record one, and read a failing gate
 - `docs/postmortems/TEMPLATE.md` and the skills' "Improve the skill" sections
 - `skills/github-pr-triage/SKILL.md`: a red `evals` check blocks the merge (D-37), and a
@@ -289,10 +349,13 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-17: `skills/github-pr-triage/SKILL.md` says a red `evals` check is never proven unrelated and blocks the merge unless the maintainer accepts that run
 - S-025-18: On a pull request from a fork the evals job runs no case and fails, never skips, with the line `evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>`, the pull request's number and the event's full head SHA filled in, as its error and in its summary
 - S-025-19: `.github/workflows/evals.yml`'s `workflow_dispatch` takes a `sha` input beside `pr`; a dispatch with `pr` and no `sha`, with a `sha` that is not 40 hexadecimal characters, or with `sha` and no `pr` exits 1 naming the input before any checkout, and a dispatch with neither runs as the baseline
-- S-025-20: A dispatched run with `pr` reads the pull request's current head SHA before any checkout and before any step that has `ANTHROPIC_API_KEY`, and when it differs from `sha` runs no case and exits 1 with `evals: the head of #<N> is <current SHA>, not <sha>; read the new commits and dispatch again with -f sha=<current SHA>` as the job's error and in its summary
-- S-025-21: After its checkout of `refs/pull/<N>/merge` and before any step that has `ANTHROPIC_API_KEY`, a dispatched run whose `HEAD^2` is not `sha` runs no case and exits 1 with the S-025-20 line naming both commits
+- S-025-20: A dispatched run with `pr` reads the pull request's current head SHA before any checkout and before the step that mints the Anthropic token (S-025-26), and when it differs from `sha` runs no case and exits 1 with `evals: the head of #<N> is <current SHA>, not <sha>; read the new commits and dispatch again with -f sha=<current SHA>` as the job's error and in its summary
+- S-025-21: After its checkout of `refs/pull/<N>/merge` and before the step that mints the Anthropic token (S-025-26), a dispatched run whose `HEAD^2` is not `sha` runs no case and exits 1 with the S-025-20 line naming both commits
 - S-025-22: A dispatched run with `pr` writes `evals: measured <sha> of #<N>` as the first line of its job summary, and its `meta.json` in the uploaded artifact holds `pr` and `head` set to that number and SHA
 - S-025-23: `skills/github-pr-triage/SKILL.md` says a fork's dispatched `evals` run counts only while the head SHA it recorded is the pull request's current head, and a push after the run needs a new dispatch naming the new SHA
+- S-025-24: When the evals job gets no GitHub OIDC token or the Anthropic token exchange fails, it runs no case and writes `evals: no Anthropic token from Workload Identity Federation (<reason>), so no case ran` to its summary, as a warning with exit 0 on a pull request while the gate is off and as its error with exit 1 otherwise; a run the runner stops with `partialReason: auth_failed` writes the same line and compares nothing
+- S-025-25: No step of `.github/workflows/evals.yml` reads `secrets.ANTHROPIC_API_KEY`, and the `evals` job has `permissions: id-token: write`
+- S-025-26: The step that mints the Anthropic token requests GitHub's OIDC token with audience `https://api.anthropic.com`, writes it under `$RUNNER_TEMP` and never in the checkout, and exchanges it with the federation rule chosen by the event (`shipmill-evals-main`, `fdrl_01Pk7bGkjpHPcaWhVmDNMffp`, for the schedule and every `workflow_dispatch`; the pull-request rule of #846 for a same-repo `pull_request` run), the organization and service account ids written in the workflow's `env`; the eval run gets `ANTHROPIC_IDENTITY_TOKEN_FILE` and those ids, and holds no `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL`, or `ACTIONS_ID_TOKEN_REQUEST_TOKEN`
 
 ## Out of scope
 
@@ -304,6 +367,9 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - A command grader that reruns a fix's test in the run's workspace: the runner has none
   today; `fix` cases check the order of tool calls and the files written instead, and gain
   it if the runner adds one
+- The federation issuer, service account, and rules in the Claude Console: the
+  maintainer's steps (shipmill/shipmill#442, shipmill/shipmill#846), since the gate's App
+  has no access to the Console
 - Gating on cost, or reporting the gate's real sessions' spend: spec 023
 - Choosing models per stage from eval results: the suite runs one pinned model; comparing
   models is a dispatched run with `--model`, read by a person
@@ -322,6 +388,7 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - shipmill/shipmill#437: S-025-1, S-025-2
 - shipmill/shipmill#438: S-025-3, S-025-4, S-025-5, S-025-6
 - shipmill/shipmill#439: S-025-15, S-025-17
+- shipmill/shipmill#442: S-025-24, S-025-25, S-025-26
 - shipmill/shipmill#443: S-025-8, S-025-9, S-025-14
 - shipmill/shipmill#448: S-025-10, S-025-11, S-025-12, S-025-13, S-025-16
 - shipmill/shipmill#449: S-025-7
