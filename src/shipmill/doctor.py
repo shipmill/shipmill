@@ -103,7 +103,7 @@ class PluginRow:
 LATEST = re.compile(r"^latest (v\d+\.\d+\.\d+);")
 SESSION_LOADS = re.compile(r"; a session loads (\w+) (\d+\.\d+\.\d+\S*) \(")
 PluginRows = Callable[[], list[PluginRow]]  # the rows, or ReleaseError when they can't be read
-PeopleReader = Callable[[], Flagged]  # spec 012's flagged items, or ReleaseError when they can't be read
+PeopleReader = Callable[[int], Flagged]  # spec 012's flagged items for [agents] app_id, or ReleaseError when unread
 HookTester = Callable[[], HookTest]  # the delivery hooks' self-test (spec 026)
 AppProbe = Callable[[int], Installed | None]  # [downstream] app_id's installation check; None: no key on the host
 
@@ -187,11 +187,11 @@ def pypi_check(answer: PyPI) -> Check:
     return Check("WARN", "pypi", answer.lines()[0])
 
 
-def agent_as_person_check(read: PeopleReader) -> Check:
+def agent_as_person_check(read: PeopleReader, app_id: int) -> Check:
     """S-012-7: a WARN naming the agent-marked items a person wrote, with the fix; a failed
     read is a WARN that says so, never a crash or a silent PASS"""
     try:
-        found = read()
+        found = read(app_id)
     except ReleaseError as exc:
         return Check("WARN", AGENT_AS_PERSON, f"can't read the last 7 days' issues, pull requests, and comments: {exc}")
     if found.urls:
@@ -404,7 +404,7 @@ def doctor(
     if plugins is not None:
         checks.extend(plugin_checks(plugins, None if gate_cli is None else gate_cli(), check_requires(raw), pypi))
     if people is not None and policy.agents is not None and policy.agents.app_id is not None:
-        checks.append(agent_as_person_check(people))
+        checks.append(agent_as_person_check(people, policy.agents.app_id))
     return checks
 
 

@@ -947,7 +947,9 @@ def main(
         slug = _doctor_repo(root)
         plugins = None if slug is None else (lambda: read_plugin_rows(slug, root))
         people = (
-            None if slug is None else (lambda: agent_as_person.read(slug, state or run_state, dt.datetime.now(dt.UTC)))
+            None
+            if slug is None
+            else (lambda app_id: agent_as_person.read(slug, state or run_state, dt.datetime.now(dt.UTC), app_id))
         )
         hooks = _hook_test(root, env, user_home)
         has_gh = shutil.which("gh") is not None
@@ -1919,7 +1921,8 @@ def _status(
         code = max(code, found.code)  # spec 008: 1 when a row needs action, theirs as before
     gate = dataclasses.replace(gate, sessions_error=failed.get("sessions"), shipmill_error=failed.get("shipmill"))
     # S-012-7, S-012-8: read only when agents write as an App
-    people = agent_as_person.read(slug, run, when) if gate.agents is not None and gate.agents.app_id else None
+    app_id = None if gate.agents is None else gate.agents.app_id
+    people = None if app_id is None else agent_as_person.read(slug, run, when, app_id)
     git = Git(top)
     main = status.read_main(git, status.landing_branch(slug, top, run))
     facts = status.Facts(
