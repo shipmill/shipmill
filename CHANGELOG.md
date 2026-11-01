@@ -7,6 +7,18 @@ bot.
 
 ## [Unreleased]
 
+## [0.102.0] - 2026-11-01
+
+### Changed
+
+- A refused config key stops only the feature it configures (spec 052, D-64): a config that sets `[lanes.stable] min_soak_days` or `[agents] plugin_update`, whatever its value, now loads with the key dropped instead of exiting 2, and every command that loads the config prints `shipmill: refused: <message>` once on stderr, its stdout and exit code otherwise unchanged. While `min_soak_days` is set the stable lane is off: `shipmill plan` says `stable: off: <message>` and plans no stable release, and `shipmill plan --lane stable` exits 2 with the message; the dev and rc lanes plan as before. `plugin_update` turns nothing off. A key shipmill never knew still exits 2 (#859)
+- `AGENT_AS_PERSON` in `shipmill doctor` and `shipmill status` skips an agent-marked record a person authored through the repo's App, whose `performed_via_github_app` id is `[agents] app_id` (spec 051's assisted mode), and still flags one a person's own token or another App made; GraphQL doesn't expose the field, so each record the search would flag is read once more with `gh api`, and one that can't be read that way stays flagged (#865)
+
+### Added
+
+- `[agents] author` in `.github/shipmill.toml` takes `"app"` or `"decider"` and needs `[agents] app_id`; with it set, `shipmill gh pr merge` names who decided the pull request in `Co-authored-by` whatever `[agents] credit` says, and `shipmill doctor` warns that `author` replaces `credit`. `credit` alone keeps its reading with a deprecation warning naming `author = "app"`, and a config with neither merges as before. Both values write as the App for now (spec 051) (#863)
+- `shipmill app-login` lets the repo's App write as you (spec 051): it runs GitHub's device flow for the App in `[agents] app_id`, prints the verification URL and the one-time code you enter on github.com, and stores your user access token and refresh token in `~/.config/shipmill/user-<app_id>-<login>.json` with mode `0600`, printing the login it stored; an App with device flow off exits 2 naming its "Enable Device Flow" setting. `shipmill app-logout <login>` deletes that file and revokes the token when `SHIPMILL_APP_CLIENT_SECRET` is set, and otherwise, or when GitHub refuses, says to revoke the App under your GitHub settings (Applications, Authorized GitHub Apps). Nothing writes with the stored token yet (#864)
+
 ## [0.101.0] - 2026-10-31
 
 ### Changed
@@ -2116,7 +2128,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.101.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.102.0...HEAD
+[0.102.0]: https://github.com/shipmill/shipmill/compare/v0.101.0...v0.102.0
 [0.101.0]: https://github.com/shipmill/shipmill/compare/v0.100.2...v0.101.0
 [0.100.2]: https://github.com/shipmill/shipmill/compare/v0.100.1...v0.100.2
 [0.100.1]: https://github.com/shipmill/shipmill/compare/v0.100.0...v0.100.1

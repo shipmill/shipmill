@@ -1,3 +1,0 @@
-### Changed
-
-- A refused config key stops only the feature it configures (spec 052, D-64): a config that sets `[lanes.stable] min_soak_days` or `[agents] plugin_update`, whatever its value, now loads with the key dropped instead of exiting 2, and every command that loads the config prints `shipmill: refused: <message>` once on stderr, its stdout and exit code otherwise unchanged. While `min_soak_days` is set the stable lane is off: `shipmill plan` says `stable: off: <message>` and plans no stable release, and `shipmill plan --lane stable` exits 2 with the message; the dev and rc lanes plan as before. `plugin_update` turns nothing off. A key shipmill never knew still exits 2 (#859)
