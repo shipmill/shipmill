@@ -204,14 +204,12 @@ def later(repo: Repo, capsys: pytest.CaptureFixture[str], recorded: str) -> int:
 def test_s014_14_propose_keeps_the_later_label_while_the_upgrade_is_not_newer(
     repo: Repo, capsys: pytest.CaptureFixture[str], recorded: str
 ) -> None:
-    # 0.100.0 sorts before 0.37.0 as text and after it as a version: the order is the version's
+    # 0.100.0 sorts before 0.37.0 as text and after it as a version: the order is the version's;
+    # a newer recorded version is a newer shipmill's issue, left as it is (S-047-7)
     number = later(repo, capsys, recorded)
-    outcome = "unchanged" if recorded == "0.37.0" else "updated"
-    assert propose(repo.root, repo.github, capsys) == [f"{outcome} #{number}: changelog-fragments"]
-    assert repo.github.labels[number] == (UPGRADE_LABEL, UPGRADE_LATER_LABEL)
-    # the update recorded the installed version; the label holds on the next run too
-    assert propose(repo.root, repo.github, capsys) == [f"unchanged #{number}: changelog-fragments"]
-    assert repo.github.labels[number] == (UPGRADE_LABEL, UPGRADE_LATER_LABEL)
+    for _ in range(2):  # the label holds on the next run too
+        assert propose(repo.root, repo.github, capsys) == [f"unchanged #{number}: changelog-fragments"]
+        assert repo.github.labels[number] == (UPGRADE_LABEL, UPGRADE_LATER_LABEL)
 
 
 @pytest.mark.parametrize("recorded", ["0.36.0", "0.9.0", "0.37.0rc2", "0.37.0.dev1"])
@@ -242,6 +240,53 @@ def test_s014_14_only_an_issue_with_the_label_renews(repo: Repo, capsys: pytest.
     assert renewed(newer, waiting)
     assert not renewed(FRAGMENTS, waiting)
     assert not renewed(newer, dataclasses.replace(waiting, labels=(UPGRADE_LABEL,)))
+
+
+# -- two shipmills on one issue (spec 047) ---------------------------------------------------
+
+
+@pytest.mark.parametrize("recorded", ["0.38.0", "0.100.0", "1.0.0rc1"])
+@pytest.mark.parametrize("labels", [(UPGRADE_LABEL,), (UPGRADE_LABEL, UPGRADE_LATER_LABEL)])
+def test_s047_7_an_issue_a_newer_shipmill_wrote_keeps_its_title_body_and_labels(
+    repo: Repo, capsys: pytest.CaptureFixture[str], recorded: str, labels: tuple[str, ...]
+) -> None:
+    # 0.100.0 sorts before 0.37.0 as text and after it as a version: the order is the version's
+    propose(repo.root, repo.github, capsys)
+    (number,) = repo.github.issues
+    issue = repo.github.issues[number]
+    newer = issue.body.replace(" 0.37.0 -->", f" {recorded} -->", 1).replace("Why:", "Why (newer):")
+    repo.github.issues[number] = Issue(number, "shipmill upgrade: a newer title", newer)
+    repo.github.labels[number] = labels
+    edits = repo.github.edits
+    for _ in range(2):
+        assert propose(repo.root, repo.github, capsys) == [f"unchanged #{number}: changelog-fragments"]
+        assert repo.github.issues[number].title == "shipmill upgrade: a newer title"
+        assert repo.github.issues[number].body == newer
+        assert repo.github.labels[number] == labels
+        assert repo.github.edits == edits and list(repo.github.issues) == [number]
+    assert main(["--repo", str(repo.root), "upgrade", "--propose", "--json"], github=repo.github) == 0
+    assert json.loads(capsys.readouterr().out) == [
+        {"id": "changelog-fragments", "issue": number, "outcome": "unchanged"}
+    ]
+
+
+@pytest.mark.parametrize("level", ["propose", "observe"])
+def test_s047_8_an_issue_naming_an_id_shipmill_doesnt_know_stays_open_and_unchanged(
+    repo: Repo, capsys: pytest.CaptureFixture[str], level: str
+) -> None:
+    # a newer shipmill's upgrade: neither the catalogue nor WITHDRAWN names it
+    text = "<!-- shipmill-upgrade: some-future-upgrade 9.0.0 -->\nshipmill 9.0.0 offers **some-future-upgrade**\n"
+    labels = (UPGRADE_LABEL, UPGRADE_LATER_LABEL)
+    number = repo.github.create_issue("shipmill upgrade: turn on some-future-upgrade", text, labels)
+    edits = repo.github.edits
+    write_config(repo.root, DECIDED + AGENTS + f'upgrade = "{level}"\n')  # AGENTS ends in [autonomy]
+    for _ in range(2):
+        assert main(["--repo", str(repo.root), "upgrade", "--propose", "--json"], github=repo.github) == 0
+        assert json.loads(capsys.readouterr().out) == []  # not listed: the run did nothing to it
+        assert list(repo.github.issues) == [number] and repo.github.closed_issues == {}
+        assert repo.github.issues[number].title == "shipmill upgrade: turn on some-future-upgrade"
+        assert repo.github.issues[number].body == text
+        assert repo.github.labels[number] == labels and repo.github.edits == edits
 
 
 def test_s014_14_the_labels_are_read_with_the_issues() -> None:
