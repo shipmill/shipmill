@@ -565,6 +565,7 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    app_id = 123456    # replace with the App ID step 3 prints; sessions write as its bot
    mode = "interactive" # step 4's answer: sessions ask you; "headless": they ask on GitHub
    # wip = 3          # at most 3 issues in progress at once (1..100); unset: no limit
+   # author = "app"   # whose account agents' issues, PRs, merges go out as (spec 051); unset: the App's, no trailer
    ```
 
    Gate sessions load the installed plugin, which runs the CLI release it pins (spec 031,
@@ -595,14 +596,49 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    `max_wait_minutes` (0..10080) to match, or 0 to never stop one. `app_id` is a
    placeholder until step 3 replaces it; never merge `123456` itself
 
-   **Credit (spec 049).** A merge the App makes is authored by its bot, so the maintainer's
-   contribution graph loses the changes they decided to land. `[agents] credit =
-   "decider"` has `shipmill gh pr merge` add a `Co-authored-by` trailer for each trusted
-   person a record shows decided the change (an approving review, a needs-decision answer,
-   the issue it closes, the `planned` label on its opportunity); the trailer means the
-   person decided the change, not that they wrote it. The default is `"off"`, which writes
-   every merge as GitHub does. Write the key only when the user asks for it; `$CR doctor`
-   shows the setting in its `credit` row
+   **Authoring (spec 051).** A merge the App makes is authored by its bot, so the
+   maintainer's contribution graph loses the changes they decided to land. `[agents]
+   author` picks whose account an agent's issue, pull request, and merge commit go out as.
+   Every write still goes through the App (D-54): only those three commands change author,
+   and comments, labels, reviews, edits, closes, and `shipmill gh api` stay the App's:
+
+   | Mode | Config | Author of the issue, pull request, and merge commit | `Co-authored-by` on the merge commit |
+   |---|---|---|---|
+   | **Autonomous** | `app_id` with `[agents] author = "app"` | The App | The decider |
+   | **Assisted** | `app_id` with `[agents] author = "decider"` | The decider, when they ran `shipmill app-login`; else the App | The App's bot, or the decider when the App wrote it |
+   | **Operator** | no `app_id`, `identity = "host"` (spec 037) | The host's `gh` login | Unchanged |
+
+   - The decider is who assigned or approved the work, never an outside author of a
+     request: the first trusted person spec 049's records name (an approving review, a
+     needs-decision answer, the issue the change closes, the `planned` label on its
+     opportunity), never a bot, the App, an untrusted account, or a record carrying the
+     agent marker. A merge takes the pull request's decider, `pr create` the deciders of the
+     issues its body closes, and `issue create` those of the record its `--decided-in <n>`
+     names (shipmill's flag, never passed to gh)
+   - Each person opts in by running `shipmill app-login` themselves (`$CR app-login`), on the
+     host that runs the gate: GitHub's device flow prints a URL and a code, the person enters
+     the code on github.com signed in as themselves, and their token is stored in
+     `~/.config/shipmill/user-<app_id>-<login>.json` with mode `0600`. The owner setting
+     `author = "decider"` is no one's consent. The App needs "Enable Device Flow" on in its
+     settings, and its client secret in `~/.config/shipmill/app-<app_id>-client-secret`
+     (mode `0600`, put there by the maintainer) to refresh an expired token. `$CR
+     app-logout <login>` deletes the token and revokes it
+   - In assisted mode, a write with no decider, or a decider without a stored token, goes as
+     the App, after one stderr line saying why. An issue or pull request written as a person
+     keeps the agent marker and ends with ``Opened by an agent through shipmill, on
+     `@<login>`'s decision.``; a merge written as a person names them with `--author-email`
+     and ends with a `Co-authored-by` trailer for the App's bot. No mode approves a pull
+     request on a person's behalf
+   - `[agents] credit` is deprecated (spec 051): write `[agents] author = "app"` instead,
+     the same as `[agents] credit = "decider"` (spec 049), whose `Co-authored-by` trailer
+     names each trusted person a record shows decided the change; the trailer means the
+     person decided the change, not that they wrote it. The default is `"off"`, which writes
+     every merge as GitHub does: a config with neither key merges as before, and a repo that
+     wants no trailer leaves both unset. With `author` set, `credit` is ignored and `$CR
+     doctor` WARNs; with `credit` alone, it WARNs that the key is deprecated
+
+   Write `author` only when the user asks for it; `$CR doctor` shows the mode in its
+   `author` row, with the logins that ran `app-login` in assisted mode
 
    **Roles (spec 036).** A step an agent can't do (a DNS record, a new repository, a
    provider key, a sign-off) goes to a role, and the session files it labelled
