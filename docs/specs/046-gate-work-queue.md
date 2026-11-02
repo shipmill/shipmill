@@ -194,6 +194,7 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
   `--sweep` prints a host row or a report-only row
 - S-046-8: a tick sweeps when `sweep.json` records none or one `sweep_hours` or more ago, with
   or without a change; tiers 2, 5, 7, and 8 read the sweep's stored rows between sweeps
+  - Amended by spec 047: a sweep first proposes the config upgrades as the App, so its UPGRADE_PENDING rows see the issue it opened, and `sweep.json` keeps what the proposal did in `upgrades` (S-047-1, S-047-9)
 - S-046-9: a new release tag in the change check runs UNANNOUNCED for that tag alone and stores
   its row with the sweep's
 - S-046-10: `[agents] sweep_hours` defaults to 6 and the config refuses a value that is not an

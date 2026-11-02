@@ -491,6 +491,58 @@ class Proposed:
     issue: int
     outcome: Outcome
 
+    def record(self) -> dict[str, object]:
+        return {"id": str(self.id), "issue": self.issue, "outcome": str(self.outcome)}
+
+
+@dataclass(frozen=True, slots=True)
+class Proposals:
+    """What the gate's sweep's proposal did (spec 047), as sweep.json's upgrades holds it: each
+    issue it wrote or left, or the first line of the error that stopped it"""
+
+    done: tuple[Proposed, ...] = ()
+    error: str | None = None
+
+    def record(self) -> dict[str, object]:
+        if self.error is not None:
+            return {"error": self.error}
+        return {"proposed": [d.record() for d in self.done]}
+
+    @classmethod
+    def of(cls, data: object) -> Proposals:
+        """sweep.json's upgrades; anything but one of the two shapes raises ValueError"""
+        if not isinstance(data, dict) or set(data) not in ({"error"}, {"proposed"}):
+            raise ValueError(f"upgrades needs exactly error or proposed, got {data!r}")
+        if "error" in data:
+            if not isinstance(data["error"], str) or not data["error"]:
+                raise ValueError(f"upgrades' error must be a non-empty string: {data!r}")
+            return cls(error=data["error"])
+        if not isinstance(data["proposed"], list):
+            raise ValueError(f"upgrades' proposed must be a list: {data!r}")
+        done = []
+        for entry in data["proposed"]:
+            if not isinstance(entry, dict) or set(entry) != {"id", "issue", "outcome"}:
+                raise ValueError(f"a proposal needs exactly id, issue, and outcome, got {entry!r}")
+            number, outcome = entry["issue"], entry["outcome"]
+            if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+                raise ValueError(f"a proposal's issue must be a positive number: {entry!r}")
+            if not isinstance(entry["id"], str) or outcome not in {o.value for o in Outcome}:
+                raise ValueError(f"a proposal needs a string id and a known outcome: {entry!r}")
+            try:
+                done.append(Proposed(UpgradeId(entry["id"]), number, Outcome(outcome)))
+            except ReleaseError as exc:
+                raise ValueError(str(exc)) from None
+        return cls(tuple(done))
+
+    def line(self) -> str:
+        """The swept tick's decision line's part: `upgrades: 1 opened`, `upgrades: none`, or
+        `upgrades failed: <first line>`"""
+        if self.error is not None:
+            return f"upgrades failed: {self.error}"
+        counts = {o: sum(1 for d in self.done if d.outcome is o) for o in Outcome}
+        shown = ", ".join(f"{n} {o}" for o, n in counts.items() if n)
+        return f"upgrades: {shown or 'none'}"
+
 
 def propose(raw: Mapping[str, Any], level: Autonomy, github: GitHub, fix: str) -> list[Proposed]:
     """Close as completed the open issue of each upgrade the config decided, and the open issue

@@ -20,6 +20,7 @@ from typing import Any, Protocol
 
 from shipmill.errors import ReleaseError
 from shipmill.findings import ISSUES, PRS_OPEN, Finding, fingerprint
+from shipmill.upgrades import Proposals
 
 CURSOR = "cursor.json"  # the last walk's cursor and the change check's signature
 SWEEP = "sweep.json"  # the last sweep's rows
@@ -169,12 +170,14 @@ class Cursor:
 
 @dataclass(frozen=True, slots=True)
 class Swept:
-    """sweep.json: when the last sweep started, its rows, and the release tag its UNANNOUNCED
-    covers, which a new tag's own check moves (S-046-9)"""
+    """sweep.json: when the last sweep started, its rows, the release tag its UNANNOUNCED
+    covers, which a new tag's own check moves (S-046-9), and what its config-upgrade proposal
+    did (spec 047), None when it ran none; a file written before spec 047 has no upgrades"""
 
     at: dt.datetime
     rows: tuple[Finding, ...]
     tag: str | None
+    upgrades: Proposals | None = None
 
     @classmethod
     def load(cls, path: Path) -> Swept | None:
@@ -182,19 +185,27 @@ class Swept:
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or set(data) != {"at", "rows", "tag"}:
-                raise ValueError("expected exactly at, rows, and tag")
+            if not isinstance(data, dict) or set(data) - {"upgrades"} != {"at", "rows", "tag"}:
+                raise ValueError("expected exactly at, rows, and tag, and upgrades or not")
             if data["tag"] is not None and not isinstance(data["tag"], str):
                 raise ValueError("tag must be a string or null")
             if not isinstance(data["rows"], list):
                 raise ValueError("rows must be a list")
             rows = tuple(row_of(r) for r in data["rows"])
-            return cls(moment(data["at"], "at"), rows, data["tag"])
+            upgrades = Proposals.of(data["upgrades"]) if "upgrades" in data else None
+            return cls(moment(data["at"], "at"), rows, data["tag"], upgrades)
         except (KeyError, TypeError, ValueError) as exc:
             raise malformed(path, exc) from None
 
     def save(self, path: Path) -> None:
-        write(path, {"at": self.at.isoformat(), "rows": [record_of(f) for f in self.rows], "tag": self.tag})
+        data: dict[str, object] = {
+            "at": self.at.isoformat(),
+            "rows": [record_of(f) for f in self.rows],
+            "tag": self.tag,
+        }
+        if self.upgrades is not None:
+            data["upgrades"] = self.upgrades.record()
+        write(path, data)
 
     def due(self, now: dt.datetime, hours: int) -> bool:
         return now - self.at >= dt.timedelta(hours=hours)
@@ -690,7 +701,7 @@ def walk(
         if number == 8 and changes.tag is not None and changes.tag != swept.tag:
             fresh = [r for r in source.tier(8, changes) if r.state == "UNANNOUNCED"]
             kept = [r for r in swept.rows if not (r.state == "UNANNOUNCED" and r.subject == changes.tag)]
-            swept = Swept(swept.at, (*kept, *fresh), changes.tag)
+            swept = replace(swept, rows=(*kept, *fresh), tag=changes.tag)
         found += [r for r in swept.rows if tier_of(r) == number]
         read.append(number)
         rows += found

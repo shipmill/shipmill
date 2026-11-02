@@ -175,6 +175,7 @@ upgrade is an offer, not a problem.
 - S-014-8: the release workflow runs `shipmill upgrade --propose` in its own job with
   `issues: write`, after the release jobs, so a failure there fails that job naming the
   upgrade and never stops a release
+  - Amended by spec 047: the gate's sweep runs the same proposal as the App, every `[agents] sweep_hours`, so a repo hears of an upgrade without a release (S-047-1); both write the same one issue per id
 - S-014-9: `doctor` warns about a missing `issues: write` for upgrades only when `upgrade` is
   `propose` or `act` and an upgrade is pending (D-9), and pending upgrades alone never make
   it exit 1
