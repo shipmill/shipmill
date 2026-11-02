@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.106.0] - 2026-11-02
+
+### Changed
+
+- The shipmill-setup skill, `docs/flow.md`, and the README describe the three authoring modes (autonomous, assisted, operator), `[agents] author`, and `shipmill app-login`, each person's own opt-in, and who the decider is; the setup skill reads `[agents] credit` as deprecated in favour of `author = "app"`, and spec 051 is built (#869)
+
 ## [0.105.0] - 2026-11-02
 
 ### Added
@@ -2157,7 +2163,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.105.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.106.0...HEAD
+[0.106.0]: https://github.com/shipmill/shipmill/compare/v0.105.0...v0.106.0
 [0.105.0]: https://github.com/shipmill/shipmill/compare/v0.104.0...v0.105.0
 [0.104.0]: https://github.com/shipmill/shipmill/compare/v0.103.0...v0.104.0
 [0.103.0]: https://github.com/shipmill/shipmill/compare/v0.102.0...v0.103.0
