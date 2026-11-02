@@ -122,4 +122,8 @@ the manual steps 4 and 5 of `spec-gate.md`.
 
 ## Issues
 
+- shipmill/shipmill#895: S-053-1, S-053-2, S-053-3, S-053-4, S-053-5, S-053-6, S-053-7, S-053-8
+- shipmill/shipmill#896: S-053-9, S-053-10
+- shipmill/shipmill#897: S-053-11, S-053-12, S-053-13, S-053-14
+
 ## Verification
