@@ -221,7 +221,7 @@ def test_s051_7_pr_merge_runs_with_the_stored_token_of_the_pull_requests_decider
     reader = CreditReader(FakeCredit(reviews=[approved("octocat", "MEMBER")]))
     assert gh(repo, tmp_path, key, MERGE, runner, reader, api) == 0
     as_person(runner, "approved the pull request")
-    assert body_of(runner.calls[0]).endswith(OCTOCAT_TRAILER)  # spec 049's trailers, as before
+    assert OCTOCAT_TRAILER not in body_of(runner.calls[0])  # the author, not a co-author (S-051-11)
     assert ("/user", ACCESS) in api.calls  # GitHub took the token before the write
     assert all(env["GH_TOKEN"] == APP_TOKEN for env in reader.envs)  # the records are read as the App
 
