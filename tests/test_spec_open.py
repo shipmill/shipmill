@@ -242,6 +242,16 @@ def test_s053_2_a_with_path_that_isnt_a_file_of_the_repo_is_refused(tmp_path: Pa
     assert "--with" in refused(tmp_path, request(with_paths=(given,)), FakeHub())
 
 
+def test_s053_2_a_with_path_through_a_symlinked_folder_is_refused(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    repo_files(root, spec_text())
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("not the repo's\n", encoding="utf-8")
+    (root / "linked").symlink_to(outside)
+    assert "--with linked/secret.md" in refused(root, request(with_paths=("linked/secret.md",)), FakeHub())
+
+
 # --- S-053-3: no --issue -------------------------------------------------------------------------
 
 

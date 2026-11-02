@@ -130,7 +130,7 @@ def open_spec(top: Path, repo: str, request: Request, checkout: Checkout, hub: H
     if request.issue < 1:
         raise ReleaseError(f"--issue is the feature issue's number, 1 or more; got {request.issue}")
     spec_path = SpecPath.parse(request.path)
-    if not _plain_file(top / spec_path.path):
+    if not _plain_file(top, spec_path.path):
         raise ReleaseError(f"no spec file at {spec_path.path} in {top}; write it with specs.py new first")
     paths = (spec_path.path, *with_paths(top, spec_path.path, request.with_paths))
     text = _body_text(request.body_file)
@@ -206,14 +206,17 @@ def with_paths(top: Path, spec: PurePosixPath, given: Sequence[str]) -> tuple[Pu
             raise ReleaseError(f"--with {text}: name a file inside the repo, relative to its root")
         if path == spec or path in found:
             raise ReleaseError(f"--with {text} is in the commit already; name each file once")
-        if not _plain_file(top / path):
+        if not _plain_file(top, path):
             raise ReleaseError(f"--with {text}: no such file in {top} (a symlink or folder doesn't count)")
         found.append(path)
     return tuple(found)
 
 
-def _plain_file(path: Path) -> bool:
-    return path.is_file() and not path.is_symlink()
+def _plain_file(top: Path, path: PurePosixPath) -> bool:
+    """A regular file at path under top, reached through no symlink: neither the file nor any
+    folder on its way, so nothing outside the repo can reach the commit"""
+    found = top / path
+    return found.is_file() and found.resolve() == top.resolve().joinpath(*path.parts)
 
 
 def _body_text(path: Path | None) -> str:
