@@ -1,0 +1,12 @@
+{
+  "args": [
+    "api",
+    "--paginate",
+    "repos/{owner}/{repo}/pulls/881/files?per_page=100",
+    "--jq",
+    ".[]"
+  ],
+  "stdout": "{\"filename\": \"docs/product.md\", \"status\": \"modified\", \"additions\": 1, \"deletions\": 0, \"changes\": 1}\n{\"filename\": \"docs/specs/091-fleet-goals.md\", \"status\": \"added\", \"additions\": 1, \"deletions\": 0, \"changes\": 1}\n",
+  "stderr": "",
+  "exit": 0
+}

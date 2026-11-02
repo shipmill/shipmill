@@ -1,0 +1,12 @@
+{
+  "args": [
+    "api",
+    "--paginate",
+    "repos/{owner}/{repo}/pulls/880/files?per_page=100",
+    "--jq",
+    ".[]"
+  ],
+  "stdout": "{\"filename\": \"docs/specs/090-release-digest.md\", \"status\": \"added\", \"additions\": 1, \"deletions\": 0, \"changes\": 1}\n",
+  "stderr": "",
+  "exit": 0
+}
