@@ -40,7 +40,7 @@
                   repo's config on its default branch and its shipmill-upgrade issues; the repos of
                   this host's gate jobs, or --repo owner/name (repeatable) and --fleet FILE, with
                   --host adding the gate jobs' back; <id> for one deprecation; --json for one object
-  upgrade        list the config upgrades this repo hasn't decided or declined (spec 014); --apply <id>
+  upgrade         list the config upgrades this repo hasn't decided or declined (spec 014); --apply <id>
                   makes one's edit in the checkout and commits nothing; --propose opens or updates
                   one shipmill-upgrade issue per pending upgrade, as land.yml runs it after a release
   roles           print who receives each step an agent can't do (spec 036): [agents.roles] resolved,
