@@ -163,9 +163,13 @@ def open_spec(top: Path, repo: str, request: Request, checkout: Checkout, hub: H
         url = hub.open_pull(f"Spec {spec_path.number}: {spec.title}", body, branch, base)
     except ReleaseError as exc:
         raise ReleaseError(f"{exc}\nthe branch {branch} is pushed, but its pull request isn't open") from None
-    opened, number = pull_url(url)
+    left = f"the branch {branch} is pushed and its pull request may be open, but #{issue} carries no verdict"
+    try:
+        opened, number = pull_url(url)
+    except ReleaseError as exc:
+        raise ReleaseError(f"{exc}\n{left}") from None
     if opened.lower() != repo.lower():
-        raise ReleaseError(f"gh opened the pull request {url}, not one of {repo}")
+        raise ReleaseError(f"gh opened the pull request {url}, not one of {repo}\n{left}")
     try:
         hub.comment(issue, verdict(spec, spec_path, repo, number))
     except ReleaseError as exc:

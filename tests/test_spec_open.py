@@ -195,6 +195,28 @@ def test_s053_1_the_commit_subject_lowercases_the_first_letter_but_not_an_acrony
     assert lowered("CLI flags") == "CLI flags"
 
 
+@dataclass
+class OddUrlHub(FakeHub):
+    """gh pr create printed something other than a pull request URL of the repo"""
+
+    url: str = ""
+
+    def open_pull(self, title: str, body: str, head: str, base: str) -> str:
+        self.writes.append(("pull", title, body, head, base))
+        return self.url
+
+
+@pytest.mark.parametrize("url", ["Warning: 1 uncommitted change", "https://github.com/x/y/pull/41"])
+def test_s053_1_a_pull_request_url_it_cant_use_says_what_was_left_behind(tmp_path: Path, url: str) -> None:
+    hub, fake = OddUrlHub(url=url), FakeCheckout()
+    with pytest.raises(ReleaseError) as raised:
+        open_spec(only_file(tmp_path), REPO, request(), fake, hub, available)
+    assert str(raised.value).splitlines()[-1] == (
+        f"the branch {BRANCH} is pushed and its pull request may be open, but #7 carries no verdict"
+    )
+    assert [write[0] for write in hub.writes] == ["pull"]
+
+
 # --- S-053-2: Serves, --body-file, and --with ----------------------------------------------------
 
 
