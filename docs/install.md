@@ -437,7 +437,10 @@ modes](design/agent-modes.md) has the details.
    `$CR factory` checks this machine's side, one line per check: the launchd job and its
    log, the gate's sessions, the App, the shipmill installs, the checkout, and the
    worktrees, each read on its own (`--json` for a record). `$CR status` is the pipeline,
-   with one `factory` line summing those checks up
+   with one `factory` line summing those checks up. `$CR deprecations` reads the repos of
+   this host's gate jobs (or `--repo owner/name` and `--fleet <file>`) and lists, for each
+   deprecated config key, the repos still relying on it and where its upgrade stands there
+   ([Retired keys](release-lanes.md#retired-keys))
 
 5. **Watch a session** with `claude agents` and `claude attach <id>`. A session waiting on
    your answer holds the repo until you give it; on a machine nobody watches,

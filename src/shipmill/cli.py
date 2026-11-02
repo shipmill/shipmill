@@ -35,7 +35,12 @@
                   milestone waiting on its specs and MILESTONE_OVERTAKEN for an open milestone a stable
                   tag took, with the version to rename it to and the `gh api` rename, run through
                   shipmill gh; --json for one JSON object (spec 022)
-  upgrade         list the config upgrades this repo hasn't decided or declined (spec 014); --apply <id>
+  deprecations    read-only: which connected repos still rely on each deprecated key or reading
+                  (spec 047, D-63), each with its migrating upgrade's state there, read from each
+                  repo's config on its default branch and its shipmill-upgrade issues; the repos of
+                  this host's gate jobs, or --repo owner/name (repeatable) and --fleet FILE, with
+                  --host adding the gate jobs' back; <id> for one deprecation; --json for one object
+  upgrade        list the config upgrades this repo hasn't decided or declined (spec 014); --apply <id>
                   makes one's edit in the checkout and commits nothing; --propose opens or updates
                   one shipmill-upgrade issue per pending upgrade, as land.yml runs it after a release
   roles           print who receives each step an agent can't do (spec 036): [agents.roles] resolved,
@@ -97,12 +102,14 @@
 
 Exit codes: 0 done (a plan may skip); 1 doctor found a failure, status found a row that needs
 action, factory found a problem or a check that failed to run, app-create or app-install left
-a repo without the App, app-logout deleted a token it couldn't revoke, product check found a
+a repo without the App, app-logout deleted a token it couldn't revoke, deprecations found a
+repo relying on a deprecation, product check found a
 broken rule, review check found a malformed REVIEW.md, evals check found a malformed case (or,
 with --gate, a suite short of the gate's counts), evals compare found a regression or a run
 stopped at its budget, or downstream start's --sha is no longer the pull request's head; 2 bad
 input or a refused state, such as an edit of a file its check refuses, a malformed
-evals/cases.toml, or a missing or malformed aggregate-result.json.
+evals/cases.toml, a missing or malformed aggregate-result.json, or a repo deprecations can't
+read.
 """
 
 import argparse
@@ -128,6 +135,8 @@ from shipmill import (
     agent_as_person,
     cli_command,
     decide,
+    deprecations,
+    deprecations_report,
     evals,
     factory,
     fragments,
@@ -288,7 +297,17 @@ from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
 from shipmill.land import ActionsRun, Prepared, Stop, Waiting, cleanup, land, prepare, work_branch
-from shipmill.launchd import DEFAULT_EVERY, DEFAULT_TOOL, build, gate_cli, install, job_arguments, read_job, remove
+from shipmill.launchd import (
+    DEFAULT_EVERY,
+    DEFAULT_TOOL,
+    build,
+    gate_cli,
+    gate_repos,
+    install,
+    job_arguments,
+    read_job,
+    remove,
+)
 from shipmill.lineedit import LineText
 from shipmill.notify import Desktop
 from shipmill.operate import Http, Unreachable, UrllibHttp, approve, approve_rollback, operate, summary
@@ -535,6 +554,23 @@ def _parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--json", action="store_true", help="print the rows and the read's error as one JSON object")
     p.add_argument("--now", help="ISO time with offset (default: now)")
+
+    p = sub.add_parser(
+        "deprecations",
+        help="print which connected repos still rely on each deprecated key, with its upgrade's state (spec 047)",
+    )
+    p.add_argument("id", nargs="?", help="one deprecation's id, such as agents-prs (default: every one)")
+    p.add_argument(
+        "--repo",
+        dest="repos",
+        action="append",
+        default=[],
+        metavar="owner/name",
+        help="a repo to read, repeatable; with --fleet, instead of this host's gate jobs' repos",
+    )
+    p.add_argument("--fleet", type=Path, metavar="FILE", help="github-ship-watch's fleet file: the repos to read")
+    p.add_argument("--host", action="store_true", help="read this host's gate jobs' repos too, with --repo or --fleet")
+    p.add_argument("--json", action="store_true", help="print the report as one JSON object")
 
     p = sub.add_parser("roles", help="print who receives each step an agent can't do, [agents.roles] (spec 036)")
     shown = p.add_mutually_exclusive_group()
@@ -922,6 +958,8 @@ def main(
     gh_capture: GhCapture | None = None,
     web: Web | None = None,
     spec_checkout: spec_open.Checkout | None = None,
+    deprecation_reads: deprecations_report.Reads | None = None,
+    today: dt.date | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -935,8 +973,9 @@ def main(
     plugin-clean runs, gh_capture for the gh that reads an edit's current body (spec 050), and
     web for github.com's device flow and the token revoke app-login and app-logout send (spec
     051), and spec_checkout for the checkout and origin `spec open` commits to and pushes (spec
-    053), as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -, and
-    gh_capture also the gh whose output `spec open` reads"""
+    053), deprecation_reads for what `deprecations` reads of each repo and today for the date its
+    report names (spec 047), as tests pass fakes; stdin is also a `shipmill gh` merge's
+    --body-file -, and gh_capture also the gh whose output `spec open` reads"""
     refused.begin()  # each refused key is said once per command, however often it loads the config
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
@@ -979,6 +1018,9 @@ def main(
         return _factory(root, args, state or run_state, hub_api, hub_signer, github, sessions, user_home)
     if args.command == "milestones":
         return _milestones(root, args, github)
+    if args.command == "deprecations":  # reads GitHub only, never the checkout's config (spec 047)
+        reads = deprecation_reads or deprecations_report.GhReads(state or run_state)
+        return _deprecations(args, reads, user_home, today or dt.datetime.now(dt.UTC).date())
     if args.command == "roles":
         resolved = roles.resolve(roles.configured(root), login or (lambda: host_login(root)))
         if args.json:
@@ -2389,6 +2431,23 @@ def _factory(
     found = factory.checks(slug, host, importlib.metadata.version("shipmill"), top, when, cli_command())
     sys.stdout.write(factory.as_json(found, _refused_or_none(top)) if args.json else factory.text(found))
     return factory.exit_code(found)
+
+
+def _deprecations(args: argparse.Namespace, reads: deprecations_report.Reads, home: Path, today: dt.date) -> int:
+    """Spec 047: which repos rely on each deprecation, or on <id>'s alone. The repos are --repo's
+    and --fleet's, with this host's gate jobs' under --host, else the gate jobs' alone. Exit 0
+    when none relies, 1 when one does; a repo that can't be read, or none to read, raises (exit 2)"""
+    asked = deprecations_report.asked_about(
+        None if args.id is None else deprecations.find(deprecations.DeprecationId(args.id))
+    )
+    named = [deprecations_report.RepoName(r) for r in args.repos]
+    if args.fleet is not None:
+        named += deprecations_report.fleet_repos(args.fleet)
+    if args.host or not named:
+        named += [deprecations_report.RepoName(r) for r in gate_repos(home)]
+    found = deprecations_report.report(named, asked, reads)
+    sys.stdout.write(found.json() if args.json else found.text(today))
+    return found.code
 
 
 def _refused_or_none(root: Path) -> tuple[refused.Refusal, ...]:

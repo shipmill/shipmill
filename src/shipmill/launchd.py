@@ -34,6 +34,8 @@ DEFAULT_EVERY = 15  # minutes between runs, `shipmill launchd --every`'s default
 # retries give up in about 7 s, 8 back off for about a minute
 UV_HTTP_RETRIES = "8"
 _TEMP_ROOTS = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
+LABEL_PREFIX = "dev.shipmill.gate."  # each gate job's label, and its plist's name, begins with it
+OPTIONS = ("--repo", "--from")  # the job's options before the gate whose value could read "gate"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +50,7 @@ def label(repo: str) -> str:
     owner, _, name = repo.partition("/")
     if not owner or not name or "/" in name:
         raise ReleaseError(f"repo must be owner/name, got {repo!r}")
-    return "dev.shipmill.gate." + re.sub(r"[^a-z0-9.-]", "-", f"{owner}.{name}".lower())
+    return LABEL_PREFIX + re.sub(r"[^a-z0-9.-]", "-", f"{owner}.{name}".lower())
 
 
 def is_temporary(folder: str) -> bool:
@@ -162,11 +164,33 @@ def read_job(repo: str, home: Path) -> dict[str, object] | None:
     plist = home / "Library" / "LaunchAgents" / f"{label(repo)}.plist"
     if not plist.is_file():
         return None
+    return _load(plist)
+
+
+def _load(plist: Path) -> dict[str, object]:
     with plist.open("rb") as handle:
         found = plistlib.load(handle)
     if not isinstance(found, dict):
         raise ReleaseError(f"{plist} is not a launchd job")
     return found
+
+
+def gate_repos(home: Path) -> tuple[str, ...]:
+    """The repos of this host's gate jobs, the plists `shipmill launchd` writes and `shipmill
+    factory` reads (spec 047), by plist name: each job's repo is the owner/name after `gate` in
+    its arguments, and its label must be that repo's. A job that names none, or another repo's,
+    is refused, since a repo left out would read as relying on nothing"""
+    folder = home / "Library" / "LaunchAgents"
+    repos = []
+    for plist in sorted(folder.glob(f"{LABEL_PREFIX}*.plist")):
+        args = job_arguments(_load(plist))
+        named = [args[i + 1] for i in range(1, len(args) - 1) if args[i] == "gate" and args[i - 1] not in OPTIONS]
+        if len(named) != 1:
+            raise ReleaseError(f"{plist} names no one repo after gate in its ProgramArguments")
+        if f"{label(named[0])}.plist" != plist.name:
+            raise ReleaseError(f"{plist} runs the gate for {named[0]}, whose job is {label(named[0])}")
+        repos.append(named[0])
+    return tuple(repos)
 
 
 def job_arguments(job: dict[str, object]) -> list[str]:
