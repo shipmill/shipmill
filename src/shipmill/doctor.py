@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from shipmill import cli_command, fragments, ticks
+from shipmill import cli_command, deprecations, fragments, ticks
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
 from shipmill.agents import AgentsConfig, Author, Credit, ProductConfig, RolesError
@@ -31,7 +31,7 @@ from shipmill.app import (
     product_token,
 )
 from shipmill.app_login import client_secret_file, secret_refused, stored_logins
-from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage, StageKind
+from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage
 from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
 from shipmill.claude_token import FLAG as TOKEN_FLAG
@@ -78,10 +78,6 @@ REFUSED = "refused"  # doctor's row for a key shipmill refuses (spec 052)
 RELEASES_OFF = 'releases off (mode = "off")'  # a check's note on what an agents-only repo needs no more (#852, #856)
 DECISIONS_SECTION = "decisions"  # the config's [decisions] section, and doctor's block for it (spec 030)
 DECIDED_LABEL = "decided"  # a notify decision's label, as triage_state.py reads it (spec 030)
-_ROADMAP_DEPRECATED = (
-    "[roadmap] is deprecated (D-32) and read by nothing: the work-in-progress limit is [agents] wip;"
-    " move wip there and delete [roadmap]"
-)
 _BREAKING = "the stable lane can hold a breaking change ([bump] major), which waits for the maintainer"
 _LOCAL_USES = re.compile(r"uses:\s*\./\.github/workflows/(?P<file>[\w.-]+\.ya?ml)")
 
@@ -259,13 +255,12 @@ def doctor(
     add(True, "policy", f"{read}, mode {policy.mode}, lanes {', '.join(policy.lanes) or 'none'}")
     for refusal in policy.refused:  # S-052-8: a FAIL each, after which every other check still runs
         add(False, REFUSED, refusal.message)
-    if policy.roadmap is not None:
-        add(False, "roadmap", _ROADMAP_DEPRECATED, warn=True)
+    checks.extend(deprecation_checks(policy, "roadmap"))
     raw = read_config(found)
     if policy.agents is not None:
         checks.append(direction_check(root))
         checks.extend(hooks_checks(policy, Git(root), hooks, Path.home() if home is None else home))
-        checks.append(credit_check(policy.agents))
+        checks.extend(deprecation_checks(policy, "credit") or [credit_check(policy.agents)])
         checks.append(author_check(policy.agents, Path.home() if home is None else home))
         uses = None if credential is None else credential()
         if uses is not None:
@@ -916,29 +911,19 @@ def app_writes(app_id: int | None, home: Path) -> str:
     )
 
 
+def deprecation_checks(policy: Policy, row: str) -> list[Check]:
+    """S-047-11: a WARN for each entry of the deprecations catalogue the config relies on whose
+    row is row, with the catalogue's text; never a FAIL, as the config still loads (D-63)"""
+    return [Check("WARN", row, detail) for detail in deprecations.warnings(policy, row)]
+
+
 def credit_check(agents: AgentsConfig) -> Check:
-    """S-049-11: the credit row, for a repo with [agents]: whom a merge through `shipmill gh`
-    names in Co-authored-by, a setting rather than a fault, so a PASS when credit is unset. Spec
-    051 folds credit into [agents] author (D-63): a WARN that author replaces credit when both
-    are set (S-051-3), and that credit is deprecated when it alone is (S-051-4)"""
-    decider = "decider, a merge names who decided it in Co-authored-by"
-    if agents.author is not None and agents.credit is not None:
-        return Check(
-            "WARN",
-            "credit",
-            f'{decider} ([agents] author = "{agents.author}", spec 051); [agents] author replaces [agents] credit, '
-            "which is ignored: delete credit",
-        )
+    """S-049-11: the credit row, for a repo with [agents] and no [agents] credit: whom a merge
+    through `shipmill gh` names in Co-authored-by, a setting rather than a fault, so a PASS.
+    Spec 051 folds credit into [agents] author (D-63): a config that sets credit gets the
+    deprecations catalogue's WARN in this row's place (S-051-3, S-051-4)"""
     if agents.author is not None:
-        return Check("PASS", "credit", f'{decider} ([agents] author = "{agents.author}", spec 051)')
-    if agents.credit is not None:
-        reading = f"{decider} (spec 049)" if agents.credit is Credit.DECIDER else "off"
-        return Check(
-            "WARN",
-            "credit",
-            f'{reading}; [agents] credit is deprecated (spec 051): set [agents] author = "app" instead, the same as '
-            'credit = "decider", or, for a repo that wants no trailer, leave both unset',
-        )
+        return Check("PASS", "credit", f'{deprecations.DECIDER} ([agents] author = "{agents.author}", spec 051)')
     return Check("PASS", "credit", "off")
 
 
@@ -1180,22 +1165,8 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
             f" bound agent sessions only; add [agents] or delete {them}"
         )
         checks.append(Check("WARN", "autonomy", detail))
-    if policy.agents is not None and policy.agents.prs is not None:  # S-040-9: warned, never refused (D-63)
-        land = policy.autonomy.configured(Stage(StageKind.LAND))
-        detail = (
-            f"[agents] prs is deprecated and ignored: [autonomy] land ({land}) decides whether the gate works on"
-            " open pull requests, under propose or act, not under observe; delete prs"
-        )
-        checks.append(Check("WARN", "autonomy", detail))
-    for stage in agent_stages:  # spec 040's legacy reading, with no end date (D-63)
-        if policy.autonomy.is_read_from_prompt(stage):
-            level = policy.autonomy.configured(stage)
-            detail = (
-                f'{stage} reads {level} from [agents] prompt ("merge when green" or "land"), which nothing'
-                f' checks: add {stage} = "{level}" to [autonomy], or run'
-                f" `{cli_command()} upgrade --apply agent-autonomy`"
-            )
-            checks.append(Check("WARN", "autonomy", detail))
+    # S-040-9's [agents] prs and spec 040's legacy prompt reading: warned, never refused (D-63)
+    checks.extend(deprecation_checks(policy, "autonomy"))
     proposes = any(policy.autonomy.configured(stage) is Autonomy.PROPOSE for stage in policy.autonomy.stages())
     breaks = policy.can_break  # S-029-7: a breaking stable candidate is proposed, whatever the autonomy
     if (
