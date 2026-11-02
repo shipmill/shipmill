@@ -226,6 +226,28 @@ that raises. The keys refused today:
 | `[lanes.stable] min_soak_days` | 029 | the stable lane | delete it, or run `shipmill upgrade --apply stable-every-batch` |
 | `[agents] plugin_update` | 031 | nothing: gate sessions load the installed plugin | delete it |
 
+Each deprecated key or reading is an entry in `src/shipmill/deprecations.py`, which `doctor`'s
+warnings come from, and `shipmill deprecations` reads it across the connected repos (spec 047):
+for each entry, the repos whose `.github/shipmill.toml` on the default branch still relies on
+it, each with its migrating upgrade's state there (`issue #N open`, `asked, waiting`, `not now`,
+`declined`, `pull request #N open`, or `not proposed`), or `none of N repos`. It reads the repos
+of this host's gate jobs, or those `--repo owner/name` and `--fleet <file>` (github-ship-watch's
+fleet file) name, with `--host` adding the gate jobs' back; `--json` prints one object. It exits 0
+when no repo relies on the deprecations asked about, 1 when one does, and 2, printing no report,
+when a repo can't be read (no access, no config on the default branch, a config that fails to
+parse) or there are no repos to read: an unread repo never counts as relying on nothing.
+
+To retire a key:
+
+1. Release the upgrade that migrates a config off it, an entry in `src/shipmill/upgrades.py`
+   that the deprecation names
+2. Let the gates' sweeps propose it: each opens the upgrade's `shipmill-upgrade` issue in its
+   repo within `[agents] sweep_hours`, and the maintainer of each repo accepts or declines
+3. Run `uvx shipmill deprecations <id>` until it reads `none of N repos` for the
+   key
+4. Then decide: the decision that refuses the key (D-63, D-64) cites that output in its Why,
+   with the date it was run and the repos it read
+
 ### The schedule in `release.yml`
 
 `shipmill init` derives `release.yml`'s cron from the policy it writes, and

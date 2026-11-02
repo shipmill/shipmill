@@ -441,6 +441,28 @@ def parse_labelled(text: str) -> list[Issue]:
     return sorted(issues, key=lambda i: i.number, reverse=True)
 
 
+def open_pulls_command() -> tuple[str, ...]:
+    """gh's arguments that list the open pull requests with their head branches, the newest PULL_LIMIT"""
+    return ("pr", "list", "--state", "open", "--json", "number,headRefName", "--limit", str(PULL_LIMIT))
+
+
+def parse_open_pulls(text: str) -> list[PullRequest]:
+    """open_pulls_command's output, by number; anything but a list of numbers and head branches is refused"""
+    found = json.loads(text)
+    if not isinstance(found, list):
+        raise ReleaseError(f"gh pr list printed {type(found).__name__}, not a JSON array")
+    pulls = []
+    for pr in found:
+        if (
+            not isinstance(pr, dict)
+            or not isinstance(pr.get("number"), int)
+            or not isinstance(pr.get("headRefName"), str)
+        ):
+            raise ReleaseError(f"gh pr list printed {pr!r}: a pull request needs a number and a headRefName")
+        pulls.append(PullRequest(pr["number"], pr["headRefName"]))
+    return sorted(pulls, key=lambda p: p.number)
+
+
 class GhCli:
     """GitHub through the gh CLI, authenticated by GH_TOKEN in Actions. A body or release
     notes go on stdin, never in argv, which Linux caps at 128 KiB an argument (#499); one
@@ -806,23 +828,7 @@ class GhCli:
         return RunState(str(found["status"]), str(found["conclusion"] or ""))
 
     def open_pull_requests(self) -> list[PullRequest]:
-        found = json.loads(
-            self._gh(
-                "pr", "list", "--state", "open", "--json", "number,headRefName", "--limit", str(PULL_LIMIT),
-            )
-        )  # fmt: skip
-        if not isinstance(found, list):
-            raise ReleaseError(f"gh pr list printed {type(found).__name__}, not a JSON array")
-        pulls = []
-        for pr in found:
-            if (
-                not isinstance(pr, dict)
-                or not isinstance(pr.get("number"), int)
-                or not isinstance(pr.get("headRefName"), str)
-            ):
-                raise ReleaseError(f"gh pr list printed {pr!r}: a pull request needs a number and a headRefName")
-            pulls.append(PullRequest(pr["number"], pr["headRefName"]))
-        return sorted(pulls, key=lambda p: p.number)
+        return parse_open_pulls(self._gh(*open_pulls_command()))
 
     def merged_pull_requests(self, branches: Sequence[str]) -> list[MergedPull]:
         names = sorted(set(branches))
