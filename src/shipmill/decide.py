@@ -21,9 +21,9 @@ from types import ModuleType
 from typing import Any
 
 from shipmill.autonomy import Autonomy, AutonomyPolicy
+from shipmill.bundle import skills_dir
 from shipmill.config import Table
 from shipmill.errors import ReleaseError
-from shipmill.gate import skills_dir
 
 VETO_HOURS_KEY = "veto_hours"
 

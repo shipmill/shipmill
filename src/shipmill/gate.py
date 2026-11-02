@@ -27,18 +27,20 @@ import sys
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from shipmill.agents import AgentsConfig, Mode, RolesConfig
 from shipmill.app import AppCheck, Identity
 from shipmill.autonomy import AGENT_STAGES, Autonomy, AutonomyPolicy, Hold, Stage, StageKind
+from shipmill.bundle import skills_dir as skills_dir
 from shipmill.catch_up import CatchUp
 from shipmill.catch_up import catch_up as fast_forward  # gate's own catch_up names the [agents] key's reader
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import ClaudeAuth
 from shipmill.claude_token import Credential, Kind, Token, rejected_fix, session_env
-from shipmill.config import CONFIG_PATH, Table, config_path, read
+from shipmill.config import CONFIG_PATH, Table, config_path, loads, read
 from shipmill.environments import OperateConfig
 from shipmill.errors import ReleaseError
 from shipmill.findings import HEAD_SHA as HEAD_SHA
@@ -47,7 +49,7 @@ from shipmill.findings import PRS_OPEN as PRS_OPEN
 from shipmill.findings import Finding as Finding
 from shipmill.findings import fingerprint as fingerprint
 from shipmill.findings import parse_findings as parse_findings
-from shipmill.github import GitHub
+from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.github_auth import GH_MISSING_FIX, GitHubAuth, GitHubPreflight
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
@@ -65,6 +67,8 @@ from shipmill.plugin import (
 )
 from shipmill.refused import CATALOGUE, Refusal
 from shipmill.roles import LoginReader, ResolvedRole, arguments
+from shipmill.upgrades import Proposals, offers, propose
+from shipmill.upgrades import pending as pending_upgrades
 from shipmill.walk import (
     CURSOR,
     CURSOR_OVERLAP,
@@ -396,6 +400,7 @@ class Decision:
     running: Running | None = None  # the session a RUNNING or STALLED tick waits on (S-048-16); None otherwise
     in_flight: InFlight | None = None  # what a QUIET tick says is in flight (spec 048); None otherwise
     refused: tuple[Refusal, ...] = ()  # the catalogued keys the config sets, which the tick runs without (S-052-10)
+    upgrades: str | None = None  # what a swept tick's config-upgrade proposal did (S-047-10); None: none ran
 
 
 def refused_suffix(refusals: Iterable[Refusal]) -> str:
@@ -832,15 +837,6 @@ class ClaudeCli:
 
     def stop(self, session: str) -> None:
         self._run(["claude", "stop", session], Path.cwd())
-
-
-def skills_dir() -> Path:
-    """The skills bundled in the wheel, or the checkout's skills folder in development"""
-    here = Path(__file__).resolve().parent
-    for candidate in (here / "skills", here.parents[1] / "skills"):
-        if (candidate / "github-ship-watch").is_dir():
-            return candidate
-    raise ReleaseError("this shipmill install has no skills folder; reinstall it")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1694,6 +1690,70 @@ class PruneRun:
 
 
 @dataclass(frozen=True, slots=True)
+class Upgrader:
+    """What a sweep's config-upgrade proposal reads and writes with (spec 047), as tests pass
+    fakes: the config at the default branch's head (head_config), GitHub writing as the App,
+    and GitHub for a dry run's read, which writes nothing and mints no token"""
+
+    config: Callable[[], Mapping[str, Any]]
+    as_app: Callable[[Identity], GitHub]
+    reader: Callable[[], GitHub]
+
+
+def upgrade_fix(repo: str) -> str:
+    """What to do when GitHub refused the App's upgrade issue, as upgrades._named gives it"""
+    return f"grant the gate's GitHub App `issues: write` on {repo} in its settings, then accept it on its installation"
+
+
+def head_config(git: Git) -> Mapping[str, Any]:
+    """S-047-2: the config at the head of the branch releases land on (Git.landing_branch, the
+    branch the gate's refresh moves to), fetched first and read from git at that ref, never
+    from the working tree, which a session may have left on another branch"""
+    branch = git.landing_branch()
+    ref = f"refs/remotes/origin/{branch}"
+    git.run("fetch", "-q", "origin", f"+refs/heads/{branch}:{ref}")  # the branch only inside a refspec (#889)
+    where = f"{CONFIG_PATH} at origin/{branch}"
+    text = git.show(ref, CONFIG_PATH.as_posix())
+    if text is None:
+        raise ReleaseError(f"no {where} to propose config upgrades from")
+    return loads(text, where)
+
+
+@dataclass(frozen=True, slots=True)
+class SweptUpgrades:
+    """What a sweep's proposal did: the decision line's part (S-047-10), and what sweep.json
+    keeps, None for a gate without an App and for a dry run, which propose nothing"""
+
+    line: str
+    stored: Proposals | None
+
+
+def sweep_upgrades(upgrader: Upgrader, identity: Identity | None, repo: str, dry_run: bool) -> SweptUpgrades:
+    """Spec 047: upgrades.propose() for the config at the default branch's head, at its
+    [autonomy] upgrade level, writing as the App; without one (no [agents] app_id, D-14, D-54)
+    it reads and writes nothing. A dry run proposes nothing and says what it would, from the
+    list `shipmill upgrade --json` prints. A shipmill error is the result's, never the tick's
+    (S-047-9, as the prune's is, D-56)"""
+    if identity is None:
+        return SweptUpgrades("upgrades: none proposed, [agents] sets no app_id", None)
+    try:
+        raw = upgrader.config()
+        level = AutonomyPolicy.parse(Table(raw, str(CONFIG_PATH)).table("autonomy", optional=True)).upgrade
+        observed = ", [autonomy] upgrade = observe" if level is Autonomy.OBSERVE else ""
+        if dry_run:
+            found = offers(raw, upgrader.reader().labelled_issues(UPGRADE_LABEL)) if pending_upgrades(raw) else ()
+            would = [str(o.upgrade.id) if o.issue is None else f"{o.upgrade.id} (#{o.issue})" for o in found]
+            shown = ", ".join(would) if would and level is not Autonomy.OBSERVE else "none"
+            return SweptUpgrades(f"upgrades: would propose {shown}{observed}", None)
+        done = propose(raw, level, upgrader.as_app(identity), upgrade_fix(repo))
+    except ReleaseError as exc:
+        failed = Proposals(error=error_line(exc))
+        return SweptUpgrades(failed.line(), None if dry_run else failed)
+    proposals = Proposals(tuple(done))
+    return SweptUpgrades(f"{proposals.line()}{observed}", proposals)
+
+
+@dataclass(frozen=True, slots=True)
 class WalkRun:
     """How far a tick's walk went (spec 046): whether the change check found a change, the
     tiers it read, in order, and whether it swept"""
@@ -1734,8 +1794,12 @@ def tick_walk(
     land: Autonomy,
     walk_now: bool = False,
     sweep_now: bool = False,
+    upgrades: Callable[[], SweptUpgrades] | None = None,
 ) -> Ticked:
-    """The change check, then the sweep when due, then the walk (spec 046). A change is a new
+    """The change check, then the sweep when due, then the walk (spec 046). A sweep runs the
+    config-upgrade proposal (upgrades) first, so its rows see the issue it opened (S-047-1);
+    sweep.json keeps what it did and the decision names it (S-047-10). A tick that doesn't
+    sweep runs none (S-047-5). A change is a new
     signature or an item updated since the cursor, and on the gate's side no cursor, a handed
     item past retry, or a dead last session (S-046-2); walk_now and sweep_now force a walk and
     a sweep. A dead session's item is handed again, until DEAD_STREAK of them (capped) hold it
@@ -1767,9 +1831,15 @@ def tick_walk(
         since = cursor.at.isoformat(timespec="minutes")
         quiet = Decision(Action.QUIET, f"no change since {since}", (), walk=WalkRun(False, (), False))
         return Ticked(quiet, changes, None, None, handed, (), None)
-    swept = Swept(now, tuple(source.sweep(changes)), changes.tag) if sweeping or known is None else known
+    proposal = upgrades() if sweeping and upgrades is not None else None  # before the sweep's read (S-047-1)
+    kept = None if proposal is None else proposal.stored
+    swept = Swept(now, tuple(source.sweep(changes)), changes.tag, kept) if sweeping or known is None else known
     found: Walked = walk(source, changes, swept, handed.kept(now, retry), now, retry, lands(land))
-    decision = replace(walked_decision(found, sessions, retry, land), walk=WalkRun(change, found.tiers, sweeping))
+    decision = replace(
+        walked_decision(found, sessions, retry, land),
+        walk=WalkRun(change, found.tiers, sweeping),
+        upgrades=None if proposal is None else proposal.line,
+    )
     stored = found.swept if sweeping or found.swept != known else None
     after = Cursor(now - CURSOR_OVERLAP, changes.signature)
     return Ticked(decision, changes, after, stored, handed.kept(now, retry), found.rows, found.hand)
@@ -2329,6 +2399,7 @@ def gate(
     github: GitHubPreflight | None = None,
     stop: Stop | None = None,
     catch_up: Callable[[], bool] | None = None,
+    upgrades: Upgrader | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -2454,7 +2525,13 @@ def gate(
     runs no catch-up. After the prune, held or not, a tick whose config reads true
     fast-forwards the local default branch where that can't lose work (catch_up_step); a dry
     run says what it would move and moves nothing. Its failure is one line, after tick.json is
-    written, so the decision, launch, record, and exit code stay as they would be without it"""
+    written, so the decision, launch, record, and exit code stay as they would be without it.
+
+    upgrades proposes the config upgrades on a tick that sweeps (spec 047, sweep_upgrades);
+    None, as in tests that don't exercise it, proposes none. It runs after the App check and
+    before the sweep's read, writing as the App and with no [agents] app_id writing nothing;
+    a tick that doesn't sweep runs none (D-58). Its failure is sweep.json's upgrades error
+    and the decision line's `upgrades failed: <first line>`, and changes nothing else (D-56)"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
     previous = None if dry_run else load_tick(tick)
     read: list[tuple[Refusal, ...]] = []  # the refusals of the tick's last config read, if it read one
@@ -2491,6 +2568,7 @@ def gate(
             sweep_now=sweep_now,
             github=github,
             stop=stop,
+            upgrades=upgrades,
         )
     except ReleaseError as exc:
         if not dry_run:
@@ -2551,6 +2629,7 @@ def decided(
     sweep_now: bool = False,
     github: GitHubPreflight | None = None,
     stop: Stop | None = None,
+    upgrades: Upgrader | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...]]:
     """gate's tick up to its decision, as gate describes it: the decision, the launched
     session's id, and what the waiting step did; gate records it and prunes after it"""
@@ -2633,8 +2712,21 @@ def decided(
     levels = Levels(agents.autonomy, on_hold)
     capped = dead is not None and dead.deaths.count >= DEAD_STREAK  # retry_hours holds the item again
     source = as_source(findings(read))
+    proposal = None if upgrades is None else partial(sweep_upgrades, upgrades, identity, repo, dry_run)
     ticked = tick_walk(
-        source, state, sessions, last, dead, capped, now, retry, agents.sweep_hours, levels.land, walk_now, sweep_now
+        source,
+        state,
+        sessions,
+        last,
+        dead,
+        capped,
+        now,
+        retry,
+        agents.sweep_hours,
+        levels.land,
+        walk_now,
+        sweep_now,
+        proposal,
     )
     waits = waiting_rows(ticked, source, state / DECISIONS, repo) if headless else []
     if ticked.swept is not None and not dry_run:  # every read went through: the sweep stands, whatever the decision
@@ -2748,14 +2840,16 @@ def tick_lines(
     decision: Decision, launched: str | None, waiting: Sequence[Waiting], pruned: Sequence[Judged], dry_run: bool
 ) -> list[str]:
     """`shipmill gate`'s text: the decision (` as <slug>[bot]` when it launches as an App, then
-    each refused key, S-052-10), the branch the refresh detached the checkout from, one line
+    each refused key, S-052-10, then a swept tick's config-upgrade proposal, S-047-10), the
+    branch the refresh detached the checkout from, one line
     per blocked session, the work and the launch, then one per pruned worktree, or the prune's
     failure (spec 045), then the default branch's catch-up when it moved, would, or failed (#886)"""
     who = f" as {decision.identity}" if decision.identity is not None else ""
     # spec 035: the kind, never the token or its path; only on LAUNCH, as SESSION_DEAD ends with its fix
     if decision.credential is Kind.TOKEN_FILE and decision.action is Action.LAUNCH:
         who += " as token file"
-    lines = [f"{decision.action.value}: {decision.reason}{who}{refused_suffix(decision.refused)}"]
+    swept = "" if decision.upgrades is None else f"; {decision.upgrades}"  # S-047-10: a swept tick's proposal
+    lines = [f"{decision.action.value}: {decision.reason}{who}{refused_suffix(decision.refused)}{swept}"]
     if decision.auth_notice is not None:
         lines.append(f"  {decision.auth_notice}")
     # a launch that didn't start names the dead session; SESSION_DEAD's reason does, and QUIET has no work for one

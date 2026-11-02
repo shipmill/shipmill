@@ -262,10 +262,12 @@ from shipmill.gate import (
     Decision,
     StateRead,
     StateRunner,
+    Upgrader,
     WatchState,
     check_checkout,
     failing,
     gate,
+    head_config,
     host_login,
     load_prune,
     load_tick,
@@ -302,6 +304,7 @@ from shipmill.stamp import notes, sync
 from shipmill.upgrades import UpgradeId, apply, find, offers, pending
 from shipmill.upgrades import propose as propose_upgrades
 from shipmill.version import Version
+from shipmill.walk import SWEEP, Swept
 from shipmill.worktrees import ClaudeSessions, Sessions, judge, prune, table
 from shipmill.worktrees import report as worktrees_report
 
@@ -1273,6 +1276,15 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         """The helpers go in the checkout's state folder and run this very shipmill"""
         return prepare_session(identity, state_dir(git) / HELPERS, Path(sys.executable), root, args.slug, path)
 
+    def upgrades_as_app(identity: Identity) -> GitHub:
+        """Spec 047: gh as the App, its token limited to the gate's repo and cached where
+        `shipmill gh` in this checkout caches it; minted only when a sweep proposes"""
+        when = dt.datetime.now(dt.UTC)
+        token = app_token(
+            state_dir(git) / CACHE, args.slug, identity.app_id, identity.key, when, Openssl(), UrllibApi()
+        )
+        return GhCli(root, env=as_app(os.environ, token))
+
     now = dt.datetime.now(dt.UTC)
     decision, launched, waiting, pruned = gate(
         git,
@@ -1307,6 +1319,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         github=github_auth(args.slug, root, Openssl(), UrllibApi()),
         stop=stop_group,
         catch_up=lambda: AgentsConfig.load(root, args.slug).catch_up,
+        upgrades=Upgrader(lambda: head_config(git), upgrades_as_app, lambda: github),
     )
     if args.json:
         refusals = refused.records(_refused_or_none(root))  # S-052-11
@@ -2305,12 +2318,18 @@ def _status(
 
 
 def _with_tick(gate: status.Gate, git: Git) -> status.Gate:
-    """Spec 048: the gate's last real tick, tick.json in its state directory, for the gate
-    check; one that can't be read is that check's error, never the report's end (D-55)"""
+    """Spec 048: the gate's last real tick, tick.json in its state directory, and spec 047:
+    its last sweep's config-upgrade proposal, from sweep.json, for the gate check; one that
+    can't be read is that check's error, never the report's end (D-55)"""
     try:
-        return dataclasses.replace(gate, tick=load_tick(state_dir(git) / TICK))
+        gate = dataclasses.replace(gate, tick=load_tick(state_dir(git) / TICK))
     except status.CHECK_FAILURES as exc:
-        return dataclasses.replace(gate, tick_error=status.first_line(exc))
+        gate = dataclasses.replace(gate, tick_error=status.first_line(exc))
+    try:
+        swept = Swept.load(state_dir(git) / SWEEP)
+    except status.CHECK_FAILURES as exc:
+        return dataclasses.replace(gate, sweep_error=status.first_line(exc))
+    return dataclasses.replace(gate, upgrades=None if swept is None else swept.upgrades)
 
 
 def _checkout(root: Path, slug: str | None, command: str) -> tuple[Path, str]:

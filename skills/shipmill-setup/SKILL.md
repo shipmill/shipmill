@@ -475,6 +475,15 @@ decision line says how far the walk went (`read tiers 1-3`), and `--json` adds `
 `item`. `--walk` walks and `--sweep` sweeps whether or not they are due, for a run by hand;
 `--dry-run` writes none of these files. `shipmill status` still reads the full report.
 
+The sweep also proposes config upgrades, as the App (spec 047): before its read it runs
+`shipmill upgrade --propose` for the config at the default branch's head, at `[autonomy]
+upgrade`, so a repo that releases rarely still hears of one; the release workflow's
+`upgrade` job writes the same one issue per upgrade. Without `[agents] app_id` it writes
+nothing, and `shipmill status` lists the pending upgrades with their `--apply` command. The
+decision line names what it did (`upgrades: 1 opened`); a failure fails no tick, is kept in
+`sweep.json`, and `shipmill factory`'s `gate` line shows it with its fix, the App's
+`issues: write`. `--dry-run` says what it would propose and writes nothing.
+
 Once a tick has its decision, held or not, it also prunes landed worktrees, every
 `[agents] prune_hours` (default 6; 0: every tick; the last attempt is the state directory's
 `prune.json`): it removes a worktree under `.claude/worktrees/` or `tmp/wt-*` and its local branch

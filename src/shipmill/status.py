@@ -43,6 +43,7 @@ from shipmill.gate import (
     minutes_between,
     refused_suffix,
     skills_dir,
+    upgrade_fix,
 )
 from shipmill.github import UPGRADE_LABEL, GitHub, labelled_command, parse_labelled
 from shipmill.gitrepo import Git
@@ -52,7 +53,7 @@ from shipmill.plugin import GateCli, publish_fix
 from shipmill.policy import Policy
 from shipmill.refused import Refusal
 from shipmill.roles import ResolvedRole, arguments
-from shipmill.upgrades import Offer, offers, pending
+from shipmill.upgrades import Offer, Proposals, offers, pending
 from shipmill.version import Version
 
 # the gate log's decision lines (QUIET, LAUNCH, ...), and the lines a failed tick leaves:
@@ -314,6 +315,8 @@ class Gate:
     shipmill_error: str | None = None  # #745: watch_state.py --host shipmill failed, the shipmill check's error
     tick: TickRecord | None = None  # the gate's last real tick, from tick.json (spec 048); None: none recorded
     tick_error: str | None = None  # spec 048: tick.json's read failed, the gate check's error
+    upgrades: Proposals | None = None  # the last sweep's config-upgrade proposal, from sweep.json (spec 047)
+    sweep_error: str | None = None  # spec 047: sweep.json's read failed, the gate check's error
 
     @property
     def login(self) -> str | None:
@@ -1544,13 +1547,17 @@ def gate_check(gate: Gate, repo: str, now: dt.datetime, command: str) -> Check:
     off a Mac `can't check here: no launchd`, no problem (S-044-11). The job's tick.json, when
     current, names a failing tick's cause and fix, STALLED, RUNNING's session, or what QUIET
     says is in flight (spec 048); a
-    tick.json that can't be read is the check's error"""
+    tick.json that can't be read is the check's error. A failed config-upgrade proposal that
+    sweep.json records is a problem, with its error and fix, that changes no verdict (S-047-9,
+    D-56); a sweep.json that can't be read is the check's error"""
     if gate.agents is None:
         return Check("gate", True, "none: no [agents] in the config")
     if gate.job_error is not None:
         return failed_check("gate", gate.job_error, command)
     if gate.tick_error is not None and gate.job is not None:  # spec 048: read beside the job, only for it
         return failed_check("gate", gate.tick_error, command)
+    if gate.sweep_error is not None:
+        return failed_check("gate", gate.sweep_error, command)
     stuck, yours = launchd_reasons(gate, repo, now, command)
     fixes: list[str] = []
     if not gate.launchd:
@@ -1565,9 +1572,14 @@ def gate_check(gate: Gate, repo: str, now: dt.datetime, command: str) -> Check:
         schedule = f"launchd every {ago(job.interval)}" if job.interval else "launchd"
         value = f"{'; '.join(p.shown for p in problems) or 'OK'}, {schedule}"
     auth = auth_detail(gate)
+    details = [] if auth is None else [auth]
+    failed = None if gate.upgrades is None else gate.upgrades.error
+    if failed is not None:  # S-047-9: the last sweep's proposal failed
+        value += "; upgrade proposal failed"
+        details.append(Detail("upgrades", f"proposal failed: {failed}", upgrade_fix(repo)))
     refused = gate.credential is not None and gate.credential.refused is not None
-    ok = not stuck and not yours and not refused
-    return Check("gate", ok, value, tuple(fixes), () if auth is None else (auth,), tuple(stuck), tuple(yours))
+    ok = not stuck and not yours and not refused and failed is None
+    return Check("gate", ok, value, tuple(fixes), tuple(details), tuple(stuck), tuple(yours))
 
 
 def sessions_check(rows: Sequence[Row], gate: Gate | None) -> Check:
