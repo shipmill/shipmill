@@ -86,7 +86,18 @@ elif args[0] == "api" and "--paginate" in args and args[args.index("--jq") + 1] 
     pr = fake[found[0].group(2)]
     for path in pr["all_files"][: pr["listed"]]:  # every page, one object a line, as gh --jq prints them
         old = pr["renamed"].get(path)
-        print(json.dumps({{"filename": path, **({{"previous_filename": old}} if old else {{}})}}))
+        status = "renamed" if old else "added" if path in pr["added"] else "modified"
+        print(json.dumps({{"filename": path, "status": status, **({{"previous_filename": old}} if old else {{}})}}))
+elif args[0] == "api" and "graphql" in args:  # the issues a spec PR's lines name, as GitHub answers them
+    query = [a for a in args if a.startswith("query=")][0]
+    found, errors = {{"nameWithOwner": fake["repo"]}}, []
+    for alias, number in re.findall(r"(i[0-9]+): issueOrPullRequest[(]number: ([0-9]+)[)]", query):
+        found[alias] = fake["issues"].get(number)
+        if found[alias] is None:
+            errors.append({{"type": "NOT_FOUND", "path": ["repository", alias], "message": "Could not resolve"}})
+    print(json.dumps({{"data": {{"repository": found}}, **({{"errors": errors}} if errors else {{}})}}))
+    if errors:
+        sys.exit("gh: Could not resolve to an issue or pull request")
 else:
     sys.exit("unexpected gh call: " + " ".join(args))
 """
@@ -134,9 +145,11 @@ def pr(
     listed: int | None = None,
     renamed: dict[str, str] | None = None,
     draft: bool = False,
+    added: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """listed caps the files the files API returns (GitHub's stops at 3000); renamed maps a
-    file's new path to its old one"""
+    file's new path to its old one; the files API reads added's files `added`, the others
+    `modified` (or `renamed`)"""
     return {
         "state": "OPEN",
         "isDraft": draft,
@@ -151,20 +164,31 @@ def pr(
         "all_files": list(files),
         "listed": len(files) if listed is None else listed,
         "renamed": renamed or {},
+        "added": list(added),
     }
 
 
 def run_gate(
-    tmp_path: Path, work: Path | None, prs: dict[int, dict[str, Any]], *args: str
+    tmp_path: Path,
+    work: Path | None,
+    prs: dict[int, dict[str, Any]],
+    *args: str,
+    issues: dict[int, dict[str, str]] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """The gate with --checkout work, or, for None, run in a folder outside any checkout"""
+    """The gate with --checkout work, or, for None, run in a folder outside any checkout; issues
+    are what GitHub's GraphQL answers for the repo demo/app's numbers"""
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     gh = fakes / "gh"
     gh.write_text(FAKE_GH.format(python=sys.executable), encoding="utf-8")
     gh.chmod(0o700)
     data = tmp_path / "gh.json"
-    data.write_text(json.dumps({str(n): p for n, p in prs.items()}), encoding="utf-8")
+    fake = {
+        **{str(n): p for n, p in prs.items()},
+        "repo": "demo/app",
+        "issues": {str(n): i for n, i in (issues or {}).items()},
+    }
+    data.write_text(json.dumps(fake), encoding="utf-8")
     env = {
         **os.environ,
         "PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]),
@@ -476,7 +500,7 @@ def test_s024_7_a_pr_editing_the_direction_needs_the_maintainer(tmp_path: Path, 
 def test_547_a_spec_pr_is_landable_like_any_other_once_green(tmp_path: Path, directed: Path) -> None:
     # D-49: a spec PR approved by an answer lands on the gate's READY; the gate holds no spec
     spec = ("docs/specs/030-decision-policy.md", "docs/decisions.md")
-    proc = run_gate(tmp_path, directed, {7: pr(files=spec)}, "--bot-login", BOT)
+    proc = run_gate(tmp_path, directed, {7: spec_pr(files=spec)}, "--bot-login", BOT, issues={12: OPEN_ISSUE})
     assert proc.returncode == 0, proc.stdout
     assert proc.stdout.splitlines()[0].startswith("#7 READY ")
 
@@ -484,9 +508,173 @@ def test_547_a_spec_pr_is_landable_like_any_other_once_green(tmp_path: Path, dir
 def test_547_a_spec_pr_editing_the_direction_still_waits_on_the_maintainer(tmp_path: Path, directed: Path) -> None:
     # D-34: the spec's answer is no --maintainer-accepted, so the direction's edit holds it
     files = ("docs/specs/030-decision-policy.md", "docs/product.md")
-    proc = run_gate(tmp_path, directed, {7: pr(files=files)}, "--bot-login", BOT)
+    proc = run_gate(tmp_path, directed, {7: spec_pr(files=files)}, "--bot-login", BOT, issues={12: OPEN_ISSUE})
     assert proc.returncode == 5, proc.stdout
     assert "  needs-decision: docs/product.md edits the product's direction" in proc.stdout
+
+
+# S-053-9, S-053-10: a spec pull request names its feature issue
+
+SPEC = "docs/specs/054-release-digest.md"
+SPEC_BODY = PLAN.replace("Fixes #7", "Spec for #12")
+OPEN_ISSUE = {"__typename": "Issue", "state": "OPEN"}
+ISSUES = {
+    12: OPEN_ISSUE,
+    13: {"__typename": "Issue", "state": "CLOSED"},
+    14: {"__typename": "PullRequest"},
+}
+NO_ISSUE = '  spec: names no feature issue: add "Spec for #N" for the open issue it specifies'
+MAIN_REFUSED = MAIN_READY.replace("READY", "REFUSED") + NO_ISSUE + "\n"
+
+
+def spec_pr(body: str = SPEC_BODY, files: tuple[str, ...] = (SPEC,), **kw: Any) -> dict[str, Any]:
+    """A PR adding its files under docs/specs/ (the files API reads them `added`)"""
+    added = kw.pop("added", tuple(f for f in files if f.startswith("docs/specs/")))
+    return pr(body=body, files=files, added=added, **kw)
+
+
+def calls_of(tmp_path: Path) -> list[str]:
+    """Each gh call the gate made, by its kind: `pr view`, `files` (the files API), or `graphql`"""
+    kinds = []
+    for call in gh_calls(tmp_path):
+        args = call["args"]
+        kinds.append("graphql" if "graphql" in args else "files" if args[0] == "api" else " ".join(args[:2]))
+    return kinds
+
+
+@pytest.mark.parametrize("login", ["app/shipmill-demo", "amy"])
+def test_s053_9_a_spec_pr_naming_no_issue_is_refused_whoever_opened_it(
+    tmp_path: Path, directed: Path, login: str
+) -> None:
+    """an agent's PR with a valid plan and a person's alike, and --maintainer-accepted lifts nothing"""
+    for accepted in ((), ("--maintainer-accepted",)):
+        data = {7: spec_pr(body=PLAN, login=login)}
+        proc = run_gate(tmp_path, directed, data, "--bot-login", BOT, *accepted, issues=ISSUES)
+        assert proc.returncode == gate.REFUSED == 6, proc.stdout + proc.stderr
+        assert proc.stdout == MAIN_REFUSED
+    # outside a checkout nothing is read from the default branch, and the spec is still checked
+    outside = run_gate(tmp_path, None, {7: spec_pr(body="Fixes #7", login=login)}, issues=ISSUES)
+    assert (outside.returncode, outside.stdout) == (6, MAIN_REFUSED), outside.stderr
+
+
+@pytest.mark.parametrize(
+    ("line", "reads"),
+    [
+        pytest.param("Spec for #13", True, id="a closed issue"),
+        pytest.param("Spec for #14", True, id="a pull request"),
+        pytest.param("Spec for #99", True, id="no such number"),
+        pytest.param("Spec for other/repo#12", True, id="another repo's issue"),
+        pytest.param("Adds the spec. Spec for #12", False, id="mid-line"),
+        pytest.param("`Spec for #12`", False, id="in a code span"),
+        pytest.param("```\nSpec for #12\n```", False, id="in a code fence"),
+        pytest.param("Spec for #99999999999", False, id="past any issue number"),
+    ],
+)
+def test_s053_9_a_spec_for_line_naming_no_open_issue_of_the_repo_is_refused(
+    tmp_path: Path, directed: Path, line: str, reads: bool
+) -> None:
+    proc = run_gate(tmp_path, directed, {7: spec_pr(body=f"{line}\n\n{PLAN}")}, "--bot-login", BOT, issues=ISSUES)
+    assert (proc.returncode, proc.stdout) == (6, MAIN_REFUSED), proc.stderr
+    assert calls_of(tmp_path) == ["pr view", "files", *(["graphql"] if reads else [])]
+
+
+def test_s053_9_an_ask_or_never_zone_doesnt_hide_the_refusal(tmp_path: Path, agents: Path) -> None:
+    """a spec PR reads the scope zone until --maintainer-accepted: the refusal holds with it, and
+    REFUSED ranks above MAINTAINER_ONLY"""
+    classify_as(tmp_path, {7: [PROTECTED_ZONE], 8: [DIRECTION_ZONE]})
+    for accepted in ((), ("--maintainer-accepted",)):
+        proc = run_gate(tmp_path, agents, {7: spec_pr(body=PLAN)}, "--bot-login", BOT, *accepted, issues=ISSUES)
+        assert proc.returncode == 6, proc.stdout + proc.stderr
+        assert NO_ISSUE in proc.stdout.splitlines()
+    never = run_gate(tmp_path, agents, {8: spec_pr(body=PLAN)}, "--bot-login", BOT, issues=ISSUES)
+    assert never.returncode == 6, never.stdout + never.stderr
+    assert never.stdout.startswith("#8 REFUSED ")
+
+
+def test_s053_9_a_draft_or_conflicting_spec_pr_keeps_its_verdict(tmp_path: Path, directed: Path) -> None:
+    draft = run_gate(tmp_path, directed, {7: spec_pr(body=PLAN, draft=True)}, issues=ISSUES)
+    assert draft.returncode == gate.DRAFT == 8, draft.stdout + draft.stderr  # D-52
+    assert calls_of(tmp_path) == ["pr view"]  # a draft's files aren't read
+    conflicting = spec_pr(body=PLAN)
+    conflicting["mergeable"] = "CONFLICTING"
+    blocked = run_gate(tmp_path, directed, {7: conflicting}, issues=ISSUES)
+    assert blocked.returncode == gate.BLOCKED == 4, blocked.stdout  # as a conflicting plan refusal reads
+
+
+@pytest.mark.parametrize("work", ["directed", None])
+def test_s053_9_a_spec_past_the_first_hundred_files_is_found(
+    tmp_path: Path, request: pytest.FixtureRequest, work: str | None
+) -> None:
+    """with a direction, all_files already read the files API: it isn't read again"""
+    files = (*(f"src/m{i}.py" for i in range(120)), SPEC)
+    checkout_ = request.getfixturevalue(work) if work else None
+    proc = run_gate(tmp_path, checkout_, {7: spec_pr(body=PLAN, files=files)}, "--agent", issues=ISSUES)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    assert NO_ISSUE in proc.stdout.splitlines()
+    assert calls_of(tmp_path) == ["pr view", "files"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(SPEC_BODY, id="Spec for #N"),
+        pytest.param(PLAN.replace("Fixes #7", "- Spec for #12"), id="after a list bullet"),
+        pytest.param(PLAN.replace("Fixes #7", "* Spec for demo/app#12"), id="owner/repo#N of the repo"),
+        pytest.param(PLAN.replace("Fixes #7", "Spec for Demo/App#12"), id="whatever its case"),
+        pytest.param(PLAN.replace("Fixes #7", "Spec for #13\nSpec for #12"), id="a closed one, then an open one"),
+    ],
+)
+def test_s053_10_a_spec_pr_naming_an_open_issue_is_not_refused(tmp_path: Path, directed: Path, body: str) -> None:
+    proc = run_gate(tmp_path, directed, {7: spec_pr(body=body)}, "--bot-login", BOT, issues=ISSUES)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert calls_of(tmp_path) == ["pr view", "files", "graphql"]  # one read for every line's issue
+
+
+def test_s053_10_r_names_the_repo_the_issues_are_read_from(tmp_path: Path, directed: Path) -> None:
+    git(directed, "remote", "set-url", "origin", "git@github.com:demo/app.git")
+    proc = run_gate(tmp_path, directed, {7: spec_pr()}, "--bot-login", BOT, "-R", "github.com/demo/app", issues=ISSUES)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    [_, files, graphql] = gh_calls(tmp_path)
+    assert files["args"][:3] == graphql["args"][:3] == ["api", "--hostname", "github.com"]
+    assert files["GH_REPO"] == graphql["GH_REPO"] == "github.com/demo/app"
+    assert graphql["args"][3:8] == ["graphql", "-F", "owner={owner}", "-F", "repo={repo}"]
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        pytest.param({"added": ()}, id="an edit of an existing spec"),
+        pytest.param({"added": (), "renamed": {SPEC: "docs/specs/054-digest.md"}}, id="a renamed spec"),
+    ],
+)
+def test_s053_10_a_pr_that_only_edits_a_spec_is_not_checked(tmp_path: Path, directed: Path, kw: Any) -> None:
+    proc = run_gate(tmp_path, directed, {7: spec_pr(body=PLAN, **kw)}, "--bot-login", BOT, issues=ISSUES)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert calls_of(tmp_path) == ["pr view", "files"]  # no issue to read
+
+
+def test_s053_10_a_pr_adding_no_spec_path_reads_nothing_more(tmp_path: Path, directed: Path) -> None:
+    files = ("docs/specs/TEMPLATE.md", "docs/specs/README.md", "docs/specs/54-short.md", "src/app.py")
+    proc = run_gate(tmp_path, directed, {7: spec_pr(body=PLAN, files=files)}, "--bot-login", BOT, issues=ISSUES)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert calls_of(tmp_path) == ["pr view"]
+
+
+def test_s053_9_a_failing_issue_read_exits_1(tmp_path: Path, directed: Path) -> None:
+    """gh's failure is never read as a missing issue: only a NOT_FOUND for a number the gate asked"""
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    (fakes / "gh").write_text(
+        f"#!{sys.executable}\nimport json, sys\nargs = sys.argv[1:]\n"
+        f"if args[:2] == ['pr', 'view']:\n    print({json.dumps(json.dumps(spec_pr()))})\n"
+        "elif 'graphql' in args:\n    sys.exit('gh: HTTP 502')\n"
+        "else:\n    print(json.dumps({'filename': " + repr(SPEC) + ", 'status': 'added'}))\n"
+    )
+    (fakes / "gh").chmod(0o700)
+    env = {**os.environ, "PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"])}
+    cmd = [sys.executable, str(SCRIPT), "7", "--checkout", str(directed)]
+    failed = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    assert (failed.returncode, failed.stdout, failed.stderr) == (1, "", "pr_gate: gh failed for #7: gh: HTTP 502\n")
 
 
 def test_the_worst_verdict_across_prs_is_the_exit_code(tmp_path: Path, directed: Path) -> None:
@@ -561,6 +749,27 @@ def test_673_the_eval_cases_record_the_read_the_gate_makes() -> None:
         found += 1
         assert fields == gate.FIELDS, path
         assert set(json.loads(recording["stdout"])) == set(gate.FIELDS.split(",")), path
+    assert found
+
+
+def test_s053_9_the_eval_cases_record_a_spec_prs_reads() -> None:
+    """a case whose gate read lists a spec file records the files API and the issues' GraphQL read
+    too, as the gate asks them, or the case's no-miss grader fails"""
+    evals = Path(__file__).resolve().parents[1] / "evals"
+    found = 0
+    for path in sorted(evals.glob("*/*/fixture/gh/*.json")):
+        args = json.loads(path.read_text(encoding="utf-8"))["args"]
+        if args[:2] != ["pr", "view"] or "--json" not in args or args[args.index("--json") + 1] != gate.FIELDS:
+            continue
+        shown = json.loads(json.loads(path.read_text(encoding="utf-8"))["stdout"])
+        if not any(gate.SPEC_FILE.fullmatch(f["path"]) for f in shown["files"]):
+            continue
+        found += 1
+        recorded = [json.loads(p.read_text(encoding="utf-8")) for p in path.parent.glob("*.json")]
+        files_read = ["api", "--paginate", FILES_API.replace("/7/", f"/{args[2]}/"), "--jq", ".[]"]
+        numbers = sorted({n for _, n in gate.spec_refs(shown["body"])})
+        for read in (files_read, ["api", *gate.issues_read(numbers)]):
+            assert [r for r in recorded if r["args"] == read and r["exit"] == 0], (path.parent, read[:3])
     assert found
 
 

@@ -1,0 +1,15 @@
+{
+  "args": [
+    "api",
+    "graphql",
+    "-F",
+    "owner={owner}",
+    "-F",
+    "repo={repo}",
+    "-f",
+    "query=query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { nameWithOwner i879: issueOrPullRequest(number: 879) { __typename ... on Issue { state } } } }"
+  ],
+  "stdout": "{\"data\": {\"repository\": {\"nameWithOwner\": \"shipmill/shipmill\", \"i879\": {\"__typename\": \"Issue\", \"state\": \"OPEN\"}}}}\n",
+  "stderr": "",
+  "exit": 0
+}

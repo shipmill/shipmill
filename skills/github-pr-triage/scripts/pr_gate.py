@@ -37,12 +37,22 @@ above; the plan check stays. Each zone by its level, read from that branch, neve
 
 Without [agents] on that branch the gate judges as it did before spec 030.
 
+A spec pull request (spec 053), one that adds a file docs/specs/NNN-<slug>.md (the files API's
+`status: added`; an edit, a rename, or a copy is not checked), names its feature issue: a line
+of its body, outside a code fence, starting `Spec for #N` (after an optional list bullet;
+`owner/repo#N` of the same repo reads the same) whose N is an open issue of the repo, not a pull
+request. Without one it is REFUSED, `  spec: names no feature issue: ...`, whoever opened it,
+and --maintainer-accepted doesn't lift it. The check reads the files API, and GitHub's GraphQL
+once for the issues the lines name; a PR that gh pr view lists whole, with no spec path, reads
+neither.
+
 A draft PR belongs to whoever opened it (D-52): the gate reads it as DRAFT, whatever its checks,
 plan, or zones, and reads neither its files nor its zones. It enters triage once marked ready.
 
 Exit codes: 0 every PR is ready; 1 a check failed, or gh failed; 3 a check is still
 pending (or --wait timed out); 4 a PR is not open or conflicts; 5 a PR needs the
-maintainer's decision; 6 an agent's PR is refused for its plan; 7 a PR only the maintainer
+maintainer's decision; 6 an agent's PR is refused for its plan, or a spec PR names no open
+feature issue; 7 a PR only the maintainer
 merges, by hand (a `never` zone); 8 a draft PR, left to its author (D-52); 2 bad arguments,
 a base branch the checkout lacks, a git failure, a REVIEW.md, docs/product.md, or config the
 gate can't read, or a `shipmill decide classify` that fails or prints what the gate can't
@@ -106,6 +116,12 @@ _MOVED = re.compile(r"^See \[([^\]]+)\]\(product/([A-Za-z0-9][A-Za-z0-9_-]*\.md)
 _PROTECTED_ITEM = re.compile(r"- `([^`]*)`: (\S.*)")
 _PLAN_FIELD = re.compile(r"^\s*(?:[-*]\s+)?(" + "|".join(PLAN_FIELDS) + r"):(.*)$")
 _GOAL = re.compile(r"G-[1-9][0-9]*")
+# a spec file, named as specs.py's NAME names one, under docs/specs/ (spec 053)
+SPEC_FILE = re.compile(r"docs/specs/[0-9]{3,}-[a-z0-9]+(?:-[a-z0-9]+)*\.md")
+# a body line naming the issue a spec pull request specifies: #N, or owner/repo#N
+_SPEC_FOR = re.compile(r"^\s*(?:[-*]\s+)?Spec for\s+([\w.-]+/[\w.-]+)?#([0-9]+)\b")
+NO_ISSUE = 'names no feature issue: add "Spec for #N" for the open issue it specifies'
+GRAPHQL_INT = 2**31 - 1  # an issue number past it is no issue, and GraphQL refuses the query
 
 
 class GateError(Exception):
@@ -132,6 +148,7 @@ class Gate:
     never: tuple[str, ...] = ()  # the never zones: only the maintainer merges it, by hand (spec 030)
     notices: tuple[str, ...] = ()  # the notify zones: decided without waiting, the verdict kept
     draft: bool = False  # its author's until marked ready (D-52)
+    spec: tuple[str, ...] = ()  # why a spec PR is refused: it names no open feature issue (spec 053)
 
     @property
     def verdict(self) -> int:
@@ -141,7 +158,7 @@ class Gate:
             return DRAFT
         if self.mergeable == "CONFLICTING":
             return BLOCKED
-        if self.refused:
+        if self.refused or self.spec:
             return REFUSED
         if self.never:
             return MAINTAINER_ONLY
@@ -321,6 +338,33 @@ def plan_problems(body: str, ids: frozenset[str]) -> list[str]:
         elif name not in ids:
             problems.append(f"`Serves:` names {name}, which {DIRECTION} doesn't list")
     return problems
+
+
+def unfenced(text: str) -> list[str]:
+    """The lines of a body outside fenced code, with sections()' fence rule"""
+    found: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines():
+        opened = _FENCE.match(line)
+        if fence is not None:
+            if opened is not None and opened.group(1)[0] == fence[0] and len(opened.group(1)) >= len(fence):
+                fence = None
+        elif opened is not None:
+            fence = opened.group(1)
+        else:
+            found.append(line)
+    return found
+
+
+def spec_refs(body: str) -> list[tuple[str | None, int]]:
+    """Each `Spec for` line's issue, in order: its owner/repo (None for a plain #N) and number.
+    Only a line that starts with it, after an optional list bullet, outside a fence, names one"""
+    found: list[tuple[str | None, int]] = []
+    for line in unfenced(body):
+        named = _SPEC_FOR.match(line)
+        if named is not None:
+            found.append((named.group(1), int(named.group(2))))
+    return found
 
 
 def run(cmd: list[str], what: str) -> str:
@@ -547,31 +591,121 @@ def all_files(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
     path after the change, as gh pr view's `path` is; the API lists at most 3000, and a partial
     list stops the gate rather than being judged"""
     files: tuple[str, ...] = data["files"]
-    changed = int(data.get("changedFiles") or 0)
-    if len(files) >= changed:
+    if len(files) >= int(data.get("changedFiles") or 0):
         return files
-    # gh fills {owner}/{repo} in from GH_REPO, which takes what -R takes, else from the cwd's repo, as gh pr view does
-    cmd = ["gh", "api", "--paginate", f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100", "--jq", ".[]"]
+    data["statuses"] = files_api(data, number, repo)
+    return tuple(data["statuses"])
+
+
+def api(args: list[str], repo: str | None) -> tuple[list[str], dict[str, str] | None]:
+    """A `gh api` call and its env: gh fills {owner}/{repo} in from GH_REPO, which takes what -R
+    takes, else from the cwd's repo, as gh pr view does"""
+    cmd = ["gh", "api", *args]
     env = None
     if repo:
         env = {**os.environ, "GH_REPO": repo}
         host = re.fullmatch(r"([^/:]+)/[^/]+/[^/]+", repo.strip("/"))  # [HOST/]OWNER/NAME: gh api's host is its own
         cmd[2:2] = ["--hostname", host.group(1)] if host else []
-    listed = gh(cmd, number, env)
-    files = tuple(str(json.loads(line)["filename"]) for line in listed.splitlines() if line.strip())
-    if len(files) < changed:
+    return cmd, env
+
+
+def files_api(data: dict, number: int, repo: str | None) -> dict[str, str]:
+    """Every file the PR changes, from the files API, each with its status (added, modified,
+    renamed, ...); a list short of changedFiles stops the gate"""
+    changed = int(data.get("changedFiles") or 0)
+    cmd, env = api(["--paginate", f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100", "--jq", ".[]"], repo)
+    entries = [json.loads(line) for line in gh(cmd, number, env).splitlines() if line.strip()]
+    statuses = {str(e["filename"]): str(e["status"]) for e in entries}
+    if len(statuses) < changed:
         sys.exit(
-            f"pr_gate: #{number} changes {changed} files but GitHub lists {len(files)} (its files API stops at "
+            f"pr_gate: #{number} changes {changed} files but GitHub lists {len(statuses)} (its files API stops at "
             "3000); the gate judges no partial list: review and land it by hand"
         )
-    return files
+    return statuses
+
+
+def added_specs(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
+    """The spec files the PR adds (spec 053). The files API is read only when a listed file has a
+    spec's path, or gh pr view lists only part of the files, and not again after all_files read it"""
+    statuses: dict[str, str] | None = data.get("statuses")
+    if statuses is None:
+        files: tuple[str, ...] = data["files"]
+        whole = len(files) >= int(data.get("changedFiles") or 0)
+        if whole and not any(SPEC_FILE.fullmatch(f) for f in files):
+            return ()
+        statuses = files_api(data, number, repo)
+    return tuple(f for f, status in statuses.items() if status == "added" and SPEC_FILE.fullmatch(f))
+
+
+def issues_read(numbers: list[int]) -> list[str]:
+    """`gh api`'s arguments for the GraphQL read of the numbers, each under the alias i<N>; the
+    github-pr-triage eval cases record this read, so a change here re-records it there"""
+    fields = " ".join(
+        f"i{n}: issueOrPullRequest(number: {n}) {{ __typename ... on Issue {{ state }} }}" for n in numbers
+    )
+    query = (
+        "query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { nameWithOwner "
+        f"{fields} }} }}"
+    )
+    return ["graphql", "-F", "owner={owner}", "-F", "repo={repo}", "-f", f"query={query}"]
+
+
+def issues_of(numbers: list[int], number: int, repo: str | None) -> tuple[str, dict[int, dict | None]]:
+    """The repo's owner/name and, for each number, its issue or pull request ({__typename, state}),
+    or None for a number the repo lacks: one GraphQL read. A NOT_FOUND error for one of the numbers
+    is an answer; any other failure exits 1, as gh's always has"""
+    aliases = {f"i{n}": n for n in numbers}
+    cmd, env = api(issues_read(numbers), repo)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    try:
+        answer = json.loads(proc.stdout) if proc.stdout.strip() else None
+    except json.JSONDecodeError:
+        answer = None
+    data = answer.get("data") if isinstance(answer, dict) else None
+    found = data.get("repository") if isinstance(data, dict) else None
+    errors = (answer.get("errors") if isinstance(answer, dict) else None) or []
+    missing = all(
+        isinstance(e, dict) and e.get("type") == "NOT_FOUND" and e.get("path") in [["repository", a] for a in aliases]
+        for e in errors
+    )
+    if not isinstance(found, dict) or not isinstance(found.get("nameWithOwner"), str) or not missing:
+        sys.exit(f"pr_gate: gh failed for #{number}: {proc.stderr.strip() or proc.stdout.strip()}")
+    if proc.returncode != 0 and not errors:
+        sys.exit(f"pr_gate: gh failed for #{number}: {proc.stderr.strip()}")
+    return found["nameWithOwner"], {n: found.get(alias) for alias, n in aliases.items()}
+
+
+def spec_problems(data: dict, number: int, repo: str | None) -> list[str]:
+    """Why a spec PR is refused (spec 053): it adds a spec file, and no `Spec for` line of its body
+    names an open issue of the repo; a PR that adds none, or edits a spec, isn't checked"""
+    if not added_specs(data, number, repo):
+        return []
+    refs = spec_refs(str(data.get("body") or ""))
+    numbers = sorted({n for _, n in refs if 0 < n <= GRAPHQL_INT})
+    if not numbers:
+        return [NO_ISSUE]
+    name, nodes = issues_of(numbers, number, repo)
+    for owner_repo, n in refs:
+        if owner_repo is not None and owner_repo.lower() != name.lower():
+            continue  # another repo's issue: the spec's feature issue is this repo's
+        node = nodes.get(n)
+        if isinstance(node, dict) and node.get("__typename") == "Issue" and node.get("state") == "OPEN":
+            return []
+    return [NO_ISSUE]
 
 
 def judge(
-    data: dict, number: int, base: Base, agent: bool, accepted: bool, zones: tuple[Zone, ...] | None = None
+    data: dict,
+    number: int,
+    base: Base,
+    agent: bool,
+    accepted: bool,
+    zones: tuple[Zone, ...] | None = None,
+    spec: tuple[str, ...] = (),
 ) -> Gate:
     """zones, classify's for the PR, are given when the base's config has [agents] (spec 030);
-    they replace the direction and Protected areas checks. A draft is judged for nothing else (D-52)"""
+    they replace the direction and Protected areas checks. spec is spec_problems' answer, which
+    --maintainer-accepted doesn't lift (spec 053). A draft is judged for nothing else (D-52)"""
     checks = tuple(check_of(e) for e in data.get("statusCheckRollup") or ())
     if data["isDraft"]:
         return Gate(
@@ -604,6 +738,7 @@ def judge(
         tuple(asks),
         tuple(never),
         tuple(notices),
+        spec=spec,
     )
 
 
@@ -618,6 +753,7 @@ def render(gate: Gate) -> str:
     lines += [f"  failed: {c.name} ({c.conclusion})" for c in failed]
     lines += [f"  pending: {c.name}" for c in pending]
     lines += [f"  refused: {reason}" for reason in gate.refused]
+    lines += [f"  spec: {reason}" for reason in gate.spec]
     lines += [f"  maintainer-only: {reason}" for reason in gate.never]
     lines += [f"  needs-decision: {reason}" for reason in gate.asks]
     lines += [f"  notify: {reason}" for reason in gate.notices]
@@ -660,6 +796,7 @@ def main() -> int:
     try:
         bases = Bases(args.checkout, args.repo)
         classifier = Classifier(bases.checkout, args.tool)
+        specs: dict[tuple[int, str, str], tuple[str, ...]] = {}  # by PR, head, and body: a --wait reads each once
         while True:
             gates = []
             for number in args.prs:
@@ -673,10 +810,16 @@ def main() -> int:
                 agent = args.agent or (
                     args.bot_login is not None and author_of(data.get("author") or {}) == args.bot_login
                 )
+                spec: tuple[str, ...] = ()
+                if data["state"] == "OPEN":  # a closed PR reads BLOCKED: nothing to read for it
+                    key = (number, str(data["headRefOid"]), str(data.get("body") or ""))
+                    if key not in specs:
+                        specs[key] = tuple(spec_problems(data, number, args.repo))
+                    spec = specs[key]
                 zones = None
                 if base.agents and base.ref is not None:
                     zones = classifier.zones(number, base.ref, str(data["headRefOid"]))
-                gates.append(judge(data, number, base, agent, args.maintainer_accepted, zones))
+                gates.append(judge(data, number, base, agent, args.maintainer_accepted, zones, spec))
             worst = max((g.verdict for g in gates), key=RANK.index)
             if not args.wait or worst != PENDING or time.monotonic() >= deadline:
                 print("\n".join(render(g) for g in gates))
