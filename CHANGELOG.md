@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.110.0] - 2026-11-02
+
+### Changed
+
+- `shipmill upgrade --propose` never moves an upgrade issue backwards when two shipmill releases propose on one repo (spec 047): it leaves the title, body, and labels of an issue whose marker records a version newer than its own catalogue's version of that upgrade, compared in version order (0.9.0 before 0.10.0), and reports it `unchanged`; an open issue whose marker names an id it neither offers nor has withdrawn stays open and unchanged and is not listed. A marker whose version shipmill can't read counts as not newer, and the run rewrites it as before (#903)
+- Deprecated config keys and readings are catalogued in `src/shipmill/deprecations.py`: `[agents] prs`, the `[agents] prompt` reading of `land`, `[roadmap]`, and `[agents] credit`, each with the release that deprecated it, its replacement, its migrating upgrade (`agent-autonomy` for spec 040's two), and a check over the parsed config; `shipmill doctor`'s deprecation warnings come from it, with the same text, row, and WARN as before (spec 047) (#905)
+
 ## [0.109.0] - 2026-11-02
 
 ### Added
@@ -2189,7 +2196,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.109.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.110.0...HEAD
+[0.110.0]: https://github.com/shipmill/shipmill/compare/v0.109.0...v0.110.0
 [0.109.0]: https://github.com/shipmill/shipmill/compare/v0.108.0...v0.109.0
 [0.108.0]: https://github.com/shipmill/shipmill/compare/v0.107.1...v0.108.0
 [0.107.1]: https://github.com/shipmill/shipmill/compare/v0.107.0...v0.107.1
