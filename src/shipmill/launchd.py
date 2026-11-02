@@ -15,6 +15,7 @@ import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 
 from shipmill import cli_command
 from shipmill.errors import ReleaseError
@@ -169,7 +170,10 @@ def read_job(repo: str, home: Path) -> dict[str, object] | None:
 
 def _load(plist: Path) -> dict[str, object]:
     with plist.open("rb") as handle:
-        found = plistlib.load(handle)
+        try:
+            found = plistlib.load(handle)
+        except (ValueError, ExpatError) as exc:  # InvalidFileException is a ValueError
+            raise ReleaseError(f"{plist} is not a plist: {exc}") from None
     if not isinstance(found, dict):
         raise ReleaseError(f"{plist} is not a launchd job")
     return found

@@ -241,6 +241,15 @@ def test_s047_15_a_gate_job_naming_another_repo_is_refused(tmp_path: Path) -> No
         gate_repos(tmp_path)
 
 
+@pytest.mark.parametrize("text", [b"not a plist", b"<?xml version='1.0'?><plist><dict><key>a</key>"])
+def test_s047_15_a_gate_job_that_isnt_a_plist_is_refused(tmp_path: Path, text: bytes) -> None:
+    folder = tmp_path / "Library" / "LaunchAgents"
+    folder.mkdir(parents=True)
+    (folder / f"{label('acme/web')}.plist").write_bytes(text)
+    with pytest.raises(ReleaseError, match="is not a plist"):  # never a traceback's exit 1, which reads as relying
+        gate_repos(tmp_path)
+
+
 def fleet_script() -> ModuleType:
     path = ROOT / "skills" / "github-ship-watch" / "scripts" / "fleet.py"
     spec = importlib.util.spec_from_file_location("deprecations_fleet", path)
