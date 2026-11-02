@@ -72,6 +72,7 @@ KEYS = {
     "preflight",  # #500's Claude Code login preflight
     "dead",  # #500's dead session
     "prune",  # spec 045's prune: whether it ran, and its error
+    "catch_up",  # #886's catch-up of the default branch; null when off
 }
 
 Tick = tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]

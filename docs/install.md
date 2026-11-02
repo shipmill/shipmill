@@ -339,6 +339,7 @@ modes](design/agent-modes.md) has the details.
    retry_hours = 24   # an item a session was handed goes to another after this
    prune_hours = 6    # prune the landed worktrees this often, after the tick's decision; 0: every tick
    sweep_hours = 6    # read the timed sections (stalled releases, upgrades, plans, notices) this often; 1..168
+   catch_up = true    # each tick fast-forwards your checkout's default branch when that can't lose work
    notify = true      # a desktop notification when a session waits on you
    remind_hours = 4   # repeat it while the session still waits
    max_wait_minutes = 15 # stop a session that waited this long; 0: never
@@ -414,6 +415,14 @@ modes](design/agent-modes.md) has the details.
    Its prune follows the tick's schedule, every `prune_hours`: when one isn't due it
    prints `prune due at <time>` and judges no worktree, else the `would prune` lines.
    `$CR worktrees --prune --dry-run` lists what a prune would remove anytime
+
+   After the prune each tick catches your checkout's default branch up to `origin`'s, by
+   fast-forward only (D-66): `git fetch origin main:main` when no worktree has it checked
+   out, and `git pull --ff-only` in your checkout when it has it checked out, its tree is
+   clean, and the branch is only behind. It prints `catch-up: main 3 commits → origin/main`,
+   a dry run `would catch up: ...`, and a failure `catch-up failed: <error>`, which never
+   fails the tick. A dirty tree, a default branch checked out in another worktree, or one
+   ahead or diverged is left as it is, and `shipmill status` keeps naming the fix; `catch_up = false` turns it off
 
 4. **Schedule it.** On a Mac:
 

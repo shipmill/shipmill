@@ -11,7 +11,9 @@ or in headless mode an item's needs-decision question, has waited on the user, s
 reminder repeats only every few hours and an optional limit stops a session. Once a tick
 has its decision, held or not, it also prunes the repository's worktrees that provably
 landed (spec S-002) when a prune is due, every [agents] prune_hours, and a prune that fails
-never fails the tick (spec 045, D-56).
+never fails the tick (spec 045, D-56); then, unless [agents] catch_up = false, it fast-forwards
+the local default branch where that can't lose work, and a failed catch-up never fails the
+tick either (#886, D-66).
 """
 
 import datetime as dt
@@ -31,6 +33,8 @@ from typing import Protocol
 from shipmill.agents import AgentsConfig, Mode, RolesConfig
 from shipmill.app import AppCheck, Identity
 from shipmill.autonomy import AGENT_STAGES, Autonomy, AutonomyPolicy, Hold, Stage, StageKind
+from shipmill.catch_up import CatchUp
+from shipmill.catch_up import catch_up as fast_forward  # gate's own catch_up names the [agents] key's reader
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import ClaudeAuth
 from shipmill.claude_token import Credential, Kind, Token, rejected_fix, session_env
@@ -386,6 +390,7 @@ class Decision:
     dead: Dead | None = None  # the last session, when it ended dead (#500)
     credential: Kind = Kind.LOGIN  # what the sessions authenticate with (spec 035)
     prune: PruneRun | None = None  # what the tick's prune did, after the decision (spec 045); None: no prune step
+    catch_up: CatchUp | None = None  # the default branch's catch-up after the prune (#886); None: none ran
     walk: WalkRun | None = None  # how far the tick's walk went (spec 046); None: the tick read no state
     tier: int | None = None  # the tier of the item a LAUNCH hands (spec 046)
     running: Running | None = None  # the session a RUNNING or STALLED tick waits on (S-048-16); None otherwise
@@ -2320,6 +2325,7 @@ def gate(
     sweep_now: bool = False,
     github: GitHubPreflight | None = None,
     stop: Stop | None = None,
+    catch_up: Callable[[], bool] | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -2439,7 +2445,13 @@ def gate(
     none for them, and names none. A refusal changes no decision: the tick runs as it would
     without the key, its decision carries the refusals, its line ends with one
     `; refused: <key> (spec NNN)` for each, and tick.json records them; it is never an ERROR
-    tick and never a failing one (S-052-10)"""
+    tick and never a failing one (S-052-10)
+
+    catch_up reads [agents] catch_up (#886, D-66); None, as in tests that don't exercise it,
+    runs no catch-up. After the prune, held or not, a tick whose config reads true
+    fast-forwards the local default branch where that can't lose work (catch_up_step); a dry
+    run says what it would move and moves nothing. Its failure is one line, after tick.json is
+    written, so the decision, launch, record, and exit code stay as they would be without it"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
     previous = None if dry_run else load_tick(tick)
     read: list[tuple[Refusal, ...]] = []  # the refusals of the tick's last config read, if it read one
@@ -2492,7 +2504,22 @@ def gate(
         record_tick(tick, previous, now, action, decision.reason, fix, fails, decision.running, flight, found)
     hours = (lambda: 0) if prune_hours is None else prune_hours
     run, pruned = prune_step(state_dir(git) / PRUNE, hours, worktrees, now, dry_run)
-    return replace(decision, prune=run), launched, waiting, pruned
+    caught = catch_up_step(git, catch_up, dry_run)
+    return replace(decision, prune=run, catch_up=caught), launched, waiting, pruned
+
+
+def catch_up_step(git: Git, enabled: Callable[[], bool] | None, dry_run: bool) -> CatchUp | None:
+    """#886, D-66, after the tick's decision and its prune: the local default branch caught up
+    by fast-forward (shipmill.catch_up.catch_up) when enabled() reads [agents] catch_up true; None when
+    it is false, or enabled is None, as in tests that don't exercise it. As the prune (D-56), a
+    shipmill error, the catch-up's or the config read's, is its first line and changes nothing
+    else in the tick"""
+    if enabled is None:
+        return None
+    try:
+        return fast_forward(git, dry_run) if enabled() else None
+    except ReleaseError as exc:
+        return CatchUp(None, error=error_line(exc))
 
 
 def decided(
@@ -2683,7 +2710,8 @@ def tick_record(
     remove; identity the App bot a launch writes as, or null for the host's gh login (and on a
     tick that launches nothing); auth, token-file or login (spec 035), preflight the Claude
     Code login preflight's verdict (#500), null when none ran, and in_flight what a QUIET tick
-    says is in flight (S-048-25), null on any other decision. The CLI adds refused, the
+    says is in flight (S-048-25), null on any other decision; catch_up what the default
+    branch's catch-up did (#886), null when it is off. The CLI adds refused, the
     checkout's refused keys (S-052-11); tick.json's refused is the tick's own (S-052-10)"""
     return {
         "action": decision.action.value,
@@ -2695,6 +2723,7 @@ def tick_record(
         "waiting": [w.record() for w in waiting],
         "pruned": [j.path for j in pruned],
         "prune": (decision.prune or PruneRun(False)).record(),  # spec 045: whether it ran, and its error
+        "catch_up": None if decision.catch_up is None else decision.catch_up.record(),  # #886: null when off
         "mode": None if decision.mode is None else decision.mode.value,
         "decisions": [a.record() for a in decision.decisions],
         "loaded": None if decision.loaded is None else decision.loaded.record(),
@@ -2718,7 +2747,7 @@ def tick_lines(
     """`shipmill gate`'s text: the decision (` as <slug>[bot]` when it launches as an App, then
     each refused key, S-052-10), the branch the refresh detached the checkout from, one line
     per blocked session, the work and the launch, then one per pruned worktree, or the prune's
-    failure (spec 045)"""
+    failure (spec 045), then the default branch's catch-up when it moved, would, or failed (#886)"""
     who = f" as {decision.identity}" if decision.identity is not None else ""
     # spec 035: the kind, never the token or its path; only on LAUNCH, as SESSION_DEAD ends with its fix
     if decision.credential is Kind.TOKEN_FILE and decision.action is Action.LAUNCH:
@@ -2759,4 +2788,7 @@ def tick_lines(
         lines.append(f"  prune due at {due.at.isoformat(timespec='minutes')}")
     if decision.prune is not None and decision.prune.error is not None:
         lines.append(f"  prune failed: {decision.prune.error}")
+    caught = None if decision.catch_up is None else decision.catch_up.line(dry_run)
+    if caught is not None:  # #886: what moved, or would, or why it failed; nothing when nothing moved
+        lines.append(f"  {caught}")
     return lines

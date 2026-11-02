@@ -25,6 +25,8 @@ from shipmill.agent_as_person import Flagged
 from shipmill.agents import AgentsConfig, Mode, app_id_of
 from shipmill.app import Identity, default_key
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold, Source, StageKind, StageLevel
+from shipmill.catch_up import Main as Main  # the gate's catch-up reads the branch the same way (#886)
+from shipmill.catch_up import read_main as read_main
 from shipmill.claude_auth import FIX as AUTH_FIX
 from shipmill.claude_auth import MISSING_FIX
 from shipmill.claude_token import FIX_SHAPE as TOKEN_FIX
@@ -246,20 +248,6 @@ class Pull:
     merge: str
     base: str
     ready: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class Main:
-    """The branch releases land on (the config's `branch`, else GitHub's default branch, #694)
-    here and on GitHub; local is None without a local branch, and checked_out says whether the
-    checkout is on it"""
-
-    branch: str
-    local: str | None
-    remote: str
-    ahead: int
-    behind: int
-    checked_out: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -685,19 +673,6 @@ def landing_branch(repo: str, root: Path, run: StateRunner, pause: Callable[[flo
     watch_state.py fetches it, else GitHub's default branch, read only then (#694)"""
     branch = policy_branch(root)
     return branch if branch is not None else read_branch(repo, run, pause)
-
-
-def read_main(git: Git, branch: str) -> Main:
-    """After watch_state.py's fetch, so origin's branch is GitHub's"""
-    remote = git.run("rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}^{{commit}}").strip()
-    if not git.ok("rev-parse", "--verify", "-q", f"refs/heads/{branch}"):
-        return Main(branch, None, remote, 0, 0, False)
-    local = git.sha(f"refs/heads/{branch}")
-    ahead, behind = git.run("rev-list", "--left-right", "--count", f"{local}...{remote}").split()
-    on = (
-        git.ok("symbolic-ref", "-q", "HEAD") and git.run("symbolic-ref", "-q", "HEAD").strip() == f"refs/heads/{branch}"
-    )
-    return Main(branch, local, remote, int(ahead), int(behind), on)
 
 
 def describe(git: Git, rev: str) -> Described:
