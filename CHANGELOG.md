@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.112.0] - 2026-11-02
+
+### Added
+
+- `shipmill deprecations [<id>]` lists, for each deprecated config key or reading, the connected repos whose config on the default branch still relies on it, each with its migrating upgrade's state (`issue #N open`, `asked, waiting`, `not now`, `declined`, `pull request #N open`, or `not proposed`), or `none of N repos`; it reads the repos of this host's gate jobs, or `--repo owner/name` and `--fleet <file>`, with `--host` adding the gate jobs' back, and `--json` prints one object. It exits 1 when a repo relies on one and 2 when a repo can't be read, and `docs/release-lanes.md` gives the steps to retire a key on its output (spec 047, D-63) (#906)
+
 ## [0.111.0] - 2026-11-02
 
 ### Added
@@ -2202,7 +2208,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.111.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.112.0...HEAD
+[0.112.0]: https://github.com/shipmill/shipmill/compare/v0.111.0...v0.112.0
 [0.111.0]: https://github.com/shipmill/shipmill/compare/v0.110.0...v0.111.0
 [0.110.0]: https://github.com/shipmill/shipmill/compare/v0.109.0...v0.110.0
 [0.109.0]: https://github.com/shipmill/shipmill/compare/v0.108.0...v0.109.0

@@ -1,3 +1,0 @@
-### Added
-
-- `shipmill deprecations [<id>]` lists, for each deprecated config key or reading, the connected repos whose config on the default branch still relies on it, each with its migrating upgrade's state (`issue #N open`, `asked, waiting`, `not now`, `declined`, `pull request #N open`, or `not proposed`), or `none of N repos`; it reads the repos of this host's gate jobs, or `--repo owner/name` and `--fleet <file>`, with `--host` adding the gate jobs' back, and `--json` prints one object. It exits 1 when a repo relies on one and 2 when a repo can't be read, and `docs/release-lanes.md` gives the steps to retire a key on its output (spec 047, D-63) (#906)
