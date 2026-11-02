@@ -1,3 +1,0 @@
-### Added
-
-- With `[agents] author = "decider"`, an issue or pull request `shipmill gh` writes as the decider keeps the agent marker `<!-- shipmill:agent -->` as its last line and ends its text with ``Opened by an agent through shipmill, on `@<login>`'s decision.``, from `--body` or `--body-file` alike and never twice; a merge written as the decider passes `--author-email <id>+<login>@users.noreply.github.com`, the id from the GET /user that already checks their token, and ends its body with spec 049's trailers for every other decider and then one `Co-authored-by` for the App's bot. A write that goes as the App gets neither, and `triage_state.py`, `watch_state.py`, and the credit read such a record as an agent's, never as that person's decision, filing, or answer (#868)

@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.105.0] - 2026-11-02
+
+### Added
+
+- With `[agents] author = "decider"`, an issue or pull request `shipmill gh` writes as the decider keeps the agent marker `<!-- shipmill:agent -->` as its last line and ends its text with ``Opened by an agent through shipmill, on `@<login>`'s decision.``, from `--body` or `--body-file` alike and never twice; a merge written as the decider passes `--author-email <id>+<login>@users.noreply.github.com`, the id from the GET /user that already checks their token, and ends its body with spec 049's trailers for every other decider and then one `Co-authored-by` for the App's bot. A write that goes as the App gets neither, and `triage_state.py`, `watch_state.py`, and the credit read such a record as an agent's, never as that person's decision, filing, or answer (#868)
+
+### Fixed
+
+- With `author = "decider"`, two `shipmill gh` runs that refresh the same expired token at once no longer log the person out: GitHub refuses the second refresh because refresh tokens are single-use, so that run re-reads the stored file and writes with the token the first run saved, deleting the file only when it still holds the refused refresh token; a file deleted meanwhile (by `app-logout`, or the other run) writes as the App instead of crashing on the missing file (#882)
+
 ## [0.104.0] - 2026-11-02
 
 ### Added
@@ -2147,7 +2157,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.104.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.105.0...HEAD
+[0.105.0]: https://github.com/shipmill/shipmill/compare/v0.104.0...v0.105.0
 [0.104.0]: https://github.com/shipmill/shipmill/compare/v0.103.0...v0.104.0
 [0.103.0]: https://github.com/shipmill/shipmill/compare/v0.102.0...v0.103.0
 [0.102.0]: https://github.com/shipmill/shipmill/compare/v0.101.0...v0.102.0
