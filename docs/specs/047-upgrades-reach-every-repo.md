@@ -108,7 +108,7 @@ upgrades in `src/shipmill/upgrades.py`'s catalogue retire them, in the style of 
 - `drop-roadmap` applies to a config with a `[roadmap]` table, and its edit deletes the table:
   its header, its keys, and its lines up to the next table's header. When `[roadmap]` sets
   `wip` and the config has an `[agents]` table that sets no `wip`, it adds that `wip` to
-  `[agents]`, which turns that limit on, since nothing reads `[roadmap] wip` today (D-32), and
+  `[agents]`, which turns that limit on, since nothing reads `[roadmap]`'s `wip` today (D-32), and
   its issue names the limit; with `[agents]` setting `wip` already, or no `[agents]` table, it
   moves nothing and its issue says so. It is decided once the config has no `[roadmap]` table
 - each is the migrating upgrade of its catalogue entry in `src/shipmill/deprecations.py`, so
@@ -204,8 +204,8 @@ until it reads none, then decide.
 - S-047-18: `upgrade --apply drop-agents-prs` on a config whose `[agents]` sets `prs` deletes
   that line, keeps every other line byte for byte, and adds none; the upgrade then reads
   decided, and doctor gives no `agents-prs` warning
-- S-047-19: `upgrade --apply drop-roadmap` deletes the `[roadmap]` table; with `[roadmap] wip
-  = 3` and an `[agents]` table without `wip` the result sets `[agents] wip = 3`, and with
+- S-047-19: `upgrade --apply drop-roadmap` deletes the `[roadmap]` table; with `wip = 3` in
+  `[roadmap]` and an `[agents]` table without `wip` the result sets `[agents] wip = 3`, and with
   `[agents] wip` already set, or no `[agents]` table, it adds no line
 - S-047-20: `src/shipmill/deprecations.py` names `drop-agents-prs` as `agents-prs`'s upgrade
   and `drop-roadmap` as `roadmap`'s, and a sweep over a config that sets `[agents] prs` and
