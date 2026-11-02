@@ -13,7 +13,7 @@ import enum
 from dataclasses import dataclass
 
 from shipmill.gitrepo import REMOTE, Git
-from shipmill.worktrees import parse_worktrees
+from shipmill.worktrees import HEADS, parse_worktrees
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +82,8 @@ def catch_up(git: Git, dry_run: bool) -> CatchUp:
     nothing (held, busy) compares against GitHub's; a dry run fetches that remote-tracking ref
     too, as the prune's judge does, and moves no branch. A git failure raises ReleaseError"""
     branch = git.landing_branch()
-    git.run("fetch", "-q", REMOTE, branch)
+    head = f"{HEADS}{branch}"  # the branch reaches git only inside a refspec, never as an option
+    git.run("fetch", "-q", REMOTE, f"+{head}:refs/remotes/{REMOTE}/{branch}")
     main = read_main(git, branch)
     if main.local is None or main.ahead or not main.behind:
         return CatchUp(branch, main.behind)
@@ -97,7 +98,7 @@ def catch_up(git: Git, dry_run: bool) -> CatchUp:
         return CatchUp(branch, main.behind)
     if not dry_run:
         if how is How.FETCH:  # no leading +: git refuses a non-fast-forward
-            git.run("fetch", "-q", REMOTE, f"{branch}:{branch}")
+            git.run("fetch", "-q", REMOTE, f"{head}:{head}")
         else:  # --no-rebase: a pull.rebase setting never turns it into a rebase
-            checkout.run("pull", "-q", "--ff-only", "--no-rebase", REMOTE, branch)
+            checkout.run("pull", "-q", "--ff-only", "--no-rebase", REMOTE, head)
     return CatchUp(branch, main.behind, how)

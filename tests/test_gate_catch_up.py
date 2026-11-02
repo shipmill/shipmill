@@ -225,7 +225,7 @@ def test_886_a_failed_catch_up_prints_one_line_and_leaves_the_tick_as_it_was(rep
     assert repo.main() == before
     catch = failed[0].catch_up
     assert catch is not None and catch.error is not None
-    assert catch.error.startswith("git fetch -q origin main:main failed: ")
+    assert catch.error.startswith("git fetch -q origin refs/heads/main:refs/heads/main failed: ")
     assert dataclasses.replace(failed[0], catch_up=None) == clean[0]
     assert lines(failed) == [*lines(clean), f"  catch-up failed: {catch.error}"]
     assert record(failed) == {"branch": None, "behind": 0, "how": None, "error": catch.error}
@@ -245,6 +245,18 @@ def test_886_a_config_read_that_fails_is_the_catch_ups_error(repo: Repo) -> None
     assert dataclasses.replace(failed[0], catch_up=None) == clean[0]
     error = ".github/shipmill.toml: [agents] catch_up must be true or false"
     assert lines(failed) == [*lines(clean), f"  catch-up failed: {error}"]
+
+
+def test_886_a_branch_name_is_never_read_as_a_git_option(repo: Repo) -> None:
+    """The config's branch reaches git only inside a refs/heads/ refspec, so a value that
+    starts with -- is a ref git can't find, never an option such as --upload-pack"""
+    ran = repo.root.parent / "ran"
+    (repo.root / ".github").mkdir()
+    repo.commit(repo.root, ".github/shipmill.toml", f'branch = "--upload-pack=touch {ran};git-upload-pack"\n')
+    repo.git().run("push", "-q", "origin", "main")
+    t = tick(repo)
+    assert not ran.exists()
+    assert t[0].catch_up is not None and t[0].catch_up.error is not None
 
 
 def agents(**keys: object) -> AgentsConfig:
