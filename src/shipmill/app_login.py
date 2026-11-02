@@ -13,6 +13,11 @@ client id and client secret. shipmill keeps no client secret (app-create drops i
 app-logout revokes only when SHIPMILL_APP_CLIENT_SECRET is set in its environment; otherwise,
 or when GitHub refuses, it deletes the file and says where the person revokes the App
 themselves.
+
+`shipmill gh` refreshes an expired token with the App's client secret from
+`~/.config/shipmill/app-<app_id>-client-secret` beside the App's key, mode 0600, which the
+maintainer puts there; shipmill never writes it, and no message quotes it. Without that file
+the refresh goes without a secret.
 """
 
 import base64
@@ -20,6 +25,7 @@ import datetime as dt
 import http.client
 import json
 import re
+import stat
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -36,7 +42,8 @@ DEVICE_CODE = "https://github.com/login/device/code"
 ACCESS_TOKEN = "https://github.com/login/oauth/access_token"
 GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 SLOW_DOWN_SECONDS = 5  # RFC 8628: slow_down without an interval adds 5 seconds
-CLIENT_SECRET = "SHIPMILL_APP_CLIENT_SECRET"  # read from the environment only, never stored
+CLIENT_SECRET = "SHIPMILL_APP_CLIENT_SECRET"  # app-logout's, read from the environment only, never stored
+SECRET_MODE = 0o600  # the widest mode the client secret's file may have
 DEVICE_FLOW_SETTING = "Enable Device Flow"
 REVOKE_PAGE = "https://github.com/settings/apps/authorizations"
 _BODY_LIMIT = 1 << 20
@@ -74,6 +81,51 @@ class UserLogin:
 def user_file(app_id: int, login: UserLogin, home: Path) -> Path:
     """Where a person's user access token for the App lives on this host (spec 051)"""
     return home / ".config" / "shipmill" / f"user-{app_id}-{login.key}.json"
+
+
+def client_secret_file(app_id: int, home: Path) -> Path:
+    """Where the App's client secret lives on this host, beside its key (spec 051): the
+    maintainer puts it there, and shipmill never writes it"""
+    return home / ".config" / "shipmill" / f"app-{app_id}-client-secret"
+
+
+def secret_refused(path: Path) -> str | None:
+    """Why the client secret's file at path can't be used, by one stat, its bytes never read:
+    not a file, a mode wider than 0600, or empty; None when it may be read. The reason names
+    the fix and never holds the secret"""
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode):
+        return f"the App's client secret {path} is not a file"
+    mode = stat.S_IMODE(info.st_mode)
+    if mode & ~SECRET_MODE:
+        return f"the App's client secret {path} has mode {mode:04o}, wider than 0600; run `chmod 600 {path}`"
+    if info.st_size == 0:
+        return f"the App's client secret {path} is empty; write the App's client secret into it"
+    return None
+
+
+class SecretRefused(ReleaseError):
+    """The App's client secret's file is there but can't be used; the message never holds it"""
+
+
+def client_secret(app_id: int, home: Path) -> str | None:
+    """S-051-8: the App's client secret from its file in home, None when there is none. A file
+    wider than 0600, empty, or holding anything but one secret raises SecretRefused"""
+    path = client_secret_file(app_id, home)
+    if not path.exists():
+        return None
+    refused = secret_refused(path)
+    if refused is not None:
+        raise SecretRefused(refused)
+    try:
+        secret = path.read_bytes().decode("utf-8").strip()
+    except UnicodeDecodeError:
+        raise SecretRefused(f"the App's client secret {path} is not UTF-8 text") from None
+    if not secret:
+        raise SecretRefused(f"the App's client secret {path} is empty; write the App's client secret into it")
+    if any(c.isspace() for c in secret):
+        raise SecretRefused(f"the App's client secret {path} holds more than one word; keep only the secret in it")
+    return secret
 
 
 def stored_logins(app_id: int, home: Path) -> list[UserLogin]:
@@ -405,6 +457,102 @@ def store_login(
         granted.refresh_token_expires_at,
     )
     return login, save_user_token(home, token)
+
+
+REFRESH_GRANT = "refresh_token"
+REFRESH_AHEAD = dt.timedelta(minutes=5)  # a token this close to its expiry is refreshed first, so it lasts the write
+
+
+class AsApp(ReleaseError):
+    """Spec 051: why a write goes as the App rather than as the decider; the message names the
+    login in a code span (D-61), and never a token"""
+
+
+def _again(login: UserLogin) -> str:
+    return f"`@{login}` runs `{cli_command()} app-login` again to write as themselves"
+
+
+def refreshed(token: UserToken, home: Path, web: Web, now: dt.datetime) -> UserToken:
+    """S-051-8: the token refreshed with its refresh token and stored again in home's file,
+    atomically and 0600. A refresh token that is gone or expired, and a refresh GitHub refuses,
+    delete the stored file and raise AsApp; GitHub out of reach raises AsApp and keeps the
+    file. The App's client secret goes with the request when its file is in home
+    (client_secret_file); a secret file that can't be used raises AsApp before any request and
+    keeps the stored file"""
+    login = token.login
+    path = user_file(token.app_id, login, home)
+    if token.refresh_token is None or (
+        token.refresh_token_expires_at is not None and token.refresh_token_expires_at <= now
+    ):
+        path.unlink()
+        raise AsApp(
+            f"`@{login}`'s token expired and can't be refreshed, so its stored file is deleted; {_again(login)}"
+        )
+    try:
+        secret = client_secret(token.app_id, home)
+    except SecretRefused as exc:
+        raise AsApp(f"`@{login}`'s expired token isn't refreshed: {exc}") from None
+    fields = {"client_id": token.client_id, "grant_type": REFRESH_GRANT, "refresh_token": token.refresh_token}
+    if secret is not None:
+        fields["client_secret"] = secret
+    headers = {"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"}
+    try:
+        answer = web.send("POST", ACCESS_TOKEN, headers, urllib.parse.urlencode(fields).encode())
+    except Unreachable:
+        raise AsApp(f"GitHub couldn't be reached to refresh `@{login}`'s expired token") from None
+    try:
+        data = _object(answer, f"POST {ACCESS_TOKEN}")
+        error = _error(data) if answer.status == 200 else f"status {answer.status}"
+        granted = None if error is not None else _granted(data, now)
+    except ReleaseError:  # an answer with no token in it: the refresh token may be spent, so the file is no use
+        error, granted = "no token in its answer", None
+    if granted is None:
+        path.unlink()
+        raise AsApp(
+            f"GitHub refused to refresh `@{login}`'s token ({error}), so its stored file is deleted; {_again(login)}"
+        )
+    renewed = UserToken(
+        token.app_id,
+        token.client_id,
+        login,
+        granted.access_token,
+        granted.expires_at,
+        granted.refresh_token,
+        granted.refresh_token_expires_at,
+    )
+    save_user_token(home, renewed)
+    return renewed
+
+
+def decider_token(app_id: int, login: UserLogin, home: Path, api: Api, web: Web, now: dt.datetime) -> UserToken:
+    """S-051-7 to S-051-9: the user access token login stored for the App with app-login,
+    refreshed first when it has expired or is about to, and checked with GET /user to be
+    login's and taken by GitHub. Raises AsApp, saying why, when there is none, its file is
+    malformed or another's, it can't be refreshed, or GitHub refuses it"""
+    path = user_file(app_id, login, home)
+    if not path.is_file():
+        raise AsApp(f"`@{login}` has not run {cli_command()} app-login")
+    try:
+        token = load_user_token(path)
+    except ReleaseError as exc:
+        raise AsApp(f"`@{login}`'s stored token can't be used: {exc}") from None
+    if token.app_id != app_id or token.login.key != login.key:
+        raise AsApp(f"`@{login}`'s stored token at {path} is for another App or login; {_again(login)}")
+    if token.expires_at is not None and token.expires_at - REFRESH_AHEAD <= now:
+        token = refreshed(token, home, web, now)
+    try:
+        answer = api.get("/user", token.access_token)
+    except ReleaseError:
+        raise AsApp(f"GitHub couldn't be reached to check `@{login}`'s token") from None
+    if answer.status != 200:
+        raise AsApp(f"GitHub refused `@{login}`'s stored token (status {answer.status}); {_again(login)}")
+    try:
+        found = _object(answer, "GET /user").get("login")
+    except ReleaseError:
+        found = None
+    if not isinstance(found, str) or found.lower() != login.key:
+        raise AsApp(f"`@{login}`'s stored token isn't theirs by GET /user; {_again(login)}")
+    return token
 
 
 def revoke_elsewhere(login: UserLogin, why: str) -> str:

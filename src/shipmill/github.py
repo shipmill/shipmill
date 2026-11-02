@@ -14,7 +14,20 @@ from urllib.parse import quote
 from shipmill.agent_marker import BODY_LIMIT as AGENT_BODY_LIMIT
 from shipmill.agent_marker import ROOM as MARKER_ROOM
 from shipmill.agent_marker import marked
-from shipmill.credit import CLOSES_QUERY, Account, Comment, Commit, Filed, Messages, Person, Pull, Review, closes_of
+from shipmill.credit import (
+    CLOSES_QUERY,
+    ISSUE_QUERY,
+    Account,
+    Comment,
+    Commit,
+    Filed,
+    Messages,
+    Person,
+    Pull,
+    Review,
+    closes_of,
+    issue_of,
+)
 from shipmill.errors import ReleaseError
 
 PROPOSAL_LABEL = "shipmill-proposal"  # on every issue proposing a release or a deploy
@@ -708,6 +721,13 @@ class GhCli:
             "-f", f"query={CLOSES_QUERY}",
         )  # fmt: skip
         return closes_of(json.loads(found), number)
+
+    def credit_issue(self, number: int) -> Filed | None:
+        found = self._gh(
+            "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", f"number={number}",
+            "-f", f"query={ISSUE_QUERY}",
+        )  # fmt: skip
+        return issue_of(json.loads(found), number)
 
     def credit_comments(self, number: int) -> list[Comment]:
         found = self._pages(f"repos/{{owner}}/{{repo}}/issues/{number}/comments?per_page=100")

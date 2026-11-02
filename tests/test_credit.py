@@ -79,6 +79,7 @@ class FakeCredit:
     accounts: dict[str, Account] = field(default_factory=lambda: {"octocat": OCTOCAT, "hubot": HUBOT})
     messages: Messages = Messages(Message.PR_BODY, Message.PR_TITLE)
     closes: list[Filed] = field(default_factory=list)
+    issues: dict[int, Filed | None] = field(default_factory=dict)  # None: the number is a pull request
     comments: dict[int, list[Comment]] = field(default_factory=dict)
     labelers: dict[int, list[Person | None]] = field(default_factory=dict)
     permissions: dict[str, str] = field(default_factory=dict)
@@ -107,6 +108,10 @@ class FakeCredit:
     def credit_closes(self, number: int) -> list[Filed]:
         self.read.append(f"closes {number}")
         return self.closes
+
+    def credit_issue(self, number: int) -> Filed | None:
+        self.read.append(f"issue {number}")
+        return self.issues[number]
 
     def credit_comments(self, number: int) -> list[Comment]:
         self.read.append(f"comments {number}")

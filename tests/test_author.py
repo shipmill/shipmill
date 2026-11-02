@@ -1,7 +1,7 @@
 """Spec 051, the modes and credit folding into them: [agents] author takes "app" or "decider"
 and needs app_id; with it set a `shipmill gh pr merge` names the decider as credit = "decider"
-does, whatever credit says; with neither key it runs as before (D-63). Both values still write
-as the App here: the assisted write is a later build"""
+does, whatever credit says; with neither key it runs as before (D-63). The assisted write, as
+the decider, is tests/test_decider_token.py's"""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from shipmill import cli_command
 from shipmill.agents import AgentsConfig, Author, gh_identity_of
-from shipmill.app_login import UserLogin, UserToken, save_user_token
+from shipmill.app_login import UserLogin, UserToken, client_secret_file, save_user_token
 from shipmill.config import CONFIG_PATH, Table
 from shipmill.doctor import Check, doctor
 from shipmill.errors import ReleaseError
@@ -107,9 +108,11 @@ def test_s051_3_author_names_the_decider_in_co_authored_by_whatever_credit_says(
     [argv] = runner.calls
     assert argv[1:5] == MERGE
     assert body_of(argv) == CREDITED
-    assert runner.stderr == ["credit: `@octocat` approved the pull request\n"]
+    # S-051-9: author = "decider" writes as the App when the decider stored no token, saying so
+    fallback = "" if author == "app" else f"author: the App; `@octocat` has not run {cli_command()} app-login\n"
+    assert runner.stderr == ["credit: `@octocat` approved the pull request\n" + fallback]
     [env] = runner.envs
-    assert env["GH_TOKEN"] == "token-1"  # author = "decider" still writes as the App until the assisted write
+    assert env["GH_TOKEN"] == "token-1"
 
 
 def test_s051_3_the_apis_merge_refusal_names_author(
@@ -206,6 +209,18 @@ def store(home: Path, app_id: int, login: str) -> None:
     save_user_token(home, UserToken(app_id, "Iv1.client", UserLogin(login), "ghu_SECRET", None, "ghr_SECRET", None))
 
 
+CLIENT_SECRET_VALUE = "cs_SECRET_VALUE"
+
+
+def put_secret(home: Path, mode: int = 0o600, content: str = CLIENT_SECRET_VALUE) -> Path:
+    """The App's client secret's file beside its key, as the maintainer puts it there"""
+    path = client_secret_file(APP_ID, home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(mode)
+    return path
+
+
 def test_s051_15_doctor_names_autonomous_mode(repo: Repo, tmp_path: Path) -> None:
     configure(repo, AGENTS + 'author = "app"\n')
     assert author_rows(repo, tmp_path) == [
@@ -218,25 +233,81 @@ def test_s051_15_doctor_lists_the_logins_with_a_stored_token_in_assisted_mode(re
     store(tmp_path, APP_ID, "Octocat")
     store(tmp_path, APP_ID, "hubot")
     store(tmp_path, APP_ID + 1, "monalisa")  # another App's token is not this App's consent
+    secret = put_secret(tmp_path)
     [row] = author_rows(repo, tmp_path)
-    assert row == Check("PASS", "author", "decider, 2 people authorized (spec 051): `@hubot`, `@octocat`")
+    assert row == Check(
+        "PASS",
+        "author",
+        f"decider, 2 people authorized (spec 051): `@hubot`, `@octocat`; the App's client secret is at {secret} "
+        "(mode 0600)",
+    )
     assert "SECRET" not in row.detail
 
 
 def test_s051_15_doctor_names_one_person_authorized(repo: Repo, tmp_path: Path) -> None:
     configure(repo, AGENTS + 'author = "decider"\n')
     store(tmp_path, APP_ID, "octocat")
+    secret = put_secret(tmp_path, 0o400)
     assert author_rows(repo, tmp_path) == [
-        Check("PASS", "author", "decider, 1 person authorized (spec 051): `@octocat`")
+        Check(
+            "PASS",
+            "author",
+            f"decider, 1 person authorized (spec 051): `@octocat`; the App's client secret is at {secret} (mode 0400)",
+        )
     ]
 
 
 def test_s051_15_doctor_says_no_one_authorized_in_assisted_mode(repo: Repo, tmp_path: Path) -> None:
     configure(repo, AGENTS + 'author = "decider"\n')
+    put_secret(tmp_path)
     [row] = author_rows(repo, tmp_path)
     assert (row.status, row.name) == ("PASS", "author")
     assert row.detail.startswith("decider, 0 people authorized (spec 051): every write goes as the App")
     assert "app-login" in row.detail
+
+
+@pytest.mark.parametrize(
+    ("mode", "content", "why"),
+    [
+        (None, "", "no App client secret at {path}: an expired token is refreshed without it, which GitHub may "
+                   "refuse; put the App's client secret there with mode 0600"),
+        (0o644, CLIENT_SECRET_VALUE, "the App's client secret {path} has mode 0644, wider than 0600; run "
+                                     "`chmod 600 {path}`; until then an expired token's write goes as the App"),
+        (0o640, CLIENT_SECRET_VALUE, "the App's client secret {path} has mode 0640, wider than 0600"),
+        (0o700, CLIENT_SECRET_VALUE, "the App's client secret {path} has mode 0700, wider than 0600"),
+        (0o600, "", "the App's client secret {path} is empty; write the App's client secret into it; until then"),
+    ],
+)  # fmt: skip
+def test_s051_15_doctor_warns_on_a_client_secret_missing_too_open_or_empty_never_printing_it(
+    repo: Repo, tmp_path: Path, mode: int | None, content: str, why: str
+) -> None:
+    configure(repo, AGENTS + 'author = "decider"\n')
+    store(tmp_path, APP_ID, "octocat")
+    path = client_secret_file(APP_ID, tmp_path) if mode is None else put_secret(tmp_path, mode, content)
+    [row] = author_rows(repo, tmp_path)
+    assert row.status == "WARN"
+    assert row.detail.startswith("decider, 1 person authorized (spec 051): `@octocat`; ")
+    assert why.format(path=path) in row.detail
+    assert CLIENT_SECRET_VALUE not in row.detail and "SECRET" not in row.detail
+
+
+def test_s051_15_doctor_never_reads_the_client_secret(repo: Repo, tmp_path: Path) -> None:
+    configure(repo, AGENTS + 'author = "decider"\n')
+    path = put_secret(tmp_path, 0o200)  # write-only: reading it would fail
+    [row] = author_rows(repo, tmp_path)
+    assert row == Check(
+        "PASS",
+        "author",
+        f"decider, 0 people authorized (spec 051): every write goes as the App until a person runs "
+        f"`{cli_command()} app-login`; the App's client secret is at {path} (mode 0200)",
+    )
+
+
+def test_s051_15_doctor_names_no_client_secret_outside_assisted_mode(repo: Repo, tmp_path: Path) -> None:
+    configure(repo, AGENTS + 'author = "app"\n')
+    put_secret(tmp_path, 0o644)
+    [row] = author_rows(repo, tmp_path)
+    assert row.status == "PASS" and "client secret" not in row.detail
 
 
 def test_s051_15_doctor_warns_on_a_stored_file_named_without_a_login(repo: Repo, tmp_path: Path) -> None:
