@@ -625,6 +625,7 @@ def test_s051_8_a_refresh_refused_after_another_won_keeps_the_winners_file(tmp_p
         saved(winner(login="hubot")),  # another login's token is never taken
         saved(winner(app_id=APP_ID + 1)),  # nor another App's
     ],
+    ids=["deleted", "malformed", "another-login", "another-app"],  # stable: the saved tokens carry now()
 )
 def test_s051_8_a_refused_refresh_with_no_winner_in_the_file_writes_as_the_app(
     tmp_path: Path, content: bytes | None
