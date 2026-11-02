@@ -764,6 +764,31 @@ def test_refresh_694_never_takes_the_branch_from_a_sessions_own_config(linked_ga
     assert git.run("rev-parse", "HEAD") == git_("rev-parse", "HEAD", cwd=pusher)
 
 
+class RecordingGit(Git):
+    """A real Git that keeps the arguments of each run"""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.calls: list[tuple[str, ...]] = []
+
+    def run(self, *args: str, stdin: bytes | None = None) -> str:
+        self.calls.append(args)
+        return super().run(*args, stdin=stdin)
+
+
+def test_889_refresh_passes_the_branch_to_git_only_inside_a_refspec(gate_checkout: tuple[Git, Path]) -> None:
+    """#889: the branch refresh fetches reaches git only inside a refs/heads/ refspec and the
+    checkout detaches at its remote-tracking ref, so no branch name is read as an option"""
+    plain, pusher = gate_checkout
+    git = RecordingGit(plain.root)
+    refresh(git)
+    fetches = [c for c in git.calls if c[0] == "fetch"]
+    assert fetches[-1] == ("fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main")
+    assert all(a.startswith("+refs/heads/") for c in fetches for a in c[c.index("origin") + 1 :])
+    assert ("checkout", "-q", "--detach", "refs/remotes/origin/main") in git.calls
+    assert git.run("rev-parse", "HEAD") == git_("rev-parse", "HEAD", cwd=pusher)
+
+
 def test_refresh_without_detach_refuses_a_linked_worktree_on_a_branch(linked_gate: tuple[Git, Path]) -> None:
     """`launchd` installs on a detached checkout only; the fix is to detach it, not a new worktree"""
     git, _ = linked_gate

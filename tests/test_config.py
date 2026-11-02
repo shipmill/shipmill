@@ -12,7 +12,7 @@ import pytest
 
 from shipmill.agents import AgentsConfig
 from shipmill.classify import _changelog as classify_changelog
-from shipmill.config import Table
+from shipmill.config import Table, branch_in
 from shipmill.errors import ReleaseError
 from shipmill.policy import BumpFrom, HooksConfig, Lane, NoticesConfig, Policy, Style, VersionFiles
 from shipmill.version import Part
@@ -58,6 +58,7 @@ CASES: dict[str, list[Change]] = {
     "top after_stamp non-empty strings": top('after_stamp = [""]'),
     "top after_stamp empty command": top('after_stamp = ["  "]'),
     "top version_files required": [('version_files = "pyproject"\n', "")],
+    "top branch an option": [('branch = "main"', 'branch = "--upload-pack=touch x;git-upload-pack"')],
     # [changelog]
     "changelog unknown key": [(CHANGELOG, CHANGELOG + "colour = 1\n")],
     "changelog fragments a string": [(CHANGELOG, CHANGELOG + "fragments = 1\n")],
@@ -165,6 +166,9 @@ MESSAGES: dict[str, str] = {
     "top after_stamp a list": "shipmill.toml: after_stamp must be a list of strings, got 'x'",
     "top after_stamp non-empty strings": "shipmill.toml: after_stamp must be a list of non-empty strings",
     "top after_stamp empty command": "shipmill.toml: after_stamp holds an empty command",
+    "top branch an option": (
+        "shipmill.toml: branch must be a git branch name, got '--upload-pack=touch x;git-upload-pack': it starts with -"
+    ),
     "top version_files required": "shipmill.toml: version_files is required",
     "changelog unknown key": "shipmill.toml [changelog]: unknown keys ['colour']; allowed: ['fragments', 'path', 'style']",
     "changelog fragments a string": "shipmill.toml [changelog]: fragments must be a string, got 1",
@@ -534,3 +538,47 @@ def test_s026_14_a_bad_hooks_key_exits_2_naming_it(name: str, tmp_path: Path) ->
     )
     assert done.returncode == 2
     assert done.stderr == f"shipmill: {MESSAGES[name]}\n"
+
+
+@pytest.mark.parametrize("name", ["main", "release/1.x", "feat/a-b", "v1", "a.b", "a-", "x@y"])
+def test_889_a_git_branch_name_is_accepted(name: str) -> None:
+    assert branch_in(f'branch = "{name}"\n', "shipmill.toml") == name
+    assert Policy.parse(tomllib.loads(apply(POLICY, [('branch = "main"', f'branch = "{name}"')])), "shipmill.toml").branch == name
+
+
+INVALID_BRANCHES = [
+    "-x",
+    "--upload-pack=touch x;git-upload-pack",
+    "a..b",
+    "a b",
+    "a\\tb",
+    "a\\u007fb",
+    "a~1",
+    "a^",
+    "a:b",
+    "a?",
+    "a*",
+    "a[b",
+    "a\\\\b",
+    "a@{1}",
+    "@",
+    "/a",
+    "a/",
+    "a//b",
+    "a/.b",
+    ".a",
+    "a.",
+    "a.lock",
+    "a.lock/b",
+]
+
+
+@pytest.mark.parametrize("name", INVALID_BRANCHES)
+def test_889_a_branch_git_refuses_is_refused_naming_the_key_and_where(name: str) -> None:
+    """#889: a configured branch reaches git, and one git's branch-name rules refuse (such as
+    one starting with -, which git reads as an option) fails to load, naming `branch`"""
+    text = f'branch = "{name}"\n'
+    with pytest.raises(ReleaseError, match=r"^\.github/shipmill\.toml at origin/main: branch must be a git branch name"):
+        branch_in(text, ".github/shipmill.toml at origin/main")
+    with pytest.raises(ReleaseError, match=r"^shipmill\.toml: branch must be a git branch name"):
+        Policy.parse(tomllib.loads(apply(POLICY, [('branch = "main"\n', text)])), "shipmill.toml")
