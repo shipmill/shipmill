@@ -243,7 +243,7 @@ def test_s051_7_pr_create_runs_as_the_decider_of_the_issues_its_body_closes(
     store(tmp_path)
     credit = FakeCredit(issues={9: filed(9), 11: None})  # #11 is a pull request: it closes nothing
     runner = EnvRunner(capsys)
-    args = ["pr", "create", "--title", "t", "--body", f"Fixes #9, closes #11 and fixes other/repo#12 ({REPO})"]
+    args = ["pr", "create", "--title", "t", "--body", f"Fixes #9\ncloses #11\nfixes other/repo#12 ({REPO})"]
     assert gh(repo, tmp_path, key, args, runner, CreditReader(credit)) == 0
     as_person(runner, "filed #9")
     assert [r for r in credit.read if r.startswith("issue")] == ["issue 9", "issue 11"]
@@ -379,11 +379,30 @@ def test_s051_12_only_issue_create_pr_create_and_pr_merge_are_written_as_the_dec
 
 def test_s051_7_closing_references_name_the_repos_issues_once_in_order() -> None:
     body = (
-        f"Fixes #9 and closes {REPO}#10.\nResolved: https://github.com/{REPO}/issues/11\n"
-        f"fixes other/repo#12, see #13, fixes #9, FIXES {REPO.upper()}#14"
+        f"Fixes #9 and closes #15.\n- closes {REPO}#10.\nResolved: https://github.com/{REPO}/issues/11\n"
+        f"fixes other/repo#12, see #13\n  * fixes #9\nFIXES {REPO.upper()}#14"
     )
     assert closed_by(body, REPO) == [9, 10, 11, 14]
     assert closed_by("Prefixes #9; fixes#9", REPO) == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Explains why `Fixes #12` is wrong",
+        "`Fixes #12` is quoted",
+        "Fixes `#12`",
+        "Intro\n```\nFixes #12\n```\n",
+        "Intro\n~~~md\nFixes #12\n~~~\n",
+        "This doesn't fix #12 yet",
+        "See the plan; it fixes #12 later",
+    ],
+)
+def test_s051_7_a_keyword_in_code_or_mid_line_closes_nothing(body: str) -> None:
+    """triage_state.py's keyword_closes rule (#416): a pull request whose body only quotes a
+    keyword names no decider by it, so no one is written as by mistake"""
+    assert closed_by(body, REPO) == []
+    assert closed_by(body + "\nFixes #9", REPO) == [9]
 
 
 def test_s051_7_one_issue_parses_with_its_parent_or_reads_as_a_pull_request() -> None:

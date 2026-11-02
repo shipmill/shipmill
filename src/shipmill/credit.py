@@ -536,21 +536,33 @@ def with_parents(issues: Iterable[Filed]) -> list[Filed]:
     return list(found.values())
 
 
-# GitHub's closing keywords, before an issue of the repo by #n, owner/name#n, or its URL
+# GitHub's closing keywords starting a line (after a list bullet), before an issue of the repo
+# by #n, owner/name#n, or its URL: triage_state.py's keyword_closes rule (#368, #416)
 _CLOSING = re.compile(
-    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+"
+    r"^\s*(?:[-*]\s*)?(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+"
     r"(?:#|(?P<repo>[A-Za-z0-9-]+/[A-Za-z0-9._-]+)#|https://github\.com/(?P<url>[A-Za-z0-9-]+/[A-Za-z0-9._-]+)/issues/)"
     r"(?P<number>[1-9][0-9]*)\b",
     re.IGNORECASE,
 )
+_CODE_SPAN = re.compile(r"`+[^`]*`+")
+_FENCE = re.compile(r"^[ \t]*(?:```|~~~)")
 
 
 def closed_by(body: str, repo: str) -> list[int]:
     """The numbers of repo's issues a pull request's body closes with GitHub's keywords
-    (`Fixes #9`, `closes owner/name#9`, `Resolves <issue URL>`), each once, in order; an issue
-    of another repo is left out, since its records are that repo's"""
+    (`Fixes #9`, `closes owner/name#9`, `Resolves <issue URL>`), each once, in order, by the
+    rule triage links a pull request to an issue by: a keyword starting a line, after an
+    optional list bullet, outside a code fence; one quoted mid-line or in backticks names
+    nothing (#416). An issue of another repo is left out, since its records are that repo's"""
     found: list[int] = []
-    for match in _CLOSING.finditer(body):
+    fenced = False
+    for line in body.splitlines():
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        match = None if fenced else _CLOSING.match(_CODE_SPAN.sub("", line))
+        if match is None:
+            continue
         named = match["repo"] or match["url"]
         number = int(match["number"])
         if (named is None or named.lower() == repo.lower()) and number not in found:
