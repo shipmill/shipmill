@@ -931,6 +931,86 @@ def test_694_a_branch_the_watch_cannot_use_is_refused(ws: ModuleType, config: st
         ws.landing_branch_310("branch = 1\n", Path(".github/shipmill.toml"))
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "--upload-pack=touch X;git-upload-pack",
+        "-main",
+        "a..b",
+        "has space",
+        "tab\tin",
+        "a~1",
+        "a^",
+        "a:b",
+        "a?",
+        "a*",
+        "a[b",
+        "a\\b",
+        "a@{1}",
+        "@",
+        "HEAD",
+        "/main",
+        "main/",
+        "a//b",
+        "a/.hidden",
+        ".main",
+        "main.lock",
+        "a.lock/b",
+        "main.",
+    ],
+)
+def test_892_a_branch_git_refuses_is_refused_before_it_reaches_git(ws: ModuleType, name: str) -> None:
+    """#892: the configured branch reaches git fetch, so one git's branch-name rules refuse,
+    an option above all, is refused naming the key; the check follows both readers, tomllib's
+    and the 3.10 fallback's"""
+    config = f"branch = {json.dumps(name)}\n"
+    with pytest.raises(SystemExit, match=r"branch must be a git branch name") as refused:
+        ws.landing_branch(config, Path(".github/shipmill.toml"), "master")
+    assert refused.value.code == 2
+
+
+@pytest.mark.parametrize("name", ["main", "release/v1", "v1.x", "feat-a_b", "a.b/c.d"])
+def test_892_a_branch_git_accepts_is_read(ws: ModuleType, name: str) -> None:
+    assert ws.landing_branch(f'branch = "{name}"\n', Path(".github/shipmill.toml"), "master") == name
+
+
+def test_892_the_landing_fetch_passes_the_branch_inside_a_refspec(ws: ModuleType, tmp_path: Path) -> None:
+    """#892: the landing branch reaches git only inside +refs/heads/<branch>:refs/remotes/origin/<branch>,
+    which still moves origin/<branch> (force, past a rewrite) and fetches the tags; a branch
+    that reads as an option fails the fetch instead of running it"""
+    origin, work, other = tmp_path / "origin.git", tmp_path / "work", tmp_path / "other"
+
+    def sh(*cmd: str, cwd: Path = other) -> str:
+        done = subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *cmd],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return done.stdout.strip()
+
+    sh("init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
+    sh("clone", "-q", str(origin), str(other), cwd=tmp_path)
+    sh("commit", "-q", "--allow-empty", "-m", "start")
+    sh("push", "-q", "origin", "HEAD:refs/heads/release/v1")
+    sh("clone", "-q", str(origin), str(work), cwd=tmp_path)
+    sh("commit", "-q", "--amend", "--allow-empty", "-m", "rewritten")
+    sh("tag", "v0.1.0")
+    sh("push", "-q", "--force", "--tags", "origin", "HEAD:refs/heads/release/v1")
+    head = sh("rev-parse", "HEAD")
+
+    ws.fetch_landing(work, "release/v1")
+    assert sh("rev-parse", "origin/release/v1", cwd=work) == head
+    assert sh("rev-parse", "FETCH_HEAD", cwd=work) == head
+    assert [tag.name for tag in ws.version_tags(work)] == ["v0.1.0"]
+
+    marker = tmp_path / "X"
+    with pytest.raises(SystemExit):
+        ws.fetch_landing(work, f"--upload-pack=touch {marker};git-upload-pack")
+    assert not marker.exists()
+
+
 def test_the_issue_states_reported_are_the_ones_triage_state_acts_on(ws: ModuleType) -> None:
     spec = importlib.util.spec_from_file_location("triage_state", ws.TRIAGE_STATE)
     assert spec is not None and spec.loader is not None
