@@ -1720,7 +1720,46 @@ def landing_branch(text: str | None, policy: Path, default: str) -> str:
         return default
     if not isinstance(value, str) or not value:
         raise Refused(f"error: {policy}: branch must be a non-empty string, got {value!r}")
+    why = branch_refusal(value)
+    if why is not None:
+        raise Refused(f"error: {policy}: branch must be a git branch name, got {value!r}: {why}")
     return value
+
+
+BRANCH_FORBIDDEN = frozenset("~^:?*[\\ ")
+
+
+def branch_refusal(name: str) -> str | None:
+    """Why git's branch-name rules (`git check-ref-format --branch`) refuse name, None when
+    they accept it: the branch reaches git, and one starting with - would read as an option
+    (#892). shipmill's own check, which a skill script can't import (#889)"""
+    if name.startswith("-"):
+        return "it starts with -"
+    if name in {"@", "HEAD"}:
+        return f"it is {name}"
+    bad = sorted({c for c in name if c in BRANCH_FORBIDDEN or ord(c) < 32 or ord(c) == 127})
+    if bad:
+        return f"it holds {''.join(bad)!r}"
+    for part in ("..", "@{", "//"):
+        if part in name:
+            return f"it holds {part}"
+    if name.startswith("/") or name.endswith("/"):
+        return "it starts or ends with /"
+    if name.endswith("."):
+        return "it ends with ."
+    for component in name.split("/"):
+        if component.startswith("."):
+            return "a component starts with ."
+        if component.endswith(".lock"):
+            return "a component ends with .lock"
+    return None
+
+
+def fetch_landing(repo_dir: Path, branch: str) -> None:
+    """Fetch the landing branch into origin/<branch>, past a rewrite, with the tags; the branch
+    reaches git only inside a refs/heads/ refspec, never as a word of its own (#892, D-66)"""
+    refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
+    run(["git", "fetch", "-q", "--force", "--tags", "origin", refspec], cwd=repo_dir)
 
 
 def landing_branch_310(text: str, policy: Path) -> str | None:
@@ -4428,8 +4467,7 @@ def default_branch(repo: str, known: Known | None) -> str:
 
 def fetched_tags(repo: str, repo_dir: Path, text: str | None, known: Known | None) -> list[Tag]:
     """The version tags, newest first, once the landing branch and its tags are fetched"""
-    branch = landing_branch(text, POLICY, default_branch(repo, known))
-    run(["git", "fetch", "-q", "--force", "--tags", "origin", branch], cwd=repo_dir)
+    fetch_landing(repo_dir, landing_branch(text, POLICY, default_branch(repo, known)))
     return version_tags(repo_dir)
 
 
@@ -4747,7 +4785,7 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
     policy = policy_file(repo_dir)
     config_text = None if policy is None else (repo_dir / policy).read_text(encoding="utf-8")
     branch = landing_branch(config_text, POLICY, view["defaultBranchRef"]["name"])
-    run(["git", "fetch", "-q", "--force", "--tags", "origin", branch], cwd=repo_dir)
+    fetch_landing(repo_dir, branch)
 
     rows: list[Row] = settings_rows(args.repo, view["deleteBranchOnMerge"])
     bot = bot_workflow(repo_dir)
