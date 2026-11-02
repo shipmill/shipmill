@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.107.0] - 2026-11-02
+
+### Added
+
+- Each `shipmill gate` tick catches the local default branch up to `origin/<default>` by fast-forward only, so the maintainer's checkout no longer stays behind until someone pulls (D-66): `git fetch origin <default>:<default>` when no worktree has it checked out, and `git pull --ff-only` in the main checkout when it has it checked out, its tree is clean, and the branch is only behind. A dirty tree, a branch checked out in another worktree, or one ahead or diverged changes nothing and stays in `shipmill status`. The tick prints `catch-up: main 3 commits → origin/main` (a dry run: `would catch up: ...`), `--json` adds `"catch_up"`, a failure prints `catch-up failed: <first line>` and never fails the tick, and `[agents] catch_up = false` turns it off (#886)
+
 ## [0.106.0] - 2026-11-02
 
 ### Changed
@@ -2163,7 +2169,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.106.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.107.0...HEAD
+[0.107.0]: https://github.com/shipmill/shipmill/compare/v0.106.0...v0.107.0
 [0.106.0]: https://github.com/shipmill/shipmill/compare/v0.105.0...v0.106.0
 [0.105.0]: https://github.com/shipmill/shipmill/compare/v0.104.0...v0.105.0
 [0.104.0]: https://github.com/shipmill/shipmill/compare/v0.103.0...v0.104.0
