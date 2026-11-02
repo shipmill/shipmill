@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Protocol, TextIO
 from urllib.parse import unquote
 
-from shipmill.agent_marker import BODY_LIMIT, carries, marked, stripped
+from shipmill.agent_marker import BODY_LIMIT, carries, closed_with, decided_by, marked, stripped
 from shipmill.classify import Pulls
 from shipmill.errors import ReleaseError
 
@@ -313,9 +313,23 @@ def merge_flags(args: Sequence[str]) -> MergeFlags:
 
 
 def with_body(args: Sequence[str], body: str) -> list[str]:
-    """args with every --body/-b and --body-file/-F and its value dropped, as `_scan` reads
-    them, and one `--body <body>` in their place, before any `--`; every other argument is
-    kept as written, a short flag bundled with a dropped one too (`-sb x` keeps `-s`)"""
+    """`gh pr merge`'s args with every --body/-b and --body-file/-F and its value dropped, as
+    `_scan` reads them, and one `--body <body>` in their place, before any `--`; every other
+    argument is kept as written, a short flag bundled with a dropped one too (`-sb x` keeps `-s`)"""
+    return _merge_replaced(args, _BODY_LONG, _BODY_SHORT, "--body", body)
+
+
+def with_author_email(args: Sequence[str], email: str) -> list[str]:
+    """S-051-11: `gh pr merge`'s args with every --author-email/-A and its value dropped, as
+    `with_body` drops a body, and one `--author-email <email>` in their place"""
+    return _merge_replaced(args, frozenset({"--author-email"}), frozenset("A"), "--author-email", email)
+
+
+def _merge_replaced(
+    args: Sequence[str], longs: frozenset[str], shorts: frozenset[str], flag: str, value: str
+) -> list[str]:
+    """`gh pr merge`'s args with each of the flags longs and shorts name dropped with its
+    value, and one `<flag> <value>` before any `--`"""
     kept: list[str] = []
     index = 0
     while index < len(args):
@@ -327,7 +341,7 @@ def with_body(args: Sequence[str], body: str) -> list[str]:
         if arg.startswith("--"):
             name, equals, _ = arg.partition("=")
             takes = name in _PR_MERGE_LONG and not equals and index < len(args)
-            if name not in _BODY_LONG:
+            if name not in longs:
                 kept.append(arg)
                 kept.extend(args[index : index + 1] if takes else [])
             index += 1 if takes else 0
@@ -336,7 +350,7 @@ def with_body(args: Sequence[str], body: str) -> list[str]:
                 if letter not in _PR_MERGE_SHORT:
                     continue
                 takes = not arg[at:] and index < len(args)
-                if letter in _BODY_SHORT:
+                if letter in shorts:
                     kept.extend([arg[: at - 1]] if at > 2 else [])
                 else:
                     kept.append(arg)
@@ -347,7 +361,7 @@ def with_body(args: Sequence[str], body: str) -> list[str]:
                 kept.append(arg)
         else:
             kept.append(arg)
-    return [*kept, "--body", body, *args[index:]]
+    return [*kept, flag, value, *args[index:]]
 
 
 def pull_url(url: str) -> tuple[str, int]:
@@ -809,6 +823,28 @@ def created_body(args: Sequence[str]) -> str:
     if not bodies:
         raise ReleaseError("gh pr create has no --body to read the issues it closes from")
     return bodies[-1]
+
+
+def person_args(args: Sequence[str], login: str) -> list[str]:
+    """S-051-10: `gh issue create`'s or `gh pr create`'s args once `marked_args` made them, with
+    their one --body kept marked and ended with `decided_by` login, before the marker; a body
+    that ends with it already keeps it once. Refused, as `marked_args` refuses it, when GitHub
+    would cut the marker off"""
+    command = write_command(args)
+    if command not in (ISSUE_CREATE, PR_CREATE):
+        raise ReleaseError(f"gh {' '.join(args[:2])} is no issue or pull request create to write as a person")
+    table = _ISSUE_CREATE if command == ISSUE_CREATE else _PR_CREATE
+    kept, taken, tail = _split(args, table, lambda name, _: name in _BODY_FLAGS)
+    if [name for name, _ in taken] != ["--body"]:
+        raise ReleaseError(f"gh {command} has no one --body to end with the line naming its decider")
+    body = closed_with(taken[0][1], decided_by(login))
+    if len(body) > BODY_LIMIT:
+        raise ReleaseError(
+            f"gh {command}'s body, marked as an agent's and naming `@{login}`'s decision (spec 051), is "
+            f"{len(body):,} characters, over GitHub's limit of {BODY_LIMIT:,}, which would cut the marker off; "
+            "shorten it"
+        )
+    return [*kept, "--body", body, *tail]
 
 
 # -- S-050-3: an edit keeps the marker its record was created with, or its lack ------------------

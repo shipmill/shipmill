@@ -147,6 +147,7 @@ from shipmill.app import (
     app_login,
     app_token,
     availability,
+    bot_id,
     cache_outside,
     check_key,
     credential,
@@ -199,15 +200,17 @@ from shipmill.app_gh import (
     merge_flags,
     merge_of,
     named_repo,
+    person_args,
     product_refusal,
     pull_url,
     repo_value,
     run_gh,
+    with_author_email,
     with_body,
     write_command,
 )
 from shipmill.app_install import WAIT_SECONDS, guide
-from shipmill.app_login import AsApp, UrllibWeb, UserLogin, Web, decider_token, remove_login, store_login
+from shipmill.app_login import AsApp, UrllibWeb, UserLogin, Web, Writer, decider_token, remove_login, store_login
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold
 from shipmill.classify import DEFAULT_REF, Base, Pulls, RepoPath, classify_paths, classify_pull, policy_at
 from shipmill.claude_auth import ClaudeAuth, preflight_auth
@@ -216,9 +219,11 @@ from shipmill.claude_token import Credential, Token, TokenSource, inspect, read_
 from shipmill.config import CONFIG_PATH, Table, config_path
 from shipmill.config import read as read_config
 from shipmill.credit import (
+    Account,
     CreditReader,
     CreditReads,
     Named,
+    Pull,
     closed_by,
     credited_body,
     deciders,
@@ -1636,18 +1641,41 @@ def _gh(
         default = _gh_default(environ, _known_origin(top))
         gh_args = edited_args(edit, default, binary, as_app(environ, token), readers.current)
     env = as_app(environ, token)
-    app = functools.partial(_app_login, app_login(signer, api), app_id, path, trailer) if trailer else None
+    # the App's bot login, read once however many readers ask for it
+    app = (
+        functools.cache(functools.partial(_app_login, app_login(signer, api), app_id, path, trailer))
+        if trailer
+        else None
+    )
     assisted = identity.author is Author.DECIDER  # whose trailer is set (S-051-3)
     if merge is not None:
         pull = _hold_never(top, merge, env, binary, readers.merge)
         if trailer is not None and app is not None:
-            gh_args, found = _credit(top, pull, gh_args, env, binary, readers, app, trailer)
+            credit = _merge_credit(top, pull, gh_args, env, binary, readers, app)
+            author = _AsApp(dict(env))
             if assisted:  # S-051-7: the pull request's deciders, by spec 049
-                env = _as_decider(found, f"no trusted person decided pull request #{pull[1]}", app_id, home, hub, env)
+                found = [] if credit is None else credit.found
+                author = _as_decider(
+                    found, f"no trusted person decided pull request #{pull[1]}", app_id, home, hub, env
+                )
+            if credit is not None:
+                bot = None
+                if author.writer is not None:
+                    try:
+                        bot = _bot_account(app(), app_id, api, author.writer.login)
+                    except AsApp as exc:  # S-051-9: as the App, with autonomous mode's trailer
+                        author = _AsApp(dict(env), None, f"author: the App; {exc}")
+                gh_args = _credit(gh_args, credit, readers, trailer, author.writer, bot)
+            author.say()
+            env = author.env
     elif assisted and app is not None and write_command(gh_args) in (ISSUE_CREATE, PR_CREATE):
-        credit = readers.credit(top, binary, {**env, "GH_REPO": repo})
-        found, none = _create_deciders(credit, gh_args, decided, repo, app)
-        env = _as_decider(found, none, app_id, home, hub, env)
+        credit_reads = readers.credit(top, binary, {**env, "GH_REPO": repo})
+        found, none = _create_deciders(credit_reads, gh_args, decided, repo, app)
+        author = _as_decider(found, none, app_id, home, hub, env)
+        if author.writer is not None:  # S-051-10: the marker kept, and the line naming whose decision it was
+            gh_args = person_args(gh_args, author.writer.login.value)
+        author.say()
+        env = author.env
     return runner([str(binary), *gh_args], env)  # S-051-12: every other command as the App
 
 
@@ -1678,29 +1706,51 @@ def _create_deciders(
         return [], f"its decider can't be read: {exc}"
 
 
+@dataclass(frozen=True, slots=True)
+class _AsApp:
+    """Whom a write goes out as (spec 051): gh's env, the person written as (None: the App),
+    and the stderr line saying so (None: autonomous mode, which says nothing). The line never
+    holds a token"""
+
+    env: dict[str, str]
+    writer: Writer | None = None
+    line: str | None = None
+
+    def say(self) -> None:
+        if self.line is not None:
+            print(self.line, file=sys.stderr)
+
+
 def _as_decider(
     found: Sequence[Named], none: str, app_id: int, home: Path, hub: _GhHub, env: Mapping[str, str]
-) -> dict[str, str]:
+) -> _AsApp:
     """S-051-7 to S-051-9: gh's env as the first decider found, with their stored user access
-    token, refreshed when it has expired, and one stderr line naming them and why; env, the
-    App's, after one stderr line saying why when there is no decider (none) or no token of
-    theirs GitHub takes. Neither line ever holds a token"""
+    token, refreshed when it has expired, and the line naming them and why; env, the App's,
+    with the line saying why when there is no decider (none) or no token of theirs GitHub takes"""
     if not found:
-        print(f"author: the App; {none}", file=sys.stderr)
-        return dict(env)
+        return _AsApp(dict(env), None, f"author: the App; {none}")
     first = found[0]
     try:
         login = UserLogin(first.person.login)
     except ReleaseError:  # a login no user can have stores no token
-        print(f"author: the App; `@{first.person.login}` is no user who can run app-login", file=sys.stderr)
-        return dict(env)
+        return _AsApp(dict(env), None, f"author: the App; `@{first.person.login}` is no user who can run app-login")
     try:
-        user = decider_token(app_id, login, home, hub.api, hub.web, dt.datetime.now(dt.UTC))
+        writer = decider_token(app_id, login, home, hub.api, hub.web, dt.datetime.now(dt.UTC))
     except AsApp as exc:
-        print(f"author: the App; {exc}", file=sys.stderr)
-        return dict(env)
-    print(f"author: `@{login}`, who {first.why}", file=sys.stderr)
-    return {**env, "GH_TOKEN": user.access_token}
+        return _AsApp(dict(env), None, f"author: the App; {exc}")
+    return _AsApp({**env, "GH_TOKEN": writer.token.access_token}, writer, f"author: `@{login}`, who {first.why}")
+
+
+def _bot_account(login: str, app_id: int, api: Api, decider: UserLogin) -> Account:
+    """S-051-11: the App's bot account, `<slug>[bot]`, its id read from GET /users/<slug>[bot],
+    named by its login alone in the merge's Co-authored-by. Raises AsApp, naming the decider in
+    a code span (D-61), when it can't be read, since a merge written as a person names the App"""
+    try:
+        return Account(bot_id(login.removesuffix("[bot]"), app_id, api), login, None)
+    except ReleaseError as exc:
+        raise AsApp(
+            f"a merge as `@{decider}` names the App's bot {login} in Co-authored-by, whose user id can't be read: {exc}"
+        ) from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1732,7 +1782,17 @@ def _app_login(login: AppLogin, app_id: int, key: Path, trailer: str) -> str:
         ) from None
 
 
-def _credit(
+@dataclass(frozen=True, slots=True)
+class _MergeCredit:
+    """What spec 049 read of a merge's pull request: its records and its deciders, in order"""
+
+    number: int
+    reads: CreditReads
+    record: Pull
+    found: list[Named]
+
+
+def _merge_credit(
     top: Path,
     pull: tuple[str, int],
     gh_args: list[str],
@@ -1740,23 +1800,37 @@ def _credit(
     binary: Path,
     readers: _GhReaders,
     app: Callable[[], str],
-    trailer: str,
-) -> tuple[list[str], list[Named]]:
-    """Spec 049: gh's arguments for `gh pr merge` of the pull request (repo, number) with one
-    `--body` in place of any given, the body it would have had followed by a Co-authored-by
-    trailer for each decider it doesn't name yet, and one stderr line per decider; unchanged
-    when no record names one, for a rebase (spec 026 refuses it), and for --disable-auto. app
-    reads the App's bot login, once the merge's records are read; trailer names the setting
-    that asked for the credit (spec 051). Also the deciders, in order; none when not read"""
+) -> _MergeCredit | None:
+    """Spec 049: the records and deciders of `gh pr merge` of the pull request (repo, number);
+    None for a rebase (spec 026 refuses it) and for --disable-auto, which read none. app reads
+    the App's bot login, once the merge's records are read"""
     repo, number = pull
     flags = merge_flags(gh_args)
     if flags.disable_auto or flags.method == "rebase":
-        return gh_args, []
+        return None
     reads = readers.credit(top, binary, {**env, "GH_REPO": repo})
     record = reads.credit_pull(number)
-    found = deciders(reads, record, app())
+    return _MergeCredit(number, reads, record, deciders(reads, record, app()))
+
+
+def _credit(
+    gh_args: list[str],
+    credit: _MergeCredit,
+    readers: _GhReaders,
+    trailer: str,
+    writer: Writer | None,
+    bot: Account | None,
+) -> list[str]:
+    """Spec 049: gh's arguments for the merge credit read, with one `--body` in place of any
+    given, the body it would have had followed by a Co-authored-by trailer for each decider it
+    doesn't name yet, and one stderr line per decider; unchanged when no record names one.
+    trailer names the setting that asked for the credit (spec 051). Written as a person
+    (writer, S-051-11), the merge's author is them by `--author-email`, so the trailers name
+    every other decider and then the App's bot"""
+    number, reads, record, found = credit.number, credit.reads, credit.record, credit.found
     if not found:
-        return gh_args, []
+        return gh_args
+    flags = merge_flags(gh_args)
     if flags.body is not None:
         base = flags.body
     elif flags.body_file is not None:
@@ -1771,13 +1845,17 @@ def _credit(
         messages = reads.credit_messages()
         setting = messages.squash if squash else messages.merge
         base = default_body(setting, record, reads.credit_commits(number), squash)
-    accounts = [reads.credit_account(named.person.login) for named in found]
-    for named in found:  # S-049-9: a code span, so no email goes out for it (D-61)
+    others = [n for n in found if writer is None or n.person.login.lower() != writer.login.key]
+    accounts = [reads.credit_account(named.person.login) for named in others]
+    for named in others:  # S-049-9: a code span, so no email goes out for it (D-61)
         print(f"credit: `@{named.person.login}` {named.why}", file=sys.stderr)
+    if writer is not None and bot is not None:  # S-051-11: the App's bot, last
+        accounts.append(bot)
     body = credited_body(base, accounts)
     if body is None and flags.body_file == "-":  # stdin is read to its end: gh can't read it again
         body = base
-    return (gh_args if body is None else with_body(gh_args, body)), found
+    credited = gh_args if body is None else with_body(gh_args, body)
+    return credited if writer is None else with_author_email(credited, writer.email)
 
 
 def _body_file(path: str) -> str:

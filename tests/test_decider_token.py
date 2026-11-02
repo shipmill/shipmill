@@ -221,7 +221,7 @@ def test_s051_7_pr_merge_runs_with_the_stored_token_of_the_pull_requests_decider
     reader = CreditReader(FakeCredit(reviews=[approved("octocat", "MEMBER")]))
     assert gh(repo, tmp_path, key, MERGE, runner, reader, api) == 0
     as_person(runner, "approved the pull request")
-    assert body_of(runner.calls[0]).endswith(OCTOCAT_TRAILER)  # spec 049's trailers, as before
+    assert OCTOCAT_TRAILER not in body_of(runner.calls[0])  # the author, not a co-author (S-051-11)
     assert ("/user", ACCESS) in api.calls  # GitHub took the token before the write
     assert all(env["GH_TOKEN"] == APP_TOKEN for env in reader.envs)  # the records are read as the App
 
@@ -610,7 +610,7 @@ def saved(token: UserToken) -> bytes:
 def test_s051_8_a_refresh_refused_after_another_won_keeps_the_winners_file(tmp_path: Path) -> None:
     path = store(tmp_path, dt.timedelta(hours=-1))
     web = RacingWeb(path=path, content=saved(winner()))
-    token = decider_token(APP_ID, UserLogin("octocat"), tmp_path / "home", UserApi(), web, now())
+    token = decider_token(APP_ID, UserLogin("octocat"), tmp_path / "home", UserApi(), web, now()).token
     assert (token.access_token, token.refresh_token) == (NEW_ACCESS, NEW_REFRESH)
     [(_, _, fields)] = web.sent
     assert fields["refresh_token"] == REFRESH  # this call sent the refresh token the other spent

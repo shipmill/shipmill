@@ -26,6 +26,27 @@ def marked(body: str) -> str:
     return f"{text}\n\n{MARKER}" if text else MARKER
 
 
+def decided_by(login: str) -> str:
+    """S-051-10: the line an issue or pull request written as a person ends its text with,
+    the login in a code span (D-61)"""
+    return f"Opened by an agent through shipmill, on `@{login}`'s decision."
+
+
+def closed_with(body: str, line: str) -> str:
+    """body marked, with line as its text's last paragraph: before the marker when the marker
+    is the last line, as `marked` writes it, so the marker stays last (spec 050) and line is
+    the last line GitHub renders; after the text otherwise. A body whose text ends with line
+    already is returned marked, so line is never written twice"""
+    text = marked(body).rstrip()
+    head, _, last = text.rpartition("\n")
+    if not _LINE.fullmatch(last.strip()):
+        return text if text.rpartition("\n")[2].strip() == line else f"{text}\n\n{line}"
+    rest = head.rstrip()
+    if rest.rpartition("\n")[2].strip() == line:
+        return text
+    return f"{rest}\n\n{line}\n\n{last.strip()}" if rest else f"{line}\n\n{last.strip()}"
+
+
 def stripped(body: str) -> str:
     """body with every line that is the marker removed, with the blank lines after it when a
     blank line comes before it, and the blank lines that leaves at its end; a body that doesn't
