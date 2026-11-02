@@ -610,7 +610,7 @@ def saved(token: UserToken) -> bytes:
 def test_s051_8_a_refresh_refused_after_another_won_keeps_the_winners_file(tmp_path: Path) -> None:
     path = store(tmp_path, dt.timedelta(hours=-1))
     web = RacingWeb(path=path, content=saved(winner()))
-    token = decider_token(APP_ID, UserLogin("octocat"), tmp_path / "home", UserApi(), web, now())
+    token = decider_token(APP_ID, UserLogin("octocat"), tmp_path / "home", UserApi(), web, now()).token
     assert (token.access_token, token.refresh_token) == (NEW_ACCESS, NEW_REFRESH)
     [(_, _, fields)] = web.sent
     assert fields["refresh_token"] == REFRESH  # this call sent the refresh token the other spent
