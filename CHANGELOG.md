@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.104.0] - 2026-11-02
+
+### Added
+
+- With `[agents] author = "decider"`, `shipmill gh issue create`, `pr create`, and `pr merge` run with the decider's user access token stored by `shipmill app-login`, refreshed first when it has expired, and as the App after one stderr line saying why when there is no decider, no stored token, or a token GitHub refuses; a refused refresh deletes the stored file, and every other command stays the App's. The refresh sends the App's client secret from `~/.config/shipmill/app-<app_id>-client-secret`, which you put beside the App's key with mode `0600`; without that file it refreshes without the secret, and a file wider than `0600` or empty makes the write go as the App, keeping the stored token. `shipmill doctor`'s `author` row says in assisted mode whether that file is there and its mode, a WARN when it is missing, too open, or empty, never reading it. `shipmill gh issue create --decided-in <n>` names the issue or pull request that decided it, and the flag never reaches gh (#866)
+
 ## [0.103.0] - 2026-11-01
 
 ### Changed
@@ -2141,7 +2147,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.103.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.104.0...HEAD
+[0.104.0]: https://github.com/shipmill/shipmill/compare/v0.103.0...v0.104.0
 [0.103.0]: https://github.com/shipmill/shipmill/compare/v0.102.0...v0.103.0
 [0.102.0]: https://github.com/shipmill/shipmill/compare/v0.101.0...v0.102.0
 [0.101.0]: https://github.com/shipmill/shipmill/compare/v0.100.2...v0.101.0
