@@ -185,7 +185,20 @@ Clone https://github.com/shipmill/shipmill into tmp/shipmill (or pull it if pres
 tmp/shipmill/skills/github-ship-watch/SKILL.md for <owner/repo> — watch and triage
 ```
 
-A merge the App makes is authored by its bot, so your contribution graph doesn't show the change you decided to land. `[agents] credit = "decider"` (spec 049) has `shipmill gh pr merge` add a `Co-authored-by` trailer for each trusted person a record shows decided it: an approving review, an answer to a needs-decision question, the issue it closes, or the `planned` label on its opportunity. The trailer means the person decided the change, not that they wrote it. The default is `"off"`: every merge is written as GitHub writes it, and `shipmill doctor` shows which in its `credit` row
+### Who the work is credited to
+
+A merge the App makes is authored by its bot, so your contribution graph doesn't show the change you decided to land. `[agents] author` (spec 051) picks whose account an agent's issue, pull request, and merge commit go out as. Every write still goes through the App (D-54); only those three commands change author, and comments, labels, reviews, edits, closes, and `shipmill gh api` calls stay the App's:
+
+| Mode | Config | Author of the issue, pull request, and merge commit | `Co-authored-by` on the merge commit |
+|---|---|---|---|
+| **Autonomous** | `app_id` with `[agents] author = "app"` | The App | The decider |
+| **Assisted** | `app_id` with `[agents] author = "decider"` | The decider, when they ran `shipmill app-login`; else the App | The App's bot, or the decider when the App wrote it |
+| **Operator** | no `app_id`, `identity = "host"` (spec 037) | The host's `gh` login | Unchanged |
+
+- **Who decides.** The decider is who assigned or approved the work, never an outside author of a request: the first trusted person a record shows decided it (an approving review, an answer to a needs-decision question, the issue it closes, or the `planned` label on its opportunity), never a bot, the App, an untrusted account, or a record carrying the agent marker. A merge takes the pull request's decider, `pr create` the deciders of the issues its body closes, and `issue create` those of the record shipmill's `--decided-in <n>` flag names
+- **Each person's consent.** Each person opts in by running `shipmill app-login` themselves (`uvx shipmill app-login` without the install), on the host that runs the gate: it prints a URL and a code, and they enter the code on github.com signed in as themselves. Turning `author = "decider"` on authorizes no one; `shipmill app-logout <login>` deletes the stored token and revokes it
+- **What a person-written record shows.** An issue or pull request written as a person keeps the agent marker, so it is never read as their own words, and ends with ``Opened by an agent through shipmill, on `@<login>`'s decision.``; a merge written as a person names them with `--author-email` and adds a `Co-authored-by` trailer for the App's bot. A write with no decider, or a decider who hasn't run `shipmill app-login`, goes as the App and says why on stderr. No mode approves a pull request on your behalf
+- **`credit` is deprecated.** `[agents] credit = "decider"` (spec 049) is what autonomous mode does: `shipmill gh pr merge` adds a `Co-authored-by` trailer for each trusted person a record shows decided the change. The trailer means the person decided the change, not that they wrote it. The default is `"off"`: with neither `author` nor `credit` set, every merge is written as GitHub writes it, as before. Set `[agents] author = "app"` in place of `credit = "decider"`; `shipmill doctor` warns while `credit` is set and shows the mode in its `author` row
 
 ## Safeguards
 

@@ -102,6 +102,27 @@ Installers skip `dev` and `rc` unless asked, so a user who wants to try a change
 the pre-release while everyone else gets each stable release; a breaking change waits for
 you.
 
+## Who the work is credited to
+
+Agents write to GitHub through the repo's GitHub App, so by default the App's bot authors
+the issues, pull requests, and merges they make. `[agents] author` in
+`.github/shipmill.toml` picks one of three modes:
+
+- **Autonomous** (`[agents] author = "app"`): the App authors them, and each merge commit
+  names its decider in a `Co-authored-by` trailer
+- **Assisted** (`[agents] author = "decider"`): an agent's issue, pull request, and merge
+  commit go out as their decider, through the App, once that person has run
+  `shipmill app-login`; for anyone else, the App writes them. Comments, labels, and reviews
+  stay the App's
+- **Operator** (no App, `[agents] identity = "host"`): the host's `gh` login writes, as
+  before
+
+Each person opts in by running `shipmill app-login` themselves; the owner turning assisted
+mode on authorizes no one. The decider is who assigned or approved the work, never an
+outside author of a request, and a record an agent wrote keeps its agent marker whoever
+authors it. [Flow](https://github.com/shipmill/shipmill/blob/main/docs/flow.md#who-the-work-is-credited-to)
+has the details.
+
 ## Documentation
 
 | Read | For |

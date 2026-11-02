@@ -1,6 +1,6 @@
 # S-051: Write as the decider
 
-status: approved
+status: built
 serves: G-8
 
 ## Problem
@@ -191,3 +191,22 @@ approved the work, never an outside author of a request.
 The live check the Out of scope names is shipmill/shipmill#870, a `role:maintainer` step.
 
 ## Verification
+
+Checked on main at 8058c441 (#863 to #868 merged) plus #869's docs: `tests/test_author.py`, `tests/test_app_login.py`, `tests/test_decider_token.py`, `tests/test_person_write.py`, `tests/test_agent_as_person.py`, and `tests/test_authoring_docs.py` pass, and `specs.py coverage --spec 051` lists a test for every criterion. The live check the Out of scope names, shipmill/shipmill#870, is not part of this verification.
+
+- S-051-1: `agents.py` reads `author` as the `Author` enum; the tests load another value and `author` without `app_id`, each exit 2 naming the key and both values, and an absent key as unset
+- S-051-2: this repo sets neither key and `shipmill doctor` prints `PASS credit: off` and `PASS author: unset (spec 051)`; the test merges through `shipmill gh pr merge` with gh's arguments unchanged, as the App
+- S-051-3: the tests merge with `author = "app"` and each `credit` reading and read the decider's `Co-authored-by` trailer; doctor WARNs that `author` replaces `credit` when both are set, and the API merge's refusal names `author`
+- S-051-4: the tests merge with `credit = "decider"` and `"off"` alone by spec 049, and doctor WARNs that `credit` is deprecated, naming `author = "app"`
+- S-051-5: the tests run `app-login` against a fake device flow: both tokens stored in `user-<app_id>-<login>.json` with mode `0600`, the login printed, exit 0; device flow off exits 2 naming "Enable Device Flow", and no token reaches a message
+- S-051-6: the tests run `app-logout <login>`: the file deleted and the token revoked; a failed revoke still deletes it and names GitHub's authorizations page
+- S-051-7: the tests run `pr merge`, `pr create`, and `issue create --decided-in <n>` with `author = "decider"`: gh gets the stored token of the first decider in spec 049's order, and never `--decided-in`
+- S-051-8: the tests refresh an expired token before the write and store it again `0600`; a refused refresh deletes the file and writes as the App
+- S-051-9: the tests write with no decider, a decider without a stored token, and a refused token: each goes as the App with autonomous mode's trailer after one stderr line, the login in a code span
+- S-051-10: the tests create an issue and a pull request as a person: the body keeps the agent marker and ends with the `Opened by an agent through shipmill` line, once
+- S-051-11: the tests merge as a person: `--author-email` carries the decider's noreply address and the body ends with the App's bot trailer; other deciders keep spec 049's trailers
+- S-051-12: the tests run every other `shipmill gh` command with `author = "decider"` and read the App's installation token
+- S-051-13: the tests read a person-written record carrying the marker through `triage_state.py`, `watch_state.py`, and `credit.py`: none takes it for the person's decision, filing, or answer
+- S-051-14: the test skips a marked record whose `performed_via_github_app` names the repo's App and flags one made without it
+- S-051-15: `shipmill doctor` in this repo prints `PASS author: unset (spec 051)`; the tests read the autonomous row, the assisted row with the logins in code spans, and none authorized
+- S-051-16: `tests/test_authoring_docs.py` reads the three modes, `[agents] author = "app"` and `"decider"`, `shipmill app-login`, each person's opt-in, and the decider sentence in `skills/shipmill-setup/SKILL.md`, `docs/flow.md`, and `README.md`, and the setup skill reading `credit` as deprecated
