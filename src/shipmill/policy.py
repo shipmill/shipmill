@@ -14,7 +14,7 @@ from shipmill import environments, requires
 from shipmill import refused as catalogue
 from shipmill.agents import AgentsConfig, ProductConfig
 from shipmill.autonomy import AutonomyPolicy
-from shipmill.config import Table, read
+from shipmill.config import Table, branch_name, read
 from shipmill.decide import DecisionPolicy
 from shipmill.downstream import DownstreamConfig
 from shipmill.environments import Environment, OperateConfig
@@ -339,7 +339,7 @@ class Policy:
         return cls(
             name=top.string("name"),
             mode=mode,
-            branch=top.string("branch", default="main"),
+            branch=branch_name(top.string("branch", default="main"), where),
             version_files_config=version_files,
             changelog_config=changelog,
             bump_config=bump,

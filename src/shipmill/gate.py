@@ -1644,11 +1644,14 @@ def refresh(git: Git, detach: bool = False) -> Detached | None:
     branch, the trusted ref classify reads too, never from the checkout, which a session may
     have left on a pull request's branch (D-16, D-48). With detach (a --refresh tick, not
     `launchd`), a clean linked worktree a session left on a branch is detached the same way,
-    and returned. Git.landing_branch decides it, as it does for the prune (#697)"""
+    and returned. Git.landing_branch decides it, as it does for the prune (#697). The branch
+    reaches git only inside a refs/heads/ refspec, never as an argument git could read as an
+    option (#889, as the catch-up does, D-66)"""
     default = git.landing_branch()
     branch = require_dedicated(git, default, detach)
-    git.run("fetch", "-q", "origin", default)
-    git.run("checkout", "-q", "--detach", "FETCH_HEAD")
+    tracking = f"refs/remotes/origin/{default}"
+    git.run("fetch", "-q", "origin", f"+refs/heads/{default}:{tracking}")
+    git.run("checkout", "-q", "--detach", tracking)
     return None if branch is None else Detached(git.root, branch)
 
 

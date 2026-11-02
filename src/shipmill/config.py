@@ -66,7 +66,43 @@ def branch_in(text: str, where: str) -> str | None:
         return None
     if not isinstance(value, str) or not value:
         raise ReleaseError(f"{where}: branch must be a non-empty string, got {value!r}")
+    return branch_name(value, where)
+
+
+_BRANCH_FORBIDDEN = frozenset("~^:?*[\\ ")
+
+
+def branch_name(value: str, where: str) -> str:
+    """value when git's branch-name rules (`git check-ref-format --branch`) accept it, else a
+    ReleaseError naming the key `branch` and where it was read: a configured branch reaches git,
+    and one starting with - would read as an option (#889). Checked here, with no git call"""
+    if why := _branch_refusal(value):
+        raise ReleaseError(f"{where}: branch must be a git branch name, got {value!r}: {why}")
     return value
+
+
+def _branch_refusal(name: str) -> str | None:
+    if not name:
+        return "it is empty"
+    if name.startswith("-"):
+        return "it starts with -"
+    if name in {"@", "HEAD"}:
+        return f"it is {name}"
+    if bad := sorted({c for c in name if c in _BRANCH_FORBIDDEN or ord(c) < 32 or ord(c) == 127}):
+        return f"it holds {''.join(bad)!r}"
+    for part in ("..", "@{", "//"):
+        if part in name:
+            return f"it holds {part}"
+    if name.startswith("/") or name.endswith("/"):
+        return "it starts or ends with /"
+    if name.endswith("."):
+        return "it ends with ."
+    for component in name.split("/"):
+        if component.startswith("."):
+            return "a component starts with ."
+        if component.endswith(".lock"):
+            return "a component ends with .lock"
+    return None
 
 
 def _parse(text: str, where: str) -> Mapping[str, Any]:
