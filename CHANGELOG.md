@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.108.0] - 2026-11-02
+
+### Added
+
+- `shipmill spec open docs/specs/NNN-<slug>.md --issue N [--with PATH]... [--body-file FILE]` opens a spec's pull request that the spec gate can follow (spec 053): it checks first, and on any failure exits 2 and writes nothing. The checks: the path's shape, `specs.py check`, status `approved`, `--issue` an open issue of the repo and not a pull request, no `spec/NNN-<slug>` on origin, and the App available as `shipmill gh` reads it. It then pushes `spec/NNN-<slug>` from origin's default branch with one commit of the spec and each `--with` path, without touching the working tree. It opens the pull request `Spec NNN: <title>`, whose body starts with `Spec for #N`, and comments the feature verdict on #N with the hold line `On hold: the build waits on <owner/repo>#<PR>, the spec PR.`. Every GitHub call goes through `shipmill gh`. Without `--issue` it exits 2 asking for the feature issue, which it never files itself (#895)
+- A spec pull request names its feature issue (spec 053): `pr_gate.py` reads a ready pull request that adds `docs/specs/NNN-<slug>.md` as REFUSED, exit 6, with a `spec: names no feature issue` line, when no line of its body starts `Spec for #N` naming an open issue of the repo, whoever opened it and even with `--maintainer-accepted`; a pull request that only edits, renames, or copies a spec isn't checked (#896)
+
 ## [0.107.1] - 2026-11-02
 
 ### Security
@@ -2176,7 +2183,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.107.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.108.0...HEAD
+[0.108.0]: https://github.com/shipmill/shipmill/compare/v0.107.1...v0.108.0
 [0.107.1]: https://github.com/shipmill/shipmill/compare/v0.107.0...v0.107.1
 [0.107.0]: https://github.com/shipmill/shipmill/compare/v0.106.0...v0.107.0
 [0.106.0]: https://github.com/shipmill/shipmill/compare/v0.105.0...v0.106.0
