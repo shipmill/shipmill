@@ -199,7 +199,10 @@ until it reads none, then decide.
 
 ## Issues
 
-The build issues, filled in once they are filed.
+- shipmill/shipmill#903: S-047-7, S-047-8
+- shipmill/shipmill#904: S-047-1, S-047-2, S-047-3, S-047-4, S-047-5, S-047-6, S-047-9, S-047-10
+- shipmill/shipmill#905: S-047-11
+- shipmill/shipmill#906: S-047-12, S-047-13, S-047-14, S-047-15, S-047-16, S-047-17
 
 ## Verification
 
