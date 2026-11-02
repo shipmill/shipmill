@@ -61,6 +61,11 @@ pattern = 'uvx shipmill==\d+\.\d+\.\d+'
 replace = 'uvx shipmill=={version}'
 
 [[version_lines]]
+file = "skills/github-issue-triage/references/spec-gate.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
 file = "skills/github-issue-resolve/SKILL.md"
 pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= gh )'
 replace = 'uvx shipmill=={version}'

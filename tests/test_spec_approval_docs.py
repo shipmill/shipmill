@@ -20,8 +20,9 @@ def test_547_the_spec_gate_takes_a_trusted_answer_as_the_approval() -> None:
     assert "Merging the spec is the approval" in intro  # the merge by hand stays an approval
     assert "or by a trusted answer to its needs-decision question that takes every recommendation" in intro
     assert "github-pr-triage lands the spec PR once it is mergeable and green (D-49" in intro
-    step_6 = gate.split("6. **Wait for the merge.**", 1)[1].split("## Status", 1)[0]
-    assert "github-pr-triage then merges it" in step_6
+    # step 5 since spec 053 made `shipmill spec open` one step of the manual steps 4 and 5
+    wait = gate.split("5. **Wait for the merge.**", 1)[1].split("## Status", 1)[0]
+    assert "github-pr-triage then merges it" in wait
     approved = next(line for line in gate.split(" | ") if "by github-pr-triage after a trusted answer" in line)
     assert "(D-49)" in approved
     section = gate.split("## Approved by an answer ", 1)[1].split(" ## ", 1)[0]

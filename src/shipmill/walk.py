@@ -48,6 +48,7 @@ TIERS: dict[int, tuple[str, ...]] = {
         for state in (
             "NEW",
             "UNBLOCKED",
+            "SPEC_UNSPLIT",  # spec 053: watch_state.py's approved spec nobody split, triage's to split
             "NEEDS_PR",
             "SUSPECT_CLOSE",
             "VERIFY_CLOSED",

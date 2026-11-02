@@ -140,7 +140,21 @@ deployments and issues shipmill operate writes):
                   S-021-4)
 
 Intake (github-issue-triage's triage_state.py):
-  ISSUES          issues needing triage action, counted by state
+  ISSUES          issues needing triage action, counted by state. One ISSUES row more per
+                  approved spec nobody split (spec 053), subject its file: `SPEC_UNSPLIT
+                  S-NNN <title> (docs/specs/NNN-<slug>.md): approved, no build issues, no open
+                  issue follows it`, for a spec at origin/<branch> (read with git ls-tree and
+                  cat-file after the fetch, never the working tree, parsed by
+                  github-issue-triage's specs.py) whose status is approved, whose Issues
+                  section lists no build issue, and that no open issue follows: none links its
+                  file in its body (triage_state.py's "specs") and none reads BLOCKED or
+                  UNBLOCKED on the pull request that added it (the newest commit of the branch
+                  adding the file, `git log --diff-filter=A`, and its merged pull requests, one
+                  `gh api repos/<repo>/commits/<sha>/pulls`, read only for a spec the rest
+                  leave). Its fix is /shipmill:github-issue-triage <repo>; an agent's row. The
+                  spec is merged content of the default branch, so the row is read with
+                  --trusted-only too, and an open issue that links the spec follows it whoever
+                  opened it (it is in UNTRUSTED for a person then)
   ISSUES_OPEN     the other open issues, by state: in progress, blocked, triaged, or
                   postponed, less the ones NEEDS_DECISION and UNTRUSTED list (reported,
                   never an action by itself). A person's item waiting on its assignees
@@ -394,14 +408,16 @@ rows (LOOP, GATE_SESSIONS_DEAD) stay in it.
 row and no report-only row. The gate walks eight tiers in order and stops at the first item no
 session has taken: 1 INCIDENT_OPEN, OPERATE_FAILED; 2 BOT_FAILED, NOT_PUBLISHED,
 WORK_BRANCH_STALE, BOT_STALLED; 3 PRS_OPEN; 4 VETOED and triage's DECIDED; 5 UPGRADE_PENDING,
-UPSTREAM_DUE; 6 triage's other action states; 7 DIRECTION_PENDING, PLANS; 8 UNANNOUNCED.
---tier N prints that tier's rows, and NEEDS_DECISION in tiers 3 and 4, where the gate's
+UPSTREAM_DUE; 6 triage's other action states and SPEC_UNSPLIT; 7 DIRECTION_PENDING, PLANS;
+8 UNANNOUNCED. --tier N prints that tier's rows, and NEEDS_DECISION in tiers 3 and 4, where the gate's
 headless notifications read it; its ISSUES rows are one per triage state, `STATE #N ...`.
 Tier 2 reads NOT_PUBLISHED for the newest tag alone and leaves BOT_STALLED to the sweep;
 tier 3 reads the open pull requests and one batched GraphQL read of the comments of those
 labelled needs-decision or decided; tier 4 runs triage_state.py --label needs-decision
 --label decided, less a DECIDED read from a relay; tier 6 runs triage_state.py on every open
-issue, and gives its DECIDED read from a relay with the label off; tier 8 reads UNANNOUNCED
+issue, and gives its DECIDED read from a relay with the label off, then fetches the landing
+branch and gives SPEC_UNSPLIT (spec 053), read on every tier 6 read, not on a sweep: a spec
+merging or an issue changing is a change the gate's check sees; tier 8 reads UNANNOUNCED
 for the newest tag alone; tiers 5 and 7 run their sections whole. --sweep prints the timed
 sections' rows, read whole: BOT_STALLED, UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING,
 PLANS, and UNANNOUNCED over every --releases tag and environment. --known FILE (with --tier)
@@ -419,6 +435,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import functools
 import importlib.util
 import json
 import os
@@ -3053,6 +3070,145 @@ def decided_prs(repo: str, now: dt.datetime, read: Callable[[list[str]], str] = 
     return found
 
 
+# -- approved specs nobody split (spec 053) ---------------------------------------------------
+
+SPEC_SCRIPTS = SKILLS / "github-issue-triage" / "scripts"
+SPECS_FOLDER = "docs/specs"  # specs.py's DEFAULT_DIR, read at origin/<branch>
+SPEC_UNSPLIT = "SPEC_UNSPLIT"  # an ISSUES row's triage state for an approved spec nobody split
+HELD_ON = ("BLOCKED", "UNBLOCKED")  # triage_state.py's states whose note names the holds, pull requests too
+
+
+@functools.cache
+def specs_module() -> ModuleType:
+    """specs.py itself, so a spec reads as `specs.py check` reads it, loaded the first time a
+    spec is read; it imports decisions.py by that name, so that loads first"""
+    module = None
+    for name, path in (("decisions", SPEC_SCRIPTS / "decisions.py"), ("shipmill_specs", SPEC_SCRIPTS / "specs.py")):
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            raise Refused(f"error: can't load {path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module  # specs.py's dataclasses look their module up by name
+        spec.loader.exec_module(module)
+    assert module is not None
+    return module
+
+
+def git_bytes(cmd: list[str], repo_dir: Path, stdin: bytes = b"") -> bytes:
+    """A git command's output as bytes; a failed one stops the watch (exit 2)"""
+    proc = subprocess.run(cmd, cwd=repo_dir, input=stdin, capture_output=True, check=False)
+    if proc.returncode != 0:
+        said = proc.stderr.decode("utf-8", errors="replace").strip()
+        sys.stderr.write(f"error: {shown_command(cmd)}: {said}\n")
+        raise SystemExit(2)
+    return proc.stdout
+
+
+def branch_specs(repo_dir: Path, branch: str) -> list[tuple[str, str]]:
+    """Each spec at origin/<branch>, the fetched branch and never the working tree, with its
+    text: the plain files of docs/specs/ named NNN-<slug>.md (specs.py's NAME, TEMPLATE.md and
+    README.md aside), in one git ls-tree and one git cat-file --batch. No folder, no spec; a
+    ref git can't resolve, or any other git failure, stops the watch (exit 2)"""
+    specs = specs_module()
+    listed = git_bytes(["git", "ls-tree", "-z", f"origin/{branch}", "--", f"{SPECS_FOLDER}/"], repo_dir)
+    blobs: list[tuple[str, str]] = []
+    for entry in listed.decode("utf-8").split("\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        mode, kind, sha = meta.split(" ")
+        name = path.rpartition("/")[2]
+        plain = kind == "blob" and int(mode, 8) != SYMLINK_MODE
+        if plain and name not in specs.NOT_SPECS and specs.NAME.match(name):
+            blobs.append((path, sha))
+    if not blobs:
+        return []
+    out = git_bytes(["git", "cat-file", "--batch"], repo_dir, "".join(f"{sha}\n" for _, sha in blobs).encode())
+    found: list[tuple[str, str]] = []
+    at = 0
+    for path, sha in blobs:
+        end = out.index(b"\n", at)
+        header = out[at:end].decode("utf-8").split(" ")
+        if len(header) != 3 or header[0] != sha or header[1] != "blob":
+            raise Refused(f"error: git cat-file --batch printed {out[at:end][:200]!r} for {path}")
+        size = int(header[2])
+        found.append((path, out[end + 1 : end + 1 + size].decode("utf-8")))
+        at = end + 1 + size + 1  # the blob ends with a newline of git's own
+    return found
+
+
+def unsplit_specs(files: list[tuple[str, str]]) -> list[tuple[str, Any]]:
+    """The specs whose status is approved and whose Issues section lists no build issue, as
+    specs.py parses them (an issue line `- owner/repo#N: ...` or `- #N: ...`)"""
+    found = []
+    for path, text in files:
+        spec, _ = specs_module().parse(Path(path), text)
+        if spec is not None and spec.status == "approved" and not spec.issues:
+            found.append((path, spec))
+    return found
+
+
+def linked_specs(lines: list[dict[str, Any]]) -> set[str]:
+    """The spec files the open issues' bodies name, as triage_state.py's "specs" lists them"""
+    found: set[str] = set()
+    for line in lines:
+        specs = line.get("specs", [])
+        if not isinstance(specs, list) or not all(isinstance(s, str) for s in specs):
+            raise Refused(f"error: triage_state.py printed #{line.get('number')}'s specs as {specs!r}, not paths")
+        found.update(specs)
+    return found
+
+
+def adding_commit(repo_dir: Path, branch: str, path: str) -> str | None:
+    """The newest commit of origin/<branch> that added path, None when none did (a shallow
+    history may hold none)"""
+    cmd = ["git", "log", "-n", "1", "--diff-filter=A", "--format=%H", f"origin/{branch}", "--", path]
+    sha = git_bytes(cmd, repo_dir).decode("utf-8").strip()
+    return sha or None
+
+
+def adding_pulls(repo: str, sha: str, read: Callable[[list[str]], str] = run) -> list[int]:
+    """The merged pull requests GitHub associates with the commit that added a spec: one REST
+    read, made only for an approved spec nobody split whose file no open issue links"""
+    found = json.loads(read(["gh", "api", f"repos/{repo}/commits/{sha}/pulls"]))
+    if not isinstance(found, list) or not all(isinstance(p, dict) and isinstance(p.get("number"), int) for p in found):
+        raise Refused(f"error: gh api repos/{repo}/commits/{sha}/pulls printed no list of pull requests")
+    return sorted(int(p["number"]) for p in found if p.get("merged_at"))
+
+
+def held_on(lines: list[dict[str, Any]], repo: str, pulls: list[int]) -> bool:
+    """Whether an open issue reads BLOCKED or UNBLOCKED on one of the pull requests, as
+    triage_state.py's note names a hold: owner/repo#N:<state>"""
+    names = [re.compile(rf"(?<![\w.-]){re.escape(repo)}#{n}:", re.IGNORECASE) for n in pulls]
+    return any(
+        line["state"] in HELD_ON and any(name.search(str(line.get("note", ""))) for name in names) for line in lines
+    )
+
+
+def spec_rows(repo: str, repo_dir: Path, branch: str, triage: str, read: Callable[[list[str]], str] = run) -> list[Row]:
+    """SPEC_UNSPLIT (spec 053): one ISSUES row per spec at origin/<branch> that is approved,
+    lists no build issue, and that no open issue follows: none links its file in its body, and
+    none reads BLOCKED or UNBLOCKED on the pull request that added it. The pull request is read
+    (one git log and one gh read) only for a spec the first two leave, so a repo whose
+    approved specs are split reads nothing of GitHub here. triage is triage_state.py's lines"""
+    candidates = unsplit_specs(branch_specs(repo_dir, branch))
+    if not candidates:
+        return []
+    lines = [json.loads(line) for line in triage.splitlines()]
+    linked = linked_specs(lines)
+    rows: list[Row] = []
+    for path, spec in candidates:
+        if path in linked:
+            continue
+        sha = adding_commit(repo_dir, branch, path)
+        if sha is not None and held_on(lines, repo, adding_pulls(repo, sha, read)):
+            continue
+        said = "approved, no build issues, no open issue follows it"
+        detail = f"{SPEC_UNSPLIT} {spec.id} {spec.title} ({path}): {said}"
+        rows.append(Row("ISSUES", path, detail, skill_fix("github-issue-triage", repo)))
+    return rows
+
+
 # -- goal plans (spec 028) ------------------------------------------------------------------
 
 
@@ -4638,8 +4794,10 @@ def relayed_numbers(triage: str) -> frozenset[str]:
     return frozenset(found)
 
 
-def issue_rows(args: argparse.Namespace, repo_dir: Path, text: str | None) -> list[Row]:
-    """Tier 6: triage_state.py's every other action state, one ISSUES row each"""
+def issue_rows(args: argparse.Namespace, repo_dir: Path, text: str | None, known: Known | None) -> list[Row]:
+    """Tier 6: triage_state.py's every other action state, one ISSUES row each, and an
+    ISSUES row SPEC_UNSPLIT for each approved spec nobody split, read at origin/<branch> once
+    the landing branch is fetched (spec 053)"""
     table = None if text is None else agents_table(text, POLICY)
     untrusted = plan_trust(args, repo_dir, table)
     if untrusted is None:
@@ -4655,7 +4813,10 @@ def issue_rows(args: argparse.Namespace, repo_dir: Path, text: str | None) -> li
     rows = intake(
         args.repo, code, triage, [], unread, args.bot_login, args.trusted_only, None, owned, untrusted, (), directions
     )
-    return [r for r in split_issues(rows, decided=False) if r.state == "ISSUES"] + relayed_rows(rows, triage)
+    branch = landing_branch(text, POLICY, default_branch(args.repo, known))
+    fetch_landing(repo_dir, branch)
+    found = [r for r in split_issues(rows, decided=False) if r.state == "ISSUES"] + relayed_rows(rows, triage)
+    return found + spec_rows(args.repo, repo_dir, branch, triage)
 
 
 def relayed_rows(rows: list[Row], triage: str) -> list[Row]:
@@ -4715,7 +4876,7 @@ def tier_rows(tier: int, args: argparse.Namespace, repo_dir: Path, known: Known 
     if tier == 4:
         return asked_rows(args, repo_dir, text, known, now)
     if tier == 6:
-        return issue_rows(args, repo_dir, text)
+        return issue_rows(args, repo_dir, text, known)
     return notice_rows(args, repo_dir, text, known, now)
 
 
@@ -4904,6 +5065,7 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
             directions,
         )
         rows += chain_rows(args.repo, triage, args.bot_login)
+        rows += spec_rows(args.repo, repo_dir, branch, triage)  # spec 053, at the branch fetched above
     rows += coordinator_rows(text, policy, args.repo, repo_dir, args.bot_login)
     rows += active_rows(fetch_active(args.repo), now)
     if not host:  # a --sweep or --tier read prints no host row (spec 046)

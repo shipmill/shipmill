@@ -250,8 +250,9 @@ def spec_files(directory: Path) -> list[Path]:
     return sorted(p for p in directory.glob("*.md") if p.name not in NOT_SPECS)
 
 
-def parse(path: Path) -> tuple[Spec | None, list[str]]:
-    """The spec, and every format problem found in it"""
+def parse(path: Path, text: str | None = None) -> tuple[Spec | None, list[str]]:
+    """The spec, and every format problem found in it; text is the file's, read from path
+    without it (github-ship-watch reads a spec of the default branch through git, spec 053)"""
     name = NAME.match(path.name)
     if name is None:
         return None, [f"{path}: not named NNN-<slug>.md (lowercase words joined by '-')"]
@@ -263,7 +264,9 @@ def parse(path: Path) -> tuple[Spec | None, list[str]]:
 
     current: str | None = None
     seen: list[str] = []
-    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    if text is None:
+        text = path.read_text(encoding="utf-8")
+    for n, line in enumerate(text.splitlines(), 1):
         if line.startswith("## "):
             current = line[3:].strip()
             if current not in SECTIONS:
