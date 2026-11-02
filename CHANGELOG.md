@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.107.1] - 2026-11-02
+
+### Security
+
+- The config's `branch` must be a name git's branch-name rules accept (no leading `-`, `..`, spaces, control characters, `~ ^ : ? * [ \`, `@{`, and so on): one they refuse stops the config from loading, naming `branch`, and the gate's refresh passes the branch to git only inside a `refs/heads/` refspec, so a branch such as `--upload-pack=...` is never read as a git option (#889)
+- The ship watch's state script passes the landing branch to `git fetch` only inside a `refs/heads/` refspec, and refuses a config `branch` that git's branch-name rules refuse, so a `branch` such as `--upload-pack=...` is no longer read as a git option (#892)
+
 ## [0.107.0] - 2026-11-02
 
 ### Added
@@ -2169,7 +2176,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.107.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.107.1...HEAD
+[0.107.1]: https://github.com/shipmill/shipmill/compare/v0.107.0...v0.107.1
 [0.107.0]: https://github.com/shipmill/shipmill/compare/v0.106.0...v0.107.0
 [0.106.0]: https://github.com/shipmill/shipmill/compare/v0.105.0...v0.106.0
 [0.105.0]: https://github.com/shipmill/shipmill/compare/v0.104.0...v0.105.0
