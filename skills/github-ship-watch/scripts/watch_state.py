@@ -3160,8 +3160,15 @@ def linked_specs(lines: list[dict[str, Any]]) -> set[str]:
 
 
 def adding_commit(repo_dir: Path, branch: str, path: str) -> str | None:
-    """The newest commit of origin/<branch> that added path, None when none did (a shallow
-    history may hold none)"""
+    """The newest commit of origin/<branch> that added path, None when none did. A shallow
+    clone is refused (exit 2): its boundary commit reads as adding every file, so the pull
+    request read would be the wrong one"""
+    shallow = git_bytes(["git", "rev-parse", "--is-shallow-repository"], repo_dir).decode("utf-8").strip()
+    if shallow == "true":
+        raise Refused(
+            f"error: {repo_dir} is a shallow clone, so the pull request that added {path} can't be"
+            f" read: run `git -C {repo_dir} fetch --unshallow origin` first (spec 053)"
+        )
     cmd = ["git", "log", "-n", "1", "--diff-filter=A", "--format=%H", f"origin/{branch}", "--", path]
     sha = git_bytes(cmd, repo_dir).decode("utf-8").strip()
     return sha or None

@@ -261,6 +261,19 @@ def test_s053_12_an_issue_that_follows_something_else_leaves_the_row(
     assert [r.subject for r in rows] == ["docs/specs/001-unsplit.md"]
 
 
+def test_s053_12_a_shallow_clone_is_refused_not_read_as_the_wrong_pull_request(ws: ModuleType, tmp_path: Path) -> None:
+    # a shallow clone's boundary commit reads as adding every file, so git log would name the
+    # tip's pull request, not the spec's, and report a spec its feature issue holds on
+    work, added = origin(tmp_path)
+    shallow = tmp_path / "shallow"
+    git("clone", "-q", "--depth", "1", (tmp_path / "origin.git").as_uri(), str(shallow), cwd=tmp_path)
+    by_sha = {added["docs/specs/001-unsplit.md"]: [merged(PULL)]}
+    held = line(9, "BLOCKED", f"o/r#{PULL}:open")
+    assert ws.spec_rows("o/r", work, "main", held, pulls(by_sha, [])) == []  # the full history reads it right
+    with pytest.raises(ws.Refused, match="--unshallow"):
+        ws.spec_rows("o/r", shallow, "main", held, pulls(by_sha, []))
+
+
 def test_s053_12_a_draft_built_or_split_spec_is_no_row(ws: ModuleType, tmp_path: Path) -> None:
     work, _ = origin(tmp_path)
     found = ws.unsplit_specs(ws.branch_specs(work, "main"))
