@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.111.0] - 2026-11-02
+
+### Added
+
+- `shipmill gate`'s sweep proposes config upgrades as the App (spec 047), every `[agents] sweep_hours`, before its own read, so a repo that releases rarely still hears of one: it runs `shipmill upgrade --propose` in-process for the config at the default branch's head and its `[autonomy] upgrade` level, writing the same one issue per upgrade the release workflow's `upgrade` job does. Without `[agents] app_id` it writes nothing, and `shipmill status` lists the pending upgrades with their `--apply` command. The swept tick's decision line names the outcome (`upgrades: 1 opened`), `sweep.json` keeps it under `upgrades`, and a failed proposal fails no tick: `shipmill factory`'s `gate` line reports it with its fix, the App's `issues: write`. `--dry-run` says what it would propose and writes nothing (#904)
+
 ## [0.110.0] - 2026-11-02
 
 ### Changed
@@ -2196,7 +2202,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.110.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.111.0...HEAD
+[0.111.0]: https://github.com/shipmill/shipmill/compare/v0.110.0...v0.111.0
 [0.110.0]: https://github.com/shipmill/shipmill/compare/v0.109.0...v0.110.0
 [0.109.0]: https://github.com/shipmill/shipmill/compare/v0.108.0...v0.109.0
 [0.108.0]: https://github.com/shipmill/shipmill/compare/v0.107.1...v0.108.0
