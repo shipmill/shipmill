@@ -2,6 +2,7 @@
 """Every refusal of the config file, byte for byte: each section is read through one
 strict Table, and these messages are what a user sees when their config is wrong"""
 
+import re
 import subprocess
 import sys
 import tomllib
@@ -543,7 +544,8 @@ def test_s026_14_a_bad_hooks_key_exits_2_naming_it(name: str, tmp_path: Path) ->
 @pytest.mark.parametrize("name", ["main", "release/1.x", "feat/a-b", "v1", "a.b", "a-", "x@y"])
 def test_889_a_git_branch_name_is_accepted(name: str) -> None:
     assert branch_in(f'branch = "{name}"\n', "shipmill.toml") == name
-    assert Policy.parse(tomllib.loads(apply(POLICY, [('branch = "main"', f'branch = "{name}"')])), "shipmill.toml").branch == name
+    text = apply(POLICY, [('branch = "main"', f'branch = "{name}"')])
+    assert Policy.parse(tomllib.loads(text), "shipmill.toml").branch == name
 
 
 INVALID_BRANCHES = [
@@ -562,6 +564,7 @@ INVALID_BRANCHES = [
     "a\\\\b",
     "a@{1}",
     "@",
+    "HEAD",
     "/a",
     "a/",
     "a//b",
@@ -578,7 +581,13 @@ def test_889_a_branch_git_refuses_is_refused_naming_the_key_and_where(name: str)
     """#889: a configured branch reaches git, and one git's branch-name rules refuse (such as
     one starting with -, which git reads as an option) fails to load, naming `branch`"""
     text = f'branch = "{name}"\n'
-    with pytest.raises(ReleaseError, match=r"^\.github/shipmill\.toml at origin/main: branch must be a git branch name"):
-        branch_in(text, ".github/shipmill.toml at origin/main")
+    where = ".github/shipmill.toml at origin/main"
+    with pytest.raises(ReleaseError, match=rf"^{re.escape(where)}: branch must be a git branch name, got "):
+        branch_in(text, where)
     with pytest.raises(ReleaseError, match=r"^shipmill\.toml: branch must be a git branch name"):
         Policy.parse(tomllib.loads(apply(POLICY, [('branch = "main"\n', text)])), "shipmill.toml")
+
+
+def test_889_the_policy_refuses_an_empty_branch() -> None:
+    with pytest.raises(ReleaseError, match=r"^shipmill\.toml: branch must be a git branch name, got '': it is empty$"):
+        Policy.parse(tomllib.loads(apply(POLICY, [('branch = "main"', 'branch = ""')])), "shipmill.toml")

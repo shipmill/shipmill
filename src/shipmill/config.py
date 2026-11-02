@@ -82,10 +82,12 @@ def branch_name(value: str, where: str) -> str:
 
 
 def _branch_refusal(name: str) -> str | None:
+    if not name:
+        return "it is empty"
     if name.startswith("-"):
         return "it starts with -"
-    if name == "@":
-        return "it is @"
+    if name in {"@", "HEAD"}:
+        return f"it is {name}"
     if bad := sorted({c for c in name if c in _BRANCH_FORBIDDEN or ord(c) < 32 or ord(c) == 127}):
         return f"it holds {''.join(bad)!r}"
     for part in ("..", "@{", "//"):
