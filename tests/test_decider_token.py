@@ -21,9 +21,12 @@ from shipmill.app_login import (
     ACCESS_TOKEN,
     CLIENT_SECRET,
     AsApp,
+    SecretRefused,
     Unreachable,
     UserLogin,
     UserToken,
+    client_secret,
+    client_secret_file,
     decider_token,
     load_user_token,
     save_user_token,
@@ -53,7 +56,8 @@ ACCESS = "ghu_octocat-access-secret"
 REFRESH = "ghr_octocat-refresh-secret"
 NEW_ACCESS = "ghu_octocat-new-access-secret"
 NEW_REFRESH = "ghr_octocat-new-refresh-secret"
-SECRETS = (ACCESS, REFRESH, NEW_ACCESS, NEW_REFRESH)
+CLIENT = "cs_the-apps-client-secret"  # the App's client secret, in its file beside the App's key
+SECRETS = (ACCESS, REFRESH, NEW_ACCESS, NEW_REFRESH, CLIENT)
 APP_TOKEN = "token-1"  # the App's installation token MintApi mints
 OCTO = Person("octocat", False)
 MERGE = ["pr", "merge", "7", "--squash"]
@@ -77,6 +81,15 @@ def store(tmp_path: Path, expires: dt.timedelta = dt.timedelta(hours=8), refresh
         None if refresh is None else now() + dt.timedelta(days=180),
     )
     return save_user_token(home, token)
+
+
+def put_secret(tmp_path: Path, content: str = CLIENT + "\n", mode: int = 0o600) -> Path:
+    """The App's client secret's file in the home gh runs with, as the maintainer puts it there"""
+    path = client_secret_file(APP_ID, tmp_path / "home")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(mode)
+    return path
 
 
 @dataclass
@@ -406,9 +419,10 @@ def test_s051_8_an_expired_token_is_refreshed_before_the_write_and_stored_again_
 ) -> None:
     key = connected(repo, tmp_path, ASSISTED)
     path = store(tmp_path, expires)
+    secret = put_secret(tmp_path)
     web, runner = FakeWeb(granted()), EnvRunner(capsys)
     reader = CreditReader(FakeCredit(reviews=[approved("octocat", "MEMBER")]))
-    assert gh(repo, tmp_path, key, MERGE, runner, reader, web=web, environ={CLIENT_SECRET: "s3"}) == 0
+    assert gh(repo, tmp_path, key, MERGE, runner, reader, web=web) == 0
     assert runner.token == NEW_ACCESS
     [(method, url, fields)] = web.sent
     assert (method, url) == ("POST", ACCESS_TOKEN)
@@ -416,25 +430,90 @@ def test_s051_8_an_expired_token_is_refreshed_before_the_write_and_stored_again_
         "client_id": "Iv1.client",
         "grant_type": "refresh_token",
         "refresh_token": REFRESH,
-        "client_secret": "s3",
+        "client_secret": CLIENT,  # from the file beside the App's key, its newline dropped
     }
     assert path.stat().st_mode & 0o777 == 0o600
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert (stored["access_token"], stored["refresh_token"]) == (NEW_ACCESS, NEW_REFRESH)
     assert dt.datetime.fromisoformat(stored["expires_at"]) > now() + dt.timedelta(hours=7)
-    assert [p.name for p in path.parent.iterdir()] == [path.name]  # written atomically: no temporary left
+    # written atomically: no temporary left; the secret's file is untouched
+    assert sorted(p.name for p in path.parent.iterdir()) == sorted([path.name, secret.name])
+    assert secret.read_text(encoding="utf-8") == CLIENT + "\n"
 
 
-def test_s051_8_a_refresh_without_the_client_secret_sends_none(
+def test_s051_8_a_refresh_without_the_client_secret_file_sends_none(
     repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     key = connected(repo, tmp_path, ASSISTED)
     store(tmp_path, dt.timedelta(hours=-1))
     web, runner = FakeWeb(granted()), EnvRunner(capsys)
     reader = CreditReader(FakeCredit(reviews=[approved("octocat", "MEMBER")]))
-    assert gh(repo, tmp_path, key, MERGE, runner, reader, web=web) == 0
-    assert "client_secret" not in web.sent[0][2]
+    assert gh(repo, tmp_path, key, MERGE, runner, reader, web=web, environ={CLIENT_SECRET: "from-env"}) == 0
+    assert "client_secret" not in web.sent[0][2]  # app-logout's environment variable is not the refresh's
     assert runner.token == NEW_ACCESS
+    assert not client_secret_file(APP_ID, tmp_path / "home").exists()  # shipmill never creates it
+
+
+@pytest.mark.parametrize(
+    ("content", "mode", "why"),
+    [
+        (CLIENT, 0o644, "has mode 0644, wider than 0600; run `chmod 600 {path}`"),
+        (CLIENT, 0o604, "has mode 0604, wider than 0600"),
+        (CLIENT, 0o660, "has mode 0660, wider than 0600"),
+        (CLIENT, 0o700, "has mode 0700, wider than 0600"),
+        ("", 0o600, "is empty; write the App's client secret into it"),
+        (" \n", 0o600, "is empty; write the App's client secret into it"),
+        (f"{CLIENT}\n{CLIENT}\n", 0o600, "holds more than one word"),
+    ],
+)
+def test_s051_8_a_client_secret_too_open_or_empty_writes_as_the_app_and_keeps_the_token_file(
+    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str], content: str, mode: int, why: str
+) -> None:
+    key = connected(repo, tmp_path, ASSISTED)
+    path = store(tmp_path, dt.timedelta(hours=-1))
+    secret = put_secret(tmp_path, content, mode)
+    web, runner = FakeWeb(granted()), EnvRunner(capsys)
+    reader = CreditReader(FakeCredit(reviews=[approved("octocat", "MEMBER")]))
+    assert gh(repo, tmp_path, key, MERGE, runner, reader, web=web) == 0
+    assert runner.token == APP_TOKEN
+    [line] = [x for x in runner.stderr[-1].splitlines() if x.startswith("author: ")]
+    assert line.startswith(
+        f"author: the App; `@octocat`'s expired token isn't refreshed: the App's client secret {secret} "
+        + why.format(path=secret)
+    )
+    assert web.sent == []  # no refresh goes without the secret the maintainer meant to give it
+    assert path.exists()  # the person's token is kept: the fault is the host's, not theirs
+    assert secret.stat().st_mode & 0o777 == mode  # shipmill never fixes or rewrites it
+    said = "".join(runner.stdout + runner.stderr)
+    assert CLIENT not in said
+    assert body_of(runner.calls[0]).endswith(OCTOCAT_TRAILER)  # as autonomous mode merges it
+
+
+@pytest.mark.parametrize(
+    ("content", "mode"), [(CLIENT, 0o644), (CLIENT, 0o640), ("", 0o600), (f"{CLIENT} {CLIENT}", 0o600)]
+)
+def test_s051_8_a_refused_client_secret_never_reaches_the_exception_or_its_repr(
+    tmp_path: Path, content: str, mode: int
+) -> None:
+    put_secret(tmp_path, content, mode)
+    with pytest.raises(SecretRefused) as raised:
+        client_secret(APP_ID, tmp_path / "home")
+    assert CLIENT not in str(raised.value) and CLIENT not in repr(raised.value)
+    assert raised.value.__cause__ is None and raised.value.__context__ is None
+
+
+def test_s051_8_the_client_secret_reads_from_its_file_or_none() -> None:
+    home = Path("/nonexistent-shipmill-home")
+    assert client_secret_file(APP_ID, home) == home / ".config" / "shipmill" / f"app-{APP_ID}-client-secret"
+    assert client_secret(APP_ID, home) is None
+
+
+def test_s051_8_a_non_utf8_client_secret_is_refused_without_quoting_it(tmp_path: Path) -> None:
+    path = put_secret(tmp_path)
+    path.write_bytes(b"\xff\xfe" + CLIENT.encode())
+    with pytest.raises(SecretRefused, match="is not UTF-8 text") as raised:
+        client_secret(APP_ID, tmp_path / "home")
+    assert CLIENT not in str(raised.value)
 
 
 @pytest.mark.parametrize(
@@ -659,6 +738,7 @@ def test_s051_9_no_token_value_reaches_stdout_stderr_or_a_record_repr(
 ) -> None:
     key = connected(repo, tmp_path, ASSISTED)
     path = store(tmp_path, expires)
+    put_secret(tmp_path)  # the client secret is never said either, nor in gh's env
     runner = EnvRunner(capsys)
     reader = CreditReader(FakeCredit(reviews=[approved("octocat", "MEMBER")]))
     api = UserApi(user_status=user_status)
@@ -666,6 +746,7 @@ def test_s051_9_no_token_value_reaches_stdout_stderr_or_a_record_repr(
     after = capsys.readouterr()
     said = "".join(runner.stdout + runner.stderr) + after.out + after.err + " ".join(runner.calls[0])
     assert not any(secret in said for secret in SECRETS)
+    assert not any(CLIENT in value for value in runner.envs[0].values())
     if path.exists():
         assert not any(secret in repr(load_user_token(path)) for secret in SECRETS)
 
@@ -676,5 +757,5 @@ def test_s051_9_a_malformed_file_quoting_a_token_never_reaches_the_error(tmp_pat
     path.write_text(json.dumps({"app_id": APP_ID, "client_id": "c", "login": "octocat", "access_token": 5,
                                 "refresh_token": REFRESH}), encoding="utf-8")  # fmt: skip
     with pytest.raises(AsApp) as raised:
-        decider_token(APP_ID, UserLogin("octocat"), tmp_path, UserApi(), FakeWeb(), {}, now())
+        decider_token(APP_ID, UserLogin("octocat"), tmp_path, UserApi(), FakeWeb(), now())
     assert REFRESH not in str(raised.value)

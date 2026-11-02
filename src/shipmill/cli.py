@@ -1695,7 +1695,7 @@ def _as_decider(
         print(f"author: the App; `@{first.person.login}` is no user who can run app-login", file=sys.stderr)
         return dict(env)
     try:
-        user = decider_token(app_id, login, home, hub.api, hub.web, env, dt.datetime.now(dt.UTC))
+        user = decider_token(app_id, login, home, hub.api, hub.web, dt.datetime.now(dt.UTC))
     except AsApp as exc:
         print(f"author: the App; {exc}", file=sys.stderr)
         return dict(env)

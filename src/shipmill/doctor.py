@@ -4,6 +4,7 @@ workflows the bot calls"""
 import datetime as dt
 import importlib.util
 import re
+import stat
 import sys
 import tomllib
 from collections.abc import Callable, Mapping
@@ -29,7 +30,7 @@ from shipmill.app import (
     jwt,
     product_token,
 )
-from shipmill.app_login import stored_logins
+from shipmill.app_login import client_secret_file, secret_refused, stored_logins
 from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage, StageKind
 from shipmill.changelog import Changelog
 from shipmill.claude_auth import ClaudeAuth
@@ -941,26 +942,47 @@ def credit_check(agents: AgentsConfig) -> Check:
     return Check("PASS", "credit", "off")
 
 
+def _client_secret_note(app_id: int, home: Path) -> tuple[bool, str]:
+    """Whether the App's client secret is ready to refresh a decider's token, and the author
+    row's note saying so; its file is stat'ed, never read"""
+    path = client_secret_file(app_id, home)
+    if not path.exists():
+        return False, (
+            f"no App client secret at {path}: an expired token is refreshed without it, which GitHub may refuse; "
+            "put the App's client secret there with mode 0600"
+        )
+    refused = secret_refused(path)
+    if refused is not None:
+        return False, f"{refused}; until then an expired token's write goes as the App"
+    return True, f"the App's client secret is at {path} (mode {stat.S_IMODE(path.stat().st_mode):04o})"
+
+
 def author_check(agents: AgentsConfig, home: Path) -> Check:
     """S-051-15: the author row, for a repo with [agents]: the mode, a setting rather than a
     fault, so a PASS. Assisted mode lists the logins with a stored user access token for the
     App on this host, read from the files' names alone; none stored is still a PASS, as every
-    write then goes as the App, and a store it can't read is a WARN"""
+    write then goes as the App, and a store it can't read is a WARN. It ends with whether the
+    App's client secret, which refreshes an expired token, is beside the App's key, by one
+    stat and never read: a WARN when it is missing, wider than 0600, or empty"""
     if agents.author is Author.DECIDER and agents.app_id is not None:
+        secret_ok, secret = _client_secret_note(agents.app_id, home)
         try:
             logins = stored_logins(agents.app_id, home)
         except ReleaseError as exc:
-            return Check("WARN", "author", f"decider (spec 051); can't read the stored logins: {exc}")
+            return Check("WARN", "author", f"decider (spec 051); can't read the stored logins: {exc}; {secret}")
+        state = "PASS" if secret_ok else "WARN"
         if not logins:
             return Check(
-                "PASS",
+                state,
                 "author",
                 f"decider, 0 people authorized (spec 051): every write goes as the App until a person runs "
-                f"`{cli_command()} app-login`",
+                f"`{cli_command()} app-login`; {secret}",
             )
         people = "1 person" if len(logins) == 1 else f"{len(logins)} people"
         return Check(
-            "PASS", "author", f"decider, {people} authorized (spec 051): {', '.join(f'`@{x}`' for x in logins)}"
+            state,
+            "author",
+            f"decider, {people} authorized (spec 051): {', '.join(f'`@{x}`' for x in logins)}; {secret}",
         )
     if agents.author is Author.APP:
         return Check("PASS", "author", "app, the App writes and names the decider (spec 051)")
