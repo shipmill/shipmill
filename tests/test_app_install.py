@@ -229,6 +229,7 @@ def test_s007_8_json_lists_each_repo(tmp_path: Path, key: Path, capsys: pytest.C
             {"repo": "acme/web", "account": "acme", "action": "none", "installed": True},
             {"repo": "beta/x", "account": "beta", "action": "add", "installed": True},
         ],
+        "refused": [],  # S-052-11: no config here, so no refused key
     }
 
 

@@ -59,6 +59,7 @@ from shipmill.plugin import (
     save_cli,
     session_project,
 )
+from shipmill.refused import CATALOGUE, Refusal
 from shipmill.roles import LoginReader, ResolvedRole, arguments
 from shipmill.walk import (
     CURSOR,
@@ -389,6 +390,12 @@ class Decision:
     tier: int | None = None  # the tier of the item a LAUNCH hands (spec 046)
     running: Running | None = None  # the session a RUNNING or STALLED tick waits on (S-048-16); None otherwise
     in_flight: InFlight | None = None  # what a QUIET tick says is in flight (spec 048); None otherwise
+    refused: tuple[Refusal, ...] = ()  # the catalogued keys the config sets, which the tick runs without (S-052-10)
+
+
+def refused_suffix(refusals: Iterable[Refusal]) -> str:
+    """What a tick's decision line ends with, one `; refused: <key> (spec NNN)` per refusal (S-052-10)"""
+    return "".join(f"; refused: {r.named}" for r in refusals)
 
 
 def held(hold: Hold, sessions: Sequence[Session]) -> Decision | None:
@@ -1912,6 +1919,9 @@ class Failing:
 
 
 TICK_KEYS = {"at", "action", "reason", "fix", "failing", "running", "in_flight"}
+# S-052-10: written only when the config sets a refused key, so a tick.json without a refusal
+# reads as before in a shipmill that predates the key
+REFUSED = "refused"
 TICK_ACTIONS = frozenset({a.value for a in Action} | {ERROR})
 
 
@@ -1919,8 +1929,9 @@ TICK_ACTIONS = frozenset({a.value for a in Action} | {ERROR})
 class TickRecord:
     """tick.json (spec 048): when the tick started, its decision or ERROR, the reason or the
     error's first line, the fix, the run of failing ticks it belongs to (None on a tick that
-    doesn't fail), the session a RUNNING or STALLED tick waits on, and what a QUIET tick says
-    is in flight, as `shipmill gate --json` prints them"""
+    doesn't fail), the session a RUNNING or STALLED tick waits on, what a QUIET tick says is
+    in flight, and the refused keys the tick ran without (S-052-10), as `shipmill gate --json`
+    prints them"""
 
     at: dt.datetime
     action: str
@@ -1929,13 +1940,14 @@ class TickRecord:
     failing: Failing | None
     running: Running | None = None
     in_flight: InFlight | None = None
+    refused: tuple[Refusal, ...] = ()
 
     def __post_init__(self) -> None:
         if self.action not in TICK_ACTIONS:
             raise ValueError(f"action must be a decision or {ERROR}, got {self.action!r}")
 
     def record(self) -> dict[str, object]:
-        return {
+        found: dict[str, object] = {
             "at": self.at.isoformat(),
             "action": self.action,
             "reason": self.reason,
@@ -1944,6 +1956,32 @@ class TickRecord:
             "running": None if self.running is None else self.running.record(),
             "in_flight": None if self.in_flight is None else self.in_flight.record(),
         }
+        if self.refused:
+            found[REFUSED] = [r.record() for r in self.refused]
+        return found
+
+
+REFUSAL_KEYS = {"key", "spec", "off", "fix"}
+REFUSAL_KEY = re.compile(r"(\[[^\]\s]+\]) (\S+)")  # [agents] plugin_update
+
+
+def _refused(value: object) -> tuple[Refusal, ...]:
+    """tick.json's refused: a list of {key, spec, off, fix}, as Refusal.record writes each;
+    an entry of the catalogue reads as that entry, one a later shipmill refuses as written"""
+    if not isinstance(value, list):
+        raise ValueError("refused must be a list of refusals")
+    found = []
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) != REFUSAL_KEYS:
+            raise ValueError(f"refused: expected exactly {', '.join(sorted(REFUSAL_KEYS))}")
+        key = REFUSAL_KEY.fullmatch(_text(entry["key"], "refused.key"))
+        if key is None:
+            raise ValueError(f"refused.key must read [table] key, got {entry['key']!r}")
+        spec, off, fix = (_text(entry[k], f"refused.{k}") for k in ("spec", "off", "fix"))
+        written = Refusal(key.group(1), key.group(2), spec, off, fix)
+        same = (r for r in CATALOGUE if r.record() == written.record())
+        found.append(next(same, written))
+    return tuple(found)
 
 
 def _text(value: object, what: str) -> str:
@@ -2046,8 +2084,8 @@ def load_tick(path: Path) -> TickRecord | None:
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or set(data) != TICK_KEYS:
-            raise ValueError(f"expected exactly {', '.join(sorted(TICK_KEYS))}")
+        if not isinstance(data, dict) or set(data) - {REFUSED} != TICK_KEYS:
+            raise ValueError(f"expected exactly {', '.join(sorted(TICK_KEYS))}, and {REFUSED} with a refusal")
         run = data["failing"]
         if run is not None and (not isinstance(run, dict) or set(run) != {"since", "count"}):
             raise ValueError("failing: expected exactly since and count, or null")
@@ -2061,6 +2099,7 @@ def load_tick(path: Path) -> TickRecord | None:
             found,
             _running(data["running"]),
             _in_flight(data["in_flight"]),
+            _refused(data.get(REFUSED, [])),
         )
     except ValueError as exc:  # json.JSONDecodeError is one
         raise malformed(path, exc) from None
@@ -2084,15 +2123,17 @@ def record_tick(
     fails: bool,
     running: Running | None,
     in_flight: InFlight | None = None,
+    refused: tuple[Refusal, ...] = (),
 ) -> TickRecord:
     """Spec 048: write this tick's tick.json after previous, the one load_tick read when the
     tick started. A failing tick after a failing one keeps its since and counts one more; one
-    after any other tick starts a run at now; a tick that doesn't fail ends the run"""
+    after any other tick starts a run at now; a tick that doesn't fail ends the run. A refusal
+    is recorded and never makes a tick fail (S-052-10)"""
     run = None
     if fails:
         before = None if previous is None else previous.failing
         run = Failing(now, 1) if before is None else Failing(before.since, before.count + 1)
-    record = TickRecord(now, action, reason, fix, run, running, in_flight)
+    record = TickRecord(now, action, reason, fix, run, running, in_flight, refused)
     save_tick(path, record)
     return record
 
@@ -2323,7 +2364,7 @@ def gate(
     release, spec 031), PyPI, and the config's requires, and knows the gate's own CLI; None, as
     in tests that don't exercise it, reads no plugin. A real tick with it records the gate's CLI
     version (cli.json in the state directory) for doctor and status. The gate changes no
-    install, and the config refuses [agents] plugin_update (S-031-22).
+    install; the config drops [agents] plugin_update, a refused key (S-052-3).
     A LAUNCH, dry run or not, reads the install a session in the checkout would
     load and reports each install that lags, an install keyed on its linked worktree, its own
     lagging CLI, and an unmet requires, each with its fix, and starts the session (spec 031,
@@ -2391,14 +2432,28 @@ def gate(
     their head's rollup, the last landed one, and the last session that ended with a result.
     The first real tick that finds the last launch ended with a result, not dead
     (ended_with_result), writes last-result.json; a dry run writes none. last-result.json is
-    read before the tick acts too"""
+    read before the tick acts too.
+
+    A tick that reads the config takes the refused keys its [agents] table set from that read
+    (AgentsConfig.refused, spec 052, D-64); a tick that reads no config, RUNNING or HELD, reads
+    none for them, and names none. A refusal changes no decision: the tick runs as it would
+    without the key, its decision carries the refusals, its line ends with one
+    `; refused: <key> (spec NNN)` for each, and tick.json records them; it is never an ERROR
+    tick and never a failing one (S-052-10)"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
     previous = None if dry_run else load_tick(tick)
+    read: list[tuple[Refusal, ...]] = []  # the refusals of the tick's last config read, if it read one
+
+    def reading() -> AgentsConfig:
+        agents = config()
+        read[:] = [agents.refused]
+        return agents
+
     try:
         decision, launched, waiting = decided(
             git,
             repo,
-            config,
+            reading,
             claude,
             findings,
             now,
@@ -2424,13 +2479,17 @@ def gate(
         )
     except ReleaseError as exc:
         if not dry_run:
-            record_tick(tick, previous, now, ERROR, error_line(exc), exc.fix or DRY_RUN_FIX, True, None)
+            found = read[0] if read else ()
+            record_tick(tick, previous, now, ERROR, error_line(exc), exc.fix or DRY_RUN_FIX, True, None, None, found)
         raise
+    found = read[0] if read else ()
+    decision = replace(decision, refused=found)
     if not dry_run:
         fix = decision_fix(decision)
         action = decision.action.value
         fails = failing(decision)
-        record_tick(tick, previous, now, action, decision.reason, fix, fails, decision.running, decision.in_flight)
+        flight = decision.in_flight
+        record_tick(tick, previous, now, action, decision.reason, fix, fails, decision.running, flight, found)
     hours = (lambda: 0) if prune_hours is None else prune_hours
     run, pruned = prune_step(state_dir(git) / PRUNE, hours, worktrees, now, dry_run)
     return replace(decision, prune=run), launched, waiting, pruned
@@ -2624,7 +2683,8 @@ def tick_record(
     remove; identity the App bot a launch writes as, or null for the host's gh login (and on a
     tick that launches nothing); auth, token-file or login (spec 035), preflight the Claude
     Code login preflight's verdict (#500), null when none ran, and in_flight what a QUIET tick
-    says is in flight (S-048-25), null on any other decision"""
+    says is in flight (S-048-25), null on any other decision. The CLI adds refused, the
+    checkout's refused keys (S-052-11); tick.json's refused is the tick's own (S-052-10)"""
     return {
         "action": decision.action.value,
         "reason": decision.reason,
@@ -2655,14 +2715,15 @@ def tick_record(
 def tick_lines(
     decision: Decision, launched: str | None, waiting: Sequence[Waiting], pruned: Sequence[Judged], dry_run: bool
 ) -> list[str]:
-    """`shipmill gate`'s text: the decision (` as <slug>[bot]` when it launches as an App), the
-    branch the refresh detached the checkout from, one line per blocked session, the work and
-    the launch, then one per pruned worktree, or the prune's failure (spec 045)"""
+    """`shipmill gate`'s text: the decision (` as <slug>[bot]` when it launches as an App, then
+    each refused key, S-052-10), the branch the refresh detached the checkout from, one line
+    per blocked session, the work and the launch, then one per pruned worktree, or the prune's
+    failure (spec 045)"""
     who = f" as {decision.identity}" if decision.identity is not None else ""
     # spec 035: the kind, never the token or its path; only on LAUNCH, as SESSION_DEAD ends with its fix
     if decision.credential is Kind.TOKEN_FILE and decision.action is Action.LAUNCH:
         who += " as token file"
-    lines = [f"{decision.action.value}: {decision.reason}{who}"]
+    lines = [f"{decision.action.value}: {decision.reason}{who}{refused_suffix(decision.refused)}"]
     if decision.auth_notice is not None:
         lines.append(f"  {decision.auth_notice}")
     # a launch that didn't start names the dead session; SESSION_DEAD's reason does, and QUIET has no work for one

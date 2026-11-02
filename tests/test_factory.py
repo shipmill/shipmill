@@ -365,8 +365,9 @@ def test_s044_9_factory_exits_1_on_a_problem_or_a_failed_check(changed: dict[str
 
 def test_s044_10_json_prints_each_check_with_ok_value_and_fixes_in_order() -> None:
     found = run_checks(fake_host(found=gate(job=job(last_exit="2"))))
-    printed = json.loads(factory.as_json(found))
-    assert list(printed) == ["checks"]
+    printed = json.loads(factory.as_json(found, ()))
+    assert list(printed) == ["checks", "refused"]  # S-052-11: the config's refused keys, none here
+    assert printed["refused"] == []
     assert [c["check"] for c in printed["checks"]] == LABELS
     assert all(set(c) == {"check", "ok", "value", "fixes"} for c in printed["checks"])
     assert printed["checks"][0] == {
@@ -376,7 +377,9 @@ def test_s044_10_json_prints_each_check_with_ok_value_and_fixes_in_order() -> No
         "fixes": ["tail -n 50 /u/gate.log"],
     }
     stale = Worktrees([tree("tmp/wt-x", Kept.KEPT, "detached HEAD", 8 * 24)], CHECKOUT, "main")
-    (record,) = [c for c in json.loads(factory.as_json(run_checks(fake_host(trees=stale))))["checks"] if not c["ok"]]
+    (record,) = [
+        c for c in json.loads(factory.as_json(run_checks(fake_host(trees=stale)), ()))["checks"] if not c["ok"]
+    ]
     assert record["check"] == "worktrees" and record["fixes"][0].startswith("see the work not landed: git -C ")
     assert _parser().parse_args(["factory", "--json"]).json
 

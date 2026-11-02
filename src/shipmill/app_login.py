@@ -76,6 +76,23 @@ def user_file(app_id: int, login: UserLogin, home: Path) -> Path:
     return home / ".config" / "shipmill" / f"user-{app_id}-{login.key}.json"
 
 
+def stored_logins(app_id: int, home: Path) -> list[UserLogin]:
+    """The logins with a stored user access token for the App on this host, sorted, read from
+    the files' names alone, never opening one (S-051-15); a name that holds no login raises
+    naming the file"""
+    folder = home / ".config" / "shipmill"
+    prefix = f"user-{app_id}-"
+    if not folder.is_dir():
+        return []
+    logins = []
+    for path in folder.glob(f"{prefix}*.json"):
+        name = path.name.removeprefix(prefix).removesuffix(".json")
+        if not _USER_LOGIN.fullmatch(name):
+            raise ReleaseError(f"{path} is not named user-{app_id}-<login>.json; delete it, or run app-login again")
+        logins.append(UserLogin(name))
+    return sorted(logins, key=lambda login: login.key)
+
+
 @dataclass(frozen=True, slots=True)
 class UserToken:
     """A person's user access token for the App, with its refresh token and their expiries;

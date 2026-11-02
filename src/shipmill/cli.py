@@ -936,8 +936,10 @@ def main(
         return _milestones(root, args, github)
     if args.command == "roles":
         resolved = roles.resolve(roles.configured(root), login or (lambda: host_login(root)))
-        render = roles.as_json if args.json else roles.flags if args.flags else roles.text
-        sys.stdout.write(render(resolved))
+        if args.json:
+            sys.stdout.write(roles.as_json(resolved, refused.in_checkout(root)))
+        else:
+            sys.stdout.write(roles.flags(resolved) if args.flags else roles.text(resolved))
         return 0
     if args.command == "upgrade":
         return _upgrade(root, args, github or GhCli(root))
@@ -1264,7 +1266,10 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         stop=stop_group,
     )
     if args.json:
-        print(json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run), indent=2))
+        refusals = refused.records(_refused_or_none(root))  # S-052-11
+        print(
+            json.dumps(tick_record(decision, launched, waiting, pruned, args.dry_run) | {"refused": refusals}, indent=2)
+        )
     else:
         print("\n".join(tick_lines(decision, launched, waiting, pruned, args.dry_run)))
     return _gate_exit(decision)
@@ -2073,6 +2078,7 @@ def _status(
         upgrades=status.read_upgrades(slug, top, run),
         autonomy=autonomy,
         environments=environments,
+        refused=refused.in_checkout(top),  # S-052-9
     )
     sys.stdout.write(status.report(facts).text(slug))
     return code  # S-009-14: spec 008's code, whatever the verdict
@@ -2142,8 +2148,18 @@ def _factory(
         prune=lambda: load_prune(state_dir(git) / PRUNE),
     )
     found = factory.checks(slug, host, importlib.metadata.version("shipmill"), top, when, cli_command())
-    sys.stdout.write(factory.as_json(found) if args.json else factory.text(found))
+    sys.stdout.write(factory.as_json(found, _refused_or_none(top)) if args.json else factory.text(found))
     return factory.exit_code(found)
+
+
+def _refused_or_none(root: Path) -> tuple[refused.Refusal, ...]:
+    """S-052-11: the checkout config's refused keys, for the --json of a command that reports a
+    config it can't read in its own record (factory's gate check, the gate's tick): none then,
+    rather than exit 2 before that record prints"""
+    try:
+        return refused.in_checkout(root)
+    except status.CHECK_FAILURES:
+        return ()
 
 
 def _milestones(root: Path, args: argparse.Namespace, github: GitHub | None) -> int:
@@ -2173,7 +2189,12 @@ def _milestones(root: Path, args: argparse.Namespace, github: GitHub | None) -> 
         hub = github or GhCli(top)
         rows, error = status.read_milestones(slug, top, head, hub, _now(args.now), cli_command())
     if args.json:
-        print(json.dumps({"milestones": [r.record() for r in rows], "error": error}, indent=2))
+        record = {
+            "milestones": [r.record() for r in rows],
+            "error": error,
+            "refused": refused.records(refused.in_checkout(top)),  # S-052-11
+        }
+        print(json.dumps(record, indent=2))
         return 0
     for row in rows:
         print(row.text())
@@ -2295,8 +2316,9 @@ def _app_install(
     missing = [r for r in repos if r not in guided.installed]
     for repo in missing:
         say(f"not installed on {repo}; install it at {guided.page}")
-    if args.json:
-        print(json.dumps(guided.record(app_id, repos), indent=2))
+    if args.json:  # S-052-11
+        record = guided.record(app_id, repos) | {"refused": refused.records(refused.in_checkout(root))}
+        print(json.dumps(record, indent=2))
     return 1 if missing else 0
 
 
@@ -2353,7 +2375,11 @@ def _decide(root: Path, args: argparse.Namespace, pulls: Pulls) -> int:
         policy = Policy.load(config_path(root)) if args.ref is None else policy_at(git, args.ref)
         rows = decide.levels(policy.decisions, policy.autonomy)
         if args.json:
-            record = {"veto_hours": int(policy.decisions.veto_hours), "zones": [r.record() for r in rows]}
+            record = {
+                "veto_hours": int(policy.decisions.veto_hours),
+                "zones": [r.record() for r in rows],
+                "refused": refused.records(policy.refused),  # S-052-11
+            }
             print(json.dumps(record, indent=2))
         else:
             print(f"veto_hours: {int(policy.decisions.veto_hours)}")
@@ -2367,7 +2393,12 @@ def _decide(root: Path, args: argparse.Namespace, pulls: Pulls) -> int:
         found = classify_pull(base, pulls, args.pr)
     else:
         found = classify_paths(base, [RepoPath.given(p) for p in args.files])
-    sys.stdout.write(json.dumps(found.record(), indent=2) + "\n" if args.json else found.text())
+    if args.json:  # S-052-11: the refused keys of the config at --ref, whose levels it read
+        sys.stdout.write(
+            json.dumps(found.record() | {"refused": refused.records(base.policy.refused)}, indent=2) + "\n"
+        )
+    else:
+        sys.stdout.write(found.text())
     return 0
 
 
@@ -2379,7 +2410,12 @@ def _autonomy(root: Path, ref: str, as_json: bool, github: GitHub) -> int:
     hold = Hold.read(github)
     rows = policy.autonomy.levels(hold, [EnvironmentName(name) for name in policy.environments])
     if as_json:
-        print(json.dumps({"hold": list(hold.issues), "stages": [row.record() for row in rows]}, indent=2))
+        record = {
+            "hold": list(hold.issues),
+            "stages": [row.record() for row in rows],
+            "refused": refused.records(policy.refused),  # S-052-11: the config's at ref
+        }
+        print(json.dumps(record, indent=2))
         return 0
     for issue in hold.issues:
         print(f"hold: {issue}")
@@ -2487,6 +2523,7 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
                 "removed": upgrade.removes,
                 "created": [p.as_posix() for p in applied.created],
                 "kept": [p.as_posix() for p in applied.kept],
+                "refused": refused.records(refused.in_checkout(root)),  # S-052-11: as the edit leaves the config
             }
             print(json.dumps(record, indent=2))
             return 0

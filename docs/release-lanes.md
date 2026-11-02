@@ -77,8 +77,10 @@ same run cuts the next rc, which carries the new CI, and the stable lane promote
 
 **`min_soak_days` was deprecated in 0.53.0**: a time soak checks nothing, since nobody runs
 the rc in those days and shipmill reads no telemetry. 0.53.0 to 0.55.0 still honour it,
-with a `doctor` warning; later releases refuse a `[lanes.stable]` that sets it, with exit 2,
-and `doctor` fails its policy check. `shipmill upgrade --apply stable-every-batch` migrates: it removes the line, keeps
+with a `doctor` warning; later releases refuse it, which turns off the stable lane alone
+([Retired keys](#retired-keys)): the config loads without the key, `shipmill plan` says
+`stable: off: <message>`, no run releases on stable, and the other lanes plan as they would.
+`shipmill upgrade --apply stable-every-batch` migrates: it removes the line, keeps
 `promote_from`, and adds `quiet_minutes = 30` only to a table with no trigger. A soak stays
 only where something is observed during it, as `bake_minutes` does for
 [environments](#environments).
@@ -201,6 +203,28 @@ command only reads (`--json` prints one object, `{"milestones": [...], "error": 
 reads nothing without a lane that sets `milestone = true`. github-ship-watch's
 `watch_state.py` runs it, so `shipmill status`, its `--rows` and `--json`, and a watch pass
 show both rows, and under "watch" the pass renames an overtaken milestone.
+
+### Retired keys
+
+A config that loaded keeps loading (D-63). A key shipmill retires is first deprecated: it
+still loads, shipmill ignores it or reads it as its replacement, and `doctor` warns, naming
+the replacement. A key no release of shipmill ever knew is still an error, so a typo fails
+with exit 2, naming the key.
+
+Refusing a deprecated key is the maintainer's decision under D-63, made on evidence that no
+connected repo still relies on it, never on a release count, and no sooner than 14 days after the release that deprecated it (D-64). A refused key
+turns off only its feature: the config still loads without the key, every other lane and
+agent runs as it would, each command that loads the config prints
+`shipmill: refused: <message>` once on stderr, and on a gate tick that reads the `[agents]`
+config, the tick's line ends with `; refused: <key> (spec NNN)` (spec 052); since the gate
+reads `[agents]` alone, `[agents] plugin_update` is the key a tick names. The refusal is an entry in `src/shipmill/refused.py`,
+which names the key, the spec that removed it, what it turns off, and the fix, not a load
+that raises. The keys refused today:
+
+| Key | Spec | Turns off | Fix |
+|---|---|---|---|
+| `[lanes.stable] min_soak_days` | 029 | the stable lane | delete it, or run `shipmill upgrade --apply stable-every-batch` |
+| `[agents] plugin_update` | 031 | nothing: gate sessions load the installed plugin | delete it |
 
 ### The schedule in `release.yml`
 
@@ -718,9 +742,11 @@ making a lane due by it.
 
 `[agents] plugin_update` was removed (spec 031, D-44): gate sessions load the installed
 plugin, which runs the CLI release it pins, and the gate reports an install that lags the
-latest release instead of updating it. 0.60.0 accepted the key and ignored it; since 0.61.0
-a config with it, whatever its value, exits 2 with `[agents] plugin_update was removed (spec
-031); delete it`. `shipmill upgrade` no longer offers `plugin-update`.
+latest release instead of updating it. 0.60.0 accepted the key and ignored it; 0.61.0
+refused it, and since spec 052 the refusal turns off nothing ([Retired keys](#retired-keys)):
+a config with it, whatever its value, loads as without it, and each command says
+`shipmill: refused: [agents] plugin_update was removed (spec 031); delete it` on stderr.
+`shipmill upgrade` no longer offers `plugin-update`.
 
 ## Where the plugin loads
 

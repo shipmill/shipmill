@@ -16,6 +16,7 @@ from pathlib import Path
 from shipmill.errors import ReleaseError
 from shipmill.gate import PruneRecord, StateRunner, skills_dir, state_failed
 from shipmill.plugin import GateCli
+from shipmill.refused import Refusal, records
 from shipmill.status import (
     CHECK_FAILURES,
     Check,
@@ -179,9 +180,10 @@ def text(found: Sequence[Check]) -> str:
     return "".join(f"{line}\n" for c in found for line in c.lines())
 
 
-def as_json(found: Sequence[Check]) -> str:
-    """S-044-10: one object, the checks in the printed order"""
-    return json.dumps({"checks": [c.record() for c in found]}, indent=2) + "\n"
+def as_json(found: Sequence[Check], refused: Sequence[Refusal]) -> str:
+    """S-044-10: one object, the checks in the printed order, and the config's refused keys
+    (S-052-11)"""
+    return json.dumps({"checks": [c.record() for c in found], "refused": records(refused)}, indent=2) + "\n"
 
 
 def exit_code(found: Sequence[Check]) -> int:

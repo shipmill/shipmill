@@ -32,13 +32,23 @@ from shipmill.claude_token import HOST, Credential, TokenFs, TokenSource, inspec
 from shipmill.claude_token import REJECTED as TOKEN_REJECTED
 from shipmill.config import CONFIG_PATH, Table, config_path, policy_branch, read
 from shipmill.errors import ReleaseError
-from shipmill.gate import ERROR, Action, PruneRecord, StateRunner, TickRecord, minutes_between, skills_dir
+from shipmill.gate import (
+    ERROR,
+    Action,
+    PruneRecord,
+    StateRunner,
+    TickRecord,
+    minutes_between,
+    refused_suffix,
+    skills_dir,
+)
 from shipmill.github import UPGRADE_LABEL, GitHub, labelled_command, parse_labelled
 from shipmill.gitrepo import Git
 from shipmill.launchd import label
 from shipmill.planner import MilestoneOvertaken, MilestoneWaiting, Planner
 from shipmill.plugin import GateCli, publish_fix
 from shipmill.policy import Policy
+from shipmill.refused import Refusal
 from shipmill.roles import ResolvedRole, arguments
 from shipmill.upgrades import Offer, offers, pending
 from shipmill.version import Version
@@ -340,6 +350,7 @@ class Facts:
     # and the environments [environments] declares; the hold comes from the HOLD rows
     autonomy: AutonomyPolicy = field(default_factory=AutonomyPolicy)
     environments: tuple[EnvironmentName, ...] = ()
+    refused: tuple[Refusal, ...] = ()  # spec 052: the refused keys the checkout's config sets
 
 
 @dataclass(frozen=True, slots=True)
@@ -965,14 +976,15 @@ def current_tick(record: TickRecord | None, job: Job) -> TickRecord | None:
     wrote none (a shipmill before spec 048, or a crash, S-048-10) left another line, so the
     record is older than it and the log reads as spec 009 does. A reason with a newline in it
     (GitHub's answer body in GITHUB_AUTH's) is printed over several lines, the first of which is
-    the log's decision line"""
+    the log's decision line. A decision line ends with the record's refused keys (S-052-10)"""
     if record is None or job.last is None:
         return None
     own = f"shipmill: {record.reason}" if record.action == ERROR else f"{record.action}: {record.reason}"
     first, newline, _ = own.partition("\n")
     if newline:
         return record if job.last == first else None
-    return record if job.last == own or job.last.startswith(f"{own} as ") else None
+    last = job.last.removesuffix(refused_suffix(record.refused)) if record.refused else job.last
+    return record if last == own or last.startswith(f"{own} as ") else None
 
 
 def _without_fix(reason: str, fix: str | None) -> str:
@@ -1730,6 +1742,12 @@ def agent_as_person_lines(facts: Facts) -> list[str]:
     return _after(_line("WARN", f"{AGENT_AS_PERSON}: {found.summary()}"), [found.fix(facts.command)])
 
 
+def refused_lines(facts: Facts) -> list[str]:
+    """S-052-9: a FAIL row for each refused key the config sets, its catalogue entry's fix on
+    an indented `fix:` line (S-011-12); beside the verdict, as the key stops only its feature"""
+    return [line for r in facts.refused for line in _after(_line("FAIL", f"refused: {r.what}"), [r.fix])]
+
+
 def report(facts: Facts) -> Report:
     found, reasons, working = verdict(facts)
     open_ = sum(1 for i in facts.issues if i.state not in CLOSED_STATES and not i.closed)
@@ -1741,6 +1759,7 @@ def report(facts: Facts) -> Report:
         count_line("pull requests", len(facts.pulls), f"{github(facts.repo)}/pulls"),
         *agents_lines(facts),
         *factory_lines(facts),
+        *refused_lines(facts),
         *agent_as_person_lines(facts),
     ]
     return Report(found, reasons, working, lines)
