@@ -77,6 +77,13 @@
                   or one section (--section, --json), list its ids; add, edit, and retire an item,
                   printing its line, an added one with an id its history never held; write,
                   replace, or clear a goal's measure line (measure, spec 027)
+  spec            open a spec's pull request (spec 053): `spec open docs/specs/NNN-<slug>.md --issue N`
+                  checks first (the path, specs.py check, status approved, #N an open issue, no
+                  spec/NNN-<slug> on origin, the App as gh reads it) and writes nothing on a failure;
+                  then pushes spec/NNN-<slug> from origin's default branch with one commit of the
+                  spec and each --with PATH, opens the pull request whose body starts "Spec for #N"
+                  (then --body-file's text), comments the feature verdict holding #N on it, and
+                  prints its URL; it never files the feature issue
   evals           the agents' eval suite, evals/ (spec 025): check exits 1 naming each case and the
                   rule it breaks, without a model; a repository with no case under evals/ passes;
                   check --gate also exits 1 while the suite is short of 8 verdict, 4 decision,
@@ -130,6 +137,7 @@ from shipmill import (
     requires,
     review,
     roles,
+    spec_open,
     status,
 )
 from shipmill.agents import AgentsConfig, Author, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
@@ -791,6 +799,26 @@ def _parser() -> argparse.ArgumentParser:
     ):  # also after it: `product check --repo DIR`
         each.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
 
+    p = sub.add_parser("spec", help="open a spec's pull request, naming its feature issue (spec 053)")
+    speccing = p.add_subparsers(dest="spec", required=True)
+    q = speccing.add_parser(
+        "open", help="push spec/NNN-<slug>, open its pull request, and hold the feature issue on it"
+    )
+    q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    q.add_argument("path", metavar="docs/specs/NNN-<slug>.md", help="the spec file, relative to the repo's root")
+    q.add_argument(
+        "--issue", type=int, help="the spec's feature issue: the maintainer's filing or accepted opportunity"
+    )
+    q.add_argument(
+        "--with",
+        dest="with_paths",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="another file for the same commit, such as docs/decisions.md (repeatable)",
+    )
+    q.add_argument("--body-file", type=Path, help="text for the pull request's body, after its `Spec for #N` line")
+
     p = sub.add_parser("evals", help="check the agents' eval suite, evals/, and compare its runs (spec 025)")
     evaluating = p.add_subparsers(dest="evals", required=True)
     q = evaluating.add_parser("check", help="exit 1 naming each case of evals/ and the rule it breaks; no case passes")
@@ -890,6 +918,7 @@ def main(
     claude: Runner | None = None,
     gh_capture: GhCapture | None = None,
     web: Web | None = None,
+    spec_checkout: spec_open.Checkout | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -902,7 +931,9 @@ def main(
     host's gh login `roles` reads, claude for the `claude plugin` and `gh api` commands
     plugin-clean runs, gh_capture for the gh that reads an edit's current body (spec 050), and
     web for github.com's device flow and the token revoke app-login and app-logout send (spec
-    051), as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -"""
+    051), and spec_checkout for the checkout and origin `spec open` commits to and pushes (spec
+    053), as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -, and
+    gh_capture also the gh whose output `spec open` reads"""
     refused.begin()  # each refused key is said once per command, however often it loads the config
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
@@ -917,6 +948,12 @@ def main(
         )
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
         return _gh(root, passed, reach, env, user_home, gh_runner or run_gh, readers)
+    if args.command == "spec":
+        readers = _GhReaders(
+            merge_reader or _gh_reader, credit_reader or _credit_reader, stdin or sys.stdin, gh_capture or capture_gh
+        )
+        reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
+        return _spec_open(root, args, _GhPath(reach, env, user_home, readers), spec_checkout)
     if args.command == "plugin-clean":  # needs no --repo and no config (spec 039)
         where = stdin or sys.stdin
         return plugin_clean.clean(claude or run_command, user_home, args.apply, where.isatty(), print)
@@ -1498,11 +1535,14 @@ AS_HOST = "--as-host"
 
 
 def _host_write_refused(
-    root: Path, top: Path | None, origin: str | None, config: bool, gh_args: list[str]
+    root: Path, top: Path | None, origin: str | None, config: bool, gh_args: list[str] | None
 ) -> ReleaseError:
     """S-037-1, S-037-2: the exit 2 of a write with no [agents] app_id, which neither the repo
-    ([agents] identity = "host") nor the call (--as-host) allows, naming the repo and both fixes"""
-    repo = repo_value(gh_args) or origin or (str(top) if top is not None else f"the folder {root} (no git checkout)")
+    ([agents] identity = "host") nor the call (--as-host) allows, naming the repo and both fixes;
+    without gh_args (spec open's writes, S-053-7) only the repo's fix, since no one call allows
+    a command of shipmill's own"""
+    named = None if gh_args is None else repo_value(gh_args)
+    repo = named or origin or (str(top) if top is not None else f"the folder {root} (no git checkout)")
     if top is None:
         why = f"the folder {root} is in no git checkout, so it has no {CONFIG_PATH} and no [agents] app_id"
     elif not config:
@@ -1510,12 +1550,14 @@ def _host_write_refused(
     else:
         why = f"{CONFIG_PATH} sets no [agents] app_id"
     command = cli_command()  # #236: the form the person can run, as every hint names it
-    return ReleaseError(
-        f"refusing a write to {repo} as the host's gh login: {why}\n"
+    lines = [
+        f"refusing a write to {repo} as the host's gh login: {why}",
         f'allow it for this repo: give it an App ({command} app-create), or set [agents] identity = "host" in '
-        f"{CONFIG_PATH}\n"
-        f"allow this one call: {command} gh {AS_HOST} {shlex.join(gh_args)}"
-    )
+        f"{CONFIG_PATH}",
+    ]
+    if gh_args is not None:
+        lines.append(f"allow this one call: {command} gh {AS_HOST} {shlex.join(gh_args)}")
+    return ReleaseError("\n".join(lines))
 
 
 def _unreadable_top(root: Path) -> Path | None:
@@ -1979,6 +2021,105 @@ def _gh_default(environ: Mapping[str, str], origin: str | None) -> str | None:
     the checkout's origin; None when neither names one"""
     gh_repo = environ.get("GH_REPO")
     return (named_repo(["-R", gh_repo]) if gh_repo else None) or origin
+
+
+@dataclass(frozen=True, slots=True)
+class _GhPath:
+    """What `shipmill gh` runs with besides its arguments, for a command of shipmill's own whose
+    GitHub calls go through it (spec 053)"""
+
+    reach: _GhHub
+    environ: Mapping[str, str]
+    home: Path
+    readers: _GhReaders
+
+
+def _spec_open(root: Path, args: argparse.Namespace, path: _GhPath, checkout: spec_open.Checkout | None) -> int:
+    """Spec 053: `spec open`, in the checkout's own repo, its GitHub reads and writes through
+    `shipmill gh`'s path; prints the pull request's URL"""
+    if not root.is_dir():
+        raise ReleaseError(f"--repo {root} is not a folder")
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(f"spec open runs in the repo's checkout, and git can't read {root}: `git -C {root} status`")
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    repo = _origin_repo(top)
+    if repo is None:
+        raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so spec open has no repo to open the pull request in")
+    request = spec_open.Request(args.path, args.issue, tuple(args.with_paths), args.body_file)
+    hub = _SpecHub(top, repo, path)
+    url = spec_open.open_spec(
+        top, repo, request, checkout or spec_open.GitCheckout(top), hub, lambda: _spec_writes(top, path)
+    )
+    print(url)
+    return 0
+
+
+def _spec_writes(top: Path, path: _GhPath) -> None:
+    """S-053-7: what `shipmill gh` checks before a write's token, before spec open's first
+    write: with [agents] app_id, the App's key (SHIPMILL_APP_KEY, else the default path);
+    without it, the refusal of a write as the host's login unless [agents] identity = "host".
+    The token itself is minted by the reads that follow, through `shipmill gh`"""
+    identity = gh_identity_of(top)
+    if identity.app_id is None:
+        if identity.identity is not WriteAs.HOST:
+            raise _host_write_refused(top, top, _known_origin(top), identity.config, None)
+        return
+    require_key(session_key(identity.app_id, path.environ, path.home))
+
+
+class _SpecHub:
+    """spec open's GitHub calls, each one `shipmill gh`'s (`_gh`): as the App with [agents]
+    app_id, as the decider for `pr create` with author = "decider" (D-65), and with the agent
+    marker on every body it writes (D-62); gh's output read through the capture"""
+
+    def __init__(self, top: Path, repo: str, path: _GhPath) -> None:
+        self._top = top
+        self._repo = repo
+        self._path = path
+
+    def _run(self, gh_args: list[str]) -> tuple[int, str]:
+        said: list[str] = []
+        capture = self._path.readers.current
+
+        def runner(argv: Sequence[str], env: Mapping[str, str]) -> int:
+            code, out = capture(argv, env)
+            said.append(out)
+            return code
+
+        path = self._path
+        code = _gh(self._top, gh_args, path.reach, path.environ, path.home, runner, path.readers)
+        return code, "".join(said)
+
+    def record(self, number: int) -> spec_open.Record | None:
+        route = f"repos/{self._repo}/issues/{number}"
+        code, out = self._run(["api", route])
+        try:
+            data = json.loads(out) if out.strip() else None
+        except json.JSONDecodeError:
+            data = None
+        if code != 0:
+            if isinstance(data, dict) and data.get("message") == "Not Found":
+                return None
+            raise ReleaseError(f"gh api {route} exited {code}, so #{number} can't be read")
+        if not isinstance(data, dict) or data.get("state") not in ("open", "closed"):
+            raise ReleaseError(f"gh api {route} answered no issue's state: {out.strip()[:200]!r}")
+        return spec_open.Record(pull="pull_request" in data, open=data["state"] == "open")
+
+    def open_pull(self, title: str, body: str, head: str, base: str) -> str:
+        args = ["pr", "create", "-R", self._repo, "--head", head, "--base", base, "--title", title, "--body", body]
+        code, out = self._run(args)
+        if code != 0:
+            raise ReleaseError(f"gh pr create exited {code}")
+        lines = [line.strip() for line in out.splitlines() if line.strip()]
+        if not lines:
+            raise ReleaseError("gh pr create printed no pull request URL")
+        return lines[-1]
+
+    def comment(self, number: int, body: str) -> None:
+        code, _ = self._run(["issue", "comment", str(number), "-R", self._repo, "--body", body])
+        if code != 0:
+            raise ReleaseError(f"gh issue comment {number} exited {code}")
 
 
 def _app_create(
