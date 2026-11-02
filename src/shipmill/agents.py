@@ -269,6 +269,7 @@ class AgentsConfig:
     retry_hours: int  # unchanged findings start a new session after this
     prune_hours: int = _PRUNE_HOURS  # the gate prunes landed worktrees this often; 0: every tick (spec 045)
     sweep_hours: int = _SWEEP_HOURS  # the gate reads the timed sections this often (spec 046)
+    catch_up: bool = True  # each tick fast-forwards the local default branch when it can't lose work (#886, D-66)
     notify: bool = True  # a desktop notification when a session waits on you
     remind_hours: int = _REMIND_HOURS  # repeat it while the session still waits
     max_wait_minutes: int = _MAX_WAIT_MINUTES  # stop a session that waited this long; 0: never
@@ -300,6 +301,7 @@ class AgentsConfig:
             "retry_hours",
             "prune_hours",
             "sweep_hours",
+            "catch_up",
             "notify",
             "remind_hours",
             "max_wait_minutes",
@@ -338,6 +340,7 @@ class AgentsConfig:
             retry_hours=retry,
             prune_hours=prune_hours,
             sweep_hours=sweep_hours,
+            catch_up=table.boolean("catch_up", default=True),
             notify=table.boolean("notify", default=True),
             remind_hours=remind,
             max_wait_minutes=max_wait,

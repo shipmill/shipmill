@@ -1,0 +1,3 @@
+### Added
+
+- Each `shipmill gate` tick catches the local default branch up to `origin/<default>` by fast-forward only, so the maintainer's checkout no longer stays behind until someone pulls (D-66): `git fetch origin <default>:<default>` when no worktree has it checked out, and `git pull --ff-only` in the main checkout when it has it checked out, its tree is clean, and the branch is only behind. A dirty tree, a branch checked out in another worktree, or one ahead or diverged changes nothing and stays in `shipmill status`. The tick prints `catch-up: main 3 commits → origin/main` (a dry run: `would catch up: ...`), `--json` adds `"catch_up"`, a failure prints `catch-up failed: <first line>` and never fails the tick, and `[agents] catch_up = false` turns it off (#886)
