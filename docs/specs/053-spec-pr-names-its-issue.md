@@ -1,6 +1,6 @@
 # S-053: A spec pull request names its feature issue, and an approved spec no issue follows is reported
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -127,3 +127,18 @@ the manual steps 4 and 5 of `spec-gate.md`.
 - shipmill/shipmill#897: S-053-11, S-053-12, S-053-13, S-053-14
 
 ## Verification
+
+- S-053-1: read `open_spec` in `src/shipmill/spec_open.py` on main: every check runs before `checkout.publish`, which builds one commit on `origin/<default>` in a scratch index and pushes `spec/NNN-<slug>`; the body starts `Spec for #N`, the verdict starts `Triage: **feature**.` and ends with the hold sentence, and the CLI prints the URL; tests/test_spec_open.py drives it against a real git origin, holds
+- S-053-2: `verdict` names `spec.goals` as `Serves: G-n.` and none for `serves: quality bar` (`read_spec`); the `--body-file` text follows `Spec for #N` after a blank line; `--with` paths go in the same `publish` call; holds
+- S-053-3: ran `shipmill spec open docs/specs/053-spec-pr-names-its-issue.md` without `--issue` in a checkout: exit 2, "a spec pull request needs its feature issue: pass --issue N, ... spec open never files it (spec 053), and nothing was written", no branch made; holds
+- S-053-4: `open_spec` refuses a missing record, a pull request, and a closed issue, all before `publish`; holds
+- S-053-5: `SpecPath.parse` refuses another path, `check_specs` runs `specs.py check` and prints its messages, and a status other than `approved` is refused, all before `publish`; holds
+- S-053-6: `checkout.remote_branch(branch)` is read before `publish`, and an existing branch is refused and left alone; holds
+- S-053-7: `app()` runs before the issue read and the push, and the writes go through `shipmill gh`'s path (`_spec_writes`), so without the App it exits 2 with `shipmill gh`'s reason; holds
+- S-053-8: the verdict's hold sentence names only `<owner/repo>#<PR>`, which `triage_state.py` reads BLOCKED while the pull request is open and UNBLOCKED once merged (tests/test_spec_open.py runs the real script on it); holds
+- S-053-9: read `skills/github-pr-triage/scripts/pr_gate.py`: a file `docs/specs/NNN-<slug>.md` with the files API's status `added` and no body line matching `Spec for #N` (after an optional bullet, `owner/repo#N` of the same repo) naming an open issue reads REFUSED, exit 6, with `  spec: names no feature issue: ...`, with no author condition; holds
+- S-053-10: an open issue named on that line passes, and only `added` spec paths are checked, so an edit isn't; holds
+- S-053-11: ran the new `spec_rows` read-only against shipmill/shipmill's main (triage_state.py's lines, then one `gh api repos/shipmill/shipmill/commits/<sha>/pulls`): it printed one row, `SPEC_UNSPLIT S-047 The gate's sweep proposes config upgrades, and a fleet report shows who relies on a deprecated key (docs/specs/047-upgrades-reach-every-repo.md): approved, no build issues, no open issue follows it`, fix `/shipmill:github-issue-triage shipmill/shipmill`, a true case: #766 added it naming no issue, and nothing follows it; the row is an ISSUES row, an action, so the watch exits 1 (a `--tier 6` run against a real git origin exits 1); holds
+- S-053-12: on the same main the 48 other specs gave no row: drafts and built specs are skipped, approved ones with Issues lines too, and spec 053 itself, approved with Issues lines; an issue reading BLOCKED or UNBLOCKED on the adding pull request, or whose body names the file (`specs` in `triage_state.py --json`), drops the row; holds
+- S-053-13: `src/shipmill/walk.py` places `ISSUES SPEC_UNSPLIT` in tier 6 after UNBLOCKED, `Finding.kind` reads it from the detail's first word, the handed fingerprint is the row's, and the session's prompt names `ISSUES SPEC_UNSPLIT docs/specs/NNN-<slug>.md (tier 6)` with the fix `/shipmill:github-issue-triage <owner/repo>`; holds
+- S-053-14: read `skills/github-issue-triage/references/spec-gate.md`: step 4 opens the spec PR with `shipmill spec open` in place of the manual steps 4 and 5, and "An approved spec nobody split" says how triage takes SPEC_UNSPLIT up; `skills/github-ship-watch/SKILL.md` lists the row and `skills/github-issue-triage/SKILL.md`'s step 7 names it; holds

@@ -230,6 +230,11 @@ marker <!-- shipmill-direction --> as its body's first line, opened by an OWNER,
 COLLABORATOR or the --bot-login) carries "direction": true, whatever its state, so
 github-ship-watch keeps it out of its issue rows without reading it again.
 
+With --json, an open issue whose body names a spec file, docs/specs/NNN-<slug>.md (a link
+to it included), carries "specs", those paths in the order the body names them, each once,
+whatever its state: github-ship-watch's SPEC_UNSPLIT reads it as following the spec (spec
+053) without reading the issue again. A line without such a path has no "specs".
+
 With --label LABEL (repeatable), only the open issues carrying any of the labels are read
 and classified, the recently closed ones as without it: shipmill gate's tier 4 reads the
 items labelled needs-decision or decided this way (spec 046).
@@ -641,6 +646,9 @@ WORKFLOW_BOT = "github-actions[bot]"  # who the release workflow writes as
 # that is its body's first line; github-ship-watch asks it, so triage posts no verdict on it
 DIRECTION_LABEL = "shipmill-direction"
 DIRECTION_MARKER = "<!-- shipmill-direction -->"
+# A spec file an issue's body names (spec 053), specs.py's NAME under docs/specs/: a link to
+# it reads too, a longer word around it doesn't
+SPEC_FILE = re.compile(r"(?<![\w.-])docs/specs/\d{3,}-[a-z0-9]+(?:-[a-z0-9]+)*\.md(?![\w-]|\.\w)")
 # A goal's plan (spec 028): product-intake's intake_state.py PLAN_LABEL, and the verdict its
 # triage comment on a plan starts with, "Triage: **plan**. ..."
 PLAN_LABEL = "goal-plan"
@@ -1726,6 +1734,11 @@ def direction_issue(issue: dict[str, Any], bot_login: str | None) -> bool:
     return trusted(login(issue.get("author")), str(issue.get("authorAssociation") or "NONE"), bot_login)
 
 
+def spec_files(body: str) -> list[str]:
+    """The spec files an issue's body names, each once, in its order (spec 053)"""
+    return list(dict.fromkeys(SPEC_FILE.findall(body)))
+
+
 def assignees(issue: dict[str, Any]) -> list[str]:
     """The logins a person's item is assigned to"""
     return [str(n["login"]) for n in issue["assignees"]["nodes"]]
@@ -2156,6 +2169,9 @@ def main() -> int:
         row: dict[str, Any] = {"number": issue["number"], "state": state, "title": issue["title"], "note": note}
         if direction_issue(issue, args.bot_login):  # spec 034: github-ship-watch's, never in its issue rows
             row["direction"] = True
+        linked = spec_files(issue["body"] or "")
+        if linked:  # spec 053: the specs it follows, for github-ship-watch's SPEC_UNSPLIT
+            row["specs"] = linked
         if state == "WITH_PERSON":  # whom it waits on, for github-ship-watch's ISSUES_OPEN row
             # a parent's check waits on the person its check-waiting comment names (#740)
             waits = None if person_item(issue) else check_waiting(issue["comments"]["nodes"], args.bot_login, None)

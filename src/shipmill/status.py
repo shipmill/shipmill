@@ -166,6 +166,8 @@ ISSUE_LINES = (
 # with what checking it takes (a person's item closed by hand: its ## Check, spec 017)
 CLOSED_LINES = (("suspect close", "SUSPECT_CLOSE", ""), ("verify close", "VERIFY_CLOSED", ": run its ## Check"))
 CLOSED_STATES = {state for _, state, _ in CLOSED_LINES}
+# spec 053: watch_state.py's ISSUES row for an approved spec nobody split, `SPEC_UNSPLIT S-NNN <title> (<path>): ...`
+SPEC_UNSPLIT = "SPEC_UNSPLIT"
 # a GitHub login, as triage_state.py's WITH_PERSON line names its assignees: watch_state.py's
 # LOGIN (tests/test_ship_watch.py keeps them equal); shown, never any other text (D-16)
 LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$")
@@ -1397,6 +1399,9 @@ def item_lines(facts: Facts) -> list[str]:
     # S-039-6: the project- and local-scope installs that shadow the user install, with plugin-clean
     lines += _fixed("plugin", [(r.detail.partition("; ")[0], fixed(r)) for r in of("PLUGIN_SHADOWING")])
     lines += _fixed("upgrade", [upgrade_value(facts, o) for o in facts.upgrades])
+    # spec 053: an approved spec nobody split, an ISSUES row of its own that triage_state.py doesn't read
+    unsplit = [r for r in of("ISSUES") if r.detail.startswith(f"{SPEC_UNSPLIT} ")]
+    lines += _fixed("to split", [(f"{r.detail.split(' ')[1]} {r.subject}", r.fix) for r in unsplit])
     # an upgrade's issue is github-ship-watch's, listed on its upgrade line, never as triage's work
     owned = {o.issue for o in facts.upgrades if o.issue is not None}
     for name, states in ISSUE_LINES:
