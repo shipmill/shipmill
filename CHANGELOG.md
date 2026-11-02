@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.109.0] - 2026-11-02
+
+### Added
+
+- The ship watch reports an approved spec nobody split (spec 053): an ISSUES row `SPEC_UNSPLIT S-NNN <title> (docs/specs/NNN-<slug>.md): approved, no build issues, no open issue follows it`, with `/shipmill:github-issue-triage <owner/repo>` as its fix, for a spec on the default branch that is `approved`, lists no build issue, and that no open issue follows (none links its file in its body, none reads BLOCKED or UNBLOCKED on the pull request that added it); `shipmill gate` takes it up in tier 6, `shipmill status` lists it as `to split`, `triage_state.py --json` prints the spec files an open issue's body links as `specs`, and the spec gate opens a spec pull request with `shipmill spec open` and says how triage finds or files the feature issue and splits such a spec (#897)
+
 ## [0.108.0] - 2026-11-02
 
 ### Added
@@ -2183,7 +2189,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.108.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.109.0...HEAD
+[0.109.0]: https://github.com/shipmill/shipmill/compare/v0.108.0...v0.109.0
 [0.108.0]: https://github.com/shipmill/shipmill/compare/v0.107.1...v0.108.0
 [0.107.1]: https://github.com/shipmill/shipmill/compare/v0.107.0...v0.107.1
 [0.107.0]: https://github.com/shipmill/shipmill/compare/v0.106.0...v0.107.0
