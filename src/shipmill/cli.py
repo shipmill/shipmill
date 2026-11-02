@@ -1659,7 +1659,12 @@ def _gh(
                     found, f"no trusted person decided pull request #{pull[1]}", app_id, home, hub, env
                 )
             if credit is not None:
-                bot = None if author.writer is None else _bot_account(app(), app_id, api)
+                bot = None
+                if author.writer is not None:
+                    try:
+                        bot = _bot_account(app(), app_id, api, author.writer.login)
+                    except AsApp as exc:  # S-051-9: as the App, with autonomous mode's trailer
+                        author = _AsApp(dict(env), None, f"author: the App; {exc}")
                 gh_args = _credit(gh_args, credit, readers, trailer, author.writer, bot)
             author.say()
             env = author.env
@@ -1736,16 +1741,15 @@ def _as_decider(
     return _AsApp({**env, "GH_TOKEN": writer.token.access_token}, writer, f"author: `@{login}`, who {first.why}")
 
 
-def _bot_account(login: str, app_id: int, api: Api) -> Account:
+def _bot_account(login: str, app_id: int, api: Api, decider: UserLogin) -> Account:
     """S-051-11: the App's bot account, `<slug>[bot]`, its id read from GET /users/<slug>[bot],
-    named by its login alone in the merge's Co-authored-by; exit 2 when it can't be read, since
-    a merge written as a person names the App"""
+    named by its login alone in the merge's Co-authored-by. Raises AsApp, naming the decider in
+    a code span (D-61), when it can't be read, since a merge written as a person names the App"""
     try:
         return Account(bot_id(login.removesuffix("[bot]"), app_id, api), login, None)
     except ReleaseError as exc:
-        raise ReleaseError(
-            f"a merge written as its decider names the App's bot {login} in Co-authored-by (spec 051), whose user "
-            f"id can't be read: {exc}"
+        raise AsApp(
+            f"a merge as `@{decider}` names the App's bot {login} in Co-authored-by, whose user id can't be read: {exc}"
         ) from None
 
 

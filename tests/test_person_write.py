@@ -22,7 +22,7 @@ from .test_agent_marker_readers import BOT as REPO_BOT
 from .test_agent_marker_readers import QUESTION, SKILLS, issue, load
 from .test_agent_marker_readers import bot as gql_bot
 from .test_agent_marker_readers import comment as gql_comment
-from .test_app import BOT, BOT_ID
+from .test_app import APP_ID, BOT, BOT_ID
 from .test_app_gh_merge import connected
 from .test_credit import APP, HUBOT_TRAILER, OCTOCAT_TRAILER, WITH_APP, CreditReader, FakeCredit, approved, body_of
 from .test_decider_token import ASSISTED, ISSUE, MERGE, EnvRunner, UserApi, as_app, as_person, filed, gh, store
@@ -202,7 +202,7 @@ def test_s051_11_autonomous_mode_merges_with_spec_049s_trailers_only(
     assert "--author-email" not in argv and body_of(argv).endswith(OCTOCAT_TRAILER)
 
 
-def test_s051_11_a_bot_id_that_cant_be_read_exits_2_before_gh(
+def test_s051_11_a_bot_id_that_cant_be_read_merges_as_the_app_with_autonomous_modes_trailer(
     repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     key = connected(repo, tmp_path, ASSISTED)
@@ -210,9 +210,13 @@ def test_s051_11_a_bot_id_that_cant_be_read_exits_2_before_gh(
     runner = EnvRunner(capsys)
     reader = CreditReader(FakeCredit(reviews=[approved("octocat", "MEMBER")]))
     api = UserApi(bot=Answer(404, '{"message": "Not Found"}'))
-    with pytest.raises(ReleaseError, match=r"names the App's bot demo-agent\[bot\] in Co-authored-by"):
-        gh(repo, tmp_path, key, MERGE, runner, reader, api)
-    assert runner.calls == []
+    assert gh(repo, tmp_path, key, MERGE, runner, reader, api) == 0  # no exit 2: S-051-9's fallback
+    as_app(runner, f"a merge as `@octocat` names the App's bot {BOT} in Co-authored-by, whose user id can't be "
+           f"read: GitHub has no bot account {BOT} for app_id {APP_ID}")  # fmt: skip
+    [argv] = runner.calls
+    assert "--author-email" not in argv
+    assert body_of(argv).endswith(OCTOCAT_TRAILER) and BOT_TRAILER not in body_of(argv)
+    assert "credit: `@octocat` approved the pull request" in runner.stderr[0]
 
 
 class NoIdApi(UserApi):
