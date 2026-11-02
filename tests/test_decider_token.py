@@ -29,6 +29,7 @@ from shipmill.app_login import (
     client_secret_file,
     decider_token,
     load_user_token,
+    refreshed,
     save_user_token,
     user_file,
 )
@@ -569,6 +570,85 @@ def test_s051_8_a_token_with_no_live_refresh_token_is_deleted_and_the_app_writes
     assert runner.token == APP_TOKEN
     assert "`@octocat`'s token expired and can't be refreshed" in runner.stderr[0]
     assert (web.sent, path.exists()) == ([], False)
+
+
+@dataclass
+class RacingWeb(FakeWeb):
+    """github.com while another `shipmill gh` refreshes the same token: before refusing this
+    call's refresh, the other's outcome lands in the stored file: content written to it, or the
+    file deleted when content is None"""
+
+    path: Path = Path()
+    content: bytes | None = None
+
+    def send(self, method: str, url: str, headers: Mapping[str, str], data: bytes | None) -> Answer:
+        self.sent.append((method, url, dict(urllib.parse.parse_qsl((data or b"").decode()))))
+        if self.content is None:
+            self.path.unlink()
+        else:
+            self.path.write_bytes(self.content)
+        return Answer(200, '{"error": "bad_refresh_token"}')
+
+
+def winner(login: str = "octocat", app_id: int = APP_ID) -> UserToken:
+    """The token another `shipmill gh` stored after it spent the shared refresh token first"""
+    return UserToken(
+        app_id,
+        "Iv1.client",
+        UserLogin(login),
+        NEW_ACCESS,
+        now() + dt.timedelta(hours=8),
+        NEW_REFRESH,
+        now() + dt.timedelta(days=180),
+    )
+
+
+def saved(token: UserToken) -> bytes:
+    return json.dumps(token.record()).encode()
+
+
+def test_s051_8_a_refresh_refused_after_another_won_keeps_the_winners_file(tmp_path: Path) -> None:
+    path = store(tmp_path, dt.timedelta(hours=-1))
+    web = RacingWeb(path=path, content=saved(winner()))
+    token = decider_token(APP_ID, UserLogin("octocat"), tmp_path / "home", UserApi(), web, now())
+    assert (token.access_token, token.refresh_token) == (NEW_ACCESS, NEW_REFRESH)
+    [(_, _, fields)] = web.sent
+    assert fields["refresh_token"] == REFRESH  # this call sent the refresh token the other spent
+    assert load_user_token(path) == token  # the winner's file is kept as it saved it
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        None,  # deleted meanwhile, by another refused refresh or app-logout: no FileNotFoundError
+        b"{not json",  # malformed: deleted, never a traceback
+        saved(winner(login="hubot")),  # another login's token is never taken
+        saved(winner(app_id=APP_ID + 1)),  # nor another App's
+    ],
+)
+def test_s051_8_a_refused_refresh_with_no_winner_in_the_file_writes_as_the_app(
+    tmp_path: Path, content: bytes | None
+) -> None:
+    path = store(tmp_path, dt.timedelta(hours=-1))
+    web = RacingWeb(path=path, content=content)
+    with pytest.raises(AsApp, match="GitHub refused to refresh `@octocat`'s token") as raised:
+        decider_token(APP_ID, UserLogin("octocat"), tmp_path / "home", UserApi(), web, now())
+    assert not path.exists()
+    assert raised.value.__cause__ is None and raised.value.__context__ is None
+    assert not any(secret in str(raised.value) for secret in SECRETS)
+
+
+def test_s051_8_a_dead_refresh_token_keeps_a_file_app_login_wrote_meanwhile(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    path = store(tmp_path, dt.timedelta(hours=-1), refresh=None)
+    stale = load_user_token(path)
+    save_user_token(home, winner())  # app-login ran again after this call read the file
+    web = FakeWeb()
+    assert refreshed(stale, home, web, now()) == load_user_token(path)
+    path.unlink()  # app-logout ran after this call read the file: no crash on the missing file
+    with pytest.raises(AsApp, match="token expired and can't be refreshed"):
+        refreshed(stale, home, web, now())
+    assert web.sent == []
 
 
 def test_s051_8_github_out_of_reach_for_the_refresh_keeps_the_file_and_the_app_writes(

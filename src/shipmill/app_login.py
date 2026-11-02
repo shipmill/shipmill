@@ -472,10 +472,34 @@ def _again(login: UserLogin) -> str:
     return f"`@{login}` runs `{cli_command()} app-login` again to write as themselves"
 
 
+def _spent(token: UserToken, path: Path) -> UserToken | None:
+    """The token another process stored in path since token was read from it (a concurrent
+    refresh that spent the single-use refresh token first, or app-login run again), when it is
+    for the same App and login; otherwise None, the file deleted when it is still there. A file
+    malformed meanwhile is deleted too, never quoted"""
+    try:
+        stored = load_user_token(path)
+    except FileNotFoundError:
+        return None
+    except ReleaseError:
+        stored = None
+    if (
+        stored is not None
+        and stored.refresh_token != token.refresh_token
+        and stored.app_id == token.app_id
+        and stored.login.key == token.login.key
+    ):
+        return stored
+    path.unlink(missing_ok=True)
+    return None
+
+
 def refreshed(token: UserToken, home: Path, web: Web, now: dt.datetime) -> UserToken:
     """S-051-8: the token refreshed with its refresh token and stored again in home's file,
     atomically and 0600. A refresh token that is gone or expired, and a refresh GitHub refuses,
-    delete the stored file and raise AsApp; GitHub out of reach raises AsApp and keeps the
+    delete the stored file and raise AsApp, unless another process stored a newer token in the
+    file meanwhile (refresh tokens are single-use, so a concurrent refresh spends this one):
+    then that token is returned and the file kept. GitHub out of reach raises AsApp and keeps the
     file. The App's client secret goes with the request when its file is in home
     (client_secret_file); a secret file that can't be used raises AsApp before any request and
     keeps the stored file"""
@@ -484,7 +508,8 @@ def refreshed(token: UserToken, home: Path, web: Web, now: dt.datetime) -> UserT
     if token.refresh_token is None or (
         token.refresh_token_expires_at is not None and token.refresh_token_expires_at <= now
     ):
-        path.unlink()
+        if (stored := _spent(token, path)) is not None:
+            return stored
         raise AsApp(
             f"`@{login}`'s token expired and can't be refreshed, so its stored file is deleted; {_again(login)}"
         )
@@ -507,7 +532,8 @@ def refreshed(token: UserToken, home: Path, web: Web, now: dt.datetime) -> UserT
     except ReleaseError:  # an answer with no token in it: the refresh token may be spent, so the file is no use
         error, granted = "no token in its answer", None
     if granted is None:
-        path.unlink()
+        if (stored := _spent(token, path)) is not None:
+            return stored
         raise AsApp(
             f"GitHub refused to refresh `@{login}`'s token ({error}), so its stored file is deleted; {_again(login)}"
         )
