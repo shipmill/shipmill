@@ -547,3 +547,11 @@ entry that supersedes it, never by editing an old one.
 - Why: The App authored nearly everything that landed, so the profiles of the people who decided the work showed almost none of it (G-8); writing as a person must stay that person's choice, and must never let an agent's text read as their decision
 - Applies to: src/shipmill/agents.py, src/shipmill/app_gh.py, src/shipmill/app_login.py, src/shipmill/credit.py, src/shipmill/agent_as_person.py, src/shipmill/doctor.py, [agents] author, [agents] credit, shipmill gh, shipmill app-login
 - Enforced by: the spec 051 tests (with the implementing PRs)
+
+## D-66: The gate fast-forwards the maintainer's default branch when that can't lose work
+
+- Decided: 2026-11-02, in shipmill/shipmill#886
+- Rule: Each shipmill gate tick, unless [agents] catch_up = false (default true), catches the local default branch of the repo's checkout up to origin/<default> by fast-forward only: with git fetch origin <default>:<default> when the branch isn't checked out, and with git pull --ff-only in the checkout when it is checked out, its working tree is clean, and the branch is only behind; a dirty tree, another branch, or a branch ahead or diverged changes nothing and stays reported by shipmill status; the gate never switches, stashes, resets, or rebases the checkout, a failed catch-up never fails the tick, and the tick says what moved. shipmill status stays read-only (D-55), and a session still pulls the user's checkout only when asked
+- Why: Nothing in the pipeline moves the maintainer's local default branch: implementers, reviewers, and the gate work from origin/<default>, so on 2026-11-02 every local default branch on one host, across 13 repos, was 3 to 80 commits behind and none diverged. People and interactive sessions then read old code and decisions, cut branches that start behind, and run an editable install dozens of commits old, and the status line's manual fix is due again after every landing. The gate runs next to the checkout and fetches every tick, and a fast-forward of a clean tree can't lose work, so it is on by default; an opt-in would leave the problem with everyone who doesn't know the key
+- Applies to: src/shipmill/gate.py, src/shipmill/agents.py, src/shipmill/status.py, [agents] catch_up, the maintainer's checkout
+- Enforced by: review
