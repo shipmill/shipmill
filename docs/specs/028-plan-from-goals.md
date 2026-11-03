@@ -152,6 +152,19 @@ comment's first line decides:
 | starts with `decline` | decline | Closes the plan as not planned; the rest of the comment is the reason |
 | anything else | edit | Rewrites the body as asked, raising `rev`, and posts the `plan-revised` comment; the plan waits again |
 
+One comment by the `--bot-login` is an answer too (D-68, #917): the maintainer's answer
+given in a session, which a repo with `[agents] app_id` can only post as the App. Its first
+line is the needs-decision relay, ``Decision by `@<login>`, relayed by <agent>`` (the login
+bare or in a code span, D-61, read with `triage_state.py`'s pattern), and it counts only
+when `<login>` is a maintainer, given as `--role maintainer=<login>` (the flags `shipmill
+roles --flags` prints from `[agents.roles]`, which the watch passes through); without a
+maintainer role no relay counts. It is read like any other answer, newer than the newest
+revision and the newest answer deciding, from its first non-blank line after the relay
+line, with the agent marker left out: `accept`, `decline` and its reason, or anything else
+as an edit, and an accept older than the body's last edit is stale. A relay naming anyone
+else, even a collaborator, and every other comment by the `--bot-login` are still never an
+answer.
+
 The maintainer may also edit the body by hand before answering: an accept applies to the
 body as it is when the accept was posted, so an accept older than the body's last edit is
 stale and the plan reads PLAN_OPEN with the note `edited after accept`. A body
@@ -226,7 +239,7 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 - S-028-5: A goal with an open plan issue never reads PLAN_DUE
 - S-028-6: `plans.py check` exits 0 on a well-formed plan body and 2 naming the line and rule for each of: a missing or malformed first-line marker, a goal id the direction doesn't list, a missing, extra, or out-of-order heading, a Work item not of the form `- W-<n> <feature|fix|existing>: <text>`, a duplicate item id, an `existing` item that isn't one issue reference, an `(after W-k)` naming an item not before it, and a Milestone section that isn't one line
 - S-028-7: `plans.py items <owner/repo>#N --json` lists each item with its id, kind, text, the items it comes after, and the issue that carries its plan-item marker, or none
-- S-028-8: A plan reads PLAN_OPEN while no comment newer than its newest revision comes from an OWNER, MEMBER, or COLLABORATOR other than the `--bot-login`; a comment by any other author, or a reaction, changes nothing
+- S-028-8: A plan reads PLAN_OPEN while no comment newer than its newest revision comes from an OWNER, MEMBER, or COLLABORATOR other than the `--bot-login`; a comment by any other author, a comment by the `--bot-login` save a relay S-028-18 reads, or a reaction, changes nothing
 - S-028-9: A trusted answer whose first line is `accept` (any case, an optional final period) reads PLAN_ACCEPTED, one starting with `decline` reads PLAN_ANSWERED with the note `decline`, and any other reads PLAN_ANSWERED with the note `edit`; a `plan-revised` comment by the `--bot-login` with a higher `rev` makes an earlier answer stale
 - S-028-10: An accept older than the body's last edit reads PLAN_OPEN with the note `edited after accept`
 - S-028-11: An accepted plan reads PLAN_ACCEPTED while a `feature` or `fix` item has no issue whose body's first line is its plan-item marker, or while its Milestone names a title and an item of this repository isn't in that milestone, and PLAN_FILED once neither holds
@@ -236,6 +249,7 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 - S-028-15: product-intake's skill files each `feature` and `fix` item of an accepted plan in Work order with the plan-item marker and `Serves: G-n`, links it as a sub-issue of the plan, turns each `(after W-k)` into a `Depends on` line and GitHub's relation, and dispatches no implementer and writes no spec
 - S-028-16: The spec gate's Where features come from lists a feature item of an accepted plan as chosen work, and still requires its own spec to merge with `status: approved` before its build
 - S-028-17: product-intake's skill never accepts, declines, or edits a plan without a trusted answer, never adds a goal or edits `docs/product.md` for a plan, and under `[autonomy] intake = "observe"` reports a due plan's text without opening an issue
+- S-028-18: A comment by the `--bot-login` whose first line is the relay `Decision by @<login>` (the login bare or in a code span) naming a maintainer passed with `--role`, newer than the newest revision, is read as that answer from its next non-blank line (accept, decline, or edit); a relay naming anyone else, or with no maintainer role given, changes nothing
 
 ## Out of scope
 
@@ -261,6 +275,7 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 - D-32: a milestone is the maintainer's list, and the WIP limit is `[agents] wip`
 - D-34: the work serves the product's written direction
 - D-38: an accepted goal plan may create the milestone it names
+- D-68: the `--bot-login`'s relay of a maintainer's answer is that answer on a goal plan
 
 ## Issues
 
@@ -269,6 +284,7 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 - shipmill/shipmill#514: S-028-8, S-028-9, S-028-10, S-028-11, S-028-12
 - shipmill/shipmill#515: S-028-13, S-028-14
 - shipmill/shipmill#517: S-028-15, S-028-16, S-028-17
+- shipmill/shipmill#917: S-028-18
 
 ## Verification
 
@@ -279,7 +295,7 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 - S-028-5: tests/test_intake_plans.py (test_s028_5_*): a goal with an open plan issue never reads PLAN_DUE; passes
 - S-028-6: tests/test_plans.py (test_s028_6_*): `plans.py check` exits 0 on a well-formed body and 2 naming the line and rule for each listed fault; passes
 - S-028-7: tests/test_plans.py (test_s028_7_*): `plans.py items` lists each item with its id, kind, text, after, and filed issue, reads a marker only from a trusted author of this repo, and stops rather than truncating past one page; passes
-- S-028-8: tests/test_intake_plans.py (test_s028_8_*): PLAN_OPEN with no trusted answer, the session's own comments never an answer, and a trusted comment older than the newest revision stale; passes
+- S-028-8: tests/test_intake_plans.py (test_s028_8_*): PLAN_OPEN with no trusted answer, the session's own comments never an answer save a relay naming a maintainer (S-028-18), and a trusted comment older than the newest revision stale; passes
 - S-028-9: tests/test_intake_plans.py (test_s028_9_*): `accept` reads PLAN_ACCEPTED, `decline` and any other answer PLAN_ANSWERED with their notes, the newest trusted answer decides, and only the `--bot-login`'s higher `rev` makes an earlier answer stale; passes
 - S-028-10: tests/test_intake_plans.py (test_s028_10_*): an accept older than the body's last edit reads PLAN_OPEN `edited after accept`; passes
 - S-028-11: tests/test_intake_plans.py (test_s028_11_*): PLAN_ACCEPTED until every `feature` and `fix` item carries its marker and every item of this repo is in the named milestone, then PLAN_FILED; passes
@@ -289,3 +305,4 @@ anyone but the `--bot-login` is UNTRUSTED and starts no session (D-16).
 - S-028-15: tests/test_plan_skill.py and tests/test_chains.py (test_s028_15_*), and product-intake's SKILL.md step 6 read: each `feature` and `fix` item filed in Work order with the plan-item marker and `Serves: G-n`, linked with `chains.py link --child --no-text`, each `(after W-k)` a `Depends on` line and `--blocked-by` relation, and no implementer or spec; passes
 - S-028-16: tests/test_plan_skill.py (test_s028_16_*), and spec-gate.md's Where features come from read: a feature item of an accepted plan is chosen work that still needs its own spec merged with `status: approved`; passes
 - S-028-17: tests/test_plan_skill.py (test_s028_17_*), and product-intake's SKILL.md rule 9 and step 6 read: no plan decided without a trusted answer, no goal added or `docs/product.md` edited, and under `observe` the due plan's text reported with nothing opened; passes
+- S-028-18: tests/test_intake_plans.py and tests/test_watch_plans.py (test_s028_18_*): the `--bot-login`'s relay naming a maintainer reads accept, decline with its reason, or edit from its next non-blank line, the login bare or in a code span, the agent marker left out, stale before the newest revision and after a body edit for an accept; a relay naming anyone else, without a maintainer role, or by anyone but the `--bot-login`, and any other App comment, is no relayed answer; the pattern and the `--role` check agree with `triage_state.py`'s, and the watch passes its `--role` flags through; passes

@@ -2,6 +2,7 @@
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -389,6 +390,7 @@ def plan_states(
     *,
     bot_login: str | None = BOT,
     filing: Any = None,
+    maintainers: frozenset[str] = frozenset(),
 ) -> dict[int, tuple[str, str]]:
     """Each plan issue's row as (state, note); without a filing reader, every accepted plan
     reads PLAN_ACCEPTED with the note `unfiled`"""
@@ -412,6 +414,7 @@ def plan_states(
         room=lambda limit: 1,
         run=fake,
         filing=filing if filing is not None else (lambda issue, plan: ("PLAN_ACCEPTED", "unfiled")),
+        maintainers=maintainers,
     )
     return {r.number: (r.state, r.note) for r in found if r.kind == "plan"}
 
@@ -508,6 +511,143 @@ def test_s028_10_an_accept_older_than_the_last_edit_reads_open(ist: ModuleType) 
 
 def test_s028_10_an_edit_after_an_edit_or_decline_answer_changes_nothing(ist: ModuleType) -> None:
     assert state_of(ist, open_plan(20, owner("decline", 10), edited=at(11))) == ("PLAN_ANSWERED", "decline")
+
+
+# -- an answer given in a session, relayed by the App (#917, D-68)
+
+MAINTAINERS = frozenset({"maintainer"})
+AGENT = "\n\n<!-- shipmill:agent -->"
+
+
+def relay(answer: str, hour: int, *, named: str = "`@maintainer`", bot: bool = True) -> dict[str, Any]:
+    """The needs-decision relay of an answer, as `shipmill gh` posts it with the agent marker"""
+    body = f"Decision by {named}, relayed by Claude Code\n\n{answer}{AGENT}"
+    if bot:
+        return comment(body, hour, author="shipmill-app", bot=True)
+    return comment(body, hour, author="maintainer", association="OWNER")
+
+
+@pytest.mark.parametrize("named", ["`@maintainer`", "@maintainer", "@Maintainer", "`@MAINTAINER`"])
+@pytest.mark.parametrize("answer", ["accept", "Accept.", "  ACCEPT  "])
+def test_s028_18_a_relayed_accept_naming_a_maintainer_reads_accepted(ist: ModuleType, named: str, answer: str) -> None:
+    relayed = open_plan(20, relay(answer, 10, named=named))
+    assert state_of(ist, relayed, maintainers=MAINTAINERS) == ("PLAN_ACCEPTED", "unfiled")
+
+
+@pytest.mark.parametrize(
+    ("answer", "note"),
+    [
+        ("decline: not this quarter", "decline"),
+        ("Decline", "decline"),
+        ("Split W-2 in two", "edit"),
+        ("accept W-2 only", "edit"),
+    ],
+)
+def test_s028_18_a_relayed_decline_or_edit_reads_answered(ist: ModuleType, answer: str, note: str) -> None:
+    relayed = open_plan(20, relay(answer, 10))
+    assert state_of(ist, relayed, maintainers=MAINTAINERS) == ("PLAN_ANSWERED", note)
+
+
+def test_s028_18_the_answer_is_the_first_non_blank_line_after_the_relay(ist: ModuleType) -> None:
+    body = "Decision by @maintainer, relayed by Claude Code\n\n\n  accept\nThe rest is context." + AGENT
+    spaced = open_plan(20, comment(body, 10, author="shipmill-app", bot=True))
+    assert state_of(ist, spaced, maintainers=MAINTAINERS) == ("PLAN_ACCEPTED", "unfiled")
+    empty = open_plan(
+        20, comment("Decision by @maintainer, relayed by Claude Code" + AGENT, 10, author="shipmill-app", bot=True)
+    )
+    assert state_of(ist, empty, maintainers=MAINTAINERS) == ("PLAN_OPEN", "")  # the marker is no answer
+
+
+def test_s028_18_a_relayed_declines_reason_leaves_the_agent_marker_out(ist: ModuleType) -> None:
+    closed = {"state": "CLOSED", "reason": "NOT_PLANNED"}
+    reasoned = open_plan(20, relay("decline: not this quarter", 10), **closed)
+    assert state_of(ist, reasoned, maintainers=MAINTAINERS) == ("PLAN_DECLINED", "not this quarter")
+    bare = open_plan(20, relay("decline", 10), **closed)
+    assert state_of(ist, bare, maintainers=MAINTAINERS) == ("PLAN_DECLINED", "closed as not planned with no reason")
+
+
+def test_s028_18_a_relay_older_than_the_newest_revision_is_stale(ist: ModuleType) -> None:
+    stale = open_plan(20, relay("Split W-2", 10), revised(2, 11))
+    assert state_of(ist, stale, maintainers=MAINTAINERS) == ("PLAN_OPEN", "")
+    again = open_plan(20, relay("Split W-2", 10), revised(2, 11), relay("accept", 12))
+    assert state_of(ist, again, maintainers=MAINTAINERS) == ("PLAN_ACCEPTED", "unfiled")
+
+
+def test_s028_18_the_newest_answer_decides_relayed_or_not(ist: ModuleType) -> None:
+    later_owner = open_plan(20, relay("accept", 10), owner("decline", 11))
+    assert state_of(ist, later_owner, maintainers=MAINTAINERS) == ("PLAN_ANSWERED", "decline")
+    later_relay = open_plan(20, owner("Split W-2", 10), relay("accept", 11))
+    assert state_of(ist, later_relay, maintainers=MAINTAINERS) == ("PLAN_ACCEPTED", "unfiled")
+
+
+def test_s028_18_an_edit_after_a_relayed_accept_reads_open(ist: ModuleType) -> None:
+    stale = open_plan(20, relay("accept", 10), edited="2026-10-01T10:00:01Z")
+    assert state_of(ist, stale, maintainers=MAINTAINERS) == ("PLAN_OPEN", "edited after accept")
+
+
+@pytest.mark.parametrize("named", ["`@collaborator`", "@maintainer-x", "`@maintainerx`", "@someone"])
+def test_s028_18_a_relay_naming_anyone_else_changes_nothing(ist: ModuleType, named: str) -> None:
+    other = open_plan(
+        20, comment("ok", 9, association="COLLABORATOR", author="collaborator"), relay("accept", 10, named=named)
+    )
+    assert state_of(ist, other, maintainers=MAINTAINERS) == ("PLAN_OPEN", "")
+
+
+def test_s028_18_without_a_maintainer_role_no_relay_counts(ist: ModuleType) -> None:
+    assert state_of(ist, open_plan(20, relay("accept", 10))) == ("PLAN_OPEN", "")
+    no_login = open_plan(20, relay("accept", 10))
+    assert state_of(ist, no_login, bot_login=None, maintainers=MAINTAINERS) == ("PLAN_OPEN", "")
+
+
+def test_s028_18_only_the_bot_logins_relay_is_one(ist: ModuleType) -> None:
+    # anyone else's relay line is a comment like any other: a trusted one's is an edit, an outsider's nothing
+    by_owner = open_plan(20, relay("accept", 10, bot=False))
+    assert state_of(ist, by_owner, maintainers=MAINTAINERS) == ("PLAN_ANSWERED", "edit")
+    body = "Decision by `@maintainer`, relayed by Claude Code\n\naccept"
+    outsider = open_plan(20, comment(body, 10, association="CONTRIBUTOR", author="drive-by"))
+    assert state_of(ist, outsider, maintainers=MAINTAINERS) == ("PLAN_OPEN", "")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "accept" + AGENT,
+        "I relayed it: Decision by `@maintainer`, relayed by Claude Code\n\naccept",
+        "<!-- shipmill:needs-decision -->\nDecision by `@maintainer`, relayed by Claude Code\n\naccept",
+    ],
+)
+def test_s028_18_any_other_app_comment_is_still_never_an_answer(ist: ModuleType, body: str) -> None:
+    app = open_plan(20, comment(body, 10, author="shipmill-app", bot=True))
+    assert state_of(ist, app, maintainers=MAINTAINERS) == ("PLAN_OPEN", "")
+
+
+def test_s028_18_the_relay_pattern_is_triage_states(ist: ModuleType) -> None:
+    path = SCRIPT.parents[2] / "github-issue-triage" / "scripts" / "triage_state.py"
+    spec = importlib.util.spec_from_file_location("triage_state_relay", path)
+    assert spec is not None and spec.loader is not None
+    triage = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = triage
+    spec.loader.exec_module(triage)
+    assert ist.DECISION_BY.pattern == triage.DECISION_BY.pattern
+    for values in (["maintainer=alice,@o/t", "dev=bob"], ["maintainer=Alice,alice"]):
+        assert ist.maintainer_logins(values) == frozenset(
+            u.lower() for u in triage.parse_roles(values)["maintainer"][0]
+        )
+    for bad in (["dev=bob"], ["maintainer="], ["maintainer=a", "maintainer=b"], ["Maintainer=a"], ["maintainer=a b"]):
+        with pytest.raises(ValueError):
+            triage.parse_roles(bad)
+        with pytest.raises(ValueError):
+            ist.maintainer_logins(bad)
+    assert ist.maintainer_logins([]) == frozenset()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["--role", "maintainer=alice"], ["--plans", "--role", "dev=bob"], ["--plans", "--role", "maintainer=a b"]],
+)
+def test_s028_18_a_bad_role_flag_exits_2_before_any_read(args: list[str]) -> None:
+    proc = subprocess.run([sys.executable, str(SCRIPT), "o/r", *args], capture_output=True, text=True, check=False)
+    assert proc.returncode == 2 and "--role" in proc.stderr
 
 
 def carrier(number: int, item: str, *, milestone: str | None = None, trusted: bool = True) -> dict[str, Any]:

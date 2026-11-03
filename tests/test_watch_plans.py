@@ -199,6 +199,28 @@ def test_s028_13_the_watch_runs_intake_state_in_the_checkout(ws: ModuleType, tmp
         ws.plans_run("o/r", tmp_path, "t", execute=lambda cmd, cwd, env: completed(2, err="boom"))
 
 
+def test_s028_18_the_watch_passes_the_role_flags_to_intake_state(ws: ModuleType, tmp_path: Path) -> None:
+    asked: list[list[str]] = []
+
+    def execute(cmd: list[str], cwd: Path | None, env: dict[str, str] | None) -> subprocess.CompletedProcess[str]:
+        asked.append(cmd)
+        return completed(0, intake_lines())
+
+    ws.plans_run("o/r", tmp_path, None, BOT, None, execute, roles=["maintainer=alice", "dev=@o/devs"])
+    assert asked[-1][1:] == [
+        str(ws.INTAKE_STATE),
+        "o/r",
+        "--plans",
+        "--json",
+        "--bot-login",
+        BOT,
+        "--role",
+        "maintainer=alice",
+        "--role",
+        "dev=@o/devs",
+    ]
+
+
 def test_s028_13_the_plans_wait_under_agents_wip(ws: ModuleType) -> None:
     policy = Path(".github/shipmill.toml")
     assert ws.plan_wip(None, policy) is None

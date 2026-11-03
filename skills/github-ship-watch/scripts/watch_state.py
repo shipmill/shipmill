@@ -203,7 +203,7 @@ Intake (github-issue-triage's triage_state.py):
                   action: an interactive session takes them up, D-16)
   PLANS           goals' plans that need a session (spec 028), from product-intake's
                   `intake_state.py --plans --json` (run in the checkout, with --tool when given, the
-                  --bot-login, and [agents] wip as --wip; only when the checkout has
+                  --bot-login, [agents] wip as --wip, and the --role flags; only when the checkout has
                   docs/product.md): PLAN_DUE with its goals (G-n), PLAN_MALFORMED,
                   PLAN_ANSWERED, and PLAN_ACCEPTED with their plan issues (#N); the session
                   runs product intake. With --trusted-only, an open plan issue the
@@ -267,8 +267,9 @@ trust filter of an unattended gate. The config's [product] home (spec 038) goes 
 as --home, which words an upstream report's note; a home that isn't owner/name exits 2.
 Each --role flag (spec 036: a role's resolved fillers, one per role, maintainer included, as
 `shipmill roles --flags` prints them) goes through to triage_state.py as given, so a person's
-item reads ASSIGN_DUE (an ISSUES action) rather than NO_ASSIGNEE; flags triage_state.py would
-refuse exit 2 before anything is read.
+item reads ASSIGN_DUE (an ISSUES action) rather than NO_ASSIGNEE, and to intake_state.py
+--plans, so a plan answer the --bot-login relays for a maintainer counts (D-68); flags
+triage_state.py would refuse exit 2 before anything is read.
 
 Repository settings:
   BRANCH_DELETE_OFF  delete_branch_on_merge is off: merged pull request branches stay on
@@ -3317,15 +3318,18 @@ def plans_run(
     bot_login: str | None = None,
     wip: int | None = None,
     execute: Spawn = spawn,
+    roles: Sequence[str] = (),
 ) -> str:
     """intake_state.py --plans --json's lines, run in the checkout, where it reads the
     direction with `shipmill product show` (the plugin's pinned version, or --tool's when a
-    person passed one) and the config; a failure (exit 2) stops the watch, save the pinned
+    person passed one) and the config, with each of roles as a --role, so a relayed answer
+    naming a maintainer counts (D-68); a failure (exit 2) stops the watch, save the pinned
     shipmill's "no version" error, which it has retried already: that raises PypiWait (#597)"""
     cmd = [sys.executable, str(INTAKE_STATE), repo, "--plans", "--json"]
     cmd += ["--tool", tool] if tool is not None else []
     cmd += ["--wip", str(wip)] if wip is not None else []
     cmd += ["--bot-login", bot_login] if bot_login is not None else []
+    cmd += [item for value in roles for item in ("--role", value)]
     proc = execute(cmd, repo_dir, None)
     if proc.returncode == 2 and tool is None and no_version(proc.stderr) == plugin_version():
         raise PypiWait(plugin_version())
@@ -4718,7 +4722,7 @@ def plan_trust(args: argparse.Namespace, repo_dir: Path, table: dict[str, str] |
     if not args.trusted_only or not (repo_dir / DIRECTION).is_file():
         return frozenset()
     try:
-        lines = plans_run(args.repo, repo_dir, args.tool, args.bot_login, plan_wip(table, POLICY))
+        lines = plans_run(args.repo, repo_dir, args.tool, args.bot_login, plan_wip(table, POLICY), roles=args.role)
     except PypiWait:
         return None
     return plans_rows(lines, args.repo, args.bot_login, True).untrusted
@@ -5124,7 +5128,7 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
     unplanned = None  # PyPI's wait for the plans' pinned shipmill (#597)
     if (repo_dir / DIRECTION).is_file():  # a goal's plan needs goals (spec 028)
         try:
-            lines = plans_run(args.repo, repo_dir, args.tool, args.bot_login, plan_wip(table, POLICY))
+            lines = plans_run(args.repo, repo_dir, args.tool, args.bot_login, plan_wip(table, POLICY), roles=args.role)
             plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only)
         except PypiWait as wait:
             unplanned = wait
