@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.115.0] - 2026-11-03
+
+### Changed
+
+- product-intake's `intake_state.py --plans` reads a comment by the `--bot-login` whose first line is the needs-decision relay (``Decision by `@<login>`, relayed by Claude Code``) as the maintainer's answer to a goal plan when the login is a maintainer given with the new `--role` flags, newer than the plan's newest revision, its accept, decline, or edit read from the next line; `watch_state.py` passes its `--role` flags through, and the skill relays an answer given in the session (D-68) (#917)
+
 ## [0.114.0] - 2026-11-03
 
 ### Changed
@@ -2220,7 +2226,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.114.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.115.0...HEAD
+[0.115.0]: https://github.com/shipmill/shipmill/compare/v0.114.0...v0.115.0
 [0.114.0]: https://github.com/shipmill/shipmill/compare/v0.113.0...v0.114.0
 [0.113.0]: https://github.com/shipmill/shipmill/compare/v0.112.0...v0.113.0
 [0.112.0]: https://github.com/shipmill/shipmill/compare/v0.111.0...v0.112.0
