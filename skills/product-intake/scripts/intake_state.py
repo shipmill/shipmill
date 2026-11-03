@@ -5,7 +5,8 @@ where each opportunity issue is in the maintainer's accept or decline.
 Usage: intake_state.py <owner/repo> [--config PATH] [--label opportunity]
                        [--accepted-label planned] [--marker "Triage:"] [--skip-label L]...
                        [--category C]... [--json]
-                       [--plans [--wip N] [--bot-login LOGIN] [--tool SPEC]]
+                       [--plans [--wip N] [--bot-login LOGIN] [--tool SPEC]
+                                [--role NAME=FILLER[,FILLER...]]...]
 
 Feedback is an open issue, or an open discussion when the repo enables Discussions, that:
   - carries none of SKIP_LABELS (bug, roadmap, and shipmill's own labels, goal-plan among
@@ -82,7 +83,11 @@ first line is <!-- shipmill:plan-revised rev=<k> -->, by the --bot-login, with a
 higher than the revision before it) from an OWNER,
 MEMBER, or COLLABORATOR other than the --bot-login; a triage comment (--marker) and a
 comment whose first line is a shipmill marker are the sessions' own and never an answer,
-and no other comment, reaction, or label is read:
+and no other comment, reaction, or label is read, save one: a comment by the --bot-login
+whose first line is the needs-decision relay, `Decision by @<login>` with the login bare or
+in a code span, naming a maintainer the --role flags give (--role maintainer=<login>, as
+`shipmill roles --flags` prints them; without them no relay counts) is that maintainer's
+answer, read from its first non-blank line after the relay line (D-68):
   PLAN_OPEN         open, with no answer; or its answer is an accept older than the
                     body's last edit, noted "edited after accept"
   PLAN_ANSWERED     open, and the answer's first line starts with `decline` (any case;
@@ -256,6 +261,20 @@ SHIPMILL_MARKER = "<!-- shipmill:"  # a session's own marked comment, never an a
 REVISED = re.compile(r"^<!-- shipmill:plan-revised rev=([1-9][0-9]*) -->$")
 ACCEPT = re.compile(r"^accept\.?$", re.IGNORECASE)
 DECLINE = re.compile(r"^decline", re.IGNORECASE)
+# An answer given in a session and relayed by the --bot-login (D-68): the first line is the
+# needs-decision relay, the login bare or in a code span (D-61). Copied from triage_state.py's
+# LOGIN_PATTERN and DECISION_BY, which the skill scripts can't import from each other; a test
+# checks the two agree
+LOGIN_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}"
+DECISION_BY = re.compile(
+    r"Decision by (?:@(" + LOGIN_PATTERN + r")(?=$|\s|[,;:)]|[.!?](?:\s|$))|`@(" + LOGIN_PATTERN + r")`(?![\w`-]))"
+)
+AGENT_MARKER = re.compile(r"<!-- shipmill:agent(?:\s[^>]*)?-->")  # triage_state.py's, which shipmill gh appends
+# The --role flags, as triage_state.py takes them (spec 036): only the maintainer's logins are read here
+MAINTAINER = "maintainer"
+ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")
+USER = re.compile(LOGIN_PATTERN)
+TEAM = re.compile(r"@" + LOGIN_PATTERN + r"/[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 FILED_KINDS = ("feature", "fix")
 EXISTING_REF = re.compile(r"^(?:([\w.-]+)/([\w.-]+))?#([1-9][0-9]*)$")
 PLAN_COMMENT = "body createdAt author { __typename login } authorAssociation"
@@ -875,14 +894,67 @@ def answerer(comment: dict[str, Any], bot_login: str | None, marker: str) -> boo
     if bot_login is not None and PLANS.login(comment.get("author")).lower() == bot_login.lower():
         return False
     body = comment.get("body") or ""
+    return own_text(body, marker)
+
+
+def own_text(body: str, marker: str) -> bool:
+    """Not a session's own text: no triage comment, and no first line opening a shipmill marker"""
     return verdict(body, marker) is None and not PLANS.first_line(body).startswith(SHIPMILL_MARKER)
 
 
-def plan_answer(issue: dict[str, Any], bot_login: str | None, marker: str) -> Answer | None:
+def maintainer_logins(values: list[str]) -> frozenset[str]:
+    """The maintainer's logins, lowercased, from --role NAME=FILLER[,FILLER...] flags checked
+    as triage_state.py's parse_roles checks them (one per role, maintainer among them); a
+    team is no login and names nobody here. Empty without flags; ValueError names what is wrong"""
+    if not values:
+        return frozenset()
+    roles: dict[str, list[str]] = {}
+    for value in values:
+        name, sep, fillers = value.partition("=")
+        if not sep or not ROLE_NAME.fullmatch(name):
+            raise ValueError(
+                f"--role wants NAME=FILLER[,FILLER...] with NAME matching {ROLE_NAME.pattern}, got {value!r}"
+            )
+        if name in roles:
+            raise ValueError(f"--role {name} is given twice")
+        if not fillers:
+            raise ValueError(f"--role {name} has no fillers")
+        roles[name] = []
+        for filler in fillers.split(","):
+            if USER.fullmatch(filler):
+                roles[name].append(filler.lower())
+            elif not TEAM.fullmatch(filler):
+                raise ValueError(f"--role {name}: {filler!r} is neither a GitHub login nor @org/team")
+    if MAINTAINER not in roles:
+        raise ValueError(f"--role flags must include {MAINTAINER}=FILLER[,FILLER...]")
+    return frozenset(roles[MAINTAINER])
+
+
+def relayed_answer(
+    comment: dict[str, Any], bot_login: str | None, marker: str, maintainers: frozenset[str]
+) -> str | None:
+    """D-68: the answer a maintainer gave in a session, from a comment by the --bot-login whose
+    first line is the relay `Decision by @<login>` naming a maintainer: the text from its next
+    non-blank line on, the agent marker left out. None for any other comment, for a relay
+    naming anyone else, and for one with no answer line or a session's own text there"""
+    if bot_login is None or PLANS.login(comment.get("author")).lower() != bot_login.lower():
+        return None
+    head, _, rest = (comment.get("body") or "").strip().partition("\n")
+    found = DECISION_BY.match(head.strip())
+    if found is None or (found[1] or found[2]).lower() not in maintainers:
+        return None
+    answer = "\n".join(line for line in rest.splitlines() if not AGENT_MARKER.fullmatch(line.strip())).strip()
+    return answer if answer and own_text(answer, marker) else None
+
+
+def plan_answer(
+    issue: dict[str, Any], bot_login: str | None, marker: str, maintainers: frozenset[str] = frozenset()
+) -> Answer | None:
     """The newest trusted answer newer than the plan's newest revision: the opening body, or
     the newest `plan-revised` comment by the --bot-login whose rev is higher than the
     revision before it. Anyone else's `plan-revised` comment revises nothing, and, starting
-    with a shipmill marker, is no answer either. None while there is none"""
+    with a shipmill marker, is no answer either. A relay by the --bot-login naming one of
+    maintainers is the answer it carries (D-68). None while there is none"""
     since = timestamp(issue["createdAt"])
     rev = 0
     found: Answer | None = None
@@ -895,12 +967,17 @@ def plan_answer(issue: dict[str, Any], bot_login: str | None, marker: str) -> An
             if by_bot and int(revised.group(1)) > rev and at >= since:
                 rev, since, found = int(revised.group(1)), at, None
             continue
-        if at <= since or not answerer(comment, bot_login, marker):
+        if at <= since:
             continue
+        answer = relayed_answer(comment, bot_login, marker, maintainers)
+        if answer is None:
+            if not answerer(comment, bot_login, marker):
+                continue
+            answer = body
         if found is None or at >= found.at:
-            first = PLANS.first_line(body)
+            first = PLANS.first_line(answer)
             kind = "accept" if ACCEPT.match(first) else "decline" if DECLINE.match(first) else "edit"
-            found = Answer(kind, at, body)
+            found = Answer(kind, at, answer)
     return found
 
 
@@ -939,6 +1016,7 @@ def plan_state(
     marker: str,
     bot_login: str | None,
     filing: FilingReader,
+    maintainers: frozenset[str] = frozenset(),
 ) -> PlanRow | None:
     """A plan issue's row; None for a plan closed but not as not planned"""
     goal = plan_goal(issue)
@@ -947,7 +1025,7 @@ def plan_state(
     if issue["state"] == "CLOSED":
         if issue["stateReason"] != "NOT_PLANNED":
             return None
-        answer = plan_answer(issue, bot_login, marker)
+        answer = plan_answer(issue, bot_login, marker, maintainers)
         reason = decline_text(answer) if answer is not None and answer.kind == "decline" else ""
         reason = reason or decline_reason(issue, marker) or "closed as not planned with no reason"
         return PlanRow(goal, "PLAN_DECLINED", title, reason, number, "plan")
@@ -956,7 +1034,7 @@ def plan_state(
         line, rule = problems[0]
         more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
         return PlanRow(goal, "PLAN_MALFORMED", title, f"line {line}: {rule}{more}", number, "plan")
-    answer = plan_answer(issue, bot_login, marker)
+    answer = plan_answer(issue, bot_login, marker, maintainers)
     if answer is None:
         return PlanRow(goal, "PLAN_OPEN", title, "", number, "plan")
     if answer.kind != "accept":
@@ -975,11 +1053,14 @@ def plan_issue_rows(
     marker: str,
     bot_login: str | None,
     filing: FilingReader,
+    maintainers: frozenset[str] = frozenset(),
 ) -> list[PlanRow]:
     found: list[PlanRow] = []
     for issue in plan_issues:
         if is_plan(issue, bot_login):
-            row = plan_state(issue, goals=goals, marker=marker, bot_login=bot_login, filing=filing)
+            row = plan_state(
+                issue, goals=goals, marker=marker, bot_login=bot_login, filing=filing, maintainers=maintainers
+            )
             if row is not None:
                 found.append(replace(row, author=PLANS.login(issue.get("author"))))
     return found
@@ -1060,6 +1141,7 @@ def fetch_plans(
     room: RoomReader,
     run: Runner = gh_graphql,
     filing: FilingReader | None = None,
+    maintainers: frozenset[str] = frozenset(),
 ) -> list[PlanRow]:
     """The plan rows: two queries more than fetch, the open pull requests with the specs at the
     default branch's head, and the plan issues; then a plan's older comments when it has more
@@ -1081,6 +1163,7 @@ def fetch_plans(
         marker=marker,
         bot_login=bot_login,
         filing=filing or gh_filing(repo, bot_login, run),
+        maintainers=maintainers,
     )
     by_goal = plan_rows(
         direction,
@@ -1209,13 +1292,25 @@ def main() -> int:
     parser.add_argument(
         "--tool", help="with --plans: where uvx gets shipmill (default: shipmill==<the plugin.json version>)"
     )
+    parser.add_argument(
+        "--role",
+        action="append",
+        default=[],
+        metavar="NAME=FILLER[,FILLER...]",
+        help="with --plans: a role's resolved fillers, as `shipmill roles --flags` prints them; a relayed answer "
+        "counts only when it names a maintainer (D-68)",
+    )
     args = parser.parse_args()
-    if not args.plans and (args.wip is not None or args.bot_login is not None):
-        parser.error("--wip and --bot-login go with --plans")
+    if not args.plans and (args.wip is not None or args.bot_login is not None or args.role):
+        parser.error("--wip, --bot-login, and --role go with --plans")
     if args.wip is not None and args.wip < 1:
         parser.error("--wip must be at least 1")
     if args.bot_login is not None and not args.bot_login.strip():
         parser.error("--bot-login must not be empty")
+    try:
+        maintainers = maintainer_logins(args.role)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     autonomy = intake_autonomy(config_file(args.config))
     intake = fetch(
@@ -1238,6 +1333,7 @@ def main() -> int:
             bot_login=args.bot_login,
             wip=args.wip,
             room=triage_room(args.repo, args.bot_login),
+            maintainers=maintainers,
         )
     if args.json:
         print(json.dumps({"autonomy": autonomy}))

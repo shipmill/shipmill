@@ -99,7 +99,7 @@ When the default branch has `docs/product.md`, read the parts of the direction i
 shipmill product show --section mission --section users --section goals --section non-goals
 ```
 
-It exits 2 on a direction that breaks its grammar: open and update no opportunity that pass, and name the problem in the report. With a direction, run the script with `--plans` (and its `--wip` and `--bot-login`) instead, so the plan rows come too.
+It exits 2 on a direction that breaks its grammar: open and update no opportunity that pass, and name the problem in the report. With a direction, run the script with `--plans` (and its `--wip`, `--bot-login`, and the `--role` flags `shipmill roles --flags` prints) instead, so the plan rows come too.
 
 Read each NEW_FEEDBACK item in full (`gh issue view <n> --json title,body,comments`, or the discussion page), and the body of every opportunity the script lists, closed ones included. Run `decisions.py find` (github-issue-triage's script) with the areas the requests touch: a request that breaks a settled `D-n` rule is still an opportunity, but its Problem section says which rule it runs into.
 
@@ -146,6 +146,8 @@ A plan is the work that reaches one goal of the direction, proposed as its own i
 
 - `decline`: close the plan as not planned (`shipmill gh issue close <P> --reason "not planned"`); the maintainer's reply is the recorded reason
 - `edit`: rewrite the body as the reply asks, raising `rev`, check it, edit the issue (`shipmill gh issue edit <P> --body-file ...`), and post the `plan-revised` comment; the plan waits again. A reply that asks for more than the plan can say (a new goal, a change to the direction) is reported, not done
+
+**Answered in the session.** When the maintainer answers a plan in the chat, put the answer on the plan before acting on it: comment it through `shipmill gh` with `--body-file`, its first line ``Decision by `@<login>`, relayed by Claude Code`` and the answer (`accept`, `decline <reason>`, or the edit asked for) on the next line, the relay format of github-issue-triage's [needs-decision.md](../github-issue-triage/references/needs-decision.md#answered-in-the-session). Re-run the script with the `--role` flags: the relay counts only when `<login>` is a maintainer (D-68). Relay only what the maintainer said, never your own reading.
 
 **PLAN_ACCEPTED: file the work.** The accept chose the work, not its design. First `plans.py items <owner/repo>#P --bot-login '<slug>[bot]' --json`: an item whose `issue` isn't `null` is filed already, so a resumed pass never files one twice. Then, for each `feature` and `fix` item still `null`, in Work order:
 
