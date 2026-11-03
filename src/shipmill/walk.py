@@ -35,13 +35,19 @@ SEQUENTIAL = 2  # at most this many watched workflows are read one after the oth
 HUMAN_LABEL = "human"
 ROLE_PREFIX = "role:"
 LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?")  # watch_state.py's LOGIN
+# #914: a pull request's author as GraphQL prints it, an Enterprise Managed User's login with its
+# _shortcode too (octocat_acme); never a "/", so only a Bot's reads as app/<slug>
+AUTHOR = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?")
+# D-67 (#914): watch_state.py's row for the App's own draft with nothing open on it, a session's to resume
+AGENT_DRAFT = "AGENT_DRAFT"
+LANDING = frozenset({PRS_OPEN, AGENT_DRAFT})  # land-stage items: a walk takes them only when land isn't observe
 
 # The tiers a walk reads in order, each its kinds in the order a walk takes them: the state,
 # or ISSUES and its triage state. A kind no tier names is read in tier 6 (S-046-12)
 TIERS: dict[int, tuple[str, ...]] = {
     1: ("INCIDENT_OPEN", "OPERATE_FAILED"),
     2: ("BOT_FAILED", "NOT_PUBLISHED", "WORK_BRANCH_STALE", "BOT_STALLED"),
-    3: (PRS_OPEN,),
+    3: (PRS_OPEN, AGENT_DRAFT),
     4: ("VETOED", f"{ISSUES} DECIDED"),
     5: ("UPGRADE_PENDING", "UPSTREAM_DUE"),
     6: tuple(
@@ -302,13 +308,16 @@ class Flight:
     requests whose head is in the repo, by their head's check rollup (waiting on CI, waiting to
     land, failing CI), and the newest merged among the default branch's last LANDED commits.
     with_person: the ones that are a person's item with an assignee, each with its assignees'
-    logins (#853): they wait on that person, not on CI or a session"""
+    logins (#853): they wait on that person, not on CI or a session. drafts: the open drafts
+    whose head is in the repo, whoever opened them (#914), so a tick never reads "no open pull
+    request" while one is open"""
 
     ci: tuple[int, ...] = ()
     landing: tuple[int, ...] = ()
     failing: tuple[int, ...] = ()
     landed: Landed | None = None
     with_person: tuple[tuple[int, tuple[str, ...]], ...] = ()
+    drafts: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,7 +368,7 @@ CONNECTIONS = {
     ),
     "pulls": (
         "pullRequests(states: OPEN, first: {page}{after}, orderBy: {{field: CREATED_AT, direction: DESC}})",
-        f"number updatedAt isDraft isCrossRepository headRefOid {LABELS} {ASSIGNEES}"
+        f"number updatedAt isDraft isCrossRepository headRefOid {LABELS} {ASSIGNEES} author {{ __typename login }}"
         " commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }",
     ),
     "incidents": (
@@ -475,6 +484,22 @@ def assignee_logins(node: Mapping[str, Any]) -> list[str]:
     return [str(a["login"]) for a in found]
 
 
+def pr_author(node: Mapping[str, Any]) -> dict[str, object] | None:
+    """A pull request's author as gh pr list prints it, which watch_state.py --known reads (D-67,
+    #914): an App's login as app/<slug> with is_bot, a person's as their login; null for a
+    deleted account. Every open pull request has an author, so its login is read as GitHub
+    spells any (AUTHOR, an Enterprise Managed User's with its _shortcode): one the gate can't
+    read would fail every tick"""
+    author = node["author"]
+    if author is None:
+        return None
+    login = author.get("login") if isinstance(author, dict) else None
+    if not isinstance(login, str) or AUTHOR.fullmatch(login) is None:
+        raise ReleaseError(f"gh api graphql printed #{node['number']}'s author as something other than a login")
+    bot = author.get("__typename") == "Bot"
+    return {"login": f"app/{login}" if bot else login, "is_bot": bot}
+
+
 def person_item(node: Mapping[str, Any]) -> bool:
     """#853: a pull request that is a person's item, as triage_state.py reads an issue: labelled
     human or role:<name>, compared case-insensitively"""
@@ -560,6 +585,7 @@ def changes_of(
                 "labels": [{"name": n} for n in label_names(p)],
                 "headRefOid": p["headRefOid"],
                 "assignees": [{"login": login} for login in assignee_logins(p)],
+                "author": pr_author(p),
             }
             for p in pulls
         ],
@@ -588,14 +614,18 @@ FAILS_CI = frozenset({"FAILURE", "ERROR"})
 def flight_of(pulls: Sequence[Mapping[str, Any]], default: Mapping[str, Any]) -> Flight:
     """The work in flight, from what the change check read and nothing more (S-048-22, D-58):
     the open pull requests a session can land, by their head's rollup, a person's with whom it
-    waits on (#853), and the last landed one.
+    waits on (#853), the drafts (#914), and the last landed one.
     It is kept out of the signature: the commits move only with the default head, already in it"""
     ci: list[int] = []
     landing: list[int] = []
     failing: list[int] = []
     people: list[tuple[int, tuple[str, ...]]] = []
+    drafts: list[int] = []
     for p in pulls:
-        if p["isDraft"] or p["isCrossRepository"]:
+        if p["isCrossRepository"]:
+            continue
+        if p["isDraft"]:
+            drafts.append(int(p["number"]))
             continue
         if person_item(p) and (logins := assignee_logins(p)):
             people.append((int(p["number"]), tuple(logins)))  # #853: it waits on them, as watch_state.py reads it
@@ -609,7 +639,7 @@ def flight_of(pulls: Sequence[Mapping[str, Any]], default: Mapping[str, Any]) ->
             failing.append(int(p["number"]))
         else:
             raise ReleaseError(f"gh api graphql printed check rollup {state!r} for #{p['number']}")
-    return Flight(tuple(ci), tuple(landing), tuple(failing), last_landed(default), tuple(people))
+    return Flight(tuple(ci), tuple(landing), tuple(failing), last_landed(default), tuple(people), tuple(drafts))
 
 
 def last_landed(default: Mapping[str, Any]) -> Landed | None:
@@ -688,7 +718,8 @@ def walk(
     """Read the tiers in order and stop at the first item not handed within retry: tiers 1, 3,
     4, and 6 from their own read, tier 2 from its read and the sweep's BOT_STALLED, 5 and 7
     from the sweep, and 8 from the sweep, after a new tag's own UNANNOUNCED check (S-046-9).
-    An item is a row that needs an agent, or PRS_OPEN when land isn't observe"""
+    An item is a row that needs an agent, but a land-stage one (PRS_OPEN, and AGENT_DRAFT, whose
+    session marks a draft ready, #914) only when land isn't observe"""
     read: list[int] = []
     rows: list[Finding] = []
     taken: tuple[Finding, Hand] | None = None
@@ -708,7 +739,7 @@ def walk(
         # A tier's read may name an earlier tier's kind (tier 6's DECIDED, relayed with the label
         # off, which tier 4 never reads): it is taken here; the sweep's rows only in their own tier
         mine = [f for f in found if tier_of(f) == number or (f in own and tier_of(f) < number)]
-        items = order(f for f in mine if f.agent or (lands and f.state == PRS_OPEN))
+        items = order(f for f in mine if (f.agent and f.state not in LANDING) or (lands and f.state in LANDING))
         for item in items:
             hand = handed.taken(item, now, retry)
             if hand is None:

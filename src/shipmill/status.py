@@ -160,7 +160,8 @@ ISSUE_LINES = (
         ),
     ),
     ("to build", ("NEEDS_PR", "UNBLOCKED")),
-    ("in progress", ("IN_PROGRESS",)),
+    # D-67 (#914): the App's own drafts, a session's to resume once nothing on them is open
+    ("in progress", ("IN_PROGRESS", "AGENT_DRAFT", "AGENT_DRAFT_HELD")),
     ("parked", ("BLOCKED", "POSTPONED", "TRIAGED", "WITH_PERSON")),  # WITH_PERSON: with its assignees
 )
 # read for recently closed issues, not open ones: a close to check, each state on its line
@@ -1314,6 +1315,9 @@ def issue_value(repo: str, issue: Issue) -> str:
     if issue.state == "IN_PROGRESS":
         opened = [int(n) for n in re.findall(r"(?<![\w/])#(\d+):open\b", issue.note)]
         return f"{shown} → {', '.join(item(repo, n, True) for n in opened)}" if opened else shown
+    if issue.state in ("AGENT_DRAFT", "AGENT_DRAFT_HELD"):  # #914: the App's drafts, `#N:draft`
+        drafts = [int(n) for n in re.findall(r"(?<![\w/])#(\d+):draft\b", issue.note)]
+        return f"{shown} → {', '.join(f'{item(repo, n, True)} (draft)' for n in drafts)}" if drafts else shown
     if issue.state == "BLOCKED":
         # A hold may carry a mark, (native) or (child), and a parent's note starts with
         # "children K/N closed" (spec 017)

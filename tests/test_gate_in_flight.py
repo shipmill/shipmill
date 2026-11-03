@@ -140,7 +140,7 @@ def test_s048_22_open_pull_requests_group_by_their_heads_rollup() -> None:
     draft["isDraft"], fork["isCrossRepository"] = True, True
     pulls = [*in_flight_answer()["data"]["repository"]["pulls"]["nodes"], pull(778, rollup="ERROR")]
     found = changed(graphql_answer(pulls=[*pulls, none_yet, draft, fork]))
-    assert found.flight == Flight((771, 773, 775), (772,), (774, 778), None)
+    assert found.flight == Flight((771, 773, 775), (772,), (774, 778), None, drafts=(776,))  # #914: a draft is open
     with pytest.raises(ReleaseError, match="check rollup 'NEW'"):
         changed(graphql_answer(pulls=[pull(9, rollup="NEW")]))
 
@@ -300,6 +300,7 @@ def test_s048_25_json_prints_in_flight_on_quiet_and_null_otherwise(checkout: Git
         "landed": {"number": 770, "at": dt.datetime.fromisoformat(MERGED).isoformat()},
         "result": None,
         "with_person": [],
+        "drafts": [],
     }
     written = json.loads((state_dir(checkout) / TICK).read_text(encoding="utf-8"))
     assert written["in_flight"] == tick_record(quiet, None, (), (), dry_run=False)["in_flight"]
@@ -374,4 +375,69 @@ def test_853_tick_json_round_trips_with_person_and_reads_one_written_before_it(t
     data["in_flight"]["with_person"] = [{"number": 160, "assignees": ["not a login"]}]
     path.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ReleaseError, match=r"in_flight\.with_person\.assignees must be a list of logins"):
+        load_tick(path)
+
+
+# -- #914: a draft is open, so a quiet tick never reads "no open pull request" while one is
+
+
+def app_draft(number: int) -> dict[str, Any]:
+    found: dict[str, Any] = pull(number)
+    found["isDraft"] = True
+    found["author"] = {"__typename": "Bot", "login": "shipmill-app"}
+    return found
+
+
+def test_914_a_quiet_tick_names_the_open_drafts(checkout: Git) -> None:
+    quiet = tick(checkout, answering(graphql_answer(pulls=[app_draft(912)])))
+    assert quiet.action is Action.QUIET
+    assert "no open pull request" not in quiet.reason
+    assert quiet.reason.endswith(
+        "in flight: 1 is a draft (#912); no landed pull request in the last 10 commits;"
+        " no session has ended with a result yet"
+    )
+    assert quiet.in_flight is not None and quiet.in_flight.record()["drafts"] == [912]
+
+
+def test_914_known_names_each_pull_requests_author_as_gh_pr_list_does() -> None:
+    """watch_state.py tells the App's draft from a person's by its author: --known holds it as
+    gh pr list prints it, an App's login as app/<slug>"""
+    found = changed(graphql_answer(pulls=[app_draft(912), pull(3)]))
+    prs = json.loads(json.dumps(found.known))["prs"]
+    assert {p["number"]: p["author"] for p in prs} == {
+        3: {"login": "amy", "is_bot": False},
+        912: {"login": "app/shipmill-app", "is_bot": True},
+    }
+    gh = Gh([graphql_answer()], runs())
+    check(REPO, NOW, "incident", (), gh.graphql, gh.read, NOW)
+    assert "author { __typename login }" in gh.queries[0]
+
+
+def test_914_an_enterprise_managed_users_pull_request_never_fails_the_change_check() -> None:
+    """Every open pull request's author is read now: an Enterprise Managed User's login, with
+    its _shortcode, is a login, so its pull request never makes every tick an ERROR"""
+    emu = pull(5)
+    emu["author"] = {"__typename": "User", "login": "octocat_acme"}
+    found = changed(graphql_answer(pulls=[emu]))
+    assert json.loads(json.dumps(found.known))["prs"][0]["author"] == {"login": "octocat_acme", "is_bot": False}
+    for odd in ("app/shipmill-app", "", "-amy", "amy_"):
+        emu["author"] = {"__typename": "User", "login": odd}
+        with pytest.raises(ReleaseError, match="#5's author as something other than a login"):
+            changed(graphql_answer(pulls=[emu]))
+
+
+def test_914_tick_json_round_trips_drafts_and_reads_one_written_before_it(tmp_path: Path) -> None:
+    flight = InFlight((), (), (), None, None, (), (912,))
+    record = TickRecord(NOW, "QUIET", "no change since x; in flight: ...", None, None, None, flight)
+    path = tmp_path / TICK
+    save_tick(path, record)
+    assert load_tick(path) == record
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["in_flight"]["drafts"]  # a tick.json a shipmill before #914 wrote
+    path.write_text(json.dumps(data), encoding="utf-8")
+    loaded = load_tick(path)
+    assert loaded is not None and loaded.in_flight == InFlight((), (), (), None, None)
+    data["in_flight"]["drafts"] = ["#912"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ReleaseError, match=r"in_flight\.drafts must be a pull request number"):
         load_tick(path)

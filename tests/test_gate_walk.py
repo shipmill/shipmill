@@ -210,6 +210,7 @@ def pull(number: int, head: str = "a" * 40, rollup: str = "SUCCESS", updated: st
         "headRefOid": head,
         "labels": {"nodes": []},
         "assignees": {"nodes": []},
+        "author": {"__typename": "User", "login": "amy"},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": rollup}}}]},
     }
 
@@ -656,3 +657,17 @@ def test_s046_12_subjects_order_by_number() -> None:
 
     ten, nine = (Finding("INCIDENT_OPEN", f"#{n}", "", True) for n in (10, 9))
     assert order([ten, nine]) == [nine, ten]
+
+
+def test_914_an_agent_draft_is_an_item_only_when_land_isnt_observe() -> None:
+    """Marking the App's own draft ready is a land-stage write: like PRS_OPEN, AGENT_DRAFT is
+    handed only when land is propose or act, though watch_state.py marks it an agent's row"""
+    from shipmill.walk import Rows, walk
+
+    draft = Finding("AGENT_DRAFT", REPO, "#20", True, (), "mark each ready, then land it: ...")
+    rows = Rows((draft,))
+    swept = Swept(NOW, (), None)
+    for lands, item in ((False, None), (True, draft)):
+        found = walk(rows, rows.changes(None), swept, Handed(), NOW, dt.timedelta(hours=6), lands)
+        assert (found.item, found.tier) == (item, None if item is None else 3)
+        assert draft in found.rows  # read and reported either way

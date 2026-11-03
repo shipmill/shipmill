@@ -178,6 +178,12 @@ Intake (github-issue-triage's triage_state.py):
                   role:<name> with an assignee, as WITH_PERSON #N (@login ...) (reported,
                   never an action: no session starts for one, #853); one with the label and
                   no assignee stays in PRS_OPEN, for a session to assign
+  AGENT_DRAFT     open draft pull requests the --bot-login authored (D-67, #914) with nothing
+                  open on them: no needs-decision question waiting on a reply and no hold
+                  comment naming an item still open. An agent's row: a session marks each
+                  ready and lands it (github-pr-triage). A person's draft is in no row
+  AGENT_DRAFT_HELD  those still held, as #N (question) or #N (owner/repo#M), the question
+                  one in NEEDS_DECISION too (reported, never an action by itself)
   NEEDS_DECISION  issues and pull requests labelled needs-decision whose question has no
                   reply, as #N only (triage_state.py's rule, applied to pull requests'
                   comments too): a person owes the answer, so an action, but never an
@@ -491,8 +497,12 @@ TRIAGE_ACTION = {
     "ASSIGN_DUE",  # spec 036: assign a person's item to its roles' users
     "VERIFY_CLOSED",
     "OFF_MILESTONE",
+    "AGENT_DRAFT",  # D-67 (#914): this script's AGENT_DRAFT row hands the draft itself, so it is in ISSUES_OPEN
 }
 VETOED = "VETOED"  # triage_state.py's state and this script's row for an unanswered veto (spec 030)
+# triage's action states this script hands by another row, never in ISSUES: VETOED its own, and
+# AGENT_DRAFT the pull request's own AGENT_DRAFT row (D-67, #914), the issue listed in ISSUES_OPEN
+BY_PULL_REQUEST = frozenset({VETOED, "AGENT_DRAFT"})
 POLICY = Path(".github/shipmill.toml")
 # a GitHub login, as a WITH_PERSON line's assignees name them: the row shows nothing else (D-16)
 LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?$")
@@ -575,6 +585,7 @@ ACTION = {
     "UPSTREAM_ASKED",
     "UPSTREAM_UNREADABLE",
     VETOED,
+    "AGENT_DRAFT",  # D-67: the App's own draft with nothing open on it, a session marks it ready (#914)
 }
 # the states whose row needs an agent: --json marks each row's "agent" from this, and
 # shipmill gate starts a session on those rows (SKILL.md's repair table says what it does)
@@ -592,6 +603,7 @@ AGENT = {
     "UPGRADE_PENDING",
     "DIRECTION_PENDING",
     "UPSTREAM_DUE",
+    "AGENT_DRAFT",
 }
 # the states whose every row carries a fix, the one line that clears it (spec 011): every
 # action, and the report-only rows a person still has to act on. PRS_OPEN carries one unless
@@ -2806,13 +2818,17 @@ def intake(
     untrusted_plans: frozenset[int] = frozenset(),
     closed_prs: Sequence[dict[str, Any]] = (),
     directions: frozenset[int] = frozenset(),
+    hold_states: HoldStates | None = None,
 ) -> list[Row]:
     """The intake rows from triage_state.py's exit code and --json lines, and the open pull
-    requests (number, isDraft, isCrossRepository, labels, headRefOid, assignees). Each pull
+    requests (number, isDraft, isCrossRepository, labels, headRefOid, assignees, author). Each pull
     request is UNTRUSTED (with trusted_only, a head in a fork), else waiting on a decision
     (labelled, no reply; its comments are read only then), else VETOED (labelled decided with
-    an unanswered trusted veto, triage_state.py's rule; its comments are read only then), else
-    in no row when a draft, else in PRS_PARKED as WITH_PERSON #N (@login ...) when a person's
+    an unanswered trusted veto, triage_state.py's rule; its comments are read only then), else,
+    a draft the bot_login authored (D-67, #914; its author and comments are read only for a draft),
+    AGENT_DRAFT, or AGENT_DRAFT_HELD while a hold comment names an item still open (hold_states,
+    triage_state.py's upstream_states by default, reads their states) or its question waits too,
+    else in no row when a person's draft, else in PRS_PARKED as WITH_PERSON #N (@login ...) when a person's
     item with an assignee (pr_people, #853), else in PRS_OPEN. closed_prs are the closed and
     merged pull requests labelled decided in the veto window (number, isCrossRepository):
     each with such a veto is VETOED too, save a fork's with trusted_only. VETOED issues and
@@ -2853,11 +2869,11 @@ def intake(
     detail = "; ".join(
         f"{s} {' '.join(f'#{n}' for n in numbers)}"
         for s, numbers in sorted(counts.items())
-        if s in TRIAGE_ACTION and s != VETOED  # VETOED has a row of its own
+        if s in TRIAGE_ACTION - BY_PULL_REQUEST  # VETOED has a row of its own
     )
     if code == 1 and detail:  # triage_state.py exits 1 only with an action line: an upgrade issue's, left out
         rows.append(Row("ISSUES", repo, detail, skill_fix("github-issue-triage", repo)))
-    elsewhere = TRIAGE_ACTION | {"NEEDS_DECISION", "UNTRUSTED"}  # rows of their own
+    elsewhere = (TRIAGE_ACTION - BY_PULL_REQUEST) | {VETOED, "NEEDS_DECISION", "UNTRUSTED"}  # rows of their own
     rest = "; ".join(
         f"{s} {' '.join(open_issue(n, waits_on) for n in numbers)}"
         for s, numbers in sorted(counts.items())
@@ -2871,17 +2887,28 @@ def intake(
     vetoed = list(counts.get(VETOED, []))
     ready: list[tuple[int, str]] = []
     parked: list[tuple[int, list[str]]] = []  # #853: a person's pull request, with whom it waits on
+    drafts: list[int] = []  # D-67: the App's own drafts with nothing open on them (#914)
+    held: list[tuple[int, str]] = []  # and the ones still held, with what holds each
     for pr in prs:
         number = int(pr["number"])
         labels = {label["name"] for label in pr["labels"]}
+        mine = own_draft(pr, bot_login)
         if trusted_only and pr["isCrossRepository"]:
             untrusted.append(number)
         elif TRIAGE.DECISION_LABEL in labels and TRIAGE.waits_on_decision(comments_of(number), bot_login):
             waiting.append(number)
+            if mine:
+                held.append((number, "question"))
         elif TRIAGE.DECIDED_LABEL in labels and TRIAGE.vetoed(comments_of(number), bot_login) is not None:
             vetoed.append(number)
+        elif mine:
+            hold = open_hold(comments_of(number), repo, hold_states)
+            if hold is None:
+                drafts.append(number)
+            else:
+                held.append((number, hold))
         elif pr["isDraft"]:
-            continue  # a draft is its author's until marked ready: it starts no session (D-52)
+            continue  # a person's draft is theirs until marked ready: it starts no session (D-67)
         elif people := pr_people(pr):
             parked.append((number, people))
         else:
@@ -2898,6 +2925,11 @@ def intake(
     if parked:
         named = " ".join(f"#{n} ({' '.join(people)})" for n, people in sorted(parked))
         rows.append(Row("PRS_PARKED", repo, f"WITH_PERSON {named}"))
+    if drafts:
+        fix = f"mark each ready, then land it: {skill_fix('github-pr-triage', repo)}"
+        rows.append(Row("AGENT_DRAFT", repo, " ".join(f"#{n}" for n in sorted(drafts)), fix))
+    if held:
+        rows.append(Row("AGENT_DRAFT_HELD", repo, " ".join(f"#{n} ({why})" for n, why in sorted(held))))
     if vetoed:
         named = " ".join(f"#{n}" for n in sorted(set(vetoed)))
         take_up = f"take up each veto (needs-decision.md): {skill_fix('github-issue-triage', repo)}"
@@ -2937,6 +2969,47 @@ def pr_people(pr: dict[str, Any]) -> list[str]:
     if not logins:
         raise Refused(f"error: gh pr list printed #{pr['number']}'s assignees as something other than a list of logins")
     return [f"@{a['login']}" for a in found]
+
+
+Ref = tuple[str, str, int]  # owner, name, number
+HoldStates = Callable[[set[Ref]], dict[Ref, str]]  # each held-on item's state, as triage_state.py's ref_state reads it
+HOLD_CLOSED = frozenset({*TRIAGE.CLOSED_STATES, "CLOSED_UNMERGED"})  # a hold on one of these holds nothing
+
+
+def pr_author(pr: dict[str, Any]) -> str:
+    """An open pull request's author as REST and --bot-login spell it: gh prints an App's login
+    as app/<slug> (is_bot true), its REST login is <slug>[bot]; a deleted account's is ghost.
+    Anything but an object with a string login is refused"""
+    author = pr.get("author")
+    if author is None:
+        return GHOST
+    if not isinstance(author, dict) or not isinstance(author.get("login"), str):
+        raise Refused(f"error: gh pr list printed #{pr['number']}'s author as something other than a login")
+    login = author["login"]
+    if login.startswith("app/"):
+        return f"{login[len('app/') :]}[bot]"
+    return f"{login}[bot]" if author.get("is_bot") is True and not login.endswith("[bot]") else login
+
+
+def own_draft(pr: dict[str, Any], bot_login: str | None) -> bool:
+    """D-67 (#914): an open draft the --bot-login authored, which a gate session resumes once
+    nothing on it is open; a person's draft, or any draft without --bot-login, is its author's.
+    The author is read only for a draft"""
+    return bot_login is not None and pr["isDraft"] is True and TRIAGE.same_login(pr_author(pr), bot_login)
+
+
+def open_hold(comments: Comments, repo: str, hold_states: HoldStates | None = None) -> str | None:
+    """The first item a hold comment on an agent's draft names that is still open, as
+    owner/repo#N, triage_state.py's hold_refs rule ("waits on #12", "blocked by o/r#5"), its
+    states read only when one is named; None when every one is closed or merged, or none is
+    named. One whose state can't be read holds, so a failed read never resumes a draft"""
+    owner, _, name = repo.partition("/")
+    refs = set(TRIAGE.hold_refs({"comments": {"nodes": [{"body": body} for _, _, body in comments]}}, (owner, name)))
+    if not refs:
+        return None
+    states = (hold_states or (lambda wanted: TRIAGE.upstream_states(wanted)[0]))(refs)
+    still = sorted(r for r in refs if states.get(r) not in HOLD_CLOSED)
+    return None if not still else f"{still[0][0]}/{still[0][1]}#{still[0][2]}"
 
 
 def person_logins(row: dict[str, Any]) -> list[str]:
@@ -3034,7 +3107,7 @@ def intake_rows(
     trusted_only, are one batched read, not one read each (#842)"""
     prs = json.loads(read(["gh", "pr", "list", "-R", repo, "--json", PR_FIELDS, "-L", "100"]))
     closed = decided_prs(repo, now, read)
-    wanted = [pr for pr in prs if asked(pr)] + list(closed)
+    wanted = [pr for pr in prs if asked(pr) or own_draft(pr, bot_login)] + list(closed)
     numbers = [int(pr["number"]) for pr in wanted if not (trusted_only and pr["isCrossRepository"])]
     comments = batched_comments(repo, numbers, read)
     return intake(
@@ -4450,7 +4523,7 @@ def host_rows(section: str, repo: str, repo_dir: Path, now: dt.datetime, *, host
 TIERS: dict[int, tuple[str, ...]] = {
     1: ("INCIDENT_OPEN", "OPERATE_FAILED"),
     2: ("BOT_FAILED", "NOT_PUBLISHED", "WORK_BRANCH_STALE", "BOT_STALLED"),
-    3: ("PRS_OPEN", "NEEDS_DECISION"),
+    3: ("PRS_OPEN", "AGENT_DRAFT", "NEEDS_DECISION"),  # AGENT_DRAFT: the App's own draft to resume (D-67)
     4: (VETOED, "ISSUES", "NEEDS_DECISION"),
     5: ("UPGRADE_PENDING", "UPSTREAM_DUE"),
     6: ("ISSUES",),
@@ -4462,8 +4535,9 @@ DECIDED_STATES = frozenset({"DECIDED"})  # triage_state.py's states in tier 4; V
 ASKED = (TRIAGE.DECISION_LABEL, TRIAGE.DECIDED_LABEL)  # tier 4's items; tier 3 reads these pull requests' comments
 COMMENTS_LAST = 100  # comments a batched read takes of each item; one with more is read whole
 COMMENTS_CHUNK = 50  # items one batched comment query reads, so a long list never asks too much of one query
-# the open pull requests' fields gh pr list reads, and --known holds; assignees: whom a person's one waits on (#853)
-PR_FIELDS = "number,isDraft,isCrossRepository,labels,headRefOid,assignees"
+# the open pull requests' fields gh pr list reads, and --known holds; assignees: whom a person's one waits on
+# (#853); author: whether a draft is the App's own (D-67, #914)
+PR_FIELDS = "number,isDraft,isCrossRepository,labels,headRefOid,assignees,author"
 
 
 @dataclass(frozen=True)
@@ -4471,7 +4545,7 @@ class Known:
     """What shipmill gate's change check read already (--known FILE), so a tier reads none of
     it again (spec 046): GitHub's default branch, whether a shipmill-hold is open (the gate
     walks only without one, D-15), the open pull requests as `gh pr list --json
-    number,isDraft,isCrossRepository,labels,headRefOid,assignees` prints them, the open incidents, and
+    number,isDraft,isCrossRepository,labels,headRefOid,assignees,author` prints them, the open incidents, and
     the newest workflow runs, each with its workflow's file name"""
 
     default_branch: str
@@ -4528,11 +4602,14 @@ def read_known(path: Path) -> Known:
 
 def known_pr(pr: dict[str, Any]) -> bool:
     """Whether a --known pull request's values are gh pr list's: a number, two flags, its
-    labels as objects with a name, and its assignees as objects with a login"""
+    labels as objects with a name, its assignees as objects with a login, and its author as
+    one too (null for a deleted account)"""
     number = pr["number"]
+    author = pr["author"]
     return (
         isinstance(number, int)
         and not isinstance(number, bool)
+        and (author is None or (isinstance(author, dict) and isinstance(author.get("login"), str)))
         and isinstance(pr["isDraft"], bool)
         and isinstance(pr["isCrossRepository"], bool)
         and isinstance(pr["labels"], list)
@@ -4710,10 +4787,12 @@ def land_level(args: argparse.Namespace, text: str | None, known: Known | None, 
 
 
 def landing_rows(args: argparse.Namespace, text: str | None, known: Known | None, now: dt.datetime) -> list[Row]:
-    """Tier 3: PRS_OPEN from the change check's pull requests, and the ones waiting on a
-    decision, whose comments, with those labelled decided, are one batched read"""
+    """Tier 3: PRS_OPEN and AGENT_DRAFT from the change check's pull requests, and the ones
+    waiting on a decision, whose comments, with those labelled decided and the --bot-login's
+    drafts (D-67), are one batched read"""
     prs = known.prs if known is not None else open_prs(args.repo)
-    comments = batched_comments(args.repo, [int(pr["number"]) for pr in prs if asked(pr)])
+    wanted = [int(pr["number"]) for pr in prs if asked(pr) or own_draft(pr, args.bot_login)]
+    comments = batched_comments(args.repo, wanted)
     land = land_level(args, text, known, now)
     rows = intake(args.repo, 0, "", prs, comments.__getitem__, args.bot_login, args.trusted_only, land)
     return [r for r in rows if r.state in TIERS[3]]
