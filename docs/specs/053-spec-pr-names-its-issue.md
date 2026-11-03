@@ -61,7 +61,7 @@ it adds a file `docs/specs/NNN-<slug>.md`. One whose body has no line starting `
 (after an optional list bullet, `owner/repo#N` of the same repo read the same) naming an open
 issue of the repo reads REFUSED, exit 6, with the line
 `  spec: names no feature issue: add "Spec for #N" for the open issue it specifies`, whoever
-opened it. A draft stays DRAFT (D-52). A pull request that only edits an existing spec is not
+opened it. A draft stays DRAFT (D-67). A pull request that only edits an existing spec is not
 checked: a revision may follow a closed feature issue.
 
 ### The watch reports an approved spec nobody split
@@ -115,10 +115,10 @@ the manual steps 4 and 5 of `spec-gate.md`.
 
 - D-5
 - D-49
-- D-52
 - D-54
 - D-58
 - D-62
+- D-67
 
 ## Issues
 
