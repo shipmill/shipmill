@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.114.0] - 2026-11-03
+
+### Changed
+
+- An agent never parks a pull request as a draft, and a draft the App opened no longer stalls once its session ends (D-67): `watch_state.py` reports it as AGENT_DRAFT, a session's item in the gate's pull-request tier, once its needs-decision question is answered and no hold comment on it names an open item (AGENT_DRAFT_HELD until then), `triage_state.py` reads its issue as AGENT_DRAFT or AGENT_DRAFT_HELD instead of IN_PROGRESS, `pr_gate.py`'s `draft:` line tells the App's own draft from a person's (still exit 8), and a quiet gate tick lists open drafts instead of reading "no open pull request" (#914)
+
 ## [0.113.0] - 2026-11-03
 
 ### Added
@@ -2214,7 +2220,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.113.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.114.0...HEAD
+[0.114.0]: https://github.com/shipmill/shipmill/compare/v0.113.0...v0.114.0
 [0.113.0]: https://github.com/shipmill/shipmill/compare/v0.112.0...v0.113.0
 [0.112.0]: https://github.com/shipmill/shipmill/compare/v0.111.0...v0.112.0
 [0.111.0]: https://github.com/shipmill/shipmill/compare/v0.110.0...v0.111.0
