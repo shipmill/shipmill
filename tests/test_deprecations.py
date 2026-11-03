@@ -46,14 +46,14 @@ def test_s047_11_the_catalogue_holds_each_deprecation_with_its_replacement_and_u
     entries = {str(d.id): (d.subject, d.since, d.replacement, d.upgrade) for d in CATALOGUE}
     autonomy = UpgradeId("agent-autonomy")
     assert entries == {
-        "agents-prs": ("[agents] prs", Version.parse("0.79.0"), "[autonomy] land", autonomy),
+        "agents-prs": ("[agents] prs", Version.parse("0.79.0"), "[autonomy] land", UpgradeId("drop-agents-prs")),
         "agents-prompt-land": (
             '[agents] prompt read as land = "act" ("merge when green" or "land")',
             Version.parse("0.78.0"),
             "[autonomy] land",
             autonomy,
         ),
-        "roadmap": ("[roadmap]", Version.parse("0.50.0"), "[agents] wip", None),
+        "roadmap": ("[roadmap]", Version.parse("0.50.0"), "[agents] wip", UpgradeId("drop-roadmap")),
         "agents-credit": ("[agents] credit", Version.parse("0.102.0"), "[agents] author", None),
     }
     for deprecation in CATALOGUE:  # each migrating upgrade is one the upgrades catalogue offers

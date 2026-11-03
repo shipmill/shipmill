@@ -1,0 +1,3 @@
+### Added
+
+- Two config upgrades retire deprecated keys (spec 047): `drop-agents-prs` deletes `[agents] prs`, which the gate ignores, and adds nothing; `drop-roadmap` deletes the `[roadmap]` table and, when `[agents]` exists and sets no `wip`, moves `[roadmap]`'s `wip` there, which turns that limit on. Each keeps every other line of `.github/shipmill.toml`, is the migrating upgrade of its entry in `shipmill deprecations`, and so is proposed by the gate's sweep in every repo that relies on the key. `shipmill upgrade --apply`, `--json`, and the upgrade's issue show the lines an edit takes out (`removed_lines`, with `dropped` and `into` in `--apply --json`, and `drops` and `into` in `upgrade --json`) (#911)

@@ -2818,18 +2818,27 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
                 "config": CONFIG_PATH.as_posix(),
                 "line": "\n".join(applied.lines) if applied.added else None,
                 "lines": list(applied.lines) if applied.added else [],
+                "into": upgrade.target,  # the table the lines went in
                 "removed": upgrade.removes,
+                "dropped": upgrade.table if upgrade.drops else None,
+                "removed_lines": list(applied.removed),  # as the file wrote them
                 "created": [p.as_posix() for p in applied.created],
                 "kept": [p.as_posix() for p in applied.kept],
                 "refused": refused.records(refused.in_checkout(root)),  # S-052-11: as the edit leaves the config
             }
             print(json.dumps(record, indent=2))
             return 0
-        if upgrade.removes is not None:
+        if upgrade.drops:
+            print(f"removed [{upgrade.table}] from {CONFIG_PATH}, these lines:")
+            for line in applied.removed:
+                print(f"  {line}")
+        elif upgrade.removes is not None:
             print(f"removed {upgrade.removes} from [{upgrade.table}] in {CONFIG_PATH}")
         if applied.added:
             for line in applied.lines:
-                print(f"added {line} to [{upgrade.table}] in {CONFIG_PATH}")
+                print(f"added {line} to [{upgrade.target}] in {CONFIG_PATH}")
+        elif upgrade.key is None or upgrade.drops:  # a delete-only edit says so
+            print(f"added no line to {CONFIG_PATH}")
         for path in applied.created:
             print(f"wrote {path.as_posix()}")
         for path in applied.kept:
@@ -2863,11 +2872,15 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
     for offer in found:
         upgrade = offer.upgrade
         print(f"{upgrade.id} (shipmill {upgrade.version}): {upgrade.changes}")
-        if upgrade.removes is not None:
+        if upgrade.drops:
+            print(f"  removes: [{upgrade.table}], the whole table")
+        elif upgrade.removes is not None:
             print(f"  removes: [{upgrade.table}] {upgrade.removes}")
         if upgrade.adds(raw):
             for line in upgrade.lines(raw):
-                print(f"  adds: [{upgrade.table}] {line}")
+                print(f"  adds: [{upgrade.target}] {line}")
+        elif upgrade.key is None or upgrade.drops:
+            print("  adds: nothing")
         print(f"  off: {upgrade.off}")
         if offer.issue is not None:
             print(f"  proposed: #{offer.issue}")

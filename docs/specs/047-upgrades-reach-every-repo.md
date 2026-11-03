@@ -1,6 +1,6 @@
 # S-047: The gate's sweep proposes config upgrades, and a fleet report shows who relies on a deprecated key
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -245,4 +245,23 @@ until it reads none, then decide.
 
 ## Verification
 
-Filled in when the spec reaches `built`.
+- S-047-1: `tests/test_gate_upgrades.py` runs a swept tick with a pending upgrade and `app_id` set; the issue is written as the App before the sweep's read, whose UPGRADE_PENDING row holds it
+- S-047-2: the same file leaves the gate's checkout on a session branch with its own and an unsaved config while the default branch moves on; `head_config` reads the default branch's new head and moves no branch
+- S-047-3: under `upgrade = "observe"` the swept tick opens nothing and closes the decided upgrade's open issue and a withdrawn one's
+- S-047-4: without `app_id` the tick writes no issue, and `shipmill status` lists the pending upgrade with `upgrade --apply <id>`
+- S-047-5: two later ticks that don't sweep, one with a changed state, read no config, mint no App token, and keep the last sweep's record
+- S-047-6: an issue the release workflow opened is updated by the sweep, and no second issue opens for the id
+- S-047-7: `tests/test_upgrade_proposals.py` gives an issue a marker newer than the catalogue's version; its title, body, and labels stay and the run reports it unchanged
+- S-047-8: an issue whose marker names an unknown, unwithdrawn id stays open and unchanged
+- S-047-9: a proposal GitHub refuses leaves the walk and launch as without it, `sweep.json` holds the error, and `shipmill factory`'s `gate` check reports it with its fix
+- S-047-10: the swept tick's decision line reads `upgrades: 1 opened`, and `gate --dry-run` writes no issue and prints what it would propose
+- S-047-11: `tests/test_deprecations.py` compares the catalogue's entries with their replacements and upgrades, and doctor's warnings with the entries a config relies on, for each entry alone and all together
+- S-047-12: `tests/test_deprecations_report.py` reads two repos, one setting `[agents] prs`; it is listed under `agents-prs` with its upgrade's state and the command exits 1, and with neither relying each block reads `none of 2 repos` and it exits 0
+- S-047-13: each of the six upgrade states is read from fake issues and pull requests
+- S-047-14: an unreadable repo, a config that fails to parse, and no repos to read each exit 2 naming the cause
+- S-047-15: with no `--repo` the command reads the host's gate jobs from their plists, and `--fleet` reads the fleet file as `fleet.py` does
+- S-047-16: `--json` prints `{"repos", "deprecations": [{"id", "replacement", "upgrade", "relied_on_by"}]}`
+- S-047-17: `docs/release-lanes.md`, Retired keys, gives the four steps, ending with `shipmill deprecations <id>` reading none before the decision
+- S-047-18: `tests/test_retire_key_upgrades.py` applies `drop-agents-prs` to a commented config with an inline comment on `prs`, and to a CRLF file whose last line has no newline; each result is the input less that one line, the upgrade reads decided, `upgrade --json` lists nothing, and doctor gives no `[agents] prs` warning
+- S-047-19: the same file applies `drop-roadmap` before `[agents]`, `[agents.roles]`, and `[[version_lines]]`, and at the end of the file; `wip = 3` lands at the end of `[agents]`'s body and the result loads, and with `[agents] wip = 7` or no `[agents]` the edit adds no line; an inline or dotted `[roadmap]` is refused with the file untouched
+- S-047-20: `src/shipmill/deprecations.py` names `drop-agents-prs` for `agents-prs` and `drop-roadmap` for `roadmap`, and a swept tick over a config that sets both opens one issue for each, which `shipmill deprecations` reads as open
