@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.113.0] - 2026-11-03
+
+### Added
+
+- Two config upgrades retire deprecated keys (spec 047): `drop-agents-prs` deletes `[agents] prs`, which the gate ignores, and adds nothing; `drop-roadmap` deletes the `[roadmap]` table and, when `[agents]` exists and sets no `wip`, moves `[roadmap]`'s `wip` there, which turns that limit on. Each keeps every other line of `.github/shipmill.toml`, is the migrating upgrade of its entry in `shipmill deprecations`, and so is proposed by the gate's sweep in every repo that relies on the key. `shipmill upgrade --apply`, `--json`, and the upgrade's issue show the lines an edit takes out (`removed_lines`, with `dropped` and `into` in `--apply --json`, and `drops` and `into` in `upgrade --json`) (#911)
+
 ## [0.112.0] - 2026-11-02
 
 ### Added
@@ -2208,7 +2214,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.112.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.113.0...HEAD
+[0.113.0]: https://github.com/shipmill/shipmill/compare/v0.112.0...v0.113.0
 [0.112.0]: https://github.com/shipmill/shipmill/compare/v0.111.0...v0.112.0
 [0.111.0]: https://github.com/shipmill/shipmill/compare/v0.110.0...v0.111.0
 [0.110.0]: https://github.com/shipmill/shipmill/compare/v0.109.0...v0.110.0
