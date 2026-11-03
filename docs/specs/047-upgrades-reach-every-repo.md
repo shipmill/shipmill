@@ -80,8 +80,9 @@ Every deprecated key and reading D-63 keeps alive gets an entry in a new catalog
 
 - an id, such as `agents-prs` or `agents-prompt-land`
 - the key or reading, and the release that deprecated it
-- its replacement, and the upgrade id that migrates it (`agent-autonomy` for both of spec
-  040's), or none
+- its replacement, and the upgrade id that migrates it (`agent-autonomy` for the `[agents]
+  prompt` land reading, `drop-agents-prs` for `[agents] prs`, `drop-roadmap` for
+  `[roadmap]`), or none
 - a check over the parsed config that says whether the config relies on it
 
 The entries at the start are `[agents] prs`, the `[agents] prompt` reading of the land
@@ -90,6 +91,32 @@ level (spec 040), and `[roadmap]` (D-32). `shipmill doctor`'s deprecation warnin
 report below never disagree. A key shipmill already refuses (`[lanes.stable] min_soak_days`,
 `[agents] plugin_update`) has no entry: nothing can rely on it, since its config fails to
 load.
+
+### Upgrades that retire a key
+
+`agent-autonomy` adds `[autonomy]`'s keys and leaves `[agents] prs` in place, and no upgrade
+touches `[roadmap]`, so a repo that accepts every upgrade still relies on both and D-63's
+removal would wait on a hand edit in each repo (decided on shipmill/shipmill#906). Two
+upgrades in `src/shipmill/upgrades.py`'s catalogue retire them, in the style of spec 029's
+`stable-every-batch`, which deletes the key it replaces:
+
+- `drop-agents-prs` applies to a config whose `[agents]` sets `prs`, and its edit deletes
+  that line and adds nothing. The gate already ignores `prs` (spec 040), so it changes
+  nothing a session does; it ends doctor's warning. It is decided once `[agents]` no longer
+  sets `prs`, and closing its issue keeps the key, the warning, and the repo listed under
+  `agents-prs`
+- `drop-roadmap` applies to a config with a `[roadmap]` table, and its edit deletes the table:
+  its header, its keys, and its lines up to the next table's header. When `[roadmap]` sets
+  `wip` and the config has an `[agents]` table that sets no `wip`, it adds that `wip` to
+  `[agents]`, which turns that limit on, since nothing reads `[roadmap]`'s `wip` today (D-32), and
+  its issue names the limit; with `[agents]` setting `wip` already, or no `[agents]` table, it
+  moves nothing and its issue says so. It is decided once the config has no `[roadmap]` table
+- each is the migrating upgrade of its catalogue entry in `src/shipmill/deprecations.py`, so
+  the sweep (above) offers it in every connected repo that relies on the key and
+  `shipmill deprecations` reports its state there
+
+An upgrade that only deletes is new to the catalogue: `upgrade --apply`, `--json`, and the
+issue's body show it as the lines it takes out, with none added.
 
 ### `shipmill deprecations`
 
@@ -174,6 +201,15 @@ until it reads none, then decide.
 - S-047-16: `shipmill deprecations --json` prints the shape given above
 - S-047-17: `docs/release-lanes.md` gives the steps to retire a config key, ending with
   `shipmill deprecations <id>` reading none before the decision
+- S-047-18: `upgrade --apply drop-agents-prs` on a config whose `[agents]` sets `prs` deletes
+  that line, keeps every other line byte for byte, and adds none; the upgrade then reads
+  decided, and doctor gives no `agents-prs` warning
+- S-047-19: `upgrade --apply drop-roadmap` deletes the `[roadmap]` table; with `wip = 3` in
+  `[roadmap]` and an `[agents]` table without `wip` the result sets `[agents] wip = 3`, and with
+  `[agents] wip` already set, or no `[agents]` table, it adds no line
+- S-047-20: `src/shipmill/deprecations.py` names `drop-agents-prs` as `agents-prs`'s upgrade
+  and `drop-roadmap` as `roadmap`'s, and a sweep over a config that sets `[agents] prs` and
+  `[roadmap]` opens an issue for each
 
 ## Out of scope
 
@@ -186,6 +222,8 @@ until it reads none, then decide.
   repos): `shipmill deprecations` reads only the repos it is given or the host's gates
 - A sweep that proposes for a component's home or a chain (spec 017, 043): each repo's own
   gate proposes for its own config
+- An upgrade for `[agents] credit` (spec 051), catalogued after this spec with no migrating
+  upgrade: its move to `[agents] author` is its own decision
 - Changing `[agents] sweep_hours`'s default to reach repos sooner: 6 hours is soon enough for
   an offer
 
@@ -203,6 +241,7 @@ until it reads none, then decide.
 - shipmill/shipmill#904: S-047-1, S-047-2, S-047-3, S-047-4, S-047-5, S-047-6, S-047-9, S-047-10
 - shipmill/shipmill#905: S-047-11
 - shipmill/shipmill#906: S-047-12, S-047-13, S-047-14, S-047-15, S-047-16, S-047-17
+- shipmill/shipmill#911: S-047-18, S-047-19, S-047-20
 
 ## Verification
 
