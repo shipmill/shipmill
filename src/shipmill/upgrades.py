@@ -425,7 +425,7 @@ CATALOGUE: tuple[Upgrade, ...] = (
         why="doctor stops warning, and the repo no longer relies on a deprecated key (D-63, spec 047)",
         off="none: nothing reads prs; set it again and doctor warns again",
         declined=(
-            "`[agents] prs` stays, doctor keeps warning, and `shipmill deprecations` keeps listing this repo"
+            f"`[agents] prs` stays, doctor keeps warning, and `{UVX} deprecations` keeps listing this repo"
             " under `agents-prs` (D-63)."
         ),
     ),
@@ -445,7 +445,7 @@ CATALOGUE: tuple[Upgrade, ...] = (
         why="doctor stops warning, and the repo no longer relies on a deprecated table (D-63, spec 047)",
         off="delete wip from [agents] to turn the limit off; nothing reads [roadmap]",
         declined=(
-            "`[roadmap]` stays, read by nothing, doctor keeps warning, and `shipmill deprecations` keeps listing"
+            f"`[roadmap]` stays, read by nothing, doctor keeps warning, and `{UVX} deprecations` keeps listing"
             " this repo under `roadmap` (D-63)."
         ),
     ),

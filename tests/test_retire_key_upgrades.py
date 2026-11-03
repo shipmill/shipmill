@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from shipmill import UVX
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH
 from shipmill.deprecations import DeprecationId
@@ -129,7 +130,7 @@ def test_s047_18_listing_and_the_issue_show_the_line_it_takes_out(
     assert "```toml" not in text_body
     assert (
         "won't propose drop-agents-prs again. `[agents] prs` stays, doctor keeps warning, and"
-        " `shipmill deprecations` keeps listing this repo under `agents-prs` (D-63)."
+        f" `{UVX} deprecations` keeps listing this repo under `agents-prs` (D-63)."
     ) in text_body
     assert "closes it once `[agents]` no longer sets `prs`." in text_body
 
