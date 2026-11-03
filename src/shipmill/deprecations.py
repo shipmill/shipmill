@@ -104,13 +104,15 @@ def _credit(policy: Policy) -> str | None:
 
 
 AGENT_AUTONOMY = UpgradeId("agent-autonomy")
+DROP_AGENTS_PRS = UpgradeId("drop-agents-prs")
+DROP_ROADMAP = UpgradeId("drop-roadmap")
 CATALOGUE: tuple[Deprecation, ...] = (
     Deprecation(
         id=DeprecationId("agents-prs"),
         subject="[agents] prs",
         since=Version.parse("0.79.0"),  # #662
         replacement="[autonomy] land",
-        upgrade=AGENT_AUTONOMY,
+        upgrade=DROP_AGENTS_PRS,  # S-047-20: agent-autonomy leaves prs in place
         row="autonomy",
         warn=_prs,
     ),
@@ -128,7 +130,7 @@ CATALOGUE: tuple[Deprecation, ...] = (
         subject="[roadmap]",
         since=Version.parse("0.50.0"),  # #377, D-32
         replacement="[agents] wip",
-        upgrade=None,
+        upgrade=DROP_ROADMAP,
         row="roadmap",
         warn=_roadmap,
     ),

@@ -16,7 +16,12 @@ An upgrade that retires a deprecated key (spec 029) works the other way round: i
 while its table sets that key, whatever the value, and is decided once the key is gone, so a
 repo that edits it out by hand is done. Its edit takes the key's line out, a trailing comment
 with it, and puts its own line in that place unless the table already sets one of the keys
-that make it unneeded.
+that make it unneeded; one with no key of its own (drop-agents-prs) adds nothing.
+
+An upgrade that retires a deprecated table (spec 047, drop-roadmap) applies while the config
+has the table and is decided once it is gone. Its edit takes the table out, from its header to
+the next table's header, and may move one of its keys into another top-level table, when that
+table exists and doesn't set the key already.
 
 Proposing one opens an issue labelled shipmill-upgrade whose first line is the upgrade's
 marker, kept up to date on later runs. Closing that issue while the config lacks the key is a
@@ -87,13 +92,14 @@ class OwnedFile:
             raise ReleaseError(f"an upgrade's file is relative to the repo root, got {self.path}")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Upgrade:
     id: UpgradeId
     version: Version  # the shipmill release that last changed it
     table: str  # the config table its key goes in, dotted for a nested one: lanes.stable
-    key: str
-    value: str | bool | int
+    # the key it adds; None for an upgrade whose edit only takes a key or a table out
+    key: str | None = None
+    value: str | bool | int | None = None  # key's value, unless reads or into gives it
     needs_table: bool  # applies only to a config that has the table, such as [agents]
     changes: str  # what it changes, for people
     why: str
@@ -109,25 +115,100 @@ class Upgrade:
     reads: Callable[[Mapping[str, Any]], tuple[str | bool | int, ...]] | None = None
     when: str | None = None  # another top-level table the config must have for it to apply, such as agents
     creates: bool = False  # a config without the table gets it, at the end of the file
+    # the edit takes the whole top-level table out: the upgrade applies while the config has it
+    # and is decided once it is gone
+    drops: bool = False
+    # with drops: the top-level table key moves to, with the value the dropped table gives it,
+    # when the config has that table and it doesn't set key
+    into: str | None = None
+    turns_on: str = ""  # with into: what the moved key turns on, for the issue's body; {value} is its value
 
     def __post_init__(self) -> None:
-        names = (*self.table.split("."), self.key, *self.also, *([self.removes] if self.removes else []), *self.unless)
-        for name in (*names, *([self.when] if self.when else [])):
+        names = (
+            *self.table.split("."),
+            *([self.key] if self.key is not None else []),
+            *self.also,
+            *([self.removes] if self.removes else []),
+            *self.unless,
+        )
+        for name in (*names, *(t for t in (self.when, self.into) if t is not None)):
             if not _KEY.match(name):
                 raise ReleaseError(f"upgrade {self.id}: {name!r} is not a bare TOML key")
-        if (self.also or self.creates) and (self.removes is not None or "." in self.table):
+        if (self.also or self.creates) and (self.removes is not None or self.drops or "." in self.table):
             raise ReleaseError(f"upgrade {self.id}: only an upgrade that adds to a top-level table adds more keys")
+        retires = self.removes is not None or self.drops
+        if self.key is None and (not retires or self.unless or self.reads is not None or self.files):
+            raise ReleaseError(f"upgrade {self.id}: only an upgrade that takes a key or a table out adds no key")
+        if self.key is not None and self.into is None and self.reads is None and self.value is None:
+            raise ReleaseError(f"upgrade {self.id}: {self.key} needs a value")
+        if self.drops and (self.removes is not None or "." in self.table or self.files):
+            raise ReleaseError(f"upgrade {self.id}: an upgrade that drops a table drops a top-level one, and only that")
+        if self.into is not None and (not self.drops or self.key is None or self.into == self.table):
+            raise ReleaseError(f"upgrade {self.id}: only an upgrade that drops a table moves its key into another")
 
     @property
     def keys(self) -> tuple[str, ...]:
-        return (self.key, *self.also)
+        return () if self.key is None else (self.key, *self.also)
+
+    @property
+    def target(self) -> str:
+        """The table its lines go in: into, for one that moves a key out of the table it drops"""
+        return self.into if self.into is not None else self.table
 
     def settings(self, raw: Mapping[str, Any]) -> dict[str, str | bool | int]:
-        """Each key it adds with its value for this config"""
+        """Each key it adds with its value for this config; for one that moves a key, nothing
+        unless it moves it"""
+        if self.key is None:
+            return {}
+        if self.into is not None:
+            return self._moved(self.key, self.into, raw)
         values = (self.value,) if self.reads is None else self.reads(raw)
         if len(values) != len(self.keys):
             raise ReleaseError(f"upgrade {self.id}: {len(values)} values for the keys {', '.join(self.keys)}")
-        return dict(zip(self.keys, values, strict=True))
+        found: dict[str, str | bool | int] = {}
+        for key, value in zip(self.keys, values, strict=True):
+            if value is None:
+                raise ReleaseError(f"upgrade {self.id}: {key} needs a value")
+            found[key] = value
+        return found
+
+    def _moved(self, key: str, into: str, raw: Mapping[str, Any]) -> dict[str, str | bool | int]:
+        """key with the value the table sets it to, when the table sets it and the config has an
+        into table that doesn't; else nothing"""
+        table = self.section(raw)
+        target = raw.get(into)
+        if table is None or key not in table or target is None:
+            return {}
+        if not isinstance(target, dict):
+            raise ReleaseError(f"{CONFIG_PATH}: {into} must be a table, got {target!r}")
+        if key in target:
+            return {}
+        value = table[key]
+        if not isinstance(value, str | bool | int):
+            raise ReleaseError(f"{CONFIG_PATH}: [{self.table}] {key} must be a string, a boolean, or an integer")
+        return {key: value}
+
+    def unmoved(self, raw: Mapping[str, Any]) -> str:
+        """For one that moves a key and won't for this config, why, for the issue's body"""
+        table, target = self.section(raw) or {}, raw.get(self.target)
+        if self.key not in table:
+            return f"`[{self.table}]` sets no `{self.key}`"
+        if target is None:
+            return f"the config has no `[{self.target}]` table to move `{self.key}` to"
+        return f"`[{self.target}]` already sets `{self.key}`, which stays as it is"
+
+    def removed(self, raw: Mapping[str, Any]) -> tuple[str, ...]:
+        """The config lines its edit takes out, as this config's values give them; a value the
+        config doesn't give reads `…`"""
+        table = self.section(raw)
+        if self.drops:
+            found = table or {}
+            return (f"[{self.table}]", *(f"{_bare(k)} = {_shown(self.table, k, v)}" for k, v in found.items()))
+        if self.removes is None:
+            return ()
+        if table is None or self.removes not in table:
+            return (f"{self.removes} = …",)
+        return (f"{self.removes} = {_shown(self.table, self.removes, table[self.removes])}",)
 
     def lines(self, raw: Mapping[str, Any]) -> tuple[str, ...]:
         """The config lines it adds to this config, such as fragments = "changelog.d" """
@@ -153,6 +234,8 @@ class Upgrade:
         return found
 
     def applies(self, raw: Mapping[str, Any]) -> bool:
+        if self.drops:
+            return self.section(raw) is not None
         if self.removes is not None:
             table = self.section(raw)
             return table is not None and self.removes in table
@@ -162,15 +245,21 @@ class Upgrade:
 
     def decided(self, raw: Mapping[str, Any]) -> bool:
         """The config holds the key, or any of also, whatever its value: a maintainer's decision
-        either way; for an upgrade that removes a key, the table no longer sets it"""
-        if self.removes is not None:
+        either way; for an upgrade that removes a key, the table no longer sets it, and for one
+        that drops a table, the config no longer has it"""
+        if self.removes is not None or self.drops:
             return not self.applies(raw)
         table = self.section(raw)
         return table is not None and any(key in table for key in self.keys)
 
     def adds(self, raw: Mapping[str, Any]) -> bool:
         """Whether applying it to the config adds its line: always, unless it removes a key from a
-        table that already sets its key or one of unless"""
+        table that already sets its key or one of unless; never for one with no key; for one that
+        moves a key, when it moves it"""
+        if self.key is None:
+            return False
+        if self.into is not None:
+            return bool(self.settings(raw))
         table = self.section(raw)
         return self.removes is None or table is None or not any(k in table for k in (self.key, *self.unless))
 
@@ -181,9 +270,12 @@ class Upgrade:
             "id": str(self.id),
             "version": str(self.version),
             "table": self.table,
+            "into": self.target,  # the table its lines go in
             "line": "\n".join(lines),
             "lines": list(lines),
             "removes": self.removes,
+            "drops": self.table if self.drops else None,
+            "removed_lines": list(self.removed(raw or {})),
             "files": [p.path.as_posix() for p in self.files],
             "changes": self.changes,
             "why": self.why,
@@ -193,6 +285,19 @@ class Upgrade:
 
 def _toml(value: str | bool | int) -> str:
     return ("true" if value else "false") if isinstance(value, bool) else json.dumps(value)
+
+
+def _bare(key: str) -> str:
+    """A key as TOML writes it: bare when it can be, quoted otherwise"""
+    return key if _KEY.match(key) else json.dumps(key)
+
+
+def _shown(table: str, key: str, value: object) -> str:
+    """A config value an upgrade takes out, as TOML writes it; refuses one that isn't a string,
+    a boolean, or an integer, which no key an upgrade takes out holds in a config that loads"""
+    if not isinstance(value, str | bool | int):
+        raise ReleaseError(f"{CONFIG_PATH}: [{table}] {key} must be a string, a boolean, or an integer, got {value!r}")
+    return _toml(value)
 
 
 def _legacy_levels(raw: Mapping[str, Any]) -> tuple[str | bool | int, ...]:
@@ -307,6 +412,43 @@ CATALOGUE: tuple[Upgrade, ...] = (
         off='set each key to "observe", "propose", or "act" in [autonomy]',
         declined="`land` keeps being read from the prompt, and doctor keeps warning (D-63).",
     ),
+    Upgrade(
+        id=UpgradeId("drop-agents-prs"),
+        version=Version.parse("0.113.0"),  # the release that adds it (spec 047)
+        table=AGENTS_TABLE,
+        needs_table=True,
+        removes="prs",
+        changes=(
+            "[agents] prs goes, which the gate ignores since spec 040: [autonomy] land decides whether open"
+            " pull requests are its work, so no session changes what it does"
+        ),
+        why="doctor stops warning, and the repo no longer relies on a deprecated key (D-63, spec 047)",
+        off="none: nothing reads prs; set it again and doctor warns again",
+        declined=(
+            f"`[agents] prs` stays, doctor keeps warning, and `{UVX} deprecations` keeps listing this repo"
+            " under `agents-prs` (D-63)."
+        ),
+    ),
+    Upgrade(
+        id=UpgradeId("drop-roadmap"),
+        version=Version.parse("0.113.0"),  # the release that adds it (spec 047)
+        table="roadmap",
+        needs_table=True,
+        drops=True,
+        key="wip",
+        into=AGENTS_TABLE,
+        turns_on="triage keeps at most {value} issues in progress at once",
+        changes=(
+            "the [roadmap] table goes, which nothing reads since D-32; a wip it sets moves to [agents], where"
+            " triage reads it, when [agents] sets none"
+        ),
+        why="doctor stops warning, and the repo no longer relies on a deprecated table (D-63, spec 047)",
+        off="delete wip from [agents] to turn the limit off; nothing reads [roadmap]",
+        declined=(
+            f"`[roadmap]` stays, read by nothing, doctor keeps warning, and `{UVX} deprecations` keeps listing"
+            " this repo under `roadmap` (D-63)."
+        ),
+    ),
 )
 
 
@@ -413,9 +555,35 @@ def title(upgrade: Upgrade) -> str:
     return f"shipmill upgrade: turn on {upgrade.id}"
 
 
-def _edit_text(upgrade: Upgrade) -> str:
+def _takes_out(upgrade: Upgrade) -> bool:
+    """Whether the issue's body shows the edit as the lines it takes out: one with no key of its
+    own, or one that drops a table"""
+    return upgrade.key is None or upgrade.drops
+
+
+def _edit_text(upgrade: Upgrade, raw: Mapping[str, Any]) -> str:
     """What the edit does to the config, for the issue's body, ending where the toml block starts"""
     config = CONFIG_PATH.as_posix()
+    if upgrade.drops:
+        dropped = (
+            f"It deletes the `[{upgrade.table}]` table from `{config}` (its header, its keys, and its lines up to"
+            " the next table's header) and keeps every other line"
+        )
+        moved = upgrade.settings(raw)
+        if not moved:
+            return f"{dropped}. It adds no line: {upgrade.unmoved(raw)}."
+        ((key, value),) = moved.items()
+        limit = upgrade.turns_on.format(value=value)
+        return (
+            f"{dropped}. It moves `{key} = {_toml(value)}` into `[{upgrade.target}]`, which turns it on, since"
+            f" nothing reads `[{upgrade.table}]`'s `{key}` today: {limit}."
+        )
+    if upgrade.key is None:
+        assert upgrade.removes is not None  # __post_init__: a key-less upgrade takes a key or a table out
+        return (
+            f"It deletes the `{upgrade.removes}` line from `[{upgrade.table}]` in `{config}`, a trailing comment"
+            " with it, keeps every other line, and adds none."
+        )
     if upgrade.removes is None:
         created = "".join(f" and creates `{f.path.as_posix()}`" for f in upgrade.files)
         what = "these lines" if upgrade.also else "this line"
@@ -430,12 +598,25 @@ def _edit_text(upgrade: Upgrade) -> str:
 
 def _decided_text(upgrade: Upgrade) -> str:
     """When the config has decided the upgrade, for the issue's body"""
+    if upgrade.drops:
+        return f"`{CONFIG_PATH.as_posix()}` has no `[{upgrade.table}]` table"
     if upgrade.removes is None:
         if upgrade.also:
             keys = ", ".join(f"`{key}`" for key in upgrade.keys)
             return f"`[{upgrade.table}]` sets any of {keys}, to any value"
         return f"`[{upgrade.table}]` sets `{upgrade.key}`, to any value"
     return f"`[{upgrade.table}]` no longer sets `{upgrade.removes}`"
+
+
+def _diff(upgrade: Upgrade, raw: Mapping[str, Any]) -> list[str]:
+    """The edit as a diff block, for the issue's body: each line it takes out, and each it adds
+    under its table's header"""
+    taken = [f"-{line}" for line in upgrade.removed(raw)]
+    shown = taken if upgrade.drops else [f" [{upgrade.table}]", *taken]
+    added = upgrade.lines(raw) if upgrade.adds(raw) else ()
+    if added:
+        shown += [f" [{upgrade.target}]", *(f"+{line}" for line in added)]
+    return ["```diff", *shown, "```"]
 
 
 def body(upgrade: Upgrade, raw: Mapping[str, Any] | None = None) -> str:
@@ -449,12 +630,13 @@ def body(upgrade: Upgrade, raw: Mapping[str, Any] | None = None) -> str:
         f"- Why: {upgrade.why}",
         f"- To turn it off later: {upgrade.off}",
         "",
-        _edit_text(upgrade),
+        _edit_text(upgrade, raw or {}),
         "",
-        "```toml",
-        f"[{upgrade.table}]",
-        *upgrade.lines(raw or {}),
-        "```",
+        *(
+            _diff(upgrade, raw or {})
+            if _takes_out(upgrade)
+            else ["```toml", f"[{upgrade.table}]", *upgrade.lines(raw or {}), "```"]
+        ),
         "",
         "### Accept",
         "",
@@ -568,10 +750,10 @@ def propose(raw: Mapping[str, Any], level: Autonomy, github: GitHub, fix: str) -
             table = upgrade.section(raw) or {}
             keys = [upgrade.removes] if upgrade.removes is not None else [k for k in upgrade.keys if k in table]
             named = ", ".join(f"`{k}`" for k in keys)  # the keys that decided it, not only the first
-            text = (
-                f"`[{upgrade.table}]` in `{CONFIG_PATH.as_posix()}` {settled} {named}:"
-                f" {upgrade.id} is decided, so this issue is done."
-            )
+            where = f"`[{upgrade.table}]` in `{CONFIG_PATH.as_posix()}` {settled} {named}"
+            if upgrade.drops:
+                where = f"`{CONFIG_PATH.as_posix()}` has no `[{upgrade.table}]` table"
+            text = f"{where}: {upgrade.id} is decided, so this issue is done."
             with _named(upgrade.id, fix):
                 github.close_issue(issue.number, text)
             done.append(Proposed(upgrade.id, issue.number, Outcome.CLOSED))
@@ -624,11 +806,13 @@ class Applied:
     kept: tuple[Path, ...]  # owned files that already existed, left as they were
     added: bool = True  # whether the edit added the upgrade's line; an upgrade that removes a key may not
     lines: tuple[str, ...] = ()  # the lines the edit added, or would have added, with this config's values
+    removed: tuple[str, ...] = ()  # the config's lines the edit took out, as the file wrote them, less line endings
 
 
 def apply(root: Path, upgrade: Upgrade) -> Applied:
     """Add the upgrade's line to the config, or for one that removes a key take that key's line
-    out (putting its line in that place when the table needs it), and create its files; refuse
+    out (putting its line in that place when the table needs it), or for one that drops a table
+    take the table out (moving its key when the upgrade does), and create its files; refuse
     one that doesn't apply or is decided, and a config whose table this edit can't find"""
     path = root / CONFIG_PATH
     if not path.is_file():
@@ -640,6 +824,8 @@ def apply(root: Path, upgrade: Upgrade) -> Applied:
         raise ReleaseError(f"{path}: {exc}") from None
     bound = requires.check(raw)
     if not upgrade.applies(raw):
+        if upgrade.drops:
+            raise ReleaseError(f"upgrade {upgrade.id} doesn't apply: {CONFIG_PATH} has no [{upgrade.table}] table")
         if upgrade.removes is not None:
             raise ReleaseError(
                 f"upgrade {upgrade.id} doesn't apply: [{upgrade.table}] in {CONFIG_PATH} sets no {upgrade.removes}"
@@ -658,22 +844,31 @@ def apply(root: Path, upgrade: Upgrade) -> Applied:
     expected = copy.deepcopy(dict(raw))
     if upgrade.creates:
         expected.setdefault(upgrade.table, {})
-    table = expected
-    for part in upgrade.table.split("."):
-        table = table[part]
-    if upgrade.removes is None:
+    taken: tuple[str, ...] = ()
+    if upgrade.drops:
+        refused = ReleaseError(
+            f"upgrade {upgrade.id}: can't take [{upgrade.table}] out of {CONFIG_PATH}; edit it by hand"
+        )
+        edited, taken = _drop(text, upgrade)
+        del expected[upgrade.table]
+        if adds:
+            moved = append_to_table(edited, upgrade.target, lines)
+            if moved is None:  # no one header line for the table the key moves to
+                raise refused
+            edited = moved
+    elif upgrade.removes is None:
         edited = _insert(text, upgrade, lines)
         shown = "; ".join(lines)
         refused = ReleaseError(f"upgrade {upgrade.id}: can't add {shown} to {CONFIG_PATH}; add it by hand")
     else:
-        edited = _replace(text, upgrade, upgrade.removes, adds)
-        del table[upgrade.removes]
+        edited, taken = _replace(text, upgrade, upgrade.removes, adds)
+        del _table(expected, upgrade.table)[upgrade.removes]
         refused = ReleaseError(
             f"upgrade {upgrade.id}: can't take {upgrade.removes} out of [{upgrade.table}] in {CONFIG_PATH};"
             " edit it by hand"
         )
     if adds:
-        table.update(upgrade.settings(raw))
+        _table(expected, upgrade.target).update(upgrade.settings(raw))
     needed = Requires.at(upgrade.version)
     if bound is not None and bound.floor < needed.floor:  # a higher or equal bound stays (S-031-7)
         edited = _set_requires(edited, needed, upgrade)
@@ -695,7 +890,15 @@ def apply(root: Path, upgrade: Upgrade) -> Applied:
         target.write_text(owned.render(raw), encoding="utf-8")
         created.append(owned.path)
     path.write_bytes(edited.encode("utf-8"))
-    return Applied(upgrade, tuple(created), tuple(kept), adds, lines)
+    return Applied(upgrade, tuple(created), tuple(kept), adds, lines, taken)
+
+
+def _table(config: dict[str, Any], dotted: str) -> dict[str, Any]:
+    """The parsed config's table at the dotted name, which the caller knows it has"""
+    found = config
+    for part in dotted.split("."):
+        found = found[part]
+    return found
 
 
 _REQUIRES_LINE = re.compile(rf"^(\s*{requires.KEY}\s*=\s*)(\"[^\"\n]*\"|'[^'\n]*')")
@@ -749,9 +952,10 @@ def _body(text: str, upgrade: Upgrade, key: str) -> tuple[list[str], list[bool],
     return bounds
 
 
-def _replace(text: str, upgrade: Upgrade, removes: str, adds: bool) -> str:
+def _replace(text: str, upgrade: Upgrade, removes: str, adds: bool) -> tuple[str, tuple[str, ...]]:
     """The text without the line that sets removes in the upgrade's table, a trailing comment
-    with it, and with adds the upgrade's line in its place, in that line's ending"""
+    with it, and with adds the upgrade's line in its place, in that line's ending; and the line
+    taken out, less its ending"""
     lines, outside, start, end = _body(text, upgrade, removes)
     key = re.compile(rf"^\s*{re.escape(removes)}\s*=")
     found = [i for i in range(start + 1, end) if outside[i] and key.match(lines[i])]
@@ -760,9 +964,22 @@ def _replace(text: str, upgrade: Upgrade, removes: str, adds: bool) -> str:
             f"upgrade {upgrade.id}: no {removes} line under [{upgrade.table}] in {CONFIG_PATH} to take out"
         )
     at = found[0]
-    ending = lines[at][len(lines[at].rstrip("\r\n")) :]
+    taken = lines[at].rstrip("\r\n")
+    ending = lines[at][len(taken) :]
     lines[at : at + 1] = [upgrade.line + ending] if adds else []
-    return "".join(lines)
+    return "".join(lines), (taken,)
+
+
+def _drop(text: str, upgrade: Upgrade) -> tuple[str, tuple[str, ...]]:
+    """The text without the upgrade's table: its header line and every line up to the next
+    table's header (or the end of the file); and the lines taken out, less their endings"""
+    bounds = _bounds(text, upgrade.table)
+    if bounds is None:
+        raise ReleaseError(f"upgrade {upgrade.id}: no [{upgrade.table}] header line in {CONFIG_PATH} to take out")
+    lines, _, start, end = bounds
+    taken = tuple(line.rstrip("\r\n") for line in lines[start:end])
+    del lines[start:end]
+    return "".join(lines), taken
 
 
 def _insert(text: str, upgrade: Upgrade, added: Sequence[str]) -> str:
@@ -774,6 +991,7 @@ def _insert(text: str, upgrade: Upgrade, added: Sequence[str]) -> str:
         ended = text if not text or text.endswith("\n") else text + newline
         gap = newline if ended else ""
         return ended + gap + f"[{upgrade.table}]{newline}" + "".join(line + newline for line in added)
+    assert upgrade.key is not None  # __post_init__: an upgrade that only adds has a key
     _body(text, upgrade, upgrade.key)  # refuses a table without one header line, in the upgrade's words
     edited = append_to_table(text, upgrade.table, added)
     assert edited is not None  # _body found the header

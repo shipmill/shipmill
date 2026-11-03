@@ -237,6 +237,13 @@ when no repo relies on the deprecations asked about, 1 when one does, and 2, pri
 when a repo can't be read (no access, no config on the default branch, a config that fails to
 parse) or there are no repos to read: an unread repo never counts as relying on nothing.
 
+Two upgrades retire deprecated keys outright, keeping every other line of the config:
+`shipmill upgrade --apply drop-agents-prs` deletes `[agents] prs` and adds nothing, and
+`shipmill upgrade --apply drop-roadmap` deletes the `[roadmap]` table, from its header to the
+next table's header, moving its `wip` to `[agents]` when `[agents]` exists and sets none (which
+turns that limit on, as nothing reads `[roadmap]`). Each is its deprecation's migrating upgrade,
+so the sweeps propose it wherever a repo relies on the key.
+
 To retire a key:
 
 1. Release the upgrade that migrates a config off it, an entry in `src/shipmill/upgrades.py`
