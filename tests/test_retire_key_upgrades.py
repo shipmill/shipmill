@@ -250,6 +250,17 @@ def test_s047_19_a_roadmap_without_wip_moves_nothing(tmp_path: Path) -> None:
     assert path.read_text(encoding="utf-8") == '[agents]\nprompt = "/t"\n\n'
 
 
+def test_s047_19_a_roadmap_before_an_array_of_tables_keeps_it(tmp_path: Path) -> None:
+    text = (
+        '[agents]\nprompt = "/t"\n\n[roadmap]\nwip = 3\n[[version_lines]]\nfile = "a"\npattern = "x"\nreplace = "y"\n'
+    )
+    path = write_config(tmp_path, text)
+    apply(tmp_path, DROP_ROADMAP)
+    assert path.read_text(encoding="utf-8") == text.replace("[roadmap]\nwip = 3\n", "").replace(
+        'prompt = "/t"\n', 'prompt = "/t"\nwip = 3\n'
+    )
+
+
 def test_s047_19_the_issue_names_the_limit_it_turns_on(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     text = BASE + '\n[agents]\nprompt = "/t"\n\n[roadmap]\nwip = 3\ncadence = 2\n'
     write_config(tmp_path, text)
@@ -287,6 +298,7 @@ def test_s047_19_a_decided_config_closes_its_issue(tmp_path: Path, capsys: pytes
     ("text", "error"),
     [
         ("roadmap = { wip = 3 }\n", "no [roadmap] header line"),
+        ("roadmap.wip = 3\n", "no [roadmap] header line"),  # dotted
         ("[roadmap]\nwip = 3\n\n[roadmap.x]\ny = 1\n", "can't take [roadmap] out of .github/shipmill.toml"),
         ('[roadmap]\nwip = 3\n\n[agents.roles]\nrelease = ["@o"]\n', "can't take [roadmap] out of"),
     ],
