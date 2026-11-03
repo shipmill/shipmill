@@ -210,6 +210,7 @@ def pull(number: int, head: str = "a" * 40, rollup: str = "SUCCESS", updated: st
         "headRefOid": head,
         "labels": {"nodes": []},
         "assignees": {"nodes": []},
+        "author": {"__typename": "User", "login": "amy"},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": rollup}}}]},
     }
 

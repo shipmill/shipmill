@@ -107,6 +107,7 @@ ACTION = frozenset(
         "UPSTREAM_ASKED",
         "UPSTREAM_UNREADABLE",
         "VETOED",
+        "AGENT_DRAFT",  # D-67: the App's own draft, resumed by a session (#914)
     }
 )
 REPO_ERROR = "REPO_ERROR"

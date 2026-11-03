@@ -683,15 +683,36 @@ def test_the_worst_verdict_across_prs_is_the_exit_code(tmp_path: Path, directed:
     assert [line.split()[1] for line in proc.stdout.splitlines() if line.startswith("#")] == ["READY", "REFUSED"]
 
 
-# D-52: a draft pull request belongs to whoever opened it
+# D-52, then D-67: a person's draft pull request belongs to them; the App's own is resumed (#914)
 
 
 def test_673_a_green_draft_is_left_to_its_author(tmp_path: Path, directed: Path) -> None:
-    proc = run_gate(tmp_path, directed, {7: pr(draft=True)}, "--bot-login", BOT)
+    proc = run_gate(tmp_path, directed, {7: pr(login="amy", draft=True)}, "--bot-login", BOT)
     assert proc.returncode == gate.DRAFT == 8, proc.stdout + proc.stderr
     assert proc.stdout.splitlines() == [
         "#7 DRAFT state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=1 pending=0 failed=0",
-        "  draft: left to its author until marked ready (D-52)",
+        "  draft: left to its author until marked ready (D-67)",
+    ]
+
+
+@pytest.mark.parametrize("flags", [(), ("--bot-login", "other-app[bot]")])
+def test_914_a_draft_without_the_bot_login_stays_its_authors(
+    tmp_path: Path, directed: Path, flags: tuple[str, ...]
+) -> None:
+    """#914: an App draft read without --bot-login, or by another bot's, is anyone's draft"""
+    proc = run_gate(tmp_path, directed, {7: pr(draft=True)}, *flags)
+    assert proc.returncode == 8 and proc.stdout.endswith("  draft: left to its author until marked ready (D-67)\n")
+
+
+def test_914_the_apps_own_draft_says_to_mark_it_ready(tmp_path: Path, directed: Path) -> None:
+    """#914 (D-67): a draft the --bot-login authored still exits 8, its line telling the gate's
+    session to mark it ready once nothing it waits on is open; its plan is still not read"""
+    proc = run_gate(tmp_path, directed, {7: pr(body="none", draft=True)}, "--bot-login", BOT)
+    assert proc.returncode == gate.DRAFT == 8, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == [
+        "#7 DRAFT state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=1 pending=0 failed=0",
+        "  draft: the App's own, no session owns it: once nothing it waits on is open, mark it ready"
+        " (gh pr ready 7, through shipmill gh) and run the gate again (D-67)",
     ]
 
 

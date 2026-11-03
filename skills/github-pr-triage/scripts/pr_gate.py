@@ -46,14 +46,16 @@ and --maintainer-accepted doesn't lift it. The check reads the files API, and Gi
 once for the issues the lines name; a PR that gh pr view lists whole, with no spec path, reads
 neither.
 
-A draft PR belongs to whoever opened it (D-52): the gate reads it as DRAFT, whatever its checks,
-plan, or zones, and reads neither its files nor its zones. It enters triage once marked ready.
+A draft PR is read as DRAFT, whatever its checks, plan, or zones, and the gate reads neither its
+files nor its zones (D-67). A person's draft belongs to them: it enters triage once marked ready.
+A draft the --bot-login authored has no owner once its session ended (#914): its line says so, and
+a gate session marks it ready once nothing it waits on is open, then runs the gate again.
 
 Exit codes: 0 every PR is ready; 1 a check failed, or gh failed; 3 a check is still
 pending (or --wait timed out); 4 a PR is not open or conflicts; 5 a PR needs the
 maintainer's decision; 6 an agent's PR is refused for its plan, or a spec PR names no open
 feature issue; 7 a PR only the maintainer
-merges, by hand (a `never` zone); 8 a draft PR, left to its author (D-52); 2 bad arguments,
+merges, by hand (a `never` zone); 8 a draft PR (D-67); 2 bad arguments,
 a base branch the checkout lacks, a git failure, a REVIEW.md, docs/product.md, or config the
 gate can't read, or a `shipmill decide classify` that fails or prints what the gate can't
 read. With several PRs the exit code is
@@ -88,8 +90,8 @@ LABELS = {
     MAINTAINER_ONLY: "MAINTAINER_ONLY",
     DRAFT: "DRAFT",
 }
-# the worst verdict last: MAINTAINER_ONLY ranks above NEEDS_DECISION and below REFUSED (spec 030); DRAFT,
-# its author's, ranks above BLOCKED and below the verdicts that ask something of the maintainer (D-52)
+# the worst verdict last: MAINTAINER_ONLY ranks above NEEDS_DECISION and below REFUSED (spec 030); DRAFT
+# ranks above BLOCKED and below the verdicts that ask something of the maintainer (D-52, kept by D-67)
 RANK = (READY, FAILED, PENDING, BLOCKED, DRAFT, NEEDS_DECISION, MAINTAINER_ONLY, REFUSED)
 
 # github-ship-watch's watch_state.py: one reading of the config's [agents] and of the plugin's
@@ -147,8 +149,9 @@ class Gate:
     asks: tuple[str, ...] = ()  # why the PR waits on the maintainer
     never: tuple[str, ...] = ()  # the never zones: only the maintainer merges it, by hand (spec 030)
     notices: tuple[str, ...] = ()  # the notify zones: decided without waiting, the verdict kept
-    draft: bool = False  # its author's until marked ready (D-52)
+    draft: bool = False  # a person's is theirs until marked ready (D-67)
     spec: tuple[str, ...] = ()  # why a spec PR is refused: it names no open feature issue (spec 053)
+    own: bool = False  # a draft the --bot-login authored: a gate session marks it ready (D-67, #914)
 
     @property
     def verdict(self) -> int:
@@ -705,12 +708,12 @@ def judge(
 ) -> Gate:
     """zones, classify's for the PR, are given when the base's config has [agents] (spec 030);
     they replace the direction and Protected areas checks. spec is spec_problems' answer, which
-    --maintainer-accepted doesn't lift (spec 053). A draft is judged for nothing else (D-52)"""
+    --maintainer-accepted doesn't lift (spec 053). A draft is judged for nothing else (D-67);
+    agent, for a draft, says the --bot-login authored it, so its line says to mark it ready"""
     checks = tuple(check_of(e) for e in data.get("statusCheckRollup") or ())
     if data["isDraft"]:
-        return Gate(
-            number, data["state"], data["mergeable"], data["baseRefName"], data["headRefOid"][:7], checks, draft=True
-        )
+        head = data["headRefOid"][:7]
+        return Gate(number, data["state"], data["mergeable"], data["baseRefName"], head, checks, draft=True, own=agent)
     files: tuple[str, ...] = data["files"]
     refused: list[str] = []
     if agent and base.ids is not None:
@@ -757,8 +760,13 @@ def render(gate: Gate) -> str:
     lines += [f"  maintainer-only: {reason}" for reason in gate.never]
     lines += [f"  needs-decision: {reason}" for reason in gate.asks]
     lines += [f"  notify: {reason}" for reason in gate.notices]
-    if gate.verdict == DRAFT:
-        lines.append("  draft: left to its author until marked ready (D-52)")
+    if gate.verdict == DRAFT and gate.own:
+        lines.append(
+            "  draft: the App's own, no session owns it: once nothing it waits on is open, mark it ready"
+            f" (gh pr ready {gate.number}, through shipmill gh) and run the gate again (D-67)"
+        )
+    elif gate.verdict == DRAFT:
+        lines.append("  draft: left to its author until marked ready (D-67)")
     return "\n".join(lines)
 
 
@@ -802,14 +810,13 @@ def main() -> int:
             for number in args.prs:
                 data = fetch(number, args.repo)
                 base = bases.base(str(data["baseRefName"]))
-                if data["isDraft"]:  # its author's: neither its files nor its zones are read (D-52)
-                    gates.append(judge(data, number, base, False, args.maintainer_accepted))
+                own = args.bot_login is not None and author_of(data.get("author") or {}) == args.bot_login
+                if data["isDraft"]:  # neither its files nor its zones are read (D-67)
+                    gates.append(judge(data, number, base, own, args.maintainer_accepted))
                     continue
                 if base.ids is not None or base.reviews:
                     data["files"] = all_files(data, number, args.repo)
-                agent = args.agent or (
-                    args.bot_login is not None and author_of(data.get("author") or {}) == args.bot_login
-                )
+                agent = args.agent or own
                 spec: tuple[str, ...] = ()
                 if data["state"] == "OPEN":  # a closed PR reads BLOCKED: nothing to read for it
                     key = (number, str(data["headRefOid"]), str(data.get("body") or ""))

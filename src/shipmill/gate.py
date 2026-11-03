@@ -286,7 +286,8 @@ class InFlight:
     """What a QUIET tick says is in flight (spec 048), from the change check and the state
     directory alone: the open pull requests waiting on CI, waiting to land, and failing CI, the
     last landed pull request, and the last session that ended with a result. with_person: a
-    person's pull requests, each with the logins it waits on (#853)"""
+    person's pull requests, each with the logins it waits on (#853). drafts: the open drafts
+    (#914)"""
 
     ci: tuple[int, ...]
     landing: tuple[int, ...]
@@ -294,10 +295,11 @@ class InFlight:
     landed: Landed | None
     result: LastResult | None
     with_person: tuple[tuple[int, tuple[str, ...]], ...] = ()
+    drafts: tuple[int, ...] = ()
 
     @classmethod
     def of(cls, flight: Flight, result: LastResult | None) -> InFlight:
-        return cls(flight.ci, flight.landing, flight.failing, flight.landed, result, flight.with_person)
+        return cls(flight.ci, flight.landing, flight.failing, flight.landed, result, flight.with_person, flight.drafts)
 
     def line(self, now: dt.datetime) -> str:
         """`in flight: 2 wait on CI (#771, #773), 1 waits to land (#772), 1 waits on @amy
@@ -313,6 +315,7 @@ class InFlight:
                 (self.landing, "waits to land", "wait to land"),
                 (self.failing, "fails CI", "fail CI"),
                 *((tuple(n), f"waits on {who}", f"wait on {who}") for who, n in people.items()),
+                (self.drafts, "is a draft", "are drafts"),  # #914: a draft is open too
             )
             if numbers
         ]
@@ -339,6 +342,7 @@ class InFlight:
             "landed": None if self.landed is None else self.landed.record(),
             "result": None if self.result is None else self.result.record(),
             "with_person": [{"number": n, "assignees": list(logins)} for n, logins in self.with_person],
+            "drafts": list(self.drafts),
         }
 
 
@@ -2094,6 +2098,7 @@ def _running(value: object) -> Running | None:
 
 IN_FLIGHT_KEYS = {"ci", "landing", "failing", "landed", "result"}
 WITH_PERSON = "with_person"  # #853: in_flight's key a tick.json written before it lacks
+DRAFTS = "drafts"  # #914: another such key
 
 
 def _number(value: object, what: str) -> int:
@@ -2120,7 +2125,7 @@ def _in_flight(value: object) -> InFlight | None:
     """tick.json's in_flight: --json's own (S-048-25), or null"""
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) - {WITH_PERSON} != IN_FLIGHT_KEYS:
+    if not isinstance(value, dict) or set(value) - {WITH_PERSON, DRAFTS} != IN_FLIGHT_KEYS:
         raise ValueError(f"in_flight: expected exactly {', '.join(sorted(IN_FLIGHT_KEYS))}, or null")
     result = value["result"]
     if result is not None and (not isinstance(result, dict) or set(result) != LAST_RESULT_KEYS):
@@ -2132,6 +2137,7 @@ def _in_flight(value: object) -> InFlight | None:
         _landed(value["landed"]),
         None if result is None else _last_result(result),
         _with_person(value.get(WITH_PERSON, [])),
+        _numbers(value.get(DRAFTS, []), "in_flight.drafts"),
     )
 
 

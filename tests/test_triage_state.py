@@ -715,6 +715,75 @@ def test_the_wip_limit_leaves_room_for_the_oldest_ready_issues(ts: ModuleType) -
     assert ts.wip_room(rows, 1)["room"] == 0
 
 
+# -- #914 (D-67): the App's own draft is named, not read as IN_PROGRESS
+
+BOT = "shipmill-app[bot]"
+
+
+def linked(
+    number: int, *, draft: bool = True, login: str = "shipmill-app", bot: bool = True, labels: tuple[str, ...] = ()
+) -> Any:
+    """A closing cross-reference from an open PR, as the query reads it: GraphQL gives a Bot's
+    login without "[bot]" """
+    pr = {
+        "number": number,
+        "state": "OPEN",
+        "title": "",
+        "body": "",
+        "isDraft": draft,
+        "author": {"__typename": "Bot" if bot else "User", "login": login},
+        "labels": {"nodes": [{"name": n} for n in labels]},
+    }
+    return {"willCloseTarget": True, "isCrossRepository": False, "source": pr}
+
+
+def drafted(*prs: Any) -> dict[str, Any]:
+    item = issue(("2026-09-01T10:00:00Z", "Triage: implement"))
+    item["timelineItems"] = {"nodes": list(prs)}
+    return item
+
+
+def test_914_an_issue_whose_only_open_pr_is_the_apps_draft_reads_agent_draft(ts: ModuleType) -> None:
+    """The issue's repro: the App parked its pull request as a draft, its questions answered;
+    triage read IN_PROGRESS, so nothing ever resumed it"""
+    verdict = ts.classify_open(drafted(linked(20)), "Triage:", "postponed", {}, None, REPO, BOT)
+    assert verdict == ("AGENT_DRAFT", "#20:draft")
+    assert "AGENT_DRAFT" in ts.ACTION  # an action: a session marks it ready
+
+
+def test_914_a_labelled_app_draft_is_held(ts: ModuleType) -> None:
+    item = drafted(linked(20, labels=("needs-decision",)))
+    verdict = ts.classify_open(item, "Triage:", "postponed", {}, None, REPO, BOT)
+    assert verdict == ("AGENT_DRAFT_HELD", "#20:draft(needs-decision)")
+    assert "AGENT_DRAFT_HELD" not in ts.ACTION  # its question may still wait: report only
+
+
+@pytest.mark.parametrize(
+    "prs",
+    [
+        (linked(20, login="amy", bot=False),),  # a person's draft
+        (linked(20, login="other-app"),),  # another bot's
+        (linked(20), linked(21, draft=False)),  # a ready pull request beside the App's draft
+    ],
+    ids=["person", "other bot", "ready beside"],
+)
+def test_914_any_other_open_pr_still_reads_in_progress(ts: ModuleType, prs: tuple[Any, ...]) -> None:
+    assert ts.classify_open(drafted(*prs), "Triage:", "postponed", {}, None, REPO, BOT)[0] == "IN_PROGRESS"
+
+
+def test_914_without_bot_login_the_apps_draft_reads_in_progress(ts: ModuleType) -> None:
+    assert classify(ts, drafted(linked(20))) == "IN_PROGRESS"
+
+
+def test_914_an_app_draft_counts_as_in_progress_under_wip(ts: ModuleType) -> None:
+    rows = [{"number": n, "state": s} for n, s in ((4, "AGENT_DRAFT"), (5, "AGENT_DRAFT_HELD"), (9, "NEEDS_PR"))]
+    assert ts.wip_room(rows, 3) == {"wip": 3, "in_progress": 2, "room": 1, "ready": [9]}
+
+
+def test_914_the_query_reads_each_open_prs_draft_author_and_labels(ts: ModuleType) -> None:
+    assert ts.OPEN_TIMELINE.count("isDraft author { __typename login } labels(first: 10)") == 2
+
+
 COMMENTS = SCRIPT.parents[1] / "references" / "comments.md"
 
 

@@ -11,6 +11,14 @@ For each open issue:
   NEW              no comment starts with the triage marker
   NEEDS_PR         triaged "implement", no linked PR
   IN_PROGRESS      a linked PR is open
+  AGENT_DRAFT      with --bot-login, every linked open PR is a draft the --bot-login
+                   authored (D-67, #914), none labelled needs-decision: no session owns
+                   it any more, so one marks it ready (github-pr-triage). The note names
+                   each as #N:draft
+  AGENT_DRAFT_HELD as AGENT_DRAFT, with one labelled needs-decision, #N:draft(needs-decision):
+                   its question may still wait (github-ship-watch's AGENT_DRAFT row reads
+                   its comments). A person's draft, or a ready PR beside the drafts, reads
+                   IN_PROGRESS
   DONE_NOT_CLOSED  a PR that closes it merged, none open, issue still open. A merged
                    "Part of #N" PR alone doesn't count: the rest of the issue is
                    still owed, so the issue reads as its other state
@@ -240,8 +248,8 @@ and classified, the recently closed ones as without it: shipmill gate's tier 4 r
 items labelled needs-decision or decided this way (spec 046).
 
 With --wip N (a work-in-progress limit, such as the config's [agents] wip), a last
-line says how many issues are IN_PROGRESS (counting an OFF_MILESTONE one with an open
-PR), the room left under N, and the issues
+line says how many issues are IN_PROGRESS, AGENT_DRAFT, or AGENT_DRAFT_HELD (counting an
+OFF_MILESTONE one with an open PR), the room left under N, and the issues
 ready to start (NEEDS_PR or UNBLOCKED), oldest first; with --json, as one JSON object.
 A person's item never counts as in progress or ready: the limit is on agents' work.
 
@@ -256,8 +264,8 @@ its to clear: the session leaves the item and asks nobody. The state stays BLOCK
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
 MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, VETOED, SUSPECT_CLOSE, HANDOFF_DUE,
-VERIFY_DUE, NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, or OFF_MILESTONE (never for NEEDS_DECISION, UNTRUSTED, UPSTREAM, or
-WITH_PERSON),
+VERIFY_DUE, NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, OFF_MILESTONE, or AGENT_DRAFT (never for NEEDS_DECISION,
+UNTRUSTED, UPSTREAM, WITH_PERSON, or AGENT_DRAFT_HELD),
 1 too when any is CHECK_FAILED (spec 042), 2 on bad input (an issue with more than 100
 labels) or a gh failure. It pages past 100 open issues and an issue's 50 comments, 50
 cross-references, 50 blocking issues, or 50 sub-issues, and back through tags to the
@@ -282,15 +290,23 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Any, NoReturn
 
-OPEN_TIMELINE = """
+# An open PR's isDraft, author, and labels tell the App's own draft (D-67, #914) from other work
+PR_DRAFT = "isDraft author { __typename login } labels(first: 10) { nodes { name } }"
+OPEN_TIMELINE = (
+    """
           nodes {
             ... on CrossReferencedEvent {
               willCloseTarget isCrossRepository
-              source { ... on PullRequest { number state title body } }
+              source { ... on PullRequest { number state title body """
+    + PR_DRAFT
+    + """ } }
             }
-            ... on ConnectedEvent { subject { ... on PullRequest { number state } } }
+            ... on ConnectedEvent { subject { ... on PullRequest { number state """
+    + PR_DRAFT
+    + """ } } }
           }
 """
+)
 CLOSED_REFS = """
           nodes {
             ... on CrossReferencedEvent {
@@ -703,7 +719,9 @@ ACTION = {
     "ASSIGN_DUE",
     "VERIFY_CLOSED",
     "OFF_MILESTONE",
+    "AGENT_DRAFT",  # D-67 (#914): the App's own draft, nothing open on it: a session resumes it
 }
+IN_FLIGHT = ("IN_PROGRESS", "AGENT_DRAFT", "AGENT_DRAFT_HELD")  # an open PR does its work: in progress under --wip
 CLOSED_STATES = ("CLOSED", "NOT_PLANNED", "MERGED")  # a hold in one of these holds nothing
 HOLD = re.compile(r"\b(?:on hold|blocked|waits? on|waiting on|pending|depends on)\b", re.IGNORECASE)
 # Where a sentence of a comment line ends: a hold phrase holds only on the links of its own
@@ -1150,6 +1168,23 @@ def linked_prs(issue: dict[str, Any]) -> list[tuple[int, str, bool]]:
     return sorted((n, s, w) for n, (s, w) in found.items())
 
 
+def own_drafts(issue: dict[str, Any], bot_login: str | None) -> dict[int, bool]:
+    """D-67 (#914): the linked open PRs that are drafts the --bot-login authored, each with
+    whether it is labelled needs-decision (its question may still wait); none without
+    --bot-login. A PR read without isDraft is no draft"""
+    if bot_login is None:
+        return {}
+    found: dict[int, bool] = {}
+    for node in issue["timelineItems"]["nodes"]:
+        pr = (node.get("subject") if "subject" in node else node.get("source")) or {}
+        if node.get("isCrossRepository") or pr.get("state") != "OPEN" or pr.get("isDraft") is not True:
+            continue
+        if not same_login(login(pr["author"]), bot_login):
+            continue
+        found[int(pr["number"])] = DECISION_LABEL in {n["name"] for n in pr["labels"]["nodes"]}
+    return found
+
+
 def merged_mentions(issue: dict[str, Any]) -> list[int]:
     """Same-repo merged PRs that mention the issue at all"""
     return sorted(
@@ -1463,6 +1498,11 @@ def classify_open(
         users, teams, undefined = resolve(issue, roles)
         if users and not people:
             return "ASSIGN_DUE", assign_note(users, own_roles, undefined)
+    drafts = own_drafts(issue, bot_login) if open_prs and not human else {}
+    if open_prs and not human and set(open_prs) <= set(drafts):
+        # D-67 (#914): only the App's own drafts are open, and no session owns them any more
+        shown = " ".join(f"#{n}:draft" + ("(needs-decision)" if drafts[n] else "") for n in sorted(open_prs))
+        return ("AGENT_DRAFT_HELD" if any(drafts[n] for n in open_prs) else "AGENT_DRAFT"), shown
     if open_prs and not human:
         return "IN_PROGRESS", note
     if merged and not human:
@@ -2032,7 +2072,7 @@ def wip_room(
     counts: the limit is on agents' work. ``busy`` are issues whose OFF_MILESTONE hides
     IN_PROGRESS: they count as in progress too"""
     agents = [r for r in rows if r["number"] not in people]
-    in_progress = sum(1 for r in agents if r["state"] == "IN_PROGRESS" or r["number"] in busy)
+    in_progress = sum(1 for r in agents if r["state"] in IN_FLIGHT or r["number"] in busy)
     ready = sorted(r["number"] for r in agents if r["state"] in ("NEEDS_PR", "UNBLOCKED"))
     return {"wip": wip, "in_progress": in_progress, "room": max(wip - in_progress, 0), "ready": ready}
 
@@ -2041,7 +2081,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         epilog=(
-            "States: NEW NEEDS_PR IN_PROGRESS DONE_NOT_CLOSED BLOCKED UNFILLED MALFORMED_DEPENDS CYCLE SPEC_REFUSED "
+            "States: NEW NEEDS_PR IN_PROGRESS AGENT_DRAFT AGENT_DRAFT_HELD DONE_NOT_CLOSED BLOCKED UNFILLED "
+            "MALFORMED_DEPENDS CYCLE SPEC_REFUSED "
             "UNBLOCKED POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED VETOED UNTRUSTED UPSTREAM OFF_MILESTONE; "
             "for an issue labelled human or role:<name> "
             "(a person's item) NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
@@ -2164,7 +2205,7 @@ def main() -> int:
             usual = classify_open(
                 issue, args.marker, args.postponed_label, states, stable, (owner, name), args.bot_login, closes, False
             )
-            if usual[0] == "IN_PROGRESS":
+            if usual[0] in IN_FLIGHT:
                 busy.add(issue["number"])
         row: dict[str, Any] = {"number": issue["number"], "state": state, "title": issue["title"], "note": note}
         if direction_issue(issue, args.bot_login):  # spec 034: github-ship-watch's, never in its issue rows
@@ -2205,7 +2246,9 @@ def main() -> int:
         "REVISIT",
         "NEW",
         "NEEDS_PR",
+        "AGENT_DRAFT",
         "IN_PROGRESS",
+        "AGENT_DRAFT_HELD",
         "WITH_PERSON",
         "BLOCKED",
         "TRIAGED",

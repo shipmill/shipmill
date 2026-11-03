@@ -1033,6 +1033,7 @@ AGENT_ROWS = [
     "DIRECTION_PENDING",
     "UPSTREAM_DUE",
     "VETOED",
+    "AGENT_DRAFT",  # #914 (D-67)
 ]
 REPORT_ROWS = [
     "DIRECTION_MISSING",
@@ -1707,6 +1708,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
     lines = [triage_line(12, "NEW"), triage_line(4, "NEEDS_DECISION"), triage_line(6, "UNTRUSTED")]
     triage = "\n".join([*lines, triage_line(14, "VETOED")])
     intake = ws.intake(REPO, 1, triage, [pull(3), pull(8, fork=True)], lambda n: [], None, True)
+    app_draft = {**pull(20), "isDraft": True, "author": {"login": "app/shipmill-app", "is_bot": True}}
     proposal = issue(ws, 9, body="<!-- shipmill:propose deploy=production -->", title=TITLE)  # no tag: the title shows
     command, start = ws.operate_start(None, REPO, CHECKOUT)
     prod = ws.Environment("production", "staging", 60)
@@ -1727,6 +1729,8 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         publish_row(ws, ws.Tag("v1.0.0", NOW - dt.timedelta(hours=2)), "pkg", False, NOW, GRACE, runs=tuple(failed)),
         ws.unannounced_row(REPO, "v1.0.0", "v0.9.0", ["#3"]),
         *intake,
+        # #914: the App's own draft with nothing open on it
+        *ws.intake(REPO, 0, "", [app_draft], lambda n: [], "shipmill-app[bot]"),
         *ws.operate_rows(failed, "operate.yml", REPO),
         ws.unhealthy_row("staging", sick, NOW),
         *ws.proposal_rows([proposal], "operate.yml", True, REPO),
@@ -1816,6 +1820,7 @@ FIXES = {
     "UPSTREAM_UNTRUSTED": ["review them in an interactive session: /shipmill:github-issue-triage o/r"],
     "UPSTREAM_UNREADABLE": ["see why: uv run --directory /work/r --no-project python {upstream} o/r"],
     "VETOED": ["take up each veto (needs-decision.md): /shipmill:github-issue-triage o/r"],
+    "AGENT_DRAFT": ["mark each ready, then land it: /shipmill:github-pr-triage o/r"],  # #914
     "PYPI_WAIT": [
         "check the publish.yml run for v0.66.0: gh run list --repo shipmill/shipmill --workflow publish.yml;"
         " if none passed, publish it: gh workflow run publish.yml --repo shipmill/shipmill -f tag=v0.66.0"

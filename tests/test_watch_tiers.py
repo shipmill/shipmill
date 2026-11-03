@@ -86,8 +86,14 @@ def checkout(tmp_path: Path) -> Path:
 
 
 def pr(
-    number: int, *labels: str, draft: bool = False, fork: bool = False, assignees: tuple[str, ...] = ()
+    number: int,
+    *labels: str,
+    draft: bool = False,
+    fork: bool = False,
+    assignees: tuple[str, ...] = (),
+    author: str = "amy",
 ) -> dict[str, object]:
+    """One open pull request as `gh pr list --json` prints it: an App author as app/<slug>"""
     return {
         "number": number,
         "isDraft": draft,
@@ -95,6 +101,7 @@ def pr(
         "labels": [{"name": label} for label in labels],
         "headRefOid": HEAD,
         "assignees": [{"login": login} for login in assignees],
+        "author": {"login": author, "is_bot": author.startswith("app/")},
     }
 
 
@@ -193,6 +200,87 @@ def test_853_known_needs_each_pull_requests_assignees(tmp_path: Path) -> None:
     cmd = [sys.executable, str(SCRIPT), "o/r", "--repo-dir", str(checkout(tmp_path)), "--json", "--tier", "3"]
     proc = subprocess.run([*cmd, "--known", str(path)], capture_output=True, text=True, check=False)
     assert proc.returncode == 2 and "gh pr list's fields" in proc.stderr
+
+
+# -- #914 (D-67): the App's own draft is resumed once nothing on it is open
+
+APP = "app/shipmill-app"  # gh pr list's login for BOT
+ANSWER = "Option 1, go ahead."
+
+
+def test_914_an_answered_app_draft_is_a_tier_3_item(tmp_path: Path) -> None:
+    """The issue's repro: the App parked its pull request as a draft on a question, the
+    maintainer answered, and every later tick read no open pull request. Now the draft is
+    AGENT_DRAFT in tier 3, an agent's row; a person's draft is still in no row"""
+    answered = pr(20, "needs-decision", draft=True, author=APP)
+    quiet = pr(21, draft=True, author=APP)  # no question, no hold
+    prs = [answered, quiet, pr(22, draft=True), pr(23, draft=True, author="app/other-app")]
+    comments = {"20": [[BOT, "NONE", QUESTION], ["alice", "OWNER", ANSWER]], "21": []}
+    rows, calls = tier(tmp_path, 3, known(prs=prs), "--bot-login", BOT, comments=comments)
+    assert [(r["state"], r["detail"], r["agent"]) for r in rows] == [("AGENT_DRAFT", "#20 #21", True)]
+    assert "/shipmill:github-pr-triage o/r" in str(rows[0]["fix"])
+    # the one batched comment read takes the App's drafts, never a person's or another bot's
+    assert len(calls) == 1 and "n20: issueOrPullRequest" in calls[0][3] and "n21: issueOrPullRequest" in calls[0][3]
+    assert "n22:" not in calls[0][3] and "n23:" not in calls[0][3]
+
+
+def test_914_an_app_draft_waiting_on_its_question_is_held(tmp_path: Path, ws: ModuleType) -> None:
+    waiting = pr(20, "needs-decision", draft=True, author=APP)
+    rows, _ = tier(tmp_path, 3, known(prs=[waiting]), "--bot-login", BOT, comments={"20": [[BOT, "NONE", QUESTION]]})
+    assert [(r["state"], r["detail"]) for r in rows] == [("NEEDS_DECISION", "#20")]  # no item for a session
+    full = ws.intake("o/r", 0, "", [waiting], lambda n: [(BOT, "NONE", QUESTION)], BOT)
+    assert [(r.state, r.detail, r.fix) for r in full] == [
+        ("AGENT_DRAFT_HELD", "#20 (question)", None),
+        ("NEEDS_DECISION", "#20", "answer the needs-decision question on o/r #20"),
+    ]
+    assert "AGENT_DRAFT_HELD" not in ws.ACTION | ws.AGENT and "AGENT_DRAFT" in ws.ACTION & ws.AGENT
+
+
+def test_914_a_hold_comment_on_an_app_draft_holds_it_until_its_item_closes(ws: ModuleType) -> None:
+    draft = pr(20, draft=True, author=APP)
+    hold = [(BOT, "NONE", "This waits on o/r#5 to land first.")]
+    asked: list[set[tuple[str, str, int]]] = []
+
+    def states(state: str) -> object:
+        def read(refs: set[tuple[str, str, int]]) -> dict[tuple[str, str, int], str]:
+            asked.append(refs)
+            return {r: state for r in refs}
+
+        return read
+
+    held = ws.intake("o/r", 0, "", [draft], lambda n: hold, BOT, hold_states=states("OPEN"))
+    assert [(r.state, r.detail) for r in held] == [("AGENT_DRAFT_HELD", "#20 (o/r#5)")]
+    merged = ws.intake("o/r", 0, "", [draft], lambda n: hold, BOT, hold_states=states("MERGED"))
+    assert [(r.state, r.detail) for r in merged] == [("AGENT_DRAFT", "#20")]
+    assert asked == [{("o", "r", 5)}, {("o", "r", 5)}]
+    # one whose state can't be read holds: a failed read never resumes a draft
+    unknown = ws.intake("o/r", 0, "", [draft], lambda n: hold, BOT, hold_states=lambda refs: {})
+    assert [r.state for r in unknown] == ["AGENT_DRAFT_HELD"]
+
+
+def test_914_without_bot_login_every_draft_is_its_authors(ws: ModuleType) -> None:
+    def unread(number: int) -> list[tuple[str, str, str]]:
+        raise AssertionError(f"#{number}'s comments were read")
+
+    assert ws.intake("o/r", 0, "", [pr(20, draft=True, author=APP)], unread) == []
+
+
+def test_914_known_needs_each_pull_requests_author(tmp_path: Path) -> None:
+    for n, bad in enumerate(({k: v for k, v in pr(3).items() if k != "author"}, {**pr(3), "author": {"name": "Amy"}})):
+        path = tmp_path / f"known-{n}.json"
+        path.write_text(json.dumps(known(prs=[bad])), encoding="utf-8")
+        work = checkout(tmp_path / str(n))
+        cmd = [sys.executable, str(SCRIPT), "o/r", "--repo-dir", str(work), "--json", "--tier", "3"]
+        proc = subprocess.run([*cmd, "--known", str(path)], capture_output=True, text=True, check=False)
+        assert proc.returncode == 2 and "--known" in proc.stderr, proc.stderr
+
+
+def test_914_an_app_drafts_issue_is_in_issues_open_not_issues(ws: ModuleType) -> None:
+    """triage_state.py's AGENT_DRAFT is an action, but the pull request's own row hands the
+    draft, so the gate never hands it twice"""
+    line = json.dumps({"number": 914, "state": "AGENT_DRAFT", "title": "t", "note": "#20:draft"})
+    rows = ws.intake("o/r", 1, line, [], lambda n: [])
+    assert [(r.state, r.detail) for r in rows] == [("ISSUES_OPEN", "AGENT_DRAFT #914")]
 
 
 @pytest.mark.parametrize(
