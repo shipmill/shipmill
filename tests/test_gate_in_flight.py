@@ -413,6 +413,19 @@ def test_914_known_names_each_pull_requests_author_as_gh_pr_list_does() -> None:
     assert "author { __typename login }" in gh.queries[0]
 
 
+def test_914_an_enterprise_managed_users_pull_request_never_fails_the_change_check() -> None:
+    """Every open pull request's author is read now: an Enterprise Managed User's login, with
+    its _shortcode, is a login, so its pull request never makes every tick an ERROR"""
+    emu = pull(5)
+    emu["author"] = {"__typename": "User", "login": "octocat_acme"}
+    found = changed(graphql_answer(pulls=[emu]))
+    assert json.loads(json.dumps(found.known))["prs"][0]["author"] == {"login": "octocat_acme", "is_bot": False}
+    for odd in ("app/shipmill-app", "", "-amy", "amy_"):
+        emu["author"] = {"__typename": "User", "login": odd}
+        with pytest.raises(ReleaseError, match="#5's author as something other than a login"):
+            changed(graphql_answer(pulls=[emu]))
+
+
 def test_914_tick_json_round_trips_drafts_and_reads_one_written_before_it(tmp_path: Path) -> None:
     flight = InFlight((), (), (), None, None, (), (912,))
     record = TickRecord(NOW, "QUIET", "no change since x; in flight: ...", None, None, None, flight)

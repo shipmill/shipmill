@@ -35,6 +35,9 @@ SEQUENTIAL = 2  # at most this many watched workflows are read one after the oth
 HUMAN_LABEL = "human"
 ROLE_PREFIX = "role:"
 LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?")  # watch_state.py's LOGIN
+# #914: a pull request's author as GraphQL prints it, an Enterprise Managed User's login with its
+# _shortcode too (octocat_acme); never a "/", so only a Bot's reads as app/<slug>
+AUTHOR = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?")
 # D-67 (#914): watch_state.py's row for the App's own draft with nothing open on it, a session's to resume
 AGENT_DRAFT = "AGENT_DRAFT"
 LANDING = frozenset({PRS_OPEN, AGENT_DRAFT})  # land-stage items: a walk takes them only when land isn't observe
@@ -484,12 +487,14 @@ def assignee_logins(node: Mapping[str, Any]) -> list[str]:
 def pr_author(node: Mapping[str, Any]) -> dict[str, object] | None:
     """A pull request's author as gh pr list prints it, which watch_state.py --known reads (D-67,
     #914): an App's login as app/<slug> with is_bot, a person's as their login; null for a
-    deleted account"""
+    deleted account. Every open pull request has an author, so its login is read as GitHub
+    spells any (AUTHOR, an Enterprise Managed User's with its _shortcode): one the gate can't
+    read would fail every tick"""
     author = node["author"]
     if author is None:
         return None
     login = author.get("login") if isinstance(author, dict) else None
-    if not isinstance(login, str) or LOGIN.fullmatch(login) is None:
+    if not isinstance(login, str) or AUTHOR.fullmatch(login) is None:
         raise ReleaseError(f"gh api graphql printed #{node['number']}'s author as something other than a login")
     bot = author.get("__typename") == "Bot"
     return {"login": f"app/{login}" if bot else login, "is_bot": bot}
