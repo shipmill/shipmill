@@ -37,6 +37,7 @@ ROLE_PREFIX = "role:"
 LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?")  # watch_state.py's LOGIN
 # D-67 (#914): watch_state.py's row for the App's own draft with nothing open on it, a session's to resume
 AGENT_DRAFT = "AGENT_DRAFT"
+LANDING = frozenset({PRS_OPEN, AGENT_DRAFT})  # land-stage items: a walk takes them only when land isn't observe
 
 # The tiers a walk reads in order, each its kinds in the order a walk takes them: the state,
 # or ISSUES and its triage state. A kind no tier names is read in tier 6 (S-046-12)
@@ -712,7 +713,8 @@ def walk(
     """Read the tiers in order and stop at the first item not handed within retry: tiers 1, 3,
     4, and 6 from their own read, tier 2 from its read and the sweep's BOT_STALLED, 5 and 7
     from the sweep, and 8 from the sweep, after a new tag's own UNANNOUNCED check (S-046-9).
-    An item is a row that needs an agent, or PRS_OPEN when land isn't observe"""
+    An item is a row that needs an agent, but a land-stage one (PRS_OPEN, and AGENT_DRAFT, whose
+    session marks a draft ready, #914) only when land isn't observe"""
     read: list[int] = []
     rows: list[Finding] = []
     taken: tuple[Finding, Hand] | None = None
@@ -732,7 +734,7 @@ def walk(
         # A tier's read may name an earlier tier's kind (tier 6's DECIDED, relayed with the label
         # off, which tier 4 never reads): it is taken here; the sweep's rows only in their own tier
         mine = [f for f in found if tier_of(f) == number or (f in own and tier_of(f) < number)]
-        items = order(f for f in mine if f.agent or (lands and f.state == PRS_OPEN))
+        items = order(f for f in mine if (f.agent and f.state not in LANDING) or (lands and f.state in LANDING))
         for item in items:
             hand = handed.taken(item, now, retry)
             if hand is None:

@@ -23,6 +23,8 @@ Before its first write to GitHub (a comment, a label, a branch, a push, a pull r
 | `fix` | writes no plan and no code | posts the implementation plan on the issue (design gate included), opens no branch | opens a branch and a pull request per implement, as today |
 | `land` | reviews in the session only: no push, no comment | reviews, pushes small fixes with regression tests, posts the review, and labels a pull request that passes every check `shipmill-ready`; a person merges | merges on green CI, as today |
 
+Marking the App's own draft ready (AGENT_DRAFT, D-67, #914) is a `land` write: under `observe` the gate hands no session for it; under `propose` the session marks nothing ready and asks through the needs-decision protocol; under `act` it marks the draft ready once nothing on it is open.
+
 ### `observe`
 
 Write nothing to GitHub for that stage: no comment, label, close, branch, push, or pull request. Put what you would have written (the verdicts, the plan, the review) in the session's report, which the gate keeps in its log.

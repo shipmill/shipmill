@@ -302,8 +302,7 @@ def test_the_gate_reads_the_rows_watch_state_prints() -> None:
         "DIRECTION_PENDING",  # S-034-4: a session opens, asks, or takes up the direction question
         "UPSTREAM_DUE",  # S-038-21: the coordinator's session routes or closes a report
         "VETOED",  # S-030-16: a session takes up an unanswered veto
-        "AGENT_DRAFT",  # #914 (D-67): a session marks the App's own draft ready and lands it
-    }
+    }  # #914: AGENT_DRAFT is land-stage work, so like PRS_OPEN it starts nothing under observe
 
 
 def test_s011_10_a_fix_changes_neither_the_fingerprint_nor_the_prompt() -> None:
