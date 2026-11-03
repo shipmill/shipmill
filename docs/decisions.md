@@ -565,3 +565,11 @@ entry that supersedes it, never by editing an old one.
 - Applies to: skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md, skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/SKILL.md, skills/github-issue-triage/references/implementer-brief.md, skills/github-issue-triage/scripts/triage_state.py, skills/github-issue-resolve/SKILL.md, skills/github-ship-watch/scripts/watch_state.py, draft pull requests
 - Enforced by: tests/test_pr_gate.py (pr_gate.py's exit 8); the watch_state.py and triage_state.py tests naming #914 (with the implementing PR); review for the skills' text
 - Supersedes: D-52
+
+## D-68: A relayed answer from the maintainer answers a goal plan
+
+- Decided: 2026-11-03, in shipmill/shipmill#917
+- Rule: Product intake reads a comment on a goal plan by the --bot-login whose first line is the needs-decision relay (Decision by @<login>, relayed by <agent>, the login bare or in a code span) as the named person's answer when that login is a maintainer (--role maintainer=<login>, or [agents.roles] maintainer), newer than the plan's newest revision like any other answer; its kind is read from the first non-blank line after the relay line (accept, decline with its reason, or anything else as an edit). Every other comment by the --bot-login, and a relay naming anyone who isn't a maintainer, is still never an answer, and no session accepts, declines, or edits a plan on its own judgment. This is an exception to D-62 for this one record, as D-49 is for a spec pull request: the relay carries the agent marker and still counts, because it records an answer the maintainer gave in the session
+- Why: In a repo with [agents] app_id the hook refuses every plain gh write from a session, so a maintainer who said accept in the chat for three G-2 plans had to post accept on each plan by hand (shipmill/shipmill#917). The maintainer chose option 1 on #917: carry the answer the same way the needs-decision relay and D-49 already do, at the cost of trusting the session to relay the chat faithfully; an undo stays by hand (decline, or edit the plan)
+- Applies to: skills/product-intake/scripts/intake_state.py, skills/product-intake/SKILL.md, docs/specs/028-plan-from-goals.md, goal plans, Decision by
+- Enforced by: review, until the implementing PR for #917 adds its S-028 test
