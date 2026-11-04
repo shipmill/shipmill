@@ -365,7 +365,7 @@ def test_s046_5_an_untaken_item_in_tier_3_reads_no_triage_and_no_notices(checkou
     source = Source({3: [PRS], 4: [DECIDED], 6: [NEW]}, tag="v1.1.0")
     tick(checkout, source)
     assert source.reads == ["changes", "sweep", "tier 1", "tier 2", "tier 3"]
-    # tier 4 and 6 run triage_state.py, tier 8's new-tag check shipped.py: none of them ran
+    # tier 4 and 6 run triage_state.py: neither ran, and no tier runs shipped.py since D-69
     assert not {"tier 4", "tier 6", "tier 8"} & set(source.reads)
 
 
@@ -389,16 +389,15 @@ def test_s046_6_tiers_1_and_3_get_the_change_checks_data(checkout: Git) -> None:
     assert json.loads(path.read_text()) == known
 
 
-def test_s046_8_a_sweep_runs_when_due_and_its_rows_serve_tiers_2_5_7_and_8(checkout: Git) -> None:
-    unannounced = Finding("UNANNOUNCED", "v1.0.0", "#5 (since v0.9.0)", True, (), "post")
+def test_s046_8_a_sweep_runs_when_due_and_its_rows_serve_tiers_2_5_and_7(checkout: Git) -> None:
     upgrade = Finding("UPGRADE_PENDING", "#11", "x: ask", True, (), "watch")
-    source = Source(swept=[STALLED, upgrade, PLANS, unannounced])
+    source = Source(swept=[STALLED, upgrade, PLANS])
     first = tick(checkout, source, agents=cfg(sweep_hours=6))
     assert first.walk is not None and first.walk.sweep and first.work == (STALLED,)
     stored = Swept.load(state_dir(checkout) / SWEEP)
-    assert stored is not None and stored.at == NOW and set(stored.rows) == {STALLED, upgrade, PLANS, unannounced}
+    assert stored is not None and stored.at == NOW and set(stored.rows) == {STALLED, upgrade, PLANS}
     # between sweeps the tiers read the stored rows: each handed item gives way to the next
-    for expected in (upgrade, PLANS, unannounced):
+    for expected in (upgrade, PLANS):
         source.reads.clear()
         source.signature = expected.state  # a change, so the tick walks
         decision = tick(checkout, source, NOW + dt.timedelta(hours=1), agents=cfg(sweep_hours=6))
@@ -409,18 +408,15 @@ def test_s046_8_a_sweep_runs_when_due_and_its_rows_serve_tiers_2_5_7_and_8(check
     assert "sweep" in source.reads and later.walk is not None and later.walk.sweep
 
 
-def test_s046_9_a_new_tag_checks_its_notices_alone_and_stores_them(checkout: Git) -> None:
+def test_d69_an_unannounced_row_a_sweep_stored_before_d69_is_never_an_item(checkout: Git) -> None:
+    # D-69 (#921): no tier 8, and a new tag runs no check of its own; a sweep.json written
+    # before the upgrade keeps loading, and its UNANNOUNCED row is never handed
     old = Finding("UNANNOUNCED", "v1.0.0", "#5 (since v0.9.0)", True, (), "post")
-    new = Finding("UNANNOUNCED", "v1.1.0", "#7 (since v1.0.0)", True, (), "post")
-    source = Source(swept=[old], tag="v1.0.0")
-    tick(checkout, source)  # sweeps, covering v1.0.0, and hands old's item
-    source.tag, source.tiers, source.signature = "v1.1.0", {8: [new]}, "tagged"  # the tag is in the signature
-    source.reads.clear()
-    decision = tick(checkout, source, LATER)
-    assert source.reads.count("tier 8") == 1 and "sweep" not in source.reads
-    assert decision.work == (new,)
-    stored = Swept.load(state_dir(checkout) / SWEEP)
-    assert stored is not None and stored.tag == "v1.1.0" and set(stored.rows) == {old, new}
+    Swept(NOW, (old,), "v1.0.0").save(state_dir(checkout) / SWEEP)
+    source = Source(tag="v1.1.0", signature="tagged")
+    decision = tick(checkout, source, NOW + dt.timedelta(hours=1), agents=cfg(sweep_hours=6))
+    assert "sweep" not in source.reads and not any(r.startswith("tier 8") for r in source.reads)
+    assert decision.action is Action.QUIET and decision.work == ()
 
 
 def test_s046_10_sweep_hours_defaults_to_6_and_is_refused_outside_1_to_168() -> None:
@@ -483,7 +479,7 @@ def test_s046_14_a_handed_item_gives_way_and_every_item_handed_is_unchanged(chec
     assert (third.action, third.work) == (Action.UNCHANGED, (INCIDENT,))
     again = (NOW + dt.timedelta(hours=24)).isoformat(timespec="minutes")
     assert third.reason.startswith("every item was handed; the first, INCIDENT_OPEN #9 (tier 1), went to session s1;")
-    assert f"retried after {again}; read tiers 1-8" in third.reason
+    assert f"retried after {again}; read tiers 1-7" in third.reason
 
 
 def dead_launch(git: Git, item: Finding, deaths: Deaths | None) -> None:

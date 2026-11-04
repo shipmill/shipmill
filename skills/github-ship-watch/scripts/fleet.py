@@ -81,7 +81,6 @@ ACTION = frozenset(
         "BOT_PLAN_FAILED",
         "WORK_BRANCH_STALE",
         "NOT_PUBLISHED",
-        "UNANNOUNCED",
         "ISSUES",
         "PLANS",
         "OPERATE_FAILED",

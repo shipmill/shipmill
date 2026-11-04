@@ -208,6 +208,7 @@ waiting it is unchanged.
   ([agents] prs = false)`, and with none waiting reads `QUIET: nothing needs an agent` as
   before
   - Amended by spec 046 (D-57): the line ends with how far the walk went, `; read tiers 1-8` (S-046-18)
+  - Amended by D-69 (#921): no tier 8, so a walk that read every tier ends `; read tiers 1-7`
 
 ## Out of scope
 

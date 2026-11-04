@@ -740,10 +740,8 @@ def test_s013_1_without_fragments_plan_stamp_and_notes_are_unchanged(
     assert capsys.readouterr().out == notes
 
     stable = plan(repo, at_day(4), event=Event.MANUAL, lane=Lane.STABLE)
-    # the rc fixed no issue GitHub knows of, so no requester confirmed (S-021-8)
-    assert stable.reason == (
-        "stable 1.1.0: promotes v1.1.0rc1, cut 3 day(s) ago; 0 of 0 requesters confirmed; started by hand"
-    )
+    # D-69 (#921): the reason counts no confirmed requesters
+    assert stable.reason == "stable 1.1.0: promotes v1.1.0rc1, cut 3 day(s) ago; started by hand"
     assert stable.version is not None
     prepared = prepare(
         repo.git, repo.policy, Lane.STABLE, stable.version, stable.base, at_day(4).date(), commit=True, push=True

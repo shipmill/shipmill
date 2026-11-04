@@ -224,6 +224,7 @@ names no slug.
   commits since, or `no release yet`; and the release problem in place of `release ok`
   when a release row is `BOT_FAILED`, `BOT_STALLED`, `WORK_BRANCH_STALE`, `NOT_PUBLISHED`,
   or `UNANNOUNCED`
+  - Amended by D-69 (#921): the watch reports no UNANNOUNCED, so the release problem is one of the other four
 - S-009-18: each issue or pull request waiting on a decision is on a `needs decision` line
   with its own direct link (`.../issues/N` or `.../pull/N`), never a label search URL; the
   same holds for every item line (to triage, to build, in progress, parked, drafts, hold,

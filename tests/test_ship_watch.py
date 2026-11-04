@@ -1024,7 +1024,6 @@ AGENT_ROWS = [
     "BOT_STALLED",
     "WORK_BRANCH_STALE",
     "NOT_PUBLISHED",
-    "UNANNOUNCED",
     "ISSUES",
     "PLANS",
     "OPERATE_FAILED",
@@ -1727,7 +1726,6 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         ws.plan_failed_row(ws.PlanFailed(TREATY_ERROR), "release.yml", CHECKOUT, "main", "shipmill==0.36.0"),
         *ws.work_branch_rows({"shipmill/v1.0.0": "a" * 40}, [], "release.yml", REPO),
         publish_row(ws, ws.Tag("v1.0.0", NOW - dt.timedelta(hours=2)), "pkg", False, NOW, GRACE, runs=tuple(failed)),
-        ws.unannounced_row(REPO, "v1.0.0", "v0.9.0", ["#3"]),
         *intake,
         # #914: the App's own draft with nothing open on it
         *ws.intake(REPO, 0, "", [app_draft], lambda n: [], "shipmill-app[bot]"),
@@ -1779,7 +1777,6 @@ FIXES = {
     ],
     "WORK_BRANCH_STALE": ["/shipmill:github-ship-watch o/r"],
     "NOT_PUBLISHED": ["gh run rerun 5 --failed -R o/r"],
-    "UNANNOUNCED": ["/shipmill:github-ship-watch o/r"],
     "ISSUES": ["/shipmill:github-issue-triage o/r"],
     "PLANS": ["/shipmill:product-intake o/r"],
     "OPERATE_FAILED": ["gh run rerun 5 --failed -R o/r"],
@@ -2278,7 +2275,7 @@ def test_s014_10_an_upgrade_autonomy_of_another_value_is_refused(ws: ModuleType,
 
 
 # shipped.py's batched GraphQL reads (#754) as GitHub answers them: a commit alias oN gets
-# PRS's pull requests, an issue alias nN the issue COMMENTS names, and a number COMMENTS
+# PRS's pull requests, an issue alias nN the closed issue ISSUES names, and a number ISSUES
 # doesn't name resolves to nothing: null, a NOT_FOUND error, and gh's exit 1
 GRAPHQL_GH = """#!{python}
 import json, os, re, sys
@@ -2287,16 +2284,14 @@ if args[:2] != ["api", "graphql"]:
     sys.stderr.write("unexpected: " + " ".join(args) + "\\n")
     sys.exit(3)
 fields = dict(args[i + 1].partition("=")[::2] for i, a in enumerate(args) if a in ("-f", "-F"))
-prs, comments = json.loads(os.environ["FAKE_PRS"]), json.loads(os.environ["FAKE_COMMENTS"])
+prs, issues = json.loads(os.environ["FAKE_PRS"]), json.loads(os.environ["FAKE_ISSUES"])
 repository, errors = {}, []
 for key, value in fields.items():
     if re.fullmatch(r"o\\d+", key):
         repository["c" + key[1:]] = {"associatedPullRequests": {"nodes": prs}}
-    elif re.fullmatch(r"n\\d+", key) and value in comments:
-        nodes = [{"author": {"login": "x"}, "body": b, "createdAt": "", "url": ""} for b in comments[value]]
-        page = {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}
+    elif re.fullmatch(r"n\\d+", key) and value in issues:
         url = "https://github.com/me/demo/issues/" + value
-        repository["i" + key[1:]] = {"state": "CLOSED", "title": "a fix", "url": url, "comments": page}
+        repository["i" + key[1:]] = {"state": "CLOSED", "title": "a fix", "url": url}
     elif re.fullmatch(r"n\\d+", key):
         repository["i" + key[1:]] = None
         missing = "Could not resolve to an issue or pull request with the number of " + value + "."
@@ -2317,7 +2312,7 @@ CLOSER = {
 
 def test_368_a_range_whose_pr_names_a_missing_number_still_lists_its_fixes(ws: ModuleType, tmp_path: Path) -> None:
     # PR #365 quotes "Closes #424" mid-line and names #777, which resolves to nothing: the
-    # watch's plan-mode shipped.py run must not exit 2 over it, and still finds #5
+    # watch's shipped.py --json run must not exit 2 over it, and still finds #5
     git = shutil.which("git")
     assert git is not None
     fakes = tmp_path / "fakes"
@@ -2328,7 +2323,7 @@ def test_368_a_range_whose_pr_names_a_missing_number_still_lists_its_fixes(ws: M
         "PATH": os.pathsep.join([str(fakes), str(Path(git).parent), "/usr/bin", "/bin"]),
         "HOME": str(tmp_path),
         "FAKE_PRS": json.dumps([CLOSER]),
-        "FAKE_COMMENTS": json.dumps({"5": []}),  # #777 resolves to nothing
+        "FAKE_ISSUES": json.dumps(["5"]),  # #777 resolves to nothing
     }
     origin, work = tmp_path / "origin.git", tmp_path / "work"
 
@@ -2342,92 +2337,19 @@ def test_368_a_range_whose_pr_names_a_missing_number_still_lists_its_fixes(ws: M
     sh("commit", "-q", "--allow-empty", "-m", "Read the closer right (#365)")
     sh("tag", "v0.2.0")
     sh("push", "-q", "--tags", "origin", "HEAD")
-    assert ws.unannounced("me/demo", work, "v0.1.0", "v0.2.0", env=env) == ["#5"]
+    assert ws.fixed_issues("me/demo", work, "v0.1.0", "v0.2.0", env=env) == [5]
 
 
-# -- spec 021: a notice per environment a deployment reaches
+# -- D-69 (#921): the watch posts no notice and reports none missing
 
 
-def test_s021_4_the_notices_count_from_the_tag_the_environment_ran_before(ws: ModuleType) -> None:
-    tags = ["v1.3.0", "v1.2.0", "v1.1.0", "v1.0.0"]
-    deployments = [
-        deployment(ws, 6, "v1.3.0"),  # still deploying: never counts
-        deployment(ws, 5, "refs/tags/v1.2.0"),
-        deployment(ws, 4, "v1.2.0"),  # a redeploy of the same tag
-        deployment(ws, 3, "main"),  # no release tag
-        deployment(ws, 2, "v1.1.0"),  # failed
-        deployment(ws, 1, "v1.0.0"),
-    ]
-    statuses = {
-        6: [status(ws, 60, "in_progress", "", 5)],
-        5: [status(ws, 50, "success", "", 30)],
-        4: [status(ws, 40, "success", "", 60)],
-        3: [status(ws, 30, "success", "", 70)],
-        2: [status(ws, 20, "failure", "deploy failed", 80)],
-        1: [status(ws, 10, "success", "", 90)],
-    }
-    current = ws.current_deployment(deployments, statuses.__getitem__)
-    assert current is not None and current.deployment.id == 5
-    assert ws.deployed_since(deployments, current, statuses.__getitem__, tags) == "v1.0.0"
-    # the environment's first deployment counts from the release tag below its own
-    first = ws.Current(deployments[1], tuple(statuses[5]))
-    assert ws.deployed_since(deployments[1:2], first, statuses.__getitem__, tags) == "v1.1.0"
-    oldest = ws.Current(deployments[5], tuple(statuses[1]))
-    assert ws.deployed_since(deployments[5:], oldest, statuses.__getitem__, tags) is None
-    branch = ws.Current(deployments[3], tuple(statuses[3]))
-    assert ws.deployed_since(deployments, branch, statuses.__getitem__, tags) is None
-    # with no successful deployment at all there is nothing to tell
-    failed = [deployments[4]]
-    no_current = ws.current_deployment(failed, statuses.__getitem__)
-    assert no_current is None
-    assert ws.deployed_rows(REPO, CHECKOUT, "staging", failed, no_current, statuses.__getitem__, tags) == []
+def test_d69_the_watch_has_no_unannounced_row_and_the_gate_no_tier_8(ws: ModuleType) -> None:
+    for state in ("UNANNOUNCED", "REQUESTER_CONFIRMED"):
+        assert state not in ws.ACTION and state not in ws.AGENT and state not in ws.SWEPT
+    assert sorted(ws.TIERS) == [1, 2, 3, 4, 5, 6, 7]
 
 
-def test_s021_4_the_row_names_the_environment_the_tag_and_where_it_counts_from(ws: ModuleType) -> None:
-    row = ws.deployed_row(REPO, "staging", "v1.2.0", "v1.0.0", ["#5", "#6"])
-    assert (row.state, row.subject, row.detail) == ("UNANNOUNCED", "v1.2.0", "#5 #6 deployed to staging (since v1.0.0)")
-    assert row.json()["agent"] is True and "UNANNOUNCED" in ws.ACTION
-
-
-def test_s021_4_a_deployment_reports_the_fixes_the_environment_did_not_run(ws: ModuleType, tmp_path: Path) -> None:
-    # staging ran v0.2.0rc1, which held #6's fix; v0.2.0 adds #5's and #7's, and #7 was told already
-    git = shutil.which("git")
-    assert git is not None
-    fakes = tmp_path / "fakes"
-    fakes.mkdir()
-    (fakes / "gh").write_text(GRAPHQL_GH.replace("{python}", sys.executable), encoding="utf-8")
-    (fakes / "gh").chmod(0o700)
-    told = {
-        "5": [],
-        "6": [],
-        "7": ["<!-- shipmill:available: staging v0.2.0rc1 -->\nDeployed to staging in v0.2.0rc1."],
-    }
-    env = {
-        "PATH": os.pathsep.join([str(fakes), str(Path(git).parent), "/usr/bin", "/bin"]),
-        "HOME": str(tmp_path),
-        "FAKE_PRS": "[]",
-        "FAKE_COMMENTS": json.dumps(told),
-    }
-    origin, work = tmp_path / "origin.git", tmp_path / "work"
-
-    def sh(*cmd: str, cwd: Path = work) -> None:
-        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *cmd], cwd=cwd, env=env, check=True)
-
-    sh("init", "-q", "--bare", str(origin), cwd=tmp_path)
-    sh("clone", "-q", str(origin), str(work), cwd=tmp_path)
-    sh("commit", "-q", "--allow-empty", "-m", "start")
-    sh("tag", "v0.1.0")
-    sh("commit", "-q", "--allow-empty", "-m", "Fix one\n\nFixes #6")
-    sh("tag", "v0.2.0rc1")
-    sh("commit", "-q", "--allow-empty", "-m", "Fix two\n\nFixes #5\nFixes #7")
-    sh("tag", "v0.2.0")
-    sh("push", "-q", "--tags", "origin", "HEAD")
-    assert ws.unannounced("me/demo", work, "v0.2.0rc1", "v0.2.0", env=env, environment="staging") == ["#5"]
-    # the release's own notices still read its whole stable range, as before
-    assert ws.unannounced("me/demo", work, "v0.2.0rc1", "v0.2.0", env=env) == ["#5", "#6", "#7"]
-
-
-# -- spec 021: the requester's answer to a pre-release notice
+# -- spec 021: the requester's answer to a pre-release notice posted before D-69
 
 NOTICE_URL = "https://github.com/o/r/issues/5#issuecomment-"
 PRE_NOTICE = "<!-- shipmill:available: pre-release v1.0.0rc1 -->\nReleased in v1.0.0rc1 (pre-release)."
@@ -2453,27 +2375,25 @@ def answered(ws: ModuleType, issue: dict[str, object], reactions: list[object]) 
     return [] if notice is None else ws.requester_rows(notice, reactions, NOW)
 
 
-def test_s021_6_the_requester_s_thumbs_up_confirms_and_anyone_else_s_does_nothing(ws: ModuleType) -> None:
+def test_s021_7_a_thumbs_up_gives_no_row(ws: ModuleType) -> None:
+    # D-69 retired REQUESTER_CONFIRMED: the requester's 👍 is no row, and neither is anyone else's
     issue = view("alice", comment("bot", PRE_NOTICE, 11, ("THUMBS_UP",)))
-    (row,) = answered(ws, issue, [reaction(ws, "alice", "+1"), reaction(ws, "bob", "-1")])
-    assert (row.state, row.subject) == ("REQUESTER_CONFIRMED", "#5")
-    assert row.detail == f"v1.0.0rc1: the requester reacted 👍 90 min ago, {NOTICE_URL}11"
-    assert answered(ws, issue, [reaction(ws, "bob", "+1"), reaction(ws, "Alice2", "+1")]) == []
+    assert answered(ws, issue, [reaction(ws, "alice", "+1"), reaction(ws, "bob", "-1")]) == []
     assert answered(ws, issue, [reaction(ws, "alice", "heart")]) == []
 
 
 @pytest.mark.parametrize(
     "issue",
     [
-        view("shipmill-app", comment("shipmill-app", PRE_NOTICE, 11, ("THUMBS_UP",)), bot=True),  # an App opened it
-        view("ghost", comment("bot", PRE_NOTICE, 11, ("THUMBS_UP",))),  # a deleted account
-        view(None, comment("bot", PRE_NOTICE, 11, ("THUMBS_UP",))),
+        view("shipmill-app", comment("shipmill-app", PRE_NOTICE, 11, ("THUMBS_DOWN",)), bot=True),  # an App opened it
+        view("ghost", comment("bot", PRE_NOTICE, 11, ("THUMBS_DOWN",))),  # a deleted account
+        view(None, comment("bot", PRE_NOTICE, 11, ("THUMBS_DOWN",))),
         # no pre-release notice: a stable one, or the form before spec 021, asks nothing
         view("alice", comment("bot", "<!-- shipmill:available: stable v1.0.0 -->\nReleased in v1.0.0.", 11)),
         view("alice", comment("bot", "Released in v1.0.0rc1.", 11), comment("alice", "broken", 12)),
     ],
 )
-def test_s021_6_an_issue_without_a_person_s_notice_has_no_requester(ws: ModuleType, issue: dict[str, object]) -> None:
+def test_s021_7_an_issue_without_a_person_s_notice_has_no_requester(ws: ModuleType, issue: dict[str, object]) -> None:
     assert ws.pre_release_notice(5, issue) is None
 
 
@@ -2537,36 +2457,33 @@ def test_s021_7_only_the_requester_s_own_comments_after_the_newest_notice_count(
     assert ws.requester_rows(notice, [], NOW) == []
 
 
-def test_s021_7_neither_row_is_an_action_or_an_agent_s(ws: ModuleType) -> None:
-    for state in ("REQUESTER_CONFIRMED", "REQUESTER_REPORT"):
-        row = ws.Row(state, "#5", "v1.0.0rc1: the requester ...")
-        assert state not in ws.ACTION and state not in ws.AGENT and state not in ws.FIXED
-        assert row.json() == {"state": state, "subject": "#5", "detail": row.detail, "agent": False, "fix": None}
+def test_s021_7_the_row_is_no_action_and_no_agent_s(ws: ModuleType) -> None:
+    row = ws.Row("REQUESTER_REPORT", "#5", "v1.0.0rc1: the requester ...")
+    assert "REQUESTER_REPORT" not in ws.ACTION and "REQUESTER_REPORT" not in ws.AGENT
+    assert "REQUESTER_REPORT" not in ws.FIXED
+    assert row.json() == {
+        "state": "REQUESTER_REPORT",
+        "subject": "#5",
+        "detail": row.detail,
+        "agent": False,
+        "fix": None,
+    }
 
 
-def test_s021_6_reactions_are_read_only_for_a_notice_with_a_vote(ws: ModuleType) -> None:
+def test_s021_7_reactions_are_read_only_for_a_notice_with_a_thumbs_down(ws: ModuleType) -> None:
     views = {
-        5: view("alice", comment("bot", PRE_NOTICE, 11, ("THUMBS_UP", "HEART"))),
+        5: view("alice", comment("bot", PRE_NOTICE, 11, ("THUMBS_UP", "HEART"))),  # a 👍 alone: not read
         6: view("carol", comment("bot", PRE_NOTICE, 21, ("HEART",)), comment("carol", "no luck", 22)),
         7: view("dave", comment("bot", "<!-- shipmill:available: stable v1.0.0 -->\nReleased in v1.0.0.", 31)),
+        8: view("erin", comment("bot", PRE_NOTICE, 41, ("THUMBS_DOWN",))),
     }
     read: list[str] = []
 
     def reactions_of(url: str) -> list[object]:
         read.append(url)
-        return [reaction(ws, "alice", "+1")]
+        return [reaction(ws, "erin", "-1")]
 
-    rows = ws.answers_rows(REPO, [5, 6, 7], NOW, views.__getitem__, reactions_of)
-    assert [(r.state, r.subject) for r in rows] == [("REQUESTER_CONFIRMED", "#5"), ("REQUESTER_REPORT", "#6")]
-    assert read == [f"{NOTICE_URL}11"]
+    rows = ws.answers_rows(REPO, [5, 6, 7, 8], NOW, views.__getitem__, reactions_of)
+    assert [(r.state, r.subject) for r in rows] == [("REQUESTER_REPORT", "#6"), ("REQUESTER_REPORT", "#8")]
+    assert read == [f"{NOTICE_URL}41"]
     assert ws.pre_release("v1.0.0rc1") and ws.pre_release("v1.1.0.dev3") and not ws.pre_release("v1.0.0")
-
-
-def test_s021_6_the_watch_reads_a_notice_by_shipped_py_s_marker(ws: ModuleType) -> None:
-    shipped = importlib.util.spec_from_file_location("shipped_marker", ws.SHIPPED)
-    assert shipped is not None and shipped.loader is not None
-    module = importlib.util.module_from_spec(shipped)
-    sys.modules[shipped.name] = module
-    shipped.loader.exec_module(module)
-    assert ws.AVAILABLE.pattern == module.MARKER.pattern
-    assert ws.AVAILABLE.match(module.notice("v1.0.0rc1", "").partition("\n")[0]) is not None

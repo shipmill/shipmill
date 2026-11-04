@@ -257,20 +257,16 @@ def setup_state():
     return ss.gh_writer(checkout, ss.watch_module())
 
 
-def shipped():
-    sp = load("shipped", "skills/github-pr-triage/scripts/shipped.py")
-    return sp.writer(checkout, sp.watch_module())
-
-
 def chains():
     sys.path.insert(0, str(root / "skills/github-issue-triage/scripts"))
     return load("chains", "skills/github-issue-triage/scripts/chains.py").writer(checkout)
 
 
-names = ["watch_state", "setup_state", "shipped", "chains"] if only == "all" else [only]
+names = ["watch_state", "setup_state", "chains"] if only == "all" else [only]
 print(json.dumps({"python": list(sys.version_info[:2]), **{n: globals()[n]() for n in names}}))
 """
-SCRIPTS = ["watch_state", "setup_state", "shipped", "chains"]
+# shipped.py writes nothing since D-69 (#921), so it has no writing gh
+SCRIPTS = ["watch_state", "setup_state", "chains"]
 
 
 def uv() -> str:

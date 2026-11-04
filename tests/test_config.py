@@ -14,6 +14,7 @@ import pytest
 from shipmill.agents import AgentsConfig
 from shipmill.classify import _changelog as classify_changelog
 from shipmill.config import Table, branch_in
+from shipmill.deprecations import warnings
 from shipmill.errors import ReleaseError
 from shipmill.policy import BumpFrom, HooksConfig, Lane, NoticesConfig, Policy, Style, VersionFiles
 from shipmill.version import Part
@@ -496,11 +497,14 @@ def test_s003_2_a_bad_wait_key_exits_2(tmp_path: Path) -> None:
     assert done.stderr == "shipmill: shipmill.toml [agents]: remind_hours must be in 1..168, got 0\n"
 
 
-def test_s021_5_the_policy_reads_notices_and_an_unknown_key_exits_2(tmp_path: Path) -> None:
+def test_d69_a_notices_section_still_loads_and_an_unknown_key_still_exits_2(tmp_path: Path) -> None:
+    # D-69 (#921) deprecates [notices] by D-63: a config that loaded keeps loading, read by nothing
     text = POLICY + "\n[notices]\npin = \"uv add 'demo=={version}'\"\ninstall = 'uv add {name}'\n"
     notices = Policy.parse(tomllib.loads(text), "shipmill.toml").notices
-    assert (notices.pin, notices.install) == ("uv add 'demo=={version}'", "uv add {name}")
-    assert Policy.parse(tomllib.loads(POLICY), "shipmill.toml").notices == NoticesConfig()
+    assert notices == NoticesConfig("uv add 'demo=={version}'", "uv add {name}")
+    assert Policy.parse(tomllib.loads(POLICY), "shipmill.toml").notices is None
+    warned = warnings(Policy.parse(tomllib.loads(text), "shipmill.toml"), "notices")
+    assert len(warned) == 1 and "D-69" in warned[0] and "spec 021" in warned[0]
     path = tmp_path / ".github" / "shipmill.toml"
     path.parent.mkdir()
     path.write_text(POLICY + "\n[notices]\ninstall = 'uv add demo'\nupgrade = 'uv add -U demo'\n", encoding="utf-8")

@@ -32,6 +32,16 @@ feature flag or a per-customer build, stays the platform's.
 
 ## Behaviour
 
+**Retired in part by D-69 (#921).** shipmill posts no notice on a fixed issue: no
+pre-release, stable, or deployment notice, so S-021-1 to S-021-4 are dropped; `[notices]` is
+deprecated by D-63 and D-64 and read by nothing (S-021-5); the watch reports no UNANNOUNCED
+or REQUESTER_CONFIRMED (S-021-6); and a stable promotion's reason counts no confirmed
+requesters (S-021-8). What stays: `shipped.py` reads which closed issues a release or a
+deployment fixed, with the holding rule and the stages below, and prints it as machine
+output (`--json`, S-021-9) for a layer outside shipmill's core; REQUESTER_REPORT still reads
+the pre-release notices posted before D-69 (S-021-7). The notices already posted stay. The
+rest of this section is the behaviour as built, kept as the record.
+
 ### Where a fix is available
 
 For each closed issue a release fixed, shipmill posts one notice per **stage** the fix
@@ -108,15 +118,16 @@ It is reported, never a gate.
 
 ## Acceptance criteria
 
-- S-021-1: `shipped.py` posts `Released in <tag> (pre-release).` with the `[notices] pin` command for a closed issue whose fix the first rc or dev tag holds, and the marker `<!-- shipmill:available: pre-release <tag> -->` is its first line
-- S-021-2: For a stable tag that promotes an rc, `shipped.py` finds every closed issue whose fix the rc held and posts its `stable` notice, even when the range from the previous tag to the stable tag holds no fix commit
-- S-021-3: A second run posts nothing; an issue with an existing `Released in <tag>` comment counts as told for that tag and stage
-- S-021-4: After a successful deployment of a tag to an environment, the watch reports UNANNOUNCED for each closed issue whose fix the tag holds and that has no `<environment>` notice, and posting it writes `Deployed to <environment> in <tag>.`
+- S-021-1: dropped in #921, see D-69 and S-021-9: `shipped.py` posts `Released in <tag> (pre-release).` with the `[notices] pin` command for a closed issue whose fix the first rc or dev tag holds, and the marker `<!-- shipmill:available: pre-release <tag> -->` is its first line
+- S-021-2: dropped in #921, see D-69 and S-021-9: For a stable tag that promotes an rc, `shipped.py` finds every closed issue whose fix the rc held and posts its `stable` notice, even when the range from the previous tag to the stable tag holds no fix commit
+- S-021-3: dropped in #921, see D-69: A second run posts nothing; an issue with an existing `Released in <tag>` comment counts as told for that tag and stage
+- S-021-4: dropped in #921, see D-69: After a successful deployment of a tag to an environment, the watch reports UNANNOUNCED for each closed issue whose fix the tag holds and that has no `<environment>` notice, and posting it writes `Deployed to <environment> in <tag>.`
   - Amended by spec 046 (D-57): the gate reads UNANNOUNCED from its sweep, every `[agents] sweep_hours`, and for a new release tag from that tag's own check (S-046-8, S-046-9); the watch's full report is unchanged
-- S-021-5: `[notices] pin` and `install` substitute `{version}`, `{tag}`, and `{name}`; an unknown key under `[notices]` fails the policy with exit 2; without `install`, `--install` text is used as today
-- S-021-6: `watch_state.py` reports REQUESTER_CONFIRMED when the issue's author reacted 👍 to its pre-release notice, and nothing for a 👍 by anyone else
+- S-021-5: dropped in #921, see D-69: `[notices] pin` and `install` substitute `{version}`, `{tag}`, and `{name}`; an unknown key under `[notices]` fails the policy with exit 2; without `install`, `--install` text is used as today
+- S-021-6: dropped in #921, see D-69: `watch_state.py` reports REQUESTER_CONFIRMED when the issue's author reacted 👍 to its pre-release notice, and nothing for a 👍 by anyone else
 - S-021-7: `watch_state.py` reports REQUESTER_REPORT when the issue's author commented after its pre-release notice or reacted 👎 to it; no label, hold, or reopen follows from the row alone
-- S-021-8: A stable promotion's plan reason names how many of the issues its rc fixed have a confirmed requester, and the count never changes whether the lane is due
+- S-021-8: dropped in #921, see D-69: A stable promotion's plan reason names how many of the issues its rc fixed have a confirmed requester, and the count never changes whether the lane is due
+- S-021-9: `shipped.py <repo> <prev-tag> <tag> --json` prints one JSON object per closed issue the release fixed, with `number`, `tag`, `stage` (`pre-release` or `stable` by the tag, or the environment's name with `--environment`), and `source`; a stable tag that promotes an rc reports every fix the rc held, even when the range from the previous tag holds only the stamp commit; it writes nothing to GitHub, and `--post` and `--install` are refused as unknown flags
 
 ## Out of scope
 
@@ -148,14 +159,16 @@ It is reported, never a gate.
 - shipmill/shipmill#393: S-021-4
 - shipmill/shipmill#394: S-021-6, S-021-7
 - shipmill/shipmill#395: S-021-8
+- shipmill/shipmill#921: S-021-9
 
 ## Verification
 
-- S-021-1: ran `tests/test_shipped.py::test_s021_1_*` and read `notice` and `command_for` in `shipped.py`: a pre-release tag's notice opens with the `pre-release <tag>` marker line, then `Released in <tag> (pre-release).` and the rendered `pin`, passes
-- S-021-2: ran `test_s021_2_*` and read `release_commits` and `own_range`: a stable tag reads its range from the newest stable tag below it (its whole history before the first), so a promotion whose previous rc range holds only the stamp still tells every fix its rc held, passes
-- S-021-3: ran `test_s021_3_*` in `test_shipped.py` and `test_metrics.py` and read `told`: a second run prints SKIP notified for each issue, and a `Released in <tag>` comment counts at its tag's stage, passes
-- S-021-4: ran `test_s021_4_*` in `test_shipped.py` and `test_ship_watch.py`: a successful deployment reports UNANNOUNCED for fixes counted from the tag the environment ran before (D-41), and posting writes `Deployed to <environment> in <tag>.` once per environment, passes
-- S-021-5: ran `test_s021_5_*` in `test_config.py` and `test_shipped.py` and read `render`: `{version}`, `{tag}`, and `{name}` are substituted, an unknown `[notices]` key exits 2, and without `install` the `--install` text is used, passes
-- S-021-6: ran `tests/test_ship_watch.py::test_s021_6_*` and read `requester_rows`: the author's 👍 on the newest pre-release notice reports REQUESTER_CONFIRMED and anyone else's gives no row, passes
+- S-021-1: dropped in #921
+- S-021-2: dropped in #921
+- S-021-3: dropped in #921
+- S-021-4: dropped in #921
+- S-021-5: dropped in #921
+- S-021-6: dropped in #921
 - S-021-7: ran `test_s021_7_*` and read `requester_rows`: the author's comment after the notice or 👎 reports REQUESTER_REPORT, a report-only row that is no action and no agent's, passes
-- S-021-8: ran `tests/test_requester_count.py`: a releasing promotion's reason names `1 of 3 requesters confirmed` from the fixes rc1's base holds past v1.0.0, a count of 1, of 0, and one GitHub fails to give produce the same decision, and the votes are never read when the stable lane isn't due, passes
+- S-021-8: dropped in #921
+- S-021-9: ran the `test_s021_9_*` tests in `tests/test_shipped.py` and read `report` and `release_commits`: `--json` prints `number`, `tag`, `stage`, and `source` for each closed issue and nothing for an open issue or a pull request, a deployment's stage is its environment, a promotion reads its rc's fixes, the reads are the only gh calls, and `--post` exits 2, passes

@@ -169,7 +169,7 @@ def test_s048_22_both_quiet_lines_end_with_what_is_in_flight(checkout: Git) -> N
         "in flight: 2 wait on CI (#771, #773), 1 waits to land (#772), 1 fails CI (#774);"
         " last landed #770 3 h ago; no session has ended with a result yet"
     )
-    assert (walked.action, walked.reason) == (Action.QUIET, f"nothing needs an agent; read tiers 1-8; {flight}")
+    assert (walked.action, walked.reason) == (Action.QUIET, f"nothing needs an agent; read tiers 1-7; {flight}")
     quiet = tick(checkout, source, LATER)
     cursor = (NOW - CURSOR_OVERLAP).isoformat(timespec="minutes")
     assert quiet.reason == f"no change since {cursor}; {flight}"  # LATER is 15 minutes on: still 3 h

@@ -49,21 +49,18 @@ Each of the --releases newest version tags (default 3):
                   PyPI (the earliest file of any release): cut before the repo published,
                   so nothing to repair (reported, never an action)
   PUBLISHED       PyPI lists it; NO_REGISTRY when the package isn't on PyPI at all
-  UNANNOUNCED     closed issues it fixed that have no notice for the tag's stage,
-                  pre-release or stable (github-pr-triage's shipped.py, in plan mode)
+  The watch posts no notice on a fixed issue and reports none missing (D-69, #921)
 
 The requester's answer (spec 021), for each closed issue that a published pre-release tag
-among those has told (read on its newest comment with the `<!-- shipmill:available:
-pre-release <tag> -->` marker, the notice); the
-requester is the issue's author, compared by login exactly, and an issue a bot or a deleted
-account opened has none. Both are reported, never an action by itself: no label, hold, or
-reopen follows from either (D-16):
-  REQUESTER_CONFIRMED  the requester reacted 👍 to the notice: the issue, the tag, when, and
-                  the notice's link. A 👍 by anyone else gives no row
+among those fixed (github-pr-triage's shipped.py --json) and that holds a pre-release notice
+shipmill posted before D-69 (its newest comment with the `<!-- shipmill:available:
+pre-release <tag> -->` marker, the notice); the requester is the issue's author, compared by
+login exactly, and an issue a bot or a deleted account opened has none. Reported, never an
+action by itself: no label, hold, or reopen follows from it (D-16):
   REQUESTER_REPORT  the requester commented after the notice (a shipmill notice is no
                   comment of theirs), or reacted 👎 to it: the issue, the tag, and the
                   comment's or the notice's link, for triage to read as a possible regression
-  The notice's reactions are read (one more gh call) only when it has a 👍 or 👎 at all
+  The notice's reactions are read (one more gh call) only when it has a 👎 at all
 
 Hold and postmortems (a repo with a shipmill config):
   HOLD            an open shipmill-hold issue, with who opened it and when (reported, never
@@ -131,13 +128,6 @@ deployments and issues shipmill operate writes):
                   for those few minutes
   INCIDENT_OPEN   an open issue labelled [operate] incident_label (default "incident"),
                   with its age and the pull requests linked to close it
-  UNANNOUNCED     per environment, the closed issues its current deployment (the newest that
-                  reached success; a failed or unfinished one never counts) of a release tag
-                  fixed that have no notice of the environment, as "<tag> #N ... deployed to
-                  <environment> (since <prev>)": prev is the release tag of the newest
-                  earlier successful deployment there, else the release tag below the
-                  current one (github-pr-triage's shipped.py --environment, in plan mode;
-                  S-021-4)
 
 Intake (github-issue-triage's triage_state.py):
   ISSUES          issues needing triage action, counted by state. One ISSUES row more per
@@ -368,7 +358,7 @@ API error: rerun". An auth, not-found, or any other failure stops it at once.
 [operate] incident_label (fleet.py passes a fleet file's incident_label this way).
 
 --json prints one JSON object per row: state, subject, detail, and agent, true when the
-row needs an agent (BOT_FAILED, BOT_STALLED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
+row needs an agent (BOT_FAILED, BOT_STALLED, WORK_BRANCH_STALE, NOT_PUBLISHED,
 ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING, DIRECTION_PENDING, UPSTREAM_DUE, VETOED): the rows
 shipmill gate starts a
 session for. A waiting
@@ -384,7 +374,7 @@ heads, each listed pull request's number (a string) mapped to its head commit's 
 push to one changes the gate's fingerprint (#546); the table never prints it.
 
 Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when any
-BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED, UNANNOUNCED,
+BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED,
 ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MISSING, GATE_SESSIONS_DEAD,
 SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_CYCLE,
@@ -412,22 +402,21 @@ read is one factory check's error rather than the report's end (#745); the gate'
 rows (LOOP, GATE_SESSIONS_DEAD) stay in it.
 
 --tier N and --sweep are the reads shipmill gate's walk makes (spec 046), and print no host
-row and no report-only row. The gate walks eight tiers in order and stops at the first item no
+row and no report-only row. The gate walks seven tiers in order and stops at the first item no
 session has taken: 1 INCIDENT_OPEN, OPERATE_FAILED; 2 BOT_FAILED, NOT_PUBLISHED,
 WORK_BRANCH_STALE, BOT_STALLED; 3 PRS_OPEN; 4 VETOED and triage's DECIDED; 5 UPGRADE_PENDING,
-UPSTREAM_DUE; 6 triage's other action states and SPEC_UNSPLIT; 7 DIRECTION_PENDING, PLANS;
-8 UNANNOUNCED. --tier N prints that tier's rows, and NEEDS_DECISION in tiers 3 and 4, where the gate's
-headless notifications read it; its ISSUES rows are one per triage state, `STATE #N ...`.
-Tier 2 reads NOT_PUBLISHED for the newest tag alone and leaves BOT_STALLED to the sweep;
-tier 3 reads the open pull requests and one batched GraphQL read of the comments of those
-labelled needs-decision or decided; tier 4 runs triage_state.py --label needs-decision
+UPSTREAM_DUE; 6 triage's other action states and SPEC_UNSPLIT; 7 DIRECTION_PENDING, PLANS
+(D-69 retired tier 8, UNANNOUNCED). --tier N prints that tier's rows, and NEEDS_DECISION
+in tiers 3 and 4, where the gate's headless notifications read it; its ISSUES rows are one
+per triage state, `STATE #N ...`. Tier 2 reads NOT_PUBLISHED for the newest tag alone and
+leaves BOT_STALLED to the sweep; tier 3 reads the open pull requests and one batched GraphQL
+read of the comments of those labelled needs-decision or decided; tier 4 runs triage_state.py --label needs-decision
 --label decided, less a DECIDED read from a relay; tier 6 runs triage_state.py on every open
 issue, and gives its DECIDED read from a relay with the label off, then fetches the landing
 branch and gives SPEC_UNSPLIT (spec 053), read on every tier 6 read, not on a sweep: a spec
-merging or an issue changing is a change the gate's check sees; tier 8 reads UNANNOUNCED
-for the newest tag alone; tiers 5 and 7 run their sections whole. --sweep prints the timed
-sections' rows, read whole: BOT_STALLED, UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING,
-PLANS, and UNANNOUNCED over every --releases tag and environment. --known FILE (with --tier)
+merging or an issue changing is a change the gate's check sees; tiers 5 and 7 run their
+sections whole. --sweep prints the timed sections' rows, read whole: BOT_STALLED,
+UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING, and PLANS. --known FILE (with --tier)
 holds what the gate's change check read already: GitHub's default branch, whether a hold is
 open, the open pull requests, the open incidents, and the newest workflow runs, so tiers 1
 and 3 make no gh read of them again; a workflow none of those runs belongs to is read with gh
@@ -560,7 +549,6 @@ ACTION = {
     "BOT_PLAN_FAILED",
     "WORK_BRANCH_STALE",
     "NOT_PUBLISHED",
-    "UNANNOUNCED",
     "ISSUES",
     "PLANS",
     "OPERATE_FAILED",
@@ -595,7 +583,6 @@ AGENT = {
     "BOT_STALLED",
     "WORK_BRANCH_STALE",
     "NOT_PUBLISHED",
-    "UNANNOUNCED",
     "ISSUES",
     VETOED,
     "PLANS",
@@ -640,7 +627,7 @@ PROPOSAL_LABEL = "shipmill-proposal"  # shipmill's github.PROPOSAL_LABEL
 PROPOSAL_SEARCH = 'in:title "Ready to"'  # proposals opened before the label; the marker in the body decides
 PROPOSAL = re.compile(r"<!-- shipmill:propose deploy=(?P<env>\S+) -->")  # shipmill's operate.deploy_marker
 PROPOSED_TAG = re.compile(r"<!-- shipmill:tag=(?P<tag>\S+) -->")
-# a notice's first line: shipped.py's MARKER (spec 021; tests/test_ship_watch.py keeps the two equal)
+# a notice's first line, as shipped.py wrote it before D-69 (spec 021); none is posted since #921
 AVAILABLE = re.compile(r"^<!-- shipmill:available: (\S+) (\S+) -->\s*$")
 COMMENT_ID = re.compile(r"#issuecomment-(\d+)$")  # an issue comment's URL names its id
 GHOST = "ghost"  # the login GitHub shows for every deleted account
@@ -1437,45 +1424,18 @@ def fetch_tag_runs(repo: str, tag: str) -> list[Run]:
     return sorted(found, key=lambda r: r.created, reverse=True)
 
 
-def shipped_plan(
-    repo: str,
-    repo_dir: Path,
-    prev: str,
-    tag: str,
-    env: dict[str, str] | None = None,
-    environment: str | None = None,
-) -> tuple[list[str], list[str]]:
-    """The issues shipped.py in plan mode would tell, of the release, or with environment, of
-    tag's deployment there, and the ones it finds told already; ``env`` is the process
-    environment it runs in"""
-    cmd = [sys.executable, str(SHIPPED), repo, prev, tag, "--repo-dir", str(repo_dir)]
-    out = run(cmd if environment is None else [*cmd, "--environment", environment], env=env)
-    # "#N     <WHAT>  <title>  [source]": read by position, so a title never reads as what it does
-    lines = [line.split() for line in out.splitlines()]
-    return [w[0] for w in lines if w[1:3] == ["WOULD", "POST"]], [w[0] for w in lines if w[1:3] == ["SKIP", "notified"]]
-
-
-def unannounced(
-    repo: str,
-    repo_dir: Path,
-    prev: str,
-    tag: str,
-    env: dict[str, str] | None = None,
-    environment: str | None = None,
-) -> list[str]:
-    """The issues shipped.py would tell in plan mode"""
-    return shipped_plan(repo, repo_dir, prev, tag, env, environment)[0]
-
-
-def unannounced_row(repo: str, tag: str, prev: str, issues: list[str]) -> Row:
-    """The issues the tag fixed that no notice for its stage tells; the watch posts them"""
-    return Row("UNANNOUNCED", tag, f"{' '.join(issues)} (since {prev})", skill_fix("github-ship-watch", repo))
-
-
-def deployed_row(repo: str, environment: str, tag: str, prev: str, issues: list[str]) -> Row:
-    """The issues tag's deployment to the environment fixed that no notice of it tells (S-021-4)"""
-    detail = f"{' '.join(issues)} deployed to {environment} (since {prev})"
-    return Row("UNANNOUNCED", tag, detail, skill_fix("github-ship-watch", repo))
+def fixed_issues(repo: str, repo_dir: Path, prev: str, tag: str, env: dict[str, str] | None = None) -> list[int]:
+    """The closed issues the release fixed, from shipped.py --json, which reads and never
+    posts (D-69); ``env`` is the process environment it runs in"""
+    out = run([sys.executable, str(SHIPPED), repo, prev, tag, "--repo-dir", str(repo_dir), "--json"], env=env)
+    found = []
+    for line in out.splitlines():
+        record = json.loads(line)
+        number = record.get("number") if isinstance(record, dict) else None
+        if not isinstance(number, int) or isinstance(number, bool):
+            raise Refused(f"error: shipped.py printed {line!r}, a record without an issue number")
+        found.append(number)
+    return found
 
 
 # -- the requester's answer (spec 021) -----------------------------------------------------
@@ -1490,7 +1450,7 @@ class Notice:
     tag: str
     url: str  # the notice comment's, ending #issuecomment-<id>
     requester: str
-    voted: bool  # a 👍 or 👎 by anyone: only then are its reactions read
+    voted: bool  # a 👎 by anyone: only then are its reactions read
     after: tuple[str, ...]  # the URLs of the requester's comments after the notice, oldest first
 
 
@@ -1533,21 +1493,17 @@ def pre_release_notice(number: int, view: dict[str, Any]) -> Notice | None:
         if (c.get("author") or {}).get("login") == login and AVAILABLE.match(c["body"].partition("\n")[0]) is None
     )
     groups = {g["content"] for g in notice.get("reactionGroups") or [] if g["users"]["totalCount"] > 0}
-    return Notice(number, tag, notice["url"], login, bool(groups & {"THUMBS_UP", "THUMBS_DOWN"}), after)
+    return Notice(number, tag, notice["url"], login, "THUMBS_DOWN" in groups, after)
 
 
 def requester_rows(notice: Notice, reactions: list[Reaction], now: dt.datetime) -> list[Row]:
-    """REQUESTER_CONFIRMED when the requester reacted 👍 to the notice (S-021-6); REQUESTER_REPORT
-    when they commented after it or reacted 👎 (S-021-7). Anyone else's reaction or comment is
-    triage's, as before; both rows are reported only, and nothing follows from them by itself"""
+    """REQUESTER_REPORT when the requester commented after the notice or reacted 👎 (S-021-7).
+    Anyone else's reaction or comment is triage's, as before; the row is reported only, and
+    nothing follows from it by itself. A 👍 gives no row: D-69 retired REQUESTER_CONFIRMED"""
     mine = sorted((r for r in reactions if r.login == notice.requester), key=lambda r: r.created)
-    up = [r for r in mine if r.content == "+1"]
     down = [r for r in mine if r.content == "-1"]
     subject = f"#{notice.number}"
     rows = []
-    if up:
-        detail = f"{notice.tag}: the requester reacted 👍 {ago(now - up[0].created)} ago, {notice.url}"
-        rows.append(Row("REQUESTER_CONFIRMED", subject, detail))
     said = []
     if notice.after:
         more = f" (+{len(notice.after) - 1} more)" if len(notice.after) > 1 else ""
@@ -1584,8 +1540,8 @@ def answers_rows(
     view_of: Callable[[int], dict[str, Any]],
     reactions_of: Callable[[str], list[Reaction]],
 ) -> list[Row]:
-    """The requester rows of the issues a pre-release told: each issue read once, and its
-    notice's reactions only when someone reacted 👍 or 👎 to it"""
+    """The requester rows of the issues a pre-release fixed: each issue read once, and its
+    notice's reactions only when someone reacted 👎 to it"""
     rows = []
     for number in numbers:
         notice = pre_release_notice(number, view_of(number))
@@ -2134,26 +2090,6 @@ def current_deployment(deployments: list[Deployment], statuses_of: Callable[[int
     return None
 
 
-def deployed_since(
-    deployments: list[Deployment], current: Current, statuses_of: Callable[[int], list[Status]], tags: list[str]
-) -> str | None:
-    """The tag an environment ran before current's, which its notices count from (S-021-4):
-    the newest earlier deployment, newest first, of another of the release tags that reached
-    success, else the release tag just below current's. None when current's ref is no release
-    tag of the checkout, or no tag is below it. A failed or unfinished deployment never counts"""
-    key = version_key(current.tag)
-    if key is None or current.tag not in tags:
-        return None
-    for deployment in deployments:
-        earlier = deployment.ref.removeprefix("refs/tags/")
-        if deployment.id >= current.deployment.id or earlier == current.tag or earlier not in tags:
-            continue
-        if any(s.state == "success" for s in statuses_of(deployment.id)):
-            return earlier
-    below = sorted((k, t) for k, t in ((version_key(t), t) for t in tags) if k is not None and k < key)
-    return below[-1][1] if below else None
-
-
 def operate_rows(runs: list[Run], caller: str, repo: str) -> list[Row]:
     failed = failed_run(runs)
     if failed is not None:
@@ -2430,28 +2366,8 @@ def operate_start(caller: tuple[str, bool] | None, repo: str, repo_dir: Path) ->
     return "write one with `shipmill init --operate`, then run it once", fix
 
 
-def deployed_rows(
-    repo: str,
-    repo_dir: Path,
-    environment: str,
-    deployments: list[Deployment],
-    current: Current | None,
-    statuses_of: Callable[[int], list[Status]],
-    tags: list[str],
-) -> list[Row]:
-    """UNANNOUNCED for the issues the environment's current deployment fixed that no notice of
-    the environment tells yet (S-021-4); none without a successful deployment of a release tag"""
-    if current is None:
-        return []
-    prev = deployed_since(deployments, current, statuses_of, tags)
-    if prev is None:
-        return []
-    issues = unannounced(repo, repo_dir, prev, current.tag, environment=environment)
-    return [deployed_row(repo, environment, current.tag, prev, issues)] if issues else []
-
-
 def operations_rows(
-    repo: str, repo_dir: Path, envs: list[Environment], held: bool, label: str, now: dt.datetime, tags: list[str]
+    repo: str, repo_dir: Path, envs: list[Environment], held: bool, label: str, now: dt.datetime
 ) -> list[Row]:
     caller = operate_caller(repo_dir)
     runs = fetch_runs(repo, caller[0]) if caller else []
@@ -2466,8 +2382,6 @@ def operations_rows(
         row = unhealthy_row(env.name, current[env.name], now)
         if row is not None:
             rows.append(row)
-    for env in envs:
-        rows += deployed_rows(repo, repo_dir, env.name, deployments[env.name], current[env.name], statuses_of, tags)
     issues = proposal_issues(
         fetch_issues(repo, "--label", PROPOSAL_LABEL), lambda: fetch_issues(repo, "--search", PROPOSAL_SEARCH)
     )
@@ -4522,8 +4436,8 @@ def host_rows(section: str, repo: str, repo_dir: Path, now: dt.datetime, *, host
 # shipmill gate walks the tiers in order and stops at the first item no session has taken. A
 # --tier read prints only its tier's rows, and NEEDS_DECISION in tiers 3 and 4, which the
 # gate's headless notifications read; its ISSUES rows are one per triage state, tier 4's
-# DECIDED and tier 6's every other. Tiers 5 and 7, BOT_STALLED, and UNANNOUNCED over every
-# --releases tag are the sweep's: the gate reads them from its last --sweep
+# DECIDED and tier 6's every other. Tiers 5 and 7 and BOT_STALLED are the sweep's: the gate
+# reads them from its last --sweep. D-69 (#921) retired tier 8, UNANNOUNCED
 TIERS: dict[int, tuple[str, ...]] = {
     1: ("INCIDENT_OPEN", "OPERATE_FAILED"),
     2: ("BOT_FAILED", "NOT_PUBLISHED", "WORK_BRANCH_STALE", "BOT_STALLED"),
@@ -4532,9 +4446,8 @@ TIERS: dict[int, tuple[str, ...]] = {
     5: ("UPGRADE_PENDING", "UPSTREAM_DUE"),
     6: ("ISSUES",),
     7: ("DIRECTION_PENDING", "PLANS"),
-    8: ("UNANNOUNCED",),
 }
-SWEPT = ("BOT_STALLED", "UPGRADE_PENDING", "UPSTREAM_DUE", "DIRECTION_PENDING", "PLANS", "UNANNOUNCED")
+SWEPT = ("BOT_STALLED", "UPGRADE_PENDING", "UPSTREAM_DUE", "DIRECTION_PENDING", "PLANS")
 DECIDED_STATES = frozenset({"DECIDED"})  # triage_state.py's states in tier 4; VETOED has its own row
 ASKED = (TRIAGE.DECISION_LABEL, TRIAGE.DECIDED_LABEL)  # tier 4's items; tier 3 reads these pull requests' comments
 COMMENTS_LAST = 100  # comments a batched read takes of each item; one with more is read whole
@@ -4924,33 +4837,6 @@ def relayed_rows(rows: list[Row], triage: str) -> list[Row]:
     return found
 
 
-def notice_rows(
-    args: argparse.Namespace, repo_dir: Path, text: str | None, known: Known | None, now: dt.datetime
-) -> list[Row]:
-    """Tier 8 for a new release: UNANNOUNCED for the newest tag alone, once it is published"""
-    tags = fetched_tags(args.repo, repo_dir, text, known)
-    if len(tags) < 2:
-        return []
-    package = package_name(repo_dir)
-    project = pypi_json(package) if package is not None else None
-    newest, prev = tags[0], tags[1]
-    listed = on_pypi(f"{package}/{newest.name[1:]}") if project is not None else None
-    row = publish_row(
-        newest,
-        package if project is not None else None,
-        listed,
-        now,
-        dt.timedelta(minutes=args.grace),
-        first_upload(project, package) if project is not None and package is not None else None,
-        repo=args.repo,
-        runs_on=lambda name: fetch_tag_runs(args.repo, name),
-    )
-    if row.state not in {"PUBLISHED", "NO_REGISTRY"}:
-        return []
-    issues, _ = shipped_plan(args.repo, repo_dir, prev.name, newest.name)
-    return [unannounced_row(args.repo, newest.name, prev.name, issues)] if issues else []
-
-
 def tier_rows(tier: int, args: argparse.Namespace, repo_dir: Path, known: Known | None, now: dt.datetime) -> list[Row]:
     """One tier's rows (spec 046); tiers 5 and 7 are the sweep's sections, read whole"""
     if tier in (5, 7):
@@ -4965,9 +4851,7 @@ def tier_rows(tier: int, args: argparse.Namespace, repo_dir: Path, known: Known 
         return landing_rows(args, text, known, now)
     if tier == 4:
         return asked_rows(args, repo_dir, text, known, now)
-    if tier == 6:
-        return issue_rows(args, repo_dir, text, known)
-    return notice_rows(args, repo_dir, text, known, now)
+    return issue_rows(args, repo_dir, text, known)
 
 
 def arguments() -> argparse.ArgumentParser:
@@ -5064,7 +4948,7 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
     project = pypi_json(package) if package is not None else None
     registered = project is not None
     first = first_upload(project, package) if package is not None and project is not None else None
-    asked: dict[int, None] = {}  # the issues a pre-release told, whose requester may have answered
+    asked: dict[int, None] = {}  # the issues a pre-release fixed, whose requester may have answered a notice
     for i, tag in enumerate(tags[: args.releases]):
         listed = on_pypi(f"{package}/{tag.name[1:]}") if registered else None
         row = publish_row(
@@ -5078,12 +4962,8 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
             runs_on=lambda name: fetch_tag_runs(args.repo, name),
         )
         rows.append(row)
-        if row.state in {"PUBLISHED", "NO_REGISTRY"} and i + 1 < len(tags):
-            issues, told = shipped_plan(args.repo, repo_dir, tags[i + 1].name, tag.name)
-            if issues:
-                rows.append(unannounced_row(args.repo, tag.name, tags[i + 1].name, issues))
-            if pre_release(tag.name):
-                asked.update((int(n.lstrip("#")), None) for n in told)
+        if row.state in {"PUBLISHED", "NO_REGISTRY"} and i + 1 < len(tags) and pre_release(tag.name):
+            asked.update((n, None) for n in fixed_issues(args.repo, repo_dir, tags[i + 1].name, tag.name))
     rows += answers_rows(
         args.repo, list(asked), now, lambda n: fetch_view(args.repo, n), lambda url: fetch_reactions(args.repo, url)
     )
@@ -5112,8 +4992,8 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
             texts = postmortem_texts(args.repo, branch)
             rows += postmortem_rows(closed, read.incident_label, texts, args.repo, now)
         if read.environments:
-            names, label = [t.name for t in tags], read.incident_label
-            rows += operations_rows(args.repo, repo_dir, read.environments, bool(holds), label, now, names)
+            label = read.incident_label
+            rows += operations_rows(args.repo, repo_dir, read.environments, bool(holds), label, now)
         upgrades = upgrade_rows(
             fetch_issues(args.repo, "--label", UPGRADE_LABEL),
             read.upgrade,

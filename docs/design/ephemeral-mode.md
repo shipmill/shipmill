@@ -97,7 +97,6 @@ input failure, which fails the run visibly.
 | DONE_NOT_CLOSED | Close the issue, citing the merged PR |
 | SUSPECT_CLOSE whose linked PR merged | Nothing; the close was right. Only an unmerged fix becomes work |
 | BOT_STALLED | `gh workflow run release.yml -f lane=<lane>` for the lane the plan names |
-| UNANNOUNCED | `shipped.py --post` |
 | PUBLISHED, not install-checked | Clean install of the version, per ecosystem; a failure becomes work |
 | Red run on a PR whose failing tests all appear in `flaky_tests` | Rerun the failed jobs once (`run_attempt` 1 only), current head only |
 | REVISIT whose last verdict is newer than the stable tag | Nothing (fixed in #12) |
@@ -135,7 +134,6 @@ Every run starts empty. The gate derives each fact from GitHub:
 | Reviewed at a commit | The bot's PR review: its `commit_id`, and the verdict in the first line of its body (`Review: MERGE`) |
 | Attempts | Failed jobs named `<stage> #<n>` in this workflow's recent runs |
 | Rerun already tried | The run's `run_attempt` |
-| Notices posted | `shipped.py`'s existing check for "Released in" comments |
 | Settled design rules | The decisions log in the repo |
 
 Local mode (crontab on a checkout) runs the same gate and may cache under

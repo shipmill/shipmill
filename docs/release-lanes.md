@@ -143,10 +143,6 @@ github_release = true
 file = "README.md"
 pattern = 'demo v\d+\.\d+\.\d+'
 replace = "demo v{version}"       # also {name}, {semver}, {minor} (X.Y), {date}
-
-[notices]                         # optional: the commands the notices on fixed issues carry
-pin = "uv add 'demo=={version}'"  # a pre-release notice's; also {tag} and {name}
-install = "uv add demo"           # a stable notice's
 ```
 
 With `mode = "release"` or `"dry-run"`, `version_files`, `[changelog]` (and its `style`),
@@ -835,38 +831,25 @@ pull request, or run the command in your own terminal.
 
 ## Notices on fixed issues
 
-Once a release is out, `github-ship-watch` tells each closed issue it fixed, through
-`github-pr-triage`'s `shipped.py`, one comment per **stage** the fix reaches (spec 021):
+shipmill posts no notice on a fixed issue (D-69, #921): no pre-release or stable release
+notice and no deployment notice. The person who filed an issue keeps GitHub's own channels:
+the issue's subscription, which tells its close and the fixing pull request, Watch →
+Releases, a dependency bot for the package, and the release notes.
 
-| Stage | When | The comment |
-|---|---|---|
-| `pre-release` | the first dev or rc tag holding the fix | `Released in v1.5.0rc2 (pre-release).`, the `pin` command, that a plain install gets it with the next stable release, and that the person who filed the issue can react 👍 once it works or reply if it doesn't |
-| `stable` | the first stable tag holding the fix | `Released in v1.5.0.` and the `install` command |
-| `<environment>` | the first successful deployment to an environment of the config's `[environments]` of a tag holding the fix, read from GitHub deployments | `Deployed to production in v1.5.0.` |
+`github-pr-triage`'s `shipped.py <repo> <prev-tag> <tag>` reports which closed issues a
+release fixed, and `--json` prints one object per issue, `number`, `tag`, `stage`, and
+`source`, so a layer outside shipmill's core can connect a request to its release and tell
+whoever asked, by whatever channel it chooses. The stage is `pre-release` for a dev or rc
+tag and `stable` for any other; a stable release that promotes an rc reports every issue
+that rc fixed, even when the newest tag before it is a later rc. With `--environment
+<name>`, `<tag>` is what that environment now runs and `<prev-tag>` what it ran before, and
+the stage is the environment's name.
 
-An environment's notices cover what its current deployment holds that the release tag it
-ran before didn't (or, on its first deployment, the release below it), so an issue fixed
-long before an environment existed isn't told of it.
-
-A stable release that promotes an rc tells every issue that rc fixed, even when the newest
-tag before it is a later rc. Each comment's first line is a hidden marker,
-`<!-- shipmill:available: <stage> <tag> -->`, so a rerun posts nothing, and a "Released in
-<tag>" comment from before the stages counts as told for its tag's stage.
-
-The person who filed the issue answers on the pre-release notice: their 👍 reads as
-REQUESTER_CONFIRMED in the watch, and a reply after it or a 👎 as REQUESTER_REPORT, which a
-watch session hands to triage as a possible regression. Only the issue's author counts, and
-neither row labels, holds, or reopens anything by itself. A stable release that promotes an
-rc names the answers in its plan reason, after the rc it promotes, such as `2 of 3
-requesters confirmed`: the closed issues with a fix the rc holds and the last stable
-release doesn't, and how many of their requesters reacted 👍 to the newest pre-release
-notice. The count is read only once the lane releases, so it never makes a lane due or holds
-one; when GitHub can't give it, the reason says `requesters not counted` and why.
-
-`[notices]` is optional. `pin` and `install` take `{version}`, `{tag}`, and `{name}` (the
-policy's `name`), and a notice shows the command as code. Without `install`, the
-`--install` text the session passes is used, as before; with only `install` set, a
-pre-release notice carries no command. Any other key fails the policy.
+`[notices]` is deprecated (D-69): a config that sets it still loads, nothing reads it, and
+`shipmill doctor` warns until it is deleted. The comments shipmill posted before stay; the
+watch still reports REQUESTER_REPORT when the person who filed an issue replied after such a
+pre-release notice or reacted 👎 to it, and a stable release's plan reason counts no
+requesters.
 
 ## Versions
 

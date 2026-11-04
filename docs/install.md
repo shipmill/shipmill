@@ -305,8 +305,7 @@ by hand from the Release workflow.
 
 ## 3. Choose where the agents run
 
-Releasing needs no agent. Triage, landing, and the shipped notices do, and run wherever
-you start them:
+Releasing needs no agent. Triage and landing do, and run wherever you start them:
 
 | Option | Runs | Stops when |
 |---|---|---|
@@ -325,7 +324,7 @@ so give it the prompt in [flow.md](flow.md#keeping-it-running), which clones shi
 when something needs an agent, no session it started is still working or waiting on you,
 and the findings changed since its last launch. Something needs an agent when
 github-ship-watch's `watch_state.py` marks a row `agent: true`: a failed or stalled release
-bot, a release missing from PyPI or not announced, issues triage owes, a failed operate
+bot, a release missing from PyPI, issues triage owes, a failed operate
 run, or an open incident; open PRs count too unless `[autonomy] land` is `observe`. A
 promotion waiting on you or an unhealthy environment starts nothing. [Agent
 modes](design/agent-modes.md) has the details.
@@ -338,7 +337,7 @@ modes](design/agent-modes.md) has the details.
    prompt = "/shipmill:github-issue-triage {repo} triage the new issues; do not merge"
    retry_hours = 24   # an item a session was handed goes to another after this
    prune_hours = 6    # prune the landed worktrees this often, after the tick's decision; 0: every tick
-   sweep_hours = 6    # read the timed sections (stalled releases, upgrades, plans, notices) this often; 1..168
+   sweep_hours = 6    # read the timed sections (stalled releases, upgrades, plans) this often; 1..168
    catch_up = true    # each tick fast-forwards your checkout's default branch when that can't lose work
    notify = true      # a desktop notification when a session waits on you
    remind_hours = 4   # repeat it while the session still waits

@@ -200,7 +200,7 @@ def test_s002_15_a_tick_with_nothing_landed_prunes_nothing(repo: Checkout) -> No
     assert (repo.root / DONE).is_dir() and open_.is_dir()
     assert tick_record(decision, launched, waiting, pruned, dry_run=False)["pruned"] == []
     assert tick_lines(decision, launched, waiting, pruned, dry_run=False) == [
-        "QUIET: nothing needs an agent; read tiers 1-8"
+        "QUIET: nothing needs an agent; read tiers 1-7"
     ]
 
 

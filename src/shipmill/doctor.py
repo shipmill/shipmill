@@ -256,6 +256,7 @@ def doctor(
     for refusal in policy.refused:  # S-052-8: a FAIL each, after which every other check still runs
         add(False, REFUSED, refusal.message)
     checks.extend(deprecation_checks(policy, "roadmap"))
+    checks.extend(deprecation_checks(policy, "notices"))  # D-69
     raw = read_config(found)
     if policy.agents is not None:
         checks.append(direction_check(root))
