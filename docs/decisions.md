@@ -345,6 +345,7 @@ entry that supersedes it, never by editing an old one.
 - Why: Read literally, S-021-4 would tell every closed issue the project ever fixed on the first deployment to a new environment, flooding old threads; the maintainer (@romamo, on #434) chose the range, whose cost is that fixes released before an environment's first deployment are never told for it. An environment named like a notice stage would read as told by the release notices, so the name is refused
 - Applies to: skills/github-pr-triage/scripts/shipped.py, skills/github-ship-watch/scripts/watch_state.py, docs/specs/021-requester-ring.md
 - Enforced by: tests/test_shipped.py and tests/test_ship_watch.py (S-021-4)
+- Superseded by: D-69
 
 ## D-42: A client repo's own docs are the maintainer's
 
@@ -573,3 +574,12 @@ entry that supersedes it, never by editing an old one.
 - Why: In a repo with [agents] app_id the hook refuses every plain gh write from a session, so a maintainer who said accept in the chat for three G-2 plans had to post accept on each plan by hand (shipmill/shipmill#917). The maintainer chose option 1 on #917: carry the answer the same way the needs-decision relay and D-49 already do, at the cost of trusting the session to relay the chat faithfully; an undo stays by hand (decline, or edit the plan)
 - Applies to: skills/product-intake/scripts/intake_state.py, skills/product-intake/SKILL.md, docs/specs/028-plan-from-goals.md, goal plans, Decision by
 - Enforced by: review, until the implementing PR for #917 adds its S-028 test
+
+## D-69: shipmill reports which issues a release fixed and never comments on them
+
+- Decided: 2026-11-04, in shipmill/shipmill#921
+- Rule: shipmill posts no notice on a fixed issue: no pre-release or stable release notice and no deployment notice (S-021-1 to S-021-4). shipped.py keeps reading which closed issues a release or a deployment fixed and gives it as machine output, so a layer outside the core can connect a request to its release and tell the person who asked, by whatever channel that layer chooses. The watch reports no UNANNOUNCED or REQUESTER_CONFIRMED, and a stable promotion's reason counts no confirmed requesters (S-021-8). [notices] is deprecated by D-63 and D-64. The person who filed an issue keeps GitHub's own channels: the issue's subscription, which tells its close and the fixing pull request, Watch → Releases, a dependency bot for the package, and the release notes
+- Why: On 2026-11-03 a stable promotion after 47 release candidates commented on 185 closed issues of one repo within six minutes, as spec 021 says it should, and each of them had already heard of its pre-release; all 216 closed issues there were filed by the maintainer or a bot, so no one learned anything. A notice repeats what a subscriber already gets, and the person who asked is often not the issue's author (an issue an agent filed for a user), so no filter on the author finds them. Connecting a request to its release and telling its requester is an outer layer's work, on the facts the core reports. G-3 and U-3 in docs/product.md change with this decision
+- Applies to: skills/github-pr-triage/scripts/shipped.py, skills/github-ship-watch/scripts/watch_state.py, skills/github-ship-watch/scripts/fleet.py, skills/github-ship-watch/scripts/metrics.py, src/shipmill/requesters.py, src/shipmill/policy.py, docs/specs/021-requester-ring.md, docs/product.md, [notices], shipped notices
+- Enforced by: review, until the implementing PR for #921 changes tests/test_shipped.py and tests/test_ship_watch.py
+- Supersedes: D-41
