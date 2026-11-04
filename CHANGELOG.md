@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.116.0] - 2026-11-04
+
+### Deprecated
+
+- `[notices]` in `.github/shipmill.toml`: a config that sets it still loads, nothing reads it, and `shipmill doctor` warns naming D-69 and spec 021 until it is deleted (#921)
+
+### Removed
+
+- shipmill posts no notice on a fixed issue (D-69): `shipped.py` drops `--post`, `--install`, and the deployment notice, and reports which closed issues a release or a deployment fixed, with `--json` printing one object per issue (`number`, `tag`, `stage`, `source`); the watch reports no UNANNOUNCED or REQUESTER_CONFIRMED, the gate walks seven tiers without the notices tier, a stable promotion's plan reason counts no confirmed requesters, and metrics' issue to release runs from the issue to the stable release that shipped the pull request closing it; comments already posted stay (#921)
+
 ## [0.115.0] - 2026-11-03
 
 ### Changed
@@ -2226,7 +2236,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.115.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.116.0...HEAD
+[0.116.0]: https://github.com/shipmill/shipmill/compare/v0.115.0...v0.116.0
 [0.115.0]: https://github.com/shipmill/shipmill/compare/v0.114.0...v0.115.0
 [0.114.0]: https://github.com/shipmill/shipmill/compare/v0.113.0...v0.114.0
 [0.113.0]: https://github.com/shipmill/shipmill/compare/v0.112.0...v0.113.0
