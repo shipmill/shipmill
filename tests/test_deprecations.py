@@ -21,6 +21,7 @@ RELIES = {
     "agents-prs": ("", "prs = true\n", ""),
     "agents-prompt-land": (" merge when green", "", ""),
     "roadmap": ("", "", "\n[roadmap]\nwip = 3\n"),
+    "notices": ("", "", "\n[notices]\ninstall = 'uv add demo'\n"),  # D-69 (#921)
     "agents-credit": ("", 'credit = "off"\n', ""),
 }
 
@@ -54,6 +55,12 @@ def test_s047_11_the_catalogue_holds_each_deprecation_with_its_replacement_and_u
             autonomy,
         ),
         "roadmap": ("[roadmap]", Version.parse("0.50.0"), "[agents] wip", UpgradeId("drop-roadmap")),
+        "notices": (
+            "[notices]",
+            Version.parse("0.116.0"),
+            "shipped.py --json, read by a layer outside shipmill's core",
+            None,
+        ),
         "agents-credit": ("[agents] credit", Version.parse("0.102.0"), "[agents] author", None),
     }
     for deprecation in CATALOGUE:  # each migrating upgrade is one the upgrades catalogue offers

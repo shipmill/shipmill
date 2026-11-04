@@ -87,6 +87,15 @@ def _roadmap(policy: Policy) -> str | None:
     )
 
 
+def _notices(policy: Policy) -> str | None:
+    if policy.notices is None:
+        return None
+    return (
+        "[notices] is deprecated (D-69, spec 021) and read by nothing: shipmill posts no notice on a fixed"
+        " issue, and github-pr-triage's shipped.py --json reports which issues a release fixed; delete [notices]"
+    )
+
+
 def _credit(policy: Policy) -> str | None:
     agents = policy.agents
     if agents is None or agents.credit is None:
@@ -133,6 +142,15 @@ CATALOGUE: tuple[Deprecation, ...] = (
         upgrade=DROP_ROADMAP,
         row="roadmap",
         warn=_roadmap,
+    ),
+    Deprecation(
+        id=DeprecationId("notices"),
+        subject="[notices]",
+        since=Version.parse("0.116.0"),  # #921, D-69
+        replacement="shipped.py --json, read by a layer outside shipmill's core",
+        upgrade=None,
+        row="notices",
+        warn=_notices,
     ),
     Deprecation(
         id=DeprecationId("agents-credit"),

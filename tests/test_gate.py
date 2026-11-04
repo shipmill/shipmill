@@ -208,7 +208,7 @@ def test_rows_watch_state_leaves_to_people_or_operate_launch_nothing() -> None:
 
 
 def test_the_fingerprint_ignores_order() -> None:
-    other = Finding("UNANNOUNCED", "v1.2.0", "#4 (since v1.1.0)", True)
+    other = Finding("NOT_PUBLISHED", "v1.2.0", "demo 1.2.0 missing from PyPI", True)
     assert fingerprint([ISSUES, other]) == fingerprint([other, ISSUES])
 
 
@@ -293,7 +293,6 @@ def test_the_gate_reads_the_rows_watch_state_prints() -> None:
         "BOT_STALLED",
         "WORK_BRANCH_STALE",
         "NOT_PUBLISHED",
-        "UNANNOUNCED",
         "ISSUES",
         "PLANS",  # S-028-13: a goal's plan starts a session as ISSUES does
         "OPERATE_FAILED",
@@ -332,17 +331,17 @@ def test_s011_20_quiet_names_the_pull_requests_no_gate_lands() -> None:
     prs = [Finding("PRS_OPEN", "romamo/demo", "#3 #5", False)]
     decision = decide([Finding("BOT_OK", "release.yml", "", False), *prs], [], None, NOW, DAY, OBSERVE)
     landing = "2 pull request(s) wait to land, landing off ([autonomy] land = observe)"
-    expected = f"QUIET: nothing needs an agent; {landing}; read tiers 1-8"
+    expected = f"QUIET: nothing needs an agent; {landing}; read tiers 1-7"
     assert tick_lines(decision, None, (), (), dry_run=False) == [expected]
     assert decision.reason == expected.removeprefix("QUIET: ")
     single = decide([OPEN_PRS], [], None, NOW, DAY, OBSERVE).reason
-    assert single == f"nothing needs an agent; {landing.replace('2 pull', '1 pull')}; read tiers 1-8"
+    assert single == f"nothing needs an agent; {landing.replace('2 pull', '1 pull')}; read tiers 1-7"
 
 
 def test_s011_20_quiet_with_no_pull_request_waiting_reads_as_before() -> None:
     decision = decide([Finding("BOT_OK", "release.yml", "", False), *REPORT_ONLY], [], None, NOW, DAY, OBSERVE)
-    assert tick_lines(decision, None, (), (), dry_run=False) == ["QUIET: nothing needs an agent; read tiers 1-8"]
-    assert decide(REPORT_ONLY, [], None, NOW, DAY, ACT).reason == "nothing needs an agent; read tiers 1-8"
+    assert tick_lines(decision, None, (), (), dry_run=False) == ["QUIET: nothing needs an agent; read tiers 1-7"]
+    assert decide(REPORT_ONLY, [], None, NOW, DAY, ACT).reason == "nothing needs an agent; read tiers 1-7"
 
 
 def test_an_unreadable_open_prs_row_is_refused_not_counted() -> None:

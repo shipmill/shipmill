@@ -74,11 +74,11 @@ TIERS: dict[int, tuple[str, ...]] = {
         )
     ),
     7: ("DIRECTION_PENDING", "PLANS"),
-    8: ("UNANNOUNCED",),
 }
 UNPLACED = 6  # the tier of a kind no tier names
-READ = (1, 2, 3, 4, 6)  # the tiers a walk reads from GitHub; 5, 7, and 8 come from the sweep
-SWEPT = frozenset({"BOT_STALLED", "UPGRADE_PENDING", "UPSTREAM_DUE", "DIRECTION_PENDING", "PLANS", "UNANNOUNCED"})
+READ = (1, 2, 3, 4, 6)  # the tiers a walk reads from GitHub; 5 and 7 come from the sweep
+# the timed sections; D-69 (#921) retired UNANNOUNCED, so a sweep.json row of it is never an item
+SWEPT = frozenset({"BOT_STALLED", "UPGRADE_PENDING", "UPSTREAM_DUE", "DIRECTION_PENDING", "PLANS"})
 DECISION_LABEL = "needs-decision"  # github-issue-triage's needs-decision.md
 WAITING_TIER = 4  # the tier whose read holds the items waiting on a decision
 
@@ -176,9 +176,10 @@ class Cursor:
 
 @dataclass(frozen=True, slots=True)
 class Swept:
-    """sweep.json: when the last sweep started, its rows, the release tag its UNANNOUNCED
-    covers, which a new tag's own check moves (S-046-9), and what its config-upgrade proposal
-    did (spec 047), None when it ran none; a file written before spec 047 has no upgrades"""
+    """sweep.json: when the last sweep started, its rows, the newest release tag the change
+    check read then (kept for the file's form; D-69 retired the UNANNOUNCED it once covered),
+    and what its config-upgrade proposal did (spec 047), None when it ran none; a file written
+    before spec 047 has no upgrades"""
 
     at: dt.datetime
     rows: tuple[Finding, ...]
@@ -717,7 +718,8 @@ def walk(
 ) -> Walked:
     """Read the tiers in order and stop at the first item not handed within retry: tiers 1, 3,
     4, and 6 from their own read, tier 2 from its read and the sweep's BOT_STALLED, 5 and 7
-    from the sweep, and 8 from the sweep, after a new tag's own UNANNOUNCED check (S-046-9).
+    from the sweep; a sweep row of a kind no longer swept (an UNANNOUNCED written before D-69)
+    is never an item.
     An item is a row that needs an agent, but a land-stage one (PRS_OPEN, and AGENT_DRAFT, whose
     session marks a draft ready, #914) only when land isn't observe"""
     read: list[int] = []
@@ -729,11 +731,7 @@ def walk(
         if number in READ:
             own = source.tier(number, changes)
             found += own
-        if number == 8 and changes.tag is not None and changes.tag != swept.tag:
-            fresh = [r for r in source.tier(8, changes) if r.state == "UNANNOUNCED"]
-            kept = [r for r in swept.rows if not (r.state == "UNANNOUNCED" and r.subject == changes.tag)]
-            swept = replace(swept, rows=(*kept, *fresh), tag=changes.tag)
-        found += [r for r in swept.rows if tier_of(r) == number]
+        found += [r for r in swept.rows if r.state in SWEPT and tier_of(r) == number]
         read.append(number)
         rows += found
         # A tier's read may name an earlier tier's kind (tier 6's DECIDED, relayed with the label

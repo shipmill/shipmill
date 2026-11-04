@@ -32,8 +32,10 @@ before it):
                      first "<env> is healthy again on" comment shipmill operate posts, or to
                      closed, whichever is first (median); ones still open at the window's
                      end are counted aside
-  Issue to release   issues whose first "Released in <tag>" notice (github-pr-triage's
-                     shipped.py) was posted in the window: opened to that notice (median, p90)
+  Issue to release   for each issue a merged PR closes (GitHub's closing links) whose
+                     merge commit a stable release published in the window first shipped, as
+                     Lead time reads it: the issue's opening to that release (median, p90).
+                     It reads no comment: shipmill posts no notice on a fixed issue (D-69)
   Human touch        PRs merged in the window that a person merged or approved / all merged
                      PRs. A person is a GitHub User whose login doesn't end in "[bot]" and
                      isn't a --bot; apps (github-actions, dependabot, mergify) are Bots. An
@@ -66,8 +68,6 @@ from dataclasses import dataclass, field
 from typing import Any, NoReturn
 
 STABLE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
-# shipped.py's notice: f"Released in {tag}", after its marker line since spec 021
-NOTICE = re.compile(r"^(?:<!-- shipmill:available: \S+ \S+ -->\r?\n)?Released in \S+")
 HEALTHY = re.compile(r"^\S+ is healthy again on ")  # shipmill operate's comment on an incident
 PAGE_INFO = "pageInfo { hasNextPage endCursor }"
 
@@ -128,6 +128,7 @@ query($owner: String!, $name: String!, $size: Int!, $cursor: String) {
         number updatedAt mergedAt body
         mergeCommit { oid }
         mergedBy { __typename login }
+        closingIssuesReferences(first: 20) { nodes { url createdAt } }
         commits(first: 100) { """
     + PAGE_INFO
     + """ nodes { commit { authoredDate message } } }
@@ -192,33 +193,6 @@ query($owner: String!, $name: String!, $size: Int!, $cursor: String, $number: In
 }
 """
 )
-NOTICES = (
-    """
-query($owner: String!, $name: String!, $size: Int!, $cursor: String, $since: DateTime!) {
-  repository(owner: $owner, name: $name) {
-    issues(first: $size, after: $cursor, filterBy: {since: $since}, orderBy: {field: UPDATED_AT, direction: DESC}) {
-      """
-    + PAGE_INFO
-    + """
-      nodes {
-        number createdAt
-        comments(last: 30) { pageInfo { hasPreviousPage startCursor } nodes { body createdAt } }
-      }
-    }
-  }
-}
-"""
-)
-NOTICE_COMMENTS = """
-query($owner: String!, $name: String!, $size: Int!, $cursor: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    issue(number: $number) {
-      comments(last: $size, before: $cursor) { pageInfo { hasPreviousPage startCursor } nodes { body createdAt } }
-    }
-  }
-}
-"""
-
 # Each query's first page size. Issues and pull requests carry nested connections, so they
 # start smaller; a rejected page halves (see sized), and the smaller size sticks
 SIZES = {
@@ -229,8 +203,6 @@ SIZES = {
     DEPLOYMENTS: 100,
     LABELLED: 50,
     LABELLED_COMMENTS: 100,
-    NOTICES: 50,
-    NOTICE_COMMENTS: 100,
 }
 MIN_PAGE = 10
 RESOURCE_LIMITS = "RESOURCE_LIMITS_EXCEEDED"
@@ -391,7 +363,6 @@ class Data:
     deployments: list[Node]  # created in the window, in the chosen environments
     incidents: list[Node]
     blockers: list[Node]
-    notices: list[Node]
     bots: frozenset[str] = field(default_factory=frozenset)
 
 
@@ -477,8 +448,7 @@ def fetch(
 
     incidents = labelled(run, base, sizes, incident, since)
     blockers = labelled(run, base, sizes, blocker, since)
-    notices = notice_issues(run, base, sizes, since, window)
-    return Data(releases, shipped, hotfixes, pulls, deployed, in_window, incidents, blockers, notices)
+    return Data(releases, shipped, hotfixes, pulls, deployed, in_window, incidents, blockers)
 
 
 def pull_commits(run: Runner, base: Variables, sizes: Sizes, pr: Node) -> None:
@@ -523,34 +493,6 @@ def labelled(run: Runner, base: Variables, sizes: Sizes, label: str, since: str)
             comments["nodes"] = comments["nodes"] + page["nodes"]
             comments["pageInfo"] = page["pageInfo"]
     return issues
-
-
-def notice_issues(run: Runner, base: Variables, sizes: Sizes, since: str, window: Window) -> list[Node]:
-    """Issues updated since, each with its newest comments paged back far enough to hold
-    its first "Released in" notice when that one may be in the window"""
-    issues = pages(run, NOTICES, {**base, "since": since}, sizes, ["issues"], "issues updated in the window")
-    for issue in issues:
-        comments = issue["comments"]
-        seen: set[str] = set()
-        while comments["pageInfo"]["hasPreviousPage"] and comments["nodes"] and not _first_notice_known(issue, window):
-            cursor = advance(comments["pageInfo"]["startCursor"], seen, f"comments on #{issue['number']}")
-            variables: Variables = {**base, "number": issue["number"], "cursor": cursor}
-            what = f"the comments of #{issue['number']}"
-            page = dig(sized(run, NOTICE_COMMENTS, variables, sizes, what), ["issue", "comments"], what)
-            comments["nodes"] = page["nodes"] + comments["nodes"]
-            comments["pageInfo"] = page["pageInfo"]
-    return issues
-
-
-def _first_notice_known(issue: Node, window: Window) -> bool:
-    """Whether the comments fetched so far settle the issue's first notice for the window:
-    one before the window means the first was too (an in-window notice is a later one);
-    with none fetched, every comment back past the window's start holds none"""
-    nodes = issue["comments"]["nodes"]
-    notices = [timestamp(c["createdAt"]) for c in nodes if NOTICE.match(c["body"])]
-    if notices:
-        return min(notices) < window.start
-    return timestamp(nodes[0]["createdAt"]) < window.start
 
 
 # -- the measures ------------------------------------------------------------------------------
@@ -622,17 +564,23 @@ def deploy_frequency(data: Data, window: Window) -> Measure:
     return Measure(name, rate, f"{rate:.1f}/week ({len(releases)} releases)", detail, "per week", extra)
 
 
-def lead_time(data: Data, window: Window) -> Measure:
-    first_shipped: dict[str, Release] = {}
+def first_shipped(data: Data, window: Window) -> dict[str, Release]:
+    """Each commit an in-window stable release first shipped, to that release"""
+    found: dict[str, Release] = {}
     for release in sorted(in_window_releases(data, window), key=lambda r: r.published, reverse=True):
         for oid in data.shipped.get(release.tag, ()):
-            first_shipped[oid] = release  # oldest release wins: the loop runs newest first
+            found[oid] = release  # oldest release wins: the loop runs newest first
+    return found
+
+
+def lead_time(data: Data, window: Window) -> Measure:
+    first_shipped_by = first_shipped(data, window)
     values = []
     for pr in data.pulls:
         merge = (pr.get("mergeCommit") or {}).get("oid")
         commits = pr["commits"]["nodes"]
-        if merge in first_shipped and commits:
-            values.append(hours(timestamp(commits[0]["commit"]["authoredDate"]), first_shipped[merge].published))
+        if merge in first_shipped_by and commits:
+            values.append(hours(timestamp(commits[0]["commit"]["authoredDate"]), first_shipped_by[merge].published))
     shipped = sum(1 for r in in_window_releases(data, window) if r.tag in data.shipped)
     detail = f"{len(values)} PRs in {shipped} releases"
     return durations("Lead time for changes", values, detail, "no merged PR shipped by a stable release in the window")
@@ -686,13 +634,24 @@ def time_to_restore(data: Data, window: Window) -> Measure:
 
 
 def issue_to_release(data: Data, window: Window) -> Measure:
-    values = []
-    for issue in data.notices:
-        notices = [timestamp(c["createdAt"]) for c in issue["comments"]["nodes"] if NOTICE.match(c["body"])]
-        if notices and min(notices) in window:
-            values.append(hours(timestamp(issue["createdAt"]), min(notices)))
-    detail = f'{len(values)} issues told "Released in"'
-    return durations("Issue to release", values, detail, 'no "Released in" notice posted in the window')
+    """Each issue a merged PR closes, from its opening to the in-window stable release that
+    first shipped the PR's merge commit: the earliest, when several PRs close it (D-69: read
+    from the release and the close, never from a notice)"""
+    first_shipped_by = first_shipped(data, window)
+    released: dict[str, tuple[dt.datetime, dt.datetime]] = {}  # an issue's url: (opened, released)
+    for pr in data.pulls:
+        release = first_shipped_by.get((pr.get("mergeCommit") or {}).get("oid") or "")
+        if release is None:
+            continue
+        for issue in (pr.get("closingIssuesReferences") or {}).get("nodes") or []:
+            opened = timestamp(issue["createdAt"])
+            if issue["url"] not in released or release.published < released[issue["url"]][1]:
+                released[issue["url"]] = (opened, release.published)
+    values = [hours(opened, at) for opened, at in released.values()]
+    detail = f"{len(values)} issues closed by a PR a stable release shipped"
+    return durations(
+        "Issue to release", values, detail, "no issue closed by a PR a stable release shipped in the window"
+    )
 
 
 def person(actor: Node | None, bots: frozenset[str]) -> bool:

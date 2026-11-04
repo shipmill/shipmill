@@ -616,13 +616,11 @@ def test_s009_17_the_repo_line_names_the_version_and_the_release_problem() -> No
         Row("BOT_STALLED", "nightly", "due and not running: 02:00", True),
         Row("WORK_BRANCH_STALE", "stable", "at abc, and no run", True),
         Row("NOT_PUBLISHED", "v0.26.0", "x 0.26.0 missing from PyPI", True),
-        Row("UNANNOUNCED", "v0.25.0", "#4 (since v0.24.0)", True),
         Row("BOT_OK", "rc", "", False),
         Row("PUBLISHED", "v0.24.0", "on PyPI", False),
     )
     assert lines(facts(*rows))[1] == (
-        "  repo           in sync at v0.26.0, BOT_STALLED nightly; WORK_BRANCH_STALE stable; "
-        "NOT_PUBLISHED v0.26.0; UNANNOUNCED v0.25.0"
+        "  repo           in sync at v0.26.0, BOT_STALLED nightly; WORK_BRANCH_STALE stable; NOT_PUBLISHED v0.26.0"
     )
 
 

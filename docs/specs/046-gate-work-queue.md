@@ -89,7 +89,7 @@ check already holds costs no further read.
 | 5 | UPGRADE_PENDING, UPSTREAM_DUE | from the last sweep |
 | 6 | triage's other action states (`NEW`, `UNBLOCKED`, `NEEDS_PR`, and the rest) | the triage read of the open issues (`triage_state.py`) |
 | 7 | DIRECTION_PENDING, PLANS | from the last sweep |
-| 8 | UNANNOUNCED | from the last sweep, or a new release tag's check |
+| 8 | UNANNOUNCED | from the last sweep, or a new release tag's check; retired by D-69 (#921) |
 
 The gate reads a tier with `watch_state.py --json --tier <n>`, a new flag that runs only that
 tier's sections and prints only their rows, given the change check's data so it reads none of
@@ -112,6 +112,11 @@ or not. A sweep runs `watch_state.py --json --sweep` and stores its rows in `swe
 (`{"at": <when it started>, "rows": [...]}`); tiers 2, 5, 7, and 8 read those rows until the
 next sweep. A new release tag in the change check runs UNANNOUNCED for that tag alone and puts
 its row in `sweep.json`, beside the sweep's.
+
+D-69 (#921) retired tier 8 and UNANNOUNCED: shipmill posts no notice on a fixed issue, so a
+sweep reads BOT_STALLED, UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING, and PLANS, a new
+release tag runs no check of its own (it is still a change), and an UNANNOUNCED row a sweep
+stored before the upgrade is never an item.
 
 A new `[agents]` key, `sweep_hours` (`src/shipmill/agents.py`), an integer from 1 to 168,
 defaults to 6.
@@ -195,8 +200,9 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
 - S-046-8: a tick sweeps when `sweep.json` records none or one `sweep_hours` or more ago, with
   or without a change; tiers 2, 5, 7, and 8 read the sweep's stored rows between sweeps
   - Amended by spec 047: a sweep first proposes the config upgrades as the App, so its UPGRADE_PENDING rows see the issue it opened, and `sweep.json` keeps what the proposal did in `upgrades` (S-047-1, S-047-9)
-- S-046-9: a new release tag in the change check runs UNANNOUNCED for that tag alone and stores
-  its row with the sweep's
+  - Amended by D-69 (#921): there is no tier 8; tiers 2, 5, and 7 read the sweep's stored rows
+- S-046-9: dropped in #921, see D-69: a new release tag in the change check runs UNANNOUNCED for
+  that tag alone and stores its row with the sweep's
 - S-046-10: `[agents] sweep_hours` defaults to 6 and the config refuses a value that is not an
   integer from 1 to 168
 - S-046-11: the cursor written is the walk's start minus 5 minutes; a failed read writes no
@@ -246,6 +252,7 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
 - D-58: a gate tick checks for change before it reads the state, then walks the work tiers in
   order and hands a session the first item no session has taken; the change check reads each
   watched workflow's runs on its own (#762, superseding D-57)
+- D-69: shipmill posts no notice on a fixed issue, which retired tier 8 and UNANNOUNCED (#921)
 
 ## Issues
 
@@ -264,8 +271,8 @@ Checked on the default branch plus #756's change, by the tests named, all passin
 - S-046-5: `test_s046_5_an_untaken_item_in_tier_3_reads_no_triage_and_no_notices`
 - S-046-6: `test_s046_6_tiers_1_and_3_get_the_change_checks_data`
 - S-046-7: `test_s046_7_tier_1_prints_its_rows_alone`, `test_s046_7_tier_3_prints_open_and_waiting_pull_requests_alone`, `test_s046_7_the_rows_a_tier_prints_read_as_the_gates_findings`, `test_s046_7_no_tier_prints_a_host_or_report_only_row`, `test_s046_7_a_tier_or_sweep_read_refuses_the_host_flags`
-- S-046-8: `test_s046_8_a_sweep_runs_when_due_and_its_rows_serve_tiers_2_5_7_and_8`
-- S-046-9: `test_s046_9_a_new_tag_checks_its_notices_alone_and_stores_them`
+- S-046-8: `test_s046_8_a_sweep_runs_when_due_and_its_rows_serve_tiers_2_5_and_7` (tier 8 since D-69: `test_d69_an_unannounced_row_a_sweep_stored_before_d69_is_never_an_item`)
+- S-046-9: dropped in #921
 - S-046-10: `test_s046_10_sweep_hours_defaults_to_6_and_is_refused_outside_1_to_168`
 - S-046-11: `test_s046_11_the_cursor_is_the_walks_start_less_5_minutes`, `test_s046_11_a_failed_read_writes_no_cursor_or_sweep`, `test_s046_11_a_failed_tier_4_read_for_notifications_writes_no_sweep`
 - S-046-12: `test_s046_12_tiers_4_and_6_hold_one_item_per_triage_state`, `test_s046_12_subjects_order_by_number`, `test_s046_12_the_issues_row_splits_by_triage_state`

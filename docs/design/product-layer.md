@@ -44,7 +44,7 @@ layer grows on purpose rather than issue by issue.
 | Decision | A `needs-decision` marker comment and label on any item | Any agent session | A trusted person replies; the next session removes the label |
 | Human item | (missing) An item only a person can do: a deploy, a credential, a payment, a vote | Today: by hand, assigned to the person | Today: the person closes it, if they remember |
 | Milestone | A forge milestone named after the version it releases | The maintainer, by hand (D-32) | Its last issue closes |
-| Release | A tag and a CHANGELOG section cut on a lane | The release workflow, by policy | Published; fixed issues told by shipped notices |
+| Release | A tag and a CHANGELOG section cut on a lane | The release workflow, by policy | Published; `shipped.py` reports the issues it fixed, and posts nothing on them (D-69) |
 
 The feature issue is already an epic in all but name: it has sub-issues, `Depends on` lines on
 each build item, and closes with the last one. What it lacks is a life outside the spec gate
@@ -62,7 +62,7 @@ collaborators, D-16), and **shipmill's code** (the release planner and the gate)
 | Spec | The feature reads BLOCKED on its spec PR, then UNBLOCKED or SPEC_REFUSED (`triage_state.py`); the spec's status line (`specs.py check`) | Writes the spec, opens its PR, splits it | Merges the spec PR, or approves it with an answer that takes every recommendation, which github-pr-triage then lands (D-49); or closes it | `specs.py check` and `coverage` in CI |
 | Build | NEEDS_PR, IN_PROGRESS, BLOCKED, UNFILLED, UNBLOCKED, DONE_NOT_CLOSED (`triage_state.py`) | Implements, reviews, lands within `[agents] wip` | Nothing, unless asked | Merges on green under the repo's autonomy |
 | Decisions | NEEDS_DECISION, then DECIDED (`triage_state.py`, `watch_state.py`) | Asks, then takes up the answer | Answers | The gate starts no session while it waits |
-| Release | A lane is due when a trigger fires and no gate holds it; `milestone = true` fires when the version's milestone has closed issues and none open (`planner.py`) | Watches, reruns, tells reporters | Holds or starts a lane by hand | Cuts the release |
+| Release | A lane is due when a trigger fires and no gate holds it; `milestone = true` fires when the version's milestone has closed issues and none open (`planner.py`) | Watches, reruns | Holds or starts a lane by hand | Cuts the release |
 
 Read end to end, the path is:
 
@@ -70,7 +70,7 @@ Read end to end, the path is:
 request ──intake──▶ opportunity ──maintainer: planned──▶ feature ──triage──▶ spec PR
    ──maintainer: merge──▶ build items (Depends on, sub-issues) ──agents──▶ merged PRs
    ──maintainer: lists──▶ milestone "X.Y.0"
-   ──last issue closes──▶ lane due ──planner──▶ release X.Y.0 ──ship-watch──▶ shipped notices
+   ──last issue closes──▶ lane due ──planner──▶ release X.Y.0 ──ship-watch──▶ published
 ```
 
 ## How it is used today

@@ -108,7 +108,7 @@ YOURS_ROWS = (
     *CHAIN_ROWS,
 )
 RELEASE_ROWS = ("BOT_OK", "BOT_NONE", "BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE")
-TAG_ROWS = ("PUBLISHED", "PUBLISHING", "NOT_PUBLISHED", "PREDATES_PUBLISH", "NO_REGISTRY", "UNANNOUNCED")
+TAG_ROWS = ("PUBLISHED", "PUBLISHING", "NOT_PUBLISHED", "PREDATES_PUBLISH", "NO_REGISTRY")
 # rows whose facts the summary shows in their own words; any other goes under "other" (S-009-13)
 PLACED = {
     *STUCK_ROWS,
@@ -134,7 +134,7 @@ PLACED = {
     MILESTONE_WAITING,  # spec 022: the milestone lines say both
 }
 # the release rows the repo line names in place of "release ok" (S-009-17)
-RELEASE_PROBLEMS = ("BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE", "NOT_PUBLISHED", "UNANNOUNCED")
+RELEASE_PROBLEMS = ("BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE", "NOT_PUBLISHED")
 
 # triage_state.py's issue states by the line they're listed on (S-009-18)
 ISSUE_LINES = (

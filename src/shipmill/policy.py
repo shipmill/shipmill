@@ -128,8 +128,9 @@ class LaneRule:
 
 @dataclass(frozen=True, slots=True)
 class NoticesConfig:
-    """[notices]: the commands the notices on fixed issues carry (spec 021), read by
-    github-pr-triage's shipped.py; each takes {version}, {tag}, and {name}"""
+    """[notices]: the commands the notices on fixed issues carried (spec 021), each taking
+    {version}, {tag}, and {name}. Deprecated by D-69 (#921): shipmill posts no notice, so the
+    section is validated as before and read by nothing (D-63), and doctor warns"""
 
     pin: str | None = None  # the pre-release notice's command
     install: str | None = None  # the stable notice's command
@@ -195,7 +196,7 @@ class Policy:
     autonomy: AutonomyPolicy = AutonomyPolicy()
     agents: AgentsConfig | None = None  # the gate's [agents] section; validated here, read by the gate
     roadmap: RoadmapConfig | None = None  # the deprecated [roadmap] section (D-32): validated, read by nothing
-    notices: NoticesConfig = NoticesConfig()  # [notices]: validated here, read by shipped.py (spec 021)
+    notices: NoticesConfig | None = None  # the deprecated [notices] section (D-69): validated, read by nothing
     hooks: HooksConfig = HooksConfig()  # [hooks]: validated here, read by the plugin's hook (spec 026)
     downstream: DownstreamConfig | None = None  # [downstream]: the repos tested on a pull request (spec 032)
     product: ProductConfig | None = None  # [product]: the product's home or components (spec 038, D-47)
@@ -332,7 +333,7 @@ class Policy:
             autonomy = agents.autonomy
         product = ProductConfig.read(top, None if agents is None else agents.app_id)
         roadmap = RoadmapConfig.parse(top.table("roadmap")) if "roadmap" in raw else None
-        notices = NoticesConfig.parse(top.table("notices", optional=True))
+        notices = NoticesConfig.parse(top.table("notices")) if "notices" in raw else None
         hooks = HooksConfig.parse(top.table("hooks", optional=True))
         downstream = DownstreamConfig.parse(top.table("downstream")) if "downstream" in raw else None
         decisions = DecisionPolicy.parse(top.table("decisions", optional=True))

@@ -431,8 +431,8 @@ or the tags are wrong; fix those, not the version.
    verdict is `IDLE` or `WORKING`. Use the plain report: `status --json` passes
    github-ship-watch's rows through and has no verdict
 4. Ask the user to switch `mode = "release"` once the dry run looks right
-5. Ask where the agents will run: releasing needs none of them, but triage, landing, and
-   the shipped notices do. Recommend on demand to start, and offer the other two:
+5. Ask where the agents will run: releasing needs none of them, but triage and landing
+   do. Recommend on demand to start, and offer the other two:
 
    | Option | Runs | Stops when |
    |---|---|---|
@@ -465,12 +465,12 @@ against the cursor of its last walk (`cursor.json` in the state directory). With
 last session ended dead, it walks the work tiers in order and stops at the first item no
 session was handed within `retry_hours` (`handed.json`): 1 production (INCIDENT_OPEN,
 OPERATE_FAILED), 2 the release lane, 3 open PRs to land, 4 vetoes and decided items, 5
-upgrades and upstream reports, 6 the other issues triage owes, one item per triage state, 7
-direction and plans, 8 notices. It reads a tier only when every tier above it is empty or
+upgrades and upstream reports, 6 the other issues triage owes, one item per triage state, and 7
+direction and plans (D-69 retired tier 8, notices). It reads a tier only when every tier above it is empty or
 handed, and hands the session that one item, with its tier and its fix line, so a stuck
 item never holds back the next. The timed sections (BOT_STALLED, UPGRADE_PENDING,
-UPSTREAM_DUE, DIRECTION_PENDING, PLANS, UNANNOUNCED) come from a sweep every
-`[agents] sweep_hours` (default 6, `sweep.json`), and a new release tag checks its own notices. The
+UPSTREAM_DUE, DIRECTION_PENDING, PLANS) come from a sweep every
+`[agents] sweep_hours` (default 6, `sweep.json`). The
 decision line says how far the walk went (`read tiers 1-3`), and `--json` adds `walk` and
 `item`. `--walk` walks and `--sweep` sweeps whether or not they are due, for a run by hand;
 `--dry-run` writes none of these files. `shipmill status` still reads the full report.

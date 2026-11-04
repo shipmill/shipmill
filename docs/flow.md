@@ -22,7 +22,7 @@ Start each one with its slash command or with plain wording. The words you use s
 
 - **"triage"** runs github-issue-triage: verdicts, comments and labels, and a PR for each "implement"
 - **"merge when green"** hands the PRs to github-pr-triage, which merges each one only when every CI job passes
-- **"tag X"** adds the release: readiness check, tag, registry check, and the "Released in" notices on fixed issues
+- **"tag X"** adds the release: readiness check, tag, and registry check; shipmill posts no notice on the fixed issues (D-69)
 
 Plain wording works the same, and the repo can be left out inside its checkout: "triage the new issues, merge when green, then tag 2.4.0".
 
@@ -40,8 +40,8 @@ Plain wording works the same, and the repo can be left out inside its checkout: 
 | Triage one issue only | "triage #57, don't fix" | The verdict comment |
 | Review PRs | `/shipmill:github-pr-triage` or "review open PRs" | Verdicts and local fixes, no pushes |
 | Merge | "merge #75" or "merge the PRs when they're green" | Merged on green CI |
-| Release | "tag <X>" | Readiness check, tag, publish, notices |
-| Tell reporters only | `python3 $S/github-pr-triage/scripts/shipped.py <owner/repo> <prev> <tag> --install '<install cmd>'` | Prints the plan; add `--post` to comment |
+| Release | "tag <X>" | Readiness check, tag, publish |
+| Which issues a release fixed | `python3 $S/github-pr-triage/scripts/shipped.py <owner/repo> <prev> <tag> [--json]` | Prints them; posts nothing (D-69) |
 | Release check only | `python3 $S/github-pr-triage/scripts/release_ready.py <owner/repo> <sha> <X>` | A pass/fail report |
 
 ## Other stacks
@@ -160,7 +160,7 @@ A parent over such a chain can carry a `## Check` of its own: what must hold in 
 
 ## Keeping it running
 
-`github-ship-watch` is the routine: each pass checks the release runs, the newest releases, and the issue intake, finishes what the policy already decided (a stalled lane, a flaky release job, the shipped notices), and hands flagged issues to triage when asked.
+`github-ship-watch` is the routine: each pass checks the release runs, the newest releases, and the issue intake, finishes what the policy already decided (a stalled lane, a flaky release job), and hands flagged issues to triage when asked.
 
 - `shipmill gate` on launchd: a new background session on this machine only when the repo needs one, with the prompt from the config's `[agents]` section; quiet ticks make no model call (shipmill-setup, The gate)
 - `/loop 30m /shipmill:github-ship-watch <owner/repo> — watch and triage`: every 30 minutes in this session

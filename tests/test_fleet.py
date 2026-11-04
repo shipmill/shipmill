@@ -216,7 +216,7 @@ class Fake:
 
 
 # the action states these fixtures use; each also needs an agent (watch_state.py's AGENT)
-WATCH_ACTION = {"BOT_FAILED", "UNANNOUNCED", "ISSUES", "INCIDENT_OPEN"}
+WATCH_ACTION = {"BOT_FAILED", "NOT_PUBLISHED", "ISSUES", "INCIDENT_OPEN"}
 
 THREE = """\
 [[repos]]
@@ -256,12 +256,12 @@ def test_s001_1_every_repos_rows_are_named_with_actions_first(
     fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     fake = quiet_fake()
-    fake.watch["romamo/shipmill"].append(row("UNANNOUNCED", "v0.11.0", "#70 (since v0.10.0)"))
+    fake.watch["romamo/shipmill"].append(row("NOT_PUBLISHED", "v0.11.0", "x 0.11.0 missing from PyPI"))
     fake.watch["owner/other"].insert(0, row("INCIDENT_OPEN", "#9", "prod down, 1 h"))
     _, out = fleet_run(fl, tmp_path, capsys, fake, FLEET)
     lines = out.splitlines()
     assert lines[:2] == [
-        "romamo/shipmill UNANNOUNCED    v0.11.0          #70 (since v0.10.0)",
+        "romamo/shipmill NOT_PUBLISHED  v0.11.0          x 0.11.0 missing from PyPI",
         "owner/other     INCIDENT_OPEN  #9               prod down, 1 h",
     ]
     assert lines[2:] == [

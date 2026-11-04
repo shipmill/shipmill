@@ -49,8 +49,10 @@ def pull(
     body: str = "",
     messages: tuple[str, ...] = ("Fix a thing",),
     more: str | None = None,
+    closes: tuple[tuple[int, str], ...] = (),
 ) -> dict[str, Any]:
-    """messages: the PR's commit messages, oldest first; more: a cursor to more commits"""
+    """messages: the PR's commit messages, oldest first; more: a cursor to more commits;
+    closes: the issues GitHub links it to close, as (number, createdAt)"""
     commits = [{"commit": {"authoredDate": first or merged, "message": m}} for m in messages]
     return {
         "number": number,
@@ -59,6 +61,9 @@ def pull(
         "body": body,
         "mergeCommit": {"oid": merge or f"m{number}"},
         "mergedBy": {"__typename": by[0], "login": by[1]},
+        "closingIssuesReferences": {
+            "nodes": [{"url": f"https://github.com/o/r/issues/{n}", "createdAt": at} for n, at in closes]
+        },
         "commits": {"pageInfo": {"hasNextPage": more is not None, "endCursor": more}, "nodes": commits},
         "reviews": {
             "pageInfo": {"hasNextPage": False},
@@ -98,7 +103,6 @@ def data(mx: ModuleType, **fields: Any) -> Any:
         "deployments": [],
         "incidents": [],
         "blockers": [],
-        "notices": [],
     }
     base.update(fields)
     if base["releases"] and isinstance(base["releases"][0], dict):
@@ -234,23 +238,22 @@ def test_until_refuses_a_naive_malformed_or_future_time(
     assert error in capsys.readouterr().err
 
 
-def test_issue_to_release_runs_to_the_first_released_in_notice(mx: ModuleType) -> None:
-    notices = [
-        issue(1, day(10), day(8), (day(7), "Released in v1.0.0rc1."), (day(2), "Released in v1.0.0.")),  # 3 days
-        issue(2, day(60), day(50), (day(40), "Released in v0.9.0.")),  # told before the window
-        issue(3, day(5), None, (day(4), "Not Released in anything")),
+def test_d69_issue_to_release_runs_from_the_issue_to_the_release_that_shipped_its_close(mx: ModuleType) -> None:
+    # D-69 (#921): no notice is read; an issue's release is the first in-window stable release
+    # that shipped a merged PR closing it
+    releases = [release("v1.2.0", day(1)), release("v1.1.0", day(5)), release("v1.0.0", day(40))]
+    shipped = {"v1.1.0": {"c1", "c2"}, "v1.2.0": {"c3"}}
+    pulls = [
+        pull(1, day(6), "c1", closes=((1, day(8)),)),  # 3 days to v1.1.0
+        pull(2, day(5.5), "c2", closes=((2, day(6)),)),  # 1 day
+        pull(3, day(2), "c3", closes=((2, day(6)), (3, day(4)))),  # #2 counts once, at v1.1.0; #3 3 days
+        pull(4, day(0.5), "c4", closes=((4, day(1)),)),  # not released yet
+        pull(5, day(3), "c5"),  # closes nothing
     ]
-    m = by_name(mx, data(mx, notices=notices))["Issue to release"]
+    m = by_name(mx, data(mx, releases=releases, shipped=shipped, pulls=pulls))["Issue to release"]
     assert m.value == pytest.approx(72.0)
-    assert m.extra["count"] == 1
-
-
-def test_s021_3_issue_to_release_reads_a_notice_after_its_marker_line(mx: ModuleType) -> None:
-    pre = "<!-- shipmill:available: pre-release v1.0.0rc1 -->\nReleased in v1.0.0rc1 (pre-release)."
-    stable = "<!-- shipmill:available: stable v1.0.0 -->\nReleased in v1.0.0."
-    notices = [issue(1, day(10), day(8), (day(7), pre), (day(2), stable))]
-    m = by_name(mx, data(mx, notices=notices))["Issue to release"]
-    assert m.value == pytest.approx(72.0)
+    assert m.extra == {"p90": pytest.approx(72.0), "count": 3}
+    assert m.detail == "3 issues closed by a PR a stable release shipped"
 
 
 def test_human_touch_counts_a_person_merging_or_approving(mx: ModuleType) -> None:
@@ -326,7 +329,6 @@ class FakeGitHub:
             mx.PULL_COMMITS: self.pull_commits,
             mx.DEPLOYMENTS: self.deployments,
             mx.LABELLED: lambda v: ok({"issues": page([])}),
-            mx.NOTICES: lambda v: ok({"issues": page([])}),
         }
 
     def __call__(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
@@ -350,7 +352,7 @@ class FakeGitHub:
         return ok({"line": {"compare": {"status": "BEHIND"}}})
 
     def pulls(self, v: dict[str, Any]) -> dict[str, Any]:
-        return ok({"pullRequests": page([pull(1, day(3), "c1", first=day(4), more="p1")])})
+        return ok({"pullRequests": page([pull(1, day(3), "c1", first=day(4), more="p1", closes=((7, day(6)),))])})
 
     def pull_commits(self, v: dict[str, Any]) -> dict[str, Any]:
         assert (v["number"], v["cursor"]) == (1, "p1")
@@ -375,6 +377,7 @@ def test_fetch_pages_shrinks_rejected_pages_and_finds_a_hotfix(mx: ModuleType) -
     assert found["Lead time for changes"].value == pytest.approx(48.0)
     assert found["Agent share"].extra["agent_made"] == 1  # the trailer was on the PR's second page of commits
     assert found["Change failure rate"].value == pytest.approx(1.0)  # the one release was a hotfix
+    assert found["Issue to release"].value == pytest.approx(96.0)  # #7, opened day 6, in v1.0.1 on day 2
 
 
 def test_a_page_rejected_at_the_floor_fails(mx: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
@@ -420,47 +423,3 @@ def test_a_repo_that_first_deployed_after_the_window_counts_releases_in_it(mx: M
     d = mx.fetch("o/r", earlier, frozenset(), "incident", "release-blocker", run=FirstDeployedLater(mx))
     assert not d.deployed
     assert mx.deploy_frequency(d, earlier).detail == "no deployments, and no stable release in the window"
-
-
-def backward(nodes: list[Any], cursor: str | None = None) -> dict[str, Any]:
-    """A comments page read newest first: cursor leads to older comments"""
-    return {"pageInfo": {"hasPreviousPage": cursor is not None, "startCursor": cursor}, "nodes": nodes}
-
-
-def comment(at: str, body: str) -> dict[str, Any]:
-    return {"createdAt": at, "body": body}
-
-
-class NoticedBefore(FakeGitHub):
-    """#1 was told "Released in" before the window and again inside it, its first notice a
-    page older than its newest comments; #2's only notice is in the window, a page back"""
-
-    def __init__(self, mx: ModuleType) -> None:
-        super().__init__(mx)
-        self.answers[mx.NOTICES] = self.notices
-        self.answers[mx.NOTICE_COMMENTS] = self.notice_comments
-
-    def notices(self, v: dict[str, Any]) -> dict[str, Any]:
-        newest = [comment(day(45), "Thanks"), comment(day(3), "Released in v1.1.0.")]
-        told = [comment(day(5), "Released in v2.0.0."), comment(day(4), "Thanks")]
-        nodes = [
-            {"number": 1, "createdAt": day(90), "comments": backward(newest, "c1")},
-            {"number": 2, "createdAt": day(9), "comments": backward(told, "c2")},
-        ]
-        return ok({"issues": page(nodes)})
-
-    def notice_comments(self, v: dict[str, Any]) -> dict[str, Any]:
-        older = {
-            "c1": backward([comment(day(80), "Released in v1.0.0.")], "c0"),
-            "c2": backward([comment(day(8), "Triage: implement")]),
-        }
-        return ok({"issue": {"comments": older[v["cursor"]]}})
-
-
-def test_issue_to_release_fetches_a_notice_older_than_the_window(mx: ModuleType) -> None:
-    gh = NoticedBefore(mx)
-    d = mx.fetch("o/r", window(mx), frozenset(), "incident", "release-blocker", run=gh)
-    paged = [v["cursor"] for name, v in gh.calls if name == "NOTICE_COMMENTS"]
-    assert paged == ["c1", "c2"]  # #1 stops at its notice from before the window, not at its first page
-    m = by_name(mx, d)["Issue to release"]
-    assert (m.value, m.extra["count"]) == (pytest.approx(96.0), 1)  # #2 only: day 9 to day 5
