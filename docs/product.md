@@ -13,7 +13,7 @@ below.
 
 - U-1: A maintainer of a library or product repository who wants agents to deliver its work while keeping the decisions
 - U-2: A founder or small team running several repositories who needs one view of what waits on them
-- U-3: The person who filed an issue, who wants to find where the fix is available
+- U-3: The person who filed an issue, who wants to know where the fix is and to try it first
 - U-4: The agents themselves, which read this repository's skills, rules, and direction to work without a person in the session
 
 ## Goals
@@ -22,7 +22,7 @@ below.
   measure: issue_to_release_p90 < 2d
 - G-2: Agents' work holds a quality bar the maintainer can trust without reading every diff
   measure: change_failure_rate <= 5%
-- G-3: The person who asked for a change can find where it is available; the core reports which release fixed an issue and doesn't promise to tell them (D-69)
+- G-3: The person who asked for a change hears where it is available at each stage and can confirm it works
 - G-4: The maintainer sees in one place what waits on them, across all their repositories
 - G-5: Agents keep to the written direction: work outside the goals is postponed or declined with its reason
 - G-6: Agents pursue a goal: they propose the work that reaches it, and the maintainer approves it
