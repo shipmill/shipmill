@@ -214,14 +214,15 @@ even as a fallback when federation fails.
   the service account `shipmill-evals` (`ANTHROPIC_SERVICE_ACCOUNT_ID`), and the federation
   rule (`ANTHROPIC_FEDERATION_RULE_ID`) as plain values in `env`, never as a repository
   secret or variable: they are not secrets, since a token is minted only for a GitHub OIDC
-  token the rule matches. Both rules cover the Default workspace only, so the job sets no
-  `ANTHROPIC_WORKSPACE_ID`
+  token the rule matches. Both rules cover only the `shipmill-evals` workspace, which has its
+  own spend limit, so the job sets no `ANTHROPIC_WORKSPACE_ID`
 - **The rule is chosen by the event:** the schedule and every `workflow_dispatch` on the
   default branch, a fork's pinned `pr` and `sha` run included, use `shipmill-evals-main`
   (`fdrl_01Pk7bGkjpHPcaWhVmDNMffp`, subject `repo:shipmill/shipmill:ref:refs/heads/main`);
   a same-repo `pull_request` run uses the pull-request rule of shipmill/shipmill#846
-  (subject `repo:shipmill/shipmill:pull_request`), whose id the workflow writes once #846
-  posts it
+  (`fdrl_01UA2FpuviYTtJHRe7EJskA2`, subject `repo:shipmill/shipmill:pull_request`).
+  `shipmill-evals-main` also pins the `workflow_ref` claim to `evals.yml` on `main`; the
+  pull-request rule pins none, since a same-repo branch can edit `evals.yml` anyway
 - **The step that mints the Anthropic token** runs after the S-025-20 and S-025-21 checks
   and after `shipmill evals check`, where "Check the API key" ran. It requests GitHub's
   OIDC token with audience `https://api.anthropic.com` (from `ACTIONS_ID_TOKEN_REQUEST_URL`
@@ -255,7 +256,7 @@ auth_failed` writes the same line, its reason naming the runner, and compares no
 A fork's pull request still fails before any token step with the S-025-18 line. The
 accepted trade-off of the pull-request rule (#846): a same-repo branch's own `evals.yml`
 runs on its pull request, so anyone who can push a branch here, collaborators and the App,
-can mint a 10-minute Developer token that spends from the Default workspace's budget. The
+can mint a 10-minute Developer token that spends from the `shipmill-evals` workspace's budget. The
 `--max-cost-usd 15` cap holds for the workflow as written; a branch that edits `evals.yml`
 can drop it, so the workspace's spend limit is the bound that holds.
 
@@ -355,7 +356,7 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-23: `skills/github-pr-triage/SKILL.md` says a fork's dispatched `evals` run counts only while the head SHA it recorded is the pull request's current head, and a push after the run needs a new dispatch naming the new SHA
 - S-025-24: When the evals job gets no GitHub OIDC token or the Anthropic token exchange fails, it runs no case and writes `evals: no Anthropic token from Workload Identity Federation (<reason>), so no case ran` to its summary, as a warning with exit 0 on a pull request while the gate is off and as its error with exit 1 otherwise; a run the runner stops with `partialReason: auth_failed` writes the same line and compares nothing
 - S-025-25: No step of `.github/workflows/evals.yml` reads `secrets.ANTHROPIC_API_KEY`, and the `evals` job has `permissions: id-token: write`
-- S-025-26: The step that mints the Anthropic token requests GitHub's OIDC token with audience `https://api.anthropic.com`, writes it under `$RUNNER_TEMP` and never in the checkout, and exchanges it with the federation rule chosen by the event (`shipmill-evals-main`, `fdrl_01Pk7bGkjpHPcaWhVmDNMffp`, for the schedule and every `workflow_dispatch`; the pull-request rule of #846 for a same-repo `pull_request` run), the organization and service account ids written in the workflow's `env`; the eval run gets `ANTHROPIC_IDENTITY_TOKEN_FILE` and those ids, and holds no `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL`, or `ACTIONS_ID_TOKEN_REQUEST_TOKEN`
+- S-025-26: The step that mints the Anthropic token requests GitHub's OIDC token with audience `https://api.anthropic.com`, writes it under `$RUNNER_TEMP` and never in the checkout, and exchanges it with the federation rule chosen by the event (`shipmill-evals-main`, `fdrl_01Pk7bGkjpHPcaWhVmDNMffp`, for the schedule and every `workflow_dispatch`; the pull-request rule of #846, `fdrl_01UA2FpuviYTtJHRe7EJskA2`, for a same-repo `pull_request` run), the organization and service account ids written in the workflow's `env`; the eval run gets `ANTHROPIC_IDENTITY_TOKEN_FILE` and those ids, and holds no `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL`, or `ACTIONS_ID_TOKEN_REQUEST_TOKEN`
 
 ## Out of scope
 

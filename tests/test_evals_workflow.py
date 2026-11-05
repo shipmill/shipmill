@@ -1,7 +1,7 @@
 """Spec 025: `.github/workflows/evals.yml` runs the suite and gates a pull request on it (D-37).
 
 The workflow is read with the eval suite's own strict YAML reader, and its small shell steps
-(choosing the run, refusing a fork, the API key) run here as bash with the env GitHub gives
+(choosing the run, refusing a fork, minting the Anthropic token) run here as bash with the env GitHub gives
 them, so their exits and lines are proved, not only their text."""
 
 import json
@@ -29,6 +29,11 @@ PIN = "Read the pull request's head before any checkout (S-025-20)"
 MERGE = "Check the merge ref's head is the one read (S-025-21)"
 MOVED = "evals: the head of #{pr} is {current}, not {sha}; read the new commits and dispatch again with "
 MOVED += "-f sha={current}"
+MINT = "Mint the Anthropic token (S-025-24, S-025-26)"
+NO_TOKEN = "evals: no Anthropic token from Workload Identity Federation ({reason}), so no case ran"
+MAIN_RULE = "fdrl_01Pk7bGkjpHPcaWhVmDNMffp"
+PR_RULE = "fdrl_01UA2FpuviYTtJHRe7EJskA2"
+OIDC = "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
 
 def _step(name: str) -> dict[str, Any]:
@@ -195,17 +200,19 @@ def test_s025_11_the_model_is_the_gate_sessions_written_once() -> None:
 
 def test_s025_11_the_stub_is_first_on_path_and_no_token_reaches_the_run() -> None:
     command = _command()
-    assert 'env -u GH_TOKEN -u GITHUB_TOKEN PATH="$tree/evals/bin:$PATH"' in command
+    unset = "GH_TOKEN GITHUB_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+    unset += " ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN"
+    assert re.search(r"env " + r" \\?\s*".join(f"-u {v}" for v in unset.split()), command), command
+    assert 'ANTHROPIC_IDENTITY_TOKEN_FILE="$token_file" PATH="$tree/evals/bin:$PATH"' in command
     env = _env("Run the suite")
-    assert env["ANTHROPIC_API_KEY"] == "${{ secrets.ANTHROPIC_API_KEY }}"
-    assert not {"GH_TOKEN", "GITHUB_TOKEN"} & set(env)
+    assert not {"GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} & set(env)
     assert all("github.token" not in str(v) and "GITHUB_TOKEN" not in str(v) for v in env.values())
     # only the head read and the baseline lookup hold a token; the checkout the cases clone keeps none
     holders = [s.get("name") for s in STEPS if re.search(r"github\.token|GITHUB_TOKEN|GH_TOKEN", str(s.get("env", "")))]
     assert holders == [PIN, "Find the default branch's baseline (S-025-12)"]
     checkout = next(s for s in STEPS if str(s.get("uses", "")).startswith("actions/checkout@"))
     assert checkout["with"]["persist-credentials"] == "false"
-    assert JOB["permissions"] == {"contents": "read", "actions": "read", "pull-requests": "read"}
+    assert JOB["permissions"] == {"contents": "read", "actions": "read", "pull-requests": "read", "id-token": "write"}
     assert DOC["permissions"] == {"contents": "read"}
 
 
@@ -311,10 +318,10 @@ def _checkout() -> int:
     return checkout
 
 
-def _with_secret() -> list[int]:
-    """The steps that hold ANTHROPIC_API_KEY, or read whether it is set"""
-    found = [i for i, s in enumerate(STEPS) if "ANTHROPIC_API_KEY" in str(s.get("env", ""))]
-    assert [STEPS[i].get("name") for i in found] == ["Check the API key", "Run the suite"]
+def _with_token() -> list[int]:
+    """The steps that mint an Anthropic token or run with one"""
+    found = [i for i, s in enumerate(STEPS) if "OIDC token" in str(s.get("run", "")) or s.get("name") == MINT]
+    assert [STEPS[i].get("name") for i in found] == [MINT, "Run the suite"]
     return found
 
 
@@ -377,7 +384,7 @@ def _fake_gh(tmp_path: Path, head: str) -> Path:
 def test_s025_20_the_head_is_read_before_the_checkout_and_every_step_with_the_secret() -> None:
     pin = _index(PIN)
     assert _index("Choose what this run is") < pin < _checkout()
-    assert all(pin < i for i in _with_secret())
+    assert all(pin < i for i in _with_token())
     assert STEPS[pin]["if"] == "steps.plan.outputs.sha != ''"
     env = _env(PIN)
     assert env["GH_TOKEN"] == "${{ github.token }}" and "secrets." not in str(env)
@@ -425,7 +432,7 @@ def _merge_ref(tmp_path: Path) -> tuple[Path, str]:
 def test_s025_21_the_merge_check_runs_after_the_checkout_and_before_the_secret() -> None:
     merge = _index(MERGE)
     assert merge == _checkout() + 1
-    assert all(merge < i for i in _with_secret())
+    assert all(merge < i for i in _with_token())
     assert STEPS[merge]["if"] == "steps.plan.outputs.sha != ''"
     assert "secrets." not in str(_env(MERGE)) and "token" not in str(_env(MERGE))
     assert "git rev-parse --verify --quiet 'HEAD^2^{commit}'" in _script(MERGE)
@@ -492,8 +499,8 @@ def test_s025_16_the_gate_is_read_before_the_run() -> None:
     gate = _script("Check the suite, and whether the gate is on (S-025-16)")
     assert "uv run shipmill evals check --gate" in gate
     assert 'echo "on=true"' in gate and 'echo "on=false"' in gate
-    assert _index("Check the suite, and whether the gate is on (S-025-16)") < _index("Check the API key")
-    assert _index("Check the API key") < _index("Run the suite")
+    assert _index("Check the suite, and whether the gate is on (S-025-16)") < _index(MINT)
+    assert _index(MINT) < _index("Run the suite")
 
 
 def test_s025_16_while_the_gate_is_off_the_pull_request_job_reports_and_exits_0() -> None:
@@ -507,26 +514,129 @@ def test_s025_16_while_the_gate_is_off_the_pull_request_job_reports_and_exits_0(
     assert compare.rstrip().endswith('so the pull request job exits 0"')
 
 
+# S-025-24, S-025-25, S-025-26: the Anthropic token comes from Workload Identity Federation
+
+
+def _fake_curl(tmp_path: Path, oidc: str, status: str) -> str:
+    """A PATH whose curl answers GitHub's OIDC request with oidc and the exchange with status,
+    logging each call's arguments and the exchange's body"""
+    bin_dir = tmp_path / "curlbin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    log = tmp_path / "curl.log"
+    curl.write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> {log}\n'
+        'case "$*" in\n'
+        f'  *oauth/token*) cat > {tmp_path / "body.json"}; printf %s "{status}";;\n'
+        f"  *) {oidc};;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    return f"{bin_dir}:{os.environ['PATH']}"
+
+
+def _mint(tmp_path: Path, mode: str = "pr", gate: str = "false", **env: str) -> tuple[int, str, dict[str, str]]:
+    request = {"ACTIONS_ID_TOKEN_REQUEST_URL": "https://gh.test/oidc?x=1", "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "rt"}
+    ids = {"ANTHROPIC_FEDERATION_RULE_ID": "fdrl_x", "ANTHROPIC_ORGANIZATION_ID": "org", "RUNNER_TEMP": str(tmp_path)}
+    ids["ANTHROPIC_SERVICE_ACCOUNT_ID"] = "svac_x"
+    return _bash(MINT, tmp_path, MODE=mode, GATE_ON=gate, **(request | ids | env))
+
+
 @pytest.mark.parametrize(
     ("mode", "gate", "code"),
     [
-        ("pr", "false", 0),  # today: no key and a short suite never block a skill pull request
+        ("pr", "false", 0),  # today: no token and a short suite never block a skill pull request
         ("pr", "true", 1),
         ("baseline", "false", 1),
         ("model", "false", 1),
     ],
 )
-def test_s025_16_a_missing_key_fails_unless_the_gate_is_off(tmp_path: Path, mode: str, gate: str, code: int) -> None:
-    got, out, outputs = _bash("Check the API key", tmp_path, KEY_SET="false", MODE=mode, GATE_ON=gate)
-    assert (got, outputs) == (code, {"set": "false"})
+def test_s025_24_no_token_fails_unless_the_gate_is_off(tmp_path: Path, mode: str, gate: str, code: int) -> None:
+    got, out, outputs = _mint(tmp_path, mode, gate, PATH=_fake_curl(tmp_path, 'echo \'{"value": "jwt"}\'', "401"))
+    line = NO_TOKEN.format(reason="the exchange with rule fdrl_x got HTTP 401")
+    assert (got, outputs) == (code, {"ok": "false"})
     level = "warning" if code == 0 else "error"
-    assert out.startswith(f"::{level}::evals: the repository secret ANTHROPIC_API_KEY is not set, so no case ran")
-    later = [s for s in STEPS[_index("Check the API key") + 1 :] if "uses" not in s]
-    for step in later:  # with no key every later step is skipped
-        assert "steps.key.outputs.set == 'true'" in str(step.get("if", "")) or "steps.run.outcome" in str(
+    assert out.splitlines()[-1].startswith(f"::{level}::{line}")
+    assert (tmp_path / "summary").read_text() == line + "\n"
+    later = [s for s in STEPS[_index(MINT) + 1 :] if "uses" not in s]
+    for step in later:  # with no token every later step is skipped
+        assert "steps.token.outputs.ok == 'true'" in str(step.get("if", "")) or "steps.run.outcome" in str(
             step.get("if", "")
         ), step.get("name")
 
 
-def test_s025_16_with_the_key_the_run_goes_on(tmp_path: Path) -> None:
-    assert _bash("Check the API key", tmp_path, KEY_SET="true", MODE="pr", GATE_ON="false") == (0, "", {"set": "true"})
+@pytest.mark.parametrize(
+    ("oidc", "env", "reason"),
+    [
+        ("exit 7", {}, "the GitHub OIDC token request failed"),
+        ("echo '{}'", {}, "the GitHub OIDC token request failed"),
+        ("echo x", {"ACTIONS_ID_TOKEN_REQUEST_URL": ""}, "GitHub gave the job no OIDC token request"),
+    ],
+)
+def test_s025_24_the_line_names_what_failed(tmp_path: Path, oidc: str, env: dict[str, str], reason: str) -> None:
+    got, _, outputs = _mint(tmp_path, "baseline", PATH=_fake_curl(tmp_path, oidc, "200"), **env)
+    assert (got, outputs) == (1, {"ok": "false"})
+    assert (tmp_path / "summary").read_text() == NO_TOKEN.format(reason=reason) + "\n"
+    assert not (tmp_path / "body.json").exists()  # no exchange without a token
+
+
+def test_s025_26_one_exchange_before_the_run_then_the_run_goes_on(tmp_path: Path) -> None:
+    got, out, outputs = _mint(tmp_path, "baseline", PATH=_fake_curl(tmp_path, 'echo \'{"value": "jwt"}\'', "200"))
+    assert (got, outputs) == (0, {"ok": "true", "dir": f"{tmp_path}/evals-identity"})
+    assert out == "::add-mask::jwt\n"
+    calls = (tmp_path / "curl.log").read_text().splitlines()
+    assert (
+        calls[0] == "-sS --fail -H Authorization: Bearer rt https://gh.test/oidc?x=1&audience=https://api.anthropic.com"
+    )
+    assert "-X POST https://api.anthropic.com/v1/oauth/token" in calls[1] and len(calls) == 2
+    assert json.loads((tmp_path / "body.json").read_text()) == {
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": "jwt",
+        "federation_rule_id": "fdrl_x",
+        "organization_id": "org",
+        "service_account_id": "svac_x",
+    }
+    assert (tmp_path / "summary").read_text() == ""
+
+
+def test_s025_24_a_run_stopped_on_auth_compares_nothing() -> None:
+    script = _script("Run the suite")
+    assert ".partialReason" in script and "= auth_failed ]" in script
+    assert 'auth_failed "claude plugin eval stopped with partialReason auth_failed"' in script
+    assert NO_TOKEN.format(reason="$1") in script and 'echo "auth=failed"' in script
+    assert "steps.run.outputs.auth != 'failed'" in str(_step("Compare against the default branch (D-37)")["if"])
+
+
+def test_s025_25_no_api_key_and_the_job_may_request_an_oidc_token() -> None:
+    assert "secrets.ANTHROPIC_API_KEY" not in TEXT and "secrets." not in TEXT
+    assert JOB["permissions"]["id-token"] == "write"
+    assert "id-token" not in DOC["permissions"]  # the job's, not the workflow's
+
+
+def test_s025_26_the_rule_follows_the_event_and_the_ids_are_plain_env() -> None:
+    env = DOC["env"]
+    rule = f"${{{{ github.event_name == 'pull_request' && '{PR_RULE}' || '{MAIN_RULE}' }}}}"
+    assert env["ANTHROPIC_FEDERATION_RULE_ID"] == rule
+    assert env["ANTHROPIC_ORGANIZATION_ID"] == "e3767508-33b1-4a4e-82bb-dedd54566ab5"
+    assert env["ANTHROPIC_SERVICE_ACCOUNT_ID"] == "svac_01QLwU4cCRmN9TW8ZW3NfggY"
+    # each rule covers one workspace, so no step sets one
+    assert all("ANTHROPIC_WORKSPACE_ID" not in str(e) for e in [env, *(s.get("env", {}) for s in STEPS)])
+
+
+def test_s025_26_the_identity_token_stays_out_of_the_checkout_and_fresh() -> None:
+    assert 'dir="$RUNNER_TEMP/evals-identity"' in _script(MINT)
+    assert _env("Run the suite")["TOKEN_DIR"] == "${{ steps.token.outputs.dir }}"
+    script = _script("Run the suite")
+    assert 'token_file="$TOKEN_DIR/github-oidc.jwt"' in script
+    # a fresh token lands before the first case and every 2 minutes while the run lasts
+    assert script.index("fetch_token || auth_failed") < script.index('suite "$GITHUB_WORKSPACE"')
+    assert "while sleep 120; do" in script and 'trap \'kill "$refresher"' in script
+
+
+def test_s025_26_every_command_that_runs_the_checkouts_code_drops_the_oidc_request() -> None:
+    for step in STEPS:
+        run = str(step.get("run", ""))
+        if "uv " in run:
+            assert run.startswith(f"unset {' '.join(OIDC)}\n"), step.get("name")
