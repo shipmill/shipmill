@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 STUB = ROOT / "evals" / "bin" / "gh"
 SCAFFOLD = ROOT / "evals" / "scaffold.sh"
+CASE_SCAFFOLDS = sorted((ROOT / "evals").glob("*/*/scaffold.sh"))  # each case's own (#929)
 NO_MISS = ROOT / "evals" / "graders" / "no-miss.yaml"
 VIEW = ["issue", "view", "5", "--repo", "me/demo", "--json", "title,state"]
 ANSWER = '{"title": "a bug", "state": "OPEN"}\n'
@@ -381,12 +382,13 @@ def test_s040_15_without_an_autonomy_json_the_real_shipmill_answers(tmp_path: Pa
 
 def test_stub_and_scaffold_are_executable_in_git() -> None:
     staged = subprocess.run(
-        ["git", "-C", str(ROOT), "ls-files", "-s", "evals/bin/gh", "evals/bin/shipmill", "evals/scaffold.sh"],
+        ["git", "-C", str(ROOT), "ls-files", "-s", "evals/bin/gh", "evals/bin/shipmill", "evals/scaffold.sh"]
+        + [str(p.relative_to(ROOT)) for p in CASE_SCAFFOLDS],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    assert [line.split()[0] for line in staged.splitlines()] == ["100755", "100755", "100755"]
+    assert [line.split()[0] for line in staged.splitlines()] == ["100755"] * (3 + len(CASE_SCAFFOLDS))
     assert STUB.read_text(encoding="utf-8").startswith("#!/usr/bin/env python3\n")
     assert (STUB.parent / "uvx").readlink() == Path("shipmill")  # one shim, two names
 
@@ -464,6 +466,28 @@ def test_s040_15_scaffold_commits_a_case_fixture_repo_over_the_case_commit(tmp_p
     assert (ws / ".github" / "shipmill.toml").read_text(encoding="utf-8") == '[autonomy]\nland = "propose"\n'
     assert git(ws, "status", "--porcelain") == ""  # committed, and .eval/ stays out of git
     assert git(ws, "show", "--name-only", "--format=", "HEAD").splitlines() == [".github/shipmill.toml", "state.txt"]
+
+
+def test_s025_27_every_case_runs_the_shared_scaffold_through_its_own() -> None:
+    cases = sorted(p.parent for p in (ROOT / "evals").glob("*/*/case.yaml"))
+    assert [p.parent for p in CASE_SCAFFOLDS] == cases
+    first = CASE_SCAFFOLDS[0].read_bytes()
+    assert all(p.read_bytes() == first for p in CASE_SCAFFOLDS)  # the same few lines in every case
+    for case in cases:
+        assert "  scaffold_script: scaffold.sh\n" in (case / "case.yaml").read_text(encoding="utf-8")
+
+
+def test_s025_27_a_case_scaffold_started_as_the_runner_starts_it(tmp_path: Path) -> None:
+    # in place, in the empty workspace, with no argument and no EVAL_CASE_DIR (#929)
+    repo, then, case = source_repo(tmp_path)
+    shutil.copy(CASE_SCAFFOLDS[0], case / "scaffold.sh")
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    env = {k: v for k, v in os.environ.items() if k != "EVAL_CASE_DIR"}
+    done = subprocess.run([str(case / "scaffold.sh")], cwd=ws, env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert git(ws, "rev-parse", "--short", "HEAD") == then
+    assert (ws / ".eval" / "case").read_text(encoding="utf-8").strip() == str(case.resolve())
 
 
 def test_s025_6_scaffold_fails_for_a_case_the_manifest_lacks(tmp_path: Path) -> None:

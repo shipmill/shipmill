@@ -266,6 +266,68 @@ def test_s025_12_only_a_full_pinned_run_on_the_default_branch_becomes_the_baseli
     assert "{model: $model, commit: $commit, claude: $claude, exit: $code," in _script("Run the suite")
 
 
+KEEP = "Keep the run as the baseline"
+REFUSED = "evals: no case ran ({errored} of {runs} runs errored, {turns} turns), so the run is no baseline"
+ESCAPES = 'case "c": path "../../scaffold.sh" escapes the case directory'
+
+
+def _arm(turns: int, error: str | None = None) -> dict[str, object]:
+    return {"score": 0, "passed": False, "turns": turns, "costUsd": 0, "error": error, "graders": []}
+
+
+def _keep(tmp_path: Path, arms: list[list[dict[str, object]]], partial: bool = False) -> tuple[int, str, str]:
+    """The baseline step on a result whose cases hold these runs; its exit, stdout, summary"""
+    head = tmp_path / "evals" / "head"
+    head.mkdir(parents=True)
+    cases = [{"name": f"c{n}", "dir": f"evals/s/c{n}", "arms": {"with": runs}} for n, runs in enumerate(arms)]
+    result = {"schemaVersion": 1, "partial": partial, "cases": cases, "aggregates": {"casesTotal": len(cases)}}
+    (head / "aggregate-result.json").write_text(json.dumps(result), encoding="utf-8")
+    code, out, _ = _bash(KEEP, tmp_path, RUNNER_TEMP=str(tmp_path))
+    return code, out, (tmp_path / "summary").read_text()
+
+
+def test_s025_28_a_run_where_every_case_errored_before_a_turn_is_no_baseline(tmp_path: Path) -> None:
+    # run 42242802136: all 14 cases refused their scaffold, partial false, 0 turns (#929)
+    code, out, summary = _keep(tmp_path, [[_arm(0, ESCAPES)] * 3] * 2)
+    line = REFUSED.format(errored=6, runs=6, turns=0)
+    assert code == 1
+    assert f"::error::{line}" in out
+    assert summary == line + "\n"
+
+
+@pytest.mark.parametrize(
+    ("arms", "line"),
+    [
+        ([], REFUSED.format(errored=0, runs=0, turns=0)),  # no case at all
+        ([[_arm(0)] * 3], REFUSED.format(errored=0, runs=3, turns=0)),  # no error, but no turn either
+        ([[_arm(12, "timeout"), _arm(5, "timeout")]], REFUSED.format(errored=2, runs=2, turns=17)),
+    ],
+)
+def test_s025_28_a_run_with_no_completed_run_is_no_baseline(
+    tmp_path: Path, arms: list[list[dict[str, object]]], line: str
+) -> None:
+    code, _, summary = _keep(tmp_path, arms)
+    assert (code, summary) == (1, line + "\n")
+
+
+def test_s025_28_a_run_where_one_case_ran_is_kept(tmp_path: Path) -> None:
+    code, out, summary = _keep(tmp_path, [[_arm(0, ESCAPES)] * 3, [_arm(9), _arm(11, "timeout"), _arm(7)]])
+    assert (code, out, summary) == (0, "", "")
+
+
+def test_s025_12_a_partial_run_is_no_baseline(tmp_path: Path) -> None:
+    code, out, _ = _keep(tmp_path, [[_arm(9)] * 3], partial=True)
+    assert code == 1
+    assert "::error::evals: the run stopped early (partial), so it is no baseline" in out
+
+
+def test_s025_28_a_baseline_that_ran_no_case_is_skipped_for_the_merge_base() -> None:
+    lookup = _script("Find the default branch's baseline (S-025-12)")
+    assert 'select((.error // "") == "" and (.turns // 0) > 0)' in lookup
+    assert 'reason="the baseline, run $id, ran no case"' in lookup
+    assert lookup.index("ran no case") < lookup.index("fresh=true")
+
+
 def test_s025_12_the_merge_base_runs_first_when_the_baseline_is_missing_stale_or_another_models() -> None:
     env = _env("Run the suite")
     assert env["ON_MERGE_BASE"] == "${{ steps.plan.outputs.mode == 'pr' && steps.base.outputs.fresh != 'true' }}"

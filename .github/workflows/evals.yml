@@ -280,7 +280,12 @@ jobs:
             gh run download "$id" -R "$REPO" -n evals-baseline -D "$dir"
             age=$(( $(date +%s) - $(date -d "$created" +%s) ))
             base_model=$(jq -r '.model' "$dir/meta.json")
-            if [ "$age" -gt $(( 14 * 86400 )) ]; then
+            # a run kept before S-025-28 may hold no case that ran
+            ran=$(jq '[.cases[].arms.with[] | select((.error // "") == "" and (.turns // 0) > 0)] | length' \
+              "$dir/aggregate-result.json")
+            if [ "$ran" -eq 0 ]; then
+              reason="the baseline, run $id, ran no case"
+            elif [ "$age" -gt $(( 14 * 86400 )) ]; then
               reason="the baseline, run $id, is older than 14 days"
             elif [ "$base_model" != "$MODEL" ]; then
               reason="the baseline, run $id, ran $base_model, not $MODEL"
@@ -404,9 +409,23 @@ jobs:
         id: baseline
         if: steps.plan.outputs.mode == 'baseline' && steps.run.outcome == 'success'
         run: |
-          partial=$(jq -r '.partial' "$RUNNER_TEMP/evals/head/aggregate-result.json")
+          result="$RUNNER_TEMP/evals/head/aggregate-result.json"
+          partial=$(jq -r '.partial' "$result")
           if [ "$partial" != false ]; then
             echo "::error::evals: the run stopped early (partial), so it is no baseline"
+            exit 1
+          fi
+          # A run none of whose runs took a turn and ended without an error measured nothing,
+          # such as every case refused before its first turn (#929): no baseline (S-025-28)
+          counts=$(jq -r '[.cases[].arms.with[]] | [length,
+              ([.[] | select((.error // "") != "")] | length),
+              ([.[].turns // 0] | add // 0),
+              ([.[] | select((.error // "") == "" and (.turns // 0) > 0)] | length)] | @tsv' "$result")
+          read -r runs errored turns ran <<<"$counts"
+          if [ "$ran" -eq 0 ]; then
+            line="evals: no case ran ($errored of $runs runs errored, $turns turns), so the run is no baseline"
+            echo "$line" >>"$GITHUB_STEP_SUMMARY"
+            echo "::error::$line"
             exit 1
           fi
 

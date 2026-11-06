@@ -42,7 +42,8 @@ directory, grouped by the skill it exercises:
       bin/shipmill, bin/uvx            send `shipmill gh` to the stub, else the real program
       github-issue-triage/feature-maintainer-filed/
         prompt.md                      the task, as a gate session would get it
-        case.yaml                      schema_version "1.1", scaffold_script: ../../scaffold.sh
+        case.yaml                      schema_version "1.1", scaffold_script: scaffold.sh
+        scaffold.sh                    calls ../../scaffold.sh with the case's directory
         fixture/                       the case's recorded GitHub state
         graders/verdict.md             a deterministic grader
       results/                         run output, ignored by git
@@ -77,7 +78,12 @@ Every case runs offline: no session reaches GitHub, and none needs a token.
 
 - **The repository** is this repository at the case's `commit`: `evals/scaffold.sh`
   makes a shared clone of the checkout the run starts from into the workspace and checks
-  out that commit, then copies the case's `fixture/` to `.eval/` in it
+  out that commit, then copies the case's `fixture/` to `.eval/` in it. The runner runs
+  only a `scaffold_script` inside the case's directory, and starts it in place with the
+  empty workspace as its working directory and no argument (shipmill/shipmill#929), so
+  each case holds its own `scaffold.sh`, the same few lines in every case, that calls the
+  shared one with the case's directory; `shipmill evals check` refuses a
+  `scaffold_script` with `..` or an absolute path
 - **GitHub** is `evals/bin/gh`, a stub put first on `PATH` for the whole run (the
   workflow sets it; the runner passes `PATH` through). It is a Python 3.10 script with no
   dependencies, like the skills' scripts. It finds `.eval/` by walking up from its working
@@ -283,7 +289,11 @@ two pass rates, so the failing check names the cases that broke. The base is the
 `aggregate-result.json` of the latest successful scheduled or dispatched run on the
 default branch, fetched from its artifact. When there is none, or it is older than 14 days,
 or its pinned model differs from the head's, the job first runs the suite on the pull
-request's merge base and compares against that. Cases the base and the head both hold are
+request's merge base and compares against that, as it does when that result ran no case.
+A run on the default branch becomes the baseline only when it finished (not `partial`) and
+at least one of its runs took a turn and ended without an error: a run whose every case
+errored before it started, as when the runner refused every case's scaffold
+(shipmill/shipmill#929), measured nothing. Cases the base and the head both hold are
 compared by `path`; a case removed by the pull request is listed as `removed` and never
 fails the gate.
 
@@ -358,6 +368,9 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-25: No step of `.github/workflows/evals.yml` reads `secrets.ANTHROPIC_API_KEY`, and the `evals` job has `permissions: id-token: write`
 - S-025-26: The step that mints the Anthropic token requests GitHub's OIDC token with audience `https://api.anthropic.com`, writes it under `$RUNNER_TEMP` and never in the checkout, and exchanges it with the federation rule chosen by the event (`shipmill-evals-main`, `fdrl_01Pk7bGkjpHPcaWhVmDNMffp`, for the schedule and every `workflow_dispatch`; the pull-request rule of #846, `fdrl_01UA2FpuviYTtJHRe7EJskA2`, for a same-repo `pull_request` run), the organization and service account ids written in the workflow's `env`; the eval run gets `ANTHROPIC_IDENTITY_TOKEN_FILE` and those ids, and holds no `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL`, or `ACTIONS_ID_TOKEN_REQUEST_TOKEN`
 
+- S-025-27: Every case's `context.scaffold_script` is `scaffold.sh` inside the case's directory, the same file in every case, which, started as the runner starts it (in place, in the empty workspace, with no argument), leaves the workspace as S-025-6 says; `shipmill evals check` exits 1 naming the case for a `scaffold_script` with `..` or an absolute path, or one that is not a file in the case's directory
+- S-025-28: A run on the default branch none of whose runs took a turn and ended without an error is never kept as the baseline: the step fails with `evals: no case ran (<errored> of <runs> runs errored, <turns> turns), so the run is no baseline` as its error and in the job summary, and the pull request job runs the merge base instead of comparing against a baseline kept before this check that ran no case
+
 ## Out of scope
 
 - Cases other repositories add for their own agents: this spec covers shipmill's own
@@ -394,5 +407,6 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - shipmill/shipmill#448: S-025-10, S-025-11, S-025-12, S-025-13, S-025-16
 - shipmill/shipmill#449: S-025-7
 - shipmill/shipmill#545: S-025-18, S-025-19, S-025-20, S-025-21, S-025-22, S-025-23
+- shipmill/shipmill#929: S-025-27, S-025-28
 
 ## Verification

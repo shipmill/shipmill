@@ -54,6 +54,12 @@ def _write(root: Path, path: str, text: str) -> None:
     target.write_text(text, encoding="utf-8")
 
 
+def _case_yaml(root: Path, path: str) -> None:
+    """CASE_YAML in the case at evals/<path>, with the scaffold.sh it names"""
+    _write(root, f"evals/{path}/case.yaml", CASE_YAML)
+    _write(root, f"evals/{path}/scaffold.sh", "#!/bin/sh\n")
+
+
 def _manifest(commit: str, **fields: str) -> str:
     values = {"path": CASE, "skill": SKILL, "kind": "verdict", "source": "shipmill/shipmill#380", "commit": commit}
     values |= fields
@@ -70,7 +76,7 @@ def repo(tmp_path: Path) -> Path:
     _git(root, "add", ".")
     _git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
     _write(root, f"evals/{CASE}/prompt.md", PROMPT)
-    _write(root, f"evals/{CASE}/case.yaml", CASE_YAML)
+    _case_yaml(root, CASE)
     _write(root, "evals/cases.toml", _manifest(_sha(root)))
     return root
 
@@ -223,6 +229,24 @@ def test_s025_1_no_grader_at_all(repo: Path, capsys: pytest.CaptureFixture[str])
     _fails(repo, capsys, r"no grader, in graders/\*\.md or in case\.yaml")
 
 
+@pytest.mark.parametrize(
+    ("scaffold", "rule"),
+    [
+        ("../../scaffold.sh", r"context\.scaffold_script '\.\./\.\./scaffold\.sh' escapes the case directory"),
+        ("/abs/scaffold.sh", r"context\.scaffold_script '/abs/scaffold\.sh' escapes the case directory"),
+        ("fixture/../../x.sh", r"escapes the case directory"),
+        ("setup.sh", r"context\.scaffold_script 'setup\.sh' is not a file in the case directory"),
+    ],
+)
+def test_s025_27_scaffold_script_outside_the_case_directory(
+    repo: Path, capsys: pytest.CaptureFixture[str], scaffold: str, rule: str
+) -> None:
+    # the runner refuses such a path in every run, before the first turn (#929)
+    text = CASE_YAML.replace("scaffold_script: scaffold.sh", f"scaffold_script: {scaffold}")
+    _write(repo, f"evals/{CASE}/case.yaml", text)
+    _fails(repo, capsys, rule)
+
+
 def test_s025_1_max_turns_above_40(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _write(repo, f"evals/{CASE}/prompt.md", PROMPT.replace("max_turns: 40", "max_turns: 41"))
     _fails(repo, capsys, "max_turns is 41, above the ceiling of 40")
@@ -296,7 +320,7 @@ def test_s025_1_a_commit_that_is_not_a_sha_never_reaches_git(repo: Path) -> None
 
 def test_s025_1_violations_name_each_case(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _write(repo, f"evals/{SKILL}/second/prompt.md", PROMPT.replace("max_turns: 40", "max_turns: 50"))
-    _write(repo, f"evals/{SKILL}/second/case.yaml", CASE_YAML)
+    _case_yaml(repo, f"{SKILL}/second")
     text = (repo / "evals/cases.toml").read_text() + _manifest(_sha(repo), path=f"{SKILL}/second", kind="nope")
     _write(repo, "evals/cases.toml", text)
     code, lines = _check(repo, capsys)
@@ -365,7 +389,7 @@ def _suite(repo: Path, kinds: dict[str, int]) -> None:
         for n in range(count):
             path = f"{SKILL}/{kind}-{n}"
             _write(repo, f"evals/{path}/prompt.md", PROMPT)
-            _write(repo, f"evals/{path}/case.yaml", CASE_YAML)
+            _case_yaml(repo, path)
             manifest += _manifest(_sha(repo), path=path, kind=kind)
     (repo / f"evals/{CASE}/prompt.md").unlink()
     (repo / f"evals/{CASE}/case.yaml").unlink()

@@ -258,6 +258,8 @@ def _case_rules(root: Path, entry: Entry, resolves: Resolves) -> list[str]:
     ):
         if value > ceiling:
             rules.append(f"{field} is {value}, above the ceiling of {ceiling}")
+    if settings.scaffold is not None:
+        rules.extend(_scaffold_rules(case, settings.scaffold))
     if not settings.graders:
         rules.append(f"no grader, in {GRADERS}/*.md or in {CASE}")
     elif kind is not Kind.FINDING and not DETERMINISTIC & set(settings.graders):
@@ -265,6 +267,20 @@ def _case_rules(root: Path, entry: Entry, resolves: Resolves) -> list[str]:
             f"no deterministic grader ({', '.join(sorted(DETERMINISTIC))}); only a finding case may rest on a judge"
         )
     return rules
+
+
+def _scaffold_rules(case: Path, scaffold: str) -> list[str]:
+    """The runner runs only a scaffold_script inside the case's directory (#929): a path
+    with `..` or an absolute one fails every run of the case before its first turn"""
+    path = PurePosixPath(scaffold)
+    if path.is_absolute() or ".." in path.parts:
+        return [
+            f"context.scaffold_script {scaffold!r} escapes the case directory; name a script inside it,"
+            " such as scaffold.sh calling ../../scaffold.sh"
+        ]
+    if not (case / path).is_file():
+        return [f"context.scaffold_script {scaffold!r} is not a file in the case directory"]
+    return []
 
 
 def _source_ok(root: Path, source: str) -> bool:
@@ -284,6 +300,7 @@ class _Settings:
     max_turns: int
     timeout_seconds: int
     graders: tuple[str, ...]  # each grader's type
+    scaffold: str | None  # case.yaml's context.scaffold_script, as written
 
 
 class _Unread(Exception):
@@ -303,6 +320,12 @@ def _settings(case: Path) -> _Settings:
     execution = spec.get("execution", {})
     if not isinstance(execution, dict):
         raise _Unread(f"{CASE}: execution is a mapping")
+    context = spec.get("context", {})
+    if not isinstance(context, dict):
+        raise _Unread(f"{CASE}: context is a mapping")
+    scaffold = context.get("scaffold_script")
+    if scaffold is not None and (not isinstance(scaffold, str) or not scaffold):
+        raise _Unread(f"{CASE}: context.scaffold_script is a path; got {scaffold!r}")
 
     def pick(key: str, nested: dict[str, object]) -> object:
         return front[key] if key in front else nested.get(key)
@@ -325,7 +348,7 @@ def _settings(case: Path) -> _Settings:
             if not file.is_file():  # a FIFO or /dev/zero would block or never end the read
                 raise _Unread(f"{name} is not a regular file")
             graders.append(_type(_frontmatter(file, name), name))
-    return _Settings(tags, max_turns, timeout, tuple(graders))
+    return _Settings(tags, max_turns, timeout, tuple(graders), scaffold)
 
 
 def _type(grader: dict[str, object], where: str) -> str:
