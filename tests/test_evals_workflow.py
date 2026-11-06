@@ -328,6 +328,26 @@ def test_s025_28_a_baseline_that_ran_no_case_is_skipped_for_the_merge_base() -> 
     assert lookup.index("ran no case") < lookup.index("fresh=true")
 
 
+def test_s025_27_the_virtualenv_lies_outside_the_checkout_the_runner_scans(tmp_path: Path) -> None:
+    # `claude plugin eval` refused every case for a hard link uv made into .venv in the checkout (#929)
+    [sync] = [s for s in STEPS if "uv sync" in str(s.get("run", ""))]
+    assert STEPS.index(sync) < _index("Run the suite")
+    workspace, temp, bin_dir = tmp_path / "workspace", tmp_path / "temp", tmp_path / "bin"
+    for d in (workspace, temp, bin_dir):
+        d.mkdir()
+    (bin_dir / "uv").write_text(f'#!/bin/sh\necho "$UV_PROJECT_ENVIRONMENT" >> {tmp_path / "uv.log"}\n')
+    (bin_dir / "uv").chmod(0o755)
+    github_env = tmp_path / "github_env"
+    github_env.write_text("")
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "RUNNER_TEMP": str(temp), "GITHUB_WORKSPACE": str(workspace)}
+    env["GITHUB_ENV"] = str(github_env)
+    subprocess.run(["bash", "-e", "-c", str(sync["run"])], env=env, cwd=workspace, check=True)
+    venv = Path((tmp_path / "uv.log").read_text().strip())
+    assert venv.is_absolute() and venv.is_relative_to(temp) and not venv.is_relative_to(workspace)
+    # every later step, `uv run` too, gets the same virtualenv
+    assert github_env.read_text().splitlines() == [f"UV_PROJECT_ENVIRONMENT={venv}"]
+
+
 def test_s025_12_the_merge_base_runs_first_when_the_baseline_is_missing_stale_or_another_models() -> None:
     env = _env("Run the suite")
     assert env["ON_MERGE_BASE"] == "${{ steps.plan.outputs.mode == 'pr' && steps.base.outputs.fresh != 'true' }}"
