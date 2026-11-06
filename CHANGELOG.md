@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.117.0] - 2026-11-06
+
+### Changed
+
+- Evals: `evals.yml` authenticates through Anthropic's Workload Identity Federation, trading the job's GitHub OIDC token for a short-lived Anthropic one, and reads no `ANTHROPIC_API_KEY` secret (#442)
+
 ## [0.116.0] - 2026-11-04
 
 ### Deprecated
@@ -2236,7 +2242,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.116.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.0...HEAD
+[0.117.0]: https://github.com/shipmill/shipmill/compare/v0.116.0...v0.117.0
 [0.116.0]: https://github.com/shipmill/shipmill/compare/v0.115.0...v0.116.0
 [0.115.0]: https://github.com/shipmill/shipmill/compare/v0.114.0...v0.115.0
 [0.114.0]: https://github.com/shipmill/shipmill/compare/v0.113.0...v0.114.0
