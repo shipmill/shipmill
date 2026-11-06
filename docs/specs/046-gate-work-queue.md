@@ -129,7 +129,9 @@ fails as today (S-008-11).
 The first item of the walk that no session was handed within `retry_hours` with the same
 fingerprint is the tick's item. The fingerprint is today's (`fingerprint()`, heads included),
 over that one item. `handed.json` in the state directory maps each handed fingerprint to the
-session and when; an entry drops once `retry_hours` has passed.
+session and when; an entry drops once `retry_hours` has passed, or when a walk that read
+every tier no longer finds its item (#926): a pull request whose needs-decision question waits
+leaves PRS_OPEN, and once answered it returns with the same fingerprint as new work.
 
 - an item is found: LAUNCH, and the prompt names that item alone, with its fix line and its
   tier; the prompt's other paragraphs (roles, levels, identity, headless) are unchanged.
