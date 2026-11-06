@@ -1807,15 +1807,17 @@ def tick_walk(
     signature or an item updated since the cursor, and on the gate's side no cursor, a handed
     item past retry, or a dead last session (S-046-2); walk_now and sweep_now force a walk and
     a sweep. A dead session's item is handed again, until DEAD_STREAK of them (capped) hold it
-    for retry (S-046-15). The last launch's item, gate.json's fingerprint, counts as handed
-    within retry too, as one gate.json recorded before handed.json did. With no change and no sweep due the
-    tick reads nothing more: QUIET, `no change since <cursor>` (S-046-1)"""
+    for retry (S-046-15). Without handed.json, the last launch's item, gate.json's fingerprint,
+    counts as handed within retry, as one gate.json recorded before handed.json did. A walk that
+    reads every tier drops the hand of an item it no longer finds (#926). With no change and no
+    sweep due the tick reads nothing more: QUIET, `no change since <cursor>` (S-046-1)"""
     cursor = Cursor.load(state / CURSOR)
+    recorded = (state / HANDED).is_file()
     handed = Handed.load(state / HANDED)
     # a dead session is a change until a walk drops its hand from handed.json, not on every
     # tick while gate.json still names it: with its item gone, every tick would walk
     unseen = dead is not None and not capped and any(h.session == dead.session for h in handed.hands.values())
-    if last is not None and now - last.at < retry and last.fingerprint not in handed.hands:
+    if not recorded and last is not None and now - last.at < retry:
         handed = Handed({**handed.hands, last.fingerprint: Hand(last.session, last.at)})
     if dead is not None and not capped:
         handed = handed.without(dead.session)
@@ -1846,7 +1848,10 @@ def tick_walk(
     )
     stored = found.swept if sweeping or found.swept != known else None
     after = Cursor(now - CURSOR_OVERLAP, changes.signature)
-    return Ticked(decision, changes, after, stored, handed.kept(now, retry), found.rows, found.hand)
+    hands = handed.kept(now, retry)
+    # a walk that stopped at an item didn't read the tiers below it, so it keeps their hands
+    hands = hands if found.item is not None else hands.found(found.rows)
+    return Ticked(decision, changes, after, stored, hands, found.rows, found.hand)
 
 
 def waiting_rows(ticked: Ticked, source: Source, path: Path, repo: str) -> list[Finding]:

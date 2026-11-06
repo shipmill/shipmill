@@ -667,3 +667,25 @@ def test_914_an_agent_draft_is_an_item_only_when_land_isnt_observe() -> None:
         found = walk(rows, rows.changes(None), swept, Handed(), NOW, dt.timedelta(hours=6), lands)
         assert (found.item, found.tier) == (item, None if item is None else 3)
         assert draft in found.rows  # read and reported either way
+
+
+def test_926_a_handed_item_a_full_walk_misses_is_handed_again_when_it_returns(checkout: Git) -> None:
+    """#926: the session asks on #3 and ends; while the question waits, #3 leaves PRS_OPEN and a
+    full walk drops its hand, so the same row, back once the answer took the label off, goes to a
+    session on the next tick instead of waiting out retry_hours"""
+    source = Source({3: [PRS]})
+    assert tick(checkout, source).work == (PRS,)
+    source.tiers, source.signature = {3: [Finding("NEEDS_DECISION", REPO, "#3", False, (), "answer")]}, "asked"
+    asked = tick(checkout, source, LATER)
+    assert (asked.action, handed(checkout)) == (Action.QUIET, {})
+    source.tiers, source.signature = {3: [PRS]}, "answered"
+    answered = tick(checkout, source, LATER + dt.timedelta(minutes=15))
+    assert (answered.action, answered.work) == (Action.LAUNCH, (PRS,))
+
+
+def test_926_a_walk_that_stops_early_keeps_the_hands_of_tiers_it_didnt_read(checkout: Git) -> None:
+    source = Source({6: [NEW]})
+    tick(checkout, source)
+    source.tiers, source.signature = {1: [INCIDENT], 6: [NEW]}, "incident"
+    assert tick(checkout, source, LATER).work == (INCIDENT,)
+    assert set(handed(checkout)) == {item_key(NEW), item_key(INCIDENT)}

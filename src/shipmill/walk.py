@@ -281,6 +281,13 @@ class Handed:
     def kept(self, now: dt.datetime, retry: dt.timedelta) -> Handed:
         return Handed({k: h for k, h in self.hands.items() if now - h.at < retry})
 
+    def found(self, rows: Iterable[Finding]) -> Handed:
+        """The hands of items a walk that read every tier still found (#926): one gone, as a
+        pull request whose needs-decision question waits, loses its hand, so when it returns
+        with the same fingerprint, the answer in, it is handed on the next tick"""
+        keys = {item_key(row) for row in rows}
+        return Handed({k: h for k, h in self.hands.items() if k in keys})
+
     def without(self, session: str) -> Handed:
         """A dead session's handing doesn't count (S-046-15)"""
         return Handed({k: h for k, h in self.hands.items() if h.session != session})
