@@ -1,0 +1,47 @@
+schema_version: "1.1"
+name: fix-plans-measure-line
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # #749, fixed in #750: plans.py's goal_ids refuses a goal's `measure:` line. A bug fix
+  # opens its pull request as the App (D-14), ready for review (D-67), with the plan the
+  # default branch's docs/product.md asks for (D-34) and the issue it fixes
+  - type: regex
+    name: opens-the-pr-as-the-app
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"via": "shipmill", "args": \["pr", "create"'
+  - type: regex
+    name: pr-carries-the-plan
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '## Plan(\\n)+- Serves: '
+  - type: regex
+    name: pr-fixes-the-issue
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '[Ff]ixes #749\b'
+  - type: regex
+    name: never-a-draft
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"args": \["pr", "create"[^\]]*"(--draft|-d)"'
+    match: not_contains
+  # an implementer never merges
+  - type: regex
+    name: never-merges
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"args": \["pr", "merge"'
+    match: not_contains
+  # Every write goes through `shipmill gh` as the App (D-14): no plain gh write
+  - type: regex
+    name: writes-as-the-app
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "write", "args"'
+    match: not_contains
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1

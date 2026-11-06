@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "749",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "title,body,comments,labels,state"
+  ],
+  "stdout": "{\"body\": \"`plans.py check` refuses every plan body in a repo whose direction gives a goal a measure (spec 027), so no goal plan can be checked, opened, or revised there.\\n\\n## Reproduce\\n\\nOn `main`, whose `docs/product.md` has `measure:` lines under G-1 and G-2:\\n\\n```\\nuv run --no-project python skills/product-intake/scripts/plans.py check tmp/plan-G-5.md\\nerror: docs/product.md:22: not a `- G-<n>: <text>` item; run `shipmill product check`\\n```\\n\\nExit 2, before the plan body is read. `shipmill product check` accepts the same file.\\n\\n## Cause\\n\\n`goal_ids` in `skills/product-intake/scripts/plans.py` (lines 147-150) requires every non-blank line of a list section to be a `- G-<n>: <text>` item, so the indented `measure:` line spec 027 allows under a goal raises. `specs.py` and `pr_gate.py` already skip those lines; `tests/test_plans.py` has no case with a measure.\\n\\n## Expected\\n\\n`plans.py check` reads the goal ids of a direction whose goals carry `measure:` lines, as `shipmill product check` does, and still refuses a line that is neither an item nor a goal's measure.\\n\", \"comments\": [], \"labels\": [{\"id\": \"LA_kwDOU5zq388AAAAC6lZyyg\", \"name\": \"bug\", \"description\": \"Something isn't working\", \"color\": \"d73a4a\"}], \"state\": \"OPEN\", \"title\": \"plans.py check refuses a direction whose goals have a measure\"}\n",
+  "stderr": "",
+  "exit": 0
+}

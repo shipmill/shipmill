@@ -442,6 +442,26 @@ def test_938_every_case_records_its_autonomy() -> None:
         assert {"triage", "fix", "land"} <= {row["stage"] for row in rows}, case["path"]
 
 
+def test_s025_7_the_suite_holds_the_first_cases_from_shipmills_history() -> None:
+    """At least 20 cases, 8 verdict, 4 decision, 4 finding, and 4 fix, each taken from one of
+    shipmill's own issues, pull requests, or postmortems; that each passes 2 of 3 runs is the
+    evals workflow's run, not this test's"""
+    report = evals.check(ROOT)
+    assert report is not None
+    assert report.violations == ()
+    assert report.cases >= 20
+    kinds = [entry.kind for entry in report.entries]
+    counts = {kind: kinds.count(kind) for kind in ("verdict", "decision", "finding", "fix")}
+    assert counts["verdict"] >= 8, counts
+    assert counts["decision"] >= 4, counts
+    assert counts["finding"] >= 4, counts
+    assert counts["fix"] >= 4, counts
+    assert evals.gate_short(report.entries) == ()
+    for entry in report.entries:
+        own = re.fullmatch(r"shipmill/shipmill#[1-9]\d*", entry.source) or entry.source.startswith("docs/postmortems/")
+        assert own, f"{entry.path}: {entry.source} is not from shipmill's own history"
+
+
 def test_s025_2_ci_runs_evals_check_on_every_pull_request() -> None:
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     on = text[text.index("\non:\n") : text.index("\npermissions:")]

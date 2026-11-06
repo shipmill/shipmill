@@ -95,3 +95,80 @@ skill = "github-issue-triage"
 kind = "fix"
 source = "shipmill/shipmill#771"
 commit = "b7ffc41"
+
+[[case]]
+path = "github-issue-triage/implement-measure-line"
+skill = "github-issue-triage"
+kind = "verdict"
+source = "shipmill/shipmill#749"
+commit = "286e5bc8"
+
+[[case]]
+path = "github-issue-triage/implement-token-race"
+skill = "github-issue-triage"
+kind = "verdict"
+source = "shipmill/shipmill#882"
+commit = "6a4b49ea"
+
+[[case]]
+path = "github-issue-triage/opportunity-agent-filed"
+skill = "github-issue-triage"
+kind = "verdict"
+source = "shipmill/shipmill#831"
+commit = "65f34d6e"
+
+[[case]]
+path = "github-issue-triage/postpone-planner-tests"
+skill = "github-issue-triage"
+kind = "verdict"
+source = "shipmill/shipmill#836"
+commit = "ad3fbdd8"
+
+[[case]]
+path = "github-issue-triage/clarify-release-order"
+skill = "github-issue-triage"
+kind = "verdict"
+source = "shipmill/shipmill#598"
+commit = "3015f20c"
+
+[[case]]
+path = "github-issue-triage/feature-maintainer-filed"
+skill = "github-issue-triage"
+kind = "verdict"
+source = "shipmill/shipmill#774"
+commit = "bc792a34"
+
+[[case]]
+path = "github-pr-triage/finding-token-refresh-race"
+skill = "github-pr-triage"
+kind = "finding"
+source = "shipmill/shipmill#882"
+commit = "6a4b49ea"
+
+[[case]]
+path = "github-pr-triage/finding-plans-measure-line"
+skill = "github-pr-triage"
+kind = "finding"
+source = "shipmill/shipmill#749"
+commit = "c4af4e3d"
+
+[[case]]
+path = "github-pr-triage/finding-spec-answer-stale"
+skill = "github-pr-triage"
+kind = "finding"
+source = "shipmill/shipmill#620"
+commit = "b9074fa8"
+
+[[case]]
+path = "github-pr-triage/finding-branch-as-option"
+skill = "github-pr-triage"
+kind = "finding"
+source = "shipmill/shipmill#889"
+commit = "d380451d"
+
+[[case]]
+path = "github-issue-resolve/fix-plans-measure-line"
+skill = "github-issue-resolve"
+kind = "fix"
+source = "shipmill/shipmill#749"
+commit = "286e5bc8"

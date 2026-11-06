@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "598",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "title,body,comments,labels,state"
+  ],
+  "stdout": "{\"body\": \"Split from #597 (ask 1).\\n\\n## What happens\\n\\n`land` pushes the release tag, then dispatches `publish.yml` and `move-major-tag.yml` together (`src/shipmill/land.py`, the `rule.dispatch` loop), and the marketplace entry's `ref` names the release tag (D-44). So `@v0`, the tag, and the marketplace `ref` reach every consumer minutes before PyPI serves the package. On 2026-10-24 v0.66.0 was tagged at 17:13:45 and on PyPI at 17:18:16; a session or job that loaded the new plugin in that window ran `uvx shipmill==0.66.0` against a PyPI that had no such version, and uv's cached index (`max-age=600`) can stretch the window by up to ten minutes.\\n\\n#597's fix (a retry with `--refresh-package` and a `PYPI_WAIT` row in place of exit 2, and moving `@v0` launchd jobs to `shipmill@latest`) makes the window survivable; this issue is about closing it.\\n\\n## Ask\\n\\nPublish first, then move the references: `@v0` and the marketplace `ref` move only once PyPI serves the version.\\n\\n## Touches\\n\\n- `src/shipmill/land.py` (dispatch order, and waiting on the publish run), `.github/workflows/land.yml`, `move-major-tag.yml`, `publish.yml`\\n- `.claude-plugin/marketplace.json` and how its `ref` moves\\n- D-31 (shipmill moves its own references), D-44 (the marketplace ref is the release tag)\\n\\nFiled by Claude Code from #597's triage.\\n\", \"comments\": [], \"labels\": [{\"id\": \"LA_kwDOU5zq388AAAAC6lZyyg\", \"name\": \"bug\", \"description\": \"Something isn't working\", \"color\": \"d73a4a\"}], \"state\": \"OPEN\", \"title\": \"Releases move the tag, @v0, and the marketplace ref before PyPI serves the package\"}\n",
+  "stderr": "",
+  "exit": 0
+}

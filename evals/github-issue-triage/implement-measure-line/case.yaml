@@ -1,0 +1,44 @@
+schema_version: "1.1"
+name: implement-measure-line
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # #749 is a bug the code shows at 286e5bc: plans.py's goal_ids refuses the measure: line
+  # spec 027 allows under a goal. A confirmed bug is implement, as the pass triaged it
+  - type: regex
+    name: verdict-implement
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'Triage: \*\*implement\*\*'
+  # A bug fix serves the quality bar, so it needs no spec and no question
+  - type: regex
+    name: no-other-verdict
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'Triage: \*\*(feature|opportunity|postponed|won.t fix|needs a decision)'
+    match: not_contains
+  - type: regex
+    name: asks-nothing
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'shipmill:needs-decision'
+    match: not_contains
+  # Verdicts only: no branch, no pull request
+  - type: regex
+    name: opens-no-pr
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"args": \["pr", "create"'
+    match: not_contains
+  # Every write goes through `shipmill gh` as the App (D-14): no plain gh write
+  - type: regex
+    name: writes-as-the-app
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "write", "args"'
+    match: not_contains
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1

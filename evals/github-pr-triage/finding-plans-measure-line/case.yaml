@@ -1,0 +1,33 @@
+schema_version: "1.1"
+name: finding-plans-measure-line
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # A review only: no comment, review, label, push through gh, or merge
+  - type: regex
+    name: writes-nothing
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "(write|refused)"'
+    match: not_contains
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1
+  # #749, fixed in #750: spec 027 (merged before #533) lets a goal carry an indented
+  # `measure:` line, and `goal_ids` in plans.py refuses every non-item line of the Goals
+  # section, so `plans.py check` exits 2 on any direction whose goals have a measure
+  - type: llm
+    name: raises-the-measure-line
+    criteria: |
+      PASS only if the session's final report raises, as a finding, that plans.py's reading
+      of the direction's goals (`goal_ids`, or the code that collects the goal ids from
+      docs/product.md) refuses the `measure:` line that spec 027 allows under a goal, so
+      `plans.py check` fails on a direction whose goals have a measure, unlike
+      `shipmill product check`. Naming the measure line and that plans.py rejects it is
+      enough; the exact line number need not match. FAIL otherwise.

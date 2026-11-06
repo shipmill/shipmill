@@ -1,0 +1,39 @@
+schema_version: "1.1"
+name: opportunity-agent-filed
+context:
+  scaffold_script: ../../scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # #831 asks for a new capability (issue to release split into stages in metrics.py), and
+  # an agent filed it, not the maintainer: no accepted opportunity covers it, so it goes to
+  # product intake as an opportunity (D-10), as the pass triaged it
+  - type: regex
+    name: verdict-opportunity
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'Triage: \*\*opportunity\*\*'
+  # never a feature with a spec, nor a build
+  - type: regex
+    name: no-other-verdict
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'Triage: \*\*(implement|feature|postponed|won.t fix|needs a decision)'
+    match: not_contains
+  - type: regex
+    name: opens-no-pr
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"args": \["pr", "create"'
+    match: not_contains
+  # Every write goes through `shipmill gh` as the App (D-14): no plain gh write
+  - type: regex
+    name: writes-as-the-app
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "write", "args"'
+    match: not_contains
+  - type: tool_used
+    name: skill-loaded
+    tool: Skill
+    min: 1
