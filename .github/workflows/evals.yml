@@ -35,6 +35,14 @@ permissions:
 
 env:
   EVALS_MODEL: claude-opus-5-5 # the gate sessions' model, the one place it is written (spec 025)
+  # Workload Identity Federation (#442, S-025-26): none of these ids is a secret, since a token
+  # is minted only for a GitHub OIDC token the rule matches. The rule follows the event: a
+  # same-repo pull request's run uses the pull-request rule (#846), every run on the default
+  # branch `shipmill-evals-main`. Each rule covers only the `shipmill-evals` workspace, so no
+  # ANTHROPIC_WORKSPACE_ID
+  ANTHROPIC_ORGANIZATION_ID: e3767508-33b1-4a4e-82bb-dedd54566ab5
+  ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01QLwU4cCRmN9TW8ZW3NfggY # shipmill-evals
+  ANTHROPIC_FEDERATION_RULE_ID: ${{ github.event_name == 'pull_request' && 'fdrl_01UA2FpuviYTtJHRe7EJskA2' || 'fdrl_01Pk7bGkjpHPcaWhVmDNMffp' }}
 
 concurrency:
   group: evals-${{ github.event.pull_request.number || inputs.pr || github.ref }}
@@ -48,6 +56,7 @@ jobs:
       contents: read
       actions: read # the baseline: the default branch's runs and their artifacts
       pull-requests: read # a dispatched run's read of the pull request's current head
+      id-token: write # GitHub's OIDC token, traded for the Anthropic one (S-025-25)
     steps:
       - name: Refuse a fork's pull request, which runs only by hand (D-16)
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
@@ -130,8 +139,8 @@ jobs:
           } >>"$GITHUB_OUTPUT"
 
       # A dispatched run measures only the head the maintainer read (#545): the pull request's
-      # head is read before any checkout or secret, and the merge ref's head parent after the
-      # checkout, so a push after the read runs no case with ANTHROPIC_API_KEY
+      # head is read before any checkout or Anthropic token, and the merge ref's head parent
+      # after the checkout, so a push after the read runs no case with an Anthropic token
       - name: Read the pull request's head before any checkout (S-025-20)
         if: steps.plan.outputs.sha != ''
         env:
@@ -183,11 +192,16 @@ jobs:
         with:
           python-version: "3.14"
 
-      - run: uv sync --locked
+      # Every command that runs the checkout's code drops the OIDC request variables, which
+      # would let it mint a GitHub OIDC token for any audience (S-025-26)
+      - run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          uv sync --locked
 
       - name: Check the suite, and whether the gate is on (S-025-16)
         id: gate
         run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           uv run shipmill evals check
           if uv run shipmill evals check --gate >"$RUNNER_TEMP/gate.txt"; then
             echo "on=true" >>"$GITHUB_OUTPUT"
@@ -196,36 +210,59 @@ jobs:
           fi
           tail -n 1 "$RUNNER_TEMP/gate.txt" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Check the API key
-        id: key
+      # After the S-025-20 and S-025-21 checks: exchange one GitHub OIDC token now, so a rule
+      # that doesn't match shows before any case runs. No API key, not even as a fallback
+      - name: Mint the Anthropic token (S-025-24, S-025-26)
+        id: token
         env:
-          KEY_SET: ${{ secrets.ANTHROPIC_API_KEY != '' }}
           MODE: ${{ steps.plan.outputs.mode }}
           GATE_ON: ${{ steps.gate.outputs.on }}
         run: |
-          if [ "$KEY_SET" = true ]; then
-            echo "set=true" >>"$GITHUB_OUTPUT"
-            exit 0
+          # One line naming what failed, never a token (S-025-24)
+          no_token() {
+            line="evals: no Anthropic token from Workload Identity Federation ($1), so no case ran"
+            echo "ok=false" >>"$GITHUB_OUTPUT"
+            echo "$line" >>"$GITHUB_STEP_SUMMARY"
+            if [ "$MODE" = pr ] && [ "$GATE_ON" != true ]; then
+              echo "::warning::$line; the gate is off, so the pull request job exits 0"
+              exit 0
+            fi
+            echo "::error::$line"
+            exit 1
+          }
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            no_token "GitHub gave the job no OIDC token request"
           fi
-          echo "set=false" >>"$GITHUB_OUTPUT"
-          line="evals: the repository secret ANTHROPIC_API_KEY is not set, so no case ran"
-          echo "$line" >>"$GITHUB_STEP_SUMMARY"
-          if [ "$MODE" = pr ] && [ "$GATE_ON" != true ]; then
-            echo "::warning::$line; the gate is off, so the pull request job exits 0"
-            exit 0
+          jwt=$(curl -sS --fail -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" | jq -r '.value // empty') || jwt=""
+          [ -n "$jwt" ] || no_token "the GitHub OIDC token request failed"
+          echo "::add-mask::$jwt"
+          # The response holds the Anthropic token: only its status is kept
+          status=$(printf '%s' "$jwt" | jq -Rc '{
+              grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: .,
+              federation_rule_id: env.ANTHROPIC_FEDERATION_RULE_ID,
+              organization_id: env.ANTHROPIC_ORGANIZATION_ID,
+              service_account_id: env.ANTHROPIC_SERVICE_ACCOUNT_ID}' \
+            | curl -sS -o /dev/null -w '%{http_code}' -X POST https://api.anthropic.com/v1/oauth/token \
+                -H 'content-type: application/json' --data-binary @-) || status="no response"
+          if [ "$status" != 200 ]; then
+            no_token "the exchange with rule $ANTHROPIC_FEDERATION_RULE_ID got HTTP $status"
           fi
-          echo "::error::$line"
-          exit 1
+          dir="$RUNNER_TEMP/evals-identity" # never in the checkout the cases clone
+          mkdir -p "$dir"
+          chmod 700 "$dir"
+          echo "dir=$dir" >>"$GITHUB_OUTPUT"
+          echo "ok=true" >>"$GITHUB_OUTPUT"
 
       - name: Install Claude Code
-        if: steps.key.outputs.set == 'true'
+        if: steps.token.outputs.ok == 'true'
         run: |
           npm install --global @anthropic-ai/claude-code
           claude --version
 
       - name: Find the default branch's baseline (S-025-12)
         id: base
-        if: steps.key.outputs.set == 'true' && steps.plan.outputs.mode == 'pr'
+        if: steps.token.outputs.ok == 'true' && steps.plan.outputs.mode == 'pr'
         env:
           GH_TOKEN: ${{ github.token }} # this step's only; the eval run has none
           REPO: ${{ github.repository }}
@@ -260,11 +297,13 @@ jobs:
 
       - name: Run the suite
         id: run
-        if: steps.key.outputs.set == 'true'
+        if: steps.token.outputs.ok == 'true'
         # while the gate is off, a pull request's run reports and never fails the job (S-025-16)
         continue-on-error: ${{ steps.plan.outputs.mode == 'pr' && steps.gate.outputs.on != 'true' }}
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TOKEN_DIR: ${{ steps.token.outputs.dir }}
+          MODE: ${{ steps.plan.outputs.mode }}
+          GATE_ON: ${{ steps.gate.outputs.on }}
           MODEL: ${{ steps.plan.outputs.model }}
           DEFAULT: ${{ github.event.repository.default_branch }}
           ON_MERGE_BASE: ${{ steps.plan.outputs.mode == 'pr' && steps.base.outputs.fresh != 'true' }}
@@ -284,14 +323,47 @@ jobs:
           print(",".join(sorted(found)))
           PY
           }
+          # No token for the run: the S-025-24 line, and nothing to compare
+          auth_failed() {
+            line="evals: no Anthropic token from Workload Identity Federation ($1), so no case ran"
+            echo "auth=failed" >>"$GITHUB_OUTPUT"
+            echo "$line" >>"$GITHUB_STEP_SUMMARY"
+            if [ "$MODE" = pr ] && [ "$GATE_ON" != true ]; then
+              echo "::warning::$line; the gate is off, so the pull request job exits 0"
+              exit 0
+            fi
+            echo "::error::$line"
+            exit 1
+          }
+          # The identity token file holds a fresh GitHub OIDC token before each refresh of the
+          # Anthropic one: each lasts about 5 minutes and is single-use, the Anthropic token
+          # 10, and the client re-reads the file on each refresh (S-025-26). This shell writes
+          # it; the eval run's environment can't request one
+          token_file="$TOKEN_DIR/github-oidc.jwt"
+          fetch_token() {
+            curl -sS --fail -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://api.anthropic.com" \
+              | jq -r '.value // empty' >"$token_file.new" && [ -s "$token_file.new" ] \
+              && mv "$token_file.new" "$token_file"
+          }
+          fetch_token || auth_failed "the GitHub OIDC token request failed"
+          (while sleep 120; do
+            fetch_token || echo "::warning::evals: the OIDC token refresh failed; it retries in 2 minutes"
+          done) &
+          refresher=$!
+          trap 'kill "$refresher" 2>/dev/null || true' EXIT
           # One run of the suite in a tree, its result in an output directory; no GitHub
-          # token in its environment, and the tree's offline gh stub first on PATH
+          # token, no OIDC request variables, and no API key or auth token (they outrank
+          # federation) in its environment, and the tree's offline gh stub first on PATH
           suite() {
             local tree=$1 out=$2 allowed code=0
             allowed=$(tools "$tree")
             [ -n "$allowed" ] || { echo "::error::evals: no case in $tree names its allowed_tools"; return 1; }
             mkdir -p "$out"
-            (cd "$tree" && env -u GH_TOKEN -u GITHUB_TOKEN PATH="$tree/evals/bin:$PATH" \
+            (cd "$tree" && env -u GH_TOKEN -u GITHUB_TOKEN \
+              -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+              -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
+              ANTHROPIC_IDENTITY_TOKEN_FILE="$token_file" PATH="$tree/evals/bin:$PATH" \
               claude plugin eval . --trust-plugin --scaffold --allow-tools "$allowed" \
                 --ablation none --no-publish --model "$MODEL" --runs 3 -j 4 --max-cost-usd 15 \
                 --json "$out/aggregate-result.json") || code=$?
@@ -306,6 +378,9 @@ jobs:
               '{model: $model, commit: $commit, claude: $claude, exit: $code,
                 pr: (if $pr == "" then null else ($pr | tonumber) end),
                 head: (if $head == "" then null else $head end)}' >"$out/meta.json"
+            if [ "$(jq -r '.partialReason // ""' "$out/aggregate-result.json")" = auth_failed ]; then
+              auth_failed "claude plugin eval stopped with partialReason auth_failed"
+            fi
           }
           if [ "$ON_MERGE_BASE" = true ]; then
             merge_base=$(git merge-base "origin/$DEFAULT" HEAD)
@@ -346,11 +421,12 @@ jobs:
           if-no-files-found: error
 
       - name: Compare against the default branch (D-37)
-        if: steps.plan.outputs.mode == 'pr' && steps.run.outcome != 'skipped'
+        if: steps.plan.outputs.mode == 'pr' && steps.run.outcome != 'skipped' && steps.run.outputs.auth != 'failed'
         env:
           GATE_ON: ${{ steps.gate.outputs.on }}
           DEFAULT: ${{ github.event.repository.default_branch }}
         run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           base="$RUNNER_TEMP/evals/base/aggregate-result.json"
           head="$RUNNER_TEMP/evals/head/aggregate-result.json"
           if [ ! -s "$base" ] || [ ! -s "$head" ]; then
