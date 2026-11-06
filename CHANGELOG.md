@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.117.1] - 2026-11-06
+
+### Fixed
+
+- Gate: a handed item a full walk no longer finds loses its hand, so a pull request whose needs-decision question was answered goes to a session on the next tick instead of waiting out `retry_hours` (#926)
+
 ## [0.117.0] - 2026-11-06
 
 ### Changed
@@ -2242,7 +2248,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.1...HEAD
+[0.117.1]: https://github.com/shipmill/shipmill/compare/v0.117.0...v0.117.1
 [0.117.0]: https://github.com/shipmill/shipmill/compare/v0.116.0...v0.117.0
 [0.116.0]: https://github.com/shipmill/shipmill/compare/v0.115.0...v0.116.0
 [0.115.0]: https://github.com/shipmill/shipmill/compare/v0.114.0...v0.115.0
