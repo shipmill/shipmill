@@ -218,9 +218,14 @@ even as a fallback when federation fails.
   own spend limit, so the job sets no `ANTHROPIC_WORKSPACE_ID`
 - **The rule is chosen by the event:** the schedule and every `workflow_dispatch` on the
   default branch, a fork's pinned `pr` and `sha` run included, use `shipmill-evals-main`
-  (`fdrl_01Pk7bGkjpHPcaWhVmDNMffp`, subject `repo:shipmill/shipmill:ref:refs/heads/main`);
-  a same-repo `pull_request` run uses the pull-request rule of shipmill/shipmill#846
-  (`fdrl_01UA2FpuviYTtJHRe7EJskA2`, subject `repo:shipmill/shipmill:pull_request`).
+  (`fdrl_01Pk7bGkjpHPcaWhVmDNMffp`, subject
+  `repo:shipmill@338219604/shipmill@1402792671:ref:refs/heads/main`); a same-repo
+  `pull_request` run uses the pull-request rule of shipmill/shipmill#846
+  (`fdrl_01UA2FpuviYTtJHRe7EJskA2`, subject
+  `repo:shipmill@338219604/shipmill@1402792671:pull_request`). GitHub's `sub` names the
+  owner and the repository with their numeric ids, so a rule written with the bare names
+  refuses every token with `match_subject_prefix`, and a repository created again under
+  the same name never matches.
   `shipmill-evals-main` also pins the `workflow_ref` claim to `evals.yml` on `main`; the
   pull-request rule pins none, since a same-repo branch can edit `evals.yml` anyway
 - **The step that mints the Anthropic token** runs after the S-025-20 and S-025-21 checks
