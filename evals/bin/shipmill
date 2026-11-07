@@ -23,7 +23,17 @@ when the fixture has one: the `--json` record as written there, or its table wit
 which a case's workspace pins, so a case that sets the levels records them as the CLI prints
 them. Without the file, the real program answers.
 
-Every other command (`uvx --from actionlint-py actionlint`, `shipmill product show`)
+`shipmill product show [args]` (spec 024, #941), in either form, answers from the case's
+`.eval/product-show/` when it records that argument list, one file per list, named from the
+arguments after `show`: `--repo PATH` is dropped, `--json` picks the `.json` extension (else
+`.txt`), the rest lose their leading dashes (`--section=goals` as `--section goals`) and join
+with `-`, and no arguments name `all`. So `--section goals --json` is `section-goals.json`,
+`--section non-goals` is `section-non-goals.txt`, and a bare `product show` is `all.txt`. The
+file is the stdout as the real command prints it, which exits 0. The real command reads the
+checkout's docs/product.md through a release uvx can't fetch offline. Without the file, the
+real program answers.
+
+Every other command (`uvx --from actionlint-py actionlint`, `shipmill product check`)
 runs the real program unchanged: the first one on PATH that isn't this shim.
 
 Python 3.10 compatible, standard library only, like the skills' scripts.
@@ -135,6 +145,45 @@ def autonomy_answer(args: list[str]) -> str | None:
     return "".join(line + "\n" for line in lines)
 
 
+def is_repo(arg: str) -> bool:
+    """`--repo` or an abbreviation of it, as argparse reads one"""
+    return len(arg) > 2 and "--repo".startswith(arg)
+
+
+def product_show_name(args: list[str]) -> str | None:
+    """The recording's file name for `product <args>` when it is `show`; None for another
+    subcommand or an argument list no file could be named for"""
+    if not args or args[0] != "show":
+        return None
+    words: list[str] = []
+    extension = ".txt"
+    rest = args[1:]
+    index = 0
+    while index < len(rest):
+        arg = rest[index]
+        if arg == "--json":
+            extension = ".json"
+        elif is_repo(arg):
+            index += 1
+        elif not arg.startswith("--repo="):
+            words += arg.lstrip("-").split("=", 1)
+        index += 1
+    if not all(word and all(c.isalnum() or c == "-" for c in word) for word in words):
+        return None
+    return ("-".join(words) or "all") + extension
+
+
+def product_show_answer(args: list[str]) -> str | None:
+    """`shipmill product show`'s output from the case's `.eval/product-show/` (#941); None
+    when the case records none for these arguments, so the real program answers"""
+    name = product_show_name(args)
+    eval_dir = None if name is None else find_eval(Path.cwd())
+    if name is None or eval_dir is None:
+        return None
+    recorded = eval_dir / "product-show" / name
+    return recorded.read_text(encoding="utf-8") if recorded.is_file() else None
+
+
 def uvx_command(argv: list[str]) -> int | None:
     """The index of the command uvx would run, past its options; None when there is none"""
     index = 0
@@ -223,6 +272,11 @@ def main(argv: list[str]) -> None:
     found = None if given is None else command(given)
     if found is not None and found[0] == "autonomy":
         answer = autonomy_answer(found[1])
+        if answer is not None:
+            sys.stdout.write(answer)
+            return
+    if found is not None and found[0] == "product":
+        answer = product_show_answer(found[1])
         if answer is not None:
             sys.stdout.write(answer)
             return
