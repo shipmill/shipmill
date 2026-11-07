@@ -591,3 +591,11 @@ entry that supersedes it, never by editing an old one.
 - Why: With [agents] app_id set the hook refuses a plain gh write from a session, so the maintainer's chat answer reaches an upgrade issue only as the App's relay; watch_state.py already read that relay as answered and opened the upgrade pull request, but github-pr-triage merged only on an author_association of OWNER, MEMBER, or COLLABORATOR, so an accepted upgrade stalled silently for four days in a connected repo (shipmill/shipmill#932). The maintainer chose option 1 on #932: carry the answer as D-49 and D-68 do, at the cost of trusting the session to relay the chat faithfully; an undo stays by hand (revert the upgrade, or close the pull request, which declines it)
 - Applies to: skills/github-pr-triage/SKILL.md, docs/specs/014-config-upgrades.md, upgrade pull requests, Decision by
 - Enforced by: review, until the implementing PR for #932 amends S-014-13 and adds its S-014 test
+
+## D-71: The evals run only by hand and weekly until the baseline passes 60%
+
+- Decided: 2026-11-07, in shipmill/shipmill#947
+- Rule: Until the default branch's evals baseline passes at least 60% of its runs, .github/workflows/evals.yml has no pull_request trigger and runs only on its weekly schedule and by workflow_dispatch (with or without pr and sha), and D-37's gate is suspended: a pull request touching the agents' instructions lands without an evals check, unless the maintainer dispatched one for its head, which must then be green; the pull_request trigger, and with it D-37's gate, come back through a later pull request once a baseline passes 60%, which ends this suspension; D-37 itself is unchanged
+- Why: On 2026-11-07 the suite ran 11 paid times in about four and a half hours (101.5 USD), almost all on pull requests fixing the eval harness itself; at a 7% baseline the comparison can't tell a worse skill from a broken case, so each run bought harness debugging, not a gate. It suspends D-37 rather than superseding it, since the gate D-37 describes is the one that comes back
+- Applies to: .github/workflows/evals.yml, docs/specs/025-agent-evals.md, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/ci-failures.md, skills/**, evals/**
+- Enforced by: review, until the implementing PR for #947 removes the pull_request trigger
