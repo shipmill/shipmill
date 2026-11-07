@@ -92,14 +92,16 @@ def _matches(pattern: str, path: str) -> bool:
 # S-025-10: the triggers
 
 
-def test_s025_10_runs_on_schedule_and_dispatch_only_while_d71_holds() -> None:
-    # no pull_request trigger until the baseline passes 60% of its runs (D-71, #947)
+def test_s025_10_runs_only_by_hand_while_d72_holds() -> None:
+    # no schedule and no pull_request trigger until the baseline passes 60% of its runs (D-72, #950)
     on = DOC["on"]
     assert isinstance(on, dict)
-    assert sorted(on) == ["schedule", "workflow_dispatch"]
+    assert sorted(on) == ["workflow_dispatch"]
     header = TEXT[: TEXT.index("\nname: evals\n")]
-    assert "No pull_request trigger while D-71 holds (#947)" in header
+    assert "Only by hand while D-72 holds (#950): no schedule and no pull_request trigger." in header
     assert "passes at least 60%" in header
+    assert "schedule:" not in TEXT and "cron" not in TEXT and "weekly" not in TEXT
+    assert "schedule)" not in _script("Choose what this run is")
 
 
 @pytest.mark.parametrize(
@@ -120,20 +122,12 @@ def test_s025_10_runs_on_schedule_and_dispatch_only_while_d71_holds() -> None:
     ],
 )
 def test_s025_10_the_trigger_to_restore_covers_only_the_agents(path: str, runs: bool) -> None:
-    # the header keeps the paths the pull_request trigger comes back with (D-71)
+    # the header keeps the paths the pull_request trigger comes back with (D-72)
     found = re.search(r"^#     paths: (\[.*\])$", TEXT, re.MULTILINE)
     assert found is not None
     paths = json.loads(found[1])
     assert paths == ["skills/**", ".claude-plugin/**", "evals/**", "src/shipmill/gate.py"]
     assert any(_matches(p, path) for p in paths) is runs
-
-
-def test_s025_10_schedule_is_weekly() -> None:
-    schedule = DOC["on"]["schedule"]
-    assert isinstance(schedule, list) and len(schedule) == 1
-    minute, hour, day, month, weekday = schedule[0]["cron"].split()
-    assert (day, month) == ("*", "*")
-    assert re.fullmatch(r"[0-6]", weekday) and minute.isdigit() and hour.isdigit()
 
 
 def test_s025_19_dispatch_takes_a_pr_a_sha_and_a_model() -> None:
@@ -146,7 +140,6 @@ def test_s025_19_dispatch_takes_a_pr_a_sha_and_a_model() -> None:
     ("env", "outputs"),
     [
         ({"EVENT": "pull_request", "PR_EVENT": "41"}, {"mode": "pr", "pr": "41", "ref": "", "sha": ""}),
-        ({"EVENT": "schedule"}, {"mode": "baseline", "pr": "", "ref": "", "sha": ""}),
         ({"EVENT": "workflow_dispatch"}, {"mode": "baseline", "pr": "", "ref": "", "sha": ""}),
         (
             {"EVENT": "workflow_dispatch", "PR_INPUT": "7", "SHA_INPUT": SHA},
@@ -170,6 +163,7 @@ def test_s025_10_each_event_chooses_its_run(tmp_path: Path, env: dict[str, str],
         {"EVENT": "workflow_dispatch", "REF": "refs/heads/feature"},  # the baseline is the default branch's
         {"EVENT": "workflow_dispatch", "PR_INPUT": "7; rm -rf /"},
         {"EVENT": "push"},
+        {"EVENT": "schedule"},  # only by hand while D-72 holds (#950)
     ],
 )
 def test_s025_10_a_run_elsewhere_is_refused(tmp_path: Path, env: dict[str, str]) -> None:
@@ -772,3 +766,73 @@ def test_s025_26_every_command_that_runs_the_checkouts_code_drops_the_oidc_reque
         run = str(step.get("run", ""))
         if "uv " in run:
             assert run.startswith(f"unset {' '.join(OIDC)}\n"), step.get("name")
+
+
+# S-025-31, S-025-32: a run explains each case that did not pass, and keeps its traces (D-72)
+
+EXPLAIN = "Explain the cases that did not pass (S-025-31, S-025-32)"
+
+
+def test_s025_32_the_breakdown_runs_after_the_suite_and_before_the_upload() -> None:
+    step = _step(EXPLAIN)
+    assert step["if"] == "always() && steps.run.outcome != 'skipped'"
+    assert _index("Run the suite") < _index(EXPLAIN) < _index("Upload the result and the report")
+    # the traces land in the head's directory, which the evals-result artifact uploads
+    upload = _step("Upload the result and the report")
+    assert upload["with"]["name"] == "evals-result"
+    assert "${{ runner.temp }}/evals/head/" in upload["with"]["path"].split("\n")
+
+
+def test_s025_32_traces_and_gh_logs_are_copied_and_the_breakdown_reaches_the_summary(tmp_path: Path) -> None:
+    tree, temp, scratch, bin_dir = tmp_path / "tree", tmp_path / "temp", tmp_path / "scratch", tmp_path / "bin"
+    for d in (tree / "evals" / "s" / "c", temp, scratch, bin_dir):
+        d.mkdir(parents=True)
+    secret = tmp_path / "evals-identity" / "github-oidc.jwt"
+    secret.parent.mkdir()
+    secret.write_text("a token\n")
+    trace = tmp_path / "run1" / "out" / "trace.jsonl"
+    trace.parent.mkdir(parents=True)
+    trace.write_text('{"type": "assistant"}\n')
+    linked = tmp_path / "run2" / "out" / "trace.jsonl"
+    linked.parent.mkdir(parents=True)
+    linked.symlink_to(secret)
+    head = temp / "evals" / "head"
+    head.mkdir(parents=True)
+    runs = [{"error": None, "tracePath": str(trace)}, {"error": None, "tracePath": str(linked)}, {"error": "x"}]
+    cases = [
+        {"name": "c", "dir": "evals/s/c", "arms": {"with": runs}},
+        {"name": "up", "dir": "evals/../up", "arms": {"with": [{"tracePath": str(trace)}]}},
+    ]
+    (head / "aggregate-result.json").write_text(json.dumps({"schemaVersion": 1, "partial": False, "cases": cases}))
+
+    def workspace(name: str, case_dir: str, log: str | None) -> Path:
+        marker = scratch / name / "work" / ".eval" / "case"
+        marker.parent.mkdir(parents=True)
+        marker.write_text(case_dir + "\n")
+        if log is not None:
+            (marker.parent / "gh.jsonl").write_text(log)
+        return marker.parent / "gh.jsonl"
+
+    workspace("a", f"{tree.resolve()}/evals/s/c", '{"kind": "miss", "args": ["pr", "checks", "41"]}\n')
+    workspace("b", "/elsewhere/evals/s/c", '{"kind": "read", "args": []}\n')  # another tree's case
+    workspace("c", f"{tree.resolve()}/evals/s/c", None).symlink_to(secret)  # a link a session left
+    (bin_dir / "uv").write_text(f'#!/bin/sh\necho "$*" >> {tmp_path / "uv.log"}\necho "### evals: stub"\n')
+    (bin_dir / "uv").chmod(0o755)
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "RUNNER_TEMP": str(temp), "GITHUB_WORKSPACE": str(tree)}
+    code, out, _ = _bash(EXPLAIN, tmp_path, TMPDIR=str(scratch), **env)
+    assert (code, out) == (0, "")
+    copied = sorted(p.relative_to(head / "traces").as_posix() for p in (head / "traces").rglob("*") if p.is_file())
+    assert copied == ["s/c/gh-1.jsonl", "s/c/run-1.jsonl"]
+    assert (head / "traces" / "s" / "c" / "gh-1.jsonl").read_text().startswith('{"kind": "miss"')
+    assert "a token" not in "".join(p.read_text() for p in (head / "traces").rglob("*") if p.is_file())
+    result = head / "aggregate-result.json"
+    assert (tmp_path / "uv.log").read_text() == f"run shipmill evals explain --result {result} --traces {head}/traces\n"
+    assert (tmp_path / "summary").read_text() == "\n### evals: stub\n"
+
+
+def test_s025_32_a_run_with_no_result_explains_nothing(tmp_path: Path) -> None:
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    env = {"RUNNER_TEMP": str(temp), "GITHUB_WORKSPACE": str(tmp_path), "TMPDIR": str(tmp_path / "none")}
+    code, out, _ = _bash(EXPLAIN, tmp_path, **env)
+    assert (code, out, (tmp_path / "summary").read_text()) == (0, "", "")

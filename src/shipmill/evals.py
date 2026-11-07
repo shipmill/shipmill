@@ -784,3 +784,349 @@ def _run_passed(run: object, where: str, fail: Callable[[str], ReleaseError]) ->
     if not scored:
         raise fail(f"{where}: no scored grader, so the run neither passed nor failed")
     return all(scored)
+
+
+# `explain` (D-72, #950): why each case of one run did not pass, from the run's own files and
+# with no model call. Of each run it reads, beside what `_run_passed` reads, `turns`,
+# `costUsd`, `durationSeconds`, `tracePath`, and each grader's `explanation`. A trace is the
+# session's JSON lines; its last assistant text is a line `{"type": "assistant", "message":
+# {"content": [{"type": "text", "text": ...}]}}`. With a traces directory, run n of a case's
+# trace is `<traces>/<case>/run-<n>.jsonl` and the case's `.eval/gh.jsonl` logs, one per
+# workspace, are `<traces>/<case>/gh-*.jsonl`, as the evals workflow copies them; without
+# one, a run's trace is its `tracePath` and no log is read.
+NO_MISS = "no-miss"  # the shared grader that fails a run on a `miss` in .eval/gh.jsonl
+SHOWN = 300  # the characters of an error, an explanation, or a message a line shows
+_UNREAD_TARGET = re.compile(
+    r"no such file|not found|does not exist|ENOENT|could not read|cannot read|can't read|unreadable", re.I
+)
+_API_ERROR = re.compile(r"\bAPI error\b|\boverloaded|\brate.?limit", re.I)
+_SCAFFOLD = re.compile(r"scaffold|fixture", re.I)
+
+
+class Verdict(StrEnum):
+    HARNESS = "harness"
+    AGENT = "agent"
+
+
+@dataclass(frozen=True, slots=True)
+class Grade:
+    name: str
+    passed: bool
+    scored: bool
+    explanation: str
+
+
+@dataclass(frozen=True, slots=True)
+class Run:
+    """One run of a case, as `explain` reads it"""
+
+    number: int  # from 1, its place in arms.with
+    passed: bool
+    error: str | None
+    aborted: bool
+    skipped_paid: bool
+    turns: float | None
+    cost: float | None
+    seconds: float | None
+    trace: str | None  # tracePath, as written
+    grades: tuple[Grade, ...]
+
+    @property
+    def failed_grades(self) -> tuple[Grade, ...]:
+        return tuple(g for g in self.grades if not g.passed)
+
+    def verdict(self) -> tuple[Verdict, str]:
+        """Harness or agent, and why: the first rule that holds, in this order. A failed run
+        no harness rule places reads agent, with the reason it fell through"""
+        error = self.error or ""
+        failed = [g for g in self.failed_grades if g.scored]
+        if _API_ERROR.search(error):
+            return Verdict.HARNESS, "an API error"
+        if _SCAFFOLD.search(error):
+            return Verdict.HARNESS, "the scaffold or the case's fixture failed"
+        if error and not self.turns:
+            return Verdict.HARNESS, "the session never took a turn"
+        if any(g.name == NO_MISS for g in failed):
+            return Verdict.HARNESS, "a gh read with no recording (a miss in .eval/gh.jsonl)"
+        unread = [g.name for g in failed if _UNREAD_TARGET.search(g.explanation)]
+        if unread:
+            return Verdict.HARNESS, f"a grader can't read its target: {', '.join(unread)}"
+        if self.skipped_paid:
+            return Verdict.HARNESS, "its paid graders were skipped"
+        if error:
+            return Verdict.AGENT, f"the session ran and stopped: {_line(error)}"
+        if failed:
+            return Verdict.AGENT, f"the session ran and graders failed: {', '.join(g.name for g in failed)}"
+        why = "aborted, with no error and no failed grader" if self.aborted else "no error and no failed grader"
+        return Verdict.AGENT, f"it fell through every harness rule: {why}"
+
+
+@dataclass(frozen=True, slots=True)
+class CaseRuns:
+    path: PurePosixPath  # relative to evals/
+    runs: tuple[Run, ...]
+
+    @property
+    def failed(self) -> tuple[Run, ...]:
+        return tuple(r for r in self.runs if not r.passed)
+
+
+@dataclass(frozen=True, slots=True)
+class Explained:
+    """One runner result, every case's runs; `stopped` is the partialReason of a run stopped early"""
+
+    cases: tuple[CaseRuns, ...]
+    stopped: str | None
+
+
+def read_runs(path: Path) -> Explained:
+    """A runner's aggregate-result.json for `explain`: every case and run, a partial one too;
+    ReleaseError naming the file and the fault when it is missing or malformed"""
+    name = str(path)
+
+    def fail(why: str) -> ReleaseError:
+        return ReleaseError(f"{name}: {why}")
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise fail("no such file") from None
+    except IsADirectoryError:
+        raise fail("a directory, not a runner's aggregate-result.json") from None
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise fail(f"not valid JSON: {exc}") from None
+    if not isinstance(raw, dict):
+        raise fail("the result is a JSON object")
+    version = raw.get("schemaVersion")
+    if version != 1 or isinstance(version, bool):
+        raise fail(f"schemaVersion is 1, the runner format this reads; got {version!r}")
+    partial = raw.get("partial")
+    if not isinstance(partial, bool):
+        raise fail(f"partial is true or false; got {partial!r}")
+    reason = raw.get("partialReason")
+    stopped = (reason if isinstance(reason, str) and reason else "no partialReason") if partial else None
+    cases = raw.get("cases")
+    if not isinstance(cases, list):
+        raise fail(f"cases is a list of cases; got {cases!r}")
+    read: list[CaseRuns] = []
+    seen: set[PurePosixPath] = set()
+    for number, case in enumerate(cases, 1):
+        if not isinstance(case, dict) or not isinstance(case.get("name"), str) or not case["name"]:
+            raise fail(f"case {number} is an object with a non-empty name, a dir, and its runs")
+        text = case.get("dir")
+        inside = text.removeprefix(f"{SUITE}/") if isinstance(text, str) else None
+        if inside is None or inside == text or not case_path_ok(inside):
+            raise fail(
+                f"case {case['name']!r}: dir is the case's directory under evals/, such as evals/<skill>/<case>;"
+                f" got {text!r}"
+            )
+        case_path = PurePosixPath(inside)
+        if case_path in seen:
+            raise fail(f"case {case['name']!r}: dir {text!r} is listed twice")
+        seen.add(case_path)
+        arms = case.get("arms")
+        runs = arms.get("with") if isinstance(arms, dict) else None
+        if not isinstance(runs, list):
+            raise fail(f"{inside}: arms.with is a list of runs; got {runs!r}")
+        read.append(
+            CaseRuns(case_path, tuple(_run(run, n, f"{inside}: run {n}", fail) for n, run in enumerate(runs, 1)))
+        )
+    return Explained(tuple(read), stopped)
+
+
+def _run(raw: object, number: int, where: str, fail: Callable[[str], ReleaseError]) -> Run:
+    if not isinstance(raw, dict):
+        raise fail(f"{where} is an object with its grader results")
+    error = raw.get("error")
+    if error is not None and not isinstance(error, str):
+        raise fail(f"{where}: error is text or null; got {error!r}")
+    trace = raw.get("tracePath")
+    if trace is not None and not isinstance(trace, str):
+        raise fail(f"{where}: tracePath is a path or null; got {trace!r}")
+    numbers: dict[str, float | None] = {}
+    for key in ("turns", "costUsd", "durationSeconds"):
+        value = raw.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int | float) or value < 0):
+            raise fail(f"{where}: {key} is a number from 0; got {value!r}")
+        numbers[key] = None if value is None else float(value)
+    grades: list[Grade] = []
+    listed = raw.get("graders", [])
+    if not isinstance(listed, list):
+        raise fail(f"{where}: graders is a list of grader results; got {listed!r}")
+    for n, grader in enumerate(listed, 1):
+        at = f"{where}: grader {n}"
+        if not isinstance(grader, dict) or not isinstance(grader.get("name"), str) or not grader["name"]:
+            raise fail(f"{at} is an object with a non-empty name")
+        passed, scored = grader.get("passed"), grader.get("scored", True)
+        if not isinstance(passed, bool) or not isinstance(scored, bool):
+            raise fail(f"{at}: passed and scored are true or false; got {passed!r}, {scored!r}")
+        explanation = grader.get("explanation")
+        if explanation is not None and not isinstance(explanation, str):
+            raise fail(f"{at}: explanation is text; got {explanation!r}")
+        grades.append(Grade(grader["name"], passed, scored, explanation or ""))
+    # an errored, aborted, or half-graded run fails before its graders are read (S-025-9)
+    errored = error is not None or raw.get("aborted") is True or raw.get("skippedPaidGraders") is True
+    passed_run = False if errored else _run_passed(raw, where, fail)
+    return Run(
+        number,
+        passed_run,
+        error,
+        raw.get("aborted") is True,
+        raw.get("skippedPaidGraders") is True,
+        numbers["turns"],
+        numbers["costUsd"],
+        numbers["durationSeconds"],
+        trace,
+        tuple(grades),
+    )
+
+
+def explain(result: Explained, traces: Path | None) -> str:
+    """The Markdown section for the job summary: one entry per case with a failed run, each
+    failed run's verdict and why, its error, failed graders, turns, cost, duration, and the
+    last assistant message of its trace; a missing or unreadable trace is said on its line"""
+    ran = [c for c in result.cases if c.runs]
+    failing = [c for c in ran if c.failed]
+    lines: list[str] = []
+    if not failing:
+        lines.append(f"### evals: every case passed ({len(ran)} of {len(ran)})")
+    else:
+        lines += [
+            f"### evals: why {len(failing)} of {len(ran)} cases did not pass",
+            "",
+            "Each verdict is read from the run's own files, with no model call: **harness** when the harness"
+            " failed the run, **agent** when the session ran and did the wrong thing.",
+        ]
+    for case in failing:
+        logs = _gh_logs(traces / case.path) if traces is not None else None
+        verdicts = [run.verdict() for run in case.failed]
+        harness = any(v is Verdict.HARNESS for v, _ in verdicts) or bool(logs and logs.misses)
+        passed = len(case.runs) - len(case.failed)
+        lines += [
+            "",
+            f"#### {case.path}: {Verdict.HARNESS if harness else Verdict.AGENT}, {passed}/{len(case.runs)} runs passed",
+            "",
+        ]
+        for run, (verdict, why) in zip(case.failed, verdicts, strict=True):
+            lines.append(f"- Run {run.number}: **{verdict}**, {why}. {_spent(run)}")
+            if run.error:
+                lines.append(f"  - error: {_line(run.error)}")
+            for grade in run.failed_grades:
+                scored = "" if grade.scored else " (not scored)"
+                lines.append(f"  - grader {grade.name} failed{scored}: {_line(grade.explanation) or 'no explanation'}")
+            lines.append("  - " + _last_message(run, traces / case.path if traces is not None else None))
+        if logs is not None:
+            lines.append(f"- gh.jsonl: {logs}")
+    not_run = [c for c in result.cases if not c.runs]
+    if not_run:
+        lines += ["", f"Not run, the run stopped first ({result.stopped}): {', '.join(str(c.path) for c in not_run)}"]
+    return "\n".join(lines) + "\n"
+
+
+def _spent(run: Run) -> str:
+    turns = "turns unknown" if run.turns is None else f"{run.turns:g} turns"
+    cost = "cost unknown" if run.cost is None else f"{run.cost:.2f} USD"
+    seconds = "duration unknown" if run.seconds is None else f"{run.seconds:g} s"
+    return f"{turns}, {cost}, {seconds}"
+
+
+def _line(text: str) -> str:
+    """Text on one line, cut to SHOWN characters"""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= SHOWN else flat[: SHOWN - 1] + "…"
+
+
+def _last_message(run: Run, case_traces: Path | None) -> str:
+    """The run's last assistant text, or the line saying why there is none"""
+    if case_traces is not None:
+        trace = case_traces / f"run-{run.number}.jsonl"
+        if not trace.is_file():
+            return "trace: none in --traces for this run"
+    elif run.trace is None:
+        return "trace: the run names no tracePath"
+    else:
+        trace = Path(run.trace)
+        if not trace.is_file():
+            return f"trace: {trace} is missing"
+    try:
+        text = trace.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return f"trace: {trace.name} is not UTF-8"
+    last: str | None = None
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            return f"trace: line {number} of {trace.name} is not JSON"
+        said = _assistant_text(entry)
+        if said:
+            last = said
+    if last is None:
+        return f"trace: {trace.name} holds no assistant text"
+    return f"last message: {_line(last)}"
+
+
+def _assistant_text(entry: object) -> str:
+    if not isinstance(entry, dict) or entry.get("type") != "assistant":
+        return ""
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    texts = [
+        b["text"] for b in content if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+    ]
+    return "\n".join(texts)
+
+
+@dataclass(frozen=True, slots=True)
+class _GhLogs:
+    logs: int
+    misses: int
+    first: str | None  # the first miss's call
+    unread: tuple[str, ...]  # a log's line that isn't a JSON object
+
+    def __str__(self) -> str:
+        if not self.logs:
+            return "no log in --traces"
+        plural = "log" if self.logs == 1 else "logs"
+        said = f"{self.misses} miss{'' if self.misses == 1 else 'es'} in {self.logs} {plural}"
+        if self.first is not None:
+            said += f", the first `{self.first}`"
+        if self.unread:
+            said += f"; unreadable: {', '.join(self.unread)}"
+        return said
+
+
+def _gh_logs(case_traces: Path) -> _GhLogs:
+    files = sorted(case_traces.glob("gh-*.jsonl")) if case_traces.is_dir() else []
+    misses = 0
+    first: str | None = None
+    unread: list[str] = []
+    for file in files:
+        try:
+            text = file.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            unread.append(f"{file.name} is not UTF-8")
+            continue
+        for number, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                unread.append(f"{file.name} line {number}")
+                continue
+            if not isinstance(entry, dict):
+                unread.append(f"{file.name} line {number}")
+                continue
+            if entry.get("kind") == "miss":
+                misses += 1
+                args = entry.get("args")
+                if first is None and isinstance(args, list):
+                    first = _line("gh " + " ".join(str(a) for a in args)).replace("`", "'")
+    return _GhLogs(len(files), misses, first, tuple(unread))

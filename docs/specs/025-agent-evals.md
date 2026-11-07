@@ -187,14 +187,17 @@ it passes:
 - **On a pull request** that touches `skills/**`, `.claude-plugin/**`, `evals/**`, or
   `src/shipmill/gate.py` (the gate's `Gate session:` and `Headless:` paragraphs are part
   of every session's instructions). Skills have no `agents/**` at the root; each skill's
-  `agents/openai.yaml` is under `skills/**` already. Suspended by D-71 (#947): until the
-  default branch's baseline passes at least 60% of its runs, `evals.yml` has no
-  `pull_request` trigger and keeps these paths in its header for the pull request that
-  restores it; meanwhile a pull request is evaluated only when the maintainer dispatches
-  `gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>` for it
-- **On a schedule**, weekly, and by hand (`workflow_dispatch`), on the default branch: a
-  model update changes behaviour with no change here, and this run is the baseline the
-  pull requests compare against
+  `agents/openai.yaml` is under `skills/**` already. Suspended by D-72 (#950, which
+  supersedes D-71 of #947): until the default branch's baseline passes at least 60% of its
+  runs, `evals.yml` has no `pull_request` trigger and keeps these paths in its header for
+  the pull request that restores it; meanwhile a pull request is evaluated only when the
+  maintainer dispatches `gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>` for it
+- **By hand** (`workflow_dispatch`) on the default branch, and only by hand while D-72
+  holds: no schedule either, so no money goes on a run nobody asked for while the baseline
+  fails most of its runs. A plain dispatched run is the baseline the pull requests compare
+  against, and a model update shows when the maintainer dispatches one. The baseline is
+  only as fresh as the last plain dispatched run: 14 days after it, a pull request's
+  dispatched run runs the merge base first (S-025-12)
 - **Not for a pull request from a fork:** a case's scaffold runs the repository's bash and
   the run needs an Anthropic token, so as with unattended sessions (D-16) the job runs only
   for a head in the repository. A fork's pull request gets no OIDC token from GitHub anyway,
@@ -254,7 +257,7 @@ even as a fallback when federation fails.
   secret or variable: they are not secrets, since a token is minted only for a GitHub OIDC
   token the rule matches. Both rules cover only the `shipmill-evals` workspace, which has its
   own spend limit, so the job sets no `ANTHROPIC_WORKSPACE_ID`
-- **The rule is chosen by the event:** the schedule and every `workflow_dispatch` on the
+- **The rule is chosen by the event:** every `workflow_dispatch` on the
   default branch, a fork's pinned `pr` and `sha` run included, use `shipmill-evals-main`
   (`fdrl_01Pk7bGkjpHPcaWhVmDNMffp`, subject
   `repo:shipmill@338219604/shipmill@1402792671:ref:refs/heads/main`); a same-repo
@@ -323,10 +326,10 @@ compares the cases both hold, and exits 1 when any of these holds, 0 otherwise:
 
 It prints one line per case that moved (`regressed`, `improved`, `new failing`), then the
 two pass rates, so the failing check names the cases that broke. The base is the
-`aggregate-result.json` of the latest successful scheduled or dispatched run on the
-default branch, fetched from its artifact. When there is none, or it is older than 14 days,
-or its pinned model differs from the head's, the job first runs the suite on the pull
-request's merge base and compares against that, as it does when that result ran no case.
+`aggregate-result.json` of the latest successful dispatched run on the default branch
+(or a scheduled one kept before D-72, while it is fresh), fetched from its artifact. When
+there is none, or it is older than 14 days, or its pinned model differs from the head's,
+the job first runs the suite on the pull request's merge base and compares against that, as it does when that result ran no case.
 A run on the default branch becomes the baseline only when it finished (not `partial`) and
 at least one of its runs took a turn and ended without an error: a run whose every case
 errored before it started, as when the runner refused every case's scaffold
@@ -338,10 +341,41 @@ A failing `evals` check is a red check like any other: github-pr-triage's `pr_ga
 merges only on a green rollup, so a pull request that regresses the agents does not land
 until it is fixed (D-37). `skills/github-pr-triage/SKILL.md` says so beside hard rule 2:
 a red `evals` check is never "proven unrelated", since it is the measure of the change
-itself; only the maintainer accepting that run lets it land. While D-71 holds, no `evals`
+itself; only the maintainer accepting that run lets it land. While D-72 holds, no `evals`
 check comes on its own, so a pull request touching the agents' instructions lands without
 one and nothing waits for it; a run the maintainer dispatched for its head is still a check
 that counts, and must be green.
+
+### A run says why its cases failed
+
+A run's pass rates and moved cases say which cases failed, never why: the reasons sit in
+`aggregate-result.json` and the HTML report, and the session traces stayed in the
+runner's `/tmp`, so on 2026-11-07 each harness bug was found by reading logs by hand after
+a full paid run (#947). So every run explains its failures (D-72, #950):
+
+- `shipmill evals explain --result <aggregate-result.json> [--traces <dir>]` prints a
+  Markdown section with one entry per case that has a failed run. For each failed run it
+  gives its error when it has one (an API error, a timeout, a turn limit), each failed
+  grader with its `explanation`, the run's turns, cost, and duration, the last assistant
+  message of its trace, and a verdict: **harness** (an API error, a scaffold or fixture
+  error, a session that never took a turn, a failed shared `no-miss` grader, a grader whose
+  explanation says it can't read its target, or skipped paid graders) or **agent** (the
+  session ran and did the wrong thing). A run no harness rule places reads **agent** with
+  the reason it fell through; a case is **harness** when any failed run of it is, or its
+  `.eval/gh.jsonl` logs hold a `miss`. It reads only the run's own files and makes no model
+  call; a missing or unreadable trace is said on its line instead of failing the breakdown,
+  and a malformed result is bad input (exit 2)
+- With `--traces`, run n's trace is `<dir>/<case>/run-<n>.jsonl` and the case's
+  `.eval/gh.jsonl` logs are `<dir>/<case>/gh-*.jsonl`; without it, a run's trace is its
+  `tracePath` and no log is read. The trace is read as JSON lines whose last
+  `{"type": "assistant"}` line's text blocks are the last message
+- `evals.yml` runs it after "Run the suite", with `always()` whenever the run step ran, and
+  appends its output to the job summary. Before that, it copies each run's `tracePath`,
+  and the `.eval/gh.jsonl` of each workspace under the runner's temporary directory whose
+  `.eval/case` names a case of the run's tree, into `traces/` beside the result, so the
+  `evals-result` artifact holds them and the breakdown can be checked against them. It
+  copies only regular files, never a link a session left, so no token file reaches the
+  artifact
 
 ### What it costs
 
@@ -368,16 +402,16 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 ### Where it lives
 
 - `evals/`: the cases, `cases.toml`, `scaffold.sh`, `bin/gh`, and its `bin/shipmill` and `bin/uvx` shims
-- `src/shipmill/evals.py` and `src/shipmill/cli.py`: `shipmill evals check` and
-  `shipmill evals compare`
+- `src/shipmill/evals.py` and `src/shipmill/cli.py`: `shipmill evals check`,
+  `shipmill evals compare`, and `shipmill evals explain`
 - `.github/workflows/evals.yml`: the runs and their federation ids; `.github/workflows/ci.yml`:
   `shipmill evals check`
 - `docs/evals.md`: how to run a case locally, record one, and read a failing gate
 - `docs/postmortems/TEMPLATE.md` and the skills' "Improve the skill" sections
 - `skills/github-pr-triage/SKILL.md`: a red `evals` check blocks the merge (D-37), and a
-  fork's dispatched run counts only for the head SHA it recorded; while D-71 holds, no
+  fork's dispatched run counts only for the head SHA it recorded; while D-72 holds, no
   `evals` check is waited for unless the maintainer dispatched one for the head
-- `docs/decisions.md`: D-37, and D-71, which suspends its gate
+- `docs/decisions.md`: D-37, and D-72, which suspends its gate and keeps the runs by hand
 - `.gitignore`: `evals/results/`
 
 ## Acceptance criteria
@@ -391,14 +425,14 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-7: `evals/` holds at least 20 cases from shipmill's own history, at least 8 `verdict`, 4 `decision`, 4 `finding`, and 4 `fix`, and every one passes at least 2 of 3 runs on the default branch when the spec's build ends
 - S-025-8: `shipmill evals compare` exits 1 when the head's suite pass rate is more than 0.05 below the base's, when a case that passed 3 of 3 base runs passes at most 1 of 3 head runs, or when a new or changed case passes fewer than 2 of 3 head runs, and prints one line per regressed, improved, new failing, or removed case and both pass rates; it exits 0 otherwise
 - S-025-9: `shipmill evals compare` computes pass rates from the per-run grader results in `aggregate-result.json`, counting a run as passed only when every scored grader passed
-- S-025-10: `.github/workflows/evals.yml` runs on a pull request touching `skills/**`, `.claude-plugin/**`, `evals/**`, or `src/shipmill/gate.py`, weekly on the default branch, and by `workflow_dispatch`, and on no other pull request. Amended by D-71 (#947): until the default branch's baseline passes at least 60% of its runs, it runs only weekly on the default branch and by `workflow_dispatch` (with or without `pr` and `sha`), has no `pull_request` trigger, and its header names D-71, the 60% condition, and the paths the trigger comes back with
+- S-025-10: `.github/workflows/evals.yml` runs on a pull request touching `skills/**`, `.claude-plugin/**`, `evals/**`, or `src/shipmill/gate.py`, and by `workflow_dispatch`, and on no other pull request. Amended by D-71 (#947), then D-72 (#950): until that baseline passes at least 60% of its runs, it runs only by hand, by `workflow_dispatch` on the default branch (with or without `pr` and `sha`), with no schedule and no `pull_request` trigger, and its header names D-72, the 60% condition, and the paths the trigger comes back with
 - S-025-11: The evals job runs `claude plugin eval` with `--ablation none`, `--no-publish`, `--model` set to the gate sessions' model, `--runs 3`, `-j 4`, and `--max-cost-usd 15`, with no GitHub token in the run's environment and `.eval/bin:../.eval/bin:../../.eval/bin` first on `PATH` (S-025-29), uploads the JSON result and the HTML report, and writes the moved cases, both pass rates, and the spend to the job summary
-- S-025-12: The pull request job compares against the latest successful default-branch run's result, and runs the suite on the merge base first when that result is missing, older than 14 days, or from a different model; while D-71 holds, the pull request job is only a run the maintainer dispatched with `pr` and `sha`, which does the same
+- S-025-12: The pull request job compares against the latest successful default-branch run's result, and runs the suite on the merge base first when that result is missing, older than 14 days, or from a different model; while D-72 holds, the pull request job is only a run the maintainer dispatched with `pr` and `sha`, which does the same, and the baseline is the latest plain dispatched run's (or a scheduled run's kept before D-72)
 - S-025-13: dropped in #603, see S-025-18: the command the fork refusal prints names the head SHA
 - S-025-14: A run that reaches `--max-cost-usd` fails the gate with `evals: budget reached after <n> of <m> runs` and compares nothing
 - S-025-15: `docs/postmortems/TEMPLATE.md` has an `## Eval case` section, and the "Improve the skill" section of every skill under `skills/` says to add a failing case under `evals/` with the lesson
-- S-025-16: `shipmill evals check --gate` exits 1 naming the kinds short of the first suite's counts (8 `verdict`, 4 `decision`, 4 `finding`, 4 `fix`), and while it does, the evals pull request job reports the comparison and exits 0; while D-71 holds, that job is only a run the maintainer dispatched with `pr` and `sha`, and a pull request with no such run has no `evals` check
-- S-025-17: `skills/github-pr-triage/SKILL.md` says a red `evals` check is never proven unrelated and blocks the merge unless the maintainer accepts that run; while D-71 holds, it and `references/ci-failures.md` say a pull request touching the agents' instructions waits on no `evals` check, and a run the maintainer dispatched for its head counts and must be green
+- S-025-16: `shipmill evals check --gate` exits 1 naming the kinds short of the first suite's counts (8 `verdict`, 4 `decision`, 4 `finding`, 4 `fix`), and while it does, the evals pull request job reports the comparison and exits 0; while D-72 holds, that job is only a run the maintainer dispatched with `pr` and `sha`, and a pull request with no such run has no `evals` check
+- S-025-17: `skills/github-pr-triage/SKILL.md` says a red `evals` check is never proven unrelated and blocks the merge unless the maintainer accepts that run; while D-72 holds, it and `references/ci-failures.md` say a pull request touching the agents' instructions waits on no `evals` check, and a run the maintainer dispatched for its head counts and must be green
 - S-025-18: On a pull request from a fork the evals job runs no case and fails, never skips, with the line `evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>`, the pull request's number and the event's full head SHA filled in, as its error and in its summary
 - S-025-19: `.github/workflows/evals.yml`'s `workflow_dispatch` takes a `sha` input beside `pr`; a dispatch with `pr` and no `sha`, with a `sha` that is not 40 hexadecimal characters, or with `sha` and no `pr` exits 1 naming the input before any checkout, and a dispatch with neither runs as the baseline
 - S-025-20: A dispatched run with `pr` reads the pull request's current head SHA before any checkout and before the step that mints the Anthropic token (S-025-26), and when it differs from `sha` runs no case and exits 1 with `evals: the head of #<N> is <current SHA>, not <sha>; read the new commits and dispatch again with -f sha=<current SHA>` as the job's error and in its summary
@@ -407,12 +441,14 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-23: `skills/github-pr-triage/SKILL.md` says a fork's dispatched `evals` run counts only while the head SHA it recorded is the pull request's current head, and a push after the run needs a new dispatch naming the new SHA
 - S-025-24: When the evals job gets no GitHub OIDC token or the Anthropic token exchange fails, it runs no case and writes `evals: no Anthropic token from Workload Identity Federation (<reason>), so no case ran` to its summary, as a warning with exit 0 on a pull request while the gate is off and as its error with exit 1 otherwise; a run the runner stops with `partialReason: auth_failed` writes the same line and compares nothing
 - S-025-25: No step of `.github/workflows/evals.yml` reads `secrets.ANTHROPIC_API_KEY`, and the `evals` job has `permissions: id-token: write`
-- S-025-26: The step that mints the Anthropic token requests GitHub's OIDC token with audience `https://api.anthropic.com`, writes it under `$RUNNER_TEMP` and never in the checkout, and exchanges it with the federation rule chosen by the event (`shipmill-evals-main`, `fdrl_01Pk7bGkjpHPcaWhVmDNMffp`, for the schedule and every `workflow_dispatch`; the pull-request rule of #846, `fdrl_01UA2FpuviYTtJHRe7EJskA2`, for a same-repo `pull_request` run), the organization and service account ids written in the workflow's `env`; the eval run gets `ANTHROPIC_IDENTITY_TOKEN_FILE` and those ids, and holds no `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL`, or `ACTIONS_ID_TOKEN_REQUEST_TOKEN`
+- S-025-26: The step that mints the Anthropic token requests GitHub's OIDC token with audience `https://api.anthropic.com`, writes it under `$RUNNER_TEMP` and never in the checkout, and exchanges it with the federation rule chosen by the event (`shipmill-evals-main`, `fdrl_01Pk7bGkjpHPcaWhVmDNMffp`, for every `workflow_dispatch`; the pull-request rule of #846, `fdrl_01UA2FpuviYTtJHRe7EJskA2`, for a same-repo `pull_request` run), the organization and service account ids written in the workflow's `env`; the eval run gets `ANTHROPIC_IDENTITY_TOKEN_FILE` and those ids, and holds no `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL`, or `ACTIONS_ID_TOKEN_REQUEST_TOKEN`
 
 - S-025-27: Every case's `context.scaffold_script` is `scaffold.sh` inside the case's directory, the same file in every case, which, started as the runner starts it (in place, in the empty workspace, with no argument), leaves the workspace as S-025-6 says; `shipmill evals check` exits 1 naming the case for a `scaffold_script` with `..` or an absolute path, or one that is not a file in the case's directory
 - S-025-28: A run on the default branch none of whose runs took a turn and ended without an error is never kept as the baseline: the step fails with `evals: no case ran (<errored> of <runs> runs errored, <turns> turns), so the run is no baseline` as its error and in the job summary, and the pull request job runs the merge base instead of comparing against a baseline kept before this check that ran no case
 - S-025-29: `evals/scaffold.sh` leaves a copy of `evals/bin/` at `.eval/bin/` in the workspace, and `.github/workflows/evals.yml` puts no directory of the checkout on the run's `PATH`, only `.eval/bin:../.eval/bin:../../.eval/bin` ahead of it, so bash and zsh resolve `gh` to that copy from the workspace and from a directory two levels below it
 - S-025-30: `shipmill evals check` exits 1 naming the case for a case whose `prompt.md` opens with a slash command and that has a `tool_used` grader with `tool: Skill`
+- S-025-31: `shipmill evals explain --result <aggregate-result.json> [--traces <dir>]` prints a Markdown section with one entry per case that has a failed run, and for each failed run its error, each failed grader with its `explanation`, its turns, cost, and duration, the last assistant message of its trace, and a verdict: **harness** for an API error, a scaffold or fixture error, a session that never took a turn, a failed `no-miss` grader, a grader that can't read its target, or skipped paid graders, else **agent** with the reason; a case is **harness** when any failed run of it is or its `gh-*.jsonl` logs hold a `miss`; a missing trace is said on its line, it makes no model call, and a missing or malformed result exits 2
+- S-025-32: `.github/workflows/evals.yml` runs `shipmill evals explain` on the head's result after "Run the suite" whenever that step ran, appends its output to the job summary, and copies each run's trace and each of the run's workspaces' `.eval/gh.jsonl` into `traces/` of the `evals-result` artifact, regular files only, never a link
 
 ## Out of scope
 
@@ -453,5 +489,6 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - shipmill/shipmill#545: S-025-18, S-025-19, S-025-20, S-025-21, S-025-22, S-025-23
 - shipmill/shipmill#929: S-025-27, S-025-28
 - shipmill/shipmill#933: S-025-29, S-025-30
+- shipmill/shipmill#950: S-025-31, S-025-32
 
 ## Verification
