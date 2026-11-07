@@ -22,8 +22,11 @@
 # its objects through alternates showed `bad object HEAD`, and evals/bin on the run's PATH
 # was skipped, so `gh` and `uvx` were the real ones. So the clone copies every object, the
 # stub and its shims are copied to .eval/bin/, and .claude/settings.local.json, excluded
-# from git too, gives the session an env with .eval/bin first on PATH and a uv cache at
-# .eval/uv-cache, since the session can write only in its workspace.
+# from git too, gives the session an env with a uv cache at .eval/uv-cache, since the
+# session can write only in its workspace. Its env.PATH is not applied to the session's
+# shell (run 42358336992 still met the real gh, #933): the stub reaches PATH from
+# .github/workflows/evals.yml, as the relative entries .eval/bin, ../.eval/bin, and
+# ../../.eval/bin, which a shell resolves against its working directory.
 set -euo pipefail
 
 die() {

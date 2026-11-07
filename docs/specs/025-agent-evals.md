@@ -86,12 +86,19 @@ Every case runs offline: no session reaches GitHub, and none needs a token.
   each case holds its own `scaffold.sh`, the same few lines in every case, that calls the
   shared one with the case's directory; `shipmill evals check` refuses a
   `scaffold_script` with `..` or an absolute path
-- **GitHub** is `evals/bin/gh`, a stub put first on `PATH` for the whole run (the
-  workflow sets it). The session's sandbox hides the checkout that holds it, so
-  `evals/scaffold.sh` also copies `evals/bin/` to `.eval/bin/` and writes the workspace's
-  `.claude/settings.local.json`, whose `env` puts `.eval/bin` first on the session's `PATH`
-  and sets `UV_CACHE_DIR` to `.eval/uv-cache`, as the session can write only in its
-  workspace (shipmill/shipmill#936). It is a Python 3.10 script with no
+- **GitHub** is `evals/bin/gh`, a stub first on the session's `PATH`. The session's
+  sandbox can't read the checkout the run starts from, so a `PATH` entry naming its
+  `evals/bin` finds nothing and the real `gh` answers (shipmill/shipmill#933). Instead
+  `evals/scaffold.sh` copies `evals/bin/` to the workspace's `.eval/bin/`, and the workflow
+  puts `.eval/bin:../.eval/bin:../../.eval/bin` first on `PATH`: relative entries, which a
+  shell resolves against its working directory, so the session finds the copy from the
+  workspace or a worktree two levels down (`tmp/wt-<slug>`, `.claude/worktrees/<name>`),
+  in bash and zsh alike; the runner passes `PATH` through. The scaffold also writes the
+  workspace's `.claude/settings.local.json`, whose `env` sets `UV_CACHE_DIR` to
+  `.eval/uv-cache`, as the session can write only in its workspace
+  (shipmill/shipmill#936); the `PATH` in that `env` is not applied to the session's shell
+  (run 42358336992 still met the real `gh`), so it is not how the stub is found. It is a
+  Python 3.10 script with no
   dependencies, like the skills' scripts. It finds `.eval/` by walking up from its working
   directory, answers each read (`gh issue view`, `gh pr view`, `gh pr diff`, `gh api`,
   `gh api graphql`) from `.eval/gh/`, keyed by its arguments, so the skills' state scripts
@@ -125,7 +132,9 @@ runner's graders cover them:
   happen, as `match: not_contains`: a `pr merge` by an implementer, a write as a person
   where the fixture's config has `[agents] app_id` (a plain `gh` write instead of
   `shipmill gh`), a guess where the case's answer is a question
-- **The tools** (`tool_used`, `tool_order`): a skill loaded (`tool: Skill`), a state
+- **The tools** (`tool_used`, `tool_order`): a skill loaded (`tool: Skill`) where the
+  prompt is plain words, never where it opens with a slash command, which the runner
+  expands inline with no `Skill` call (shipmill/shipmill#933), a state
   script run before a verdict, the failing test run before the fix's edit and again after
   it, `AskUserQuestion` never called in a headless case (`min: 0, max: 0`)
 - **The files** (`file_exists`, `regex` on a file): a regression test added under
@@ -362,7 +371,7 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-8: `shipmill evals compare` exits 1 when the head's suite pass rate is more than 0.05 below the base's, when a case that passed 3 of 3 base runs passes at most 1 of 3 head runs, or when a new or changed case passes fewer than 2 of 3 head runs, and prints one line per regressed, improved, new failing, or removed case and both pass rates; it exits 0 otherwise
 - S-025-9: `shipmill evals compare` computes pass rates from the per-run grader results in `aggregate-result.json`, counting a run as passed only when every scored grader passed
 - S-025-10: `.github/workflows/evals.yml` runs on a pull request touching `skills/**`, `.claude-plugin/**`, `evals/**`, or `src/shipmill/gate.py`, weekly on the default branch, and by `workflow_dispatch`, and on no other pull request
-- S-025-11: The evals job runs `claude plugin eval` with `--ablation none`, `--no-publish`, `--model` set to the gate sessions' model, `--runs 3`, `-j 4`, and `--max-cost-usd 15`, with `evals/bin` first on `PATH` and no GitHub token in the run's environment, uploads the JSON result and the HTML report, and writes the moved cases, both pass rates, and the spend to the job summary
+- S-025-11: The evals job runs `claude plugin eval` with `--ablation none`, `--no-publish`, `--model` set to the gate sessions' model, `--runs 3`, `-j 4`, and `--max-cost-usd 15`, with no GitHub token in the run's environment and `.eval/bin:../.eval/bin:../../.eval/bin` first on `PATH` (S-025-29), uploads the JSON result and the HTML report, and writes the moved cases, both pass rates, and the spend to the job summary
 - S-025-12: The pull request job compares against the latest successful default-branch run's result, and runs the suite on the merge base first when that result is missing, older than 14 days, or from a different model
 - S-025-13: dropped in #603, see S-025-18: the command the fork refusal prints names the head SHA
 - S-025-14: A run that reaches `--max-cost-usd` fails the gate with `evals: budget reached after <n> of <m> runs` and compares nothing
@@ -381,6 +390,8 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 
 - S-025-27: Every case's `context.scaffold_script` is `scaffold.sh` inside the case's directory, the same file in every case, which, started as the runner starts it (in place, in the empty workspace, with no argument), leaves the workspace as S-025-6 says; `shipmill evals check` exits 1 naming the case for a `scaffold_script` with `..` or an absolute path, or one that is not a file in the case's directory
 - S-025-28: A run on the default branch none of whose runs took a turn and ended without an error is never kept as the baseline: the step fails with `evals: no case ran (<errored> of <runs> runs errored, <turns> turns), so the run is no baseline` as its error and in the job summary, and the pull request job runs the merge base instead of comparing against a baseline kept before this check that ran no case
+- S-025-29: `evals/scaffold.sh` leaves a copy of `evals/bin/` at `.eval/bin/` in the workspace, and `.github/workflows/evals.yml` puts no directory of the checkout on the run's `PATH`, only `.eval/bin:../.eval/bin:../../.eval/bin` ahead of it, so bash and zsh resolve `gh` to that copy from the workspace and from a directory two levels below it
+- S-025-30: `shipmill evals check` exits 1 naming the case for a case whose `prompt.md` opens with a slash command and that has a `tool_used` grader with `tool: Skill`
 
 ## Out of scope
 
@@ -419,5 +430,6 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - shipmill/shipmill#449: S-025-7
 - shipmill/shipmill#545: S-025-18, S-025-19, S-025-20, S-025-21, S-025-22, S-025-23
 - shipmill/shipmill#929: S-025-27, S-025-28
+- shipmill/shipmill#933: S-025-29, S-025-30
 
 ## Verification
