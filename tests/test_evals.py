@@ -1,8 +1,10 @@
 """Spec 025: `shipmill evals check` validates the eval suite without a model"""
 
+import json
 import os
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -420,6 +422,24 @@ def test_933_skill_grader_only_where_the_prompt_names_no_skill() -> None:
             described.append(prompt.parent.name)
             assert skill_grader, f"{prompt.parent.name} reaches its skill by description, so it checks the Skill call"
     assert slash and described
+
+
+def test_938_every_case_records_its_autonomy() -> None:
+    """The shim answers `shipmill autonomy` only from the case's recording; without one it runs
+    the real uvx, which can't reach PyPI offline, so the session reads the App as missing and
+    writes nothing (#938). So every case records the levels, as `--json` prints them"""
+    cases = tomllib.loads((ROOT / "evals" / "cases.toml").read_text(encoding="utf-8"))["case"]
+    assert cases
+    missing = [c["path"] for c in cases if not (ROOT / "evals" / c["path"] / "fixture" / "autonomy.json").is_file()]
+    assert not missing, f"cases without fixture/autonomy.json: {missing}"
+    for case in cases:
+        record = json.loads((ROOT / "evals" / case["path"] / "fixture" / "autonomy.json").read_text(encoding="utf-8"))
+        assert isinstance(record["hold"], list), case["path"]
+        rows = record["stages"]
+        assert isinstance(rows, list), case["path"]
+        for row in rows:
+            assert set(row) == {"stage", "configured", "effective", "source"}, case["path"]
+        assert {"triage", "fix", "land"} <= {row["stage"] for row in rows}, case["path"]
 
 
 def test_s025_2_ci_runs_evals_check_on_every_pull_request() -> None:

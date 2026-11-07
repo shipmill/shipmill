@@ -11,11 +11,16 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
 
+from shipmill.cli import main
+
 ROOT = Path(__file__).resolve().parents[1]
+CASES = ROOT / "evals" / "cases.toml"
+INTAKE_CASE = "product-intake/no-goal-not-proposed"
 STUB = ROOT / "evals" / "bin" / "gh"
 SCAFFOLD = ROOT / "evals" / "scaffold.sh"
 CASE_SCAFFOLDS = sorted((ROOT / "evals").glob("*/*/scaffold.sh"))  # each case's own (#929)
@@ -380,6 +385,93 @@ def test_s040_15_without_an_autonomy_json_the_real_shipmill_answers(tmp_path: Pa
     done = shim(ws, "uvx", "shipmill==0.78.0", "autonomy", "--json", path=[STUB.parent, python_bin(tmp_path), real_bin])
     assert (done.returncode, done.stdout) == (0, "real uvx\n"), done.stderr
     assert calls.read_text(encoding="utf-8").splitlines() == ["uvx shipmill==0.78.0 autonomy --json"]
+
+
+GOALS_JSON = '{\n  "goals": [{"id": "G-1", "text": "Ship it", "measure": null}]\n}\n'
+GOALS_TEXT = "## Goals\n\n- G-1: Ship it\n"
+
+
+def product_show_recordings(ws: Path) -> None:
+    recordings = ws / ".eval" / "product-show"
+    recordings.mkdir()
+    (recordings / "section-goals.json").write_text(GOALS_JSON, encoding="utf-8")
+    (recordings / "section-goals.txt").write_text(GOALS_TEXT, encoding="utf-8")
+    (recordings / "all.txt").write_text("# Acme\n", encoding="utf-8")
+    (recordings / "section-mission-section-non-goals.txt").write_text("## Mission\n", encoding="utf-8")
+
+
+def test_941_shipmill_product_show_answers_from_the_case_recording_in_each_form(tmp_path: Path) -> None:
+    ws = workspace(tmp_path)
+    product_show_recordings(ws)
+    (ws / "sub").mkdir()
+    real_bin, calls = fake_programs(tmp_path)
+    path = [STUB.parent, python_bin(tmp_path), real_bin]
+    for form in (
+        ["uvx", "shipmill==0.117.3"],
+        ["shipmill"],
+        ["shipmill", "--repo", "."],
+        ["uvx", "-q", "shipmill@0.117.3"],
+    ):
+        for args, expected in (
+            (["--section", "goals", "--json"], GOALS_JSON),
+            (["--section", "goals"], GOALS_TEXT),
+            (["--repo", ".", "--section=goals"], GOALS_TEXT),
+            ([], "# Acme\n"),
+            (["--section", "mission", "--section", "non-goals"], "## Mission\n"),
+        ):
+            done = shim(ws / "sub", *form, "product", "show", *args, path=path)
+            assert (done.returncode, done.stdout) == (0, expected), (form, args, done.stderr)
+    assert not calls.exists()  # the real programs never ran
+    assert not (ws / ".eval" / "gh.jsonl").exists()
+
+
+def test_941_without_a_recording_for_the_args_the_real_shipmill_answers(tmp_path: Path) -> None:
+    ws = workspace(tmp_path)
+    product_show_recordings(ws)
+    real_bin, calls = fake_programs(tmp_path)
+    path = [STUB.parent, python_bin(tmp_path), real_bin]
+    passed = [
+        ["uvx", "shipmill==0.117.3", "product", "show", "--json"],
+        ["shipmill", "product", "show", "--section", "users"],
+        ["shipmill", "product", "show", "--section", "../gh/x"],
+        ["shipmill", "product", "check"],
+    ]
+    for argv in passed:
+        done = shim(ws, *argv, path=path)
+        assert (done.returncode, done.stdout) == (0, f"real {argv[0]}\n"), (argv, done.stderr)
+    assert calls.read_text(encoding="utf-8").splitlines() == [" ".join(argv) for argv in passed]
+
+
+# Every form of `shipmill product show` the product-intake skill (step 1) and its
+# intake_state.py --plans run, as the case records them
+INTAKE_SHOW_FORMS = [
+    ["--section", "mission", "--section", "users", "--section", "goals", "--section", "non-goals"],
+    ["--section", "goals", "--json"],
+    ["--section", "goals"],
+]
+
+
+def test_941_the_case_recordings_match_the_real_cli_at_the_case_commit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """no-goal-not-proposed records what the real `shipmill product show` prints on the
+    docs/product.md of the case's commit, in each form intake runs, and nothing else"""
+    case = next(c for c in tomllib.loads(CASES.read_text(encoding="utf-8"))["case"] if c["path"] == INTAKE_CASE)
+    direction = tmp_path / "direction" / "docs" / "product.md"
+    direction.parent.mkdir(parents=True)
+    direction.write_text(git(ROOT, "show", f"{case['commit']}:docs/product.md") + "\n", encoding="utf-8")
+    ws = workspace(tmp_path)
+    shutil.copytree(ROOT / "evals" / INTAKE_CASE / "fixture" / "product-show", ws / ".eval" / "product-show")
+    real_bin, calls = fake_programs(tmp_path)
+    path = [STUB.parent, python_bin(tmp_path), real_bin]
+    for args in INTAKE_SHOW_FORMS:
+        assert main(["--repo", str(direction.parents[1]), "product", "show", *args]) == 0
+        printed = capsys.readouterr().out
+        done = shim(ws, "uvx", "shipmill==0.117.3", "product", "show", *args, path=path)
+        assert (done.returncode, done.stdout) == (0, printed), (args, done.stderr)
+    assert not calls.exists()  # each form answered from a recording
+    recorded = sorted(p.name for p in (ws / ".eval" / "product-show").iterdir())
+    assert len(recorded) == len(INTAKE_SHOW_FORMS), recorded
 
 
 def test_stub_and_scaffold_are_executable_in_git() -> None:
