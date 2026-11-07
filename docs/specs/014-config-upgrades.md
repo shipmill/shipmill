@@ -228,6 +228,7 @@ upgrade is an offer, not a problem.
 - D-10: the maintainer accepts or declines; shipmill proposes
 - D-14: agent sessions write as the App
 - D-21: every question a gate session asks goes through the needs-decision protocol
+- D-70: a relayed answer from the maintainer accepts an upgrade pull request
 
 ## Issues
 
