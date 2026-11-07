@@ -411,6 +411,9 @@ def source_repo(tmp_path: Path) -> tuple[Path, str, Path]:
     then = git(repo, "rev-parse", "--short", "HEAD")
     (repo / "state.txt").write_text("now\n", encoding="utf-8")
     shutil.copy(SCAFFOLD, repo / "evals" / "scaffold.sh")
+    for name in ("gh", "shipmill"):
+        shutil.copy(STUB.parent / name, repo / "evals" / "bin" / name)
+    (repo / "evals" / "bin" / "uvx").symlink_to("shipmill")
     case = repo / "evals" / "github-issue-triage" / "feature-maintainer-filed"
     (case / "fixture" / "gh").mkdir(parents=True)
     (case / "fixture" / "gh" / "abc.json").write_text('{"args": []}\n', encoding="utf-8")
@@ -445,8 +448,71 @@ def test_s025_6_scaffold_leaves_the_repo_at_the_case_commit_with_the_fixture_at_
     assert (ws / ".eval" / "gh.jsonl").read_text(encoding="utf-8") == ""
     assert (ws / ".eval" / "case").read_text(encoding="utf-8").strip() == str(case.resolve())
     assert git(ws, "status", "--porcelain") == ""  # .eval/ never shows to a session's git
-    alternates = ws / ".git" / "objects" / "info" / "alternates"
-    assert alternates.is_file()  # a shared clone, not a copy of the objects
+
+
+def test_936_the_clone_works_where_the_session_cannot_read_the_checkout(tmp_path: Path) -> None:
+    # The session's sandbox hides the checkout the run starts from: a clone sharing its
+    # objects through alternates read `bad object HEAD` there
+    repo, then, case = source_repo(tmp_path)
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    done = subprocess.run(
+        ["bash", str(repo / "evals" / "scaffold.sh"), str(case)], cwd=ws, capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    assert not (ws / ".git" / "objects" / "info" / "alternates").exists()
+    shutil.rmtree(repo / ".git")
+    assert git(ws, "rev-parse", "--short", "HEAD") == then
+    assert git(ws, "log", "--format=%s") == "then"
+    assert git(ws, "status", "--porcelain") == ""
+
+
+def test_936_the_scaffold_clones_from_a_worktree_as_the_merge_base_run_does(tmp_path: Path) -> None:
+    repo, then, _ = source_repo(tmp_path)
+    tree = tmp_path / "base-tree"
+    git(repo, "worktree", "add", "-q", "--detach", str(tree), "HEAD")
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    case = tree / "evals" / "github-issue-triage" / "feature-maintainer-filed"
+    done = subprocess.run(
+        ["bash", str(tree / "evals" / "scaffold.sh"), str(case)], cwd=ws, capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    assert not (ws / ".git" / "objects" / "info" / "alternates").exists()
+    assert git(ws, "rev-parse", "--short", "HEAD") == then
+
+
+def test_936_the_session_settings_put_the_workspace_stub_first_on_path(tmp_path: Path) -> None:
+    # evals/bin on the run's PATH sits in the checkout the sandbox hides, so the session ran
+    # the real gh and uvx: the stub is copied into the workspace and the session's settings
+    # env puts it first, with a uv cache the session can write
+    repo, _, case = source_repo(tmp_path)
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    done = subprocess.run(
+        ["bash", str(repo / "evals" / "scaffold.sh"), str(case)], cwd=ws, capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    settings = json.loads((ws / ".claude" / "settings.local.json").read_text(encoding="utf-8"))
+    real = ws.resolve()
+    entries = settings["env"]["PATH"].split(os.pathsep)
+    assert entries[0] == str(real / ".eval" / "bin")
+    assert entries[1:] == os.environ["PATH"].split(os.pathsep)
+    assert settings["env"]["UV_CACHE_DIR"] == str(real / ".eval" / "uv-cache")
+    assert (ws / ".eval" / "bin" / "uvx").readlink() == Path("shipmill")
+    shutil.rmtree(repo)  # nothing the session runs reaches back into the checkout
+    sub = ws / "src"
+    sub.mkdir()
+    env = {"PATH": settings["env"]["PATH"], "HOME": os.environ.get("HOME", "")}
+    plain = subprocess.run(["gh", *VIEW], cwd=sub, env=env, capture_output=True, text=True)
+    assert plain.returncode == 1
+    assert plain.stderr.startswith("gh: no recording for issue view 5")
+    via = subprocess.run(
+        ["uvx", "shipmill==0.117.2", "app-token", "--check"], cwd=sub, env=env, capture_output=True, text=True
+    )
+    assert via.returncode == 0, via.stderr
+    assert [line["kind"] for line in lines(ws)] == ["miss", "check"]
+    assert git(ws, "status", "--porcelain") == ""  # the settings file never shows to git either
 
 
 def test_s040_15_scaffold_commits_a_case_fixture_repo_over_the_case_commit(tmp_path: Path) -> None:
