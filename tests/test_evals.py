@@ -372,6 +372,23 @@ def test_s025_1_this_repository_suite_is_well_formed(capsys: pytest.CaptureFixtu
     assert main(["evals", "check", "--repo", str(ROOT)]) == 0
 
 
+def test_933_skill_grader_only_where_the_prompt_names_no_skill() -> None:
+    """A slash command puts the skill's text in a headless prompt, so the session never calls
+    the Skill tool for it, and a `tool: Skill` grader fails every run (#933). That grader
+    belongs only in a case that reaches its skill by the description"""
+    slash, described = [], []
+    for prompt in sorted((ROOT / "evals").glob("*/*/prompt.md")):
+        case = prompt.with_name("case.yaml").read_text(encoding="utf-8")
+        skill_grader = re.search(r"^\s+tool: Skill$", case, re.MULTILINE) is not None
+        if re.search(r"^/shipmill:\S+", prompt.read_text(encoding="utf-8"), re.MULTILINE):
+            slash.append(prompt.parent.name)
+            assert not skill_grader, f"{prompt.parent.name} names its skill by slash command"
+        else:
+            described.append(prompt.parent.name)
+            assert skill_grader, f"{prompt.parent.name} reaches its skill by description, so it checks the Skill call"
+    assert slash and described
+
+
 def test_s025_2_ci_runs_evals_check_on_every_pull_request() -> None:
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     on = text[text.index("\non:\n") : text.index("\npermissions:")]
