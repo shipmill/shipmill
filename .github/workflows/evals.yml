@@ -193,10 +193,16 @@ jobs:
           python-version: "3.14"
 
       # Every command that runs the checkout's code drops the OIDC request variables, which
-      # would let it mint a GitHub OIDC token for any audience (S-025-26)
-      - run: |
+      # would let it mint a GitHub OIDC token for any audience (S-025-26). The virtualenv lives
+      # under $RUNNER_TEMP for this and every later step: `claude plugin eval` scans the
+      # checkout as the plugin and refuses every case for a hard link, which uv makes from
+      # its cache into a .venv in the checkout (S-025-27, #929)
+      - name: Install the project, its virtualenv outside the checkout (S-025-27)
+        run: |
           unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
-          uv sync --locked
+          venv="$RUNNER_TEMP/evals-venv"
+          echo "UV_PROJECT_ENVIRONMENT=$venv" >>"$GITHUB_ENV"
+          UV_PROJECT_ENVIRONMENT=$venv uv sync --locked
 
       - name: Check the suite, and whether the gate is on (S-025-16)
         id: gate
@@ -260,6 +266,19 @@ jobs:
           npm install --global @anthropic-ai/claude-code
           claude --version
 
+      # A case's shell tool runs only where Claude Code can confine it: bubblewrap and socat,
+      # or it refuses every case before a turn (sandbox.failIfUnavailable, #929). Ubuntu 24.04's
+      # AppArmor may refuse bwrap a user namespace; that is lifted only when the probe fails
+      - name: Install the sandbox the cases' shell tool needs (S-025-27)
+        if: steps.token.outputs.ok == 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q bubblewrap socat
+          if ! bwrap --ro-bind / / --unshare-user true; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            bwrap --ro-bind / / --unshare-user true
+          fi
+
       - name: Find the default branch's baseline (S-025-12)
         id: base
         if: steps.token.outputs.ok == 'true' && steps.plan.outputs.mode == 'pr'
@@ -280,7 +299,12 @@ jobs:
             gh run download "$id" -R "$REPO" -n evals-baseline -D "$dir"
             age=$(( $(date +%s) - $(date -d "$created" +%s) ))
             base_model=$(jq -r '.model' "$dir/meta.json")
-            if [ "$age" -gt $(( 14 * 86400 )) ]; then
+            # a run kept before S-025-28 may hold no case that ran
+            ran=$(jq '[.cases[].arms.with[] | select((.error // "") == "" and (.turns // 0) > 0)] | length' \
+              "$dir/aggregate-result.json")
+            if [ "$ran" -eq 0 ]; then
+              reason="the baseline, run $id, ran no case"
+            elif [ "$age" -gt $(( 14 * 86400 )) ]; then
               reason="the baseline, run $id, is older than 14 days"
             elif [ "$base_model" != "$MODEL" ]; then
               reason="the baseline, run $id, ran $base_model, not $MODEL"
@@ -404,9 +428,23 @@ jobs:
         id: baseline
         if: steps.plan.outputs.mode == 'baseline' && steps.run.outcome == 'success'
         run: |
-          partial=$(jq -r '.partial' "$RUNNER_TEMP/evals/head/aggregate-result.json")
+          result="$RUNNER_TEMP/evals/head/aggregate-result.json"
+          partial=$(jq -r '.partial' "$result")
           if [ "$partial" != false ]; then
             echo "::error::evals: the run stopped early (partial), so it is no baseline"
+            exit 1
+          fi
+          # A run none of whose runs took a turn and ended without an error measured nothing,
+          # such as every case refused before its first turn (#929): no baseline (S-025-28)
+          counts=$(jq -r '[.cases[].arms.with[]] | [length,
+              ([.[] | select((.error // "") != "")] | length),
+              ([.[].turns // 0] | add // 0),
+              ([.[] | select((.error // "") == "" and (.turns // 0) > 0)] | length)] | @tsv' "$result")
+          read -r runs errored turns ran <<<"$counts"
+          if [ "$ran" -eq 0 ]; then
+            line="evals: no case ran ($errored of $runs runs errored, $turns turns), so the run is no baseline"
+            echo "$line" >>"$GITHUB_STEP_SUMMARY"
+            echo "::error::$line"
             exit 1
           fi
 

@@ -4,9 +4,11 @@
 #
 #   evals/scaffold.sh [CASE_DIR [WORKSPACE]]
 #
-# Calling convention (assumed, not confirmed against `claude plugin eval --scaffold`): the
-# runner starts the script with the workspace as its working directory. The case's directory
-# is the first argument, else $EVAL_CASE_DIR; the workspace is the second argument, else the
+# Calling convention: `claude plugin eval --scaffold` runs only a scaffold_script inside the
+# case's directory (#929), and starts it in place with the empty workspace as its working
+# directory and no argument. So each case's own scaffold.sh, the same few lines in every
+# case, calls this one with the case's directory and the workspace. The case's directory is
+# the first argument, else $EVAL_CASE_DIR; the workspace is the second argument, else the
 # working directory. The workspace must be empty or missing, as `git clone` needs.
 #
 # Steps: a shared clone of the checkout this script sits in, a detached checkout of the

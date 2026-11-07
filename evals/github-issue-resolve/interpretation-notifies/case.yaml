@@ -1,7 +1,7 @@
 schema_version: "1.1"
 name: interpretation-notifies
 context:
-  scaffold_script: ../../scaffold.sh
+  scaffold_script: scaffold.sh
 graders:
   # The shared no-miss grader, copied from evals/graders/no-miss.yaml
   - type: regex

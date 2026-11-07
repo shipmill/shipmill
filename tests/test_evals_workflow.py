@@ -266,6 +266,128 @@ def test_s025_12_only_a_full_pinned_run_on_the_default_branch_becomes_the_baseli
     assert "{model: $model, commit: $commit, claude: $claude, exit: $code," in _script("Run the suite")
 
 
+KEEP = "Keep the run as the baseline"
+REFUSED = "evals: no case ran ({errored} of {runs} runs errored, {turns} turns), so the run is no baseline"
+ESCAPES = 'case "c": path "../../scaffold.sh" escapes the case directory'
+
+
+def _arm(turns: int, error: str | None = None) -> dict[str, object]:
+    return {"score": 0, "passed": False, "turns": turns, "costUsd": 0, "error": error, "graders": []}
+
+
+def _keep(tmp_path: Path, arms: list[list[dict[str, object]]], partial: bool = False) -> tuple[int, str, str]:
+    """The baseline step on a result whose cases hold these runs; its exit, stdout, summary"""
+    head = tmp_path / "evals" / "head"
+    head.mkdir(parents=True)
+    cases = [{"name": f"c{n}", "dir": f"evals/s/c{n}", "arms": {"with": runs}} for n, runs in enumerate(arms)]
+    result = {"schemaVersion": 1, "partial": partial, "cases": cases, "aggregates": {"casesTotal": len(cases)}}
+    (head / "aggregate-result.json").write_text(json.dumps(result), encoding="utf-8")
+    code, out, _ = _bash(KEEP, tmp_path, RUNNER_TEMP=str(tmp_path))
+    return code, out, (tmp_path / "summary").read_text()
+
+
+def test_s025_28_a_run_where_every_case_errored_before_a_turn_is_no_baseline(tmp_path: Path) -> None:
+    # run 42242802136: all 14 cases refused their scaffold, partial false, 0 turns (#929)
+    code, out, summary = _keep(tmp_path, [[_arm(0, ESCAPES)] * 3] * 2)
+    line = REFUSED.format(errored=6, runs=6, turns=0)
+    assert code == 1
+    assert f"::error::{line}" in out
+    assert summary == line + "\n"
+
+
+@pytest.mark.parametrize(
+    ("arms", "line"),
+    [
+        ([], REFUSED.format(errored=0, runs=0, turns=0)),  # no case at all
+        ([[_arm(0)] * 3], REFUSED.format(errored=0, runs=3, turns=0)),  # no error, but no turn either
+        ([[_arm(12, "timeout"), _arm(5, "timeout")]], REFUSED.format(errored=2, runs=2, turns=17)),
+    ],
+)
+def test_s025_28_a_run_with_no_completed_run_is_no_baseline(
+    tmp_path: Path, arms: list[list[dict[str, object]]], line: str
+) -> None:
+    code, _, summary = _keep(tmp_path, arms)
+    assert (code, summary) == (1, line + "\n")
+
+
+def test_s025_28_a_run_where_one_case_ran_is_kept(tmp_path: Path) -> None:
+    code, out, summary = _keep(tmp_path, [[_arm(0, ESCAPES)] * 3, [_arm(9), _arm(11, "timeout"), _arm(7)]])
+    assert (code, out, summary) == (0, "", "")
+
+
+def test_s025_12_a_partial_run_is_no_baseline(tmp_path: Path) -> None:
+    code, out, _ = _keep(tmp_path, [[_arm(9)] * 3], partial=True)
+    assert code == 1
+    assert "::error::evals: the run stopped early (partial), so it is no baseline" in out
+
+
+def test_s025_28_a_baseline_that_ran_no_case_is_skipped_for_the_merge_base() -> None:
+    lookup = _script("Find the default branch's baseline (S-025-12)")
+    assert 'select((.error // "") == "" and (.turns // 0) > 0)' in lookup
+    assert 'reason="the baseline, run $id, ran no case"' in lookup
+    assert lookup.index("ran no case") < lookup.index("fresh=true")
+
+
+def test_s025_27_the_virtualenv_lies_outside_the_checkout_the_runner_scans(tmp_path: Path) -> None:
+    # `claude plugin eval` refused every case for a hard link uv made into .venv in the checkout (#929)
+    [sync] = [s for s in STEPS if "uv sync" in str(s.get("run", ""))]
+    assert STEPS.index(sync) < _index("Run the suite")
+    workspace, temp, bin_dir = tmp_path / "workspace", tmp_path / "temp", tmp_path / "bin"
+    for d in (workspace, temp, bin_dir):
+        d.mkdir()
+    (bin_dir / "uv").write_text(f'#!/bin/sh\necho "$UV_PROJECT_ENVIRONMENT" >> {tmp_path / "uv.log"}\n')
+    (bin_dir / "uv").chmod(0o755)
+    github_env = tmp_path / "github_env"
+    github_env.write_text("")
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "RUNNER_TEMP": str(temp), "GITHUB_WORKSPACE": str(workspace)}
+    env["GITHUB_ENV"] = str(github_env)
+    subprocess.run(["bash", "-e", "-c", str(sync["run"])], env=env, cwd=workspace, check=True)
+    venv = Path((tmp_path / "uv.log").read_text().strip())
+    assert venv.is_absolute() and venv.is_relative_to(temp) and not venv.is_relative_to(workspace)
+    # every later step, `uv run` too, gets the same virtualenv
+    assert github_env.read_text().splitlines() == [f"UV_PROJECT_ENVIRONMENT={venv}"]
+
+
+SANDBOX = "Install the sandbox the cases' shell tool needs (S-025-27)"
+
+
+def _sandbox(tmp_path: Path, userns: bool) -> tuple[int, list[str]]:
+    """Run the sandbox step with stub sudo, apt-get, sysctl, and bwrap; its exit and the commands run"""
+    bin_dir, log, lifted = tmp_path / "bin", tmp_path / "calls.log", tmp_path / "lifted"
+    bin_dir.mkdir()
+    stubs = {
+        "sudo": 'exec "$@"',
+        "apt-get": f'echo "apt-get $*" >> {log}',
+        "sysctl": f'echo "sysctl $*" >> {log}; touch {lifted}',
+        # bwrap gets a user namespace when the runner allows one, or once the sysctl lifted the limit
+        "bwrap": f'echo "bwrap" >> {log}; [ {"true" if userns else "false"} = true ] || [ -e {lifted} ]',
+    }
+    for name, body in stubs.items():
+        (bin_dir / name).write_text(f"#!/bin/sh\n{body}\n")
+        (bin_dir / name).chmod(0o755)
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    proc = subprocess.run(["bash", "-e", "-c", _script(SANDBOX)], env=env, check=False)
+    return proc.returncode, log.read_text().splitlines()
+
+
+def test_s025_27_the_sandbox_is_installed_before_the_suite_runs(tmp_path: Path) -> None:
+    # every case was refused before a turn: bubblewrap and socat not installed (#929)
+    step = _step(SANDBOX)
+    assert step["if"] == "steps.token.outputs.ok == 'true'"
+    assert _index("Install Claude Code") < _index(SANDBOX) < _index("Run the suite")
+    code, calls = _sandbox(tmp_path, userns=True)
+    assert code == 0
+    assert "apt-get install -y -q bubblewrap socat" in calls
+    # AppArmor's limit stays as it is when bwrap already gets a user namespace
+    assert not [c for c in calls if c.startswith("sysctl")]
+
+
+def test_s025_27_the_user_namespace_limit_is_lifted_only_when_bwrap_fails(tmp_path: Path) -> None:
+    code, calls = _sandbox(tmp_path, userns=False)
+    assert code == 0
+    assert calls[-3:] == ["bwrap", "sysctl -w kernel.apparmor_restrict_unprivileged_userns=0", "bwrap"]
+
+
 def test_s025_12_the_merge_base_runs_first_when_the_baseline_is_missing_stale_or_another_models() -> None:
     env = _env("Run the suite")
     assert env["ON_MERGE_BASE"] == "${{ steps.plan.outputs.mode == 'pr' && steps.base.outputs.fresh != 'true' }}"
