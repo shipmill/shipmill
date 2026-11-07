@@ -187,7 +187,11 @@ it passes:
 - **On a pull request** that touches `skills/**`, `.claude-plugin/**`, `evals/**`, or
   `src/shipmill/gate.py` (the gate's `Gate session:` and `Headless:` paragraphs are part
   of every session's instructions). Skills have no `agents/**` at the root; each skill's
-  `agents/openai.yaml` is under `skills/**` already
+  `agents/openai.yaml` is under `skills/**` already. Suspended by D-71 (#947): until the
+  default branch's baseline passes at least 60% of its runs, `evals.yml` has no
+  `pull_request` trigger and keeps these paths in its header for the pull request that
+  restores it; meanwhile a pull request is evaluated only when the maintainer dispatches
+  `gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>` for it
 - **On a schedule**, weekly, and by hand (`workflow_dispatch`), on the default branch: a
   model update changes behaviour with no change here, and this run is the baseline the
   pull requests compare against
@@ -334,7 +338,10 @@ A failing `evals` check is a red check like any other: github-pr-triage's `pr_ga
 merges only on a green rollup, so a pull request that regresses the agents does not land
 until it is fixed (D-37). `skills/github-pr-triage/SKILL.md` says so beside hard rule 2:
 a red `evals` check is never "proven unrelated", since it is the measure of the change
-itself; only the maintainer accepting that run lets it land.
+itself; only the maintainer accepting that run lets it land. While D-71 holds, no `evals`
+check comes on its own, so a pull request touching the agents' instructions lands without
+one and nothing waits for it; a run the maintainer dispatched for its head is still a check
+that counts, and must be green.
 
 ### What it costs
 
@@ -368,8 +375,9 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - `docs/evals.md`: how to run a case locally, record one, and read a failing gate
 - `docs/postmortems/TEMPLATE.md` and the skills' "Improve the skill" sections
 - `skills/github-pr-triage/SKILL.md`: a red `evals` check blocks the merge (D-37), and a
-  fork's dispatched run counts only for the head SHA it recorded
-- `docs/decisions.md`: D-37
+  fork's dispatched run counts only for the head SHA it recorded; while D-71 holds, no
+  `evals` check is waited for unless the maintainer dispatched one for the head
+- `docs/decisions.md`: D-37, and D-71, which suspends its gate
 - `.gitignore`: `evals/results/`
 
 ## Acceptance criteria
@@ -383,14 +391,14 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-7: `evals/` holds at least 20 cases from shipmill's own history, at least 8 `verdict`, 4 `decision`, 4 `finding`, and 4 `fix`, and every one passes at least 2 of 3 runs on the default branch when the spec's build ends
 - S-025-8: `shipmill evals compare` exits 1 when the head's suite pass rate is more than 0.05 below the base's, when a case that passed 3 of 3 base runs passes at most 1 of 3 head runs, or when a new or changed case passes fewer than 2 of 3 head runs, and prints one line per regressed, improved, new failing, or removed case and both pass rates; it exits 0 otherwise
 - S-025-9: `shipmill evals compare` computes pass rates from the per-run grader results in `aggregate-result.json`, counting a run as passed only when every scored grader passed
-- S-025-10: `.github/workflows/evals.yml` runs on a pull request touching `skills/**`, `.claude-plugin/**`, `evals/**`, or `src/shipmill/gate.py`, weekly on the default branch, and by `workflow_dispatch`, and on no other pull request
+- S-025-10: `.github/workflows/evals.yml` runs on a pull request touching `skills/**`, `.claude-plugin/**`, `evals/**`, or `src/shipmill/gate.py`, weekly on the default branch, and by `workflow_dispatch`, and on no other pull request. Amended by D-71 (#947): until the default branch's baseline passes at least 60% of its runs, it runs only weekly on the default branch and by `workflow_dispatch` (with or without `pr` and `sha`), has no `pull_request` trigger, and its header names D-71, the 60% condition, and the paths the trigger comes back with
 - S-025-11: The evals job runs `claude plugin eval` with `--ablation none`, `--no-publish`, `--model` set to the gate sessions' model, `--runs 3`, `-j 4`, and `--max-cost-usd 15`, with no GitHub token in the run's environment and `.eval/bin:../.eval/bin:../../.eval/bin` first on `PATH` (S-025-29), uploads the JSON result and the HTML report, and writes the moved cases, both pass rates, and the spend to the job summary
-- S-025-12: The pull request job compares against the latest successful default-branch run's result, and runs the suite on the merge base first when that result is missing, older than 14 days, or from a different model
+- S-025-12: The pull request job compares against the latest successful default-branch run's result, and runs the suite on the merge base first when that result is missing, older than 14 days, or from a different model; while D-71 holds, the pull request job is only a run the maintainer dispatched with `pr` and `sha`, which does the same
 - S-025-13: dropped in #603, see S-025-18: the command the fork refusal prints names the head SHA
 - S-025-14: A run that reaches `--max-cost-usd` fails the gate with `evals: budget reached after <n> of <m> runs` and compares nothing
 - S-025-15: `docs/postmortems/TEMPLATE.md` has an `## Eval case` section, and the "Improve the skill" section of every skill under `skills/` says to add a failing case under `evals/` with the lesson
-- S-025-16: `shipmill evals check --gate` exits 1 naming the kinds short of the first suite's counts (8 `verdict`, 4 `decision`, 4 `finding`, 4 `fix`), and while it does, the evals pull request job reports the comparison and exits 0
-- S-025-17: `skills/github-pr-triage/SKILL.md` says a red `evals` check is never proven unrelated and blocks the merge unless the maintainer accepts that run
+- S-025-16: `shipmill evals check --gate` exits 1 naming the kinds short of the first suite's counts (8 `verdict`, 4 `decision`, 4 `finding`, 4 `fix`), and while it does, the evals pull request job reports the comparison and exits 0; while D-71 holds, that job is only a run the maintainer dispatched with `pr` and `sha`, and a pull request with no such run has no `evals` check
+- S-025-17: `skills/github-pr-triage/SKILL.md` says a red `evals` check is never proven unrelated and blocks the merge unless the maintainer accepts that run; while D-71 holds, it and `references/ci-failures.md` say a pull request touching the agents' instructions waits on no `evals` check, and a run the maintainer dispatched for its head counts and must be green
 - S-025-18: On a pull request from a fork the evals job runs no case and fails, never skips, with the line `evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>`, the pull request's number and the event's full head SHA filled in, as its error and in its summary
 - S-025-19: `.github/workflows/evals.yml`'s `workflow_dispatch` takes a `sha` input beside `pr`; a dispatch with `pr` and no `sha`, with a `sha` that is not 40 hexadecimal characters, or with `sha` and no `pr` exits 1 naming the input before any checkout, and a dispatch with neither runs as the baseline
 - S-025-20: A dispatched run with `pr` reads the pull request's current head SHA before any checkout and before the step that mints the Anthropic token (S-025-26), and when it differs from `sha` runs no case and exits 1 with `evals: the head of #<N> is <current SHA>, not <sha>; read the new commits and dispatch again with -f sha=<current SHA>` as the job's error and in its summary
@@ -431,6 +439,7 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - D-16: a fork's pull request starts no unattended run, so its evals run only by hand
 - D-34: cases replay the direction (`docs/product.md`) the skills read at their `commit`
 - D-37: a change to the agents' instructions lands only when the evals don't regress
+- D-71: until the default branch's baseline passes 60% of its runs, the evals run only weekly and by hand, and D-37's gate is suspended
 
 ## Issues
 

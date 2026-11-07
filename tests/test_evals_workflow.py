@@ -92,12 +92,14 @@ def _matches(pattern: str, path: str) -> bool:
 # S-025-10: the triggers
 
 
-def test_s025_10_runs_on_pull_request_schedule_and_dispatch_only() -> None:
+def test_s025_10_runs_on_schedule_and_dispatch_only_while_d71_holds() -> None:
+    # no pull_request trigger until the baseline passes 60% of its runs (D-71, #947)
     on = DOC["on"]
     assert isinstance(on, dict)
-    assert sorted(on) == ["pull_request", "schedule", "workflow_dispatch"]
-    pull = on["pull_request"]
-    assert pull == {"paths": ["skills/**", ".claude-plugin/**", "evals/**", "src/shipmill/gate.py"]}
+    assert sorted(on) == ["schedule", "workflow_dispatch"]
+    header = TEXT[: TEXT.index("\nname: evals\n")]
+    assert "No pull_request trigger while D-71 holds (#947)" in header
+    assert "passes at least 60%" in header
 
 
 @pytest.mark.parametrize(
@@ -117,8 +119,12 @@ def test_s025_10_runs_on_pull_request_schedule_and_dispatch_only() -> None:
         ("CHANGELOG.md", False),
     ],
 )
-def test_s025_10_a_pull_request_runs_only_when_it_touches_the_agents(path: str, runs: bool) -> None:
-    paths = DOC["on"]["pull_request"]["paths"]
+def test_s025_10_the_trigger_to_restore_covers_only_the_agents(path: str, runs: bool) -> None:
+    # the header keeps the paths the pull_request trigger comes back with (D-71)
+    found = re.search(r"^#     paths: (\[.*\])$", TEXT, re.MULTILINE)
+    assert found is not None
+    paths = json.loads(found[1])
+    assert paths == ["skills/**", ".claude-plugin/**", "evals/**", "src/shipmill/gate.py"]
     assert any(_matches(p, path) for p in paths) is runs
 
 

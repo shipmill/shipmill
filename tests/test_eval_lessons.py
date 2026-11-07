@@ -54,6 +54,16 @@ def test_s025_17_a_forks_evals_land_only_after_a_dispatched_green_run() -> None:
     assert "the PR lands only after that run is green, and only while that SHA is still its head" in text
 
 
+def test_s025_17_while_d71_holds_no_evals_check_is_waited_on() -> None:
+    text = folded(ROOT / "skills" / "github-pr-triage" / "SKILL.md")
+    rule_2 = text.split(" 2. **Red CI blocks the merge**", 1)[1].split(" 3. **", 1)[0]
+    assert "While D-71 holds, `evals.yml` has no pull request trigger, so never wait on an `evals` check" in rule_2
+    assert "unless the maintainer dispatched a run for its head, which must then be green" in rule_2
+    ci = folded(ROOT / "skills" / "github-pr-triage" / "references" / "ci-failures.md")
+    assert "While D-71 holds, no pull request gets an `evals` check on its own, a fork's included" in ci
+    assert "unless the maintainer dispatched a run for its head, which must then be green" in ci
+
+
 def test_s025_23_a_forks_dispatched_run_counts_only_while_its_sha_is_the_head() -> None:
     text = folded(ROOT / "skills" / "github-pr-triage" / "SKILL.md")
     rule_2 = text.split(" 2. **Red CI blocks the merge**", 1)[1].split(" 3. **", 1)[0]
