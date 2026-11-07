@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.119.1] - 2026-11-07
+
+### Fixed
+
+- Evals: a dispatched run keeps its session traces and each case's `.eval/gh.jsonl` (the eval run's `TMPDIR` is under the job's temp, which the breakdown step reads), `shipmill evals explain` reads a session that stopped within a quarter of its case's `max_turns` with no gh write as **harness**, `the session stopped early after N turns`, reading each failed case's limits from the suite at `--repo`, and the run's budget is 25 USD instead of 15, so a full run of the suite fits (#954)
+
 ## [0.119.0] - 2026-11-07
 
 ### Added
@@ -2293,7 +2299,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.119.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.119.1...HEAD
+[0.119.1]: https://github.com/shipmill/shipmill/compare/v0.119.0...v0.119.1
 [0.119.0]: https://github.com/shipmill/shipmill/compare/v0.118.0...v0.119.0
 [0.118.0]: https://github.com/shipmill/shipmill/compare/v0.117.5...v0.118.0
 [0.117.5]: https://github.com/shipmill/shipmill/compare/v0.117.4...v0.117.5
