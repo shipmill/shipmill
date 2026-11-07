@@ -467,6 +467,21 @@ def test_936_the_clone_works_where_the_session_cannot_read_the_checkout(tmp_path
     assert git(ws, "status", "--porcelain") == ""
 
 
+def test_936_the_scaffold_clones_from_a_worktree_as_the_merge_base_run_does(tmp_path: Path) -> None:
+    repo, then, _ = source_repo(tmp_path)
+    tree = tmp_path / "base-tree"
+    git(repo, "worktree", "add", "-q", "--detach", str(tree), "HEAD")
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    case = tree / "evals" / "github-issue-triage" / "feature-maintainer-filed"
+    done = subprocess.run(
+        ["bash", str(tree / "evals" / "scaffold.sh"), str(case)], cwd=ws, capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    assert not (ws / ".git" / "objects" / "info" / "alternates").exists()
+    assert git(ws, "rev-parse", "--short", "HEAD") == then
+
+
 def test_936_the_session_settings_put_the_workspace_stub_first_on_path(tmp_path: Path) -> None:
     # evals/bin on the run's PATH sits in the checkout the sandbox hides, so the session ran
     # the real gh and uvx: the stub is copied into the workspace and the session's settings
