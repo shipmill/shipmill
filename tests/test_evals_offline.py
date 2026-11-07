@@ -707,6 +707,30 @@ def test_s040_15_scaffold_commits_a_case_fixture_repo_over_the_case_commit(tmp_p
     assert git(ws, "show", "--name-only", "--format=", "HEAD").splitlines() == [".github/shipmill.toml", "state.txt"]
 
 
+def test_928_a_case_that_pushes_gets_a_bare_origin_in_the_workspace(tmp_path: Path) -> None:
+    # fix-plans-measure-line's prompt says `origin` has no origin/main and to push to it; the
+    # clone's own origin is the run's checkout, with today's main, outside the sandbox
+    pushes = ROOT / "evals" / "github-issue-resolve" / "fix-plans-measure-line"
+    assert (pushes / "fixture" / "bare-origin").is_file()
+    repo, then, case = source_repo(tmp_path)
+    (case / "fixture" / "bare-origin").write_text("", encoding="utf-8")
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    done = subprocess.run(
+        ["bash", str(repo / "evals" / "scaffold.sh"), str(case)], cwd=ws, capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    bare = ws.resolve() / ".eval" / "origin.git"
+    assert git(ws, "remote", "get-url", "origin") == str(bare)
+    assert git(ws, "for-each-ref", "refs/remotes") == ""  # no origin/main
+    assert git(ws, "rev-parse", "--short", "main") == then
+    shutil.rmtree(repo)  # the push stays in the workspace
+    git(ws, "switch", "-q", "-c", "fix")
+    git(ws, "push", "-q", "-u", "origin", "fix")
+    assert git(bare, "rev-parse", "--short", "fix") == then
+    assert git(ws, "status", "--porcelain") == ""
+
+
 def test_s025_27_every_case_runs_the_shared_scaffold_through_its_own() -> None:
     cases = sorted(p.parent for p in (ROOT / "evals").glob("*/*/case.yaml"))
     assert [p.parent for p in CASE_SCAFFOLDS] == cases
