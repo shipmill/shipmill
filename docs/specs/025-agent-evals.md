@@ -236,11 +236,15 @@ So a dispatched run names the commit it is for:
   and `skills/github-pr-triage/SKILL.md` says so beside its rule on a red `evals` check
 
 The job runs `claude plugin eval . --trust-plugin --scaffold --allow-tools <the case's
-tools> --ablation none --no-publish --model <pinned> --runs 3 -j 4 --max-cost-usd 15
+tools> --ablation none --no-publish --model <pinned> --runs 3 -j 4 --max-cost-usd 25
 --json <out>`, authenticated through Workload Identity Federation (below) and with no GitHub
 token in the run's environment, uploads the JSON and the HTML report as the run's
 artifact, and writes the summary below to the job's summary. `--ablation none` skips the
 no-plugin arm, which would double the cost to measure something the gate doesn't use.
+The budget covers a full run of the suite with headroom: at 15 USD, 48 runs at about 0.36
+USD each cost more than the cap, so run 42388048763 stopped partial at 17.17 USD and could
+never become the baseline (#954). It stays at three runs a case, since D-37's rules (3 of 3,
+at most 1 of 3, fewer than 2 of 3) are written for three runs.
 
 ### The Anthropic token comes from Workload Identity Federation
 
@@ -303,7 +307,7 @@ A fork's pull request still fails before any token step with the S-025-18 line. 
 accepted trade-off of the pull-request rule (#846): a same-repo branch's own `evals.yml`
 runs on its pull request, so anyone who can push a branch here, collaborators and the App,
 can mint a 10-minute Developer token that spends from the `shipmill-evals` workspace's budget. The
-`--max-cost-usd 15` cap holds for the workflow as written; a branch that edits `evals.yml`
+`--max-cost-usd 25` cap holds for the workflow as written; a branch that edits `evals.yml`
 can drop it, so the workspace's spend limit is the bound that holds.
 
 The pinned model is the one the gate's sessions run, written once in `evals.yml` as the
@@ -359,12 +363,22 @@ a full paid run (#947). So every run explains its failures (D-72, #950):
   grader with its `explanation`, the run's turns, cost, and duration, the last assistant
   message of its trace, and a verdict: **harness** (an API error, a scaffold or fixture
   error, a session that never took a turn, a failed shared `no-miss` grader, a grader whose
-  explanation says it can't read its target, or skipped paid graders) or **agent** (the
-  session ran and did the wrong thing). A run no harness rule places reads **agent** with
-  the reason it fell through; a case is **harness** when any failed run of it is, or its
-  `.eval/gh.jsonl` logs hold a `miss`. It reads only the run's own files and makes no model
-  call; a missing or unreadable trace is said on its line instead of failing the breakdown,
-  and a malformed result is bad input (exit 2)
+  explanation says it can't read its target, skipped paid graders, or a session that stopped
+  early) or **agent** (the session ran and did the wrong thing). A run no harness rule places
+  reads **agent** with the reason it fell through; a case is **harness** when any failed run
+  of it is, or its `.eval/gh.jsonl` logs hold a `miss`. It reads only the run's own files and
+  the suite in the checkout (`--repo`, default `.`), and makes no model call; a missing or
+  unreadable trace is said on its line instead of failing the breakdown, and a malformed
+  result, or a failed case the suite doesn't hold, is bad input (exit 2)
+- **A session that stopped early** reads **harness**, `the session stopped early after <n>
+  turns`, after the other harness rules and before the agent ones: its turns are at most a
+  quarter of its case's `max_turns` (the runner's default of 10 when the case sets none), the
+  case's `.eval/gh.jsonl` logs in `--traces` are there, readable, and hold no `write`, and
+  its trace names none of the other files its graders read. A triage or resolve session
+  can't do its work in so few turns: run 42388048763's failed runs ended after 3 to 5 of 30
+  or 40 turns, about 20 s and 0.15 USD each, with no write, and read **agent** (#954).
+  Without the logs, or without the trace when a grader reads another file, a write can't be
+  ruled out and the run reads **agent**
 - With `--traces`, run n's trace is `<dir>/<case>/run-<n>.jsonl` and the case's
   `.eval/gh.jsonl` logs are `<dir>/<case>/gh-*.jsonl`; without it, a run's trace is its
   `tracePath` and no log is read. The trace is read as JSON lines whose last
@@ -375,7 +389,9 @@ a full paid run (#947). So every run explains its failures (D-72, #950):
   `.eval/case` names a case of the run's tree, into `traces/` beside the result, so the
   `evals-result` artifact holds them and the breakdown can be checked against them. It
   copies only regular files, never a link a session left, so no token file reaches the
-  artifact
+  artifact. The eval run's `TMPDIR` is `$RUNNER_TEMP/evals-tmp`, and the copy reads that
+  directory: under `/tmp` the runner's `claude-eval-*` directories were gone by the time
+  the step ran, so run 42388048763 kept no trace (#954)
 
 ### What it costs
 
@@ -426,7 +442,7 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-8: `shipmill evals compare` exits 1 when the head's suite pass rate is more than 0.05 below the base's, when a case that passed 3 of 3 base runs passes at most 1 of 3 head runs, or when a new or changed case passes fewer than 2 of 3 head runs, and prints one line per regressed, improved, new failing, or removed case and both pass rates; it exits 0 otherwise
 - S-025-9: `shipmill evals compare` computes pass rates from the per-run grader results in `aggregate-result.json`, counting a run as passed only when every scored grader passed
 - S-025-10: `.github/workflows/evals.yml` runs on a pull request touching `skills/**`, `.claude-plugin/**`, `evals/**`, or `src/shipmill/gate.py`, and by `workflow_dispatch`, and on no other pull request. Amended by D-71 (#947), then D-72 (#950): until that baseline passes at least 60% of its runs, it runs only by hand, by `workflow_dispatch` on the default branch (with or without `pr` and `sha`), with no schedule and no `pull_request` trigger, and its header names D-72, the 60% condition, and the paths the trigger comes back with
-- S-025-11: The evals job runs `claude plugin eval` with `--ablation none`, `--no-publish`, `--model` set to the gate sessions' model, `--runs 3`, `-j 4`, and `--max-cost-usd 15`, with no GitHub token in the run's environment and `.eval/bin:../.eval/bin:../../.eval/bin` first on `PATH` (S-025-29), uploads the JSON result and the HTML report, and writes the moved cases, both pass rates, and the spend to the job summary
+- S-025-11: The evals job runs `claude plugin eval` with `--ablation none`, `--no-publish`, `--model` set to the gate sessions' model, `--runs 3`, `-j 4`, and `--max-cost-usd 25` (a full run of the suite with headroom, #954), with no GitHub token in the run's environment and `.eval/bin:../.eval/bin:../../.eval/bin` first on `PATH` (S-025-29), uploads the JSON result and the HTML report, and writes the moved cases, both pass rates, and the spend to the job summary
 - S-025-12: The pull request job compares against the latest successful default-branch run's result, and runs the suite on the merge base first when that result is missing, older than 14 days, or from a different model; while D-72 holds, the pull request job is only a run the maintainer dispatched with `pr` and `sha`, which does the same, and the baseline is the latest plain dispatched run's (or a scheduled run's kept before D-72)
 - S-025-13: dropped in #603, see S-025-18: the command the fork refusal prints names the head SHA
 - S-025-14: A run that reaches `--max-cost-usd` fails the gate with `evals: budget reached after <n> of <m> runs` and compares nothing
@@ -447,8 +463,8 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-28: A run on the default branch none of whose runs took a turn and ended without an error is never kept as the baseline: the step fails with `evals: no case ran (<errored> of <runs> runs errored, <turns> turns), so the run is no baseline` as its error and in the job summary, and the pull request job runs the merge base instead of comparing against a baseline kept before this check that ran no case
 - S-025-29: `evals/scaffold.sh` leaves a copy of `evals/bin/` at `.eval/bin/` in the workspace, and `.github/workflows/evals.yml` puts no directory of the checkout on the run's `PATH`, only `.eval/bin:../.eval/bin:../../.eval/bin` ahead of it, so bash and zsh resolve `gh` to that copy from the workspace and from a directory two levels below it
 - S-025-30: `shipmill evals check` exits 1 naming the case for a case whose `prompt.md` opens with a slash command and that has a `tool_used` grader with `tool: Skill`
-- S-025-31: `shipmill evals explain --result <aggregate-result.json> [--traces <dir>]` prints a Markdown section with one entry per case that has a failed run, and for each failed run its error, each failed grader with its `explanation`, its turns, cost, and duration, the last assistant message of its trace, and a verdict: **harness** for an API error, a scaffold or fixture error, a session that never took a turn, a failed `no-miss` grader, a grader that can't read its target, or skipped paid graders, else **agent** with the reason; a case is **harness** when any failed run of it is or its `gh-*.jsonl` logs hold a `miss`; a missing trace is said on its line, it makes no model call, and a missing or malformed result exits 2
-- S-025-32: `.github/workflows/evals.yml` runs `shipmill evals explain` on the head's result after "Run the suite" whenever that step ran, appends its output to the job summary, and copies each run's trace and each of the run's workspaces' `.eval/gh.jsonl` into `traces/` of the `evals-result` artifact, regular files only, never a link
+- S-025-31: `shipmill evals explain --result <aggregate-result.json> [--traces <dir>]` prints a Markdown section with one entry per case that has a failed run, and for each failed run its error, each failed grader with its `explanation`, its turns, cost, and duration, the last assistant message of its trace, and a verdict: **harness** for an API error, a scaffold or fixture error, a session that never took a turn, a failed `no-miss` grader, a grader that can't read its target, skipped paid graders, or a session that stopped early (at most a quarter of its case's `max_turns`, with the case's `gh-*.jsonl` logs present and holding no `write`, and a trace naming none of its graders' other files: `the session stopped early after <n> turns`), else **agent** with the reason; a case is **harness** when any failed run of it is or its `gh-*.jsonl` logs hold a `miss`; a missing trace is said on its line, it makes no model call, and a missing or malformed result, or a failed case the suite at `--repo` doesn't hold, exits 2
+- S-025-32: `.github/workflows/evals.yml` runs `shipmill evals explain` on the head's result after "Run the suite" whenever that step ran, appends its output to the job summary, and copies each run's trace and each of the run's workspaces' `.eval/gh.jsonl` into `traces/` of the `evals-result` artifact, regular files only, never a link, reading them under `$RUNNER_TEMP/evals-tmp`, the eval run's `TMPDIR`
 
 ## Out of scope
 

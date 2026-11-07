@@ -893,6 +893,12 @@ def _parser() -> argparse.ArgumentParser:
     q = evaluating.add_parser(
         "explain", help="print one Markdown entry per case of a run that did not pass, with why (D-72); no model call"
     )
+    q.add_argument(
+        "--repo",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="the checkout whose evals/ ran, read for each failed case's max_turns and graders (default: .)",
+    )
     q.add_argument("--result", type=Path, required=True, help="the run's aggregate-result.json")
     q.add_argument(
         "--traces",
@@ -1058,7 +1064,7 @@ def main(
         if args.evals == "explain":
             if args.traces is not None and not args.traces.is_dir():
                 raise ReleaseError(f"--traces {args.traces}: no such directory")
-            sys.stdout.write(evals.explain(evals.read_runs(args.result), args.traces))
+            sys.stdout.write(evals.explain(evals.read_runs(args.result), args.traces, root))
             return 0
         return _evals(root, gate=args.gate)
     if args.command == "downstream":

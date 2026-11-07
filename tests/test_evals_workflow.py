@@ -185,7 +185,9 @@ def _command() -> str:
 
 def test_s025_11_the_run_passes_the_spec_flags() -> None:
     command = _command()
-    for flag in ("--ablation none", "--no-publish", '--model "$MODEL"', "--runs 3", "-j 4", "--max-cost-usd 15"):
+    # 25 USD: 48 runs at about 0.36 USD each exceed 15, so a run ended partial (#954); three
+    # runs a case, the count D-37's rules are written for
+    for flag in ("--ablation none", "--no-publish", '--model "$MODEL"', "--runs 3", "-j 4", "--max-cost-usd 25"):
         assert re.search(rf"(?<!\S){re.escape(flag)}(?!\S)", command), flag
     assert "--trust-plugin" in command and "--scaffold" in command and "--json" in command
 
@@ -785,17 +787,33 @@ def test_s025_32_the_breakdown_runs_after_the_suite_and_before_the_upload() -> N
     assert "${{ runner.temp }}/evals/head/" in upload["with"]["path"].split("\n")
 
 
+def test_s025_32_the_eval_run_keeps_its_files_under_the_jobs_temp() -> None:
+    # #954: with TMPDIR left at /tmp the runner's claude-eval-* directories were gone when the
+    # explain step ran, so no trace and no gh log reached the artifact; the run's TMPDIR is a
+    # directory under $RUNNER_TEMP, made before the run, and the explain step reads that one
+    run = _script("Run the suite")
+    assert 'mkdir -p "$RUNNER_TEMP/evals-tmp"' in run
+    assert run.index('mkdir -p "$RUNNER_TEMP/evals-tmp"') < run.index("claude plugin eval")
+    assert re.search(r'-u ANTHROPIC_AUTH_TOKEN \\\s+TMPDIR="\$RUNNER_TEMP/evals-tmp" \\\s+ANTHROPIC_', _command())
+    explain = _script(EXPLAIN)
+    assert 'find "$RUNNER_TEMP/evals-tmp" ' in explain
+    assert "${TMPDIR" not in explain and "/tmp" not in explain
+
+
 def test_s025_32_traces_and_gh_logs_are_copied_and_the_breakdown_reaches_the_summary(tmp_path: Path) -> None:
+    # the runner's layout under the run's TMPDIR: <tmp>/claude-eval-*/out/trace.jsonl, and each
+    # workspace's .eval/ beside it
     tree, temp, scratch, bin_dir = tmp_path / "tree", tmp_path / "temp", tmp_path / "scratch", tmp_path / "bin"
-    for d in (tree / "evals" / "s" / "c", temp, scratch, bin_dir):
+    kept = temp / "evals-tmp"
+    for d in (tree / "evals" / "s" / "c", kept, scratch, bin_dir):
         d.mkdir(parents=True)
     secret = tmp_path / "evals-identity" / "github-oidc.jwt"
     secret.parent.mkdir()
     secret.write_text("a token\n")
-    trace = tmp_path / "run1" / "out" / "trace.jsonl"
+    trace = kept / "claude-eval-a1" / "out" / "trace.jsonl"
     trace.parent.mkdir(parents=True)
     trace.write_text('{"type": "assistant"}\n')
-    linked = tmp_path / "run2" / "out" / "trace.jsonl"
+    linked = kept / "claude-eval-a2" / "out" / "trace.jsonl"
     linked.parent.mkdir(parents=True)
     linked.symlink_to(secret)
     head = temp / "evals" / "head"
@@ -807,17 +825,19 @@ def test_s025_32_traces_and_gh_logs_are_copied_and_the_breakdown_reaches_the_sum
     ]
     (head / "aggregate-result.json").write_text(json.dumps({"schemaVersion": 1, "partial": False, "cases": cases}))
 
-    def workspace(name: str, case_dir: str, log: str | None) -> Path:
-        marker = scratch / name / "work" / ".eval" / "case"
+    def workspace(top: Path, name: str, case_dir: str, log: str | None) -> Path:
+        marker = top / name / "work" / ".eval" / "case"
         marker.parent.mkdir(parents=True)
         marker.write_text(case_dir + "\n")
         if log is not None:
             (marker.parent / "gh.jsonl").write_text(log)
         return marker.parent / "gh.jsonl"
 
-    workspace("a", f"{tree.resolve()}/evals/s/c", '{"kind": "miss", "args": ["pr", "checks", "41"]}\n')
-    workspace("b", "/elsewhere/evals/s/c", '{"kind": "read", "args": []}\n')  # another tree's case
-    workspace("c", f"{tree.resolve()}/evals/s/c", None).symlink_to(secret)  # a link a session left
+    case_dir = f"{tree.resolve()}/evals/s/c"
+    workspace(kept, "claude-eval-a1", case_dir, '{"kind": "miss", "args": ["pr", "checks", "41"]}\n')
+    workspace(kept, "claude-eval-b1", "/elsewhere/evals/s/c", '{"kind": "read", "args": []}\n')  # another tree's
+    workspace(kept, "claude-eval-a3", case_dir, None).symlink_to(secret)  # a link a session left
+    workspace(scratch, "claude-eval-z1", case_dir, '{"kind": "read", "args": ["elsewhere"]}\n')  # not the run's
     (bin_dir / "uv").write_text(f'#!/bin/sh\necho "$*" >> {tmp_path / "uv.log"}\necho "### evals: stub"\n')
     (bin_dir / "uv").chmod(0o755)
     env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "RUNNER_TEMP": str(temp), "GITHUB_WORKSPACE": str(tree)}

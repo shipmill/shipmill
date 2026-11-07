@@ -1,0 +1,12 @@
+schema_version: "1.1"
+name: stopped-early
+graders:
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  - type: regex
+    name: posts-the-verdict
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'Triage: \*\*implement\*\*'
