@@ -439,7 +439,7 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - D-16: a fork's pull request starts no unattended run, so its evals run only by hand
 - D-34: cases replay the direction (`docs/product.md`) the skills read at their `commit`
 - D-37: a change to the agents' instructions lands only when the evals don't regress
-- D-71: until the default branch's baseline passes 60% of its runs, the evals run only weekly and by hand, and D-37's gate is suspended
+- D-72: until the default branch's baseline passes 60% of its runs, the evals run only by hand, and D-37's gate is suspended
 
 ## Issues
 
