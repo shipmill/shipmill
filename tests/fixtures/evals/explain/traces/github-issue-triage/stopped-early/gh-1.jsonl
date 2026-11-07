@@ -1,0 +1,1 @@
+{"kind": "read", "args": ["issue", "view", "380", "--repo", "shipmill/shipmill", "--json", "title,body"]}

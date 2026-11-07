@@ -76,6 +76,31 @@
       }
     },
     {
+      "name": "stopped-early",
+      "dir": "evals/github-issue-triage/stopped-early",
+      "runsPerCase": 3,
+      "arms": {
+        "with": [
+          {
+            "score": 0.5, "passed": false, "turns": 4, "costUsd": 0.15, "durationSeconds": 21, "error": null,
+            "tracePath": "<tmp>/e1/out/trace.jsonl", "skippedPaidGraders": false,
+            "graders": [
+              {"name": "no-miss", "passed": true, "explanation": "no match", "scored": true},
+              {"name": "posts-the-verdict", "passed": false, "explanation": "pattern not found in file .eval/gh.jsonl", "scored": true}
+            ]
+          },
+          {
+            "score": 0.5, "passed": false, "turns": 3, "costUsd": 0.14, "durationSeconds": 19, "error": null,
+            "tracePath": "<tmp>/e2/out/trace.jsonl", "skippedPaidGraders": false,
+            "graders": [
+              {"name": "no-miss", "passed": true, "explanation": "no match", "scored": true},
+              {"name": "posts-the-verdict", "passed": false, "explanation": "pattern not found in file .eval/gh.jsonl", "scored": true}
+            ]
+          }
+        ]
+      }
+    },
+    {
       "name": "steady",
       "dir": "evals/product-intake/steady",
       "runsPerCase": 3,

@@ -385,7 +385,13 @@ jobs:
           # stub is the copy each case's scaffold leaves at .eval/bin/ in the workspace, first
           # on PATH as relative entries: from the workspace, or a worktree two levels down (#933).
           # The env.PATH in the workspace's .claude/settings.local.json is not applied to the
-          # session's shell (run 42358336992 still met the real gh), so PATH is set here
+          # session's shell (run 42358336992 still met the real gh), so PATH is set here.
+          # TMPDIR is a directory under the job's temp, where the runner's claude-eval-*
+          # directories (each run's out/trace.jsonl and each workspace's .eval/) stay for the
+          # explain step: under /tmp they were gone by then, so no trace reached the artifact (#954).
+          # The budget is 25 USD at three runs a case, D-37's count: 48 runs at about 0.36 USD
+          # each exceed 15, so a run stopped partial and could never be the baseline (#954)
+          mkdir -p "$RUNNER_TEMP/evals-tmp"
           suite() {
             local tree=$1 out=$2 allowed code=0
             allowed=$(tools "$tree")
@@ -394,9 +400,10 @@ jobs:
             (cd "$tree" && env -u GH_TOKEN -u GITHUB_TOKEN \
               -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
               -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
+              TMPDIR="$RUNNER_TEMP/evals-tmp" \
               ANTHROPIC_IDENTITY_TOKEN_FILE="$token_file" PATH=".eval/bin:../.eval/bin:../../.eval/bin:$PATH" \
               claude plugin eval . --trust-plugin --scaffold --allow-tools "$allowed" \
-                --ablation none --no-publish --model "$MODEL" --runs 3 -j 4 --max-cost-usd 15 \
+                --ablation none --no-publish --model "$MODEL" --runs 3 -j 4 --max-cost-usd 25 \
                 --json "$out/aggregate-result.json") || code=$?
             # 2 is the budget, with partial results; compare names it, never compares them
             if [ ! -s "$out/aggregate-result.json" ]; then
@@ -422,7 +429,8 @@ jobs:
 
       # Why each case did not pass, from the run's own files and with no model call (D-72,
       # #950): the session traces and each case's .eval/gh.jsonl go to <out>/traces/, inside
-      # the evals-result artifact, and the breakdown of the head's run to the job summary
+      # the evals-result artifact, and the breakdown of the head's run to the job summary.
+      # The runner's files are under $RUNNER_TEMP/evals-tmp, the eval run's TMPDIR (#954)
       - name: Explain the cases that did not pass (S-025-31, S-025-32)
         if: always() && steps.run.outcome != 'skipped'
         continue-on-error: true # a bug here never skips keeping a paid run as the baseline or the compare
@@ -461,7 +469,7 @@ jobs:
                 mkdir -p "$out/traces/$rel"
                 cp "$log" "$out/traces/$rel/gh-$k.jsonl"
               fi
-            done < <(find "${TMPDIR:-/tmp}" -maxdepth 8 -type f -path '*/.eval/case' -print0 2>/dev/null)
+            done < <(find "$RUNNER_TEMP/evals-tmp" -maxdepth 8 -type f -path '*/.eval/case' -print0 2>/dev/null)
           }
           collect "$RUNNER_TEMP/evals/base-tree" "$RUNNER_TEMP/evals/base"
           head="$RUNNER_TEMP/evals/head"

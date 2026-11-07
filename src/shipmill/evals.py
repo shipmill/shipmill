@@ -308,6 +308,7 @@ class _Settings:
     scaffold: str | None  # case.yaml's context.scaffold_script, as written
     slash: bool  # prompt.md's body opens with a slash command
     skill_graded: bool  # a tool_used grader counts Skill calls
+    targets: frozenset[PurePosixPath]  # the files the graders read, relative to the workspace
 
 
 class _Unread(Exception):
@@ -341,6 +342,7 @@ def _settings(case: Path) -> _Settings:
     max_turns = _int(pick("max_turns", execution), "max_turns", RUNNER_MAX_TURNS)
     timeout = _int(pick("timeout_seconds", execution), "timeout_seconds", RUNNER_TIMEOUT_SECONDS)
     graders: list[str] = []
+    targets: set[PurePosixPath] = set()
     skill_graded = False
     listed = spec.get("graders", [])
     if not isinstance(listed, list):
@@ -349,6 +351,7 @@ def _settings(case: Path) -> _Settings:
         if not isinstance(grader, dict):
             raise _Unread(f"{CASE}: grader {number} is a mapping with a type")
         graders.append(_type(grader, f"{CASE}: grader {number}"))
+        targets.update(_target(grader, f"{CASE}: grader {number}"))
         skill_graded = skill_graded or _counts_skill(grader)
     folder = case / GRADERS
     if folder.is_dir():
@@ -358,9 +361,36 @@ def _settings(case: Path) -> _Settings:
                 raise _Unread(f"{name} is not a regular file")
             front_matter = _frontmatter(file, name)
             graders.append(_type(front_matter, name))
+            targets.update(_target(front_matter, name))
             skill_graded = skill_graded or _counts_skill(front_matter)
     slash = (case / PROMPT).is_file() and _body(case / PROMPT).startswith("/")
-    return _Settings(tags, max_turns, timeout, tuple(graders), scaffold, slash, skill_graded)
+    return _Settings(tags, max_turns, timeout, tuple(graders), scaffold, slash, skill_graded, frozenset(targets))
+
+
+def _target(grader: dict[str, object], where: str) -> tuple[PurePosixPath, ...]:
+    """The file a grader reads, as its `target: {source: file, path: ...}` names it, a flow or
+    a block mapping; none for a grader with no target or another source, such as the transcript"""
+    raw = grader.get("target")
+    if raw is None:
+        return ()
+    fields: dict[str, object]
+    if isinstance(raw, dict):
+        fields = raw
+    elif isinstance(raw, str) and raw.startswith("{") and raw.endswith("}"):
+        fields = {}
+        for item in (i.strip() for i in raw[1:-1].split(",")):
+            found = _KEY.fullmatch(item)
+            if found is None or found.group(2) is None or found.group(1) in fields:
+                raise _Unread(f"{where}: target is a mapping such as {{source: file, path: <file>}}; got {raw}")
+            fields[found.group(1)] = _unquote(found.group(2).strip(), lambda why: _Unread(f"{where}: target: {why}"))
+    else:
+        raise _Unread(f"{where}: target is a mapping such as {{source: file, path: <file>}}; got {raw!r}")
+    if fields.get("source") != "file":
+        return ()
+    path = fields.get("path")
+    if not isinstance(path, str) or not path or PurePosixPath(path).is_absolute() or ".." in PurePosixPath(path).parts:
+        raise _Unread(f"{where}: a file target's path is relative to the workspace; got {path!r}")
+    return (PurePosixPath(path),)
 
 
 def _counts_skill(grader: dict[str, object]) -> bool:
@@ -793,8 +823,15 @@ def _run_passed(run: object, where: str, fail: Callable[[str], ReleaseError]) ->
 # {"content": [{"type": "text", "text": ...}]}}`. With a traces directory, run n of a case's
 # trace is `<traces>/<case>/run-<n>.jsonl` and the case's `.eval/gh.jsonl` logs, one per
 # workspace, are `<traces>/<case>/gh-*.jsonl`, as the evals workflow copies them; without
-# one, a run's trace is its `tracePath` and no log is read.
+# one, a run's trace is its `tracePath` and no log is read. Of each case with a failed run it
+# reads, from the suite in the checkout that ran, the case's max_turns and its graders' files.
 NO_MISS = "no-miss"  # the shared grader that fails a run on a `miss` in .eval/gh.jsonl
+GH_LOG = PurePosixPath(".eval/gh.jsonl")  # the offline gh's log in a workspace, a grader's usual target
+# A run that took at most a quarter of its case's max_turns stopped early: a triage or a
+# resolve session can't do its work in so few turns, and #954's failed runs ended after 3 to 5
+# of 30 or 40. With no gh write and none of its graders' files written, it stopped on
+# something at the start, such as a denied tool or a skill that didn't load: the harness
+EARLY_STOP = Fraction(1, 4)
 SHOWN = 300  # the characters of an error, an explanation, or a message a line shows
 # "pattern not found in file <f>" is the runner's regex grader on a file it read, so no harness
 _UNREAD_TARGET = re.compile(
@@ -837,9 +874,10 @@ class Run:
     def failed_grades(self) -> tuple[Grade, ...]:
         return tuple(g for g in self.grades if not g.passed)
 
-    def verdict(self) -> tuple[Verdict, str]:
+    def verdict(self, stopped_early: bool) -> tuple[Verdict, str]:
         """Harness or agent, and why: the first rule that holds, in this order. A failed run
-        no harness rule places reads agent, with the reason it fell through"""
+        no harness rule places reads agent, with the reason it fell through. stopped_early:
+        the run ended well under its case's max_turns and wrote nothing a grader reads"""
         error = self.error or ""
         failed = [g for g in self.failed_grades if g.scored]
         if _API_ERROR.search(error):
@@ -855,6 +893,8 @@ class Run:
             return Verdict.HARNESS, f"a grader can't read its target: {', '.join(unread)}"
         if self.skipped_paid:
             return Verdict.HARNESS, "its paid graders were skipped"
+        if stopped_early and self.turns is not None:
+            return Verdict.HARNESS, f"the session stopped early after {self.turns:g} turns"
         if error:
             return Verdict.AGENT, f"the session ran and stopped: {_line(error)}"
         if failed:
@@ -879,6 +919,30 @@ class Explained:
 
     cases: tuple[CaseRuns, ...]
     stopped: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CaseFacts:
+    """What `explain` reads of a case in the suite: its turn limit and the files its graders read"""
+
+    max_turns: int  # the runner's default when the case sets none
+    targets: frozenset[PurePosixPath]  # relative to the workspace
+
+
+def case_facts(root: Path, case: PurePosixPath) -> CaseFacts:
+    """The case's facts from the suite under root; ReleaseError when the suite holds no such
+    case or can't read it, since explain then can't tell an early stop"""
+    folder = root / SUITE / case
+    where = SUITE / case
+    if not ((folder / PROMPT).is_file() or (folder / CASE).is_file()):
+        raise ReleaseError(
+            f"{where}: no case in the suite at {root}; explain a run in the checkout whose evals/ ran it"
+        )
+    try:
+        settings = _settings(folder)
+    except _Unread as exc:
+        raise ReleaseError(f"{where}: {exc}") from None
+    return CaseFacts(settings.max_turns, settings.targets)
 
 
 def read_runs(path: Path) -> Explained:
@@ -983,10 +1047,11 @@ def _run(raw: object, number: int, where: str, fail: Callable[[str], ReleaseErro
     )
 
 
-def explain(result: Explained, traces: Path | None) -> str:
+def explain(result: Explained, traces: Path | None, root: Path) -> str:
     """The Markdown section for the job summary: one entry per case with a failed run, each
     failed run's verdict and why, its error, failed graders, turns, cost, duration, and the
-    last assistant message of its trace; a missing or unreadable trace is said on its line"""
+    last assistant message of its trace; a missing or unreadable trace is said on its line.
+    Each failed case's facts come from the suite under root (ReleaseError without the case)"""
     ran = [c for c in result.cases if c.runs]
     failing = [c for c in ran if c.failed]
     lines: list[str] = []
@@ -1000,8 +1065,11 @@ def explain(result: Explained, traces: Path | None) -> str:
             " failed the run, **agent** when the session ran and did the wrong thing.",
         ]
     for case in failing:
-        logs = _gh_logs(traces / case.path) if traces is not None else None
-        verdicts = [run.verdict() for run in case.failed]
+        facts = case_facts(root, case.path)
+        case_traces = traces / case.path if traces is not None else None
+        logs = _gh_logs(case_traces) if case_traces is not None else None
+        read = [_trace(run, case_traces) for run in case.failed]
+        verdicts = [run.verdict(_stopped_early(run, facts, logs, t)) for run, t in zip(case.failed, read, strict=True)]
         harness = any(v is Verdict.HARNESS for v, _ in verdicts) or bool(logs and logs.misses)
         passed = len(case.runs) - len(case.failed)
         lines += [
@@ -1009,14 +1077,14 @@ def explain(result: Explained, traces: Path | None) -> str:
             f"#### {case.path}: {Verdict.HARNESS if harness else Verdict.AGENT}, {passed}/{len(case.runs)} runs passed",
             "",
         ]
-        for run, (verdict, why) in zip(case.failed, verdicts, strict=True):
+        for run, (verdict, why), trace in zip(case.failed, verdicts, read, strict=True):
             lines.append(f"- Run {run.number}: **{verdict}**, {why}. {_spent(run)}")
             if run.error:
                 lines.append(f"  - error: {_line(run.error)}")
             for grade in run.failed_grades:
                 scored = "" if grade.scored else " (not scored)"
                 lines.append(f"  - grader {grade.name} failed{scored}: {_line(grade.explanation) or 'no explanation'}")
-            lines.append("  - " + _last_message(run, traces / case.path if traces is not None else None))
+            lines.append("  - " + trace.said)
         if logs is not None:
             lines.append(f"- gh.jsonl: {logs}")
     not_run = [c for c in result.cases if not c.runs]
@@ -1038,22 +1106,31 @@ def _line(text: str) -> str:
     return flat if len(flat) <= SHOWN else flat[: SHOWN - 1] + "…"
 
 
-def _last_message(run: Run, case_traces: Path | None) -> str:
-    """The run's last assistant text, or the line saying why there is none"""
+@dataclass(frozen=True, slots=True)
+class _Trace:
+    """A run's trace as explain reads it: its entries, or None when there is no readable one,
+    and the line it shows: the last assistant text, or why there is none"""
+
+    entries: tuple[object, ...] | None
+    said: str
+
+
+def _trace(run: Run, case_traces: Path | None) -> _Trace:
     if case_traces is not None:
         trace = case_traces / f"run-{run.number}.jsonl"
         if not trace.is_file():
-            return "trace: none in --traces for this run"
+            return _Trace(None, "trace: none in --traces for this run")
     elif run.trace is None:
-        return "trace: the run names no tracePath"
+        return _Trace(None, "trace: the run names no tracePath")
     else:
         trace = Path(run.trace)
         if not trace.is_file():
-            return f"trace: {trace} is missing"
+            return _Trace(None, f"trace: {trace} is missing")
     try:
         text = trace.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        return f"trace: {trace.name} is not UTF-8"
+        return _Trace(None, f"trace: {trace.name} is not UTF-8")
+    entries: list[object] = []
     last: str | None = None
     for number, line in enumerate(text.splitlines(), 1):
         if not line.strip():
@@ -1061,13 +1138,46 @@ def _last_message(run: Run, case_traces: Path | None) -> str:
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
-            return f"trace: line {number} of {trace.name} is not JSON"
+            return _Trace(None, f"trace: line {number} of {trace.name} is not JSON")
+        entries.append(entry)
         said = _assistant_text(entry)
         if said:
             last = said
     if last is None:
-        return f"trace: {trace.name} holds no assistant text"
-    return f"last message: {_line(last)}"
+        return _Trace(tuple(entries), f"trace: {trace.name} holds no assistant text")
+    return _Trace(tuple(entries), f"last message: {_line(last)}")
+
+
+def _stopped_early(run: Run, facts: CaseFacts, logs: _GhLogs | None, trace: _Trace) -> bool:
+    """Whether the run ended within EARLY_STOP of its case's max_turns having written nothing
+    a grader reads: its case's gh logs, each one readable, hold no write, and its trace names no
+    other file its graders read. Without the logs or, for such a file, the trace, a write can't
+    be ruled out, so it didn't stop early. The logs are the case's, one per workspace, so a
+    write in any of them counts for every run"""
+    if run.turns is None or Fraction(run.turns) > facts.max_turns * EARLY_STOP:
+        return False
+    if logs is None or not logs.logs or logs.writes or logs.unread:
+        return False
+    others = facts.targets - {GH_LOG}
+    if not others:
+        return True
+    if trace.entries is None:
+        return False
+    return not any(_names(entry, target) for entry in trace.entries for target in others)
+
+
+def _names(entry: object, target: PurePosixPath) -> bool:
+    """Whether an assistant entry calls a tool whose input names the file"""
+    if not isinstance(entry, dict) or entry.get("type") != "assistant":
+        return False
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(b, dict) and b.get("type") == "tool_use" and target.as_posix() in json.dumps(b.get("input"))
+        for b in content
+    )
 
 
 def _assistant_text(entry: object) -> str:
@@ -1089,6 +1199,7 @@ def _assistant_text(entry: object) -> str:
 class _GhLogs:
     logs: int
     misses: int
+    writes: int
     first: str | None  # the first miss's call
     unread: tuple[str, ...]  # a log's line that isn't a JSON object
 
@@ -1106,7 +1217,7 @@ class _GhLogs:
 
 def _gh_logs(case_traces: Path) -> _GhLogs:
     files = sorted(case_traces.glob("gh-*.jsonl")) if case_traces.is_dir() else []
-    misses = 0
+    misses = writes = 0
     first: str | None = None
     unread: list[str] = []
     for file in files:
@@ -1126,9 +1237,11 @@ def _gh_logs(case_traces: Path) -> _GhLogs:
             if not isinstance(entry, dict):
                 unread.append(f"{file.name} line {number}")
                 continue
+            if entry.get("kind") == "write":
+                writes += 1
             if entry.get("kind") == "miss":
                 misses += 1
                 args = entry.get("args")
                 if first is None and isinstance(args, list):
                     first = _line("gh " + " ".join(str(a) for a in args)).replace("`", "'")
-    return _GhLogs(len(files), misses, first, tuple(unread))
+    return _GhLogs(len(files), misses, writes, first, tuple(unread))
