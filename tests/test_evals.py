@@ -231,6 +231,39 @@ def test_s025_1_no_grader_at_all(repo: Path, capsys: pytest.CaptureFixture[str])
     _fails(repo, capsys, r"no grader, in graders/\*\.md or in case\.yaml")
 
 
+SKILL_GRADER = "  - type: tool_used\n    name: skill-loaded\n    tool: Skill\n    min: 1\n"
+SLASH = "prompt\\.md opens with a slash command, which loads the skill inline with no Skill call"
+
+
+def test_s025_30_a_slash_command_prompt_with_a_skill_grader(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # the runner expands a leading /plugin:skill inline, so Skill is never called (#933)
+    _write(repo, f"evals/{CASE}/prompt.md", PROMPT.replace("Triage shipmill", f"\n/shipmill:{SKILL} triage shipmill"))
+    _write(repo, f"evals/{CASE}/case.yaml", CASE_YAML + SKILL_GRADER)
+    _fails(repo, capsys, SLASH)
+
+
+def test_s025_30_a_skill_grader_file_counts_too(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write(repo, f"evals/{CASE}/prompt.md", PROMPT.replace("Triage shipmill", f"/shipmill:{SKILL} triage shipmill"))
+    _write(repo, f"evals/{CASE}/graders/fired.md", "---\ntype: tool_used\ntool: Skill\nmin: 1\n---\n")
+    _fails(repo, capsys, SLASH)
+
+
+@pytest.mark.parametrize(
+    ("body", "graders"),
+    [
+        (f"/shipmill:{SKILL} triage shipmill", ""),  # the slash command alone: no Skill grader
+        ("Triage shipmill", SKILL_GRADER),  # plain words: the description must reach the skill
+        ("Triage shipmill, as /shipmill:x says", SKILL_GRADER),  # a slash command not at the start
+    ],
+)
+def test_s025_30_a_skill_grader_on_a_plain_prompt_passes(
+    repo: Path, capsys: pytest.CaptureFixture[str], body: str, graders: str
+) -> None:
+    _write(repo, f"evals/{CASE}/prompt.md", PROMPT.replace("Triage shipmill", body))
+    _write(repo, f"evals/{CASE}/case.yaml", CASE_YAML + graders)
+    assert _check(repo, capsys)[0] == 0
+
+
 @pytest.mark.parametrize(
     ("scaffold", "rule"),
     [

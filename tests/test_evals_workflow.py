@@ -198,12 +198,16 @@ def test_s025_11_the_model_is_the_gate_sessions_written_once() -> None:
     assert "model=${MODEL_INPUT:-$EVALS_MODEL}" in _script("Choose what this run is")
 
 
-def test_s025_11_the_stub_is_first_on_path_and_no_token_reaches_the_run() -> None:
+def test_s025_11_s025_29_the_stub_is_first_on_path_and_no_token_reaches_the_run() -> None:
+    # proves: S-025-29
     command = _command()
     unset = "GH_TOKEN GITHUB_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN"
     unset += " ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN"
     assert re.search(r"env " + r" \\?\s*".join(f"-u {v}" for v in unset.split()), command), command
-    assert 'ANTHROPIC_IDENTITY_TOKEN_FILE="$token_file" PATH="$tree/evals/bin:$PATH"' in command
+    # the session can't read the tree, so an entry in it lets the real gh answer (#933): the
+    # stub is the workspace's copy, found from the workspace or a worktree two levels down
+    assert 'ANTHROPIC_IDENTITY_TOKEN_FILE="$token_file" PATH=".eval/bin:../.eval/bin:../../.eval/bin:$PATH"' in command
+    assert "evals/bin" not in command
     env = _env("Run the suite")
     assert not {"GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} & set(env)
     assert all("github.token" not in str(v) and "GITHUB_TOKEN" not in str(v) for v in env.values())

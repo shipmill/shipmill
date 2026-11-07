@@ -260,6 +260,11 @@ def _case_rules(root: Path, entry: Entry, resolves: Resolves) -> list[str]:
             rules.append(f"{field} is {value}, above the ceiling of {ceiling}")
     if settings.scaffold is not None:
         rules.extend(_scaffold_rules(case, settings.scaffold))
+    if settings.slash and settings.skill_graded:
+        rules.append(
+            f"{PROMPT} opens with a slash command, which loads the skill inline with no Skill call,"
+            " so a tool_used grader counting Skill calls can never pass"
+        )
     if not settings.graders:
         rules.append(f"no grader, in {GRADERS}/*.md or in {CASE}")
     elif kind is not Kind.FINDING and not DETERMINISTIC & set(settings.graders):
@@ -301,6 +306,8 @@ class _Settings:
     timeout_seconds: int
     graders: tuple[str, ...]  # each grader's type
     scaffold: str | None  # case.yaml's context.scaffold_script, as written
+    slash: bool  # prompt.md's body opens with a slash command
+    skill_graded: bool  # a tool_used grader counts Skill calls
 
 
 class _Unread(Exception):
@@ -334,6 +341,7 @@ def _settings(case: Path) -> _Settings:
     max_turns = _int(pick("max_turns", execution), "max_turns", RUNNER_MAX_TURNS)
     timeout = _int(pick("timeout_seconds", execution), "timeout_seconds", RUNNER_TIMEOUT_SECONDS)
     graders: list[str] = []
+    skill_graded = False
     listed = spec.get("graders", [])
     if not isinstance(listed, list):
         raise _Unread(f"{CASE}: graders is a list of graders")
@@ -341,14 +349,31 @@ def _settings(case: Path) -> _Settings:
         if not isinstance(grader, dict):
             raise _Unread(f"{CASE}: grader {number} is a mapping with a type")
         graders.append(_type(grader, f"{CASE}: grader {number}"))
+        skill_graded = skill_graded or _counts_skill(grader)
     folder = case / GRADERS
     if folder.is_dir():
         for file in sorted(folder.glob("*.md")):
             name = f"{GRADERS}/{file.name}"
             if not file.is_file():  # a FIFO or /dev/zero would block or never end the read
                 raise _Unread(f"{name} is not a regular file")
-            graders.append(_type(_frontmatter(file, name), name))
-    return _Settings(tags, max_turns, timeout, tuple(graders), scaffold)
+            front_matter = _frontmatter(file, name)
+            graders.append(_type(front_matter, name))
+            skill_graded = skill_graded or _counts_skill(front_matter)
+    slash = (case / PROMPT).is_file() and _body(case / PROMPT).startswith("/")
+    return _Settings(tags, max_turns, timeout, tuple(graders), scaffold, slash, skill_graded)
+
+
+def _counts_skill(grader: dict[str, object]) -> bool:
+    return grader.get("type") == "tool_used" and grader.get("tool") == "Skill"
+
+
+def _body(path: Path) -> str:
+    """A prompt's text after its frontmatter, leading blank lines dropped"""
+    lines = _text(path).splitlines()
+    if lines and lines[0].rstrip() == "---":
+        end = next((i for i in range(1, len(lines)) if lines[i].rstrip() == "---"), len(lines) - 1)
+        lines = lines[end + 1 :]
+    return "\n".join(lines).lstrip()
 
 
 def _type(grader: dict[str, object], where: str) -> str:

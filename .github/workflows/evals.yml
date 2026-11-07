@@ -378,7 +378,11 @@ jobs:
           trap 'kill "$refresher" 2>/dev/null || true' EXIT
           # One run of the suite in a tree, its result in an output directory; no GitHub
           # token, no OIDC request variables, and no API key or auth token (they outrank
-          # federation) in its environment, and the tree's offline gh stub first on PATH
+          # federation) in its environment. The session can't read the tree, so the offline gh
+          # stub is the copy each case's scaffold leaves at .eval/bin/ in the workspace, first
+          # on PATH as relative entries: from the workspace, or a worktree two levels down (#933).
+          # The env.PATH in the workspace's .claude/settings.local.json is not applied to the
+          # session's shell (run 42358336992 still met the real gh), so PATH is set here
           suite() {
             local tree=$1 out=$2 allowed code=0
             allowed=$(tools "$tree")
@@ -387,7 +391,7 @@ jobs:
             (cd "$tree" && env -u GH_TOKEN -u GITHUB_TOKEN \
               -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
               -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
-              ANTHROPIC_IDENTITY_TOKEN_FILE="$token_file" PATH="$tree/evals/bin:$PATH" \
+              ANTHROPIC_IDENTITY_TOKEN_FILE="$token_file" PATH=".eval/bin:../.eval/bin:../../.eval/bin:$PATH" \
               claude plugin eval . --trust-plugin --scaffold --allow-tools "$allowed" \
                 --ablation none --no-publish --model "$MODEL" --runs 3 -j 4 --max-cost-usd 15 \
                 --json "$out/aggregate-result.json") || code=$?

@@ -609,6 +609,42 @@ def test_936_the_session_settings_put_the_workspace_stub_first_on_path(tmp_path:
     assert git(ws, "status", "--porcelain") == ""  # the settings file never shows to git either
 
 
+RUN_PATH = ".eval/bin:../.eval/bin:../../.eval/bin"  # evals.yml's, ahead of the runner's PATH
+
+
+@pytest.mark.parametrize("shell", [s for s in ("bash", "zsh") if shutil.which(s)])
+@pytest.mark.parametrize("below", ["", "tmp/wt-fix"])
+def test_s025_29_the_session_finds_the_stubs_copy_in_the_workspace(tmp_path: Path, shell: str, below: str) -> None:
+    # The settings' env.PATH is not applied to the session's shell (run 42358336992 met the
+    # real gh, #933): evals.yml's relative PATH entries find the workspace's copy of the stub,
+    # from the workspace or a worktree two levels down, with the checkout gone
+    repo, _, case = source_repo(tmp_path)
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    done = subprocess.run(
+        ["bash", str(repo / "evals" / "scaffold.sh"), str(case)], cwd=ws, capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    assert (ws / ".eval" / "bin" / "gh").read_bytes() == STUB.read_bytes()
+    shutil.rmtree(repo)
+    where = ws / below
+    where.mkdir(parents=True, exist_ok=True)
+    env = {"HOME": str(tmp_path), "PATH": f"{RUN_PATH}:{os.environ['PATH']}"}
+    found = subprocess.run(
+        [shell, "-c", 'cd "$(dirname "$(command -v gh)")" && pwd -P'],
+        cwd=where,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert found.stdout.strip() == str((ws / ".eval" / "bin").resolve())
+    plain = subprocess.run([shell, "-c", "gh issue view 5"], cwd=where, env=env, capture_output=True, text=True)
+    assert plain.returncode == 1, plain.stderr
+    assert plain.stderr.startswith("gh: no recording for issue view 5"), plain.stderr
+    assert [line["kind"] for line in lines(ws)] == ["miss"]
+
+
 def test_s040_15_scaffold_commits_a_case_fixture_repo_over_the_case_commit(tmp_path: Path) -> None:
     repo, then, case = source_repo(tmp_path)
     overlay = case / "fixture" / "repo"
