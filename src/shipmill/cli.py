@@ -93,7 +93,10 @@
                   rule it breaks, without a model; a repository with no case under evals/ passes;
                   check --gate also exits 1 while the suite is short of 8 verdict, 4 decision,
                   4 finding, and 4 fix cases, the counts the gate turns on at; compare judges
-                  a pull request's run against the default branch's (D-37)
+                  a pull request's run against the default branch's (D-37); explain prints a
+                  Markdown section with one entry per case that did not pass, each failed run's
+                  error, failed graders, turns, cost, last message, and a harness or agent
+                  verdict, read from the run's own files with no model call (D-72)
   downstream      the downstream repositories' tests on a pull request (spec 032): start writes a
                   check per [downstream] repository on the head and dispatches each one's workflow
                   as the App; a fork's pull request waits for a person's workflow_dispatch,
@@ -108,7 +111,8 @@ broken rule, review check found a malformed REVIEW.md, evals check found a malfo
 with --gate, a suite short of the gate's counts), evals compare found a regression or a run
 stopped at its budget, or downstream start's --sha is no longer the pull request's head; 2 bad
 input or a refused state, such as an edit of a file its check refuses, a malformed
-evals/cases.toml, a missing or malformed aggregate-result.json, or a repo deprecations can't
+evals/cases.toml, a missing or malformed aggregate-result.json (compare and explain), or a
+repo deprecations can't
 read.
 """
 
@@ -886,6 +890,16 @@ def _parser() -> argparse.ArgumentParser:
         metavar="CASE",
         help="a case whose directory the pull request changed, relative to evals/; judged on its own (repeatable)",
     )
+    q = evaluating.add_parser(
+        "explain", help="print one Markdown entry per case of a run that did not pass, with why (D-72); no model call"
+    )
+    q.add_argument("--result", type=Path, required=True, help="the run's aggregate-result.json")
+    q.add_argument(
+        "--traces",
+        type=Path,
+        help="the run's traces as the evals workflow copies them, <case>/run-<n>.jsonl and <case>/gh-*.jsonl"
+        " (default: each run's tracePath, and no gh.jsonl)",
+    )
 
     p = sub.add_parser("downstream", help="run the downstream repositories' tests on a pull request (spec 032)")
     acting = p.add_subparsers(dest="downstream", required=True)
@@ -1041,6 +1055,11 @@ def main(
     if args.command == "evals":
         if args.evals == "compare":
             return _evals_compare(args.base, args.head, frozenset(args.changed), args.tolerance)
+        if args.evals == "explain":
+            if args.traces is not None and not args.traces.is_dir():
+                raise ReleaseError(f"--traces {args.traces}: no such directory")
+            sys.stdout.write(evals.explain(evals.read_runs(args.result), args.traces))
+            return 0
         return _evals(root, gate=args.gate)
     if args.command == "downstream":
         if args.downstream == "collect":

@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.296",
+  "startedAt": "2026-11-07T10:02:11.104Z",
+  "durationSeconds": 912,
+  "costUsd": 9.84,
+  "partial": false,
+  "cases": [
+    {
+      "name": "overloaded",
+      "dir": "evals/github-issue-triage/overloaded",
+      "runsPerCase": 3,
+      "arms": {
+        "with": [
+          {
+            "score": 0, "passed": false, "turns": 0, "costUsd": 0, "durationSeconds": 2,
+            "error": "API error: 529 overloaded_error", "tracePath": "<tmp>/a1/out/trace.jsonl",
+            "skippedPaidGraders": false, "graders": []
+          },
+          {
+            "score": 1, "passed": true, "turns": 9, "costUsd": 0.61, "durationSeconds": 140, "error": null,
+            "tracePath": "<tmp>/a2/out/trace.jsonl", "skippedPaidGraders": false,
+            "graders": [{"name": "verdict", "passed": true, "explanation": "matched", "scored": true}]
+          },
+          {
+            "score": 1, "passed": true, "turns": 8, "costUsd": 0.57, "durationSeconds": 131, "error": null,
+            "tracePath": "<tmp>/a3/out/trace.jsonl", "skippedPaidGraders": false,
+            "graders": [{"name": "verdict", "passed": true, "explanation": "matched", "scored": true}]
+          }
+        ]
+      }
+    },
+    {
+      "name": "fixture-drift",
+      "dir": "evals/github-pr-triage/fixture-drift",
+      "runsPerCase": 3,
+      "arms": {
+        "with": [
+          {
+            "score": 0.5, "passed": false, "turns": 14, "costUsd": 1.12, "durationSeconds": 301, "error": null,
+            "tracePath": "<tmp>/b1/out/trace.jsonl", "skippedPaidGraders": false,
+            "graders": [
+              {"name": "merged", "passed": true, "explanation": "matched pr merge", "scored": true},
+              {"name": "no-miss", "passed": false, "explanation": "found \"kind\": \"miss\" in .eval/gh.jsonl", "scored": true}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "wrong-verdict",
+      "dir": "evals/github-issue-resolve/wrong-verdict",
+      "runsPerCase": 3,
+      "arms": {
+        "with": [
+          {
+            "score": 0.5, "passed": false, "turns": 12, "costUsd": 0.93, "durationSeconds": 214, "error": null,
+            "tracePath": "<tmp>/c1/out/trace.jsonl", "skippedPaidGraders": false,
+            "graders": [
+              {"name": "verdict", "passed": false, "explanation": "no match for Triage: \\*\\*feature\\*\\*", "scored": true},
+              {"name": "no-miss", "passed": true, "explanation": "no match", "scored": true},
+              {"name": "tone", "passed": false, "explanation": "judge votes: FAIL FAIL PASS", "scored": false}
+            ]
+          },
+          {
+            "score": 0.5, "passed": false, "turns": 5, "costUsd": 0.31, "durationSeconds": 77,
+            "error": "max turns reached", "tracePath": "<tmp>/c2/out/trace.jsonl", "skippedPaidGraders": false,
+            "graders": [{"name": "verdict", "passed": false, "explanation": "no match for Triage: \\*\\*feature\\*\\*", "scored": true}]
+          },
+          {
+            "score": 1, "passed": true, "turns": 10, "costUsd": 0.8, "durationSeconds": 190, "error": null,
+            "tracePath": "<tmp>/c3/out/trace.jsonl", "skippedPaidGraders": false,
+            "graders": [{"name": "verdict", "passed": true, "explanation": "matched", "scored": true}]
+          }
+        ]
+      }
+    },
+    {
+      "name": "steady",
+      "dir": "evals/product-intake/steady",
+      "runsPerCase": 3,
+      "arms": {
+        "with": [
+          {
+            "score": 1, "passed": true, "turns": 6, "costUsd": 0.4, "durationSeconds": 90, "error": null,
+            "tracePath": "<tmp>/d1/out/trace.jsonl", "skippedPaidGraders": false,
+            "graders": [{"name": "verdict", "passed": true, "explanation": "matched", "scored": true}]
+          }
+        ]
+      }
+    }
+  ]
+}

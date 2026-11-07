@@ -1,0 +1,3 @@
+{"kind": "read", "args": ["pr", "view", "41", "--json", "title,body"]}
+{"kind": "miss", "args": ["pr", "checks", "41", "--json", "name,state"]}
+{"kind": "write", "via": "shipmill", "args": ["pr", "merge", "41", "--squash"]}

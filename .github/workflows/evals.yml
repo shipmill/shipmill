@@ -1,15 +1,18 @@
 # The agents' evals (spec 025, D-37): `claude plugin eval` runs the suite in evals/, offline,
 # and `shipmill evals compare` gates a pull request's run against the default branch's.
-# A scheduled or plain dispatched run on the default branch is the baseline; a pull request's
-# run, or a dispatched run with `pr` and the head `sha` the maintainer read (which runs no case
-# for any other head), is compared against it. Until the suite holds the first
-# suite's counts (`shipmill evals check --gate`), the pull request job reports and exits 0.
+# A plain dispatched run on the default branch is the baseline; a pull request's run, or a
+# dispatched run with `pr` and the head `sha` the maintainer read (which runs no case for any
+# other head), is compared against it. Until the suite holds the first suite's counts
+# (`shipmill evals check --gate`), the pull request job reports and exits 0. Every run's
+# summary explains each case that did not pass (`shipmill evals explain`), and its artifact
+# holds the session traces and each case's .eval/gh.jsonl.
 #
-# No pull_request trigger while D-71 holds (#947): at a 7% baseline a pull request's run can't
-# tell a worse skill from a broken case, and 11 paid runs on 2026-11-07 cost 101.5 USD, mostly
-# on pull requests fixing the harness. A pull request is evaluated only when the maintainer
-# dispatches it with `pr` and `sha`. Once the default branch's baseline passes at least 60%
-# of its runs, a pull request restores the trigger, D-37's gate with it:
+# Only by hand while D-72 holds (#950): no schedule and no pull_request trigger. At a 7%
+# baseline a run can't tell a worse skill from a broken case, and 11 paid runs on 2026-11-07
+# cost 101.5 USD with no reasons; a run spends money only when the maintainer dispatches it.
+# A pull request is evaluated only when the maintainer dispatches it with `pr` and `sha`.
+# Once the default branch's baseline passes at least 60% of its runs, a pull request restores
+# the trigger, D-37's gate with it:
 #   pull_request:
 #     paths: ["skills/**", ".claude-plugin/**", "evals/**", "src/shipmill/gate.py"]
 # The steps below keep their pull_request branches (the fork refusal, the federation rule,
@@ -17,8 +20,6 @@
 name: evals
 
 on:
-  schedule:
-    - cron: "0 6 * * 1" # weekly, on the default branch: a model update shows with no change here
   workflow_dispatch:
     inputs:
       pr:
@@ -91,10 +92,6 @@ jobs:
             pull_request)
               mode="pr"
               pr=$PR_EVENT
-              ;;
-            schedule)
-              mode=baseline
-              pr=""
               ;;
             workflow_dispatch)
               if [ "$REF" != "refs/heads/$DEFAULT" ]; then
@@ -293,6 +290,8 @@ jobs:
           MODEL: ${{ steps.plan.outputs.model }}
         run: |
           dir="$RUNNER_TEMP/evals/base"
+          # The workflow has no schedule since D-72 (#950); a baseline an older scheduled run
+          # kept still counts until the 14-day freshness rule below ages it out
           runs=$(gh run list -R "$REPO" --workflow evals.yml --branch "$DEFAULT" --status success --limit 50 \
             --json databaseId,event --jq '.[] | select(.event == "schedule" or .event == "workflow_dispatch") | .databaseId')
           reason="no successful run on $DEFAULT left a baseline"
@@ -420,6 +419,59 @@ jobs:
             suite "$RUNNER_TEMP/evals/base-tree" "$RUNNER_TEMP/evals/base"
           fi
           suite "$GITHUB_WORKSPACE" "$RUNNER_TEMP/evals/head"
+
+      # Why each case did not pass, from the run's own files and with no model call (D-72,
+      # #950): the session traces and each case's .eval/gh.jsonl go to <out>/traces/, inside
+      # the evals-result artifact, and the breakdown of the head's run to the job summary
+      - name: Explain the cases that did not pass (S-025-31, S-025-32)
+        if: always() && steps.run.outcome != 'skipped'
+        continue-on-error: true # a bug here never skips keeping a paid run as the baseline or the compare
+        run: |
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          # A case's path relative to evals/, as `shipmill evals check` takes it
+          case_path() {
+            [[ "$1" =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]] && [[ "/$1/" != */../* && "/$1/" != */./* ]]
+          }
+          # Run n of a case's trace, from its tracePath, to <out>/traces/<case>/run-<n>.jsonl, and
+          # every workspace's .eval/gh.jsonl, found by the case its .eval/case names in the tree,
+          # to <out>/traces/<case>/gh-<k>.jsonl. Only regular files: never a link a session left,
+          # so no file outside the runs (the identity token's directory) reaches the artifact
+          collect() {
+            local tree=$1 out=$2 dir n trace rel marker named log k=0
+            [ -s "$out/aggregate-result.json" ] || return 0
+            mkdir -p "$out/traces"
+            while IFS=$'\t' read -r dir n trace; do
+              rel=${dir#evals/}
+              if [ "$rel" = "$dir" ] || ! case_path "$rel"; then continue; fi
+              if [ -n "$trace" ] && [ -f "$trace" ] && [ ! -L "$trace" ]; then
+                mkdir -p "$out/traces/$rel"
+                cp "$trace" "$out/traces/$rel/run-$n.jsonl"
+              fi
+            done < <(jq -r '.cases[] | .dir as $dir | (.arms.with // []) | to_entries[]
+              | [$dir, (.key + 1), (.value.tracePath // "")] | @tsv' "$out/aggregate-result.json")
+            [ -d "$tree" ] || return 0
+            tree=$(cd "$tree" && pwd -P)
+            while IFS= read -r -d '' marker; do
+              named=$(head -n 1 "$marker")
+              rel=${named#"$tree/evals/"}
+              if [ "$rel" = "$named" ] || ! case_path "$rel"; then continue; fi
+              log="$(dirname "$marker")/gh.jsonl"
+              if [ -f "$log" ] && [ ! -L "$log" ]; then
+                k=$((k + 1))
+                mkdir -p "$out/traces/$rel"
+                cp "$log" "$out/traces/$rel/gh-$k.jsonl"
+              fi
+            done < <(find "${TMPDIR:-/tmp}" -maxdepth 8 -type f -path '*/.eval/case' -print0 2>/dev/null)
+          }
+          collect "$RUNNER_TEMP/evals/base-tree" "$RUNNER_TEMP/evals/base"
+          head="$RUNNER_TEMP/evals/head"
+          collect "$GITHUB_WORKSPACE" "$head"
+          if [ ! -s "$head/aggregate-result.json" ]; then
+            exit 0 # the spend step says the run wrote no result
+          fi
+          uv run shipmill evals explain --result "$head/aggregate-result.json" --traces "$head/traces" \
+            >"$RUNNER_TEMP/explain.md"
+          { echo; cat "$RUNNER_TEMP/explain.md"; } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Upload the result and the report
         if: always() && steps.run.outcome != 'skipped'
