@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.119.0] - 2026-11-07
+
+### Added
+
+- The evals suite holds its first 25 cases from shipmill's own history, adding 11: six triage verdicts (implement twice, a maintainer's feature as a proposal, an agent's opportunity, a postpone, and a question before a contract change), four post-merge reviews that must raise the bug a later issue named, and a fix that opens its pull request as the App with its plan; with them `shipmill evals check --gate` passes, so the `evals` check now gates pull requests that change the agents' instructions (#449)
+
+### Changed
+
+- Evals: `evals.yml` runs only by hand (no weekly schedule) until the baseline passes 60%, and every run's summary explains each case that did not pass with `shipmill evals explain` (error, failed graders, turns, cost, last message, and a harness or agent verdict), its artifact holding the session traces and each case's `.eval/gh.jsonl` (#950)
+
 ## [0.118.0] - 2026-11-07
 
 ### Changed
@@ -2283,7 +2293,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.118.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.119.0...HEAD
+[0.119.0]: https://github.com/shipmill/shipmill/compare/v0.118.0...v0.119.0
 [0.118.0]: https://github.com/shipmill/shipmill/compare/v0.117.5...v0.118.0
 [0.117.5]: https://github.com/shipmill/shipmill/compare/v0.117.4...v0.117.5
 [0.117.4]: https://github.com/shipmill/shipmill/compare/v0.117.3...v0.117.4
