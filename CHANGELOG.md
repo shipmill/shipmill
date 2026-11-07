@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.117.4] - 2026-11-07
+
+### Fixed
+
+- Evals: every case records `shipmill autonomy --json` in `fixture/autonomy.json`, so an offline run answers the levels from the recording instead of reaching PyPI and reading the App as missing (#938)
+- Evals: the eval shim answers `shipmill product show` from the case's `fixture/product-show/` recordings, and `product-intake/no-goal-not-proposed` records the forms intake runs, so an offline run reads the direction's goals instead of failing to reach PyPI (#941)
+
 ## [0.117.3] - 2026-11-07
 
 ### Fixed
@@ -2263,7 +2270,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.3...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.4...HEAD
+[0.117.4]: https://github.com/shipmill/shipmill/compare/v0.117.3...v0.117.4
 [0.117.3]: https://github.com/shipmill/shipmill/compare/v0.117.2...v0.117.3
 [0.117.2]: https://github.com/shipmill/shipmill/compare/v0.117.1...v0.117.2
 [0.117.1]: https://github.com/shipmill/shipmill/compare/v0.117.0...v0.117.1
