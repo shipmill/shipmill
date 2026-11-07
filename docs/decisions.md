@@ -599,3 +599,13 @@ entry that supersedes it, never by editing an old one.
 - Why: On 2026-11-07 the suite ran 11 paid times in about four and a half hours (101.5 USD), almost all on pull requests fixing the eval harness itself; at a 7% baseline the comparison can't tell a worse skill from a broken case, so each run bought harness debugging, not a gate. It suspends D-37 rather than superseding it, since the gate D-37 describes is the one that comes back
 - Applies to: .github/workflows/evals.yml, docs/specs/025-agent-evals.md, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/ci-failures.md, skills/**, evals/**
 - Enforced by: review, until the implementing PR for #947 removes the pull_request trigger
+- Superseded by: D-72
+
+## D-72: The evals run only by hand until the baseline passes 60%
+
+- Decided: 2026-11-07, in shipmill/shipmill#950
+- Rule: Until the default branch's evals baseline passes at least 60% of its runs, .github/workflows/evals.yml runs only by workflow_dispatch (with or without pr and sha), with no schedule and no pull_request trigger, and D-37's gate stays suspended exactly as D-71 said: a pull request touching the agents' instructions lands without an evals check, unless the maintainer dispatched one for its head, which must then be green; the pull_request trigger, and with it D-37's gate, come back through a later pull request once a baseline passes 60%, which ends this suspension; D-37 itself is unchanged. A dispatched run's job summary explains each case that did not pass: each failed run's error, each failed grader with its explanation, the run's turns, cost and duration, the last assistant message from its trace, and a verdict, harness or agent, read from the run's own files with no model call; the session traces go into the run's artifact
+- Why: On 2026-11-07, 11 paid runs (101.5 USD, #947) showed pass rates of 0% to 21% and no reasons, and each harness bug was found by reading logs by hand after a full run; at a 7% baseline a scheduled run spends money without a gate, and a run that says why its cases failed turns one paid run into one fix list. The maintainer decided it in chat, relayed in the issue
+- Applies to: .github/workflows/evals.yml, docs/specs/025-agent-evals.md, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/ci-failures.md, skills/**, evals/**
+- Enforced by: review, until the implementing PR for #950 removes the schedule trigger
+- Supersedes: D-71
