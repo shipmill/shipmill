@@ -39,7 +39,7 @@ directory, grouped by the skill it exercises:
       cases.toml                       the manifest
       scaffold.sh                      materialises a case's fixture
       bin/gh                           the offline gh stub
-      bin/shipmill, bin/uvx            send `shipmill gh` to the stub, else the real program
+      bin/shipmill, bin/uvx            answer the shipmill commands a case records, offline
       github-issue-triage/feature-maintainer-filed/
         prompt.md                      the task, as a gate session would get it
         case.yaml                      schema_version "1.1", scaffold_script: scaffold.sh
@@ -107,6 +107,19 @@ Every case runs offline: no session reaches GitHub, and none needs a token.
   `gh` and saves the answers into the case's `fixture/gh/`, and still never forwards a
   write. A case taken from history is recorded once and edited back to the moment it is
   set at (later comments removed, the state reopened), which is why it names its `commit`
+- **shipmill itself** is `evals/bin/shipmill`, a shim on `PATH` as `shipmill` and (linked)
+  as `uvx`, since the sandbox can't fetch a release from PyPI. It sends `shipmill gh` to the
+  stub, logged with `"via": "shipmill"`, and answers `app-token --check` as the real check
+  does (exit 2 when the fixture holds `no-app`). Every other command the skills run before
+  a write is recorded with the case, as the CLI prints it at the case's `commit`:
+  `fixture/autonomy.json` is `shipmill autonomy --json`, recorded in every case (a repo test
+  fails a case without it), its `hold` from the fixture's `gh` state; `fixture/product-show/`
+  holds one file per `shipmill product show` argument list the case reads. A command with no
+  recording runs the real program, which fails offline, so a case that drifts shows as a
+  session that writes nothing (shipmill/shipmill#938, shipmill/shipmill#941). The shim
+  could instead compute the levels from the workspace's `.github/shipmill.toml` and the
+  hold from the `gh` state; that would reimplement the CLI's level and hold rules in a
+  stub, and drift from them as they change
 
 A sandbox repository on GitHub was the alternative: it would exercise the real API and the
 App identity end to end, but every run would write real issues and comments, need a token
