@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.118.0] - 2026-11-07
+
+### Changed
+
+- The agents' evals no longer run on a pull request: `evals.yml` runs weekly and when the maintainer dispatches it, until the default branch's baseline passes 60% of its runs (D-71), and github-pr-triage waits on no `evals` check meanwhile unless one was dispatched for the head (#947)
+
 ## [0.117.5] - 2026-11-07
 
 ### Fixed
@@ -2277,7 +2283,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.5...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.118.0...HEAD
+[0.118.0]: https://github.com/shipmill/shipmill/compare/v0.117.5...v0.118.0
 [0.117.5]: https://github.com/shipmill/shipmill/compare/v0.117.4...v0.117.5
 [0.117.4]: https://github.com/shipmill/shipmill/compare/v0.117.3...v0.117.4
 [0.117.3]: https://github.com/shipmill/shipmill/compare/v0.117.2...v0.117.3
