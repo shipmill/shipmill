@@ -776,6 +776,8 @@ EXPLAIN = "Explain the cases that did not pass (S-025-31, S-025-32)"
 def test_s025_32_the_breakdown_runs_after_the_suite_and_before_the_upload() -> None:
     step = _step(EXPLAIN)
     assert step["if"] == "always() && steps.run.outcome != 'skipped'"
+    # a failed breakdown never skips the steps after it: the baseline, its upload, the compare
+    assert step["continue-on-error"] == "true"  # the file's YAML loader keeps scalars as text
     assert _index("Run the suite") < _index(EXPLAIN) < _index("Upload the result and the report")
     # the traces land in the head's directory, which the evals-result artifact uploads
     upload = _step("Upload the result and the report")

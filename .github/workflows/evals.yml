@@ -425,6 +425,7 @@ jobs:
       # the evals-result artifact, and the breakdown of the head's run to the job summary
       - name: Explain the cases that did not pass (S-025-31, S-025-32)
         if: always() && steps.run.outcome != 'skipped'
+        continue-on-error: true # a bug here never skips keeping a paid run as the baseline or the compare
         run: |
           unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           # A case's path relative to evals/, as `shipmill evals check` takes it
