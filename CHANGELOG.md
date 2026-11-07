@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.117.3] - 2026-11-07
+
+### Fixed
+
+- Evals: the 12 cases whose prompt opens with a `/shipmill:<skill>` slash command no longer fail every run on a `skill-loaded` grader, since the slash command puts the skill's text in the prompt and the session never calls the Skill tool; the grader stays in the cases that reach their skill by its description (#933)
+- Evals: a case's session runs the offline `gh` stub and its `shipmill` and `uvx` shims, not the real ones, and its git works: the sandbox hid the checkout holding `evals/bin` and the shared clone's objects, so `.eval/gh.jsonl` stayed empty. `evals/scaffold.sh` now copies every object into the workspace, copies `evals/bin/` to `.eval/bin/`, and writes the workspace's `.claude/settings.local.json`, excluded from git, putting `.eval/bin` first on the session's `PATH` and its uv cache at `.eval/uv-cache` (#936)
+
 ## [0.117.2] - 2026-11-07
 
 ### Fixed
@@ -2256,7 +2263,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.3...HEAD
+[0.117.3]: https://github.com/shipmill/shipmill/compare/v0.117.2...v0.117.3
 [0.117.2]: https://github.com/shipmill/shipmill/compare/v0.117.1...v0.117.2
 [0.117.1]: https://github.com/shipmill/shipmill/compare/v0.117.0...v0.117.1
 [0.117.0]: https://github.com/shipmill/shipmill/compare/v0.116.0...v0.117.0
