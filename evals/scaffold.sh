@@ -94,6 +94,17 @@ with open(settings, "w", encoding="utf-8") as handle:
     handle.write(json.dumps({"env": env}, indent=2) + "\n")
 PY
 
+# The clone's `origin` is the checkout the run starts from: its origin/main is today's main,
+# and a push leaves the workspace, which the session's sandbox refuses. A case whose session
+# pushes (fixture/bare-origin, #928) gets an empty bare `origin` at .eval/origin.git instead,
+# with no remote-tracking branch, and `main` at the case's HEAD
+if [ -f "$case_dir/fixture/bare-origin" ]; then
+  git init --quiet --bare "$ws/.eval/origin.git"
+  git -C "$ws" remote remove origin
+  git -C "$ws" remote add origin "$ws/.eval/origin.git"
+  git -C "$ws" branch --quiet --force main HEAD
+fi
+
 git_dir=$(git -C "$workspace" rev-parse --absolute-git-dir)
 mkdir -p "$git_dir/info"
 printf '.eval/\n/.claude/settings.local.json\n' >>"$git_dir/info/exclude"

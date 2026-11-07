@@ -1,0 +1,32 @@
+schema_version: "1.1"
+name: finding-spec-answer-stale
+context:
+  scaffold_script: scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # A review only: no comment, review, label, push through gh, or merge
+  - type: regex
+    name: writes-nothing
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "(write|refused)"'
+    match: not_contains
+  # No skill-loaded grader (#933): the prompt opens with /shipmill:github-pr-triage, which puts the
+  # skill's text in the prompt, so the session never calls the Skill tool for it
+  # #620, found in the review of #606 and fixed in #622: nothing requires the answer to
+  # come after the spec's last change, so a push that changes the spec after the
+  # maintainer answered "1" still lands on the older answer
+  - type: llm
+    name: raises-the-stale-answer
+    criteria: |
+      PASS only if the session's final report raises, as a finding, that the new landing
+      rule lets a spec pull request merge on a trusted answer even when the spec was
+      changed after that answer (a criterion or the behaviour edited by a later push), so
+      the maintainer approved a text other than the one that merges; for example, that the
+      answer must cover the spec as it stood when it was given, or that a change after the
+      answer must ask again. A rebase alone being fine may or may not be mentioned. FAIL
+      otherwise.

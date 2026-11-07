@@ -1,0 +1,7 @@
+## Non-goals
+
+- N-1: Executing a rollout: staged rollout, traffic shifting, and deploys to customers belong to the platform; shipmill decides and verifies (D-31)
+- N-2: A server or state of its own: the forge holds the state, in issues, labels, pull requests, tags, and deployments
+- N-3: Making the maintainer's decisions: accepting an opportunity, approving a spec, or changing this direction
+- N-4: The software lifecycle outside the delivery loop for now: strategy, discovery, operations and SLOs, support, deprecation
+- N-5: A coding agent or model of its own: shipmill directs an existing agent

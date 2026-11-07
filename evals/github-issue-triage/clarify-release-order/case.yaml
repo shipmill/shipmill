@@ -1,0 +1,46 @@
+schema_version: "1.1"
+name: clarify-release-order
+context:
+  scaffold_script: scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # #598 is confirmed on 3015f20c, but closing the window changes the order every caller's
+  # release runs in and the marketplace ref D-44 settles: the verdict waits on the
+  # maintainer's answer, as the pass triaged it ("implement, waits on your decision below")
+  - type: regex
+    name: verdict-waits-on-a-decision
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'Triage: \*\*(implement|needs a decision)\*\*'
+  # asked through the needs-decision protocol: the marked comment and the label
+  - type: regex
+    name: asks-the-maintainer
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"body": "<!-- shipmill:needs-decision -->'
+  - type: regex
+    name: labels-it-needs-decision
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"--add-label", "([^"]*,)?needs-decision[,"]|"labels\[\]=needs-decision"'
+  # and nothing is built or specified before the answer
+  - type: regex
+    name: no-other-verdict
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: 'Triage: \*\*(feature|opportunity|postponed|won.t fix)'
+    match: not_contains
+  - type: regex
+    name: opens-no-pr
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"args": \["pr", "create"'
+    match: not_contains
+  # Every write goes through `shipmill gh` as the App (D-14): no plain gh write
+  - type: regex
+    name: writes-as-the-app
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "write", "args"'
+    match: not_contains
+  # No skill-loaded grader (#933): the prompt opens with /shipmill:github-issue-triage, which puts the
+  # skill's text in the prompt, so the session never calls the Skill tool for it

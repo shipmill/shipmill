@@ -1,0 +1,6 @@
+## Users
+
+- U-1: A maintainer of a library or product repository who wants agents to deliver its work while keeping the decisions
+- U-2: A founder or small team running several repositories who needs one view of what waits on them
+- U-3: The person who filed an issue, who wants to know where the fix is and to try it first
+- U-4: The agents themselves, which read this repository's skills, rules, and direction to work without a person in the session

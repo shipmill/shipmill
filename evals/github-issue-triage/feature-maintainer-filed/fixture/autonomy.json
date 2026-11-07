@@ -1,0 +1,35 @@
+{
+  "hold": [],
+  "stages": [
+    {
+      "stage": "triage",
+      "configured": "propose",
+      "effective": "propose",
+      "source": "config"
+    },
+    {
+      "stage": "fix",
+      "configured": "act",
+      "effective": "act",
+      "source": "config"
+    },
+    {
+      "stage": "land",
+      "configured": "act",
+      "effective": "act",
+      "source": "config"
+    },
+    {
+      "stage": "intake",
+      "configured": "propose",
+      "effective": "propose",
+      "source": "default"
+    },
+    {
+      "stage": "upgrade",
+      "configured": "propose",
+      "effective": "propose",
+      "source": "default"
+    }
+  ]
+}

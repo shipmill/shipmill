@@ -474,6 +474,49 @@ def test_941_the_case_recordings_match_the_real_cli_at_the_case_commit(
     assert len(recorded) == len(INTAKE_SHOW_FORMS), recorded
 
 
+# The forms each skill runs: triage's verdicts read Goals and Non-goals (and its spec gate
+# Users), resolve's plan Goals and Quality, a pull request review's brief all three at once
+TRIAGE_SHOW_FORMS = [["--section", "goals"], ["--section", "non-goals"]]
+REVIEW_SHOW_FORMS = [["--section", "goals", "--section", "non-goals", "--section", "quality"]]
+CASE_SHOW_FORMS = {
+    "github-issue-triage/implement-measure-line": TRIAGE_SHOW_FORMS,
+    "github-issue-triage/implement-token-race": TRIAGE_SHOW_FORMS,
+    "github-issue-triage/opportunity-agent-filed": TRIAGE_SHOW_FORMS,
+    "github-issue-triage/postpone-planner-tests": TRIAGE_SHOW_FORMS,
+    "github-issue-triage/clarify-release-order": TRIAGE_SHOW_FORMS,
+    "github-issue-triage/feature-maintainer-filed": [*TRIAGE_SHOW_FORMS, ["--section", "users"]],
+    "github-issue-resolve/fix-plans-measure-line": [["--section", "goals"], ["--section", "quality"]],
+    "github-pr-triage/finding-token-refresh-race": REVIEW_SHOW_FORMS,
+    "github-pr-triage/finding-plans-measure-line": REVIEW_SHOW_FORMS,
+    "github-pr-triage/finding-spec-answer-stale": REVIEW_SHOW_FORMS,
+    "github-pr-triage/finding-branch-as-option": REVIEW_SHOW_FORMS,
+}
+
+
+@pytest.mark.parametrize("case_path", sorted(CASE_SHOW_FORMS))
+def test_449_each_case_records_the_direction_at_its_commit(
+    case_path: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A case set before today's direction answers `shipmill product show` with what the
+    real CLI prints on the docs/product.md of the case's commit, in each form its skill runs"""
+    case = next(c for c in tomllib.loads(CASES.read_text(encoding="utf-8"))["case"] if c["path"] == case_path)
+    direction = tmp_path / "direction" / "docs" / "product.md"
+    direction.parent.mkdir(parents=True)
+    direction.write_text(git(ROOT, "show", f"{case['commit']}:docs/product.md") + "\n", encoding="utf-8")
+    ws = workspace(tmp_path)
+    shutil.copytree(ROOT / "evals" / case_path / "fixture" / "product-show", ws / ".eval" / "product-show")
+    real_bin, calls = fake_programs(tmp_path)
+    path = [STUB.parent, python_bin(tmp_path), real_bin]
+    forms = CASE_SHOW_FORMS[case_path]
+    for args in forms:
+        assert main(["--repo", str(direction.parents[1]), "product", "show", *args]) == 0
+        printed = capsys.readouterr().out
+        done = shim(ws, "uvx", "shipmill==0.117.4", "product", "show", *args, path=path)
+        assert (done.returncode, done.stdout) == (0, printed), (args, done.stderr)
+    assert not calls.exists()  # each form answered from a recording
+    assert len(list((ws / ".eval" / "product-show").iterdir())) == len(forms)
+
+
 def test_stub_and_scaffold_are_executable_in_git() -> None:
     staged = subprocess.run(
         ["git", "-C", str(ROOT), "ls-files", "-s", "evals/bin/gh", "evals/bin/shipmill", "evals/scaffold.sh"]
@@ -662,6 +705,30 @@ def test_s040_15_scaffold_commits_a_case_fixture_repo_over_the_case_commit(tmp_p
     assert (ws / ".github" / "shipmill.toml").read_text(encoding="utf-8") == '[autonomy]\nland = "propose"\n'
     assert git(ws, "status", "--porcelain") == ""  # committed, and .eval/ stays out of git
     assert git(ws, "show", "--name-only", "--format=", "HEAD").splitlines() == [".github/shipmill.toml", "state.txt"]
+
+
+def test_928_a_case_that_pushes_gets_a_bare_origin_in_the_workspace(tmp_path: Path) -> None:
+    # fix-plans-measure-line's prompt says `origin` has no origin/main and to push to it; the
+    # clone's own origin is the run's checkout, with today's main, outside the sandbox
+    pushes = ROOT / "evals" / "github-issue-resolve" / "fix-plans-measure-line"
+    assert (pushes / "fixture" / "bare-origin").is_file()
+    repo, then, case = source_repo(tmp_path)
+    (case / "fixture" / "bare-origin").write_text("", encoding="utf-8")
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    done = subprocess.run(
+        ["bash", str(repo / "evals" / "scaffold.sh"), str(case)], cwd=ws, capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    bare = ws.resolve() / ".eval" / "origin.git"
+    assert git(ws, "remote", "get-url", "origin") == str(bare)
+    assert git(ws, "for-each-ref", "refs/remotes") == ""  # no origin/main
+    assert git(ws, "rev-parse", "--short", "main") == then
+    shutil.rmtree(repo)  # the push stays in the workspace
+    git(ws, "switch", "-q", "-c", "fix")
+    git(ws, "push", "-q", "-u", "origin", "fix")
+    assert git(bare, "rev-parse", "--short", "fix") == then
+    assert git(ws, "status", "--porcelain") == ""
 
 
 def test_s025_27_every_case_runs_the_shared_scaffold_through_its_own() -> None:

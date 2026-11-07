@@ -1,0 +1,14 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "831",
+    "--repo",
+    "shipmill/shipmill",
+    "--json",
+    "title,body,comments,labels,state"
+  ],
+  "stdout": "{\"body\": \"## Problem\\n\\n`metrics.py` reports issue to release as one number (`issue_to_release_median`, `issue_to_release_p90`, spec 027), so a retro can say G-1 is missed but not where the time went. Finding that out today takes a hand-written GraphQL query.\\n\\n## Success\\n\\n- metrics.py reports issue to release split into stages, each with median and p90: issue to the first agent comment, issue to PR opened, PR opened to merged, merged to the first release that holds the merge commit\\n- Issue to PR opened is reported separately for issues filed by a person and by the App\\n- The retro names the stage that grew most when a lead-time measure is missed\\n- The stage metrics join the spec 027 registry, so a goal can set a measure on one stage\\n\\n## Notes\\n\\n- Lead time for changes and issue to release already exist (#56, spec 027); this only breaks the second into stages\\n- The numbers in #830 were computed this way by hand\\n- Forge data only, like every metric in the registry\\n\", \"comments\": [], \"labels\": [], \"state\": \"OPEN\", \"title\": \"Issue to release by stage in metrics.py\"}\n",
+  "stderr": "",
+  "exit": 0
+}

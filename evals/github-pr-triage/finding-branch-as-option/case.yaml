@@ -1,0 +1,33 @@
+schema_version: "1.1"
+name: finding-branch-as-option
+context:
+  scaffold_script: scaffold.sh
+graders:
+  # The shared no-miss grader, copied from evals/graders/no-miss.yaml
+  - type: regex
+    name: no-miss
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "miss"'
+    match: not_contains
+  # A review only: no comment, review, label, push through gh, or merge
+  - type: regex
+    name: writes-nothing
+    target: {source: file, path: .eval/gh.jsonl}
+    pattern: '"kind": "(write|refused)"'
+    match: not_contains
+  # No skill-loaded grader (#933): the prompt opens with /shipmill:github-pr-triage, which puts the
+  # skill's text in the prompt, so the session never calls the Skill tool for it
+  # #889, found while reviewing #888 and fixed in #890: the config's `branch` is never
+  # checked to be a ref name, and the gate's checkout refresh passes it to `git fetch` as a
+  # bare argument, so a value starting with `-` runs as a git option (`--upload-pack=...`)
+  - type: llm
+    name: raises-the-branch-as-option
+    criteria: |
+      PASS only if the session's final report raises, as a finding, that the configured
+      default branch (the config's `branch` key, which the repository's own
+      `.github/shipmill.toml` sets) reaches a git command as a bare argument without being
+      validated, so a value starting with `-` would be read by git as an option (for
+      example `--upload-pack=<command>`, running a command on the gate's host). The finding
+      may name the gate's checkout refresh in src/shipmill/gate.py or the config loader that
+      never checks the value; one that places the bare argument only in the new catch-up,
+      which passes the branch inside a `refs/heads/` refspec, does not count. FAIL otherwise.

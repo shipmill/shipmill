@@ -1,0 +1,12 @@
+{
+  "args": [
+    "issue",
+    "view",
+    "882",
+    "--json",
+    "title,body,comments,labels,state"
+  ],
+  "stdout": "{\"body\": \"Found in the review of #879 (spec 051, S-051-8); not fixed there.\\n\\n## What happens\\n\\nGitHub's refresh tokens for a GitHub App's user access token are single-use. When two `shipmill gh` processes on one host (two gate sessions, or a session and its agents) find the same decider's stored token expired at once, both send the same refresh token:\\n\\n1. Process A refreshes, gets a new token pair, and stores it in `~/.config/shipmill/user-<app_id>-<login>.json`\\n2. Process B's refresh, with the now-spent refresh token, is refused by GitHub\\n3. `refreshed` in `src/shipmill/app_login.py` treats the refusal as a dead token and deletes the stored file, the one A just saved\\n\\nThe person's valid token is gone, every later write goes as the App, and they have to run `shipmill app-login` again.\\n\\n## Expected\\n\\nA refusal deletes the file only when the file still holds the refresh token that was refused. Two ways:\\n\\n- Re-read the file before deleting; if its refresh token changed, use the newly stored token instead of falling back\\n- Or hold a per-login lock (file lock beside the token file) across read, refresh, and save\\n\\n## Proof\\n\\nA test with two refreshes of one stored token, the second refused after the first saved: the file must survive, holding the first refresh's token.\\n\\n<!-- shipmill:agent -->\", \"comments\": [], \"labels\": [], \"state\": \"OPEN\", \"title\": \"A concurrent refresh of a decider's token deletes the token the other refresh just saved\"}\n",
+  "stderr": "",
+  "exit": 0
+}
