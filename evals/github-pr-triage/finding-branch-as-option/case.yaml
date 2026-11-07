@@ -28,5 +28,6 @@ graders:
       `.github/shipmill.toml` sets) reaches a git command as a bare argument without being
       validated, so a value starting with `-` would be read by git as an option (for
       example `--upload-pack=<command>`, running a command on the gate's host). The finding
-      may name the gate's checkout refresh in src/shipmill/gate.py, the new catch-up, or
-      the config loader that never checks the value. FAIL otherwise.
+      may name the gate's checkout refresh in src/shipmill/gate.py or the config loader that
+      never checks the value; one that places the bare argument only in the new catch-up,
+      which passes the branch inside a `refs/heads/` refspec, does not count. FAIL otherwise.

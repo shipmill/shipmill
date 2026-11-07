@@ -19,8 +19,7 @@ spec 051's S-051-7, S-051-8, S-051-9, and S-051-12 (issue #866). Its summary: wi
 `[agents] author = "decider"`, `shipmill gh` runs `issue create`, `pr create`, and `pr merge`
 with the decider's user access token stored by `shipmill app-login`, refreshing it when it
 has expired (`src/shipmill/app_login.py`), and every other command with the App's
-installation token. Several `shipmill gh` processes run on one host at once: gate sessions,
-and a session and its agents.
+installation token.
 
 This case is offline: GitHub holds no recording, so don't run `gh` or `shipmill gh` reads
 (`pr view`, `pr diff`, `api`); what you need is above and in this checkout. No reviewer agent

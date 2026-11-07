@@ -17,8 +17,7 @@ shipmill-romamo[bot]. #888 merged as a merge commit: what it landed is
 #888, "Catch the local default branch up on each gate tick", builds D-66 (issue #886). Its
 summary: each `shipmill gate` tick now catches the repo's local default branch up to
 `origin/<default>` by fast-forward only, never with `switch`, `stash`, `reset`, `rebase`, or a
-forced refspec; `[agents] catch_up = false` turns it off. The default branch is the config's
-`branch` key, read from the repository's own `.github/shipmill.toml`. The step runs after the
+forced refspec; `[agents] catch_up = false` turns it off. The step runs after the
 tick's decision, beside the gate's other git calls in `src/shipmill/gate.py`, and the
 ahead/behind read moves to the new `src/shipmill/catch_up.py`.
 
