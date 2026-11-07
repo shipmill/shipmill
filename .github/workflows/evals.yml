@@ -442,7 +442,7 @@ jobs:
             mkdir -p "$out/traces"
             while IFS=$'\t' read -r dir n trace; do
               rel=${dir#evals/}
-              [ "$rel" != "$dir" ] && case_path "$rel" || continue
+              if [ "$rel" = "$dir" ] || ! case_path "$rel"; then continue; fi
               if [ -n "$trace" ] && [ -f "$trace" ] && [ ! -L "$trace" ]; then
                 mkdir -p "$out/traces/$rel"
                 cp "$trace" "$out/traces/$rel/run-$n.jsonl"
@@ -454,7 +454,7 @@ jobs:
             while IFS= read -r -d '' marker; do
               named=$(head -n 1 "$marker")
               rel=${named#"$tree/evals/"}
-              [ "$rel" != "$named" ] && case_path "$rel" || continue
+              if [ "$rel" = "$named" ] || ! case_path "$rel"; then continue; fi
               log="$(dirname "$marker")/gh.jsonl"
               if [ -f "$log" ] && [ ! -L "$log" ]; then
                 k=$((k + 1))
