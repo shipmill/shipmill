@@ -796,8 +796,10 @@ def _run_passed(run: object, where: str, fail: Callable[[str], ReleaseError]) ->
 # one, a run's trace is its `tracePath` and no log is read.
 NO_MISS = "no-miss"  # the shared grader that fails a run on a `miss` in .eval/gh.jsonl
 SHOWN = 300  # the characters of an error, an explanation, or a message a line shows
+# "pattern not found in file <f>" is the runner's regex grader on a file it read, so no harness
 _UNREAD_TARGET = re.compile(
-    r"no such file|not found|does not exist|ENOENT|could not read|cannot read|can't read|unreadable", re.I
+    r"no such file|(?<!pattern )not found|does not exist|ENOENT|could not read|cannot read|can't read|unreadable",
+    re.I,
 )
 _API_ERROR = re.compile(r"\bAPI error\b|\boverloaded|\brate.?limit", re.I)
 _SCAFFOLD = re.compile(r"scaffold|fixture", re.I)

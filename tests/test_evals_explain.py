@@ -100,6 +100,19 @@ def test_s025_31_a_case_it_cannot_place_reads_agent_with_the_reason(
     assert "  - trace: the run names no tracePath\n" in out
 
 
+def test_s025_31_a_pattern_the_grader_read_and_did_not_find_is_the_agent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the runner's regex grader on a file it read: the session never wrote what it looks for
+    grader = {"name": "posts-the-verdict", "passed": False, "explanation": "pattern not found in file .eval/gh.jsonl"}
+    run = {"error": None, "turns": 8, "graders": [grader]}
+    case = {"name": "c", "dir": "evals/s/c", "runsPerCase": 1, "arms": {"with": [run]}}
+    result = tmp_path / "aggregate-result.json"
+    result.write_text(json.dumps({"schemaVersion": 1, "partial": False, "cases": [case]}), encoding="utf-8")
+    out = _explain(capsys, "--result", str(result))
+    assert "- Run 1: **agent**, the session ran and graders failed: posts-the-verdict." in out
+
+
 def test_s025_31_every_case_passed(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     run = {"error": None, "graders": [{"name": "v", "passed": True}]}
     case = {"name": "c", "dir": "evals/s/c", "runsPerCase": 1, "arms": {"with": [run]}}
