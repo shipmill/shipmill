@@ -11,12 +11,19 @@
 # the first argument, else $EVAL_CASE_DIR; the workspace is the second argument, else the
 # working directory. The workspace must be empty or missing, as `git clone` needs.
 #
-# Steps: a shared clone of the checkout this script sits in, a detached checkout of the
-# case's `commit` from evals/cases.toml (the entry whose `path` is the case's directory
+# Steps: a self-contained clone of the checkout this script sits in, a detached checkout of
+# the case's `commit` from evals/cases.toml (the entry whose `path` is the case's directory
 # relative to evals/), fixture/repo/ committed over it when the case has one, then
 # fixture/ copied to .eval/ with an empty .eval/gh.jsonl, and
 # .eval/case naming the case's directory for EVAL_GH_RECORD=1. .eval/ is excluded from git
 # in the workspace, so a session's `git add -A` never commits it.
+#
+# The session's sandbox can't read the checkout the run starts from (#936): a clone sharing
+# its objects through alternates showed `bad object HEAD`, and evals/bin on the run's PATH
+# was skipped, so `gh` and `uvx` were the real ones. So the clone copies every object, the
+# stub and its shims are copied to .eval/bin/, and .claude/settings.local.json, excluded
+# from git too, gives the session an env with .eval/bin first on PATH and a uv cache at
+# .eval/uv-cache, since the session can write only in its workspace.
 set -euo pipefail
 
 die() {
@@ -49,8 +56,10 @@ commit=$(awk -v want="$rel" '
 ' "$manifest")
 [ -n "$commit" ] || die "$manifest has no [[case]] with path \"$rel\" and a commit"
 
-source_repo=$(git -C "$evals_dir" rev-parse --show-toplevel)
-git clone --quiet --shared --no-checkout "$source_repo" "$workspace"
+# The common git dir holds every object, also for a worktree (the merge base's); copied, not
+# shared or hard-linked: no alternates, and no link into the checkout the runner scans (#929)
+source_repo=$(git -C "$evals_dir" rev-parse --path-format=absolute --git-common-dir)
+git clone --quiet --no-hardlinks --no-checkout "$source_repo" "$workspace"
 git -C "$workspace" checkout --quiet --detach "$commit"
 
 # A case may change files of the repository at its commit: fixture/repo/ (a config with
@@ -67,6 +76,21 @@ mkdir "$workspace/.eval"
 cp -R "$case_dir/fixture/." "$workspace/.eval/"
 : >"$workspace/.eval/gh.jsonl"
 printf '%s\n' "$case_dir" >"$workspace/.eval/case"
+cp -R "$evals_dir/bin" "$workspace/.eval/bin" # uvx stays a link to the sibling shim
+[ -x "$workspace/.eval/bin/gh" ] || die "no gh stub in $evals_dir/bin"
+
+ws=$(cd "$workspace" && pwd -P)
+settings="$ws/.claude/settings.local.json"
+[ ! -e "$settings" ] || die "the case's repository already holds .claude/settings.local.json"
+mkdir -p "$ws/.claude"
+python3 - "$settings" "$ws/.eval/bin" "$ws/.eval/uv-cache" "$PATH" <<'PY'
+import json, os, sys
+settings, stub_bin, uv_cache, path = sys.argv[1:]
+env = {"PATH": os.pathsep.join([stub_bin, path]), "UV_CACHE_DIR": uv_cache}
+with open(settings, "w", encoding="utf-8") as handle:
+    handle.write(json.dumps({"env": env}, indent=2) + "\n")
+PY
+
 git_dir=$(git -C "$workspace" rev-parse --absolute-git-dir)
 mkdir -p "$git_dir/info"
-printf '.eval/\n' >>"$git_dir/info/exclude"
+printf '.eval/\n/.claude/settings.local.json\n' >>"$git_dir/info/exclude"

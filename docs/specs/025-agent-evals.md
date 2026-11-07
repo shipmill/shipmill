@@ -77,15 +77,21 @@ show.
 Every case runs offline: no session reaches GitHub, and none needs a token.
 
 - **The repository** is this repository at the case's `commit`: `evals/scaffold.sh`
-  makes a shared clone of the checkout the run starts from into the workspace and checks
-  out that commit, then copies the case's `fixture/` to `.eval/` in it. The runner runs
+  clones the checkout the run starts from into the workspace, copying its objects (the
+  session's sandbox can't read the checkout, so a shared clone's alternates fail there,
+  shipmill/shipmill#936), and checks out that commit, then copies the case's `fixture/`
+  to `.eval/` in it. The runner runs
   only a `scaffold_script` inside the case's directory, and starts it in place with the
   empty workspace as its working directory and no argument (shipmill/shipmill#929), so
   each case holds its own `scaffold.sh`, the same few lines in every case, that calls the
   shared one with the case's directory; `shipmill evals check` refuses a
   `scaffold_script` with `..` or an absolute path
 - **GitHub** is `evals/bin/gh`, a stub put first on `PATH` for the whole run (the
-  workflow sets it; the runner passes `PATH` through). It is a Python 3.10 script with no
+  workflow sets it). The session's sandbox hides the checkout that holds it, so
+  `evals/scaffold.sh` also copies `evals/bin/` to `.eval/bin/` and writes the workspace's
+  `.claude/settings.local.json`, whose `env` puts `.eval/bin` first on the session's `PATH`
+  and sets `UV_CACHE_DIR` to `.eval/uv-cache`, as the session can write only in its
+  workspace (shipmill/shipmill#936). It is a Python 3.10 script with no
   dependencies, like the skills' scripts. It finds `.eval/` by walking up from its working
   directory, answers each read (`gh issue view`, `gh pr view`, `gh pr diff`, `gh api`,
   `gh api graphql`) from `.eval/gh/`, keyed by its arguments, so the skills' state scripts
