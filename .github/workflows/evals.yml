@@ -4,15 +4,19 @@
 # run, or a dispatched run with `pr` and the head `sha` the maintainer read (which runs no case
 # for any other head), is compared against it. Until the suite holds the first
 # suite's counts (`shipmill evals check --gate`), the pull request job reports and exits 0.
+#
+# No pull_request trigger while D-71 holds (#947): at a 7% baseline a pull request's run can't
+# tell a worse skill from a broken case, and 11 paid runs on 2026-11-07 cost 101.5 USD, mostly
+# on pull requests fixing the harness. A pull request is evaluated only when the maintainer
+# dispatches it with `pr` and `sha`. Once the default branch's baseline passes at least 60%
+# of its runs, a pull request restores the trigger, D-37's gate with it:
+#   pull_request:
+#     paths: ["skills/**", ".claude-plugin/**", "evals/**", "src/shipmill/gate.py"]
+# The steps below keep their pull_request branches (the fork refusal, the federation rule,
+# cancel-in-progress, the pr case) for that pull request; no event reaches them meanwhile.
 name: evals
 
 on:
-  pull_request:
-    paths:
-      - "skills/**"
-      - ".claude-plugin/**"
-      - "evals/**"
-      - "src/shipmill/gate.py" # the gate's session paragraphs are every session's instructions
   schedule:
     - cron: "0 6 * * 1" # weekly, on the default branch: a model update shows with no change here
   workflow_dispatch:
