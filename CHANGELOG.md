@@ -7,6 +7,14 @@ bot.
 
 ## [Unreleased]
 
+## [0.117.2] - 2026-11-07
+
+### Fixed
+
+- Evals: every case runs its own `scaffold.sh`, which calls the shared `evals/scaffold.sh`, since `claude plugin eval` now refuses a `scaffold_script` outside the case's directory and ran no case; `shipmill evals check` refuses such a path, and a default-branch run where no case ran is never kept as the baseline, nor compared against when one was (#929)
+- Evals: the workflow keeps the project's virtualenv under `$RUNNER_TEMP`, out of the checkout `claude plugin eval` scans as the plugin, which refused every case for the hard links uv made into `.venv` (#929)
+- Evals: the workflow installs `bubblewrap` and `socat`, so Claude Code can confine a case's shell tool instead of refusing every case before a turn, and lifts Ubuntu's AppArmor limit on user namespaces only when `bwrap` can't create one (#929)
+
 ## [0.117.1] - 2026-11-06
 
 ### Fixed
@@ -2248,7 +2256,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.2...HEAD
+[0.117.2]: https://github.com/shipmill/shipmill/compare/v0.117.1...v0.117.2
 [0.117.1]: https://github.com/shipmill/shipmill/compare/v0.117.0...v0.117.1
 [0.117.0]: https://github.com/shipmill/shipmill/compare/v0.116.0...v0.117.0
 [0.116.0]: https://github.com/shipmill/shipmill/compare/v0.115.0...v0.116.0
