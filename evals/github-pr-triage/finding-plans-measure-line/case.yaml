@@ -15,10 +15,8 @@ graders:
     target: {source: file, path: .eval/gh.jsonl}
     pattern: '"kind": "(write|refused)"'
     match: not_contains
-  - type: tool_used
-    name: skill-loaded
-    tool: Skill
-    min: 1
+  # No skill-loaded grader (#933): the prompt opens with /shipmill:github-pr-triage, which puts the
+  # skill's text in the prompt, so the session never calls the Skill tool for it
   # #749, fixed in #750: spec 027 (merged before #533) lets a goal carry an indented
   # `measure:` line, and `goal_ids` in plans.py refuses every non-item line of the Goals
   # section, so `plans.py check` exits 2 on any direction whose goals have a measure
