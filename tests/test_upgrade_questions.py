@@ -131,6 +131,30 @@ def test_s014_13_pr_triage_merges_an_upgrade_pull_request_only_on_an_accepting_a
         assert phrase in rule, phrase
 
 
+def test_s014_16_d70_a_relayed_answer_naming_a_maintainer_accepts_the_upgrade() -> None:
+    text = folded((SKILLS / "github-pr-triage" / "SKILL.md").read_text(encoding="utf-8"))
+    rule = text.split("**An upgrade pull request**", 1)[1].split(" - ", 1)[0]
+    for phrase in (
+        # the relay of needs-decision.md's Answered in the session, the login bare or in a code span (D-61)
+        "or the App's relayed answer (D-70): a comment by the `--bot-login` whose first line is "
+        "`Decision by @<login>, relayed by <agent>` (or ``Decision by `@<login>`, relayed by <agent>``, "
+        "the login in a code span)",
+        "naming a maintainer (`--role maintainer=<login>` as `shipmill roles --flags` prints it, "
+        "or `[agents.roles] maintainer` on the default branch)",
+        "with option 1 or 2, or the person's own words accepting, on its next non-blank line",
+        "A relay naming anyone else, and every other comment by the `--bot-login`, counts for nothing",
+        "the pull request's `Accepted by` line",
+        "Never while a `shipmill-hold` issue is open, whatever the answer or the autonomy",
+    ):
+        assert phrase in rule, phrase
+
+
+def test_s014_16_ship_watch_takes_up_a_maintainers_relay_as_the_upgrades_answer() -> None:
+    answers = UPGRADES.split("**Take up the answer**", 1)[1].split("**The pull request.**", 1)[0]
+    assert "or the newest relay after it by the `--bot-login` naming a maintainer (D-70)" in answers
+    assert "a relay naming anyone else is no answer" in answers
+
+
 @pytest.fixture(scope="module")
 def ss() -> ModuleType:
     script = SKILLS / "shipmill-setup" / "scripts" / "setup_state.py"

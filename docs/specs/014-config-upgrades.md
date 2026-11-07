@@ -194,12 +194,20 @@ upgrade is an offer, not a problem.
 - S-014-13: github-pr-triage merges an upgrade pull request on green CI only when its issue
   holds an accepting answer from an OWNER, MEMBER, or COLLABORATOR or `upgrade` is `act`,
   never while a hold is open, and otherwise reports it as waiting on the maintainer
+  - Amended by D-70 (#932): the accepting answer may also be the App's relay of an answer a maintainer gave in a session, the needs-decision relay naming that maintainer (S-014-16)
 - S-014-14: `upgrade --propose` removes `shipmill-upgrade-later` from an issue only when the
   installed shipmill's version of that upgrade is newer than the one the issue was last
   asked about, which the issue's marker records (`<!-- shipmill-upgrade: <id> <version>
   -->`)
 - S-014-15: `shipmill status` lists each pending upgrade with its issue link or the
   `--apply` command as its fix
+- S-014-16: github-pr-triage and github-ship-watch also take as an upgrade's accepting
+  answer a comment on its issue by the `--bot-login` whose first line is the needs-decision
+  relay (`Decision by @<login>, relayed by <agent>`, the login bare or in a code span)
+  naming a maintainer (`--role maintainer=<login>`, or `[agents.roles] maintainer`), with
+  option 1 or 2, or the person's own words accepting, on its next non-blank line; a relay
+  naming anyone else, every other comment by the `--bot-login`, and the pull request's
+  `Accepted by` line count for nothing, and an open hold still holds the merge (D-70)
 
 ## Out of scope
 
@@ -226,6 +234,7 @@ upgrade is an offer, not a problem.
 - shipmill/shipmill#279: S-014-1, S-014-2, S-014-3, S-014-4
 - shipmill/shipmill#280: S-014-5, S-014-6, S-014-7, S-014-8, S-014-9, S-014-15
 - shipmill/shipmill#281: S-014-10, S-014-11, S-014-12, S-014-13, S-014-14
+- shipmill/shipmill#932: S-014-16
 
 ## Verification
 
@@ -241,6 +250,7 @@ upgrade is an offer, not a problem.
 - S-014-10: ran the `test_s014_10` tests in `tests/test_ship_watch.py`: an open upgrade issue reads `UPGRADE_PENDING` (an agent and action row), waits under `shipmill-upgrade-later` or an open pull request closing it, is in NEEDS_DECISION while labelled with no reply from an OWNER, MEMBER, or COLLABORATOR, and reads `UPGRADE_PENDING` again after one; no upgrade issue reaches ISSUES or ISSUES_OPEN, and the intake rows without one are unchanged. With `--trusted-only`, the release workflow's upgrade issue, by `github-actions[bot]` with the `shipmill-upgrade` label and the marker as its first line, is trusted and reads `UPGRADE_PENDING` as usual (D-30, `test_s014_10_d30_the_release_workflows_upgrade_issue_is_pending_for_an_unattended_gate`); an upgrade issue `triage_state.py` reads as UNTRUSTED (an outsider's: neither trusted, the gate's App, nor the release workflow's own) stays UNTRUSTED with no UPGRADE_PENDING row, as D-16 requires. Loaded `watch_state.py` under Python 3.10 and read `[autonomy] upgrade` and an upgrade issue's row through the regex fallback
 - S-014-11: ran the `test_s014_11` tests in `tests/test_upgrade_questions.py`: github-ship-watch's Config upgrades section holds this spec's question word for word, asks it through the needs-decision protocol under `propose` and nothing under `act`, and gives each answer its outcome; `setup_state.py` wants the `shipmill-upgrade-later` label with an `[agents]` section
 - S-014-12: ran the `test_s014_12` tests: the skill opens the pull request as the App on `shipmill/upgrade-<id>` from `shipmill upgrade --apply <id>`, with `Closes #<issue>` and the decision line, and `watch_state.py` reads a pull request from that branch closed unmerged (state CLOSED, not a fork's) as the decline that closes the issue as not planned, never a merged one
-- S-014-13: ran the `test_s014_13` test: github-pr-triage merges an upgrade pull request on green CI only under `upgrade = "act"` on the default branch or on an accepting answer told by its `author_association`, never during a hold, and otherwise reports it as waiting on the maintainer
+- S-014-13: ran the `test_s014_13` test: github-pr-triage merges an upgrade pull request on green CI only under `upgrade = "act"` on the default branch or on an accepting answer told by its `author_association`, never during a hold, and otherwise reports it as waiting on the maintainer; as amended by D-70 (#932), a maintainer's relayed answer accepts it too, which S-014-16 proves
+- S-014-16: ran the `test_s014_16` tests in `tests/test_upgrade_questions.py`, which fail on main before #932: github-pr-triage's upgrade rule takes the App's relay naming a maintainer (`--bot-login`, the relay as the first line, the acceptance on the next non-blank line), counts a relay naming anyone else and every other App comment for nothing, keeps the hold, and cites D-70; github-ship-watch's Take up the answer step reads the same relay
 - S-014-14: ran the `test_s014_14` tests in `tests/test_upgrade_proposals.py`: `upgrade --propose` keeps `shipmill-upgrade-later` while the marker records 0.37.0, 0.100.0, 0.37.1, or 1.0.0rc1 and takes it off for 0.36.0, 0.9.0, 0.37.0rc2, or 0.37.0.dev1 (version order, not text order), before rewriting the marker; an unreadable version keeps it. `gh issue list --json ...,labels` on shipmill/shipmill returned the labels as `[{"name": ...}]`, the shape `parse_labelled` reads
 - S-014-15: ran the `test_s014_15` tests: `shipmill status` lists each pending upgrade with its issue's link, or the `--apply` command without one, and leaves out a declined upgrade
