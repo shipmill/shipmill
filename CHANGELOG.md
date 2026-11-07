@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.117.5] - 2026-11-07
+
+### Fixed
+
+- github-pr-triage merges an accepted upgrade pull request when the maintainer answered in a session: the App's relayed `Decision by` answer naming a maintainer now counts as the upgrade's acceptance, as github-ship-watch already read it to open the pull request (D-70, S-014-16) (#932)
+- Evals: the gh stub reaches the case's session. The session's sandbox can't read the checkout, and the `env.PATH` in the workspace's `.claude/settings.local.json` isn't applied to its shell, so the real `gh` still answered; the workflow now puts the workspace's copy of the stub first on `PATH` as the relative entries `.eval/bin:../.eval/bin:../../.eval/bin`. `shipmill evals check` refuses a case whose prompt opens with a slash command and that grades a `Skill` call, which can't happen there (#933)
+
 ## [0.117.4] - 2026-11-07
 
 ### Fixed
@@ -2270,7 +2277,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.4...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.117.5...HEAD
+[0.117.5]: https://github.com/shipmill/shipmill/compare/v0.117.4...v0.117.5
 [0.117.4]: https://github.com/shipmill/shipmill/compare/v0.117.3...v0.117.4
 [0.117.3]: https://github.com/shipmill/shipmill/compare/v0.117.2...v0.117.3
 [0.117.2]: https://github.com/shipmill/shipmill/compare/v0.117.1...v0.117.2
