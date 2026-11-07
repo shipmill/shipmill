@@ -266,6 +266,19 @@ jobs:
           npm install --global @anthropic-ai/claude-code
           claude --version
 
+      # A case's shell tool runs only where Claude Code can confine it: bubblewrap and socat,
+      # or it refuses every case before a turn (sandbox.failIfUnavailable, #929). Ubuntu 24.04's
+      # AppArmor may refuse bwrap a user namespace; that is lifted only when the probe fails
+      - name: Install the sandbox the cases' shell tool needs (S-025-27)
+        if: steps.token.outputs.ok == 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q bubblewrap socat
+          if ! bwrap --ro-bind / / --unshare-user true; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            bwrap --ro-bind / / --unshare-user true
+          fi
+
       - name: Find the default branch's baseline (S-025-12)
         id: base
         if: steps.token.outputs.ok == 'true' && steps.plan.outputs.mode == 'pr'

@@ -348,6 +348,46 @@ def test_s025_27_the_virtualenv_lies_outside_the_checkout_the_runner_scans(tmp_p
     assert github_env.read_text().splitlines() == [f"UV_PROJECT_ENVIRONMENT={venv}"]
 
 
+SANDBOX = "Install the sandbox the cases' shell tool needs (S-025-27)"
+
+
+def _sandbox(tmp_path: Path, userns: bool) -> tuple[int, list[str]]:
+    """Run the sandbox step with stub sudo, apt-get, sysctl, and bwrap; its exit and the commands run"""
+    bin_dir, log, lifted = tmp_path / "bin", tmp_path / "calls.log", tmp_path / "lifted"
+    bin_dir.mkdir()
+    stubs = {
+        "sudo": 'exec "$@"',
+        "apt-get": f'echo "apt-get $*" >> {log}',
+        "sysctl": f'echo "sysctl $*" >> {log}; touch {lifted}',
+        # bwrap gets a user namespace when the runner allows one, or once the sysctl lifted the limit
+        "bwrap": f'echo "bwrap" >> {log}; [ {"true" if userns else "false"} = true ] || [ -e {lifted} ]',
+    }
+    for name, body in stubs.items():
+        (bin_dir / name).write_text(f"#!/bin/sh\n{body}\n")
+        (bin_dir / name).chmod(0o755)
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    proc = subprocess.run(["bash", "-e", "-c", _script(SANDBOX)], env=env, check=False)
+    return proc.returncode, log.read_text().splitlines()
+
+
+def test_s025_27_the_sandbox_is_installed_before_the_suite_runs(tmp_path: Path) -> None:
+    # every case was refused before a turn: bubblewrap and socat not installed (#929)
+    step = _step(SANDBOX)
+    assert step["if"] == "steps.token.outputs.ok == 'true'"
+    assert _index("Install Claude Code") < _index(SANDBOX) < _index("Run the suite")
+    code, calls = _sandbox(tmp_path, userns=True)
+    assert code == 0
+    assert "apt-get install -y -q bubblewrap socat" in calls
+    # AppArmor's limit stays as it is when bwrap already gets a user namespace
+    assert not [c for c in calls if c.startswith("sysctl")]
+
+
+def test_s025_27_the_user_namespace_limit_is_lifted_only_when_bwrap_fails(tmp_path: Path) -> None:
+    code, calls = _sandbox(tmp_path, userns=False)
+    assert code == 0
+    assert calls[-3:] == ["bwrap", "sysctl -w kernel.apparmor_restrict_unprivileged_userns=0", "bwrap"]
+
+
 def test_s025_12_the_merge_base_runs_first_when_the_baseline_is_missing_stale_or_another_models() -> None:
     env = _env("Run the suite")
     assert env["ON_MERGE_BASE"] == "${{ steps.plan.outputs.mode == 'pr' && steps.base.outputs.fresh != 'true' }}"
