@@ -411,6 +411,24 @@ def test_a_newer_run_in_flight_keeps_the_check_pending(tmp_path: Path) -> None:
         assert proc.stdout.splitlines()[0].endswith(" checks=1 green=0 pending=1 failed=0")
 
 
+def test_a_run_in_flight_listed_before_an_older_pass_keeps_the_check_pending() -> None:
+    """The rollup's order is not the runs' order: a run not started yet still wins"""
+    for started in ("0001-01-01T00:00:00Z", None):
+        checks = gate.newest_checks([run_of(None, started), run_of("SUCCESS", "2026-11-08T08:00:00Z")])
+        assert checks == (gate.Check("test", False, ""),)
+
+
+def test_a_start_with_a_fraction_of_any_length_is_read() -> None:
+    """Python 3.10's fromisoformat takes neither Z nor a fraction other than 3 or 6 digits"""
+    for older, newer in (
+        ("2026-11-08T07:37:15.12Z", "2026-11-08T07:37:15.123Z"),
+        ("2026-11-08T07:37:15.1234567Z", "2026-11-08T07:37:16Z"),
+        ("2026-11-08T08:37:15+01:00", "2026-11-08T07:37:15.5Z"),
+    ):
+        checks = gate.newest_checks([run_of("SUCCESS", newer), run_of("FAILURE", older)])
+        assert checks == (gate.Check("test", True, "SUCCESS"),), (older, newer)
+
+
 def test_two_workflows_with_one_job_name_stay_two_checks(tmp_path: Path) -> None:
     rollup = with_rollup(
         run_of("SUCCESS", "2026-11-08T09:00:00Z", workflow="CI"),

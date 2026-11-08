@@ -119,6 +119,10 @@ _MOVED = re.compile(r"^See \[([^\]]+)\]\(product/([A-Za-z0-9][A-Za-z0-9_-]*\.md)
 _PROTECTED_ITEM = re.compile(r"- `([^`]*)`: (\S.*)")
 _PLAN_FIELD = re.compile(r"^\s*(?:[-*]\s+)?(" + "|".join(PLAN_FIELDS) + r"):(.*)$")
 _GOAL = re.compile(r"G-[1-9][0-9]*")
+# a check's startedAt: seconds, an optional fraction, and a zone, Z or an offset (#962)
+TIMESTAMP = re.compile(
+    r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]+))?(Z|[+-][0-9]{2}:[0-9]{2})"
+)
 # a spec file, named as specs.py's NAME names one, under docs/specs/ (spec 053)
 SPEC_FILE = re.compile(r"docs/specs/[0-9]{3,}-[a-z0-9]+(?:-[a-z0-9]+)*\.md")
 # a body line naming the issue a spec pull request specifies: #N, or owner/repo#N
@@ -226,22 +230,25 @@ def started_of(entry: dict) -> datetime | None:
     raw = entry.get("startedAt")
     if raw is None or raw == "":
         return None
-    if not isinstance(raw, str):
+    found = TIMESTAMP.fullmatch(raw) if isinstance(raw, str) else None
+    if found is None:
         raise GateError(f"a check's startedAt is not a timestamp: {raw!r}")
+    seconds, fraction, zone = found.groups()
+    # Python 3.10's fromisoformat takes neither Z nor a fraction other than 3 or 6 digits
+    micro = "." + (fraction + "000000")[:6] if fraction else ""
     try:
-        started = datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith("Z") else raw)
+        started = datetime.fromisoformat(seconds + micro + ("+00:00" if zone == "Z" else zone))
     except ValueError as error:
         raise GateError(f"a check's startedAt is not a timestamp: {raw!r}") from error
-    if started.tzinfo is None:
-        raise GateError(f"a check's startedAt has no time zone: {raw!r}")
     return None if started.year == 1 else started
 
 
 def newest_checks(rollup: Iterable[dict]) -> tuple[Check, ...]:
     """One check per CheckRun (workflowName, name) or StatusContext context: a head checked
     twice (a PR closed and reopened) lists both runs, and only the newest counts (#962). The
-    later start wins; without both starts the later rollup entry does, so a run in flight
-    is never hidden behind an older pass"""
+    later start wins; without both starts the later rollup entry does, except that a run
+    not started and not done is never replaced by a started one, so a run in flight is
+    never hidden behind an older pass wherever the rollup lists it"""
     newest: dict[tuple[str, ...], tuple[datetime | None, dict]] = {}
     for entry in rollup:
         if "state" in entry and "status" not in entry:
@@ -250,7 +257,12 @@ def newest_checks(rollup: Iterable[dict]) -> tuple[Check, ...]:
             key = ("run", str(entry.get("workflowName") or ""), str(entry.get("name", "?")))
         started = started_of(entry)
         kept = newest.get(key)
-        if kept is None or kept[0] is None or started is None or started >= kept[0]:
+        if kept is None or started is None:
+            newest[key] = (started, entry)
+        elif kept[0] is None:
+            if check_of(kept[1]).done:
+                newest[key] = (started, entry)
+        elif started >= kept[0]:
             newest[key] = (started, entry)
     return tuple(check_of(entry) for _, entry in newest.values())
 
