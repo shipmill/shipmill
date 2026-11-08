@@ -219,12 +219,13 @@ For the N most recently closed issues (default 20):
   VERIFY_CLOSED    a person's item, closed as completed by someone other than the
                    --bot-login, with a "## Check" section and no comment after its close
                    whose first line is <!-- shipmill:verified --> by an OWNER, MEMBER, or
-                   COLLABORATOR or the --bot-login: run its check. Also a parent (an
-                   issue with a sub-issue, not a person's item, not labelled upstream)
-                   closed as completed with a "## Check" section, by a pull request, a
-                   commit, or the --bot-login, with no such verified comment after its
-                   last close (spec 042): never SUSPECT_CLOSE. One a person closed by
-                   hand reads as any issue does
+                   COLLABORATOR or the --bot-login: run its check. Also any other
+                   issue (not a person's item, not labelled upstream) closed as
+                   completed with a "## Check" section by a pull request or a commit
+                   (D-76), and a parent (an issue with a sub-issue) closed so by the
+                   --bot-login too (spec 042), with no such verified comment after its
+                   last close: never SUSPECT_CLOSE. One a person closed by hand reads
+                   as any issue does
 
 For each closed issue labelled decided and updated in the last 14 days (a veto comment
 updates it), read in the first query and paged past 50:
@@ -977,12 +978,16 @@ def checkable(issue: dict[str, Any]) -> bool:
 
 def parent_checkable(issue: dict[str, Any]) -> bool:
     """A closed parent whose close may owe its check (spec 042): it has a sub-issue (only the
-    native query asks), is no person's item and no upstream report, closed as completed, with
-    a ## Check section"""
+    native query asks), and is check_closable"""
+    return (issue.get("subIssues") or {}).get("totalCount", 0) > 0 and check_closable(issue)
+
+
+def check_closable(issue: dict[str, Any]) -> bool:
+    """A closed issue whose close by a pull request or a commit owes its check (D-76), a parent
+    or not: no person's item and no upstream report, closed as completed, with a ## Check section"""
     labels = {n["name"] for n in issue["labels"]["nodes"]}
     return (
-        (issue.get("subIssues") or {}).get("totalCount", 0) > 0
-        and not person_item(issue)
+        not person_item(issue)
         and UPSTREAM_LABEL not in labels
         and issue["stateReason"] == "COMPLETED"
         and CHECK.search(issue.get("body") or "") is not None
@@ -1021,7 +1026,7 @@ def complete_closed_comments(run: Runner, base: Variables, sizes: Sizes, issue: 
     """Every comment after a closed issue's last close: a person's item may owe a check,
     and any close may have been confirmed. The first query's last few comments are enough
     unless they fill the page and all came after the close"""
-    if checkable(issue) or parent_checkable(issue):
+    if checkable(issue) or check_closable(issue):
         comments_since_close(run, base, sizes, issue)
         return
     nodes = issue["comments"]["nodes"]
@@ -1971,9 +1976,9 @@ def verified(issue: dict[str, Any], bot_login: str | None) -> bool:
 
 
 def parent_closed(issue: dict[str, Any], bot_login: str | None) -> tuple[str, str] | None:
-    """VERIFY_CLOSED for a closed parent that owes its check (spec 042, parent_checkable) when
-    a pull request or a commit closed it, or the --bot-login, and no trusted verified comment
-    came after the close: never SUSPECT_CLOSE. None when it was verified"""
+    """VERIFY_CLOSED for a closed issue that owes its check (check_closable) when a pull request
+    or a commit closed it (D-76), or, for a parent (spec 042), the --bot-login, and no trusted
+    verified comment came after the close: never SUSPECT_CLOSE. None when it was verified"""
     events = issue["timelineItems"]["nodes"]
     closer = events[0].get("closer") if events else None
     if verified(issue, bot_login):
@@ -2011,12 +2016,13 @@ def classify_closed(
         return verify_closed(issue, bot_login)
     if UPSTREAM_LABEL in labels:
         return None  # the coordinator, or the maintainer without one, closes a report by hand (spec 038)
-    if parent_checkable(issue):
-        # Closed by a pull request, a commit, or a session before its check ran (spec 042); a
-        # trusted person's own close by hand is their call and reads as before
+    if check_closable(issue):
+        # Closed by a pull request or a commit before its check ran, any issue (D-76), or a
+        # parent by a session (spec 042); a trusted person's own close by hand is their call and
+        # reads as before
         event = (issue["timelineItems"]["nodes"] or [{}])[0]
         by_bot = bot_login is not None and same_login(login(event.get("actor")), bot_login)
-        if event.get("closer") is not None or by_bot:
+        if event.get("closer") is not None or (by_bot and parent_checkable(issue)):
             return parent_closed(issue, bot_login)
     if close_confirmed(issue, bot_login):
         return None  # every path below reads None or SUSPECT_CLOSE, which the marker ends (D-29)

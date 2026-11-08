@@ -154,11 +154,16 @@ def pr(
     renamed: dict[str, str] | None = None,
     draft: bool = False,
     added: tuple[str, ...] = (),
+    commits: tuple[str, ...] = ("Change the app",),
 ) -> dict[str, Any]:
     """listed caps the files the files API returns (GitHub's stops at 3000); renamed maps a
     file's new path to its old one; the files API reads added's files `added`, the others
-    `modified` (or `renamed`)"""
+    `modified` (or `renamed`); commits are the PR's commit messages, each on its own commit"""
     return {
+        "commits": [
+            {"oid": f"abc{i}234fff", "messageHeadline": m.split("\n", 1)[0], "messageBody": m.partition("\n")[2]}
+            for i, m in enumerate(commits, start=1)
+        ],
         "state": "OPEN",
         "isDraft": draft,
         "mergeable": "MERGEABLE",
@@ -497,7 +502,7 @@ def test_963_a_green_pr_on_a_red_base_fails(tmp_path: Path) -> None:
     proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy")}, base={"check_runs": [base_run("failure")]})
     assert proc.returncode == gate.FAILED == 1, proc.stdout + proc.stderr
     assert proc.stdout.splitlines() == [MAIN_READY.replace("READY", "FAILED").rstrip("\n"), RED]
-    assert calls_of(tmp_path) == ["pr view", *BASE_READS]
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS]  # Fixes #7 names an issue
 
 
 @pytest.mark.parametrize(
@@ -579,7 +584,7 @@ def test_963_the_base_is_read_once_for_prs_that_share_it(tmp_path: Path) -> None
         tmp_path, None, {7: pr(login="amy"), 8: pr(login="amy")}, base={"check_runs": [base_run("failure")]}
     )
     assert proc.returncode == 1, proc.stdout + proc.stderr
-    assert calls_of(tmp_path) == ["pr view", *BASE_READS, "pr view"]
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS, "pr view", *CLOSERS_READ]
 
 
 def test_without_origin_head_the_prs_base_branch_is_read(tmp_path: Path, directed: Path) -> None:
@@ -647,6 +652,7 @@ def gh_calls(tmp_path: Path) -> list[dict[str, Any]]:
 
 FILES_API = "repos/{owner}/{repo}/pulls/7/files?per_page=100"
 BASE_READS = ["status", "check-runs"]  # the base head's checks, one read per endpoint (D-75)
+CLOSERS_READ = ["graphql"]  # the issues PLAN's Fixes #7 names, read for a ## Check (D-76)
 
 
 def test_630_a_pr_of_more_than_300_files_is_read_through_the_files_api(tmp_path: Path, directed: Path) -> None:
@@ -674,7 +680,7 @@ def test_630_r_names_the_repo_the_files_api_reads(tmp_path: Path, directed: Path
 def test_630_a_pr_gh_pr_view_lists_whole_reads_no_more(tmp_path: Path, directed: Path) -> None:
     proc = run_gate(tmp_path, directed, {7: pr(files=tuple(f"src/m{i}.py" for i in range(100)))}, "--bot-login", BOT)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert calls_of(tmp_path) == ["pr view", *BASE_READS]
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS]
 
 
 def test_630_a_list_short_of_changed_files_stops_the_gate(tmp_path: Path, directed: Path) -> None:
@@ -792,7 +798,7 @@ def test_s053_9_a_spec_for_line_naming_no_open_issue_of_the_repo_is_refused(
 ) -> None:
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=f"{line}\n\n{PLAN}")}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (6, MAIN_REFUSED), proc.stderr
-    assert calls_of(tmp_path) == ["pr view", "files", *(["graphql"] if reads else []), *BASE_READS]
+    assert calls_of(tmp_path) == ["pr view", "files", *(["graphql"] if reads else []), *CLOSERS_READ, *BASE_READS]
 
 
 def test_s053_9_an_ask_or_never_zone_doesnt_hide_the_refusal(tmp_path: Path, agents: Path) -> None:
@@ -828,7 +834,7 @@ def test_s053_9_a_spec_past_the_first_hundred_files_is_found(
     proc = run_gate(tmp_path, checkout_, {7: spec_pr(body=PLAN, files=files)}, "--agent", issues=ISSUES)
     assert proc.returncode == 6, proc.stdout + proc.stderr
     assert NO_ISSUE in proc.stdout.splitlines()
-    assert calls_of(tmp_path) == ["pr view", "files", *BASE_READS]
+    assert calls_of(tmp_path) == ["pr view", "files", *CLOSERS_READ, *BASE_READS]
 
 
 @pytest.mark.parametrize(
@@ -868,14 +874,14 @@ def test_s053_10_r_names_the_repo_the_issues_are_read_from(tmp_path: Path, direc
 def test_s053_10_a_pr_that_only_edits_a_spec_is_not_checked(tmp_path: Path, directed: Path, kw: Any) -> None:
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=PLAN, **kw)}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
-    assert calls_of(tmp_path) == ["pr view", "files", *BASE_READS]  # no issue to read
+    assert calls_of(tmp_path) == ["pr view", "files", *CLOSERS_READ, *BASE_READS]  # no spec issue to read
 
 
 def test_s053_10_a_pr_adding_no_spec_path_reads_nothing_more(tmp_path: Path, directed: Path) -> None:
     files = ("docs/specs/TEMPLATE.md", "docs/specs/README.md", "docs/specs/54-short.md", "src/app.py")
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=PLAN, files=files)}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
-    assert calls_of(tmp_path) == ["pr view", *BASE_READS]
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS]
 
 
 def test_s053_9_a_failing_issue_read_exits_1(tmp_path: Path, directed: Path) -> None:
@@ -893,6 +899,95 @@ def test_s053_9_a_failing_issue_read_exits_1(tmp_path: Path, directed: Path) -> 
     cmd = [sys.executable, str(SCRIPT), "7", "--checkout", str(directed)]
     failed = subprocess.run(cmd, capture_output=True, text=True, env=env)
     assert (failed.returncode, failed.stdout, failed.stderr) == (1, "", "pr_gate: gh failed for #7: gh: HTTP 502\n")
+
+
+# D-76 (#965): a merge never closes an issue its PR is only part of, or one whose check has not run
+
+CHECKED = {"__typename": "Issue", "state": "OPEN", "body": "Serve it.\n\n## Check\n\n`curl` shows it\n"}
+LEAF = {"__typename": "Issue", "state": "OPEN", "body": "Serve it.\n"}
+CLOSING = {12: LEAF, 13: CHECKED, 14: {**CHECKED, "state": "CLOSED"}, 15: {"__typename": "PullRequest"}}
+REFUSED_LINE = MAIN_READY.replace("READY", "REFUSED")
+
+
+def part_of(commits: tuple[str, ...], body: str = "Part of #12") -> dict[str, Any]:
+    return pr(body=body, login="amy", commits=commits)
+
+
+def test_965_a_commit_closing_a_part_of_issue_is_refused(tmp_path: Path) -> None:
+    proc = run_gate(tmp_path, None, {7: part_of(("Serve it\n\nFixes #12",))}, issues=CLOSING)
+    assert proc.returncode == gate.REFUSED == 6, proc.stdout + proc.stderr
+    assert proc.stdout == REFUSED_LINE + "  refused: commit abc1234 closes #12, which the body lists as Part of #12\n"
+    assert calls_of(tmp_path) == ["pr view", *BASE_READS]  # its issue needs no read
+
+
+def test_965_a_commit_closing_an_issue_the_body_doesnt_list_as_part_of_is_ready(tmp_path: Path) -> None:
+    for body in ("Fixes #12", "Part of #9"):
+        proc = run_gate(tmp_path, None, {7: part_of(("Serve it\n\nFixes #12",), body=body)}, issues=CLOSING)
+        assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+
+
+@pytest.mark.parametrize(
+    ("commits", "body", "where"),
+    [
+        pytest.param(("Serve it\n\n- Closes #13",), "Serves it", "commit abc1234", id="in a commit"),
+        pytest.param(("Fixes #13: serve it",), "Serves it", "commit abc1234", id="in a commit's headline"),
+        pytest.param(("Serve it",), "Serves it\n\nResolves #13", "the body", id="in the body"),
+    ],
+)
+def test_965_a_keyword_closing_an_open_issue_with_a_check_is_refused(
+    tmp_path: Path, commits: tuple[str, ...], body: str, where: str
+) -> None:
+    proc = run_gate(tmp_path, None, {7: part_of(commits, body=body)}, issues=CLOSING)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    line = f"  refused: {where} closes #13, an open issue with a ## Check: write Part of #13 instead"
+    assert proc.stdout == REFUSED_LINE + line + "\n"
+
+
+def test_965_one_read_holds_every_issue_the_keywords_name(tmp_path: Path) -> None:
+    commits = ("Serve it\n\nFixes #13", "Close it\n\nCloses #14\nFixes #15")
+    proc = run_gate(tmp_path, None, {7: part_of(commits, body="Fixes #12\n\nPart of #14")}, issues=CLOSING)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [
+        "  refused: commit abc2234 closes #14, which the body lists as Part of #14",
+        "  refused: commit abc1234 closes #13, an open issue with a ## Check: write Part of #13 instead",
+    ]
+    [graphql] = [c for c in gh_calls(tmp_path) if "graphql" in c["args"]]
+    query = next(a for a in graphql["args"] if a.startswith("query="))
+    assert [f"i{n}:" in query for n in (12, 13, 14, 15)] == [True, True, False, True]  # #14 is Part of
+
+
+@pytest.mark.parametrize(
+    ("commits", "body"),
+    [
+        pytest.param(("Serve it\n\n`Fixes #13`",), "Serves it", id="in backticks in a commit"),
+        pytest.param(("Serve it, which fixes #13",), "Serves it", id="mid-line in a commit"),
+        pytest.param(("Serve it",), "Serves it\n\n```\nFixes #13\n```", id="in a code fence in the body"),
+        pytest.param(("Serve it\n\nFixes other/repo#13",), "Serves it", id="another repo's issue"),
+        pytest.param(("Serve it",), "Serves it\n\nPart of #13", id="part of"),
+    ],
+)
+def test_965_a_keyword_that_names_nothing_reads_nothing(tmp_path: Path, commits: tuple[str, ...], body: str) -> None:
+    proc = run_gate(tmp_path, None, {7: part_of(commits, body=body)}, issues=CLOSING)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+    assert calls_of(tmp_path) == ["pr view", *BASE_READS]
+
+
+def test_965_a_closed_issue_a_pull_request_or_no_issue_with_a_check_is_ready(tmp_path: Path) -> None:
+    commits = ("Serve it\n\nFixes #14\nFixes #15\nFixes #99",)
+    proc = run_gate(tmp_path, None, {7: part_of(commits, body="Serves it")}, issues=CLOSING)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+
+
+def test_965_an_agents_pr_is_refused_for_its_plan_and_its_closers_alike(tmp_path: Path, directed: Path) -> None:
+    data = pr(body="Fixes #13", commits=("Fixes #13",))
+    proc = run_gate(tmp_path, directed, {7: data}, "--bot-login", BOT, issues=CLOSING)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    refused = [line for line in proc.stdout.splitlines() if line.startswith("  refused: ")]
+    assert refused[0].startswith("  refused: no `## Plan` section")
+    assert refused[1:] == [
+        "  refused: commit abc1234 closes #13, an open issue with a ## Check: write Part of #13 instead",
+        "  refused: the body closes #13, an open issue with a ## Check: write Part of #13 instead",
+    ]
 
 
 def test_the_worst_verdict_across_prs_is_the_exit_code(tmp_path: Path, directed: Path) -> None:

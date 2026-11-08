@@ -262,6 +262,41 @@ def test_s042_6_a_parent_closed_before_its_check_ran_reads_verify_closed(ts: Mod
     )
 
 
+def test_965_a_leaf_with_a_check_closed_by_a_pr_or_a_commit_reads_verify_closed(ts: ModuleType) -> None:
+    """D-76: any issue with a ## Check, not only a parent or a person's item, owes its check when a
+    pull request or a commit closed it"""
+    maria = ("maria", False)
+    assert closed(ts, closed_parent(PR, maria, children=0)) == ("VERIFY_CLOSED", "closed by #12: run its ## Check")
+    assert closed(ts, closed_parent(COMMIT, maria, children=0)) == (
+        "VERIFY_CLOSED",
+        "closed by commit abc1234: run its ## Check",
+    )
+    verified = [said(f"{VERIFIED}\nThe check returned `colour`.", "2026-09-08T10:00:00Z", **by("maria", "OWNER"))]
+    assert closed(ts, closed_parent(PR, comments=verified, children=0)) is None
+    # Closed by hand by a trusted person, or by the --bot-login: as before
+    by_hand = ("SUSPECT_CLOSE", "closed as completed by hand, and no merged PR mentions it")
+    assert closed(ts, closed_parent(None, ("maria", False), children=0)) == by_hand
+    assert closed(ts, closed_parent(None, children=0)) == by_hand
+    # No check, or an upstream report: as before
+    assert closed(ts, closed_parent(PR, body="Serve the new field.\n", children=0)) is None
+    assert closed(ts, closed_parent(PR, children=0, labels=("upstream",))) is None
+
+
+def test_965_fetch_reads_a_closed_leaf_s_comments_back_to_its_close(ts: ModuleType) -> None:
+    item = closed_parent(PR, children=0)
+    after = said(f"{VERIFIED}\nThe check returned `colour`.", "2026-09-08T10:00:00Z")
+    gh = FakeGitHub(
+        ts,
+        {
+            ("QUERY", None, None): first_page([], closed_nodes=[item]),
+            ("COMMENTS_PAGE", 1, None): {"issue": {"comments": backward([after])}},
+        },
+    )
+    fetched = ts.fetch("o/r", 20, run=gh)["closed"]["nodes"][0]
+    assert ("COMMENTS_PAGE", 1, None) in gh.calls
+    assert closed(ts, fetched) is None
+
+
 def test_s042_6_only_the_native_query_asks_a_closed_issue_for_sub_issues(ts: ModuleType) -> None:
     closed_part = ts.QUERY.split("closed: issues", 1)[1]
     assert "subIssues(first: 1) { totalCount }" in closed_part
