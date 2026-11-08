@@ -609,3 +609,11 @@ entry that supersedes it, never by editing an old one.
 - Applies to: .github/workflows/evals.yml, docs/specs/025-agent-evals.md, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/ci-failures.md, skills/**, evals/**
 - Enforced by: review, until the implementing PR for #950 removes the schedule trigger
 - Supersedes: D-71
+
+## D-73: A merge written as a person names no author email
+
+- Decided: 2026-11-08, in shipmill/shipmill#870
+- Rule: shipmill gh pr merge, written as a person with their user access token (D-65), passes no --author-email and drops one it is given; GitHub makes the token's user the author of the merge. The App's bot stays in a Co-authored-by trailer
+- Why: The live check of spec 051 (#870, 2026-11-07) showed GitHub refuses a noreply --author-email with a user access token (GraphQL: Invalid email address), for both noreply forms, so every merge written as a person would fail, while the same merge without the flag has the token's user as its author and keeps the App's trailer. The flag was a hedge for not knowing who GitHub makes the author, and the check answered that. Granting the App the Email addresses permission might make GitHub accept it, but would widen the App's access to keep a flag the merge doesn't need
+- Applies to: src/shipmill/app_gh.py, src/shipmill/app_login.py, src/shipmill/cli.py, docs/specs/051-write-as-the-decider.md, shipmill gh pr merge
+- Enforced by: tests/test_person_write.py (S-051-11)

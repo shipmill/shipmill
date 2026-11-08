@@ -227,8 +227,8 @@ from shipmill.app_gh import (
     pull_url,
     repo_value,
     run_gh,
-    with_author_email,
     with_body,
+    without_author_email,
     write_command,
 )
 from shipmill.app_install import WAIT_SECONDS, guide
@@ -1961,7 +1961,7 @@ def _credit(
     given, the body it would have had followed by a Co-authored-by trailer for each decider it
     doesn't name yet, and one stderr line per decider; unchanged when no record names one.
     trailer names the setting that asked for the credit (spec 051). Written as a person
-    (writer, S-051-11), the merge's author is them by `--author-email`, so the trailers name
+    (writer, S-051-11), the merge's author is them as the token's user (D-73), so the trailers name
     every other decider and then the App's bot"""
     number, reads, record, found = credit.number, credit.reads, credit.record, credit.found
     if not found:
@@ -1991,7 +1991,7 @@ def _credit(
     if body is None and flags.body_file == "-":  # stdin is read to its end: gh can't read it again
         body = base
     credited = gh_args if body is None else with_body(gh_args, body)
-    return credited if writer is None else with_author_email(credited, writer.email)
+    return credited if writer is None else without_author_email(credited)
 
 
 def _body_file(path: str) -> str:

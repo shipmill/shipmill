@@ -35,8 +35,10 @@ From GitHub's documentation for an App acting on a user's behalf (read 2026-10-3
 Not settled by the documentation, and checked live before the build's first release (Out of
 scope names the person's step): that `performed_via_github_app` names the App on an issue,
 pull request, and comment made with a user access token, and who GitHub makes the author of a
-squash merge made with one. The design below does not depend on the second: the merge names
-its author with `--author-email`.
+squash merge made with one. Checked live in #870 (2026-11-07): `performed_via_github_app` names
+the App on all three, and GitHub makes the token's user the author of the squash merge, keeping
+the App's trailer. `--author-email` with a noreply address is refused with a user access token,
+so the merge passes none (D-73).
 
 ## Behaviour
 
@@ -108,8 +110,8 @@ it first when it has expired, and with the App's installation token otherwise:
 - An issue or pull request written as a person keeps the agent marker (D-62) and gets one
   more line at the end of its body: `Opened by an agent through shipmill, on `@<login>`'s
   decision.`
-- A merge written as a person passes `--author-email <id>+<login>@users.noreply.github.com`
-  for the decider, and its body ends with one `Co-authored-by` trailer for the App's bot,
+- A merge written as a person passes no `--author-email`, and drops one it is given (D-73):
+  GitHub makes the token's user, the decider, its author. Its body ends with one `Co-authored-by` trailer for the App's bot,
   `<slug>[bot] <<bot id>+<slug>[bot]@users.noreply.github.com>`, the bot id read from
   `GET /users/<slug>[bot]`; spec 049's trailers name every other decider
 - Comments, labels, reviews, edits, closes, needs-decision questions, relayed decisions, and
@@ -149,7 +151,7 @@ approved the work, never an outside author of a request.
 - S-051-8: With `author = "decider"`, an expired token is refreshed before the write, and a refused refresh deletes the stored file and writes as the App
 - S-051-9: With `author = "decider"`, a write with no decider, a decider with no stored token, or a refused token goes as the App with autonomous mode's trailer, after one stderr line naming why, the login in a code span
 - S-051-10: An issue or pull request written as a person carries the agent marker and ends with `Opened by an agent through shipmill, on `@<login>`'s decision.`
-- S-051-11: A merge written as a person passes `--author-email` with the decider's noreply address and ends its body with a `Co-authored-by` trailer for the App's bot, and other deciders keep spec 049's trailers
+- S-051-11: A merge written as a person passes no `--author-email`, dropping one it is given, and ends its body with a `Co-authored-by` trailer for the App's bot, and other deciders keep spec 049's trailers
 - S-051-12: With `author = "decider"`, every `shipmill gh` command other than `issue create`, `pr create`, and `pr merge` runs with the App's installation token
 - S-051-13: An issue or pull request written as a person carries the agent marker, so `triage_state.py`, `watch_state.py`, and `credit.py` never read it as that person's decision, filing, or answer
 - S-051-14: `AGENT_AS_PERSON` skips a marked record GitHub made through the repo's App and still flags a marked record a person's token made without it
@@ -177,6 +179,7 @@ approved the work, never an outside author of a request.
 - D-62
 - D-63
 - D-65
+- D-73
 
 ## Issues
 
@@ -204,7 +207,7 @@ Checked on main at 8058c441 (#863 to #868 merged) plus #869's docs: `tests/test_
 - S-051-8: the tests refresh an expired token before the write and store it again `0600`; a refused refresh deletes the file and writes as the App
 - S-051-9: the tests write with no decider, a decider without a stored token, and a refused token: each goes as the App with autonomous mode's trailer after one stderr line, the login in a code span
 - S-051-10: the tests create an issue and a pull request as a person: the body keeps the agent marker and ends with the `Opened by an agent through shipmill` line, once
-- S-051-11: the tests merge as a person: `--author-email` carries the decider's noreply address and the body ends with the App's bot trailer; other deciders keep spec 049's trailers
+- S-051-11: the tests merge as a person: no `--author-email` reaches gh and the body ends with the App's bot trailer; other deciders keep spec 049's trailers
 - S-051-12: the tests run every other `shipmill gh` command with `author = "decider"` and read the App's installation token
 - S-051-13: the tests read a person-written record carrying the marker through `triage_state.py`, `watch_state.py`, and `credit.py`: none takes it for the person's decision, filing, or answer
 - S-051-14: the test skips a marked record whose `performed_via_github_app` names the repo's App and flags one made without it
