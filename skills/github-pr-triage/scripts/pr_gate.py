@@ -51,8 +51,18 @@ files nor its zones (D-67). A person's draft belongs to them: it enters triage o
 A draft the --bot-login authored has no owner once its session ended (#914): its line says so, and
 a gate session marks it ready once nothing it waits on is open, then runs the gate again.
 
-Exit codes: 0 every PR is ready; 1 a check failed, or gh failed; 3 a check is still
-pending (or --wait timed out); 4 a PR is not open or conflicts; 5 a PR needs the
+The base branch (D-75): the gate reads the checks on its head commit, one read of the commit's
+statuses (which names the commit) and one of its check runs, once per base branch and pass, and
+keeps the newest run per check as it does the PR's own (#962). A completed check there that failed
+(not one queued or running, nor a cancelled, skipped, neutral, or stale one) makes the verdict
+FAILED, `  base: red: <check> failed on <base>@<sha>`, save for the PR whose body has a line
+`Repairs: <URL>` naming it (after an optional list bullet, outside a fence): a workflow run's URL
+names its every job, a job's or a check run's URL that one, a commit status's exact target URL that
+status. A named failure prints `  base: repairs: ...` for the reviewer to check the claim. A
+failure outside the code clears by re-running the failed run on the default branch.
+
+Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base's (D-75),
+or gh failed; 3 a check is still pending (or --wait timed out); 4 a PR is not open or conflicts; 5 a PR needs the
 maintainer's decision; 6 an agent's PR is refused for its plan, or a spec PR names no open
 feature issue; 7 a PR only the maintainer
 merges, by hand (a `never` zone); 8 a draft PR (D-67); 2 bad arguments,
@@ -73,8 +83,9 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
@@ -129,6 +140,12 @@ SPEC_FILE = re.compile(r"docs/specs/[0-9]{3,}-[a-z0-9]+(?:-[a-z0-9]+)*\.md")
 _SPEC_FOR = re.compile(r"^\s*(?:[-*]\s+)?Spec for\s+([\w.-]+/[\w.-]+)?#([0-9]+)\b")
 NO_ISSUE = 'names no feature issue: add "Spec for #N" for the open issue it specifies'
 GRAPHQL_INT = 2**31 - 1  # an issue number past it is no issue, and GraphQL refuses the query
+# a base check that finished so is not red: the PR's green, and a run cancelled or gone stale (D-75)
+NOT_RED = GREEN | {"CANCELLED", "STALE"}
+# a body line naming the failed base run the PR repairs, and the ids an Actions or check run URL names
+_REPAIRS = re.compile(r"^\s*(?:[-*]\s+)?Repairs:\s*(\S+)")
+_ACTIONS_URL = re.compile(r"https://[^/]+/[^/]+/[^/]+/actions/runs/([0-9]+)(?:/job/([0-9]+)|/attempts/[0-9]+)?/?")
+_CHECK_RUN_URL = re.compile(r"https://[^/]+/[^/]+/[^/]+/runs/([0-9]+)/?")
 
 
 class GateError(Exception):
@@ -157,6 +174,8 @@ class Gate:
     draft: bool = False  # a person's is theirs until marked ready (D-67)
     spec: tuple[str, ...] = ()  # why a spec PR is refused: it names no open feature issue (spec 053)
     own: bool = False  # a draft the --bot-login authored: a gate session marks it ready (D-67, #914)
+    base_red: tuple[str, ...] = ()  # the base head's failed checks no Repairs: line names (D-75)
+    base_repairs: tuple[str, ...] = ()  # the ones a Repairs: line names, for the reviewer to check
 
     @property
     def verdict(self) -> int:
@@ -172,7 +191,7 @@ class Gate:
             return MAINTAINER_ONLY
         if self.asks:
             return NEEDS_DECISION
-        if any(c.done and c.conclusion not in GREEN for c in self.checks):
+        if self.base_red or any(c.done and c.conclusion not in GREEN for c in self.checks):
             return FAILED
         if not self.checks or any(not c.done for c in self.checks) or self.mergeable != "MERGEABLE":
             return PENDING
@@ -244,6 +263,10 @@ def started_of(entry: dict) -> datetime | None:
 
 
 def newest_checks(rollup: Iterable[dict]) -> tuple[Check, ...]:
+    return tuple(check_of(entry) for entry in newest_entries(rollup))
+
+
+def newest_entries(rollup: Iterable[dict]) -> list[dict]:
     """One check per CheckRun (workflowName, name) or StatusContext context: a head checked
     twice (a PR closed and reopened) lists both runs, and only the newest counts (#962). The
     later start wins; without both starts the later rollup entry does, except that a run
@@ -264,7 +287,7 @@ def newest_checks(rollup: Iterable[dict]) -> tuple[Check, ...]:
                 newest[key] = (started, entry)
         elif started >= kept[0]:
             newest[key] = (started, entry)
-    return tuple(check_of(entry) for _, entry in newest.values())
+    return [entry for _, entry in newest.values()]
 
 
 def sections(text: str) -> list[tuple[int, str | None, list[tuple[int, str]]]]:
@@ -745,6 +768,98 @@ def spec_problems(data: dict, number: int, repo: str | None) -> list[str]:
     return [NO_ISSUE]
 
 
+def base_head(branch: str, number: int, repo: str | None) -> tuple[str, list[dict]]:
+    """The base branch's head commit and its checks, the newest run of each as newest_checks reads
+    the PR's (#962): one read of the commit's statuses, which names the commit, then one of its
+    check runs, every page. Each check is rollup-shaped, with the URLs a Repairs: line may name"""
+    ref = urllib.parse.quote(branch, safe="")
+    cmd, env = api([f"repos/{{owner}}/{{repo}}/commits/{ref}/status?per_page=100"], repo)
+    combined = json.loads(gh(cmd, number, env))
+    sha = combined.get("sha") if isinstance(combined, dict) else None
+    statuses = combined.get("statuses") if isinstance(combined, dict) else None
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{7,64}", sha) or not isinstance(statuses, list):
+        raise GateError(f"the status of {branch}'s head is not a combined status: {combined!r}")
+    if len(statuses) < int(combined.get("total_count") or 0):
+        raise GateError(f"{branch}@{sha[:7]} has more than 100 commit statuses; the gate judges no partial list")
+    entries = [status_entry(s, branch) for s in statuses]
+    path = f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?per_page=100"
+    cmd, env = api(["--paginate", path, "--jq", ".check_runs[]"], repo)
+    entries += [run_entry(json.loads(line), branch) for line in gh(cmd, number, env).splitlines() if line.strip()]
+    return sha, newest_entries(entries)
+
+
+def status_entry(status: object, branch: str) -> dict:
+    """A commit status as the rollup's StatusContext, with its target URL"""
+    if not isinstance(status, dict) or not all(isinstance(status.get(k), str) for k in ("context", "state")):
+        raise GateError(f"a commit status on {branch}'s head is not {{context, state}}: {status!r}")
+    return {
+        "context": status["context"],
+        "state": status["state"].upper(),
+        "startedAt": status.get("created_at"),
+        "urls": [str(status.get("target_url") or "")],
+    }
+
+
+def run_entry(run_: object, branch: str) -> dict:
+    """A check run as the rollup's CheckRun, keyed by its check suite, which a rerun of its jobs
+    stays in, with its id (an Actions job's) and its URLs"""
+    suite = run_.get("check_suite") if isinstance(run_, dict) else None
+    if (
+        not isinstance(run_, dict)
+        or not isinstance(run_.get("id"), int)
+        or not all(isinstance(run_.get(k), str) for k in ("name", "status"))
+        or not isinstance(suite, dict)
+        or not isinstance(suite.get("id"), int)
+    ):
+        raise GateError(f"a check run on {branch}'s head is not {{id, name, status, check_suite}}: {run_!r}")
+    return {
+        "workflowName": f"suite {suite['id']}",
+        "name": run_["name"],
+        "status": run_["status"].upper(),
+        "conclusion": str(run_.get("conclusion") or "").upper(),
+        "startedAt": run_.get("started_at"),
+        "urls": [str(run_.get(k) or "") for k in ("html_url", "details_url")],
+        "id": run_["id"],
+    }
+
+
+def repairs_of(body: str) -> list[str]:
+    """Each Repairs: line's URL, in order; only a line starting with it, after an optional list
+    bullet, outside a fence, names one"""
+    return [found.group(1) for found in map(_REPAIRS.match, unfenced(body)) if found is not None]
+
+
+def repaired(entry: dict, named: list[str]) -> bool:
+    """Whether a Repairs: URL names the failed check: its workflow run's URL, its job's, its check
+    run's, or, for a commit status, its exact target URL"""
+    urls = {u for u in entry["urls"] if u}
+    runs = {int(found.group(1)) for found in map(_ACTIONS_URL.fullmatch, urls) if found is not None}
+    for url in named:
+        actions, check_run = _ACTIONS_URL.fullmatch(url), _CHECK_RUN_URL.fullmatch(url)
+        if url in urls:
+            return True
+        if actions is not None and actions.group(2) is not None:
+            if int(actions.group(2)) == entry.get("id"):
+                return True
+        elif actions is not None and int(actions.group(1)) in runs:
+            return True
+        if check_run is not None and int(check_run.group(1)) == entry.get("id"):
+            return True
+    return False
+
+
+def base_failures(branch: str, sha: str, entries: list[dict], body: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The base head's failed checks no Repairs: line of the body names, and those one does"""
+    named = repairs_of(body)
+    red: list[str] = []
+    repairs: list[str] = []
+    for entry in entries:
+        check = check_of(entry)
+        if check.done and check.conclusion not in NOT_RED:
+            (repairs if repaired(entry, named) else red).append(f"{check.name} failed on {branch}@{sha[:7]}")
+    return tuple(red), tuple(repairs)
+
+
 def judge(
     data: dict,
     number: int,
@@ -803,6 +918,8 @@ def render(gate: Gate) -> str:
     ]
     lines += [f"  failed: {c.name} ({c.conclusion})" for c in failed]
     lines += [f"  pending: {c.name}" for c in pending]
+    lines += [f"  base: red: {line}" for line in gate.base_red]
+    lines += [f"  base: repairs: {line}" for line in gate.base_repairs]
     lines += [f"  refused: {reason}" for reason in gate.refused]
     lines += [f"  spec: {reason}" for reason in gate.spec]
     lines += [f"  maintainer-only: {reason}" for reason in gate.never]
@@ -855,6 +972,7 @@ def main() -> int:
         specs: dict[tuple[int, str, str], tuple[str, ...]] = {}  # by PR, head, and body: a --wait reads each once
         while True:
             gates = []
+            heads: dict[str, tuple[str, list[dict]]] = {}  # each base branch's head, read once a pass (D-75)
             for number in args.prs:
                 data = fetch(number, args.repo)
                 base = bases.base(str(data["baseRefName"]))
@@ -874,7 +992,14 @@ def main() -> int:
                 zones = None
                 if base.agents and base.ref is not None:
                     zones = classifier.zones(number, base.ref, str(data["headRefOid"]))
-                gates.append(judge(data, number, base, agent, args.maintainer_accepted, zones, spec))
+                judged = judge(data, number, base, agent, args.maintainer_accepted, zones, spec)
+                if data["state"] == "OPEN":
+                    branch = str(data["baseRefName"])
+                    if branch not in heads:
+                        heads[branch] = base_head(branch, number, args.repo)
+                    red, repairs = base_failures(branch, *heads[branch], str(data.get("body") or ""))
+                    judged = replace(judged, base_red=red, base_repairs=repairs)
+                gates.append(judged)
             worst = max((g.verdict for g in gates), key=RANK.index)
             if not args.wait or worst != PENDING or time.monotonic() >= deadline:
                 print("\n".join(render(g) for g in gates))

@@ -17,6 +17,7 @@ from .conftest import copy_tree, no_auto_maintenance
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-pr-triage" / "scripts" / "pr_gate.py"
 BOT = "shipmill-demo[bot]"
+BASE_SHA = "ba5e0123456789"
 
 DIRECTION = """\
 # demo
@@ -77,8 +78,15 @@ args = sys.argv[1:]
 with open(os.environ["FAKE_GH_CALLS"], "a") as calls:
     calls.write(json.dumps({{"args": args, "GH_REPO": os.environ.get("GH_REPO")}}) + "\\n")
 files = re.compile(r"repos/(.+)/pulls/([0-9]+)/files[?]per_page=100")
+base = fake["base"]
 if args[:2] == ["pr", "view"]:
     print(json.dumps(fake[args[2]]))
+elif args[0] == "api" and any(a.endswith("/status?per_page=100") for a in args):  # the base's statuses (D-75)
+    statuses = base["statuses"]
+    print(json.dumps({{"sha": base["sha"], "total_count": len(statuses), "statuses": statuses}}))
+elif args[0] == "api" and any(a.endswith("/check-runs?per_page=100") for a in args):
+    for run in base["check_runs"]:  # one object a line, as gh --jq .check_runs[] prints them
+        print(json.dumps(run))
 elif args[:2] == ["pr", "diff"]:
     sys.exit("HTTP 406: Sorry, the diff exceeded the maximum number of files (300)")
 elif args[0] == "api" and "--paginate" in args and args[args.index("--jq") + 1] == ".[]":
@@ -174,9 +182,11 @@ def run_gate(
     prs: dict[int, dict[str, Any]],
     *args: str,
     issues: dict[int, dict[str, str]] | None = None,
+    base: dict[str, Any] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """The gate with --checkout work, or, for None, run in a folder outside any checkout; issues
-    are what GitHub's GraphQL answers for the repo demo/app's numbers"""
+    are what GitHub's GraphQL answers for the repo demo/app's numbers; base, the base branch head's
+    sha, statuses, and check_runs (default: a head with no checks)"""
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     gh = fakes / "gh"
@@ -187,6 +197,7 @@ def run_gate(
         **{str(n): p for n, p in prs.items()},
         "repo": "demo/app",
         "issues": {str(n): i for n, i in (issues or {}).items()},
+        "base": {"sha": BASE_SHA, "statuses": [], "check_runs": [], **(base or {})},
     }
     data.write_text(json.dumps(fake), encoding="utf-8")
     env = {
@@ -451,6 +462,126 @@ def test_a_malformed_start_stops_the_gate() -> None:
         gate.newest_checks([run_of("SUCCESS", "yesterday")])
 
 
+# D-75 (#963): no pull request lands on a red default branch, save the one that repairs it
+
+RUN_URL = "https://github.com/demo/app/actions/runs/900"
+
+
+def base_run(
+    conclusion: str | None,
+    status: str = "completed",
+    name: str = "test",
+    run: int = 900,
+    job: int = 901,
+    started: str | None = "2026-11-08T08:00:00Z",
+) -> dict[str, Any]:
+    """A check run on the base head as the check-runs API lists it; an Actions job's check run id is its job id"""
+    url = f"https://github.com/demo/app/actions/runs/{run}/job/{job}"
+    return {
+        "id": job,
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "started_at": started,
+        "html_url": url,
+        "details_url": url,
+        "check_suite": {"id": run + 7},
+    }
+
+
+RED = "  base: red: test failed on main@ba5e012"
+REPAIRS = "  base: repairs: test failed on main@ba5e012"
+
+
+def test_963_a_green_pr_on_a_red_base_fails(tmp_path: Path) -> None:
+    proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy")}, base={"check_runs": [base_run("failure")]})
+    assert proc.returncode == gate.FAILED == 1, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == [MAIN_READY.replace("READY", "FAILED").rstrip("\n"), RED]
+    assert calls_of(tmp_path) == ["pr view", *BASE_READS]
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        pytest.param([base_run("success")], id="a green base"),
+        pytest.param([base_run(None, "in_progress")], id="a base check still running"),
+        pytest.param([base_run(None, "queued", started=None)], id="a base check queued"),
+        pytest.param([base_run("cancelled"), base_run("skipped", name="lint", job=902)], id="cancelled and skipped"),
+        pytest.param([base_run("neutral")], id="neutral"),
+        pytest.param(
+            [base_run("failure"), base_run("success", job=905, started="2026-11-08T09:00:00Z")], id="a green rerun"
+        ),
+    ],
+)
+def test_963_a_base_that_is_not_red_keeps_the_verdict(tmp_path: Path, runs: list[dict[str, Any]]) -> None:
+    proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy")}, base={"check_runs": runs})
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "timed_out", "action_required"])
+def test_963_each_failed_conclusion_on_the_base_is_red(tmp_path: Path, conclusion: str) -> None:
+    proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy")}, base={"check_runs": [base_run(conclusion)]})
+    assert proc.returncode == 1 and RED in proc.stdout.splitlines(), proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(f"Repairs: {RUN_URL}", id="the run"),
+        pytest.param(f"- Repairs: {RUN_URL}/attempts/1", id="an attempt of the run, after a bullet"),
+        pytest.param(f"Repairs: {RUN_URL}/job/901", id="the job"),
+        pytest.param("Repairs: https://github.com/demo/app/runs/901", id="the check run"),
+    ],
+)
+def test_963_the_pr_whose_repairs_line_names_the_failed_run_passes(tmp_path: Path, line: str) -> None:
+    data = pr(body=f"{line}\n\nFixes #7", login="amy")
+    proc = run_gate(tmp_path, None, {7: data}, base={"check_runs": [base_run("failure")]})
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY + REPAIRS + "\n", "")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param("Repairs: https://github.com/demo/app/actions/runs/800", id="another run"),
+        pytest.param(f"Repairs: {RUN_URL}/job/999", id="another job of the run"),
+        pytest.param(f"Fixes the base. Repairs: {RUN_URL}", id="mid-line"),
+        pytest.param(f"```\nRepairs: {RUN_URL}\n```", id="in a code fence"),
+    ],
+)
+def test_963_a_repairs_line_naming_another_run_fails(tmp_path: Path, line: str) -> None:
+    data = pr(body=f"{line}\n\nFixes #7", login="amy")
+    proc = run_gate(tmp_path, None, {7: data}, base={"check_runs": [base_run("failure")]})
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [RED]
+
+
+def test_963_a_repairs_line_covers_only_the_run_it_names(tmp_path: Path) -> None:
+    runs = [base_run("failure"), base_run("failure", name="lint", run=910, job=911)]
+    proc = run_gate(tmp_path, None, {7: pr(body=f"Repairs: {RUN_URL}", login="amy")}, base={"check_runs": runs})
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == ["  base: red: lint failed on main@ba5e012", REPAIRS]
+
+
+def test_963_a_failed_commit_status_on_the_base_is_red_until_named(tmp_path: Path) -> None:
+    url = "https://ci.example.com/build/12"
+    status = {"context": "ci/ext", "state": "error", "target_url": url, "created_at": "2026-11-08T08:00:00Z"}
+    base = {"statuses": [status, {**status, "context": "ci/pending", "state": "pending"}]}
+    proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy")}, base=base)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == ["  base: red: ci/ext failed on main@ba5e012"]
+    named = run_gate(tmp_path, None, {7: pr(body=f"Repairs: {url}", login="amy")}, base=base)
+    assert named.returncode == 0, named.stdout + named.stderr
+    assert named.stdout.splitlines()[1:] == ["  base: repairs: ci/ext failed on main@ba5e012"]
+
+
+def test_963_the_base_is_read_once_for_prs_that_share_it(tmp_path: Path) -> None:
+    proc = run_gate(
+        tmp_path, None, {7: pr(login="amy"), 8: pr(login="amy")}, base={"check_runs": [base_run("failure")]}
+    )
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert calls_of(tmp_path) == ["pr view", *BASE_READS, "pr view"]
+
+
 def test_without_origin_head_the_prs_base_branch_is_read(tmp_path: Path, directed: Path) -> None:
     git(directed, "remote", "set-head", "origin", "--delete")
     proc = run_gate(tmp_path, directed, {7: pr(body="Fixes #7")}, "--bot-login", BOT)
@@ -515,6 +646,7 @@ def gh_calls(tmp_path: Path) -> list[dict[str, Any]]:
 
 
 FILES_API = "repos/{owner}/{repo}/pulls/7/files?per_page=100"
+BASE_READS = ["status", "check-runs"]  # the base head's checks, one read per endpoint (D-75)
 
 
 def test_630_a_pr_of_more_than_300_files_is_read_through_the_files_api(tmp_path: Path, directed: Path) -> None:
@@ -523,7 +655,7 @@ def test_630_a_pr_of_more_than_300_files_is_read_through_the_files_api(tmp_path:
     proc = run_gate(tmp_path, directed, {7: pr(files=files)}, "--bot-login", BOT)
     assert proc.returncode == 5, proc.stdout + proc.stderr
     assert "  needs-decision: src/land.py matches `src/land.py`" in proc.stdout
-    api = [c for c in gh_calls(tmp_path) if c["args"][0] == "api"]
+    api = [c for c in gh_calls(tmp_path) if FILES_API in c["args"]]
     assert api == [{"args": ["api", "--paginate", FILES_API, "--jq", ".[]"], "GH_REPO": None}]
 
 
@@ -535,14 +667,14 @@ def test_630_r_names_the_repo_the_files_api_reads(tmp_path: Path, directed: Path
     files = tuple(f"src/m{i}.py" for i in range(349)) + ("src/land.py",)
     proc = run_gate(tmp_path, directed, {7: pr(files=files)}, "--bot-login", BOT, "-R", repo)
     assert proc.returncode == 5, proc.stdout + proc.stderr
-    api = [c for c in gh_calls(tmp_path) if c["args"][0] == "api"]
+    api = [c for c in gh_calls(tmp_path) if FILES_API in c["args"]]
     assert api == [{"args": ["api", *host, "--paginate", FILES_API, "--jq", ".[]"], "GH_REPO": repo}]
 
 
 def test_630_a_pr_gh_pr_view_lists_whole_reads_no_more(tmp_path: Path, directed: Path) -> None:
     proc = run_gate(tmp_path, directed, {7: pr(files=tuple(f"src/m{i}.py" for i in range(100)))}, "--bot-login", BOT)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert [c["args"][:2] for c in gh_calls(tmp_path)] == [["pr", "view"]]
+    assert calls_of(tmp_path) == ["pr view", *BASE_READS]
 
 
 def test_630_a_list_short_of_changed_files_stops_the_gate(tmp_path: Path, directed: Path) -> None:
@@ -615,11 +747,15 @@ def spec_pr(body: str = SPEC_BODY, files: tuple[str, ...] = (SPEC,), **kw: Any) 
 
 
 def calls_of(tmp_path: Path) -> list[str]:
-    """Each gh call the gate made, by its kind: `pr view`, `files` (the files API), or `graphql`"""
+    """Each gh call the gate made, by its kind: `pr view`, `files` (the files API), `graphql`, or the
+    base head's `status` and `check-runs` (D-75)"""
     kinds = []
     for call in gh_calls(tmp_path):
         args = call["args"]
-        kinds.append("graphql" if "graphql" in args else "files" if args[0] == "api" else " ".join(args[:2]))
+        base = [a.rsplit("/", 1)[-1].split("?")[0] for a in args if a.startswith("repos/") and "/commits/" in a]
+        kinds.append(
+            base[0] if base else "graphql" if "graphql" in args else "files" if args[0] == "api" else " ".join(args[:2])
+        )
     return kinds
 
 
@@ -656,7 +792,7 @@ def test_s053_9_a_spec_for_line_naming_no_open_issue_of_the_repo_is_refused(
 ) -> None:
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=f"{line}\n\n{PLAN}")}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (6, MAIN_REFUSED), proc.stderr
-    assert calls_of(tmp_path) == ["pr view", "files", *(["graphql"] if reads else [])]
+    assert calls_of(tmp_path) == ["pr view", "files", *(["graphql"] if reads else []), *BASE_READS]
 
 
 def test_s053_9_an_ask_or_never_zone_doesnt_hide_the_refusal(tmp_path: Path, agents: Path) -> None:
@@ -692,7 +828,7 @@ def test_s053_9_a_spec_past_the_first_hundred_files_is_found(
     proc = run_gate(tmp_path, checkout_, {7: spec_pr(body=PLAN, files=files)}, "--agent", issues=ISSUES)
     assert proc.returncode == 6, proc.stdout + proc.stderr
     assert NO_ISSUE in proc.stdout.splitlines()
-    assert calls_of(tmp_path) == ["pr view", "files"]
+    assert calls_of(tmp_path) == ["pr view", "files", *BASE_READS]
 
 
 @pytest.mark.parametrize(
@@ -708,16 +844,17 @@ def test_s053_9_a_spec_past_the_first_hundred_files_is_found(
 def test_s053_10_a_spec_pr_naming_an_open_issue_is_not_refused(tmp_path: Path, directed: Path, body: str) -> None:
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=body)}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
-    assert calls_of(tmp_path) == ["pr view", "files", "graphql"]  # one read for every line's issue
+    assert calls_of(tmp_path) == ["pr view", "files", "graphql", *BASE_READS]  # one read for every line's issue
 
 
 def test_s053_10_r_names_the_repo_the_issues_are_read_from(tmp_path: Path, directed: Path) -> None:
     git(directed, "remote", "set-url", "origin", "git@github.com:demo/app.git")
     proc = run_gate(tmp_path, directed, {7: spec_pr()}, "--bot-login", BOT, "-R", "github.com/demo/app", issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
-    [_, files, graphql] = gh_calls(tmp_path)
-    assert files["args"][:3] == graphql["args"][:3] == ["api", "--hostname", "github.com"]
-    assert files["GH_REPO"] == graphql["GH_REPO"] == "github.com/demo/app"
+    [_, files, graphql, status, runs] = gh_calls(tmp_path)
+    for call in (files, graphql, status, runs):
+        assert call["args"][:3] == ["api", "--hostname", "github.com"]
+        assert call["GH_REPO"] == "github.com/demo/app"
     assert graphql["args"][3:8] == ["graphql", "-F", "owner={owner}", "-F", "repo={repo}"]
 
 
@@ -731,14 +868,14 @@ def test_s053_10_r_names_the_repo_the_issues_are_read_from(tmp_path: Path, direc
 def test_s053_10_a_pr_that_only_edits_a_spec_is_not_checked(tmp_path: Path, directed: Path, kw: Any) -> None:
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=PLAN, **kw)}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
-    assert calls_of(tmp_path) == ["pr view", "files"]  # no issue to read
+    assert calls_of(tmp_path) == ["pr view", "files", *BASE_READS]  # no issue to read
 
 
 def test_s053_10_a_pr_adding_no_spec_path_reads_nothing_more(tmp_path: Path, directed: Path) -> None:
     files = ("docs/specs/TEMPLATE.md", "docs/specs/README.md", "docs/specs/54-short.md", "src/app.py")
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=PLAN, files=files)}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
-    assert calls_of(tmp_path) == ["pr view"]
+    assert calls_of(tmp_path) == ["pr view", *BASE_READS]
 
 
 def test_s053_9_a_failing_issue_read_exits_1(tmp_path: Path, directed: Path) -> None:

@@ -49,6 +49,13 @@ Run the gate in the background (Monitor, or Bash with `run_in_background`), not 
 
 A label added after the PR opens (`full-ci`) starts a second run that cancels the first. The gate then counts the first run's CANCELLED jobs as failed and exits 1 while the new run is still pending. Before calling the PR red, check `gh pr checks <n>`: if each cancelled job has a passing or pending twin from the newer run, wait on that run (`gh run watch <id>`) and treat it as the gate. Better, add the label in `gh pr create --label`, which starts one run.
 
+## A red default branch
+
+No pull request lands on a red default branch, save the one that repairs it (D-75). `scripts/pr_gate.py` reads the checks on the base branch's head commit, newest run per check, and a completed one there that failed makes the verdict FAILED (exit 1) with a line `base: red: <check> failed on <base>@<sha>`, however green the PR's own checks are. A base check still queued or running is not red, nor is a cancelled, skipped, neutral, or stale one. Read the failure as above, then:
+
+- **Caused by the code:** the PR that fixes it carries a body line `Repairs: <URL of the failed run>`: the workflow run's URL (`https://github.com/<owner>/<repo>/actions/runs/<id>`) covers each of its jobs, a job's URL (`.../actions/runs/<id>/job/<id>`) only that job, and a commit status is named by its exact target URL. The gate then prints `base: repairs: ...` instead of `base: red: ...`; check that the PR does fix that failure before merging it. A URL naming another run doesn't pass. Other PRs wait until it lands and the base reads green
+- **Caused outside the code** (a 504 on a download, a connection limit, a runner lost): no PR repairs it. Re-run the failed run on the default branch, `gh run rerun <id> --failed`, through `shipmill gh` when `[agents] app_id` is set (as the App), and landing resumes once that run is green; a fresh pass of the gate reads it again
+
 ## Platform-only test bugs
 
 When PR CI covers one OS (Ubuntu-only, as treaty's does), a new test that builds a path or glob from platform-dependent state (a uid suffix, a temp-dir name, a separator) passes on the PR and fails only in the release's full matrix. In treaty, a glob `cf-*/out/*` missed Windows's `cf` session directory and skipped the rc17 release until a follow-up PR. When a reviewed PR adds such a test, or touches cleanup, paths or permissions, put the `full-ci` label on it before merging.
