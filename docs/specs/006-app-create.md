@@ -113,8 +113,9 @@ or `https://github.com/settings/apps/new` for the login, with a random `state`. 
 manifest:
 
 - `name`, `public` from the plan; `url`, the App's homepage, `https://github.com/shipmill/shipmill`
-- `default_permissions`: exactly `PERMISSIONS` from `src/shipmill/app.py`, so the App has
-  what the gate checks and nothing more
+- `default_permissions`: exactly `PERMISSIONS` plus `OPTIONAL_PERMISSIONS` from
+  `src/shipmill/app.py` (D-77), so the App has what the gate checks, and the optional
+  Deployments: read, and nothing more
 - `hook_attributes.active: false` and no `default_events`: the App needs no webhook
 - `redirect_url`: the local server's `/callback`
 
@@ -172,7 +173,7 @@ then prove it: shipmill --repo <gate checkout> gate <owner/repo> --dry-run
 - S-006-6: the owner menu lists the login first as the default and each administered org with its gated repos; Enter keeps the default, a number or a login picks one, and anything else exits 2 saying to pass `--owner`
 - S-006-7: `--owner` and `--public`/`--private` override the plan; an `--owner` the login doesn't administer exits 2 naming it and the role needed; `--private` with gated repos outside the owner prints a warning naming each
 - S-006-8: the plan is printed before anything is created, and `--dry-run` prints it, starts no server, opens no browser, and writes nothing
-- S-006-9: the manifest's permissions are exactly `PERMISSIONS` from `src/shipmill/app.py`, its webhook is inactive with no events, its homepage is `https://github.com/shipmill/shipmill`, its `public` and `name` come from the plan, and it is posted to the org's or the user's new-App URL as the owner type requires
+- S-006-9: the manifest's permissions are exactly `PERMISSIONS` plus `OPTIONAL_PERMISSIONS` from `src/shipmill/app.py` (D-77), its webhook is inactive with no events, its homepage is `https://github.com/shipmill/shipmill`, its `public` and `name` come from the plan, and it is posted to the org's or the user's new-App URL as the owner type requires
 - S-006-10: the server listens on `127.0.0.1` only, and a callback with a missing or wrong `state` writes nothing and leaves the flow waiting
 - S-006-11: the code is exchanged through `POST /app-manifests/<code>/conversions`; the key is written to `~/.config/shipmill/app-<id>.pem` with mode `0600` in a directory with mode `0700`, an existing key file is never overwritten, and the client secret, webhook secret, client id, and key never appear in output
 - S-006-12: with no callback in 10 minutes the command exits 2 with `no App was created`
@@ -219,7 +220,7 @@ discovery and the plan also ran against GitHub for real (`shipmill app-create --
 - S-006-6: `test_s006_6_an_org_owner_is_asked_for_with_the_personal_account_first`, passing
 - S-006-7: `test_s006_7_flags_override_the_plan_and_a_private_app_warns_about_other_accounts`, passing
 - S-006-8: `test_s006_8_a_dry_run_prints_the_plan_and_creates_nothing`, passing; the real dry run made no POST and wrote no key
-- S-006-9: `test_s006_9_the_manifest_holds_exactly_the_gates_permissions_and_no_webhook`, passing; the manifest's permissions come from `PERMISSIONS` in `src/shipmill/app.py`
+- S-006-9: `test_s006_9_the_manifest_holds_exactly_the_gates_permissions_and_no_webhook`, passing; the manifest's permissions come from `PERMISSIONS` and `OPTIONAL_PERMISSIONS` in `src/shipmill/app.py` (D-77)
 - S-006-10: `test_s006_10_the_server_is_local_and_a_forged_callback_is_refused`, passing; it loads the real page, reads the state from the form, and gets 400 for a forged callback
 - S-006-11: `test_s006_11_the_key_is_saved_0600_in_0700_and_the_secrets_never_appear`, passing
 - S-006-12: `test_s006_12_no_callback_means_no_app`, passing

@@ -69,9 +69,15 @@ class Permission:
     key: str  # the name GitHub's API gives it
     label: str  # the name GitHub's settings page gives it
     access: Access
+    serves: str = ""  # an optional permission's use, which its warning names
+
+    def named(self) -> str:
+        return f"{self.label}: {self.access}"
 
 
-# The spec's table: what a session needs on the repo, and nothing more
+# The spec's table: what a session needs on the repo, and nothing more. installation()
+# requires every one, so adding one here stops every gate whose installation hasn't
+# accepted it (D-63); a new permission goes in OPTIONAL_PERMISSIONS instead (D-77)
 PERMISSIONS = (
     Permission("contents", "Contents", Access.WRITE),
     Permission("pull_requests", "Pull requests", Access.WRITE),
@@ -82,6 +88,13 @@ PERMISSIONS = (
     Permission("statuses", "Commit statuses", Access.READ),
     Permission("discussions", "Discussions", Access.READ),
     Permission("metadata", "Metadata", Access.READ),
+)
+
+# D-77: what the App asks for beyond PERMISSIONS. A session's token asks for one only where
+# the installation grants it, and an installation without it still launches sessions;
+# doctor and the gate's GitHub preflight name it as a warning saying what to accept
+OPTIONAL_PERMISSIONS = (
+    Permission("deployments", "Deployments", Access.READ, "the report reads the environments' deployments with it"),
 )
 
 # Spec 038, D-47: the coordinator's second token, over the product's repos: it reads their code
@@ -304,10 +317,31 @@ class Installation:
     slug: str
     id: int
     permissions: Mapping[str, Access]
+    page: str | None = None  # the installation's settings page, GitHub's html_url
 
     @property
     def bot(self) -> str:
         return f"{self.slug}[bot]"
+
+    @property
+    def settings(self) -> str:
+        """Where the owner accepts the App's permissions on this installation"""
+        return self.page or f"https://github.com/settings/installations/{self.id}"
+
+    def grants(self, table: tuple[Permission, ...]) -> tuple[Permission, ...]:
+        """The table's permissions this installation grants"""
+        lacking = missing(self.permissions, table)
+        return tuple(p for p in table if p not in lacking)
+
+    def notices(self, repo: str, optional: tuple[Permission, ...] = OPTIONAL_PERMISSIONS) -> tuple[str, ...]:
+        """D-77: one warning per optional permission the installation lacks, naming it, what it
+        serves, and that the owner accepts it on the installation's page"""
+        return tuple(
+            f"app {self.slug} on {repo} lacks the optional permission {p.named()} ({p.serves}); sessions"
+            f" start without it; fix: add {p.named()} to the App's permissions if it doesn't ask for it yet,"
+            f" then the owner accepts it on the App's installation page {self.settings}"
+            for p in missing(self.permissions, optional)
+        )
 
 
 def missing(granted: Mapping[str, Access], table: tuple[Permission, ...] = PERMISSIONS) -> list[Permission]:
@@ -378,14 +412,14 @@ def installed(
     if found.get("suspended_at") is not None:
         raise NotInstalled(f"app {slug}'s installation on {repo} is suspended", install_fix(repo))
     granted = _permissions(found.get("permissions"), path)
+    page = found.get("html_url")
+    found_installation = Installation(slug, number, granted, page if isinstance(page, str) and page else None)
     if lacking := missing(granted, table):
-        names = ", ".join(f"{p.label}: {p.access}" for p in lacking)
-        page = found.get("html_url")
-        settings = page if isinstance(page, str) and page else f"https://github.com/settings/installations/{number}"
+        names = ", ".join(p.named() for p in lacking)
         problem = f"app {slug} on {repo} lacks these permissions: {names}"
-        fix = f"grant them in the App's settings, then accept them at {settings}"
+        fix = f"grant them in the App's settings, then accept them at {found_installation.settings}"
         raise Lacks(problem, fix, f"{problem}; {fix}")
-    return Installation(slug, number, granted)
+    return found_installation
 
 
 NOREPLY = "users.noreply.github.com"
@@ -527,6 +561,7 @@ class Token:
     expires: dt.datetime
     repo: str
     app_id: int
+    notices: tuple[str, ...] = field(default=(), compare=False)  # D-77: the optional permissions it went without
 
     def reusable(self, repo: str, app_id: int, now: dt.datetime) -> bool:
         return self.repo.lower() == repo.lower() and self.app_id == app_id and self.expires - now >= REUSE_FOR
@@ -620,14 +655,18 @@ def mint(
     signer: Signer,
     api: Api,
     table: tuple[Permission, ...] = PERMISSIONS,
+    optional: tuple[Permission, ...] = (),
 ) -> Token:
     """Spec 004, Tokens: an installation token limited to repo and the table's permissions (a
-    session's, unless another is given)"""
+    session's, unless another is given), plus each optional one the installation grants (D-77):
+    GitHub refuses a token asking for a permission the installation hasn't accepted, so one it
+    lacks is never asked for, only named in the token's notices"""
     name = repo_name(repo)
     bearer = jwt(app_id, check_key(key), now, signer)
     found = installation(app_id, repo, bearer, api, table)
     path = f"/app/installations/{found.id}/access_tokens"
-    body = {"repositories": [name], "permissions": {p.key: str(p.access) for p in table}}
+    asked = table + found.grants(optional)
+    body = {"repositories": [name], "permissions": {p.key: str(p.access) for p in asked}}
     answer = api.post(path, bearer, body)
     if answer.status not in (201, 401):  # a 401 is the JWT's, which _ok names
         problem = f"POST {path} for app_id {app_id} answered {answer.status}: {answer.body.strip()[:300]}"
@@ -640,7 +679,7 @@ def mint(
     if expires is None:
         raise ReleaseError(f"POST {path} gave no expires_at with an offset")
     _scope(data, repo, path)
-    return Token(value, expires, repo, app_id)
+    return Token(value, expires, repo, app_id, found.notices(repo, optional))
 
 
 def app_token(cache: Path, repo: str, app_id: int, key: Path, now: dt.datetime, signer: Signer, api: Api) -> str:
@@ -651,7 +690,7 @@ def app_token(cache: Path, repo: str, app_id: int, key: Path, now: dt.datetime, 
     cached = load_token(cache)
     if cached is not None and cached.reusable(repo, app_id, now):
         return cached.value
-    fresh = mint(app_id, repo, key, now, signer, api)
+    fresh = mint(app_id, repo, key, now, signer, api, PERMISSIONS, OPTIONAL_PERMISSIONS)
     save_token(cache, fresh)
     return fresh.value
 

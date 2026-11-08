@@ -6,7 +6,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from shipmill.app import CACHE, CREDENTIAL_HELPER, GH_HELPER, HELPERS, PERMISSIONS
+from shipmill.app import CACHE, CREDENTIAL_HELPER, GH_HELPER, HELPERS, OPTIONAL_PERMISSIONS, PERMISSIONS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,7 +35,7 @@ def test_s004_14_the_docs_document_the_app() -> None:
     install = folded("docs", "install.md")
     modes = folded("docs", "design", "agent-modes.md")
     watch = folded("skills", "github-ship-watch", "SKILL.md")
-    expected = {(p.label, str(p.access)) for p in PERMISSIONS}
+    expected = {(p.label, str(p.access)) for p in PERMISSIONS + OPTIONAL_PERMISSIONS}  # D-77: new Apps ask for both
 
     for name, doc in (("shipmill-setup", gate), ("install.md", install)):
         # creating the App: no webhook, the permission table, installed only where it works

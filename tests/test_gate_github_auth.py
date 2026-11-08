@@ -177,7 +177,8 @@ def test_s048_1_a_launch_as_the_app_mints_a_token_and_reads_the_repo_with_it(
     preflight = github_auth(REPO, checkout.root, FakeSigner(), api, run=no_host, clock=lambda: NOW)
     claude = FakeClaude()
     decision = tick(checkout, tmp_path, config(mode, APP_ID), claude, preflight, auth_of(events), api, dry_run=dry_run)
-    assert decision.action is Action.LAUNCH and decision.github == GitHubAuth(None)
+    # FakeApi's installation lacks the optional Deployments: read, a notice that starts the session (D-77)
+    assert decision.action is Action.LAUNCH and decision.github is not None and decision.github.ok
     assert len(claude.started) + len(claude.launched) == (0 if dry_run else 1)
     # the App check, then the Claude Code preflight, then the mint and the repo read with its token
     after = events[events.index("claude auth status") + 1 :]
