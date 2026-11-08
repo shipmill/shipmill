@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.119.2] - 2026-11-08
+
+### Fixed
+
+- The gate no longer exits 2 on every tick when an untracked file in its checkout sits where origin's new head adds a file: in its own linked worktree it moves the file aside, keeping its path, under the worktree's git dir (`shipmill-displaced/<UTC stamp>/`) and says so in one line; in a person's main working tree it moves nothing and names the files and the fix instead of git's raw message (#956)
+
 ## [0.119.1] - 2026-11-07
 
 ### Fixed
@@ -2299,7 +2305,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.119.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.119.2...HEAD
+[0.119.2]: https://github.com/shipmill/shipmill/compare/v0.119.1...v0.119.2
 [0.119.1]: https://github.com/shipmill/shipmill/compare/v0.119.0...v0.119.1
 [0.119.0]: https://github.com/shipmill/shipmill/compare/v0.118.0...v0.119.0
 [0.118.0]: https://github.com/shipmill/shipmill/compare/v0.117.5...v0.118.0
