@@ -43,7 +43,7 @@ before anything is tagged.
 
 ### When something is wrong in a batch
 
-The proof goes before the merge: CI, the review, and the evals. After a release, escalate
+The proof goes before the merge: CI and the review. After a release, escalate
 in this order:
 
 1. **Fix forward**: merge the fix; the next batch releases it

@@ -1,22 +1,18 @@
-# The agents' evals (spec 025, D-37): `claude plugin eval` runs the suite in evals/, offline,
-# and `shipmill evals compare` gates a pull request's run against the default branch's.
-# A plain dispatched run on the default branch is the baseline; a pull request's run, or a
-# dispatched run with `pr` and the head `sha` the maintainer read (which runs no case for any
-# other head), is compared against it. Until the suite holds the first suite's counts
-# (`shipmill evals check --gate`), the pull request job reports and exits 0. Every run's
-# summary explains each case that did not pass (`shipmill evals explain`), and its artifact
-# holds the session traces and each case's .eval/gh.jsonl.
+# The agents' evals (spec 025): `claude plugin eval` runs the suite in evals/, offline, and
+# `shipmill evals compare` compares a pull request's run against the default branch's.
+# A plain dispatched run on the default branch is the baseline; a dispatched run with `pr`
+# and the head `sha` the maintainer read (which runs no case for any other head) is
+# compared against it. Every run's summary explains each case that did not pass
+# (`shipmill evals explain`), and its artifact holds the session traces and each case's
+# .eval/gh.jsonl.
 #
-# Only by hand while D-72 holds (#950): no schedule and no pull_request trigger. At a 7%
-# baseline a run can't tell a worse skill from a broken case, and 11 paid runs on 2026-11-07
-# cost 101.5 USD with no reasons; a run spends money only when the maintainer dispatches it.
-# A pull request is evaluated only when the maintainer dispatches it with `pr` and `sha`.
-# Once the default branch's baseline passes at least 60% of its runs, a pull request restores
-# the trigger, D-37's gate with it:
-#   pull_request:
-#     paths: ["skills/**", ".claude-plugin/**", "evals/**", "src/shipmill/gate.py"]
-# The steps below keep their pull_request branches (the fork refusal, the federation rule,
-# cancel-in-progress, the pr case) for that pull request; no event reaches them meanwhile.
+# The evals stopped by D-74 (#972): nothing runs them and none are planned. The workflow
+# runs only by hand, with no schedule and no pull_request trigger, no pull request needs
+# an evals check, and D-37's gate is retired, with no baseline or pass rate that brings it
+# back. A skill changes an agent's behaviour only with some probability, so a passing eval
+# can't serve as a gate. The suite and this workflow stay until a separate decision
+# removes them. The steps below keep their pull_request branches (the fork refusal, the
+# federation rule, cancel-in-progress, the pr case) unchanged; no event reaches them.
 name: evals
 
 on:

@@ -1,4 +1,4 @@
-"""Spec 025: `.github/workflows/evals.yml` runs the suite and gates a pull request on it (D-37).
+"""Spec 025: `.github/workflows/evals.yml` runs the suite by hand; D-74 retired its gate (D-37).
 
 The workflow is read with the eval suite's own strict YAML reader, and its small shell steps
 (choosing the run, refusing a fork, minting the Anthropic token) run here as bash with the env GitHub gives
@@ -83,51 +83,20 @@ def _bash_in(cwd: Path | None, name: str, tmp_path: Path, env: dict[str, str]) -
     return proc.returncode, proc.stdout, outputs
 
 
-def _matches(pattern: str, path: str) -> bool:
-    """GitHub's path filter glob: `**` crosses directories, `*` does not"""
-    regex = re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
-    return re.fullmatch(regex, path) is not None
-
-
 # S-025-10: the triggers
 
 
-def test_s025_10_runs_only_by_hand_while_d72_holds() -> None:
-    # no schedule and no pull_request trigger until the baseline passes 60% of its runs (D-72, #950)
+def test_s025_10_runs_only_by_hand_since_d74() -> None:
+    # the evals stopped (D-74, #972): only workflow_dispatch, and no trigger that comes back
     on = DOC["on"]
     assert isinstance(on, dict)
     assert sorted(on) == ["workflow_dispatch"]
-    header = TEXT[: TEXT.index("\nname: evals\n")]
-    assert "Only by hand while D-72 holds (#950): no schedule and no pull_request trigger." in header
-    assert "passes at least 60%" in header
+    header = " ".join(line.lstrip("#").strip() for line in TEXT[: TEXT.index("\nname: evals\n")].splitlines())
+    assert "The evals stopped by D-74 (#972)" in header
+    assert "D-37's gate is retired, with no baseline or pass rate that brings it back" in header
+    assert "60%" not in header and "paths:" not in header and "restores" not in header
     assert "schedule:" not in TEXT and "cron" not in TEXT and "weekly" not in TEXT
     assert "schedule)" not in _script("Choose what this run is")
-
-
-@pytest.mark.parametrize(
-    ("path", "runs"),
-    [
-        ("skills/github-pr-triage/SKILL.md", True),
-        ("skills/github-issue-triage/agents/openai.yaml", True),
-        (".claude-plugin/plugin.json", True),
-        ("evals/cases.toml", True),
-        ("evals/product-intake/no-goal-not-proposed/prompt.md", True),
-        ("src/shipmill/gate.py", True),
-        ("src/shipmill/cli.py", False),
-        ("src/shipmill/gate_extra.py", False),
-        ("docs/specs/025-agent-evals.md", False),
-        ("tests/test_evals.py", False),
-        (".github/workflows/evals.yml", False),
-        ("CHANGELOG.md", False),
-    ],
-)
-def test_s025_10_the_trigger_to_restore_covers_only_the_agents(path: str, runs: bool) -> None:
-    # the header keeps the paths the pull_request trigger comes back with (D-72)
-    found = re.search(r"^#     paths: (\[.*\])$", TEXT, re.MULTILINE)
-    assert found is not None
-    paths = json.loads(found[1])
-    assert paths == ["skills/**", ".claude-plugin/**", "evals/**", "src/shipmill/gate.py"]
-    assert any(_matches(p, path) for p in paths) is runs
 
 
 def test_s025_19_dispatch_takes_a_pr_a_sha_and_a_model() -> None:

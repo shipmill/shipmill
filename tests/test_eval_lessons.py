@@ -1,4 +1,4 @@
-"""Spec 025: a lesson becomes an eval case, and a red evals check is never unrelated (#439)"""
+"""Spec 025: a lesson becomes an eval case (#439), and since D-74 no evals check holds a pull request (#972)"""
 
 from __future__ import annotations
 
@@ -40,39 +40,25 @@ def test_s025_15_each_skill_adds_a_failing_eval_case_with_the_lesson(skill: str)
     assert "in the same pull request" in body, skill
 
 
-def test_s025_17_a_red_evals_check_is_never_proven_unrelated() -> None:
-    text = folded(ROOT / "skills" / "github-pr-triage" / "SKILL.md")
-    rule_2 = text.split(" 2. **Red CI blocks the merge**", 1)[1].split(" 3. **", 1)[0]
-    assert "A red `evals` check is never proven unrelated" in rule_2
-    assert "it blocks the merge unless the maintainer accepts that run (D-37)" in rule_2
-
-
-def test_s025_17_a_forks_evals_land_only_after_a_dispatched_green_run() -> None:
-    text = folded(ROOT / "skills" / "github-pr-triage" / "references" / "ci-failures.md")
-    assert "A red `evals` check is always caused by the PR" in text
-    assert "`gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>`, for the head SHA the maintainer read)" in text
-    assert "the PR lands only after that run is green, and only while that SHA is still its head" in text
-
-
-def test_s025_17_while_d72_holds_no_evals_check_is_waited_on() -> None:
+def test_s025_17_since_d74_no_evals_check_is_waited_on_or_blocks() -> None:
+    # the evals stopped (D-74, #972): D-37's gate is retired, so no evals run holds a PR
     text = folded(ROOT / "skills" / "github-pr-triage" / "SKILL.md")
     rule_2 = text.split(" 2. **Red CI blocks the merge**", 1)[1].split(" 3. **", 1)[0]
     assert (
-        "While D-72 holds, `evals.yml` runs only by hand, with no pull request trigger,"
-        " so never wait on an `evals` check" in rule_2
+        "The evals stopped (D-74): `evals.yml` runs only by hand and no pull request needs an `evals` check,"
+        " so never wait on one or dispatch one" in rule_2
     )
-    assert "unless the maintainer dispatched a run for its head, which must then be green" in rule_2
+    assert "D-37's gate is retired, so a run someone dispatched by hand blocks nothing" in rule_2
+    assert "D-72" not in rule_2 and "must then be green" not in rule_2
     ci = folded(ROOT / "skills" / "github-pr-triage" / "references" / "ci-failures.md")
-    assert "While D-72 holds, no pull request gets an `evals` check on its own, a fork's included" in ci
-    assert "unless the maintainer dispatched a run for its head, which must then be green" in ci
+    assert "Since the evals stopped (D-74), no pull request gets an `evals` check, a fork's included" in ci
+    assert "a run someone dispatched by hand blocks nothing" in ci
+    assert "D-72" not in ci and "must then be green" not in ci
 
 
-def test_s025_23_a_forks_dispatched_run_counts_only_while_its_sha_is_the_head() -> None:
+def test_s025_23_no_dispatched_run_is_pinned_to_a_head_any_more() -> None:
+    # D-74 dropped S-025-23's rule: with no gate, a fork's dispatched run counts for nothing
     text = folded(ROOT / "skills" / "github-pr-triage" / "SKILL.md")
     rule_2 = text.split(" 2. **Red CI blocks the merge**", 1)[1].split(" 3. **", 1)[0]
-    assert (
-        "A fork's dispatched `evals` run counts only while the head SHA it recorded "
-        "(its summary's `evals: measured <sha> of #<N>`) is the PR's current head"
-    ) in rule_2
-    assert "a push after the run needs a new dispatch naming the new SHA" in rule_2
-    assert "`gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>`" in rule_2
+    assert "evals: measured <sha> of #<N>" not in rule_2
+    assert "gh workflow run evals.yml" not in rule_2
