@@ -157,4 +157,4 @@ A worktree this session leaves behind once it exits (it ended before the merge, 
 
 ## Improve the skill
 
-When a run goes wrong (a verdict the code contradicted, unpushed commits riding along in a PR, a fix on the user's checkout), add the lesson to the matching phase, so the skill doesn't repeat it. When a lesson goes into the skill, add a case under `evals/` that fails without it, in the same pull request.
+When a run goes wrong (a verdict the code contradicted, unpushed commits riding along in a PR, a fix on the user's checkout), add the lesson to the matching phase, so the skill doesn't repeat it. When a rule must hold, put it in code too (a script with its test, a hook, or the gate), since a skill's prose only makes it likely; the evals stopped (D-74), so add no case under `evals/`.

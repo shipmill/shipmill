@@ -609,6 +609,7 @@ entry that supersedes it, never by editing an old one.
 - Applies to: .github/workflows/evals.yml, docs/specs/025-agent-evals.md, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/ci-failures.md, skills/**, evals/**
 - Enforced by: review, until the implementing PR for #950 removes the schedule trigger
 - Supersedes: D-71
+- Superseded by: D-74
 
 ## D-73: A merge written as a person names no author email
 
@@ -617,3 +618,12 @@ entry that supersedes it, never by editing an old one.
 - Why: The live check of spec 051 (#870, 2026-11-07) showed GitHub refuses a noreply --author-email with a user access token (GraphQL: Invalid email address), for both noreply forms, so every merge written as a person would fail, while the same merge without the flag has the token's user as its author and keeps the App's trailer. The flag was a hedge for not knowing who GitHub makes the author, and the check answered that. Granting the App the Email addresses permission might make GitHub accept it, but would widen the App's access to keep a flag the merge doesn't need
 - Applies to: src/shipmill/app_gh.py, src/shipmill/app_login.py, src/shipmill/cli.py, docs/specs/051-write-as-the-decider.md, shipmill gh pr merge
 - Enforced by: tests/test_person_write.py (S-051-11)
+
+## D-74: The evals of the agents' instructions are not run, and no gate depends on them
+
+- Decided: 2026-11-08, in shipmill/shipmill#972
+- Rule: The evals of the agents' instructions are not run and no gate depends on them: .github/workflows/evals.yml runs only by workflow_dispatch, no pull request needs an evals check to land, and D-37's gate is retired, not suspended, with no baseline or pass rate that brings it back, so D-72's 60% condition is gone; the suite under evals/ and shipmill evals stay in the tree, with no new cases and no fixes to the harness, until a separate decision removes them
+- Why: A skill can't force an agent to do anything: it changes behaviour only with some probability, so a passing eval promises nothing about the next run and can't serve as a gate; only deterministic code (the gate, hooks, a server rule) guarantees a rule, so the rules that matter move to code (#959). The signal on how the agents work comes from reviewing real gate sessions against what then happened on GitHub, at no extra cost and with no stubbed gh; that review produced #959 and #962 to #971, none of which an eval would have caught. The evals cost 101.5 USD for 11 runs on 2026-11-07 and 17.17 USD for a partial run after them, at a pass rate of 21% at best, mostly spent debugging the harness (#947, #954). It supersedes D-72 and retires the gate D-37 describes by name, since an entry supersedes only one other. The maintainer decided it in chat, relayed in the issue
+- Applies to: .github/workflows/evals.yml, docs/specs/025-agent-evals.md, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/ci-failures.md, skills/**, evals/**, docs/postmortems/TEMPLATE.md
+- Enforced by: review, and tests/test_evals_workflow.py's check that evals.yml has only the workflow_dispatch trigger
+- Supersedes: D-72
