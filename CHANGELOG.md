@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.122.2] - 2026-11-08
+
+### Fixed
+
+- `pr_gate.py` reads a commit message's closing keyword followed by an issue's URL, `https://github.com/<owner>/<repo>/issues/N` of the pull request's own repo, as GitHub closes by it, so a commit naming a `Part of` issue or one whose `## Check` hasn't run by its URL is refused like one naming it by `#N`; a `/pull/N` URL and another repo's URL name nothing (#993)
+
 ## [0.122.1] - 2026-11-08
 
 ### Fixed
@@ -2347,7 +2353,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.122.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.122.2...HEAD
+[0.122.2]: https://github.com/shipmill/shipmill/compare/v0.122.1...v0.122.2
 [0.122.1]: https://github.com/shipmill/shipmill/compare/v0.122.0...v0.122.1
 [0.122.0]: https://github.com/shipmill/shipmill/compare/v0.121.0...v0.122.0
 [0.121.0]: https://github.com/shipmill/shipmill/compare/v0.120.0...v0.121.0
