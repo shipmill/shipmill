@@ -7,6 +7,18 @@ bot.
 
 ## [Unreleased]
 
+## [0.121.0] - 2026-11-08
+
+### Fixed
+
+- `shipmill gh pr merge` written as a person passes no `--author-email`, which GitHub refuses with a user access token; the token's user is the merge's author (#870)
+- The merge gate counts each check once, by its newest run: a pull request closed and reopened lists two runs of a check on one head, and an older failure no longer fails it after a newer pass, while a newer run still in flight keeps it pending; the `checks=`, `green=`, `pending=` and `failed=` counts now count the deduplicated checks (#962)
+- The watch no longer ends on a repo with `[environments]` when the gate's GitHub App has no `deployments: read`: GitHub's `Resource not accessible by integration (HTTP 403)` on a deployments or deployment-statuses read is one `DEPLOYMENTS_FORBIDDEN` notice row naming the environments not read and the permission to accept, and the rest of the report (issues, pull requests, every other section) stands; any other failure of those reads still exits 2 (#973)
+
+### Changed
+
+- The evals of the agents' instructions stopped (D-74, superseding D-72): `evals.yml` stays `workflow_dispatch` only, no pull request needs an `evals` check, D-37's gate is retired with no baseline that brings it back, and github-pr-triage and spec 025 say so; every skill's "Improve the skill" section and the postmortem template now put a rule that must hold into code instead of asking for a case under `evals/`; the suite and `shipmill evals` stay in the tree (#972)
+
 ## [0.120.0] - 2026-11-08
 
 ### Changed
@@ -2311,7 +2323,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.120.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.121.0...HEAD
+[0.121.0]: https://github.com/shipmill/shipmill/compare/v0.120.0...v0.121.0
 [0.120.0]: https://github.com/shipmill/shipmill/compare/v0.119.2...v0.120.0
 [0.119.2]: https://github.com/shipmill/shipmill/compare/v0.119.1...v0.119.2
 [0.119.1]: https://github.com/shipmill/shipmill/compare/v0.119.0...v0.119.1
