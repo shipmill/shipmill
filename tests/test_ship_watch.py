@@ -1064,6 +1064,7 @@ REPORT_ROWS = [
     "UPSTREAM_ASKED",
     "UPSTREAM_UNTRUSTED",
     "UPSTREAM_UNREADABLE",
+    "DEPLOYMENTS_FORBIDDEN",  # #973
 ]
 
 
@@ -1761,6 +1762,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         ),
         ws.upstream_unreadable_row(REPO, CHECKOUT, f"error: {TITLE}"),
         ws.pypi_wait_row("0.66.0", "the release plan"),
+        ws.deployments_forbidden_row(REPO, ["staging", "production"]),  # #973
         *ws.direction_rows(REPO, "main", False, list, lambda: [], list, lambda n: [], None, lambda n: None).rows,
     ]
     found: dict[str, list[Any]] = {}
@@ -1822,6 +1824,10 @@ FIXES = {
         "check the publish.yml run for v0.66.0: gh run list --repo shipmill/shipmill --workflow publish.yml;"
         " if none passed, publish it: gh workflow run publish.yml --repo shipmill/shipmill -f tag=v0.66.0"
     ],
+    "DEPLOYMENTS_FORBIDDEN": [
+        "the App lacks deployments: read on o/r: grant it in the App's settings and accept it on the"
+        " installation (shipmill/shipmill#968)"
+    ],
 }
 
 
@@ -1850,7 +1856,8 @@ def test_s011_1_every_json_line_adds_a_fix_and_keeps_the_rest(ws: ModuleType, tm
 
 
 def test_s011_2_every_action_state_is_fixed_and_a_fixed_row_needs_its_fix(ws: ModuleType) -> None:
-    assert {"HOLD", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT"} | ws.ACTION == ws.FIXED
+    notices = {"HOLD", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT", "DEPLOYMENTS_FORBIDDEN"}  # #973
+    assert notices | ws.ACTION == ws.FIXED
     assert ws.ACTION <= ws.FIXED, "a state in ACTION but not in FIXED ships without a fix"
     assert set(FIXES) == ws.FIXED
     for state in ws.FIXED:

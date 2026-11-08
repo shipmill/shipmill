@@ -128,6 +128,16 @@ deployments and issues shipmill operate writes):
                   for those few minutes
   INCIDENT_OPEN   an open issue labelled [operate] incident_label (default "incident"),
                   with its age and the pull requests linked to close it
+  DEPLOYMENTS_FORBIDDEN  a deployments or deployment-statuses read failed on GitHub's
+                  "Resource not accessible by integration (HTTP 403)": the token's GitHub App
+                  has no deployments: read (#973). One row per repo, subject the repo, naming
+                  the environments not read; their UNHEALTHY and deployment-based
+                  PROMOTION_DUE rows are skipped this pass, and the rest of the report stands
+                  (proposal issues and incidents are read as usual). The fix: grant
+                  deployments: read in the App's settings and accept it on the installation
+                  (shipmill/shipmill#968). Reported, never an action by
+                  itself, and never an agent's; any other failure of these reads (a 5xx, a
+                  404, another 403) still exits 2
 
 Intake (github-issue-triage's triage_state.py):
   ISSUES          issues needing triage action, counted by state. One ISSUES row more per
@@ -352,7 +362,8 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
 A gh read (the watch never writes GitHub) that fails on a server or network error (HTTP 5xx,
 a timeout, a reset or refused connection, an unexpected EOF) is run once more after 5
 seconds; when that fails too, the watch exits 2 with an error line ending "transient GitHub
-API error: rerun". An auth, not-found, or any other failure stops it at once.
+API error: rerun". An auth, not-found, or any other failure stops it at once, save a
+deployments read GitHub refuses the App, the DEPLOYMENTS_FORBIDDEN row (#973).
 
 --incident-label names the label the repo's incidents carry, in place of the config's
 [operate] incident_label (fleet.py passes a fleet file's incident_label this way).
@@ -366,7 +377,8 @@ item is in no agent row, so it neither starts a session nor changes the gate's f
 Each line has a fix too (spec 011): the one line that clears the row, an exact command where
 one exists (every gh naming the repo, every git its checkout with -C), else the decision to
 make; null for a row with nothing to clear. Every action row, HOLD,
-UNTRUSTED, and UPSTREAM_UNTRUSTED carry one, and PRS_OPEN unless [autonomy] land is act with [agents].
+UNTRUSTED, UPSTREAM_UNTRUSTED, PYPI_WAIT, and DEPLOYMENTS_FORBIDDEN carry one, and PRS_OPEN unless
+[autonomy] land is act with [agents].
 A fix is built from the repo, numbers, run ids, tags, paths, and config keys, never from an
 issue's or a pull request's text (D-16). The table prints it on an indented "fix:" line
 after its row, unless the row's detail already ends with it. The PRS_OPEN line also has
@@ -596,7 +608,7 @@ AGENT = {
 # the states whose every row carries a fix, the one line that clears it (spec 011): every
 # action, and the report-only rows a person still has to act on. PRS_OPEN carries one unless
 # a gate lands pull requests ([autonomy] land act, land_fix); every other state's fix is None
-FIXED = ACTION | {"HOLD", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT"}
+FIXED = ACTION | {"HOLD", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT", "DEPLOYMENTS_FORBIDDEN"}
 FIX_INDENT = " " * 15  # the table's fix line starts under the subject column
 RUN_ID = re.compile(r"/actions/runs/(\d+)(?:/|$)")  # a workflow run's URL names its id
 HEAD_SHA = re.compile(r"[0-9a-f]{40}")  # a pull request's headRefOid (#546)
@@ -2340,15 +2352,35 @@ def fetch_issues(repo: str, *filters: str, state: str = "open") -> list[Issue]:
     ]
 
 
+# #973: gh's error line for a read the token's GitHub App may not make, as a deployments read
+# gets it from an App without deployments: read; only that 403 is a row, any other failure exits 2
+NO_INTEGRATION_ACCESS = re.compile(r"\bResource not accessible by integration \(HTTP 403\)")
+DEPLOYMENTS_FORBIDDEN = "DEPLOYMENTS_FORBIDDEN"
+
+
+class DeploymentsForbidden(Exception):
+    """A deployments or deployment-statuses read GitHub refused the token's App (#973)"""
+
+
+def deployments_read(cmd: list[str]) -> str:
+    """A deployments read's output; GitHub's integration 403 is DeploymentsForbidden, and any
+    other failure stops the watch (exit 2), as run's does"""
+    proc = capture(cmd)
+    if proc.returncode != 0 and NO_INTEGRATION_ACCESS.search(proc.stderr):
+        raise DeploymentsForbidden(shown_command(cmd))
+    return checked(cmd, proc)
+
+
 def fetch_deployments(repo: str, environment: str) -> list[Deployment]:
     query = ["-f", f"environment={environment}", "-f", "per_page=100"]  # as shipmill operate reads them
-    out = run(["gh", "api", "-X", "GET", f"repos/{repo}/deployments", *query])
+    out = deployments_read(["gh", "api", "-X", "GET", f"repos/{repo}/deployments", *query])
     found = [Deployment(int(d["id"]), d["ref"], d["sha"], parse_time(d["created_at"])) for d in json.loads(out)]
     return sorted(found, key=lambda d: d.id, reverse=True)
 
 
 def fetch_statuses(repo: str, deployment: int) -> list[Status]:
-    out = run(["gh", "api", "-X", "GET", f"repos/{repo}/deployments/{deployment}/statuses", "-f", "per_page=100"])
+    cmd = ["gh", "api", "-X", "GET", f"repos/{repo}/deployments/{deployment}/statuses", "-f", "per_page=100"]
+    out = deployments_read(cmd)
     found = [
         Status(int(s["id"]), s["state"], s["description"] or "", parse_time(s["created_at"])) for s in json.loads(out)
     ]
@@ -2366,19 +2398,44 @@ def operate_start(caller: tuple[str, bool] | None, repo: str, repo_dir: Path) ->
     return "write one with `shipmill init --operate`, then run it once", fix
 
 
+def deployments_forbidden_row(repo: str, unread: list[str]) -> Row:
+    """DEPLOYMENTS_FORBIDDEN (#973): one notice per repo naming the environments whose
+    deployments GitHub refused the token's App (no deployments: read), so their UNHEALTHY and
+    PROMOTION_DUE rows weren't read this pass; never an action nor an agent's"""
+    names = ", ".join(unread)
+    detail = f"the GitHub App lacks deployments: read, so {names} went unread: no health or promotion check"
+    fix = (
+        f"the App lacks deployments: read on {repo}: grant it in the App's settings and accept it on the"
+        " installation (shipmill/shipmill#968)"
+    )
+    return Row(DEPLOYMENTS_FORBIDDEN, repo, detail, fix)
+
+
 def operations_rows(
     repo: str, repo_dir: Path, envs: list[Environment], held: bool, label: str, now: dt.datetime
 ) -> list[Row]:
     caller = operate_caller(repo_dir)
     runs = fetch_runs(repo, caller[0]) if caller else []
     rows = operate_rows(runs, caller[0], repo) if caller else []
-    deployments = {e.name: fetch_deployments(repo, e.name) for e in envs}
 
     def statuses_of(deployment: int) -> list[Status]:
         return fetch_statuses(repo, deployment)
 
-    current = {e.name: current_deployment(deployments[e.name], statuses_of) for e in envs}
+    deployments: dict[str, list[Deployment]] = {}
+    current: dict[str, Current | None] = {}
+    unread: list[str] = []  # #973: the environments whose deployments GitHub refused the App
     for env in envs:
+        try:
+            found = fetch_deployments(repo, env.name)
+            current[env.name] = current_deployment(found, statuses_of)
+            deployments[env.name] = found
+        except DeploymentsForbidden:
+            unread.append(env.name)
+    if unread:
+        rows.append(deployments_forbidden_row(repo, unread))
+    for env in envs:
+        if env.name not in current:
+            continue
         row = unhealthy_row(env.name, current[env.name], now)
         if row is not None:
             rows.append(row)
@@ -2391,7 +2448,7 @@ def operations_rows(
     command, fix = operate_start(caller, repo, repo_dir)
     proposed = {r.subject for r in proposals}
     for env in envs:
-        if env.name in proposed or env.source is None:
+        if env.name in proposed or env.source is None or env.name in unread or env.source in unread:
             continue
         source = current.get(env.source)
         row = unpromoted_row(env, source, current[env.name], deployments[env.name], idle, held, command, now, fix)
