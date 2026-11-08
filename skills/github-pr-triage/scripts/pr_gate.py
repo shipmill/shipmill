@@ -62,14 +62,16 @@ status. A named failure prints `  base: repairs: ...` for the reviewer to check 
 failure outside the code clears by re-running the failed run on the default branch.
 
 Closing keywords (D-76): a merge never closes an issue its PR is only part of, or one whose check
-has not run. An open PR's commits (gh pr view's) and body are read by triage_state.py's
-keyword_closes, the rule shipped.py reads too (#416): a keyword starting a line, after an optional
-list bullet, outside a fence; one mid-line, in backticks, or naming owner/repo#N names nothing.
-Whoever opened it, it is REFUSED, `  refused: commit <sha7> closes #N, which the body lists as Part
-of #N`, when a commit's keyword names an issue its body lists as `Part of #N`, and `  refused: <commit
-<sha7> or the body> closes #N, an open issue with a ## Check: write Part of #N instead` when one
-names an open issue of the repo whose body has a `## Check` section. The issues are read in one
-GraphQL query, only when a keyword names one.
+has not run. An open PR's title, commits (gh pr view's), and body are read by triage_state.py's
+keyword_closes, the rule shipped.py reads too (#416): in a commit or the body, a keyword starting a
+line, after an optional list bullet, outside a fence; in the title, one anywhere outside a code
+span; one mid-line in a commit or the body, in backticks, or naming owner/repo#N names nothing. The
+title is the squash commit's subject (D-33), so it reads as a commit (#987). Whoever opened it, it
+is REFUSED, `  refused: <the title or commit <sha7>> closes #N, which the body lists as Part of #N`,
+when the title's or a commit's keyword names an issue its body lists as `Part of #N`, and `  refused:
+<the title, commit <sha7>, or the body> closes #N, an open issue with a ## Check: write Part of #N
+instead` when one names an open issue of the repo whose body has a `## Check` section. The issues
+are read in one GraphQL query, only when a keyword names one.
 
 Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base's (D-75),
 or gh failed; 3 a check is still pending (or --wait timed out); 4 a PR is not open or
@@ -655,7 +657,7 @@ def author_of(entry: dict) -> str:
 
 # the fields the gate reads; the github-pr-triage eval cases record this read, so a change here
 # re-records it there (#673)
-FIELDS = "state,isDraft,mergeable,baseRefName,headRefOid,statusCheckRollup,author,body,files,changedFiles,commits"
+FIELDS = "state,isDraft,mergeable,baseRefName,headRefOid,statusCheckRollup,author,body,files,changedFiles,commits,title"
 
 
 def fetch(number: int, repo: str | None) -> dict:
@@ -899,18 +901,21 @@ def commit_messages(data: dict, number: int) -> list[tuple[str, str]]:
 
 def closing_problems(data: dict, number: int, repo: str | None) -> list[str]:
     """Why the PR is refused for its closing keywords (D-76), read by triage_state.py's
-    keyword_closes, the rule shipped.py reads too (#416): one starting a line, after an optional
-    list bullet, outside a fence; mid-line, in backticks, or naming owner/repo#N, it names nothing.
-    A commit's keyword naming an issue its body lists as Part of #N, then a commit's or the body's
-    naming an open issue of the repo with a ## Check section, read once in GraphQL for every
-    number the keywords name"""
+    keyword_closes, the rule shipped.py reads too (#416): in a commit or the body, one starting a
+    line, after an optional list bullet, outside a fence; in the title, one anywhere outside a
+    code span; mid-line, in backticks, or naming owner/repo#N, it names nothing. The title is read
+    as the squash commit it becomes (D-33, #987). The title's or a commit's keyword naming an issue
+    its body lists as Part of #N, then the title's, a commit's, or the body's naming an open issue
+    of the repo with a ## Check section, read once in GraphQL for every number the keywords name"""
     ts = triage_state()
     body = str(data.get("body") or "")
     parts = {int(n) for n in PART_OF.findall(body)}
-    commits = [(f"commit {sha}", n) for sha, text in commit_messages(data, number) for n in closed_by(ts, text)]
-    parted = [(where, n) for where, n in commits if n in parts]
+    # the title and the commits: what lands as commits under a squash merge
+    landed = [("the title", n) for n in sorted(ts.keyword_closes(str(data.get("title") or ""), ""))]
+    landed += [(f"commit {sha}", n) for sha, text in commit_messages(data, number) for n in closed_by(ts, text)]
+    parted = [(where, n) for where, n in landed if n in parts]
     problems = [f"{where} closes #{n}, which the body lists as Part of #{n}" for where, n in parted]
-    named = [pair for pair in commits if pair not in parted] + [("the body", n) for n in closed_by(ts, body)]
+    named = [pair for pair in landed if pair not in parted] + [("the body", n) for n in closed_by(ts, body)]
     numbers = sorted({n for _, n in named if 0 < n <= GRAPHQL_INT})
     if not numbers:
         return problems
@@ -1040,7 +1045,8 @@ def main() -> int:
         bases = Bases(args.checkout, args.repo)
         classifier = Classifier(bases.checkout, args.tool)
         specs: dict[tuple[int, str, str], tuple[str, ...]] = {}  # by PR, head, and body: a --wait reads each once
-        closings: dict[tuple[int, str, str], tuple[str, ...]] = {}  # the same, for its closing keywords (D-76)
+        closings: dict[tuple[int, str, str, str], tuple[str, ...]] = {}  # the same and the title, for its
+        # closing keywords (D-76, #987)
         while True:
             gates = []
             heads: dict[str, tuple[str, list[dict]]] = {}  # each base branch's head, read once a pass (D-75)
@@ -1060,9 +1066,10 @@ def main() -> int:
                     if key not in specs:
                         specs[key] = tuple(spec_problems(data, number, args.repo))
                     spec = specs[key]
-                    if key not in closings:
-                        closings[key] = tuple(closing_problems(data, number, args.repo))
-                    data["closes"] = closings[key]
+                    closing = (*key, str(data.get("title") or ""))
+                    if closing not in closings:
+                        closings[closing] = tuple(closing_problems(data, number, args.repo))
+                    data["closes"] = closings[closing]
                 zones = None
                 if base.agents and base.ref is not None:
                     zones = classifier.zones(number, base.ref, str(data["headRefOid"]))
