@@ -763,6 +763,74 @@ def test_refresh_694_never_takes_the_branch_from_a_sessions_own_config(linked_ga
     assert git.run("rev-parse", "HEAD") == git_("rev-parse", "HEAD", cwd=pusher)
 
 
+def land(pusher: Path, files: Mapping[str, str]) -> None:
+    """Commit files to origin's main from the second clone, as a merged pull request would"""
+    for name, text in files.items():
+        (pusher / name).parent.mkdir(parents=True, exist_ok=True)
+        (pusher / name).write_text(text, encoding="utf-8")
+    git_("add", "-A", cwd=pusher)
+    git_("commit", "-q", "-m", "land", cwd=pusher)
+    git_("push", "-q", "origin", "main", cwd=pusher)
+
+
+SPEC = "docs/specs/004 post-deploy-check.md"  # a space: paths are read with -z
+
+
+def test_956_refresh_moves_untracked_files_in_the_way_aside_in_a_linked_worktree(linked_gate: tuple[Git, Path]) -> None:
+    """#956: an untracked file in the gate's own worktree at a path origin's new head adds,
+    or under one it adds as a file, no longer stops every tick: it is moved aside under the
+    worktree's private git dir, keeping its path, and the tick goes on; the rest stays"""
+    git, pusher = linked_gate
+    land(pusher, {"a.txt": "a", "b.txt": "b", "d2": "now a file", SPEC: "landed"})
+    for name in ("a.txt", "b.txt", "d2/q", SPEC):
+        (git.root / name).parent.mkdir(parents=True, exist_ok=True)
+        (git.root / name).write_text(f"mine {name}", encoding="utf-8")
+    (git.root / "notes.txt").write_text("keep", encoding="utf-8")
+    said: list[str] = []
+    assert refresh(git, detach=True, clock=lambda: NOW, say=said.append) == Detached(git.root, "fix/1-thing")
+    assert git.run("rev-parse", "HEAD") == git_("rev-parse", "HEAD", cwd=pusher)
+    assert (git.root / SPEC).read_text(encoding="utf-8") == "landed"
+    assert (git.root / "d2").read_text(encoding="utf-8") == "now a file"
+    assert (git.root / "notes.txt").read_text(encoding="utf-8") == "keep"
+    folder = Path(git.run("rev-parse", "--absolute-git-dir").strip()) / "shipmill-displaced" / "20261004T120000Z"
+    for name in ("a.txt", "b.txt", "d2/q", SPEC):
+        assert (folder / name).read_text(encoding="utf-8") == f"mine {name}"
+    assert said == [
+        f"shipmill: moved untracked files in the way of origin/main aside (a.txt, b.txt, d2/q and 1 more) to {folder}"
+    ]
+    assert git.run("status", "--porcelain") == "?? notes.txt\n"
+
+
+def test_956_refresh_without_files_in_the_way_says_nothing(linked_gate: tuple[Git, Path]) -> None:
+    git, pusher = linked_gate
+    land(pusher, {SPEC: "landed"})
+    (git.root / "docs" / "other.md").parent.mkdir(parents=True, exist_ok=True)
+    (git.root / "docs" / "other.md").write_text("mine", encoding="utf-8")
+    said: list[str] = []
+    refresh(git, detach=True, clock=lambda: NOW, say=said.append)
+    assert said == []
+    assert (git.root / "docs" / "other.md").read_text(encoding="utf-8") == "mine"
+    assert not (Path(git.run("rev-parse", "--absolute-git-dir").strip()) / "shipmill-displaced").exists()
+
+
+def test_956_refresh_moves_nothing_in_the_main_working_tree(gate_checkout: tuple[Git, Path]) -> None:
+    """#956: in a person's working copy the gate moves no file: it refuses, naming the files
+    and the fix, instead of git's raw message"""
+    git, pusher = gate_checkout
+    land(pusher, {SPEC: "landed"})
+    (git.root / SPEC).parent.mkdir(parents=True, exist_ok=True)
+    (git.root / SPEC).write_text("mine", encoding="utf-8")
+    head = git.run("rev-parse", "HEAD")
+    in_the_way = rf"untracked files are in the way of origin/main \({re.escape(SPEC)}\)"
+    with pytest.raises(ReleaseError, match=in_the_way) as e:
+        refresh(git, clock=lambda: NOW, say=lambda line: pytest.fail(line))
+    assert "git worktree add --detach <path> origin/main" in str(e.value)
+    assert e.value.fix is not None and "git worktree add --detach <path> origin/main" in e.value.fix
+    assert (git.root / SPEC).read_text(encoding="utf-8") == "mine"
+    assert git.run("rev-parse", "HEAD") == head
+    assert not (git.root / ".git" / "shipmill-displaced").exists()
+
+
 class RecordingGit(Git):
     """A real Git that keeps the arguments of each run"""
 

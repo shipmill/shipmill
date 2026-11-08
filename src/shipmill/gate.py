@@ -21,6 +21,7 @@ import enum
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -1637,7 +1638,59 @@ def require_dedicated(git: Git, default: str, detach: bool = False) -> str | Non
     )
 
 
-def refresh(git: Git, detach: bool = False) -> Detached | None:
+def in_the_way(git: Git, target: str) -> list[str]:
+    """The untracked files a checkout of target would refuse to overwrite (#956): at a path
+    target adds to HEAD's tree, under one it adds as a file, or a file where it adds a
+    directory. Ignored files are left out, as git overwrites them. Reads only local git, and
+    lists the untracked files only when target adds a path"""
+
+    def parents(path: str) -> set[str]:
+        parts = path.split("/")
+        return {"/".join(parts[:i]) for i in range(1, len(parts))}
+
+    diff = git.run("diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", "HEAD", target)
+    added = {p for p in diff.split("\0") if p}
+    if not added:
+        return []
+    dirs = set().union(*map(parents, added))
+    # a nested repository is listed as its directory, with a trailing slash
+    untracked = {p.rstrip("/") for p in git.run("ls-files", "--others", "--exclude-standard", "-z").split("\0") if p}
+    return sorted(p for p in untracked if p in added or p in dirs or not added.isdisjoint(parents(p)))
+
+
+def displace(git: Git, files: list[str], now: dt.datetime) -> Path:
+    """Move untracked files aside, keeping their paths, into a new folder under the worktree's
+    private git dir, never the working tree, and drop the directories they leave empty; returns
+    the folder"""
+    folder = Path(git.run("rev-parse", "--absolute-git-dir").strip()) / "shipmill-displaced"
+    folder /= now.astimezone(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+    folder.mkdir(parents=True)  # an existing folder fails: nothing is moved over another tick's files
+    root = git.root.resolve()
+    for name in files:
+        source = root / name
+        (folder / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(source, folder / name)
+        parent = source.parent
+        while parent != root and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+    return folder
+
+
+def utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+def to_stderr(line: str) -> None:
+    print(line, file=sys.stderr)
+
+
+def refresh(
+    git: Git,
+    detach: bool = False,
+    clock: Callable[[], dt.datetime] = utc_now,
+    say: Callable[[str], None] = to_stderr,
+) -> Detached | None:
     """Move a dedicated gate checkout to the head of the branch releases land on (the config's
     `branch`, else origin's default branch, #694), so the session reads the current [agents]
     section, CLAUDE.md, and skills. The branch is read from the config at origin's default
@@ -1646,11 +1699,25 @@ def refresh(git: Git, detach: bool = False) -> Detached | None:
     `launchd`), a clean linked worktree a session left on a branch is detached the same way,
     and returned. Git.landing_branch decides it, as it does for the prune (#697). The branch
     reaches git only inside a refs/heads/ refspec, never as an argument git could read as an
-    option (#889, as the catch-up does, D-66)"""
+    option (#889, as the catch-up does, D-66). Untracked files the checkout would refuse to
+    overwrite are moved aside in the gate's own linked worktree, with one line said about it,
+    and refused in the main working tree, a person's, where nothing is moved (#956)"""
     default = git.landing_branch()
     branch = require_dedicated(git, default, detach)
     tracking = f"refs/remotes/origin/{default}"
     git.run("fetch", "-q", "origin", f"+refs/heads/{default}:{tracking}")
+    files = in_the_way(git, tracking)
+    if files:
+        shown = ", ".join(files[:3]) + (f" and {len(files) - 3} more" if len(files) > 3 else "")
+        if not linked(git):
+            own = f"give the gate its own with `git worktree add --detach <path> origin/{default}`"
+            raise ReleaseError(
+                f"the gate can't refresh {git.root}: untracked files are in the way of origin/{default} "
+                f"({shown}): move them out of the checkout, or {own}",
+                f"move them out of the checkout, or {own}",
+            )
+        folder = displace(git, files, clock())
+        say(f"shipmill: moved untracked files in the way of origin/{default} aside ({shown}) to {folder}")
     git.run("checkout", "-q", "--detach", tracking)
     return None if branch is None else Detached(git.root, branch)
 
@@ -2689,7 +2756,7 @@ def decided(
             result = ended
             if not dry_run:
                 write(state / LAST_RESULT, ended.record())
-    detached = refresh(git, detach=True) if refresh_checkout and not dry_run else None
+    detached = refresh(git, detach=True, clock=lambda: now) if refresh_checkout and not dry_run else None
     agents = config()
     if app_key_named and agents.app_id is None:  # read after the refresh, so a stale checkout can't stall it
         raise ReleaseError(
