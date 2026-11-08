@@ -1824,7 +1824,10 @@ FIXES = {
         "check the publish.yml run for v0.66.0: gh run list --repo shipmill/shipmill --workflow publish.yml;"
         " if none passed, publish it: gh workflow run publish.yml --repo shipmill/shipmill -f tag=v0.66.0"
     ],
-    "DEPLOYMENTS_FORBIDDEN": ["accept deployments: read on the GitHub App's installation on o/r"],
+    "DEPLOYMENTS_FORBIDDEN": [
+        "the App lacks deployments: read on o/r: grant it in the App's settings and accept it on the"
+        " installation (shipmill/shipmill#968)"
+    ],
 }
 
 

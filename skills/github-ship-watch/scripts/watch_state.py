@@ -133,8 +133,9 @@ deployments and issues shipmill operate writes):
                   has no deployments: read (#973). One row per repo, subject the repo, naming
                   the environments not read; their UNHEALTHY and deployment-based
                   PROMOTION_DUE rows are skipped this pass, and the rest of the report stands
-                  (proposal issues and incidents are read as usual). The fix: accept
-                  deployments: read on the App's installation. Reported, never an action by
+                  (proposal issues and incidents are read as usual). The fix: grant
+                  deployments: read in the App's settings and accept it on the installation
+                  (shipmill/shipmill#968). Reported, never an action by
                   itself, and never an agent's; any other failure of these reads (a 5xx, a
                   404, another 403) still exits 2
 
@@ -2403,7 +2404,10 @@ def deployments_forbidden_row(repo: str, unread: list[str]) -> Row:
     PROMOTION_DUE rows weren't read this pass; never an action nor an agent's"""
     names = ", ".join(unread)
     detail = f"the GitHub App lacks deployments: read, so {names} went unread: no health or promotion check"
-    fix = f"accept deployments: read on the GitHub App's installation on {repo}"
+    fix = (
+        f"the App lacks deployments: read on {repo}: grant it in the App's settings and accept it on the"
+        " installation (shipmill/shipmill#968)"
+    )
     return Row(DEPLOYMENTS_FORBIDDEN, repo, detail, fix)
 
 
