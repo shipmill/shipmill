@@ -627,3 +627,35 @@ entry that supersedes it, never by editing an old one.
 - Applies to: .github/workflows/evals.yml, docs/specs/025-agent-evals.md, skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/ci-failures.md, skills/**, evals/**, docs/postmortems/TEMPLATE.md
 - Enforced by: review, and tests/test_evals_workflow.py's check that evals.yml has only the workflow_dispatch trigger
 - Supersedes: D-72
+
+## D-75: No pull request lands on a red default branch, save the one that repairs it
+
+- Decided: 2026-11-08, in shipmill/shipmill#963
+- Rule: pr_gate.py reads the checks on the base branch's head commit, newest run per check, and when one completed check there failed the verdict is FAILED with a base: red line; the pull request whose body carries a Repairs: line naming that failed run on the base's head passes, after its reviewer checks the claim; a failure outside the code (a 504 on a download, a connection limit) gets no repairing pull request: it clears by re-running the failed run on the default branch, and landing resumes once that run is green
+- Why: Merges landed on top of a failure nobody had looked at, so a new failure could not be told from the old one; and a failure caused outside the code cannot be repaired by any pull request
+- Applies to: skills/github-pr-triage/scripts/pr_gate.py, skills/github-pr-triage/**, landing
+- Enforced by: review
+
+## D-76: A merge never closes an issue its pull request is only part of, or one whose check has not run
+
+- Decided: 2026-11-08, in shipmill/shipmill#965
+- Rule: pr_gate.py refuses a pull request when a closing keyword in one of its commit messages names an issue its body lists as Part of, and when a closing keyword in a commit or in the body names an open issue with a ## Check section, asking for Part of #N instead; triage_state.py reads VERIFY_CLOSED for any issue with a ## Check closed as completed by a pull request or a commit with no verified comment after the close, not only for parents and a person's items; the closing-keyword rule is the one shipped.py and triage_state.py read (#416)
+- Why: Commit messages kept saying Fixes #N while the body said Part of #N, closing issues on merge in several repos, and issues with a ## Check closed that way lost their check
+- Applies to: skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/scripts/triage_state.py, closing keywords
+- Enforced by: review
+
+## D-77: The gate's App asks for deployments read as an optional permission
+
+- Decided: 2026-11-08, in shipmill/shipmill#968
+- Rule: The App asks for deployments: read in a table of optional permissions, apart from PERMISSIONS, the table installation() requires at launch: a token asks for an optional permission only where the installation grants it, a gate whose installation hasn't accepted it keeps launching sessions, and shipmill doctor and the gate's preflight name it as a warning saying what to accept, as watch_state.py's notice row does in the report
+- Why: Making it required would stop every connected gate whose installation hasn't accepted it, which D-63 says an upgrade must not do
+- Applies to: src/shipmill/app.py, src/shipmill/doctor.py, App permissions
+- Enforced by: review
+
+## D-78: A Breaking entry must sit under a heading that bumps the major
+
+- Decided: 2026-11-08, in shipmill/shipmill#971
+- Rule: changelog_guard.py check refuses, with exit 1 and the heading to move it to, an entry that starts with a Breaking marker (**Breaking**, **Breaking:**, Breaking:, any case) under a ### heading that [bump] major does not list, in a changelog fragment and under Unreleased in a hand-written CHANGELOG.md alike; a repo whose [bump] has no major list is left as it is
+- Why: An entry marked Breaking under ### Changed released as a minor, placed there on purpose to avoid the major bump with no question to the maintainer
+- Applies to: skills/github-pr-triage/scripts/changelog_guard.py, changelog fragments, [bump]
+- Enforced by: review
