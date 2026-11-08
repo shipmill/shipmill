@@ -961,11 +961,14 @@ def test_965_one_read_holds_every_issue_the_keywords_name(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     ("commits", "body"),
     [
-        pytest.param(("Serve it\n\n`Fixes #13`",), "Serves it", id="in backticks in a commit"),
-        pytest.param(("Serve it, which fixes #13",), "Serves it", id="mid-line in a commit"),
         pytest.param(("Serve it",), "Serves it\n\n```\nFixes #13\n```", id="in a code fence in the body"),
-        pytest.param(("Serve it\n\nFixes other/repo#13",), "Serves it", id="another repo's issue"),
+        pytest.param(("Serve it",), "Serves it, which fixes #13", id="mid-line in the body"),
+        pytest.param(("Serve it",), "Serves it\n\n`Fixes #13`", id="in backticks in the body"),
         pytest.param(("Serve it",), "Serves it\n\nPart of #13", id="part of"),
+        pytest.param(("Serve it, which prefixes #13 and unfixed #13",), "Serves it", id="not a whole word"),
+        pytest.param(("Serve it, which fixes#13",), "Serves it", id="no space before the number"),
+        pytest.param(("Serve it, which fixes #13a or closes #13_1",), "Serves it", id="not a number"),
+        pytest.param(("Serve it, which fixing #13",), "Serves it", id="not a keyword"),
     ],
 )
 def test_965_a_keyword_that_names_nothing_reads_nothing(tmp_path: Path, commits: tuple[str, ...], body: str) -> None:
@@ -1029,6 +1032,61 @@ def test_987_a_title_naming_no_part_of_or_checked_issue_is_ready(
     proc = run_gate(tmp_path, None, {7: titled(title, body)}, issues=CLOSING)
     assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
     assert [c for c in calls_of(tmp_path) if c == "graphql"] == reads
+
+
+# #988, D-79: GitHub closes an issue from a keyword anywhere in a landed commit's message, so a
+# commit's keyword counts mid-line, in backticks, and in a fence too
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        pytest.param("Serve it, which fixes #12", id="mid-line"),
+        pytest.param("Serve it\n\nThe `Fixes #12` line", id="in backticks"),
+        pytest.param("Serve it\n\n```\nCLOSED: #12\n```", id="in a fence, upper case, with a colon"),
+        pytest.param("Serve it\n\nand resolves Demo/App#12.", id="the repo's own owner/repo#N"),
+    ],
+)
+def test_988_a_commit_closing_a_part_of_issue_anywhere_is_refused(tmp_path: Path, commit: str) -> None:
+    proc = run_gate(tmp_path, None, {7: part_of((commit,))}, issues=CLOSING)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    assert proc.stdout == REFUSED_LINE + "  refused: commit abc1234 closes #12, which the body lists as Part of #12\n"
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        pytest.param("Serve it and fixes #13", id="mid-line"),
+        pytest.param("Serve it (`closes #13`)", id="in backticks"),
+        pytest.param("Serve it\n\nSee #12; this resolved demo/app#13, too", id="the repo's own owner/repo#N"),
+    ],
+)
+def test_988_a_commit_closing_an_open_issue_with_a_check_anywhere_is_refused(tmp_path: Path, commit: str) -> None:
+    proc = run_gate(tmp_path, None, {7: part_of((commit,), body="Serves it")}, issues=CLOSING)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    line = "  refused: commit abc1234 closes #13, an open issue with a ## Check: write Part of #13 instead"
+    assert proc.stdout == REFUSED_LINE + line + "\n"
+
+
+@pytest.mark.parametrize(
+    ("commit", "reads"),
+    [
+        pytest.param("Serve it, which fixes #12", ["graphql"], id="an issue with neither, mid-line"),
+        pytest.param("Serve it, which fixes other/repo#12 and closes other/repo#13", ["graphql"], id="another repo"),
+    ],
+)
+def test_988_a_commit_naming_no_part_of_or_checked_issue_is_ready(
+    tmp_path: Path, commit: str, reads: list[str]
+) -> None:
+    """another repo's owner/repo#N names nothing here, the read naming the PR's repo"""
+    proc = run_gate(tmp_path, None, {7: part_of((commit,), body="Serves it\n\nPart of #14")}, issues=CLOSING)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+    assert [c for c in calls_of(tmp_path) if c == "graphql"] == reads
+
+
+def test_988_another_repos_issue_is_not_its_part_of(tmp_path: Path) -> None:
+    proc = run_gate(tmp_path, None, {7: part_of(("Serve it\n\nFixes other/repo#12",))}, issues=CLOSING)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
 
 
 def test_the_worst_verdict_across_prs_is_the_exit_code(tmp_path: Path, directed: Path) -> None:
