@@ -61,10 +61,21 @@ names its every job, a job's or a check run's URL that one, a commit status's ex
 status. A named failure prints `  base: repairs: ...` for the reviewer to check the claim. A
 failure outside the code clears by re-running the failed run on the default branch.
 
+Closing keywords (D-76): a merge never closes an issue its PR is only part of, or one whose check
+has not run. An open PR's commits (gh pr view's) and body are read by triage_state.py's
+keyword_closes, the rule shipped.py reads too (#416): a keyword starting a line, after an optional
+list bullet, outside a fence; one mid-line, in backticks, or naming owner/repo#N names nothing.
+Whoever opened it, it is REFUSED, `  refused: commit <sha7> closes #N, which the body lists as Part
+of #N`, when a commit's keyword names an issue its body lists as `Part of #N`, and `  refused: <commit
+<sha7> or the body> closes #N, an open issue with a ## Check: write Part of #N instead` when one
+names an open issue of the repo whose body has a `## Check` section. The issues are read in one
+GraphQL query, only when a keyword names one.
+
 Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base's (D-75),
-or gh failed; 3 a check is still pending (or --wait timed out); 4 a PR is not open or conflicts; 5 a PR needs the
-maintainer's decision; 6 an agent's PR is refused for its plan, or a spec PR names no open
-feature issue; 7 a PR only the maintainer
+or gh failed; 3 a check is still pending (or --wait timed out); 4 a PR is not open or
+conflicts; 5 a PR needs the maintainer's decision; 6 an agent's PR is refused for its plan, a
+spec PR names no open feature issue, or a PR's closing keyword names a Part of issue or an open
+one with a ## Check (D-76); 7 a PR only the maintainer
 merges, by hand (a `never` zone); 8 a draft PR (D-67); 2 bad arguments,
 a base branch the checkout lacks, a git failure, a REVIEW.md, docs/product.md, or config the
 gate can't read, or a `shipmill decide classify` that fails or prints what the gate can't
@@ -111,6 +122,11 @@ RANK = (READY, FAILED, PENDING, BLOCKED, DRAFT, NEEDS_DECISION, MAINTAINER_ONLY,
 WATCH_STATE = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "watch_state.py"
 # github-issue-triage's decisions.py: the zone table's one copy, its ZONES and LEVELS
 DECISIONS = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "decisions.py"
+# github-issue-triage's triage_state.py: the closing-keyword rule and the ## Check section, one
+# reading for every script (#416, D-76)
+TRIAGE_STATE = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "triage_state.py"
+# a body's "Part of #N", as triage_state.py's closes() reads a partial PR
+PART_OF = re.compile(r"\bpart of:?\s+#([0-9]+)\b", re.IGNORECASE)
 CONFIG = ".github/shipmill.toml"
 
 DIRECTION = "docs/product.md"
@@ -167,7 +183,7 @@ class Gate:
     base: str
     head: str
     checks: tuple[Check, ...]
-    refused: tuple[str, ...] = ()  # why an agent's PR is refused for its plan
+    refused: tuple[str, ...] = ()  # why an agent's PR is refused for its plan, or any PR for its closers (D-76)
     asks: tuple[str, ...] = ()  # why the PR waits on the maintainer
     never: tuple[str, ...] = ()  # the never zones: only the maintainer merges it, by hand (spec 030)
     notices: tuple[str, ...] = ()  # the notify zones: decided without waiting, the verdict kept
@@ -639,7 +655,7 @@ def author_of(entry: dict) -> str:
 
 # the fields the gate reads; the github-pr-triage eval cases record this read, so a change here
 # re-records it there (#673)
-FIELDS = "state,isDraft,mergeable,baseRefName,headRefOid,statusCheckRollup,author,body,files,changedFiles"
+FIELDS = "state,isDraft,mergeable,baseRefName,headRefOid,statusCheckRollup,author,body,files,changedFiles,commits"
 
 
 def fetch(number: int, repo: str | None) -> dict:
@@ -711,11 +727,12 @@ def added_specs(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
     return tuple(f for f, status in statuses.items() if status == "added" and SPEC_FILE.fullmatch(f))
 
 
-def issues_read(numbers: list[int]) -> list[str]:
-    """`gh api`'s arguments for the GraphQL read of the numbers, each under the alias i<N>; the
-    github-pr-triage eval cases record this read, so a change here re-records it there"""
+def issues_read(numbers: list[int], wanted: str = "state") -> list[str]:
+    """`gh api`'s arguments for the GraphQL read of the numbers, each under the alias i<N>, an issue
+    with the wanted fields; the github-pr-triage eval cases record this read, so a change here
+    re-records it there"""
     fields = " ".join(
-        f"i{n}: issueOrPullRequest(number: {n}) {{ __typename ... on Issue {{ state }} }}" for n in numbers
+        f"i{n}: issueOrPullRequest(number: {n}) {{ __typename ... on Issue {{ {wanted} }} }}" for n in numbers
     )
     query = (
         "query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { nameWithOwner "
@@ -724,12 +741,14 @@ def issues_read(numbers: list[int]) -> list[str]:
     return ["graphql", "-F", "owner={owner}", "-F", "repo={repo}", "-f", f"query={query}"]
 
 
-def issues_of(numbers: list[int], number: int, repo: str | None) -> tuple[str, dict[int, dict | None]]:
-    """The repo's owner/name and, for each number, its issue or pull request ({__typename, state}),
-    or None for a number the repo lacks: one GraphQL read. A NOT_FOUND error for one of the numbers
-    is an answer; any other failure exits 1, as gh's always has"""
+def issues_of(
+    numbers: list[int], number: int, repo: str | None, wanted: str = "state"
+) -> tuple[str, dict[int, dict | None]]:
+    """The repo's owner/name and, for each number, its issue or pull request ({__typename} and, for
+    an issue, the wanted fields), or None for a number the repo lacks: one GraphQL read. A NOT_FOUND
+    error for one of the numbers is an answer; any other failure exits 1, as gh's always has"""
     aliases = {f"i{n}": n for n in numbers}
-    cmd, env = api(issues_read(numbers), repo)
+    cmd, env = api(issues_read(numbers, wanted), repo)
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     try:
         answer = json.loads(proc.stdout) if proc.stdout.strip() else None
@@ -860,6 +879,56 @@ def base_failures(branch: str, sha: str, entries: list[dict], body: str) -> tupl
     return tuple(red), tuple(repairs)
 
 
+def triage_state() -> ModuleType:
+    return module("shipmill_triage_state", TRIAGE_STATE)
+
+
+def commit_messages(data: dict, number: int) -> list[tuple[str, str]]:
+    """Each of the PR's commits, its short sha and its whole message, as gh pr view lists them"""
+    commits = data.get("commits")
+    if not isinstance(commits, list):
+        raise GateError(f"gh pr view {number} listed no commits")
+    found = []
+    for commit in commits:
+        if not isinstance(commit, dict) or not isinstance(commit.get("oid"), str):
+            raise GateError(f"a commit of #{number} is not {{oid, messageHeadline, messageBody}}: {commit!r}")
+        message = f"{commit.get('messageHeadline') or ''}\n{commit.get('messageBody') or ''}"
+        found.append((commit["oid"][:7], message))
+    return found
+
+
+def closing_problems(data: dict, number: int, repo: str | None) -> list[str]:
+    """Why the PR is refused for its closing keywords (D-76), read by triage_state.py's
+    keyword_closes, the rule shipped.py reads too (#416): one starting a line, after an optional
+    list bullet, outside a fence; mid-line, in backticks, or naming owner/repo#N, it names nothing.
+    A commit's keyword naming an issue its body lists as Part of #N, then a commit's or the body's
+    naming an open issue of the repo with a ## Check section, read once in GraphQL for every
+    number the keywords name"""
+    ts = triage_state()
+    body = str(data.get("body") or "")
+    parts = {int(n) for n in PART_OF.findall(body)}
+    commits = [(f"commit {sha}", n) for sha, text in commit_messages(data, number) for n in closed_by(ts, text)]
+    parted = [(where, n) for where, n in commits if n in parts]
+    problems = [f"{where} closes #{n}, which the body lists as Part of #{n}" for where, n in parted]
+    named = [pair for pair in commits if pair not in parted] + [("the body", n) for n in closed_by(ts, body)]
+    numbers = sorted({n for _, n in named if 0 < n <= GRAPHQL_INT})
+    if not numbers:
+        return problems
+    _, nodes = issues_of(numbers, number, repo, "state body")
+    for where, n in named:
+        node = nodes.get(n)
+        if not isinstance(node, dict) or node.get("__typename") != "Issue" or node.get("state") != "OPEN":
+            continue
+        if ts.CHECK.search(str(node.get("body") or "")) is not None:
+            problems.append(f"{where} closes #{n}, an open issue with a ## Check: write Part of #{n} instead")
+    return problems
+
+
+def closed_by(ts: ModuleType, text: str) -> list[int]:
+    """The issues a text's closing keywords name, by keyword_closes' line rule"""
+    return sorted(ts.keyword_closes("", text))
+
+
 def judge(
     data: dict,
     number: int,
@@ -881,6 +950,7 @@ def judge(
     refused: list[str] = []
     if agent and base.ids is not None:
         refused = plan_problems(str(data.get("body") or ""), base.ids)
+    refused += data.get("closes") or ()  # whoever opened it (D-76)
     asks: list[str] = []
     never: list[str] = []
     notices: list[str] = []
@@ -970,6 +1040,7 @@ def main() -> int:
         bases = Bases(args.checkout, args.repo)
         classifier = Classifier(bases.checkout, args.tool)
         specs: dict[tuple[int, str, str], tuple[str, ...]] = {}  # by PR, head, and body: a --wait reads each once
+        closings: dict[tuple[int, str, str], tuple[str, ...]] = {}  # the same, for its closing keywords (D-76)
         while True:
             gates = []
             heads: dict[str, tuple[str, list[dict]]] = {}  # each base branch's head, read once a pass (D-75)
@@ -989,6 +1060,9 @@ def main() -> int:
                     if key not in specs:
                         specs[key] = tuple(spec_problems(data, number, args.repo))
                     spec = specs[key]
+                    if key not in closings:
+                        closings[key] = tuple(closing_problems(data, number, args.repo))
+                    data["closes"] = closings[key]
                 zones = None
                 if base.agents and base.ref is not None:
                     zones = classifier.zones(number, base.ref, str(data["headRefOid"]))
