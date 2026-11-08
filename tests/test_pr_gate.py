@@ -370,6 +370,87 @@ def test_s032_14_neutral_and_success_downstream_checks_are_green(tmp_path: Path)
     assert proc.stdout == MAIN_READY.replace("checks=1 green=1", "checks=3 green=3")
 
 
+# #962: a check run twice on one head (a PR closed and reopened) counts once, its newest run
+
+
+def run_of(conclusion: str | None, started: str | None, workflow: str = "CI", name: str = "test") -> dict[str, Any]:
+    status = "IN_PROGRESS" if conclusion is None else "COMPLETED"
+    run = {"__typename": "CheckRun", "workflowName": workflow, "name": name, "status": status, "conclusion": conclusion}
+    return {**run, "startedAt": started} if started is not None else run
+
+
+def with_rollup(*entries: dict[str, Any]) -> dict[str, Any]:
+    data = pr(body="Fixes #7", login="amy")
+    data["statusCheckRollup"] = list(entries)
+    return data
+
+
+def test_an_older_failure_and_a_newer_success_of_one_check_read_ready(tmp_path: Path) -> None:
+    rollup = with_rollup(run_of("FAILURE", "2026-11-08T08:00:00Z"), run_of("SUCCESS", "2026-11-08T09:00:00Z"))
+    proc = run_gate(tmp_path, None, {7: rollup})
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+
+
+def test_an_older_success_and_a_newer_failure_of_one_check_read_failed(tmp_path: Path) -> None:
+    """The newest run wins by its start, not by where the rollup lists it"""
+    rollup = with_rollup(run_of("FAILURE", "2026-11-08T09:00:00Z"), run_of("SUCCESS", "2026-11-08T08:00:00Z"))
+    proc = run_gate(tmp_path, None, {7: rollup})
+    assert proc.returncode == gate.FAILED, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == [
+        "#7 FAILED state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=0 pending=0 failed=1",
+        "  failed: test (FAILURE)",
+    ]
+
+
+def test_a_newer_run_in_flight_keeps_the_check_pending(tmp_path: Path) -> None:
+    """A re-run not started yet has no start (gh's zero time), so the later entry wins"""
+    for started in ("0001-01-01T00:00:00Z", None):
+        rollup = with_rollup(run_of("SUCCESS", "2026-11-08T08:00:00Z"), run_of(None, started))
+        proc = run_gate(tmp_path, None, {7: rollup})
+        assert proc.returncode == gate.PENDING, proc.stdout + proc.stderr
+        assert proc.stdout.splitlines()[0].endswith(" checks=1 green=0 pending=1 failed=0")
+
+
+def test_a_run_in_flight_listed_before_an_older_pass_keeps_the_check_pending() -> None:
+    """The rollup's order is not the runs' order: a run not started yet still wins"""
+    for started in ("0001-01-01T00:00:00Z", None):
+        checks = gate.newest_checks([run_of(None, started), run_of("SUCCESS", "2026-11-08T08:00:00Z")])
+        assert checks == (gate.Check("test", False, ""),)
+
+
+def test_a_start_with_a_fraction_of_any_length_is_read() -> None:
+    """Python 3.10's fromisoformat takes neither Z nor a fraction other than 3 or 6 digits"""
+    for older, newer in (
+        ("2026-11-08T07:37:15.12Z", "2026-11-08T07:37:15.123Z"),
+        ("2026-11-08T07:37:15.1234567Z", "2026-11-08T07:37:16Z"),
+        ("2026-11-08T08:37:15+01:00", "2026-11-08T07:37:15.5Z"),
+    ):
+        checks = gate.newest_checks([run_of("SUCCESS", newer), run_of("FAILURE", older)])
+        assert checks == (gate.Check("test", True, "SUCCESS"),), (older, newer)
+
+
+def test_two_workflows_with_one_job_name_stay_two_checks(tmp_path: Path) -> None:
+    rollup = with_rollup(
+        run_of("SUCCESS", "2026-11-08T09:00:00Z", workflow="CI"),
+        run_of("FAILURE", "2026-11-08T08:00:00Z", workflow="Downstream"),
+    )
+    proc = run_gate(tmp_path, None, {7: rollup})
+    assert proc.returncode == gate.FAILED, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[0].endswith(" checks=2 green=1 pending=0 failed=1")
+
+
+def test_a_status_context_counts_its_newest_state() -> None:
+    started = "2026-11-08T08:00:00Z"
+    older = {"__typename": "StatusContext", "context": "ci/lint", "state": "FAILURE", "startedAt": started}
+    newer = {**older, "state": "SUCCESS", "startedAt": "2026-11-08T09:00:00Z"}
+    assert gate.newest_checks([newer, older]) == (gate.Check("ci/lint", True, "SUCCESS"),)
+
+
+def test_a_malformed_start_stops_the_gate() -> None:
+    with pytest.raises(gate.GateError, match="startedAt"):
+        gate.newest_checks([run_of("SUCCESS", "yesterday")])
+
+
 def test_without_origin_head_the_prs_base_branch_is_read(tmp_path: Path, directed: Path) -> None:
     git(directed, "remote", "set-head", "origin", "--delete")
     proc = run_gate(tmp_path, directed, {7: pr(body="Fixes #7")}, "--bot-login", BOT)
