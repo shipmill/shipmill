@@ -316,20 +316,20 @@ def with_body(args: Sequence[str], body: str) -> list[str]:
     """`gh pr merge`'s args with every --body/-b and --body-file/-F and its value dropped, as
     `_scan` reads them, and one `--body <body>` in their place, before any `--`; every other
     argument is kept as written, a short flag bundled with a dropped one too (`-sb x` keeps `-s`)"""
-    return _merge_replaced(args, _BODY_LONG, _BODY_SHORT, "--body", body)
+    return _merge_replaced(args, _BODY_LONG, _BODY_SHORT, ("--body", body))
 
 
-def with_author_email(args: Sequence[str], email: str) -> list[str]:
+def without_author_email(args: Sequence[str]) -> list[str]:
     """S-051-11: `gh pr merge`'s args with every --author-email/-A and its value dropped, as
-    `with_body` drops a body, and one `--author-email <email>` in their place"""
-    return _merge_replaced(args, frozenset({"--author-email"}), frozenset("A"), "--author-email", email)
+    `with_body` drops a body: the token's user is the merge's author (D-73)"""
+    return _merge_replaced(args, frozenset({"--author-email"}), frozenset("A"), ())
 
 
 def _merge_replaced(
-    args: Sequence[str], longs: frozenset[str], shorts: frozenset[str], flag: str, value: str
+    args: Sequence[str], longs: frozenset[str], shorts: frozenset[str], added: Sequence[str]
 ) -> list[str]:
     """`gh pr merge`'s args with each of the flags longs and shorts name dropped with its
-    value, and one `<flag> <value>` before any `--`"""
+    value, and added before any `--`"""
     kept: list[str] = []
     index = 0
     while index < len(args):
@@ -361,7 +361,7 @@ def _merge_replaced(
                 kept.append(arg)
         else:
             kept.append(arg)
-    return [*kept, flag, value, *args[index:]]
+    return [*kept, *added, *args[index:]]
 
 
 def pull_url(url: str) -> tuple[str, int]:

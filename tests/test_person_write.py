@@ -3,7 +3,6 @@ and names whose decision it was (S-051-10); a merge names the decider as its aut
 App's bot as a co-author (S-051-11); and the readers never take such a record for that
 person's decision, filing, or answer (S-051-13). No test reaches the network"""
 
-import json
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -13,7 +12,7 @@ import pytest
 from shipmill import cli_command
 from shipmill.agent_marker import MARKER, carries, closed_with, decided_by, marked, unmarked
 from shipmill.app import Answer
-from shipmill.app_gh import person_args, with_author_email
+from shipmill.app_gh import person_args, without_author_email
 from shipmill.credit import Comment, Person, answers, issue_deciders, issue_of
 from shipmill.errors import ReleaseError
 
@@ -28,7 +27,6 @@ from .test_credit import APP, HUBOT_TRAILER, OCTOCAT_TRAILER, WITH_APP, CreditRe
 from .test_decider_token import ASSISTED, ISSUE, MERGE, EnvRunner, UserApi, as_app, as_person, filed, gh, store
 
 LINE = "Opened by an agent through shipmill, on `@octocat`'s decision."
-EMAIL = "583231+octocat@users.noreply.github.com"  # UserApi's GET /user id for octocat
 BOT_TRAILER = f"Co-authored-by: {BOT} <{BOT_ID}+{BOT}@users.noreply.github.com>"
 
 
@@ -144,7 +142,7 @@ def test_s051_10_autonomous_mode_and_no_author_add_no_line(
 # -- S-051-11: a merge written as a person -----------------------------------------------------
 
 
-def test_s051_11_a_merge_as_a_person_names_them_author_and_the_apps_bot_last(
+def test_s051_11_a_merge_as_a_person_passes_no_author_email_and_names_the_apps_bot_last(
     repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     key = connected(repo, tmp_path, ASSISTED)
@@ -155,27 +153,18 @@ def test_s051_11_a_merge_as_a_person_names_them_author_and_the_apps_bot_last(
     assert gh(repo, tmp_path, key, MERGE, runner, CreditReader(FakeCredit(reviews=reviews)), api) == 0
     as_person(runner, "approved the pull request")
     [argv] = runner.calls
-    assert argv[argv.index("--author-email") + 1] == EMAIL and argv.count("--author-email") == 1
+    assert "--author-email" not in argv  # GitHub refuses it with a user access token, and the token names the author
     body = body_of(argv)
     assert body.endswith(f"{HUBOT_TRAILER}\n{BOT_TRAILER}")  # spec 049's other decider, then the App
     assert OCTOCAT_TRAILER not in body and body.count("Co-authored-by: ") == 3  # with the commit's own
     assert "credit: `@hubot` approved the pull request" in runner.stderr[0]
     assert "credit: `@octocat`" not in runner.stderr[0]
-    assert sum(path == "/user" for path, _ in api.calls) == 1  # the id comes from the check GitHub made
+    assert sum(path == "/user" for path, _ in api.calls) == 1
 
 
-def test_s051_11_an_author_email_given_is_replaced_by_the_deciders() -> None:
-    assert with_author_email(["pr", "merge", "7", "-sA", "me@x", "--", "x"], EMAIL) == [
-        "pr",
-        "merge",
-        "7",
-        "-s",
-        "--author-email",
-        EMAIL,
-        "--",
-        "x",
-    ]
-    assert with_author_email(["pr", "merge", "7", "--author-email=me@x"], EMAIL)[-2:] == ["--author-email", EMAIL]
+def test_s051_11_an_author_email_given_is_dropped() -> None:
+    assert without_author_email(["pr", "merge", "7", "-sA", "me@x", "--", "x"]) == ["pr", "merge", "7", "-s", "--", "x"]
+    assert without_author_email(["pr", "merge", "7", "--author-email=me@x"]) == ["pr", "merge", "7"]
 
 
 def test_s051_11_a_merge_that_falls_back_to_the_app_keeps_spec_049s_trailers_and_no_author(
@@ -217,26 +206,6 @@ def test_s051_11_a_bot_id_that_cant_be_read_merges_as_the_app_with_autonomous_mo
     assert "--author-email" not in argv
     assert body_of(argv).endswith(OCTOCAT_TRAILER) and BOT_TRAILER not in body_of(argv)
     assert "credit: `@octocat` approved the pull request" in runner.stderr[0]
-
-
-class NoIdApi(UserApi):
-    """GET /user that takes the token but gives no user id"""
-
-    def get(self, path: str, token: str | None) -> Answer:
-        answer = super().get(path, token)
-        return Answer(200, json.dumps({"login": "octocat"})) if path == "/user" and answer.status == 200 else answer
-
-
-def test_s051_11_a_user_id_get_user_doesnt_give_writes_as_the_app(
-    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    key = connected(repo, tmp_path, ASSISTED)
-    store(tmp_path)
-    runner = EnvRunner(capsys)
-    reader = CreditReader(FakeCredit(reviews=[approved("octocat", "MEMBER")]))
-    assert gh(repo, tmp_path, key, MERGE, runner, reader, NoIdApi()) == 0
-    as_app(runner, "GET /user gave no user id for `@octocat`, so their commit address can't be named")
-    assert "--author-email" not in runner.calls[0] and body_of(runner.calls[0]).endswith(OCTOCAT_TRAILER)
 
 
 # -- S-051-13: the readers never take a person-written record for that person's decision --------

@@ -635,8 +635,8 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    - In assisted mode, a write with no decider, or a decider without a stored token, goes as
      the App, after one stderr line saying why. An issue or pull request written as a person
      keeps the agent marker and ends with ``Opened by an agent through shipmill, on
-     `@<login>`'s decision.``; a merge written as a person names them with `--author-email`
-     and ends with a `Co-authored-by` trailer for the App's bot. No mode approves a pull
+     `@<login>`'s decision.``; a merge written as a person has them as its author, through
+     their token, and ends with a `Co-authored-by` trailer for the App's bot. No mode approves a pull
      request on a person's behalf
    - `[agents] credit` is deprecated (spec 051): write `[agents] author = "app"` instead,
      the same as `[agents] credit = "decider"` (spec 049), whose `Co-authored-by` trailer

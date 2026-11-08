@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from shipmill import cli_command
-from shipmill.app import API, NOREPLY, TIMEOUT, Answer, Api, Clock, Signer, check_key, jwt, write_atomic
+from shipmill.app import API, TIMEOUT, Answer, Api, Clock, Signer, check_key, jwt, write_atomic
 from shipmill.errors import ReleaseError
 
 DEVICE_CODE = "https://github.com/login/device/code"
@@ -179,13 +179,7 @@ class Writer:
     and their account as GET /user gave it with that token. repr leaves the token's values out"""
 
     token: UserToken
-    id: int
     login: UserLogin
-
-    @property
-    def email(self) -> str:
-        """The noreply address GitHub credits the person's commits to"""
-        return f"{self.id}+{self.login}@{NOREPLY}"
 
 
 def save_user_token(home: Path, token: UserToken) -> Path:
@@ -568,7 +562,7 @@ def refreshed(token: UserToken, home: Path, web: Web, now: dt.datetime) -> UserT
 def decider_token(app_id: int, login: UserLogin, home: Path, api: Api, web: Web, now: dt.datetime) -> Writer:
     """S-051-7 to S-051-9: the user access token login stored for the App with app-login,
     refreshed first when it has expired or is about to, and checked with GET /user to be
-    login's and taken by GitHub, with the user id that GET /user gives (S-051-11). Raises
+    login's and taken by GitHub. Raises
     AsApp, saying why, when there is none, its file is malformed or another's, it can't be
     refreshed, or GitHub refuses it"""
     path = user_file(app_id, login, home)
@@ -592,12 +586,10 @@ def decider_token(app_id: int, login: UserLogin, home: Path, api: Api, web: Web,
         user = _object(answer, "GET /user")
     except ReleaseError:  # no object: no login, refused below as not theirs
         user = {}
-    found, number = user.get("login"), user.get("id")
+    found = user.get("login")
     if not isinstance(found, str) or found.lower() != login.key:
         raise AsApp(f"`@{login}`'s stored token isn't theirs by GET /user; {_again(login)}")
-    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
-        raise AsApp(f"GET /user gave no user id for `@{login}`, so their commit address can't be named")
-    return Writer(token, number, UserLogin(found))
+    return Writer(token, UserLogin(found))
 
 
 def revoke_elsewhere(login: UserLogin, why: str) -> str:
