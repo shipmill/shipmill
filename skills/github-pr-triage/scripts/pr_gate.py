@@ -64,8 +64,9 @@ failure outside the code clears by re-running the failed run on the default bran
 Closing keywords (D-76, D-79): a merge never closes an issue its PR is only part of, or one whose
 check has not run. A commit's (gh pr view's) closing keyword counts as GitHub closes by it (#988):
 any of close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved as a whole word, in any
-case, an optional colon, whitespace, then #N or owner/repo#N naming the PR's own repo, anywhere in
-its message, mid-line, in backticks, and in a fence too. The title and the body are read by
+case, an optional colon, whitespace, then #N, or owner/repo#N or an issue's URL
+https://github.com/owner/repo/issues/N naming the PR's own repo (#993; a /pull/N URL names
+nothing), anywhere in its message, mid-line, in backticks, and in a fence too. The title and the body are read by
 triage_state.py's keyword_closes, the rule shipped.py reads too (#416): in the body, a keyword
 starting a line, after an optional list bullet, outside a fence; in the title, one anywhere outside
 a code span; one mid-line in the body, in backticks, or naming owner/repo#N names nothing there. The
@@ -74,7 +75,7 @@ is REFUSED, `  refused: <the title or commit <sha7>> closes #N, which the body l
 when the title's or a commit's keyword names an issue its body lists as `Part of #N`, and `  refused:
 <the title, commit <sha7>, or the body> closes #N, an open issue with a ## Check: write Part of #N
 instead` when one names an open issue of the repo whose body has a `## Check` section. The issues
-are read in one GraphQL query, only when a keyword names one, or a commit names owner/repo#N.
+are read in one GraphQL query, only when a keyword names one, or a commit names owner/repo#N or a URL.
 
 Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base's (D-75),
 or gh failed; 3 a check is still pending (or --wait timed out); 4 a PR is not open or
@@ -911,8 +912,8 @@ def closing_problems(data: dict, number: int, repo: str | None) -> list[str]:
     owner/repo#N, it names nothing. The title is read as the squash commit it becomes (D-33, #987).
     The title's or a commit's keyword naming an issue its body lists as Part of #N, then the
     title's, a commit's, or the body's naming an open issue of the repo with a ## Check section,
-    read once in GraphQL for every number the keywords name; a commit naming owner/repo#N takes
-    that read even when nothing else is named, since it names the PR's repo"""
+    read once in GraphQL for every number the keywords name; a commit naming owner/repo#N or an
+    issue's URL takes that read even when nothing else is named, since it names the PR's repo"""
     ts = triage_state()
     body = str(data.get("body") or "")
     parts = {int(n) for n in PART_OF.findall(body)}
@@ -951,10 +952,14 @@ def closed_by(ts: ModuleType, text: str) -> list[int]:
 def commit_closes(ts: ModuleType, message: str) -> list[tuple[str | None, int]]:
     """Each issue a commit message's closing keywords name, as GitHub closes by them once the
     commit reaches the default branch (D-79, #988): any of triage_state.py's KEYWORDS as a whole
-    word, in any case, an optional colon, whitespace, then #N or owner/repo#N, anywhere in the
+    word, in any case, an optional colon, whitespace, then #N, owner/repo#N, or an issue's URL
+    https://github.com/owner/repo/issues/N (#993; a /pull/N URL names nothing), anywhere in the
     message, mid-line, in backticks, and in a fence too. Each with its owner/repo, None for #N"""
-    closer = re.compile(rf"\b{ts.KEYWORDS}:?\s+([\w.-]+/[\w.-]+)?#([0-9]+)\b", re.IGNORECASE)
-    return [(owner or None, int(n)) for owner, n in closer.findall(message)]
+    closer = re.compile(
+        rf"\b{ts.KEYWORDS}:?\s+(?:([\w.-]+/[\w.-]+)?#([0-9]+)|https://github\.com/([\w.-]+/[\w.-]+)/issues/([0-9]+))\b",
+        re.IGNORECASE,
+    )
+    return [(owner or url_owner or None, int(n or url_n)) for owner, n, url_owner, url_n in closer.findall(message)]
 
 
 def judge(

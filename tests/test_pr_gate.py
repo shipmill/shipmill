@@ -1089,6 +1089,43 @@ def test_988_another_repos_issue_is_not_its_part_of(tmp_path: Path) -> None:
     assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
 
 
+# #993: GitHub closes by an issue's URL after a keyword too, the PR's own repo's only
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        pytest.param("Serve it, which fixes https://github.com/demo/app/issues/12", id="mid-line"),
+        pytest.param("Serve it\n\nCloses: https://github.com/Demo/App/issues/12.", id="a colon, the repo in any case"),
+    ],
+)
+def test_993_a_commit_closing_a_part_of_issue_by_its_url_is_refused(tmp_path: Path, commit: str) -> None:
+    proc = run_gate(tmp_path, None, {7: part_of((commit,))}, issues=CLOSING)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    assert proc.stdout == REFUSED_LINE + "  refused: commit abc1234 closes #12, which the body lists as Part of #12\n"
+
+
+def test_993_a_commit_closing_an_open_issue_with_a_check_by_its_url_is_refused(tmp_path: Path) -> None:
+    commit = "Serve it\n\n`resolves https://github.com/demo/app/issues/13`"
+    proc = run_gate(tmp_path, None, {7: part_of((commit,), body="Serves it")}, issues=CLOSING)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    line = "  refused: commit abc1234 closes #13, an open issue with a ## Check: write Part of #13 instead"
+    assert proc.stdout == REFUSED_LINE + line + "\n"
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        pytest.param("Serve it, which fixes https://github.com/other/repo/issues/13", id="another repo's issue"),
+        pytest.param("Serve it, which fixes https://github.com/demo/app/pull/13", id="a pull request's URL"),
+        pytest.param("Serve it, which fixes https://github.com/demo/app/issues/13a", id="not a number"),
+    ],
+)
+def test_993_a_commit_url_naming_no_issue_of_the_repo_is_ready(tmp_path: Path, commit: str) -> None:
+    proc = run_gate(tmp_path, None, {7: part_of((commit,), body="Serves it\n\nPart of #13")}, issues=CLOSING)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+
+
 def test_the_worst_verdict_across_prs_is_the_exit_code(tmp_path: Path, directed: Path) -> None:
     proc = run_gate(tmp_path, directed, {7: pr(), 8: pr(body="none")}, "--bot-login", BOT)
     assert proc.returncode == 6
