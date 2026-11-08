@@ -969,7 +969,8 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      reads the repo as its sessions will write: with `app_id` a token it mints and caches
      nowhere, else the host's gh login. A failure, or a failed App check before the state
      read, is `GITHUB_AUTH` with the fix (the key, the clock, `$CR app-install`, or `gh auth
-     login`). `$CR factory`'s gate line reads `tick.json`: a failing tick's cause and fix,
+     login`); a 5xx from GitHub reads `GitHub is unavailable`, whose fix is to wait for
+     https://www.githubstatus.com, since the next tick tries again. `$CR factory`'s gate line reads `tick.json`: a failing tick's cause and fix,
      STALLED, RUNNING's session, and QUIET's in-flight part
 5. **A dedicated checkout.** The session branches and commits where it starts, so never
    use the user's working copy: `git worktree add --detach tmp/shipmill-gate

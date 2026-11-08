@@ -30,11 +30,11 @@ from shipmill.gate import (
     save_launch,
     state_dir,
 )
-from shipmill.github_auth import GH_MISSING_FIX, HOST_FIX, GitHubAuth, github_auth, host_reach
+from shipmill.github_auth import GH_MISSING_FIX, HOST_FIX, GitHubAuth, app_reach, github_auth, host_reach
 from shipmill.gitrepo import Git
 from shipmill.walk import CURSOR, HANDED
 
-from .test_app import APP_ID, BOT, REPO, FakeApi, FakeSigner, key_file
+from .test_app import APP_ID, BOT, BOT_ID, BOT_PATH, REPO, FakeApi, FakeSigner, key_file
 from .test_gate import ISSUES, NO_PRUNE, NOW, FakeClaude, FakeNotifier, bg
 from .test_gate_app import Prepared, gh_path
 from .test_gate_headless import LOGIN, STARTED, Reads, checkout, unread
@@ -320,6 +320,36 @@ def test_s048_3_any_other_failure_is_github_auth_naming_the_app_and_the_repo(
     assert SECRET not in decision.reason
 
 
+UNAVAILABLE_FIX = "wait for GitHub (https://www.githubstatus.com): nothing here needs repair, the next tick tries again"
+
+
+@pytest.mark.parametrize(
+    ("api", "call"),
+    [
+        (ReachApi(mint=Answer(503, '{"message": "Service Unavailable"}')), f"POST {ACCESS} answered 503"),
+        (ReachApi(repo=Answer(504, "<html>Gateway Timeout</html>")), f"GET {REPO_PATH} answered 504"),
+        (ReachApi(repo=Answer(500, '{"message": "Server Error"}')), f"GET {REPO_PATH} answered 500"),
+    ],
+)
+def test_s048_3_github_answering_5xx_to_the_mint_or_the_repo_read_is_unavailable_not_app_install(
+    checkout: Git, tmp_path: Path, api: ReachApi, call: str
+) -> None:
+    """#981: an outage on GitHub's side needs no repair here: the next tick tries again"""
+    decision = launch_failing(checkout, tmp_path, api, APP_ID)
+    problem = f"GitHub is unavailable ({call})"
+    assert decision.action is Action.GITHUB_AUTH
+    assert decision.reason == f"{problem}: no session starts; fix: {UNAVAILABLE_FIX}"
+    assert decision.github == GitHubAuth(problem, UNAVAILABLE_FIX)
+    assert "app-install" not in decision.reason and SECRET not in decision.reason
+
+
+def test_s048_3_github_answering_5xx_to_the_mints_installation_lookup_is_unavailable(tmp_path: Path) -> None:
+    identity = Identity(APP_ID, "demo-agent", BOT_ID, key_file(tmp_path))
+    api = ReachApi(found=Answer(502, "<html>Bad Gateway</html>"))
+    found = app_reach(identity, REPO, FakeSigner(), api, clock=lambda: NOW)
+    assert found == GitHubAuth(f"GitHub is unavailable (GET {REPO_PATH}/installation answered 502)", UNAVAILABLE_FIX)
+
+
 # S-048-4
 
 
@@ -401,6 +431,26 @@ def test_s048_4_any_other_app_check_failure_is_github_auth_and_reads_no_state(
     assert (
         decision.reason == f"the App {APP_ID} can't reach {REPO}: {error}: no session starts; fix: {install_fix(REPO)}"
     )
+    assert (claude.started, claude.launched, claude.stopped) == ([], [], [])
+    assert nothing_walked(checkout)
+
+
+@pytest.mark.parametrize(
+    ("api", "call"),
+    [
+        (ReachApi(bot=Answer(503, "<html>Unicorn!</html>")), f"GET {BOT_PATH} answered 503"),
+        (ReachApi(app=Answer(500, '{"message": "Server Error"}')), "GET /app answered 500"),
+    ],
+)
+def test_s048_4_github_answering_5xx_to_the_app_check_is_unavailable_and_reads_no_state(
+    checkout: Git, tmp_path: Path, api: ReachApi, call: str
+) -> None:
+    """#981: the App check's bot lookup answering 503 named `app-install`, which repairs nothing"""
+    claude = FakeClaude([bg("old", "idle", "done")])
+    agents = config(Mode.HEADLESS, APP_ID)
+    decision = tick(checkout, tmp_path, agents, claude, unasked_github, unasked_auth, api, unread)
+    assert decision.action is Action.GITHUB_AUTH and _gate_exit(decision) == 2
+    assert decision.reason == f"GitHub is unavailable ({call}): no session starts; fix: {UNAVAILABLE_FIX}"
     assert (claude.started, claude.launched, claude.stopped) == ([], [], [])
     assert nothing_walked(checkout)
 
