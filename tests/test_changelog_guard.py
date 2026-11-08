@@ -485,3 +485,119 @@ def test_s013_15_two_branches_that_each_add_a_fragment_merge_with_no_conflict(tm
     commit(root, BEFORE.replace("- A\n", "- A\n- Two (#21)\n"), "two")
     merged = subprocess.run(["git", "merge", "--no-edit", "c"], cwd=root, capture_output=True, text=True, check=False)
     assert merged.returncode != 0 and "CONFLICT" in merged.stdout
+
+
+# D-78: an entry marked Breaking must sit under a heading [bump] major lists (#971)
+MAJOR_CONFIG = CONFIG.replace(
+    '[bump]\nminor = ["Added", "Changed"]\n',
+    '[bump]\nfrom = "headings"\nmajor = [\n    "Breaking",  # a contract change\n]\nminor = ["Added", "Changed"]\n'
+    "patch = ['Fixed']\n",
+)
+MAJOR_LIST = 'major = [\n    "Breaking",  # a contract change\n]\n'
+MOVE_IT = "a Breaking entry under ### Changed; [bump] major lists ### Breaking: move it under ### Breaking"
+
+
+@pytest.mark.parametrize("marker", ["**Breaking:**", "**Breaking**", "**Breaking**:", "Breaking:", "BREAKING:"])
+def test_d78_a_breaking_entry_under_a_minor_heading_fails_naming_the_major_one(tmp_path: Path, marker: str) -> None:
+    root = with_fragments(tmp_path, MAJOR_CONFIG)
+    add(root, "12-a-fix.md", f"### Fixed\n\n- A fix (#12)\n\n### Changed\n\n- {marker} drop the old flag (#12)\n")
+    done = guard(root, "check", "--base", "main")
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert f"changelog.d/12-a-fix.md:7: {MOVE_IT}" in done.stdout
+
+
+def test_d78_a_breaking_entry_under_the_major_heading_passes(tmp_path: Path) -> None:
+    root = with_fragments(tmp_path, MAJOR_CONFIG)
+    add(root, "12-a-fix.md", "### Breaking\n\n- **Breaking:** drop the old flag (#12)\n")
+    done = guard(root, "check", "--base", "main")
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        CONFIG,  # [bump] with no from and no major
+        MAJOR_CONFIG.replace(MAJOR_LIST, ""),
+        MAJOR_CONFIG.replace(MAJOR_LIST, "major = []\n"),
+        MAJOR_CONFIG.replace('"keep-a-changelog"', '"dash"').replace("fragments = 'changelog.d'\n", ""),
+        MAJOR_CONFIG.split("[bump]")[0],  # no [bump]
+    ],
+)
+def test_d78_without_a_major_list_a_breaking_entry_is_left_as_it_is(tmp_path: Path, config: str) -> None:
+    root = with_fragments(tmp_path, config)
+    if "fragments" in config:
+        add(root, "12-a-fix.md", "### Changed\n\n- **Breaking:** drop the old flag (#12)\n")
+    else:
+        commit(root, BEFORE.replace("- A\n", "- A\n\n### Changed\n\n- Breaking: drop the old flag (#12)\n"), "entry")
+    done = guard(root, "check", "--base", "main")
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_d78_the_marker_counts_only_at_the_start_of_the_entry(tmp_path: Path) -> None:
+    root = with_fragments(tmp_path, MAJOR_CONFIG)
+    text = "### Changed\n\n- Drop the old flag; **Breaking:** for scripts (#12)\n  Breaking: in the body too\n"
+    add(root, "12-a-fix.md", text)
+    done = guard(root, "check", "--base", "main")
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_d78_a_breaking_entry_under_unreleased_in_a_hand_written_changelog_fails(tmp_path: Path) -> None:
+    root = with_fragments(tmp_path, MAJOR_CONFIG.replace("fragments = 'changelog.d'\n", ""))
+    entry = "- **Breaking** drop the old flag (#12)\n"
+    commit(root, BEFORE.replace("- A\n", f"- A\n\n### Changed\n\n{entry}"), "entry under Unreleased")
+    done = guard(root, "check", "--base", "main")
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert f"CHANGELOG.md:11: {MOVE_IT}" in done.stdout
+    commit(root, BEFORE.replace("- A\n", f"- A\n\n### Breaking\n\n{entry}"), "under its major heading")
+    done = guard(root, "check", "--base", "main")
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_d78_on_python_3_10(tmp_path: Path) -> None:
+    root = with_fragments(tmp_path, MAJOR_CONFIG)
+    add(root, "12-a-fix.md", "### Breaking\n\n- **Breaking:** drop the old flag (#12)\n")
+    done = guard_310(root, "check", "--base", "main")
+    assert done.returncode == 0, done.stdout + done.stderr
+    add(root, "13-other.md", "### Changed\n\n- **Breaking:** drop the other flag (#13)\n")
+    done = guard_310(root, "check", "--base", "main")
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert f"changelog.d/13-other.md:3: {MOVE_IT}" in done.stdout
+
+
+def test_the_plain_form_reads_the_bump_table_as_tomllib_does() -> None:
+    """Python 3.10's reader of the [bump] lists, on one line or several, on this example and
+    on shipmill's own config"""
+    own = (SCRIPT.parents[3] / ".github" / "shipmill.toml").read_text()
+    for text in (MAJOR_CONFIG, own):
+        assert guard_module().plain_tables(text, "config")["bump"] == tomllib.loads(text)["bump"]
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        ('["Breaking" "Major"]', "two strings with no comma"),
+        ('[, "Breaking"]', "a comma with no string before it"),
+        ("[Breaking]", "can't read the array"),
+        ('["Breaking"] extra', "can't read 'extra' after the array"),
+        ('["Breaking"', "can't read the array"),
+    ],
+)
+def test_the_plain_form_refuses_an_array_it_cannot_read(
+    value: str, error: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exited:
+        guard_module().plain_tables(f'[bump]\nfrom = "headings"\nmajor = {value}\n', "config")
+    assert exited.value.code == 2
+    assert error in capsys.readouterr().err
+
+
+def test_d78_this_repos_own_fragments_pass() -> None:
+    """The guard runs in this repo's CI: its config's major list leaves every fragment as it is"""
+    module = guard_module()
+    repo = SCRIPT.parents[3]
+    tables = tomllib.loads((repo / ".github" / "shipmill.toml").read_text())
+    majors = module.major_headings(tables)
+    assert majors == ["Breaking"]
+    for path in sorted((repo / FOLDER).glob("*.md")):
+        lines = path.read_text().splitlines()
+        assert module.breaking_problems(lines, 1, len(lines) + 1, path.name, majors) == []

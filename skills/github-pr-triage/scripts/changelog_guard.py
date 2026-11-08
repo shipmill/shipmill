@@ -5,7 +5,11 @@ check --base REF   exit 1 if lines added (or removed) since REF fall outside Unr
                    Unreleased has a bullet with no ### heading or the same ### heading twice.
                    When .github/shipmill.toml sets [changelog] fragments (spec 013), also exit 1
                    on a line added under Unreleased since REF (the entry goes in a fragment
-                   instead) and on a fragment added or changed since REF that fails to read
+                   instead) and on a fragment added or changed since REF that fails to read.
+                   When [bump] from = "headings" sets a major list (D-78), also exit 1 on an
+                   entry whose text starts **Breaking**, **Breaking:**, or Breaking: (any case)
+                   under a ### heading major doesn't list: in a fragment added or changed since
+                   REF, or, without fragments, under Unreleased
 move --base REF    move entries added since REF that sit in a released section under Unreleased,
                    each under its own ### heading (created in Keep a Changelog order if missing);
                    an entry right under a ## heading goes under the nearest ### heading above it
@@ -120,11 +124,17 @@ CONFIG = PurePosixPath(".github/shipmill.toml")
 STYLES = ("keep-a-changelog", "dash")
 FRAGMENT_README = "README.md"  # keeps the folder in git; never a fragment
 FRAGMENT_SUFFIX = ".md"
-# the plain form read on Python 3.10: a table header, or key = "string", each with an optional comment
+# the plain form read on Python 3.10: a table header, key = "string", or key = ["string", ...]
+# (one line or several), each with an optional comment; only these tables are read
+PLAIN_TABLES = ("changelog", "bump")
 PLAIN_HEADER = re.compile(r"^\[\s*([A-Za-z0-9_.-]+)\s*\]\s*(?:#.*)?$")
 PLAIN_KEY = re.compile(r"""^([A-Za-z0-9_-]+)\s*=\s*(?:"([^"\\]*)"|'([^']*)')\s*(?:#.*)?$""")
-PLAIN_DOTTED = re.compile(r"^changelog\s*[.=]")  # [changelog] keys written outside its table
+PLAIN_ARRAY = re.compile(r"^([A-Za-z0-9_-]+)\s*=\s*\[")
+PLAIN_TOKEN = re.compile(r"""[ \t\r\n]*(?:"([^"\\\n]*)"|'([^'\n]*)'|(,)|(\])|#[^\n]*)""")
+PLAIN_DOTTED = re.compile(r"^(?:changelog|bump)\s*[.=]")  # the tables' keys written outside them
 BRANCH_FRAGMENT = re.compile(r"^\d+-[A-Za-z0-9._-]+$")  # a branch's last part that names a fragment
+# an entry marked breaking: its text, after "- ", starts **Breaking**, **Breaking:**, or Breaking:
+BREAKING = re.compile(r"(?:\*\*breaking:?\*\*|breaking:)", re.IGNORECASE)
 
 
 def git_root(cwd: Path) -> Path:
@@ -134,13 +144,49 @@ def git_root(cwd: Path) -> Path:
     return Path(top.stdout.strip())
 
 
-def plain_changelog(text: str, where: str) -> dict[str, str]:
-    """The [changelog] table of the config's plain form, for Python 3.10: its lines must be
-    key = "string"; other tables are skipped"""
-    table: dict[str, str] = {}
+def plain_array(lines: list[str], index: int, start: int, where: str) -> tuple[list[str], int]:
+    """The strings of an array whose "[" ends at lines[index][:start], on that line or the ones
+    after, and the index of the line holding its "]"; anything but strings, commas, and
+    comments is refused"""
+    text = "\n".join(lines[index:])
+    values: list[str] = []
+    want_value = True
+    at = start
+    while True:
+        token = PLAIN_TOKEN.match(text, at)
+        line = index + 1 + text.count("\n", 0, at)
+        if token is None or token.end() == at:
+            fail(f'{where}: line {line}: can\'t read the array on Python 3.10: write ["string", ...]')
+        at = token.end()
+        double, single, comma, close = token.groups()
+        if close is not None:
+            break
+        if comma is not None:
+            if want_value:
+                fail(f"{where}: line {line}: can't read the array on Python 3.10: a comma with no string before it")
+            want_value = True
+        elif double is not None or single is not None:
+            if not want_value:
+                fail(f"{where}: line {line}: can't read the array on Python 3.10: two strings with no comma")
+            values.append(double if double is not None else single)
+            want_value = False
+    end = index + text.count("\n", 0, at)
+    rest = text[at:].split("\n", 1)[0].strip()
+    if rest and not rest.startswith("#"):
+        fail(f"{where}: line {end + 1}: can't read {rest!r} after the array on Python 3.10")
+    return values, end
+
+
+def plain_tables(text: str, where: str) -> dict[str, dict[str, object]]:
+    """The [changelog] and [bump] tables of the config's plain form, for Python 3.10: their
+    lines must be key = "string" or key = ["string", ...]; other tables are skipped"""
+    tables: dict[str, dict[str, object]] = {}
     current: str | None = ""  # "" before any header; None in an array of tables
-    for number, line in enumerate(text.splitlines(), 1):
-        stripped = line.strip()
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        number, stripped = index + 1, lines[index].strip()
+        index += 1
         if not stripped or stripped.startswith("#"):
             continue
         if stripped.startswith("[["):
@@ -153,36 +199,109 @@ def plain_changelog(text: str, where: str) -> dict[str, str]:
         if stripped.startswith("["):  # a quoted header such as ["changelog"]: never skipped silently
             fail(f"{where}: line {number}: can't read the header {stripped!r} on Python 3.10: write a bare [name]")
         if current == "" and PLAIN_DOTTED.match(stripped):
-            fail(f"{where}: line {number}: can't read {stripped!r} on Python 3.10: write a [changelog] table")
-        if current != "changelog":
+            name = stripped.split(".", 1)[0].split("=", 1)[0].strip()
+            fail(f"{where}: line {number}: can't read {stripped!r} on Python 3.10: write a [{name}] table")
+        if current not in PLAIN_TABLES:
             continue
+        table = tables.setdefault(current, {})
         found = PLAIN_KEY.match(stripped)
-        if found is None:
-            fail(f'{where}: line {number}: can\'t read {stripped!r} on Python 3.10: write key = "string" lines')
-        key = found.group(1)
+        array = PLAIN_ARRAY.match(stripped)
+        match = found or array
+        if match is None:
+            message = 'write key = "string" or key = ["string", ...] lines'
+            fail(f"{where}: line {number}: can't read {stripped!r} on Python 3.10: {message}")
+        key = match.group(1)
         if key in table:
             fail(f"{where}: line {number}: {key} is set twice")
-        table[key] = found.group(2) if found.group(2) is not None else found.group(3)
-    return table
+        if found is not None:
+            table[key] = found.group(2) if found.group(2) is not None else found.group(3)
+            continue
+        row = lines[number - 1]
+        indent = len(row) - len(row.lstrip())
+        table[key], end = plain_array(lines, number - 1, indent + match.end(), where)
+        index = end + 1
+    return tables
 
 
-def fragments_config(root: Path) -> tuple[str, str] | None:
-    """The [changelog] fragments folder and style of the checkout's config; None when there is
-    no config or it sets no fragments"""
+def plain_changelog(text: str, where: str) -> dict[str, object]:
+    """The [changelog] table of the config's plain form, for Python 3.10"""
+    return plain_tables(text, where).get("changelog", {})
+
+
+def config_tables(root: Path) -> dict[str, object] | None:
+    """The checkout's config as tables, tomllib's reading on 3.11+ and the plain form's
+    [changelog] and [bump] on 3.10; None when there is no config"""
     path = root / CONFIG
     if not path.is_file():
         return None
     text = path.read_text(encoding="utf-8")
-    where = str(CONFIG)
     if tomllib is None:
-        table: object = plain_changelog(text, where)
-    else:
-        try:
-            table = tomllib.loads(text).get("changelog", {})
-        except tomllib.TOMLDecodeError as exc:
-            fail(f"{where}: not TOML: {exc}")
+        return dict(plain_tables(text, str(CONFIG)))
+    try:
+        raw: dict[str, object] = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        fail(f"{CONFIG}: not TOML: {exc}")
+    return raw
+
+
+def changelog_table(config: dict[str, object] | None) -> dict[str, object]:
+    table = {} if config is None else config.get("changelog", {})
     if not isinstance(table, dict):
-        fail(f"{where}: changelog must be a table")
+        fail(f"{CONFIG}: changelog must be a table")
+    return table
+
+
+def major_headings(config: dict[str, object] | None) -> list[str] | None:
+    """The ### headings [bump] major lists, as the release planner reads them
+    (src/shipmill/policy.py, BumpConfig): only under from = "headings", and only in
+    keep-a-changelog style, where a ### heading is a category. None when there is no config,
+    no [bump], another rule, or no (or an empty) major list: then no entry is checked"""
+    if config is None or "bump" not in config:
+        return None
+    bump = config["bump"]
+    if not isinstance(bump, dict):
+        fail(f"{CONFIG}: bump must be a table")
+    if bump.get("from") != "headings" or "major" not in bump:
+        return None
+    if changelog_table(config).get("style") == "dash":
+        return None
+    major = bump["major"]
+    if not isinstance(major, list) or not all(isinstance(h, str) and h for h in major):
+        fail(f"{CONFIG}: [bump] major must be a list of non-empty strings; got {major!r}")
+    return list(major) or None
+
+
+def breaking_problems(lines: list[str], first: int, end: int, label: str, majors: list[str]) -> list[str]:
+    """An entry marked Breaking at the start of its text under a ### heading [bump] major
+    doesn't list, in lines first..end-1 (1-based); a bullet with no heading is reported
+    elsewhere"""
+    lists = ", ".join(f"{CATEGORY}{h}" for h in majors)
+    problems: list[str] = []
+    heading: str | None = None
+    for n in range(first, end):
+        line = lines[n - 1]
+        if line.startswith(CATEGORY):
+            heading = line[len(CATEGORY) :].strip()
+        elif (
+            line.startswith(BULLET)
+            and heading is not None
+            and heading not in majors
+            and BREAKING.match(line[len(BULLET[0]) :])
+        ):
+            problems.append(
+                f"{label}:{n}: a Breaking entry under {CATEGORY}{heading}; [bump] major lists {lists}:"
+                f" move it under {CATEGORY}{majors[0]}"
+            )
+    return problems
+
+
+def fragments_config(config: dict[str, object] | None) -> tuple[str, str] | None:
+    """The [changelog] fragments folder and style of the checkout's config; None when there is
+    no config or it sets no fragments"""
+    if config is None:
+        return None
+    where = str(CONFIG)
+    table = changelog_table(config)
     if "fragments" not in table:
         return None
     folder = table["fragments"]
@@ -259,9 +378,12 @@ def changed_fragments(root: Path, base: str, folder: str) -> list[str]:
     return sorted({p for p in (diff.stdout + untracked.stdout).split("\0") if p})
 
 
-def fragment_problems(root: Path, base: str, folder: str, style: str) -> tuple[int, list[str]]:
+def fragment_problems(
+    root: Path, base: str, folder: str, style: str, majors: list[str] | None
+) -> tuple[int, list[str]]:
     """How many fragments added or changed since base read, and why the others don't, as
-    shipmill's reader (src/shipmill/fragments.py, read) says it"""
+    shipmill's reader (src/shipmill/fragments.py, read) says it; with majors, a fragment that
+    reads also fails on a Breaking entry under a heading majors doesn't list (D-78)"""
     if not (root / folder).is_dir():
         fail(f"[changelog] fragments names {folder}, which is not a folder in {root}")
     good = 0
@@ -276,10 +398,16 @@ def fragment_problems(root: Path, base: str, folder: str, style: str) -> tuple[i
             problems.append(
                 f"{path}: not a fragment; a file in {folder} is a <name>{FRAGMENT_SUFFIX} or {FRAGMENT_README}"
             )
-        elif (problem := fragment_problem((root / path).read_text(encoding="utf-8"), style, path)) is not None:
-            problems.append(problem)
         else:
-            good += 1
+            text = (root / path).read_text(encoding="utf-8")
+            problem = fragment_problem(text, style, path)
+            lines = text.splitlines()
+            if problem is not None:
+                problems.append(problem)
+            elif majors and (breaking := breaking_problems(lines, 1, len(lines) + 1, path, majors)):
+                problems.extend(breaking)
+            else:
+                good += 1
     return good, problems
 
 
@@ -309,10 +437,18 @@ def cmd_check(path: Path, base: str, allow_released_edits: bool) -> int:
     for problem in shape:
         print(problem)
     root = git_root(path.parent)
-    config = fragments_config(root)
+    tables = config_tables(root)
+    config = fragments_config(tables)
+    majors = major_headings(tables)
     under: list[int] = []
     unread: list[str] = []
+    breaking: list[str] = []
     good = 0
+    if config is None and majors:
+        label = path.resolve().relative_to(root.resolve()).as_posix()
+        breaking = breaking_problems(lines, start + 1, end, label, majors)
+        for problem in breaking:
+            print(problem)
     if config is not None:
         folder, style = config
         under = [n for n in added if start < n < end and lines[n - 1].strip()]
@@ -323,10 +459,10 @@ def cmd_check(path: Path, base: str, allow_released_edits: bool) -> int:
                 f"[changelog] fragments is set: move the entry into a new fragment, {fragment_to_write(root, folder)},"
                 " and leave the CHANGELOG alone"
             )
-        good, unread = fragment_problems(root, base, folder, style)
+        good, unread = fragment_problems(root, base, folder, style, majors)
         for problem in unread:
             print(problem)
-    if outside or edited or shape or under or unread:
+    if outside or edited or shape or under or unread or breaking:
         return 1
     if config is None:
         print(f"ok: {len(added)} added line(s), all under Unreleased (lines {start}-{end - 1})")
