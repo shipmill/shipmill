@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.120.0] - 2026-11-08
+
+### Changed
+
+- `shipmill gh pr merge` and the merge API `PUT` now refuse, as the App, a pull request still labelled `needs-decision`, and in every mode a `--match-head-commit` or `sha` field that isn't the full 40-character SHA, naming `gh pr view <n> --json headRefOid -q .headRefOid` (#960)
+
 ## [0.119.2] - 2026-11-08
 
 ### Fixed
@@ -2305,7 +2311,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.119.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.120.0...HEAD
+[0.120.0]: https://github.com/shipmill/shipmill/compare/v0.119.2...v0.120.0
 [0.119.2]: https://github.com/shipmill/shipmill/compare/v0.119.1...v0.119.2
 [0.119.1]: https://github.com/shipmill/shipmill/compare/v0.119.0...v0.119.1
 [0.119.0]: https://github.com/shipmill/shipmill/compare/v0.118.0...v0.119.0
