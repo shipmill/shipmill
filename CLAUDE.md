@@ -25,8 +25,12 @@ uv run mypy
 uv run pytest -q -n auto
 uv run --no-project python skills/github-issue-triage/scripts/specs.py check
 uv run --no-project python skills/github-issue-triage/scripts/specs.py coverage
-uvx --from actionlint-py actionlint .github/workflows/*.yml
+actionlint .github/workflows/*.yml
 ```
+
+- actionlint is the official rhysd/actionlint release at the version `ci.yml`'s
+  `ACTIONLINT_VERSION` pins (`brew install actionlint` or the release's binary), not
+  actionlint-py, whose sdist build downloads the binary unpinned
 
 - An agent runs the fast checks and the touched files' tests and leaves the full suite to the PR's CI
 - Package code needs Python 3.14 and strict mypy
