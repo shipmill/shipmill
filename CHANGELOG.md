@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.122.1] - 2026-11-08
+
+### Fixed
+
+- `pr_gate.py` reads a commit message's closing keyword wherever GitHub closes by it, mid-line, in backticks, and in a fence too, with `#N` or the repo's own `owner/repo#N`, so a commit saying `... and fixes #N` no longer slips past the gate and closes a `Part of` issue or one whose `## Check` hasn't run; the title and the body keep their reading (#988)
+
 ## [0.122.0] - 2026-11-08
 
 ### Changed
@@ -2341,7 +2347,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.122.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.122.1...HEAD
+[0.122.1]: https://github.com/shipmill/shipmill/compare/v0.122.0...v0.122.1
 [0.122.0]: https://github.com/shipmill/shipmill/compare/v0.121.0...v0.122.0
 [0.121.0]: https://github.com/shipmill/shipmill/compare/v0.120.0...v0.121.0
 [0.120.0]: https://github.com/shipmill/shipmill/compare/v0.119.2...v0.120.0
