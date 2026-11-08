@@ -7,6 +7,24 @@ bot.
 
 ## [Unreleased]
 
+## [0.122.0] - 2026-11-08
+
+### Changed
+
+- `pr_gate.py` reads the checks on the base branch's head commit and reads FAILED, with a `base: red:` line, while one failed there, save for the pull request whose body has a `Repairs: <URL>` line naming that run; a failure from outside the code clears by re-running it on the default branch (D-75) (#963)
+- `pr_gate.py` refuses a pull request whose commit's closing keyword names an issue its body lists as `Part of #N`, or whose commit's or body's closing keyword names an open issue with a `## Check`; `triage_state.py` reads VERIFY_CLOSED for any issue with a `## Check` a pull request or a commit closed before its check ran, not only a parent (D-76) (#965)
+- github-pr-triage: `changelog_guard.py check` refuses an entry marked Breaking (`**Breaking**`, `**Breaking:**`, or `Breaking:` at its start) under a `###` heading that `[bump] major` doesn't list, in a fragment or under Unreleased, naming the heading to move it to, so a breaking change no longer releases as a minor (D-78) (#971)
+
+### Added
+
+- The gate's App asks for Deployments: read as an optional permission, so the report reads the environments' deployments; a new App asks for it at creation, and an existing installation accepts it once on the App's installation page (after it is added to the App's permissions). Until then sessions still start, the token never asks for it, and `shipmill doctor` and the gate's GitHub preflight warn naming what to accept (D-77) (#968)
+
+### Fixed
+
+- CI lints the workflows with the official actionlint release, pinned and checked by sha256 and cached, instead of an unpinned actionlint-py whose sdist build downloaded the binary from GitHub releases and failed release runs when that answered 504 (#977)
+- `shipmill gate` no longer tells you to rerun `app-install` during a GitHub outage: a 5xx answer to the App check, the token mint, or the repo read is `GITHUB_AUTH` with `GitHub is unavailable (<method> <path> answered <status>)` and the fix to wait for GitHub (https://www.githubstatus.com), since the next tick tries again; the tick still exits 2 (#981)
+- `pr_gate.py` reads the pull request's title for closing keywords too: under a squash merge it is the landed commit's subject, so a title naming an issue the body lists as `Part of #N`, or an open issue with a `## Check`, is refused as a commit's keyword is (#987)
+
 ## [0.121.0] - 2026-11-08
 
 ### Fixed
@@ -2323,7 +2341,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.121.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.122.0...HEAD
+[0.122.0]: https://github.com/shipmill/shipmill/compare/v0.121.0...v0.122.0
 [0.121.0]: https://github.com/shipmill/shipmill/compare/v0.120.0...v0.121.0
 [0.120.0]: https://github.com/shipmill/shipmill/compare/v0.119.2...v0.120.0
 [0.119.2]: https://github.com/shipmill/shipmill/compare/v0.119.1...v0.119.2
