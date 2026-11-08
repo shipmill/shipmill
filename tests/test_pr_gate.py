@@ -155,11 +155,13 @@ def pr(
     draft: bool = False,
     added: tuple[str, ...] = (),
     commits: tuple[str, ...] = ("Change the app",),
+    title: str = "Change the app",
 ) -> dict[str, Any]:
     """listed caps the files the files API returns (GitHub's stops at 3000); renamed maps a
     file's new path to its old one; the files API reads added's files `added`, the others
     `modified` (or `renamed`); commits are the PR's commit messages, each on its own commit"""
     return {
+        "title": title,
         "commits": [
             {"oid": f"abc{i}234fff", "messageHeadline": m.split("\n", 1)[0], "messageBody": m.partition("\n")[2]}
             for i, m in enumerate(commits, start=1)
@@ -988,6 +990,45 @@ def test_965_an_agents_pr_is_refused_for_its_plan_and_its_closers_alike(tmp_path
         "  refused: commit abc1234 closes #13, an open issue with a ## Check: write Part of #13 instead",
         "  refused: the body closes #13, an open issue with a ## Check: write Part of #13 instead",
     ]
+
+
+# #987: under a squash merge the title is the landed commit's subject (D-33), so its keyword closes too
+
+
+def titled(title: str, body: str) -> dict[str, Any]:
+    return pr(body=body, login="amy", commits=("Serve it",), title=title)
+
+
+def test_987_a_title_closing_a_part_of_issue_is_refused(tmp_path: Path) -> None:
+    proc = run_gate(tmp_path, None, {7: titled("Fixes #12: serve it", "Part of #12")}, issues=CLOSING)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    assert proc.stdout == REFUSED_LINE + "  refused: the title closes #12, which the body lists as Part of #12\n"
+    assert calls_of(tmp_path) == ["pr view", *BASE_READS]  # its issue needs no read
+
+
+@pytest.mark.parametrize("title", ["Fixes #13: serve it", "Serve it, which closes #13"])
+def test_987_a_title_closing_an_open_issue_with_a_check_is_refused(tmp_path: Path, title: str) -> None:
+    """a title's keyword counts anywhere outside code spans, keyword_closes' title rule"""
+    proc = run_gate(tmp_path, None, {7: titled(title, "Serves it")}, issues=CLOSING)
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    line = "  refused: the title closes #13, an open issue with a ## Check: write Part of #13 instead"
+    assert proc.stdout == REFUSED_LINE + line + "\n"
+
+
+@pytest.mark.parametrize(
+    ("title", "body", "reads"),
+    [
+        pytest.param("Fixes #12: serve it", "Serves it", ["graphql"], id="an issue with neither"),
+        pytest.param("Serve `Fixes #13`", "Serves it", [], id="in backticks"),
+        pytest.param("Serve it (Part of #13)", "Serves it", [], id="part of"),
+    ],
+)
+def test_987_a_title_naming_no_part_of_or_checked_issue_is_ready(
+    tmp_path: Path, title: str, body: str, reads: list[str]
+) -> None:
+    proc = run_gate(tmp_path, None, {7: titled(title, body)}, issues=CLOSING)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+    assert [c for c in calls_of(tmp_path) if c == "graphql"] == reads
 
 
 def test_the_worst_verdict_across_prs_is_the_exit_code(tmp_path: Path, directed: Path) -> None:
