@@ -192,4 +192,4 @@ Lead with a table: issue, verdict, and PR or plan. List the requests handed to p
 
 ## Improve the skill
 
-When a pass goes wrong, add the lesson to the matching reference, or to Hard rules if it must never recur. Examples: a verdict the code contradicted, a dropped comment, an agent that merged, a wrongly closed issue. When a lesson goes into the skill, add a case under `evals/` that fails without it, in the same pull request.
+When a pass goes wrong, add the lesson to the matching reference, or to Hard rules if it must never recur. Examples: a verdict the code contradicted, a dropped comment, an agent that merged, a wrongly closed issue. When a rule must hold, put it in code too (a script with its test, a hook, or the gate), since a skill's prose only makes it likely; the evals stopped (D-74), so add no case under `evals/`.

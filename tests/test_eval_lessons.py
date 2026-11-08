@@ -1,4 +1,4 @@
-"""Spec 025: a lesson becomes an eval case (#439), and since D-74 no evals check holds a pull request (#972)"""
+"""Spec 025, D-74 (#972): a lesson becomes a rule in code, not an eval case, and no evals check holds a pull request"""
 
 from __future__ import annotations
 
@@ -21,10 +21,14 @@ def section(text: str, heading: str) -> str:
     return text.split(f"## {heading} ", 1)[1].split(" ## ", 1)[0]
 
 
-def test_s025_15_the_postmortem_template_names_an_eval_case() -> None:
-    body = section(folded(ROOT / "docs" / "postmortems" / "TEMPLATE.md"), "Eval case")
-    assert "the case under `evals/` that would have caught the fault" in body
+def test_s025_15_the_postmortem_template_names_the_rule_in_code() -> None:
+    # D-74 (#972): no more eval cases; the template asks for the check in code instead
+    text = folded(ROOT / "docs" / "postmortems" / "TEMPLATE.md")
+    assert "## Eval case" not in text
+    body = section(text, "Rule in code")
+    assert "The test, hook, or gate check that now holds what an agent got wrong" in body
     assert "`none:` and why no agent's instructions were involved" in body
+    assert "The evals stopped (D-74), so no case goes under `evals/`" in body
 
 
 def test_s025_15_every_skill_is_checked() -> None:
@@ -34,10 +38,14 @@ def test_s025_15_every_skill_is_checked() -> None:
 
 
 @pytest.mark.parametrize("skill", SKILLS)
-def test_s025_15_each_skill_adds_a_failing_eval_case_with_the_lesson(skill: str) -> None:
+def test_s025_15_each_skill_puts_a_rule_in_code_and_adds_no_eval_case(skill: str) -> None:
+    # D-74 (#972): a rule that must hold goes into code, and no case goes under evals/
     body = section(folded(ROOT / "skills" / skill / "SKILL.md"), "Improve the skill")
-    assert "When a lesson goes into the skill, add a case under `evals/` that fails without it" in body, skill
-    assert "in the same pull request" in body, skill
+    assert (
+        "When a rule must hold, put it in code too (a script with its test, a hook, or the gate),"
+        " since a skill's prose only makes it likely; the evals stopped (D-74), so add no case under `evals/`."
+    ) in body, skill
+    assert "fails without it" not in body, skill
 
 
 def test_s025_17_since_d74_no_evals_check_is_waited_on_or_blocks() -> None:

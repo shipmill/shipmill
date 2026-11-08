@@ -1036,5 +1036,6 @@ on whom, from GitHub, with one `factory` line summing up those checks.
 
 When a setup goes wrong (a prerequisite missed, a lane the user didn't choose, a gate that
 never started), add the lesson to the matching step, or a check to `setup_state.py` with a
-test in shipmill's `tests/test_setup_state.py`. When a lesson goes into the skill, add a
-case under `evals/` that fails without it, in the same pull request.
+test in shipmill's `tests/test_setup_state.py`. When a rule must hold, put it in code too
+(a script with its test, a hook, or the gate), since a skill's prose only makes it likely;
+the evals stopped (D-74), so add no case under `evals/`.

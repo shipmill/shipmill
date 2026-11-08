@@ -133,4 +133,4 @@ If you misreported earlier (for example, a job you called green was still runnin
 
 ## Improve the skill
 
-When a pass goes wrong (a merge on a partial rollup, a misattributed flake, a lost push, a clobbered peer worktree), add the lesson to the matching reference, or here if it's a hard rule, so the skill doesn't repeat it. When a lesson goes into the skill, add a case under `evals/` that fails without it, in the same pull request.
+When a pass goes wrong (a merge on a partial rollup, a misattributed flake, a lost push, a clobbered peer worktree), add the lesson to the matching reference, or here if it's a hard rule, so the skill doesn't repeat it. When a rule must hold, put it in code too (a script with its test, a hook, or the gate), since a skill's prose only makes it likely; the evals stopped (D-74), so add no case under `evals/`.

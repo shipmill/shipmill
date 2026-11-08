@@ -423,6 +423,12 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
   `skills/shipmill-setup/SKILL.md` say: when a lesson goes into the skill, add a case under
   `evals/` that fails without it, in the same pull request
 
+Amended by D-74 (#972): no case is added any more. The template's section is `## Rule in
+code`, the test, hook, or gate check that now holds what an agent got wrong, or `none:`
+and why no agent's instructions were involved; and each "Improve the skill" section says
+a rule that must hold goes into code too (a script with its test, a hook, or the gate),
+with no case under `evals/`.
+
 ### Where it lives
 
 - `evals/`: the cases, `cases.toml`, `scaffold.sh`, `bin/gh`, and its `bin/shipmill` and `bin/uvx` shims
@@ -454,7 +460,7 @@ A mistake that was caught becomes a case, so a fixed class of error stays fixed:
 - S-025-12: The pull request job compares against the latest successful default-branch run's result, and runs the suite on the merge base first when that result is missing, older than 14 days, or from a different model; while D-72 holds, the pull request job is only a run the maintainer dispatched with `pr` and `sha`, which does the same, and the baseline is the latest plain dispatched run's (or a scheduled run's kept before D-72); since D-74 (#972) such a run gates nothing
 - S-025-13: dropped in #603, see S-025-18: the command the fork refusal prints names the head SHA
 - S-025-14: A run that reaches `--max-cost-usd` fails the gate with `evals: budget reached after <n> of <m> runs` and compares nothing
-- S-025-15: `docs/postmortems/TEMPLATE.md` has an `## Eval case` section, and the "Improve the skill" section of every skill under `skills/` says to add a failing case under `evals/` with the lesson
+- S-025-15: `docs/postmortems/TEMPLATE.md` has an `## Eval case` section, and the "Improve the skill" section of every skill under `skills/` says to add a failing case under `evals/` with the lesson. Amended by D-74 (#972): the template's section is `## Rule in code` (the test, hook, or gate check that now holds what an agent got wrong, or `none:`), and every "Improve the skill" section says a rule that must hold goes into code too and no case goes under `evals/`
 - S-025-16: `shipmill evals check --gate` exits 1 naming the kinds short of the first suite's counts (8 `verdict`, 4 `decision`, 4 `finding`, 4 `fix`), and while it does, the evals pull request job reports the comparison and exits 0; while D-72 holds, that job is only a run the maintainer dispatched with `pr` and `sha`, and a pull request with no such run has no `evals` check. Amended by D-74 (#972): no pull request has an `evals` check, and the gate stays off whatever `--gate` says
 - S-025-17: `skills/github-pr-triage/SKILL.md` says a red `evals` check is never proven unrelated and blocks the merge unless the maintainer accepts that run; while D-72 holds, it and `references/ci-failures.md` say a pull request touching the agents' instructions waits on no `evals` check, and a run the maintainer dispatched for its head counts and must be green. Amended by D-74 (#972): both say the evals stopped, no pull request needs or waits on an `evals` check, and D-37's gate is retired, so a run someone dispatched by hand blocks nothing
 - S-025-18: On a pull request from a fork the evals job runs no case and fails, never skips, with the line `evals: a fork's pull request runs only by hand: gh workflow run evals.yml -f pr=<N> -f sha=<head SHA>`, the pull request's number and the event's full head SHA filled in, as its error and in its summary
