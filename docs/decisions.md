@@ -643,6 +643,7 @@ entry that supersedes it, never by editing an old one.
 - Why: Commit messages kept saying Fixes #N while the body said Part of #N, closing issues on merge in several repos, and issues with a ## Check closed that way lost their check
 - Applies to: skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/scripts/triage_state.py, closing keywords
 - Enforced by: review
+- Superseded by: D-79
 
 ## D-77: The gate's App asks for deployments read as an optional permission
 
@@ -659,3 +660,12 @@ entry that supersedes it, never by editing an old one.
 - Why: An entry marked Breaking under ### Changed released as a minor, placed there on purpose to avoid the major bump with no question to the maintainer
 - Applies to: skills/github-pr-triage/scripts/changelog_guard.py, changelog fragments, [bump]
 - Enforced by: review
+
+## D-79: The merge gate reads a commit message's closing keywords as GitHub does
+
+- Decided: 2026-11-08, in shipmill/shipmill#988
+- Rule: pr_gate.py refuses a pull request when a closing keyword in its title or one of its commit messages names an issue its body lists as Part of, and when one in its title, a commit, or its body names an open issue with a ## Check section, asking for Part of #N instead; for a commit message it reads every keyword GitHub closes an issue by (close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved, followed by #N or by owner/repo#N naming the same repo), mid-line and in backticks too, while the title and the body keep the reading D-76 and #987 gave them; triage_state.py and shipped.py keep the #416 rule for linking a pull request to its issue; triage_state.py reads VERIFY_CLOSED as D-76 says
+- Why: GitHub closes an issue from a keyword anywhere in a commit message that reaches the default branch, so a mid-line 'and fixes #13' passed D-76's check and closed #13 on merge with its check unrun
+- Applies to: skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/scripts/triage_state.py, closing keywords
+- Enforced by: tests/test_pr_gate.py
+- Supersedes: D-76
