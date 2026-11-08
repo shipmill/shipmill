@@ -283,6 +283,12 @@ sets `[agents] app_id` (D-40), refuses to merge a pull request whose classificat
 `never` zone: `shipmill gh pr merge <n>` and a `shipmill gh api` `PUT` to
 `repos/<owner>/<repo>/pulls/<n>/merge` exit 2 naming the zone and saying the maintainer
 merges it by hand. Approval in chat changes nothing, since the tool doesn't read the chat.
+The same read refuses, with exit 2, a merge of a pull request labelled `needs-decision`:
+its question waits on an answer, and the label comes off before the merge (D-21, D-49).
+In every mode, App or host, `shipmill gh` also refuses before any token a merge whose
+`--match-head-commit`, or the merge API's `sha` field, isn't the full 40-character SHA,
+naming `gh pr view <n> --json headRefOid -q .headRefOid`, since GitHub refuses a short one
+with nothing to act on; it never expands the value.
 A repo without an App has only the skills and `pr_gate.py` between an agent and such a
 merge, and `doctor` says so.
 
@@ -369,6 +375,8 @@ changelog says so under `Changed`:
 - S-030-20: `setup_state.py` reports `LABELS_MISSING` naming `decided` for a config with `[agents]` whose repo lacks it, and doesn't want the label without `[agents]`
 - S-030-21: `skills/github-issue-triage/references/needs-decision.md` opens with "Who decides", giving the code-first then model order, the strictest-level rule, `unknown` for a decision no zone covers, the four paths, the zone line under the needs-decision marker, the decided comment format, and the veto take-up steps; `design-gate.md`, `spec-gate.md`, `comments.md`, github-issue-resolve's, github-pr-triage's, and product-intake's SKILL.md point to it for who decides
 - S-030-22: The eval suite (spec 025) holds cases where a session meets an `implementation` decision and goes on without a question, an `interpretation` decision and posts a decided comment and goes on, a `contract-change` and asks, and an approved `never` change in chat and still leaves the merge to the maintainer
+- S-030-23: `shipmill gh pr merge <n>` and `shipmill gh api -X PUT repos/<o>/<r>/pulls/<n>/merge`, as the App, exit 2 without running `gh` when pull request `n` carries the `needs-decision` label, in any case, naming the label and saying its question is answered and the label removed first, and run `gh` as before for a pull request without it
+- S-030-24: `shipmill gh pr merge` with a `--match-head-commit <v>` or `--match-head-commit=<v>`, and the merge API `PUT` with a `sha=<v>` field (`-f`, `-F`, `--field`, `--raw-field`), exit 2 before any token is minted, as the App or the host, when `v` isn't 40 hex characters, naming `v` and `gh pr view <n> --json headRefOid -q .headRefOid`; a full SHA or none runs `gh` as before
 
 ## Out of scope
 
@@ -408,6 +416,7 @@ changelog says so under `Changed`:
 - shipmill/shipmill#609: S-030-17, S-030-18
 - shipmill/shipmill#611: S-030-19, S-030-20
 - shipmill/shipmill#613: S-030-21, S-030-22
+- shipmill/shipmill#960: S-030-23, S-030-24
 
 ## Verification
 
@@ -433,3 +442,5 @@ changelog says so under `Changed`:
 - S-030-20: `test_s030_20_*` in `tests/test_setup_state.py` (`decided` wanted with `[agents]`, not without); pass
 - S-030-21: opened `skills/github-issue-triage/references/needs-decision.md`, which opens with "Who decides" (code first, then the model, the strictest level, `unknown`, the four paths, the zone line, the decided comment, the veto take-up), and the one-line pointers in `design-gate.md`, `spec-gate.md`, `comments.md`, and github-issue-resolve's, github-pr-triage's, and product-intake's SKILL.md; `test_s030_21_*` in `tests/test_who_decides.py` check them against `decisions.py`'s zones, `triage_state.py`'s and `retro.py`'s markers, and the reference's anchors; pass
 - S-030-22: the cases `evals/github-issue-resolve/implementation-goes-on`, `interpretation-notifies`, `contract-change-asks`, and `evals/github-pr-triage/never-approved-in-chat`, registered in `evals/cases.toml`; `shipmill evals check` passes, and `test_s030_22_*` in `tests/test_who_decides.py` check each case's graders against the writes they must pass and fail, and that the `never` case's fixture answers every read `shipmill decide classify --pr 893` makes and reads `direction` at `never`; their pass rate is the `evals` check's to measure on this pull request (D-37)
+- S-030-23: `test_s030_23_*` in `tests/test_app_gh_merge.py` (`shipmill gh pr merge` and the merge API `PUT` exit 2 without running gh for a pull request labelled `needs-decision` or `Needs-Decision`, and run gh for one with other labels); `test_s030_8_gh_reads_the_merge_base_the_head_and_every_file_with_its_patch` in `tests/test_decide_cli.py` reads the labels in the same call as the head; pass
+- S-030-24: `test_s030_24_*` in `tests/test_app_gh_merge.py` (a short, long, or non-hex `--match-head-commit` in both forms and a short `sha` field in each flag form exit 2 with no token minted, no read, and no gh run, as the App and as the host; a full SHA, an upper-case one, or none runs gh as before); pass

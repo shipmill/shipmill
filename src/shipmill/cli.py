@@ -216,6 +216,7 @@ from shipmill.app_gh import (
     decided_in,
     edited_args,
     find_gh,
+    hold_short_head,
     is_read,
     marked_args,
     merge_flags,
@@ -233,7 +234,16 @@ from shipmill.app_gh import (
 from shipmill.app_install import WAIT_SECONDS, guide
 from shipmill.app_login import AsApp, UrllibWeb, UserLogin, Web, Writer, decider_token, remove_login, store_login
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold
-from shipmill.classify import DEFAULT_REF, Base, Pulls, RepoPath, classify_paths, classify_pull, policy_at
+from shipmill.classify import (
+    DEFAULT_REF,
+    Base,
+    Pulls,
+    RepoPath,
+    classify_change,
+    classify_paths,
+    classify_pull,
+    policy_at,
+)
 from shipmill.claude_auth import ClaudeAuth, preflight_auth
 from shipmill.claude_token import FLAG as TOKEN_FLAG
 from shipmill.claude_token import Credential, Token, TokenSource, inspect, read_token
@@ -327,7 +337,7 @@ from shipmill.stamp import notes, sync
 from shipmill.upgrades import UpgradeId, apply, find, offers, pending
 from shipmill.upgrades import propose as propose_upgrades
 from shipmill.version import Version
-from shipmill.walk import SWEEP, Swept
+from shipmill.walk import DECISION_LABEL, SWEEP, Swept
 from shipmill.worktrees import ClaudeSessions, Sessions, judge, prune, table
 from shipmill.worktrees import report as worktrees_report
 
@@ -1670,8 +1680,10 @@ def _gh(
     With app_id set any failure to get the token exits 2 and gh never runs (D-14), and so does
     --as-host. Without it (spec 037), a read runs as the host's login, and a write too when
     [agents] identity = "host" or the call passes --as-host; any other write exits 2 and gh
-    never runs. GH_TOKEN is never set but empty. As the App, a merge of a pull request with a
-    `never` zone exits 2 and gh never runs (S-030-13), and with [agents] author set, or without
+    never runs. GH_TOKEN is never set but empty. A merge naming its head commit by less than its
+    full SHA exits 2 before any token, in every mode (S-030-24). As the App, a merge of a pull
+    request with a `never` zone or the needs-decision label exits 2 and gh never runs (S-030-13,
+    S-030-23), and with [agents] author set, or without
     it the deprecated credit = "decider", it names who decided it (specs 049, 051). With author =
     "decider", `issue create`, `pr create`, and `pr merge` run with the decider's stored user
     access token, and as the App after one stderr line saying why when there is none; every
@@ -1689,6 +1701,7 @@ def _gh(
         return _gh_product(
             root, leading.product, key, gh_args, read, api, signer, environ, home, runner, readers.current
         )
+    hold_short_head(gh_args)  # S-030-24: before any token, App or not; --product refuses a merge whole
     if not root.is_dir():  # a mistyped --repo must not read as a repo with no App
         raise ReleaseError(f"--repo {root} is not a folder")
     git = Git(root)
@@ -1996,8 +2009,10 @@ def _gh_reader(top: Path, binary: Path, env: Mapping[str, str]) -> MergeReads:
 def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, reader: MergeReader) -> tuple[str, int]:
     """S-030-13: a merge of a pull request whose classification, by the levels at origin/HEAD,
     has a `never` zone exits 2, naming the zone and the maintainer's hand merge; approval in
-    chat changes nothing, since nothing here reads it (D-48). Read with the App's token, in the
-    checkout's own repo only, whose levels it holds. The pull request held, repo and number"""
+    chat changes nothing, since nothing here reads it (D-48). S-030-23: so does one labelled
+    needs-decision, whose question waits on an answer (D-21, D-49), read in the same call. Read
+    with the App's token, in the checkout's own repo only, whose levels it holds. The pull
+    request held, repo and number"""
     origin = _origin_repo(top)
     if origin is None:
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so {merge.command}'s pull request can't be classified")
@@ -2024,7 +2039,13 @@ def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, r
             f"the config on the default branch through a pull request the maintainer merges, then run "
             f"`git -C {top} fetch origin`"
         )
-    found = classify_pull(Base.read(git, DEFAULT_REF), reads, number)
+    change = reads.pull_change(number)
+    if DECISION_LABEL in (label.lower() for label in change.labels):  # S-030-23, D-21, D-49
+        raise ReleaseError(
+            f"{merge.command} is refused: #{number} in {target} is labelled {DECISION_LABEL}, so its question still "
+            "waits on an answer; answer its question and remove the label first, then merge (D-21, D-49)"
+        )
+    found = classify_change(Base.read(git, DEFAULT_REF), reads, change)
     never = [z for z in found.zones if z.level is decide.Level.NEVER]
     if never:
         zones = "; ".join(f"{z.zone.value}: {z.reason}" for z in never)

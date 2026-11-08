@@ -464,7 +464,8 @@ def test_s030_10_without_a_log_there_are_no_candidates(repo: Repo, capsys: pytes
 def test_s030_8_gh_reads_the_merge_base_the_head_and_every_file_with_its_patch(tmp_path: Path) -> None:
     """GhCli.pull_change and text_at, against a gh that answers from a script"""
     merge_base = "a" * 40
-    pull = json.dumps({"head": {"sha": HEAD}, "base": {"sha": "t" * 40}})
+    labels = [{"name": "needs-decision", "color": "d93f0b"}, {"name": "bug"}]
+    pull = json.dumps({"head": {"sha": HEAD}, "base": {"sha": "t" * 40}, "labels": labels})
     files = (
         json.dumps(
             {"filename": "docs/specs/031-x.md", "status": "modified", "patch": "@@ -3 +3 @@\n+status: approved"}
@@ -488,6 +489,7 @@ def test_s030_8_gh_reads_the_merge_base_the_head_and_every_file_with_its_patch(t
     hub = GhCli(tmp_path, gh=str(script))
     change = hub.pull_change(5)
     assert (change.number, change.base, change.head) == (5, merge_base, HEAD)
+    assert change.labels == ("needs-decision", "bug")  # S-030-23: read in the same call
     assert change.files == (
         FileChange("docs/specs/031-x.md", "modified", "@@ -3 +3 @@\n+status: approved"),
         FileChange("docs/product/goals.md", "renamed", None, "docs/goals.md"),
@@ -512,7 +514,7 @@ def test_s030_8_a_pure_rename_has_an_empty_diff_and_classifies(repo: Repo, capsy
 
 
 def test_s030_8_gh_reads_a_pure_rename_as_an_empty_patch(tmp_path: Path) -> None:
-    pull = json.dumps({"head": {"sha": HEAD}, "base": {"sha": "t" * 40}})
+    pull = json.dumps({"head": {"sha": HEAD}, "base": {"sha": "t" * 40}, "labels": []})
     renamed = {"filename": "docs/specs/032-x.md", "status": "renamed", "changes": 0}
     large = {"filename": "docs/specs/033-x.md", "status": "modified", "changes": 9000}
     files = (json.dumps({**renamed, "previous_filename": "docs/specs/031-x.md"}), json.dumps(large))

@@ -266,6 +266,40 @@ def merge_of(args: Sequence[str]) -> Merge | None:
     return Merge("gh api -X PUT .../merge", int(number), None, f"{owner}/{name}")
 
 
+# -- S-030-24: a head commit named by less than its full SHA -------------------------------------
+
+_FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
+_FIELD_FLAGS = frozenset({"-f", "-F", "--field", "--raw-field"})
+
+
+def hold_short_head(args: Sequence[str]) -> None:
+    """S-030-24: a merge whose `--match-head-commit` of `gh pr merge`, or `sha` field of the
+    merge API's PUT, isn't 40 hex characters exits 2, naming the value and the command that
+    prints the full SHA, since GitHub refuses a short one with nothing to act on; nothing is
+    expanded. Read from the arguments alone; any other call passes"""
+    merge = merge_of(args)
+    if merge is None:
+        return
+    if args[0] == "pr":
+        flag = "--match-head-commit"
+        _, flags = _scan(args[1:], _PR_MERGE_LONG, _PR_MERGE_SHORT)
+        given = [value for name, value in flags if name == flag]
+    else:
+        flag = "the sha field"
+        _, flags = _scan(args[1:], _API_LONG, _API_SHORT)
+        fields = [value.partition("=") for name, value in flags if name in _FIELD_FLAGS]
+        given = [value for key, equals, value in fields if key == "sha" and equals]
+    short = next((value for value in given if _FULL_SHA.fullmatch(value) is None), None)
+    if short is None:
+        return
+    pull = merge.number if merge.number is not None else merge.selector
+    view = "gh pr view" if pull is None else f"gh pr view {pull}"
+    raise ReleaseError(
+        f"{merge.command} is refused: GitHub matches the head commit only by its full 40-character SHA, got "
+        f"{short!r} for {flag}; `{view} --json headRefOid -q .headRefOid` prints it (spec 030)"
+    )
+
+
 # -- S-049-8: the flags of `gh pr merge` the credit reads and rewrites ---------------------------
 
 _BODY_LONG = frozenset({"--body", "--body-file"})
