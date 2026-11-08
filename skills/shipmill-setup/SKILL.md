@@ -842,7 +842,7 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      | Commit statuses | read | CI state |
      | Discussions | read | product-intake's input |
      | Metadata | read | required by GitHub |
-     | Deployments | read | the report's environments (optional) |
+     | Deployments | read | the report's environments, asked for where the installation grants it (D-77) |
 
      Deployments is optional (D-77): an installation without it still starts sessions, and
      `shipmill doctor` and the gate warn naming it. For an App made before shipmill asked for

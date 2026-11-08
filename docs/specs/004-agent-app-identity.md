@@ -66,6 +66,12 @@ repos it works on, a private key downloaded to the key path with mode `0600`.
 | Commit statuses | read | CI state |
 | Discussions | read | product-intake's input |
 | Metadata | read | required by GitHub |
+| Deployments | read | the report's environments; optional (D-77) |
+
+Deployments: read is optional (D-77): it is `OPTIONAL_PERMISSIONS` in `src/shipmill/app.py`,
+apart from `PERMISSIONS`, which the launch requires. A session's token asks for it only
+where the installation grants it, an installation without it still launches, and doctor
+and the gate's GitHub preflight warn naming what the owner accepts.
 
 ### At launch
 
@@ -193,7 +199,7 @@ RSA key, `shipmill --repo` on this checkout):
 - S-004-2: ran `shipmill gate shipmill/shipmill --dry-run --app-key <key>` with `app_id` unset, which exited 2 with `--app-key names an App's key, but [agents] in .github/shipmill.toml sets no app_id`; the default path by `test_s004_2_without_app_key_the_gate_reads_the_default_path`, passing
 - S-004-3: ran `shipmill app-token` with a missing key and with a mode `0644` key, each exited 2 naming the path (the second saying `run chmod 600 <path>`); no session stopped or started by `test_s004_3_a_bad_key_launches_and_stops_nothing`, passing
 - S-004-4: ran `shipmill app-token` with a `PATH` holding `git` but no `openssl`, which exited 2 with `openssl not found`; the claims, and a signature the public key verifies, by `test_s004_4_the_jwt_claims_and_header` and `test_s004_4_openssl_signs_a_jwt_its_public_key_verifies`, passing
-- S-004-5: checked by `test_s004_5_an_app_not_installed_on_the_repo_is_named` and `test_s004_5_each_missing_permission_is_named_with_its_access`, passing; `PERMISSIONS` in `src/shipmill/app.py` matches the table
+- S-004-5: checked by `test_s004_5_an_app_not_installed_on_the_repo_is_named` and `test_s004_5_each_missing_permission_is_named_with_its_access`, passing; `PERMISSIONS` in `src/shipmill/app.py` matches the table's required rows, and `OPTIONAL_PERMISSIONS` its optional Deployments row (D-77)
 - S-004-6: checked by `test_s004_6_a_launch_as_the_app_gets_the_bots_env_and_helpers`, `test_s004_6_claude_gets_settings_after_the_name_and_no_token`, and `test_s004_6_git_reads_the_identity_and_config_from_the_env` (a real `git` reads the env), passing
 - S-004-7: checked by `test_s004_7_with_app_id_unset_the_launch_is_todays`, passing; `shipmill gate shipmill/shipmill --dry-run --json` without `app_id` decided LAUNCH, and the state folder held no `app-token.json` or `bin/` after it
 - S-004-8: checked by `test_s004_8_the_token_is_limited_to_the_one_repository`, `test_s004_8_the_cache_is_written_with_mode_0600_and_no_stray_files`, `test_s004_8_reused_while_10_minutes_remain_then_minted`, and `test_s004_8_a_malformed_cache_exits_2_naming_its_path`, passing
@@ -202,4 +208,4 @@ RSA key, `shipmill --repo` on this checkout):
 - S-004-11: `shipmill gate --dry-run --json` without `app_id` printed `"identity": null`; the bot on the decision line, `would launch as <slug>[bot]`, and a dry run that writes nothing by `test_s004_11_a_launch_as_the_app_names_the_bot` and `test_s004_11_a_dry_run_checks_the_app_and_writes_nothing`, passing
 - S-004-12: checked by `test_s004_12_the_gates_own_reads_keep_the_hosts_environment` and `test_s004_12_with_app_id_unset_the_reads_keep_the_hosts_environment`, passing; `gate()` in `src/shipmill/gate.py` never changes its own environment
 - S-004-13: ran `shipmill launchd shipmill/shipmill --print --app-key <relative key>`, whose plist holds `--app-key` and the key's absolute path; and `test_s004_13_launchd_puts_app_key_in_the_gates_arguments`, passing
-- S-004-14: read the four files; `test_s004_14_the_docs_document_the_app` asserts each topic, and the permission table against `PERMISSIONS`, and `test_s004_14_the_metrics_count_the_apps_bot_as_a_bot` that `metrics.py` counts a `Bot` named `<slug>[bot]` as no person, passing
+- S-004-14: read the four files; `test_s004_14_the_docs_document_the_app` asserts each topic, and the permission table against `PERMISSIONS` plus `OPTIONAL_PERMISSIONS` (D-77), and `test_s004_14_the_metrics_count_the_apps_bot_as_a_bot` that `metrics.py` counts a `Bot` named `<slug>[bot]` as no person, passing
