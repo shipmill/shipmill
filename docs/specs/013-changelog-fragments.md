@@ -165,7 +165,8 @@ fragment instead.
   doctor` both ways
 - S-013-14: in a repo with fragments, `changelog_guard.py check --base <ref>` exits 1 on a
   line added under Unreleased since `<ref>` and on an added fragment that fails to read,
-  and exits 0 on a well-formed added fragment, on Python 3.10
+  and exits 0 on a well-formed added fragment, on Python 3.10; a Breaking entry under a
+  heading `[bump] major` doesn't list is not well-formed (D-78)
 - S-013-15: two branches off the same base that each add a fragment merge into each other
   with no conflict (a git-level test, no GitHub)
 - S-013-16: the skills listed under Skills tell a PR to add a fragment when the config sets
