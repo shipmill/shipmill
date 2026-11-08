@@ -262,7 +262,15 @@ from shipmill.credit import (
     issue_deciders,
     with_parents,
 )
-from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER, doctor, product_on_host, read_plugin_rows
+from shipmill.doctor import (
+    CALLER,
+    DOWNSTREAM_CALLER,
+    OPERATE_CALLER,
+    doctor,
+    product_on_host,
+    read_plugin_rows,
+    session_app_on_host,
+)
 from shipmill.downstream import (
     AppDispatcher,
     AppRuns,
@@ -1158,6 +1166,7 @@ def main(
             ),
             home_reader=GhReader(root) if has_gh else None,
             home=user_home,
+            session_app=session_app_on_host(key, user_home, hub_signer, hub_api, lambda: dt.datetime.now(dt.UTC)),
         )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")

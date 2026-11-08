@@ -2948,6 +2948,8 @@ def tick_lines(
         lines += [f"  {line}" for line in decision.pypi.lines()]
     if decision.plugin_notice is not None:
         lines.append(f"  {decision.plugin_notice}")
+    if decision.github is not None:  # D-77: an optional permission the App's installation lacks
+        lines += [f"  warning: {notice}" for notice in decision.github.notices]
     if decision.hooks is not None and not decision.hooks.ok and decision.action is not Action.HOOKS_FAILED:
         verb = "couldn't run" if decision.hooks.unread else "failed"
         lines.append(f"  hooks self-test {verb}, the session starts anyway: {decision.hooks.line()}")

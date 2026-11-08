@@ -842,7 +842,12 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      | Commit statuses | read | CI state |
      | Discussions | read | product-intake's input |
      | Metadata | read | required by GitHub |
+     | Deployments | read | the report's environments (optional) |
 
+     Deployments is optional (D-77): an installation without it still starts sessions, and
+     `shipmill doctor` and the gate warn naming it. For an App made before shipmill asked for
+     it, the user adds it in the App's permissions and the owner accepts it on the App's
+     installation page
    - **Install it only on the repos the gate works on** ("Only select repositories")
    - **The private key:** generate one on the App's page, move the download to
      `~/.config/shipmill/app-<app_id>.pem`, and `chmod 600` it. The key is a host secret

@@ -15,7 +15,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from shipmill.app import Api, AuthFailure, Clock, Identity, Signer, install_fix, mint, utc_now
+from shipmill.app import (
+    OPTIONAL_PERMISSIONS,
+    PERMISSIONS,
+    Api,
+    AuthFailure,
+    Clock,
+    Identity,
+    Signer,
+    install_fix,
+    mint,
+    utc_now,
+)
 from shipmill.errors import ReleaseError
 
 HOST_FIX = "gh auth login"
@@ -38,6 +49,7 @@ class GitHubAuth:
 
     problem: str | None
     fix: str | None = None
+    notices: tuple[str, ...] = ()  # D-77: warnings that start the session anyway, such as an optional permission
 
     def __post_init__(self) -> None:
         if (self.problem is None) != (self.fix is None):
@@ -74,15 +86,16 @@ GitHubPreflight = Callable[[Identity | None], GitHubAuth]  # the App's identity,
 
 def app_reach(identity: Identity, repo: str, signer: Signer, api: Api, clock: Clock = utc_now) -> GitHubAuth:
     """Mint the session's token for repo, then read the repo with it; the token goes nowhere else.
-    The API's own failures (unreachable, an answer that isn't JSON) are ReleaseErrors"""
+    The API's own failures (unreachable, an answer that isn't JSON) are ReleaseErrors. An
+    optional permission the installation lacks is a notice, and the verdict stays ok (D-77)"""
     path = f"/repos/{repo}"
     try:
-        token = mint(identity.app_id, repo, identity.key, clock(), signer, api)
+        token = mint(identity.app_id, repo, identity.key, clock(), signer, api, PERMISSIONS, OPTIONAL_PERMISSIONS)
         answer = api.get(path, token.value)
     except ReleaseError as exc:
         return GitHubAuth.app_failed(exc, identity.app_id, repo)
     if answer.status == 200:
-        return GitHubAuth(None)
+        return GitHubAuth(None, notices=token.notices)
     said = f"GET {path} answered {answer.status}: {answer.body.strip()[:300]}"
     return GitHubAuth(f"the token of {identity.login} can't read {repo} ({said})", install_fix(repo))
 

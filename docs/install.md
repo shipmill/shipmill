@@ -511,6 +511,12 @@ By hand instead:
    | Commit statuses | read | CI state |
    | Discussions | read | product-intake's input |
    | Metadata | read | required by GitHub |
+   | Deployments | read | the report's environments (optional) |
+
+   Deployments is optional (D-77): an installation that hasn't accepted it still starts
+   sessions, and `shipmill doctor` and the gate warn with what to accept. An App created
+   before it was asked for gets it once you add it in the App's permissions and the owner
+   accepts it on the App's installation page.
 
 2. **Install it** only on the repos the gate works on ("Only select repositories")
 

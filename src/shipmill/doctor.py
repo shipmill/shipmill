@@ -17,9 +17,11 @@ from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
 from shipmill.agents import AgentsConfig, Author, Credit, ProductConfig, RolesError
 from shipmill.app import (
+    OPTIONAL_PERMISSIONS,
     PRODUCT_PERMISSIONS,
     Api,
     Clock,
+    Installation,
     Lacks,
     NotInstalled,
     Signer,
@@ -105,6 +107,8 @@ PluginRows = Callable[[], list[PluginRow]]  # the rows, or ReleaseError when the
 PeopleReader = Callable[[int], Flagged]  # spec 012's flagged items for [agents] app_id, or ReleaseError when unread
 HookTester = Callable[[], HookTest]  # the delivery hooks' self-test (spec 026)
 AppProbe = Callable[[int], Installed | None]  # [downstream] app_id's installation check; None: no key on the host
+# [agents] app_id's installation on the repo, read with the App's key; None: no key on the host
+SessionApp = Callable[[int, str], Installation | None]
 
 
 def read_plugin_rows(repo: str, root: Path) -> list[PluginRow]:
@@ -217,6 +221,7 @@ def doctor(
     launchd_job: bool = False,
     now: dt.datetime | None = None,
     home: Path | None = None,
+    session_app: SessionApp | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -237,7 +242,9 @@ def doctor(
     can't. credential reads the Claude token file the gate would use, only with [agents]
     (spec 035); None reads none and the preflight asks about the login. launchd_job says the
     repo has a launchd job on this host, and now times the token's age. home is the user's
-    home, where the hooks block looks for the App's key (spec 033); None takes Path.home()"""
+    home, where the hooks block looks for the App's key (spec 033); None takes Path.home().
+    session_app reads [agents] app_id's installation on repo for its optional permissions
+    (D-77); None, or a probe without the key, checks none"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -263,6 +270,8 @@ def doctor(
         checks.extend(hooks_checks(policy, Git(root), hooks, Path.home() if home is None else home))
         checks.extend(deprecation_checks(policy, "credit") or [credit_check(policy.agents)])
         checks.append(author_check(policy.agents, Path.home() if home is None else home))
+        if session_app is not None and policy.agents.app_id is not None and repo is not None:
+            checks.extend(optional_permission_checks(session_app, policy.agents.app_id, repo))
         uses = None if credential is None else credential()
         if uses is not None:
             checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC)))
@@ -765,6 +774,41 @@ def product_on_host(
         return AppProductReads(app_id, check_key(path), cache, signer, api, clock)
 
     return probe
+
+
+APP = "app"  # doctor's row for the session App's optional permissions (D-77)
+
+
+def session_app_on_host(key: Path | None, home: Path, signer: Signer, api: Api, clock: Clock) -> SessionApp:
+    """doctor's read of [agents] app_id's installation on the repo: the JWT and the two reads the
+    gate's App check makes, nothing minted; None when the key isn't on the host (no key passed and
+    none at the default path). Its bytes are never read"""
+
+    def probe(app_id: int, repo: str) -> Installation | None:
+        path = key if key is not None else default_key(app_id, home)
+        if key is None and not path.exists():
+            return None
+        return installation(app_id, repo, jwt(app_id, check_key(path), clock(), signer), api)
+
+    return probe
+
+
+def optional_permission_checks(read: SessionApp, app_id: int, repo: str) -> list[Check]:
+    """D-77: a WARN per optional permission the App's installation on repo lacks, naming it and
+    that the owner accepts it on the installation's page, else one PASS; sessions start either
+    way, so none is a FAIL. A read that fails is a WARN (the gate's App check reports it as its
+    own), and without the key on the host there is no row"""
+    try:
+        found = read(app_id, repo)
+    except ReleaseError as exc:
+        return [Check("WARN", APP, f"can't check the App {app_id}'s optional permissions on {repo}: {exc}")]
+    if found is None:
+        return []
+    notices = found.notices(repo)
+    if notices:
+        return [Check("WARN", APP, notice) for notice in notices]
+    names = ", ".join(p.named() for p in OPTIONAL_PERMISSIONS)
+    return [Check("PASS", APP, f"app {found.slug} on {repo} is granted the optional {names}")]
 
 
 def product_checks(

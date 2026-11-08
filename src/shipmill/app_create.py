@@ -27,8 +27,12 @@ from pathlib import Path
 from typing import Any
 
 from shipmill import cli_command
-from shipmill.app import PERMISSIONS, Api
+from shipmill.app import OPTIONAL_PERMISSIONS, PERMISSIONS, Api
 from shipmill.errors import ReleaseError
+
+# What a new App asks for: the session's table and the optional permissions (D-77), which a
+# new installation accepts with the rest
+ASKED = PERMISSIONS + OPTIONAL_PERMISSIONS
 
 CONFIG = ".github/shipmill.toml"
 HOMEPAGE = "https://github.com/shipmill/shipmill"  # S-006-9: the App's page links to shipmill
@@ -255,7 +259,7 @@ def free_name(api: Api, token: str, p: Plan, login: str, chosen: bool) -> tuple[
 
 
 def manifest(p: Plan, redirect: str) -> dict[str, object]:
-    """S-006-9: exactly the permissions the gate checks, no webhook"""
+    """S-006-9: exactly the permissions the gate checks, and the optional ones (D-77), no webhook"""
     return {
         "name": p.name,
         "url": HOMEPAGE,
@@ -263,7 +267,7 @@ def manifest(p: Plan, redirect: str) -> dict[str, object]:
         "public": p.public,
         "redirect_url": redirect,
         "hook_attributes": {"url": "https://example.invalid/shipmill-no-webhook", "active": False},
-        "default_permissions": {perm.key: perm.access.value for perm in PERMISSIONS},
+        "default_permissions": {perm.key: perm.access.value for perm in ASKED},
         "default_events": [],
     }
 
@@ -371,6 +375,7 @@ WHY = {
     "statuses": "read CI results",
     "discussions": "read discussions for product intake",
     "metadata": "read the repo's basic details (GitHub requires it)",
+    "deployments": "read the environments' deployments for the report (optional: sessions start without it)",
 }
 
 
@@ -385,7 +390,7 @@ def page(p: Plan, action: str, body: str) -> str:
     repos = "".join(f"<li>{html.escape(r)}</li>" for r in p.installable) or "<li>none yet</li>"
     rows = "".join(
         f"<tr><td>{html.escape(perm.label)}</td><td>{perm.access.value}</td><td>{html.escape(WHY[perm.key])}</td></tr>"
-        for perm in PERMISSIONS
+        for perm in ASKED
     )
     return (
         f"<h1>Create {html.escape(p.name)}</h1>"

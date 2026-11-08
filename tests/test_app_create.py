@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from shipmill.app import PERMISSIONS, Answer
+from shipmill.app import OPTIONAL_PERMISSIONS, PERMISSIONS, Answer
 from shipmill.app_create import (
     Account,
     Created,
@@ -239,7 +239,9 @@ def test_s006_8_a_dry_run_prints_the_plan_and_creates_nothing(
 def test_s006_9_the_manifest_holds_exactly_the_gates_permissions_and_no_webhook() -> None:
     planned = plan((ME, SHIPMILL), ("shipmill/shipmill",), "shipmill", None, "shipmill-agent")
     made = manifest(planned, "http://127.0.0.1:9/callback")
-    assert made["default_permissions"] == {p.key: p.access.value for p in PERMISSIONS}
+    # D-77: a new App asks for the optional permissions too, so its installation accepts them at once
+    assert made["default_permissions"] == {p.key: p.access.value for p in PERMISSIONS + OPTIONAL_PERMISSIONS}
+    assert made["default_permissions"]["deployments"] == "read"
     assert made["hook_attributes"] == {"url": "https://example.invalid/shipmill-no-webhook", "active": False}
     assert (made["default_events"], made["public"], made["name"]) == ([], False, "shipmill-agent")
     assert made["redirect_url"] == "http://127.0.0.1:9/callback"
@@ -429,7 +431,7 @@ def test_s006_18_the_page_reviews_the_plan_and_waits_for_a_click() -> None:
     assert "<script" not in shown and "Create on GitHub" in shown
     assert "Public: it can be installed on any account" in shown
     assert "<li>cli-agent-spec/x</li><li>shipmill/a</li>" in shown
-    for perm in PERMISSIONS:
+    for perm in PERMISSIONS + OPTIONAL_PERMISSIONS:
         assert f"<td>{perm.label}</td><td>{perm.access.value}</td>" in shown
     assert "We didn't find an App Manifest" in shown and "click the button again" in shown
     private = plan((ME, SHIPMILL), ("shipmill/a",), "shipmill", None, "n")
