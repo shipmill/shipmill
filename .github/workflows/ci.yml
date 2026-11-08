@@ -17,6 +17,11 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      # actionlint-py publishes no Linux wheel, and its sdist build downloads the binary
+      # from GitHub releases unpinned (#977): take the official release, checked by sha256
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 # linux_amd64
     steps:
       - uses: actions/checkout@v7
         with:
@@ -42,9 +47,32 @@ jobs:
           uv run shipmill review check
       - name: Check the agents' eval suite without a model (spec 025)
         run: uv run shipmill evals check
+      - name: Restore actionlint
+        id: actionlint
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.actionlint
+          key: actionlint-${{ env.ACTIONLINT_VERSION }}-${{ env.ACTIONLINT_SHA256 }}
+      - name: Download actionlint and check its sha256
+        if: steps.actionlint.outputs.cache-hit != 'true'
+        run: |
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "$url/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check --strict
+          mkdir -p ~/.actionlint
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C ~/.actionlint actionlint
+      - name: Save actionlint
+        if: steps.actionlint.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.actionlint
+          key: ${{ steps.actionlint.outputs.cache-primary-key }}
+      - run: echo "$HOME/.actionlint" >> "$GITHUB_PATH"
       - name: Lint the workflows, including the template init writes
         run: |
-          uvx --from actionlint-py actionlint .github/workflows/*.yml
+          actionlint -version
+          actionlint .github/workflows/*.yml
           uv run python -c "
           import sys
           from pathlib import Path
@@ -60,9 +88,9 @@ jobs:
           (out / 'release-windows.yml').write_text(caller_text(d, 'ci.yml', ticks=windows))
           (out / 'release-push.yml').write_text(caller_text(d, 'ci.yml', ticks=Ticks(hourly=False)))
           " "$RUNNER_TEMP"
-          uvx --from actionlint-py actionlint -ignore 'ci.yml' \
+          actionlint -ignore 'ci.yml' \
             "$RUNNER_TEMP/release.yml" "$RUNNER_TEMP/release-label.yml" "$RUNNER_TEMP/release-list.yml" \
             "$RUNNER_TEMP/release-windows.yml" "$RUNNER_TEMP/release-push.yml"
           uv run python -c "from shipmill.init import operate_caller_text; print(operate_caller_text())" \
             > "$RUNNER_TEMP/operate.yml"
-          uvx --from actionlint-py actionlint "$RUNNER_TEMP/operate.yml"
+          actionlint "$RUNNER_TEMP/operate.yml"
