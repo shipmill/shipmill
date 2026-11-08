@@ -7,7 +7,8 @@ or cached (`mint`, not `app_token`), so a dry run writes nothing. Without an App
 `gh api repos/<repo>` as the host's gh login. Any failure is the verdict's (spec 048: "Any
 failure is GITHUB_AUTH"): one the GITHUB_AUTH table names reads its problem and fix; any other
 shipmill error, such as GitHub being unreachable or an answer shipmill refuses, reads its first
-line, naming the identity and the repo, with the table's last fix.
+line, naming the identity and the repo, with the table's last fix. A 5xx from GitHub, in the App
+check, the mint, or the repo read, reads GitHub as unavailable, with waiting as its fix (#981).
 """
 
 import subprocess
@@ -21,10 +22,12 @@ from shipmill.app import (
     Api,
     AuthFailure,
     Clock,
+    GitHubUnavailable,
     Identity,
     Signer,
     install_fix,
     mint,
+    unavailable,
     utc_now,
 )
 from shipmill.errors import ReleaseError
@@ -96,6 +99,8 @@ def app_reach(identity: Identity, repo: str, signer: Signer, api: Api, clock: Cl
         return GitHubAuth.app_failed(exc, identity.app_id, repo)
     if answer.status == 200:
         return GitHubAuth(None, notices=token.notices)
+    if unavailable(answer.status):  # GitHub's own failure: no repair, the next tick tries again (#981)
+        return GitHubAuth.of(GitHubUnavailable("GET", path, answer.status))
     said = f"GET {path} answered {answer.status}: {answer.body.strip()[:300]}"
     return GitHubAuth(f"the token of {identity.login} can't read {repo} ({said})", install_fix(repo))
 

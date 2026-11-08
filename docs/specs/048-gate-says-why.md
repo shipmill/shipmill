@@ -70,6 +70,7 @@ The reason names what failed, and the line ends `; fix: <fix>`:
 | The installation lacks a permission the session table asks for | each permission | the installation's settings URL, to accept them |
 | Minting the token is refused | GitHub's status and message | `shipmill app-install <repo>` |
 | The token, or the host's gh login, can't read the repo | the status and the identity | `shipmill app-install <repo>` with an App; `gh auth login` without one |
+| GitHub answers a 5xx to the App check, the mint, or the repo read (#981) | `GitHub is unavailable (<method> <path> answered <status>)`, never the body | wait for GitHub (https://www.githubstatus.com): nothing needs repair, the next tick tries again |
 
 A GITHUB_AUTH tick writes no `cursor.json` or `handed.json`, as a CLAUDE_AUTH tick doesn't,
 so the next tick walks again (S-046-11).

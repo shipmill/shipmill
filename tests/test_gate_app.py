@@ -177,7 +177,7 @@ def test_s004_6_the_bot_account_is_read_anonymously() -> None:
         (Answer(404, '{"message": "Not Found"}'), r"GitHub has no bot account demo-agent\[bot\] for app_id 123456"),
         (Answer(200, json.dumps({"login": BOT, "id": "1"})), "gave no user id"),
         (Answer(200, json.dumps({"login": "someone", "id": 5})), r"answered for 'someone', not demo-agent\[bot\]"),
-        (Answer(500, "oops"), "answered 500: oops"),
+        (Answer(500, "oops"), r"GitHub is unavailable \(GET /users/demo-agent%5Bbot%5D answered 500\)"),  # #981
     ],
 )
 def test_s004_6_a_bad_bot_account_exits_2_and_starts_nothing(

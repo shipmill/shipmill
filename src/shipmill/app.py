@@ -185,6 +185,29 @@ class MintRefused(AuthFailure):
     """GitHub refused to mint an installation token"""
 
 
+GITHUB_STATUS = "https://www.githubstatus.com"
+UNAVAILABLE_FIX = f"wait for GitHub ({GITHUB_STATUS}): nothing here needs repair, the next tick tries again"
+
+
+def unavailable(status: int) -> bool:
+    """A 5xx: GitHub's own failure, which no repair on this side fixes (#981)"""
+    return 500 <= status <= 599
+
+
+class GitHubUnavailable(AuthFailure):
+    """GitHub answered a call with a 5xx (#981): its problem names the call and the status,
+    never the body; its fix is to wait for GitHub, since the next tick tries again. The
+    message stays the one the error read before, for a caller that prints it"""
+
+    def __init__(self, method: str, path: str, status: int, message: str | None = None) -> None:
+        if not unavailable(status):
+            raise ValueError(f"GitHub is unavailable only on a 5xx, not {status}")
+        super().__init__(f"GitHub is unavailable ({method} {path} answered {status})", UNAVAILABLE_FIX, message)
+        self.method = method
+        self.path = path
+        self.status = status
+
+
 def check_key(path: Path) -> Path:
     """The key's path once it is a file only its owner can read; its bytes are never read here"""
     if not path.is_file():
@@ -300,6 +323,9 @@ def _ok(answer: Answer, path: str, app_id: int, method: str = "GET", status: int
     if answer.status == status:
         return _json(answer, path, method)
     message = answer.body.strip()[:300]
+    said = f"{method} {path} for app_id {app_id} answered {answer.status}: {message}"
+    if unavailable(answer.status):
+        raise GitHubUnavailable(method, path, answer.status, said)
     if answer.status == 401:
         problem = f"GitHub refused the JWT for app_id {app_id} ({method} {path}: 401 {message})"
         raise JwtRefused(
@@ -307,7 +333,7 @@ def _ok(answer: Answer, path: str, app_id: int, method: str = "GET", status: int
             f"set the host's clock (`sntp -sS time.apple.com`), or use App {app_id}'s own private key",
             f"{problem}; check that the private key is App {app_id}'s and the host's clock is right",
         )
-    raise ReleaseError(f"{method} {path} for app_id {app_id} answered {answer.status}: {message}")
+    raise ReleaseError(said)
 
 
 @dataclass(frozen=True, slots=True)
@@ -668,7 +694,7 @@ def mint(
     asked = table + found.grants(optional)
     body = {"repositories": [name], "permissions": {p.key: str(p.access) for p in asked}}
     answer = api.post(path, bearer, body)
-    if answer.status not in (201, 401):  # a 401 is the JWT's, which _ok names
+    if answer.status not in (201, 401) and not unavailable(answer.status):  # _ok names a 401 (the JWT's) and a 5xx
         problem = f"POST {path} for app_id {app_id} answered {answer.status}: {answer.body.strip()[:300]}"
         raise MintRefused(problem, install_fix(repo))
     data = _ok(answer, path, app_id, "POST", 201)
