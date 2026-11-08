@@ -99,12 +99,14 @@ class FileChange:
 @dataclass(frozen=True, slots=True)
 class PullChange:
     """A pull request's change: the commit it branched from on its base (the merge base, the
-    side its diff is against), its head commit, and its files"""
+    side its diff is against), its head commit, its files, and its labels' names as GitHub
+    spells them (S-030-23)"""
 
     number: int
     base: str
     head: str
     files: tuple[FileChange, ...]
+    labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -618,9 +620,14 @@ class GhCli:
         return json.loads(self._gh("api", *args))
 
     def pull_change(self, number: int) -> PullChange:
-        """The pull request's merge base, head, and every file it changes with its patch (spec 030)"""
+        """The pull request's merge base, head, every file it changes with its patch (spec 030),
+        and its labels (S-030-23)"""
         pull = self._api(f"repos/{{owner}}/{{repo}}/pulls/{number}")
         head, tip = str(pull["head"]["sha"]), str(pull["base"]["sha"])
+        labels = pull.get("labels")
+        named = isinstance(labels, list) and all(isinstance(x, dict) and isinstance(x.get("name"), str) for x in labels)
+        if not named:
+            raise ReleaseError(f"gh api of pull request #{number} gave no list of named labels: {labels!r}")
         compare = f"repos/{{owner}}/{{repo}}/compare/{tip}...{head}"
         base = self._gh("api", compare, "--jq", ".merge_base_commit.sha").strip()
         if not re.fullmatch(r"[0-9a-f]{40}", base):
@@ -643,7 +650,7 @@ class GhCli:
                     None if entry.get("previous_filename") is None else str(entry["previous_filename"]),
                 )
             )
-        return PullChange(number, base, head, tuple(files))
+        return PullChange(number, base, head, tuple(files), tuple(str(label["name"]) for label in labels))
 
     def pull_of(self, selector: str | None) -> str:
         """The URL of the pull request gh resolves selector to (a branch; None for the current

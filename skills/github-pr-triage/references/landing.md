@@ -39,6 +39,7 @@ test "$(git rev-list --count origin/<default>.."$sha")" -gt 0
 
 - **Squash by default** (D-33): `gh pr merge <n> --squash`, so main reads one commit per pull request with its number in the subject. Where the repo's settings don't allow a squash merge, use a merge commit. Never a rebase merge: it rewrites the PR's SHAs and keeps none of the squash's single-commit history.
 - In a repo with `[agents]`, the plugin's delivery hook refuses a rebase merge (`gh pr merge --rebase` or `-r`, or a `gh api` call with `merge_method=rebase`) with exit 2 and the `--squash` command to run instead (spec 026)
+- `shipmill gh pr merge` (and its merge API `PUT`) exits 2 without merging, as the App, for a `never` zone and for a pull request still labelled `needs-decision`: take up the answer and remove the label first (spec 030). In every mode it refuses a `--match-head-commit` (or `sha` field) that isn't the full 40-character SHA; read it with `gh pr view <n> --json headRefOid -q .headRefOid`
 - **Stacked PRs:** merge the base with a merge commit, then `gh pr edit <next> --base <default>`, check the gate again, and merge. A rebase-merge of the base rewrites its SHAs, so the next PR shows duplicate commits. Don't rely on branch deletion to retarget.
   - If the retarget restarts CI, the gate waits for the new run.
   - If the base PR changed after the child was cut (review fixes), rebase the child onto it before merging.

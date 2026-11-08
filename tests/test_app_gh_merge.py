@@ -1,5 +1,6 @@
 """Spec 030: `shipmill gh`, as the App, refuses to merge a pull request with a `never` zone
-(S-030-13). No test reaches the network: the pull request is FakeReads, GitHub MintApi"""
+(S-030-13) or labelled needs-decision (S-030-23), and any `shipmill gh` merge with a short
+head SHA (S-030-24). No test reaches the network: the pull request is FakeReads, GitHub MintApi"""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -14,7 +15,7 @@ from shipmill.errors import ReleaseError
 from shipmill.github import FileChange, PullChange
 
 from .conftest import POLICY, Repo
-from .test_agent_marker import sent
+from .test_agent_marker import HOST_IDENTITY, sent
 from .test_app import APP_ID, REPO, FakeSigner, key_file
 from .test_app_token import FAKE_GH, MintApi, executable
 
@@ -31,12 +32,13 @@ class FakeReads:
 
     files: tuple[FileChange, ...]
     url: str = URL
+    labels: tuple[str, ...] = ()
     numbers: list[int] = field(default_factory=list)
     selectors: list[str | None] = field(default_factory=list)
 
     def pull_change(self, number: int) -> PullChange:
         self.numbers.append(number)
-        return PullChange(number, "b" * 40, "h" * 40, self.files)
+        return PullChange(number, "b" * 40, "h" * 40, self.files, self.labels)
 
     def text_at(self, sha: str, path: str) -> str:
         raise AssertionError(f"no file is read for these paths, got {path} at {sha}")
@@ -81,11 +83,12 @@ def connected(repo: Repo, tmp_path: Path, config: str = POLICY + WITH_APP) -> Pa
 def gh(
     repo: Repo,
     tmp_path: Path,
-    key: Path,
+    key: Path | None,
     args: list[str],
     reader: Reader,
     runner: Runner,
     environ: Mapping[str, str] | None = None,
+    api: MintApi | None = None,
 ) -> int:
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
@@ -93,8 +96,8 @@ def gh(
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     return main(
-        ["--repo", str(repo.root), "gh", "--app-key", str(key), *args],
-        api=MintApi(),
+        ["--repo", str(repo.root), "gh", *([] if key is None else ["--app-key", str(key)]), *args],
+        api=MintApi() if api is None else api,
         signer=FakeSigner(),
         environ={"PATH": f"{fakes}:/usr/bin:/bin", **(environ or {})},
         home=home,
@@ -257,3 +260,96 @@ def test_s030_13_a_placeholder_is_filled_from_the_default_repo() -> None:
     assert merge is not None and merge.target("a/b") == "a/b"
     assert Merge("x", 3, None, "{owner}/c").target("a/b") == "a/c"
     assert Merge("x", 3, None, None).target("a/b") == "a/b"
+
+
+@pytest.mark.parametrize("args", MERGES)
+@pytest.mark.parametrize("label", ["needs-decision", "Needs-Decision"])
+def test_s030_23_a_merge_of_a_pr_labelled_needs_decision_exits_2_without_running_gh(
+    repo: Repo, tmp_path: Path, args: list[str], label: str
+) -> None:
+    key = connected(repo, tmp_path)
+    reader, runner = Reader(FakeReads((CODE,), labels=("bug", label))), Runner()
+    with pytest.raises(ReleaseError) as raised:  # cli.run prints it and exits 2
+        gh(repo, tmp_path, key, args, reader, runner)
+    message = str(raised.value)
+    assert "is refused: #7 in romamo/demo is labelled needs-decision" in message
+    assert "answer its question and remove the label first" in message
+    assert runner.calls == []
+    assert reader.reads.numbers == [7]
+
+
+@pytest.mark.parametrize("args", MERGES)
+def test_s030_23_a_merge_of_a_pr_with_other_labels_runs_gh_as_before(
+    repo: Repo, tmp_path: Path, args: list[str]
+) -> None:
+    key = connected(repo, tmp_path)
+    reader, runner = Reader(FakeReads((CODE,), labels=("bug", "decided", "needs-decision-later"))), Runner()
+    assert gh(repo, tmp_path, key, args, reader, runner) == 0
+    [argv] = runner.calls
+    assert argv[1:] == args
+
+
+SHORT = "abc1234"
+FULL = "0123456789abcdef0123456789abcdef01234567"
+SHORT_HEADS = [
+    ["pr", "merge", "7", "--squash", "--match-head-commit", SHORT],
+    ["pr", "merge", "7", f"--match-head-commit={SHORT}"],
+    ["pr", "merge", "--match-head-commit", FULL, "--match-head-commit", SHORT, "7"],  # each value is checked
+    ["pr", "merge", "7", "--match-head-commit", FULL + "0"],
+    ["pr", "merge", "7", "--match-head-commit", "g" * 40],
+    ["api", "-X", "PUT", f"repos/{REPO}/pulls/7/merge", "-f", f"sha={SHORT}"],
+    ["api", "-X", "PUT", f"repos/{REPO}/pulls/7/merge", f"--raw-field=sha={SHORT}"],
+    ["api", "-X", "PUT", f"repos/{REPO}/pulls/7/merge", "-F", f"sha={SHORT}"],
+    ["api", "-X", "PUT", f"repos/{REPO}/pulls/7/merge", "--field", f"sha={SHORT}"],
+]
+
+
+@pytest.mark.parametrize("args", SHORT_HEADS)
+def test_s030_24_a_merge_with_a_short_head_sha_exits_2_before_any_token(
+    repo: Repo, tmp_path: Path, args: list[str]
+) -> None:
+    key = connected(repo, tmp_path)
+    reader, runner, api = Reader(FakeReads((CODE,))), Runner(), MintApi()
+    with pytest.raises(ReleaseError) as raised:  # cli.run prints it and exits 2
+        gh(repo, tmp_path, key, args, reader, runner, api=api)
+    message = str(raised.value)
+    assert "is refused: GitHub matches the head commit only by its full 40-character SHA, got " in message
+    assert "`gh pr view 7 --json headRefOid -q .headRefOid` prints it" in message
+    assert (runner.calls, reader.envs, api.posts) == ([], [], [])  # no read, no token, no gh
+
+
+def test_s030_24_the_refusal_names_the_value_and_the_branch(repo: Repo, tmp_path: Path) -> None:
+    key = connected(repo, tmp_path)
+    reader, runner = Reader(FakeReads((CODE,))), Runner()
+    with pytest.raises(ReleaseError) as raised:
+        gh(repo, tmp_path, key, ["pr", "merge", "feat/x", "--match-head-commit", SHORT], reader, runner)
+    assert f"got '{SHORT}'" in str(raised.value)
+    assert "`gh pr view feat/x --json headRefOid -q .headRefOid`" in str(raised.value)
+
+
+def test_s030_24_a_short_head_sha_is_refused_as_the_host_too(repo: Repo, tmp_path: Path) -> None:
+    connected(repo, tmp_path, POLICY + HOST_IDENTITY)
+    reader, runner = Reader(FakeReads((CODE,))), Runner()
+    with pytest.raises(ReleaseError, match="full 40-character SHA"):
+        gh(repo, tmp_path, None, ["pr", "merge", "7", "--match-head-commit", SHORT], reader, runner)
+    assert runner.calls == []
+    assert gh(repo, tmp_path, None, ["pr", "merge", "7", "--match-head-commit", FULL], reader, runner) == 0
+    assert [argv[1:] for argv in runner.calls] == [["pr", "merge", "7", "--match-head-commit", FULL]]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["pr", "merge", "7", "--squash", "--match-head-commit", FULL],
+        ["pr", "merge", "7", f"--match-head-commit={FULL.upper()}"],
+        ["api", "-X", "PUT", f"repos/{REPO}/pulls/7/merge", "-f", f"sha={FULL}"],
+        ["api", "-X", "PUT", f"repos/{REPO}/pulls/7/merge", "-f", "merge_method=squash"],
+        ["pr", "view", "7", "--json", "headRefOid"],
+    ],
+)
+def test_s030_24_a_full_head_sha_or_none_runs_gh_as_before(repo: Repo, tmp_path: Path, args: list[str]) -> None:
+    key = connected(repo, tmp_path)
+    reader, runner = Reader(FakeReads((CODE,))), Runner()
+    assert gh(repo, tmp_path, key, args, reader, runner) == 0
+    [argv] = runner.calls
+    assert argv[1:] == args

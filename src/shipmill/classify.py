@@ -235,7 +235,12 @@ def classify_paths(base: Base, paths: Iterable[RepoPath]) -> Classification:
 
 def classify_pull(base: Base, pulls: Pulls, number: int) -> Classification:
     """The zones a pull request's files and patches show"""
-    change = pulls.pull_change(number)
+    return classify_change(base, pulls, pulls.pull_change(number))
+
+
+def classify_change(base: Base, pulls: Pulls, change: PullChange) -> Classification:
+    """The zones the files and patches of a pull request's change, already read, show"""
+    number = change.number
     found = _Found(base)
     listed = list(dict.fromkeys(p for f in change.files for p in f.paths))
     for file in change.files:
