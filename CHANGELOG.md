@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.123.1] - 2026-11-09
+
+### Fixed
+
+- On a runner without GitHub's CLI, `plan`, `prepare`, `land`, `operate`, and every other command that reads GitHub exit 2 with `gh not found on PATH; install GitHub's CLI, https://cli.github.com` instead of a `FileNotFoundError` traceback, and the self-hosted runner docs list `gh` (#1000)
+
 ## [0.123.0] - 2026-11-09
 
 ### Changed
@@ -2359,7 +2365,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.123.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.123.1...HEAD
+[0.123.1]: https://github.com/shipmill/shipmill/compare/v0.123.0...v0.123.1
 [0.123.0]: https://github.com/shipmill/shipmill/compare/v0.122.2...v0.123.0
 [0.122.2]: https://github.com/shipmill/shipmill/compare/v0.122.1...v0.122.2
 [0.122.1]: https://github.com/shipmill/shipmill/compare/v0.122.0...v0.122.1
