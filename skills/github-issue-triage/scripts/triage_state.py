@@ -1219,7 +1219,8 @@ def upstream_refs(issue: dict[str, Any], repo: tuple[str, str]) -> list[tuple[st
 def hold_refs(issue: dict[str, Any], repo: tuple[str, str]) -> dict[tuple[str, str, int], int]:
     """Each issue or pull request a hold comment names, with the index of the newest
     comment naming it: an owner/repo#N or URL in a sentence with a hold phrase, or a plain
-    #N right after one, which is one of repo's own (owner, name)"""
+    #N right after one, which is one of repo's own (owner, name). The issue itself is never
+    one, in any spelling (#1005): "#126 keeps waiting on #125" on #125 says what waits on it"""
     refs: dict[tuple[str, str, int], int] = {}
     for i, c in enumerate(issue["comments"]["nodes"]):
         for line in c["body"].splitlines():
@@ -1227,7 +1228,8 @@ def hold_refs(issue: dict[str, Any], repo: tuple[str, str]) -> dict[tuple[str, s
                 if HOLD.search(sentence):
                     refs.update(((m["owner"], m["name"], int(m["num"])), i) for m in UPSTREAM.finditer(sentence))
                     refs.update(((*repo, int(m["num"])), i) for m in SAME_REPO.finditer(sentence))
-    return refs
+    own = fold((*repo, int(issue["number"])))
+    return {r: i for r, i in refs.items() if fold(r) != own}
 
 
 def depends_lines(body: str) -> list[tuple[int, str, str, bool]]:
