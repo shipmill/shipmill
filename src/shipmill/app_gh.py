@@ -12,7 +12,6 @@ output.
 
 import json
 import re
-import shutil
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -35,13 +34,6 @@ def run_gh(argv: Sequence[str], env: Mapping[str, str]) -> int:
     as a shell reports it"""
     code = subprocess.run(list(argv), env=dict(env), check=False).returncode
     return code if code >= 0 else 128 - code
-
-
-def find_gh(environ: Mapping[str, str]) -> Path:
-    found = shutil.which("gh", path=environ.get("PATH", ""))
-    if found is None:
-        raise ReleaseError("gh not found on PATH; install GitHub's CLI, https://cli.github.com")
-    return Path(found)
 
 
 def named_repo(args: Sequence[str]) -> str | None:

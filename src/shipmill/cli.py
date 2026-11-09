@@ -215,7 +215,6 @@ from shipmill.app_gh import (
     created_body,
     decided_in,
     edited_args,
-    find_gh,
     hold_short_head,
     is_read,
     marked_args,
@@ -313,7 +312,7 @@ from shipmill.gate import (
     tick_record,
     watch_command,
 )
-from shipmill.github import UPGRADE_LABEL, GhCli, GitHub
+from shipmill.github import UPGRADE_LABEL, GhCli, GitHub, find_gh
 from shipmill.github_auth import github_auth
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest, run_hook, self_test
@@ -1089,7 +1088,6 @@ def main(
         if args.downstream == "collect":
             return _downstream_collect(root, args, library or GhLibrary(root), api or UrllibApi(), signer or Openssl())
         return _downstream_start(root, args, library or GhLibrary(root), api or UrllibApi(), signer or Openssl())
-    hub = github or GhCli(root)
     if args.command == "init":
         # checked before any write, on every path (spec 015)
         runs_on = None if args.runs_on is None else RunsOn.parse(args.runs_on)
@@ -1172,22 +1170,29 @@ def main(
             print(f"{check.status} {check.name}: {check.detail}")
         return 1 if any(c.status == "FAIL" for c in checks) else 0
     if args.command == "gate":
-        return _gate(root, args, hub, sessions or ClaudeSessions(root))
+        return _gate(root, args, github or GhCli(root), sessions or ClaudeSessions(root))
     if args.command == "launchd":
         return _launchd(root, args)
     if args.command == "worktrees":
         if args.dry_run and not args.prune:
             raise ReleaseError("--dry-run goes with --prune")
         git = Git(root)
-        judged = judge(git, hub, sessions or ClaudeSessions(root), dt.datetime.now(dt.UTC))
+        judged = judge(git, github or GhCli(root), sessions or ClaudeSessions(root), dt.datetime.now(dt.UTC))
         if args.prune:
             judged = prune(git, judged, args.dry_run)
         sys.stdout.write(json.dumps(worktrees_report(judged), indent=2) + "\n" if args.json else table(judged))
         return 0
 
     policy = Policy.load(config_path(root))
-    if github is None:  # a body cut to fit links the policy's changelog (#499), the default one without [changelog]
-        hub = GhCli(root) if policy.changelog_config is None else GhCli(root, changelog=policy.changelog)
+
+    def hub() -> GitHub:
+        """gh, built only by the commands that read GitHub, so settle-minutes, sync, notes, and
+        cleanup run on a host without it (#1000)"""
+        if github is not None:
+            return github
+        # a body cut to fit links the policy's changelog (#499), the default one without [changelog]
+        return GhCli(root) if policy.changelog_config is None else GhCli(root, changelog=policy.changelog)
+
     git = Git(root, policy.bot_name, policy.bot_email)
     today = dt.datetime.now(dt.UTC).date()
     if args.command == "settle-minutes":
@@ -1199,12 +1204,12 @@ def main(
         if hotfix is None and (args.hotfix_prs or args.hotfix_from):
             raise ReleaseError("--hotfix-prs and --hotfix-from go with --lane hotfix")
         actor = Actor(args.actor) if args.actor else None
-        decision = Planner(git, policy, hub, _now(args.now)).plan(event, lane, args.dry_run, hotfix, actor)
+        decision = Planner(git, policy, hub(), _now(args.now)).plan(event, lane, args.dry_run, hotfix, actor)
         outputs = decision.outputs()
         print(json.dumps(outputs, indent=2))
         _outputs(args.github_output, outputs)
     elif args.command == "propose":
-        for done in propose(git, policy, hub, _proposals(args.proposals)):
+        for done in propose(git, policy, hub(), _proposals(args.proposals)):
             print(f"{done.outcome} #{done.issue}: {done.proposal.lane} {done.proposal.version}, {done.proposal.cause}")
     elif args.command == "prepare":
         prepared = prepare(
@@ -1218,7 +1223,7 @@ def main(
             _ints(args.prs),
             commit=args.commit or args.push,
             push=args.push,
-            github=hub,
+            github=hub(),
             run=ActionsRun.parse(args.workflow_ref, args.run_id) if args.push else None,
         )
         for changed in prepared.changed:
@@ -1231,7 +1236,7 @@ def main(
         landed = land(
             git,
             policy,
-            hub,
+            hub(),
             Lane(args.lane),
             args.version,
             args.sha,
@@ -1251,7 +1256,7 @@ def main(
             )
         )
     elif args.command == "close-proposal":
-        print(close_released(policy, hub, Lane(args.lane), args.version, run_url(os.environ)))
+        print(close_released(policy, hub(), Lane(args.lane), args.version, run_url(os.environ)))
     elif args.command == "cleanup":
         print("deleted the work branch" if cleanup(git, args.version) else "no work branch to delete")
     elif args.command == "sync":
@@ -1262,12 +1267,13 @@ def main(
         for changed in sync(git, policy, args.version, released, args.date or today, newest):
             print(f"synced {changed}")
     elif args.command == "operate":
+        operated = hub()  # before git reads the tags: no gh fails first, with the fix
         if args.approve:
-            report = approve(policy, hub, args.approve, args.dry_run) + "\n"
+            report = approve(policy, operated, args.approve, args.dry_run) + "\n"
         elif args.approve_rollback:
-            report = approve_rollback(policy, hub, args.approve_rollback, args.dry_run) + "\n"
+            report = approve_rollback(policy, operated, args.approve_rollback, args.dry_run) + "\n"
         else:
-            reports = operate(policy, git.tags(), hub, http or UrllibHttp(), _now(args.now), args.dry_run)
+            reports = operate(policy, git.tags(), operated, http or UrllibHttp(), _now(args.now), args.dry_run)
             report = summary(reports, args.dry_run)
         sys.stdout.write(report)
         if args.step_summary is not None:

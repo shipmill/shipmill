@@ -740,6 +740,7 @@ def test_s002_11_the_command_exits_2_and_removes_nothing_when_claude_fails(repo:
             (bin_dir / "git").symlink_to(git)
         else:
             fake_tool(tmp_path, "claude", script)
+        fake_tool(tmp_path, "gh", "exit 1\n")  # found when built (#1000); claude fails before gh runs
         env = {**os.environ, "PATH": str(bin_dir)}
         cmd = [sys.executable, "-c", "from shipmill.cli import run; run()", "--repo", str(repo.root), "worktrees"]
         proc = subprocess.run(cmd, capture_output=True, text=True, env=env)

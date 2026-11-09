@@ -21,6 +21,7 @@ def test_s015_10_release_lanes_documents_self_hosted_runners() -> None:
     assert "Without it every job runs on `ubuntu-latest`" in runners
     for needed in ("`bash`", "`git`", "`curl`", "`github.com`", "`api.github.com`", "`astral-sh/setup-uv`"):
         assert needed in runners, needed
+    assert "GitHub's CLI `gh` on the path" in runners  # #1000: a self-hosted runner may lack it
     assert "A runner takes one job at a time." in runners
     assert "the `settle` job holds the runner for up to `quiet_minutes`" in runners
     assert "Give shipmill a runner of its own" in runners and "drop `quiet_minutes` for a `schedule`" in runners
