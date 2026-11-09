@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.123.2] - 2026-11-09
+
+### Fixed
+
+- The weekly retro now learns whether a zoned question was answered with its recommended option when the question's zone line has no `answer=`: it reads the first answer after the question, a person's reply or the App's relay for the maintainer (pass `retro.py gather --decisions` the `--role` flags), and counts it only when it takes the recommended option as it stands, so the "ask to notify" proposal no longer starves (#997)
+
 ## [0.123.1] - 2026-11-09
 
 ### Fixed
@@ -2365,7 +2371,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.123.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.123.2...HEAD
+[0.123.2]: https://github.com/shipmill/shipmill/compare/v0.123.1...v0.123.2
 [0.123.1]: https://github.com/shipmill/shipmill/compare/v0.123.0...v0.123.1
 [0.123.0]: https://github.com/shipmill/shipmill/compare/v0.122.2...v0.123.0
 [0.122.2]: https://github.com/shipmill/shipmill/compare/v0.122.1...v0.122.2
