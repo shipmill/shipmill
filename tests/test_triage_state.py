@@ -261,6 +261,28 @@ def test_a_plain_hash_number_as_context_on_the_hold_line_holds_nothing(ts: Modul
     assert ts.classify_open(item, "Triage:", "postponed", states, None, REPO)[0] == "UNBLOCKED"
 
 
+def test_1005_a_hold_sentence_naming_the_issue_itself_holds_nothing(ts: ModuleType) -> None:
+    # #125's own comment says what waits on it; it never waits on itself, in any spelling
+    item = {
+        **issue(
+            ("2026-09-01T10:00:00Z", "Triage: **feature**, the spec is #130\n\nOn hold: waits on #130"),
+            ("2026-09-02T10:00:00Z", "#126 and #116 keep waiting on #125 either way."),
+            ("2026-09-03T10:00:00Z", "Blocked: O/R#125 and https://github.com/o/R/issues/125 wait on review."),
+        ),
+        "number": 125,
+    }
+    assert ts.upstream_refs(item, REPO) == [("o", "r", 130)]
+    for state, expected in (("OPEN", "BLOCKED"), ("MERGED", "UNBLOCKED")):
+        states = {("o", "r", 130): state, ("o", "r", 125): "OPEN"}
+        assert ts.classify_open(item, "Triage:", "postponed", states, None, REPO) == (
+            expected,
+            f"o/r#130:{state.lower()}",
+        )
+    # the same number in another repo is another item: it still holds
+    other = {**issue(("2026-09-01T10:00:00Z", "On hold: waits on other/lib#125")), "number": 125}
+    assert ts.upstream_refs(other, REPO) == [("other", "lib", 125)]
+
+
 REFUSED_SPEC = {("o", "r", 60): "CLOSED_UNMERGED"}
 FEATURE = ("2026-09-01T10:00:00Z", "Triage: **feature**, the spec is o/r#60\n\nOn hold: the build waits on o/r#60")
 

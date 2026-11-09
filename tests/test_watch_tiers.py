@@ -258,6 +258,17 @@ def test_914_a_hold_comment_on_an_app_draft_holds_it_until_its_item_closes(ws: M
     assert [r.state for r in unknown] == ["AGENT_DRAFT_HELD"]
 
 
+def test_1005_a_hold_sentence_naming_the_draft_itself_holds_nothing(ws: ModuleType) -> None:
+    draft = pr(20, draft=True, author=APP)
+    hold = [(BOT, "NONE", "#21 keeps waiting on #20 either way. Blocked: o/r#20 lands first.")]
+
+    def states(refs: set[tuple[str, str, int]]) -> dict[tuple[str, str, int], str]:
+        return {r: "OPEN" for r in refs}
+
+    resumed = ws.intake("o/r", 0, "", [draft], lambda n: hold, BOT, hold_states=states)
+    assert [(r.state, r.detail) for r in resumed] == [("AGENT_DRAFT", "#20")]
+
+
 def test_914_without_bot_login_every_draft_is_its_authors(ws: ModuleType) -> None:
     def unread(number: int) -> list[tuple[str, str, str]]:
         raise AssertionError(f"#{number}'s comments were read")

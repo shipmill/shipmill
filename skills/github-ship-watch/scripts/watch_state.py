@@ -2874,7 +2874,7 @@ def intake(
         elif TRIAGE.DECIDED_LABEL in labels and TRIAGE.vetoed(comments_of(number), bot_login) is not None:
             vetoed.append(number)
         elif mine:
-            hold = open_hold(comments_of(number), repo, hold_states)
+            hold = open_hold(comments_of(number), repo, number, hold_states)
             if hold is None:
                 drafts.append(number)
             else:
@@ -2970,13 +2970,15 @@ def own_draft(pr: dict[str, Any], bot_login: str | None) -> bool:
     return bot_login is not None and pr["isDraft"] is True and TRIAGE.same_login(pr_author(pr), bot_login)
 
 
-def open_hold(comments: Comments, repo: str, hold_states: HoldStates | None = None) -> str | None:
-    """The first item a hold comment on an agent's draft names that is still open, as
-    owner/repo#N, triage_state.py's hold_refs rule ("waits on #12", "blocked by o/r#5"), its
-    states read only when one is named; None when every one is closed or merged, or none is
-    named. One whose state can't be read holds, so a failed read never resumes a draft"""
+def open_hold(comments: Comments, repo: str, number: int, hold_states: HoldStates | None = None) -> str | None:
+    """The first item a hold comment on an agent's draft (#number) names that is still open,
+    as owner/repo#N, triage_state.py's hold_refs rule ("waits on #12", "blocked by o/r#5",
+    never the draft itself), its states read only when one is named; None when every one is
+    closed or merged, or none is named. One whose state can't be read holds, so a failed read
+    never resumes a draft"""
     owner, _, name = repo.partition("/")
-    refs = set(TRIAGE.hold_refs({"comments": {"nodes": [{"body": body} for _, _, body in comments]}}, (owner, name)))
+    nodes = [{"body": body} for _, _, body in comments]
+    refs = set(TRIAGE.hold_refs({"number": number, "comments": {"nodes": nodes}}, (owner, name)))
     if not refs:
         return None
     states = (hold_states or (lambda wanted: TRIAGE.upstream_states(wanted)[0]))(refs)
