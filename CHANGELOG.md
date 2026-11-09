@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.124.1] - 2026-11-09
+
+### Fixed
+
+- A hold sentence in an issue's own comment that names the issue itself ("#126 keeps waiting on #125" on #125), as `#N`, `owner/repo#N` or its URL in any case, no longer holds it: triage read such an issue BLOCKED on itself forever, and ship-watch held an agent's draft on its own number the same way (#1005)
+
 ## [0.124.0] - 2026-11-09
 
 ### Changed
@@ -2377,7 +2383,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.124.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.124.1...HEAD
+[0.124.1]: https://github.com/shipmill/shipmill/compare/v0.124.0...v0.124.1
 [0.124.0]: https://github.com/shipmill/shipmill/compare/v0.123.2...v0.124.0
 [0.123.2]: https://github.com/shipmill/shipmill/compare/v0.123.1...v0.123.2
 [0.123.1]: https://github.com/shipmill/shipmill/compare/v0.123.0...v0.123.1
