@@ -4,7 +4,8 @@
 Usage: retro.py gather <owner/repo> [--days 7] [--environment NAME ...]
                        [--incident-label incident] [--bot LOGIN ...] [--json]
                        [--goals [--checkout DIR] [--stalled-weeks 3] [--met-weeks 4]]
-                       [--decisions [--checkout DIR] [--raise-at 2] [--lower-after 4]]
+                       [--decisions [--checkout DIR] [--raise-at 2] [--lower-after 4]
+                                    [--role NAME=FILLER[,FILLER...] ...]]
        retro.py dedupe <owner/repo> --title TITLE [--title TITLE ...] [--json]
 
 gather   runs metrics.py over the --days to now and over the --days before that, and prints
@@ -33,8 +34,12 @@ gather   runs metrics.py over the --days to now and over the --days before that,
          the zones, defaults, and floors from github-issue-triage's decisions.py). Per zone,
          on the issues' and pull requests' comments posted in this --days window by a
          trusted author as above: the decided markers, the veto-handled markers, the
-         needs-decision questions with a zone line, and those whose zone line reads
-         answer=recommended; and the questions over the last --lower-after windows. It
+         needs-decision questions with a zone line, and those answered with the recommended
+         option: the zone line's answer= when it has one, else the first answer after the
+         question (a trusted person's reply without the agent marker, or a --bot login's
+         relay `Decision by @<login>` naming the maintainer the --role flags give), its first
+         non-blank line taking the option marked (recommended) as it stands, its number or
+         its text alone; and the questions over the last --lower-after windows. It
          proposes `Decision policy: <zone> from notify to ask` for a zone at notify with
          --raise-at vetoes or more this window, and `<zone> from ask to notify` for a zone at
          ask, above its floor, whose questions over the --lower-after windows number at least
@@ -186,6 +191,7 @@ def pinned_shipmill(plugin: Path | None = None) -> tuple[str, ...]:
 
 
 def gather(args: argparse.Namespace, sources: Sources) -> int:
+    maintainers = maintainer_logins(args.role) if args.decisions else frozenset()
     direction = read_direction(sources, args.checkout) if args.goals else None
     levels = read_policy(sources, args.checkout) if args.decisions else None
     current = sources.metrics(None)
@@ -217,7 +223,7 @@ def gather(args: argparse.Namespace, sources: Sources) -> int:
         goals = {"direction": False}
         if direction is not None:
             goals = goals_report(args, sources, direction, [current, previous])
-    decisions = decisions_report(args, sources, levels, end) if levels is not None else None
+    decisions = decisions_report(args, sources, levels, end, maintainers) if levels is not None else None
     if args.json:
         window = {"start": current["start"], "end": current["end"], "previous_start": previous["start"]}
         report = {
@@ -766,6 +772,24 @@ DECIDED_MARK = re.compile(r"^<!-- shipmill:decided zone=([a-z][a-z-]*) until=\S+
 VETO_HANDLED_MARK = re.compile(r"^<!-- shipmill:veto-handled zone=([a-z][a-z-]*) -->$")
 NEEDS_DECISION_MARK = "<!-- shipmill:needs-decision -->"
 ZONE_MARK = re.compile(r"^<!-- shipmill:zone ([a-z][a-z-]*)(?: answer=(recommended|other))? -->$")
+# A question's option (needs-decision.md, Asking): "1. <option> (recommended): <why>"
+OPTION = re.compile(r"^\s*([1-9][0-9]*)\.\s+(.+)$")
+RECOMMENDED = " (recommended)"
+NUMBER_ALONE = re.compile(r"(?:option\s*)?#?([1-9][0-9]*)")  # "1", "1.", "Option 1", read after plain()
+SESSION_ANSWER = "Answered in the session:"  # the relay's answer line (needs-decision.md)
+# A relay's first line (D-68, D-70), the login bare or in a code span (D-61), and the agent marker
+# (spec 050): copied from triage_state.py, which the skill scripts can't import from each other;
+# a test checks they agree
+LOGIN_PATTERN = r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}"
+DECISION_BY = re.compile(
+    r"Decision by (?:@(" + LOGIN_PATTERN + r")(?=$|\s|[,;:)]|[.!?](?:\s|$))|`@(" + LOGIN_PATTERN + r")`(?![\w`-]))"
+)
+AGENT_MARKER = re.compile(r"<!-- shipmill:agent(?:\s[^>]*)?-->")
+# The --role flags, as triage_state.py takes them (spec 036): only the maintainer's logins are read
+MAINTAINER = "maintainer"
+ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")
+USER = re.compile(LOGIN_PATTERN)
+TEAM = re.compile(r"@" + LOGIN_PATTERN + r"/[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 MIN_ASKS = 5  # the questions a zone needs over --lower-after windows before it is proposed lower
 COUNTS = ("decided", "vetoes", "asks", "recommended")
 
@@ -915,20 +939,124 @@ def marker(body: str) -> tuple[str, str, bool] | None:
     return None
 
 
+def stated_answer(body: str) -> str | None:
+    """The answer= a question's zone line states, recommended or other; None without one"""
+    lines = body.lstrip().splitlines()
+    zone = ZONE_MARK.match(lines[1].strip()) if len(lines) > 1 else None
+    return zone.group(2) if zone else None
+
+
+def maintainer_logins(values: list[str]) -> frozenset[str]:
+    """The maintainer's logins, lowercased, from --role NAME=FILLER[,FILLER...] flags checked as
+    triage_state.py's parse_roles checks them (one per role, maintainer among them); a team is
+    no login and names nobody here. Empty without flags; exit 2 naming what is wrong"""
+    if not values:
+        return frozenset()
+    roles: dict[str, list[str]] = {}
+    for value in values:
+        name, sep, fillers = value.partition("=")
+        if not sep or not ROLE_NAME.fullmatch(name):
+            raise fail(f"--role wants NAME=FILLER[,FILLER...] with NAME matching {ROLE_NAME.pattern}, got {value!r}")
+        if name in roles:
+            raise fail(f"--role {name} is given twice")
+        if not fillers:
+            raise fail(f"--role {name} has no fillers")
+        roles[name] = []
+        for filler in fillers.split(","):
+            if USER.fullmatch(filler):
+                roles[name].append(filler.lower())
+            elif not TEAM.fullmatch(filler):
+                raise fail(f"--role {name}: {filler!r} is neither a GitHub login nor @org/team")
+    if MAINTAINER not in roles:
+        raise fail(f"--role flags must include {MAINTAINER}=FILLER[,FILLER...]")
+    return frozenset(roles[MAINTAINER])
+
+
+def by_agent(body: str) -> bool:
+    return any(AGENT_MARKER.fullmatch(line.strip()) for line in body.splitlines())
+
+
+def relayed_answer(comment: dict[str, Any], bots: frozenset[str], maintainers: frozenset[str]) -> str | None:
+    """D-68, D-70: from a comment by a --bot login whose first line is the relay `Decision by
+    @<login>` naming a maintainer, its first non-blank line after the relay line, past the
+    template's `Answered in the session:` ("" with none); None for any other comment"""
+    if not login_names(comment.get("author")) & {b.lower() for b in bots}:
+        return None
+    head, _, rest = (comment.get("body") or "").strip().partition("\n")
+    found = DECISION_BY.match(head.strip())
+    if found is None or (found[1] or found[2]).lower() not in maintainers:
+        return None
+    for line in rest.splitlines():
+        if line.strip() and not AGENT_MARKER.fullmatch(line.strip()):
+            said = line.strip()
+            return said[len(SESSION_ANSWER) :].strip() if said.startswith(SESSION_ANSWER) else said
+    return ""
+
+
+def first_answer(later: list[dict[str, Any]], bots: frozenset[str], maintainers: frozenset[str]) -> str | None:
+    """The answer to a question from the comments after it, oldest first, up to a newer trusted
+    question: the first person's reply (an OWNER, MEMBER, or COLLABORATOR, readable, without
+    the needs-decision marker or the agent marker, D-62), its first non-blank line; or a
+    maintainer's relay, as relayed_answer reads it. None while there is neither"""
+    for comment in later:
+        body = comment.get("body") or ""
+        if first_line(body) == NEEDS_DECISION_MARK and trusted(comment, bots):
+            return None
+        relayed = relayed_answer(comment, bots, maintainers)
+        if relayed is not None:
+            return relayed
+        logins = login_names(comment.get("author"))
+        person = bool(logins) and not logins & {b.lower() for b in bots}
+        if person and str(comment.get("authorAssociation") or "NONE") in TRUSTED and not by_agent(body):
+            return first_line(body)
+    return None
+
+
+def plain(text: str) -> str:
+    """Text as an answer is compared: no emphasis or code marks, one space, any case, no end stop"""
+    return " ".join(text.replace("`", "").replace("*", "").split()).casefold().rstrip(".!").strip()
+
+
+def takes_recommended(question: str, answer: str) -> bool:
+    """Whether an answer takes the question's option marked (recommended) as it stands: its
+    number alone ("1", "1.", "Option 1") or its text alone; an answer that narrows or departs
+    from it, another option, or one that can't be read, does not"""
+    for line in question.splitlines():
+        option = OPTION.match(line)
+        if option is None or RECOMMENDED not in option.group(2):
+            continue
+        said = plain(answer)
+        number = NUMBER_ALONE.fullmatch(said)
+        name = plain(option.group(2).split(RECOMMENDED, 1)[0])
+        if number is not None:
+            return number.group(1) == option.group(1)
+        return bool(name) and said in (name, name + RECOMMENDED)
+    return False
+
+
 def decision_counts(
-    threads: list[dict[str, Any]], windows: list[Window], zones: list[str], bots: frozenset[str]
+    threads: list[dict[str, Any]],
+    windows: list[Window],
+    zones: list[str],
+    bots: frozenset[str],
+    maintainers: frozenset[str] = frozenset(),
 ) -> tuple[list[dict[str, dict[str, int]]], list[dict[str, Any]]]:
     """Per window, per zone, the trusted markers posted in it: decided markers, veto-handled
-    markers, zoned needs-decision questions, and those answered with the recommended option;
-    and the markers naming no zone id, so a mistyped zone shows instead of vanishing"""
+    markers, zoned needs-decision questions, and those answered with the recommended option
+    (the zone line's answer= when it has one, else the first answer after the question, a
+    relay counting only when it names one of maintainers); and the markers naming no zone id,
+    so a mistyped zone shows instead of vanishing"""
     counts = [{zone: dict.fromkeys(COUNTS, 0) for zone in zones} for _ in windows]
     unknown: list[dict[str, Any]] = []
     for thread in threads:
-        for comment in thread["comments"]:
+        for i, comment in enumerate(thread["comments"]):
             found = marker(comment["body"])
             if found is None or not trusted(comment, bots):
                 continue
             kind, zone, recommended = found
+            if kind == "asks" and stated_answer(comment["body"]) is None:
+                answer = first_answer(thread["comments"][i + 1 :], bots, maintainers)
+                recommended = answer is not None and takes_recommended(comment["body"], answer)
             posted = timestamp(comment["createdAt"])
             for week, window in zip(counts, windows, strict=True):
                 if posted not in window:
@@ -968,13 +1096,15 @@ def proposal(zone: str, before: str, after: str, why: str) -> dict[str, str]:
     return {"zone": zone, "from": before, "to": after, "title": title, "why": why}
 
 
-def decisions_report(args: argparse.Namespace, sources: Sources, policy: Levels, end: dt.datetime) -> dict[str, Any]:
+def decisions_report(
+    args: argparse.Namespace, sources: Sources, policy: Levels, end: dt.datetime, maintainers: frozenset[str]
+) -> dict[str, Any]:
     """The JSON `decisions` key of spec 030: per zone this window's counts and the questions
     over --lower-after windows, and the proposed level changes"""
     windows = weeks(end, args.days, max(1, args.lower_after))
     threads = fetch_threads(sources, args.repo, windows[-1].start)
     zones = list(policy.levels)
-    counts, unknown = decision_counts(threads, windows, zones, frozenset(args.bot))
+    counts, unknown = decision_counts(threads, windows, zones, frozenset(args.bot), maintainers)
     rows = []
     for zone in zones:
         now = counts[0][zone]
@@ -1086,6 +1216,14 @@ def main() -> int:
         type=int,
         default=4,
         help="with --decisions: windows whose questions, all answered recommended, propose ask to notify",
+    )
+    g.add_argument(
+        "--role",
+        action="append",
+        default=[],
+        help="with --decisions: a role's resolved fillers, one flag per role, maintainer included, as "
+        "`shipmill roles --flags` prints them; a --bot login's relay counts as an answer only when it "
+        "names a maintainer (D-68, D-70)",
     )
     d = sub.add_parser("dedupe", help="each proposed title against the open issues")
     d.add_argument("repo", help="owner/name")
