@@ -218,6 +218,7 @@ def arguments(checkout: Path, **overrides: Any) -> argparse.Namespace:
         "decisions": False,
         "raise_at": 2,
         "lower_after": 4,
+        "role": [],
     }
     return argparse.Namespace(**{**values, **overrides})
 
@@ -667,3 +668,97 @@ def test_s030_18_proposals_raise_at_vetoes_and_lower_only_after_every_question_w
     assert titles(counts(security=five)) == ["Decision policy: security from ask to notify"]
     # a zone at act or never is never proposed
     assert titles(counts(implementation=[(5, 9, 9)] * 4, direction=[(5, 9, 9)] * 4)) == []
+
+
+# -- an answer read from the thread when the zone line has no answer= (#997) ---------------------
+
+AGENT = "\n\n<!-- shipmill:agent -->"
+OPTIONS = (
+    "\n\n1. Derive it in `retro.py` (recommended): every answer counts\n"
+    "2. Keep the zone line: prose only\n\nReply here with a number or your own answer."
+)
+
+
+def question(answer: str = "") -> str:
+    return asked("contract-change", answer) + OPTIONS + AGENT
+
+
+def relay(answer: str, login: str = "`@amy`") -> str:
+    return f"Decision by {login}, relayed by Claude Code\n\n{answer}{AGENT}"
+
+
+def after(n: float) -> str:
+    return iso(END - dt.timedelta(days=3) + dt.timedelta(hours=n))
+
+
+ASKED = after(0)
+
+
+@pytest.mark.parametrize(
+    ("replies", "recommended"),
+    [
+        ([comment("1", after(1))], 1),  # a person's bare number
+        ([comment("Option 1\n\nThanks.", after(1))], 1),  # its first line, the number alone
+        ([comment("Derive it in retro.py", after(1), association="MEMBER")], 1),  # the option's name
+        ([bot(relay("1."), after(1))], 1),  # the App's relay, the login in a code span
+        ([bot(relay("Answered in the session: 1", "@amy"), after(1))], 1),  # the template, bare login
+        ([comment("1, narrowed: only the retro", after(1))], 0),  # narrows the option
+        ([bot(relay("1, but only these commands"), after(1))], 0),
+        ([comment("2", after(1))], 0),  # another option
+        ([comment("sounds good, do whatever", after(1))], 0),  # unreadable
+        ([bot(relay(""), after(1))], 0),  # a relay with no answer line
+        ([comment("2", after(1)), comment("1", after(2))], 0),  # the first answer counts
+        ([comment("1", after(1), association="NONE", login="outsider")], 0),  # no trusted reply
+        ([comment("1" + AGENT, after(1))], 0),  # the agent marker: an agent's text (D-62)
+        ([bot(relay("1", "`@bob`"), after(1))], 0),  # a relay naming no maintainer
+        ([comment("1", after(1), login=BOT, kind="Bot", association="NONE")], 0),  # the App, no relay
+        ([bot(question(), after(1)), comment("1", after(2))], 1),  # of 2 asks: the reply answers the newer
+        ([bot("Triage: implement." + AGENT, after(1)), comment("1.", after(2))], 1),  # agent text skipped
+    ],
+)
+def test_s030_18_a_question_without_answer_reads_the_first_answer_after_it(
+    rt: ModuleType, replies: list[dict[str, Any]], recommended: int
+) -> None:
+    threads = [{"kind": "issue", "number": 7, "comments": [bot(question(), ASKED), *replies]}]
+    bots, maintainers = frozenset({f"{BOT}[bot]"}), frozenset({"amy"})
+    counts, _ = rt.decision_counts(threads, rt.weeks(END, 7, 1), ["contract-change"], bots, maintainers)
+    assert counts[0]["contract-change"]["asks"] >= 1
+    assert counts[0]["contract-change"]["recommended"] == recommended
+
+
+@pytest.mark.parametrize(("stated", "reply", "recommended"), [("other", "1", 0), ("recommended", "2", 1)])
+def test_s030_18_an_explicit_answer_on_the_zone_line_wins_over_the_thread(
+    rt: ModuleType, stated: str, reply: str, recommended: int
+) -> None:
+    threads = [{"kind": "issue", "number": 7, "comments": [bot(question(stated), ASKED), comment(reply, after(1))]}]
+    counts, _ = rt.decision_counts(
+        threads, rt.weeks(END, 7, 1), ["contract-change"], frozenset({f"{BOT}[bot]"}), frozenset({"amy"})
+    )
+    assert counts[0]["contract-change"]["recommended"] == recommended
+
+
+def test_s030_18_gather_reads_a_relay_only_for_the_role_flags_maintainer(
+    rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    issues = [thread(62, bot(question(), ASKED), bot(relay("1"), after(1)))]
+    _, run = commands()
+    for role, recommended in ((["maintainer=amy,@o/team", "qa=bob"], 1), ([], 0)):
+        src = sources(rt, run, graphql=thread_graphql(rt, issues, []))
+        assert rt.gather(policy_args(tmp_path, role=role), src) == 0
+        rows = {z["zone"]: z for z in json.loads(capsys.readouterr().out)["decisions"]["zones"]}
+        assert (rows["contract-change"]["asks"], rows["contract-change"]["recommended"]) == (1, recommended)
+    with pytest.raises(SystemExit) as stopped:
+        rt.gather(policy_args(tmp_path, role=["qa=bob"]), sources(rt, run))
+    assert stopped.value.code == 2
+    assert "--role flags must include maintainer" in capsys.readouterr().err
+
+
+def test_s030_18_the_relay_and_agent_marker_patterns_are_triage_states(rt: ModuleType) -> None:
+    path = SCRIPTS.parent.parent / "github-issue-triage" / "scripts" / "triage_state.py"
+    spec = importlib.util.spec_from_file_location("triage_state_for_retro", path)
+    assert spec is not None and spec.loader is not None
+    triage = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = triage
+    spec.loader.exec_module(triage)
+    assert rt.DECISION_BY.pattern == triage.DECISION_BY.pattern
+    assert rt.AGENT_MARKER.pattern == triage.AGENT_MARKER.pattern
