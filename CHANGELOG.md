@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.124.0] - 2026-11-09
+
+### Changed
+
+- The reusable workflows pin uv to one exact version, 0.13.7, in every `astral-sh/setup-uv` step instead of installing the newest uv on each run, so a broken uv release no longer stops every connected repo's release at once; a test keeps every step on the same version, and `@v0` and the `tool` input keep floating on purpose (D-80) (#1001)
+
 ## [0.123.2] - 2026-11-09
 
 ### Fixed
@@ -2371,7 +2377,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.123.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.124.0...HEAD
+[0.124.0]: https://github.com/shipmill/shipmill/compare/v0.123.2...v0.124.0
 [0.123.2]: https://github.com/shipmill/shipmill/compare/v0.123.1...v0.123.2
 [0.123.1]: https://github.com/shipmill/shipmill/compare/v0.123.0...v0.123.1
 [0.123.0]: https://github.com/shipmill/shipmill/compare/v0.122.2...v0.123.0
