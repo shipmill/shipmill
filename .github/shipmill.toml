@@ -146,3 +146,4 @@ mode = "headless"  # what the gate runs; written out, not left to the default (D
 triage = "act"
 fix = "act"
 land = "act"
+upgrade = "act"                   # shipmill config migrations land without a question
