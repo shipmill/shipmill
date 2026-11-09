@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.123.0] - 2026-11-09
+
+### Changed
+
+- shipmill's own config sets `[autonomy] upgrade = "act"`, so its config upgrades land on green CI without a needs-decision question (#995)
+
 ## [0.122.2] - 2026-11-08
 
 ### Fixed
@@ -2353,7 +2359,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.122.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.123.0...HEAD
+[0.123.0]: https://github.com/shipmill/shipmill/compare/v0.122.2...v0.123.0
 [0.122.2]: https://github.com/shipmill/shipmill/compare/v0.122.1...v0.122.2
 [0.122.1]: https://github.com/shipmill/shipmill/compare/v0.122.0...v0.122.1
 [0.122.0]: https://github.com/shipmill/shipmill/compare/v0.121.0...v0.122.0
