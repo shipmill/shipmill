@@ -669,3 +669,11 @@ entry that supersedes it, never by editing an old one.
 - Applies to: skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/scripts/triage_state.py, closing keywords
 - Enforced by: tests/test_pr_gate.py
 - Supersedes: D-76
+
+## D-80: The reusable workflows pin uv to one exact version
+
+- Decided: 2026-11-09, in shipmill/shipmill#1001
+- Rule: The reusable workflows pin uv to one exact version, bumped by a reviewed pull request here; the tool input and the workflow ref float with @v0, which only ever names a version PyPI serves (D-50)
+- Why: With no version, setup-uv installed the newest uv on every run, so a broken uv release would stop every connected repo's release at once; floating @v0 and tool stay, since a caller on @v0 takes each stable release on purpose
+- Applies to: .github/workflows/*.yml, astral-sh/setup-uv, docs/release-lanes.md
+- Enforced by: tests/test_uv_pin.py

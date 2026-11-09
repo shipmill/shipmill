@@ -64,6 +64,8 @@ jobs:
 
       - uses: astral-sh/setup-uv@v10.2.0
         if: github.event_name == 'push'
+        with:
+          version: "0.13.7"
 
       - name: Wait for the batch of merges to end
         if: github.event_name == 'push'
@@ -101,6 +103,8 @@ jobs:
           fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.13.7"
 
       - name: Plan
         id: plan
@@ -183,6 +187,8 @@ jobs:
           fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.13.7"
 
       - name: Open or update the proposal issues
         shell: bash # -eo pipefail: a failed propose fails the step, though its output goes through tee

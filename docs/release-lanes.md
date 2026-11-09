@@ -92,6 +92,12 @@ comes from the `tool` input of `prepare.yml` and `land.yml` (default
 `git+https://github.com/shipmill/shipmill@v0`), not from the `uses:` ref, so pinning
 shipmill means setting both the `uses:` refs and `tool:`.
 
+A caller on `@v0` takes each stable release on purpose: `@v0` and the default `tool` float
+together, and `@v0` only ever names a version PyPI serves (D-50). The `uv` those workflows
+run is not left floating: every `astral-sh/setup-uv` step pins one exact uv version, and this
+repo bumps it in a reviewed pull request (D-80), so a broken uv release doesn't stop the
+releases of every repo on `@v0` at once.
+
 The keys:
 
 ```toml
@@ -313,7 +319,8 @@ The runner needs:
   `gh`; a self-hosted one may not, and shipmill then exits with `gh not found on PATH`)
 - network access to `github.com`, `api.github.com`, and the package index `uvx` installs
   shipmill's dependencies from (`pypi.org`, `files.pythonhosted.org`)
-- nothing else: `uv` itself comes from the workflows' `astral-sh/setup-uv` step
+- nothing else: `uv` itself comes from the workflows' `astral-sh/setup-uv` step, at the
+  exact version those steps pin
 
 Your own CI workflow, which `release.yml`'s `ci` job calls, picks its runner itself.
 

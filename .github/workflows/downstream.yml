@@ -82,6 +82,8 @@ jobs:
           echo "the head of #$PR is $SHA, the one the person read"
 
       - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.13.7"
 
       - name: Start the downstream runs
         env:
@@ -139,6 +141,8 @@ jobs:
           persist-credentials: false
 
       - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.13.7"
 
       - name: Collect the downstream results
         env:
