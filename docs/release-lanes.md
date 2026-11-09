@@ -309,7 +309,8 @@ under `with:` in both the `prepare` and the `land` job of `release.yml`:
 
 The runner needs:
 
-- `bash`, `git`, and `curl` on the path
+- `bash`, `git`, `curl`, and GitHub's CLI `gh` on the path (GitHub-hosted runners have
+  `gh`; a self-hosted one may not, and shipmill then exits with `gh not found on PATH`)
 - network access to `github.com`, `api.github.com`, and the package index `uvx` installs
   shipmill's dependencies from (`pypi.org`, `files.pythonhosted.org`)
 - nothing else: `uv` itself comes from the workflows' `astral-sh/setup-uv` step

@@ -133,7 +133,8 @@ decisions below, and make any `release.yml` edit in step 4, after `init` writes 
 **The runner.** On a private repo, ask with the decisions below where shipmill's release
 jobs run: GitHub-hosted (the default, billed as above) or a self-hosted runner, named by
 its labels (`self-hosted`, or a JSON list such as `["self-hosted", "linux"]`), which GitHub
-doesn't bill. The runner needs `bash`, `git`, and `curl`, and network access to
+doesn't bill. The runner needs `bash`, `git`, `curl`, and GitHub's CLI `gh` (a
+self-hosted runner may lack it: install it, https://cli.github.com), and network access to
 `github.com`, `api.github.com`, `pypi.org`, and `files.pythonhosted.org`; `uv` comes from
 the workflows' `astral-sh/setup-uv` step
 ([Self-hosted runners](https://github.com/shipmill/shipmill/blob/main/docs/release-lanes.md#self-hosted-runners)).

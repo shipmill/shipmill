@@ -2,7 +2,9 @@
 
 import datetime as dt
 import json
+import os
 import re
+import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -425,6 +427,20 @@ def parse_open_pulls(text: str) -> list[PullRequest]:
     return sorted(pulls, key=lambda p: p.number)
 
 
+_INSTALL_GH = "install GitHub's CLI, https://cli.github.com"
+GH_MISSING = f"gh not found on PATH; {_INSTALL_GH}"
+
+
+def find_gh(environ: Mapping[str, str], gh: str = "gh") -> Path:
+    """gh's path: a bare name looked up on environ's PATH (none without PATH), a path checked
+    as given; ReleaseError naming the fix when there is none (#1000)"""
+    found = shutil.which(gh, path=environ.get("PATH", ""))
+    if found is not None:
+        return Path(found)
+    where = f"gh not found at {gh}" if os.path.dirname(gh) else f"{gh} not found on PATH"
+    raise ReleaseError(f"{where}; {_INSTALL_GH}")  # GH_MISSING for the default gh
+
+
 class GhCli:
     """GitHub through the gh CLI, authenticated by GH_TOKEN in Actions. A body or release
     notes go on stdin, never in argv, which Linux caps at 128 KiB an argument (#499); one
@@ -434,7 +450,9 @@ class GhCli:
         self, root: Path, gh: str = "gh", changelog: str = "CHANGELOG.md", env: Mapping[str, str] | None = None
     ) -> None:
         """env, when given, is gh's whole environment (`shipmill gh`'s, with the App's token);
-        else gh gets this process's"""
+        else gh gets this process's. gh is found on that environment's PATH here, before any
+        call, so a host without it fails with the fix rather than a traceback (#1000)"""
+        find_gh(os.environ if env is None else env, gh)
         self.root = root
         self.gh = gh
         self.changelog = changelog
