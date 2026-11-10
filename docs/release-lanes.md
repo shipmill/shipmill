@@ -827,7 +827,8 @@ and a copy of a private path out of the repo. In a session `shipmill gate` start
 alone), it also refuses a `uv run` of anything but `python`, `pytest`, `ruff`, `mypy`, an
 entry of the checkout's `[project.scripts]`, or a path to a `.py` file (D-82): `uv run env`,
 `uv run sh`, and a `NAME=value` word where the program goes are refused, while `uv sync` and
-uv's own options, such as `--with` and `--no-project`, pass. Its known limit: `uv run python
+uv's own options, such as `--with` and `--no-project`, pass. A session sets a variable in a
+file under `tmp/` and runs `uv run --env-file tmp/<name>.env <command>`. Its known limit: `uv run python
 -c` and the allowlist's `Bash(uvx *)` still start any program, so the rule narrows the
 routing around a denied command without closing it. A person's own session runs `uv` as
 before. `[hooks]` holds what a repo may change; the other rules have no switch:

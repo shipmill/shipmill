@@ -706,7 +706,7 @@ class Rule:
     guards: Callable[[Simple], bool]  # the rule judges this command, so a broken config refuses it
     # the command to run instead, or what to do when no command is left; None allows
     check: Callable[[Simple, Config, Context], Simple | str | None]
-    gate: bool = False  # judged only in a session shipmill gate started (D-82)
+    gate: bool = False  # judged only in a headless session shipmill gate started (D-82)
 
 
 def _with_args(cmd: Simple, call: GhCall, args: Sequence[str]) -> Simple:
@@ -1148,6 +1148,7 @@ UV_FLAGS = frozenset(
     | {"--only-dev", "--no-default-groups", "--all-packages", "--no-editable", "--exact", "--no-env-file"}
     | {"--upgrade", "--reinstall", "--refresh", "--no-build-isolation", "--no-build", "--no-binary"}
     | {"--no-sources", "--compile-bytecode", "--no-index", "--script", "--gui-script", "--module"}
+    | {"--system-certs"}
 )
 UV_VALUE_OPTIONS = frozenset(
     {"--cache-dir", "--color", "--config-file", "--directory", "--project", "--allow-insecure-host"}
@@ -1157,10 +1158,11 @@ UV_VALUE_OPTIONS = frozenset(
     | {"--keyring-provider", "--resolution", "--prerelease", "--fork-strategy", "--exclude-newer"}
     | {"--exclude-newer-package", "--no-binary-package", "--no-build-package", "--reinstall-package"}
     | {"--refresh-package", "--upgrade-package", "--link-mode", "--config-setting", "--config-settings-package"}
-    | {"--no-build-isolation-package", "--python-platform"}
+    | {"--no-build-isolation-package", "--python-platform", "--no-editable-package", "--upgrade-group"}
+    | {"--prerelease-package", "--no-sources-package"}
 )
 UV_SHORT_FLAGS = "qvnUsmhV"  # -q, -v, -n, -U, -s, -m, -h, -V; bundled as in -qq
-UV_SHORT_VALUES = "pifPC"  # -p, -i, -f, -P, -C: the rest of the word, or the next word, is the value
+UV_SHORT_VALUES = "pifPCw"  # -p, -i, -f, -P, -C, -w: the rest of the word, or the next word, is the value
 
 
 def _uv_option(words: Sequence[str], i: int) -> int | None:
@@ -1297,7 +1299,7 @@ RULES = (
     ),
     Rule(
         "uv-run",
-        "in a session shipmill gate starts, uv run starts only python, pytest, ruff, mypy, a [project.scripts]"
+        "in a headless session shipmill gate starts, uv run starts only python, pytest, ruff, mypy, a [project.scripts]"
         " entry, a .py file, or a [hooks] uv_run program; never env, sh, another program, or a NAME=value word",
         "D-82",
         lambda cmd: uv_run(cmd) is not None,

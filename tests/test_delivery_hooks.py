@@ -1611,6 +1611,9 @@ UV_ALLOWED = [
     "uv pip list",
     "uv run --with ruff ruff check",
     "uv run --with=ruff ruff check",
+    "uv run -w ruff ruff check",
+    "uv run --env-file tmp/x.env pytest -q",
+    "uv run --env-file=tmp/x.env --no-project python skills/github-issue-triage/scripts/specs.py check",
     "uv run --with ruff --with-editable . ruff format --check src",
     "uv run --locked --frozen --extra dev --group test --python 3.14 --project . --directory . pytest",
     "uv run -p 3.14 -qq pytest",
@@ -1638,6 +1641,8 @@ UV_REFUSED = [
     "uv run /tmp/evil/python",
     "uv run -- env X=1 ls",
     "uv run --with ruff env X=1 ls",
+    "uv run --env-file tmp/x.env env X=1 ls",
+    "uv run --env-file tmp/x.env sh -c ls",
     "uv run --frobnicate pytest",
     "uv --frobnicate x run env X=1 ls",
     "uv run -x pytest",
@@ -1691,7 +1696,9 @@ def test_d82_the_refusal_reads_as_the_rule(box: Sandbox) -> None:
     result = bash("uv run --no-project env PATH=/x gh pr list", box.app, env=gate_env())
     lines = result.stderr.splitlines()
     assert lines[0] == "shipmill hook uv-run: uv run --no-project env PATH=/x gh pr list"
-    assert lines[1].startswith("Rule: in a session shipmill gate starts, uv run starts only python, pytest, ruff, mypy")
+    assert lines[1].startswith(
+        "Rule: in a headless session shipmill gate starts, uv run starts only python, pytest, ruff, mypy"
+    )
     assert "never env, sh, another program, or a NAME=value word (D-82)" in lines[1]
     assert lines[2].startswith("Instead: run the program itself when the allowlist has it")
 

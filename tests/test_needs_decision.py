@@ -619,10 +619,12 @@ def test_each_skill_and_brief_carries_the_one_command_per_call_rule(path: str) -
     ],
 )
 def test_the_headless_rule_names_the_variable_form_that_passes(path: str) -> None:
-    # #842: `env VAR=... uv run` and `PYTHONPATH=. uv run` were refused 26 times; `uv run env` passes `Bash(uv *)`
+    # #842: `env VAR=... uv run` and `PYTHONPATH=. uv run` were refused 26 times; #1018 (D-82): the
+    # delivery hook refuses `uv run env` in a headless gate session, so variables go in an env file
     text = folded(SKILLS / path)
-    assert "Set a variable with `uv run env VAR=value <command>`" in text
-    assert "never a `VAR=value uv run` or `env VAR=value` prefix" in text
+    assert "`uv run --env-file tmp/<name>.env <command>`, whose command is still one the delivery hook allows" in text
+    assert "never a `VAR=value uv run` or `env VAR=value` prefix, nor `uv run env`, which the hook refuses" in text
+    assert "uv run env VAR=value" not in text
     assert "(`uv run pytest`), not `PYTHONPATH=.`" in text
 
 
