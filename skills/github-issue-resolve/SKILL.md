@@ -90,7 +90,7 @@ A gate session (its prompt carries the `Gate session:` or `Headless:` paragraph)
 ```markdown
 ## Plan
 
-- Serves: {G-n, or several as G-2, G-3; quality bar, as two plain words, for a bug fix or a contract tweak}
+- Serves: {G-n, or several as G-2, G-3; quality bar, as two plain words, for a bug fix or a contract tweak, or the quality-bar ids it serves, as Q-6 or quality bar (Q-4, Q-6)}
 - Files: {the files you expect to change}
 - Order: {the steps; for a bug fix the failing proof first}
 - Proof: {the tests or checks that show it works; a spec's criterion ids}

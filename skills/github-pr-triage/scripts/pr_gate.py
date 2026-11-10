@@ -4,7 +4,8 @@ And does it keep to the repo's direction (spec 024)?
 
 - An agent's PR (authored by --bot-login, or every PR named with --agent) carries a
   `## Plan` section with `Serves:`, `Files:`, `Order:`, and `Proof:` lines, and its
-  `Serves:` names goal ids docs/product.md lists, or `quality bar`; without a
+  `Serves:` names goal ids docs/product.md lists, `quality bar`, or quality-bar ids it
+  lists, alone (`Q-6`) or as `quality bar (Q-4, Q-6)`; without a
   docs/product.md the plan isn't checked. A person's PR is never refused for its plan
 - A PR whose files match a REVIEW.md Protected areas glob, or that edits docs/product.md
   or docs/product/, waits on the maintainer (needs-decision) until --maintainer-accepted
@@ -152,6 +153,9 @@ _MOVED = re.compile(r"^See \[([^\]]+)\]\(product/([A-Za-z0-9][A-Za-z0-9_-]*\.md)
 _PROTECTED_ITEM = re.compile(r"- `([^`]*)`: (\S.*)")
 _PLAN_FIELD = re.compile(r"^\s*(?:[-*]\s+)?(" + "|".join(PLAN_FIELDS) + r"):(.*)$")
 _GOAL = re.compile(r"G-[1-9][0-9]*")
+_QUALITY = re.compile(r"Q-[1-9][0-9]*")
+# `quality bar (Q-4, Q-6)` in a `Serves:` line, read before the line is split on commas (#1016)
+_QUALITY_IDS = re.compile(r"quality bar \(([^()]*)\)")
 # a check's startedAt: seconds, an optional fraction, and a zone, Z or an offset (#962)
 TIMESTAMP = re.compile(
     r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]+))?(Z|[+-][0-9]{2}:[0-9]{2})"
@@ -427,7 +431,8 @@ def direction_ids(read: Callable[[str], str | None]) -> frozenset[str]:
 
 def plan_problems(body: str, ids: frozenset[str]) -> list[str]:
     """Why a PR body's plan doesn't hold: no `## Plan` section, a missing field, or a
-    `Serves:` naming something other than listed goal ids or `quality bar`"""
+    `Serves:` naming something other than listed goal ids, `quality bar`, or listed quality-bar
+    ids, alone (`Q-6`) or in `quality bar (Q-4, Q-6)`"""
     plans = [lines for level, heading, lines in sections(body) if level == 2 and heading == "Plan"]
     if not plans:
         return ["no `## Plan` section; an agent's pull request carries its plan (Serves, Files, Order, Proof)"]
@@ -442,12 +447,20 @@ def plan_problems(body: str, ids: frozenset[str]) -> list[str]:
     problems += [f"the plan has {len(v)} `{k}:` lines; it holds one" for k, v in fields.items() if len(v) > 1]
     serves = fields.get("Serves", [""])[0]
     if "Serves" in fields and not serves:
-        problems.append(f"`Serves:` is empty; it names goal ids from {DIRECTION}, or `{QUALITY_BAR}`")
-    for name in (part.strip() for part in serves.split(",") if serves):
+        problems.append(f"`Serves:` is empty; it names goal ids from {DIRECTION}, `{QUALITY_BAR}`, or quality-bar ids")
+    grouped = [part.strip() for found in _QUALITY_IDS.finditer(serves) for part in found.group(1).split(",")]
+    for name in (part.strip() for part in _QUALITY_IDS.sub(QUALITY_BAR, serves).split(",") if serves):
         if name == QUALITY_BAR:
             continue
-        if not _GOAL.fullmatch(name):
-            problems.append(f"`Serves:` names {name!r}; it names goal ids (G-n) or `{QUALITY_BAR}`")
+        if not (_GOAL.fullmatch(name) or _QUALITY.fullmatch(name)):
+            problems.append(
+                f"`Serves:` names {name!r}; it names goal ids (G-n), `{QUALITY_BAR}`, or quality-bar ids (Q-n)"
+            )
+        elif name not in ids:
+            problems.append(f"`Serves:` names {name}, which {DIRECTION} doesn't list")
+    for name in grouped:
+        if not _QUALITY.fullmatch(name):
+            problems.append(f"`Serves:` names {name!r} in `{QUALITY_BAR} (...)`; it holds quality-bar ids (Q-n)")
         elif name not in ids:
             problems.append(f"`Serves:` names {name}, which {DIRECTION} doesn't list")
     return problems

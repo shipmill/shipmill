@@ -268,6 +268,8 @@ WONT_FIX = re.compile(r"^Triage: \*\*won't fix\*\*: it hits (N-[1-9][0-9]*)\b")
 _HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$")
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 _PLAN_SERVES = re.compile(r"^\s*(?:[-*]\s+)?Serves:(.*)$")
+_PLAN_QUALITY = re.compile(r"Q-[1-9][0-9]*")
+_PLAN_QUALITY_IDS = re.compile(r"quality bar \(([^()]*)\)")
 # A spec (docs/specs/NNN-<slug>.md): its `serves:` line and its `## Issues` items
 _SPEC_NAME = re.compile(r"^\d{3,}-[a-z0-9]+(?:-[a-z0-9]+)*\.md$")
 _SPEC_SERVES = re.compile(r"^serves:(.*)$")
@@ -439,7 +441,11 @@ def plan_serves(body: str | None) -> set[str]:
     if len(plans) != 1:
         return set()
     serves = [m.group(1) for m in (_PLAN_SERVES.match(line) for line in plans[0]) if m]
-    return names(serves[0]) if len(serves) == 1 else set()
+    if len(serves) != 1:
+        return set()
+    # #1016: a quality-bar id, alone or in `quality bar (Q-4, Q-6)`, counts as the quality bar
+    named = names(_PLAN_QUALITY_IDS.sub(QUALITY_BAR, serves[0]))
+    return {QUALITY_BAR if _PLAN_QUALITY.fullmatch(name) else name for name in named}
 
 
 def spec_goals(checkout: Path, repo: str) -> dict[int, set[str]]:
