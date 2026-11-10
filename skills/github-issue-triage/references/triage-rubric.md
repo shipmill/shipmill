@@ -110,6 +110,8 @@ A check the session's tools can't run (a host it can't reach, a command outside 
 
 A parent (an issue with sub-issues that isn't a person's item) may carry a `## Check` section in its body, read as a person's item's is: a command or a URL and what it must return, saying what must hold in production and how to see it (spec 042). A parent without one reads as before: UNBLOCKED once its last child closes, and the session closes it ([comments.md](comments.md), A parent's close). A feature issue gets one from the spec gate when its build deploys ([spec-gate.md](spec-gate.md), Split it into build issues).
 
+**A check whose work lives in other issues links them as its sub-issues** (#1027): `chains.py link <owner/repo#check> --child <owner/repo#part>`, or `chains.py link --product ...` from the coordinator for a part in another of the product's repos. A `Depends on` line alone, or a `blockedBy` relation, means "waits on", not "consists of": an issue held only that way, with a `## Check`, has work of its own and reads UNBLOCKED once its holds close, as work to build, so never write a check's parts that way. When `chains.py link --child` prints `text only:` for a part (GitHub refused the sub-issue, such as across owners), stop and ask the maintainer through the [needs-decision protocol](needs-decision.md) how to mark that check; never leave it held by the line alone, and never label it `role:maintainer` only to keep it from reading UNBLOCKED.
+
 `triage_state.py` reads a parent with a check, where it would read UNBLOCKED, as:
 
 | State | Means | The session |
