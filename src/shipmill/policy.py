@@ -163,11 +163,14 @@ class HooksConfig:
 
     default_branch: bool = True  # default-branch-push: refuse a push to the default branch
     private: tuple[str, ...] = ()  # private-paths: globs, relative to the repo root, whose files never leave it
+    uv_run: tuple[str, ...] = ()  # uv-run: programs a gate session's uv run may start besides the built-in (D-82)
 
     @classmethod
     def parse(cls, t: Table) -> HooksConfig:
-        t.allow("default_branch", "private")
-        return cls(t.boolean("default_branch", default=True), t.strings("private", default=()))
+        t.allow("default_branch", "private", "uv_run")
+        return cls(
+            t.boolean("default_branch", default=True), t.strings("private", default=()), t.strings("uv_run", default=())
+        )
 
 
 @dataclass(frozen=True, slots=True)

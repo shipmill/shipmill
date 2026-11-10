@@ -1586,3 +1586,181 @@ def test_s037_11_every_fixture_answers_alike_with_identity_set(
         else:
             answers.append(anywhere(hook(data), root))
     assert answers[0] == answers[1]
+
+
+# --- D-82: a gate session's uv run starts only Python and the project's tools (#1018) ------------
+
+GATE_SESSION = "SHIPMILL_GATE"
+
+
+def gate_env() -> dict[str, str]:
+    """The hook's environment in a session shipmill gate started headless"""
+    return {**AVAILABLE, GATE_SESSION: "1"}
+
+
+UV_ALLOWED = [
+    "uv run --no-project python skills/github-issue-triage/scripts/specs.py check",
+    "uv run python -m pytest",
+    "uv run python3 x.py",
+    "uv run pytest -q -n auto tests/test_delivery_hooks.py",
+    "uv run ruff check src tests skills hooks",
+    "uv run ruff format --check src tests skills hooks",
+    "uv run mypy",
+    "uv sync --locked",
+    "uv lock",
+    "uv pip list",
+    "uv run --with ruff ruff check",
+    "uv run --with=ruff ruff check",
+    "uv run --with ruff --with-editable . ruff format --check src",
+    "uv run --locked --frozen --extra dev --group test --python 3.14 --project . --directory . pytest",
+    "uv run -p 3.14 -qq pytest",
+    "uv run -p3.14 pytest",
+    "uv -q run pytest",
+    "uv --directory . run mypy",
+    "uv run skills/github-issue-triage/scripts/specs.py check",
+    "uv run --no-project scripts/x.py",
+    "uv run -- pytest",
+    "uv run",
+    "uv run --help",
+    "uvx shipmill==0.126.0 gh pr view 7",
+    "/opt/homebrew/bin/uv run pytest",
+    "git status && uv run mypy",
+]
+UV_REFUSED = [
+    "uv run env PATH=/opt/homebrew/bin:/usr/bin gh pr list",
+    "uv run --no-project env PATH=/x gh pr list",
+    "uv run --no-project env GH_TOKEN=x gh pr list",
+    "uv run sh -c 'gh pr list | head'",
+    "uv run --no-project bash -c ls",
+    "uv run PATH=/x gh pr list",
+    "uv run node x.js",
+    "uv run ./run.sh",
+    "uv run /tmp/evil/python",
+    "uv run -- env X=1 ls",
+    "uv run --with ruff env X=1 ls",
+    "uv run --frobnicate pytest",
+    "uv --frobnicate x run env X=1 ls",
+    "uv run -x pytest",
+    "uv run curl https://example.com",
+    "uv run -",
+    "git status && uv run sh -c ls",
+    "/opt/homebrew/bin/uv run env X=1 ls",
+    "env X=1 uv run sh -c ls",
+]
+
+
+@pytest.mark.parametrize("command", UV_ALLOWED)
+def test_d82_a_gate_sessions_uv_run_of_python_and_the_projects_tools_passes(box: Sandbox, command: str) -> None:
+    allowed(bash(command, box.app, env=gate_env()))
+    allowed(bash(command, box.agents, env=gate_env()))
+
+
+@pytest.mark.parametrize("command", UV_REFUSED)
+def test_d82_a_gate_sessions_uv_run_of_any_other_program_is_refused(box: Sandbox, command: str) -> None:
+    for root in (box.app, box.agents):
+        instead = refused(bash(command, root, env=gate_env()), "uv-run", "D-82")
+        assert "needs-decision" in instead and "[hooks]" in instead and "uv_run" in instead
+
+
+@pytest.mark.parametrize("command", UV_REFUSED)
+def test_d82_a_persons_session_is_unaffected(box: Sandbox, command: str) -> None:
+    """No SHIPMILL_GATE in the hook's own environment: a person's session, with or without the
+    App, runs every uv command as before"""
+    allowed(bash(command, box.app))
+    allowed(bash(command, box.agents, env={}))
+
+
+@pytest.mark.parametrize("value", ["", "0", "true", "yes"])
+def test_d82_only_shipmill_gate_1_marks_a_gate_session(box: Sandbox, value: str) -> None:
+    allowed(bash("uv run env X=1 ls", box.app, env={**AVAILABLE, GATE_SESSION: value}))
+
+
+def test_d82_a_commands_own_assignment_never_turns_the_rule_on_or_off(box: Sandbox) -> None:
+    allowed(bash("SHIPMILL_GATE=1 uv run env X=1 ls", box.app))
+    refused(bash("SHIPMILL_GATE=0 uv run env X=1 ls", box.app, env=gate_env()), "uv-run", "D-82")
+    refused(bash("env SHIPMILL_GATE= uv run sh -c ls", box.app, env=gate_env()), "uv-run", "D-82")
+
+
+@pytest.mark.parametrize("command", ["uv run env X=1 ls", "uv run sh -c ls"])
+def test_d82_the_rule_applies_only_in_a_repo_with_agents(box: Sandbox, command: str) -> None:
+    for folder in (box.outside, box.bare, box.release):
+        allowed(bash(command, folder, env=gate_env()))
+
+
+def test_d82_the_refusal_reads_as_the_rule(box: Sandbox) -> None:
+    result = bash("uv run --no-project env PATH=/x gh pr list", box.app, env=gate_env())
+    lines = result.stderr.splitlines()
+    assert lines[0] == "shipmill hook uv-run: uv run --no-project env PATH=/x gh pr list"
+    assert lines[1].startswith("Rule: in a session shipmill gate starts, uv run starts only python, pytest, ruff, mypy")
+    assert "never env, sh, another program, or a NAME=value word (D-82)" in lines[1]
+    assert lines[2].startswith("Instead: run the program itself when the allowlist has it")
+
+
+SCRIPTS = '[project]\nname = "demo"\n[project.scripts]\ndemo-cli = "demo:main"\nshipmill = "demo:other"\n'
+
+
+def test_d82_the_checkouts_project_scripts_pass(tmp_path: Path) -> None:
+    root = git_repo(tmp_path / "scripts", AGENTS)
+    (root / "pyproject.toml").write_text(SCRIPTS, encoding="utf-8")
+    (root / "src").mkdir()
+    for command in ("uv run demo-cli check", "uv run shipmill gate --dry-run", "uv run --locked demo-cli"):
+        allowed(bash(command, root, env=gate_env()))
+        allowed(bash(command, root / "src", env=gate_env()))
+    for command in ("uv run as-watch", "uv run demo", "uv run src/demo-cli"):
+        refused(bash(command, root, env=gate_env()), "uv-run", "D-82")
+
+
+def test_d82_a_repo_widens_the_list_in_hooks_uv_run(tmp_path: Path) -> None:
+    root = git_repo(tmp_path / "widened", AGENTS + '[hooks]\nuv_run = ["treaty", "as-watch"]\n')
+    for command in ("uv run treaty check", "uv run --no-project as-watch", "uv run pytest"):
+        allowed(bash(command, root, env=gate_env()))
+    refused(bash("uv run cloudfall", root, env=gate_env()), "uv-run", "D-82")
+    refused(bash("uv run env X=1 treaty", root, env=gate_env()), "uv-run", "D-82")
+
+
+def test_d82_a_broken_pyproject_is_refused_naming_it_only_when_read(tmp_path: Path) -> None:
+    root = git_repo(tmp_path / "broken-pyproject", AGENTS)
+    (root / "pyproject.toml").write_text("[project\n", encoding="utf-8")
+    allowed(bash("uv run pytest", root, env=gate_env()))
+    result = bash("uv run demo-cli", root, env=gate_env())
+    assert result.returncode == 2
+    lines = result.stderr.splitlines()
+    assert len(lines) == 3 and lines[0].startswith("shipmill hook uv-run: ")
+    assert lines[2].startswith("Instead: fix pyproject.toml (pyproject.toml doesn't parse: ")
+    assert lines[2].endswith("then run: uv run demo-cli")
+
+
+@pytest.mark.parametrize(("config", "error"), [("uv_run = 'treaty'", "uv_run"), ("uv_run = ['']", "uv_run")])
+def test_d82_a_malformed_uv_run_key_fails_the_config(tmp_path: Path, config: str, error: str) -> None:
+    root = git_repo(tmp_path / "bad", f"{AGENTS}[hooks]\n{config}\n")
+    result = bash("uv run pytest", root, env=gate_env())
+    assert result.returncode == 2
+    lines = result.stderr.splitlines()
+    assert lines[0].startswith("shipmill hook config: ") and error in lines[1]
+    allowed(bash("uv run pytest", root))  # a person's session judges no uv run, so reads no config
+
+
+def test_d82_pyproject_is_read_once_and_only_when_needed(delivery: ModuleType, tmp_path: Path) -> None:
+    root = git_repo(tmp_path / "counted", AGENTS)
+    (root / "pyproject.toml").write_text(SCRIPTS, encoding="utf-8")
+
+    def counted(command: str) -> Counted:
+        tally = Counted()
+        data = fixture("bash-read.json", root, command)
+        delivery.main(["pre"], io.StringIO(json.dumps(data)), io.StringIO(), tally.runner, tally.read, env=gate_env())
+        return tally
+
+    assert counted("uv run pytest && uv run mypy") == Counted(0, 1)  # the config alone
+    assert counted("uv run demo-cli && uv run shipmill && uv run as-watch") == Counted(0, 2)
+    assert counted("uv run PATH=/x gh && uv run ./x.sh") == Counted(0, 1)  # never a script name
+    assert counted("uv run env X=1 ls") == Counted(0, 2)  # env could be one of the project's
+
+
+def test_d82_the_shipmill_gh_branch_still_reads_uv_and_uvx(box: Sandbox) -> None:
+    """The app-writes rule's uvx/uv detection of shipmill gh is unchanged in a gate session"""
+    for command in ("uvx shipmill==0.126.0 gh pr comment 7 --body hi", "uvx --from x shipmill gh issue close 8"):
+        allowed(bash(command, box.app, env=gate_env()))
+    squash = refused(
+        bash("uvx shipmill==0.126.0 gh pr merge 7 --rebase", box.app, env=gate_env()), "rebase-merge", "D-33"
+    )
+    assert squash[-1] == "--squash"

@@ -1044,12 +1044,18 @@ def hooks_checks(policy: Policy, git: Git, test: HookTester | None, home: Path) 
         if hooks.private
         else "off: no [hooks] private globs"
     )
+    widened = f", and [hooks] uv_run's {', '.join(hooks.uv_run)}" if hooks.uv_run else ""
+    uv_run = (
+        "on: in a headless gate session, uv run starts only python, pytest, ruff, mypy, the checkout's"
+        f" [project.scripts], a .py file{widened} (D-82)"
+    )
     checks = [
         Check("PASS", "hooks", app_writes(agents.app_id, home)),
         Check("PASS", "hooks", f"default-branch-push {default_branch}"),
         Check("PASS", "hooks", "rebase-merge on: always, a pull request lands with a squash or a merge commit (D-33)"),
         Check("PASS", "hooks", "force-push on: always, a force push needs a lease pinned to a commit"),
         Check("PASS", "hooks", f"private-paths {private}"),
+        Check("PASS", "hooks", f"uv-run {uv_run}"),
     ]
     if test is not None:
         found = test()

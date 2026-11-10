@@ -157,7 +157,10 @@ has an `[agents]` section, they refuse with exit 2 a `gh` write without `shipmil
 `~/.config/shipmill/app-<app_id>.pem`, or `SHIPMILL_APP_KEY` set, as in every gate session;
 spec 033), a push to the default branch, a rebase merge, a force push without a lease
 pinned to a commit, and a copy of a `[hooks] private` path out of the repo, each with the
-command to run instead. Everywhere else they allow every command. They need `uv` on your
+command to run instead. In a session `shipmill gate` started headless they also refuse a
+`uv run` of anything but Python and the project's tools (D-82), which `[hooks] uv_run`
+widens; `uv run python -c` and `uvx` still start any program, a known limit. Everywhere
+else they allow every command. They need `uv` on your
 `PATH`, which runs them on a Python 3.11 or newer it finds or installs. When a hook can't
 start its script (no `uv`, no such Python to be had, offline or with `python-downloads =
 "never"`, or the script missing), it prints `shipmill hook: can't start hooks/delivery.py

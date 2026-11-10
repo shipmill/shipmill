@@ -14,12 +14,19 @@ Stdlib only and Python 3.11+ (tomllib), since the plugin can't import the instal
 The hooks catch an agent's mistake: a command shlex can't split, and `bash -c`, `eval`,
 `$(...)`, and here-documents, pass; the trust filter (D-16) is the control against hostile
 text. No command but a `git push`, and no edit but of the direction or a REVIEW.md, may start
-a process, and each call reads a repo's config at most once.
+a process, and each call reads a repo's config, and its pyproject.toml, at most once.
 
 The app-writes rule applies only where the App is available to the session (spec 033, D-54):
 a non-empty SHIPMILL_APP_KEY in the hook's own environment, which shipmill gate sets on every
 session it starts, or the App's key file at $HOME/.config/shipmill/app-<app_id>.pem, checked
 with one stat and never read. A command's own NAME=value assignments are never read for it.
+
+The uv-run rule (D-82) applies only in a session shipmill gate started headless, whose
+--settings env sets SHIPMILL_GATE=1, read from the hook's own environment alone: there `uv run`
+starts only python, pytest, ruff, mypy, a [hooks] uv_run program, a path to a .py file, or an
+entry of the checkout's [project.scripts]. Its known limit: `uv run python -c` and the
+allowlist's `Bash(uvx *)` still start any program, so it narrows the routing around a denied
+command without closing it.
 """
 
 from __future__ import annotations
@@ -143,6 +150,10 @@ class Config:
     app_id: int | None = None
     default_branch: bool = True  # [hooks] default_branch
     private: tuple[str, ...] = ()  # [hooks] private
+    uv_run: tuple[str, ...] = ()  # [hooks] uv_run: programs a gate session's uv run may start besides the built-in
+
+
+HOOKS_KEYS = frozenset({"default_branch", "private", "uv_run"})
 
 
 def parse_config(text: str) -> Config | None:
@@ -163,7 +174,7 @@ def parse_config(text: str) -> Config | None:
     hooks = data.get("hooks", {})
     if not isinstance(hooks, dict):
         raise ConfigError("[hooks] is not a table")
-    unknown = sorted(set(hooks) - {"default_branch", "private"})
+    unknown = sorted(set(hooks) - HOOKS_KEYS)
     if unknown:
         raise ConfigError(f"[hooks] has an unknown key: {unknown[0]}")
     default_branch = hooks.get("default_branch", True)
@@ -172,7 +183,10 @@ def parse_config(text: str) -> Config | None:
     private = hooks.get("private", [])
     if not isinstance(private, list) or not all(isinstance(glob, str) and glob for glob in private):
         raise ConfigError(f"[hooks] private must be a list of globs, got {private!r}")
-    return Config(app_id, default_branch, tuple(private))
+    uv_run = hooks.get("uv_run", [])
+    if not isinstance(uv_run, list) or not all(isinstance(name, str) and name for name in uv_run):
+        raise ConfigError(f"[hooks] uv_run must be a list of program names, got {uv_run!r}")
+    return Config(app_id, default_branch, tuple(private), tuple(uv_run))
 
 
 @dataclass(frozen=True)
@@ -180,17 +194,55 @@ class Broken:
     message: str
 
 
+PYPROJECT = Path("pyproject.toml")
+
+
+def parse_scripts(text: str) -> frozenset[str]:
+    """pyproject.toml's [project.scripts] names; ConfigError when it doesn't parse or the
+    table has the wrong shape"""
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{PYPROJECT} doesn't parse: {exc}") from None
+    project = data.get("project", {})
+    if not isinstance(project, dict):
+        raise ConfigError(f"{PYPROJECT}: [project] is not a table")
+    scripts = project.get("scripts", {})
+    if not isinstance(scripts, dict):
+        raise ConfigError(f"{PYPROJECT}: [project.scripts] is not a table")
+    return frozenset(scripts)
+
+
 @dataclass
 class Configs:
-    """Each repo's config, read at most once per call"""
+    """Each repo's config, and its pyproject.toml's [project.scripts], read at most once per call"""
 
     read: ReadConfig
     seen: dict[Path, Config | Broken | None] = field(default_factory=dict)
+    scripts_seen: dict[Path, frozenset[str] | Broken] = field(default_factory=dict)
 
     def at(self, root: Path) -> Config | Broken | None:
         if root not in self.seen:
             self.seen[root] = self._load(root)
         return self.seen[root]
+
+    def scripts(self, root: Path) -> frozenset[str] | Broken:
+        """The checkout's [project.scripts] names; none without a pyproject.toml"""
+        if root not in self.scripts_seen:
+            self.scripts_seen[root] = self._scripts(root)
+        return self.scripts_seen[root]
+
+    def _scripts(self, root: Path) -> frozenset[str] | Broken:
+        try:
+            text = self.read(root / PYPROJECT)
+        except (OSError, UnicodeDecodeError) as exc:
+            return Broken(f"{PYPROJECT} can't be read: {exc}")
+        if text is None:
+            return frozenset()
+        try:
+            return parse_scripts(text)
+        except ConfigError as exc:
+            return Broken(str(exc))
 
     def _load(self, root: Path) -> Config | Broken | None:
         try:
@@ -654,6 +706,7 @@ class Rule:
     guards: Callable[[Simple], bool]  # the rule judges this command, so a broken config refuses it
     # the command to run instead, or what to do when no command is left; None allows
     check: Callable[[Simple, Config, Context], Simple | str | None]
+    gate: bool = False  # judged only in a session shipmill gate started (D-82)
 
 
 def _with_args(cmd: Simple, call: GhCall, args: Sequence[str]) -> Simple:
@@ -1072,6 +1125,135 @@ def _app_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
     return Simple(kept, (*shipmill(ctx.plugin), "gh", *call.args(cmd)), cmd.cwd)
 
 
+# A session shipmill gate starts headless carries this in its --settings env (D-82); read from
+# the hook's own environment only, never from a command's NAME=value words
+GATE_SESSION = "SHIPMILL_GATE"
+
+
+def gate_session(env: Mapping[str, str]) -> bool:
+    return env.get(GATE_SESSION) == "1"
+
+
+# What a gate session's `uv run` may start (D-82), besides [hooks] uv_run, the checkout's
+# [project.scripts], and a path to a .py file
+UV_RUN_PROGRAMS = frozenset({"python", "python3", "pytest", "ruff", "mypy"})
+# uv's options, global and `uv run`'s, as uv 0.9 documents them: a flag, or one that takes the
+# next word (or its own `=value`) as its value. An option not listed is refused, never guessed at,
+# since a value option read as a flag would make its value the program
+UV_FLAGS = frozenset(
+    {"--quiet", "--verbose", "--native-tls", "--offline", "--no-cache", "--no-progress", "--no-config"}
+    | {"--no-python-downloads", "--managed-python", "--no-managed-python", "--preview", "--no-preview"}
+    | {"--show-settings", "--help", "--version", "--no-project", "--locked", "--frozen", "--no-sync"}
+    | {"--isolated", "--active", "--no-active", "--all-extras", "--all-groups", "--no-dev", "--dev"}
+    | {"--only-dev", "--no-default-groups", "--all-packages", "--no-editable", "--exact", "--no-env-file"}
+    | {"--upgrade", "--reinstall", "--refresh", "--no-build-isolation", "--no-build", "--no-binary"}
+    | {"--no-sources", "--compile-bytecode", "--no-index", "--script", "--gui-script", "--module"}
+)
+UV_VALUE_OPTIONS = frozenset(
+    {"--cache-dir", "--color", "--config-file", "--directory", "--project", "--allow-insecure-host"}
+    | {"--python-preference", "--extra", "--no-extra", "--group", "--no-group", "--only-group", "--with"}
+    | {"--with-editable", "--with-requirements", "--env-file", "--package", "--python", "--index"}
+    | {"--default-index", "--index-url", "--extra-index-url", "--find-links", "--index-strategy"}
+    | {"--keyring-provider", "--resolution", "--prerelease", "--fork-strategy", "--exclude-newer"}
+    | {"--exclude-newer-package", "--no-binary-package", "--no-build-package", "--reinstall-package"}
+    | {"--refresh-package", "--upgrade-package", "--link-mode", "--config-setting", "--config-settings-package"}
+    | {"--no-build-isolation-package", "--python-platform"}
+)
+UV_SHORT_FLAGS = "qvnUsmhV"  # -q, -v, -n, -U, -s, -m, -h, -V; bundled as in -qq
+UV_SHORT_VALUES = "pifPC"  # -p, -i, -f, -P, -C: the rest of the word, or the next word, is the value
+
+
+def _uv_option(words: Sequence[str], i: int) -> int | None:
+    """The index past the option at words[i] and its value; None when the hook doesn't know it"""
+    word = words[i]
+    name, eq, _ = word.partition("=")
+    if word.startswith("--"):
+        if eq:
+            return i + 1 if name in UV_VALUE_OPTIONS else None
+        if word in UV_FLAGS:
+            return i + 1
+        return i + 2 if word in UV_VALUE_OPTIONS else None
+    letters = word[1:]
+    for k, ch in enumerate(letters):
+        if ch in UV_SHORT_VALUES:
+            return i + 1 if letters[k + 1 :] else i + 2
+        if ch not in UV_SHORT_FLAGS:
+            return None
+    return i + 1
+
+
+def _is_option(word: str) -> bool:
+    return word.startswith("-") and word != "-"
+
+
+@dataclass(frozen=True)
+class UvRun:
+    """What a `uv run` starts: its program, None when it names none (uv run --help); or the
+    first option the hook doesn't know"""
+
+    program: str | None
+    unknown: str | None
+
+
+def uv_run(cmd: Simple) -> UvRun | None:
+    """The `uv run` cmd is, with uv's options before the program skipped; None for any other
+    uv command (uv sync, uv lock, uv pip) or another program"""
+    if cmd.program != "uv":
+        return None
+    words = cmd.words
+    unknown: str | None = None
+    i = 1
+    while i < len(words) and _is_option(words[i]):
+        after = _uv_option(words, i)
+        unknown = unknown or (words[i] if after is None else None)
+        i = i + 1 if after is None else after
+    if unknown is not None:  # its value may be the word read as the subcommand: refused wherever run follows
+        return UvRun(None, unknown) if "run" in words[i:] else None
+    if i >= len(words) or words[i] != "run":
+        return None
+    i += 1
+    while i < len(words) and _is_option(words[i]):
+        if words[i] == "--":
+            i += 1
+            break
+        after = _uv_option(words, i)
+        if after is None:
+            return UvRun(None, words[i])
+        i = after
+    return UvRun(words[i] if i < len(words) else None, None)
+
+
+UV_RUN_INSTEAD = (
+    "run the program itself when the allowlist has it; otherwise stop, as for any denied tool call:"
+    " the needs-decision protocol asks the maintainer, who may add the program to [hooks] uv_run in"
+    f" {CONFIG} through a pull request"
+)
+
+
+def _uv_run_check(cmd: Simple, config: Config, ctx: Context) -> str | None:
+    """D-82: in a gate session, a uv run of anything but python, pytest, ruff, mypy, a [hooks]
+    uv_run program, a path to a .py file, or the checkout's [project.scripts] entry; a NAME=value
+    word where the program goes is refused too. pyproject.toml is read only when the program is
+    none of the others"""
+    found = uv_run(cmd)
+    if found is None:
+        return None
+    program = found.program
+    if found.unknown is not None or program is None:
+        return None if found.unknown is None else UV_RUN_INSTEAD
+    if ASSIGNMENT.match(program):
+        return UV_RUN_INSTEAD
+    if program in UV_RUN_PROGRAMS or program in config.uv_run or program.endswith(".py"):
+        return None
+    root = repo_root(cmd.cwd)
+    if "/" in program or root is None:
+        return UV_RUN_INSTEAD
+    scripts = ctx.configs.scripts(root)
+    if isinstance(scripts, Broken):
+        return f"fix {PYPROJECT} ({scripts.message}), then run: {cmd.text()}"
+    return None if program in scripts else UV_RUN_INSTEAD
+
+
 # In order: a refusal names the first rule that refuses, and its Instead line takes every rule's fix
 RULES = (
     Rule(
@@ -1113,6 +1295,15 @@ RULES = (
         lambda cmd: cmd.program in COPIES,
         _private_check,
     ),
+    Rule(
+        "uv-run",
+        "in a session shipmill gate starts, uv run starts only python, pytest, ruff, mypy, a [project.scripts]"
+        " entry, a .py file, or a [hooks] uv_run program; never env, sh, another program, or a NAME=value word",
+        "D-82",
+        lambda cmd: uv_run(cmd) is not None,
+        _uv_run_check,
+        gate=True,
+    ),
 )
 
 
@@ -1136,7 +1327,7 @@ class Refusal:
 
 
 def judge(cmd: Simple, ctx: Context) -> Refusal | None:
-    rules = [rule for rule in RULES if rule.guards(cmd)]
+    rules = [rule for rule in RULES if rule.guards(cmd) and (not rule.gate or gate_session(ctx.env))]
     if not rules:
         return None
     git = git_call(cmd)

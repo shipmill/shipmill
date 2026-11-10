@@ -155,6 +155,8 @@ CASES: dict[str, list[Change]] = {
     "hooks private a list": add('\n[hooks]\nprivate = "owner/**"\n'),
     "hooks private strings": add('\n[hooks]\nprivate = ["owner/**", 1]\n'),
     "hooks private non-empty": add('\n[hooks]\nprivate = [""]\n'),
+    "hooks uv_run a list": add('\n[hooks]\nuv_run = "treaty"\n'),
+    "hooks uv_run non-empty": add('\n[hooks]\nuv_run = [""]\n'),
     "hooks a table": top("hooks = 1"),
 }
 
@@ -247,12 +249,16 @@ MESSAGES: dict[str, str] = {
     "notices empty": "shipmill.toml [notices]: install must not be empty",
     "notices placeholder": "shipmill.toml [notices]: pin takes {version}, {tag}, and {name}; got ['semver']",
     "notices a table": "shipmill.toml: notices must be a table, got 1",
-    "hooks unknown key": "shipmill.toml [hooks]: unknown keys ['force_push']; allowed: ['default_branch', 'private']",
+    "hooks unknown key": (
+        "shipmill.toml [hooks]: unknown keys ['force_push']; allowed: ['default_branch', 'private', 'uv_run']"
+    ),
     "hooks default_branch a bool": "shipmill.toml [hooks]: default_branch must be true or false, got 'false'",
     "hooks default_branch not an integer": "shipmill.toml [hooks]: default_branch must be true or false, got 0",
     "hooks private a list": "shipmill.toml [hooks]: private must be a list of strings, got 'owner/**'",
     "hooks private strings": "shipmill.toml [hooks]: private must be a list of non-empty strings",
     "hooks private non-empty": "shipmill.toml [hooks]: private must be a list of non-empty strings",
+    "hooks uv_run a list": "shipmill.toml [hooks]: uv_run must be a list of strings, got 'treaty'",
+    "hooks uv_run non-empty": "shipmill.toml [hooks]: uv_run must be a list of non-empty strings",
     "hooks a table": "shipmill.toml: hooks must be a table, got 1",
 }
 
@@ -528,6 +534,11 @@ def test_s026_14_the_policy_reads_hooks_with_its_defaults() -> None:
     given = hooks('\n[hooks]\ndefault_branch = false\nprivate = ["owner/**", "notes/*.md"]\n')
     assert given == HooksConfig(default_branch=False, private=("owner/**", "notes/*.md"))
     assert hooks("\n[hooks]\nprivate = []\n").private == ()
+
+
+def test_d82_the_policy_reads_hooks_uv_run() -> None:
+    assert hooks("").uv_run == ()
+    assert hooks('\n[hooks]\nuv_run = ["treaty", "as-watch"]\n').uv_run == ("treaty", "as-watch")
 
 
 @pytest.mark.parametrize("name", [name for name in CASES if name.startswith("hooks ")])
