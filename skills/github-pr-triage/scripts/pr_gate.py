@@ -194,7 +194,7 @@ class Gate:
     state: str
     mergeable: str
     base: str
-    head: str
+    head: str  # the full headRefOid it judged, the verdict line's head= for --match-head-commit (#1017)
     checks: tuple[Check, ...]
     refused: tuple[str, ...] = ()  # why an agent's PR is refused for its plan, or any PR for its closers (D-76)
     asks: tuple[str, ...] = ()  # why the PR waits on the maintainer
@@ -1007,7 +1007,7 @@ def judge(
     agent, for a draft, says the --bot-login authored it, so its line says to mark it ready"""
     checks = newest_checks(data.get("statusCheckRollup") or ())
     if data["isDraft"]:
-        head = data["headRefOid"][:7]
+        head = data["headRefOid"]
         return Gate(number, data["state"], data["mergeable"], data["baseRefName"], head, checks, draft=True, own=agent)
     files: tuple[str, ...] = data["files"]
     refused: list[str] = []
@@ -1031,7 +1031,7 @@ def judge(
         data["state"],
         data["mergeable"],
         data["baseRefName"],
-        data["headRefOid"][:7],
+        data["headRefOid"],
         checks,
         tuple(refused),
         tuple(asks),
