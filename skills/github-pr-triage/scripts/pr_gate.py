@@ -88,6 +88,11 @@ a base branch the checkout lacks, a git failure, a REVIEW.md, docs/product.md, o
 gate can't read, or a `shipmill decide classify` that fails or prints what the gate can't
 read. With several PRs the exit code is
 the worst verdict's, ranked 0, 1, 3, 4, 8, 5, 7, 6.
+
+--wait polls while the worst verdict is PENDING, or is NEEDS_DECISION and a NEEDS_DECISION PR has
+a check still pending on its own head (#1028): the question waits until its CI finished, and the
+exit code and its ranking stay as above. The base's checks are never pending (D-75), a PR with no
+checks has none pending, and every other verdict stops the wait.
 """
 
 from __future__ import annotations
@@ -1068,11 +1073,27 @@ def render(gate: Gate) -> str:
     return "\n".join(lines)
 
 
+def polls(gates: list[Gate]) -> bool:
+    """Whether --wait polls again: while the worst verdict is PENDING, or is NEEDS_DECISION and a
+    NEEDS_DECISION PR has a check still pending on its own head, so the question waits for its CI
+    (#1028); the base's checks are never pending (D-75), and every other verdict stops the wait"""
+    worst = max((g.verdict for g in gates), key=RANK.index)
+    if worst == PENDING:
+        return True
+    return worst == NEEDS_DECISION and any(
+        g.verdict == NEEDS_DECISION and any(not c.done for c in g.checks) for g in gates
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("prs", nargs="+", type=int, help="PR numbers")
     parser.add_argument("-R", "--repo", help="owner/name; default: the current checkout's repo")
-    parser.add_argument("--wait", action="store_true", help="poll until no check is pending")
+    parser.add_argument(
+        "--wait",
+        action="store_true",
+        help="poll until no check is pending, on a NEEDS_DECISION PR's head too, so its question waits for CI",
+    )
     parser.add_argument("--interval", type=int, default=30, help="seconds between polls (default 30)")
     parser.add_argument("--timeout", type=int, default=1800, help="seconds before --wait gives up (default 1800)")
     parser.add_argument(
@@ -1140,7 +1161,7 @@ def main() -> int:
                     judged = replace(judged, base_red=red, base_repairs=repairs)
                 gates.append(judged)
             worst = max((g.verdict for g in gates), key=RANK.index)
-            if not args.wait or worst != PENDING or time.monotonic() >= deadline:
+            if not args.wait or not polls(gates) or time.monotonic() >= deadline:
                 print("\n".join(render(g) for g in gates))
                 return worst
             time.sleep(args.interval)

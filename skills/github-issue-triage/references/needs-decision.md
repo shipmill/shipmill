@@ -101,6 +101,8 @@ Every place github-issue-triage, github-issue-resolve, and github-pr-triage woul
 
 ## Asking
 
+**A question on a pull request waits for its CI (#1028).** Ask it only once every check on the pull request's head has finished: run `pr_gate.py --wait`, which polls while a NEEDS_DECISION pull request has a `pending:` line. When a check failed, the CI failure comes first (github-pr-triage's [ci-failures.md](../../github-pr-triage/references/ci-failures.md)): fix it or hand it back, and ask once the head is green. The question's line right under `@<login> Decision needed: ...` states the head's CI state, such as `CI on <sha7>: 5 checks green`, so the maintainer doesn't have to open the checks.
+
 1. Post one comment on the issue or pull request the decision belongs to, through `--body-file` (never an inline `--body`):
 
    ```markdown
