@@ -1181,6 +1181,52 @@ def test_the_worst_verdict_across_prs_is_the_exit_code(tmp_path: Path, directed:
     assert [line.split()[1] for line in proc.stdout.splitlines() if line.startswith("#")] == ["READY", "REFUSED"]
 
 
+# #1028: --wait polls until no check on a pull request's head is pending, a NEEDS_DECISION one's too,
+# so the session asks the maintainer only once its CI finished
+
+
+def judged(*checks: Any, **kw: Any) -> Any:
+    return gate.Gate(7, "OPEN", "MERGEABLE", "main", HEAD_SHA, tuple(checks), **kw)
+
+
+RUNNING = gate.Check("test", False, "", "running since 10:00 UTC")
+PASSED = gate.Check("test", True, "SUCCESS")
+BROKE = gate.Check("test", True, "FAILURE")
+ASKS = ("protected: REVIEW.md: release workflows",)
+
+
+def test_1028_wait_polls_while_a_needs_decision_prs_check_is_pending() -> None:
+    asking = judged(RUNNING, PASSED, asks=ASKS)
+    assert asking.verdict == gate.NEEDS_DECISION  # the ranking stays: the ask outranks the running check
+    assert gate.polls([asking])
+    assert gate.polls([judged(PASSED), asking])
+
+
+@pytest.mark.parametrize(
+    "gates",
+    [
+        [judged(PASSED, asks=ASKS)],  # its head finished green
+        [judged(BROKE, asks=ASKS)],  # finished red: the CI failure comes first, polling won't fix it
+        [judged(asks=ASKS)],  # no checks at all: none is pending
+        [judged(PASSED, asks=ASKS, base_red=("test failed on main@ba5e012",))],  # the base's are never pending
+        [judged(RUNNING, never=("release: the release workflows",))],  # MAINTAINER_ONLY
+        [judged(RUNNING, refused=("no plan",))],  # REFUSED
+        [judged(RUNNING, draft=True)],  # DRAFT
+        [gate.Gate(7, "OPEN", "CONFLICTING", "main", HEAD_SHA, (RUNNING,))],  # BLOCKED
+        [judged(RUNNING, asks=ASKS), judged(RUNNING, refused=("no plan",))],  # a worse verdict ends the wait
+        [judged(PASSED)],  # READY
+        [judged(BROKE)],  # FAILED
+    ],
+)
+def test_1028_wait_stops_once_nothing_it_waits_on_is_pending(gates: list[Any]) -> None:
+    assert not gate.polls(gates)
+
+
+@pytest.mark.parametrize("gates", [[judged(RUNNING)], [judged()], [judged(PASSED), judged(RUNNING)]])
+def test_1028_wait_polls_a_pending_verdict_as_before(gates: list[Any]) -> None:
+    assert gate.polls(gates)
+
+
 # D-52, then D-67: a person's draft pull request belongs to them; the App's own is resumed (#914)
 
 
