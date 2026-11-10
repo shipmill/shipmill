@@ -7,6 +7,17 @@ bot.
 
 ## [Unreleased]
 
+## [0.126.0] - 2026-11-10
+
+### Added
+
+- A busy self-hosted runner no longer reads as a stalled one: each RUNS_ACTIVE row of github-ship-watch's report ends with what the run's jobs do (`running: <job> since HH:MM UTC`, `no job started`, `no job running`, or `jobs unreadable` when GitHub refuses the read), and each `pending:` line of github-pr-triage's gate says `(queued)`, `(running since HH:MM UTC)`, or `(pending)` (#1014)
+- An agent's pull request plan may name the quality-bar ids it serves: `pr_gate.py` accepts `Serves: Q-6` and `Serves: quality bar (Q-4, Q-6)` when docs/product.md's Quality bar lists them, refuses an unlisted one like an unlisted goal id, and the weekly retro counts such a pull request under the quality bar (#1016)
+
+### Fixed
+
+- The session's gh helper runs gh at the path PATH names, such as `/opt/homebrew/bin/gh`, not its symlink's versioned target, so a `brew upgrade` during a session no longer breaks every gh call with exit 126 (#1015)
+
 ## [0.125.0] - 2026-11-10
 
 ### Added
@@ -2389,7 +2400,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.125.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.126.0...HEAD
+[0.126.0]: https://github.com/shipmill/shipmill/compare/v0.125.0...v0.126.0
 [0.125.0]: https://github.com/shipmill/shipmill/compare/v0.124.1...v0.125.0
 [0.124.1]: https://github.com/shipmill/shipmill/compare/v0.124.0...v0.124.1
 [0.124.0]: https://github.com/shipmill/shipmill/compare/v0.123.2...v0.124.0
