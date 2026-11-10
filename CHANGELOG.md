@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.127.2] - 2026-11-10
+
+### Fixed
+
+- A gate session no longer asks the maintainer to decide on a pull request while its CI is failing or still running: `pr_gate.py --wait` keeps polling while a NEEDS_DECISION pull request has a pending check on its head (its exit codes and verdict ranking unchanged), the needs-decision protocol asks only once the head's checks finished and handles a failed one as red CI first, and the question states the head's CI state (#1028)
+
 ## [0.127.1] - 2026-11-10
 
 ### Fixed
@@ -2416,7 +2422,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.127.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.127.2...HEAD
+[0.127.2]: https://github.com/shipmill/shipmill/compare/v0.127.1...v0.127.2
 [0.127.1]: https://github.com/shipmill/shipmill/compare/v0.127.0...v0.127.1
 [0.127.0]: https://github.com/shipmill/shipmill/compare/v0.126.0...v0.127.0
 [0.126.0]: https://github.com/shipmill/shipmill/compare/v0.125.0...v0.126.0
