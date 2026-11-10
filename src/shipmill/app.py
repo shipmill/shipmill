@@ -908,13 +908,15 @@ class Helpers:
 
 
 def resolve_gh(folder: Path, path: str) -> Path:
-    """The gh on path, skipping the helpers' folder, so the gh helper never runs itself"""
+    """The gh on path, skipping the helpers' folder, so the gh helper never runs itself. It
+    keeps the path as PATH names it, made absolute, not its symlink's target: Homebrew's gh
+    links into a versioned folder that `brew upgrade` deletes mid-session (#1015)"""
     mine = folder.resolve()
     rest = [entry for entry in path.split(os.pathsep) if entry and Path(entry).resolve() != mine]
     found = shutil.which("gh", path=os.pathsep.join(rest))
     if found is None:
         raise ReleaseError("gh not found on PATH; the session's gh helper runs it with the App's token")
-    return Path(found).resolve()
+    return Path(found).absolute()
 
 
 def write_helpers(folder: Path, python: Path, checkout: Path, repo: str, app_id: int, key: Path, path: str) -> Helpers:
