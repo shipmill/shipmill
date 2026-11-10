@@ -419,8 +419,31 @@ def test_s004_10_neither_helper_file_contains_a_token(host: Host, tmp_path: Path
 
 def test_s004_10_the_real_gh_is_resolved_past_the_helpers_folder(host: Host, tmp_path: Path) -> None:
     helpers_for(host, tmp_path)  # the helpers' folder, holding a gh, is first on PATH
-    assert resolve_gh(host.folder, host.path) == (host.fakes / "gh").resolve()
-    assert f'exec {shlex.quote(str((host.fakes / "gh").resolve()))} "$@"' in (host.folder / "gh").read_text()
+    assert resolve_gh(host.folder, host.path) == host.fakes / "gh"
+    assert f'exec {shlex.quote(str(host.fakes / "gh"))} "$@"' in (host.folder / "gh").read_text()
+
+
+def test_s004_10_the_real_gh_is_the_path_entry_not_its_symlink_target(tmp_path: Path) -> None:
+    """#1015: a Homebrew gh is a symlink into a versioned Cellar folder that `brew upgrade`
+    deletes; the helper execs the stable link on PATH, and still skips its own folder when
+    PATH reaches that folder through a symlink"""
+    cellar = tmp_path / "Cellar" / "gh" / "2.102.0" / "bin"
+    cellar.mkdir(parents=True)
+    executable(cellar / "gh", FAKE_GH)
+    brew = tmp_path / "homebrew" / "bin"
+    brew.mkdir(parents=True)
+    (brew / "gh").symlink_to(cellar / "gh")
+    folder = tmp_path / "state" / "bin"
+    folder.mkdir(parents=True)
+    executable(folder / "gh", FAKE_GH)
+    linked = tmp_path / "linked-bin"
+    linked.symlink_to(folder)
+    assert resolve_gh(folder, os.pathsep.join([str(linked), str(folder), str(brew)])) == brew / "gh"
+    relative = os.path.relpath(brew)  # a relative PATH entry still yields an absolute path
+    found = resolve_gh(folder, os.pathsep.join([str(linked), relative]))
+    assert found.is_absolute()
+    assert found == Path(relative, "gh").absolute()
+    assert found.resolve() == (cellar / "gh").resolve()
 
 
 def test_s004_10_a_missing_gh_is_named(host: Host) -> None:

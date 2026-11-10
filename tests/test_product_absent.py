@@ -148,7 +148,7 @@ def test_s038_4_the_gates_helpers_and_app_check_are_as_before(tmp_path: Path, co
         + ["--app-id", str(APP_ID), "--app-key", str(key.resolve())]
     )
     header = "#!/bin/sh\n# Written by shipmill gate (spec 004). It holds no token: each call mints or reuses one.\n"
-    real_gh = shlex.quote(str((fakes / "gh").resolve()))
+    real_gh = shlex.quote(str(fakes / "gh"))
     assert helpers.gh.read_text(encoding="utf-8") == (
         f'{header}token=$({command}) || exit $?\nGH_TOKEN=$token\nexport GH_TOKEN\nunset token\nexec {real_gh} "$@"\n'
     )
