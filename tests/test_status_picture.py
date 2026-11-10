@@ -766,6 +766,14 @@ def test_s009_23_gate_sessions_and_runs_are_counted_with_their_links() -> None:
     text = lines(facts(*rows))
     assert "  sessions       1: gate busy (s1)" in text
     assert f"  runs           1: CI {URL}/actions/runs/3" in text
+    # #1014: what the run's jobs do follows its link, past a "; "
+    noted = Row(
+        "RUNS_ACTIVE",
+        "CI",
+        f"in_progress 1 min: push on main, {URL}/actions/runs/4; running: a since 11:00 UTC, b since 11:01 UTC",
+        False,
+    )
+    assert f"  runs           1: CI {URL}/actions/runs/4" in lines(facts(noted))
     headless = gate(job=job(last="RUNNING: session s is still working: claude attach s"))
     found = facts(gate=headless)
     assert report(found).verdict is Verdict.WORKING

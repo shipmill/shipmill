@@ -43,7 +43,7 @@ Since the evals stopped (D-74), no pull request gets an `evals` check, a fork's 
 
 ## Gate details
 
-`scripts/pr_gate.py` counts a check as green only when its status is COMPLETED and its conclusion SUCCESS (or NEUTRAL or SKIPPED). An empty rollup right after a push counts as pending, not green. Pass `--wait` to poll until every check has finished; it gives up after `--timeout` (30 min by default) with exit 3. If that happens, report which jobs are still running and ask the user rather than merge. A docs-only PR gets no exemption from the gate: wait for its slow jobs too.
+`scripts/pr_gate.py` counts a check as green only when its status is COMPLETED and its conclusion SUCCESS (or NEUTRAL or SKIPPED). An empty rollup right after a push counts as pending, not green. Each pending check's line says whether it waits or runs: `pending: <name> (queued)`, `(running since HH:MM UTC)`, or `(pending)` for a commit status; a check queued behind another's job on the one self-hosted runner waits, it isn't stalled. Pass `--wait` to poll until every check has finished; it gives up after `--timeout` (30 min by default) with exit 3. If that happens, report which jobs are still running and ask the user rather than merge. A docs-only PR gets no exemption from the gate: wait for its slow jobs too.
 
 Run the gate in the background (Monitor, or Bash with `run_in_background`), not as a foreground sleep loop.
 

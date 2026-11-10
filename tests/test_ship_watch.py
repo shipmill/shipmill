@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -1156,7 +1157,11 @@ def test_no_open_issues_print_no_issue_rows(ws: ModuleType) -> None:
 
 def active(ws: ModuleType, workflow: str, status: str, minutes_ago: int) -> object:
     created = NOW - dt.timedelta(minutes=minutes_ago)
-    return ws.ActiveRun(workflow, status, "push", "main", created, f"https://run/{minutes_ago}")
+    return ws.ActiveRun(workflow, status, "push", "main", created, f"https://run/{minutes_ago}", minutes_ago)
+
+
+def no_jobs(run: object) -> list[object]:
+    return []
 
 
 def test_queued_and_running_workflow_runs_are_reported_oldest_first(ws: ModuleType) -> None:
@@ -1166,16 +1171,84 @@ def test_queued_and_running_workflow_runs_are_reported_oldest_first(ws: ModuleTy
         active(ws, "Release", "completed", 3),
         active(ws, "Deploy", "in_progress", 7),
     ]
-    rows = ws.active_rows(runs, NOW)
+    rows = ws.active_rows(runs, NOW, no_jobs)
     assert [(r.state, r.subject, r.detail) for r in rows] == [
-        ("RUNS_ACTIVE", "Deploy", "in_progress 7 min: push on main, https://run/7"),
-        ("RUNS_ACTIVE", "CI", "queued 1 min: push on main, https://run/1"),
+        ("RUNS_ACTIVE", "Deploy", "in_progress 7 min: push on main, https://run/7; no job started"),
+        ("RUNS_ACTIVE", "CI", "queued 1 min: push on main, https://run/1; no job started"),
     ]
     assert "RUNS_ACTIVE" not in ws.ACTION and "RUNS_ACTIVE" not in ws.AGENT
 
 
 def test_finished_runs_print_no_active_rows(ws: ModuleType) -> None:
-    assert ws.active_rows([active(ws, "CI", "completed", 2)], NOW) == []
+    assert ws.active_rows([active(ws, "CI", "completed", 2)], NOW, no_jobs) == []
+
+
+# #1014: one self-hosted runner; while one run's job holds it the other runs read queued
+
+
+def jobs_reply(*jobs: dict[str, Any]) -> str:
+    return "".join(json.dumps(j) + "\n" for j in jobs)
+
+
+def jobs_read(replies: dict[int, subprocess.CompletedProcess[str]], ws: ModuleType) -> Callable[[object], object]:
+    """The rows' jobs reader over fetch_jobs, each run's gh api reply by its id"""
+
+    def execute(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        assert cmd[:3] == ["gh", "api", "--paginate"]
+        run_id = int(cmd[3].split("/")[5])
+        return replies[run_id]
+
+    return lambda run: ws.fetch_jobs("o/r", getattr(run, "id"), execute)  # noqa: B009 (an ActiveRun, typed object here)
+
+
+def test_a_running_job_is_named_and_a_queued_run_behind_it_reads_no_job_started(ws: ModuleType) -> None:
+    started = "2026-10-03T11:53:20Z"
+    running = jobs_reply(
+        {"name": "lint", "status": "completed", "started_at": "2026-10-03T11:50:00Z"},
+        {"name": "test (3.14)", "status": "in_progress", "started_at": started},
+    )
+    queued = jobs_reply({"name": "test (3.14)", "status": "queued", "started_at": None})
+    replies = {
+        7: subprocess.CompletedProcess([], 0, running, ""),
+        3: subprocess.CompletedProcess([], 0, queued, ""),
+        1: subprocess.CompletedProcess([], 0, "", ""),
+    }
+    runs = [active(ws, "CI", "in_progress", 7), active(ws, "CI", "queued", 3), active(ws, "Release", "queued", 1)]
+    rows = ws.active_rows(runs, NOW, jobs_read(replies, ws))
+    assert [r.detail for r in rows] == [
+        "in_progress 7 min: push on main, https://run/7; running: test (3.14) since 11:53 UTC",
+        "queued 3 min: push on main, https://run/3; no job started",
+        "queued 1 min: push on main, https://run/1; no job started",
+    ]
+    assert "RUNS_ACTIVE" not in ws.ACTION
+
+
+def test_a_run_between_its_jobs_reads_no_job_running(ws: ModuleType) -> None:
+    done = jobs_reply(
+        {"name": "build", "status": "completed", "started_at": "2026-10-03T11:50:00Z"},
+        {"name": "deploy", "status": "queued", "started_at": None},
+    )
+    replies = {5: subprocess.CompletedProcess([], 0, done, "")}
+    rows = ws.active_rows([active(ws, "CI", "in_progress", 5)], NOW, jobs_read(replies, ws))
+    assert [r.detail for r in rows] == ["in_progress 5 min: push on main, https://run/5; no job running"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    ["gh: Resource not accessible by integration (HTTP 403)", "gh: Not Found (HTTP 404)"],
+)
+def test_a_jobs_read_github_refuses_reads_jobs_unreadable(ws: ModuleType, error: str) -> None:
+    replies = {4: subprocess.CompletedProcess([], 1, "", error)}
+    rows = ws.active_rows([active(ws, "CI", "queued", 4)], NOW, jobs_read(replies, ws))
+    assert [r.detail for r in rows] == ["queued 4 min: push on main, https://run/4; jobs unreadable"]
+
+
+def test_any_other_failed_jobs_read_stops_the_watch(ws: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
+    replies = {4: subprocess.CompletedProcess([], 1, "", "gh: Bad credentials (HTTP 401)")}
+    with pytest.raises(SystemExit) as stopped:
+        ws.active_rows([active(ws, "CI", "queued", 4)], NOW, jobs_read(replies, ws))
+    assert stopped.value.code == 2
+    assert "repos/o/r/actions/runs/4/jobs" in capsys.readouterr().err
 
 
 AGENTS_CONFIG = """name = "demo"
