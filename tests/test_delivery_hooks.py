@@ -20,6 +20,8 @@ from typing import Any
 
 import pytest
 
+from shipmill.gate import GATE_SESSION
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "hooks" / "delivery.py"
 HOOKS_JSON = ROOT / "hooks" / "hooks.json"
@@ -1590,7 +1592,11 @@ def test_s037_11_every_fixture_answers_alike_with_identity_set(
 
 # --- D-82: a gate session's uv run starts only Python and the project's tools (#1018) ------------
 
-GATE_SESSION = "SHIPMILL_GATE"
+
+def test_d82_the_gate_and_the_hook_name_the_same_gate_session_variable() -> None:
+    """The gate sets the variable the hook reads; the hook can't import the package (it runs
+    under --no-project), so this test is what keeps the two names one (#1025)"""
+    assert DELIVERY.GATE_SESSION == GATE_SESSION
 
 
 def gate_env() -> dict[str, str]:
@@ -1681,9 +1687,17 @@ def test_d82_only_shipmill_gate_1_marks_a_gate_session(box: Sandbox, value: str)
 
 
 def test_d82_a_commands_own_assignment_never_turns_the_rule_on_or_off(box: Sandbox) -> None:
-    allowed(bash("SHIPMILL_GATE=1 uv run env X=1 ls", box.app))
-    refused(bash("SHIPMILL_GATE=0 uv run env X=1 ls", box.app, env=gate_env()), "uv-run", "D-82")
-    refused(bash("env SHIPMILL_GATE= uv run sh -c ls", box.app, env=gate_env()), "uv-run", "D-82")
+    allowed(bash(f"{GATE_SESSION}=1 uv run env X=1 ls", box.app))
+    refused(bash(f"{GATE_SESSION}=0 uv run env X=1 ls", box.app, env=gate_env()), "uv-run", "D-82")
+    refused(bash(f"env {GATE_SESSION}= uv run sh -c ls", box.app, env=gate_env()), "uv-run", "D-82")
+
+
+@pytest.mark.parametrize("command", ["uv run python -c 'import os'", "uvx ruff check", "uv tool run sh -c ls"])
+def test_d82_its_known_limit_passes(box: Sandbox, command: str) -> None:
+    """D-82's stated known limit, not a goal: `uv run python -c`, `uvx`, and its long form
+    `uv tool run` still start any program in a gate session (#1025). A change that closes it
+    is a new D-n and updates this test and the docs that state the limit"""
+    allowed(bash(command, box.app, env=gate_env()))
 
 
 @pytest.mark.parametrize("command", ["uv run env X=1 ls", "uv run sh -c ls"])

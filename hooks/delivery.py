@@ -24,9 +24,9 @@ with one stat and never read. A command's own NAME=value assignments are never r
 The uv-run rule (D-82) applies only in a session shipmill gate started headless, whose
 --settings env sets SHIPMILL_GATE=1, read from the hook's own environment alone: there `uv run`
 starts only python, pytest, ruff, mypy, a [hooks] uv_run program, a path to a .py file, or an
-entry of the checkout's [project.scripts]. Its known limit: `uv run python -c` and the
-allowlist's `Bash(uvx *)` still start any program, so it narrows the routing around a denied
-command without closing it.
+entry of the checkout's [project.scripts]. Its known limit: `uv run python -c`, the
+allowlist's `Bash(uvx *)`, and `uv tool run`, the long form of uvx, still start any program,
+so it narrows the routing around a denied command without closing it.
 """
 
 from __future__ import annotations
