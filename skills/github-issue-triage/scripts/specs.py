@@ -69,9 +69,10 @@ same-approval
           covers its HEAD (D-81): compares the pull request's own change to SPEC at each
           head, `git diff $(git merge-base REF <head>) <head> -- SPEC` (REF the default
           branch, default origin/main), so main's changes a rebase brought in don't count.
-          Only format is left out: rewrapped text and whitespace, the status: line, a
+          Only format is left out: rewrapped text and whitespace (a list item's or paragraph's
+          indent and a fenced code block's lines are kept as they are), the status: line, a
           section that is empty or holds exactly the template's placeholder (D/TEMPLATE.md
-          at HEAD, or the built-in one), the same D-n ids in another shape under
+          at REF, or the built-in one), the same D-n ids in another shape under
           Decisions relied on, and a D-n the pull request claims (a heading its change to
           the decisions log adds, matched by its title) renumbered, with the lines citing
           it. Exit 1 prints each remaining difference by section: what changed since the
@@ -152,6 +153,7 @@ ID = re.compile(r"^(?:S-)?(\d+)$")
 PREAMBLE = "(title)"  # the lines before the first section
 STATUS_ANY = re.compile(r"^status:")
 LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]")
+FENCE = re.compile(r"^[ \t]*(```|~~~)")
 DECISION_ID = re.compile(r"(?<![\w-])D-(\d+)(?!\d)")
 # Reports one problem at a line of the spec being parsed
 ProblemSink = Callable[[int, str], None]
@@ -923,18 +925,33 @@ def file_at(commit: str, path: str) -> str | None:
 
 def blocks(text: str) -> dict[str, list[str]]:
     """Each section's paragraphs and list items, whitespace folded so that a rewrapped one
-    reads the same, under PREAMBLE before the first section; the status line is left out"""
+    reads the same, under PREAMBLE before the first section; the status line is left out.
+    A block keeps its first line's indent, so a list item moved in or out of a nested list
+    differs, and a fenced code block's lines are kept as they are, indent and all"""
     found: dict[str, list[str]] = {PREAMBLE: []}
     current = PREAMBLE
     block: list[str] = []
+    fence = ""
 
     def close() -> None:
         if block:
-            found[current].append(" ".join(" ".join(block).split()))
+            first = block[0].expandtabs(4)
+            indent = first[: len(first) - len(first.lstrip())]
+            found[current].append(indent + " ".join(" ".join(block).split()))
         block.clear()
 
     for line in text.splitlines():
-        if line.startswith("## "):
+        opened = FENCE.match(line)
+        if fence:
+            if line.strip():
+                found[current].append(line.rstrip())
+            if opened and opened.group(1) == fence:
+                fence = ""
+        elif opened:
+            close()
+            fence = opened.group(1)
+            found[current].append(line.rstrip())
+        elif line.startswith("## "):
             close()
             current = line[3:].strip()
             found.setdefault(current, [])
@@ -1024,7 +1041,9 @@ def same_approval(path: str, answered_ref: str, head_ref: str, base_ref: str) ->
     answered_base = git("merge-base", base, answered).strip()
     head_base = git("merge-base", base, head).strip()
     spec_id = f"S-{int(name.group(1)):03d}"
-    template_text = file_at(head, (Path(path).parent / "TEMPLATE.md").as_posix()) or TEMPLATE
+    # the default branch's template, never the pull request's own: its head could make any
+    # section's text the placeholder and so drop it
+    template_text = file_at(base, (Path(path).parent / "TEMPLATE.md").as_posix()) or TEMPLATE
     placeholder = blocks(template_text.replace("S-NNN", spec_id))
     moved = renumbering(claimed(answered_base, answered), claimed(head_base, head))
     answered_text = DECISION_ID.sub(lambda m: f"D-{moved.get(int(m.group(1)), int(m.group(1)))}", texts[answered_ref])

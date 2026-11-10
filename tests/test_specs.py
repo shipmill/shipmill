@@ -750,6 +750,34 @@ def test_1007_a_changed_criterion_asks_again(tmp_path: Path) -> None:
     assert "## Acceptance criteria\n  - - S-001-2: tool run --dry-run writes nothing\n" in out.stdout
 
 
+def test_1007_the_pull_requests_own_template_makes_no_text_a_placeholder(tmp_path: Path) -> None:
+    root, answered = answered_repo(tmp_path)
+    template = (ROOT / "docs" / "specs" / "TEMPLATE.md").read_text()
+    ours = template.replace("- <what this spec deliberately leaves out, and where it went>", "- Undo")
+    commit(root, {"docs/specs/TEMPLATE.md": ours, SPEC_PATH: ANSWERED.replace("- Undo\n", "")})
+    out = same(root, answered)
+    assert out.returncode == 1
+    assert "## Out of scope\n  - - Undo\n" in out.stdout
+
+
+def test_1007_a_changed_nesting_or_code_block_indent_asks_again(tmp_path: Path) -> None:
+    behaviour = "Adds `src/tool/run.py` and the `--dry-run` flag, as D-2 says."
+    nested = ANSWERED.replace("- Undo", "- Undo\n  - Redo")
+    root, answered = answered_repo(tmp_path, nested)
+    commit(root, {SPEC_PATH: ANSWERED.replace("- Undo", "- Undo\n- Redo")})
+    out = same(root, answered)
+    assert out.returncode == 1
+    assert "## Out of scope\n  -   - Redo\n  + - Redo\n" in out.stdout
+    fenced = ANSWERED.replace(behaviour, behaviour + "\n\n```yaml\nrun:\n  dry: true\n\n## not a heading\n```")
+    root, answered = answered_repo(tmp_path / "fenced", fenced)
+    commit(root, {SPEC_PATH: fenced.replace("  dry: true", "dry: true")})
+    out = same(root, answered)
+    assert out.returncode == 1
+    assert "## Behaviour\n  -   dry: true\n  + dry: true\n" in out.stdout
+    commit(root, {SPEC_PATH: fenced + "\n"})
+    assert same(root, answered).returncode == 0
+
+
 def test_1007_a_changed_problem_asks_again(tmp_path: Path) -> None:
     root, answered = answered_repo(tmp_path)
     commit(root, {SPEC_PATH: ANSWERED.replace("Runs write files.", "")})

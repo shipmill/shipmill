@@ -88,7 +88,7 @@ def test_620_the_answer_approves_the_spec_as_it_stood_when_given() -> None:
     assert "differing only where a `D-n` the PR claims was renumbered" in changed
     assert "it lands on the answer" in changed
     assert "**Exit 1: any other difference** (a criterion added, removed, or reworded" in changed
-    assert "a new marker comment that names what changed since the answer, quoting the script's exit-1 output" in changed
+    assert "a new marker comment that names what changed since the answer, quoting the script's exit-1" in changed
     assert "and repeats the question, and the `needs-decision` label" in changed
     assert "the old answer, which comes before it, doesn't answer it" in changed
     assert "**The answered head can't be named**" in changed
