@@ -18,6 +18,7 @@ from .conftest import copy_tree, no_auto_maintenance
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-pr-triage" / "scripts" / "pr_gate.py"
 BOT = "shipmill-demo[bot]"
 BASE_SHA = "ba5e0123456789"
+HEAD_SHA = "abcdef0123456789abcdef0123456789abcdef01"  # the PR's head, a full SHA as GitHub's headRefOid
 
 DIRECTION = """\
 # demo
@@ -170,7 +171,7 @@ def pr(
         "isDraft": draft,
         "mergeable": "MERGEABLE",
         "baseRefName": "main",
-        "headRefOid": "abcdef0123",
+        "headRefOid": HEAD_SHA,
         "statusCheckRollup": [{"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}],
         "author": {"login": login, "is_bot": login.startswith("app/")},
         "body": body,
@@ -221,7 +222,20 @@ def run_gate(
     return subprocess.run(cmd, capture_output=True, text=True, check=False, env=env, cwd=cwd)
 
 
-MAIN_READY = "#7 READY state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=1 pending=0 failed=0\n"
+MAIN_READY = f"#7 READY state=OPEN mergeable=MERGEABLE base=main head={HEAD_SHA} checks=1 green=1 pending=0 failed=0\n"
+
+
+# #1017: the verdict line's head= is the full head the gate judged, for `--match-head-commit`
+
+
+@pytest.mark.parametrize("draft", [False, True])
+def test_1017_the_verdict_line_prints_the_full_head_it_judged(tmp_path: Path, draft: bool) -> None:
+    """`shipmill gh pr merge` refuses a short --match-head-commit (S-030-24), so the lander passes
+    the verdict's head= as it is: all 40 characters of the headRefOid the gate read"""
+    head = "0123456789abcdef0123456789abcdef01234567"
+    proc = run_gate(tmp_path, None, {7: {**pr(body="Fixes #7", login="amy", draft=draft), "headRefOid": head}})
+    fields = dict(f.split("=", 1) for f in proc.stdout.splitlines()[0].split()[2:])
+    assert len(fields["head"]) == 40 and fields["head"] == head, proc.stdout + proc.stderr
 
 
 @pytest.fixture
@@ -393,7 +407,7 @@ def test_s032_14_a_running_downstream_check_keeps_the_gate_pending(tmp_path: Pat
     proc = run_gate(tmp_path, None, {7: with_checks(downstream("IN_PROGRESS", None))})
     assert proc.returncode == gate.PENDING == 3, proc.stdout + proc.stderr
     assert proc.stdout.splitlines() == [
-        "#7 PENDING state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=2 green=1 pending=1 failed=0",
+        f"#7 PENDING state=OPEN mergeable=MERGEABLE base=main head={HEAD_SHA} checks=2 green=1 pending=1 failed=0",
         "  pending: downstream: acme/app (running)",
     ]
 
@@ -450,7 +464,7 @@ def test_an_older_success_and_a_newer_failure_of_one_check_read_failed(tmp_path:
     proc = run_gate(tmp_path, None, {7: rollup})
     assert proc.returncode == gate.FAILED, proc.stdout + proc.stderr
     assert proc.stdout.splitlines() == [
-        "#7 FAILED state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=0 pending=0 failed=1",
+        f"#7 FAILED state=OPEN mergeable=MERGEABLE base=main head={HEAD_SHA} checks=1 green=0 pending=0 failed=1",
         "  failed: test (FAILURE)",
     ]
 
@@ -1174,7 +1188,7 @@ def test_673_a_green_draft_is_left_to_its_author(tmp_path: Path, directed: Path)
     proc = run_gate(tmp_path, directed, {7: pr(login="amy", draft=True)}, "--bot-login", BOT)
     assert proc.returncode == gate.DRAFT == 8, proc.stdout + proc.stderr
     assert proc.stdout.splitlines() == [
-        "#7 DRAFT state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=1 pending=0 failed=0",
+        f"#7 DRAFT state=OPEN mergeable=MERGEABLE base=main head={HEAD_SHA} checks=1 green=1 pending=0 failed=0",
         "  draft: left to its author until marked ready (D-67)",
     ]
 
@@ -1194,7 +1208,7 @@ def test_914_the_apps_own_draft_says_to_mark_it_ready(tmp_path: Path, directed: 
     proc = run_gate(tmp_path, directed, {7: pr(body="none", draft=True)}, "--bot-login", BOT)
     assert proc.returncode == gate.DRAFT == 8, proc.stdout + proc.stderr
     assert proc.stdout.splitlines() == [
-        "#7 DRAFT state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=1 pending=0 failed=0",
+        f"#7 DRAFT state=OPEN mergeable=MERGEABLE base=main head={HEAD_SHA} checks=1 green=1 pending=0 failed=0",
         "  draft: the App's own, no session owns it: once nothing it waits on is open, mark it ready"
         " (gh pr ready 7, through shipmill gh) and run the gate again (D-67)",
     ]
@@ -1428,7 +1442,7 @@ def test_s030_12_a_notify_zone_keeps_the_ci_verdict_and_prints_a_notify_line(tmp
 
 
 DIRECTION_ASK = (
-    "#7 NEEDS_DECISION state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=1 green=1 pending=0 failed=0\n"
+    f"#7 NEEDS_DECISION state=OPEN mergeable=MERGEABLE base=main head={HEAD_SHA} checks=1 green=1 pending=0 failed=0\n"
     "  needs-decision: docs/product.md edits the product's direction, which only the maintainer changes (D-34)\n"
 )
 
