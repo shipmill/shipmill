@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.128.0] - 2026-11-10
+
+### Changed
+
+- github-issue-triage links a check issue's parts as its sub-issues, so it reads VERIFY_DUE once they close, and asks the maintainer when GitHub refuses the sub-issue instead of holding the check on a `Depends on` line, which reads UNBLOCKED as work to build (#1027)
+
 ## [0.127.2] - 2026-11-10
 
 ### Fixed
@@ -2422,7 +2428,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.127.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.128.0...HEAD
+[0.128.0]: https://github.com/shipmill/shipmill/compare/v0.127.2...v0.128.0
 [0.127.2]: https://github.com/shipmill/shipmill/compare/v0.127.1...v0.127.2
 [0.127.1]: https://github.com/shipmill/shipmill/compare/v0.127.0...v0.127.1
 [0.127.0]: https://github.com/shipmill/shipmill/compare/v0.126.0...v0.127.0
