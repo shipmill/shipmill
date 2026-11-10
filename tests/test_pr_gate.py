@@ -244,6 +244,23 @@ def test_s024_7_a_fix_serving_the_quality_bar_is_ready(tmp_path: Path, directed:
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+def test_a_fix_serving_a_listed_quality_bar_id_is_ready(tmp_path: Path, directed: Path) -> None:
+    """#1016: `Serves:` names the Quality bar's ids too, alone or in `quality bar (...)`"""
+    for serves in ("Q-1", "quality bar (Q-1)"):
+        proc = run_gate(tmp_path, directed, {7: pr(body=PLAN.replace("G-3", serves))}, "--bot-login", BOT)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_a_direction_without_a_quality_bar_section_lists_no_quality_bar_ids(tmp_path: Path) -> None:
+    barless = DIRECTION.replace("## Quality bar\n\n- Q-1: Fail fast\n", "")
+    assert ids_of({"docs/product.md": barless}) == {"U-1", "G-1", "G-3"}
+    work = checkout(tmp_path, {"docs/product.md": barless})
+    assert run_gate(tmp_path, work, {7: pr()}, "--bot-login", BOT).returncode == 0
+    refused = run_gate(tmp_path, work, {7: pr(body=PLAN.replace("G-3", "Q-1"))}, "--bot-login", BOT)
+    assert refused.returncode == 6, refused.stdout
+    assert "  refused: `Serves:` names Q-1, which docs/product.md doesn't list" in refused.stdout
+
+
 def test_s024_7_an_agents_pr_without_a_plan_is_refused(tmp_path: Path, directed: Path) -> None:
     proc = run_gate(tmp_path, directed, {7: pr(body="Fixes #7\n\nPlan: tests first\n")}, "--bot-login", BOT)
     assert proc.returncode == gate.REFUSED == 6
@@ -1474,13 +1491,25 @@ def test_a_glob_matches_as_decisions_scopes_do(glob: str, path: str, hit: bool) 
         ("G-1, G-3", None),
         ("quality bar", None),
         ("", "`Serves:` is empty"),
-        ("Q-1", "`Serves:` names 'Q-1'; it names goal ids (G-n) or `quality bar`"),
+        ("Q-6", None),
+        ("quality bar (Q-6)", None),
+        ("G-2, Q-4", None),
+        ("quality bar (Q-4, Q-6)", None),
+        ("G-2, quality bar (Q-4, Q-6)", None),
+        ("N-1", "`Serves:` names 'N-1'; it names goal ids (G-n), `quality bar`, or quality-bar ids (Q-n)"),
         ("G-1, G-7", "`Serves:` names G-7, which docs/product.md doesn't list"),
+        ("Q-9", "`Serves:` names Q-9, which docs/product.md doesn't list"),
+        ("quality bar (Q-9)", "`Serves:` names Q-9, which docs/product.md doesn't list"),
+        ("quality bar (X)", "`Serves:` names 'X' in `quality bar (...)`; it holds quality-bar ids (Q-n)"),
+        ("quality bar (G-2)", "`Serves:` names 'G-2' in `quality bar (...)`"),
+        ("quality bar ()", "`Serves:` names '' in `quality bar (...)`"),
+        ("quality bar (Q-4", "`Serves:` names 'quality bar (Q-4'"),
     ],
 )
 def test_s024_7_serves_names_listed_goals_or_the_quality_bar(serves: str, problem: str | None) -> None:
+    """#1016: a listed quality-bar id serves too, alone or as `quality bar (Q-n[, Q-m])`"""
     body = PLAN.replace("- Serves: G-3", f"- Serves: {serves}")
-    found = gate.plan_problems(body, frozenset({"G-1", "G-3", "Q-1"}))
+    found = gate.plan_problems(body, frozenset({"G-1", "G-2", "G-3", "N-1", "Q-1", "Q-4", "Q-6"}))
     if problem is None:
         assert found == []
     else:
