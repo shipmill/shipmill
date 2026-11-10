@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.127.1] - 2026-11-10
+
+### Fixed
+
+- D-82's stated known limit names `uv tool run`, the long form of `uvx`, which a headless gate session's delivery hook lets start any program, and a test keeps the gate's `SHIPMILL_GATE` name and the hook's the same, so a rename on one side can't silently turn the rule off (#1025)
+
 ## [0.127.0] - 2026-11-10
 
 ### Changed
@@ -2410,7 +2416,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.127.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.127.1...HEAD
+[0.127.1]: https://github.com/shipmill/shipmill/compare/v0.127.0...v0.127.1
 [0.127.0]: https://github.com/shipmill/shipmill/compare/v0.126.0...v0.127.0
 [0.126.0]: https://github.com/shipmill/shipmill/compare/v0.125.0...v0.126.0
 [0.125.0]: https://github.com/shipmill/shipmill/compare/v0.124.1...v0.125.0
