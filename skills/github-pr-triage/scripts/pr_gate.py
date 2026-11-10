@@ -104,7 +104,7 @@ import time
 import urllib.parse
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 
@@ -183,6 +183,9 @@ class Check:
     name: str
     done: bool
     conclusion: str
+    # a pending check's own word, its pending line's suffix (#1014): queued, running since HH:MM
+    # UTC, or a status context's pending; a queued check waits, it isn't stalled
+    waits: str = ""
 
 
 @dataclass(frozen=True)
@@ -264,9 +267,23 @@ def check_of(entry: dict) -> Check:
     """A CheckRun (status, conclusion) or a StatusContext (state)"""
     if "state" in entry and "status" not in entry:
         state = str(entry["state"])
-        return Check(str(entry.get("context", "?")), state != "PENDING", state)
+        pending = state == "PENDING"
+        return Check(str(entry.get("context", "?")), not pending, state, "pending" if pending else "")
     status = str(entry.get("status", ""))
-    return Check(str(entry.get("name", "?")), status == "COMPLETED", str(entry.get("conclusion") or ""))
+    done = status == "COMPLETED"
+    return Check(str(entry.get("name", "?")), done, str(entry.get("conclusion") or ""), "" if done else waits_of(entry))
+
+
+def waits_of(entry: dict) -> str:
+    """What a CheckRun not completed does, from its own status and startedAt: running since
+    its start, else its status (queued, waiting, ...) lowercased"""
+    status = str(entry.get("status", ""))
+    if status != "IN_PROGRESS":
+        return status.lower() or "pending"
+    started = started_of(entry)
+    if started is None:
+        return "running"
+    return f"running since {started.astimezone(timezone.utc).strftime('%H:%M UTC')}"  # noqa: UP017 (3.10)
 
 
 def started_of(entry: dict) -> datetime | None:
@@ -1033,7 +1050,7 @@ def render(gate: Gate) -> str:
         f"head={gate.head} checks={len(gate.checks)} green={green} pending={len(pending)} failed={len(failed)}"
     ]
     lines += [f"  failed: {c.name} ({c.conclusion})" for c in failed]
-    lines += [f"  pending: {c.name}" for c in pending]
+    lines += [f"  pending: {c.name} ({c.waits})" for c in pending]
     lines += [f"  base: red: {line}" for line in gate.base_red]
     lines += [f"  base: repairs: {line}" for line in gate.base_repairs]
     lines += [f"  refused: {reason}" for reason in gate.refused]

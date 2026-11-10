@@ -394,7 +394,25 @@ def test_s032_14_a_running_downstream_check_keeps_the_gate_pending(tmp_path: Pat
     assert proc.returncode == gate.PENDING == 3, proc.stdout + proc.stderr
     assert proc.stdout.splitlines() == [
         "#7 PENDING state=OPEN mergeable=MERGEABLE base=main head=abcdef0 checks=2 green=1 pending=1 failed=0",
-        "  pending: downstream: acme/app",
+        "  pending: downstream: acme/app (running)",
+    ]
+
+
+# #1014: a pending check's line says whether it waits for a runner or runs
+
+
+def test_a_pending_checks_line_says_queued_or_running_since_its_start(tmp_path: Path) -> None:
+    rollup = with_rollup(
+        run_of(None, "2026-11-08T09:07:41Z", name="test"),
+        {**downstream("QUEUED", None, "lint"), "startedAt": "0001-01-01T00:00:00Z"},
+        {"__typename": "StatusContext", "context": "ci/legacy", "state": "PENDING"},
+    )
+    proc = run_gate(tmp_path, None, {7: rollup})
+    assert proc.returncode == gate.PENDING, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [
+        "  pending: test (running since 09:07 UTC)",
+        "  pending: lint (queued)",
+        "  pending: ci/legacy (pending)",
     ]
 
 
@@ -450,7 +468,7 @@ def test_a_run_in_flight_listed_before_an_older_pass_keeps_the_check_pending() -
     """The rollup's order is not the runs' order: a run not started yet still wins"""
     for started in ("0001-01-01T00:00:00Z", None):
         checks = gate.newest_checks([run_of(None, started), run_of("SUCCESS", "2026-11-08T08:00:00Z")])
-        assert checks == (gate.Check("test", False, ""),)
+        assert checks == (gate.Check("test", False, "", "running"),)
 
 
 def test_a_start_with_a_fraction_of_any_length_is_read() -> None:

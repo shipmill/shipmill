@@ -1433,7 +1433,8 @@ def item_lines(facts: Facts) -> list[str]:
     lines += _group("drafts", ready)  # S-011-19
     lines += _group("sessions", session_values(facts.rows, facts.gate))
     runs = of("RUNS_ACTIVE")
-    shown = ", ".join(f"{r.subject} {r.detail.rsplit(', ', 1)[-1]}" for r in runs)
+    # the run's link, before the "; " that starts what its jobs do (#1014)
+    shown = ", ".join(f"{r.subject} {r.detail.partition('; ')[0].rsplit(', ', 1)[-1]}" for r in runs)
     lines += _group("runs", [f"{len(runs)}: {shown}"] if runs else [])
     other = [(f"{r.state} {r.subject} {r.detail}", r.fix) for r in rows if r.state not in PLACED]
     lines += _fixed("other", other)

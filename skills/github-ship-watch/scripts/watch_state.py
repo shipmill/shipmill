@@ -279,7 +279,13 @@ Repository settings:
 
 Workflows:
   RUNS_ACTIVE     a queued or running workflow run of any workflow, one row each, with its
-                  status, age, event, branch, and link (reported, never an action by itself)
+                  status, age, event, branch, and link (reported, never an action by itself),
+                  then, after "; ", what its jobs do (#1014): `running: <job> since HH:MM UTC`
+                  for each job in progress, `no job started`, `no job running` between its
+                  jobs, or `jobs unreadable` when GitHub refuses the jobs read (403, 404); any
+                  other failure of that read exits 2. A run queued behind another run's
+                  running job on the one runner is waiting, not stalled. Only the full report
+                  reads it, one jobs read per active run; a --tier or --sweep read doesn't
 
 Agents (all reported, never an action by itself):
   TRIAGE_MODE     how far the gate's sessions go: the effective triage, fix, and land levels,
@@ -813,6 +819,16 @@ class ActiveRun:
     branch: str
     created: dt.datetime
     url: str
+    id: int
+
+
+@dataclass(frozen=True)
+class Job:
+    """A job of an active run, as its RUNS_ACTIVE row names it (#1014)"""
+
+    name: str
+    status: str
+    started: dt.datetime | None
 
 
 @dataclass(frozen=True)
@@ -4458,21 +4474,79 @@ def settings_rows(repo: str, delete_on_merge: object) -> list[Row]:
 # -- workflows -----------------------------------------------------------------------------
 
 
-def active_rows(runs: list[ActiveRun], now: dt.datetime) -> list[Row]:
-    """The queued and running workflow runs, oldest first"""
+def active_rows(runs: list[ActiveRun], now: dt.datetime, jobs: Callable[[ActiveRun], list[Job] | None]) -> list[Row]:
+    """The queued and running workflow runs, oldest first, each with what its jobs do (#1014):
+    a run queued behind another's job on the one runner reads no job started, not a stall"""
     return [
-        Row("RUNS_ACTIVE", r.workflow, f"{r.status} {ago(now - r.created)}: {r.event} on {r.branch}, {r.url}")
+        Row(
+            "RUNS_ACTIVE",
+            r.workflow,
+            f"{r.status} {ago(now - r.created)}: {r.event} on {r.branch}, {r.url}; {jobs_note(jobs(r))}",
+        )
         for r in sorted(runs, key=lambda r: r.created)
         if r.status in ACTIVE
     ]
 
 
+def jobs_note(jobs: list[Job] | None) -> str:
+    """What a run's jobs do: the running ones with their starts, else whether any started;
+    None, jobs GitHub wouldn't show, reads unreadable, never a guess"""
+    if jobs is None:
+        return "jobs unreadable"
+    running = [j for j in jobs if j.status == "in_progress"]
+    if running:
+        return "running: " + ", ".join(f"{j.name} since {clock(j.started)}" for j in running)
+    if any(j.status == "completed" for j in jobs):
+        return "no job running"
+    return "no job started"
+
+
+def clock(at: dt.datetime | None) -> str:
+    """A job's start as HH:MM UTC; a running job without one is GitHub's answer refused"""
+    if at is None:
+        raise Refused("error: gh api .../jobs listed an in_progress job with no started_at")
+    return at.astimezone(dt.timezone.utc).strftime("%H:%M UTC")  # noqa: UP017 (dt.UTC needs 3.11)
+
+
+# a jobs read GitHub refuses the token (the App's 403) or doesn't show it (404): `jobs unreadable`
+JOBS_UNREADABLE = re.compile(r"\(HTTP 40[34]\)")
+
+
+def fetch_jobs(
+    repo: str, run_id: int, execute: Callable[[list[str]], subprocess.CompletedProcess[str]] = capture
+) -> list[Job] | None:
+    """The run's jobs of its latest attempt; None when GitHub refuses or hides them (403,
+    404), and any other failure stops the watch as a failed read does (#1014)"""
+    cmd = ["gh", "api", "--paginate", f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100", "--jq", ".jobs[]"]
+    proc = execute(cmd)
+    if proc.returncode != 0 and JOBS_UNREADABLE.search(proc.stderr):
+        return None
+    found = []
+    for line in checked(cmd, proc).splitlines():
+        if not line.strip():
+            continue
+        j = json.loads(line)
+        if not isinstance(j, dict) or not isinstance(j.get("name"), str) or not isinstance(j.get("status"), str):
+            raise Refused(f"error: {shown_command(cmd)} listed a job without a name and a status: {line}")
+        started = j.get("started_at")
+        found.append(Job(j["name"], j["status"], parse_time(started) if isinstance(started, str) else None))
+    return found
+
+
 def fetch_active(repo: str) -> list[ActiveRun]:
     """The repo's newest runs of every workflow; a run still active is among them"""
-    fields = "workflowName,status,event,headBranch,createdAt,url"
+    fields = "workflowName,status,event,headBranch,createdAt,url,databaseId"
     out = run(["gh", "run", "list", "-R", repo, "-L", "100", "--json", fields])
     return [
-        ActiveRun(r["workflowName"], r["status"], r["event"], r["headBranch"], parse_time(r["createdAt"]), r["url"])
+        ActiveRun(
+            r["workflowName"],
+            r["status"],
+            r["event"],
+            r["headBranch"],
+            parse_time(r["createdAt"]),
+            r["url"],
+            int(r["databaseId"]),
+        )
         for r in json.loads(out)
     ]
 
@@ -5096,9 +5170,11 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         rows += chain_rows(args.repo, triage, args.bot_login)
         rows += spec_rows(args.repo, repo_dir, branch, triage)  # spec 053, at the branch fetched above
     rows += coordinator_rows(text, policy, args.repo, repo_dir, args.bot_login)
-    rows += active_rows(fetch_active(args.repo), now)
-    if not host:  # a --sweep or --tier read prints no host row (spec 046)
+    # a --sweep or --tier read prints no host row (spec 046), nor RUNS_ACTIVE, no tier's or the
+    # sweep's: so neither reads the runs or their jobs, one read per active run (#1014, D-58)
+    if not host:
         return merged_waits(rows)
+    rows += active_rows(fetch_active(args.repo), now, lambda r: fetch_jobs(args.repo, r.id))
     if args.no_host:  # shipmill status reads the host sections with --host, each on its own (#745)
         rows += launchd_rows(args.repo, now)
     else:
