@@ -685,3 +685,11 @@ entry that supersedes it, never by editing an old one.
 - Why: Spec approvals were asked again after commits that only made specs.py check pass, repeating a decision already made; an amendment recording an answer stays a question because otherwise an agent judges that its own text matches the answer and a wrong reading merges unseen
 - Applies to: skills/github-issue-triage/references/spec-gate.md, skills/github-issue-triage/scripts/specs.py, skills/github-pr-triage/SKILL.md, spec approval
 - Enforced by: review, and the tests of `specs.py same-approval` once #1007 is built
+
+## D-82: A headless gate session's uv run starts only Python and the project's tools
+
+- Decided: 2026-11-10, in shipmill/shipmill#1018
+- Rule: In a headless session shipmill gate starts, the delivery hook refuses a uv run whose program isn't python, pytest, ruff, mypy, a [project.scripts] entry of the checkout, a path to a .py file, or a program the repo's [hooks] config adds; uv sync and uv's own options such as --with, --no-project, and --env-file pass, while uv run env, uv run sh, and a PATH= assignment after uv run are refused, so a session sets a variable with uv run --env-file; uv run python -c and Bash(uvx *) remain open and the change says so; an interactive session, whose every command a person approves, is unchanged
+- Why: The headless allowlist's Bash(uv *) let a session route around a denied command through uv run env or sh (190 times on 2026-11-04); the gated repos' own checks start shipmill, project scripts, skill scripts, and uv run --with ruff, so a list of four tools alone would refuse them
+- Applies to: hooks/delivery.py, src/shipmill/gate.py, [hooks] config
+- Enforced by: hooks/delivery.py
