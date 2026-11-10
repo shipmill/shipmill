@@ -110,19 +110,24 @@ def test_s026_15_one_line_per_rule_on_or_off_and_why(agents_repo: Repo) -> None:
     key.parent.mkdir(parents=True)
     key.write_text("not a key\n", encoding="utf-8")
     found = hooks_block(doctor(agents_repo.root, home=home))
-    assert [c.status for c in found] == ["PASS"] * 5
+    assert [c.status for c in found] == ["PASS"] * 6
     assert found[0].detail.startswith("app-writes: off (no [agents] app_id)")
+    assert found[5].detail == (
+        "uv-run on: in a headless gate session, uv run starts only python, pytest, ruff, mypy,"
+        " the checkout's [project.scripts], a .py file (D-82)"
+    )
     assert found[1].detail.startswith("default-branch-push on: [hooks] default_branch is not false")
     assert found[2].detail.startswith("rebase-merge on: always") and "(D-33)" in found[2].detail
     assert found[3].detail.startswith("force-push on: always")
     assert found[4].detail == "private-paths off: no [hooks] private globs"
-    hooks = '\n[hooks]\ndefault_branch = false\nprivate = ["owner/**"]\n'
+    hooks = '\n[hooks]\ndefault_branch = false\nprivate = ["owner/**"]\nuv_run = ["treaty"]\n'
     text = agents_repo.read(str(CONFIG_PATH)).replace(AGENTS, APP + hooks)
     agents_repo.write(str(CONFIG_PATH), text)
     found = hooks_block(doctor(agents_repo.root, home=home))
     assert found[0].detail.startswith(f"app-writes: on (the App's key is at {key})") and "(D-14" in found[0].detail
     assert found[1].detail.startswith("default-branch-push off: [hooks] default_branch = false")
     assert found[4].detail.startswith("private-paths on: [hooks] private holds owner/**")
+    assert found[5].detail.endswith("a .py file, and [hooks] uv_run's treaty (D-82)")
 
 
 def test_s026_15_a_repo_without_agents_gets_no_hooks_block(repo: Repo) -> None:

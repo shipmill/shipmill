@@ -24,6 +24,7 @@ from shipmill.config import Table
 from shipmill.errors import ReleaseError
 from shipmill.gate import (
     BG_WAIT_CEILING,
+    GATE_SESSION,
     HEADLESS_REFUSED,
     HEADLESS_TOOLS,
     RECORD,
@@ -384,6 +385,8 @@ def test_s005_3_headless_runs_claude_p_with_the_allowlist(checkout: Git) -> None
         "AskUserQuestion",
         "--session-id",
         str(SESSION),
+        "--settings",  # D-82: the hook reads the session as the gate's
+        json.dumps({"env": {GATE_SESSION: "1"}}),
         "-n",
         NAME,
         "--allowedTools",
@@ -478,6 +481,34 @@ def test_246_an_interactive_launch_spawns_nothing_with_the_ceiling(checkout: Git
     claude = ClaudeCli(["--permission-mode=auto"], run=spawned.runner, spawn=spawned, environ=GATE_ENV)
     tick(checkout, interactive(), claude, Reads(), started=unasked)
     assert spawned.envs == [] and not any(BG_WAIT_CEILING in arg for arg in spawned.run[1])
+
+
+def test_d82_a_headless_session_without_an_app_carries_the_gate_signal(checkout: Git) -> None:
+    """The delivery hook tells a gate session from a person's by SHIPMILL_GATE=1 in its own
+    environment, which --settings env sets (#1018)"""
+    spawned = Spawned()
+    tick(checkout, headless(), ClaudeCli([], run=spawned.runner, spawn=spawned, environ=GATE_ENV), Reads())
+    [(cmd, _, _)] = spawned.commands
+    assert json.loads(cmd[cmd.index("--settings") + 1])["env"] == {GATE_SESSION: "1"}
+    assert spawned.envs == [{**GATE_ENV, BG_WAIT_CEILING: "0"}]  # the process env is as before
+
+
+def test_d82_a_headless_session_with_an_app_carries_the_gate_signal(checkout: Git, tmp_path: Path) -> None:
+    spawned = Spawned()
+    prepared = Prepared(checkout, gh_path(tmp_path))
+    claude = ClaudeCli([], run=spawned.runner, spawn=spawned)
+    tick(checkout, headless(APP_ID), claude, Reads(), app=app_check_for(tmp_path), app_env=prepared)
+    [(cmd, _, _)] = spawned.commands
+    env = json.loads(cmd[cmd.index("--settings") + 1])["env"]
+    assert env[GATE_SESSION] == "1" and env["GIT_AUTHOR_NAME"] == BOT
+
+
+def test_d82_an_interactive_launch_without_an_app_is_unchanged(checkout: Git) -> None:
+    """S-004-7 and S-005-2: the interactive command line stays as it was; a person answers its prompts"""
+    spawned = Spawned()
+    claude = ClaudeCli([], run=spawned.runner, spawn=spawned, environ=GATE_ENV)
+    tick(checkout, interactive(), claude, Reads(), started=unasked)
+    assert "--settings" not in spawned.run[1] and not any(GATE_SESSION in arg for arg in spawned.run[1])
 
 
 def test_246_the_detached_process_runs_with_the_env_given(tmp_path: Path) -> None:

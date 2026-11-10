@@ -1,0 +1,3 @@
+### Security
+
+- A headless gate session's `uv run` starts only `python`, `pytest`, `ruff`, `mypy`, the checkout's `[project.scripts]`, a path to a `.py` file, or a program `[hooks] uv_run` adds: the delivery hook refuses `uv run env`, `uv run sh`, any other program, and a `NAME=value` word where the program goes, in a session whose `--settings` env sets `SHIPMILL_GATE=1`, which the gate now gives every headless session; a person's own session is unaffected, the skills and briefs now set a variable through `uv run --env-file tmp/<name>.env <command>`, and `uv run python -c` and `uvx` still start any program, a known limit (D-82) (#1018)

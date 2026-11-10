@@ -129,11 +129,15 @@ STREAM_HEAD = 256 * 1024  # how much of a session's log's start tells stream-jso
 # The tools a headless session may use without a prompt (spec 005): the file tools, skills and
 # subagents, peer messages, and gh, git, and uv. Not a sandbox: the trust filter is (D-16)
 # An allow list only: the deny rules on these tools' arguments (a plain gh write, a push to the
-# default branch, a rebase merge, a force push) live in hooks/delivery.py alone (spec 026)
+# default branch, a rebase merge, a force push) live in hooks/delivery.py alone (spec 026), as
+# does what Bash(uv *)'s `uv run` may start, which the hook judges where GATE_SESSION is set (D-82)
 HEADLESS_TOOLS = (
     "Read Edit Write Glob Grep Skill Agent SendMessage ListAgents TodoWrite"
     " Bash(gh *) Bash(git *) Bash(uv *) Bash(uvx *)"
 )
+# Set to "1" in every headless session's --settings env; the delivery hook reads it from its own
+# environment to tell a gate session from a person's (D-82)
+GATE_SESSION = "SHIPMILL_GATE"
 # --claude-arg flags a headless gate refuses, alone or as --flag=value: each brings prompts
 # back, drops the allowlist, or breaks how the gate tracks the session
 HEADLESS_REFUSED = (
@@ -833,7 +837,9 @@ class ClaudeCli:
         --claude-arg tool list that widens the allowlist never reads the prompt as a tool name.
         Its output is stream-json (S-048-17), so its log grows with each message it sends or
         receives, not only at its end"""
-        settings = [] if env is None else ["--settings", json.dumps({"env": dict(env)})]
+        # every headless session's hooks read it as a gate session: its uv run starts only
+        # Python and the project's tools (D-82)
+        settings = ["--settings", json.dumps({"env": {**(env or {}), GATE_SESSION: "1"}})]
         tools = ["--allowedTools", HEADLESS_TOOLS, "--disallowedTools", "AskUserQuestion"]
         stream = ["--output-format", "stream-json", "--verbose"]
         head = ["claude", "-p", "--permission-prompts", "none", *stream, *tools, "--session-id", str(session)]

@@ -822,18 +822,28 @@ In a repo whose config has `[agents]`, the shipmill plugin's delivery hooks
 to the session, its key at `~/.config/shipmill/app-<app_id>.pem` or `SHIPMILL_APP_KEY` set
 (D-14, D-54), a push to the
 default branch, a rebase merge (D-33), a force push without a lease pinned to a commit,
-and a copy of a private path out of the repo. `[hooks]` holds the two rules a repo may
-change; the other three have no switch:
+and a copy of a private path out of the repo. In a session `shipmill gate` started headless
+(its `--settings` env sets `SHIPMILL_GATE=1`, which the hook reads from its own environment
+alone), it also refuses a `uv run` of anything but `python`, `pytest`, `ruff`, `mypy`, an
+entry of the checkout's `[project.scripts]`, or a path to a `.py` file (D-82): `uv run env`,
+`uv run sh`, and a `NAME=value` word where the program goes are refused, while `uv sync` and
+uv's own options, such as `--with` and `--no-project`, pass. A session sets a variable in a
+file under `tmp/` and runs `uv run --env-file tmp/<name>.env <command>`. Its known limit: `uv run python
+-c` and the allowlist's `Bash(uvx *)` still start any program, so the rule narrows the
+routing around a denied command without closing it. A person's own session runs `uv` as
+before. `[hooks]` holds what a repo may change; the other rules have no switch:
 
 ```toml
 [hooks]
 default_branch = true      # refuse a push to the default branch (the default)
 private = ["owner/**"]     # globs, relative to the repo root, whose files never leave it (default: none)
+uv_run = ["treaty"]        # programs a gate session's uv run may start besides the built-in ones (default: none)
 ```
 
 `default_branch` is a boolean, default true; `false` lets a session push the default
 branch. `private` is a list of globs, default empty, and the copy rule is on only when it
-lists one. An unknown key or a wrong type fails with exit 2, naming the key. No
+lists one. `uv_run` is a list of program names, default empty, for a repo whose checks run
+another tool through `uv run`. An unknown key or a wrong type fails with exit 2, naming the key. No
 environment variable or session setting turns a rule off: change the config through a
 pull request, or run the command in your own terminal.
 
