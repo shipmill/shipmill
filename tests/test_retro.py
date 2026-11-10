@@ -341,6 +341,12 @@ def test_s027_8_a_plan_is_read_as_the_gate_reads_it(rt: ModuleType) -> None:
     assert rt.plan_serves(None) == set()
 
 
+def test_a_plan_serving_quality_bar_ids_counts_as_the_quality_bar(rt: ModuleType) -> None:
+    """#1016: the gate passes `Q-6` and `quality bar (Q-4, Q-6)`; the retro rows them as the quality bar"""
+    assert rt.plan_serves(plan("Q-6")) == {"quality bar"}
+    assert rt.plan_serves(plan("G-1, quality bar (Q-4, Q-6)")) == {"G-1", "quality bar"}
+
+
 def test_s027_9_status_compares_in_the_metrics_unit(rt: ModuleType) -> None:
     week = report(
         END,
