@@ -623,3 +623,168 @@ def test_s024_6_a_heading_after_a_tab_is_read_as_shipmill_product_reads_it(tmp_p
     root = direction(repo(tmp_path, **{"001-tab.md": serving(spec("001"), "G-3")}), tabbed)
     assert [str(item.id) for item in product.read(root).goals] == ["G-1", "G-3"]
     assert specs(root, "check").stdout == ""
+
+
+# same-approval (#1007, D-81): the spec PR's own change at the answered head and at the head,
+# compared past what is only format
+
+SPEC_PATH = "docs/specs/001-dry-run.md"
+ANSWERED = spec("001", behaviour="Adds `src/tool/run.py` and the `--dry-run` flag, as D-2 says.")
+
+
+def git(root: Path, *args: str) -> str:
+    config = ("-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false")
+    done = subprocess.run(["git", *config, *args], cwd=root, capture_output=True, text=True, check=True)
+    return done.stdout.strip()
+
+
+def commit(root: Path, files: dict[str, str] | None = None) -> str:
+    """Write each file (its path relative to root) and commit the tree; the new head"""
+    for name, text in (files or {}).items():
+        (root / name).write_text(text)
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "--allow-empty", "-m", "change")
+    return git(root, "rev-parse", "HEAD")
+
+
+def answered_repo(tmp_path: Path, text: str = ANSWERED, decisions: str = DECISIONS) -> tuple[Path, str]:
+    """A repo whose main holds the decisions log and the template, and a spec branch whose
+    head adds the spec (and any decision it claims): the head the answer was given at"""
+    root = repo(tmp_path / "repo")
+    (root / "docs" / "specs" / "TEMPLATE.md").write_text((ROOT / "docs" / "specs" / "TEMPLATE.md").read_text())
+    git(root, "init", "-q", "-b", "main")
+    commit(root)
+    git(root, "switch", "-q", "-c", "spec")
+    return root, commit(root, {"docs/decisions.md": decisions, SPEC_PATH: text})
+
+
+def same(root: Path, answered: str, head: str = "HEAD", path: str = SPEC_PATH) -> subprocess.CompletedProcess[str]:
+    return specs(root, "same-approval", path, answered, head, "--base", "main")
+
+
+def test_1007_the_same_spec_after_a_rebase_lands_on_the_answer(tmp_path: Path) -> None:
+    root, answered = answered_repo(tmp_path)
+    assert same(root, answered).returncode == 0
+    git(root, "switch", "-q", "main")
+    commit(root, {"docs/specs/002-other.md": spec("002"), "README.md": "main moved on\n"})
+    git(root, "switch", "-q", "spec")
+    git(root, "rebase", "-q", "main")
+    out = same(root, answered)
+    assert (out.returncode, out.stderr) == (0, "")
+    assert "only its format changed" in out.stdout
+
+
+def test_1007_a_changed_status_line_lands_on_the_answer(tmp_path: Path) -> None:
+    root, answered = answered_repo(tmp_path, ANSWERED.replace("status: approved", "status: draft"))
+    commit(root, {SPEC_PATH: ANSWERED})
+    assert same(root, answered).returncode == 0
+
+
+def test_1007_rewrapped_text_and_whitespace_land_on_the_answer(tmp_path: Path) -> None:
+    root, answered = answered_repo(tmp_path)
+    rewrapped = ANSWERED.replace("Runs write files.", "Runs   write\nfiles.  ").replace(
+        "- S-001-2: tool run --dry-run writes nothing", "- S-001-2: tool run --dry-run\n  writes nothing"
+    )
+    commit(root, {SPEC_PATH: rewrapped + "\n\n"})
+    assert same(root, answered).returncode == 0
+
+
+def test_1007_an_empty_or_placeholder_section_lands_on_the_answer(tmp_path: Path) -> None:
+    without = ANSWERED.split("## Issues", 1)[0].rstrip() + "\n"
+    root, answered = answered_repo(tmp_path, without)
+    issues = (
+        "## Issues\n\nThe build issues, filled in once they are filed: one `- owner/repo#N: S-001-1, S-001-2` per\n"
+    )
+    issues += "line, naming the criteria that issue delivers. Each criterion belongs to exactly one.\n"
+    commit(root, {SPEC_PATH: without + "\n" + issues + "\n## Verification\n"})
+    assert same(root, answered).returncode == 0
+    # a section filled in is no format
+    commit(root, {SPEC_PATH: without + "\n## Issues\n\n- o/r#12: S-001-1, S-001-2\n"})
+    out = same(root, answered)
+    assert out.returncode == 1
+    assert "## Issues\n  + - o/r#12: S-001-1, S-001-2\n" in out.stdout
+
+
+def test_1007_the_same_decisions_in_another_shape_land_on_the_answer(tmp_path: Path) -> None:
+    root, answered = answered_repo(tmp_path)
+    commit(root, {SPEC_PATH: ANSWERED.replace("- D-2: New", "- D-2")})
+    assert same(root, answered).returncode == 0
+    commit(root, {SPEC_PATH: ANSWERED.replace("- D-2: New", "- D-1, D-2")})
+    out = same(root, answered)
+    assert out.returncode == 1
+    assert out.stdout.endswith("\n## Decisions relied on\n  + D-1\n")
+
+
+def test_1007_a_claimed_decision_renumbered_lands_on_the_answer(tmp_path: Path) -> None:
+    claim = "\n## D-3: Ours\n\n- Decided: 2026-10-03, in o/r#3\n- Rule: r\n- Why: w\n- Applies to: x\n"
+    claim += "- Enforced by: review\n"
+    citing = ANSWERED.replace("as D-2 says", "as D-3 says").replace("- D-2: New", "- D-2: New\n- D-3: Ours")
+    root, answered = answered_repo(tmp_path, citing, DECISIONS + claim)
+    # main takes D-3 meanwhile, and the spec PR is rebuilt on it with its claim as D-4
+    git(root, "switch", "-q", "main")
+    theirs = claim.replace("D-3: Ours", "D-3: Theirs").replace("o/r#3", "o/r#4")
+    commit(root, {"docs/decisions.md": DECISIONS + theirs})
+    git(root, "switch", "-q", "-c", "rebuilt")
+    renumbered = citing.replace("D-3", "D-4")
+    commit(root, {"docs/decisions.md": DECISIONS + theirs + claim.replace("D-3", "D-4")})
+    commit(root, {SPEC_PATH: renumbered})
+    assert same(root, answered).returncode == 0
+    # a D-n the PR doesn't claim, changed in the spec, is no renumbering
+    commit(root, {SPEC_PATH: renumbered.replace("as D-4 says", "as D-1 says")})
+    out = same(root, answered)
+    assert out.returncode == 1
+    assert "## Behaviour\n" in out.stdout
+
+
+def test_1007_a_changed_criterion_asks_again(tmp_path: Path) -> None:
+    root, answered = answered_repo(tmp_path)
+    commit(root, {SPEC_PATH: ANSWERED.replace("exits 2 on", "exits 3 on")})
+    out = same(root, answered)
+    assert out.returncode == 1
+    assert "## Acceptance criteria\n  - - S-001-1: tool run exits 2 on a missing config\n" in out.stdout
+    assert "  + - S-001-1: tool run exits 3 on a missing config\n" in out.stdout
+    # a criterion's text deleted is no empty section
+    commit(root, {SPEC_PATH: ANSWERED.replace("- S-001-2: tool run --dry-run writes nothing", "")})
+    out = same(root, answered)
+    assert out.returncode == 1
+    assert "## Acceptance criteria\n  - - S-001-2: tool run --dry-run writes nothing\n" in out.stdout
+
+
+def test_1007_a_changed_problem_asks_again(tmp_path: Path) -> None:
+    root, answered = answered_repo(tmp_path)
+    commit(root, {SPEC_PATH: ANSWERED.replace("Runs write files.", "")})
+    out = same(root, answered)
+    assert out.returncode == 1
+    assert "## Problem\n  - Runs write files.\n" in out.stdout
+
+
+def test_1007_a_changed_behaviour_asks_again(tmp_path: Path) -> None:
+    root, answered = answered_repo(tmp_path)
+    commit(root, {SPEC_PATH: ANSWERED.replace("`--dry-run` flag", "`--dry` flag")})
+    out = same(root, answered)
+    assert out.returncode == 1
+    assert "## Behaviour\n" in out.stdout
+    assert "`--dry` flag" in out.stdout
+
+
+def test_1007_a_changed_out_of_scope_asks_again(tmp_path: Path) -> None:
+    root, answered = answered_repo(tmp_path)
+    commit(root, {SPEC_PATH: ANSWERED.replace("- Undo", "- Undo\n- Redo")})
+    out = same(root, answered)
+    assert out.returncode == 1
+    assert "## Out of scope\n  + - Redo\n" in out.stdout
+    assert "## Problem" not in out.stdout
+
+
+def test_1007_bad_input_exits_2(tmp_path: Path) -> None:
+    root, answered = answered_repo(tmp_path)
+    assert "unknown commit" in same(root, "no-such-ref").stderr
+    assert same(root, answered, "no-such-ref").returncode == 2
+    assert specs(root, "same-approval", SPEC_PATH, answered, "HEAD", "--base", "nope").returncode == 2
+    assert "not a spec" in same(root, answered, path="docs/specs/TEMPLATE.md").stderr
+    assert same(root, answered, path="docs/decisions.md").returncode == 2
+    assert same(root, answered, path="docs/specs/002-missing.md").returncode == 2
+    assert same(root, "main").returncode == 2  # no spec at that head
+    assert same(root, "-p").returncode == 2
+    (tmp_path / "plain").mkdir()
+    assert same(tmp_path / "plain", answered).returncode == 2

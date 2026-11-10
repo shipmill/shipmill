@@ -9,6 +9,7 @@ Usage:
   specs.py criteria [--dir D] NNN
   specs.py coverage [--dir D] [--root R] [--spec NNN]...
   specs.py split [--dir D] [--repo OWNER/REPO] [--group K,K...]... [--after B:A]... [--milestone T] [--json] NNN
+  specs.py same-approval [--base REF] SPEC ANSWERED_HEAD HEAD
 
 A spec has a title line, a status line, and fixed sections, in this order:
 
@@ -63,20 +64,35 @@ split    propose the build issues of an approved spec, for the criteria its Issu
           until they are filed: replace {Bk} with each issue's number as it is created.
           --milestone T puts each in milestone T (a "milestone:" line, and a "milestone"
           key in --json); without it none has one. --json prints the same as one JSON object
+same-approval
+          whether a trusted answer given at a spec pull request's ANSWERED_HEAD still
+          covers its HEAD (D-81): compares the pull request's own change to SPEC at each
+          head, `git diff $(git merge-base REF <head>) <head> -- SPEC` (REF the default
+          branch, default origin/main), so main's changes a rebase brought in don't count.
+          Only format is left out: rewrapped text and whitespace, the status: line, a
+          section that is empty or holds exactly the template's placeholder (D/TEMPLATE.md
+          at HEAD, or the built-in one), the same D-n ids in another shape under
+          Decisions relied on, and a D-n the pull request claims (a heading its change to
+          the decisions log adds, matched by its title) renumbered, with the lines citing
+          it. Exit 1 prints each remaining difference by section: what changed since the
+          answer. Run it in the repo's checkout
 
-Exit 0 on success (find: at least one match), 1 when check (or criteria or split, for
-its spec) finds a problem, find matches nothing, or coverage finds a criterion with no test (or a
-test naming a criterion its spec lacks), 2 on bad input. Python 3.10+, standard library
+Exit 0 on success (find: at least one match; same-approval: only the format changed), 1
+when check (or criteria or split, for its spec) finds a problem, find matches nothing,
+coverage finds a criterion with no test (or a test naming a criterion its spec lacks), or
+same-approval finds a change beyond format, 2 on bad input. Python 3.10+, standard library
 only.
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import fnmatch
 import json
 import os
 import re
+import subprocess
 import sys
 import tokenize
 from collections.abc import Callable
@@ -86,6 +102,7 @@ from pathlib import Path
 from typing import Any
 
 from decisions import CANDIDATES as DECISION_LOGS
+from decisions import HEADING as DECISION_HEADING
 from decisions import parse as parse_log
 
 DEFAULT_DIR = Path("docs/specs")
@@ -131,6 +148,11 @@ ASSIGNED = re.compile(r"^S-(\d{3,})-(\d+)$")
 REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
 UNASSIGNED = "is in no build issue under Issues"
 ID = re.compile(r"^(?:S-)?(\d+)$")
+# same-approval (#1007, D-81): what is only format in a spec pull request's change
+PREAMBLE = "(title)"  # the lines before the first section
+STATUS_ANY = re.compile(r"^status:")
+LIST_ITEM = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]")
+DECISION_ID = re.compile(r"(?<![\w-])D-(\d+)(?!\d)")
 # Reports one problem at a line of the spec being parsed
 ProblemSink = Callable[[int, str], None]
 
@@ -869,6 +891,170 @@ def split(
     return 0
 
 
+def git(*args: str) -> str:
+    """git's output in the current directory; a failure is bad input"""
+    done = subprocess.run(["git", *args], capture_output=True, text=True, encoding="utf-8", check=False)
+    if done.returncode != 0:
+        raise SpecError(f"git {' '.join(args)}: {done.stderr.strip() or f'exit {done.returncode}'}")
+    return done.stdout
+
+
+def commit_of(ref: str) -> str:
+    """The commit a ref names"""
+    if not ref or ref.startswith("-"):
+        raise SpecError(f"unknown commit {ref!r}")
+    done = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if done.returncode != 0:
+        raise SpecError(f"unknown commit {ref!r}")
+    return done.stdout.strip()
+
+
+def file_at(commit: str, path: str) -> str | None:
+    """A file's text at a commit, None when the commit hasn't it"""
+    done = subprocess.run(["git", "cat-file", "-e", f"{commit}:{path}"], capture_output=True, check=False)
+    return git("show", f"{commit}:{path}") if done.returncode == 0 else None
+
+
+def blocks(text: str) -> dict[str, list[str]]:
+    """Each section's paragraphs and list items, whitespace folded so that a rewrapped one
+    reads the same, under PREAMBLE before the first section; the status line is left out"""
+    found: dict[str, list[str]] = {PREAMBLE: []}
+    current = PREAMBLE
+    block: list[str] = []
+
+    def close() -> None:
+        if block:
+            found[current].append(" ".join(" ".join(block).split()))
+        block.clear()
+
+    for line in text.splitlines():
+        if line.startswith("## "):
+            close()
+            current = line[3:].strip()
+            found.setdefault(current, [])
+        elif not line.strip() or (current == PREAMBLE and STATUS_ANY.match(line)):
+            close()
+        else:
+            if LIST_ITEM.match(line):
+                close()
+            block.append(line)
+    close()
+    return found
+
+
+def format_free(text: str, placeholder: dict[str, list[str]]) -> dict[str, list[str]]:
+    """The spec's blocks past what is only format: a section empty or holding exactly the
+    template's placeholder counts as absent, and Decisions relied on as the D-n ids it names"""
+    found = blocks(text)
+    for section, body in found.items():
+        if section == "Decisions relied on":
+            found[section] = [f"D-{n}" for n in sorted({int(n) for n in DECISION_ID.findall(" ".join(body))})]
+        elif body == placeholder.get(section, []):
+            found[section] = []
+    return found
+
+
+def claimed(base: str, head: str) -> dict[int, str]:
+    """The decisions (D-n to title) the log has at head and not at its merge base: the ones
+    the pull request claims"""
+    for log in DECISION_LOGS:
+        text = file_at(head, log.as_posix())
+        if text is None:
+            continue
+        before = {
+            m.group(1) for m in map(DECISION_HEADING.match, (file_at(base, log.as_posix()) or "").splitlines()) if m
+        }
+        added = (m for m in map(DECISION_HEADING.match, text.splitlines()) if m and m.group(1) not in before)
+        return {int(m.group(1)): m.group(2).strip() for m in added}
+    return {}
+
+
+def renumbering(answered: dict[int, str], now: dict[int, str]) -> dict[int, int]:
+    """Each D-n the pull request claimed at the answer, to the number the same claim (by its
+    title, one of a kind on both sides) has now, when it changed"""
+    moved = {}
+    for number, title in answered.items():
+        then = [n for n, t in answered.items() if t == title]
+        later = [n for n, t in now.items() if t == title]
+        if len(then) == len(later) == 1 and later[0] != number:
+            moved[number] = later[0]
+    return moved
+
+
+def change(before: list[str], after: list[str]) -> tuple[list[str], list[str]]:
+    """The blocks a patch from before to after removes, and the ones it adds"""
+    removed: list[str] = []
+    added: list[str] = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=before, b=after, autojunk=False).get_opcodes():
+        if tag != "equal":
+            removed += before[i1:i2]
+            added += after[j1:j2]
+    return removed, added
+
+
+def minus(items: list[str], taken: list[str]) -> list[str]:
+    """items without taken, each taken once, in items' order"""
+    left = list(taken)
+    kept = []
+    for item in items:
+        if item in left:
+            left.remove(item)
+        else:
+            kept.append(item)
+    return kept
+
+
+def same_approval(path: str, answered_ref: str, head_ref: str, base_ref: str) -> int:
+    name = NAME.match(Path(path).name)
+    if name is None or Path(path).name in NOT_SPECS or Path(path).is_absolute():
+        raise SpecError(f"{path} is not a spec: a spec is docs/specs/NNN-<slug>.md, relative to the repo")
+    answered, head, base = commit_of(answered_ref), commit_of(head_ref), commit_of(base_ref)
+    texts = {}
+    for ref, commit in ((answered_ref, answered), (head_ref, head)):
+        text = file_at(commit, path)
+        if text is None:
+            raise SpecError(f"{path} is not a spec at {ref}: the commit hasn't the file")
+        texts[ref] = text
+    answered_base = git("merge-base", base, answered).strip()
+    head_base = git("merge-base", base, head).strip()
+    spec_id = f"S-{int(name.group(1)):03d}"
+    template_text = file_at(head, (Path(path).parent / "TEMPLATE.md").as_posix()) or TEMPLATE
+    placeholder = blocks(template_text.replace("S-NNN", spec_id))
+    moved = renumbering(claimed(answered_base, answered), claimed(head_base, head))
+    answered_text = DECISION_ID.sub(lambda m: f"D-{moved.get(int(m.group(1)), int(m.group(1)))}", texts[answered_ref])
+    then = (format_free(file_at(answered_base, path) or "", placeholder), format_free(answered_text, placeholder))
+    now = (format_free(file_at(head_base, path) or "", placeholder), format_free(texts[head_ref], placeholder))
+    names = [s for s in (PREAMBLE, *SECTIONS) if any(s in side for side in (*then, *now))]
+    names += sorted({s for side in (*then, *now) for s in side} - set(names))
+    differences: dict[str, list[str]] = {}
+    for section in names:
+        removed_then, added_then = change(then[0].get(section, []), then[1].get(section, []))
+        removed_now, added_now = change(now[0].get(section, []), now[1].get(section, []))
+        if (removed_then, added_then) == (removed_now, added_now):
+            continue
+        gone = minus(added_then, added_now) + minus(removed_now, removed_then)
+        new = minus(added_now, added_then) + minus(removed_then, removed_now)
+        lines = [f"  - {block}" for block in gone] + [f"  + {block}" for block in new]
+        differences[section] = lines or ["  the same lines, in another order"]
+    if not differences:
+        print(
+            f"{path}: the pull request's change is the same at {head_ref} as at {answered_ref}; only its format changed"
+        )
+        return 0
+    print(f"{path}: changed since the answer, at {answered_ref}, to {head_ref} (- at the answer, + now):")
+    for section, lines in differences.items():
+        print(f"## {section}")
+        for line in lines:
+            print(line)
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -894,8 +1080,15 @@ def main() -> int:
             p.add_argument("--json", action="store_true", help="print the task graph as one JSON object")
             p.add_argument("--milestone", metavar="TITLE", help="put every build issue in this milestone")
             p.add_argument("spec", metavar="NNN")
+    p = sub.add_parser("same-approval")
+    p.add_argument("--base", default="origin/main", help="the default branch (default: origin/main)")
+    p.add_argument("spec", metavar="SPEC", help="the spec file, docs/specs/NNN-<slug>.md")
+    p.add_argument("answered", metavar="ANSWERED_HEAD", help="the pull request's head when the answer was given")
+    p.add_argument("head", metavar="HEAD", help="its head now")
     args = parser.parse_args()
     try:
+        if args.command == "same-approval":
+            return same_approval(args.spec, args.answered, args.head, args.base)
         if args.command == "new":
             return new(args.dir, args.slug, args.title)
         if args.command == "criteria":

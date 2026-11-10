@@ -87,8 +87,9 @@ def test_620_the_answer_approves_the_spec_as_it_stood_when_given() -> None:
     assert "Main's changes brought in by a rebase fall outside these patches" in changed
     assert "differing only where a `D-n` the PR claims was renumbered" in changed
     assert "it lands on the answer" in changed
-    assert "**Any other difference** (a criterion added, removed, or reworded" in changed
-    assert "a new marker comment that names what changed since the answer and repeats the question" in changed
+    assert "**Exit 1: any other difference** (a criterion added, removed, or reworded" in changed
+    assert "a new marker comment that names what changed since the answer, quoting the script's exit-1 output" in changed
+    assert "and repeats the question, and the `needs-decision` label" in changed
     assert "the old answer, which comes before it, doesn't answer it" in changed
     assert "**The answered head can't be named**" in changed
     assert "ask again the same way rather than land" in changed
@@ -96,9 +97,33 @@ def test_620_the_answer_approves_the_spec_as_it_stood_when_given() -> None:
     bullet = skill.split("- **A spec pull request**", 1)[1].split(" - **An upgrade pull request**", 1)[0]
     assert "The answer approves the spec as it stood when it was given" in bullet
     assert "compare the PR's own change to the spec file at the answered head and at the current head" in bullet
-    assert "A rebase, or a renumbered `D-n` the PR claims, still lands on the answer" in bullet
-    assert "any other change to the spec file (a criterion, the behaviour, the scope) asks again" in bullet
+    assert "A rebase, a renumbered `D-n` the PR claims, or a change of format only" in bullet
+    assert "any other change to the spec file (exit 1: a criterion, the problem, the behaviour, the scope)" in bullet
     assert "which the old answer doesn't satisfy" in bullet
+
+
+def test_1007_specs_same_approval_is_the_comparison_and_names_what_changed() -> None:
+    gate = folded(TRIAGE / "references" / "spec-gate.md")
+    changed = gate.split("- **The spec changed after the answer**", 1)[1].split(" ## ", 1)[0]
+    command = "`specs.py same-approval docs/specs/NNN-<slug>.md <answered head> <head> --base origin/<default>`"
+    assert command in changed
+    assert "The script compares the two patches, never a reading by eye (D-81)" in changed
+    landing = changed.split("- **Exit 0: the same, or differing only in format**", 1)[1].split(" - **Exit 1", 1)[0]
+    for ignored in ("rewrapped text or whitespace", "the `status:` line", "exactly the template's placeholder text"):
+        assert ignored in landing
+    assert "the same `D-n` ids in another shape under Decisions relied on" in landing
+    asking = changed.split("- **Exit 1: any other difference**", 1)[1].split(" - **The answered head", 1)[0]
+    assert "a section whose text was deleted is a change, not an empty section" in asking
+    assert 'quoting the script\'s exit-1 output under "What changed since the answer"' in asking
+    assert "An amendment that records an answer the maintainer gave elsewhere" in asking
+    assert "or the script exits 2" in changed
+    skill = folded(PR_TRIAGE / "SKILL.md")
+    bullet = skill.split("- **A spec pull request**", 1)[1].split(" - **An upgrade pull request**", 1)[0]
+    assert command.replace("`", "") in bullet.replace("`", "")
+    assert "an amendment recording an answer given elsewhere, or exit 2 asks again" in bullet
+    assert "quoting the exit-1 output as what changed since the answer" in bullet
+    script = (TRIAGE / "scripts" / "specs.py").read_text(encoding="utf-8")
+    assert "specs.py same-approval [--base REF] SPEC ANSWERED_HEAD HEAD" in script
 
 
 def test_547_needs_decision_points_an_answered_spec_pr_at_its_landing() -> None:
