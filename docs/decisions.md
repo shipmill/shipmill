@@ -677,3 +677,11 @@ entry that supersedes it, never by editing an old one.
 - Why: With no version, setup-uv installed the newest uv on every run, so a broken uv release would stop every connected repo's release at once; floating @v0 and tool stay, since a caller on @v0 takes each stable release on purpose
 - Applies to: .github/workflows/*.yml, astral-sh/setup-uv, docs/release-lanes.md
 - Enforced by: tests/test_uv_pin.py
+
+## D-81: A trusted answer approving a spec survives a format-only change
+
+- Decided: 2026-11-10, in shipmill/shipmill#1007
+- Rule: After a trusted answer takes every recommendation on a spec pull request, a later change to the spec that `specs.py same-approval` finds format-only (the status: line, an empty or placeholder section, rewrapped text or whitespace, the same D-n ids in another shape of Decisions relied on, a renumbered D-n the pull request claims) lands on that answer; any change to a criterion, the Problem, the Behaviour, or the Out of scope asks again, and so does an amendment that records an answer the maintainer gave elsewhere. This refines D-49: an answer still approves the spec as it stood when it was given, and a format-only change no longer counts as a change to it
+- Why: Spec approvals were asked again after commits that only made specs.py check pass, repeating a decision already made; an amendment recording an answer stays a question because otherwise an agent judges that its own text matches the answer and a wrong reading merges unseen
+- Applies to: skills/github-issue-triage/references/spec-gate.md, skills/github-issue-triage/scripts/specs.py, skills/github-pr-triage/SKILL.md, spec approval
+- Enforced by: review, and the tests of `specs.py same-approval` once #1007 is built
