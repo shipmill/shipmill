@@ -603,7 +603,8 @@ def test_s038_26_a_fault_in_one_component_is_routed_to_another_and_closed_back(
     coordinator = {t for t, asked in tokens.items() if asked["permissions"] == ASKED}
     assert session | coordinator == set(tokens) and session and coordinator
     assert all(tokens[t]["repositories"] == ["api"] for t in session)  # A's session: romamo/api alone
-    assert all(tokens[t]["repositories"] == ["api", "web"] for t in coordinator)
+    # the coordinator's: the listed repos and the home of the same owner (S-038-8, #1032)
+    assert all(tokens[t]["repositories"] == ["api", "web", "demo"] for t in coordinator)
     a_calls = [c for c in forge.calls if c.token in session]
     product_calls = [c for c in forge.calls if c.token in coordinator]
     assert len(a_calls) + len(product_calls) == len(forge.calls)

@@ -693,3 +693,11 @@ entry that supersedes it, never by editing an old one.
 - Why: The headless allowlist's Bash(uv *) let a session route around a denied command through uv run env or sh (190 times on 2026-11-04); the gated repos' own checks start shipmill, project scripts, skill scripts, and uv run --with ruff, so a list of four tools alone would refuse them
 - Applies to: hooks/delivery.py, src/shipmill/gate.py, [hooks] config
 - Enforced by: hooks/delivery.py
+
+## D-83: The coordinator's product token also covers the home repo of the same owner
+
+- Decided: 2026-11-11, in shipmill/shipmill#1032
+- Rule: As D-47, plus the coordinator's product token over one owner's listed repos also covers the product's home repo when the home has that owner, with the same permissions (contents, issues, and pull requests read, issues write; nothing more), so a report in the home repo can take a listed repo's issue as a sub-issue: chains.py link --product with a home-repo parent and a child in a listed repo of the home's owner writes through shipmill gh --product <the child's repo>. A home of another owner keeps the token over the listed repos alone, since one installation token never spans owners. shipmill gh --product's -R still names only a listed repo, and the coordinator still never changes files, pushes, creates a branch, opens a pull request, or merges outside the home. This refines D-47
+- Why: GitHub's addSubIssue resolves both issues with one token: the session's token covers only the home and the product token covered only [product] repos, so linking a home-repo report to a listed repo's issue failed with Could not resolve to a node with the global id (#1032). Widening the product token to the home of the same owner adds no permission the coordinator lacked there (its session token already writes the home's issues) and keeps one token per owner
+- Applies to: src/shipmill/app.py, src/shipmill/cli.py, src/shipmill/doctor.py, shipmill gh, shipmill app-token, skills/github-issue-triage/scripts/chains.py, docs/specs/038-product-coordinator.md, [product] repos, home repo, coordinator
+- Enforced by: tests/test_product_token.py and tests/test_chains.py (test_s038_8_*, test_s038_29_*)

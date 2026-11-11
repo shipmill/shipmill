@@ -13,7 +13,8 @@ one, limited to the gate's repo, at each call, or reuse the one cached in `app-t
 arguments, or a helper's file.
 
 The product's home repo, the coordinator, has a second token (spec 038, D-47): over the repos
-its `[product] repos` lists under one owner, with PRODUCT_PERMISSIONS, cached apart in
+its `[product] repos` lists under one owner, and the home repo itself when it has that owner
+(#1032), with PRODUCT_PERMISSIONS, cached apart in
 `app-token-product-<owner>.json`. It never reaches the session's cache or helpers, so a push
 from the coordinator's session still reaches only the home repo.
 """
@@ -729,6 +730,19 @@ def product_cache(owner: str) -> str:
     return f"app-token-product-{owner.lower()}.json"
 
 
+def with_home(repos: tuple[str, ...], home: str | None) -> tuple[str, ...]:
+    """S-038-8, #1032: the repos one product token covers: one owner's listed repos, plus the
+    home repo when it has their owner and isn't among them, so the token sees both ends of a
+    home-repo report and a listed repo's issue under it. A home of another owner, or one that
+    can't be told, adds nothing: one installation token never spans owners"""
+    if home is None or not repos:
+        return repos
+    owner = repos[0].partition("/")[0].lower()
+    if home.partition("/")[0].lower() != owner or any(r.lower() == home.lower() for r in repos):
+        return repos
+    return (*repos, home)
+
+
 def _same_repos(one: tuple[str, ...], other: tuple[str, ...]) -> bool:
     return sorted(r.lower() for r in one) == sorted(r.lower() for r in other)
 
@@ -743,7 +757,8 @@ class ProductToken:
     app_id: int
 
     def reusable(self, repos: tuple[str, ...], app_id: int, now: dt.datetime) -> bool:
-        """S-038-8: the same App, the config's very repos, and at least 10 minutes left"""
+        """S-038-8: the same App, the very repos asked (the config's, with the home of the same
+        owner), and at least 10 minutes left"""
         return self.app_id == app_id and _same_repos(self.repos, repos) and self.expires - now >= REUSE_FOR
 
 
@@ -842,8 +857,9 @@ def mint_product(
 def product_token(
     cache: Path, repos: tuple[str, ...], app_id: int, key: Path, now: dt.datetime, signer: Signer, api: Api
 ) -> str:
-    """S-038-8: the cached product token while it has 10 minutes left and covers the config's
-    very repos, else a new one, cached only once its scope checks out"""
+    """S-038-8: the cached product token while it has 10 minutes left and covers the very repos
+    asked (`with_home`'s), else a new one, cached only once its scope checks out; a token cached
+    before the home joined them no longer matches, so it is minted again"""
     cached = load_product_token(cache)
     if cached is not None and cached.reusable(repos, app_id, now):
         return cached.value

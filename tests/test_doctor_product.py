@@ -203,9 +203,10 @@ def test_s038_28_a_component_with_no_or_another_home_warns_naming_the_fix_read_w
             f" {fix} other-org/sdk's {FILE}",
         ),
     ]
-    # each read carried the product token over its owner's listed repos, minted once per owner
+    # each read carried the product token over its owner's listed repos, minted once per owner,
+    # the home of the same owner included as `gh --product` mints it (S-038-8, #1032)
     minted = {path: body["repositories"] for path, body in api.posts}
-    assert sorted(map(sorted, minted.values())) == [["api", "web"], ["sdk"]]  # type: ignore[arg-type]
+    assert sorted(map(sorted, minted.values())) == [["api", "demo", "web"], ["sdk"]]  # type: ignore[arg-type]
     assert {token for _, token in api.reads} <= {"token-1", "token-2"}
     assert [read for read, _ in api.reads] == list(LISTED)
     for _, body in api.posts:
