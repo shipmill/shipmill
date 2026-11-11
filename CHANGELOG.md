@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.128.3] - 2026-11-11
+
+### Fixed
+
+- The gate's App check no longer reads the App's bot account anonymously on every tick, which spent the host's shared 60-an-hour limit: it keeps the bot's id in its state folder's `bot-ids.json`, by App id and slug, and reads GitHub only on a miss; a dry run, `shipmill status`, and `shipmill factory` read that file but never write it, and a malformed one exits 2 naming it (#1034)
+
 ## [0.128.2] - 2026-11-11
 
 ### Fixed
@@ -2440,7 +2446,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.128.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.128.3...HEAD
+[0.128.3]: https://github.com/shipmill/shipmill/compare/v0.128.2...v0.128.3
 [0.128.2]: https://github.com/shipmill/shipmill/compare/v0.128.1...v0.128.2
 [0.128.1]: https://github.com/shipmill/shipmill/compare/v0.128.0...v0.128.1
 [0.128.0]: https://github.com/shipmill/shipmill/compare/v0.127.2...v0.128.0
