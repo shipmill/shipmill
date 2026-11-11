@@ -518,6 +518,61 @@ def bot_id(slug: str, app_id: int, api: Api, token: str | None) -> int:
     return number
 
 
+BOT_IDS = "bot-ids.json"  # in the gate's state folder: each App's slug and bot account id, by App id (#1034)
+
+
+@dataclass(frozen=True, slots=True)
+class BotIds:
+    """#1034: where the App check keeps the bot account's id, and whether it may write there.
+    The id never changes for an App, so the check reads it from GitHub once per App and slug;
+    the gate writes, while a dry run, status, and factory only read"""
+
+    path: Path
+    write: bool
+
+    def _malformed(self, reason: str) -> ReleaseError:
+        fix = "delete it, and the next App check reads the id again"
+        return ReleaseError(f"the bot id cache {self.path} is malformed ({reason}); {fix}")
+
+    def load(self) -> dict[int, tuple[str, int]]:
+        """Each App id's slug and bot id; none when there is no file. Malformed content raises
+        naming the file rather than be trusted or silently replaced"""
+        if not self.path.exists():
+            return {}
+        try:
+            data = json.loads(self.path.read_bytes())
+        except json.JSONDecodeError, UnicodeDecodeError:
+            raise self._malformed("not JSON") from None
+        if not isinstance(data, dict):
+            raise self._malformed("not a JSON object")
+        found = {}
+        for key, entry in data.items():
+            if not key.isdecimal():
+                raise self._malformed(f"key {key!r} is not an App id")
+            if not isinstance(entry, dict):
+                raise self._malformed(f"entry {key} is not an object")
+            slug, number = entry.get("slug"), entry.get("bot_id")
+            if not isinstance(slug, str) or not slug:
+                raise self._malformed(f"entry {key}'s slug is not a non-empty string")
+            if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+                raise self._malformed(f"entry {key}'s bot_id is not a positive integer")
+            found[int(key)] = (slug, number)
+        return found
+
+    def bot_id(self, slug: str, app_id: int, api: Api) -> int:
+        """The cached id when its slug is the App's; else the id read anonymously (no token is
+        minted, S-048-5), written back when this may write"""
+        known = self.load()
+        if (cached := known.get(app_id)) is not None and cached[0] == slug:
+            return cached[1]
+        number = bot_id(slug, app_id, api, None)
+        if self.write:
+            known[app_id] = (slug, number)
+            record = {str(k): {"slug": s, "bot_id": n} for k, (s, n) in known.items()}
+            write_atomic(self.path, (json.dumps(record, indent=2) + "\n").encode(), 0o644)
+        return number
+
+
 AppCheck = Callable[[int], Identity]
 
 
@@ -533,6 +588,7 @@ def app_check(
     api: Api,
     product: Callable[[], tuple[str, ...]] = _no_product,
     clock: Clock = utc_now,
+    bots: BotIds | None = None,
 ) -> AppCheck:
     """The gate's App check for repo, spec 004's At launch steps 1 to 4: the key (`--app-key`,
     else the default path for the App's id), the JWT, the installation, then the bot account.
@@ -540,7 +596,10 @@ def app_check(
     App must be installed on each with PRODUCT_PERMISSIONS before any session starts.
     The JWT is signed with clock's time when the check runs, never the tick's start, which a
     slow prune can put past VALID_FOR (#694).
-    Any failure raises ReleaseError (exit 2). It writes nothing, so a dry run runs it too"""
+    The bot account's id comes from bots, the state folder's cache, when it holds the App's
+    slug, and is read from GitHub only on a miss (#1034); None reads it on every check.
+    Any failure raises ReleaseError (exit 2). It writes only the cache, and only when bots
+    may write, so a dry run runs it too and writes nothing"""
 
     def check(app_id: int) -> Identity:
         path = check_key(key if key is not None else default_key(app_id, home))
@@ -548,8 +607,9 @@ def app_check(
         found = installation(app_id, repo, bearer, api)
         for listed in product():
             installed(app_id, found.slug, listed, bearer, api, PRODUCT_PERMISSIONS)
-        # anonymous: the check mints no token (S-048-5), so a rate limit reads as a wait (#1034)
-        return Identity(app_id, found.slug, bot_id(found.slug, app_id, api, None), path)
+        # anonymous on a miss: the check mints no token (S-048-5), so a rate limit reads as a wait
+        number = bot_id(found.slug, app_id, api, None) if bots is None else bots.bot_id(found.slug, app_id, api)
+        return Identity(app_id, found.slug, number, path)
 
     return check
 

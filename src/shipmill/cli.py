@@ -155,10 +155,12 @@ from shipmill import (
 )
 from shipmill.agents import AgentsConfig, Author, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
 from shipmill.app import (
+    BOT_IDS,
     CACHE,
     HELPERS,
     Api,
     AppLogin,
+    BotIds,
     Identity,
     NotInstalled,
     Openssl,
@@ -1391,7 +1393,15 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         pruner(git, github, sessions),
         args.refresh,
         args.dry_run,
-        app_check(args.slug, args.app_key, Path.home(), Openssl(), UrllibApi(), lambda: _product_repos(root)),
+        app_check(
+            args.slug,
+            args.app_key,
+            Path.home(),
+            Openssl(),
+            UrllibApi(),
+            lambda: _product_repos(root),
+            bots=BotIds(state_dir(git) / BOT_IDS, write=not args.dry_run),  # #1034: a dry run only reads
+        ),
         args.app_key is not None,
         session_env,
         lambda: host_login(root),
@@ -2345,7 +2355,8 @@ def _status(
     when = now if now is not None else dt.datetime.now(dt.UTC)
 
     def check(app_id: int, key: Path) -> Identity:
-        return app_check(slug, key, home, signer, api)(app_id)  # signed at the call (#694)
+        bots = BotIds(state_dir(Git(top)) / BOT_IDS, write=False)  # #1034: status reads the gate's cache
+        return app_check(slug, key, home, signer, api, bots=bots)(app_id)  # signed at the call (#694)
 
     def bot_login(app_id: int, key: Path) -> str | None:
         try:
@@ -2477,7 +2488,8 @@ def _factory(
     git = Git(top)
 
     def check(app_id: int, key: Path) -> Identity:
-        return app_check(slug, key, home, signer, api)(app_id)
+        bots = BotIds(state_dir(git) / BOT_IDS, write=False)  # #1034: factory reads the gate's cache
+        return app_check(slug, key, home, signer, api, bots=bots)(app_id)
 
     def main_branch() -> status.Main:
         branch = status.landing_branch(slug, top, run)

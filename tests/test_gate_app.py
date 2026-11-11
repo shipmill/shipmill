@@ -15,10 +15,12 @@ from pathlib import Path
 import pytest
 
 from shipmill.app import (
+    BOT_IDS,
     CACHE,
     CREDENTIAL_HELPER,
     HELPERS,
     Answer,
+    BotIds,
     Helpers,
     Identity,
     app_check,
@@ -93,9 +95,14 @@ class Prepared:
 
 
 def launch_as_app(
-    git: Git, tmp_path: Path, claude: Claude, api: FakeApi | None = None, dry_run: bool = False
+    git: Git,
+    tmp_path: Path,
+    claude: Claude,
+    api: FakeApi | None = None,
+    dry_run: bool = False,
+    bots: BotIds | None = None,
 ) -> tuple[Decision, str | None]:
-    check = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api or FakeApi())
+    check = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api or FakeApi(), bots=bots)
     decision, launched, _, _ = gate(
         git,
         REPO,
@@ -178,6 +185,97 @@ def test_s004_6_the_app_check_reads_the_bot_account_without_a_token(tmp_path: Pa
     identity = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api)(APP_ID)
     assert identity.bot_id == BOT_ID
     assert api.calls[-1] == (BOT_PATH, None)
+
+
+# #1034: the bot account's id, cached in the gate's state folder by App id
+
+
+CACHED_ID = 4242  # unlike BOT_ID, so a launch's email shows which one it used
+
+
+def bots_file(git: Git) -> Path:
+    return state_dir(git) / BOT_IDS
+
+
+def cache_ids(path: Path, entries: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries), encoding="utf-8")
+
+
+def test_1034_a_tick_with_the_id_cached_makes_no_users_call(checkout: Git, tmp_path: Path) -> None:
+    cache_ids(bots_file(checkout), {str(APP_ID): {"slug": "demo-agent", "bot_id": CACHED_ID}})
+    claude = FakeClaude([bg("old", "idle", "done")])
+    api = FakeApi()
+    decision, launched = launch_as_app(checkout, tmp_path, claude, api, bots=BotIds(bots_file(checkout), True))
+    assert (decision.action, launched) == (Action.LAUNCH, "s1")
+    assert [path for path, _ in api.calls] == ["/app", f"/repos/{REPO}/installation"]
+    env = claude.envs[0]
+    assert env is not None
+    assert env["GIT_AUTHOR_EMAIL"] == f"{CACHED_ID}+{BOT}@users.noreply.github.com"
+
+
+def test_1034_a_miss_reads_the_id_once_and_writes_it(checkout: Git, tmp_path: Path) -> None:
+    path = bots_file(checkout)
+    cache_ids(path, {"777": {"slug": "other-agent", "bot_id": 5}})  # another App's entry is kept
+    api = FakeApi()
+    check = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api, bots=BotIds(path, True))
+    assert check(APP_ID).bot_id == BOT_ID
+    assert check(APP_ID).bot_id == BOT_ID
+    assert [call for call in api.calls if call[0] == BOT_PATH] == [(BOT_PATH, None)]  # anonymous: no token minted
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "777": {"slug": "other-agent", "bot_id": 5},
+        str(APP_ID): {"slug": "demo-agent", "bot_id": BOT_ID},
+    }
+    assert [p.name for p in path.parent.iterdir() if p.name.startswith(f".{BOT_IDS}")] == []  # no temp file left
+
+
+def test_1034_a_dry_run_on_a_miss_reads_the_id_and_writes_no_file(checkout: Git, tmp_path: Path) -> None:
+    claude = FakeClaude([bg("old", "idle", "done")])
+    api = FakeApi()
+    path = bots_file(checkout)
+    decision, launched = launch_as_app(checkout, tmp_path, claude, api, dry_run=True, bots=BotIds(path, False))
+    assert (decision.action, launched) == (Action.LAUNCH, None)
+    assert api.calls[-1] == (BOT_PATH, None)
+    assert not path.exists()
+
+
+def test_1034_a_slug_that_no_longer_matches_reads_the_id_again(checkout: Git, tmp_path: Path) -> None:
+    path = bots_file(checkout)
+    cache_ids(path, {str(APP_ID): {"slug": "renamed-agent", "bot_id": CACHED_ID}})
+    api = FakeApi()
+    identity = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api, bots=BotIds(path, True))(APP_ID)
+    assert (identity.slug, identity.bot_id) == ("demo-agent", BOT_ID)
+    assert api.calls[-1] == (BOT_PATH, None)
+    assert json.loads(path.read_text(encoding="utf-8")) == {str(APP_ID): {"slug": "demo-agent", "bot_id": BOT_ID}}
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        ("{not json", "not JSON"),
+        ("[]", "not a JSON object"),
+        (json.dumps({str(APP_ID): "demo-agent"}), f"entry {APP_ID} is not an object"),
+        (json.dumps({str(APP_ID): {"bot_id": CACHED_ID}}), f"entry {APP_ID}'s slug is not a non-empty string"),
+        (json.dumps({str(APP_ID): {"slug": "demo-agent", "bot_id": "1"}}), f"entry {APP_ID}'s bot_id"),
+        (json.dumps({str(APP_ID): {"slug": "demo-agent", "bot_id": 0}}), f"entry {APP_ID}'s bot_id"),
+        (json.dumps({"demo": {"slug": "demo-agent", "bot_id": 1}}), "key 'demo' is not an App id"),
+    ],
+)
+def test_1034_a_malformed_cache_exits_2_naming_the_file_and_starts_nothing(
+    checkout: Git, tmp_path: Path, content: str, reason: str
+) -> None:
+    path = bots_file(checkout)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    claude = FakeClaude([bg("old", "idle", "done")])
+    api = FakeApi()
+    decision, launched = launch_as_app(checkout, tmp_path, claude, api, bots=BotIds(path, True))
+    assert (decision.action, launched, _gate_exit(decision)) == (Action.GITHUB_AUTH, None, 2)
+    assert f"the bot id cache {path} is malformed ({reason}" in decision.reason
+    assert "delete it" in decision.reason
+    assert BOT_PATH not in [p for p, _ in api.calls]  # never trusted, never silently replaced
+    assert path.read_text(encoding="utf-8") == content
+    assert claude.launched == []
 
 
 @pytest.mark.parametrize(

@@ -90,7 +90,10 @@ reads it, so the state read can pass `--bot-login <slug>[bot]`):
    `app <slug> is not installed on <owner/repo>`. An installation missing any permission
    in the table exits 2 naming each one with its access
 4. Reads `GET /users/<slug>[bot]` for the bot account's id, which makes the commit email
-   `<id>+<slug>[bot]@users.noreply.github.com`
+   `<id>+<slug>[bot]@users.noreply.github.com`. The id never changes for an App, so the gate
+   keeps it in its state folder's `bot-ids.json`, by App id with the slug it was read for,
+   and reads GitHub only when that holds no id for the App's current slug (#1034); a dry run
+   reads the file but never writes it, and a malformed one exits 2 naming it
 5. Writes the session's helper scripts (below) and launches with
    `--settings '{"env": {...}}'` holding:
    - `PATH`: the helpers' folder, then the gate's own `PATH`
