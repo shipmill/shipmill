@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.128.2] - 2026-11-11
+
+### Fixed
+
+- `shipmill gate` no longer tells you to rerun `app-install` when GitHub rate-limits it: a 403 or 429 saying a rate limit was exceeded, to the App check, the token mint, or the repo read, is `GITHUB_AUTH` with `GitHub rate-limited the call (<method> <path> answered <status>)` and the fix to wait for the limit to reset, since the next tick tries again; the tick still exits 2, and a 403 without a rate limit reads as before. A merge's Co-authored-by now reads the App's bot account with the App's token, not anonymously under the host's shared per-IP limit (#1034)
+
 ## [0.128.1] - 2026-11-11
 
 ### Fixed
@@ -2434,7 +2440,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.128.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.128.2...HEAD
+[0.128.2]: https://github.com/shipmill/shipmill/compare/v0.128.1...v0.128.2
 [0.128.1]: https://github.com/shipmill/shipmill/compare/v0.128.0...v0.128.1
 [0.128.0]: https://github.com/shipmill/shipmill/compare/v0.127.2...v0.128.0
 [0.127.2]: https://github.com/shipmill/shipmill/compare/v0.127.1...v0.127.2
