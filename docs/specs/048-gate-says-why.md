@@ -71,6 +71,7 @@ The reason names what failed, and the line ends `; fix: <fix>`:
 | Minting the token is refused | GitHub's status and message | `shipmill app-install <repo>` |
 | The token, or the host's gh login, can't read the repo | the status and the identity | `shipmill app-install <repo>` with an App; `gh auth login` without one |
 | GitHub answers a 5xx to the App check, the mint, or the repo read (#981) | `GitHub is unavailable (<method> <path> answered <status>)`, never the body | wait for GitHub (https://www.githubstatus.com): nothing needs repair, the next tick tries again |
+| GitHub rate-limits the App check, the mint, or the repo read: a 403 or 429 whose body says a rate limit was exceeded (#1034) | `GitHub rate-limited the call (<method> <path> answered <status>)`, never the body | wait for GitHub's rate limit to reset: nothing needs repair, the next tick tries again |
 
 A GITHUB_AUTH tick writes no `cursor.json` or `handed.json`, as a CLAUDE_AUTH tick doesn't,
 so the next tick walks again (S-046-11).

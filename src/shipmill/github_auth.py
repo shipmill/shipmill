@@ -8,7 +8,8 @@ or cached (`mint`, not `app_token`), so a dry run writes nothing. Without an App
 failure is GITHUB_AUTH"): one the GITHUB_AUTH table names reads its problem and fix; any other
 shipmill error, such as GitHub being unreachable or an answer shipmill refuses, reads its first
 line, naming the identity and the repo, with the table's last fix. A 5xx from GitHub, in the App
-check, the mint, or the repo read, reads GitHub as unavailable, with waiting as its fix (#981).
+check, the mint, or the repo read, reads GitHub as unavailable, with waiting as its fix (#981),
+and so does a 403 or 429 there whose body says a rate limit was exceeded (#1034).
 """
 
 import subprocess
@@ -24,9 +25,11 @@ from shipmill.app import (
     Clock,
     GitHubUnavailable,
     Identity,
+    RateLimited,
     Signer,
     install_fix,
     mint,
+    rate_limited,
     unavailable,
     utc_now,
 )
@@ -101,6 +104,8 @@ def app_reach(identity: Identity, repo: str, signer: Signer, api: Api, clock: Cl
         return GitHubAuth(None, notices=token.notices)
     if unavailable(answer.status):  # GitHub's own failure: no repair, the next tick tries again (#981)
         return GitHubAuth.of(GitHubUnavailable("GET", path, answer.status))
+    if rate_limited(answer):  # a limit that resets: no repair, the next tick tries again (#1034)
+        return GitHubAuth.of(RateLimited("GET", path, answer))
     said = f"GET {path} answered {answer.status}: {answer.body.strip()[:300]}"
     return GitHubAuth(f"the token of {identity.login} can't read {repo} ({said})", install_fix(repo))
 

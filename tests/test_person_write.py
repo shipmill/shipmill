@@ -21,10 +21,22 @@ from .test_agent_marker_readers import BOT as REPO_BOT
 from .test_agent_marker_readers import QUESTION, SKILLS, issue, load
 from .test_agent_marker_readers import bot as gql_bot
 from .test_agent_marker_readers import comment as gql_comment
-from .test_app import APP_ID, BOT, BOT_ID
+from .test_app import APP_ID, BOT, BOT_ID, BOT_PATH
 from .test_app_gh_merge import connected
 from .test_credit import APP, HUBOT_TRAILER, OCTOCAT_TRAILER, WITH_APP, CreditReader, FakeCredit, approved, body_of
-from .test_decider_token import ASSISTED, ISSUE, MERGE, EnvRunner, UserApi, as_app, as_person, filed, gh, store
+from .test_decider_token import (
+    APP_TOKEN,
+    ASSISTED,
+    ISSUE,
+    MERGE,
+    EnvRunner,
+    UserApi,
+    as_app,
+    as_person,
+    filed,
+    gh,
+    store,
+)
 
 LINE = "Opened by an agent through shipmill, on `@octocat`'s decision."
 BOT_TRAILER = f"Co-authored-by: {BOT} <{BOT_ID}+{BOT}@users.noreply.github.com>"
@@ -160,6 +172,8 @@ def test_s051_11_a_merge_as_a_person_passes_no_author_email_and_names_the_apps_b
     assert "credit: `@hubot` approved the pull request" in runner.stderr[0]
     assert "credit: `@octocat`" not in runner.stderr[0]
     assert sum(path == "/user" for path, _ in api.calls) == 1
+    # #1034: the bot read carries the App's token, never anonymous under the host's shared per-IP limit
+    assert (BOT_PATH, APP_TOKEN) in api.calls and (BOT_PATH, None) not in api.calls
 
 
 def test_s051_11_an_author_email_given_is_dropped() -> None:

@@ -209,6 +209,32 @@ class GitHubUnavailable(AuthFailure):
         self.status = status
 
 
+RATE_LIMITED_FIX = "wait for GitHub's rate limit to reset: nothing here needs repair, the next tick tries again"
+_RATE_LIMIT = re.compile(r"\brate limit\b", re.IGNORECASE)  # "API rate limit exceeded", "a secondary rate limit"
+
+
+def rate_limited(answer: Answer) -> bool:
+    """A 403 or 429 whose body says GitHub's rate limit was exceeded, primary or secondary
+    (#1034): a limit that resets, which no repair on this side fixes. A 403 saying anything
+    else is a refusal, read as before"""
+    return answer.status in (403, 429) and _RATE_LIMIT.search(answer.body) is not None
+
+
+class RateLimited(AuthFailure):
+    """GitHub rate-limited a call (#1034): its problem names the call and the status, never the
+    body; its fix is to wait, since the next tick tries again. The message stays the one the
+    error read before, for a caller that prints it"""
+
+    def __init__(self, method: str, path: str, answer: Answer, message: str | None = None) -> None:
+        if not rate_limited(answer):
+            raise ValueError(f"GitHub rate-limited a call only on a 403 or 429 saying so, not {answer.status}")
+        problem = f"GitHub rate-limited the call ({method} {path} answered {answer.status})"
+        super().__init__(problem, RATE_LIMITED_FIX, message)
+        self.method = method
+        self.path = path
+        self.status = answer.status
+
+
 def check_key(path: Path) -> Path:
     """The key's path once it is a file only its owner can read; its bytes are never read here"""
     if not path.is_file():
@@ -327,6 +353,8 @@ def _ok(answer: Answer, path: str, app_id: int, method: str = "GET", status: int
     said = f"{method} {path} for app_id {app_id} answered {answer.status}: {message}"
     if unavailable(answer.status):
         raise GitHubUnavailable(method, path, answer.status, said)
+    if rate_limited(answer):
+        raise RateLimited(method, path, answer, said)
     if answer.status == 401:
         problem = f"GitHub refused the JWT for app_id {app_id} ({method} {path}: 401 {message})"
         raise JwtRefused(
@@ -471,12 +499,14 @@ class Identity:
         return f"{self.bot_id}+{self.login}@{NOREPLY}"
 
 
-def bot_id(slug: str, app_id: int, api: Api) -> int:
-    """Spec 004, At launch step 4: the user id of the App's bot account. A public read, made
-    without the JWT, which GitHub accepts only on the App's own endpoints"""
+def bot_id(slug: str, app_id: int, api: Api, token: str | None) -> int:
+    """Spec 004, At launch step 4: the user id of the App's bot account, read with token, an
+    installation token, so the read counts against the App's own rate limit (#1034). None
+    reads it anonymously, under GitHub's 60 an hour per IP that every gate on the host shares;
+    the App's JWT is never given, since GitHub accepts it only on the App's own endpoints"""
     login = f"{slug}[bot]"
     path = f"/users/{urllib.parse.quote(login)}"
-    answer = api.get(path, None)
+    answer = api.get(path, token)
     if answer.status == 404:
         raise ReleaseError(f"GitHub has no bot account {login} for app_id {app_id}")
     found = _ok(answer, path, app_id)
@@ -518,7 +548,8 @@ def app_check(
         found = installation(app_id, repo, bearer, api)
         for listed in product():
             installed(app_id, found.slug, listed, bearer, api, PRODUCT_PERMISSIONS)
-        return Identity(app_id, found.slug, bot_id(found.slug, app_id, api), path)
+        # anonymous: the check mints no token (S-048-5), so a rate limit reads as a wait (#1034)
+        return Identity(app_id, found.slug, bot_id(found.slug, app_id, api, None), path)
 
     return check
 
@@ -695,7 +726,8 @@ def mint(
     asked = table + found.grants(optional)
     body = {"repositories": [name], "permissions": {p.key: str(p.access) for p in asked}}
     answer = api.post(path, bearer, body)
-    if answer.status not in (201, 401) and not unavailable(answer.status):  # _ok names a 401 (the JWT's) and a 5xx
+    # _ok names a 401 (the JWT's), a 5xx, and a rate limit
+    if answer.status not in (201, 401) and not unavailable(answer.status) and not rate_limited(answer):
         problem = f"POST {path} for app_id {app_id} answered {answer.status}: {answer.body.strip()[:300]}"
         raise MintRefused(problem, install_fix(repo))
     data = _ok(answer, path, app_id, "POST", 201)
