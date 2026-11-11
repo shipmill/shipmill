@@ -60,12 +60,15 @@ link  writes a link in both forms triage_state.py reads:
       read or write. In a component ([product] home), a reference to another repo than the
       checkout's origin exits 2: an item there waits only on items in the same repo.
       --product is the coordinator's, in the home repo ([product] repos, with [agents]
-      app_id), and goes with --child alone. Its writes run through the session's own
-      `shipmill gh`, with no --product, when P is in the home repo (the checkout's origin),
-      and through `shipmill gh --product <P's repo>`, the token over the product's repos,
-      when P is in a listed repo; each read of a listed repo (resolving P or C, and whether
-      C is already P's child) runs through `shipmill gh --product <that repo>`, never plain
-      gh, and a read of the home repo through plain gh (S-038-29). It exits 2 when the
+      app_id), and goes with --child alone. Its writes run through `shipmill gh --product
+      <P's repo>`, the token over the product's repos, when P is in a listed repo. When P is
+      in the home repo (the checkout's origin), they run through `shipmill gh --product
+      <C's repo>` when C is in a listed repo of the home's owner, whose token covers the home
+      too and so sees both issues (#1032), else through the session's own `shipmill gh`,
+      with no --product (C in the home, or of another owner). Each read of a listed repo
+      (resolving P or C, and whether C is already P's child) runs through `shipmill gh
+      --product <that repo>`, never plain gh, and a read of the home repo through plain gh
+      (S-038-29). It exits 2 when the
       checkout has no [product] repos or a reference is in neither a listed repo nor the
       home repo. Without a [product] table, link is as above.
 
@@ -385,6 +388,11 @@ class Product:
     def is_listed(self, ref: Ref) -> bool:
         return any(ref.same_repo(*repo.split("/")) for repo in self.repos)
 
+    def same_owner(self, ref: Ref) -> bool:
+        """Whether ref's owner is the home's (the checkout's origin), so the product token for
+        ref's repo covers the home repo too (S-038-8)"""
+        return self.origin is not None and ref.owner.lower() == self.origin.partition("/")[0].lower()
+
 
 def checkout_top(checkout: Path) -> Path:
     """The checkout's top folder, found from a subfolder as watch_state.py's gh_writer and
@@ -497,13 +505,20 @@ def product_walker(product: Product, run: Runner, execute: Execute = capture) ->
     return read_for
 
 
-def product_writer(product: Product, parent: Ref) -> list[str]:
-    """The gh command --product's writes go through (S-038-29): the session's own `shipmill gh`,
-    with no --product, when the parent is in the home repo, which [product] repos never lists;
-    `shipmill gh --product <the parent's repo>`, the token over the product's repos, when it
-    is in a listed repo"""
+def product_writer(product: Product, parent: Ref, child: Ref) -> list[str]:
+    """The gh command --product's writes go through (S-038-29): `shipmill gh --product <the
+    parent's repo>`, the token over the product's repos, when the parent is in a listed repo.
+    For a parent in the home repo, which [product] repos never lists: `shipmill gh --product
+    <the child's repo>` when the child is in a listed repo of the home's owner, since that
+    token covers the home too (S-038-8, #1032) and so sees both issues, as addSubIssue needs;
+    else the session's own `shipmill gh`, with no --product (a child in the home, or of
+    another owner, whose token can't cover the home)"""
     command = session_gh(product)
-    return command if product.is_origin(parent) else [*command, "--product", parent.repo]
+    if not product.is_origin(parent):
+        return [*command, "--product", parent.repo]
+    if product.is_listed(child) and product.same_owner(child):
+        return [*command, "--product", child.repo]
+    return command
 
 
 def parse_ref(text: str) -> Ref:
@@ -1161,7 +1176,9 @@ def main(
         action="store_true",
         help=(
             "the coordinator's: read a listed repo and write a listed parent through `shipmill gh --product "
-            "<that repo>`, a home-repo parent through the session's `shipmill gh` (spec 038, --child only)"
+            "<that repo>`, a home-repo parent of a listed child of the home's owner through `shipmill gh "
+            "--product <the child's repo>`, any other home-repo parent through the session's `shipmill gh` "
+            "(spec 038, --child only)"
         ),
     )
     link_parser.add_argument(
@@ -1204,7 +1221,7 @@ def main(
         run_other = product_reader(product, other, run, execute)
         run = product_reader(product, target, run, execute)
     if write is None or edit is None:  # neither, as the check above has it
-        command = product_writer(product, target) if args.product and product is not None else writer(here)
+        command = product_writer(product, target, other) if args.product and product is not None else writer(here)
         write, edit = gh_runner(command, execute), gh_editor(command, execute)
     return link(
         run,

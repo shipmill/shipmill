@@ -180,6 +180,7 @@ from shipmill.app import (
     require_key,
     resolve_gh,
     session_key,
+    with_home,
 )
 from shipmill.app_create import (
     FLOW_SECONDS,
@@ -1492,7 +1493,7 @@ def _app_token(
                 "--product's token never goes to git: the coordinator's pushes reach only the home repo, "
                 "through the session's own token (D-47)"
             )
-        top, repos = _coordinator(root, args.slug, f"app-token {args.slug} --product")
+        top, _, repos = _coordinator(root, args.slug, f"app-token {args.slug} --product")
         configured = app_id_of(top)
         if configured != app_id:
             raise ReleaseError(
@@ -1562,11 +1563,12 @@ def _component_token(root: Path, repo: str) -> None:
     product.refuse_outside(repo, _origin_repo(top), f"app-token {repo}")
 
 
-def _coordinator(root: Path, repo: str, what: str) -> tuple[Path, tuple[str, ...]]:
-    """Spec 038: the home repo's checkout and the listed repos of repo's owner, which one
-    product token covers. Exits 2 in a component (S-038-10), in a repo its own [product] names
-    (S-038-3), and without [product] repos or with repo not listed (S-038-5, S-038-9); all
-    before any token is minted"""
+def _coordinator(root: Path, repo: str, what: str) -> tuple[Path, tuple[str, ...], tuple[str, ...]]:
+    """Spec 038: the home repo's checkout, the listed repos of repo's owner, and the repos one
+    product token covers: those, plus the home repo when it has their owner (S-038-8, #1032).
+    Exits 2 in a component (S-038-10), in a repo its own [product] names (S-038-3), and
+    without [product] repos or with repo not listed (S-038-5, S-038-9); all before any token
+    is minted"""
     if not is_plain_repo(repo):
         raise ReleaseError(f"{what} needs owner/name of letters, digits, '.', '-', or '_'; got {repo!r}")
     if not root.is_dir():
@@ -1581,8 +1583,10 @@ def _coordinator(root: Path, repo: str, what: str) -> tuple[Path, tuple[str, ...
     if product is None:
         raise ReleaseError(f"{what} needs [product] repos in {CONFIG_PATH}; {top} has no [product] table")
     product.refuse_product()
-    product.refuse_self(_known_origin(top))
-    return top, product.coordinated(repo, what)
+    origin = _known_origin(top)
+    product.refuse_self(origin)
+    listed = product.coordinated(repo, what)
+    return top, listed, with_home(listed, origin)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2085,13 +2089,15 @@ def _gh_product(
     runner: GhRunner,
     current: GhCapture,
 ) -> int:
-    """S-038-9: gh with the coordinator's token over the listed repos of coordinated's owner.
-    Before any token is minted it exits 2 in a component, without [product] repos, for a repo
-    not listed, for a -R naming a repo not listed or of another owner, and for a command that
-    writes code or pull requests (D-47). gh works on -R's repo, else on coordinated, never on
-    the checkout's origin: GH_REPO names it"""
+    """S-038-9: gh with the coordinator's token over the listed repos of coordinated's owner,
+    and the home repo when it has that owner (S-038-8, #1032), so a write that names both a
+    home-repo issue and a listed repo's (a sub-issue) sees both. Before any token is minted it
+    exits 2 in a component, without [product] repos, for a repo not listed, for a -R naming a
+    repo not listed or of another owner (the home included: its own calls go through the
+    session's gh), and for a command that writes code or pull requests (D-47). gh works on
+    -R's repo, else on coordinated, never on the checkout's origin: GH_REPO names it"""
     what = f"gh --product {coordinated}"
-    top, repos = _coordinator(root, coordinated, what)
+    top, repos, covered = _coordinator(root, coordinated, what)
     refused = product_refusal(gh_args)
     if refused is not None:
         raise ReleaseError(
@@ -2123,9 +2129,9 @@ def _gh_product(
     cache = state_dir(Git(top)) / product_cache(coordinated.partition("/")[0])
     now = dt.datetime.now(dt.UTC)
     try:
-        token = product_token(cache, repos, app_id, key or session_key(app_id, environ, home), now, signer, api)
+        token = product_token(cache, covered, app_id, key or session_key(app_id, environ, home), now, signer, api)
     except NotInstalled as exc:
-        raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {' '.join(repos)}`") from None
+        raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {' '.join(covered)}`") from None
     env = {**as_app(environ, token), "GH_REPO": target}
     if edit is not None:
         gh_args = edited_args(edit, target, binary, env, current)

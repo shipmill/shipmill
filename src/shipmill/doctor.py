@@ -31,6 +31,7 @@ from shipmill.app import (
     installation,
     jwt,
     product_token,
+    with_home,
 )
 from shipmill.app_login import client_secret_file, secret_refused, stored_logins
 from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage
@@ -878,7 +879,8 @@ def home_checks(config: ProductConfig, app_id: int, home: str | None, probe: Pro
             )
             checks.append(Check("WARN", PRODUCT, detail))
             continue
-        checks.append(_back_link(reads, covered, listed, home))
+        # the token `gh --product` mints, the home of the same owner included, so both share its cache
+        checks.append(_back_link(reads, with_home(covered, home), listed, home))
     return checks
 
 

@@ -72,7 +72,10 @@ decides what to build (D-47).
   repo's checkout, prints an installation token for every repo the config's `[product]
   repos` lists under OWNER, the one App installation that covers them. It asks a second
   table in `src/shipmill/app.py`, `PRODUCT_PERMISSIONS`: contents read, issues write, pull
-  requests read, metadata read; no contents, pull requests, actions, or workflows write
+  requests read, metadata read; no contents, pull requests, actions, or workflows write.
+  When the home repo (the checkout's origin) has OWNER too, the token covers it as well,
+  with the same permissions, once even if listed, so one token sees a report in the home and
+  a listed repo's issue linked under it (#1032); a home of another owner adds nothing
 - Repos that span owners get one token per installation (per owner); a gh call names the
   repo it works on, which picks the token
 - It refuses the token (exit 2, the token never printed or cached) when GitHub's answer
@@ -83,7 +86,9 @@ decides what to build (D-47).
   it starts a session and exits 2 rather than starting one without the coordinator's access
 - It is cached apart from the session's: `app-token-product-<owner>.json` in the
   checkout's state folder (`$(git rev-parse --git-common-dir)/shipmill`), mode 0600,
-  reused while it has 10 minutes left and its repositories match the config's. The
+  reused while it has 10 minutes left and its repositories match the ones asked (the
+  config's, with the home of the same owner), so a token cached before the home joined them
+  is minted again on its next use. The
   session's `app-token.json`, the gh and git credential helpers, and their one-repo token
   are unchanged, so a push or a pull request from the coordinator's session still reaches only
   the home repo
@@ -187,10 +192,11 @@ The coordinator's session (github-issue-triage's SKILL.md, Reports from other re
   naming the report and quoting its sections, and makes each one a child of the report with
   `chains.py link --product <report> --child <issue>`; a stand-in's named issue is linked
   the same way, with no new issue. Where `link --product` writes depends on the report's
-  repo: for a report in the home repo it writes through the session's own `shipmill gh`
-  (the App's token over the home repo), since `shipmill gh --product` takes only a listed
-  repo; for a report in a listed repo it writes through `shipmill gh --product <the
-  report's repo>`. Its reads of a listed repo (resolving each reference, checking whether
+  repo: for a report in a listed repo it writes through `shipmill gh --product <the
+  report's repo>`; for a report in the home repo it writes through `shipmill gh --product
+  <the child's repo>` when the child is in a listed repo of the home's owner, whose token
+  covers the home too (#1032), and otherwise (a child in the home, or of another owner)
+  through the session's own `shipmill gh` (the App's token over the home repo). Its reads of a listed repo (resolving each reference, checking whether
   the child is already linked) go through `shipmill gh --product <that repo>`, never the
   session's plain gh. It exits 2 before any read or write when the checkout has no
   `[product] repos` or a reference is in neither a listed repo nor the home repo
@@ -210,6 +216,16 @@ a repo outside `[product] repos` (S-038-9), and `repos` never lists the home rep
 the home repo is written through the session's own `shipmill gh`, and that `link
 --product` reads a listed repo through `shipmill gh --product` too, in
 `skills/github-issue-triage/scripts/chains.py`. S-038-12 is dropped for S-038-29.
+
+That still left a home-repo report unable to take a listed repo's issue as a sub-issue:
+GitHub's `addSubIssue` must see both issues with one token, and the session's token covers
+only the home while the product token covered only `[product] repos`, so the write failed
+with `Could not resolve to a node with the global id` (shipmill/shipmill#1032). The
+maintainer decided in #1032 that the product token also covers the home repo when it has
+the listed repos' owner, with no new permission, and that such a link writes through
+`shipmill gh --product <the child's repo>`. `shipmill gh --product`'s `-R` check still
+takes only a listed repo: the link names the home in the body edit's endpoint, never in
+`-R`, and the home's own calls keep the session's `shipmill gh`.
 
 ### Without a coordinator
 
@@ -270,7 +286,7 @@ token covers only the listed repos (S-038-6). So in a component, a checkout whos
 - S-038-5: `shipmill app-token OWNER/NAME --app-id N --product` in a home checkout mints one token over every listed repo of OWNER, asking exactly contents read, issues write, pull requests read, and metadata read, and prints it; it exits 2 when the checkout has no `[product] repos` or OWNER/NAME isn't listed
 - S-038-6: `app-token --product` exits 2 without printing or caching the token when GitHub's answer covers a repo outside the asked set, leaves one out, or grants a permission broader than asked (contents write, pull requests write, or a key not asked)
 - S-038-7: `app-token --product` exits 2 naming the repo when the App isn't installed on a listed repo or its installation lacks one of the product permissions, and `shipmill gate` in the home repo exits 2 for the same before starting a session
-- S-038-8: the product token is cached in `app-token-product-<owner>.json` with mode 0600, reused while it has at least 10 minutes left and its repositories match the config's, and never read from or written to `app-token.json`; a session's `app-token <repo>` still mints for its one repo with `PERMISSIONS`
+- S-038-8: the product token's repositories are the config's listed repos of its owner plus the home repo when the home has that owner (once, with the same permissions; a home of another owner adds nothing); it is cached in `app-token-product-<owner>.json` with mode 0600, reused while it has at least 10 minutes left and its repositories match those, so a token cached without the home is minted again, and never read from or written to `app-token.json`; a session's `app-token <repo>` still mints for its one repo with `PERMISSIONS`
 - S-038-9: `shipmill gh --product OWNER/NAME <args>` runs gh with the product token; it exits 2 when OWNER/NAME isn't listed, or gh's `-R` names a repo not listed or of another owner, and, before gh runs, for `pr` other than list, view, diff, checks, and status, `release` other than list and view, `repo` other than view and list, `workflow run`, `run rerun`, and `run cancel`
 - S-038-10: in a checkout whose config sets `[product] home`, `shipmill gh` whose `-R` names a repo other than the checkout's origin, `shipmill app-token` for such a repo, and any `--product` exit 2 naming D-47 before a token is minted
 - S-038-11: `chains.py link` run from a checkout whose config sets `[product] home` exits 2 before any write when either reference names another repo than its own
@@ -291,7 +307,7 @@ token covers only the listed repos (S-038-6). So in a component, a checkout whos
 - S-038-26: over one scripted forge of a home repo and two components, an issue in component A waits on its `upstream` report, the coordinator routes the report to an issue in component B as its child, B's issue closes, the coordinator closes the report as completed with its summary, and A's issue reads UNBLOCKED; along the way no write from A's session names another repo and no write with the product token touches contents or a pull request
 - S-038-27: `shipmill doctor` in a checkout whose config has `[product] repos` reports a FAIL naming the repo and `shipmill app-install <repo>` for a listed repo the App isn't installed on or whose installation lacks a product permission, and a FAIL naming the entry and the key for a malformed or repeated `[product] repos` entry, without exiting before its other checks
 - S-038-28: `shipmill doctor` in that checkout, reading each component's `.github/shipmill.toml` with the product token, reports a WARN naming the fix for a listed repo whose `[product] home` is missing or names another repo than this home
-- S-038-29: `chains.py link --product P --child C` in the home repo writes through the session's own `shipmill gh`, with no `--product`, when P is in the home repo, and through `shipmill gh --product <P's repo>` when P is in a listed repo; each read of a listed repo (resolving P or C, checking whether C is already linked) goes through `shipmill gh --product <that repo>`, never plain gh; it exits 2 before any read or write when the checkout has no `[product] repos` or a reference is in neither a listed repo nor the home repo
+- S-038-29: `chains.py link --product P --child C` in the home repo writes through `shipmill gh --product <P's repo>` when P is in a listed repo; when P is in the home repo, through `shipmill gh --product <C's repo>` when C is in a listed repo of the home's owner (#1032), else through the session's own `shipmill gh`, with no `--product`; each read of a listed repo (resolving P or C, checking whether C is already linked) goes through `shipmill gh --product <that repo>`, never plain gh; it exits 2 before any read or write when the checkout has no `[product] repos` or a reference is in neither a listed repo nor the home repo
 - S-038-30: `shipmill doctor` in a checkout whose config sets `[product] home` reads the home's `.github/shipmill.toml` and nothing else of the home repo, and reports a WARN naming the fix (add this repo to the home's `[product] repos`) when that list doesn't name this repo, a WARN naming the home when that config can't be read, and no WARN when the list names this repo, case ignored; it writes nothing in the home repo and mints no App token for it
 
 ## Out of scope
@@ -317,6 +333,7 @@ token covers only the listed repos (S-038-6). So in a component, a checkout whos
 - D-47
 - D-46
 - D-53
+- D-83
 
 ## Issues
 
@@ -338,7 +355,7 @@ token covers only the listed repos (S-038-6). So in a component, a checkout whos
 - S-038-5: tests/test_product_token.py (test_s038_5_*): one token per owner over the listed repos with exactly contents read, issues write, pull requests read, metadata read; exits 2 without `[product] repos` or for a repo not listed; `shipmill --repo . app-token shipmill/other --app-id 1 --product` in this repo exits 2 naming the missing table; passes
 - S-038-6: tests/test_product_token.py (test_s038_6_*): an answer for other repositories or broader permissions exits 2, unprinted and uncached; passes
 - S-038-7: tests/test_product_token.py (test_s038_7_*): NotInstalled and Lacks name the repo for `app-token --product`, and the home repo's gate starts no session for them; passes
-- S-038-8: tests/test_product_token.py (test_s038_8_*): `app-token-product-<owner>.json` with mode 0600, reused with 10 minutes left and the same repos, never `app-token.json`; a session token still asks `PERMISSIONS` for one repo; passes
+- S-038-8: tests/test_product_token.py (test_s038_8_*): the token over the listed repos and the home of the same owner, once, with the product permissions, and over the listed repos alone for another owner's repos or a home of another owner; `app-token-product-<owner>.json` with mode 0600, reused with 10 minutes left and the same repos, a cached token without the home minted again, never `app-token.json`; a session token still asks `PERMISSIONS` for one repo; passes
 - S-038-9: tests/test_product_token.py (test_s038_9_*): `shipmill gh --product` runs gh with the product token and GH_REPO, and refuses an unlisted repo, a `-R` outside the owner's listed repos, and each listed code or pull request command before gh runs; `shipmill --repo . gh --product shipmill/other issue list` in this repo exits 2; passes
 - S-038-10: tests/test_product_config.py and tests/test_product_token.py (test_s038_10_*): a component's `shipmill gh -R` another repo, `app-token` for another repo, and any `--product` exit 2 naming D-47 before a token; passes
 - S-038-11: tests/test_chains.py (test_s038_11_*): `chains.py link` in a component exits 2 for another repo's reference with no read or write, and links within its repo as before; passes
@@ -357,7 +374,7 @@ token covers only the listed repos (S-038-6). So in a component, a checkout whos
 - S-038-24: tests/test_setup_state.py (test_s038_24_*): `upstream` is wanted wherever `needs-decision` is, reported missing beside it, and created by `setup_state.py`'s label step, which shipmill-setup's SKILL.md runs; passes
 - S-038-25: tests/test_triage_upstream.py (test_s038_25_*): a hold on another repo's issue reads as spec 017 says, with and without `--home`; passes
 - S-038-26: tests/test_coordinator_e2e.py (test_s038_26_*) drives a home repo and two components over one scripted forge through the real `shipmill gh`, `chains.py`, `upstream_state.py`, and `triage_state.py`, from A's report to B's closed issue to A's UNBLOCKED issue, and checks every recorded gh call's token: A's only for its repo, the product token only for issue writes and reads; passes
-- S-038-29: tests/test_chains.py (test_s038_29_*): `link --product` writes a home-repo parent's link through the session's `shipmill gh` and a listed parent's through `shipmill gh --product <its repo>`, reads each listed repo through `shipmill gh --product <that repo>` and the home repo through plain gh, stops on a `shipmill gh` exit 2 with no plain-gh retry, and exits 2 with no read for a checkout without `[product] repos` or a reference outside the product; passes
+- S-038-29: tests/test_chains.py and tests/test_product_token.py (test_s038_29_*): `link --product` writes a listed parent's link through `shipmill gh --product <its repo>`, a home-repo parent's through `shipmill gh --product <the child's repo>` for a listed child of the home's owner and through the session's `shipmill gh` for a child in the home or of another owner, and `shipmill gh --product <listed repo>` runs the home report's body edit with the token that covers the home; reads each listed repo through `shipmill gh --product <that repo>` and the home repo through plain gh, stops on a `shipmill gh` exit 2 with no plain-gh retry, and exits 2 with no read for a checkout without `[product] repos` or a reference outside the product; passes
 - S-038-27: tests/test_doctor_product.py (test_s038_27_*): a listed repo the App isn't installed on, or whose installation lacks Issues: write, is a FAIL naming it and `shipmill app-install <repo>`; a malformed, repeated, or empty `[product] repos` is one FAIL row naming the entry and the key while the policy, hooks, decisions, changelog, and workflow checks still run, and `shipmill doctor` exits 1, not 2; without the key on the host there is one WARN; passes
 - S-038-28: tests/test_doctor_product.py (test_s038_28_*): each listed repo's `.github/shipmill.toml` is read through the contents API with the product token (one per owner, minted and cached as `app-token --product` does), and a missing `[product] home`, one naming another repo, or a config that can't be read is a WARN naming the fix `set [product] home = "<home>"`, while a home matching case ignored passes. One deviation: a product token covers all of an owner's listed repos, so while the App is missing on one of them, the owner's other repos read "unchecked: needs the App on X too" rather than having their config read; passes
 - S-038-30: tests/test_doctor_product.py (test_s038_30_*): a component reads only `repos/<home>/contents/.github/shipmill.toml` through the maintainer's gh (`GhReader.file`), never asks the App (the product probe is never called and no token is minted), passes when the home's `[product] repos` lists it case ignored, and WARNs with the fix when it doesn't, or naming the home when the file is missing, unreadable, or can't be parsed; passes

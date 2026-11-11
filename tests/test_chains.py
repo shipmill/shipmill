@@ -857,13 +857,20 @@ def through(top: Path, repo: str) -> list[str]:
     return session if repo.lower() == "acme/product" else [*session, "--product", repo]
 
 
+def written(top: Path, parent: str, child: str) -> list[str]:
+    """The gh prefix the coordinator's link writes with (S-038-29, #1032): a listed parent's
+    token; for a home-repo parent, the token of a listed child's repo, which covers the home
+    too, else the session's own `shipmill gh`"""
+    return through(top, child if parent.lower() == "acme/product" else parent)
+
+
 @pytest.mark.parametrize(
     ("parent", "child"),
     [
         ("acme/api#3", "acme/web#7"),
         ("ACME/Web#3", "acme/product#7"),
         ("acme/api#3", "acme/api#7"),
-        ("acme/product#3", "acme/web#7"),  # a report in the home repo itself (#596)
+        ("acme/product#3", "acme/web#7"),  # a report in the home repo itself (#596), its child's token (#1032)
         ("Acme/Product#3", "acme/product#7"),
     ],
 )
@@ -876,7 +883,7 @@ def test_s038_29_product_child_writes_through_the_session_or_the_product_token_a
     assert forge.parents[c] == p and forge.body(parent) == f"The report\n\nDepends on {child}"
     top = (tmp_path / "repo").resolve()
     p_repo, c_repo = parent.partition("#")[0], child.partition("#")[0]
-    assert git.writes() == [through(top, p_repo)] * 2  # the sub-issue, the line: never --product for the home
+    assert git.writes() == [written(top, p_repo, c_repo)] * 2  # the sub-issue, the line: one token sees both
     assert forge.writes() == ["addSubIssue", "PATCH"]
     # resolving P, resolving C, the cycle walk reading C (spec 041), C's parent: a listed
     # repo's through the product token, never plain gh
@@ -891,6 +898,23 @@ def test_s038_29_product_child_writes_through_the_session_or_the_product_token_a
     assert ch.main(["link", "--product", parent, "--child", child], run=forge, checkout=top, execute=git) == 0
     assert git.writes() == [] and git.reads() == listed
     assert capsys.readouterr().out.strip() == "already linked"
+
+
+def test_s038_29_a_home_parent_of_another_owners_child_writes_through_the_session(
+    ch: ModuleType, forge: Forge, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #1032: the token over other-org's repos can't cover acme/product, so the write stays on
+    # the session's own `shipmill gh`, as before; the child's reads still take its token
+    p, c = forge.add("acme/product#3", "The report\n"), forge.add("other-org/sdk#7")
+    config = PRODUCT_APP + '\n[product]\nrepos = ["acme/api", "other-org/sdk"]\n'
+    code, git = run_link(
+        ch, forge, tmp_path, config, "acme/product", "--product", "acme/product#3", "--child", "other-org/sdk#7"
+    )
+    assert code == 0 and forge.parents[c] == p
+    top = (tmp_path / "repo").resolve()
+    assert git.writes() == [through(top, "acme/product")] * 2
+    assert git.reads() and all(r == through(top, "other-org/sdk") for r in git.reads())
+    capsys.readouterr()
 
 
 @pytest.mark.parametrize("parent", ["acme/api#3", "acme/product#3"])

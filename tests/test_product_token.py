@@ -26,6 +26,7 @@ from shipmill.app import (
     app_check,
     load_product_token,
     product_cache,
+    with_home,
     write_helpers,
 )
 from shipmill.app_gh import product_refusal, run_gh
@@ -45,8 +46,8 @@ HOUR = dt.timedelta(hours=1)
 LISTED = ("romamo/api", "romamo/web", "other-org/sdk")
 HOME = WITH_APP + "\n[product]\nrepos = [" + ", ".join(f'"{r}"' for r in LISTED) + "]\n"
 ASKED = {"contents": "read", "issues": "write", "pull_requests": "read", "metadata": "read"}
-INSTALLS = {REPO: 77, "romamo/api": 55, "romamo/web": 55, "other-org/sdk": 66}
-OWNERS = {77: "romamo", 55: "romamo", 66: "other-org"}
+INSTALLS = {REPO: 55, "romamo/api": 55, "romamo/web": 55, "other-org/sdk": 66}  # one installation per owner
+OWNERS = {55: "romamo", 66: "other-org"}
 
 
 @dataclass
@@ -181,11 +182,11 @@ def test_s038_5_app_token_product_mints_one_token_over_the_owners_listed_repos(
     api = ProductApi()
     assert token(root, tmp_path, "romamo/web", api, host) == 0
     assert capsys.readouterr().out == "token-1\n"
+    # the home repo, romamo/demo, has the listed repos' owner, so the token covers it too (S-038-8)
     assert api.posts == [
-        ("/app/installations/55/access_tokens", {"repositories": ["api", "web"], "permissions": ASKED})
+        ("/app/installations/55/access_tokens", {"repositories": ["api", "web", "demo"], "permissions": ASKED})
     ]
     assert {p.key: str(p.access) for p in PRODUCT_PERMISSIONS} == ASKED
-    assert f"/repos/{REPO}/installation" not in api.calls  # the home repo is no part of it
 
 
 def test_s038_5_another_owners_repos_get_their_own_token(
@@ -241,7 +242,8 @@ def test_s038_5_another_app_id_than_the_configs_is_refused(tmp_path: Path, host:
 @pytest.mark.parametrize(
     ("answer", "message"),
     [
-        ({"repositories": ["romamo/api", "romamo/web", "romamo/demo"]}, "for other repositories"),
+        ({"repositories": ["romamo/api", "romamo/web", "romamo/demo", "romamo/cli"]}, "for other repositories"),
+        ({"repositories": ["romamo/api", "romamo/web"]}, "for other repositories"),  # the home left out
         ({"repositories": ["romamo/api"]}, "for other repositories"),
         ({"repositories": ["romamo/api", "romamo/elsewhere"]}, "for other repositories"),
         ({"repositories": []}, "for other repositories"),
@@ -364,7 +366,7 @@ def test_s038_8_the_product_token_is_cached_apart_with_mode_0600(
     assert cache.name == "app-token-product-romamo.json"
     assert stat.S_IMODE(cache.stat().st_mode) == 0o600
     cached = load_product_token(cache)
-    assert cached is not None and cached.repos == ("romamo/api", "romamo/web") and cached.value == "token-1"
+    assert cached is not None and cached.repos == ("romamo/api", "romamo/web", REPO) and cached.value == "token-1"
     assert "token-1" not in repr(cached)
     assert not (state_dir(Git(root)) / CACHE).exists()  # never the session's
     capsys.readouterr()
@@ -398,10 +400,74 @@ def test_s038_8_a_repo_added_to_the_config_mints_again(
     api = ProductApi(now=now)
     api.installs["romamo/cli"] = 55
     assert token(root, tmp_path, "romamo/api", api, host) == 0
-    assert api.posts[0][1]["repositories"] == ["api", "web", "cli"]
+    assert api.posts[0][1]["repositories"] == ["api", "web", "cli", "demo"]
     cached = load_product_token(product_cache_of(root))
-    assert cached is not None and cached.repos == ("romamo/api", "romamo/web", "romamo/cli")
+    assert cached is not None and cached.repos == ("romamo/api", "romamo/web", "romamo/cli", REPO)
     capsys.readouterr()
+
+
+def test_s038_8_the_token_covers_the_home_repo_of_the_same_owner_and_no_other(
+    tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #1032: one token sees a home-repo report and a listed repo's issue, as addSubIssue needs
+    root = checkout(tmp_path, HOME)
+    api = ProductApi()
+    assert token(root, tmp_path, "romamo/api", api, host) == 0
+    assert token(root, tmp_path, "other-org/sdk", api, host) == 0
+    assert capsys.readouterr().out == "token-1\ntoken-2\n"
+    assert [body["repositories"] for _, body in api.posts] == [["api", "web", "demo"], ["sdk"]]
+    assert all(body["permissions"] == ASKED for _, body in api.posts)  # no new permission
+    owners = {owner: load_product_token(product_cache_of(root, owner)) for owner in ("romamo", "other-org")}
+    assert {owner: cached.repos for owner, cached in owners.items() if cached is not None} == {
+        "romamo": ("romamo/api", "romamo/web", REPO),
+        "other-org": ("other-org/sdk",),  # one token never spans owners: today's token
+    }
+
+
+def test_s038_8_a_home_of_another_owner_keeps_the_listed_repos_alone(
+    tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = checkout(tmp_path, HOME, origin="https://github.com/acme/home.git")
+    api = ProductApi()
+    assert token(root, tmp_path, "romamo/api", api, host) == 0
+    assert [body["repositories"] for _, body in api.posts] == [["api", "web"]]
+    assert "/repos/acme/home/installation" not in api.calls
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize(
+    ("repos", "home", "covered"),
+    [
+        (("romamo/api",), "romamo/demo", ("romamo/api", "romamo/demo")),
+        (("Romamo/API",), "ROMAMO/demo", ("Romamo/API", "ROMAMO/demo")),  # owners compared case ignored
+        (("romamo/api", "romamo/demo"), "Romamo/Demo", ("romamo/api", "romamo/demo")),  # listed already: no repeat
+        (("romamo/api",), "acme/home", ("romamo/api",)),  # another owner
+        (("romamo/api",), None, ("romamo/api",)),  # a home that can't be told
+    ],
+)
+def test_s038_8_with_home_adds_the_home_once_and_only_of_the_same_owner(
+    repos: tuple[str, ...], home: str | None, covered: tuple[str, ...]
+) -> None:
+    assert with_home(repos, home) == covered
+
+
+def test_s038_8_a_cached_token_minted_without_the_home_is_minted_again(
+    tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # a token cached before #1032 covers the listed repos alone: it no longer matches, so the
+    # next use mints one over the home too, with nothing to migrate
+    root = checkout(tmp_path, HOME)
+    cache = product_cache_of(root)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    later = (dt.datetime.now(dt.UTC) + HOUR).isoformat()
+    old = {"app_id": APP_ID, "repositories": ["romamo/api", "romamo/web"], "expires_at": later, "token": "old"}
+    cache.write_text(json.dumps(old), encoding="utf-8")
+    api = ProductApi(now=dt.datetime.now(dt.UTC))
+    assert token(root, tmp_path, "romamo/api", api, host) == 0
+    assert capsys.readouterr().out == "token-1\n"
+    assert [body["repositories"] for _, body in api.posts] == [["api", "web", "demo"]]
+    cached = load_product_token(cache)
+    assert cached is not None and cached.repos == ("romamo/api", "romamo/web", REPO)
 
 
 def test_s038_8_a_session_token_still_mints_for_its_one_repo(
@@ -479,6 +545,35 @@ def test_s050_3_under_product_the_edit_reads_with_the_product_token(tmp_path: Pa
     assert read == [host.gh, "api", "repos/romamo/api/issues/2"]
     assert argv == [host.gh, "issue", "edit", "2", "--body", f"x\n\n{MARKER}"]
     assert read_env == env and (env["GH_TOKEN"], env["GH_REPO"]) == ("token-1", "romamo/api")
+
+
+def test_s038_29_a_home_reports_body_edit_runs_under_its_childs_product_token(tmp_path: Path, host: Host) -> None:
+    # #1032: chains.py link --product <home#3> --child <romamo/api#7> edits the home report's
+    # body through `gh --product romamo/api`, naming the home in the endpoint, not in -R: the
+    # token covers the home, and the -R check stays on the listed repos (S-038-9)
+    root = checkout(tmp_path, HOME)
+    body = tmp_path / "body.md"
+    body.write_text("The report\n\nDepends on romamo/api#7", encoding="utf-8")
+    current, runner = Current(body="The report\n"), Runner()
+    edit = ["api", "-X", "PATCH", f"repos/{REPO}/issues/3", "-F", f"body=@{body}"]
+    args = ["--app-key", str(key_file(tmp_path)), "--product", "romamo/api", *edit]
+    api = ProductApi()
+    code = main(
+        ["--repo", str(root), "gh", *args],
+        api=api,
+        signer=FakeSigner(),
+        environ=host.env(),
+        home=host.home,
+        gh_runner=runner,
+        gh_capture=current,
+    )
+    assert code == 7
+    [(read, read_env)] = current.calls
+    assert read == [host.gh, "api", f"repos/{REPO}/issues/3"]  # the current body, read with the product token
+    [(argv, env)] = runner.calls
+    assert argv[:4] == [host.gh, "api", "-X", "PATCH"] and argv[4] == f"repos/{REPO}/issues/3"
+    assert read_env == env and env["GH_TOKEN"] == "token-1"
+    assert [body["repositories"] for _, body in api.posts] == [["api", "web", "demo"]]
 
 
 def test_s038_9_gh_product_in_the_coordinators_session_skips_the_sessions_gh_helper(tmp_path: Path, host: Host) -> None:
