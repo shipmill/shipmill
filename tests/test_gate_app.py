@@ -165,10 +165,19 @@ def test_s004_6_a_launch_as_the_app_gets_the_bots_env_and_helpers(checkout: Git,
     assert not (state_dir(checkout) / CACHE).exists()
 
 
-def test_s004_6_the_bot_account_is_read_anonymously() -> None:
+def test_s004_6_the_bot_account_is_read_with_the_token_given() -> None:
+    """#1034: a read with a token counts against its own limit, not the host's anonymous 60 an hour"""
     api = FakeApi()
-    assert bot_id("demo-agent", APP_ID, api) == BOT_ID
-    assert api.calls == [(BOT_PATH, None)]
+    assert bot_id("demo-agent", APP_ID, api, "ghs_not-a-real-token") == BOT_ID
+    assert api.calls == [(BOT_PATH, "ghs_not-a-real-token")]
+
+
+def test_s004_6_the_app_check_reads_the_bot_account_without_a_token(tmp_path: Path) -> None:
+    """The App check mints no token (S-048-5), so its bot read stays anonymous"""
+    api = FakeApi()
+    identity = app_check(REPO, key_file(tmp_path), tmp_path, FakeSigner(), api)(APP_ID)
+    assert identity.bot_id == BOT_ID
+    assert api.calls[-1] == (BOT_PATH, None)
 
 
 @pytest.mark.parametrize(

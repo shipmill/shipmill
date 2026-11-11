@@ -343,6 +343,50 @@ def test_s048_3_github_answering_5xx_to_the_mint_or_the_repo_read_is_unavailable
     assert "app-install" not in decision.reason and SECRET not in decision.reason
 
 
+RATE_LIMITED_FIX = "wait for GitHub's rate limit to reset: nothing here needs repair, the next tick tries again"
+PRIMARY = Answer(403, '{"message": "API rate limit exceeded for 203.0.113.7. (But here\'s the good news: ...)"}')
+SECONDARY = Answer(429, '{"message": "You have exceeded a secondary rate limit. Please wait a few minutes."}')
+FORBIDDEN = Answer(403, '{"message": "Resource not accessible by integration"}')
+
+
+@pytest.mark.parametrize(
+    ("api", "call"),
+    [
+        (ReachApi(mint=PRIMARY), f"POST {ACCESS} answered 403"),
+        (ReachApi(mint=SECONDARY), f"POST {ACCESS} answered 429"),
+        (ReachApi(found=PRIMARY), f"GET {REPO_PATH}/installation answered 403"),
+        (ReachApi(repo=PRIMARY), f"GET {REPO_PATH} answered 403"),
+        (ReachApi(repo=SECONDARY), f"GET {REPO_PATH} answered 429"),
+    ],
+)
+def test_s048_3_github_rate_limiting_the_mint_or_the_repo_read_is_a_wait_not_app_install(
+    tmp_path: Path, api: ReachApi, call: str
+) -> None:
+    """#1034: a rate limit needs no repair here: the next tick tries again"""
+    identity = Identity(APP_ID, "demo-agent", BOT_ID, key_file(tmp_path))
+    found = app_reach(identity, REPO, FakeSigner(), api, clock=lambda: NOW)
+    assert found == GitHubAuth(f"GitHub rate-limited the call ({call})", RATE_LIMITED_FIX)
+    assert found.fix is not None and "app-install" not in found.fix
+
+
+@pytest.mark.parametrize(
+    ("api", "problem"),
+    [
+        (ReachApi(mint=FORBIDDEN), f"POST {ACCESS} for app_id {APP_ID} answered 403: {FORBIDDEN.body}"),
+        (
+            ReachApi(repo=FORBIDDEN),
+            f"the token of {BOT} can't read {REPO} (GET {REPO_PATH} answered 403: {FORBIDDEN.body})",
+        ),
+    ],
+)
+def test_s048_3_a_403_without_a_rate_limit_keeps_the_app_install_fix(
+    tmp_path: Path, api: ReachApi, problem: str
+) -> None:
+    identity = Identity(APP_ID, "demo-agent", BOT_ID, key_file(tmp_path))
+    found = app_reach(identity, REPO, FakeSigner(), api, clock=lambda: NOW)
+    assert found == GitHubAuth(problem, install_fix(REPO))
+
+
 def test_s048_3_github_answering_5xx_to_the_mints_installation_lookup_is_unavailable(tmp_path: Path) -> None:
     identity = Identity(APP_ID, "demo-agent", BOT_ID, key_file(tmp_path))
     api = ReachApi(found=Answer(502, "<html>Bad Gateway</html>"))
@@ -453,6 +497,43 @@ def test_s048_4_github_answering_5xx_to_the_app_check_is_unavailable_and_reads_n
     assert decision.reason == f"GitHub is unavailable ({call}): no session starts; fix: {UNAVAILABLE_FIX}"
     assert (claude.started, claude.launched, claude.stopped) == ([], [], [])
     assert nothing_walked(checkout)
+
+
+@pytest.mark.parametrize(
+    ("api", "call"),
+    [
+        (ReachApi(bot=PRIMARY), f"GET {BOT_PATH} answered 403"),
+        (ReachApi(bot=SECONDARY), f"GET {BOT_PATH} answered 429"),
+        (ReachApi(app=SECONDARY), "GET /app answered 429"),
+    ],
+)
+def test_s048_4_github_rate_limiting_the_app_check_is_a_wait_and_reads_no_state(
+    checkout: Git, tmp_path: Path, api: ReachApi, call: str
+) -> None:
+    """#1034: the bot lookup hit the anonymous per-IP limit and named `app-install`, which repairs nothing"""
+    claude = FakeClaude([bg("old", "idle", "done")])
+    agents = config(Mode.HEADLESS, APP_ID)
+    decision = tick(checkout, tmp_path, agents, claude, unasked_github, unasked_auth, api, unread)
+    problem = f"GitHub rate-limited the call ({call})"
+    assert decision.action is Action.GITHUB_AUTH and _gate_exit(decision) == 2
+    assert decision.reason == f"{problem}: no session starts; fix: {RATE_LIMITED_FIX}"
+    assert decision.github == GitHubAuth(problem, RATE_LIMITED_FIX)
+    assert (claude.started, claude.launched, claude.stopped) == ([], [], [])
+    assert nothing_walked(checkout)
+
+
+def test_s048_4_a_403_to_the_bot_lookup_without_a_rate_limit_keeps_the_app_install_fix(
+    checkout: Git, tmp_path: Path
+) -> None:
+    claude = FakeClaude([bg("old", "idle", "done")])
+    api = ReachApi(bot=FORBIDDEN)
+    decision = tick(
+        checkout, tmp_path, config(Mode.HEADLESS, APP_ID), claude, unasked_github, unasked_auth, api, unread
+    )
+    error = f"GET {BOT_PATH} for app_id {APP_ID} answered 403: {FORBIDDEN.body}"
+    assert (
+        decision.reason == f"the App {APP_ID} can't reach {REPO}: {error}: no session starts; fix: {install_fix(REPO)}"
+    )
 
 
 def test_s048_4_a_missing_key_names_its_path_and_app_create(checkout: Git, tmp_path: Path) -> None:
