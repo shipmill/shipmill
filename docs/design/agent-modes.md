@@ -214,7 +214,8 @@ the prompt.
 On LAUNCH, before stopping or starting any session, the gate checks the key's mode, signs
 an App JWT with `openssl dgst -sha256 -sign` (so the package keeps no dependencies), reads
 the App's slug, its installation on the repo and the installation's permissions, and the
-bot account's id. It then writes two helpers, mode `0700`, to the state folder's `bin/`: a
+bot account's id, which it reads once and then keeps in the state folder's `bot-ids.json`.
+It then writes two helpers, mode `0700`, to the state folder's `bin/`: a
 `gh` that sets `GH_TOKEN` from `shipmill app-token` and runs the host's `gh`, and
 `git-credential-shipmill`, which answers git's credential protocol the same way. The
 session gets them through `--settings` env: `bin/` first on `PATH`, `<slug>[bot]` and
