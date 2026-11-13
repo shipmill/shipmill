@@ -851,6 +851,17 @@ def created_body(args: Sequence[str]) -> str:
     return bodies[-1]
 
 
+# the switches and flags of `gh pr create` by which gh may send a body other than its --body
+_OTHER_BODY = ("--fill", "-f", "--fill-first", "--fill-verbose", "--template", "-T", "--recover")
+
+
+def other_body(args: Sequence[str]) -> str | None:
+    """S-055-17: the first flag of `gh pr create`'s args that would let gh send a body from
+    commits, a template, or a recovery file rather than its --body; None when there is none"""
+    _, flags = _scan(args[1:], _PR_CREATE.long, _PR_CREATE.short)
+    return next((name for name in _OTHER_BODY if _on(flags, name)), None)
+
+
 def person_args(args: Sequence[str], login: str) -> list[str]:
     """S-051-10: `gh issue create`'s or `gh pr create`'s args once `marked_args` made them, with
     their one --body kept marked and ended with `decided_by` login, before the marker; a body
