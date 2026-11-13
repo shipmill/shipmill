@@ -25,7 +25,7 @@ TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 GHOST = "ghost"  # the login a deleted account's comment reads with
 DECIDED = re.compile(r"<!-- shipmill:decided(?:\s[^>]*)?-->")
 DECIDED_FIELDS = re.compile(r"<!-- shipmill:decided zone=([a-z][a-z-]*) until=(\S+) -->")
-UTC_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z")
+UTC_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?Z", re.ASCII)
 HANDLED = re.compile(r"<!-- shipmill:veto-handled(?:\s[^>]*)?-->")
 VETO = re.compile(r"veto\b", re.IGNORECASE)
 
@@ -84,9 +84,13 @@ def _until(item: str, comment: IssueComment) -> tuple[str, dt.datetime]:
     if found is None:
         raise ReleaseError(f"{where} is not <!-- shipmill:decided zone=<id> until=<UTC time> -->")
     zone, text = found.group(1), found.group(2)
+    bad = ReleaseError(f"{where} has until={text}, not a UTC time such as 2026-10-20T14:00:00Z")
     if not UTC_TIME.fullmatch(text):
-        raise ReleaseError(f"{where} has until={text}, not a UTC time such as 2026-10-20T14:00:00Z")
-    until = dt.datetime.fromisoformat(text)
+        raise bad
+    try:
+        until = dt.datetime.fromisoformat(text)
+    except ValueError:  # the shape of a time with no such day or hour, such as 2026-10-32
+        raise bad from None
     if until - comment.created_at > LONGEST:
         raise ReleaseError(f"{where} has until={text}, more than {LONGEST.days * 24} hours after the comment")
     return zone, until

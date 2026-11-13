@@ -245,6 +245,7 @@ def test_s059_8_a_stable_promotion_reads_from_the_newest_stable_tag_to_the_rcs_b
 BAD_UNTIL = {
     "not a UTC time": "<!-- shipmill:decided zone=security until=2026-10-07T09:00:00+02:00 -->",
     "no time": "<!-- shipmill:decided zone=security until=tomorrow -->",
+    "no such day": "<!-- shipmill:decided zone=security until=2026-10-32T09:00:00Z -->",
     "no zone": "<!-- shipmill:decided until=2026-10-07T09:00:00Z -->",
     "past 168 hours": "<!-- shipmill:decided zone=security until=2026-10-14T08:00:00Z -->",
 }
