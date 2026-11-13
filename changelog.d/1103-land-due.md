@@ -1,3 +1,0 @@
-### Added
-
-- The land window's queue drains when the window opens: `watch_state.py` reports the oldest open pull request carrying `[land.window]`'s `queued_label` as `LAND_DUE` while the window is open and the spacing allows a held merge (an action whose fix is `/shipmill:github-pr-triage <repo>`), and every other one as `LAND_QUEUED` with why it waits, outside `PRS_OPEN`; the gate hands `LAND_DUE` in tier 3 before `PRS_OPEN` where `[autonomy] land` isn't `observe`, and its change check reads the window opening, or the spacing passing, as a change while a pull request is queued (spec 056) (#1103)

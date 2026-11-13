@@ -7,6 +7,22 @@ bot.
 
 ## [Unreleased]
 
+## [0.130.0] - 2026-11-13
+
+### Added
+
+- `shipmill decide classify` sets each changed path's level from the strictest `[decisions.paths.<zone>]` part on the base whose glob matches it, else its zone's level, and takes a zone's level as the strictest among its paths'; its JSON lists them in a new `paths` key per zone (`path`, `level`, `source`, `glob`), and a text reason names the part that set a level, so `pr_gate.py` holds or notifies by the part (spec 057) (#1071)
+- `shipmill gate` checks `[agents] verify` on a real headless launch, after the hook self-test and the preflight, when the state directory's `verify.json` holds no result for the fingerprint of the list, the tool flags, the settings files, the PATH, and the plugin's version, or holds a failing one `retry_hours` old; the decision line ends with `; verify: ...`, the session starts whatever the result, and with `notify = true` a failing result sends one desktop notification per fingerprint (#1074)
+- A lane in `[gates] veto_lanes` now waits for the veto windows it would ship: `shipmill plan` reads the merged pull requests in the candidate's base and not in the lane's newest tag (the last 168 hours with no tag yet; the newest stable tag to the rc's base for a promotion) and the issues they close, and skips the lane while a trusted decided marker's `until` is ahead or a veto of it is unhandled, naming each item, its zone, and when its window ends; a person's hand start (`--actor <person>`) releases anyway, a bot's or an unnamed one waits, and a trusted marker whose `until` isn't a UTC time or lies more than 168 hours after its comment exits 2 naming the item (spec 059) (#1084)
+- A component's triage reads a hold on its product's other repos (spec 065, D-84): `triage_state.py --home OWNER/NAME` in a component reads again, through `shipmill gh --product`, one call per owner, each hold on another repo's item that plain gh couldn't read, so a hold on a home item it reads is BLOCKED or UNBLOCKED like any other; a read that fails leaves the hold unknown with D-60's note, as before; without `--home`, or in the home, no `shipmill gh` runs. github-issue-resolve says a component reads a spec or item of its product's other repos with `shipmill gh --product`, writes nothing there, and asks through needs-decision, writing no substitute, when a reference it builds from can't be read (#1087)
+- Goals: the twelve stage metrics (`issue_to_agent_comment_*`, `issue_to_pr_*`, `issue_to_pr_person_*`, `issue_to_pr_agent_*`, `pr_to_merge_*`, `merge_to_release_*`, each `_median` and `_p90`) join the goal-measure registry with `<n>h` or `<n>d` targets, and the weekly retro reads their status; a missed `issue_to_release_*` or `lead_time_*` goal gains `grew_most`, the stage that grew most from the week before, shown as `grew most:` on its Goals row (#1092)
+- `pr_gate.py` reads the land window on a base whose config has `[land.window]`: a green pull request carrying a held label and no bypass label reads QUEUED, exit 10, with a `queued:` line naming the next opening while the window is closed, or the spacing while the next held merge is still to come; a red, pending, refused, or held-for-a-decision one keeps its verdict, and a `shipmill window` that fails exits 2 (spec 056) (#1101)
+- The land window's queue drains when the window opens: `watch_state.py` reports the oldest open pull request carrying `[land.window]`'s `queued_label` as `LAND_DUE` while the window is open and the spacing allows a held merge (an action whose fix is `/shipmill:github-pr-triage <repo>`), and every other one as `LAND_QUEUED` with why it waits, outside `PRS_OPEN`; the gate hands `LAND_DUE` in tier 3 before `PRS_OPEN` where `[autonomy] land` isn't `observe`, and its change check reads the window opening, or the spacing passing, as a change while a pull request is queued (spec 056) (#1103)
+
+### Changed
+
+- `shipmill gh pr merge <n>` and `shipmill gh api -X PUT repos/<o>/<r>/pulls/<n>/merge`, as the App, run the wheel's `pr_gate.py` on the pull request (the checkout's repo, the checkout, and the App's bot login) after the never-zone and needs-decision holds, and exit 2 without running gh unless it reads READY, printing `is refused: pr_gate.py reads #<n> <VERDICT>` with the gate's verdict and reason lines; a READY merge runs pinned to the head the gate judged (`--match-head-commit H`, or `sha=H` for the API), a merge pinned to another head exits 2 naming both, and a gate that exits 2, can't start, or prints no verdict refuses the merge, as do an unreadable bot login and the merge API's `--input`, as spec 055 says (#1093)
+
 ## [0.129.0] - 2026-11-13
 
 ### Added
@@ -2479,7 +2495,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.129.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.130.0...HEAD
+[0.130.0]: https://github.com/shipmill/shipmill/compare/v0.129.0...v0.130.0
 [0.129.0]: https://github.com/shipmill/shipmill/compare/v0.128.4...v0.129.0
 [0.128.4]: https://github.com/shipmill/shipmill/compare/v0.128.3...v0.128.4
 [0.128.3]: https://github.com/shipmill/shipmill/compare/v0.128.2...v0.128.3
