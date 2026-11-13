@@ -126,7 +126,8 @@ def test_s030_5_levels_json_names_every_zone_with_its_level_floor_and_source(
         "security", "protected", "interpretation", "triage-verdict", "implementation", "unknown",
         "release", "breaking-release", "deploy", "rollback", "intake", "upgrade", "triage", "fix", "land",
     ]  # fmt: skip
-    assert all(set(r) == {"zone", "level", "floor", "source"} for r in found["zones"])
+    assert all(set(r) == {"zone", "level", "floor", "source", "paths"} for r in found["zones"])  # S-057-1
+    rows = {zone: {k: v for k, v in r.items() if k != "paths"} for zone, r in rows.items()}
     assert rows["direction"] == {"zone": "direction", "level": "ask", "floor": "ask", "source": "config"}
     assert rows["contract-addition"] == {"zone": "contract-addition", "level": "act", "floor": None, "source": "config"}
     assert rows["scope"] == {"zone": "scope", "level": "ask", "floor": "ask", "source": "default"}
@@ -180,9 +181,9 @@ def test_s040_12_levels_list_triage_fix_and_land_from_autonomy_mapped_as_release
     commit(repo)  # no [autonomy]: act, act, propose
     rows = {r["zone"]: r for r in run(repo, capsys, "levels")["zones"]}
     assert [rows[z] for z in ("triage", "fix", "land")] == [
-        {"zone": "triage", "level": "act", "floor": None, "source": "autonomy"},
-        {"zone": "fix", "level": "act", "floor": None, "source": "autonomy"},
-        {"zone": "land", "level": "ask", "floor": None, "source": "autonomy"},
+        {"zone": "triage", "level": "act", "floor": None, "source": "autonomy", "paths": []},
+        {"zone": "fix", "level": "act", "floor": None, "source": "autonomy", "paths": []},
+        {"zone": "land", "level": "ask", "floor": None, "source": "autonomy", "paths": []},
     ]
     commit(repo, POLICY + '\n[autonomy]\ntriage = "observe"\nfix = "propose"\nland = "act"\nrelease = "propose"\n')
     rows = {r["zone"]: r for r in run(repo, capsys, "levels")["zones"]}

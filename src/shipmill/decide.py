@@ -178,31 +178,97 @@ class VetoHours:
         return self.hours
 
 
+# -- parts: a zone's paths with their own level (spec 057) --------------------------------------
+
+PATHS_KEY = "paths"
+# The zones code detects from a changed path, the only ones that take parts
+PART_ZONES = (Zone.DIRECTION, Zone.SECURITY, Zone.PROTECTED)
+_PART_ZONE_NAMES = "direction, security, and protected"
+_DIRECTION_FILE = "docs/product.md"
+_DIRECTION_DIR = "docs/product/"
+_SECURITY_DIR = ".github/"
+
+
+def _part_key(zone: Zone, glob: str) -> str:
+    return f'[decisions.paths.{zone}] "{glob}"'
+
+
+def _glob_problem(zone: Zone, glob: str) -> str | None:
+    """Why a glob can't be a part of the zone, or None: it is relative, stays in the repo, and
+    lies inside the zone's paths (protected's paths are REVIEW.md's, so any relative glob)"""
+    if not glob:
+        return "is an empty glob; name a path relative to the repository root"
+    if glob.startswith(("/", "\\")):
+        return "is absolute; a glob is relative to the repository root"
+    if ".." in glob.replace("\\", "/").split("/"):
+        return "holds ..; a glob stays inside the repository"
+    if zone is Zone.SECURITY and not glob.startswith(_SECURITY_DIR):
+        return f"lies outside security's paths: a security glob starts {_SECURITY_DIR}"
+    if zone is Zone.DIRECTION and glob != _DIRECTION_FILE and not glob.startswith(_DIRECTION_DIR):
+        return f"lies outside direction's paths: a direction glob is {_DIRECTION_FILE} or starts {_DIRECTION_DIR}"
+    return None
+
+
+def _part_floor_problem(zone: Zone, level: Level) -> str | None:
+    rule = zones()[zone]
+    if rule.floor is not None and level.below(rule.floor):
+        return f'= "{level}" is below its floor {rule.floor}: {rule.why}'
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class Part:
+    """A part of a zone: the zone's paths a glob matches take this level rather than the zone's,
+    never below the zone's floor (D-48)"""
+
+    zone: Zone
+    glob: str
+    level: Level
+
+    def __post_init__(self) -> None:
+        if self.zone not in PART_ZONES:
+            raise ReleaseError(f"{self.zone} takes no paths: only {_PART_ZONE_NAMES} are detected by path")
+        problem = _glob_problem(self.zone, self.glob) or _part_floor_problem(self.zone, self.level)
+        if problem is not None:
+            raise ReleaseError(f"{_part_key(self.zone, self.glob)} {problem}")
+
+    def record(self) -> dict[str, str]:
+        return {"glob": self.glob, "level": self.level.value, "source": Source.CONFIG.value}
+
+    def text(self) -> str:
+        return f'  part "{self.glob}"  {self.level.value}  {Source.CONFIG.value} [decisions.paths.{self.zone}]'
+
+
 @dataclass(frozen=True, slots=True)
 class DecisionPolicy:
-    """The [decisions] section: the levels the config sets, over each zone's default"""
+    """The [decisions] section: the levels the config sets, over each zone's default, and the
+    parts of the zones code detects by path (spec 057)"""
 
     configured: Mapping[Zone, Level] = field(default_factory=dict)
     veto_hours: VetoHours = VetoHours()
+    parts: Mapping[Zone, tuple[Part, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if Zone.DECISION_POLICY in self.configured:
             raise ReleaseError(f"[decisions]: {Zone.DECISION_POLICY} {_FIXED[Zone.DECISION_POLICY.value]}")
         for zone, level in self.configured.items():
             _check_floor(zone, level, "[decisions]")
+        for zone, found in self.parts.items():
+            if any(part.zone is not zone for part in found):
+                raise ReleaseError(f"[decisions.paths.{zone}] holds a part of another zone")
 
     @classmethod
     def parse(cls, t: Table) -> DecisionPolicy:
         configured: dict[Zone, Level] = {}
         for key in t.raw:
-            if key == VETO_HOURS_KEY:
+            if key in (VETO_HOURS_KEY, PATHS_KEY):
                 continue
             zone, level = _zone(t, key), _level(t, key)
             _check_floor(zone, level, t.where)
             configured[zone] = level
         hours = t.integer(VETO_HOURS_KEY, default=_VETO_DEFAULT, low=_VETO_LOW, high=_VETO_HIGH)
         assert hours is not None  # a default is given
-        return cls(configured, VetoHours(hours))
+        return cls(configured, VetoHours(hours), _parts(t))
 
     def level(self, zone: Zone) -> Level:
         """The zone's level: the config's, or the zone's default"""
@@ -212,10 +278,54 @@ class DecisionPolicy:
         """Whether [decisions] sets the zone's level, rather than its default"""
         return zone in self.configured
 
+    def parts_of(self, zone: Zone) -> tuple[Part, ...]:
+        """The zone's parts, in the config's order; none for a zone without them"""
+        return self.parts.get(zone, ())
+
     @property
     def levels(self) -> Mapping[Zone, Level]:
         """Every zone's level, in the zone table's order"""
         return {zone: self.level(zone) for zone in Zone}
+
+
+def _parts(t: Table) -> dict[Zone, tuple[Part, ...]]:
+    """[decisions.paths]: one table per zone that takes parts, each glob with its level; every
+    refusal names the key and its fix (S-057-2 to S-057-4)"""
+    paths = t.table(PATHS_KEY, optional=True)
+    found: dict[Zone, tuple[Part, ...]] = {}
+    for key, value in paths.raw.items():
+        zone = _part_zone(t.where, key)
+        if not isinstance(value, dict):
+            raise ReleaseError(
+                f"{t.where}: [decisions.paths] {key} must be a table of globs and levels,"
+                f" [decisions.paths.{key}], got {value!r}"
+            )
+        parts = []
+        for glob, level in value.items():
+            where = f"{t.where}: {_part_key(zone, glob)}"
+            if not isinstance(level, str) or level not in set(Level):
+                raise ReleaseError(f"{where} must be one of {[lv.value for lv in Level]}, got {level!r}")
+            problem = _glob_problem(zone, glob) or _part_floor_problem(zone, Level(level))
+            if problem is not None:
+                raise ReleaseError(f"{where} {problem}")
+            parts.append(Part(zone, glob, Level(level)))
+        if parts:
+            found[zone] = tuple(parts)
+    return found
+
+
+def _part_zone(where: str, key: str) -> Zone:
+    """The zone a [decisions.paths] key names; one that takes no parts is refused with its fix"""
+    takes = f"only {_PART_ZONE_NAMES} are detected by path"
+    if key in _FIXED:
+        raise ReleaseError(f"{where}: [decisions.paths] {key} {_FIXED[key]}")
+    if key in set(ReleaseZone):
+        raise ReleaseError(f"{where}: [decisions.paths] {key} is set in [autonomy] {key} and takes no paths: {takes}")
+    if key not in set(Zone):
+        raise ReleaseError(f"{where}: [decisions.paths] unknown zone {key!r}; {takes}")
+    if Zone(key) not in PART_ZONES:
+        raise ReleaseError(f"{where}: [decisions.paths] {key} takes no paths: {takes}")
+    return Zone(key)
 
 
 def _zone(t: Table, key: str) -> Zone:
@@ -259,25 +369,29 @@ class Source(StrEnum):
 @dataclass(frozen=True, slots=True)
 class ZoneLevel:
     """One row of `decide levels`: a zone, its level (None: agents take no part, as under
-    [autonomy] observe), its floor, and where the level comes from"""
+    [autonomy] observe), its floor, where the level comes from, and its parts (spec 057)"""
 
     zone: Zone | ReleaseZone
     level: Level | None
     floor: Level | None
     source: Source
+    parts: tuple[Part, ...] = ()
 
-    def record(self) -> dict[str, str | None]:
+    def record(self) -> dict[str, object]:
         return {
             "zone": self.zone.value,
             "level": None if self.level is None else self.level.value,
             "floor": None if self.floor is None else self.floor.value,
             "source": self.source.value,
+            "paths": [part.record() for part in self.parts],  # S-057-1: [] for a zone without parts
         }
 
     def text(self) -> str:
+        """The zone's line, then one line per part under it"""
         level = "none" if self.level is None else self.level.value
         floor = "none" if self.floor is None else self.floor.value
-        return f"{self.zone.value:<18} {level:<7} floor {floor:<7} {self.source.value}"
+        lines = [f"{self.zone.value:<18} {level:<7} floor {floor:<7} {self.source.value}"]
+        return "\n".join(lines + [part.text() for part in self.parts])
 
 
 # The level an agent has at a release-side stage: under propose the proposal issue is the question
@@ -304,7 +418,7 @@ def levels(decisions: DecisionPolicy, autonomy: AutonomyPolicy) -> tuple[ZoneLev
             source = Source.FIXED
         else:
             source = Source.CONFIG if decisions.is_configured(zone) else Source.DEFAULT
-        rows.append(ZoneLevel(zone, decisions.level(zone), rule.floor, source))
+        rows.append(ZoneLevel(zone, decisions.level(zone), rule.floor, source, decisions.parts_of(zone)))
     deploy = max(autonomy.deploy.values(), key=_HELD.index, default=Autonomy.ACT)
     stages = {
         ReleaseZone.RELEASE: autonomy.release,
