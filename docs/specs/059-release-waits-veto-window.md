@@ -149,6 +149,10 @@ merges without waiting, adds that a lane in `veto_lanes` holds its release inste
 The build issues, filled in once they are filed: one `- owner/repo#N: S-NNN-1, S-NNN-2` per
 line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
 
+- shipmill/shipmill#1083: S-059-1, S-059-10, S-059-11
+- shipmill/shipmill#1084: S-059-2, S-059-3, S-059-4, S-059-5, S-059-6, S-059-7, S-059-8, S-059-9
+- shipmill/shipmill#1086: S-059-12
+
 ## Verification
 
 Filled in when the spec reaches `built`: one line per criterion id, saying how it was
