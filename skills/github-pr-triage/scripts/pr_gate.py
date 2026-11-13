@@ -634,13 +634,16 @@ def read_base(checkout: str, ref: str) -> Base:
 
 def has_land_window(text: str, where: str) -> bool:
     """Whether the config has [land.window] (spec 056); `shipmill window` checks the section
-    itself. On Python 3.10, without tomllib, a [land.window] header or a window key under
-    [land] counts"""
+    itself. On Python 3.10, without tomllib, a [land.window] header, a window key or dotted key
+    under [land], or a land key or dotted key at the top counts: a form it can't read runs
+    `shipmill window`, which reads it, rather than letting a held PR through"""
     ws = watch_state()
     if ws.tomllib is None:
         tables = ws.toml_tables(text)
-        under = re.search(r"^\s*[\"']?window[\"']?\s*=", tables.get("land", ""), re.MULTILINE)
-        return any(n == "land.window" or n.startswith("land.window.") for n in tables) or under is not None
+        under = re.search(r"^\s*[\"']?window[\"']?\s*[.=]", tables.get("land", ""), re.MULTILINE)
+        top = re.search(r"^\s*[\"']?land[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE)
+        headers = any(n == "land.window" or n.startswith("land.window.") for n in tables)
+        return headers or under is not None or top is not None
     try:
         raw = ws.tomllib.loads(text)
     except ws.tomllib.TOMLDecodeError as exc:

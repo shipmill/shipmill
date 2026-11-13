@@ -2155,6 +2155,30 @@ def test_s056_6_a_base_without_land_window_reads_neither_window_nor_labels(tmp_p
     assert uvx_calls(record) == [] and label_reads(tmp_path) == []
 
 
+def test_s056_4_python_310_finds_every_form_of_land_window() -> None:
+    """Without tomllib, a dotted or inline [land.window] still runs `shipmill window`, never lets a held PR through"""
+    uv = shutil.which("uv")
+    assert uv is not None
+    configs = [
+        '[land.window]\ntimezone = "UTC"\n',
+        '[land]\nwindow.timezone = "UTC"\n',
+        'land.window.timezone = "UTC"\n',
+        'land = { window = { timezone = "UTC" } }\n',
+        '[lanes.stable]\nwindow = "x"\n',
+    ]
+    code = (
+        "import importlib.util, json, sys\n"
+        "spec = importlib.util.spec_from_file_location('pr_gate', sys.argv[1])\n"
+        "pg = importlib.util.module_from_spec(spec); sys.modules['pr_gate'] = pg; spec.loader.exec_module(pg)\n"
+        "assert pg.watch_state().tomllib is None, 'tomllib on 3.10'\n"
+        "print([pg.has_land_window(t, 'cfg') for t in json.loads(sys.argv[2])])\n"
+    )
+    command = [uv, "run", "--no-project", "--python", "3.10", "python", "-c", code, str(SCRIPT), json.dumps(configs)]
+    done = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "[True, True, True, True, False]"
+
+
 def test_s056_6_a_pr_into_another_branch_is_not_held(tmp_path: Path, windowed: Path) -> None:
     """one window per repo, for pull requests into the default branch"""
     record = window_as(tmp_path, CLOSED)
