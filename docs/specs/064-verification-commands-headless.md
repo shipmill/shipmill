@@ -1,6 +1,6 @@
 # S-064: A repo's verification commands are known to work from a headless session
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -181,3 +181,14 @@ tells three failures apart, so a question names the right cause and the right fi
 - shipmill/shipmill#1078: S-064-10
 
 ## Verification
+
+- S-064-1: read `agents.py`'s `verify_of` and ran tests/test_verify.py's S-064-1 tests: a list of commands parses, an absent key is `()`, and a non-list, a non-string, an empty or blank string, a newline, and a duplicate exit 2 naming `[agents] verify`, holds
+- S-064-2: read `verify.py`'s `matches`, `flag_rules`, `permissions`, and `Allowlist.denial`, and ran tests/test_verify.py's S-064-2 tests: the four rule forms match as documented, a deny rule wins, and `pnpm --dir web api` under only `Bash(pnpm api:*)` is `denied` naming the part, holds
+- S-064-3: ran tests/test_verify.py's S-064-3 test: `uv run env` through the delivery hook with `SHIPMILL_GATE=1` is `refused by hook` naming `uv-run`, and the shell never runs, holds
+- S-064-4: read `worktree` and `judge`, and ran tests/test_verify.py's S-064-4 tests: the run is in `.claude/worktrees/shipmill-verify-<hex>` at `origin/<default>` through `$SHELL -c` with the gate's PATH; exits 0, 127, and another, and a run past the limit, read `ok`, `not found` naming the program, `failed` with the code and last stderr line, and `timed out`, with 30 minutes by default, holds
+- S-064-5: ran tests/test_verify.py's S-064-5 tests: the commands run in order in one worktree, a setup command's files reach the next, denied and refused commands don't run, and the worktree is removed after a failing and an erroring check, holds
+- S-064-6: ran tests/test_gate_verify.py's S-064-6 tests: a headless LAUNCH tick checks before the session, writes `verify.json`, ends its decision line with `; verify: ...`, starts the session on a failing or erroring check, and fails on a malformed `verify.json`, holds
+- S-064-7: ran tests/test_gate_verify.py's S-064-7 tests: a passing result isn't checked again until the fingerprint changes, each input changes it, a failing result is checked again `retry_hours` later, and an interactive tick, a dry run, and an empty list check nothing, holds
+- S-064-8: ran tests/test_gate_verify.py's S-064-8 tests: a failing result notifies once per fingerprint, a failed send stays owed, and a pass or `notify = false` sends nothing, holds
+- S-064-9: ran `shipmill doctor` on this repo's config with `verify = ["uv run pytest --version"]` added and no `verify.json`: one `WARN verify command: uv run pytest --version: not checked yet` row; tests/test_doctor_verify.py covers the PASS row with its time, a FAIL per result with its fix (`not found` naming the PATH, never an allow rule), an older list's result read as not checked, a malformed `verify.json` as one FAIL naming the file, and no row without a list, holds
+- S-064-10: read `needs-decision.md`'s "A denied tool call is a decision", which tells a denial, a hook refusal, and a not-found (exit 127) apart with each its fix and says a not-found never proposes widening the allowlist, and ran tests/test_needs_decision.py's S-064-10 test, holds

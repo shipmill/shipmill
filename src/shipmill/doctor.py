@@ -55,7 +55,7 @@ from shipmill.downstream import (
     not_installed,
 )
 from shipmill.errors import ReleaseError
-from shipmill.gate import skills_dir
+from shipmill.gate import VERIFY, skills_dir, state_dir
 from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.gitrepo import REMOTE, Git
 from shipmill.hooks import HookTest
@@ -72,6 +72,8 @@ from shipmill.requires import Requires
 from shipmill.requires import check as check_requires
 from shipmill.stamp import project_version
 from shipmill.upgrades import offers, pending
+from shipmill.verify import Result, Verified
+from shipmill.verify import fix as verify_fix
 from shipmill.version import Part, Version
 
 CALLER = Path(".github") / "workflows" / "release.yml"
@@ -283,6 +285,8 @@ def doctor(
             checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC)))
         if auth is not None and (uses is None or uses.refused is None):  # a refused file can't be asked about
             checks.append(auth_check(auth(None if uses is None else uses.token)))
+        if policy.agents.verify:  # D-9: no list, no row and no read of the gate's state
+            checks.extend(verify_checks(policy.agents.verify, state_dir(Git(root)) / VERIFY))
     checks.extend(decisions_checks(policy, raw, github))
     if (veto := veto_lanes_check(policy)) is not None:
         checks.append(veto)
@@ -545,6 +549,32 @@ def veto_lanes_check(policy: Policy) -> Check | None:
     return Check(
         "PASS", "gates", f"veto_lanes {lanes}: a release waits for the veto window of each notify decision it ships"
     )
+
+
+VERIFY_ROW = "verify command"  # doctor's row for each [agents] verify command (spec 064)
+
+
+def verify_checks(commands: tuple[str, ...], path: Path) -> list[Check]:
+    """S-064-9: one row per [agents] verify command from the gate's verify.json: PASS for ok, FAIL
+    with the result, its detail, and its fix, and WARN for each command when the file holds no
+    result for the current list (none, or one checked for another list); no row without a list
+    (D-9). A malformed verify.json is one FAIL naming the file and its fix, as the gate refuses it"""
+    if not commands:
+        return []
+    try:
+        found = Verified.load(path)
+    except ReleaseError as exc:
+        return [Check("FAIL", VERIFY_ROW, str(exc))]
+    if found is None or tuple(e.command for e in found.entries) != commands:
+        later = "not checked yet: the gate checks it before its next headless session"
+        return [Check("WARN", VERIFY_ROW, f"{command}: {later}") for command in commands]
+    at = found.at.astimezone(dt.UTC).strftime("%Y-%m-%d %H:%M UTC")
+    return [
+        Check("PASS", VERIFY_ROW, f"{e.command}: ok at {at}")
+        if e.result is Result.OK
+        else Check("FAIL", VERIFY_ROW, f"{e.command}: {e.result}: {e.detail}; {verify_fix(e)}")
+        for e in found.entries
+    ]
 
 
 def _decided_label(github: GitHub | None, app: bool) -> Check:
