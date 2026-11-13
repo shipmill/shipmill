@@ -338,6 +338,7 @@ from shipmill.operate import Http, Unreachable, UrllibHttp, approve, approve_rol
 from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
 from shipmill.plugin import CLI_RECORD, MARKERS, GateCli, PluginHost, Runner, load_cli
 from shipmill.policy import Lane, Policy
+from shipmill.pr_plan import hold_plan
 from shipmill.product import DIRECTION, GitRef, ItemId, Measure, Section
 from shipmill.product import check as check_product
 from shipmill.product import read as read_product
@@ -1720,7 +1721,9 @@ def _gh(
     create` never reaches gh, in any mode. In every mode, the body a create writes ends with the agent
     marker, and one that can't be marked exits 2 and gh never runs; an edit's body carries it
     exactly when the record's current body does, read first with the same token, and one whose
-    current body can't be read exits 2 and gh never edits (spec 050)"""
+    current body can't be read exits 2 and gh never edits (spec 050). As the App, a `pr create`
+    whose body's plan pr_gate.py's plan_problems refuses, by the default branch's docs/product.md,
+    exits 2 before any token (S-055-17, `hold_plan`)"""
     api, signer = hub.api, hub.signer
     leading = _leading(passed)
     key = leading.key
@@ -1798,6 +1801,8 @@ def _gh(
     # spec 050: before any token; a merge's args pass as given, and an edit's wait for its record
     edit = body_edit(gh_args, read)
     gh_args = marked_args(gh_args, read) if edit is None else gh_args
+    if write_command(gh_args) == PR_CREATE:  # S-055-17: before any token, so gh never runs
+        hold_plan(top, gh_args, repo)
     try:
         token = app_token(cache, repo, app_id, path, dt.datetime.now(dt.UTC), signer, api)
     except NotInstalled as exc:

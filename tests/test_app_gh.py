@@ -78,6 +78,21 @@ def checkout(tmp_path: Path, config: str | None, origin: str = f"https://github.
     return root
 
 
+def default_branch(root: Path, files: Mapping[str, str] | None = None) -> None:
+    """origin/HEAD at a commit holding files, so `shipmill gh pr create` reads the default
+    branch's docs/product.md (S-055-17) locally rather than asking the GitHub origin with `git
+    ls-remote`, which a test must not reach; the work tree is left as it is"""
+    git = Git(root, "t", "t@example.com")
+    for name, text in (files or {}).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        git.run("add", "--", name)
+    git.run("commit", "-q", "--allow-empty", "-m", "base")
+    git.run("update-ref", "refs/remotes/origin/main", "HEAD")
+    git.run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+
 WITH_APP = f'[agents]\nprompt = "/t"\napp_id = {APP_ID}\n'
 
 
@@ -171,6 +186,7 @@ def test_s012_2_gh_runs_with_exactly_its_arguments_and_origins_token(
     tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = checkout(tmp_path, WITH_APP)
+    default_branch(root)
     key_file(tmp_path)
     args = ["pr", "create", "--title", "two words", "--body", "", "--", "--repo", "x/y", "--app-key", "k", "-h"]
     api = MintApi()
