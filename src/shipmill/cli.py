@@ -69,7 +69,8 @@
                   login and a write exits 2 unless [agents] identity = "host" or a leading
                   --as-host allows it (spec 037). Every gh call that writes in an agent
                   session goes through it. A leading --product OWNER/NAME runs it with the
-                  coordinator's token, refusing commands that write code or pull requests (D-47)
+                  coordinator's token, refusing commands that write code or pull requests (D-47);
+                  in a component, with a read-only token over its product's other repos (D-84)
   app-create      create the gate's GitHub App in one click: owner and visibility planned from the
                   repos holding .github/shipmill.toml, the key saved with mode 0600
   app-install     guide installing the App on more repos: the App's Install App page and what to pick
@@ -172,15 +173,20 @@ from shipmill.app import (
     availability,
     bot_id,
     cache_outside,
+    cached_read_token,
     check_key,
+    contents,
     credential,
     default_key,
     is_plain_repo,
+    mint_read,
     prepare_session,
     product_cache,
     product_token,
+    read_cache,
     require_key,
     resolve_gh,
+    save_product_token,
     session_key,
     with_home,
 )
@@ -227,6 +233,7 @@ from shipmill.app_gh import (
     person_args,
     product_refusal,
     pull_url,
+    read_refusal,
     repo_value,
     run_gh,
     with_body,
@@ -751,7 +758,9 @@ def _parser() -> argparse.ArgumentParser:
             '"host" or the call passes --as-host (spec 037); use it for every gh call that writes from an agent '
             "session. Only a leading --app-key PATH (default: ~/.config/shipmill/app-<app_id>.pem), --product "
             "OWNER/NAME, and --as-host are shipmill's; --product runs gh with the coordinator's token for OWNER's "
-            "listed repos and refuses the commands that write code or pull requests (spec 038, D-47)"
+            "listed repos and refuses the commands that write code or pull requests (spec 038, D-47); in a "
+            "component ([product] home) it runs gh with a read-only token over the home and the repos the home "
+            "lists, cached in app-token-read-<owner>.json, and refuses every command that writes (spec 065, D-84)"
         ),
     )
 
@@ -1557,8 +1566,8 @@ def _app_check(root: Path, args: argparse.Namespace, environ: Mapping[str, str],
 
 
 def _component_token(root: Path, repo: str) -> None:
-    """S-038-10: a checkout whose config sets [product] home gets a token only for its origin
-    repo (D-47). Outside a checkout there is no config, so nothing to refuse; a checkout git
+    """S-065-7: a checkout whose config sets [product] home gets a token only for its origin
+    repo (D-84). Outside a checkout there is no config, so nothing to refuse; a checkout git
     can't read still has its config, as `shipmill gh` reads it"""
     git = Git(root)
     readable = git.ok("rev-parse", "--show-toplevel")
@@ -1577,7 +1586,7 @@ def _component_token(root: Path, repo: str) -> None:
 def _coordinator(root: Path, repo: str, what: str) -> tuple[Path, tuple[str, ...], tuple[str, ...]]:
     """Spec 038: the home repo's checkout, the listed repos of repo's owner, and the repos one
     product token covers: those, plus the home repo when it has their owner (S-038-8, #1032).
-    Exits 2 in a component (S-038-10), in a repo its own [product] names (S-038-3), and
+    Exits 2 in a component (S-065-7), in a repo its own [product] names (S-038-3), and
     without [product] repos or with repo not listed (S-038-5, S-038-9); all before any token
     is minted"""
     if not is_plain_repo(repo):
@@ -1730,6 +1739,10 @@ def _gh(
     decided, gh_args = decided_in(leading.gh_args)  # S-051-7: before anything reads gh's args
     read = body_reader(readers.stdin)
     if leading.product is not None:
+        component = _component_checkout(root)
+        if component is not None:  # spec 065: a component's read token; the home's path below is spec 038's
+            reach = _ReadReach(api, signer, environ, home, runner)
+            return _gh_component_read(component, leading.product, key, gh_args, reach)
         return _gh_product(
             root, leading.product, key, gh_args, read, api, signer, environ, home, runner, readers.current
         )
@@ -1749,7 +1762,7 @@ def _gh(
     product = None if top is None else ProductConfig.load(top)
     if top is not None and product is not None and readable:  # S-038-3: before any token, App or not
         product.refuse_self(_known_origin(top))
-    if top is not None and product is not None and product.component:  # S-038-10: before any token, App or not
+    if top is not None and product is not None and product.component:  # S-065-7: before any token, App or not
         if not readable:
             raise ReleaseError(
                 f"git can't read the checkout at {top}, a component of {product.home}, so its origin repo "
@@ -1759,7 +1772,7 @@ def _gh(
         if bundled is not None:
             raise ReleaseError(
                 f"gh's {bundled} bundles -R with another flag, and this repo is a component of {product.home} "
-                "([product] home), whose session reaches only its origin repo (D-47); write -R owner/name on its "
+                "([product] home), whose session writes only its origin repo (D-84); write -R owner/name on its "
                 "own, so the repo it names can be checked"
             )
         named = named_repo(gh_args)
@@ -2152,6 +2165,137 @@ def _gh_product(
     if edit is not None:
         gh_args = edited_args(edit, target, binary, env, current)
     return runner([str(binary), *gh_args], env)
+
+
+def _component_checkout(root: Path) -> tuple[Path, str] | None:
+    """Spec 065: the checkout's top and its [product] home when its config sets one; None for
+    any other checkout, and for a folder or checkout git can't read, which `_gh_product` refuses
+    as before. A malformed config exits 2 here as it would there"""
+    if not root.is_dir():
+        return None
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        return None
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    product = ProductConfig.load(top)
+    return None if product is None or product.home is None else (top, product.home)
+
+
+@dataclass(frozen=True, slots=True)
+class _ReadReach:
+    """What a component's `shipmill gh --product` reaches GitHub and gh with"""
+
+    api: Api
+    signer: Signer
+    environ: Mapping[str, str]
+    home: Path
+    runner: GhRunner
+
+
+def _no_read_set(component: str, home: str, why: str) -> ReleaseError:
+    """S-065-3: the refusal of a read token over the set, naming D-84 and the fix"""
+    return ReleaseError(
+        f"gh --product reads no repo of {home}'s product: {why}, so this component's read token covers nothing "
+        f'beyond the home (D-84); fix: add "{component}" to [product] repos in {home}\'s {CONFIG_PATH}'
+    )
+
+
+def _read_set(
+    component: str, product_home: str, owner: str, reach: _ReadReach, app_id: int, key: Path
+) -> tuple[str, ...]:
+    """S-065-1, S-065-2, S-065-3: the repos of owner one read token covers: the home and every
+    repo the home's own [product] repos lists, save the component, read from the home's config on
+    its default branch with a read token over the home alone. The component's own config adds
+    only the home. A home that doesn't list the component (case ignored), or whose config is
+    missing or can't be parsed, exits 2 naming D-84 and the fix"""
+    now = dt.datetime.now(dt.UTC)
+    alone = mint_read(app_id, (product_home,), key, now, reach.signer, reach.api)
+    where = f"{product_home}:{CONFIG_PATH}"
+    try:
+        text = contents(product_home, str(CONFIG_PATH), alone.value, reach.api)
+        found = None if text is None else ProductConfig.of_text(text, where)
+    except ReleaseError as exc:
+        raise _no_read_set(component, product_home, f"{where} can't be read ({exc})") from None
+    if text is None:
+        raise _no_read_set(component, product_home, f"GitHub has no {where} on its default branch")
+    if found is None or not found.lists(component):
+        raise _no_read_set(component, product_home, f"its [product] repos doesn't list {component}")
+    candidates = (product_home, *found.repos)
+    return tuple(
+        r for r in candidates if r.partition("/")[0].lower() == owner.lower() and r.lower() != component.lower()
+    )
+
+
+def _gh_component_read(
+    checkout: tuple[Path, str], wanted: str, key: Path | None, gh_args: list[str], reach: _ReadReach
+) -> int:
+    """Spec 065, D-84: in a component, gh with the read token over the product's repos of
+    wanted's owner, the home and every repo the home lists, save the component. Before gh runs
+    it exits 2 for wanted naming the component itself or a repo outside the set, a -R outside the
+    set or of another owner, a config without [agents] app_id, and every command that writes
+    (S-065-6, S-065-7). gh works on -R's repo, else on wanted: GH_REPO names it. The token goes
+    to gh in GH_TOKEN alone, and is cached in `app-token-read-<owner>.json`, never the session's
+    or the coordinator's cache"""
+    top, product_home = checkout
+    what = f"gh --product {wanted}"
+    if not is_plain_repo(wanted):
+        raise ReleaseError(f"{what} needs owner/name of letters, digits, '.', '-', or '_'; got {wanted!r}")
+    component = _known_origin(top)
+    if component is None:
+        raise ReleaseError(f"{what}: {top}'s origin isn't a GitHub repo, so the component reading can't be told (D-84)")
+    ProductConfig(home=product_home).refuse_self(component)  # S-038-3
+    if wanted.lower() == component.lower():
+        raise ReleaseError(
+            f"{what} names this checkout's own repo; a component reads its own repo with `{cli_command()} gh`, and "
+            "--product only its product's other repos (D-84)"
+        )
+    refused = read_refusal(gh_args)
+    if refused is not None:
+        raise ReleaseError(
+            f"{refused} under --product is refused: this repo is a component of {product_home}, whose session reads "
+            "its product's other repos and writes nothing there (D-84); name the gh command first and its "
+            "subcommand right after it, from the ones that read"
+        )
+    bundled = bundled_repo_flag(gh_args)
+    if bundled is not None:
+        raise ReleaseError(
+            f"gh's {bundled} bundles -R with another flag; under --product write -R owner/name on its own, so the "
+            "repo it names can be checked against the product's repos (D-84)"
+        )
+    owner = wanted.partition("/")[0]
+    named = named_repo(gh_args)
+    if named is not None and named.partition("/")[0].lower() != owner.lower():
+        raise ReleaseError(
+            f"gh's -R {named} isn't a repo of {owner}, whose read token --product {wanted} asks for; name it with "
+            "--product (D-84)"
+        )
+    target = wanted if named is None else named
+    app_id = app_id_of(top)
+    if app_id is None:
+        raise ReleaseError(f"{what} needs [agents] app_id in {CONFIG_PATH}; the read token comes from that App (D-84)")
+    path = require_key(key or session_key(app_id, reach.environ, reach.home))
+    needed = (wanted,) if named is None or named.lower() == wanted.lower() else (wanted, named)
+    cache = state_dir(Git(top)) / read_cache(owner)
+    now = dt.datetime.now(dt.UTC)
+    cached = cached_read_token(cache, needed, app_id, now)
+    if cached is None:
+        covered = _read_set(component, product_home, owner, reach, app_id, path)
+        outside = [r for r in needed if r.lower() not in {c.lower() for c in covered}]
+        if outside:
+            listed = ", ".join(covered) or "none"
+            raise ReleaseError(
+                f"{what} names {outside[0]}, which isn't {product_home} or a repo its [product] repos lists, save this "
+                f"one; the read token for {owner} covers: {listed} (D-84)"
+            )
+        try:
+            cached = mint_read(app_id, covered, path, now, reach.signer, reach.api)
+        except NotInstalled as exc:
+            raise ReleaseError(f"{exc}; install it with `{cli_command()} app-install {' '.join(covered)}`") from None
+        save_product_token(cache, cached)
+    # the session's gh helper comes first on PATH and would put the session's token on gh: skip it
+    binary = resolve_gh(state_dir(Git(top)) / HELPERS, reach.environ.get("PATH", ""))
+    env = {**as_app(reach.environ, cached.value), "GH_REPO": target}
+    return reach.runner([str(binary), *gh_args], env)
 
 
 def _gh_default(environ: Mapping[str, str], origin: str | None) -> str | None:

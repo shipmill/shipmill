@@ -1,7 +1,7 @@
 """Spec 038, The config and the component's guard: the [product] table, read strictly by the
 policy (`shipmill plan`) and the gate's loader alike (S-038-1), `repos` needing the App
 (S-038-2), and a component's `shipmill gh -R` and `shipmill app-token` limited to its origin
-repo before any token is minted (S-038-10). No test reaches the network"""
+repo before any token is minted (S-065-7, which S-038-10 was). No test reaches the network"""
 
 import io
 import shutil
@@ -165,7 +165,7 @@ def test_s038_2_a_component_needs_no_app(repo: Repo) -> None:
     assert ProductConfig.load(repo.root) == ProductConfig(home=HOME)
 
 
-# -- S-038-10 --------------------------------------------------------------------------------
+# -- S-065-7 (S-038-10 dropped) --------------------------------------------------------------
 
 OTHER = "romamo/api"
 
@@ -183,14 +183,14 @@ OTHER = "romamo/api"
     ],
 )
 @pytest.mark.parametrize("config", [WITH_APP + COMPONENT, COMPONENT])
-def test_s038_10_a_components_gh_naming_another_repo_exits_2_naming_d47_before_a_token(
+def test_s065_7_a_components_gh_naming_another_repo_exits_2_naming_d84_before_a_token(
     tmp_path: Path, host: Host, flag: list[str], config: str
 ) -> None:
     root = checkout(tmp_path, config)
     key_file(tmp_path)
     api = MintApi()
     runner = Runner()
-    with pytest.raises(ReleaseError, match="D-47") as raised:
+    with pytest.raises(ReleaseError, match="D-84") as raised:
         gh(root, ["--app-key", str(tmp_path / "app.pem"), "issue", "create", *flag], host, api, runner)
     assert f"component of {HOME}" in str(raised.value)
     assert (api.calls, api.posts, runner.calls) == ([], [], [])
@@ -198,7 +198,7 @@ def test_s038_10_a_components_gh_naming_another_repo_exits_2_naming_d47_before_a
 
 @pytest.mark.parametrize("flag", [["-sR", OTHER], [f"-sR{OTHER}"], ["-dsR", OTHER]])
 @pytest.mark.parametrize("config", [WITH_APP + COMPONENT, COMPONENT])
-def test_s038_10_a_components_gh_with_r_bundled_after_another_flag_exits_2_naming_d47(
+def test_s065_7_a_components_gh_with_r_bundled_after_another_flag_exits_2_naming_d84(
     tmp_path: Path, host: Host, flag: list[str], config: str
 ) -> None:
     # gh's flag parser reads `-sR other/x` as -s and -R other/x, so the cluster names a repo too
@@ -206,14 +206,14 @@ def test_s038_10_a_components_gh_with_r_bundled_after_another_flag_exits_2_namin
     key_file(tmp_path)
     api = MintApi()
     runner = Runner()
-    with pytest.raises(ReleaseError, match="D-47") as raised:
+    with pytest.raises(ReleaseError, match="D-84") as raised:
         gh(root, ["--app-key", str(tmp_path / "app.pem"), "pr", "merge", "1", *flag], host, api, runner)
     assert "-R owner/name on its own" in str(raised.value)
     assert (api.calls, api.posts, runner.calls) == ([], [], [])
 
 
 @pytest.mark.parametrize("flag", [[], ["-R", REPO], ["--repo", f"github.com/{REPO}"]])
-def test_s038_10_a_components_gh_on_its_own_repo_runs(tmp_path: Path, host: Host, flag: list[str]) -> None:
+def test_s065_7_a_components_gh_on_its_own_repo_runs(tmp_path: Path, host: Host, flag: list[str]) -> None:
     root = checkout(tmp_path, WITH_APP + COMPONENT)
     key_file(tmp_path)
     runner = Runner()
@@ -221,15 +221,15 @@ def test_s038_10_a_components_gh_on_its_own_repo_runs(tmp_path: Path, host: Host
     assert runner.calls[0][1]["GH_TOKEN"] == "token-1"
 
 
-def test_s038_10_the_origin_is_compared_case_ignored() -> None:
+def test_s065_7_the_origin_is_compared_case_ignored() -> None:
     component = ProductConfig(home=HOME)
     component.refuse_outside("ROMAMO/Demo", REPO, "gh's -R ROMAMO/Demo")
-    with pytest.raises(ReleaseError, match="D-47"):
+    with pytest.raises(ReleaseError, match="D-84"):
         component.refuse_outside("romamo/demo2", REPO, "gh's -R romamo/demo2")
     ProductConfig(repos=(OTHER,)).refuse_outside(OTHER, REPO, "gh's -R")  # a home repo isn't limited here
 
 
-def test_s038_10_a_home_repos_gh_is_unchanged(tmp_path: Path, host: Host) -> None:
+def test_s065_7_a_home_repos_gh_is_unchanged(tmp_path: Path, host: Host) -> None:
     root = checkout(tmp_path, WITH_APP + '\n[product]\nrepos = ["romamo/api"]\n')
     key_file(tmp_path)
     runner = Runner()
@@ -242,12 +242,12 @@ def _token(root: Path, tmp_path: Path, repo: str, api: MintApi, host: Host) -> i
 
 
 @pytest.mark.parametrize("other", [OTHER, HOME])
-def test_s038_10_a_components_app_token_for_another_repo_exits_2_naming_d47(
+def test_s065_7_a_components_app_token_for_another_repo_exits_2_naming_d84(
     tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str], other: str
 ) -> None:
     root = checkout(tmp_path, WITH_APP + COMPONENT)
     api = MintApi()
-    with pytest.raises(ReleaseError, match="D-47") as raised:
+    with pytest.raises(ReleaseError, match="D-84") as raised:
         _token(root, tmp_path, other, api, host)
     assert f"app-token {other} names {other}" in str(raised.value)
     assert (api.calls, api.posts) == ([], [])
@@ -255,7 +255,7 @@ def test_s038_10_a_components_app_token_for_another_repo_exits_2_naming_d47(
 
 
 @pytest.mark.parametrize("other", [OTHER, REPO])
-def test_s038_10_a_component_checkout_git_cant_read_gets_no_app_token(tmp_path: Path, host: Host, other: str) -> None:
+def test_s065_7_a_component_checkout_git_cant_read_gets_no_app_token(tmp_path: Path, host: Host, other: str) -> None:
     # a worktree whose repo is gone: git can't tell the origin, but the config still says component
     root = checkout(tmp_path, WITH_APP + COMPONENT)
     shutil.rmtree(root / ".git")
@@ -282,15 +282,15 @@ def test_s038_4_app_token_and_its_git_helper_mint_as_before_under_a_newer_requir
     assert capsys.readouterr().out == "username=x-access-token\npassword=token-1\n"
 
 
-def test_s038_10_a_newer_requires_still_keeps_a_component_to_its_repo(tmp_path: Path, host: Host) -> None:
+def test_s065_7_a_newer_requires_still_keeps_a_component_to_its_repo(tmp_path: Path, host: Host) -> None:
     root = checkout(tmp_path, NEWER + WITH_APP + COMPONENT)
     api = MintApi()
-    with pytest.raises(ReleaseError, match="D-47"):
+    with pytest.raises(ReleaseError, match="D-84"):
         _token(root, tmp_path, OTHER, api, host)
     assert api.calls == []
 
 
-def test_s038_10_a_config_that_isnt_toml_still_stops_app_token(tmp_path: Path, host: Host) -> None:
+def test_s065_7_a_config_that_isnt_toml_still_stops_app_token(tmp_path: Path, host: Host) -> None:
     # the guard can't tell a component from a broken file, so it fails closed, as `shipmill gh` does
     root = checkout(tmp_path, WITH_APP + "\nbroken = [\n")
     api = MintApi()
@@ -299,7 +299,7 @@ def test_s038_10_a_config_that_isnt_toml_still_stops_app_token(tmp_path: Path, h
     assert api.calls == []
 
 
-def test_s038_10_a_components_app_token_for_its_own_repo_mints(
+def test_s065_7_a_components_app_token_for_its_own_repo_mints(
     tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = checkout(tmp_path, WITH_APP + COMPONENT)
@@ -307,16 +307,16 @@ def test_s038_10_a_components_app_token_for_its_own_repo_mints(
     assert capsys.readouterr().out == "token-1\n"
 
 
-def test_s038_10_a_component_whose_origin_isnt_github_gets_no_token(tmp_path: Path, host: Host) -> None:
+def test_s065_7_a_component_whose_origin_isnt_github_gets_no_token(tmp_path: Path, host: Host) -> None:
     root = checkout(tmp_path, WITH_APP + COMPONENT, origin="https://example.com/romamo/demo.git")
     api = MintApi()
-    with pytest.raises(ReleaseError, match="only the checkout's origin \\(D-47\\)"):
+    with pytest.raises(ReleaseError, match="writes only the checkout's origin and .*\\(D-84\\)"):
         _token(root, tmp_path, REPO, api, host)
     assert api.calls == []
 
 
-def test_s038_10_product_is_refused_in_a_component() -> None:
-    # #585 builds --product on gh and app-token; each calls this before it mints
-    with pytest.raises(ReleaseError, match="--product is the coordinator's.*D-47"):
+def test_s065_7_app_token_product_is_refused_in_a_component() -> None:
+    # app-token --product calls this before it mints; a component's gh --product takes spec 065's path
+    with pytest.raises(ReleaseError, match="app-token --product is the coordinator's.*D-84"):
         ProductConfig(home=HOME).refuse_product()
     ProductConfig(repos=("romamo/api",)).refuse_product()  # the home repo's coordinator may

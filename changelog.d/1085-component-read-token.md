@@ -1,0 +1,3 @@
+### Added
+
+- A component's session reads its product's other repos (spec 065, D-84): in a checkout whose config sets `[product] home`, `shipmill gh --product OWNER/NAME` runs gh with a read-only App token (`READ_PERMISSIONS`: contents, issues, pull requests, and metadata read) over the home and every repo of OWNER the home's `[product] repos` lists, save the component, read from the home's `.github/shipmill.toml` with a token over the home alone; it exits 2 naming D-84 and the fix when the home doesn't list the component, refuses a token GitHub scopes otherwise, caches it in `app-token-read-<owner>.json`, and refuses every command that writes before gh runs; `shipmill gh -R` and `shipmill app-token` for another repo still exit 2, now naming D-84 (#1085)

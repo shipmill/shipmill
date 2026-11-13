@@ -10,6 +10,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from shipmill import cli_command
 from shipmill import refused as catalogue
 from shipmill.app import is_plain_repo
 from shipmill.autonomy import AutonomyPolicy
@@ -513,16 +514,22 @@ class ProductConfig:
         return cls.read(top, app_id)
 
     def refuse_outside(self, repo: str, origin: str | None, what: str) -> None:
-        """S-038-10: in a component, what (a gh call, a token) names only the checkout's origin
-        repo; another repo, or an origin that can't be told, exits 2 naming D-47"""
+        """S-065-7: in a component, what (a gh call without --product, a token) names only the
+        checkout's origin repo; another repo, or an origin that can't be told, exits 2 naming
+        D-84"""
         if self.home is None or (origin is not None and repo.lower() == origin.lower()):
             return
         own = "the checkout's origin" if origin is None else origin
         raise ReleaseError(
             f"{what} names {repo}, but this repo is a component of {self.home} ([product] home), "
-            f"so its session reads and writes only {own} (D-47); report work for another repo in "
+            f"so its session writes only {own} and reads the product's other repos only with "
+            f"`{cli_command()} gh --product <their repo>` (D-84); report work for another repo in "
             "this repo, labelled upstream"
         )
+
+    def lists(self, repo: str) -> bool:
+        """Whether [product] repos lists repo, case ignored (a home's back-link, D-53, D-84)"""
+        return any(listed.lower() == repo.lower() for listed in self.repos)
 
     def refuse_self(self, repo: str | None) -> None:
         """S-038-3: a repo never names itself, as its home or as one of its components; None (a
@@ -545,11 +552,13 @@ class ProductConfig:
         return tuple(listed for listed in self.repos if listed.partition("/")[0].lower() == owner)
 
     def refuse_product(self) -> None:
-        """S-038-10: `--product` is the coordinator's, so in a component it exits 2 naming D-47"""
+        """S-065-7: the coordinator's token is the home's, so in a component `app-token --product`
+        exits 2 naming D-84; a component reads other repos through `shipmill gh --product` alone"""
         if self.home is not None:
             raise ReleaseError(
-                f"--product is the coordinator's, in the product's home repo {self.home}; this repo is a "
-                "component ([product] home), so its session gets no token over other repos (D-47)"
+                f"app-token --product is the coordinator's, in the product's home repo {self.home}; this repo is "
+                "a component ([product] home), whose session prints no token over other repos: it reads them "
+                f"with `{cli_command()} gh --product <their repo>` (D-84)"
             )
 
 

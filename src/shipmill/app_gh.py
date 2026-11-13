@@ -115,6 +115,47 @@ def product_refusal(args: Sequence[str]) -> str | None:
     return None
 
 
+# S-065-7, D-84: under --product in a component, the commands its read token runs: a group runs
+# only the subcommands named, or any (None); every other command is refused, so a gh command
+# added later is refused until it is listed. `api` runs with no method or GET alone
+_COMPONENT_READS: Mapping[str, frozenset[str] | None] = {
+    "issue": frozenset({"list", "view", "status"}),
+    "pr": frozenset({"list", "view", "diff", "checks", "status"}),
+    "label": frozenset({"list"}),
+    "release": frozenset({"list", "view"}),
+    "repo": frozenset({"view", "list"}),
+    "workflow": frozenset({"list", "view"}),
+    "run": frozenset({"list", "view", "watch"}),
+    "search": None,
+}
+
+
+def read_refusal(args: Sequence[str]) -> str | None:
+    """The gh command a component's `--product` refuses (`gh issue comment`, `gh api -X POST`),
+    or None for one it runs. The command comes first and its subcommand right after it, as
+    `product_refusal` reads them, so no flag can make gh run another subcommand than the one
+    checked. `api` is refused with any -X/--method other than GET, in every form gh reads
+    (`-X POST`, `-XPOST`, `-X=POST`, `--method POST`, `--method=POST`); a write it makes without
+    one (a GraphQL mutation, a field that makes it POST) is the token's to refuse"""
+    if not args:
+        return "gh"
+    group = args[0]
+    if group == "api":
+        _, flags = _scan(args[1:], _API_LONG, _API_SHORT)
+        methods = [value for name, value in flags if name in _METHOD_FLAGS]
+        refused = next((m for m in methods if m.upper() != "GET"), None)
+        return None if refused is None else f"gh api -X {refused}"
+    if group.startswith("-") or group not in _COMPONENT_READS:
+        return f"gh {group}"
+    subs = _COMPONENT_READS[group]
+    if subs is None:
+        return None
+    sub = args[1] if len(args) > 1 else None
+    if sub is None or sub not in subs:
+        return f"gh {group}" if sub is None else f"gh {group} {sub}"
+    return None
+
+
 def as_host(environ: Mapping[str, str]) -> dict[str, str]:
     """gh's env with no App: the caller's, less a GH_TOKEN set but empty, so gh uses the
     host's login as the repo chose rather than by a silent fallback"""
