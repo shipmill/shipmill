@@ -21,6 +21,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import subprocess
@@ -72,10 +73,12 @@ class Entry:
 
 @dataclass(frozen=True, slots=True)
 class Part:
-    """One simple command of a command line: its text, and its program as written"""
+    """One simple command of a command line: its text, its program as written, and its text past
+    any leading NAME=value assignments, which a deny rule matches too"""
 
     text: str
     program: str
+    bare: str
 
 
 # --- Step 1: the allowlist ----------------------------------------------------------------------
@@ -132,15 +135,16 @@ def permissions(path: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
 
 def matches(rule: str, part: str) -> bool:
     """Whether a rule matches a part as Claude Code documents it: `Bash` and `Bash(*)` any part;
-    `Bash(<prefix>:*)` the prefix, alone or followed by a space; `Bash(<pattern>)` with `*`
-    matching any run of characters, else the exact text. A rule of another tool matches none"""
+    `Bash(<prefix>:*)`, and `Bash(<prefix> *)` when that `*` is its only one, the prefix alone
+    or followed by a space; `Bash(<pattern>)` with `*` matching any run of characters, else the
+    exact text. A rule of another tool matches none"""
     if rule in ("Bash", "Bash(*)"):
         return True
     if not (rule.startswith("Bash(") and rule.endswith(")")):
         return False
     inner = rule[len("Bash(") : -1]
-    if inner.endswith(":*"):
-        prefix = inner[: -len(":*")]
+    if inner.endswith(":*") or (inner.endswith(" *") and inner.count("*") == 1):
+        prefix = inner[:-2]
         return part == prefix or part.startswith(prefix + " ")
     if "*" in inner:
         return re.fullmatch(".*".join(re.escape(s) for s in inner.split("*")), part, re.DOTALL) is not None
@@ -154,12 +158,13 @@ class Allowlist:
     allow: tuple[str, ...]
     deny: tuple[str, ...]
 
-    def denial(self, part: str) -> str | None:
-        """Why the part is denied, naming it and any deny rule; None when it is allowed"""
-        if rule := next((r for r in self.deny if matches(r, part)), None):
-            return f"`{part}` matches the deny rule {rule}"
-        if not any(matches(r, part) for r in self.allow):
-            return f"no allow rule matches `{part}`"
+    def denial(self, part: Part) -> str | None:
+        """Why the part is denied, naming it and any deny rule; None when it is allowed. A deny
+        rule matches past any leading assignment, an allow rule doesn't"""
+        if rule := next((r for r in self.deny if matches(r, part.text) or matches(r, part.bare)), None):
+            return f"`{part.text}` matches the deny rule {rule}"
+        if not any(matches(r, part.text) for r in self.allow):
+            return f"no allow rule matches `{part.text}`"
         return None
 
 
@@ -246,8 +251,8 @@ class DeliveryHook:
         try:
             found = self._script.commands(command, cwd)
         except ValueError:
-            return [Part(command.strip(), command.split()[0])]
-        return [Part(s.text(), s.words[0]) for s in found]
+            return [Part(command.strip(), command.split()[0], command.strip())]
+        return [Part(s.text(), s.words[0], shlex.join(s.words)) for s in found]
 
     def refusal(self, part: Part, cwd: Path, env: Mapping[str, str]) -> Refusal | None:
         """The hook's refusal of the part, a PreToolUse Bash input whose cwd is cwd; None when it
@@ -359,7 +364,7 @@ def judge(
     """One command through the three steps; the first that fails names its result"""
     parts = hook.parts(command, where)
     for part in parts:
-        if (denied := allowlist.denial(part.text)) is not None:
+        if (denied := allowlist.denial(part)) is not None:
             return Entry(command, Result.DENIED, denied)
     for part in parts:
         if (refused := hook.refusal(part, where, session.env)) is not None:

@@ -19,9 +19,11 @@ from shipmill.verify import (
     PREFIX,
     TIMEOUT,
     WORKTREES,
+    Allowlist,
     DeliveryHook,
     Entry,
     Headless,
+    Part,
     Ran,
     Result,
     Shell,
@@ -83,6 +85,20 @@ def test_s064_2_a_bash_rule_matches_as_claude_code_documents() -> None:
     assert matches("Bash(pnpm --dir * test)", "pnpm --dir web test")
     assert matches("Bash(make test)", "make test") and not matches("Bash(make test)", "make test-all")
     assert not matches("Read", "cat x") and not matches("Bash(git *)", "gitk")
+
+
+def test_s064_2_a_trailing_space_star_also_matches_the_bare_command() -> None:
+    # Claude Code: "A `*` at the end, with a space before it, also matches the bare command",
+    # only when it is the rule's one wildcard
+    assert matches("Bash(make *)", "make") and matches("Bash(git log *)", "git log")
+    assert not matches("Bash(* --help *)", "npm --help") and matches("Bash(* --help *)", "npm --help x")
+
+
+def test_s064_2_a_deny_rule_matches_past_a_leading_assignment() -> None:
+    # Claude Code: "A deny or ask rule matches past any leading assignment"
+    found = Allowlist(("Bash",), ("Bash(git push:*)",)).denial(Part("FOO=bar git push", "git", "git push"))
+    assert found == "`FOO=bar git push` matches the deny rule Bash(git push:*)"
+    assert Allowlist(("Bash(git push:*)",), ()).denial(Part("FOO=bar git push", "git", "git push")) is not None
 
 
 def test_s064_2_tool_lists_and_flags_give_their_rules() -> None:
@@ -186,6 +202,10 @@ def test_s064_2_every_part_is_judged_and_a_deny_rule_wins(checkout: Repo, tmp_pa
         (Result.DENIED, "`git push origin HEAD` matches the deny rule Bash(git push:*)"),
         (Result.DENIED, "`git clean -fdx` matches the deny rule Bash(git clean:*)"),
         (Result.DENIED, "`git status` matches the deny rule Bash(git status)"),
+    ]
+    assigned = verify(checkout, ["FOO=bar git push origin HEAD"], home, ("--allowedTools", "Bash"), shell=ran)
+    assert [(e.result, e.detail) for e in assigned] == [
+        (Result.DENIED, "`FOO=bar git push origin HEAD` matches the deny rule Bash(git push:*)")
     ]
     widened = verify(checkout, ["git log -1 && make build"], home, ("--allowedTools", "Bash(make:*)"), shell=ran)
     assert widened == [Entry("git log -1 && make build", Result.OK, "")]
