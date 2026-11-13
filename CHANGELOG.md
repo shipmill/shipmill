@@ -7,6 +7,33 @@ bot.
 
 ## [Unreleased]
 
+## [0.129.0] - 2026-11-13
+
+### Added
+
+- Decisions: `.github/shipmill.toml` accepts `[decisions.paths.<zone>]`, a level by glob for part of the `direction`, `security`, or `protected` zone, refused with exit 2 below the zone's floor or outside its paths, and `shipmill decide levels` lists each part under its zone (`"paths"` in `--json`); `decide classify` doesn't read parts yet, spec 057 (#1070)
+- `[agents] verify` lists the commands a headless session relies on for verification, and `shipmill.verify` checks each one as such a session would meet it: the allowlist, the delivery hook, and a run through `$SHELL -c` with the gate's PATH, in a worktree at `origin/<default>` that it removes when it ends; the gate and doctor read the result in later changes (#1072)
+- Decisions: `decisions.py`'s `policy()`, which `retro.py gather --decisions` and `decisions.py add --zone` read, accepts `[decisions.paths.<zone>]` with the package's refusals and leaves every zone's level as it is; on Python 3.10 it refuses the table with its "use 3.11+" message, spec 057 (#1073)
+- `shipmill land --app-key <path>` pushes the release commit to the default branch, a hotfix to `release/X.Y`, and the sync commit as the App in `[agents] app_id`, with one token limited to the repository and `contents` and `workflows` write, minted before any push; the tag and the work branch keep the workflow token, and a push a branch's rules refuse (`GH013`, `protected branch`) names `shipmill doctor` and the docs as the fix (#1075)
+- Doctor: a `landing` row reads the default branch's rulesets and classic protection (and `release/<series>` with a hotfix lane) and reports a rule that refuses land's push, naming the ruleset, its rules, the landing identity, and the App opt-in as the fix; a tag ruleset that would refuse the release tag is a warning (#1080)
+- `shipmill ruleset` prints a branch ruleset for `gh api -X POST repos/<repo>/rulesets --input -`: the default branch (and `release/*` with a hotfix lane) needs a pull request and a check per job of the CI workflow the release workflow calls, with `[agents] app_id` as its one bypass actor; it exits 2 without `[agents] app_id` (#1081)
+- `[gates] veto_lanes` in `.github/shipmill.toml` names the lanes whose release will wait for the veto window of each notify decision it ships (spec 059, empty by default; `hotfix` is refused); a lane it names gets the hourly tick, so `shipmill doctor`'s `schedule` check warns when `release.yml` lacks it, and doctor prints a `gates` line naming the lanes, a warning without `[agents] app_id` (#1083)
+- A component's session reads its product's other repos (spec 065, D-84): in a checkout whose config sets `[product] home`, `shipmill gh --product OWNER/NAME` runs gh with a read-only App token (`READ_PERMISSIONS`: contents, issues, pull requests, and metadata read) over the home and every repo of OWNER the home's `[product] repos` lists, save the component, read from the home's `.github/shipmill.toml` with a token over the home alone; it exits 2 naming D-84 and the fix when the home doesn't list the component, refuses a token GitHub scopes otherwise, caches it in `app-token-read-<owner>.json`, and refuses every command that writes before gh runs; `shipmill gh -R` and `shipmill app-token` for another repo still exit 2, now naming D-84 (#1085)
+- github-pr-triage: `pr_gate.py` reads the maintainer's answer to the needs-decision question from GitHub, on the pull request or, without one there, on the issue it closes or is part of, and lifts an `ask` zone or a Protected areas match to CI alone only for a head the answer covers: the head it was given at, or one whose own change is the same (`specs.py same-approval` for a spec pull request); otherwise it prints why the question stays open (#1088)
+- Metrics: issue to release by stage. Right after Issue to release, `metrics.py` measures Issue to first agent comment, Issue to PR opened (also split person-filed and agent-filed), PR opened to merged, and Merged to release, each a median and p90 in hours over the same issues, the last three summing to Issue to release per issue (#1089)
+- `shipmill gh pr create`, with `[agents] app_id` set and `docs/product.md` on the default branch, checks the body it would send with `pr_gate.py`'s plan rule and exits 2 without running gh when the plan doesn't hold, printing each problem; a body with a `Spec for #N` line needs no plan, a repo without `docs/product.md` on its default branch isn't checked, the default branch is `origin/HEAD` or, where that is unset, the branch `git ls-remote --symref origin HEAD` names, and `--fill`, `--fill-first`, `--fill-verbose`, `--template`, and `--recover` are refused there, as spec 055 says (#1091)
+- Gate: a headless session's `--settings` env holds `SHIPMILL_MAINTAINER`, the login its prompt names, beside `SHIPMILL_GATE=1`, and the headless paragraph ends asking that every request to that login in the final message is an issue or a needs-decision question on GitHub (spec 062) (#1096)
+- `[land.window]` in `.github/shipmill.toml` sets the hours, in one time zone, when pull requests of held label classes may merge, read strictly (a malformed section exits 2 naming the key, and `doctor` fails on it); `shipmill window --json` prints whether the window is open, when it opens or closes next, the last held merge and when the spacing allows the next; shipmill-setup's checklist wants the section's `queued_label` (spec 056) (#1100)
+
+### Changed
+
+- needs-decision: a headless session's question about a failed command tells a denial, a delivery hook refusal, and a not-found (exit 127) apart, each with its own fix; a not-found's question names the program missing from the gate host's PATH and never proposes widening the allowlist (#1078)
+
+### Fixed
+
+- `shipmill gh api repos/<owner>/<repo>/pulls` as a POST, named with `-X`/`--method` or implied by a field, checks the pull request's body for its plan as `shipmill gh pr create` does and exits 2 without running gh when the plan doesn't hold, a body read from `-F body=@<file>` or stdin and a create with no body included; a GET listing pull requests and an edit of one run as before (#1121)
+- `shipmill.verify` now meets a verification command as a headless session does: the commands inside `$(...)` and backticks are judged against the allowlist too (one it can't read is denied, never run), `settings.local.json` is read from the checkout the sessions start in, the wrappers `timeout`, `nohup`, `nice`, `command`, and `xargs` are stripped before a rule matches, the delivery hook gets each part in the directory a `cd` before it set, and a run never waits on a child holding stderr and leaves no child behind (#1123)
+
 ## [0.128.4] - 2026-11-13
 
 ### Fixed
@@ -2452,7 +2479,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.128.4...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.129.0...HEAD
+[0.129.0]: https://github.com/shipmill/shipmill/compare/v0.128.4...v0.129.0
 [0.128.4]: https://github.com/shipmill/shipmill/compare/v0.128.3...v0.128.4
 [0.128.3]: https://github.com/shipmill/shipmill/compare/v0.128.2...v0.128.3
 [0.128.2]: https://github.com/shipmill/shipmill/compare/v0.128.1...v0.128.2
