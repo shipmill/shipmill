@@ -122,14 +122,18 @@ a hosted runner starts clean for each job, a self-hosted one keeps its workspace
 A job J, in any workflow, **breaks the deploy runner's checkout** when, for some deploy job D
 on a shared runner with J not D, J's runner labels are a subset of D's (so any runner that
 takes D can take J) and J has a step `uses: actions/checkout@<ref>` whose `with:` sets no
-`path:`. For each such J, doctor prints one FAIL row named `deploy runner`:
+`path:`. For each such J, doctor prints one WARN row named `deploy runner`:
 
 `<J's file> job <J's id> runs actions/checkout without path: on [<J's labels>], a runner <D's file> job <D's id> deploys from; its checkout cleans the workspace the deploy left: set with: path: to a folder of its own, or run it on another runner`
 
 With at least one deploy job on a shared runner and no such J, doctor prints one PASS row
 `deploy runner` naming the deploy jobs it checked. With no deploy job on a shared runner it
-prints no `deploy runner` row (D-9). The FAIL counts toward doctor's exit code as any FAIL
-does.
+prints no `deploy runner` row (D-9).
+
+The row is a WARN, not a FAIL, in this build, so it leaves doctor's exit code as any WARN
+does. Several connected repos can run CI and deploy jobs on the same self-hosted runner, and
+a FAIL would turn doctor red in all of them on the upgrade, before anyone has looked at whether
+their checkouts are affected.
 
 ### What the agents read
 
@@ -151,8 +155,8 @@ does.
 - S-063-6: A run doesn't cover the job, and the reason says why, when it ran another workflow path, another content of the file, has no job by that name, has that job `skipped`, `failure`, or not completed, or is in another repo; a run URL outside a `Proof:` line, or inside a code fence, isn't read
 - S-063-7: `shipmill decide classify --files .github/workflows/<deploy workflow>` prints `deploy-step` with the reason `<path> is a deploy workflow, and paths alone show no run`
 - S-063-8: `pr_gate.py` on a pull request of a repo with `[agents]` at default levels whose classify finds `deploy-step` reads NEEDS_DECISION, exit 5, with the line `  needs-decision: deploy-step: <reason>`, and READY on the same pull request with `--maintainer-accepted` and green checks
-- S-063-9: `shipmill doctor` prints a FAIL row `deploy runner` naming the file and job, for a job with `uses: actions/checkout@<ref>` and no `with: path:` whose `runs-on` labels are a subset of a deploy job's self-hosted labels, and exits as it does on any FAIL
-- S-063-10: `shipmill doctor` prints no FAIL `deploy runner` row when that checkout sets `path:`, when the job's labels aren't a subset of any shared-runner deploy job's, when the deploy job runs on a GitHub-hosted label, or when either `runs-on` holds `${{`; it prints a PASS row when a deploy job runs on a shared runner and none breaks it, and no `deploy runner` row when no deploy job does
+- S-063-9: `shipmill doctor` prints a WARN row `deploy runner` naming the file and job, for a job with `uses: actions/checkout@<ref>` and no `with: path:` whose `runs-on` labels are a subset of a deploy job's self-hosted labels, and never a FAIL row `deploy runner`, so with no other FAIL it exits 0
+- S-063-10: `shipmill doctor` prints no WARN `deploy runner` row when that checkout sets `path:`, when the job's labels aren't a subset of any shared-runner deploy job's, when the deploy job runs on a GitHub-hosted label, or when either `runs-on` holds `${{`; it prints a PASS row when a deploy job runs on a shared runner and none breaks it, and no `deploy runner` row when no deploy job does
 - S-063-11: `needs-decision.md`'s zone table lists `deploy-step`, github-issue-resolve's `SKILL.md` says a change to a deploy workflow's job names a run of each changed job on its `Proof:` line or says the repo has no way to run it off production, and spec 030's zone table has the `deploy-step` row
 
 ## Out of scope
@@ -162,7 +166,7 @@ does.
 - A deploy that is neither an `[environments]` workflow nor a job with `environment:` (a deploy on `push` with no environment): GitHub records no deployment for it either; a repo that wants the check sets `environment:` on its deploy job
 - Whether the named run touched production: shipmill can't tell a staging input from a production one in another repo's workflow; the run is the repo's choice, and the maintainer sees its URL
 - Pull requests from forks, whose runs live in the fork
-- Other ways a job breaks a shared runner (a `clean: false` checkout of another ref, a `rm -rf` in a step): the `deploy runner` check refuses the one known case, `actions/checkout` without `path:`
+- Other ways a job breaks a shared runner (a `clean: false` checkout of another ref, a `rm -rf` in a step): the `deploy runner` check warns of the one known case, `actions/checkout` without `path:`
 - Each deploy's own checks (a canary's expected value, a constraints file's rules): they stay in the repos that own them
 
 ## Decisions relied on
