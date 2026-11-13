@@ -113,7 +113,9 @@ Labels (the triage skills and shipmill read them):
                    now", spec 014), upstream (a report for another repo, spec
                    038), decided (a notify decision, spec 030), and
                    shipmill-direction (the question for a missing direction,
-                   spec 034) don't exist; --fix creates
+                   spec 034) don't exist, and with a [land.window] section, with
+                   or without [agents], its queued_label (default land-queued,
+                   the land window's queue, spec 056); --fix creates
                    them on GitHub through `uvx shipmill==<version> gh` (the version in
                    the plugin's .claude-plugin/plugin.json, spec 031) when the config has
                    an [agents] section (spec 012, spec 050), as the App with app_id,
@@ -219,6 +221,10 @@ DECIDED_LABEL = ("bfd4f2", "A shipmill session decided here without waiting; the
 # Wanted wherever needs-decision is (spec 034): shipmill's question for the product's direction
 DIRECTION = "shipmill-direction"
 DIRECTION_LABEL = ("1d76db", "shipmill's question for the product's direction")
+# Wanted with [land.window] (spec 056): a held pull request waiting for the land window, named
+# by the section's queued_label
+QUEUED_DEFAULT = "land-queued"
+QUEUED_LABEL = ("fef2c0", "A held pull request queued for the land window; it merges once the window allows")
 # D-19: the gate runs without an App, but setup isn't done until one is connected
 NO_APP = (
     "no app connected: sessions write as the host's gh login, so you can't approve their PRs"
@@ -805,7 +811,58 @@ def wanted_labels(repo_dir: Path, ws: ModuleType | None = None) -> dict[str, tup
         wanted[UPSTREAM] = UPSTREAM_LABEL  # a report for another repo (spec 038)
         wanted[DECIDED] = DECIDED_LABEL  # a notify decision, open to a veto (spec 030)
         wanted[DIRECTION] = DIRECTION_LABEL  # the question for a missing direction (spec 034)
+    mentions_land = config is not None and "land" in config.read_text(encoding="utf-8")
+    queued = queued_label(repo_dir, ws) if mentions_land else None
+    if queued is not None:  # the land window's queue (spec 056), with or without [agents]
+        wanted[queued] = QUEUED_LABEL
     return wanted
+
+
+def queued_label(repo_dir: Path, ws: ModuleType | None = None) -> str | None:
+    """[land.window] queued_label, its default without the key, or None without the section,
+    read as watch_state.py reads the config: with tomllib on Python 3.11+, a plain
+    [land.window] table on 3.10. shipmill validates the rest of the section"""
+    config = repo_dir / CONFIG
+    text = config.read_text(encoding="utf-8")
+    ws = ws or watch_module()
+    if ws.tomllib is None:
+        return queued_label_310(text, config, ws)
+    try:
+        raw = ws.tomllib.loads(text)
+    except ws.tomllib.TOMLDecodeError as exc:
+        fail(f"{config}: {exc}")
+    land = raw.get("land")
+    if land is None:
+        return None
+    window = land.get("window") if isinstance(land, dict) else None
+    if not isinstance(land, dict) or (window is not None and not isinstance(window, dict)):
+        fail(f"{config}: [land.window] must be a table")
+    if window is None:
+        return None
+    label = window.get("queued_label", QUEUED_DEFAULT)
+    if not isinstance(label, str) or not label.strip():
+        fail(f"{config}: [land.window] queued_label must be a non-empty string, got {label!r}")
+    return label
+
+
+def queued_label_310(text: str, config: Path, ws: ModuleType) -> str | None:
+    """queued_label on Python 3.10, without tomllib: a plain [land.window] table whose
+    queued_label, when set, is a one-line string; any other form is refused rather than misread"""
+    tables = ws.toml_tables(text)
+    unreadable = f"{config}: can't read [land.window] on Python 3.10: use 3.11+ or a plain [land.window] table"
+    if re.search(r"^\s*[\"']?land[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE):
+        fail(unreadable)
+    if re.search(r"^\s*[\"']?window[\"']?\s*[.=]", tables.get("land", ""), re.MULTILINE):
+        fail(unreadable)
+    if "land.window" not in tables:
+        return None
+    body = tables["land.window"]
+    label = ws.toml_string(body, "queued_label")
+    if label is None and re.search(r"^\s*[\"']?queued_label[\"']?\s*=", body, re.MULTILINE):
+        fail(unreadable)
+    if label is not None and not label.strip():
+        fail(f"{config}: [land.window] queued_label must be a non-empty string, got {label!r}")
+    return QUEUED_DEFAULT if label is None else label
 
 
 def role_labels(repo_dir: Path, ws: ModuleType) -> dict[str, tuple[str, str]]:
@@ -870,6 +927,7 @@ def labels_row(missing: list[str], wanted: dict[str, tuple[str, str]]) -> Row:
         for label in (NEEDS_DECISION, HUMAN, UPGRADE_LATER, UPSTREAM, DECIDED, DIRECTION)
         if label in wanted
     )
+    extra += "".join(f" {label}," for label, value in wanted.items() if value == QUEUED_LABEL)
     return Row("LABELS_OK", f"postponed, blocked, shipmill-hold,{extra} and the blocker label exist")
 
 

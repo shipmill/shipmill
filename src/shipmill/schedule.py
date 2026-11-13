@@ -31,7 +31,7 @@ class Window:
             zone = ZoneInfo(m["zone"])
         except ZoneInfoNotFoundError:
             raise ReleaseError(f"window {text!r}: unknown time zone {m['zone']!r}") from None
-        return cls(text, _weekdays(m["days"], text), dt.time(hour, minute), zone)
+        return cls(text, weekdays(m["days"], text), dt.time(hour, minute), zone)
 
     def latest_start(self, now: dt.datetime) -> dt.datetime | None:
         """The newest window start at or before now, within the last week"""
@@ -49,7 +49,7 @@ class Window:
         return dt.datetime.combine(day, self.time, tzinfo=self.zone).astimezone(dt.UTC)
 
 
-def _weekdays(spec: str, text: str) -> frozenset[int]:
+def weekdays(spec: str, text: str) -> frozenset[int]:
     if spec.lower() == "daily":
         return frozenset(range(7))
     days: set[int] = set()

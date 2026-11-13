@@ -20,6 +20,11 @@
                   environment, rollback, intake, and upgrade, each configured, under the shipmill-hold
                   stop switch, and its source (default, config, prompt, or hold), from the config at --ref
                   (default origin/HEAD); --json for one JSON object with the open hold issues
+  window          read-only: the land window, [land.window] (spec 056), from the config at --ref (default
+                  origin/HEAD): open or closed now, opens or closes next, the held, bypass, and queued
+                  labels, the spacing, last_held_merge (the newest merge into the default branch of a
+                  held pull request, read from GitHub) and next_merge; configured: false without the
+                  section; --json for one JSON object
   review          REVIEW.md, the review rubric (spec 024): check exits 1 naming the file, line, and rule
                   a structured section breaks; show prints the rubric for the files given with --path,
                   the root's and their directories' merged, as Markdown or --json; add-rule, protect,
@@ -145,6 +150,7 @@ from shipmill import (
     evals,
     factory,
     fragments,
+    land_window,
     plugin_clean,
     product,
     refused,
@@ -529,6 +535,20 @@ def _parser() -> argparse.ArgumentParser:
         " lacks it",
     )
     p.add_argument("--json", action="store_true", help="print the hold and the stages as one JSON object")
+
+    p = sub.add_parser(
+        "window",
+        help="print the land window, [land.window]: open or closed now, when that changes, and when the spacing"
+        " allows the next held merge (spec 056)",
+    )
+    p.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    p.add_argument(
+        "--ref",
+        default=DEFAULT_REF,
+        help=f"read the config at this git ref, never from a change (default: {DEFAULT_REF}); exit 2 when the checkout"
+        " lacks it",
+    )
+    p.add_argument("--json", action="store_true", help="print the window as one JSON object")
 
     p = sub.add_parser("review", help="check, show, or edit REVIEW.md, the review rubric (spec 024)")
     reviews = p.add_subparsers(dest="review_command", required=True)
@@ -1010,6 +1030,8 @@ def main(
     spec_checkout: spec_open.Checkout | None = None,
     deprecation_reads: deprecations_report.Reads | None = None,
     today: dt.date | None = None,
+    graphql: Callable[[], land_window.Graphql] | None = None,
+    now: dt.datetime | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -1024,7 +1046,8 @@ def main(
     web for github.com's device flow and the token revoke app-login and app-logout send (spec
     051), and spec_checkout for the checkout and origin `spec open` commits to and pushes (spec
     053), deprecation_reads for what `deprecations` reads of each repo and today for the date its
-    report names (spec 047), as tests pass fakes; stdin is also a `shipmill gh` merge's
+    report names (spec 047), graphql for the GitHub `window` reads the last held merge from and
+    now for the moment it reads the window at (spec 056), as tests pass fakes; stdin is also a `shipmill gh` merge's
     --body-file -, and gh_capture also the gh whose output `spec open` reads"""
     refused.begin()  # each refused key is said once per command, however often it loads the config
     head, passed = _split_gh(argv)
@@ -1088,6 +1111,8 @@ def main(
         return _decide(root, args, pulls or GhCli(root))
     if args.command == "autonomy":
         return _autonomy(root, args.ref, args.json, github or GhCli(root))
+    if args.command == "window":
+        return _window(root, args.ref, args.json, graphql or (lambda: GhCli(root)), now or dt.datetime.now(dt.UTC))
     if args.command == "evals":
         if args.evals == "compare":
             return _evals_compare(args.base, args.head, frozenset(args.changed), args.tolerance)
@@ -2949,6 +2974,21 @@ def _autonomy(root: Path, ref: str, as_json: bool, github: GitHub) -> int:
     width = max(18, *(len(row.stage) for row in rows))
     for row in rows:
         print(row.text(width))
+    return 0
+
+
+def _window(root: Path, ref: str, as_json: bool, graphql: Callable[[], land_window.Graphql], now: dt.datetime) -> int:
+    """Spec 056: the land window at ref, never the working tree's, as `autonomy` reads its
+    levels; GitHub is asked for the last held merge only when the config has the section"""
+    window = policy_at(Git(root), ref).land_window
+    last = None if window is None else land_window.last_held_merge(graphql(), window.labels)
+    record = land_window.record(window, now, last)
+    if as_json:
+        print(json.dumps(record, indent=2))
+        return 0
+    for key, value in record.items():
+        shown = ", ".join(value) if isinstance(value, list) else json.dumps(value).strip('"')
+        print(f"{key}: {shown}")
     return 0
 
 

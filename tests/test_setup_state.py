@@ -390,6 +390,69 @@ def test_s030_20_decided_is_wanted_with_agents(ss: ModuleType, tmp_path: Path, t
     ]
 
 
+LAND_WINDOW = '[land.window]\ntimezone = "UTC"\nlabels = ["rollout:high"]\n'
+
+
+@pytest.mark.parametrize(
+    ("text", "queued"),
+    [
+        (LAND_WINDOW + 'queued_label = "rollout:queued"\n', "rollout:queued"),
+        (LAND_WINDOW, "land-queued"),  # the default
+        ('[agents]\nprompt = "x"\n\n' + LAND_WINDOW, "land-queued"),  # with [agents] too
+    ],
+)
+def test_s056_13_labels_missing_names_the_queued_label(ss: ModuleType, tmp_path: Path, text: str, queued: str) -> None:
+    write(tmp_path, ".github/shipmill.toml", text)
+    wanted = ss.wanted_labels(tmp_path)
+    description = "A held pull request queued for the land window; it merges once the window allows"
+    assert wanted[queued] == ("fef2c0", description)
+    row = ss.labels_row([name for name in wanted if name == queued], wanted)
+    assert (row.state, row.detail) == ("LABELS_MISSING", queued)
+    assert f" {queued}, and the blocker label exist" in ss.labels_row([], wanted).detail
+    gh = FakeGh("")
+    ss.create_labels("me/demo", wanted, [queued], ["gh"], gh)
+    assert gh.calls == [
+        [*["gh", "label", "create", queued, "-R", "me/demo", "--color", "fef2c0"], "--description", description]
+    ]
+
+
+@pytest.mark.parametrize(
+    "text", ["", 'mode = "release"\n', '[agents]\nprompt = "x"\n', '# the land window comes later\nmode = "off"\n']
+)
+def test_s056_13_no_queued_label_is_wanted_without_land_window(ss: ModuleType, tmp_path: Path, text: str) -> None:
+    write(tmp_path, ".github/shipmill.toml", text)
+    wanted = ss.wanted_labels(tmp_path)
+    assert "land-queued" not in wanted and ss.QUEUED_LABEL not in wanted.values()
+
+
+@pytest.mark.parametrize(
+    ("text", "queued"),
+    [
+        (LAND_WINDOW + "queued_label = 'rollout:queued'  # the queue\n", "rollout:queued"),
+        (LAND_WINDOW, "land-queued"),
+        ('mode = "off"\n', None),
+        ('[land]\n\n[gates]\nblocker_label = "x"\n', None),
+    ],
+)
+def test_s056_13_python_310_reads_the_queued_label_from_a_plain_table(
+    ss: ModuleType, tmp_path: Path, text: str, queued: str | None
+) -> None:
+    ws = ss.watch_module()
+    write(tmp_path, ".github/shipmill.toml", text)
+    assert ss.queued_label_310(text, tmp_path / ".github/shipmill.toml", ws) == queued
+    assert ss.queued_label(tmp_path, ws) == queued  # tomllib's reading agrees
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['land.window.timezone = "UTC"\n', '[land]\nwindow = { timezone = "UTC" }\n', LAND_WINDOW + "queued_label = 1\n"],
+)
+def test_s056_13_python_310_refuses_a_section_it_cant_read(ss: ModuleType, tmp_path: Path, text: str) -> None:
+    with pytest.raises(SystemExit) as exc:
+        ss.queued_label_310(text, tmp_path / ".github/shipmill.toml", ss.watch_module())
+    assert exc.value.code == 2
+
+
 @pytest.mark.parametrize("text", ["", 'mode = "release"\n', "[decisions]\nveto_hours = 12\n"])
 def test_s030_20_decided_isnt_wanted_without_agents(ss: ModuleType, tmp_path: Path, text: str) -> None:
     write(tmp_path, ".github/shipmill.toml", text)
