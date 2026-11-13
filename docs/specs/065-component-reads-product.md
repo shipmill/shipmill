@@ -1,6 +1,6 @@
 # S-065: A component's session reads its product's other repos
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -158,5 +158,15 @@ in a component, and updates its tests to this spec's behaviour.
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+- S-065-1: read `src/shipmill/app.py`'s `READ_PERMISSIONS` (contents, issues, pull requests, metadata, each read) and its `_READ` kind the mint checks, and ran tests/test_component_read.py and tests/test_product_token.py, holds
+- S-065-2: read `cli.py`'s component reading, which takes the set from the home's config read through a read token over the home alone and only `[product] home` from the component's own, and ran its tests, holds
+- S-065-3: read the refusal naming D-84 and the fix (add the repo to the home's `[product] repos`) before any mint, cache, or gh, and ran its tests, holds
+- S-065-4: read the scope check that refuses a token whose repos or permissions differ from the asked ones, uncached and unprinted, and ran its tests, holds
+- S-065-5: read the cache name `app-token-read-<owner>.json` (mode 0600, App id, 10-minute reuse) apart from `app-token.json` and the coordinator's, and ran its tests, holds
+- S-065-6: read `cli.py`'s checks of `--product` and `-R` against the set and the owner, and its need for `[agents] app_id`, all before gh runs, and ran its tests, holds
+- S-065-7: read the write refusals naming D-84 per gh command and `api -X`/`--method`, and the kept refusals of `-R` without `--product` and `app-token` for another repo, and ran its tests, holds
+- S-065-8: ran `triage_state.py o/r --home acme/product` over a fake gh that reads no hold and a fake uvx, as tests/test_component_reads_product.py does: holds on acme/api and acme/product went in one `shipmill gh --product acme/product api graphql` and holds on other/* in one `--product other/lib` call, and read open, closed, and not_planned with no D-60 note, holds
+- S-065-9: the same run with the fake `shipmill gh` exiting 2, and answering with no node: the home hold read `:unknown` with D-60's note, a stderr note named the exit, and the script exited 0 as for any BLOCKED issue, holds
+- S-065-10: the same run without `--home`, and with `--home o/r` and `--home O/R`, over a fake uvx that fails and logs any call: no call, and the notes are those of before (`:unknown`, no D-60 note), holds
+- S-065-11: read github-issue-resolve's SKILL.md paragraph "In a component, read the product's other repos", triage-rubric.md's BLOCKED row, and github-issue-triage's SKILL.md Chains bullet naming D-84; the resolve SKILL.md keeps one pinned `uvx shipmill==X.Y.Z gh ` for its version line, holds
+- S-065-12: read spec 038, whose S-038-10 reads "dropped in #1085, see S-065-6 and S-065-7", holds

@@ -1,0 +1,3 @@
+### Added
+
+- A component's triage reads a hold on its product's other repos (spec 065, D-84): `triage_state.py --home OWNER/NAME` in a component reads again, through `shipmill gh --product`, one call per owner, each hold on another repo's item that plain gh couldn't read, so a hold on a home item it reads is BLOCKED or UNBLOCKED like any other; a read that fails leaves the hold unknown with D-60's note, as before; without `--home`, or in the home, no `shipmill gh` runs. github-issue-resolve says a component reads a spec or item of its product's other repos with `shipmill gh --product`, writes nothing there, and asks through needs-decision, writing no substitute, when a reference it builds from can't be read (#1087)
