@@ -119,7 +119,7 @@ def test_s030_21_the_four_paths() -> None:
     assert "assign it to the maintainer, label it `role:maintainer`" in never  # spec 036: `human` is read, not written
     assert "say in one comment what the maintainer does by hand, and leave it" in never
     assert "no answer in the session or on GitHub lets the agent take the step" in never
-    assert "MAINTAINER_ONLY (exit 7), which `--maintainer-accepted` doesn't lift" in never
+    assert "MAINTAINER_ONLY (exit 7), which no answer lifts" in never
     assert "`never` holds there too, even when the person says yes" in who
 
 

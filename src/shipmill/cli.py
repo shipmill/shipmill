@@ -156,6 +156,7 @@ from shipmill import (
     refused,
     requires,
     review,
+    review_record,
     roles,
     spec_open,
     status,
@@ -595,6 +596,19 @@ def _parser() -> argparse.ArgumentParser:
             q.add_argument("cap", type=int, metavar="N", help="the cap, a whole number from 0")
         else:
             q.add_argument("target", metavar="I-n|GLOB", help="the rule's id or the protected glob")
+    q = reviews.add_parser(
+        "record",
+        help="post, as the App, the review of a pull request's head that pr_gate.py reads as its record (spec 055)",
+    )
+    q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    q.add_argument("number", type=int, metavar="N", help="the pull request")
+    q.add_argument("--head", required=True, metavar="SHA", help="the head the review read, its full 40-character SHA")
+    q.add_argument(
+        "--verdict", required=True, choices=[v.value for v in review_record.Verdict], help="the reviewer's verdict"
+    )
+    q.add_argument(
+        "--body-file", required=True, type=Path, help="the reviewer's report, written after the verdict's marker line"
+    )
 
     p = sub.add_parser("status", help="say whether the factory works or is stuck (specs 008, 009)")
     p.add_argument(
@@ -1079,12 +1093,15 @@ def main(
         )
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
         return _gh(root, passed, reach, env, user_home, gh_runner or run_gh, readers)
-    if args.command == "spec":
+    if args.command == "spec" or (args.command == "review" and args.review_command == "record"):
         readers = _GhReaders(
             merge_reader or _gh_reader, credit_reader or _credit_reader, stdin or sys.stdin, gh_capture or capture_gh
         )
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
-        return _spec_open(root, args, _GhPath(reach, env, user_home, readers), spec_checkout)
+        through = _GhPath(reach, env, user_home, readers)
+        if args.command == "review":
+            return _review_record(root, args, through)
+        return _spec_open(root, args, through, spec_checkout)
     if args.command == "plugin-clean":  # needs no --repo and no config (spec 039)
         where = stdin or sys.stdin
         return plugin_clean.clean(claude or run_command, user_home, args.apply, where.isatty(), print)
@@ -2408,17 +2425,7 @@ class _SpecHub:
         self._path = path
 
     def _run(self, gh_args: list[str]) -> tuple[int, str]:
-        said: list[str] = []
-        capture = self._path.readers.current
-
-        def runner(argv: Sequence[str], env: Mapping[str, str]) -> int:
-            code, out = capture(argv, env)
-            said.append(out)
-            return code
-
-        path = self._path
-        code = _gh(self._top, gh_args, path.reach, path.environ, path.home, runner, path.readers)
-        return code, "".join(said)
+        return _through_gh(self._top, self._path, gh_args)
 
     def record(self, number: int) -> spec_open.Record | None:
         route = f"repos/{self._repo}/issues/{number}"
@@ -2449,6 +2456,83 @@ class _SpecHub:
         code, _ = self._run(["issue", "comment", str(number), "-R", self._repo, "--body", body])
         if code != 0:
             raise ReleaseError(f"gh issue comment {number} exited {code}")
+
+
+def _through_gh(top: Path, path: _GhPath, gh_args: list[str]) -> tuple[int, str]:
+    """gh's exit code and output for gh_args, run as `shipmill gh` runs them (`_gh`), its output
+    read through the capture"""
+    said: list[str] = []
+    capture = path.readers.current
+
+    def runner(argv: Sequence[str], env: Mapping[str, str]) -> int:
+        code, out = capture(argv, env)
+        said.append(out)
+        return code
+
+    code = _gh(top, gh_args, path.reach, path.environ, path.home, runner, path.readers)
+    return code, "".join(said)
+
+
+def _review_record(root: Path, args: argparse.Namespace, path: _GhPath) -> int:
+    """S-055-16: `review record`, in the checkout's own repo, its GitHub read and write through
+    `shipmill gh`'s path, as the App only; prints what it recorded"""
+    if not root.is_dir():
+        raise ReleaseError(f"--repo {root} is not a folder")
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(
+            f"review record runs in the repo's checkout, and git can't read {root}: `git -C {root} status`"
+        )
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    repo = _origin_repo(top)
+    if repo is None:
+        raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so review record has no pull request to review")
+    request = review_record.Request(args.number, args.head, review_record.Verdict(args.verdict), args.body_file)
+    print(review_record.record(request, _ReviewHub(top, repo, path), lambda: _review_writes(top, path)))
+    return 0
+
+
+def _review_writes(top: Path, path: _GhPath) -> None:
+    """S-055-16: a review record is the App's, so without [agents] app_id, or without the App's key
+    (SHIPMILL_APP_KEY, else the default path), it exits 2 before any GitHub call"""
+    app_id = gh_identity_of(top).app_id
+    if app_id is None:
+        raise ReleaseError(
+            f"review record posts as the App, and {CONFIG_PATH} sets no [agents] app_id: a review record is "
+            "the App's (spec 055); nothing was written"
+        )
+    require_key(session_key(app_id, path.environ, path.home))
+
+
+class _ReviewHub:
+    """review record's GitHub calls, each one `shipmill gh`'s (`_gh`), as the App"""
+
+    def __init__(self, top: Path, repo: str, path: _GhPath) -> None:
+        self._top = top
+        self._repo = repo
+        self._path = path
+
+    def head(self, number: int) -> str:
+        route = f"repos/{self._repo}/pulls/{number}"
+        code, out = _through_gh(self._top, self._path, ["api", route])
+        if code != 0:
+            raise ReleaseError(f"gh api {route} exited {code}, so #{number}'s head can't be read; nothing was written")
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            data = None
+        head = data.get("head") if isinstance(data, dict) else None
+        sha = head.get("sha") if isinstance(head, dict) else None
+        if not isinstance(sha, str):
+            raise ReleaseError(f"gh api {route} answered no pull request's head: {out.strip()[:200]!r}")
+        return sha
+
+    def post(self, number: int, head: review_record.Head, body: str) -> None:
+        route = f"repos/{self._repo}/pulls/{number}/reviews"
+        fields = ["-f", "event=COMMENT", "-f", f"commit_id={head}", "-f", f"body={body}"]
+        code, _ = _through_gh(self._top, self._path, ["api", "-X", "POST", route, *fields])
+        if code != 0:
+            raise ReleaseError(f"gh api -X POST {route} exited {code}, so no review was recorded")
 
 
 def _app_create(

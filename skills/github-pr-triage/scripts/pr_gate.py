@@ -2,8 +2,9 @@
 """Merge gate: is each PR open, mergeable, and green on every CI check that has finished?
 And does it keep to the repo's direction (spec 024)?
 
-- An agent's PR (authored by --bot-login, or every PR named with --agent) carries a
-  `## Plan` section with `Serves:`, `Files:`, `Order:`, and `Proof:` lines, and its
+- An agent's PR (authored by --bot-login, every PR named with --agent, or one whose body
+  carries the agent marker `<!-- shipmill:agent -->` on a line of its own, whoever its author:
+  spec 055, D-62) carries a `## Plan` section with `Serves:`, `Files:`, `Order:`, and `Proof:` lines, and its
   `Serves:` names goal ids docs/product.md lists, `quality bar`, or quality-bar ids it
   lists, alone (`Q-6`) or as `quality bar (Q-4, Q-6)`; without a
   docs/product.md the plan isn't checked. A person's PR is never refused for its plan
@@ -100,21 +101,38 @@ when the title's or a commit's keyword names an issue its body lists as `Part of
 instead` when one names an open issue of the repo whose body has a `## Check` section. The issues
 are read in one GraphQL query, only when a keyword names one, or a commit names owner/repo#N or a URL.
 
+A review of the merging head (spec 055): an agent's PR that changes code and would otherwise read
+READY reads UNREVIEWED, `  unreviewed: no review of <sha7> on record; review it, then record it with
+shipmill review record`, until a review record covers the judged head. A PR changes code unless
+every file it touches is documentation: a name ending .md, .mdx, .rst, or .txt, or a path under
+docs/, and none of them the agents' instructions (under skills/, .claude/, or .claude-plugin/, or
+named CLAUDE.md, AGENTS.md, or REVIEW.md), a renamed file's old path among them, read from the
+files API once every listed path is documentation; a person's PR needs no record either. The records are
+read from `repos/<o>/<r>/pulls/<n>/reviews`, one paginated read, only for such a PR: the
+--bot-login's review whose body's first line is `<!-- shipmill:review merge -->` or `<!--
+shipmill:review refuse -->`, and an APPROVED review by an OWNER, MEMBER, or COLLABORATOR, not a
+bot, whose body carries no agent marker. One covers the judged head when its commit_id is that
+head or a head whose own change is the same, as for the maintainer's answer above. The
+--bot-login's newest record that covers it counts: a refuse keeps the PR UNREVIEWED, `
+unreviewed: the newest review of <sha7> on record refuses it; ...`; a merge, or a person's
+approval, lets it read READY.
+
 Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base's (D-75),
 or gh failed; 3 a check is still pending (or --wait timed out); 4 a PR is not open or
 conflicts; 5 a PR needs the maintainer's decision; 6 an agent's PR is refused for its plan, a
 spec PR names no open feature issue, or a PR's closing keyword names a Part of issue or an open
 one with a ## Check (D-76); 7 a PR only the maintainer
-merges, by hand (a `never` zone); 8 a draft PR (D-67); 2 bad arguments,
+merges, by hand (a `never` zone); 8 a draft PR (D-67); 9 an agent's code PR no review record
+covers (spec 055); 2 bad arguments,
 a base branch the checkout lacks, a git failure, a REVIEW.md, docs/product.md, or config the
 gate can't read, or a `shipmill decide classify` that fails or prints what the gate can't
 read. With several PRs the exit code is
-the worst verdict's, ranked 0, 1, 3, 4, 8, 5, 7, 6.
+the worst verdict's, ranked 0, 1, 3, 9, 4, 8, 5, 7, 6.
 
 --wait polls while the worst verdict is PENDING, or is NEEDS_DECISION and a NEEDS_DECISION PR has
 a check still pending on its own head (#1028): the question waits until its CI finished, and the
 exit code and its ranking stay as above. The base's checks are never pending (D-75), a PR with no
-checks has none pending, and every other verdict stops the wait.
+checks has none pending, and every other verdict, UNREVIEWED too, stops the wait.
 """
 
 from __future__ import annotations
@@ -137,6 +155,7 @@ from types import ModuleType
 
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 READY, FAILED, PENDING, BLOCKED, NEEDS_DECISION, REFUSED, MAINTAINER_ONLY, DRAFT = 0, 1, 3, 4, 5, 6, 7, 8
+UNREVIEWED = 9  # an agent's code PR no review record covers (spec 055)
 LABELS = {
     READY: "READY",
     FAILED: "FAILED",
@@ -146,10 +165,12 @@ LABELS = {
     REFUSED: "REFUSED",
     MAINTAINER_ONLY: "MAINTAINER_ONLY",
     DRAFT: "DRAFT",
+    UNREVIEWED: "UNREVIEWED",
 }
 # the worst verdict last: MAINTAINER_ONLY ranks above NEEDS_DECISION and below REFUSED (spec 030); DRAFT
-# ranks above BLOCKED and below the verdicts that ask something of the maintainer (D-52, kept by D-67)
-RANK = (READY, FAILED, PENDING, BLOCKED, DRAFT, NEEDS_DECISION, MAINTAINER_ONLY, REFUSED)
+# ranks above BLOCKED and below the verdicts that ask something of the maintainer (D-52, kept by D-67);
+# UNREVIEWED between PENDING and BLOCKED (spec 055)
+RANK = (READY, FAILED, PENDING, UNREVIEWED, BLOCKED, DRAFT, NEEDS_DECISION, MAINTAINER_ONLY, REFUSED)
 
 # github-ship-watch's watch_state.py: one reading of the config's [agents] and of the plugin's
 # pinned CLI for every skill script
@@ -237,6 +258,7 @@ class Gate:
     own: bool = False  # a draft the --bot-login authored: a gate session marks it ready (D-67, #914)
     base_red: tuple[str, ...] = ()  # the base head's failed checks no Repairs: line names (D-75)
     base_repairs: tuple[str, ...] = ()  # the ones a Repairs: line names, for the reviewer to check
+    unreviewed: str = ""  # why an agent's code PR that reads READY otherwise has no review record (spec 055)
 
     @property
     def verdict(self) -> int:
@@ -256,7 +278,7 @@ class Gate:
             return FAILED
         if not self.checks or any(not c.done for c in self.checks) or self.mergeable != "MERGEABLE":
             return PENDING
-        return READY
+        return UNREVIEWED if self.unreviewed else READY
 
 
 @dataclass(frozen=True)
@@ -835,11 +857,13 @@ def api(args: list[str], repo: str | None) -> tuple[list[str], dict[str, str] | 
 
 def files_api(data: dict, number: int, repo: str | None) -> dict[str, str]:
     """Every file the PR changes, from the files API, each with its status (added, modified,
-    renamed, ...); a list short of changedFiles stops the gate"""
+    renamed, ...); a list short of changedFiles stops the gate. A renamed file's old path is kept
+    in data["previous"]: the review check reads it as a file the PR touches too (spec 055)"""
     changed = int(data.get("changedFiles") or 0)
     cmd, env = api(["--paginate", f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100", "--jq", ".[]"], repo)
     entries = [json.loads(line) for line in gh(cmd, number, env).splitlines() if line.strip()]
     statuses = {str(e["filename"]): str(e["status"]) for e in entries}
+    data["previous"] = tuple(str(e["previous_filename"]) for e in entries if e.get("previous_filename"))
     if len(statuses) < changed:
         sys.exit(
             f"pr_gate: #{number} changes {changed} files but GitHub lists {len(statuses)} (its files API stops at "
@@ -1291,13 +1315,127 @@ def acceptance(
         return False, UNNAMED
     if answered == head:
         return True, None
+    specs = added_specs(data, number, repo)
+    if same_change(checkout, base_of(data, checkout), answered, head, specs):
+        return True, None
+    return False, DIFFERS.format(sha7=answered[:7])
+
+
+# a review of the merging head (spec 055): the records the App writes with `shipmill review record`
+REVIEW_MERGE = "<!-- shipmill:review merge -->"
+REVIEW_REFUSE = "<!-- shipmill:review refuse -->"
+TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})  # D-16, D-29: whose approval is a record
+DOC_SUFFIXES = (".md", ".mdx", ".rst", ".txt")
+INSTRUCTION_DIRS = ("skills/", ".claude/", ".claude-plugin/")  # the agents' instructions: code to review
+INSTRUCTION_NAMES = frozenset({"CLAUDE.md", "AGENTS.md", "REVIEW.md"})
+NO_REVIEW = "no review of {sha7} on record; review it, then record it with shipmill review record"
+REVIEW_REFUSED = (
+    "the newest review of {sha7} on record refuses it; fix it, review it again, then record it with "
+    "shipmill review record"
+)
+
+
+def documentation(path: str) -> bool:
+    """Whether a changed file is documentation (spec 055): a name ending .md, .mdx, .rst, or .txt,
+    or a path under docs/, and not the agents' instructions"""
+    name = path.rsplit("/", 1)[-1]
+    if path.startswith(INSTRUCTION_DIRS) or name in INSTRUCTION_NAMES:
+        return False
+    return path.startswith("docs/") or name.endswith(DOC_SUFFIXES)
+
+
+def docs_only(data: dict, number: int, repo: str | None) -> bool:
+    """Whether every file the PR touches is documentation: each path gh pr view lists, past its
+    first hundred too, and, read from the files API once they all are, each renamed file's old
+    path, so a rename out of code reads as touching code"""
+    data["files"] = all_files(data, number, repo)
+    if not all(documentation(path) for path in data["files"]):
+        return False
+    if "previous" not in data:
+        data["statuses"] = files_api(data, number, repo)
+    return all(documentation(path) for path in data["previous"])
+
+
+def reviews_of(number: int, repo: str | None) -> list[dict]:
+    """The pull request's reviews, oldest first, every page: one read; a gh failure exits 1, a
+    review the gate can't read stops it"""
+    path = f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews?per_page=100"
+    cmd, env = api(["--paginate", path, "--jq", ".[]"], repo)
+    found = []
+    for line in gh(cmd, number, env).splitlines():
+        if not line.strip():
+            continue
+        review = json.loads(line)
+        user = review.get("user") if isinstance(review, dict) else None
+        if (
+            not isinstance(review, dict)
+            or not isinstance(review.get("state"), str)
+            or not isinstance(review.get("body") or "", str)
+            or not (user is None or isinstance(user, dict))
+        ):
+            raise GateError(f"a review of #{number} is not {{state, body, user, commit_id}}: {review!r}")
+        found.append(review)
+    return found
+
+
+def record_of(review: dict, bot: str | None, ts: ModuleType) -> str | None:
+    """What a review records (spec 055): `merge` or `refuse` for the --bot-login's marked review,
+    `approved` for a trusted person's APPROVED review without the agent marker, else None"""
+    user = review.get("user") or {}
+    login = str(user.get("login") or "").lower()
+    body = str(review.get("body") or "")
+    state = review["state"]
+    if bot is not None and login == bot:
+        if state in ("PENDING", "DISMISSED"):
+            return None
+        first = body.lstrip().split("\n", 1)[0].strip()
+        return {REVIEW_MERGE: "merge", REVIEW_REFUSE: "refuse"}.get(first)
+    if state != "APPROVED" or user.get("type") == "Bot" or str(review.get("author_association")) not in TRUSTED:
+        return None
+    return None if ts.by_agent(body) else "approved"
+
+
+def unreviewed(data: dict, number: int, repo: str | None, bot_login: str | None, checkout: str, inside: bool) -> str:
+    """Why an agent's code pull request has no review record covering its judged head (spec 055),
+    or "" when one does: the --bot-login's newest record covering it, else a trusted person's
+    approval covering it. A record covers the head at its commit_id, or, in a checkout of the repo,
+    at a head whose own change is the same, as same_change reads it for the maintainer's answer"""
+    ts = triage_state()
+    bot = bot_login.lower() if bot_login else None
+    head = str(data["headRefOid"])
+    records = []
+    for review in reviews_of(number, repo):
+        kind = record_of(review, bot, ts)
+        commit = review.get("commit_id")
+        if kind is not None and isinstance(commit, str) and FULL_SHA.fullmatch(commit):
+            records.append((commit, kind))
+    known: dict[str, bool] = {head: True}
+
+    def covers(commit: str) -> bool:
+        if commit not in known:
+            known[commit] = inside and same_change(checkout, base_of(data, checkout), commit, head, specs())
+        return known[commit]
+
+    def specs() -> tuple[str, ...]:
+        return added_specs(data, number, repo)
+
+    for commit, kind in reversed(records):
+        if kind != "approved" and covers(commit):
+            if kind == "refuse":
+                return REVIEW_REFUSED.format(sha7=head[:7])
+            return ""
+    if any(kind == "approved" and covers(commit) for commit, kind in records):
+        return ""
+    return NO_REVIEW.format(sha7=head[:7])
+
+
+def base_of(data: dict, checkout: str) -> str:
+    """origin/<the PR's base>, which a head's own change is read against; one the checkout lacks
+    stops the gate"""
     base_ref = f"origin/{data['baseRefName']}"
     if quiet(checkout, "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}") is None:
         raise GateError(f"{base_ref} is not in {checkout}: run `git -C {checkout} fetch origin`")
-    specs = added_specs(data, number, repo)
-    if same_change(checkout, base_ref, answered, head, specs):
-        return True, None
-    return False, DIFFERS.format(sha7=answered[:7])
+    return base_ref
 
 
 def judge(
@@ -1366,6 +1504,7 @@ def render(gate: Gate) -> str:
     lines += [f"  maintainer-only: {reason}" for reason in gate.never]
     lines += [f"  needs-decision: {reason}" for reason in gate.asks]
     lines += [f"  notify: {reason}" for reason in gate.notices]
+    lines += [f"  unreviewed: {gate.unreviewed}"] if gate.verdict == UNREVIEWED else []
     if gate.verdict == DRAFT and gate.own:
         lines.append(
             "  draft: the App's own, no session owns it: once nothing it waits on is open, mark it ready"
@@ -1442,7 +1581,8 @@ def main() -> int:
                     continue
                 if base.ids is not None or base.reviews:
                     data["files"] = all_files(data, number, args.repo)
-                agent = args.agent or own
+                # the agent marker on a line of its own makes it an agent's, whoever opened it (spec 055, D-62)
+                agent = args.agent or own or triage_state().by_agent(str(data.get("body") or ""))
                 spec: tuple[str, ...] = ()
                 if data["state"] == "OPEN":  # a closed PR reads BLOCKED: nothing to read for it
                     key = (number, str(data["headRefOid"]), str(data.get("body") or ""))
@@ -1469,6 +1609,10 @@ def main() -> int:
                         heads[branch] = base_head(branch, number, args.repo)
                     red, repairs = base_failures(branch, *heads[branch], str(data.get("body") or ""))
                     judged = replace(judged, base_red=red, base_repairs=repairs)
+                # a review of the merging head (spec 055)
+                if judged.verdict == READY and agent and not docs_only(data, number, args.repo):
+                    why = unreviewed(data, number, args.repo, args.bot_login, bases.checkout, bases.inside)
+                    judged = replace(judged, unreviewed=why)
                 gates.append(judged)
             worst = max((g.verdict for g in gates), key=RANK.index)
             if not args.wait or not polls(gates) or time.monotonic() >= deadline:

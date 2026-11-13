@@ -45,7 +45,7 @@ Review GitHub PR #{N} of {owner/repo} ("{title}", fixes #{issue}). The repo is a
    - {When the brief holds the direction:} A change that hits a non-goal (cite `N-n`), or breaks a quality-bar item (cite `Q-n`): a finding
    - {When the brief holds a rubric:} A change that breaks an Important rule: a finding citing its id (`I-n`, or `skills/I-2` for a subdirectory's). A nit never blocks the verdict: report at most {cap} nits, the rubric's `cap:`, and drop the rest
 4. Reproduce each real bug before fixing it. Commit each small fix with proof that fails on the old code, by github-issue-resolve's [test gate](../../github-issue-resolve/references/test-gate.md) (a new regression test only when no existing test, type check or boundary model catches it), on review-{N}, and rerun the affected checks. Leave larger problems as findings.
-5. Final report, under 250 words: verdict (MERGE / MERGE AFTER SMALL FIX / REFUSE), rebase status, test results, findings with file:line (fixed or not){ and the `I-n`, `N-n`, or `Q-n` each cites}{, at most {cap} nits}, and the HEAD SHA of review-{N}.
+5. Final report, under 250 words: verdict (MERGE / MERGE AFTER SMALL FIX / REFUSE), rebase status, test results, findings with file:line (fixed or not){ and the `I-n`, `N-n`, or `Q-n` each cites}{, at most {cap} nits}, and the HEAD SHA of review-{N}, the head you reviewed: the landing session pushes it and records your verdict on it with `shipmill review record`, and `pr_gate.py` reads an agent's code PR UNREVIEWED until that record covers its head.
 ```
 
 ## Post-merge review

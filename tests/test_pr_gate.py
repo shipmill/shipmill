@@ -79,6 +79,7 @@ args = sys.argv[1:]
 with open(os.environ["FAKE_GH_CALLS"], "a") as calls:
     calls.write(json.dumps({{"args": args, "GH_REPO": os.environ.get("GH_REPO")}}) + "\\n")
 files = re.compile(r"repos/(.+)/pulls/([0-9]+)/files[?]per_page=100")
+reviews = re.compile(r"repos/[^/]+/[^/]+/pulls/([0-9]+)/reviews[?]per_page=100")
 base = fake["base"]
 if args[:2] == ["pr", "view"]:
     print(json.dumps(fake[args[2]]))
@@ -95,6 +96,10 @@ elif args[0] == "api" and any(a.endswith("/check-runs?per_page=100") for a in ar
         print(json.dumps(run))
 elif args[:2] == ["pr", "diff"]:
     sys.exit("HTTP 406: Sorry, the diff exceeded the maximum number of files (300)")
+elif args[0] == "api" and any(reviews.fullmatch(a) for a in args):  # the review records (spec 055)
+    number = [reviews.fullmatch(a) for a in args if reviews.fullmatch(a)][0].group(1)
+    for review in fake["reviews"][number]:  # every page, one object a line, as gh --jq .[] prints them
+        print(json.dumps(review))
 elif args[0] == "api" and "--paginate" in args and args[args.index("--jq") + 1] == ".[]":
     found = [files.fullmatch(a) for a in args if files.fullmatch(a)]
     pr = fake[found[0].group(2)]
@@ -192,6 +197,33 @@ def pr(
     }
 
 
+def review(
+    body: str = "",
+    commit: str = HEAD_SHA,
+    login: str = "romamo",
+    state: str = "APPROVED",
+    association: str = "OWNER",
+    kind: str = "User",
+) -> dict[str, Any]:
+    """A pull request review as `GET repos/<o>/<r>/pulls/<n>/reviews` lists it"""
+    return {
+        "user": {"login": login, "type": kind},
+        "author_association": association,
+        "state": state,
+        "body": body,
+        "commit_id": commit,
+    }
+
+
+APPROVED = review()  # a trusted person's approval of the head: every test's PR is reviewed unless it says
+
+
+def recorded(verdict: str, commit: str = HEAD_SHA) -> dict[str, Any]:
+    """The App's review record, as `shipmill review record` posts it (spec 055)"""
+    body = f"<!-- shipmill:review {verdict} -->\n\nThe report.\n\n<!-- shipmill:agent -->"
+    return review(body, commit, BOT, "COMMENTED", "NONE", "Bot")
+
+
 OPENED = "2026-11-01T10:00:00Z"  # when a test's PR opened
 
 
@@ -219,12 +251,14 @@ def run_gate(
     base: dict[str, Any] | None = None,
     threads: dict[int, dict[str, Any]] | None = None,
     permissions: dict[str, str] | None = None,
+    reviews: dict[int, list[dict[str, Any]]] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """The gate with --checkout work, or, for None, run in a folder outside any checkout; issues
     are what GitHub's GraphQL answers for the repo demo/app's numbers; base, the base branch head's
     sha, statuses, and check_runs (default: a head with no checks); threads, each PR's comments
     and force-pushes as GraphQL answers them (default: none of either); permissions, each login's
-    permission on the repo (any other login's read is a 404)"""
+    permission on the repo (any other login's read is a 404); reviews, each PR's reviews as the
+    REST API lists them (default: a trusted person's approval of HEAD_SHA, spec 055)"""
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     gh = fakes / "gh"
@@ -238,6 +272,7 @@ def run_gate(
         "base": {"sha": BASE_SHA, "statuses": [], "check_runs": [], **(base or {})},
         "threads": {str(n): (threads or {}).get(n, thread()) for n in prs},
         "permissions": permissions or {},
+        "reviews": {str(n): (reviews or {}).get(n, [APPROVED]) for n in prs},
     }
     data.write_text(json.dumps(fake), encoding="utf-8")
     env = {
@@ -736,6 +771,7 @@ def gh_calls(tmp_path: Path) -> list[dict[str, Any]]:
 FILES_API = "repos/{owner}/{repo}/pulls/7/files?per_page=100"
 BASE_READS = ["status", "check-runs"]  # the base head's checks, one read per endpoint (D-75)
 CLOSERS_READ = ["graphql"]  # the issues PLAN's Fixes #7 names, read for a ## Check (D-76)
+REVIEWS_READ = ["reviews"]  # an agent's code PR's review records, read once it reads READY otherwise (spec 055)
 
 
 def test_630_a_pr_of_more_than_300_files_is_read_through_the_files_api(tmp_path: Path, directed: Path) -> None:
@@ -763,7 +799,7 @@ def test_630_r_names_the_repo_the_files_api_reads(tmp_path: Path, directed: Path
 def test_630_a_pr_gh_pr_view_lists_whole_reads_no_more(tmp_path: Path, directed: Path) -> None:
     proc = run_gate(tmp_path, directed, {7: pr(files=tuple(f"src/m{i}.py" for i in range(100)))}, "--bot-login", BOT)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS]
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS, *REVIEWS_READ]
 
 
 def test_630_a_list_short_of_changed_files_stops_the_gate(tmp_path: Path, directed: Path) -> None:
@@ -836,12 +872,16 @@ def spec_pr(body: str = SPEC_BODY, files: tuple[str, ...] = (SPEC,), **kw: Any) 
 
 
 def calls_of(tmp_path: Path) -> list[str]:
-    """Each gh call the gate made, by its kind: `pr view`, `files` (the files API), `graphql`, or the
-    base head's `status` and `check-runs` (D-75)"""
+    """Each gh call the gate made, by its kind: `pr view`, `files` (the files API), `graphql`, the
+    base head's `status` and `check-runs` (D-75), or the review records' `reviews` (spec 055)"""
     kinds = []
     for call in gh_calls(tmp_path):
         args = call["args"]
-        base = [a.rsplit("/", 1)[-1].split("?")[0] for a in args if a.startswith("repos/") and "/commits/" in a]
+        base = [
+            a.rsplit("/", 1)[-1].split("?")[0]
+            for a in args
+            if a.startswith("repos/") and ("/commits/" in a or "/reviews?" in a)
+        ]
         kinds.append(
             base[0] if base else "graphql" if "graphql" in args else "files" if args[0] == "api" else " ".join(args[:2])
         )
@@ -964,7 +1004,7 @@ def test_s053_10_a_pr_adding_no_spec_path_reads_nothing_more(tmp_path: Path, dir
     files = ("docs/specs/TEMPLATE.md", "docs/specs/README.md", "docs/specs/54-short.md", "src/app.py")
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=PLAN, files=files)}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
-    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS]
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS, *REVIEWS_READ]
 
 
 def test_s053_9_a_failing_issue_read_exits_1(tmp_path: Path, directed: Path) -> None:
@@ -1695,8 +1735,9 @@ def protected(
     tmp_path: Path, work: Path, data: dict[str, Any], pr_thread: dict[str, Any], **kw: Any
 ) -> subprocess.CompletedProcess[str]:
     """The gate on #7, an agent's PR changing the protected src/land.py, its thread pr_thread; romamo
-    has admin on the repo unless permissions says otherwise"""
+    has admin on the repo unless permissions says otherwise, and approved its head (spec 055)"""
     kw.setdefault("permissions", {"romamo": "admin"})
+    kw.setdefault("reviews", {7: [review(commit=data["headRefOid"])]})
     return run_gate(tmp_path, work, {7: data}, "--bot-login", BOT, threads={7: pr_thread}, **kw)
 
 
@@ -2018,3 +2059,192 @@ def test_s055_10_a_spec_prs_other_files_are_still_compared_byte_for_byte(tmp_pat
     proc = protected(tmp_path, agents, data, thread(asked(), comment("1", at(12))), issues=ISSUES)
     assert proc.returncode == 5, proc.stdout + proc.stderr
     assert proc.stdout.splitlines()[-1] == f"  needs-decision: answered at {answered[:7]}, and the change differs since"
+
+
+# S-055-12 to S-055-15: an agent's code pull request needs a review record of its head
+
+NO_RECORD = (
+    f"  unreviewed: no review of {HEAD_SHA[:7]} on record; review it, then record it with shipmill review record"
+)
+REFUSED_RECORD = (
+    f"  unreviewed: the newest review of {HEAD_SHA[:7]} on record refuses it; fix it, review it again, then record "
+    "it with shipmill review record"
+)
+MAIN_UNREVIEWED = MAIN_READY.replace("READY", "UNREVIEWED")
+MARKED = PLAN + "\n<!-- shipmill:agent -->\n"
+OTHER_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_s055_12_a_body_carrying_the_agent_marker_is_an_agents_pr_whoever_opened_it(
+    tmp_path: Path, directed: Path
+) -> None:
+    """a person's login with the marker in the body reads as the --bot-login's PR: its plan is checked
+    and its code needs a review record, with or without --bot-login"""
+    for flags in ((), ("--bot-login", BOT)):
+        refused = run_gate(tmp_path, directed, {7: pr(body="none\n\n<!-- shipmill:agent -->", login="amy")}, *flags)
+        assert refused.returncode == 6 and "  refused: no `## Plan` section" in refused.stdout, refused.stdout
+        unreviewed = run_gate(tmp_path, directed, {7: pr(body=MARKED, login="amy")}, *flags, reviews={7: []})
+        assert (unreviewed.returncode, unreviewed.stdout) == (9, MAIN_UNREVIEWED + NO_RECORD + "\n")
+
+
+@pytest.mark.parametrize(
+    "body", ["Fixes #7\n\nWritten in `<!-- shipmill:agent -->` style", "Fixes #7 <!-- shipmill:agent -->", "Fixes #7"]
+)
+def test_s055_12_a_persons_pr_without_the_marker_on_its_own_line_is_theirs(tmp_path: Path, body: str) -> None:
+    proc = run_gate(tmp_path, None, {7: pr(body=body, login="amy")}, "--bot-login", BOT, reviews={7: []})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert "reviews" not in calls_of(tmp_path)
+
+
+@pytest.mark.parametrize("flags", [("--bot-login", BOT), ("--agent",)])
+def test_s055_13_an_agents_code_pr_without_a_record_reads_unreviewed(
+    tmp_path: Path, directed: Path, flags: tuple[str, ...]
+) -> None:
+    proc = run_gate(tmp_path, directed, {7: pr()}, *flags, reviews={7: []})
+    assert proc.returncode == gate.UNREVIEWED == 9, proc.stdout + proc.stderr
+    assert proc.stdout == MAIN_UNREVIEWED + NO_RECORD + "\n"
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS, *REVIEWS_READ]
+
+
+def test_s055_13_only_a_pr_that_would_read_ready_reads_its_records(tmp_path: Path) -> None:
+    """a failed check, a pending one, or a conflict keeps its verdict, and nothing reads the reviews"""
+    failing = pr(body="Fixes #7")
+    failing["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    pending = pr(body="Fixes #7")
+    pending["statusCheckRollup"] = [{"name": "test", "status": "IN_PROGRESS", "conclusion": None}]
+    conflicting = {**pr(body="Fixes #7"), "mergeable": "CONFLICTING"}
+    for data, code in ((failing, 1), (pending, 3), (conflicting, 4)):
+        (tmp_path / "gh-calls").unlink(missing_ok=True)
+        proc = run_gate(tmp_path, None, {7: data}, "--bot-login", BOT, reviews={7: []})
+        assert proc.returncode == code, proc.stdout + proc.stderr
+        assert "unreviewed:" not in proc.stdout and "reviews" not in calls_of(tmp_path)
+
+
+def test_s055_13_unreviewed_ranks_between_pending_and_blocked_and_stops_the_wait() -> None:
+    assert gate.RANK.index(gate.PENDING) < gate.RANK.index(gate.UNREVIEWED) < gate.RANK.index(gate.BLOCKED)
+    held = judged(PASSED, unreviewed="no review")
+    assert held.verdict == gate.UNREVIEWED
+    assert not gate.polls([held])
+    assert not gate.polls([held, judged(RUNNING)])  # the worst verdict is UNREVIEWED: --wait doesn't poll on it
+    assert judged(RUNNING, unreviewed="no review").verdict == gate.PENDING  # it only stands in for READY
+
+
+@pytest.mark.parametrize(
+    ("records", "code", "line"),
+    [
+        ([recorded("merge")], 0, None),
+        ([APPROVED], 0, None),
+        ([review(association="MEMBER"), review(association="COLLABORATOR")], 0, None),
+        ([recorded("refuse")], 9, REFUSED_RECORD),
+        ([recorded("merge"), recorded("refuse")], 9, REFUSED_RECORD),  # the App's newest record counts
+        ([recorded("refuse"), recorded("merge")], 0, None),
+        ([recorded("refuse"), APPROVED], 9, REFUSED_RECORD),  # a person's approval doesn't lift the App's refuse
+        ([recorded("merge", OTHER_SHA)], 9, NO_RECORD),  # another head, read outside a checkout
+        ([review(commit=OTHER_SHA)], 9, NO_RECORD),
+        ([review(state="COMMENTED")], 9, NO_RECORD),
+        ([review(state="CHANGES_REQUESTED")], 9, NO_RECORD),
+        ([review(association="CONTRIBUTOR")], 9, NO_RECORD),
+        ([review(body="Looks right\n\n<!-- shipmill:agent -->")], 9, NO_RECORD),  # an agent's approval (D-62)
+        ([review(login="other-app[bot]", kind="Bot", association="MEMBER")], 9, NO_RECORD),
+        ([review(body="<!-- shipmill:review merge -->", state="COMMENTED")], 9, NO_RECORD),  # a person's marker
+        ([{**recorded("merge"), "state": "DISMISSED"}], 9, NO_RECORD),
+        ([{**recorded("merge"), "commit_id": None}], 9, NO_RECORD),
+        ([], 9, NO_RECORD),
+    ],
+)
+def test_s055_14_the_records_that_cover_the_judged_head(
+    tmp_path: Path, records: list[dict[str, Any]], code: int, line: str | None
+) -> None:
+    proc = run_gate(tmp_path, None, {7: pr()}, "--bot-login", BOT, reviews={7: records})
+    expected = MAIN_READY if line is None else MAIN_UNREVIEWED + line + "\n"
+    assert (proc.returncode, proc.stdout) == (code, expected), proc.stderr
+
+
+def test_s055_14_without_bot_login_the_apps_record_is_no_record(tmp_path: Path) -> None:
+    proc = run_gate(tmp_path, None, {7: pr()}, "--agent", reviews={7: [recorded("merge")]})
+    assert (proc.returncode, proc.stdout) == (9, MAIN_UNREVIEWED + NO_RECORD + "\n"), proc.stderr
+
+
+@pytest.mark.parametrize("move", ["rebase", "merge"])
+def test_s055_14_a_record_of_a_head_with_the_same_own_change_covers_the_judged_head(
+    tmp_path: Path, directed: Path, move: str
+) -> None:
+    reviewed = branched(tmp_path, directed, {"src/app.py": "run = 1\n"})
+    git(directed, *(("rebase", "-q") if move == "rebase" else ("merge", "-q", "--no-edit")), "origin/main")
+    head = git(directed, "rev-parse", "HEAD").strip()
+    for records in ([recorded("merge", reviewed)], [review(commit=reviewed)]):
+        data = headed(head, ((head, at(13)),))
+        proc = run_gate(tmp_path, directed, {7: data}, "--bot-login", BOT, reviews={7: records})
+        assert (proc.returncode, proc.stdout) == (0, ready_line(head)), proc.stdout + proc.stderr
+
+
+def test_s055_14_a_record_of_a_head_whose_own_change_differs_covers_nothing(tmp_path: Path, directed: Path) -> None:
+    reviewed = branched(tmp_path, directed, {"src/app.py": "run = 1\n"})
+    head = committed(directed, {"src/app.py": "run = 2\n"}, "Change more")
+    data = headed(head, ((reviewed, at(10, 30)), (head, at(13))))
+    proc = run_gate(tmp_path, directed, {7: data}, "--bot-login", BOT, reviews={7: [recorded("merge", reviewed)]})
+    assert proc.returncode == 9, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[-1] == NO_RECORD.replace(HEAD_SHA[:7], head[:7])
+    # a refuse of the earlier head doesn't hold the new one; a merge record of the new one lands it
+    records = [recorded("refuse", reviewed), recorded("merge", head)]
+    landed = run_gate(tmp_path, directed, {7: data}, "--bot-login", BOT, reviews={7: records})
+    assert (landed.returncode, landed.stdout) == (0, ready_line(head)), landed.stdout + landed.stderr
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        ("README.md",),
+        ("docs/guide.md", "notes.txt", "docs/api.rst", "docs/page.mdx"),
+        ("docs/specs/030-decision-policy.md", "docs/decisions.md"),  # a spec pull request among them
+        ("docs/diagram.svg",),  # under docs/
+        ("sub/notes.md",),
+    ],
+)
+def test_s055_15_a_docs_only_pr_needs_no_record(tmp_path: Path, files: tuple[str, ...]) -> None:
+    proc = run_gate(tmp_path, None, {7: pr(files=files)}, "--bot-login", BOT, reviews={7: []})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert "reviews" not in calls_of(tmp_path)
+
+
+@pytest.mark.parametrize(("old", "code"), [("src/guide.py", 9), ("skills/x/SKILL.md", 9), ("docs/old.md", 0)])
+def test_s055_15_a_renamed_files_old_path_is_a_file_it_touches(tmp_path: Path, old: str, code: int) -> None:
+    """gh pr view names a rename by its new path: the files API's previous_filename is read too"""
+    data = pr(files=("docs/guide.md",), renamed={"docs/guide.md": old})
+    proc = run_gate(tmp_path, None, {7: data}, "--bot-login", BOT, reviews={7: []})
+    assert proc.returncode == code, proc.stdout + proc.stderr
+    assert calls_of(tmp_path)[-2:] == (["files", "reviews"] if code else ["check-runs", "files"])
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        ("skills/github-pr-triage/SKILL.md",),
+        (".claude/agents/reviewer.md",),
+        (".claude-plugin/README.md",),
+        ("CLAUDE.md",),
+        ("sub/AGENTS.md",),
+        ("REVIEW.md",),
+        ("docs/guide.md", "src/app.py"),
+        ("docs/guide.md", "Makefile"),
+    ],
+)
+def test_s055_15_the_agents_instructions_or_any_other_file_needs_a_record(
+    tmp_path: Path, files: tuple[str, ...]
+) -> None:
+    proc = run_gate(tmp_path, None, {7: pr(files=files)}, "--bot-login", BOT, reviews={7: []})
+    assert (proc.returncode, proc.stdout) == (9, MAIN_UNREVIEWED + NO_RECORD + "\n"), proc.stderr
+
+
+def test_s055_15_a_docs_file_past_the_first_hundred_is_read_before_the_records(tmp_path: Path) -> None:
+    """gh pr view lists 100 files: a PR whose first hundred are docs reads the rest from the files API"""
+    files = tuple(f"docs/p{i}.md" for i in range(100)) + ("src/app.py",)
+    proc = run_gate(tmp_path, None, {7: pr(files=files)}, "--bot-login", BOT, reviews={7: []})
+    assert (proc.returncode, proc.stdout) == (9, MAIN_UNREVIEWED + NO_RECORD + "\n"), proc.stderr
+
+
+@pytest.mark.parametrize("files", [("src/app.py",), ("skills/x/SKILL.md",)])
+def test_s055_15_a_persons_pr_needs_no_record(tmp_path: Path, files: tuple[str, ...]) -> None:
+    proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy", files=files)}, "--bot-login", BOT)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert "reviews" not in calls_of(tmp_path)
