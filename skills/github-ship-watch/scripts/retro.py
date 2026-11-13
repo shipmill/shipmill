@@ -62,7 +62,7 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Container
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -982,10 +982,11 @@ def by_agent(body: str) -> bool:
     return any(AGENT_MARKER.fullmatch(line.strip()) for line in body.splitlines())
 
 
-def relayed_answer(comment: dict[str, Any], bots: frozenset[str], maintainers: frozenset[str]) -> str | None:
+def relayed_answer(comment: dict[str, Any], bots: frozenset[str], maintainers: Container[str]) -> str | None:
     """D-68, D-70: from a comment by a --bot login whose first line is the relay `Decision by
-    @<login>` naming a maintainer, its first non-blank line after the relay line, past the
-    template's `Answered in the session:` ("" with none); None for any other comment"""
+    @<login>` naming a maintainer (the lowercased login in maintainers, asked only for a relay:
+    pr_gate.py's reads GitHub then, spec 055), its first non-blank line after the relay line,
+    past the template's `Answered in the session:` ("" with none); None for any other comment"""
     if not login_names(comment.get("author")) & {b.lower() for b in bots}:
         return None
     head, _, rest = (comment.get("body") or "").strip().partition("\n")
@@ -1000,21 +1001,28 @@ def relayed_answer(comment: dict[str, Any], bots: frozenset[str], maintainers: f
 
 
 def first_answer(later: list[dict[str, Any]], bots: frozenset[str], maintainers: frozenset[str]) -> str | None:
+    """The answer to a question from the comments after it, as answer_at reads it, or None"""
+    found = answer_at(later, bots, maintainers)
+    return None if found is None else found[1]
+
+
+def answer_at(later: list[dict[str, Any]], bots: frozenset[str], maintainers: Container[str]) -> tuple[int, str] | None:
     """The answer to a question from the comments after it, oldest first, up to a newer trusted
-    question: the first person's reply (an OWNER, MEMBER, or COLLABORATOR, readable, without
-    the needs-decision marker or the agent marker, D-62), its first non-blank line; or a
-    maintainer's relay, as relayed_answer reads it. None while there is neither"""
-    for comment in later:
+    question, with its index in later: the first person's reply (an OWNER, MEMBER, or
+    COLLABORATOR, readable, without the needs-decision marker or the agent marker, D-62), its
+    first non-blank line; or a maintainer's relay, as relayed_answer reads it. None while there
+    is neither"""
+    for i, comment in enumerate(later):
         body = comment.get("body") or ""
         if first_line(body) == NEEDS_DECISION_MARK and trusted(comment, bots):
             return None
         relayed = relayed_answer(comment, bots, maintainers)
         if relayed is not None:
-            return relayed
+            return i, relayed
         logins = login_names(comment.get("author"))
         person = bool(logins) and not logins & {b.lower() for b in bots}
         if person and str(comment.get("authorAssociation") or "NONE") in TRUSTED and not by_agent(body):
-            return first_line(body)
+            return i, first_line(body)
     return None
 
 
