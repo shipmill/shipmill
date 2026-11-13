@@ -322,8 +322,38 @@ class Allowlist:
         if rule := next((r for r in self.deny if any(matches(r, form) for form in denied)), None):
             return f"`{part.text}` matches the deny rule {rule}"
         if not any(matches(r, form) for r in self.allow for form in (part.text, text)):
-            return f"no allow rule matches `{part.text}`"
+            return f"{NO_ALLOW}`{part.text}`"
         return None
+
+
+NO_ALLOW = "no allow rule matches "  # a denied part's detail, its text in backticks after it
+_INSTEAD = "; Instead: "  # where a refusal's detail carries the hook's Instead line
+
+
+def fix(entry: Entry) -> str:
+    """What to do about a failing entry, by its result (S-064-9): an allow rule on the gate's
+    launchd job for a part no rule allows, or the deny rule to drop; the hook's own Instead line;
+    for a program the PATH lacks, installing it there, never an allowlist change; else running
+    the command where a session would, to see why"""
+    match entry.result:
+        case Result.DENIED if entry.detail.startswith(NO_ALLOW):
+            part = entry.detail.removeprefix(NO_ALLOW).strip("`")
+            return f'allow it on the gate: shipmill launchd --claude-arg=--allowedTools --claude-arg "Bash({part})"'
+        case Result.DENIED:
+            return "drop or narrow the deny rule that blocks it, or the command's substitution, so a rule can allow it"
+        case Result.REFUSED if _INSTEAD in entry.detail:
+            return "do as the hook's Instead line says; an allow rule doesn't pass the hook"
+        case Result.REFUSED:
+            return "change the command so the delivery hook's rule lets it run; an allow rule doesn't pass the hook"
+        case Result.NOT_FOUND:
+            return (
+                "install its program into a folder of the gate's PATH (shipmill launchd builds it from where"
+                " claude, gh, git, and uvx live); the allowlist already lets it run"
+            )
+        case Result.FAILED | Result.TIMED_OUT:
+            return f"run it in a worktree under {WORKTREES.as_posix()} to see why"
+        case Result.OK:
+            raise ValueError(f"{entry.command} passed and needs no fix")
 
 
 @dataclass(frozen=True, slots=True)
