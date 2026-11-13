@@ -62,11 +62,14 @@ HOURLY_TICKS = Ticks(hourly=True)
 
 
 def needed(policy: Policy, today: dt.date) -> Ticks:
-    """The ticks the policy's triggers need: hourly when a lane sets milestone, or the stable
-    lane promotes with quiet_minutes, since neither ends with a push; else one per UTC minute
-    and hour the windows open at over DAYS days from today. The hotfix lane is cut by hand"""
+    """The ticks the policy's triggers need: hourly when a lane sets milestone, the stable
+    lane promotes with quiet_minutes, or [gates] veto_lanes names an enabled lane, since none
+    of them ends with a push (a veto window ends on the clock, S-059-10); else one per UTC
+    minute and hour the windows open at over DAYS days from today. The hotfix lane is cut by hand"""
     rules = [rule for lane, rule in policy.lanes.items() if lane is not Lane.HOTFIX]
     if any(r.milestone or (r.lane is Lane.STABLE and r.promote and r.quiet_minutes is not None) for r in rules):
+        return HOURLY_TICKS
+    if any(r.lane in policy.veto_lanes for r in rules):
         return HOURLY_TICKS
     days: dict[tuple[int, int], set[int]] = {}
     for window in (w for r in rules for w in r.schedule):

@@ -188,6 +188,7 @@ class Policy:
     blocker_lanes: frozenset[Lane]
     freezes: tuple[Freeze, ...]
     freeze_lanes: frozenset[Lane]
+    veto_lanes: frozenset[Lane]  # [gates] veto_lanes: a release waits for the veto windows it ships (spec 059)
     version_lines: tuple[VersionLine, ...]
     after_stamp: tuple[tuple[str, ...], ...]
     tag_message: str
@@ -306,7 +307,7 @@ class Policy:
         bump = BumpConfig.parse(top.table("bump"), where) if needed or "bump" in raw else None
         version_files = top.enum("version_files", VersionFiles) if needed or "version_files" in raw else None
         gates = top.table("gates", optional=True)
-        gates.allow("blocker_label", "blocker_lanes", "freeze", "freeze_lanes")
+        gates.allow("blocker_label", "blocker_lanes", "freeze", "freeze_lanes", "veto_lanes")
         publish = top.table("publish", optional=True)
         publish.allow("tag_message", "release_title")
         bot = top.table("bot", optional=True)
@@ -352,6 +353,7 @@ class Policy:
             blocker_lanes=frozenset(gates.enums("blocker_lanes", Lane, default=(Lane.RC, Lane.STABLE))),
             freezes=tuple(Freeze.parse(f) for f in gates.strings("freeze", default=())),
             freeze_lanes=frozenset(gates.enums("freeze_lanes", Lane, default=(Lane.DEV, Lane.RC, Lane.STABLE))),
+            veto_lanes=_veto_lanes(gates),
             version_lines=tuple(_version_line(i, t) for i, t in enumerate(top.tables("version_lines"))),
             after_stamp=tuple(_command(c, where) for c in top.strings("after_stamp", default=())),
             tag_message=publish.string("tag_message", default="{name} {version}"),
@@ -401,6 +403,17 @@ class Policy:
     def settle_minutes(self) -> int:
         """How long the settle job waits after a push: none when the mode is off, since plan then skips"""
         return 0 if self.mode is Mode.OFF else self.quiet_minutes
+
+
+def _veto_lanes(gates: Table) -> frozenset[Lane]:
+    """[gates] veto_lanes, empty by default (D-63); hotfix is refused, since a hotfix is
+    started by hand, which never waits (S-059-1)"""
+    lanes = frozenset(gates.enums("veto_lanes", Lane, default=()))
+    if Lane.HOTFIX in lanes:
+        raise ReleaseError(
+            f"{gates.where}: veto_lanes can't hold hotfix: a hotfix is started by hand, which never waits"
+        )
+    return lanes
 
 
 def _lane(lane: Lane, t: Table) -> LaneRule:
