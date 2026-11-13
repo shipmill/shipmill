@@ -138,6 +138,9 @@ HEADLESS_TOOLS = (
 # Set to "1" in every headless session's --settings env; the delivery hook reads it from its own
 # environment to tell a gate session from a person's (D-82)
 GATE_SESSION = "SHIPMILL_GATE"
+# Beside it, the login the headless paragraph names: the Stop hook refuses a final message that
+# asks this login for something the session put nowhere on GitHub (spec 062)
+MAINTAINER = "SHIPMILL_MAINTAINER"
 # --claude-arg flags a headless gate refuses, alone or as --flag=value: each brings prompts
 # back, drops the allowlist, or breaks how the gate tracks the session
 HEADLESS_REFUSED = (
@@ -579,11 +582,13 @@ def prompt(
 
 def headless_paragraph(login: str) -> str:
     """The paragraph a headless prompt ends with (spec 005); login is the host's gh login,
-    the person who decides"""
+    the person who decides. Its last sentence is spec 062's: the final message is read by no one"""
     return (
         "Headless: nobody can answer AskUserQuestion or a permission prompt. A decision for the user,"
         " or a tool call that was denied, becomes the needs-decision protocol (github-issue-triage's"
         f" references/needs-decision.md): mention @{login}, label the item needs-decision, and leave it."
+        f" Before you end, every request to @{login} in your final message is an issue or a needs-decision"
+        " question on GitHub."
     )
 
 
@@ -695,8 +700,11 @@ class Claude(Protocol):
         log: Path,
         env: Mapping[str, str] | None = None,
         token: Token | None = None,
+        *,
+        maintainer: str,
     ) -> int:
-        """Start a headless `claude -p` session detached from the tick (D-17); its pid"""
+        """Start a headless `claude -p` session detached from the tick (D-17); its pid.
+        maintainer is the login the headless paragraph names (spec 062)"""
         ...
 
     def stop(self, session: str) -> None: ...
@@ -831,6 +839,8 @@ class ClaudeCli:
         log: Path,
         env: Mapping[str, str] | None = None,
         token: Token | None = None,
+        *,
+        maintainer: str,
     ) -> int:
         """`claude -p` (spec 005): no prompt can block it and AskUserQuestion is gone; the tool
         lists come before --session-id, and `--` ends the options before the prompt, so a
@@ -838,8 +848,10 @@ class ClaudeCli:
         Its output is stream-json (S-048-17), so its log grows with each message it sends or
         receives, not only at its end"""
         # every headless session's hooks read it as a gate session: its uv run starts only
-        # Python and the project's tools (D-82)
-        settings = ["--settings", json.dumps({"env": {**(env or {}), GATE_SESSION: "1"}})]
+        # Python and the project's tools (D-82), and its Stop hook reads whom its final message
+        # may not ask without a request on GitHub (spec 062)
+        gate_env = {GATE_SESSION: "1", MAINTAINER: maintainer}
+        settings = ["--settings", json.dumps({"env": {**(env or {}), **gate_env}})]
         tools = ["--allowedTools", HEADLESS_TOOLS, "--disallowedTools", "AskUserQuestion"]
         stream = ["--output-format", "stream-json", "--verbose"]
         head = ["claude", "-p", "--permission-prompts", "none", *stream, *tools, "--session-id", str(session)]
@@ -2876,7 +2888,7 @@ def decided(
         return decision, launched, waiting
     session_id = new_session()
     log = session_log(state, str(session_id))
-    pid = claude.start(git.root, name, text, session_id, log, env, token)
+    pid = claude.start(git.root, name, text, session_id, log, env, token, maintainer=host)
     save_launch(record, Launch(item_key(item), str(session_id), now, Process(pid, started(pid)), deaths, item.brief()))
     settled(ticked.handed.handing(item, str(session_id), now))
     return replace(decision, follow=f"tail -f {log}"), str(session_id), waiting

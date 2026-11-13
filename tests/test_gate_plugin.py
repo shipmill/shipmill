@@ -522,7 +522,7 @@ def test_s031_24_the_gates_claude_commands_carry_no_plugin_dir(tmp_path: Path) -
 
     cli = ClaudeCli(["--model", "opus"], run=run, spawn=spawn, environ={})
     assert cli.launch(tmp_path, "n", "prompt", {"GH_TOKEN_HELPER": "x"}) == "s1"
-    assert cli.start(tmp_path, "n", "prompt", uuid.UUID(int=1), tmp_path / "s.log") == 42
+    assert cli.start(tmp_path, "n", "prompt", uuid.UUID(int=1), tmp_path / "s.log", maintainer="amy") == 42
     assert ran and ran[0][:2] == ["claude", "--bg"] and spawned and spawned[0][:2] == ["claude", "-p"]
     assert not any(arg.startswith("--plugin-dir") for cmd in ran + spawned for arg in cmd)
 

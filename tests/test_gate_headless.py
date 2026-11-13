@@ -27,6 +27,7 @@ from shipmill.gate import (
     GATE_SESSION,
     HEADLESS_REFUSED,
     HEADLESS_TOOLS,
+    MAINTAINER,
     RECORD,
     SESSIONS,
     Action,
@@ -385,8 +386,8 @@ def test_s005_3_headless_runs_claude_p_with_the_allowlist(checkout: Git) -> None
         "AskUserQuestion",
         "--session-id",
         str(SESSION),
-        "--settings",  # D-82: the hook reads the session as the gate's
-        json.dumps({"env": {GATE_SESSION: "1"}}),
+        "--settings",  # D-82: the hook reads the session as the gate's; spec 062: and whom it may not ask
+        json.dumps({"env": {GATE_SESSION: "1", MAINTAINER: LOGIN}}),
         "-n",
         NAME,
         "--allowedTools",
@@ -489,8 +490,51 @@ def test_d82_a_headless_session_without_an_app_carries_the_gate_signal(checkout:
     spawned = Spawned()
     tick(checkout, headless(), ClaudeCli([], run=spawned.runner, spawn=spawned, environ=GATE_ENV), Reads())
     [(cmd, _, _)] = spawned.commands
-    assert json.loads(cmd[cmd.index("--settings") + 1])["env"] == {GATE_SESSION: "1"}
+    assert json.loads(cmd[cmd.index("--settings") + 1])["env"] == {GATE_SESSION: "1", MAINTAINER: LOGIN}
     assert spawned.envs == [{**GATE_ENV, BG_WAIT_CEILING: "0"}]  # the process env is as before
+
+
+def test_s062_10_the_settings_env_names_the_maintainer_beside_the_gate_signal(checkout: Git, tmp_path: Path) -> None:
+    """SHIPMILL_MAINTAINER is the login the headless paragraph names"""
+    spawned = Spawned()
+    tick(checkout, headless(), ClaudeCli([], run=spawned.runner, spawn=spawned, environ=GATE_ENV), Reads())
+    [(cmd, _, _)] = spawned.commands
+    env = json.loads(cmd[cmd.index("--settings") + 1])["env"]
+    assert (env[GATE_SESSION], env[MAINTAINER]) == ("1", LOGIN)
+    assert cmd[-1].endswith(headless_paragraph(LOGIN)) and f"@{env[MAINTAINER]} " in headless_paragraph(LOGIN)
+    assert MAINTAINER not in spawned.envs[0]  # the session's tools get it, not claude's own process env
+
+
+def test_s062_10_with_an_app_the_settings_env_names_the_maintainer_too(checkout: Git, tmp_path: Path) -> None:
+    spawned = Spawned()
+    prepared = Prepared(checkout, gh_path(tmp_path))
+    claude = ClaudeCli([], run=spawned.runner, spawn=spawned)
+    tick(checkout, headless(APP_ID), claude, Reads(), app=app_check_for(tmp_path), app_env=prepared)
+    [(cmd, _, _)] = spawned.commands
+    env = json.loads(cmd[cmd.index("--settings") + 1])["env"]
+    assert (env[GATE_SESSION], env[MAINTAINER], env["GIT_AUTHOR_NAME"]) == ("1", LOGIN, BOT)
+
+
+def test_s062_10_an_interactive_launch_holds_neither(checkout: Git) -> None:
+    spawned = Spawned()
+    claude = ClaudeCli([], run=spawned.runner, spawn=spawned, environ=GATE_ENV)
+    tick(checkout, interactive(), claude, Reads(), started=unasked)
+    assert not any(GATE_SESSION in arg or MAINTAINER in arg for arg in spawned.run[1])
+
+
+def test_s062_10_an_interactive_launch_with_an_app_holds_neither(checkout: Git, tmp_path: Path) -> None:
+    fake = FakeClaude()
+    prepared = Prepared(checkout, gh_path(tmp_path))
+    tick(checkout, interactive(APP_ID), fake, Reads(), app=app_check_for(tmp_path), app_env=prepared, started=unasked)
+    [env] = fake.envs
+    assert env is not None and GATE_SESSION not in env and MAINTAINER not in env and fake.maintainers == []
+
+
+def test_s062_11_the_headless_paragraph_ends_with_the_request_sentence() -> None:
+    assert headless_paragraph("amy").endswith(
+        " Before you end, every request to @amy in your final message is an issue or a needs-decision question on"
+        " GitHub."
+    )
 
 
 def test_d82_a_headless_session_with_an_app_carries_the_gate_signal(checkout: Git, tmp_path: Path) -> None:
@@ -571,6 +615,8 @@ def test_s005_6_the_headless_prompt_ends_with_the_paragraph_naming_the_login(che
         "Headless: nobody can answer AskUserQuestion or a permission prompt. A decision for the user,"
         " or a tool call that was denied, becomes the needs-decision protocol (github-issue-triage's"
         " references/needs-decision.md): mention @amy, label the item needs-decision, and leave it."
+        " Before you end, every request to @amy in your final message is an issue or a needs-decision question"
+        " on GitHub."  # spec 062
     )
     assert text == prompt("/t", REPO, [ISSUES], NOW) + "\n\n" + paragraph
     assert (skills_dir() / "github-issue-triage" / "references" / "needs-decision.md").is_file()

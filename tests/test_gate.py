@@ -97,6 +97,7 @@ class FakeClaude:
     started: list[tuple[str, str, uuid.UUID, Path]] = field(default_factory=list)  # headless: name, text, id, log
     pid: int = 4242  # each headless start's pid
     tokens: list[Token | None] = field(default_factory=list)  # each start's token (spec 035)
+    maintainers: list[str] = field(default_factory=list)  # each headless start's maintainer (spec 062)
 
     def sessions(self, workspace: Path, repo: str) -> list[Session]:
         return list(self.listed)
@@ -118,10 +119,13 @@ class FakeClaude:
         log: Path,
         env: Mapping[str, str] | None = None,
         token: Token | None = None,
+        *,
+        maintainer: str,
     ) -> int:
         self.started.append((name, text, session, log))
         self.envs.append(env)
         self.tokens.append(token)
+        self.maintainers.append(maintainer)
         return self.pid
 
     def stop(self, session: str) -> None:
