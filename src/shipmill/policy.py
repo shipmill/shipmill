@@ -10,7 +10,7 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from shipmill import environments, requires
+from shipmill import environments, land_window, requires
 from shipmill import refused as catalogue
 from shipmill.agents import AgentsConfig, ProductConfig
 from shipmill.autonomy import AutonomyPolicy
@@ -19,6 +19,7 @@ from shipmill.decide import DecisionPolicy
 from shipmill.downstream import DownstreamConfig
 from shipmill.environments import Environment, OperateConfig
 from shipmill.errors import ReleaseError
+from shipmill.land_window import LandWindow
 from shipmill.lanes import Lane as Lane  # re-exported: most modules name a lane through the policy
 from shipmill.roadmap import RoadmapConfig
 from shipmill.schedule import Freeze, Window
@@ -204,6 +205,7 @@ class Policy:
     downstream: DownstreamConfig | None = None  # [downstream]: the repos tested on a pull request (spec 032)
     product: ProductConfig | None = None  # [product]: the product's home or components (spec 038, D-47)
     decisions: DecisionPolicy = DecisionPolicy()  # [decisions]: each zone's level, or its default (spec 030, D-48)
+    land_window: LandWindow | None = None  # [land.window]: the hours held pull requests merge in (spec 056)
     # the catalogued keys the config sets, [agents]'s included, each dropped on load (spec 052, D-64)
     refused: tuple[catalogue.Refusal, ...] = ()
 
@@ -298,6 +300,7 @@ class Policy:
             "downstream",
             "product",
             "decisions",
+            "land",
         )
         mode = top.enum("mode", Mode)
         # releases off: the release side's tables may be left out, and one that is there is read as ever (#856)
@@ -340,6 +343,7 @@ class Policy:
         hooks = HooksConfig.parse(top.table("hooks", optional=True))
         downstream = DownstreamConfig.parse(top.table("downstream")) if "downstream" in raw else None
         decisions = DecisionPolicy.parse(top.table("decisions", optional=True))
+        window = land_window.read(top)
         return cls(
             name=top.string("name"),
             mode=mode,
@@ -368,6 +372,7 @@ class Policy:
             downstream=downstream,
             product=product,
             decisions=decisions,
+            land_window=window,
             refused=(*refusals, *(agents.refused if agents is not None else ())),
         )
 

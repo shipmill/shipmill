@@ -493,6 +493,12 @@ class GhCli:
             raise ReleaseError(message)
         return proc.stdout
 
+    def graphql(self, query: str) -> Any:
+        """The query's answer, with $owner and $name set to the repository's (spec 056)"""
+        return json.loads(
+            self._gh("api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", f"query={query}")
+        )
+
     def open_issues(self, label: str) -> list[str]:
         found = json.loads(
             self._gh(

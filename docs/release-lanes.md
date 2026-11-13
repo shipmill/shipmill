@@ -596,6 +596,45 @@ that was valid keeps working, and `doctor` keeps warning until the keys are set.
 must name an environment in `[environments]`. `deploy` and `rollback` take effect in
 `shipmill operate` (see Operate above).
 
+## Land window
+
+Where a merge to the default branch deploys, `[land.window]` holds the pull requests of
+labelled classes to configured hours, so a risky change lands only while someone can watch
+(spec 056). shipmill reads the section from the default branch, never from a pull request. A
+repo without it sees no change: every merge is judged as before.
+
+```toml
+[land.window]
+timezone = "Asia/Nicosia"                      # required: an IANA zone, the one every entry is read in
+open = ["Mon-Thu 10:00-18:00", "Fri 10:00-14:00"]
+closed = ["08:00-08:30"]                       # a daily restart
+labels = ["rollout:normal", "rollout:high"]    # required: the held classes
+queued_label = "rollout:queued"                # default "land-queued"
+spacing_minutes = 30                           # default 0: no spacing
+bypass_labels = ["revert", "incident"]         # default none
+```
+
+- An `open` or `closed` entry is `[<days> ]HH:MM-HH:MM`, its days as a lane's `schedule`
+  writes them (`daily`, `Mon`, `Mon-Fri`, `Mon,Wed`), and no days meaning daily. The end is
+  after the start on the same day, up to `24:00`: a window across midnight is two entries,
+  such as `Fri 22:00-24:00` and `Sat 00:00-02:00`
+- The window is open at a moment when the moment, on the wall clock of `timezone`, falls
+  inside an `open` entry (any moment, without `open`) and inside no `closed` entry; the start
+  is inside, the end is not. Days and hours are the zone's, daylight saving time included
+- A pull request is held when it carries one of `labels` and none of `bypass_labels`; any
+  other merges at any time
+- An unknown key, a missing `timezone` or `labels`, an unknown zone, a malformed entry, a
+  negative `spacing_minutes`, or a label in both `labels` and `bypass_labels` exits 2 naming
+  the key, from every command that reads the config, and `doctor` fails on it with the same
+  message. shipmill-setup's checklist wants the `queued_label` label on GitHub
+
+`uvx shipmill window --json` prints the window at `--ref` (default `origin/HEAD`): `open`
+now, `opens` (the next opening, when closed) or `closes` (when open), the labels, the
+spacing, `last_held_merge` (the newest merge into the default branch of a pull request
+carrying one of `labels`, read from GitHub), and `next_merge` (that time plus
+`spacing_minutes`, or now when it has passed or the spacing is 0). Times are in `timezone`.
+Without the section it prints `{"configured": false}` and reads nothing on GitHub.
+
 ## Downstream tests
 
 A library's change can break the repositories that depend on it. With `[downstream]`,
@@ -900,6 +939,7 @@ The workflows call these; you can run them locally too.
 | `notes` | Print a release's notes |
 | `settle-minutes` | Print how long to wait after a push: the longest `quiet_minutes`, 0 when `mode = "off"` |
 | `autonomy` | Print every stage's `[autonomy]` level, configured and under the hold, with its source (`default`, `config`, `prompt`, or `hold`) and the open hold issues, from the config at `--ref` (default `origin/HEAD`); `--json` |
+| `window` | Print the land window, `[land.window]`, at `--ref` (default `origin/HEAD`): open or closed now, when that changes, the last held merge and when the spacing allows the next; `--json` |
 | `upgrade` | List the config upgrades this repo hasn't decided; `--apply <id>` makes one's edit in the checkout, `--json` |
 | `gate` | Start a Claude Code session for a repo only when its state needs one, with the config's `[agents]` prompt ([agent modes](design/agent-modes.md)) |
 | `launchd` | Run `gate` for a dedicated checkout every few minutes on a Mac |
