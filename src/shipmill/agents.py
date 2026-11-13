@@ -121,6 +121,29 @@ def trailer_setting(author: Author | None, credit: Credit | None) -> str | None:
     return None
 
 
+def verify_of(table: Table) -> tuple[str, ...]:
+    """[agents] verify (spec 064): the commands a headless session relies on for verification,
+    one Bash line each, in the order the check runs them; () when absent. A value that isn't a
+    list of strings, an empty or blank string, one holding a newline, or one given twice exits 2
+    naming the key (S-064-1)"""
+    if "verify" not in table.raw:
+        return ()
+    value = table.raw["verify"]
+    key = f"{CONFIG_PATH}: [agents] verify"
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ReleaseError(f"{key} must be a list of command strings, got {value!r}")
+    seen: set[str] = set()
+    for command in value:
+        if not command.strip():
+            raise ReleaseError(f"{key} holds an empty command; delete it, or write the command")
+        if "\n" in command or "\r" in command:
+            raise ReleaseError(f"{key} holds {command!r}, which spans lines; give each command as one line")
+        if command in seen:
+            raise ReleaseError(f"{key} lists {command!r} twice")
+        seen.add(command)
+    return tuple(value)
+
+
 ROLES = "[agents.roles]"
 MAINTAINER = "maintainer"  # the role every step an agent can't do falls back to (spec 036)
 _ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")  # its label, role:<name>, stays within GitHub's 50
@@ -286,6 +309,7 @@ class AgentsConfig:
     # key, which reads as off, so doctor warns only when it is set (spec 051 deprecates it)
     credit: Credit | None = None
     author: Author | None = None  # [agents] author: whose account an agent writes as (spec 051)
+    verify: tuple[str, ...] = ()  # [agents] verify: the commands a headless session must be able to run (spec 064)
     # [autonomy] with spec 040's legacy reading of the prompt, as `shipmill autonomy` reads it;
     # load and Policy.parse set it, parse alone can't, as it sees [agents] only
     autonomy: AutonomyPolicy = AutonomyPolicy()
@@ -315,6 +339,7 @@ class AgentsConfig:
             "identity",
             "credit",
             "author",
+            "verify",
         )
         roles = RolesConfig.parse(table.raw["roles"]) if "roles" in table.raw else RolesConfig()
         prompt = table.string("prompt").strip()
@@ -354,6 +379,7 @@ class AgentsConfig:
             identity=identity,
             credit=credit_of(table),
             author=author_of(table, app_id),
+            verify=verify_of(table),
             refused=refusals,
         )
 
