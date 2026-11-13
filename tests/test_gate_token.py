@@ -248,7 +248,7 @@ def test_s035_4_no_launch_argument_holds_any_8_characters_of_the_token(tmp_path:
     claude = runner.claude()
     settings = {"PATH": "/state/bin:/usr/bin", "GIT_AUTHOR_NAME": "shipmill[bot]"}  # spec 004's --settings env
     claude.launch(tmp_path, "n", "the prompt", settings, token)
-    claude.start(tmp_path, "n", "the prompt", uuid.UUID(int=1), tmp_path / "s.log", settings, token)
+    claude.start(tmp_path, "n", "the prompt", uuid.UUID(int=1), tmp_path / "s.log", settings, token, maintainer="amy")
     [(bg, _)] = runner.run_in_calls
     [(p, _)] = runner.spawned
     assert "--settings" in bg and "--settings" in p
@@ -706,5 +706,5 @@ def test_s035_18_a_token_file_drops_the_api_key_and_auth_token_from_sessions_and
     # without a token file both keys pass through unchanged (spec 035, Behaviour)
     assert Token(home, SENTINEL, NOW).env(environ).keys() & set(OUTRANKING) == set()
     plain = Launcher()
-    plain.claude(environ).start(tmp_path, "n", "p", uuid.UUID(int=1), tmp_path / "s.log")
+    plain.claude(environ).start(tmp_path, "n", "p", uuid.UUID(int=1), tmp_path / "s.log", maintainer="amy")
     assert set(OUTRANKING) <= set(plain.spawned[0][1])
