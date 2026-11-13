@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Protocol, TextIO
 from urllib.parse import unquote
 
+from shipmill import cli_command
 from shipmill.agent_marker import BODY_LIMIT, carries, closed_with, decided_by, marked, stripped
 from shipmill.classify import Pulls
 from shipmill.errors import ReleaseError
@@ -347,7 +348,7 @@ def merge_pins(args: Sequence[str]) -> list[str]:
         if any(name == "--input" for name, _ in flags):
             raise ReleaseError(
                 "gh api -X PUT .../merge is refused: with --input its sha can't be read, so the head pr_gate.py "
-                "judged can't be pinned (spec 055); pass the fields with -f, or run `shipmill gh pr merge <n>`"
+                f"judged can't be pinned (spec 055); pass the fields with -f, or run `{cli_command()} gh pr merge <n>`"
             )
     return _pins(args)[1]
 
