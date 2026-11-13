@@ -10,6 +10,12 @@ the input wasn't the hook JSON, or a check couldn't run. hooks/hooks.json runs i
 Python 3.11+ that uv finds or installs, and exits 1 itself, letting the command run, when it
 can't start it (D-40).
 
+`delivery.py stop` reads a Stop input (spec 062): in a headless gate session (SHIPMILL_GATE=1)
+of a repo with [agents], a final message that addresses the maintainer (@SHIPMILL_MAINTAINER, or
+a line starting with one of ADDRESSES) while the transcript holds no successful issue create or
+needs-decision label exits 2, once per session: stop_hook_active and a refusal record in the
+temporary directory each let a later stop end. What it can't read exits 1, never 2.
+
 Stdlib only and Python 3.11+ (tomllib), since the plugin can't import the installed shipmill.
 The hooks catch an agent's mistake: a command shlex can't split, and `bash -c`, `eval`,
 `$(...)`, and here-documents, pass; the trust filter (D-16) is the control against hostile
@@ -39,6 +45,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -1427,6 +1434,238 @@ def post(hook: HookInput, stderr: TextIO, ctx: Context) -> int:
     return 1
 
 
+# --- The Stop hook (spec 062) ----------------------------------------------------------------
+
+MAINTAINER = "SHIPMILL_MAINTAINER"  # the login the headless paragraph names, set by the gate
+SESSION_ID = re.compile(r"[A-Za-z0-9-]+")
+LOGIN = re.compile(r"[A-Za-z0-9-]+")
+# A line that starts, past this markup, with one of ADDRESSES addresses the maintainer
+ADDRESSES = (
+    "For you",
+    "For the maintainer",
+    "For @",
+    "Decision needed",
+    "Needs your decision",
+    "Action needed",
+    "Your turn",
+)
+LINE_MARKUP = re.compile(r"^(?:[\s#>*_-]|\d+\.)*")
+NEEDS_DECISION = "needs-decision"
+RECORD = "shipmill-stop-{}"  # the refusal record, in the system's temporary directory
+STOP_REFUSAL = Refusal(
+    "request-on-github",
+    "your final message asks @{login} for something, and this session filed no issue and labelled nothing"
+    " needs-decision",
+    "a headless session's request to the maintainer is on GitHub before it ends",
+    "needs-decision.md, Gate sessions",
+    "post each request as a needs-decision question on its item, or file an issue for one with no item;"
+    " if each is already on GitHub, end with a line naming it as owner/repo#N. You can end after this.",
+)
+
+
+class Unreadable(ValueError):
+    """What the Stop hook can't read: exit 1, and the session ends unchecked"""
+
+
+@dataclass(frozen=True)
+class StopInput:
+    session_id: object
+    transcript_path: object
+    cwd: Path
+    active: bool  # stop_hook_active: the session already continues after a refusal
+    last_message: str | None  # last_assistant_message, when the input carries it as a string
+
+
+def parse_stop(data: Mapping[str, object]) -> StopInput:
+    cwd = data.get("cwd")
+    if cwd is not None and (not isinstance(cwd, str) or not os.path.isabs(cwd)):
+        raise BadInput("the input's cwd is not an absolute path")
+    active = data.get("stop_hook_active", False)
+    if not isinstance(active, bool):
+        raise BadInput("the input's stop_hook_active is not true or false")
+    last = data.get("last_assistant_message")
+    return StopInput(
+        data.get("session_id"),
+        data.get("transcript_path"),
+        Path(cwd) if cwd else Path.cwd(),
+        active,
+        last if isinstance(last, str) else None,
+    )
+
+
+def addresses(text: str, login: str) -> bool:
+    """The final text names @<login>, in any case and not followed by another login character,
+    or starts a line, past the listed markup, with one of ADDRESSES"""
+    if re.search(rf"@{re.escape(login)}(?![A-Za-z0-9-])", text, re.IGNORECASE):
+        return True
+    phrases = tuple(phrase.casefold() for phrase in ADDRESSES)
+    return any(LINE_MARKUP.sub("", line).casefold().startswith(phrases) for line in text.splitlines())
+
+
+def read_transcript(path: object) -> list[Mapping[str, object]]:
+    """The transcript's entries; Unreadable when it is missing or a line isn't a JSON object"""
+    if not isinstance(path, str) or not path:
+        raise Unreadable("the input has no transcript_path")
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise Unreadable(f"the transcript can't be read: {exc}") from None
+    entries: list[Mapping[str, object]] = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise Unreadable(f"the transcript's line {number} is not JSON: {exc}") from None
+        if not isinstance(entry, dict):
+            raise Unreadable(f"the transcript's line {number} is not a JSON object")
+        entries.append(entry)
+    return entries
+
+
+def _blocks(entry: Mapping[str, object], role: str) -> list[Mapping[str, object]]:
+    """The content blocks of a main-session entry of role; none for a subagent's (sidechain)"""
+    message = entry.get("message")
+    if entry.get("type") != role or entry.get("isSidechain") is True or not isinstance(message, dict):
+        return []
+    content = message.get("content")
+    return [block for block in content if isinstance(block, dict)] if isinstance(content, list) else []
+
+
+def final_text(entries: Sequence[Mapping[str, object]]) -> str:
+    """The text blocks of the last assistant entry; Claude Code writes one entry per block, so
+    the entries before it that share its message id are the same message"""
+    found = [entry for entry in entries if _blocks(entry, "assistant")]
+    if not found:
+        raise Unreadable("the transcript has no assistant entry")
+    last = found[-1]
+    message = last.get("message")
+    last_id = message.get("id") if isinstance(message, dict) else None
+    same: list[Mapping[str, object]] = [last]
+    if last_id is not None:
+        for entry in reversed(found[:-1]):
+            other = entry.get("message")
+            if not isinstance(other, dict) or other.get("id") != last_id:
+                break
+            same.insert(0, entry)
+    texts: list[str] = []
+    for entry in same:
+        for block in _blocks(entry, "assistant"):
+            value = block.get("text")
+            if block.get("type") == "text" and isinstance(value, str):
+                texts.append(value)
+    text = "\n".join(texts)
+    if not text.strip():
+        raise Unreadable("the transcript's last assistant entry holds no text")
+    return text
+
+
+def _labels(args: Sequence[str]) -> list[str]:
+    """The labels each --add-label of gh's arguments names, a comma-separated list split"""
+    found: list[str] = []
+    for i, word in enumerate(args):
+        if word == "--add-label" and i + 1 < len(args):
+            found += args[i + 1].split(",")
+        elif word.startswith("--add-label="):
+            found += word.partition("=")[2].split(",")
+    return [label.strip() for label in found]
+
+
+def is_request(command: str, cwd: Path) -> bool:
+    """A gh write, plain or through shipmill gh, that puts a request on GitHub: an issue created,
+    or an issue or pull request labelled needs-decision"""
+    try:
+        found = commands(command, cwd)
+    except ValueError:  # shlex can't split it: no request the hook can read
+        return False
+    for cmd in found:
+        call = gh_call(cmd)
+        if call is None:
+            continue
+        args = call.args(cmd)
+        group, sub = gh_command(args)
+        if (group, sub) == ("issue", "create"):
+            return True
+        if (group, sub) in (("issue", "edit"), ("pr", "edit")) and NEEDS_DECISION in _labels(args):
+            return True
+    return False
+
+
+def requested(entries: Sequence[Mapping[str, object]], cwd: Path) -> bool:
+    """The session's transcript holds a request on GitHub whose tool result isn't an error"""
+    calls: dict[str, str] = {}  # a Bash tool_use's id: its command
+    succeeded: set[str] = set()
+    for entry in entries:
+        for block in _blocks(entry, "assistant"):
+            tool_input = block.get("input")
+            if block.get("type") != "tool_use" or block.get("name") != "Bash" or not isinstance(tool_input, dict):
+                continue
+            command = tool_input.get("command")
+            if isinstance(command, str):
+                calls[str(block.get("id"))] = command
+        for block in _blocks(entry, "user"):
+            if block.get("type") == "tool_result" and block.get("is_error") is not True:
+                succeeded.add(str(block.get("tool_use_id")))
+    return any(is_request(command, cwd) for use, command in calls.items() if use in succeeded)
+
+
+def record(folder: Path, session_id: str) -> bool:
+    """Create the refusal record exclusively; False when it exists or can't be created"""
+    try:
+        fd = os.open(folder / RECORD.format(session_id), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
+def stop(data: Mapping[str, object], stderr: TextIO, ctx: Context, temp: Path) -> int:
+    """Spec 062: in a headless gate session of a repo with [agents], refuse once a stop whose
+    final text addresses the maintainer while the session put no request on GitHub"""
+    if data["hook_event_name"] != "Stop" or not gate_session(ctx.env):
+        return 0
+    hook = parse_stop(data)
+    root = repo_root(hook.cwd)
+    config = None if root is None else ctx.configs.at(root)
+    if config is None or hook.active:
+        return 0
+    if isinstance(config, Broken):
+        raise Unreadable(f"{config.message} ({CONFIG})")
+    session = hook.session_id
+    if not isinstance(session, str) or not SESSION_ID.fullmatch(session):
+        raise Unreadable("the input's session_id is not letters, digits, and dashes")
+    login = ctx.env.get(MAINTAINER, "")
+    if not LOGIN.fullmatch(login):
+        raise Unreadable(f"{MAINTAINER} is not set to a GitHub login")
+    entries: list[Mapping[str, object]] | None = None
+    text = hook.last_message
+    if text is None:
+        entries = read_transcript(hook.transcript_path)
+        text = final_text(entries)
+    if not addresses(text, login):
+        return 0
+    if entries is None:
+        entries = read_transcript(hook.transcript_path)
+    if requested(entries, hook.cwd) or not record(temp, session):
+        return 0
+    refusal = replace(STOP_REFUSAL, command=STOP_REFUSAL.command.format(login=login))
+    stderr.write("".join(f"{line}\n" for line in refusal.lines()))
+    return 2
+
+
+def stop_input(text: str) -> Mapping[str, object]:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise BadInput(f"stdin is not JSON: {exc}") from None
+    if not isinstance(data, dict):
+        raise BadInput("stdin is not a JSON object")
+    if not isinstance(data.get("hook_event_name"), str):
+        raise BadInput("the input has no hook_event_name string")
+    return data
+
+
 def main(
     argv: Sequence[str],
     stdin: TextIO,
@@ -1435,11 +1674,22 @@ def main(
     read_config: ReadConfig = read_text,
     plugin: Path = PLUGIN_JSON,
     env: Mapping[str, str] | None = None,
+    temp: Path | None = None,
 ) -> int:
-    """env is the hook's own environment, os.environ unless a test passes one (spec 033)"""
-    if len(argv) != 1 or argv[0] not in EVENTS:
-        stderr.write("usage: delivery.py pre|post, with Claude Code's hook input on stdin (spec 026)\n")
+    """env is the hook's own environment, os.environ unless a test passes one (spec 033); temp
+    is where the Stop hook keeps its refusal records, the system's temporary directory unless a
+    test passes one (spec 062)"""
+    if len(argv) != 1 or argv[0] not in (*EVENTS, "stop"):
+        stderr.write("usage: delivery.py pre|post|stop, with Claude Code's hook input on stdin (specs 026, 062)\n")
         return 1
+    if argv[0] == "stop":  # exits 0, 1, or its own refusal's 2; never 2 for what it can't read
+        try:
+            ctx = Context(runner, Configs(read_config), plugin, os.environ if env is None else env)
+            return stop(stop_input(stdin.read()), stderr, ctx, Path(tempfile.gettempdir()) if temp is None else temp)
+        except (BadInput, Unreadable) as exc:
+            one = str(exc).replace("\r", "\\r").replace("\n", "\\n")
+            stderr.write(f"shipmill hook: {one}; this session ends unchecked\n")
+            return 1
     try:
         hook = parse_input(stdin.read())
         if hook.event != EVENTS[argv[0]]:
