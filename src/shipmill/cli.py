@@ -334,6 +334,7 @@ from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
 from shipmill.land import ActionsRun, AppPush, Prepared, Stop, Waiting, cleanup, land, mint_land, prepare, work_branch
+from shipmill.landing import GhRules, RulesReader
 from shipmill.launchd import (
     DEFAULT_EVERY,
     DEFAULT_TOOL,
@@ -1045,6 +1046,7 @@ def main(
     today: dt.date | None = None,
     graphql: Callable[[], land_window.Graphql] | None = None,
     now: dt.datetime | None = None,
+    rules_reader: RulesReader | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -1060,7 +1062,8 @@ def main(
     051), and spec_checkout for the checkout and origin `spec open` commits to and pushes (spec
     053), deprecation_reads for what `deprecations` reads of each repo and today for the date its
     report names (spec 047), graphql for the GitHub `window` reads the last held merge from and
-    now for the moment it reads the window at (spec 056), as tests pass fakes; stdin is also a `shipmill gh` merge's
+    now for the moment it reads the window at (spec 056), and rules_reader for the branch rules
+    doctor's landing row reads (spec 054), as tests pass fakes; stdin is also a `shipmill gh` merge's
     --body-file -, and gh_capture also the gh whose output `spec open` reads"""
     refused.begin()  # each refused key is said once per command, however often it loads the config
     head, passed = _split_gh(argv)
@@ -1216,6 +1219,7 @@ def main(
             home_reader=GhReader(root) if has_gh else None,
             home=user_home,
             session_app=session_app_on_host(key, user_home, hub_signer, hub_api, lambda: dt.datetime.now(dt.UTC)),
+            rules=lambda: rules_reader or (GhRules(root) if has_gh else None),
         )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")

@@ -60,6 +60,8 @@ from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.gitrepo import REMOTE, Git
 from shipmill.hooks import HookTest
 from shipmill.land import BLOCKING_BRANCH, WORK_PREFIX, blocked
+from shipmill.landing import ROW as LANDING
+from shipmill.landing import Branch, Landing, RulesReader, land_environment, landing_checks
 from shipmill.plugin import PLUGIN, USER_UPDATE, Fetch, GateCli, PyPI, publish_fix
 from shipmill.plugin import pypi as ask_pypi
 from shipmill.policy import BumpFrom, Lane, Mode, Policy, VersionFiles
@@ -70,7 +72,7 @@ from shipmill.requires import Requires
 from shipmill.requires import check as check_requires
 from shipmill.stamp import project_version
 from shipmill.upgrades import offers, pending
-from shipmill.version import Version
+from shipmill.version import Part, Version
 
 CALLER = Path(".github") / "workflows" / "release.yml"
 DIRECTION_GUIDE = "https://github.com/shipmill/shipmill/blob/main/docs/direction.md"  # the direction, for people
@@ -223,6 +225,7 @@ def doctor(
     now: dt.datetime | None = None,
     home: Path | None = None,
     session_app: SessionApp | None = None,
+    rules: Callable[[], RulesReader | None] | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -245,7 +248,9 @@ def doctor(
     repo has a launchd job on this host, and now times the token's age. home is the user's
     home, where the hooks block looks for the App's key (spec 033); None takes Path.home().
     session_app reads [agents] app_id's installation on repo for its optional permissions
-    (D-77); None, or a probe without the key, checks none"""
+    (D-77); None, or a probe without the key, checks none. rules builds the reader of the branch
+    rules the landing row reads (spec 054), only with a release workflow and releases on; None
+    checks none, and a builder that returns None (no gh) reports that it can't read them"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -397,6 +402,8 @@ def doctor(
             ci = root / ".github" / "workflows" / m["file"]
             ok = ci.is_file() and _takes_input(ci.read_text(encoding="utf-8"), "workflow_call", "ref")
             add(ok, "ci", f"{m['file']} runs on workflow_call with a 'ref' input to check out")
+        if rules is not None and policy.mode is not Mode.OFF:  # spec 054, D-9: only where land pushes
+            checks.extend(_landing(policy, text, stable, repo, rules()))
     for rule in policy.lanes.values():
         for key, workflows in (("dispatch", rule.dispatch), ("after_publish", rule.after_publish)):
             for workflow in workflows:
@@ -1367,6 +1374,21 @@ def _job_grants(text: str, workflow: str, permission: str) -> bool | None:
             grant = rf"^\s+(?:{permission}:\s*write|permissions:\s*write-all)\b"
             return re.search(grant, job, re.MULTILINE) is not None
     return None
+
+
+def _landing(
+    policy: Policy, caller: str, stable: list[Version], repo: str | None, reader: RulesReader | None
+) -> list[Check]:
+    """Spec 054's landing row: the default branch, and release/<series> of the newest stable
+    tag with a hotfix lane, read for rules that refuse land's push, and the tag rulesets that
+    match the next release tag; a failed read is a WARN, never a crash"""
+    branches = [Branch(policy.branch, release=False)]
+    if Lane.HOTFIX in policy.lanes and stable:
+        branches.append(Branch(f"release/{max(stable).series}", release=True))
+    next_tag = max(stable).bump(Part.PATCH).tag if stable else Version(0, 1, 0).tag
+    app_id = None if policy.agents is None else policy.agents.app_id
+    found = Landing(repo, policy.branch, tuple(branches), next_tag, land_environment(_uncommented(caller)), app_id)
+    return [Check(status, LANDING, detail) for status, detail in landing_checks(found, reader)]
 
 
 def _work_branch(git: Git) -> Check:
