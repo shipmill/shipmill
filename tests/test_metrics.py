@@ -336,6 +336,13 @@ def test_the_markdown_form_is_a_table(mx: ModuleType) -> None:
     assert "| Deploy frequency | no data |" in text
 
 
+def test_the_table_form_aligns_its_value_column(mx: ModuleType) -> None:
+    w = window(mx)
+    found = mx.measures(data(mx), w)
+    rows = mx.render("o/r", 30, w, found, "table").splitlines()[1:]
+    assert len({row.index(m.text, len(m.name)) for row, m in zip(rows, found, strict=True)}) == 1
+
+
 # -- fetch, against a fake GraphQL runner ---------------------------------------------------------
 
 

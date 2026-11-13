@@ -918,7 +918,8 @@ def render(repo: str, days: int, window: Window, found: list[Measure], form: str
         ]
         return "\n".join(lines)
     head = f"{repo}: the {days} days to {window.end:%Y-%m-%d %H:%M} UTC"
-    return "\n".join([head, *(f"{m.name:<22} {m.text:<32} {m.detail}" for m in found)])
+    wide = max((len(m.name) for m in found), default=0)
+    return "\n".join([head, *(f"{m.name:<{wide}} {m.text:<32} {m.detail}" for m in found)])
 
 
 def until(text: str, now: dt.datetime) -> dt.datetime:
