@@ -1,6 +1,6 @@
 # S-057: A decision level for part of a zone, by path
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -171,3 +171,16 @@ The table is optional, so no config fails and no spec 014 upgrade is needed. A r
 - shipmill/shipmill#1076: S-057-11, S-057-12
 
 ## Verification
+
+- S-057-1: read `decide.py`'s `_parts` and `Part.record`/`Part.text`, and ran tests/test_decide_parts.py: the part is kept, `decide levels --json` lists it under `security` with `"paths": []` elsewhere, and the text prints its `part` line, holds
+- S-057-2: read `_parts` and `_part_zone`'s refusals and ran tests/test_decide_parts.py: a non-table `paths` or zone table, `scope`, `contract-change`, `decision-policy`, `release`, an unknown zone (listing the three), and a value that is no level each exit 2 naming the key, holds
+- S-057-3: read `_part_floor_problem` and ran tests/test_decide_parts.py: `security` and `direction` parts at `act` are refused naming the floor; `security` at `notify` and `protected` at `never` and `act` parse, holds
+- S-057-4: read `_glob_problem` and ran tests/test_decide_parts.py: an empty, absolute, or `..` glob, a `security` glob outside `.github/`, and a `direction` glob outside `docs/product.md` and `docs/product/` exit 2, holds
+- S-057-5: ran tests/test_decide_cli.py's S-057-5 tests: `classify --files .github/workflows/ci.yml --json` reports `security` at `notify` with the part's `paths` entry, and `.github/CODEOWNERS` reads `ask` with `source` `default` and `glob` `null`, holds
+- S-057-6: ran tests/test_decide_cli.py's S-057-6 tests: both paths read `ask`, two matching globs give the stricter `ask`, and a `protected` part at `ask` raises its path above `protected = "notify"`, holds
+- S-057-7: ran tests/test_decide_cli.py's S-057-7 test: `--files src/x.py` with only a `protected` part reports no zone and `"level": null`, holds
+- S-057-8: ran tests/test_decide_cli.py's S-057-8 test: a pull request adding the part is judged by the base, `security` at `ask` and `decision-policy` at `never`, holds
+- S-057-9: ran tests/test_pr_gate.py's S-057-9 tests: a `protected` part at `never` prints `MAINTAINER_ONLY` and exits 7; a `security` part at `notify` keeps the CI verdict and prints a `notify:` line, holds
+- S-057-10: ran tests/test_decisions_parts.py: `policy()` reads valid parts with the zone levels unchanged, raises `LogError` for each malformed part, and its 3.10 reader raises "use 3.11+", holds
+- S-057-11: ran `shipmill doctor` on this repo's config with two `security` parts (`notify`, `never`) added: one `part [decisions.paths.security] "<glob>" <level>` PASS each, and one WARN for the `notify` part naming `notify` and the default `ask`; tests/test_doctor_decisions.py's S-057-11 tests also cover no part line without parts or without `[agents]`, holds
+- S-057-12: read the "Who decides" sections of `docs/flow.md` and `needs-decision.md`, which name `[decisions.paths.<zone>]`, `direction`, `security`, and `protected`, and that the strictest level among a change's paths wins, and ran tests/test_who_decides.py, holds

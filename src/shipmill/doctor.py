@@ -41,7 +41,7 @@ from shipmill.claude_token import FLAG as TOKEN_FLAG
 from shipmill.claude_token import MAX_AGE, SETUP, Credential, Kind, Token
 from shipmill.config import config_path, policy_branch
 from shipmill.config import read as read_config
-from shipmill.decide import VETO_HOURS_KEY, Zone, zones
+from shipmill.decide import PART_ZONES, VETO_HOURS_KEY, DecisionPolicy, Zone, zones
 from shipmill.downstream import (
     INPUTS,
     RUN_NAME_RULE,
@@ -497,6 +497,7 @@ def decisions_checks(policy: Policy, raw: Mapping[str, Any], github: GitHub | No
             " less there than shipmill ships; delete the key to restore the default"
         )
         checks.append(Check("WARN", DECISIONS_SECTION, detail))
+    checks.extend(_part_checks(decisions))
     if agents.app_id is None:
         detail = (
             "no [agents] app_id (hooks: app-writes off), so a never zone holds by the skills and pr_gate.py only:"
@@ -505,6 +506,26 @@ def decisions_checks(policy: Policy, raw: Mapping[str, Any], github: GitHub | No
         )
         checks.append(Check("WARN", DECISIONS_SECTION, detail))
     checks.append(_decided_label(github, agents.app_id is not None))
+    return checks
+
+
+def _part_checks(decisions: DecisionPolicy) -> list[Check]:
+    """S-057-11: one PASS per part of a zone, naming its zone, glob, and level, then a WARN for
+    each part set below its zone's default, naming both levels; nothing without parts (D-9)"""
+    parts = [part for zone in PART_ZONES for part in decisions.parts_of(zone)]
+    checks = [
+        Check("PASS", DECISIONS_SECTION, f'part [{DECISIONS_SECTION}.paths.{part.zone}] "{part.glob}" {part.level}')
+        for part in parts
+    ]
+    for part in parts:
+        default = zones()[part.zone].default
+        if part.level.below(default):
+            detail = (
+                f'[{DECISIONS_SECTION}.paths.{part.zone}] "{part.glob}" = "{part.level}" is below {part.zone}\'s'
+                f" default {default}, so agents involve you less on those paths than shipmill ships; delete the"
+                " glob to give them the zone's level"
+            )
+            checks.append(Check("WARN", DECISIONS_SECTION, detail))
     return checks
 
 
