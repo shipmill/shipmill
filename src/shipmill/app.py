@@ -17,6 +17,10 @@ its `[product] repos` lists under one owner, and the home repo itself when it ha
 (#1032), with PRODUCT_PERMISSIONS, cached apart in
 `app-token-product-<owner>.json`. It never reaches the session's cache or helpers, so a push
 from the coordinator's session still reaches only the home repo.
+
+A component has a third (spec 065, D-84): over its home and the repos the home lists, of one
+owner, with READ_PERMISSIONS, cached apart in `app-token-read-<owner>.json`; it too never
+reaches the session's cache or helpers.
 """
 
 import base64
@@ -104,6 +108,15 @@ OPTIONAL_PERMISSIONS = (
 PRODUCT_PERMISSIONS = (
     Permission("contents", "Contents", Access.READ),
     Permission("issues", "Issues", Access.WRITE),
+    Permission("pull_requests", "Pull requests", Access.READ),
+    Permission("metadata", "Metadata", Access.READ),
+)
+
+# Spec 065, D-84: a component's read token, over its product's other repos: it reads their code,
+# issues, and pull requests, and writes nothing anywhere
+READ_PERMISSIONS = (
+    Permission("contents", "Contents", Access.READ),
+    Permission("issues", "Issues", Access.READ),
     Permission("pull_requests", "Pull requests", Access.READ),
     Permission("metadata", "Metadata", Access.READ),
 )
@@ -889,9 +902,23 @@ def save_product_token(path: Path, token: ProductToken) -> None:
     write_atomic(path, (json.dumps(record, indent=2) + "\n").encode(), 0o600)
 
 
-def _product_scope(data: Mapping[str, object], repos: tuple[str, ...], path: str) -> None:
-    """S-038-6, mirroring `_scope`: GitHub's answer covers exactly the asked repos and grants
-    no permission broader than PRODUCT_PERMISSIONS (a key not asked, or write where read was)"""
+@dataclass(frozen=True, slots=True)
+class _Kind:
+    """Which of the tokens over several repos is minted: its permissions, and whose it is, as a
+    refusal names it"""
+
+    table: tuple[Permission, ...]
+    whose: str
+
+
+_PRODUCT = _Kind(PRODUCT_PERMISSIONS, "the coordinator asks (D-47)")
+_READ = _Kind(READ_PERMISSIONS, "a component's read token asks (D-84)")
+
+
+def _product_scope(data: Mapping[str, object], repos: tuple[str, ...], path: str, kind: _Kind = _PRODUCT) -> None:
+    """S-038-6, S-065-4, mirroring `_scope`: GitHub's answer covers exactly the asked repos and
+    grants no permission broader than the kind's table (a key not asked, write where read was,
+    or admin)"""
     listed = data.get("repositories")
     names: list[str] = []
     if isinstance(listed, list):
@@ -906,34 +933,33 @@ def _product_scope(data: Mapping[str, object], repos: tuple[str, ...], path: str
     granted = data.get("permissions")
     if not isinstance(granted, dict):
         raise ReleaseError(f"POST {path} gave a token without its permissions; refusing it")
-    table = {p.key: p.access for p in PRODUCT_PERMISSIONS}
+    table = {p.key: p.access for p in kind.table}
     for key, value in granted.items():
         access = _ACCESS.get(value) if isinstance(value, str) else None
         wanted = table.get(key) if isinstance(key, str) else None
         if access is None or wanted is None or not wanted.covers(access) or value == "admin":
-            raise ReleaseError(
-                f"POST {path} gave a token with {key}: {value}, broader than the coordinator asks (D-47); refusing it"
-            )
+            raise ReleaseError(f"POST {path} gave a token with {key}: {value}, broader than {kind.whose}; refusing it")
 
 
 def mint_product(
-    app_id: int, repos: tuple[str, ...], key: Path, now: dt.datetime, signer: Signer, api: Api
+    app_id: int, repos: tuple[str, ...], key: Path, now: dt.datetime, signer: Signer, api: Api, kind: _Kind = _PRODUCT
 ) -> ProductToken:
-    """Spec 038: one installation token over repos, all of one owner, asking PRODUCT_PERMISSIONS.
-    Each repo's installation must grant them (NotInstalled and Lacks name the repo), and all must
-    be the one installation of the App on that owner"""
+    """Spec 038: one installation token over repos, all of one owner, asking PRODUCT_PERMISSIONS
+    (spec 065: READ_PERMISSIONS for a component's read token). Each repo's installation must
+    grant them (NotInstalled and Lacks name the repo), and all must be the one installation of
+    the App on that owner"""
     owners = {r.partition("/")[0].lower() for r in repos}
     if not repos or len(owners) != 1 or not all(is_plain_repo(r) for r in repos):
         raise ReleaseError(f"a product token covers owner/name repos of one owner; got {', '.join(repos) or 'none'}")
     bearer = jwt(app_id, check_key(key), now, signer)
     slug = app_slug(app_id, bearer, api)
-    ids = {installed(app_id, slug, repo, bearer, api, PRODUCT_PERMISSIONS).id for repo in repos}
+    ids = {installed(app_id, slug, repo, bearer, api, kind.table).id for repo in repos}
     if len(ids) != 1:
         raise ReleaseError(f"app {slug} has more than one installation over {', '.join(repos)}; refusing the token")
     path = f"/app/installations/{ids.pop()}/access_tokens"
     body = {
         "repositories": [repo_name(r) for r in repos],
-        "permissions": {p.key: str(p.access) for p in PRODUCT_PERMISSIONS},
+        "permissions": {p.key: str(p.access) for p in kind.table},
     }
     data = _ok(api.post(path, bearer, body), path, app_id, "POST", 201)
     value = data.get("token")
@@ -942,7 +968,7 @@ def mint_product(
     expires = _expiry(data.get("expires_at"))
     if expires is None:
         raise ReleaseError(f"POST {path} gave no expires_at with an offset")
-    _product_scope(data, repos, path)
+    _product_scope(data, repos, path, kind)
     return ProductToken(value, expires, repos, app_id)
 
 
@@ -958,6 +984,33 @@ def product_token(
     fresh = mint_product(app_id, repos, key, now, signer, api)
     save_product_token(cache, fresh)
     return fresh.value
+
+
+def read_cache(owner: str) -> str:
+    """Spec 065: a component's read token's cache for owner's repos, beside the session's
+    `app-token.json` and the coordinator's `app-token-product-<owner>.json`, never either"""
+    if not _plain(owner):
+        raise ReleaseError(f"the owner is letters, digits, '.', '-', or '_'; got {owner!r}")
+    return f"app-token-read-{owner.lower()}.json"
+
+
+def cached_read_token(cache: Path, needed: tuple[str, ...], app_id: int, now: dt.datetime) -> ProductToken | None:
+    """S-065-5: the cached read token while the same App minted it, it has at least 10 minutes
+    left, and it covers every repo needed; else None. The home's list isn't read for it, so a
+    repo the home drops stays readable until the token expires"""
+    cached = load_product_token(cache)
+    if cached is None or cached.app_id != app_id or cached.expires - now < REUSE_FOR:
+        return None
+    covered = {r.lower() for r in cached.repos}
+    return cached if all(r.lower() in covered for r in needed) else None
+
+
+def mint_read(
+    app_id: int, repos: tuple[str, ...], key: Path, now: dt.datetime, signer: Signer, api: Api
+) -> ProductToken:
+    """Spec 065: one installation token over repos, all of one owner, asking READ_PERMISSIONS;
+    refused, never returned, when GitHub's answer covers other repos or grants more (S-065-4)"""
+    return mint_product(app_id, repos, key, now, signer, api, _READ)
 
 
 def contents(repo: str, file: str, token: str, api: Api) -> str | None:

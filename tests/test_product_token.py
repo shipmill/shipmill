@@ -1,7 +1,8 @@
 """Spec 038, The coordinator's second token: `shipmill app-token --product` and `shipmill gh
 --product` in the product's home repo, the scope check on GitHub's answer, the token's own
 cache, the gate's check of the App on every listed repo, and a repo never naming itself
-(S-038-3, S-038-5 to S-038-10). No test reaches the network: GitHub is ProductApi"""
+(S-038-3, S-038-5 to S-038-9), and a component's --product kept off the coordinator's path
+(S-065-6, S-065-7). No test reaches the network: GitHub is ProductApi"""
 
 import datetime as dt
 import json
@@ -706,24 +707,26 @@ def test_s038_9_gh_without_product_is_unchanged_in_the_home_repo(tmp_path: Path,
     assert not product_cache_of(root).exists()
 
 
-# -- S-038-10 --------------------------------------------------------------------------------
+# -- S-065-6, S-065-7 (S-038-10 dropped) -----------------------------------------------------
 
 COMPONENT = WITH_APP + '\n[product]\nhome = "romamo/product"\n'
 
 
-def test_s038_10_gh_product_in_a_component_exits_2_naming_d47_before_a_token(tmp_path: Path, host: Host) -> None:
+def test_s065_6_gh_product_naming_the_component_itself_exits_2_naming_d84_before_a_token(
+    tmp_path: Path, host: Host
+) -> None:
     root = checkout(tmp_path, COMPONENT)
     api, runner = ProductApi(), Runner()
-    with pytest.raises(ReleaseError, match="--product is the coordinator's.*D-47"):
+    with pytest.raises(ReleaseError, match="names this checkout's own repo.*D-84"):
         gh(root, tmp_path, ["--product", REPO, "issue", "list"], host, api, runner)
     assert (api.calls, api.posts, runner.calls) == ([], [], [])
 
 
-def test_s038_10_app_token_product_in_a_component_exits_2_naming_d47_before_a_token(
+def test_s065_7_app_token_product_in_a_component_exits_2_naming_d84_before_a_token(
     tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = checkout(tmp_path, COMPONENT)
     api = ProductApi()
-    with pytest.raises(ReleaseError, match="--product is the coordinator's.*D-47"):
+    with pytest.raises(ReleaseError, match="app-token --product is the coordinator's.*D-84"):
         token(root, tmp_path, "romamo/product", api, host)
     assert (api.calls, api.posts, capsys.readouterr().out) == ([], [], "")
