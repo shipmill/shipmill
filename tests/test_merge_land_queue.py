@@ -15,6 +15,9 @@ from shipmill.merge_gate import unlabel_args
 from .conftest import POLICY, Repo
 from .test_app import REPO
 from .test_app_gh_merge import CODE, WITH_APP, FakeGate, FakeReads, Reader, Runner, connected, gh, pinned_to, verdict
+from .test_credit import CreditReader, FakeCredit, approved
+from .test_decider_token import ACCESS, ASSISTED, EnvRunner, store
+from .test_decider_token import gh as decider_gh
 
 WINDOW = '\n[land.window]\ntimezone = "UTC"\nlabels = ["rollout:high"]\n'
 HELD = verdict("QUEUED") + "\n  queued: held by the land window (rollout:high); opens 2026-11-14 09:00 UTC\n"
@@ -160,6 +163,18 @@ def test_s056_8_queued_with_another_exit_is_refused_without_a_label(repo: Repo, 
     runner, refused = merge(repo, tmp_path, MERGES[0], gate, capture)
     assert isinstance(refused, str) and "reads #7 QUEUED (exit 2)" in refused
     assert (runner.calls, capture.calls) == ([], [])
+
+
+def test_s056_8_a_merge_written_as_the_decider_removes_the_label_as_the_app(
+    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    key = connected(repo, tmp_path, ASSISTED + WINDOW)
+    store(tmp_path)
+    runner, capture = EnvRunner(capsys), Capture()
+    reader = CreditReader(FakeCredit(reviews=[approved("octocat", "MEMBER")]))
+    code = decider_gh(repo, tmp_path, key, MERGES[0], runner, reader, labels=("land-queued",), capture=capture)
+    assert code == 0 and runner.token == ACCESS  # the merge went out as the decider (D-65)
+    assert sent(capture) == [REMOVE]  # the label as the App's token, never the decider's (D-54)
 
 
 def test_s056_8_a_label_is_quoted_in_the_removals_path() -> None:
