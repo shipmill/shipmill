@@ -38,7 +38,7 @@ The release side's zones (`release`, `breaking-release`, `deploy`, `rollback`, `
    - **`act`:** go on. No question, no decided comment
    - **`notify`:** post the [decided comment](#a-decided-comment), add the `decided` label, and go on
    - **`ask`:** post the needs-decision question ([Asking](#asking)) with its [zone line](#the-zone-line), and leave the item
-   - **`never`:** prepare what helps (a pull request, an issue with the evidence), assign it to the maintainer, label it `role:maintainer` (a person's item, spec 036; the older `human` label reads the same but isn't written), say in one comment what the maintainer does by hand, and leave it. A reply never moves it: no answer in the session or on GitHub lets the agent take the step. `pr_gate.py` reads such a pull request as MAINTAINER_ONLY (exit 7), which `--maintainer-accepted` doesn't lift, and `shipmill gh pr merge` refuses it with exit 2
+   - **`never`:** prepare what helps (a pull request, an issue with the evidence), assign it to the maintainer, label it `role:maintainer` (a person's item, spec 036; the older `human` label reads the same but isn't written), say in one comment what the maintainer does by hand, and leave it. A reply never moves it: no answer in the session or on GitHub lets the agent take the step. `pr_gate.py` reads such a pull request as MAINTAINER_ONLY (exit 7), which no answer lifts, and `shipmill gh pr merge` refuses it with exit 2
 
 A session a person started by hand still asks in the session for `ask`, with AskUserQuestion as usual; `never` holds there too, even when the person says yes.
 

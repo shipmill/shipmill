@@ -1,0 +1,3 @@
+### Added
+
+- github-pr-triage: `pr_gate.py` reads a pull request whose body carries the agent marker on a line of its own as an agent's, whoever opened it, and an agent's pull request that changes code and would read READY reads UNREVIEWED, exit 9, until a review record covers its head: the App's review whose first line is `<!-- shipmill:review merge -->`, or a trusted person's approval, at that head or one with the same own change; `shipmill review record <n> --head <sha> --verdict merge|refuse --body-file <file>` posts that record as the App, and the skills record the reviewed head with it, read the maintainer's answer instead of passing `--maintainer-accepted`, and open a pull request with its plan in the body (#1090)
