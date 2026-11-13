@@ -260,6 +260,7 @@ PULLS = f"repos/{REPO}/pulls"
         ["--method=post", f"{PULLS}/", "--field", f"body={NO_PLAN}"],
         [PULLS, "--raw-field", f"body={NO_PLAN}"],
         [f"https://api.github.com/{PULLS}?x=1", "-f", f"body={NO_PLAN}"],
+        [f"{PULLS}#x", "-f", f"body={NO_PLAN}"],  # gh's URL parser drops the fragment: a POST on pulls
         [f"repos/{REPO}/pull%73", "-f", f"body={NO_PLAN}"],  # percent-decoded as GitHub decodes it
         ["repos/{owner}/{repo}/pulls", "-f", f"body={NO_PLAN}"],
         ["-X", "POST", PULLS, "-f", "title=t"],  # no body: the marker alone, which has no plan

@@ -195,6 +195,7 @@ _METHOD_FLAGS = ("-X", "--method")
 _PULL_URL = re.compile(r"https?://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/pull/([1-9][0-9]*)(?:[/?#].*)?")
 _NUMBER = re.compile(r"#?([1-9][0-9]*)")
 _API_HOST = re.compile(r"^https?://api\.github\.com/", re.IGNORECASE)
+_QUERY = re.compile(r"[?#]")  # where an endpoint's path ends: its query or its fragment
 # GitHub reads the number with leading zeros (pulls/007 is #7), so they don't hide a merge
 _MERGE_PATH = re.compile(r"repos/([^/]+)/([^/]+)/pulls/0*([1-9][0-9]*)/merge/?")
 PLACEHOLDER = ("{owner}", "{repo}")  # gh api fills them with the current repo
@@ -774,8 +775,9 @@ def _field(name: str, value: str) -> str | None:
 
 
 def _endpoint(given: str) -> str:
-    """gh api's endpoint as GitHub reads it: no host, leading slash, or query, percent-decoded"""
-    return unquote(_API_HOST.sub("", given).lstrip("/").partition("?")[0])
+    """gh api's endpoint as GitHub reads it: no host, leading slash, query, or fragment (gh's URL
+    parser drops it), percent-decoded"""
+    return unquote(_QUERY.split(_API_HOST.sub("", given).lstrip("/"), maxsplit=1)[0])
 
 
 def _api_method(flags: Sequence[tuple[str, str]]) -> str:
