@@ -28,6 +28,8 @@ Every session in a repo whose `.github/shipmill.toml` has `[agents]`, a gate ses
 | `implementation` | work order, how a change splits into pull requests, internal design, refactors, tests, docs of existing behaviour |
 | `unknown` | a decision no other zone covers |
 
+The three zones code detects from a changed path, `direction`, `security`, and `protected`, may give part of their paths its own level: a glob under `[decisions.paths.<zone>]` with a level, above or below the zone's but never below its floor (spec 057). A part never adds a zone; it sets the level of a path the zone already covers, and the strictest level among a change's paths wins, which `shipmill decide classify` reports per path. `decide levels` lists each zone's parts under it.
+
 The release side's zones (`release`, `breaking-release`, `deploy`, `rollback`, `intake`, `upgrade`) and the agent stages (`triage`, `fix`, `land`, spec 040) take their levels from `[autonomy]` and D-39, and `decide levels` lists them too. Without `[agents]` there are no zones: the skills' own rules (the [design gate](design-gate.md)'s, the [spec gate](spec-gate.md)'s) say when to ask.
 
 ### Placing a decision
