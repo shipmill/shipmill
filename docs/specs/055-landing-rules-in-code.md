@@ -204,4 +204,10 @@ it opens the pull request with.
 
 ## Issues
 
+- shipmill/shipmill#1088: S-055-5, S-055-6, S-055-7, S-055-8, S-055-9, S-055-10, S-055-11
+- shipmill/shipmill#1090: S-055-12, S-055-13, S-055-14, S-055-15, S-055-16, S-055-18
+- shipmill/shipmill#1091: S-055-17
+- shipmill/shipmill#1093: S-055-1, S-055-2, S-055-3
+- shipmill/shipmill#1095: S-055-4
+
 ## Verification
