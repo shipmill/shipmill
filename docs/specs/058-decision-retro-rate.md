@@ -48,8 +48,8 @@ After this spec:
   over the last `--lower-after` windows number at least `--lower-min`, and at least
   `--lower-rate` percent of them took the recommended option
 - The proposal keeps its title, `Decision policy: <zone> from ask to notify`, and its `why`
-  names the counts and the thresholds: `18 of 20 answered questions (90%) over 4 windows took
-  the recommended option, at least 90% of at least 20`
+  names the counts and the thresholds: `9 of 10 answered questions (90%) over 4 windows took
+  the recommended option, at least 90% of at least 10`
 - `MIN_ASKS` goes; nothing else in the proposals changes. A zone at its floor is never
   proposed lower, and a zone at `notify` is never proposed `act`
 
@@ -58,10 +58,14 @@ New flags, as spec 030's and spec 027's thresholds are flags and not policy keys
 | Flag | Default | Means |
 |---|---|---|
 | `--lower-rate P` | 90 | the percent of answered questions that took the recommended option, 1 to 100 |
-| `--lower-min N` | 20 | the answered questions a zone needs over `--lower-after` windows, at least 1 |
+| `--lower-min N` | 10 | the answered questions a zone needs over `--lower-after` windows, at least 1 |
 | `--revert-days N` | 14 | how long after a decided marker a revert or reopening counts against it, at least 1 |
 
 A value out of range exits 2, as `--raise-at` and `--lower-after` do.
+
+`--lower-min` is 10, not 20. The retro counts per repo and per zone over 4 weekly windows, and
+a busy zone (`protected` on one repo) had 14 questions in 30 days, so 20 would almost never be
+reached. A lower level is still only a proposal the maintainer merges.
 
 Per zone, the report gains `answered_over_windows` beside `asks_over_windows` and
 `recommended_over_windows`, and `rate_over_windows`, the percent recommended of answered,
@@ -109,7 +113,7 @@ oldest window's start.
 ### The weekly retro
 
 The Weekly retro section of `skills/github-ship-watch/SKILL.md` keeps `--lower-rate` (90),
-`--lower-min` (20), and `--revert-days` (14) at their defaults unless the user names others,
+`--lower-min` (10), and `--revert-days` (14) at their defaults unless the user names others,
 and its Decisions section of the tracking comment shows per zone the rate over the windows
 and the decided items' outcomes, and one row for the questions with no zone line. A proposal
 issue's body cites the zone's rate and sample. The retro still never edits `[decisions]`.
@@ -124,10 +128,10 @@ zone's line in `[decisions]`.
 
 ## Acceptance criteria
 
-- S-058-1: `retro.py gather --decisions` proposes `<zone> from ask to notify` for a zone at `ask` above its floor whose answered questions over the `--lower-after` windows are 20 with 18 recommended (90%), with a `why` naming 18 of 20, 90%, and the thresholds; and proposes nothing for 17 of 20 (85%) or for 19 of 19 (below `--lower-min`)
+- S-058-1: `retro.py gather --decisions` proposes `<zone> from ask to notify` for a zone at `ask` above its floor whose answered questions over the `--lower-after` windows are 10 with 9 recommended (90%), with a `why` naming 9 of 10, 90%, and the thresholds; and proposes nothing for 17 of 20 (85%) or for 9 of 9 (below `--lower-min`)
 - S-058-2: A question with no answer yet is left out of `answered` and doesn't block a proposal; an answer that can't be read as an option, or one that departs from the recommended option, counts as answered and not recommended; a zone line's `answer=recommended` or `answer=other` counts as answered without reading the thread
 - S-058-3: A zone at its floor (`scope`, `rule-departure`, `unknown`) is never proposed lower at any rate, and a zone at `notify` is never proposed `act`
-- S-058-4: `--lower-rate`, `--lower-min`, and `--revert-days` default to 90, 20, and 14; `--lower-rate` 0 or 101, `--lower-min` 0, and `--revert-days` 0 exit 2
+- S-058-4: `--lower-rate`, `--lower-min`, and `--revert-days` default to 90, 10, and 14; `--lower-rate` 0 or 101, `--lower-min` 0, and `--revert-days` 0 exit 2
 - S-058-5: Per zone the JSON report gives `answered_over_windows` and `rate_over_windows`, the percent rounded down, `null` with no answered question
 - S-058-6: A trusted needs-decision question whose second line is no zone line is counted under `unzoned` (`asks`, `answered`, `recommended`, and `items` naming its kind and number), and under `all` with every zoned question; an untrusted author's question counts in neither; the text output prints a `no zone line:` line listing the items
 - S-058-7: A decided marker on an issue reopened within `--revert-days` after it counts `reverted` for its zone; one reopened later, or one with a trusted veto-handled marker for that zone, does not (the latter counts `vetoed`)
