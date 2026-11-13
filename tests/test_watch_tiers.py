@@ -701,5 +701,9 @@ def test_s056_9_the_full_reports_queue_waits_for_pypi_as_its_other_reads_do(ws: 
 def test_s056_10_a_queued_pull_request_whose_label_events_dont_add_it_stops_the_watch(ws: ModuleType) -> None:
     events = {"nodes": [{"createdAt": "2026-10-27T08:00:00Z", "label": {"name": "other"}}]}
     answer = {"data": {"repository": {"n5": {"title": "Five", "timelineItems": events}}}}
-    with pytest.raises(ws.Refused, match="o/r#5 carries rollout:queued but none of its newest 100 label events"):
+    with pytest.raises(
+        ws.Refused, match="o/r#5 carries rollout:queued but none of its newest 100 label events"
+    ) as raised:
         ws.queued_since("o/r", [5], QUEUED_LABEL, lambda cmd: json.dumps(answer))
+    # Q-1: the message names the fix, a label event the read can find
+    assert str(raised.value).endswith("remove rollout:queued from o/r#5 and add it again")

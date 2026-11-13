@@ -2959,7 +2959,8 @@ def queued_since(
             ]
             if not added:
                 raise Refused(
-                    f"error: {repo}#{n} carries {label} but none of its newest {LABELED_LAST} label events adds it"
+                    f"error: {repo}#{n} carries {label} but none of its newest {LABELED_LAST} label events adds it;"
+                    f" remove {label} from {repo}#{n} and add it again"
                 )
             found[n] = Queued(n, item["title"], max(added))
     return found
