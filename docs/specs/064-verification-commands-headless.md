@@ -62,7 +62,11 @@ first that fails names the result, and a command that fails step 1 or 2 is not r
    session in that worktree. The allow rules are `HEADLESS_TOOLS`, the values of the gate's
    `--claude-arg` `--allowedTools` and `--allowed-tools` flags, and `permissions.allow` of the
    settings files Claude Code reads for a session there (the user's `~/.claude/settings.json`,
-   the worktree's `.claude/settings.json` and `.claude/settings.local.json`); the deny rules are
+   the worktree's `.claude/settings.json`, and `.claude/settings.local.json` of the checkout
+   the gate sessions run in, since an untracked file never exists in a fresh worktree); the
+   commands inside a `$(...)` or backtick substitution are parts of their own, and the
+   wrappers Claude Code strips (`timeout`, `nohup`, `nice`, `command`, `xargs`) are stripped
+   before a part is matched (#1123); the deny rules are
    the `--disallowedTools` values and `permissions.deny` of the same files. A Bash rule matches
    a part as Claude Code documents: `Bash` or `Bash(*)` any part; `Bash(<prefix>:*)` a part
    that is the prefix or starts with it followed by a space; `Bash(<pattern>)` with `*`
@@ -71,7 +75,7 @@ first that fails names the result, and a command that fails step 1 or 2 is not r
    part and the rule
 2. **The delivery hook.** Each part goes to the delivery hook a gate session loads (the
    script the gate's hook self-test runs, spec 026) as a PreToolUse Bash input whose cwd is
-   the worktree, in an environment with `SHIPMILL_GATE=1` as a headless session's
+   the worktree, or the directory a `cd` in an earlier part set (#1123), in an environment with `SHIPMILL_GATE=1` as a headless session's
    `--settings` env sets it. An exit 2 is `refused by hook`, naming the rule from the hook's
    first stderr line (`shipmill hook <rule>: ...`), such as D-82's `uv-run`
 3. **The run.** The command runs through the shell the gate's environment names in `SHELL`
