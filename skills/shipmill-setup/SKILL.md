@@ -701,8 +701,12 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    as the `[agents]` section. For each goal you write, offer a measure from the registry
    of spec 027, `<metric> <comparison> <target>` with a comparison of `<`, `<=`, `>`, or
    `>=`: `deploy_frequency` (`<n>/week`), `lead_time_median`, `lead_time_p90`,
-   `time_to_restore_median`, `issue_to_release_median`, `issue_to_release_p90` (`<n>h` or
-   `<n>d`), `change_failure_rate`, `human_touch`, `agent_share` (`<n>%`), such as
+   `time_to_restore_median`, `issue_to_release_median`, `issue_to_release_p90`, and issue to
+   release by stage (spec 066) `issue_to_agent_comment_median`, `issue_to_agent_comment_p90`,
+   `issue_to_pr_median`, `issue_to_pr_p90`, `issue_to_pr_person_median`,
+   `issue_to_pr_person_p90`, `issue_to_pr_agent_median`, `issue_to_pr_agent_p90`,
+   `pr_to_merge_median`, `pr_to_merge_p90`, `merge_to_release_median`,
+   `merge_to_release_p90` (`<n>h` or `<n>d`), `change_failure_rate`, `human_touch`, `agent_share` (`<n>%`), such as
    `issue_to_release_median < 2d`. Write only the measures the maintainer gives, each with
    `$CR product measure G-n "<metric> <comparison> <target>"`, never by hand; a goal they
    give no measure gets none, and you never pick the metric or the target for them. Never invent a goal, a user, a non-goal, or a quality-bar

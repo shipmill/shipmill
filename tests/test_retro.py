@@ -7,7 +7,7 @@ import importlib.util
 import json
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -495,6 +495,165 @@ def test_s027_12_the_weekly_retro_reports_goals_and_proposes_but_never_edits_the
         "It never edits `docs/product.md` or `docs/product/`, never runs a `shipmill product` edit command"
         " (`add`, `edit`, `retire`, `measure`), and never opens a pull request that changes the direction"
     ) in retro
+
+
+# -- issue to release by stage (spec 066) --------------------------------------------------------
+
+STAGE_NAMES = ("Issue to PR opened", "PR opened to merged", "Merged to release")
+
+
+def staged_week(
+    end: dt.datetime,
+    release: tuple[float, float] | None,
+    lead: tuple[float, float] | None,
+    stages: Mapping[str, tuple[float, float] | None],
+    touch: float = 0.5,
+) -> dict[str, Any]:
+    """metrics.py's JSON with Issue to release, Lead time, Human touch, and the three stages
+    after an issue's opening, each (median, p90) or None for no data"""
+    found = [
+        hours_measure("Lead time for changes", *(lead or (None,))),
+        hours_measure("Issue to release", *(release or (None,))),
+        *(hours_measure(name, *(stages.get(name) or (None,))) for name in STAGE_NAMES),
+        ratio_measure("Human touch", touch),
+    ]
+    return report(end, *found)
+
+
+def goal(n: int, metric: str, comparison: str, target: float, unit: str = "hours") -> dict[str, Any]:
+    return {"id": f"G-{n}", "text": f"goal {n}", "measure": measure(metric, comparison, target, unit, f"{metric} x")}
+
+
+def goal_rows(
+    rt: ModuleType, tmp_path: Path, goals: list[dict[str, Any]], weeks: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    _, run = commands(entered=iso(END - dt.timedelta(days=100)))
+    src = sources(rt, run, graphql=graphql(rt, [], []), reports=[])
+    found = rt.goals_report(arguments(tmp_path), src, {"goals": goals}, weeks)
+    return {g["id"]: g for g in found["goals"]}
+
+
+def test_s066_8_metric_measures_maps_each_registry_metric_and_reads_metrics_py_json(
+    rt: ModuleType, tmp_path: Path
+) -> None:
+    from shipmill.product import Metric, Unit
+
+    from .test_metrics import data, staged, window
+
+    assert set(rt.METRIC_MEASURES) == {m.value for m in Metric}
+    stage_metrics = [m for m in Metric if m.value.startswith(("issue_to_agent_", "issue_to_pr", "pr_to_", "merge_to_"))]
+    assert len(stage_metrics) == 12 and all(m.unit is Unit.HOURS for m in stage_metrics)
+    mx = sys.modules["metrics"]  # loaded by retro, as when it runs
+    w = window(mx)
+    full = json.loads(mx.render("o/r", 30, w, mx.measures(staged(mx), w), "json"))
+    empty = json.loads(mx.render("o/r", 30, w, mx.measures(data(mx), w), "json"))
+    for metric in stage_metrics:
+        name, key = rt.METRIC_MEASURES[metric.value]
+        assert key == ("p90" if metric.value.endswith("_p90") else "value")
+        found = next(m for m in full["measures"] if m["measure"] == name)
+        value = float(found[key])
+        assert rt.status(measure(metric.value, "<=", value, "hours", "x"), full)[:2] == ("met", value)
+        assert rt.status(measure(metric.value, "<", value, "hours", "x"), full)[:2] == ("not met", value)
+        assert rt.status(measure(metric.value, "<", value, "hours", "x"), empty)[:2] == ("no data", None)
+
+
+def test_s066_9_a_missed_lead_time_goal_names_the_stage_that_grew_most(
+    rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # medians grow 2, 8, 1 h; p90s grow 15, 2, 9 h
+    now = {"Issue to PR opened": (10.0, 20.0), "PR opened to merged": (12.0, 30.0), "Merged to release": (8.0, 10.0)}
+    before = {"Issue to PR opened": (8.0, 5.0), "PR opened to merged": (4.0, 28.0), "Merged to release": (7.0, 1.0)}
+    weeks = [staged_week(END, (30.0, 60.0), (20.0, 40.0), now), staged_week(START, (19.0, 34.0), (8.0, 29.0), before)]
+    goals = [
+        goal(1, "issue_to_release_median", "<", 1.0),
+        goal(2, "issue_to_release_p90", "<", 1.0),
+        goal(3, "lead_time_median", "<", 1.0),
+        goal(4, "lead_time_p90", "<", 1.0),  # Issue to PR opened grew most, but isn't a lead-time stage
+    ]
+    rows = goal_rows(rt, tmp_path, goals, weeks)
+    assert {k: r["grew_most"] for k, r in rows.items()} == {
+        "G-1": {"measure": "PR opened to merged", "statistic": "median", "value": 12.0, "previous": 4.0, "change": 8.0},
+        "G-2": {"measure": "Issue to PR opened", "statistic": "p90", "value": 20.0, "previous": 5.0, "change": 15.0},
+        "G-3": {"measure": "PR opened to merged", "statistic": "median", "value": 12.0, "previous": 4.0, "change": 8.0},
+        "G-4": {"measure": "Merged to release", "statistic": "p90", "value": 10.0, "previous": 1.0, "change": 9.0},
+    }
+    text = rt.goals_text({"direction": True, "goals": list(rows.values()), **EMPTY_GOALS_REST})
+    assert "    grew most: PR opened to merged, median 4.0 h to 12.0 h" in text
+    assert "    grew most: Issue to PR opened, p90 5.0 h to 20.0 h" in text
+
+
+EMPTY_GOALS_REST: dict[str, Any] = {
+    "quality_bar": {"issues": [], "pulls": [], "previous": {"issues": 0, "pulls": 0}},
+    "off_direction": {
+        "postponed": [],
+        "wont_fix": [],
+        "top_non_goal": None,
+        "previous": {"postponed": 0, "wont_fix": 0, "top_non_goal": None},
+    },
+    "unlinked": [],
+}
+
+
+def test_s066_10_grew_most_skips_missing_stages_ties_to_the_earlier_and_is_null_when_none_compares(
+    rt: ModuleType,
+) -> None:
+    def week(end: dt.datetime, stages: Mapping[str, tuple[float, float] | None]) -> dict[str, Any]:
+        return staged_week(end, (30.0, 60.0), (20.0, 40.0), stages)
+
+    tie = {"Issue to PR opened": (10.0, 1.0), "PR opened to merged": (5.0, 1.0), "Merged to release": (9.0, 1.0)}
+    was = {"Issue to PR opened": (4.0, 1.0), "PR opened to merged": (4.0, 1.0), "Merged to release": (3.0, 1.0)}
+    assert rt.grew_most("issue_to_release_median", week(END, tie), week(START, was))["measure"] == "Issue to PR opened"
+    # Issue to PR opened grew most but has no data the week before; Merged to release none this week
+    missing = {**was, "Issue to PR opened": None}
+    found = rt.grew_most("issue_to_release_median", week(END, {**tie, "Merged to release": None}), week(START, missing))
+    assert found == {
+        "measure": "PR opened to merged",
+        "statistic": "median",
+        "value": 5.0,
+        "previous": 4.0,
+        "change": 1.0,
+    }
+    shrunk = rt.grew_most("lead_time_median", week(END, was), week(START, tie))  # every stage shrank: the least
+    assert (shrunk["measure"], shrunk["change"]) == ("PR opened to merged", -1.0)
+    assert rt.grew_most("issue_to_release_p90", week(END, tie), week(START, {})) is None
+    assert rt.grew_most_text(None) == "grew most: no stage to compare"
+
+
+def test_s066_10_grew_most_is_absent_unless_a_lead_time_goal_is_missed(
+    rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    now = {"Issue to PR opened": (10.0, 20.0), "PR opened to merged": (12.0, 30.0), "Merged to release": (8.0, 10.0)}
+    weeks = [staged_week(END, (30.0, 60.0), None, now), staged_week(START, (200.0, 300.0), None, {})]
+    goals = [
+        goal(1, "issue_to_release_median", "<", 100.0),  # met
+        goal(2, "lead_time_median", "<", 1.0),  # no data
+        goal(3, "human_touch", "<=", 0.1, "ratio"),  # not met, not a lead-time metric
+        goal(4, "pr_to_merge_median", "<", 1.0),  # not met, a stage, not a lead-time metric
+        goal(5, "issue_to_release_p90", "<", 1.0),  # not met, no stage the week before
+    ]
+    rows = goal_rows(rt, tmp_path, goals, weeks)
+    assert [r["status"] for r in rows.values()] == ["met", "no data", "not met", "not met", "not met"]
+    assert [k for k, r in rows.items() if "grew_most" in r] == ["G-5"]
+    assert rows["G-5"]["grew_most"] is None
+    text = rt.goals_text({"direction": True, "goals": list(rows.values()), **EMPTY_GOALS_REST})
+    assert text.count("    grew most: no stage to compare") == 1
+    assert sum("grew most" in line for line in text) == 1
+
+
+def test_s066_11_the_retro_and_setup_skills_name_the_grew_most_line_and_the_stage_metrics() -> None:
+    from shipmill.product import Metric
+
+    skill = (SCRIPTS.parent / "SKILL.md").read_text(encoding="utf-8")
+    retro = " ".join(skill.split("## Weekly retro\n", 1)[1].split("\n## ", 1)[0].split())
+    goals_row = retro.split("a section **Goals**: a row per goal (", 1)[1].split("), then the quality-bar row", 1)[0]
+    assert "`grew most: <measure>, <statistic> <previous> to <value>`" in goals_row
+    assert "`grew most: no stage to compare`" in goals_row
+    setup = " ".join((SCRIPTS.parents[1] / "shipmill-setup" / "SKILL.md").read_text(encoding="utf-8").split())
+    offered = setup.split("offer a measure from the registry", 1)[1].split("Write only the measures", 1)[0]
+    stages = [m.value for m in Metric if m.value.startswith(("issue_to_agent_", "issue_to_pr", "pr_to_", "merge_to_"))]
+    assert len(stages) == 12
+    for metric in stages:
+        assert f"`{metric}`" in offered, metric
 
 
 # -- the report per zone of the decision policy (spec 030) ---------------------------------------
