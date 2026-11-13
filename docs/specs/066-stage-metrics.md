@@ -1,6 +1,6 @@
 # S-066: Issue to release by stage
 
-status: approved
+status: built
 serves: G-7, G-1
 
 ## Problem
@@ -132,5 +132,14 @@ goal's measure is a lead-time metric and reads **not met**, the goal's entry gai
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+- S-066-1: ran `metrics.py shipmill/shipmill --days 7 --json` on 2026-11-13; the six stage measures follow Issue to release in order, each in `hours` with `value`, `p90`, and `count`, and Issue to PR opened, person-filed reads "no data" with a null value (every counted issue was agent-filed); holds
+- S-066-2: read `metrics.py`'s stage code: every stage reads the same counted issues and pull request Issue to release does (`closed_issues`), and the earliest-release, earliest-merge pick is asserted over the scripted forge; holds
+- S-066-3: on the same live run, Issue to release, Issue to PR opened, PR opened to merged, and Merged to release all counted the same 39 issues, and the per-issue sum is asserted over the scripted forge, a pull request opened before its issue included; holds
+- S-066-4: the live run counted Issue to first agent comment over the 39 issues (median 0.2 h); the marker, Bot, `[bot]`, and `--bot` cases and the left-out count are read in the code and its test; holds
+- S-066-5: the live run gave agent-filed 39 and person-filed no data, summing to Issue to PR opened's 39; holds
+- S-066-6: the live run read only through gh; the paging that stops at the first agent comment is asserted by its tests, not seen live; holds
+- S-066-7: wrote a direction with a goal per stage metric (`h` and `d` targets) and ran `shipmill product check` (well formed) and `product show --section goals --json` (unit `hours`, `1d` as 24); a `20%` and a `5/week` target exit 1 naming the line and the rule; holds
+- S-066-8: fed the live run's JSON to `retro.py`'s `status` for each stage metric at `< 1h`: met, not met (`issue_to_pr_p90`, 14.4 h), and no data (`issue_to_pr_person_*`); holds
+- S-066-9: ran `retro.py`'s `grew_most` over the live runs for this week and the week before: `issue_to_release_median` named Issue to PR opened, `issue_to_release_p90` Merged to release, and the `lead_time_*` metrics only PR opened to merged or Merged to release; holds
+- S-066-10: the skip, tie, null, and absent cases are asserted through `goals_report` over scripted weeks; holds
+- S-066-11: read the Weekly retro's Goals row in github-ship-watch's SKILL.md (the `grew most:` line) and shipmill-setup's registry list (the twelve stage metrics); holds

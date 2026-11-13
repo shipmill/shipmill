@@ -22,7 +22,9 @@ gather   runs metrics.py over the --days to now and over the --days before that,
          the `serves:` of a spec listing it under Issues; a pull request by its `## Plan`
          `Serves:`); its measure met, not met, no data, or no measure, from metrics.py, and
          the weeks in a row it was met (metrics.py runs for earlier weeks, up to
-         --met-weeks, only while a measured goal is still met); stalled when nothing served
+         --met-weeks, only while a measured goal is still met); for a not-met
+         issue_to_release_* or lead_time_* measure, grew_most: the stage whose same statistic
+         grew most in hours from the week before (spec 066); stalled when nothing served
          it in each of the last --stalled-weeks weeks, unless its id entered the direction
          (git log in DIR) fewer weeks ago. Then the `quality bar` row, the off-direction
          verdicts (postponed for no goal, won't fix for a non-goal, the most-cited N-n, ties
@@ -68,7 +70,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from metrics import PULL_COMMITS, Runner, Variables, agent_made, dig, gh_graphql, pages, pull_commits, sized
+from metrics import PULL_COMMITS, Runner, Variables, agent_made, dig, gh_graphql, pages, pull_commits, sized, span
 
 METRICS = Path(__file__).resolve().parent / "metrics.py"
 PR_LIMIT = 500  # closed pull requests in one window; more is refused, not truncated
@@ -285,8 +287,30 @@ METRIC_MEASURES = {
     "issue_to_release_p90": ("Issue to release", "p90"),
     "human_touch": ("Human touch", "value"),
     "agent_share": ("Agent share", "value"),
+    # Issue to release by stage (spec 066)
+    "issue_to_agent_comment_median": ("Issue to first agent comment", "value"),
+    "issue_to_agent_comment_p90": ("Issue to first agent comment", "p90"),
+    "issue_to_pr_median": ("Issue to PR opened", "value"),
+    "issue_to_pr_p90": ("Issue to PR opened", "p90"),
+    "issue_to_pr_person_median": ("Issue to PR opened, person-filed", "value"),
+    "issue_to_pr_person_p90": ("Issue to PR opened, person-filed", "p90"),
+    "issue_to_pr_agent_median": ("Issue to PR opened, agent-filed", "value"),
+    "issue_to_pr_agent_p90": ("Issue to PR opened, agent-filed", "p90"),
+    "pr_to_merge_median": ("PR opened to merged", "value"),
+    "pr_to_merge_p90": ("PR opened to merged", "p90"),
+    "merge_to_release_median": ("Merged to release", "value"),
+    "merge_to_release_p90": ("Merged to release", "p90"),
 }
 MET, NOT_MET, NO_DATA, NO_MEASURE = "met", "not met", "no data", "no measure"
+# A lead-time metric's stages (spec 066), in order: a not-met goal names the one that grew most
+ISSUE_STAGES = ("Issue to PR opened", "PR opened to merged", "Merged to release")
+LEAD_TIME_STAGES = {
+    "issue_to_release_median": ISSUE_STAGES,
+    "issue_to_release_p90": ISSUE_STAGES,
+    "lead_time_median": ISSUE_STAGES[1:],
+    "lead_time_p90": ISSUE_STAGES[1:],
+}
+STATISTICS = {"value": "median", "p90": "p90"}
 
 ISSUES = """
 query($owner: String!, $name: String!, $size: Int!, $cursor: String, $since: DateTime!) {
@@ -627,6 +651,32 @@ def status(measure: dict[str, Any] | None, report: dict[str, Any]) -> tuple[str,
     return (MET if holds(value, measure["comparison"], float(measure["target"])) else NOT_MET), value, text
 
 
+def stage_value(name: str, key: str, report: dict[str, Any]) -> float | None:
+    """A stage's median (key "value") or p90 in hours from metrics.py's JSON; None for no data"""
+    found = [m for m in report["measures"] if m["measure"] == name]
+    if len(found) != 1:
+        raise fail(f"metrics.py gave {len(found)} {name!r} measures, not one")
+    if found[0]["unit"] != "hours":
+        raise fail(f"metrics.py gives {name} in {found[0]['unit']}, not hours")
+    return None if found[0]["value"] is None else float(found[0][key])
+
+
+def grew_most(metric: str, current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any] | None:
+    """Spec 066: among the lead-time metric's stages, the one whose same statistic grew most in
+    hours from the week before; a stage with no data in either week is skipped, a tie goes to the
+    earlier stage, and None when no stage can be compared"""
+    key = METRIC_MEASURES[metric][1]
+    best: dict[str, Any] | None = None
+    for name in LEAD_TIME_STAGES[metric]:
+        value, before = stage_value(name, key, current), stage_value(name, key, previous)
+        if value is None or before is None:
+            continue
+        change = value - before
+        if best is None or change > best["change"]:
+            best = {"measure": name, "statistic": STATISTICS[key], "value": value, "previous": before, "change": change}
+    return best
+
+
 def met_streaks(goals: list[dict[str, Any]], report: Callable[[int], dict[str, Any]], limit: int) -> dict[str, int]:
     """Per measured goal, the weeks in a row back from this one it was met, up to limit;
     report(k) is metrics.py's JSON k weeks back, asked only while a goal is still met"""
@@ -687,21 +737,22 @@ def goals_report(
         if unserved >= args.stalled_weeks:
             entered = first_listed(sources, args.checkout, goal["id"])
             stalled = entered is not None and entered <= young
-        rows.append(
-            {
-                "id": goal["id"],
-                "text": goal["text"],
-                "measure": measure,
-                "status": state,
-                "value": value,
-                "value_text": text,
-                "met_weeks": streaks.get(goal["id"], 0),
-                **work[0].row(goal["id"]),
-                "previous": work[1].counts(goal["id"]),
-                "stalled": stalled,
-                "weeks_unserved": unserved,
-            }
-        )
+        row = {
+            "id": goal["id"],
+            "text": goal["text"],
+            "measure": measure,
+            "status": state,
+            "value": value,
+            "value_text": text,
+            "met_weeks": streaks.get(goal["id"], 0),
+            **work[0].row(goal["id"]),
+            "previous": work[1].counts(goal["id"]),
+            "stalled": stalled,
+            "weeks_unserved": unserved,
+        }
+        if measure is not None and state == NOT_MET and measure["metric"] in LEAD_TIME_STAGES:
+            row["grew_most"] = grew_most(measure["metric"], reports[0], reports[1])
+        rows.append(row)
     now, before = off_direction(issues, windows[0], bots), off_direction(issues, windows[1], bots)
     unlinked = []
     owner, _, name = args.repo.partition("/")
@@ -731,6 +782,13 @@ def numbered(numbers: list[int]) -> str:
     return " ".join(f"#{n}" for n in numbers) or "none"
 
 
+def grew_most_text(grew: dict[str, Any] | None) -> str:
+    """The goal row's `grew most:` line (spec 066)"""
+    if grew is None:
+        return "grew most: no stage to compare"
+    return f"grew most: {grew['measure']}, {grew['statistic']} {span(grew['previous'])} to {span(grew['value'])}"
+
+
 def goals_text(goals: dict[str, Any]) -> list[str]:
     if not goals["direction"]:
         return [f"No direction ({DIRECTION}): no per-goal report"]
@@ -749,6 +807,8 @@ def goals_text(goals: dict[str, Any]) -> list[str]:
             lines.append(
                 f"    measure {g['measure']['text']}: {g['status']}{shown}, met {g['met_weeks']} weeks in a row"
             )
+        if "grew_most" in g:
+            lines.append(f"    {grew_most_text(g['grew_most'])}")
         if g["stalled"]:
             lines.append(f"    stalled: nothing served it for {g['weeks_unserved']} weeks")
     q = goals["quality_bar"]
