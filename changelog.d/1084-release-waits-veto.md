@@ -1,0 +1,3 @@
+### Added
+
+- A lane in `[gates] veto_lanes` now waits for the veto windows it would ship: `shipmill plan` reads the merged pull requests in the candidate's base and not in the lane's newest tag (the last 168 hours with no tag yet; the newest stable tag to the rc's base for a promotion) and the issues they close, and skips the lane while a trusted decided marker's `until` is ahead or a veto of it is unhandled, naming each item, its zone, and when its window ends; a person's hand start (`--actor <person>`) releases anyway, a bot's or an unnamed one waits, and a trusted marker whose `until` isn't a UTC time or lies more than 168 hours after its comment exits 2 naming the item (spec 059) (#1084)

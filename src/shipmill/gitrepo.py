@@ -84,6 +84,11 @@ class Git:
     def commit_time(self, rev: str = "HEAD") -> dt.datetime:
         return dt.datetime.fromisoformat(self.run("show", "-s", "--format=%cI", rev).strip())
 
+    def commits_since(self, since: str, rev: str) -> dict[str, dt.datetime]:
+        """The commits in rev and not in since, each with its committer time"""
+        out = self.run("log", "--format=%H %cI", rev, f"^{since}")
+        return {sha: dt.datetime.fromisoformat(when) for sha, when in (line.split(" ", 1) for line in out.splitlines())}
+
     def changed_paths(self, since: str, rev: str = "HEAD") -> list[str]:
         return [p for p in self.run("diff", "--name-only", f"{since}..{rev}").splitlines() if p]
 
