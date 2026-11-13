@@ -171,4 +171,9 @@ tells three failures apart, so a question names the right cause and the right fi
 
 ## Issues
 
+- shipmill/shipmill#1072: S-064-1, S-064-2, S-064-3, S-064-4, S-064-5
+- shipmill/shipmill#1074: S-064-6, S-064-7, S-064-8
+- shipmill/shipmill#1077: S-064-9
+- shipmill/shipmill#1078: S-064-10
+
 ## Verification

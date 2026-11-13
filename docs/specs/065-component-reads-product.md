@@ -153,8 +153,8 @@ in a component, and updates its tests to this spec's behaviour.
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-NNN-1, S-NNN-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
+- shipmill/shipmill#1085: S-065-1, S-065-2, S-065-3, S-065-4, S-065-5, S-065-6, S-065-7, S-065-12
+- shipmill/shipmill#1087: S-065-8, S-065-9, S-065-10, S-065-11
 
 ## Verification
 
