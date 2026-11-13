@@ -591,6 +591,26 @@ def test_a_chained_call_is_rerun_one_command_per_call_not_routed_around() -> Non
     assert unlisted in section
 
 
+def test_s064_10_a_denial_a_hook_refusal_and_a_not_found_each_get_their_own_fix() -> None:
+    # spec 064: an exit 127 asked as a denial got the allowlist widened, which changed nothing
+    section = folded(SKILLS / "github-issue-triage" / "references" / "needs-decision.md").split(
+        "## A denied tool call is a decision", 1
+    )[1]
+    section = section.split("## ", 1)[0]
+    denied = section.split("- **Denied**: ", 1)[1].split("- **", 1)[0]
+    hook = section.split("- **Refused by the hook**: ", 1)[1].split("- **", 1)[0]
+    missing = section.split("- **Not found**: ", 1)[1]
+    assert "no allow rule matches it" in denied
+    assert '--claude-arg=--allowedTools --claude-arg "<tool>"' in denied and "do that step by hand" in denied
+    assert "`shipmill hook <rule>:`" in hook and "`Instead:` line" in hook
+    assert "`[hooks] uv_run`" in hook and "never an allowlist change" in hook
+    assert "exited 127" in missing and "`command not found`" in missing
+    assert "not on the gate host's PATH" in missing and "names the program" in missing
+    assert "installing that program into a folder of the PATH the gate runs with" in missing
+    assert "never proposes widening the allowlist" in missing
+    assert "--allowedTools" not in hook + missing
+
+
 @pytest.mark.parametrize(
     "path",
     [
