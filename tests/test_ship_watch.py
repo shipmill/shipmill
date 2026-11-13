@@ -1836,6 +1836,8 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         ws.upstream_unreadable_row(REPO, CHECKOUT, f"error: {TITLE}"),
         ws.pypi_wait_row("0.66.0", "the release plan"),
         ws.deployments_forbidden_row(REPO, ["staging", "production"]),  # #973
+        # spec 056: the land window's queue head, its title MARKER's
+        *ws.land_rows(ws.Queue(ws.Window("UTC", True, None, NOW), NOW, {3: ws.Queued(3, TITLE, NOW)}), [3], REPO),
         *ws.direction_rows(REPO, "main", False, list, lambda: [], list, lambda n: [], None, lambda n: None).rows,
     ]
     found: dict[str, list[Any]] = {}
@@ -1893,6 +1895,7 @@ FIXES = {
     "UPSTREAM_UNREADABLE": ["see why: uv run --directory /work/r --no-project python {upstream} o/r"],
     "VETOED": ["take up each veto (needs-decision.md): /shipmill:github-issue-triage o/r"],
     "AGENT_DRAFT": ["mark each ready, then land it: /shipmill:github-pr-triage o/r"],  # #914
+    "LAND_DUE": ["/shipmill:github-pr-triage o/r"],  # spec 056
     "PYPI_WAIT": [
         "check the publish.yml run for v0.66.0: gh run list --repo shipmill/shipmill --workflow publish.yml;"
         " if none passed, publish it: gh workflow run publish.yml --repo shipmill/shipmill -f tag=v0.66.0"
