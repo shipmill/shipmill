@@ -18,7 +18,7 @@ from shipmill.errors import ReleaseError
 
 from .conftest import POLICY, Repo
 from .test_app import APP_ID, REPO
-from .test_app_gh_merge import connected
+from .test_app_gh_merge import connected, pinned_to
 from .test_credit import OCTOCAT_TRAILER, WITH_APP, CreditReader, FakeCredit, Runner, approved, body_of, gh
 
 MERGE = ["pr", "merge", "7", "--squash"]
@@ -86,7 +86,7 @@ def test_s051_2_neither_author_nor_credit_merges_with_ghs_arguments_unchanged_as
     key = connected(repo, tmp_path, POLICY + WITH_APP)
     runner = EnvRunner(capsys)
     assert gh(repo, tmp_path, key, args, runner) == 0  # the credit reader raises when called
-    assert [argv[1:] for argv in runner.calls] == [args]
+    assert [argv[1:] for argv in runner.calls] == [pinned_to(args)]  # pinned to the gate's READY head (S-055-2)
     assert runner.stderr == [""]
     [env] = runner.envs
     assert env["GH_TOKEN"] == "token-1"  # the App's installation token
@@ -146,7 +146,7 @@ def test_s051_4_credit_off_without_author_merges_with_ghs_arguments(
     key = connected(repo, tmp_path, POLICY + WITH_APP + 'credit = "off"\n')
     runner = Runner(capsys)
     assert gh(repo, tmp_path, key, MERGE, runner) == 0  # the credit reader raises when called
-    assert [argv[1:] for argv in runner.calls] == [MERGE]
+    assert [argv[1:] for argv in runner.calls] == [pinned_to(MERGE)]
 
 
 # -- S-051-3, S-051-4: doctor ------------------------------------------------------------------

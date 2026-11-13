@@ -166,7 +166,6 @@ from shipmill.app import (
     CACHE,
     HELPERS,
     Api,
-    AppLogin,
     BotIds,
     Identity,
     NotInstalled,
@@ -347,6 +346,7 @@ from shipmill.launchd import (
     remove,
 )
 from shipmill.lineedit import LineText
+from shipmill.merge_gate import GateRun, hold_gate, run_gate
 from shipmill.notify import Desktop
 from shipmill.operate import Http, Unreachable, UrllibHttp, approve, approve_rollback, operate, summary
 from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
@@ -1047,6 +1047,7 @@ def main(
     graphql: Callable[[], land_window.Graphql] | None = None,
     now: dt.datetime | None = None,
     rules_reader: RulesReader | None = None,
+    merge_gate: GateRun | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -1063,7 +1064,8 @@ def main(
     053), deprecation_reads for what `deprecations` reads of each repo and today for the date its
     report names (spec 047), graphql for the GitHub `window` reads the last held merge from and
     now for the moment it reads the window at (spec 056), and rules_reader for the branch rules
-    doctor's landing row reads (spec 054), as tests pass fakes; stdin is also a `shipmill gh` merge's
+    doctor's landing row reads (spec 054), and merge_gate for the pr_gate.py a `shipmill gh` merge
+    runs (spec 055), as tests pass fakes; stdin is also a `shipmill gh` merge's
     --body-file -, and gh_capture also the gh whose output `spec open` reads"""
     refused.begin()  # each refused key is said once per command, however often it loads the config
     head, passed = _split_gh(argv)
@@ -1075,13 +1077,21 @@ def main(
         if passed is None:  # such as `shipmill -- gh ...`
             raise ReleaseError("only --repo PATH may come before gh, as in `shipmill --repo PATH gh pr list`")
         readers = _GhReaders(
-            merge_reader or _gh_reader, credit_reader or _credit_reader, stdin or sys.stdin, gh_capture or capture_gh
+            merge_reader or _gh_reader,
+            credit_reader or _credit_reader,
+            stdin or sys.stdin,
+            gh_capture or capture_gh,
+            merge_gate or run_gate,
         )
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
         return _gh(root, passed, reach, env, user_home, gh_runner or run_gh, readers)
     if args.command == "spec":
         readers = _GhReaders(
-            merge_reader or _gh_reader, credit_reader or _credit_reader, stdin or sys.stdin, gh_capture or capture_gh
+            merge_reader or _gh_reader,
+            credit_reader or _credit_reader,
+            stdin or sys.stdin,
+            gh_capture or capture_gh,
+            merge_gate or run_gate,
         )
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
         return _spec_open(root, args, _GhPath(reach, env, user_home, readers), spec_checkout)
@@ -1780,7 +1790,9 @@ def _gh(
     current body can't be read exits 2 and gh never edits (spec 050). As the App, a `pr create`,
     or `api`'s POST on `repos/<owner>/<repo>/pulls`, whose body's plan pr_gate.py's
     plan_problems refuses, by the default branch's docs/product.md, exits 2 before any token
-    (S-055-17, `hold_plan`)"""
+    (S-055-17, `hold_plan`). As the App, a merge runs the wheel's pr_gate.py after those holds,
+    exits 2 unless it reads READY, and merges only the head it judged (S-055-1 to S-055-3,
+    `hold_gate`)"""
     api, signer = hub.api, hub.signer
     leading = _leading(passed)
     key = leading.key
@@ -1872,14 +1884,13 @@ def _gh(
         gh_args = edited_args(edit, default, binary, as_app(environ, token), readers.current)
     env = as_app(environ, token)
     # the App's bot login, read once however many readers ask for it
-    app = (
-        functools.cache(functools.partial(_app_login, app_login(signer, api), app_id, path, trailer))
-        if trailer
-        else None
-    )
+    bot_login = functools.cache(functools.partial(app_login(signer, api), app_id, path))
+    app = functools.partial(_app_login, bot_login, trailer) if trailer else None
     assisted = identity.author is Author.DECIDER  # whose trailer is set (S-051-3)
     if merge is not None:
         pull = _hold_never(top, merge, env, binary, readers.merge)
+        # S-055-1 to S-055-3: after the holds above, with the App's token, before any author's
+        gh_args = hold_gate(merge, pull[1], pull[0], top, _gate_login(merge, bot_login), gh_args, env, readers.gate)
         if trailer is not None and app is not None:
             credit = _merge_credit(top, pull, gh_args, env, binary, readers, app)
             author = _AsApp(dict(env))
@@ -1988,12 +1999,13 @@ def _bot_account(login: str, app_id: int, api: Api, token: str, decider: UserLog
 class _GhReaders:
     """What `shipmill gh` reads besides gh's arguments: the pull request a merge names (spec
     030), its deciders (spec 049), stdin, for a `--body-file -`, and an edit's current body
-    through gh (spec 050)"""
+    through gh (spec 050), and the pr_gate.py a merge as the App runs (spec 055)"""
 
     merge: MergeReader
     credit: CreditReader
     stdin: TextIO
     current: GhCapture
+    gate: GateRun
 
 
 def _credit_reader(top: Path, binary: Path, env: Mapping[str, str]) -> CreditReads:
@@ -2001,15 +2013,26 @@ def _credit_reader(top: Path, binary: Path, env: Mapping[str, str]) -> CreditRea
     return GhCli(top, gh=str(binary), env=env)
 
 
-def _app_login(login: AppLogin, app_id: int, key: Path, trailer: str) -> str:
+def _app_login(login: Callable[[], str], trailer: str) -> str:
     """The App's bot login, whose comments alone ask and relay a decision (S-049-4); exit 2
     when it can't be read, since the credit can't then tell the App from another bot. trailer
     names the setting that asked for the credit"""
     try:
-        return login(app_id, key)
+        return login()
     except ReleaseError as exc:
         raise ReleaseError(
             f"{trailer} in {CONFIG_PATH} needs the App's bot login, which can't be read: {exc}"
+        ) from None
+
+
+def _gate_login(merge: Merge, login: Callable[[], str]) -> str:
+    """S-055-1: the App's bot login pr_gate.py reads the agents' pull requests by; exit 2 when it
+    can't be read, so the merge fails closed"""
+    try:
+        return login()
+    except ReleaseError as exc:
+        raise ReleaseError(
+            f"{merge.command} is refused: pr_gate.py needs the App's bot login, which can't be read: {exc}"
         ) from None
 
 

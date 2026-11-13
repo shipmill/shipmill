@@ -314,15 +314,7 @@ def hold_short_head(args: Sequence[str]) -> None:
     merge = merge_of(args)
     if merge is None:
         return
-    if args[0] == "pr":
-        flag = "--match-head-commit"
-        _, flags = _scan(args[1:], _PR_MERGE_LONG, _PR_MERGE_SHORT)
-        given = [value for name, value in flags if name == flag]
-    else:
-        flag = "the sha field"
-        _, flags = _scan(args[1:], _API_LONG, _API_SHORT)
-        fields = [value.partition("=") for name, value in flags if name in _FIELD_FLAGS]
-        given = [value for key, equals, value in fields if key == "sha" and equals]
+    flag, given = _pins(args)
     short = next((value for value in given if _FULL_SHA.fullmatch(value) is None), None)
     if short is None:
         return
@@ -332,6 +324,60 @@ def hold_short_head(args: Sequence[str]) -> None:
         f"{merge.command} is refused: GitHub matches the head commit only by its full 40-character SHA, got "
         f"{short!r} for {flag}; `{view} --json headRefOid -q .headRefOid` prints it (spec 030)"
     )
+
+
+def _pins(args: Sequence[str]) -> tuple[str, list[str]]:
+    """The pin a merge's args name, as the refusal names it, and each value given for it:
+    `gh pr merge`'s --match-head-commit, or the merge API's sha field"""
+    if args[0] == "pr":
+        flag = "--match-head-commit"
+        _, flags = _scan(args[1:], _PR_MERGE_LONG, _PR_MERGE_SHORT)
+        return flag, [value for name, value in flags if name == flag]
+    _, flags = _scan(args[1:], _API_LONG, _API_SHORT)
+    fields = [value.partition("=") for name, value in flags if name in _FIELD_FLAGS]
+    return "the sha field", [value for key, equals, value in fields if key == "sha" and equals]
+
+
+def merge_pins(args: Sequence[str]) -> list[str]:
+    """S-055-2: the head SHAs a merge's args pin it to, in order; none when they pin none. The
+    merge API's PUT with --input is refused: its body may hold a sha the args don't show, so
+    the head the gate judged can't be pinned"""
+    if args[0] == "api":
+        _, flags = _scan(args[1:], _API_LONG, _API_SHORT)
+        if any(name == "--input" for name, _ in flags):
+            raise ReleaseError(
+                "gh api -X PUT .../merge is refused: with --input its sha can't be read, so the head pr_gate.py "
+                "judged can't be pinned (spec 055); pass the fields with -f, or run `shipmill gh pr merge <n>`"
+            )
+    return _pins(args)[1]
+
+
+def pinned(args: Sequence[str], head: str) -> list[str]:
+    """S-055-2: a merge's args pinned to head: `--match-head-commit <head>` for `gh pr merge`,
+    `-f sha=<head>` for the merge API's PUT, added before any `--`"""
+    pr = args[0] == "pr"
+    longs, shorts = (_PR_MERGE_LONG, _PR_MERGE_SHORT) if pr else (_API_LONG, _API_SHORT)
+    end = _flags_end(args, longs, shorts)
+    added = ["--match-head-commit", head] if pr else ["-f", f"sha={head}"]
+    return [*args[:end], *added, *args[end:]]
+
+
+def _flags_end(args: Sequence[str], long_values: frozenset[str], short_values: frozenset[str]) -> int:
+    """The index of the `--` after which gh reads no flag, as `_scan` reads args (a flag's value
+    is never it); len(args) when there is none"""
+    index = 1
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if arg == "--":
+            return index - 1
+        if arg.startswith("--"):
+            name, equals, _ = arg.partition("=")
+            index += 1 if name in long_values and not equals else 0
+        elif arg.startswith("-") and len(arg) > 1:
+            letter = next((at for at, c in enumerate(arg[1:], start=2) if c in short_values), None)
+            index += 1 if letter is not None and not arg[letter:] else 0
+    return len(args)
 
 
 # -- S-049-8: the flags of `gh pr merge` the credit reads and rewrites ---------------------------

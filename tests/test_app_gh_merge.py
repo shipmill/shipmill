@@ -2,6 +2,7 @@
 (S-030-13) or labelled needs-decision (S-030-23), and any `shipmill gh` merge with a short
 head SHA (S-030-24). No test reaches the network: the pull request is FakeReads, GitHub MintApi"""
 
+import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,6 +70,39 @@ class Runner:
         return 0
 
 
+SHORT = "abc1234"
+FULL = "0123456789abcdef0123456789abcdef01234567"
+OTHER = "f" * 40
+
+
+def verdict(label: str = "READY", head: str = FULL, number: int = 7) -> str:
+    """pr_gate.py's verdict line, as its render prints it"""
+    return f"#{number} {label} state=OPEN mergeable=MERGEABLE base=main head={head} checks=3 green=3 pending=0 failed=0"
+
+
+@dataclass
+class FakeGate:
+    """pr_gate.py, as `shipmill gh` runs it (spec 055): records each command and its env, and
+    answers with the exit code and output given, or raises when it can't start"""
+
+    stdout: str = verdict() + "\n"
+    returncode: int = 0
+    stderr: str = ""
+    raises: OSError | None = None
+    calls: list[tuple[list[str], dict[str, str]]] = field(default_factory=list)
+
+    def __call__(self, cmd: Sequence[str], env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
+        self.calls.append((list(cmd), dict(env)))
+        if self.raises is not None:
+            raise self.raises
+        return subprocess.CompletedProcess(list(cmd), self.returncode, self.stdout, self.stderr)
+
+
+def pinned_to(args: list[str], head: str = FULL) -> list[str]:
+    """A merge's args as gh gets them once pr_gate.py read READY at head and they pinned none"""
+    return [*args, "--match-head-commit", head] if args[0] == "pr" else [*args, "-f", f"sha={head}"]
+
+
 def connected(repo: Repo, tmp_path: Path, config: str = POLICY + WITH_APP) -> Path:
     """The config on origin/HEAD, origin named on GitHub, and the App's key"""
     repo.write(CONFIG, config)
@@ -89,6 +123,7 @@ def gh(
     runner: Runner,
     environ: Mapping[str, str] | None = None,
     api: MintApi | None = None,
+    gate: FakeGate | None = None,
 ) -> int:
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
@@ -103,6 +138,7 @@ def gh(
         home=home,
         gh_runner=runner,
         merge_reader=reader,
+        merge_gate=FakeGate() if gate is None else gate,
     )
 
 
@@ -147,7 +183,7 @@ def test_s030_13_a_merge_of_a_pr_without_a_never_zone_runs_gh_as_before(
     reader, runner = Reader(FakeReads((CODE,))), Runner()
     assert gh(repo, tmp_path, key, args, reader, runner) == 0
     [argv] = runner.calls
-    assert argv[1:] == args
+    assert argv[1:] == pinned_to(args)  # pinned to the head pr_gate.py read READY (S-055-2)
     assert reader.reads.numbers == [7]
 
 
@@ -229,9 +265,9 @@ def test_s030_13_a_merge_in_another_repo_is_refused(repo: Repo, tmp_path: Path) 
 )
 def test_s030_13_other_gh_calls_read_nothing(repo: Repo, tmp_path: Path, args: list[str]) -> None:
     key = connected(repo, tmp_path)
-    reader, runner = Reader(FakeReads((DIRECTION,))), Runner()
-    assert gh(repo, tmp_path, key, args, reader, runner) == 0
-    assert reader.envs == []
+    reader, runner, gate = Reader(FakeReads((DIRECTION,))), Runner(), FakeGate()
+    assert gh(repo, tmp_path, key, args, reader, runner, gate=gate) == 0
+    assert (reader.envs, gate.calls) == ([], [])
     # a create gets its body marked (spec 050), and nothing else changes
     assert [argv[1:] for argv in runner.calls] == [sent(args) if "--body" in args else args]
 
@@ -286,11 +322,9 @@ def test_s030_23_a_merge_of_a_pr_with_other_labels_runs_gh_as_before(
     reader, runner = Reader(FakeReads((CODE,), labels=("bug", "decided", "needs-decision-later"))), Runner()
     assert gh(repo, tmp_path, key, args, reader, runner) == 0
     [argv] = runner.calls
-    assert argv[1:] == args
+    assert argv[1:] == pinned_to(args)
 
 
-SHORT = "abc1234"
-FULL = "0123456789abcdef0123456789abcdef01234567"
 SHORT_HEADS = [
     ["pr", "merge", "7", "--squash", "--match-head-commit", SHORT],
     ["pr", "merge", "7", f"--match-head-commit={SHORT}"],
@@ -343,7 +377,6 @@ def test_s030_24_a_short_head_sha_is_refused_as_the_host_too(repo: Repo, tmp_pat
         ["pr", "merge", "7", "--squash", "--match-head-commit", FULL],
         ["pr", "merge", "7", f"--match-head-commit={FULL.upper()}"],
         ["api", "-X", "PUT", f"repos/{REPO}/pulls/7/merge", "-f", f"sha={FULL}"],
-        ["api", "-X", "PUT", f"repos/{REPO}/pulls/7/merge", "-f", "merge_method=squash"],
         ["pr", "view", "7", "--json", "headRefOid"],
     ],
 )

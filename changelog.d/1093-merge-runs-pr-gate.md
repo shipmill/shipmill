@@ -1,0 +1,3 @@
+### Changed
+
+- `shipmill gh pr merge <n>` and `shipmill gh api -X PUT repos/<o>/<r>/pulls/<n>/merge`, as the App, run the wheel's `pr_gate.py` on the pull request (the checkout's repo, the checkout, and the App's bot login) after the never-zone and needs-decision holds, and exit 2 without running gh unless it reads READY, printing `is refused: pr_gate.py reads #<n> <VERDICT>` with the gate's verdict and reason lines; a READY merge runs pinned to the head the gate judged (`--match-head-commit H`, or `sha=H` for the API), a merge pinned to another head exits 2 naming both, and a gate that exits 2, can't start, or prints no verdict refuses the merge, as do an unreadable bot login and the merge API's `--input`, as spec 055 says (#1093)
