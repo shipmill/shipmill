@@ -333,7 +333,7 @@ from shipmill.github_auth import github_auth
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
-from shipmill.land import ActionsRun, Prepared, Stop, Waiting, cleanup, land, prepare, work_branch
+from shipmill.land import ActionsRun, AppPush, Prepared, Stop, Waiting, cleanup, land, mint_land, prepare, work_branch
 from shipmill.launchd import (
     DEFAULT_EVERY,
     DEFAULT_TOOL,
@@ -463,6 +463,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--sha", required=True)
     p.add_argument("--base", required=True)
     p.add_argument("--date", type=dt.date.fromisoformat, help="YYYY-MM-DD (default: today, UTC)")
+    p.add_argument(
+        "--app-key",
+        type=Path,
+        help="the private key of the App in [agents] app_id: push the release and sync commits to their"
+        " branches as the App, for a protected default branch (spec 054)",
+    )
 
     p = sub.add_parser("close-proposal", help="close the lane's proposal issue once land released it")
     _release_args(p)
@@ -1271,6 +1277,8 @@ def main(
         sha = prepared.sha if (prepared.pushed or not args.push) else ""
         _outputs(args.github_output, {"sha": sha})
     elif args.command == "land":
+        # minted before land reads or pushes anything: a failure pushes nothing (S-054-5)
+        pusher = None if args.app_key is None else _land_app(root, args.app_key, env, api, signer)
         landed = land(
             git,
             policy,
@@ -1281,6 +1289,7 @@ def main(
             args.base,
             args.date or today,
             waiting=Waiting(pypi=_pypi_status),
+            app=pusher,
         )
         print(
             json.dumps(
@@ -2817,6 +2826,24 @@ def _known_origin(root: Path) -> str | None:
         return _origin_repo(root)
     except ReleaseError:  # no origin remote
         return None
+
+
+def _land_app(root: Path, key: Path, environ: Mapping[str, str], api: Api | None, signer: Signer | None) -> AppPush:
+    """`land --app-key`: the App's token for the protected branches' pushes (spec 054). The App
+    is [agents] app_id, and the repository the one the Actions job runs for, else origin's"""
+    app_id = app_id_of(root)
+    if app_id is None:  # S-054-4
+        raise ReleaseError(
+            f"--app-key names an App's key, but [agents] in {CONFIG_PATH} sets no app_id; set [agents] app_id"
+            f" in {CONFIG_PATH}, or drop --app-key; nothing was pushed"
+        )
+    repo = environ.get("GITHUB_REPOSITORY") or _origin_repo(root)
+    if not repo:
+        raise ReleaseError(
+            f"land --app-key can't tell the repository: no GITHUB_REPOSITORY and {root} has no GitHub origin;"
+            " nothing was pushed"
+        )
+    return mint_land(app_id, repo, key.expanduser(), dt.datetime.now(dt.UTC), signer or Openssl(), api or UrllibApi())
 
 
 def _origin_repo(root: Path) -> str | None:

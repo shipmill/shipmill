@@ -122,6 +122,14 @@ READ_PERMISSIONS = (
 )
 
 
+# Spec 054: the token `shipmill land --app-key` pushes the protected branches with: the release
+# and sync commits, and a hotfix's cherry-picked merges, which may touch .github/workflows/
+LAND_PERMISSIONS = (
+    Permission("contents", "Contents", Access.WRITE),
+    Permission("workflows", "Workflows", Access.WRITE),
+)
+
+
 def default_key(app_id: int, home: Path) -> Path:
     """Where the key lives when `--app-key` doesn't say"""
     return home / ".config" / "shipmill" / f"app-{app_id}.pem"

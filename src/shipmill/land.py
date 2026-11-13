@@ -3,15 +3,18 @@ a stable release made off main back into main, and publish it. A lane with after
 then waits for its publish runs and PyPI before it starts the workflows that move the
 release's references (D-50)"""
 
+import base64
 import datetime as dt
 import re
 import time
 import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 
 from shipmill import fragments
+from shipmill.app import LAND_PERMISSIONS, Api, AuthFailure, Signer, mint
 from shipmill.environments import deployed_from
 from shipmill.errors import ReleaseError
 from shipmill.github import Forbidden, GitHub
@@ -146,6 +149,67 @@ def _held(github: GitHub | None, run: ActionsRun | None) -> Stop | None:
     return Stop.OWNED if any(r.id != run.id for r in active) else None
 
 
+WORKFLOW_BOT = "github-actions[bot]"  # who the workflow token pushes as
+_EXTRAHEADER = "http.https://github.com/.extraheader"  # where actions/checkout persists the workflow token
+# GitHub's refusal of a push by a branch's rules: GH013 for a ruleset, GH006's "Protected
+# branch update failed" for classic protection
+_RULES_REFUSE = re.compile(r"GH013|protected branch", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True)
+class AppPush:
+    """Spec 054: the App's installation token, limited to the repository with contents and
+    workflows write, that pushes the protected branches (the release commit to the default
+    branch, a hotfix to release/X.Y, the sync commit); repr leaves the token out"""
+
+    token: str = field(repr=False)
+    app_id: int
+
+    @property
+    def identity(self) -> str:
+        return f"the App {self.app_id}"
+
+    def config(self) -> tuple[tuple[str, str], ...]:
+        """git's settings for a push as the App: the checkout's persisted header, the workflow
+        token's, is cleared (an empty value resets the list) and the App's sent instead; they
+        reach git through its environment, never its arguments (S-054-7)"""
+        basic = base64.b64encode(f"x-access-token:{self.token}".encode()).decode("ascii")
+        return ((_EXTRAHEADER, ""), (_EXTRAHEADER, f"AUTHORIZATION: basic {basic}"))
+
+
+def mint_land(app_id: int, repo: str, key: Path, now: dt.datetime, signer: Signer, api: Api) -> AppPush:
+    """S-054-5: one installation token limited to repo with LAND_PERMISSIONS, minted before
+    land's first push. A missing key, an App not installed on repo, or an installation without
+    those permissions fails naming the problem and its fix: land never falls back to the
+    workflow token (D-14)"""
+    try:
+        token = mint(app_id, repo, key, now, signer, api, LAND_PERMISSIONS)
+    except AuthFailure as exc:
+        raise ReleaseError(
+            f"land can't push as the App {app_id}, so it pushed nothing: {exc.problem}; fix: {exc.fix}"
+        ) from None
+    return AppPush(token.value, app_id)
+
+
+def _branch_config(app: AppPush | None) -> tuple[tuple[str, str], ...]:
+    """The push settings of a protected branch: the App's under spec 054, else none, so the
+    push is the one land made before it (S-054-2)"""
+    return () if app is None else app.config()
+
+
+def _refused(what: str, branch: str, error: str, app: AppPush | None) -> ReleaseError:
+    """A refused push of a protected branch: git's error, plus the fix when GitHub's branch
+    rules refused it (S-054-9); any other refusal reads as before"""
+    said = f"{what} was rejected: {error}"
+    if _RULES_REFUSE.search(error):
+        identity = WORKFLOW_BOT if app is None else app.identity
+        said += (
+            f"; {branch}'s rules refuse {identity}: run shipmill doctor, and see Protected default branch"
+            " in docs/release-lanes.md"
+        )
+    return ReleaseError(said)
+
+
 @dataclass(frozen=True, slots=True)
 class Landed:
     tag: str
@@ -165,10 +229,14 @@ def land(
     today: dt.date,
     retry_waits: tuple[int, ...] = _TAG_RETRY_WAITS,
     waiting: Waiting | None = None,
+    app: AppPush | None = None,
 ) -> Landed:
     """Land the release commit sha as version. A lane with after_publish starts those
     workflows only once each dispatch run succeeded and, under version_files = 'pyproject',
-    PyPI serves the version (D-50); waiting is how land waits, needed for such a lane"""
+    PyPI serves the version (D-50); waiting is how land waits, needed for such a lane. With
+    app, the release commit's push to its branch and the sync commit's go as the App, while
+    the tag keeps the workflow token (spec 054)"""
+    branched = _branch_config(app)
     rule = policy.rule(lane)
     work = work_branch(version)
     git.fetch(f"+refs/heads/{work}:refs/remotes/origin/{work}")
@@ -182,16 +250,16 @@ def land(
     placed = "tag only"
     on_main = False
     if lane is Lane.STABLE and git.remote_branch(policy.branch) == base:
-        if error := git.push(f"{sha}:refs/heads/{policy.branch}"):
-            raise ReleaseError(f"pushing {sha[:12]} to {policy.branch} was rejected: {error}")
+        if error := git.push(f"{sha}:refs/heads/{policy.branch}", config=branched):
+            raise _refused(f"pushing {sha[:12]} to {policy.branch}", policy.branch, error, app)
         placed, on_main = policy.branch, True
     elif lane is Lane.HOTFIX:
         branch = f"release/{version.series}"
         current = git.remote_branch(branch)
         if current is not None and current != base:
             raise ReleaseError(f"{branch} moved to {current[:12]} since the hotfix was planned on {base[:12]}")
-        if error := git.push(f"{sha}:refs/heads/{branch}"):
-            raise ReleaseError(f"pushing {sha[:12]} to {branch} was rejected: {error}")
+        if error := git.push(f"{sha}:refs/heads/{branch}", config=branched):
+            raise _refused(f"pushing {sha[:12]} to {branch}", branch, error, app)
         placed = branch
 
     message = policy.tag_message.format(name=policy.name, version=version)
@@ -204,7 +272,7 @@ def land(
     synced = False
     if lane in (Lane.STABLE, Lane.HOTFIX) and not on_main:
         newest = all(t.version <= version for t in git.tags() if t.version.is_stable)
-        _sync_main(git, policy, version, released, today, newest)
+        _sync_main(git, policy, version, released, today, newest, app)
         synced = True
 
     stable = [t.version for t in git.tags() if t.version.is_stable and t.version < version]
@@ -339,17 +407,22 @@ def _push_tag(git: Git, version: Version, sha: str, retry_waits: tuple[int, ...]
     raise ReleaseError(f"pushing tag {version.tag} was rejected {len(errors)} times: {errors[-1]}")
 
 
-def _sync_main(git: Git, policy: Policy, version: Version, released: str, today: dt.date, newest: bool) -> None:
+def _sync_main(
+    git: Git, policy: Policy, version: Version, released: str, today: dt.date, newest: bool, app: AppPush | None = None
+) -> None:
     """Commit the release's CHANGELOG section (and version, when newest) onto main, retrying
-    when a merge lands on main between the fetch and the push"""
+    when a merge lands on main between the fetch and the push; a push the branch's rules
+    refuse fails at once, since no retry passes them (S-054-9)"""
     for _ in range(_SYNC_ATTEMPTS):
         git.fetch(f"+refs/heads/{policy.branch}:refs/remotes/origin/{policy.branch}")
         git.run("checkout", "-q", "--detach", f"origin/{policy.branch}")
         sync(git, policy, version, released, today, newest)
         git.run("add", "-A")
         git.run("commit", "-q", "-m", f"Sync {version} into {policy.branch}")
-        if not git.push(f"HEAD:refs/heads/{policy.branch}"):
+        if not (error := git.push(f"HEAD:refs/heads/{policy.branch}", config=_branch_config(app))):
             return
+        if _RULES_REFUSE.search(error):
+            raise _refused(f"pushing the sync of {version} to {policy.branch}", policy.branch, error, app)
     raise ReleaseError(f"{policy.branch} kept moving: the sync of {version} failed {_SYNC_ATTEMPTS} times")
 
 
