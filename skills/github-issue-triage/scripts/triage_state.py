@@ -48,8 +48,9 @@ For each open issue:
                    such as o/r#12:open(child), and a parent's note starts with
                    "children K/N closed". An untriaged issue reads NEW whatever its
                    body depends on and whatever GitHub records holds it. With --home,
-                   a hold on an item of the home it can't read adds the coordinator's
-                   note (below)
+                   holds on other repos of the product are read with the read token,
+                   and a hold on an item of the home it still can't read adds the
+                   coordinator's note (below)
   UNFILLED         a "Depends on" line of its body still names a placeholder such
                    as #{B1} from specs.py split: put in the dependency's number
   MALFORMED_DEPENDS once triaged (or a person's item), a "Depends on" line of its body
@@ -256,12 +257,19 @@ A person's item never counts as in progress or ready: the limit is on agents' wo
 
 --bot-login names the login shipmill's sessions write as (an App's <slug>[bot]). --home
 names the product's home repo, the config's [product] home, as owner/name (letters, digits,
-".", "-", or "_" on each side; anything else exits 2); it only words notes: UPSTREAM's, and
-in a component (a repo other than the home) BLOCKED's when a hold still open is on an item
-of the home this session can't read (its state shows as :unknown): the note ends " | the
-coordinator's hold on the home OWNER/NAME: waits for the coordinator, ask nobody" (D-60,
-#773). The coordinator never holds a component's issue on a home item, so such a hold is
-its to clear: the session leaves the item and asks nobody. The state stays BLOCKED.
+".", "-", or "_" on each side; anything else exits 2). It words UPSTREAM's note, and in a
+component (a repo other than the home) it reads the product's other repos (spec 065, D-84):
+each hold on an item of another repo that plain gh read no state for is read again through
+`shipmill gh --product <repo> api graphql`, run as `uvx shipmill==<the plugin's version>`
+(spec 031), one call per owner, its repo the home for the home's owner, else that owner's
+first repo among the holds. A hold read so reads as any other: BLOCKED while open, UNBLOCKED
+once closed (:not_planned for one closed as not planned). A read that fails (a non-zero exit
+without a GraphQL answer, or no node for the item) leaves the hold :unknown, counted as open,
+with one stderr note; when such a hold still open is on an item of the home, BLOCKED's note
+ends " | the coordinator's hold on the home OWNER/NAME: waits for the coordinator, ask
+nobody" (D-60, #773): the session leaves the item and asks nobody, and the state stays
+BLOCKED. Without --home, or with --home naming the repo itself, no `shipmill gh` runs. No
+uvx, or a broken plugin.json, when a read is due exits 2.
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
 MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, VETOED, SUSPECT_CLOSE, HANDOFF_DUE,
@@ -284,11 +292,14 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib.util
 import json
 import re
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from pathlib import Path
+from types import ModuleType
 from typing import Any, NoReturn
 
 # An open PR's isDraft, author, and labels tell the App's own draft (D-67, #914) from other work
@@ -588,6 +599,10 @@ Variables = dict[str, str | int]
 # Runs one GraphQL query with its variables and returns the parsed JSON response
 Runner = Callable[[str, Variables], dict[str, Any]]
 Sizes = dict[str, int]
+# Runs one command, such as `shipmill gh --product ... api graphql`, and returns its result
+Execute = Callable[[list[str]], subprocess.CompletedProcess[str]]
+# Where how a skill script runs the CLI is read from (spec 031): github-ship-watch's script
+WATCH_STATE = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "watch_state.py"
 
 
 class ResourceLimitsExceeded(Exception):
@@ -1285,15 +1300,24 @@ def upstream_states(
     if not refs:
         return {}, {}
     ordered = sorted(refs)
+    proc = subprocess.run(
+        ["gh", "api", "graphql", "-f", f"query={states_query(ordered)}"], capture_output=True, text=True, check=False
+    )
+    return read_states(json.loads(proc.stdout or "{}").get("data") or {}, ordered)
+
+
+def states_query(ordered: list[Ref]) -> str:
+    """One query reading each ref's state, the i-th under alias r<i>"""
     parts = [
         f'r{i}: repository(owner: "{o}", name: "{n}") {{ issueOrPullRequest(number: {k}) '
         "{ __typename ... on Issue { state stateReason closedAt } ... on PullRequest { state closedAt } } }"
         for i, (o, n, k) in enumerate(ordered)
     ]
-    proc = subprocess.run(
-        ["gh", "api", "graphql", "-f", "query={" + " ".join(parts) + "}"], capture_output=True, text=True, check=False
-    )
-    data = json.loads(proc.stdout or "{}").get("data") or {}
+    return "{" + " ".join(parts) + "}"
+
+
+def read_states(data: dict[str, Any], ordered: list[Ref]) -> tuple[dict[Ref, str], dict[Ref, str]]:
+    """states_query's answer: each ref's state (UNKNOWN when no node came back) and when it closed"""
     states = {}
     closes = {}
     for i, ref in enumerate(ordered):
@@ -1302,6 +1326,91 @@ def upstream_states(
         if node.get("closedAt"):
             closes[ref] = str(node["closedAt"])
     return states, closes
+
+
+def product_reads(states: dict[Ref, str], repo: tuple[str, str], home: str | None) -> list[Ref]:
+    """The holds a component reads again through `shipmill gh --product` (spec 065): those on
+    another repo's item that plain gh read no state for. None without --home, or with --home
+    naming the checkout's own repo: there nothing changes (S-065-10)"""
+    if home is None or home.lower() == "/".join(repo).lower():
+        return []
+    own = (repo[0].lower(), repo[1].lower())
+    return sorted(r for r, state in states.items() if fold(r)[:2] != own and state == "UNKNOWN")
+
+
+def product_states(
+    refs: list[Ref], home: str, gh: Sequence[str], execute: Execute
+) -> tuple[dict[Ref, str], dict[Ref, str]]:
+    """The states of holds on other repos' items, read with the read token (spec 065, D-84):
+    one `<gh> --product <repo> api graphql` per owner, its repo the home when the owner is the
+    home's, else the owner's first repo among the refs. A read that fails (a non-zero exit
+    without a GraphQL answer, such as `shipmill gh`'s exit 2 for a repo outside the product)
+    leaves its holds UNKNOWN, as before (S-065-9), with one stderr note; a node GitHub doesn't
+    return stays UNKNOWN too"""
+    owners: dict[str, list[Ref]] = {}
+    for ref in sorted(refs):
+        owners.setdefault(ref[0].lower(), []).append(ref)
+    states: dict[Ref, str] = {}
+    closes: dict[Ref, str] = {}
+    for owner, group in owners.items():
+        via = home if owner == home.partition("/")[0].lower() else f"{group[0][0]}/{group[0][1]}"
+        proc = execute([*gh, "--product", via, "api", "graphql", "-f", f"query={states_query(group)}"])
+        try:
+            response = json.loads(proc.stdout or "")
+        except ValueError:
+            response = None
+        answered = isinstance(response, dict) and (proc.returncode == 0 or bool(response.get("errors")))
+        if not answered or not isinstance(response, dict):
+            said = (proc.stderr or "").strip().splitlines()
+            sys.stderr.write(
+                f"note: shipmill gh --product {via} exited {proc.returncode}"
+                + (f": {said[0]}" if said else "")
+                + f"; {len(group)} hold(s) of {owner} read unknown\n"
+            )
+            continue
+        found, closed = read_states(response.get("data") or {}, group)
+        states.update(found)
+        closes.update(closed)
+    return states, closes
+
+
+def watch_module() -> ModuleType:
+    """github-ship-watch's watch_state.py, loaded once, for how a skill script runs the CLI"""
+    loaded = sys.modules.get("shipmill_watch_state")
+    if loaded is not None:
+        return loaded
+    spec = importlib.util.spec_from_file_location("shipmill_watch_state", WATCH_STATE)
+    if spec is None or spec.loader is None:
+        fail(f"can't load {WATCH_STATE}")
+    ws = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ws  # its dataclasses look their module up by name
+    spec.loader.exec_module(ws)
+    return ws
+
+
+def capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def product_gh(here: Path, execute: Execute = capture) -> tuple[list[str], Execute]:
+    """`shipmill gh` as upstream_state.py runs it: `uvx shipmill==<the plugin's version>
+    --repo <the checkout> gh` (spec 031), each call run once more with uv's index refreshed
+    when uv found no such version (#597). A broken plugin.json, or no uvx, exits 2"""
+    ws = watch_module()
+    try:
+        cli: list[str] = ws.shipmill_cli()
+    except ws.Refused as refused:
+        fail(str(refused).removeprefix("error: "))
+    top = next((folder for folder in (here, *here.parents) if (folder / ".git").exists()), here)
+
+    def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        try:
+            proc: subprocess.CompletedProcess[str] = ws.pinned(cmd, execute)
+        except FileNotFoundError:
+            fail("uvx is not on PATH: --home in a component reads its product's holds with `shipmill gh --product`")
+        return proc
+
+    return [*cli, "--repo", str(top), "gh"], run
 
 
 def ref_state(node: dict[str, Any]) -> str:
@@ -1904,10 +2013,9 @@ def upstream_note(home: str | None, asks: bool) -> str:
 
 def home_hold_note(still: list[Ref], states: dict[Ref, str], repo: tuple[str, str], home: str | None) -> str | None:
     """BLOCKED's added note in a component (D-60, #773): a hold still open on an item of the
-    product's home that this session can't read (no state came back, as for a repo the
-    component's tokens get a 404 for) is the coordinator's, so the session asks nobody about
-    it and leaves the item. None without --home, in the home repo itself, or when every such
-    hold was read"""
+    product's home that this session can't read (no state came back, even through the read
+    token, spec 065) is the coordinator's, so the session asks nobody about it and leaves the
+    item. None without --home, in the home repo itself, or when every such hold was read"""
     if home is None or home.lower() == "/".join(repo).lower():
         return None
     owner, _, name = home.lower().partition("/")
@@ -2130,7 +2238,10 @@ def main() -> int:
     parser.add_argument(
         "--home",
         metavar="OWNER/NAME",
-        help="the config's [product] home, which routes upstream reports (spec 038) and clears its own holds (D-60)",
+        help=(
+            "the config's [product] home, which routes upstream reports (spec 038) and clears its own holds"
+            " (D-60); in a component, holds on the product's other repos are read with `shipmill gh --product`"
+        ),
     )
     parser.add_argument(
         "--role",
@@ -2169,6 +2280,14 @@ def main() -> int:
     holds = {r: h for issue in data["open"]["nodes"] for r, h in native_holds(issue).items()}
     native = {r: s for r, (_, s, _) in holds.items()}
     upstream, closes = upstream_states(refs - set(native))
+    # A component reads again, with the read token, the holds on other repos' items plain gh
+    # couldn't (spec 065); without --home, or in the home, no `shipmill gh` runs
+    unread = product_reads(upstream, (owner, name), args.home)
+    if unread:
+        gh, execute = product_gh(Path.cwd().resolve())
+        read, read_closes = product_states(unread, args.home, gh, execute)
+        upstream.update(read)
+        closes.update(read_closes)
     states = {**upstream, **native}
     # with each one's close time too: a person's hand-off is dated against it
     closes = {**closes, **{r: c for r, (_, _, c) in holds.items() if c is not None}}
