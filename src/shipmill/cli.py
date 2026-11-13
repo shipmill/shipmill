@@ -1802,7 +1802,7 @@ def _gh(
     edit = body_edit(gh_args, read)
     gh_args = marked_args(gh_args, read) if edit is None else gh_args
     if write_command(gh_args) == PR_CREATE:  # S-055-17: before any token, so gh never runs
-        hold_plan(Git(top), gh_args, repo)
+        hold_plan(top, gh_args, repo)
     try:
         token = app_token(cache, repo, app_id, path, dt.datetime.now(dt.UTC), signer, api)
     except NotInstalled as exc:

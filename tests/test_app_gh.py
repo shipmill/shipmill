@@ -79,8 +79,9 @@ def checkout(tmp_path: Path, config: str | None, origin: str = f"https://github.
 
 
 def default_branch(root: Path, files: Mapping[str, str] | None = None) -> None:
-    """origin/HEAD at a commit holding files, so `shipmill gh pr create` can read the default
-    branch's docs/product.md (S-055-17); the work tree is left as it is"""
+    """origin/HEAD at a commit holding files, so `shipmill gh pr create` reads the default
+    branch's docs/product.md (S-055-17) locally rather than asking the GitHub origin with `git
+    ls-remote`, which a test must not reach; the work tree is left as it is"""
     git = Git(root, "t", "t@example.com")
     for name, text in (files or {}).items():
         path = root / name

@@ -4,6 +4,7 @@ runs for a body whose plan doesn't hold. No test reaches the network: GitHub is 
 FakeSigner, and gh Runner"""
 
 import io
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from shipmill.agent_marker import MARKER
 from shipmill.app_gh import other_body
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
+from shipmill.gitrepo import Git
 
 from .test_app import REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, Runner, checkout, default_branch
@@ -31,11 +33,10 @@ def host(tmp_path: Path) -> Host:
     return Host(fakes, record, home)
 
 
-def connected(tmp_path: Path, files: dict[str, str] | None = PRODUCT) -> Path:
-    """A checkout with the App, origin/HEAD at a commit holding files; None leaves origin/HEAD unset"""
+def connected(tmp_path: Path, files: dict[str, str] = PRODUCT) -> Path:
+    """A checkout with the App, origin/HEAD at a commit holding files"""
     root = checkout(tmp_path, WITH_APP)
-    if files is not None:
-        default_branch(root, files)
+    default_branch(root, files)
     key_file(tmp_path)
     return root
 
@@ -134,10 +135,65 @@ def test_s055_17_the_direction_is_read_from_the_default_branch_not_the_work_tree
     assert "no `## Plan` section" in refused(root, host, ["--body", NO_PLAN])
 
 
-def test_s055_17_an_unset_origin_head_is_refused(tmp_path: Path, host: Host) -> None:
-    root = connected(tmp_path, None)
-    said = refused(root, host, ["--body", PLAN])
-    assert "origin/HEAD is not set" in said and "remote set-head origin --auto" in said
+def bare_origin(tmp_path: Path, files: dict[str, str], branch: str = "trunk") -> Path:
+    """A local bare origin whose default branch, branch, holds files"""
+    origin, seed = tmp_path / "origin.git", tmp_path / "seed"
+    git_run(tmp_path, "init", "-q", "--bare", "-b", branch, str(origin))
+    git_run(tmp_path, "init", "-q", "-b", branch, str(seed))
+    for name, text in files.items():
+        (seed / name).parent.mkdir(parents=True, exist_ok=True)
+        (seed / name).write_text(text, encoding="utf-8")
+    git_run(seed, "add", "-A")
+    git_run(seed, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "b")
+    git_run(seed, "push", "-q", str(origin), f"HEAD:refs/heads/{branch}")
+    return origin
+
+
+def git_run(cwd: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+
+def unset_head(tmp_path: Path, origin: Path, fetched: bool = False) -> Path:
+    """A checkout with the App whose origin is origin and that has no origin/HEAD, as one made
+    by `git fetch` or actions/checkout; fetched leaves origin's branches fetched"""
+    root = checkout(tmp_path, WITH_APP, origin=str(origin))
+    if fetched:
+        git_run(root, "fetch", "-q", "origin")
+        git_run(root, "remote", "set-head", "origin", "--delete")  # a newer git's fetch sets it
+    assert not Git(root).ok("rev-parse", "--verify", "--quiet", "origin/HEAD")
+    key_file(tmp_path)
+    return root
+
+
+R = ["-R", REPO]  # the origin is a local path, so -R names the GitHub repo
+
+
+@pytest.mark.parametrize("fetched", [False, True])
+def test_s055_17_without_origin_head_the_default_branch_is_read_from_origin(
+    tmp_path: Path, host: Host, fetched: bool
+) -> None:
+    root = unset_head(tmp_path, bare_origin(tmp_path, PRODUCT), fetched)
+    assert "no `## Plan` section" in refused(root, host, [*R, "--body", NO_PLAN])
+    assert sent(root, host, [*R, "--body", PLAN]) == f"{PLAN}\n{MARKER}"
+    assert Git(root).ok("rev-parse", "--verify", "--quiet", "origin/trunk")  # fetched once it was missing
+
+
+def test_s055_17_without_origin_head_a_default_branch_without_a_direction_is_not_checked(
+    tmp_path: Path, host: Host
+) -> None:
+    root = unset_head(tmp_path, bare_origin(tmp_path, {"README.md": "demo\n"}))
+    assert sent(root, host, [*R, "--body", NO_PLAN]) == f"{NO_PLAN}\n{MARKER}"
+
+
+def test_s055_17_a_default_branch_that_cant_be_resolved_is_refused_naming_why(tmp_path: Path, host: Host) -> None:
+    root = unset_head(tmp_path, tmp_path / "gone.git")
+    said = refused(root, host, [*R, "--body", PLAN])
+    assert "origin/HEAD is not set" in said and "origin's default branch can't be read: git ls-remote" in said
+
+
+def test_s055_17_an_unresolved_default_branch_still_lets_a_spec_body_through(tmp_path: Path, host: Host) -> None:
+    root = unset_head(tmp_path, tmp_path / "gone.git")
+    assert sent(root, host, [*R, "--body", "Spec for #12\n"]) == f"Spec for #12\n\n{MARKER}"
 
 
 def test_s055_17_a_direction_the_gate_cant_read_is_refused(tmp_path: Path, host: Host) -> None:
