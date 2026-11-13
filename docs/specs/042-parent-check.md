@@ -229,7 +229,7 @@ comment, and the needs-decision question; the Upstream report's `## Check`), and
 - D-21
 - D-29
 - D-31
-- D-47
+- D-84
 
 ## Issues
 

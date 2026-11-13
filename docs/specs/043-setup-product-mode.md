@@ -186,7 +186,7 @@ phrased that way reaches the skill.
 - D-34: each repo keeps its own direction
 - D-42: setup writes no client doc; the Product step writes only the config
 - D-46: the home is the repo whose direction describes the whole product
-- D-47: the coordinator is the home's gate; a component's session stays in its repo
+- D-84: the coordinator is the home's gate; a component's session writes only its repo
 
 ## Issues
 
