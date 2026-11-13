@@ -255,3 +255,15 @@ def test_s065_11_the_rubric_and_triage_skill_name_the_read_token() -> None:
     triage = flat(SKILLS / "github-issue-triage" / "SKILL.md")
     assert "D-84" in triage
     assert "`shipmill gh --product <their repo>`" in triage and "writes only its own (D-84)" in triage
+
+
+def test_d60s_reason_no_longer_says_a_component_cant_read_the_home() -> None:
+    """D-84 refines D-60: a component reads the home through the read token, so the coordinator's
+    filing order rests on a hold the read token may still not read, not on one it never can"""
+    for path in (
+        SKILLS / "github-issue-triage" / "SKILL.md",
+        SKILLS / "github-issue-triage" / "references" / "spec-gate.md",
+    ):
+        text = flat(path)
+        assert "session can't read the home" not in text, path
+        assert "the read token (D-84)" in text, path
