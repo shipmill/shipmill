@@ -348,7 +348,7 @@ from shipmill.launchd import (
     remove,
 )
 from shipmill.lineedit import LineText
-from shipmill.merge_gate import GateRun, hold_gate, run_gate
+from shipmill.merge_gate import GateRun, Queued, hold_gate, label_args, run_gate, unlabel_args
 from shipmill.notify import Desktop
 from shipmill.operate import Http, Unreachable, UrllibHttp, approve, approve_rollback, operate, summary
 from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
@@ -1809,7 +1809,9 @@ def _gh(
     plan_problems refuses, by the default branch's docs/product.md, exits 2 before any token
     (S-055-17, `hold_plan`). As the App, a merge runs the wheel's pr_gate.py after those holds,
     exits 2 unless it reads READY, and merges only the head it judged (S-055-1 to S-055-3,
-    `hold_gate`)"""
+    `hold_gate`); on QUEUED it first adds the base's [land.window] queued_label as the App, and
+    a merge gh ran that exited 0 removes that label, as the App, when the pull request carries
+    it (S-056-8)"""
     api, signer = hub.api, hub.signer
     leading = _leading(passed)
     key = leading.key
@@ -1904,10 +1906,18 @@ def _gh(
     bot_login = functools.cache(functools.partial(app_login(signer, api), app_id, path))
     app = functools.partial(_app_login, bot_login, trailer) if trailer else None
     assisted = identity.author is Author.DECIDER  # whose trailer is set (S-051-3)
+    held: _Held | None = None
     if merge is not None:
-        pull = _hold_never(top, merge, env, binary, readers.merge)
+        held = _hold_never(top, merge, env, binary, readers.merge)
+        pull = held.repo, held.number
         # S-055-1 to S-055-3: after the holds above, with the App's token, before any author's
-        gh_args = hold_gate(merge, pull[1], pull[0], top, _gate_login(merge, bot_login), gh_args, env, readers.gate)
+        try:
+            gh_args = hold_gate(
+                merge, held.number, held.repo, top, _gate_login(merge, bot_login), gh_args, env, readers.gate
+            )
+        except Queued as exc:  # S-056-8: labelled queued_label as the App, and still refused
+            _queue(held, exc, binary, env, readers.current)
+            raise
         if trailer is not None and app is not None:
             credit = _merge_credit(top, pull, gh_args, env, binary, readers, app)
             author = _AsApp(dict(env))
@@ -1934,7 +1944,53 @@ def _gh(
             gh_args = person_args(gh_args, author.writer.login.value)
         author.say()
         env = author.env
-    return runner([str(binary), *gh_args], env)  # S-051-12: every other command as the App
+    code = runner([str(binary), *gh_args], env)  # S-051-12: every other command as the App
+    if held is not None and code == 0:  # S-056-8: as the App, whoever the merge went out as
+        _unqueue(held, binary, as_app(environ, token), readers.current)
+    return code
+
+
+@dataclass(frozen=True, slots=True)
+class _Held:
+    """The pull request a merge names, once the holds of spec 030 let it through: its repo and
+    number, the base's [land.window] queued_label (None without the section), and that label as
+    the pull request carries it (None when it doesn't), for S-056-8"""
+
+    repo: str
+    number: int
+    queued_label: str | None
+    carried: str | None
+
+
+def _queue(held: _Held, refused: Queued, binary: Path, env: Mapping[str, str], current: GhCapture) -> None:
+    """S-056-8: add queued_label to the pull request pr_gate.py read QUEUED, with the App's env;
+    nothing when it carries it already. The merge stays refused either way: a label that can't
+    be added says so beside the refusal"""
+    label = held.queued_label
+    if label is None or held.carried is not None:
+        return
+    code, _ = current([str(binary), *label_args(held.repo, held.number, label)], env)
+    if code != 0:
+        raise ReleaseError(
+            f"{refused}\nand adding {label} to #{held.number} failed (gh exited {code}), so the land window's "
+            f"queue doesn't list it; add it with `{cli_command()} gh pr edit {held.number} -R {held.repo} "
+            f"--add-label {label}`"
+        ) from None
+
+
+def _unqueue(held: _Held, binary: Path, env: Mapping[str, str], current: GhCapture) -> None:
+    """S-056-8: remove queued_label, with the App's env, from the pull request a merge exited 0
+    on; nothing when it doesn't carry it. One that can't be removed exits 2 naming the merge as
+    done, so nothing merges it again"""
+    if held.carried is None:
+        return
+    code, _ = current([str(binary), *unlabel_args(held.repo, held.number, held.carried)], env)
+    if code != 0:
+        raise ReleaseError(
+            f"the merge of #{held.number} in {held.repo} went through, but removing its {held.carried} label failed "
+            f"(gh exited {code}), so the land window's queue still lists it; remove it with "
+            f"`{cli_command()} gh pr edit {held.number} -R {held.repo} --remove-label {held.carried}`"
+        )
 
 
 def _create_deciders(
@@ -2141,13 +2197,13 @@ def _gh_reader(top: Path, binary: Path, env: Mapping[str, str]) -> MergeReads:
     return GhCli(top, gh=str(binary), env=env)
 
 
-def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, reader: MergeReader) -> tuple[str, int]:
+def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, reader: MergeReader) -> _Held:
     """S-030-13: a merge of a pull request whose classification, by the levels at origin/HEAD,
     has a `never` zone exits 2, naming the zone and the maintainer's hand merge; approval in
     chat changes nothing, since nothing here reads it (D-48). S-030-23: so does one labelled
     needs-decision, whose question waits on an answer (D-21, D-49), read in the same call. Read
     with the App's token, in the checkout's own repo only, whose levels it holds. The pull
-    request held, repo and number"""
+    request held, with the queued_label of the same base's [land.window] (spec 056)"""
     origin = _origin_repo(top)
     if origin is None:
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so {merge.command}'s pull request can't be classified")
@@ -2180,7 +2236,8 @@ def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, r
             f"{merge.command} is refused: #{number} in {target} is labelled {DECISION_LABEL}, so its question still "
             "waits on an answer; answer its question and remove the label first, then merge (D-21, D-49)"
         )
-    found = classify_change(Base.read(git, DEFAULT_REF), reads, change)
+    base = Base.read(git, DEFAULT_REF)
+    found = classify_change(base, reads, change)
     never = [z for z in found.zones if z.level is decide.Level.NEVER]
     if never:
         zones = "; ".join(f"{z.zone.value}: {z.reason}" for z in never)
@@ -2189,7 +2246,12 @@ def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, r
             "merges it, by hand; an approval in chat doesn't change that (spec 030, D-48). Assign it to the "
             "maintainer and leave it"
         )
-    return target, number
+    window = base.policy.land_window
+    if window is None:
+        return _Held(target, number, None, None)
+    label = window.queued_label
+    carried = next((name for name in change.labels if name.lower() == label.lower()), None)
+    return _Held(target, number, label, carried)
 
 
 def _gh_product(

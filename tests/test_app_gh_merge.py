@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from shipmill.app_gh import Merge, merge_of
+from shipmill.app_gh import GhCapture, Merge, merge_of
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
@@ -124,6 +124,7 @@ def gh(
     environ: Mapping[str, str] | None = None,
     api: MintApi | None = None,
     gate: FakeGate | None = None,
+    capture: GhCapture | None = None,
 ) -> int:
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
@@ -139,6 +140,7 @@ def gh(
         gh_runner=runner,
         merge_reader=reader,
         merge_gate=FakeGate() if gate is None else gate,
+        gh_capture=capture,
     )
 
 
