@@ -145,11 +145,18 @@ class Git:
         """Push to origin; git's error when the remote rejected it (such as a ref that
         moved), else ''. config holds git settings for this push alone, passed through
         GIT_CONFIG_* in git's environment, never its arguments, so a credential in them
-        appears in no process argument (spec 054)"""
-        extra = {"GIT_CONFIG_COUNT": str(len(config))} if config else {}
-        for index, (key, value) in enumerate(config):
-            extra[f"GIT_CONFIG_KEY_{index}"] = key
-            extra[f"GIT_CONFIG_VALUE_{index}"] = value
+        appears in no process argument (spec 054); they follow any GIT_CONFIG_* entries
+        the environment already holds, which keep applying"""
+        extra: dict[str, str] = {}
+        if config:
+            count = {**os.environ, **self.env}.get("GIT_CONFIG_COUNT", "0")
+            if not count.isdecimal():
+                raise ReleaseError(f"GIT_CONFIG_COUNT is {count!r}, not a count; nothing was pushed")
+            start = int(count)
+            extra["GIT_CONFIG_COUNT"] = str(start + len(config))
+            for index, (key, value) in enumerate(config, start):
+                extra[f"GIT_CONFIG_KEY_{index}"] = key
+                extra[f"GIT_CONFIG_VALUE_{index}"] = value
         proc = self._proc(("push", "-q", REMOTE, *refspecs), extra=extra)
         return "" if proc.returncode == 0 else proc.stderr.decode(errors="replace").strip()
 

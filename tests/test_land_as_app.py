@@ -3,6 +3,7 @@ it every push is the one land made before; a push the branch's rules refuse name
 
 import base64
 import datetime as dt
+import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -144,14 +145,39 @@ def test_s054_6_the_apps_settings_reach_git_through_its_environment(repo: Repo) 
     decision = _stable_unmoved(repo)
     git, sha = _flow(repo, decision, APP)
     [pushed] = [e for a, e in zip(git.argv, git.extra, strict=True) if a[:1] == ("push",) and a[-1].endswith("main")]
+    start = int(os.environ.get("GIT_CONFIG_COUNT", "0"))  # the host's own entries come first
     assert pushed == {
-        "GIT_CONFIG_COUNT": "2",
-        "GIT_CONFIG_KEY_0": HEADER,
-        "GIT_CONFIG_VALUE_0": "",
-        "GIT_CONFIG_KEY_1": HEADER,
-        "GIT_CONFIG_VALUE_1": AS_APP[1][1],
+        "GIT_CONFIG_COUNT": str(start + 2),
+        f"GIT_CONFIG_KEY_{start}": HEADER,
+        f"GIT_CONFIG_VALUE_{start}": "",
+        f"GIT_CONFIG_KEY_{start + 1}": HEADER,
+        f"GIT_CONFIG_VALUE_{start + 1}": AS_APP[1][1],
     }
     assert repo.git.remote_branch("main") == sha
+
+
+def test_s054_6_the_apps_settings_append_to_git_config_entries_already_in_the_environment(
+    repo: Repo, tmp_path: Path
+) -> None:
+    # a job's own GIT_CONFIG_* entry (here a push URL) still applies to the App's push
+    elsewhere = tmp_path / "elsewhere.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(elsewhere)], check=True)
+    git = Git(repo.root)
+    git.env = {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "remote.origin.pushurl",
+        "GIT_CONFIG_VALUE_0": str(elsewhere),
+    }
+    assert git.push("HEAD:refs/heads/pushed", config=AS_APP) == ""
+    assert Git(elsewhere).run("rev-parse", "refs/heads/pushed").strip() == repo.git.run("rev-parse", "HEAD").strip()
+    assert repo.git.remote_branch("pushed") is None
+
+
+def test_s054_6_a_malformed_git_config_count_in_the_environment_fails_naming_it(repo: Repo) -> None:
+    git = Git(repo.root)
+    git.env = {"GIT_CONFIG_COUNT": "two"}
+    with pytest.raises(ReleaseError, match="GIT_CONFIG_COUNT is 'two', not a count"):
+        git.push("HEAD:refs/heads/pushed", config=AS_APP)
 
 
 def test_s054_7_no_process_argument_holds_the_token(repo: Repo) -> None:
