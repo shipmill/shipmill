@@ -97,6 +97,9 @@ elif args[0] == "api" and "--paginate" in args and args[args.index("--jq") + 1] 
         old = pr["renamed"].get(path)
         status = "renamed" if old else "added" if path in pr["added"] else "modified"
         print(json.dumps({{"filename": path, "status": status, **({{"previous_filename": old}} if old else {{}})}}))
+elif args[0] == "api" and "graphql" in args and "pullRequest(number:" in [a for a in args if a.startswith("query=")][0]:
+    number = re.search(r"pullRequest[(]number: ([0-9]+)[)]", [a for a in args if a.startswith("query=")][0])
+    print(json.dumps({{"data": {{"repository": {{"pullRequest": fake["threads"][number.group(1)]}}}}}}))
 elif args[0] == "api" and "graphql" in args:  # the issues a spec PR's lines name, as GitHub answers them
     query = [a for a in args if a.startswith("query=")][0]
     found, errors = {{"nameWithOwner": fake["repo"]}}, []
@@ -184,17 +187,37 @@ def pr(
     }
 
 
+OPENED = "2026-11-01T10:00:00Z"  # when a test's PR opened
+
+
+def thread(
+    *comments: dict[str, Any], pushes: tuple[dict[str, Any], ...] = (), created: str = OPENED, whole: bool = True
+) -> dict[str, Any]:
+    """A pull request's or an issue's thread as GraphQL answers it: its comments, oldest first,
+    and a pull request's force-pushes; whole False says older comments went unread"""
+    return {
+        "__typename": "Issue",
+        "state": "OPEN",
+        "body": "",
+        "createdAt": created,
+        "comments": {"pageInfo": {"hasPreviousPage": not whole}, "nodes": list(comments)},
+        "timelineItems": {"pageInfo": {"hasPreviousPage": False}, "nodes": list(pushes)},
+    }
+
+
 def run_gate(
     tmp_path: Path,
     work: Path | None,
     prs: dict[int, dict[str, Any]],
     *args: str,
-    issues: dict[int, dict[str, str]] | None = None,
+    issues: dict[int, dict[str, Any]] | None = None,
     base: dict[str, Any] | None = None,
+    threads: dict[int, dict[str, Any]] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """The gate with --checkout work, or, for None, run in a folder outside any checkout; issues
     are what GitHub's GraphQL answers for the repo demo/app's numbers; base, the base branch head's
-    sha, statuses, and check_runs (default: a head with no checks)"""
+    sha, statuses, and check_runs (default: a head with no checks); threads, each PR's comments
+    and force-pushes as GraphQL answers them (default: none of either)"""
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     gh = fakes / "gh"
@@ -206,6 +229,7 @@ def run_gate(
         "repo": "demo/app",
         "issues": {str(n): i for n, i in (issues or {}).items()},
         "base": {"sha": BASE_SHA, "statuses": [], "check_runs": [], **(base or {})},
+        "threads": {str(n): (threads or {}).get(n, thread()) for n in prs},
     }
     data.write_text(json.dumps(fake), encoding="utf-8")
     env = {
@@ -1602,3 +1626,311 @@ def test_s024_7_every_plan_field_is_required() -> None:
 def test_a_plan_inside_a_code_fence_is_not_a_plan() -> None:
     body = "```\n## Plan\n- Serves: G-3\n```\n"
     assert gate.plan_problems(body, frozenset({"G-3"}))[0].startswith("no `## Plan` section")
+
+
+# Spec 055: the maintainer's acceptance is read from the answer on GitHub
+
+QUESTION = (
+    "<!-- shipmill:needs-decision -->\n**Decision needed:** src/land.py pushes tags.\n\n"
+    "1. Land it (recommended): the change is reviewed\n2. Hold it until the release\n\n<!-- shipmill:agent -->\n"
+)
+PROTECTED_ASK = "  needs-decision: src/land.py matches `src/land.py` (REVIEW.md): it pushes tags"
+
+
+def at(hour: int, minute: int = 0) -> str:
+    """A time on the day the test's PR opened, at 10:00"""
+    return f"2026-11-01T{hour:02d}:{minute:02d}:00Z"
+
+
+def comment(
+    body: str, when: str, login: str = "romamo", association: str = "OWNER", bot: bool = False
+) -> dict[str, Any]:
+    """A comment as GraphQL lists it; an App's login without [bot], as GraphQL spells it"""
+    return {
+        "author": {"login": login, "__typename": "Bot" if bot else "User"},
+        "authorAssociation": association,
+        "body": body,
+        "createdAt": when,
+    }
+
+
+def asked(when: str = at(11)) -> dict[str, Any]:
+    return comment(QUESTION, when, login="shipmill-demo", association="NONE", bot=True)
+
+
+def relay(line: str, answer: str, when: str = at(12)) -> dict[str, Any]:
+    body = f"{line}\n\nAnswered in the session: {answer}\n\n<!-- shipmill:agent -->\n"
+    return comment(body, when, login="shipmill-demo", association="NONE", bot=True)
+
+
+def push(when: str, before: str) -> dict[str, Any]:
+    return {"createdAt": when, "beforeCommit": {"oid": before}}
+
+
+def headed(
+    head: str = HEAD_SHA, commits: tuple[tuple[str, str], ...] = ((HEAD_SHA, at(10, 30)),), **kw: Any
+) -> dict[str, Any]:
+    """pr(**kw) at head, its commits (oid, committedDate) as gh pr view lists them"""
+    data = pr(**kw)
+    data["headRefOid"] = head
+    data["commits"] = [
+        {"oid": oid, "messageHeadline": "Change", "messageBody": "", "committedDate": when} for oid, when in commits
+    ]
+    return data
+
+
+def ready_line(head: str = HEAD_SHA) -> str:
+    return MAIN_READY.replace(HEAD_SHA, head)
+
+
+def protected(
+    tmp_path: Path, work: Path, data: dict[str, Any], pr_thread: dict[str, Any], **kw: Any
+) -> subprocess.CompletedProcess[str]:
+    """The gate on #7, an agent's PR changing the protected src/land.py, its thread pr_thread"""
+    return run_gate(tmp_path, work, {7: data}, "--bot-login", BOT, threads={7: pr_thread}, **kw)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        comment("1", at(12)),
+        comment("Option 1.", at(12), association="MEMBER"),
+        comment("Land it", at(12), association="COLLABORATOR"),
+        comment("**1**\n\nThanks, go ahead.", at(12)),
+    ],
+)
+def test_s055_5_an_answer_taking_the_recommended_option_lifts_a_protected_glob(
+    tmp_path: Path, directed: Path, answer: dict[str, Any]
+) -> None:
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(), answer))
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+
+
+def test_s055_5_an_accepted_ask_zone_is_judged_on_ci_alone(tmp_path: Path, agents: Path) -> None:
+    classify_as(tmp_path, {7: [PROTECTED_ZONE]})
+    accepted = thread(asked(), comment("1", at(12)))
+    proc = protected(tmp_path, agents, headed(files=("src/land.py",)), accepted)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+    failing = headed(files=("src/land.py",))
+    failing["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    ci = protected(tmp_path, agents, failing, accepted)
+    assert ci.returncode == 1 and ci.stdout.splitlines()[1:] == ["  failed: test (FAILURE)"], ci.stdout
+
+
+def test_s055_5_the_answer_is_read_once_and_only_for_a_pr_needing_a_decision(tmp_path: Path, directed: Path) -> None:
+    run_gate(tmp_path, directed, {7: headed()}, "--bot-login", BOT)
+    # a READY PR reads no thread
+    assert not any("pullRequest(number:" in " ".join(c["args"]) for c in gh_calls(tmp_path))
+    (tmp_path / "gh-calls").unlink()
+    protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(), comment("1", at(12))))
+    reads = [c for c in gh_calls(tmp_path) if "pullRequest(number:" in " ".join(c["args"])]
+    assert [c["args"] for c in reads] == [["api", *gate.thread_read(7)]]
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["Decision by @romamo", "Decision by `@romamo`", "Decision by @romamo, in the session"],
+)
+def test_s055_9_the_apps_relay_counts_as_a_trusted_answer(tmp_path: Path, directed: Path, line: str) -> None:
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(), relay(line, "1")))
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+
+
+def test_s055_9_a_relay_by_another_bot_is_no_answer(tmp_path: Path, directed: Path) -> None:
+    other = {**relay("Decision by @romamo", "1"), "author": {"login": "other-app", "__typename": "Bot"}}
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(), other))
+    assert proc.returncode == 5 and proc.stdout.splitlines()[1:] == [PROTECTED_ASK], proc.stdout
+
+
+NOT_TAKEN = "  needs-decision: the answer doesn't take the recommended option"
+
+
+@pytest.mark.parametrize(
+    ("comments", "why"),
+    [
+        ((), []),  # no question
+        ((asked(),), []),  # no answer
+        ((asked(), comment("1", at(12), association="CONTRIBUTOR")), []),
+        ((asked(), comment("1", at(12), login="dependabot", association="NONE", bot=True)), []),
+        ((asked(), comment("1\n\n<!-- shipmill:agent -->", at(12))), []),
+        ((asked(), comment("2", at(12))), [NOT_TAKEN]),
+        ((asked(), comment("Land it, but rename the tag first", at(12))), [NOT_TAKEN]),
+        ((asked(), relay("Decision by @romamo", "2")), [NOT_TAKEN]),
+        ((asked(), comment("1", at(12)), asked(at(13))), []),  # a newer question follows the answer
+        ((comment(QUESTION, at(11), login="eve", association="CONTRIBUTOR"), comment("1", at(12))), []),
+        ((comment("1", at(10, 30)), asked()), []),  # a reply before the question answers nothing
+    ],
+)
+def test_s055_8_anything_but_a_trusted_recommended_answer_keeps_the_question(
+    tmp_path: Path, directed: Path, comments: tuple[dict[str, Any], ...], why: list[str]
+) -> None:
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(*comments))
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, *why]
+
+
+def test_s055_8_a_question_older_than_the_comments_read_is_not_taken_from_an_issue(
+    tmp_path: Path, directed: Path
+) -> None:
+    """the PR's own question may sit past its newest 100 comments: an issue's answer doesn't stand in"""
+    issue = thread(asked(at(9)), comment("1", at(9, 30)), created=at(8))
+    data = headed(files=("src/land.py",), body=PLAN.replace("Fixes #7", "Part of #12"))
+    proc = protected(tmp_path, directed, data, thread(whole=False), issues={12: issue})
+    assert proc.returncode == 5 and proc.stdout.splitlines()[1:] == [PROTECTED_ASK], proc.stdout
+
+
+def test_s055_11_a_never_zone_stays_maintainer_only_whatever_the_answer(tmp_path: Path, agents: Path) -> None:
+    classify_as(tmp_path, {7: [DIRECTION_ZONE, PROTECTED_ZONE]})
+    data = headed(files=("docs/product.md", "src/land.py"))
+    proc = protected(tmp_path, agents, data, thread(asked(), comment("1", at(12))))
+    assert proc.returncode == gate.MAINTAINER_ONLY == 7, proc.stdout + proc.stderr
+    assert f"  maintainer-only: direction: {DIRECTION_ZONE['reason']}" in proc.stdout.splitlines()
+    assert not any("pullRequest(number:" in " ".join(c["args"]) for c in gh_calls(tmp_path))
+
+
+# S-055-7: an answer on the issue the PR closes or is part of
+
+ISSUE_BODIES = [PLAN.replace("Fixes #7", "Part of #12"), PLAN.replace("Fixes #7", "Fixes #12")]
+
+
+@pytest.mark.parametrize("body", ISSUE_BODIES)
+def test_s055_7_an_answer_on_the_issue_before_the_pr_opened_covers_every_head(
+    tmp_path: Path, directed: Path, body: str
+) -> None:
+    issue = thread(asked(at(8)), comment("1", at(9)), created=at(7))
+    data = headed(files=("src/land.py",), body=body, commits=((HEAD_SHA, at(15)),))  # a head well after it
+    proc = protected(tmp_path, directed, data, thread(), issues={12: issue})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("body", ISSUE_BODIES)
+def test_s055_7_an_answer_on_the_issue_after_the_pr_opened_binds_to_its_head(
+    tmp_path: Path, directed: Path, body: str
+) -> None:
+    issue = thread(asked(at(11)), comment("1", at(12)), created=at(7))
+    data = headed(files=("src/land.py",), body=body)
+    proc = protected(tmp_path, directed, data, thread(), issues={12: issue})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+    unnamed = headed(files=("src/land.py",), body=body, commits=((HEAD_SHA, at(13)),))  # no commit that old
+    held = protected(tmp_path, directed, unnamed, thread(), issues={12: issue})
+    assert held.returncode == 5, held.stdout + held.stderr
+    assert held.stdout.splitlines()[1:] == [
+        PROTECTED_ASK,
+        "  needs-decision: the head the answer was given at can't be named",
+    ]
+
+
+def test_s055_7_the_prs_own_question_comes_before_the_issues(tmp_path: Path, directed: Path) -> None:
+    issue = thread(asked(at(8)), comment("1", at(9)), created=at(7))
+    data = headed(files=("src/land.py",), body=ISSUE_BODIES[0])
+    proc = protected(tmp_path, directed, data, thread(asked()), issues={12: issue})
+    assert proc.returncode == 5 and proc.stdout.splitlines()[1:] == [PROTECTED_ASK], proc.stdout
+
+
+# S-055-6 and S-055-10: the head the answer covers, read from real commits
+
+
+def committed(work: Path, files: dict[str, str], message: str) -> str:
+    for name, text in files.items():
+        (work / name).parent.mkdir(parents=True, exist_ok=True)
+        (work / name).write_text(text)
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", message)
+    return git(work, "rev-parse", "HEAD").strip()
+
+
+def branched(tmp_path: Path, work: Path, files: dict[str, str]) -> str:
+    """A branch off origin/main in work with one commit of files, and a commit on origin's main
+    after it, fetched: the answered head, and a base that moved since"""
+    for where in (work, tmp_path / "origin"):
+        git(where, "config", "user.email", "t@example.com")
+        git(where, "config", "user.name", "t")
+    git(work, "switch", "-q", "-c", "feat", "origin/main")
+    answered = committed(work, files, "Change")
+    committed(tmp_path / "origin", {"NOTES.txt": "moved on\n"}, "Base moves")
+    git(work, "fetch", "-q", "origin")
+    return answered
+
+
+def test_s055_6_a_rebase_with_the_same_own_change_is_still_covered(tmp_path: Path, directed: Path) -> None:
+    answered = branched(tmp_path, directed, {"src/land.py": "tag = 1\n"})
+    git(directed, "rebase", "-q", "origin/main")
+    head = git(directed, "rev-parse", "HEAD").strip()
+    data = headed(head, ((head, at(13)),), files=("src/land.py",))
+    rebased = thread(asked(), comment("1", at(12)), pushes=(push(at(13), answered),))
+    proc = protected(tmp_path, directed, data, rebased)
+    assert (proc.returncode, proc.stdout) == (0, ready_line(head)), proc.stdout + proc.stderr
+
+
+def test_s055_6_a_merge_of_the_base_with_the_same_own_change_is_still_covered(tmp_path: Path, directed: Path) -> None:
+    answered = branched(tmp_path, directed, {"src/land.py": "tag = 1\n"})
+    git(directed, "merge", "-q", "--no-edit", "origin/main")
+    head = git(directed, "rev-parse", "HEAD").strip()
+    data = headed(head, ((answered, at(10, 30)), (head, at(13))), files=("src/land.py",))
+    proc = protected(tmp_path, directed, data, thread(asked(), comment("1", at(12))))
+    assert (proc.returncode, proc.stdout) == (0, ready_line(head)), proc.stdout + proc.stderr
+
+
+def test_s055_6_a_head_whose_own_change_differs_needs_the_decision_again(tmp_path: Path, directed: Path) -> None:
+    answered = branched(tmp_path, directed, {"src/land.py": "tag = 1\n"})
+    head = committed(directed, {"src/land.py": "tag = 2\n"}, "Change more")
+    data = headed(head, ((answered, at(10, 30)), (head, at(13))), files=("src/land.py",))
+    proc = protected(tmp_path, directed, data, thread(asked(), comment("1", at(12))))
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    differs = f"  needs-decision: answered at {answered[:7]}, and the change differs since"
+    assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, differs]
+
+
+def test_s055_6_a_force_push_since_the_answer_binds_it_to_the_head_before_the_push(
+    tmp_path: Path, directed: Path
+) -> None:
+    """a rebase rewrites every commit's date, so the push's beforeCommit names the answered head"""
+    answered = branched(tmp_path, directed, {"src/land.py": "tag = 1\n"})
+    git(directed, "rebase", "-q", "origin/main")
+    head = committed(directed, {"src/land.py": "tag = 2\n"}, "Change more")
+    data = headed(head, ((head, at(11, 30)),), files=("src/land.py",))  # dated before the answer
+    proc = protected(tmp_path, directed, data, thread(asked(), comment("1", at(12)), pushes=(push(at(13), answered),)))
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[-1] == f"  needs-decision: answered at {answered[:7]}, and the change differs since"
+
+
+SPEC_TEXT = """\
+# S-054: Release digest
+
+status: draft
+serves: G-1
+
+## Problem
+
+Releases go out and nobody reads what changed in them.
+
+## Acceptance criteria
+
+- S-054-1: a digest is posted with each release
+"""
+SCOPE_ZONE = {"zone": "scope", "level": "ask", "reason": "a new spec"}
+
+
+@pytest.mark.parametrize(
+    ("edit", "covered"),
+    [
+        (SPEC_TEXT.replace("out and nobody", "out\nand nobody"), True),  # rewrapped: format only
+        (SPEC_TEXT + "- S-054-2: the digest names each pull request\n", False),  # a criterion added
+    ],
+)
+def test_s055_10_a_spec_pr_compares_its_heads_with_same_approval(
+    tmp_path: Path, agents: Path, edit: str, covered: bool
+) -> None:
+    classify_as(tmp_path, {7: [SCOPE_ZONE]})
+    answered = branched(tmp_path, agents, {SPEC: SPEC_TEXT})
+    head = committed(agents, {SPEC: edit}, "Edit the spec")
+    data = headed(head, ((answered, at(10, 30)), (head, at(13))), body=SPEC_BODY, files=(SPEC,), added=(SPEC,))
+    proc = protected(tmp_path, agents, data, thread(asked(), comment("1", at(12))), issues=ISSUES)
+    if covered:
+        assert (proc.returncode, proc.stdout) == (0, ready_line(head)), proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == 5, proc.stdout + proc.stderr
+        assert proc.stdout.splitlines()[1:] == [
+            "  needs-decision: scope: a new spec",
+            f"  needs-decision: answered at {answered[:7]}, and the change differs since",
+        ]

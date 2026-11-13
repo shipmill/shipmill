@@ -8,8 +8,25 @@ And does it keep to the repo's direction (spec 024)?
   lists, alone (`Q-6`) or as `quality bar (Q-4, Q-6)`; without a
   docs/product.md the plan isn't checked. A person's PR is never refused for its plan
 - A PR whose files match a REVIEW.md Protected areas glob, or that edits docs/product.md
-  or docs/product/, waits on the maintainer (needs-decision) until --maintainer-accepted
-  says they accepted it
+  or docs/product/, waits on the maintainer (needs-decision) until their answer on GitHub
+  accepts it (below), or --maintainer-accepted says they accepted it
+
+The maintainer's answer (spec 055), read only for a PR that would read NEEDS_DECISION: the
+newest needs-decision question (its first line `<!-- shipmill:needs-decision -->`, by an
+OWNER, MEMBER, or COLLABORATOR or the --bot-login) on the PR, or, when the PR has none, on an
+issue its title or body closes or names as `Part of #N`; its first answer as retro.py reads one
+(a trusted person's reply without the agent marker, or the --bot-login's relay whose first line
+is `Decision by @<login>`); that answer taking the option marked (recommended) as it stands. It
+lifts the asks, and CI decides, when it covers the judged head: one given on an issue before the
+PR opened covers every head; any other covers the head the PR had when it was given (after a
+force-push since, the first push's beforeCommit; else the newest commit whose committedDate is
+at or before it) and every head whose own change, `git diff $(git merge-base origin/<base>
+<head>) <head>`, is the same, or, for a PR adding a spec, whose spec files `specs.py
+same-approval` reads the same (exit 0). Otherwise the asks stay, with `  needs-decision:
+answered at <sha7>, and the change differs since`, `  needs-decision: the answer doesn't take
+the recommended option`, or `  needs-decision: the head the answer was given at can't be named`.
+It costs one GraphQL read of the PR's newest 100 comments and force-pushes, and one of the
+issues' when the PR has no question; a never zone stays MAINTAINER_ONLY whatever the answer.
 
 REVIEW.md and docs/product.md are read from the default branch of the checkout
 (--checkout, default the current directory, at origin/HEAD, or at origin/<the PR's base
@@ -31,7 +48,8 @@ above; the plan check stays. Each zone by its level, read from that branch, neve
 
 - never: MAINTAINER_ONLY, `  maintainer-only: <zone>: <reason>`; --maintainer-accepted
   doesn't lift it, since only the maintainer merges it, by hand (D-48)
-- ask: NEEDS_DECISION, `  needs-decision: <zone>: <reason>`, until --maintainer-accepted
+- ask: NEEDS_DECISION, `  needs-decision: <zone>: <reason>`, until the maintainer's answer
+  or --maintainer-accepted
 - notify: the verdict stays, with `  notify: <zone>: <reason>`; the skill posts the decided
   comment before it merges
 - act: nothing
@@ -137,6 +155,11 @@ DECISIONS = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scrip
 # github-issue-triage's triage_state.py: the closing-keyword rule and the ## Check section, one
 # reading for every script (#416, D-76)
 TRIAGE_STATE = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "triage_state.py"
+# github-ship-watch's retro.py: the needs-decision question, its first trusted answer, and whether
+# that answer takes the (recommended) option (S-030-18), one reading for every script (spec 055)
+RETRO = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "retro.py"
+# github-issue-triage's specs.py: same-approval compares a spec PR's answered and judged heads (D-81)
+SPECS = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "specs.py"
 # a body's "Part of #N", as triage_state.py's closes() reads a partial PR
 PART_OF = re.compile(r"\bpart of:?\s+#([0-9]+)\b", re.IGNORECASE)
 CONFIG = ".github/shipmill.toml"
@@ -297,17 +320,22 @@ def started_of(entry: dict) -> datetime | None:
     raw = entry.get("startedAt")
     if raw is None or raw == "":
         return None
+    started = moment(raw, "a check's startedAt")
+    return None if started.year == 1 else started
+
+
+def moment(raw: object, what: str) -> datetime:
+    """A GitHub timestamp, with its zone; anything else stops the gate"""
     found = TIMESTAMP.fullmatch(raw) if isinstance(raw, str) else None
     if found is None:
-        raise GateError(f"a check's startedAt is not a timestamp: {raw!r}")
+        raise GateError(f"{what} is not a timestamp: {raw!r}")
     seconds, fraction, zone = found.groups()
     # Python 3.10's fromisoformat takes neither Z nor a fraction other than 3 or 6 digits
     micro = "." + (fraction + "000000")[:6] if fraction else ""
     try:
-        started = datetime.fromisoformat(seconds + micro + ("+00:00" if zone == "Z" else zone))
+        return datetime.fromisoformat(seconds + micro + ("+00:00" if zone == "Z" else zone))
     except ValueError as error:
-        raise GateError(f"a check's startedAt is not a timestamp: {raw!r}") from error
-    return None if started.year == 1 else started
+        raise GateError(f"{what} is not a timestamp: {raw!r}") from error
 
 
 def newest_checks(rollup: Iterable[dict]) -> tuple[Check, ...]:
@@ -765,6 +793,7 @@ def added_specs(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
         if whole and not any(SPEC_FILE.fullmatch(f) for f in files):
             return ()
         statuses = files_api(data, number, repo)
+    data["statuses"] = statuses  # read once: the answer's spec comparison asks again (spec 055)
     return tuple(f for f, status in statuses.items() if status == "added" and SPEC_FILE.fullmatch(f))
 
 
@@ -997,6 +1026,212 @@ def commit_closes(ts: ModuleType, message: str) -> list[tuple[str | None, int]]:
     return [(owner or url_owner or None, int(n or url_n)) for owner, n, url_owner, url_n in closer.findall(message)]
 
 
+def retro() -> ModuleType:
+    """retro.py, which imports metrics from its own folder, as when it runs from there"""
+    if "shipmill_retro" not in _MODULES:
+        folder = str(RETRO.parent)
+        sys.path.insert(0, folder)
+        try:
+            _MODULES["shipmill_retro"] = load("shipmill_retro", RETRO)
+        finally:
+            sys.path.remove(folder)
+    return _MODULES["shipmill_retro"]
+
+
+# what the answer is read from (spec 055): a pull request's or an issue's creation and its newest
+# comments, and a pull request's force-pushes; the github-pr-triage eval cases record this read
+THREAD = (
+    "createdAt comments(last: 100) { pageInfo { hasPreviousPage } "
+    "nodes { author { __typename login } authorAssociation body createdAt } }"
+)
+FORCE_PUSHES = (
+    "timelineItems(last: 100, itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT]) { pageInfo { hasPreviousPage } "
+    "nodes { ... on HeadRefForcePushedEvent { createdAt beforeCommit { oid } } } }"
+)
+FULL_SHA = re.compile(r"[0-9a-f]{40}")
+DIFFERS = "answered at {sha7}, and the change differs since"
+NOT_RECOMMENDED = "the answer doesn't take the recommended option"
+UNNAMED = "the head the answer was given at can't be named"
+
+
+def thread_read(number: int) -> list[str]:
+    """`gh api`'s arguments for the GraphQL read of pull request number's thread"""
+    query = (
+        "query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { "
+        f"pullRequest(number: {number}) {{ {THREAD} {FORCE_PUSHES} }} }} }}"
+    )
+    return ["graphql", "-F", "owner={owner}", "-F", "repo={repo}", "-f", f"query={query}"]
+
+
+def pr_thread(number: int, repo: str | None) -> dict:
+    """The pull request's thread, one GraphQL read; a gh failure exits 1, a shape the gate can't
+    read stops it"""
+    cmd, env = api(thread_read(number), repo)
+    answer = json.loads(gh(cmd, number, env))
+    data = answer.get("data") if isinstance(answer, dict) else None
+    found = data.get("repository") if isinstance(data, dict) else None
+    node = found.get("pullRequest") if isinstance(found, dict) else None
+    if not isinstance(node, dict):
+        raise GateError(f"GitHub's GraphQL gave no thread for #{number}: {answer!r}")
+    return node
+
+
+def comments_of(node: dict, where: str) -> tuple[list[dict], bool]:
+    """A thread's comments, oldest first, and whether they are all of them"""
+    comments = node.get("comments")
+    nodes = comments.get("nodes") if isinstance(comments, dict) else None
+    info = comments.get("pageInfo") if isinstance(comments, dict) else None
+    if not isinstance(nodes, list) or not isinstance(info, dict):
+        raise GateError(f"the comments of {where} are not {{nodes, pageInfo}}: {comments!r}")
+    for comment in nodes:
+        if not isinstance(comment, dict) or not all(isinstance(comment.get(k), str) for k in ("body", "createdAt")):
+            raise GateError(f"a comment of {where} is not {{body, createdAt}}: {comment!r}")
+    return nodes, info.get("hasPreviousPage") is False
+
+
+def newest_question(comments: list[dict], bots: frozenset[str]) -> int | None:
+    """The index of the newest needs-decision question, as retro.py reads one: its first line is
+    the marker, by an OWNER, MEMBER, or COLLABORATOR or the --bot-login"""
+    rt = retro()
+    for i in range(len(comments) - 1, -1, -1):
+        if rt.first_line(comments[i]["body"]) == rt.NEEDS_DECISION_MARK and rt.trusted(comments[i], bots):
+            return i
+    return None
+
+
+def issue_question(data: dict, number: int, repo: str | None, bots: frozenset[str]) -> tuple[list[dict], int] | None:
+    """The newest question on an issue the pull request closes (triage_state.py's keyword_closes) or
+    names as Part of #N, with that issue's comments: one GraphQL read; None without one"""
+    body = str(data.get("body") or "")
+    refs = triage_state().keyword_closes(str(data.get("title") or ""), body) | {int(n) for n in PART_OF.findall(body)}
+    numbers = sorted(n for n in refs if 0 < n <= GRAPHQL_INT and n != number)
+    if not numbers:
+        return None
+    _, nodes = issues_of(numbers, number, repo, THREAD)
+    newest: tuple[datetime, list[dict], int] | None = None
+    for n in numbers:
+        node = nodes.get(n)
+        if not isinstance(node, dict) or node.get("__typename") != "Issue":
+            continue
+        comments, _ = comments_of(node, f"#{n}")
+        asked = newest_question(comments, bots)
+        if asked is None:
+            continue
+        at = moment(comments[asked]["createdAt"], f"a comment of #{n}'s createdAt")
+        if newest is None or at > newest[0]:
+            newest = (at, comments, asked)
+    return None if newest is None else (newest[1], newest[2])
+
+
+def head_at(data: dict, thread: dict, at: datetime, number: int) -> str | None:
+    """The pull request's head when the answer was given (spec-gate.md's rule): after a force-push
+    since then, the beforeCommit of the first one after it; else the newest commit whose
+    committedDate is at or before it. None when neither can be named"""
+    items = thread.get("timelineItems")
+    nodes = items.get("nodes") if isinstance(items, dict) else None
+    info = items.get("pageInfo") if isinstance(items, dict) else None
+    if not isinstance(nodes, list) or not isinstance(info, dict):
+        raise GateError(f"the force-pushes of #{number} are not {{nodes, pageInfo}}: {items!r}")
+    pushes = []
+    for event in nodes:
+        if not isinstance(event, dict):
+            raise GateError(f"a force-push of #{number} is not {{createdAt, beforeCommit}}: {event!r}")
+        before = event.get("beforeCommit")
+        oid = before.get("oid") if isinstance(before, dict) else None
+        pushes.append((moment(event.get("createdAt"), f"a force-push of #{number}'s createdAt"), oid))
+    after = [push for push in pushes if push[0] > at]
+    if after:
+        if info.get("hasPreviousPage") is not False and len(after) == len(pushes):
+            return None  # the first push after the answer may be older than the ones read
+        oid = min(after, key=lambda push: push[0])[1]
+        return oid if isinstance(oid, str) and FULL_SHA.fullmatch(oid) else None
+    newest: tuple[datetime, str] | None = None
+    for commit in data.get("commits") or ():
+        if not isinstance(commit, dict) or not isinstance(commit.get("oid"), str):
+            raise GateError(f"a commit of #{number} is not {{oid, committedDate}}: {commit!r}")
+        when = moment(commit.get("committedDate"), f"a commit of #{number}'s committedDate")
+        if when <= at and (newest is None or when >= newest[0]):
+            newest = (when, commit["oid"])
+    return None if newest is None else newest[1]
+
+
+def has_commit(checkout: str, sha: str) -> bool:
+    """Whether the checkout holds the commit, fetched from origin when it doesn't yet"""
+    if quiet(checkout, "cat-file", "-e", f"{sha}^{{commit}}") is not None:
+        return True
+    quiet(checkout, "fetch", "--quiet", "origin", sha)
+    return quiet(checkout, "cat-file", "-e", f"{sha}^{{commit}}") is not None
+
+
+def own_change(checkout: str, base_ref: str, sha: str) -> str:
+    """The pull request's own change at a head: the patch from its merge-base with the base to it"""
+    merge_base = git(checkout, "merge-base", base_ref, sha).strip()
+    return git(checkout, "diff", "--no-color", "--no-ext-diff", merge_base, sha)
+
+
+def same_approval(checkout: str, base_ref: str, spec: str, answered: str, head: str) -> bool:
+    """specs.py same-approval (D-81): exit 0 covers the judged head, any other exit doesn't"""
+    cmd = [sys.executable, str(SPECS), "same-approval", "--base", base_ref, spec, answered, head]
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=checkout).returncode == 0
+
+
+def same_change(checkout: str, base_ref: str, answered: str, head: str, specs: tuple[str, ...]) -> bool:
+    """Whether the answered head's own change is the judged head's: a spec PR's spec files by
+    same-approval, any other PR's whole patch byte for byte; a head the checkout can't read isn't"""
+    if not has_commit(checkout, answered) or not has_commit(checkout, head):
+        return False
+    if specs:
+        return all(same_approval(checkout, base_ref, spec, answered, head) for spec in specs)
+    return own_change(checkout, base_ref, answered) == own_change(checkout, base_ref, head)
+
+
+def acceptance(
+    data: dict, number: int, repo: str | None, bot_login: str | None, checkout: str
+) -> tuple[bool, str | None]:
+    """Whether the maintainer's answer covers the judged head (spec 055), and, when it doesn't,
+    the needs-decision line that says why (None for no line): the newest question on the pull
+    request, else on an issue it closes or names as Part of #N; its first trusted answer, by
+    retro.py's answer_at (a relay by the --bot-login counts); taking the (recommended) option, by
+    retro.py's takes_recommended; given on an issue before the pull request opened, or at a head
+    whose own change is the judged head's. Anything else leaves the question open"""
+    rt = retro()
+    bots = frozenset({bot_login}) if bot_login else frozenset()
+    thread = pr_thread(number, repo)
+    comments, whole = comments_of(thread, f"#{number}")
+    asked = newest_question(comments, bots)
+    on_issue = False
+    if asked is None:
+        if not whole:
+            return False, None  # its own question may be older than the comments read
+        found = issue_question(data, number, repo, bots)
+        if found is None:
+            return False, None
+        (comments, asked), on_issue = found, True
+    later = comments[asked + 1 :]
+    answer = rt.answer_at(later, bots, None)
+    if answer is None:
+        return False, None
+    index, said = answer
+    if not rt.takes_recommended(comments[asked]["body"], said):
+        return False, NOT_RECOMMENDED
+    at = moment(later[index]["createdAt"], f"the answer on #{number}'s createdAt")
+    if on_issue and at < moment(thread.get("createdAt"), f"#{number}'s createdAt"):
+        return True, None  # given before the pull request opened: it covers every head
+    head = str(data["headRefOid"])
+    answered = head_at(data, thread, at, number)
+    if answered is None:
+        return False, UNNAMED
+    if answered == head:
+        return True, None
+    base_ref = f"origin/{data['baseRefName']}"
+    if quiet(checkout, "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}") is None:
+        raise GateError(f"{base_ref} is not in {checkout}: run `git -C {checkout} fetch origin`")
+    specs = added_specs(data, number, repo)
+    if same_change(checkout, base_ref, answered, head, specs):
+        return True, None
+    return False, DIFFERS.format(sha7=answered[:7])
+
+
 def judge(
     data: dict,
     number: int,
@@ -1153,6 +1388,9 @@ def main() -> int:
                 if base.agents and base.ref is not None:
                     zones = classifier.zones(number, base.ref, str(data["headRefOid"]))
                 judged = judge(data, number, base, agent, args.maintainer_accepted, zones, spec)
+                if judged.verdict == NEEDS_DECISION:  # the answer on GitHub lifts the asks (spec 055)
+                    covered, why = acceptance(data, number, args.repo, args.bot_login, bases.checkout)
+                    judged = replace(judged, asks=() if covered else (*judged.asks, *([why] if why else [])))
                 if data["state"] == "OPEN":
                     branch = str(data["baseRefName"])
                     if branch not in heads:
