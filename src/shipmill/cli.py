@@ -343,6 +343,7 @@ from shipmill.product import check as check_product
 from shipmill.product import read as read_product
 from shipmill.propose import close_released, propose, run_url
 from shipmill.roles import LoginReader
+from shipmill.ruleset import ruleset as branch_ruleset
 from shipmill.stamp import notes, sync
 from shipmill.upgrades import UpgradeId, apply, find, offers, pending
 from shipmill.upgrades import propose as propose_upgrades
@@ -399,6 +400,12 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("settle-minutes", help="print the longest quiet_minutes in the policy, 0 when its mode is off")
+
+    sub.add_parser(
+        "ruleset",
+        help="print a branch ruleset that protects the default branch and lets the App land, for"
+        " `gh api -X POST repos/<repo>/rulesets --input -`",
+    )
 
     p = sub.add_parser("plan", help="decide whether a lane releases now")
     p.add_argument("--event", choices=[e.value for e in Event], help="default: $GITHUB_EVENT_NAME, else manual")
@@ -1200,6 +1207,8 @@ def main(
     today = dt.datetime.now(dt.UTC).date()
     if args.command == "settle-minutes":
         print(policy.settle_minutes)
+    elif args.command == "ruleset":
+        print(json.dumps(branch_ruleset(policy, root), indent=2))
     elif args.command == "plan":
         event = Event(args.event or env.get("GITHUB_EVENT_NAME") or Event.MANUAL.value)
         lane = Lane(args.lane) if args.lane else None
