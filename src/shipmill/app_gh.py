@@ -773,6 +773,19 @@ def _field(name: str, value: str) -> str | None:
     return value.partition("=")[0]
 
 
+def _endpoint(given: str) -> str:
+    """gh api's endpoint as GitHub reads it: no host, leading slash, or query, percent-decoded"""
+    return unquote(_API_HOST.sub("", given).lstrip("/").partition("?")[0])
+
+
+def _api_method(flags: Sequence[tuple[str, str]]) -> str:
+    """The method gh api sends: its last -X/--method, else POST with a field or --input, else GET"""
+    methods = [value for name, value in flags if name in _METHOD_FLAGS]
+    if methods:
+        return methods[-1].upper()
+    return "POST" if any(name in _API_FIELDS or name == "--input" for name, _ in flags) else "GET"
+
+
 def _marked_api(args: Sequence[str], read: BodyRead) -> list[str]:
     """`gh api`'s args past `api`: a create on a body endpoint gets its `body` field marked, or
     one holding the marker alone; such a create with --input, and a graphql mutation that
@@ -780,7 +793,7 @@ def _marked_api(args: Sequence[str], read: BodyRead) -> list[str]:
     positional, flags = _scan(args, _API_LONG, _API_SHORT)
     if not positional:
         return list(args)
-    endpoint = unquote(_API_HOST.sub("", positional[0]).lstrip("/").partition("?")[0])
+    endpoint = _endpoint(positional[0])
     has_input = [value for name, value in flags if name == "--input"]
     if endpoint.strip("/").lower() == "graphql":
         queries = [
@@ -804,10 +817,7 @@ def _marked_api(args: Sequence[str], read: BodyRead) -> list[str]:
                 f"or keep as its record's (spec 050); use {_REST_FORM}"
             )
         return list(args)
-    methods = [value for name, value in flags if name in _METHOD_FLAGS]
-    fields = [value for name, value in flags if name in _API_FIELDS]
-    method = methods[-1].upper() if methods else ("POST" if fields or has_input else "GET")
-    if method != "POST" or _API_CREATES.fullmatch(endpoint) is None:
+    if _api_method(flags) != "POST" or _API_CREATES.fullmatch(endpoint) is None:
         return list(args)
     what = f"gh api {positional[0]}"
     if has_input:
@@ -890,6 +900,26 @@ def created_body(args: Sequence[str]) -> str:
     if not bodies:
         raise ReleaseError("gh pr create has no --body to read the issues it closes from")
     return bodies[-1]
+
+
+_API_PULL_CREATE = re.compile(r"repos/[^/]+/[^/]+/pulls/?", re.IGNORECASE)  # as _API_CREATES reads it
+
+
+def created_pull_body(args: Sequence[str]) -> tuple[str, str] | None:
+    """S-055-17: a pull request `gh api` creates, a POST on `repos/<owner>/<repo>/pulls` (named
+    or implied by a field), read from gh's args once `marked_args` made them: the command as a
+    refusal names it, and the body its last `body` field sends, which `marked_args` made the one
+    inline field; None for every other call"""
+    if not args or args[0] != "api":
+        return None
+    positional, flags = _scan(args[1:], _API_LONG, _API_SHORT)
+    if not positional or _api_method(flags) != "POST" or _API_PULL_CREATE.fullmatch(_endpoint(positional[0])) is None:
+        return None
+    what = f"gh api {positional[0]}"
+    bodies = [(name, value.partition("=")[2]) for name, value in flags if _field(name, value) == "body"]
+    if [name for name, _ in bodies] != ["-f"]:
+        raise ReleaseError(f"{what} has no one -f body= to read its plan from (spec 055)")
+    return what, bodies[0][1]
 
 
 # the switches and flags of `gh pr create` by which gh may send a body other than its --body
@@ -1051,7 +1081,7 @@ def _api_edit(args: Sequence[str], read: BodyRead) -> BodyEdit | None:
     methods = [value for name, value in flags if name in _METHOD_FLAGS]
     if not positional or not methods or methods[-1].upper() != "PATCH":
         return None
-    found = _API_EDITS.fullmatch(unquote(_API_HOST.sub("", positional[0]).lstrip("/").partition("?")[0]))
+    found = _API_EDITS.fullmatch(_endpoint(positional[0]))
     if found is None:
         return None
     what = f"gh api -X PATCH {positional[0]}"
