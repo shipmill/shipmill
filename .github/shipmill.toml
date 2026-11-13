@@ -147,3 +147,9 @@ triage = "act"
 fix = "act"
 land = "act"
 upgrade = "act"                   # shipmill config migrations land without a question
+
+# Who decides (spec 030, Roman 2026-11-13). shipmill is a pre-1.0 alpha: a
+# changed command, flag, format or default is listed under Changed and undone by a revert within
+# veto_hours. scope, rule-departure, security and protected stay ask
+[decisions]
+contract-change = "notify"
