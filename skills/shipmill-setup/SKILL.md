@@ -259,6 +259,21 @@ operate.yml -f approve=production -f dry-run=false`), and the same for rollbacks
 `.github/workflows/operate.yml` as an extra scheduled workflow, and skip it for a
 library with no environments.
 
+### Land window
+
+Ask whether a merge to the default branch deploys and some changes should land only while
+someone can watch; skip this when not. For hours that hold merges of labelled classes, write
+`[land.window]` into the policy (spec 056), never a line in `[agents] prompt`, which a
+session can misread: `timezone` and `labels` (the held classes, such as `rollout:high`), and
+as needed `open` and `closed` entries (`Mon-Thu 10:00-18:00`, `08:00-08:30` for a daily
+restart), `queued_label` (default `land-queued`), `spacing_minutes`, and `bypass_labels`
+(`revert`, `incident`); the keys are in
+[release-lanes.md](https://github.com/shipmill/shipmill/blob/main/docs/release-lanes.md#land-window).
+Outside the window `pr_gate.py` reads a held pull request QUEUED and the merge labels it
+`queued_label`; when the window opens the gate lands the queue oldest first. The repo needs
+the `queued_label` label: step 6's checklist wants it and `--fix` creates it. In step 5,
+`$CR window --json` shows the window and `$CR doctor` fails on a malformed section.
+
 ### Downstream tests
 
 For a library, ask whether other repositories depend on it and which of them the maintainer
@@ -345,7 +360,8 @@ or the tags are wrong; fix those, not the version.
    `role:<name>` for each role `[agents.roles]` defines, a role's item (spec 036), `human`,
    the older label for a person's item in a chain (spec 017), `shipmill-upgrade-later`, a config upgrade's "not now",
    `upstream`, a report for another repo, spec 038, and `decided`, a notify decision the
-   maintainer may veto, spec 030), and
+   maintainer may veto, spec 030; with `[land.window]`, with or without `[agents]`, its
+   `queued_label`, spec 056), and
    whether GitHub deletes a pull request's branch when it merges (`BRANCH_DELETE_ON` or
    `BRANCH_DELETE_OFF`, the repo setting `delete_branch_on_merge`). That setting matters
    because github-pr-triage's stacked merges rely on GitHub retargeting a stacked PR when
