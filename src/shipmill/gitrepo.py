@@ -4,6 +4,7 @@ import datetime as dt
 import os
 import re
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,12 +33,15 @@ class Git:
         self._identity = ("-c", f"user.name={name}", "-c", f"user.email={email}") if name else ()
         self.env: dict[str, str] = {}  # extra environment for git, such as GIT_COMMITTER_DATE
 
-    def _proc(self, args: tuple[str, ...], stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    def _proc(
+        self, args: tuple[str, ...], stdin: bytes | None = None, extra: Mapping[str, str] | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
+        added = {**self.env, **(extra or {})}
         return subprocess.run(
             ["git", "-C", str(self.root), *self._identity, *args],
             input=stdin,
             capture_output=True,
-            env={**os.environ, **self.env} if self.env else None,
+            env={**os.environ, **added} if added else None,
         )
 
     def run(self, *args: str, stdin: bytes | None = None) -> str:
@@ -137,10 +141,16 @@ class Git:
     def fetch(self, *refspecs: str) -> None:
         self.run("fetch", "-q", "--tags", REMOTE, *refspecs)
 
-    def push(self, *refspecs: str) -> str:
+    def push(self, *refspecs: str, config: tuple[tuple[str, str], ...] = ()) -> str:
         """Push to origin; git's error when the remote rejected it (such as a ref that
-        moved), else ''"""
-        proc = self._proc(("push", "-q", REMOTE, *refspecs))
+        moved), else ''. config holds git settings for this push alone, passed through
+        GIT_CONFIG_* in git's environment, never its arguments, so a credential in them
+        appears in no process argument (spec 054)"""
+        extra = {"GIT_CONFIG_COUNT": str(len(config))} if config else {}
+        for index, (key, value) in enumerate(config):
+            extra[f"GIT_CONFIG_KEY_{index}"] = key
+            extra[f"GIT_CONFIG_VALUE_{index}"] = value
+        proc = self._proc(("push", "-q", REMOTE, *refspecs), extra=extra)
         return "" if proc.returncode == 0 else proc.stderr.decode(errors="replace").strip()
 
     def dirty(self) -> bool:
