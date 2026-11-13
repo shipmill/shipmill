@@ -100,6 +100,11 @@ RELEASE_ZONES = {
     "land": "land is set in [autonomy] land",
 }
 VETO_HOURS = 24
+# [decisions.paths.<zone>] (spec 057): the zones code detects from a changed path take parts,
+# a glob with its own level; the package's PART_ZONES
+PATHS = "paths"
+PART_ZONES = ("direction", "security", "protected")
+TAKES_PATHS = "only direction, security, and protected are detected by path"
 CONFIG = Path(".github/shipmill.toml")
 ZONE_LINE = re.compile(r"^([a-z][a-z-]*) \(notify, veto until (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\)$")
 UNTIL = "%Y-%m-%dT%H:%M:%SZ"
@@ -133,10 +138,13 @@ class LogError(Exception):
 
 @dataclass(frozen=True)
 class Policy:
-    """Each zone's level and the notify window, as a repo's [decisions] table sets them"""
+    """Each zone's level and the notify window, as a repo's [decisions] table sets them, and
+    the parts of the zones detected by path: each zone's (glob, level) pairs in the config's
+    order (spec 057); a part leaves its zone's level as it is"""
 
     levels: dict[str, str]
     veto_hours: int = VETO_HOURS
+    parts: dict[str, tuple[tuple[str, str], ...]] = field(default_factory=dict)
 
 
 def policy(path: Path) -> Policy:
@@ -162,7 +170,7 @@ def policy_from(table: dict[str, object], path: Path) -> Policy:
     if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 168:
         raise LogError(f"{path}: [decisions] veto_hours must be an integer from 1 to 168, not {hours!r}")
     for key, value in table.items():
-        if key == "veto_hours":
+        if key in ("veto_hours", PATHS):
             continue
         if key in RELEASE_ZONES:
             raise LogError(f"{path}: [decisions] {key}: {RELEASE_ZONES[key]}")
@@ -176,7 +184,57 @@ def policy_from(table: dict[str, object], path: Path) -> Policy:
         if floor is not None and LEVELS.index(str(value)) < LEVELS.index(floor):
             raise LogError(f"{path}: [decisions] {key} = {value!r} is below its floor {floor}")
         levels[key] = str(value)
-    return Policy(levels, hours)
+    return Policy(levels, hours, parts_from(table.get(PATHS, {}), path))
+
+
+def parts_from(paths: object, path: Path) -> dict[str, tuple[tuple[str, str], ...]]:
+    """[decisions.paths]: per zone that takes parts, its globs with their levels; refused as
+    the package refuses them (S-057-2 to S-057-4)"""
+    if not isinstance(paths, dict):
+        raise LogError(f"{path}: [decisions] paths must be a table, [decisions.paths.<zone>], not {paths!r}")
+    found: dict[str, tuple[tuple[str, str], ...]] = {}
+    for zone, globs in paths.items():
+        if zone == "decision-policy":
+            raise LogError(f"{path}: [decisions.paths] decision-policy is fixed at never; remove the key")
+        if zone in RELEASE_ZONES:
+            raise LogError(f"{path}: [decisions.paths] {zone}: {RELEASE_ZONES[zone]}; it takes no paths")
+        if zone not in ZONES:
+            raise LogError(f"{path}: [decisions.paths] {zone} is no zone id; {TAKES_PATHS}")
+        if zone not in PART_ZONES:
+            raise LogError(f"{path}: [decisions.paths] {zone} takes no paths: {TAKES_PATHS}")
+        if not isinstance(globs, dict):
+            raise LogError(f"{path}: [decisions.paths] {zone} must be a table, [decisions.paths.{zone}], not {globs!r}")
+        parts = []
+        for glob, level in globs.items():
+            where = f'{path}: [decisions.paths.{zone}] "{glob}"'
+            if level not in LEVELS:
+                raise LogError(f"{where} = {level!r}: a level is one of {', '.join(LEVELS)}")
+            floor = ZONES[zone][1]
+            if floor is not None and LEVELS.index(str(level)) < LEVELS.index(floor):
+                raise LogError(f"{where} = {level!r} is below its floor {floor}")
+            problem = glob_problem(zone, glob)
+            if problem is not None:
+                raise LogError(f"{where} {problem}")
+            parts.append((glob, str(level)))
+        if parts:
+            found[zone] = tuple(parts)
+    return found
+
+
+def glob_problem(zone: str, glob: str) -> str | None:
+    """Why a glob can't be a part of the zone, or None: relative, inside the repository, and
+    inside the zone's paths; protected's paths are REVIEW.md's, so any relative glob"""
+    if not glob:
+        return "is an empty glob; name a path relative to the repository root"
+    if glob.startswith(("/", "\\")):
+        return "is absolute; a glob is relative to the repository root"
+    if ".." in glob.replace("\\", "/").split("/"):
+        return "holds ..; a glob stays inside the repository"
+    if zone == "security" and not glob.startswith(".github/"):
+        return "lies outside security's paths: a security glob starts .github/"
+    if zone == "direction" and glob != "docs/product.md" and not glob.startswith("docs/product/"):
+        return "lies outside direction's paths: a direction glob is docs/product.md or starts docs/product/"
+    return None
 
 
 def decisions_table_310(text: str, path: Path) -> dict[str, object]:
