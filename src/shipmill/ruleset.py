@@ -61,7 +61,8 @@ def check_names(workflow: Path) -> tuple[str, ...]:
             key_indent = indent
         if indent == key_indent and ":" in stripped:
             key, _, value = stripped.partition(":")
-            found[current][key.strip()] = re.sub(r"\s+#.*$", "", value).strip().strip("'\"")
+            quoted = re.match(r"\s*(?P<q>[\"'])(?P<v>.*?)(?P=q)", value)  # a `#` inside quotes is text
+            found[current][key.strip()] = quoted["v"] if quoted else re.sub(r"\s+#.*$", "", value).strip()
     names = []
     for job, keys in found.items():
         if "strategy" in keys or "uses" in keys or "${{" in keys.get("name", ""):

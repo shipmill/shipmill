@@ -130,6 +130,13 @@ def test_a_ci_whose_check_names_its_text_doesnt_tell_is_refused(
     assert capsys.readouterr().out == ""
 
 
+def test_a_quoted_name_keeps_its_hash(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
+    body = printed(repo, capsys, ci=CI.replace('name: "Lint"  # a plain name', 'name: "Lint #1"  # a comment'))
+    rules = body["rules"]
+    assert isinstance(rules, list)
+    assert rules[3]["parameters"]["required_status_checks"] == [{"context": "checks"}, {"context": "Lint #1"}]
+
+
 def test_a_release_workflow_without_one_ci_call_is_refused(repo: Repo) -> None:
     repo.write(repo.policy_file, WITH_APP)
     repo.write(
