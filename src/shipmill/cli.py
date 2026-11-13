@@ -138,6 +138,7 @@ import webbrowser
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import TextIO
 
@@ -160,6 +161,7 @@ from shipmill import (
     spec_open,
     status,
 )
+from shipmill import verify as verifying
 from shipmill.agents import AgentsConfig, Author, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
 from shipmill.app import (
     BOT_IDS,
@@ -1403,6 +1405,20 @@ def _hook_test(root: Path, environ: Mapping[str, str], home: Path) -> Callable[[
     return lambda: self_test(root, run_command, run_hook, which, home, environ)
 
 
+def _verify(
+    root: Path, git: Git, claude_args: Sequence[str], environ: Mapping[str, str], home: Path
+) -> verifying.Planner:
+    """Spec 064's check of [agents] verify as a headless session in root meets it: the gate's
+    --claude-arg flags and environment, origin's default branch, and the plugin a session loads"""
+    session = verifying.Headless.of(claude_args, environ, home)
+    plugin = partial(verifying.plugin_root, root, run_command, home)
+
+    def planned(commands: tuple[str, ...]) -> verifying.Planned:
+        return verifying.plan(commands, root, session, git.default_branch, git.show, plugin, run_command)
+
+    return planned
+
+
 def _claude_auth(environ: Mapping[str, str]) -> Callable[[Token | None], ClaudeAuth]:
     """#500's preflight, with claude looked up on environ's PATH; with a token, spec 035's"""
     program = shutil.which("claude", path=environ.get("PATH", ""))
@@ -1490,6 +1506,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         stop=stop_group,
         catch_up=lambda: AgentsConfig.load(root, args.slug).catch_up,
         upgrades=Upgrader(lambda: head_config(git), upgrades_as_app, lambda: github),
+        verify=_verify(root, git, args.claude_arg, os.environ, Path.home()),
     )
     if args.json:
         refusals = refused.records(_refused_or_none(root))  # S-052-11
