@@ -279,6 +279,8 @@ def doctor(
         if auth is not None and (uses is None or uses.refused is None):  # a refused file can't be asked about
             checks.append(auth_check(auth(None if uses is None else uses.token)))
     checks.extend(decisions_checks(policy, raw, github))
+    if (veto := veto_lanes_check(policy)) is not None:
+        checks.append(veto)
     autonomy, hold = _autonomy(policy, github, root / CALLER)
     checks.extend(autonomy)
     upgrades, proposed = _upgrades(policy, raw, github, repo)
@@ -497,6 +499,24 @@ def decisions_checks(policy: Policy, raw: Mapping[str, Any], github: GitHub | No
         checks.append(Check("WARN", DECISIONS_SECTION, detail))
     checks.append(_decided_label(github, agents.app_id is not None))
     return checks
+
+
+def veto_lanes_check(policy: Policy) -> Check | None:
+    """S-059-11: one gates line for a config that sets [gates] veto_lanes, PASS naming the
+    lanes, or WARN without [agents] app_id, since only a member's own decided marker can then
+    hold a lane; none for a config that doesn't set it (D-9)"""
+    if not policy.veto_lanes:
+        return None
+    lanes = ", ".join(lane for lane in Lane if lane in policy.veto_lanes)
+    if policy.agents is None or policy.agents.app_id is None:
+        detail = (
+            f"veto_lanes {lanes}, but no [agents] app_id: only an OWNER, MEMBER, or COLLABORATOR's own decided"
+            " marker can hold a release, not an agent's; connect an App with shipmill-setup's step 3 (app-create)"
+        )
+        return Check("WARN", "gates", detail)
+    return Check(
+        "PASS", "gates", f"veto_lanes {lanes}: a release waits for the veto window of each notify decision it ships"
+    )
 
 
 def _decided_label(github: GitHub | None, app: bool) -> Check:
