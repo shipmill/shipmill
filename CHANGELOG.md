@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.128.4] - 2026-11-13
+
+### Fixed
+
+- Docs: `docs/release-lanes.md` (Limits), `docs/install.md` and shipmill-setup no longer tell an organization repository to let `github-actions[bot]` bypass the branch rules, which GitHub refuses there (a ruleset rejects it as a bypass actor, classic protection drops it); they say a rule requiring a pull request or a status check on main blocks landing, that the release commit's CI reports as `ci / checks` rather than `checks`, and to protect main there only against force pushes and deletion for now (#1038)
+
 ## [0.128.3] - 2026-11-11
 
 ### Fixed
@@ -2446,7 +2452,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.128.3...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.128.4...HEAD
+[0.128.4]: https://github.com/shipmill/shipmill/compare/v0.128.3...v0.128.4
 [0.128.3]: https://github.com/shipmill/shipmill/compare/v0.128.2...v0.128.3
 [0.128.2]: https://github.com/shipmill/shipmill/compare/v0.128.1...v0.128.2
 [0.128.1]: https://github.com/shipmill/shipmill/compare/v0.128.0...v0.128.1
