@@ -37,7 +37,7 @@ The opportunity is shipmill/shipmill#1052.
 ## Behaviour
 
 This spec extends spec 046 (the walk and `handed.json`), spec 040 (`land = "propose"`), and
-spec 048 (`tick.json`). A tick keeps spec 046's order: hold, busy, still working, the change
+spec 048 (`tick.json`), and adds a row to github-ship-watch's report. A tick keeps spec 046's order: hold, busy, still working, the change
 check, the walk, the decision, then the prune (D-56).
 
 ### Subjects
@@ -112,6 +112,41 @@ UNCHANGED as S-046-14 says. When the first such item's subject is idle, the reas
 `every item was handed; the first, <kind> #<N>, went to session <id>, which wrote nothing on
 it; it waits for a change`.
 
+### Idle subjects are listed in the watch report
+
+An idle subject waits with no ceiling, so it must not wait unseen: on 2026-11-13, 24 requests
+were found waiting since October with nothing reporting them (#1043). The tick line and
+`handed.json` alone would hide an idle hold the same way. github-ship-watch's report lists each
+one in a row of its own, so a person, a watch loop, and a fleet report read it without opening
+the gate host's state directory.
+
+`watch_state.py` gives one **GATE_IDLE** row per hand in `handed.json` marked `idle: true`,
+in its Agents section beside LOOP and GATE_SESSIONS_DEAD:
+
+```text
+GATE_IDLE      ISSUES VERIFY_DUE #842  idle since 2026-10-02 14:05 UTC (42 d ago): session 5c1e9a7b wrote nothing on it; waits for a change
+```
+
+Its subject is the hand's key, `<kind> #<N>`; its detail reads `idle since <YYYY-MM-DD HH:MM>
+UTC (<age> ago): session <id> wrote nothing on it; waits for a change`, where the time is the
+hand's `at`, the age is worded by `ago` as the other rows word one, and the id is the hand's
+session. The rows are ordered oldest first, so the longest wait leads.
+
+- **Where it reads:** the state directory of the gate's folder (`gate_folder`: launchd's
+  working directory, else `tmp/shipmill-gate` beside the main checkout, else the checkout),
+  `<git rev-parse --git-common-dir>/shipmill/handed.json`, as JSON with the standard library.
+  No file, or no idle hand in it, gives no row; a file that isn't the JSON object the gate
+  writes exits 2, as any malformed read does
+- **What it is:** reported, never an action by itself and never an agent's row: the subject
+  waits on someone or something outside the gate, as decision 1 holds. It changes no exit
+  code, and no session starts for it
+- **Where it prints:** the full report and `--no-host`, as LOOP does; `--tier`, `--sweep`, and
+  `--host` print none, so the gate's own reads and its fingerprint are unchanged. `shipmill
+  status` shows it on its "other" line, as it does any row it doesn't place (S-009-13)
+
+The row is read from the host because only the host holds the hand; the deciding facts stay
+GitHub's, and the row names the subject so a person can open it there.
+
 ### PRS_OPEN leaves out what waits on the maintainer's merge
 
 Under `[autonomy] land = "propose"`, a session reviews a pull request and labels it
@@ -182,7 +217,11 @@ up its next REVISIT adds the line when it postpones again.
   when a recorded path changed, or on every stable tag without one
 - `skills/shipmill-setup/SKILL.md`, The gate: a tick hands an item's issues and pull requests
   one by one, and one whose last session wrote nothing on it waits until it changes
-- `skills/github-ship-watch/SKILL.md`: PRS_PARKED's `TO_MERGE` part
+- `skills/github-ship-watch/SKILL.md`: PRS_PARKED's `TO_MERGE` part, and the GATE_IDLE row
+  among the reported rows, with what a person does about one (answer or change the subject on
+  GitHub, or close it)
+- `skills/github-ship-watch/scripts/watch_state.py`'s help text: the GATE_IDLE row in its
+  Agents section
 - Spec 046, under S-046-2 and S-046-13: a line saying spec 061 hands an item's subjects one by
   one and keeps an idle hand past `retry_hours`
 
@@ -206,7 +245,10 @@ up its next REVISIT adds the line when it postpones again.
 - S-061-16: A postponed issue whose newest triage comment has no `Revisit on:` line reads REVISIT and POSTPONED exactly as before this spec
 - S-061-17: A `Revisit on:` line that names no path in backticks reads REVISIT with the note `revisit line unreadable: <the line>`
 - S-061-18: A `Revisit on:` path matches with `**` across `/`, `*` and `?` within one path segment, and every other character as itself: `src/**` matches `src/a/b.py`, `src/*.py` matches `src/a.py` and not `src/a/b.py`
-- S-061-19: `skills/github-issue-triage/references/comments.md`, `skills/github-issue-triage/SKILL.md`, `skills/github-issue-triage/references/triage-rubric.md`, `skills/shipmill-setup/SKILL.md`, `skills/github-ship-watch/SKILL.md`, and spec 046 say what the Docs list says
+- S-061-19: `skills/github-issue-triage/references/comments.md`, `skills/github-issue-triage/SKILL.md`, `skills/github-issue-triage/references/triage-rubric.md`, `skills/shipmill-setup/SKILL.md`, `skills/github-ship-watch/SKILL.md`, `watch_state.py`'s help text, and spec 046 say what the Docs list says
+- S-061-20: With `handed.json` in the gate folder's state directory holding two idle hands, `ISSUES VERIFY_DUE #842` at 2026-10-02 14:05 UTC and `PRS_OPEN #12` at 2026-10-20 09:00 UTC, and one hand not idle, `watch_state.py`'s full report gives exactly two GATE_IDLE rows, `ISSUES VERIFY_DUE #842` first, each detail reading `idle since <the hand's at, YYYY-MM-DD HH:MM> UTC (<age> ago): session <its session> wrote nothing on it; waits for a change`
+- S-061-21: A GATE_IDLE row is reported with `agent` false and changes no exit code; `--no-host` prints it, `--tier N`, `--sweep`, and `--host` print none, and with no `handed.json`, or none marked idle, the report gives no GATE_IDLE row
+- S-061-22: A `handed.json` that isn't a JSON object of hands, as the gate writes it, makes `watch_state.py` exit 2 with an error line naming its path
 
 ## Out of scope
 
@@ -214,7 +256,10 @@ up its next REVISIT adds the line when it postpones again.
   `updatedAt`, so a session that wrote only elsewhere (a new issue that doesn't touch the
   subject) leaves its subject idle. A triage state that such a write changes (a pull request
   that makes an issue IN_PROGRESS) moves the item out anyway
-- A ceiling on how long an idle subject waits: it waits until it changes (Decisions for you)
+- A ceiling on how long an idle subject waits: it waits until it changes, and the GATE_IDLE
+  row lists it meanwhile (Decisions for you)
+- A GATE_IDLE row as an action, or a notice on GitHub for an idle subject: the row is
+  reported, and a write on the subject would move its `updatedAt` and hand it again
 - Idle hands for tiers 1, 2, 5, and 7: production, the release lane, upgrades, and the
   direction keep `retry_hours`; their items have no issue or pull request to read a change from
 - A pull request held only by a hold comment: reading every open pull request's comments on
@@ -226,7 +271,8 @@ up its next REVISIT adds the line when it postpones again.
   waits on another item uses a `Depends on` line; any other condition keeps today's reading
 - How QUIET's in-flight part words a `shipmill-ready` pull request (spec 048): it still counts
   as waiting to land
-- `shipmill status` and `shipmill factory`: they report as before
+- `shipmill status` and `shipmill factory`: they report as before, save that status shows a
+  GATE_IDLE row on its "other" line as it shows any row it doesn't place
 
 ## Decisions relied on
 
