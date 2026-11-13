@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.131.0] - 2026-11-13
+
+### Added
+
+- `shipmill doctor`'s decisions block prints one PASS line per `[decisions.paths.<zone>]` part, naming its zone, glob, and level, and WARNs for a part set below its zone's default; the "Who decides" docs say which zones take parts and that the strictest level among a change's paths wins (#1076)
+- `shipmill doctor` prints one `verify command` row per `[agents] verify` command from the gate's last check: PASS for `ok`, FAIL with its result, detail, and fix (a missing program's fix is installing it on the gate's PATH, never an allow rule), and WARN `not checked yet` until the gate checks the current list (#1077)
+- `docs/release-lanes.md` documents `[gates] veto_lanes`: what a release ships, the wait for each `notify` decision's veto window, a person's hand start that releases anyway, and the hourly tick it needs; the needs-decision protocol says such a lane holds a `notify` decision's release until its window ends (#1086)
+- `shipmill gh pr merge` of a pull request `pr_gate.py` reads QUEUED adds the land window's `queued_label` to it as the App and exits 2 without merging, and a merge that exits 0 removes that label from the pull request carrying it (S-056-8) (#1102)
+- The skills name the land window: github-pr-triage's hard rule 1 and landing reference say what a QUEUED pull request (`pr_gate.py` exit 10) means and that the gate lands the queue as LAND_DUE once the window opens, github-ship-watch lists the LAND_DUE and LAND_QUEUED rows, and shipmill-setup writes `[land.window]` to hold merges of labelled classes to hours, with its `queued_label` label; spec 056 is built (S-056-14) (#1104)
+
 ## [0.130.0] - 2026-11-13
 
 ### Added
@@ -2495,7 +2505,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.130.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.131.0...HEAD
+[0.131.0]: https://github.com/shipmill/shipmill/compare/v0.130.0...v0.131.0
 [0.130.0]: https://github.com/shipmill/shipmill/compare/v0.129.0...v0.130.0
 [0.129.0]: https://github.com/shipmill/shipmill/compare/v0.128.4...v0.129.0
 [0.128.4]: https://github.com/shipmill/shipmill/compare/v0.128.3...v0.128.4
