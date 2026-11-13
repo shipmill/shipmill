@@ -127,8 +127,8 @@ goal's measure is a lead-time metric and reads **not met**, the goal's entry gai
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-NNN-1, S-NNN-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
+- shipmill/shipmill#1089: S-066-1, S-066-2, S-066-3, S-066-4, S-066-5, S-066-6
+- shipmill/shipmill#1092: S-066-7, S-066-8, S-066-9, S-066-10, S-066-11
 
 ## Verification
 
