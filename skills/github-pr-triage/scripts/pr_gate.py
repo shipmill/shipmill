@@ -25,7 +25,8 @@ PR opened covers every head; any other covers the head the PR had when it was gi
 force-push since, the first push's beforeCommit; else the newest commit whose committedDate is
 at or before it) and every head whose own change, `git diff $(git merge-base origin/<base>
 <head>) <head>`, is the same, or, for a PR adding a spec, whose spec files `specs.py
-same-approval` reads the same (exit 0). Otherwise the asks stay, with `  needs-decision:
+same-approval` reads the same (exit 0) and whose other files' patch is the same. Otherwise
+the asks stay, with `  needs-decision:
 answered at <sha7>, and the change differs since`, `  needs-decision: the answer doesn't take
 the recommended option`, or `  needs-decision: the head the answer was given at can't be named`.
 It costs one GraphQL read of the PR's newest 100 comments and force-pushes, and one of the
@@ -1227,10 +1228,12 @@ def has_commit(checkout: str, sha: str) -> bool:
     return quiet(checkout, "cat-file", "-e", f"{sha}^{{commit}}") is not None
 
 
-def own_change(checkout: str, base_ref: str, sha: str) -> str:
-    """The pull request's own change at a head: the patch from its merge-base with the base to it"""
+def own_change(checkout: str, base_ref: str, sha: str, leaving: tuple[str, ...] = ()) -> str:
+    """The pull request's own change at a head: the patch from its merge-base with the base to it,
+    leaving out the files named"""
     merge_base = git(checkout, "merge-base", base_ref, sha).strip()
-    return git(checkout, "diff", "--no-color", "--no-ext-diff", merge_base, sha)
+    paths = ("--", ".", *(f":(exclude,literal){path}" for path in leaving)) if leaving else ()
+    return git(checkout, "diff", "--no-color", "--no-ext-diff", merge_base, sha, *paths)
 
 
 def same_approval(checkout: str, base_ref: str, spec: str, answered: str, head: str) -> bool:
@@ -1241,12 +1244,12 @@ def same_approval(checkout: str, base_ref: str, spec: str, answered: str, head: 
 
 def same_change(checkout: str, base_ref: str, answered: str, head: str, specs: tuple[str, ...]) -> bool:
     """Whether the answered head's own change is the judged head's: a spec PR's spec files by
-    same-approval, any other PR's whole patch byte for byte; a head the checkout can't read isn't"""
+    same-approval, every other file's patch byte for byte; a head the checkout can't read isn't"""
     if not has_commit(checkout, answered) or not has_commit(checkout, head):
         return False
-    if specs:
-        return all(same_approval(checkout, base_ref, spec, answered, head) for spec in specs)
-    return own_change(checkout, base_ref, answered) == own_change(checkout, base_ref, head)
+    if not all(same_approval(checkout, base_ref, spec, answered, head) for spec in specs):
+        return False
+    return own_change(checkout, base_ref, answered, specs) == own_change(checkout, base_ref, head, specs)
 
 
 def acceptance(

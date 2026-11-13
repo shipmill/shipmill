@@ -2006,3 +2006,15 @@ def test_s055_10_a_spec_pr_compares_its_heads_with_same_approval(
             "  needs-decision: scope: a new spec",
             f"  needs-decision: answered at {answered[:7]}, and the change differs since",
         ]
+
+
+def test_s055_10_a_spec_prs_other_files_are_still_compared_byte_for_byte(tmp_path: Path, agents: Path) -> None:
+    """same-approval reads only the spec: a change to the spec PR's other files since the answer asks again"""
+    classify_as(tmp_path, {7: [SCOPE_ZONE]})
+    answered = branched(tmp_path, agents, {SPEC: SPEC_TEXT, "src/land.py": "tag = 1\n"})
+    head = committed(agents, {"src/land.py": "tag = 2\n"}, "Change the code")
+    files = (SPEC, "src/land.py")
+    data = headed(head, ((answered, at(10, 30)), (head, at(13))), body=SPEC_BODY, files=files, added=(SPEC,))
+    proc = protected(tmp_path, agents, data, thread(asked(), comment("1", at(12))), issues=ISSUES)
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[-1] == f"  needs-decision: answered at {answered[:7]}, and the change differs since"
