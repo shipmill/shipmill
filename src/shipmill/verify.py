@@ -6,11 +6,13 @@ folder implementers' worktrees use, and removes it when the check ends, however 
 Each command goes through three steps in the list's order, and the first that fails names its
 result; a command that fails step 1 or 2 is not run:
 
-1. The allowlist: each of its parts (its simple commands, as the delivery hook splits them)
-   matches an allow rule and no deny rule of a headless session: HEADLESS_TOOLS, the gate's
-   --claude-arg tool flags, and the settings files' permissions, as Claude Code matches a Bash
-   rule; a deny rule wins
-2. The delivery hook a gate session loads judges each part, with SHIPMILL_GATE=1 (D-82)
+1. The allowlist: each of its parts (its simple commands, as the delivery hook splits them, and
+   those inside its `$(...)` and backtick substitutions) matches an allow rule and no deny rule
+   of a headless session: HEADLESS_TOOLS, the gate's --claude-arg tool flags, and the settings
+   files' permissions, as Claude Code matches a Bash rule, past the wrappers it strips; a deny
+   rule wins, and a substitution that can't be read is denied
+2. The delivery hook a gate session loads judges each part, with SHIPMILL_GATE=1 (D-82), in the
+   directory a `cd` before it set
 3. The run: `$SHELL -c` in the worktree, in a headless session's environment, for at most 30
    minutes; exit 127 names the program the PATH lacks
 """
@@ -26,8 +28,10 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -38,6 +42,8 @@ from shipmill.errors import ReleaseError
 from shipmill.hooks import SETTINGS, HookRunner, pre_command, run_hook
 
 TIMEOUT = 30 * 60.0  # seconds a command may run before the check stops it
+POLL = 0.05  # seconds between looks at whether a command exited
+TAIL = 64 * 1024  # bytes of a command's stderr kept, its end, which holds the line a result names
 WORKTREES = Path(".claude") / "worktrees"  # where Claude Code's worktrees for implementers live
 PREFIX = "shipmill-verify-"  # the check's worktree is PREFIX and 8 hex digits
 ALLOW_FLAGS = ("--allowedTools", "--allowed-tools")
@@ -73,15 +79,158 @@ class Entry:
 
 @dataclass(frozen=True, slots=True)
 class Part:
-    """One simple command of a command line: its text, its program as written, and its text past
-    any leading NAME=value assignments, which a deny rule matches too"""
+    """One simple command of a command line: its text, its program as written, its text past
+    any leading NAME=value assignments, which a deny rule matches too, and the directory a `cd`
+    in an earlier part of its line set (None: the line's own)"""
 
     text: str
     program: str
     bare: str
+    cwd: Path | None = None
+
+    def unwrapped(self) -> tuple[str, str]:
+        """Its text and its bare text past the wrappers Claude Code strips (WRAPPERS); both as
+        they are when shlex can't split them"""
+        try:
+            words, bare = shlex.split(self.text), shlex.split(self.bare)
+        except ValueError:
+            return self.text, self.bare
+        assignments = words[: len(words) - len(bare)]
+        inner = unwrap(bare)
+        return shlex.join((*assignments, *inner)), shlex.join(inner)
+
+    def programs(self) -> list[str]:
+        """Its program, and the one its wrappers wrap when it has any"""
+        try:
+            inner = unwrap(shlex.split(self.bare))
+        except ValueError:
+            return [self.program]
+        return [self.program] if not inner or inner[0] == self.program else [self.program, inner[0]]
 
 
 # --- Step 1: the allowlist ----------------------------------------------------------------------
+
+
+def _quote_end(command: str, i: int) -> int:
+    """The index of the `'` closing the one at i; ValueError when none does"""
+    end = command.find("'", i + 1)
+    if end < 0:
+        raise ValueError("an unclosed '")
+    return end
+
+
+def _tick_end(command: str, i: int) -> int:
+    """The index of the backtick closing a substitution whose body starts at i"""
+    while i < len(command):
+        if command[i] == "\\":
+            i += 2
+            continue
+        if command[i] == "`":
+            return i
+        i += 1
+    raise ValueError("an unclosed `")
+
+
+def _paren_end(command: str, i: int) -> int:
+    """The index of the `)` closing a `$(` whose body starts at i, past the quotes, parentheses,
+    and substitutions it holds"""
+    depth, quoted = 1, False
+    while i < len(command):
+        ch = command[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "'" and not quoted:
+            i = _quote_end(command, i) + 1
+            continue
+        if command.startswith("$(", i):
+            i = _paren_end(command, i + 2) + 1
+            continue
+        if ch == "`":
+            i = _tick_end(command, i + 1) + 1
+            continue
+        if ch == '"':
+            quoted = not quoted
+        elif ch == "(" and not quoted:
+            depth += 1
+        elif ch == ")" and not quoted:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise ValueError("an unclosed $(")
+
+
+def substitutions(command: str) -> list[str]:
+    """The commands of the `$(...)` and backtick substitutions in a command line, outermost
+    first, inside double quotes too and never inside single quotes; an arithmetic `$((...))`,
+    one whose inner `(` closes right before its last `)`, gives the substitutions it holds, while
+    another `$((` is a subshell the shell runs, so a substitution. ValueError when a quote or a
+    substitution isn't closed"""
+    found: list[str] = []
+    i, quoted = 0, False
+    while i < len(command):
+        ch = command[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "'" and not quoted:
+            i = _quote_end(command, i) + 1
+            continue
+        if command.startswith("$(", i):
+            end = _paren_end(command, i + 2)
+            body = command[i + 2 : end]
+            if body.startswith("(") and _paren_end(body, 1) == len(body) - 1:  # else a subshell
+                found += substitutions(body[1:-1])
+            else:
+                found.append(body)
+            i = end + 1
+            continue
+        if ch == "`":
+            end = _tick_end(command, i + 1)
+            found.append(re.sub(r"\\([\\`$])", r"\1", command[i + 1 : end]))
+            i = end + 1
+            continue
+        if ch == '"':
+            quoted = not quoted
+        i += 1
+    if quoted:
+        raise ValueError('an unclosed "')
+    return found
+
+
+# The wrappers Claude Code strips from a command before it matches a Bash rule, each with its
+# options that take the next word as their value
+WRAPPERS: Mapping[str, frozenset[str]] = {
+    "timeout": frozenset({"-k", "--kill-after", "-s", "--signal"}),
+    "nohup": frozenset(),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "command": frozenset(),
+    "xargs": frozenset(
+        {"-a", "--arg-file", "-d", "--delimiter", "-E", "-I", "-L", "-n", "--max-args", "-P", "--max-procs", "-s"}
+        | {"--max-chars", "--process-slot-var"}
+    ),
+}
+
+
+def unwrap(words: Sequence[str]) -> list[str]:
+    """The words past the wrappers that lead them, with each wrapper's options and timeout's
+    duration; the words as they are when a wrapper wraps no command"""
+    rest = list(words)
+    while rest and os.path.basename(rest[0]) in WRAPPERS:
+        name = os.path.basename(rest[0])
+        i = 1
+        while i < len(rest) and rest[i].startswith("-") and rest[i] != "-":
+            if rest[i] == "--":
+                i += 1
+                break
+            i += 2 if rest[i] in WRAPPERS[name] else 1
+        if name == "timeout":
+            i += 1  # its duration
+        if i >= len(rest):
+            return rest
+        rest = rest[i:]
+    return rest
 
 
 def rules(text: str) -> tuple[str, ...]:
@@ -160,10 +309,13 @@ class Allowlist:
 
     def denial(self, part: Part) -> str | None:
         """Why the part is denied, naming it and any deny rule; None when it is allowed. A deny
-        rule matches past any leading assignment, an allow rule doesn't"""
-        if rule := next((r for r in self.deny if matches(r, part.text) or matches(r, part.bare)), None):
+        rule matches past any leading assignment, an allow rule doesn't; both match the part as
+        written and past the wrappers Claude Code strips"""
+        text, bare = part.unwrapped()
+        denied = (part.text, part.bare, text, bare)
+        if rule := next((r for r in self.deny if any(matches(r, form) for form in denied)), None):
             return f"`{part.text}` matches the deny rule {rule}"
-        if not any(matches(r, part.text) for r in self.allow):
+        if not any(matches(r, form) for r in self.allow for form in (part.text, text)):
             return f"no allow rule matches `{part.text}`"
         return None
 
@@ -186,11 +338,13 @@ class Headless:
         allow, deny = flag_rules(claude_args)
         return cls((*rules(HEADLESS_TOOLS), *allow), deny, {**headless_env(environ), GATE_SESSION: "1"}, home)
 
-    def allowlist(self, worktree: Path) -> Allowlist:
-        """The rules for a session in worktree: the flags', then the user's, the project's, and
-        the local settings' permissions"""
+    def allowlist(self, worktree: Path, checkout: Path) -> Allowlist:
+        """The rules for a gate session: the flags', then the user's, the project's (tracked, so
+        read from worktree at origin/<default>), and the local settings' permissions, read from
+        the checkout the gate's sessions start in, since an untracked file is never in worktree"""
+        project, local = SETTINGS
         allow, deny = list(self.allowed), list(self.disallowed)
-        for path in (self.home / ".claude" / "settings.json", *(worktree / name for name in SETTINGS)):
+        for path in (self.home / ".claude" / "settings.json", worktree / project, checkout / local):
             more, less = permissions(path)
             allow += more
             deny += less
@@ -252,16 +406,18 @@ class DeliveryHook:
             found = self._script.commands(command, cwd)
         except ValueError:
             return [Part(command.strip(), command.split()[0], command.strip())]
-        return [Part(s.text(), s.words[0], shlex.join(s.words)) for s in found]
+        return [Part(s.text(), s.words[0], shlex.join(s.words), s.cwd) for s in found]
 
     def refusal(self, part: Part, cwd: Path, env: Mapping[str, str]) -> Refusal | None:
-        """The hook's refusal of the part, a PreToolUse Bash input whose cwd is cwd; None when it
-        lets the part run, which is any exit but 2, as Claude Code reads it"""
+        """The hook's refusal of the part, run in cwd, as a PreToolUse Bash input whose cwd is
+        the directory a `cd` before the part set (cwd when none did), as the hook reads the whole
+        line in a session; None when it lets the part run, which is any exit but 2, as Claude
+        Code reads it"""
         stdin = json.dumps(
             {
                 "session_id": "00000000-0000-4000-8000-000000000000",
                 "transcript_path": "",
-                "cwd": str(cwd),
+                "cwd": str(part.cwd or cwd),
                 "permission_mode": "default",
                 "hook_event_name": "PreToolUse",
                 "tool_name": "Bash",
@@ -295,46 +451,63 @@ class Ran:
 Shell = Callable[[list[str], Path, Mapping[str, str], float], Ran]  # (argv, cwd, env, timeout)
 
 
+def _exited(pid: int, timeout: float) -> bool:
+    """Whether the child pid exits within timeout, left unreaped, so its pid, the id of its
+    process group, can't be reused before the group is killed"""
+    deadline = time.monotonic() + timeout
+    while os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL)
+    return True
+
+
 def run_shell(argv: list[str], cwd: Path, env: Mapping[str, str], timeout: float) -> Ran:
-    """argv in its own process group, stdin from /dev/null and stdout dropped; past timeout the
-    whole group is killed, so a test runner's children stop too"""
-    try:
-        proc = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            env=dict(env),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            errors="replace",
-            start_new_session=True,
-        )
-    except OSError as exc:
-        raise ReleaseError(f"{argv[0]} could not start: {exc}") from None
-    with proc:
+    """argv in its own process group, stdin from /dev/null, stdout dropped, and stderr into a
+    file, so a child holding it never keeps the check waiting; when argv exits, or past timeout,
+    the whole group is killed, so a test runner's children stop and none outlives the worktree"""
+    with tempfile.TemporaryFile() as stderr:
         try:
-            _, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            with suppress(ProcessLookupError):  # the group ended on its own
+            proc = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                env=dict(env),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise ReleaseError(f"{argv[0]} could not start: {exc}") from None
+        with proc:
+            exited = _exited(proc.pid, timeout)
+            try:
                 os.killpg(proc.pid, signal.SIGKILL)
-            proc.communicate()
+            except ProcessLookupError:  # nothing of the group is left
+                pass
+            except PermissionError:  # macOS's answer for a group whose one process is argv, exited
+                if not exited:
+                    raise
+            code = proc.wait()
+        if not exited:
             return Ran(None, "")
-    return Ran(proc.returncode, stderr)
+        size = stderr.seek(0, os.SEEK_END)
+        stderr.seek(max(0, size - TAIL))
+        return Ran(code, stderr.read().decode(errors="replace"))
 
 
 def missing(parts: Sequence[Part], cwd: Path, path: str) -> str | None:
     """The first part's program that the PATH lacks (a relative path is read from cwd); None
     when every program is found"""
     for part in parts:
-        program = part.program
-        if program in BUILTINS:
-            continue
-        if "/" in program:
-            if not os.access(cwd / os.path.expanduser(program), os.X_OK):
+        for program in part.programs():
+            if program in BUILTINS:
+                continue
+            if "/" in program:
+                if not os.access(cwd / os.path.expanduser(program), os.X_OK):
+                    return program
+            elif shutil.which(program, path=path) is None:
                 return program
-        elif shutil.which(program, path=path) is None:
-            return program
     return None
 
 
@@ -358,12 +531,30 @@ def worktree(checkout: Path, default: str, git: Git) -> Iterator[Path]:
         git(["git", "-C", str(checkout), "worktree", "remove", "--force", str(folder)], checkout)
 
 
+def every_part(command: str, where: Path, hook: Hook) -> list[Part]:
+    """The command's parts and, after them, those of its substitutions, nested ones too;
+    ValueError when a substitution can't be read"""
+    found = hook.parts(command, where)
+    for body in substitutions(command):
+        found += every_part(body, where, hook)
+    return found
+
+
 def judge(
     command: str, where: Path, allowlist: Allowlist, session: Headless, hook: Hook, shell: Shell, timeout: float
 ) -> Entry:
-    """One command through the three steps; the first that fails names its result"""
+    """One command through the three steps; the first that fails names its result. The
+    allowlist judges the commands of its substitutions as parts too, as Claude Code does; the
+    hook gets the parts its own splitter finds, as it gets the line in a session"""
     parts = hook.parts(command, where)
-    for part in parts:
+    try:
+        inner = [p for body in substitutions(command) for p in every_part(body, where, hook)]
+    except ValueError:
+        if "$(" in command or "`" in command:  # fail closed: what can't be read can't be allowed
+            detail = f"can't read the command substitution in `{command}`, so no rule can allow it"
+            return Entry(command, Result.DENIED, detail)
+        inner = []  # an unclosed quote and no substitution: the shell's own error
+    for part in (*parts, *inner):
         if (denied := allowlist.denial(part)) is not None:
             return Entry(command, Result.DENIED, denied)
     for part in parts:
@@ -395,5 +586,5 @@ def check(
     """Each command's entry, in the list's order, from one worktree at origin/<default>, which
     is gone when this returns or raises"""
     with worktree(checkout, default, git) as where:
-        allowlist = session.allowlist(where)
+        allowlist = session.allowlist(where, checkout)
         return [judge(command, where, allowlist, session, hook, shell, timeout) for command in commands]

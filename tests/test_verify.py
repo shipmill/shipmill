@@ -4,8 +4,12 @@ run through a shell, as Claude Code runs it) and, unless a case records the run,
 
 import os
 import shutil
+import signal
+import sys
+import time
 import tomllib
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,6 +36,7 @@ from shipmill.verify import (
     matches,
     rules,
     run_shell,
+    substitutions,
 )
 
 from .conftest import Repo
@@ -300,3 +305,151 @@ def test_s064_5_an_erroring_check_removes_its_worktree(checkout: Repo, tmp_path:
     with pytest.raises(ReleaseError, match="the run broke"):
         verify(checkout, ["git status"], tmp_path / "home", shell=Recorded(fail=True))
     assert worktrees(checkout) == []
+
+
+# --- #1123: where the prediction differed from a headless session ------------------------------
+
+
+def test_substitutions_are_found_outside_single_quotes_nested_too() -> None:
+    assert substitutions("echo $(git push origin HEAD)") == ["git push origin HEAD"]
+    assert substitutions("echo `git push` \"$(make a)\" '$(make b)'") == ["git push", "make a"]
+    assert substitutions("echo $(echo $(git push) `make c`)") == ["echo $(git push) `make c`"]
+    assert substitutions("echo `echo \\`git push\\``") == ["echo `git push`"]
+    assert substitutions("echo $((1 + $(wc -l < f))) \\$(no)") == ["wc -l < f"]
+    for unbalanced in ("echo $(git push", "echo `git push", 'echo "$(git push)', "echo $(echo ')"):
+        with pytest.raises(ValueError):
+            substitutions(unbalanced)
+
+
+def test_a_double_parenthesis_the_shell_runs_as_a_command_is_a_substitution() -> None:
+    # `$((` is arithmetic only when its inner `(` closes right before the last `)`; else the
+    # shell runs it as a command substitution of a subshell
+    assert substitutions("echo $((git push) && (make a))") == ["(git push) && (make a)"]
+    assert substitutions("echo $(( (1 + 2) * 3 )) $((1 + $(wc -l < f)))") == ["wc -l < f"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo $(git push --dry-run origin HEAD)",
+        "echo `git push --dry-run origin HEAD`",
+        'echo "$(git push --dry-run origin HEAD)"',
+        "echo $(echo $(git push --dry-run origin HEAD))",
+        "echo <(git push --dry-run origin HEAD)",
+        "echo >(git push --dry-run origin HEAD)",
+        "echo $((git push --dry-run origin HEAD) && (echo))",
+    ],
+    ids=["dollar", "backtick", "double-quoted", "nested", "process-in", "process-out", "subshell"],
+)
+def test_a_denied_command_inside_a_substitution_is_denied_and_not_run(
+    checkout: Repo, tmp_path: Path, command: str
+) -> None:
+    ran = Recorded()
+    found = verify(checkout, [command], tmp_path / "home", ("--allowedTools", "Bash(echo:*)"), shell=ran)
+    assert found == [
+        Entry(command, Result.DENIED, "`git push --dry-run origin HEAD` matches the deny rule Bash(git push:*)")
+    ]
+    assert ran.commands == []
+
+
+def test_a_substitution_needs_its_own_allow_rule_and_single_quotes_hold_none(checkout: Repo, tmp_path: Path) -> None:
+    ran = Recorded()
+    allow = ("--allowedTools", "Bash(echo:*)")
+    commands = ["echo $(make build)", "echo '$(make build)'", "echo $(git rev-parse HEAD)", "echo $(git push"]
+    found = verify(checkout, commands, tmp_path / "home", allow, shell=ran)
+    assert [(e.result, e.detail) for e in found] == [
+        (Result.DENIED, "no allow rule matches `make build`"),
+        (Result.OK, ""),
+        (Result.OK, ""),
+        (Result.DENIED, "can't read the command substitution in `echo $(git push`, so no rule can allow it"),
+    ]
+    assert ran.commands == ["echo '$(make build)'", "echo $(git rev-parse HEAD)"]
+
+
+def test_settings_local_json_is_read_from_the_checkout(checkout: Repo, tmp_path: Path) -> None:
+    local = '{"permissions": {"allow": ["Bash(make:*)"], "deny": ["Bash(git log:*)"]}}'
+    checkout.write(".claude/settings.local.json", local)  # untracked: no worktree has it
+    ran = Recorded()
+    found = verify(checkout, ["make build", "git log -1"], tmp_path / "home", shell=ran)
+    assert [(e.result, e.detail) for e in found] == [
+        (Result.OK, ""),
+        (Result.DENIED, "`git log -1` matches the deny rule Bash(git log:*)"),
+    ]
+
+
+def test_the_wrappers_claude_code_strips_are_stripped_before_matching() -> None:
+    allowlist = Allowlist(("Bash(uv run:*)", "Bash(make test)"), ("Bash(git push:*)",))
+    for text in (
+        "timeout 60 uv run pytest",
+        "timeout -s KILL --kill-after 5 60 uv run pytest",
+        "nohup uv run pytest",
+        "nice -n 5 uv run pytest",
+        "nice uv run pytest",
+        "command uv run pytest",
+        "xargs -n 1 -P 4 uv run pytest",
+        "timeout 30 nice -n 5 make test",
+    ):
+        assert allowlist.denial(part(text)) is None, text
+    assert allowlist.denial(part("timeout 30 git push origin HEAD")) == (
+        "`timeout 30 git push origin HEAD` matches the deny rule Bash(git push:*)"
+    )
+    assert allowlist.denial(part("strace uv run pytest")) == "no allow rule matches `strace uv run pytest`"
+    assert allowlist.denial(part("timeout 30")) == "no allow rule matches `timeout 30`"
+
+
+def part(text: str) -> Part:
+    words = text.split()
+    return Part(text, words[0], text)
+
+
+def test_the_hook_gets_each_part_in_the_directory_a_cd_before_it_set(checkout: Repo, tmp_path: Path) -> None:
+    # outside a repo with [agents] the hook judges no rule, so `uv run env` there passes, as in a session
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    ran = Recorded()
+    command = f"cd {outside} && uv run env"
+    found = verify(checkout, [command, "uv run env"], tmp_path / "home", ("--allowedTools", "Bash(cd:*)"), shell=ran)
+    assert [e.result for e in found] == [Result.OK, Result.REFUSED]
+    assert ran.commands == [command]
+
+
+def child(tmp_path: Path, own_group: bool, stderr: str) -> list[str]:
+    """A python that starts `sleep 30`, in its own process group or not, with the given stderr,
+    writes its pid, and then waits too, or exits 0 right away when it shares the group"""
+    pidfile = tmp_path / "child.pid"
+    script = (
+        "import subprocess, sys, time\n"
+        f"p = subprocess.Popen(['sleep', '30'], start_new_session={own_group}, stderr={stderr})\n"
+        f"open({str(pidfile)!r}, 'w').write(str(p.pid))\n"
+        f"time.sleep(30 if {own_group} else 0)\n"
+    )
+    return [sys.executable, "-c", script]
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_a_timeout_never_waits_on_a_child_that_left_the_group(tmp_path: Path) -> None:
+    started = time.monotonic()
+    try:
+        ran = run_shell(child(tmp_path, True, "None"), tmp_path, os.environ, 2)
+        assert ran.code is None and time.monotonic() - started < 12
+    finally:
+        with suppress(ProcessLookupError):
+            os.kill(int((tmp_path / "child.pid").read_text()), signal.SIGKILL)
+
+
+def test_a_command_that_passes_leaves_no_child_behind_and_never_waits_on_one(tmp_path: Path) -> None:
+    started = time.monotonic()
+    ran = run_shell(child(tmp_path, False, "None"), tmp_path, os.environ, 10)
+    assert ran == Ran(0, "") and time.monotonic() - started < 8
+    pid = int((tmp_path / "child.pid").read_text())
+    deadline = time.monotonic() + 5
+    while alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not alive(pid)
