@@ -7,13 +7,18 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Any
 
 import pytest
 
-from .conftest import copy_tree, no_auto_maintenance
+from shipmill.classify import Base, RepoPath, classify_paths
+from shipmill.config import loads
+from shipmill.policy import Policy
+from shipmill.review import parse as parse_review
+
+from .conftest import POLICY, copy_tree, no_auto_maintenance
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-pr-triage" / "scripts" / "pr_gate.py"
 BOT = "shipmill-demo[bot]"
@@ -1568,6 +1573,46 @@ def test_s030_11_a_zone_the_gate_doesnt_know_stops_it() -> None:
         gate.parse_zones(json.dumps({"zones": [{"zone": "nope", "level": "never", "reason": "x"}]}), 7)
     with pytest.raises(gate.GateError, match="no zones list"):
         gate.parse_zones("{}", 7)
+
+
+def part_zones(config: str, *paths: str) -> list[dict[str, Any]]:
+    """The zones shipmill's own classify gives the paths, the base holding config and a REVIEW.md
+    that protects src/land.py, as `decide classify --json` prints them"""
+    rubric, problems = parse_review("## Protected areas\n\n- `src/land.py`: pushes\n", PurePosixPath("REVIEW.md"))
+    assert problems == ()
+    policy = Policy.parse(loads(POLICY + config, "base"), "base")
+    found = classify_paths(Base(policy, {"REVIEW.md": rubric.protected}, None), [RepoPath(p) for p in paths])
+    zones: list[dict[str, Any]] = found.record()["zones"]
+    return zones
+
+
+def test_s057_9_a_protected_part_at_never_is_maintainer_only(tmp_path: Path, agents: Path) -> None:
+    zones = part_zones('\n[decisions.paths.protected]\n"src/land.py" = "never"\n', "src/land.py")
+    assert [(z["zone"], z["level"]) for z in zones] == [("protected", "never")]
+    classify_as(tmp_path, {7: zones})
+    proc = run_gate(tmp_path, agents, {7: pr(files=("src/land.py",))}, "--bot-login", BOT, "--maintainer-accepted")
+    assert proc.returncode == gate.MAINTAINER_ONLY == 7, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [
+        "  maintainer-only: protected: src/land.py matches `src/land.py` (REVIEW.md): pushes"
+        ' (never by [decisions.paths.protected] "src/land.py")'
+    ]
+
+
+def test_s057_9_a_security_part_at_notify_keeps_the_ci_verdict_and_prints_a_notify_line(
+    tmp_path: Path, agents: Path
+) -> None:
+    ci = ".github/workflows/ci.yml"
+    zones = part_zones('\n[decisions.paths.security]\n".github/workflows/**" = "notify"\n', ci)
+    assert [(z["zone"], z["level"]) for z in zones] == [("security", "notify")]
+    classify_as(tmp_path, {7: zones})
+    notify = f'  notify: security: {ci} is under .github/ (notify by [decisions.paths.security] ".github/workflows/**")'
+    proc = run_gate(tmp_path, agents, {7: pr(files=(ci,))}, "--bot-login", BOT)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY + notify + "\n"), proc.stderr
+    failing = pr(files=(ci,))
+    failing["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    red = run_gate(tmp_path, agents, {7: failing}, "--bot-login", BOT)
+    assert red.returncode == 1
+    assert red.stdout.splitlines()[1:] == ["  failed: test (FAILURE)", notify]
 
 
 def test_s030_11_tool_runs_classify_from_another_shipmill(tmp_path: Path, agents: Path) -> None:
