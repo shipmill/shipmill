@@ -221,6 +221,94 @@ def test_s055_17_a_body_gh_would_ask_for_stays_refused(tmp_path: Path, host: Hos
     assert "is refused" in refused(connected(tmp_path), host, args)
 
 
+def api(root: Path, host: Host, runner: Runner, args: list[str], stdin: str = "") -> int:
+    return main(
+        ["--repo", str(root), "gh", "--app-key", str(root.parent / "app.pem"), "api", *args],
+        api=MintApi(),
+        signer=FakeSigner(),
+        stdin=io.StringIO(stdin),
+        environ=host.env(),
+        home=host.home,
+        gh_runner=runner,
+    )
+
+
+def api_refused(root: Path, host: Host, args: list[str], stdin: str = "") -> str:
+    runner = Runner()
+    with pytest.raises(ReleaseError) as raised:
+        api(root, host, runner, args, stdin)
+    assert runner.calls == []  # gh never runs
+    return str(raised.value)
+
+
+def api_sent(root: Path, host: Host, args: list[str], stdin: str = "") -> list[str]:
+    """gh's args past `api`, as it ran"""
+    runner = Runner()
+    assert api(root, host, runner, args, stdin) == 7
+    [(argv, _)] = runner.calls
+    return argv[argv.index("api") + 1 :]
+
+
+PULLS = f"repos/{REPO}/pulls"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [PULLS, "-f", "title=t", "-f", f"body={NO_PLAN}"],
+        ["-X", "POST", PULLS, "-F", f"body={NO_PLAN}"],
+        ["--method=post", f"{PULLS}/", "--field", f"body={NO_PLAN}"],
+        [PULLS, "--raw-field", f"body={NO_PLAN}"],
+        [f"https://api.github.com/{PULLS}?x=1", "-f", f"body={NO_PLAN}"],
+        [f"{PULLS}#x", "-f", f"body={NO_PLAN}"],  # gh's URL parser drops the fragment: a POST on pulls
+        [f"repos/{REPO}/pull%73", "-f", f"body={NO_PLAN}"],  # percent-decoded as GitHub decodes it
+        ["repos/{owner}/{repo}/pulls", "-f", f"body={NO_PLAN}"],
+        ["-X", "POST", PULLS, "-f", "title=t"],  # no body: the marker alone, which has no plan
+    ],
+)
+def test_s055_17_a_rest_pull_request_create_with_no_plan_is_refused(
+    tmp_path: Path, host: Host, args: list[str]
+) -> None:
+    said = api_refused(connected(tmp_path), host, ["-f", "head=b", *args])
+    assert "is refused: the body's plan doesn't hold" in said and "no `## Plan` section" in said
+
+
+def test_s055_17_a_rest_pull_request_body_from_a_file_or_stdin_is_checked(tmp_path: Path, host: Host) -> None:
+    root = connected(tmp_path)
+    bad, good = tmp_path / "bad.md", tmp_path / "good.md"
+    bad.write_text(NO_PLAN, encoding="utf-8")
+    good.write_text(PLAN, encoding="utf-8")
+    assert "no `## Plan` section" in api_refused(root, host, [PULLS, "-F", f"body=@{bad}"])
+    assert "no `## Plan` section" in api_refused(root, host, [PULLS, "-F", "body=@-"], stdin=NO_PLAN)
+    assert api_sent(root, host, [PULLS, "-F", f"body=@{good}"]) == [PULLS, "-f", f"body={PLAN}\n{MARKER}"]
+    assert api_sent(root, host, [PULLS, "-F", "body=@-"], stdin=PLAN) == [PULLS, "-f", f"body={PLAN}\n{MARKER}"]
+
+
+def test_s055_17_a_rest_pull_request_with_a_valid_plan_runs_gh(tmp_path: Path, host: Host) -> None:
+    sent_args = api_sent(connected(tmp_path), host, ["-X", "POST", PULLS, "-f", f"body={PLAN}"])
+    assert sent_args == ["-X", "POST", PULLS, "-f", f"body={PLAN}\n{MARKER}"]
+
+
+def test_s055_17_a_rest_pull_request_with_input_stays_refused(tmp_path: Path, host: Host) -> None:
+    said = api_refused(connected(tmp_path), host, [PULLS, "--input", "-"], stdin='{"body": "b"}')
+    assert "with --input is refused" in said
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        [PULLS],  # lists them
+        ["-X", "GET", PULLS, "-f", "state=open"],  # a field with GET named stays a GET
+        [f"repos/{REPO}/pulls/7"],
+        ["-X", "PATCH", f"repos/{REPO}/pulls/7", "-f", "title=t"],
+        [f"repos/{REPO}/pulls/7/comments", "-f", f"body={NO_PLAN}"],
+        [f"repos/{REPO}/issues", "-f", f"body={NO_PLAN}"],
+    ],
+)
+def test_s055_17_other_api_calls_are_not_checked(tmp_path: Path, host: Host, args: list[str]) -> None:
+    api_sent(connected(tmp_path), host, args)
+
+
 def test_s055_17_other_commands_are_not_checked(tmp_path: Path, host: Host) -> None:
     root = connected(tmp_path)
     runner = Runner()
