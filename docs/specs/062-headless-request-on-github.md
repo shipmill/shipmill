@@ -198,6 +198,10 @@ is a test's temporary directory, so the refusal record is the test's.
 The build issues, filled in once they are filed: one `- owner/repo#N: S-NNN-1, S-NNN-2` per
 line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
 
+- shipmill/shipmill#1094: S-062-1, S-062-2, S-062-3, S-062-4, S-062-5, S-062-6, S-062-7, S-062-8, S-062-9, S-062-13
+- shipmill/shipmill#1096: S-062-10, S-062-11
+- shipmill/shipmill#1097: S-062-12, S-062-14
+
 ## Verification
 
 Filled in when the spec reaches `built`: one line per criterion id, saying how it was

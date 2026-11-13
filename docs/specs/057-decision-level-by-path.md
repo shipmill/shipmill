@@ -165,4 +165,9 @@ The table is optional, so no config fails and no spec 014 upgrade is needed. A r
 
 ## Issues
 
+- shipmill/shipmill#1070: S-057-1, S-057-2, S-057-3, S-057-4
+- shipmill/shipmill#1071: S-057-5, S-057-6, S-057-7, S-057-8, S-057-9
+- shipmill/shipmill#1073: S-057-10
+- shipmill/shipmill#1076: S-057-11, S-057-12
+
 ## Verification
