@@ -281,6 +281,12 @@ From GitHub's documentation, unless marked:
 The build issues, filled in once they are filed: one `- owner/repo#N: S-054-1, S-054-2` per
 line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
 
+- shipmill/shipmill#1075: S-054-2, S-054-4, S-054-5, S-054-6, S-054-7, S-054-9
+- shipmill/shipmill#1079: S-054-1, S-054-3, S-054-8, S-054-18
+- shipmill/shipmill#1080: S-054-10, S-054-11, S-054-12, S-054-13, S-054-14, S-054-15, S-054-16
+- shipmill/shipmill#1081: S-054-17
+- shipmill/shipmill#1082: S-054-19, S-054-20
+
 ## Verification
 
 Filled in when the spec reaches `built`: one line per criterion id, saying how it was

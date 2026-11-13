@@ -149,4 +149,10 @@ place of a line in `[agents] prompt`.
 
 ## Issues
 
+- shipmill/shipmill#1100: S-056-1, S-056-2, S-056-3, S-056-13
+- shipmill/shipmill#1101: S-056-4, S-056-5, S-056-6, S-056-7
+- shipmill/shipmill#1102: S-056-8
+- shipmill/shipmill#1103: S-056-9, S-056-10, S-056-11, S-056-12
+- shipmill/shipmill#1104: S-056-14
+
 ## Verification
