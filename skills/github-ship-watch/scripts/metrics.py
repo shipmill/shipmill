@@ -35,7 +35,19 @@ before it):
   Issue to release   for each issue a merged PR closes (GitHub's closing links) whose
                      merge commit a stable release published in the window first shipped, as
                      Lead time reads it: the issue's opening to that release (median, p90).
-                     It reads no comment: shipmill posts no notice on a fixed issue (D-69)
+                     When several PRs close it, the one whose release is earliest (the
+                     earliest merged on a tie). No notice is read: shipmill posts none (D-69)
+  The stages         over the same issues and PRs (median, p90 in hours each):
+                     Issue to first agent comment: opening to the first comment at or before
+                     the release an agent wrote (the agent marker as a line of its own, D-62,
+                     or a Bot, "[bot]" or --bot author); an issue with none is left out, and
+                     the detail counts it. Issue to PR opened: opening to the PR's creation,
+                     negative for a PR created first. Issue to PR opened, person-filed and
+                     agent-filed: split by the issue (agent-filed: the marker in its body, or a
+                     bot author). PR opened to merged, and Merged to release. Per issue, Issue
+                     to PR opened, PR opened to merged and Merged to release sum to Issue to
+                     release. An issue's comments are paged only until the first agent comment
+                     or one after its release
   Human touch        PRs merged in the window that a person merged or approved / all merged
                      PRs. A person is a GitHub User whose login doesn't end in "[bot]" and
                      isn't a --bot; apps (github-actions, dependabot, mergify) are Bots. An
@@ -79,6 +91,8 @@ AGENT_MARKS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("commit", re.compile(r"^Co-Authored-By: Claude\b", re.IGNORECASE | re.MULTILINE)),
     ("commit", re.compile(r"^Claude-Session:", re.IGNORECASE | re.MULTILINE)),
 )
+# shipmill's agent marker (D-62), counted only as a line of its own; attributes may follow a space
+AGENT_MARKER = re.compile(r"<!-- shipmill:agent(?:\s[^>]*)?-->")
 
 RELEASES = (
     """
@@ -125,16 +139,36 @@ query($owner: String!, $name: String!, $size: Int!, $cursor: String) {
     + PAGE_INFO
     + """
       nodes {
-        number updatedAt mergedAt body
+        number createdAt updatedAt mergedAt body
         mergeCommit { oid }
         mergedBy { __typename login }
-        closingIssuesReferences(first: 20) { nodes { url createdAt } }
+        closingIssuesReferences(first: 20) {
+          nodes {
+            url number createdAt body
+            author { __typename login }
+            repository { owner { login } name }
+            comments(first: 10) { """
+    + PAGE_INFO
+    + """ nodes { createdAt body author { __typename login } } }
+          }
+        }
         commits(first: 100) { """
     + PAGE_INFO
     + """ nodes { commit { authoredDate message } } }
         reviews(states: APPROVED, first: 50) { pageInfo { hasNextPage } nodes { author { __typename login } } }
       }
     }
+  }
+}
+"""
+)
+ISSUE_COMMENTS = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) { comments(first: $size, after: $cursor) { """
+    + PAGE_INFO
+    + """ nodes { createdAt body author { __typename login } } } }
   }
 }
 """
@@ -200,6 +234,7 @@ SIZES = {
     COMPARE: 100,
     PULLS: 50,
     PULL_COMMITS: 100,
+    ISSUE_COMMENTS: 100,
     DEPLOYMENTS: 100,
     LABELLED: 50,
     LABELLED_COMMENTS: 100,
@@ -388,7 +423,13 @@ def previous(release: Release, releases: list[Release]) -> Release | None:
 
 
 def fetch(
-    repo: str, window: Window, environments: frozenset[str], incident: str, blocker: str, run: Runner = gh_graphql
+    repo: str,
+    window: Window,
+    environments: frozenset[str],
+    incident: str,
+    blocker: str,
+    run: Runner = gh_graphql,
+    bots: frozenset[str] = frozenset(),
 ) -> Data:
     owner, _, name = repo.partition("/")
     if not owner or not name or "/" in name:
@@ -448,7 +489,29 @@ def fetch(
 
     incidents = labelled(run, base, sizes, incident, since)
     blockers = labelled(run, base, sizes, blocker, since)
-    return Data(releases, shipped, hotfixes, pulls, deployed, in_window, incidents, blockers)
+    data = Data(releases, shipped, hotfixes, pulls, deployed, in_window, incidents, blockers, bots)
+    for closed in closed_issues(data, window):
+        issue_comments(run, sizes, closed, bots)
+    return data
+
+
+def issue_comments(run: Runner, sizes: Sizes, closed: Closed, bots: frozenset[str]) -> None:
+    """Page a counted issue's comments forwards, oldest first, while none is an agent's and
+    none came after its release: only those can end Issue to first agent comment"""
+    issue = closed.issue
+    comments = issue["comments"]
+    seen: set[str] = set()
+    where = issue["repository"]
+    base: Variables = {"owner": where["owner"]["login"], "name": where["name"]}
+    what = f"comments on {issue['url']}"
+    while comments["pageInfo"]["hasNextPage"] and not any(
+        agent_wrote(c, bots) or timestamp(c["createdAt"]) > closed.release.published for c in comments["nodes"]
+    ):
+        cursor = advance(comments["pageInfo"]["endCursor"], seen, what)
+        variables: Variables = {**base, "number": issue["number"], "cursor": cursor}
+        page = dig(sized(run, ISSUE_COMMENTS, variables, sizes, what), ["issue", "comments"], what)
+        comments["nodes"] = comments["nodes"] + page["nodes"]
+        comments["pageInfo"] = page["pageInfo"]
 
 
 def pull_commits(run: Runner, base: Variables, sizes: Sizes, pr: Node) -> None:
@@ -633,25 +696,128 @@ def time_to_restore(data: Data, window: Window) -> Measure:
     return Measure(name, median, f"median {span(median)}", detail, "hours", {"count": len(values), "open": still})
 
 
-def issue_to_release(data: Data, window: Window) -> Measure:
-    """Each issue a merged PR closes, from its opening to the in-window stable release that
-    first shipped the PR's merge commit: the earliest, when several PRs close it (D-69: read
+@dataclass(frozen=True)
+class Closed:
+    """An issue Issue to release counts, the PR that closed it, and the release that shipped it"""
+
+    issue: Node
+    pr: Node
+    release: Release
+
+    @property
+    def opened(self) -> dt.datetime:
+        return timestamp(self.issue["createdAt"])
+
+    @property
+    def created(self) -> dt.datetime:
+        return timestamp(self.pr["createdAt"])
+
+    @property
+    def merged(self) -> dt.datetime:
+        return timestamp(self.pr["mergedAt"])
+
+
+def closed_issues(data: Data, window: Window) -> list[Closed]:
+    """Each issue a merged PR closes whose merge commit an in-window stable release first
+    shipped, with the PR whose release is earliest, the earliest merged on a tie (D-69: read
     from the release and the close, never from a notice)"""
     first_shipped_by = first_shipped(data, window)
-    released: dict[str, tuple[dt.datetime, dt.datetime]] = {}  # an issue's url: (opened, released)
+    found: dict[str, Closed] = {}  # by the issue's url
     for pr in data.pulls:
         release = first_shipped_by.get((pr.get("mergeCommit") or {}).get("oid") or "")
         if release is None:
             continue
         for issue in (pr.get("closingIssuesReferences") or {}).get("nodes") or []:
-            opened = timestamp(issue["createdAt"])
-            if issue["url"] not in released or release.published < released[issue["url"]][1]:
-                released[issue["url"]] = (opened, release.published)
-    values = [hours(opened, at) for opened, at in released.values()]
+            closed = Closed(issue, pr, release)
+            held = found.get(issue["url"])
+            if held is None or (release.published, closed.merged) < (held.release.published, held.merged):
+                found[issue["url"]] = closed
+    return list(found.values())
+
+
+EMPTY_CLOSED = "no issue closed by a PR a stable release shipped in the window"
+
+
+def issue_to_release(data: Data, window: Window) -> Measure:
+    """Each counted issue, from its opening to the release that first shipped its PR"""
+    values = [hours(c.opened, c.release.published) for c in closed_issues(data, window)]
     detail = f"{len(values)} issues closed by a PR a stable release shipped"
-    return durations(
-        "Issue to release", values, detail, "no issue closed by a PR a stable release shipped in the window"
-    )
+    return durations("Issue to release", values, detail, EMPTY_CLOSED)
+
+
+def bot_author(actor: Node | None, bots: frozenset[str]) -> bool:
+    """A Bot, a login ending "[bot]", or a --bot login; a deleted (null) author is none"""
+    if actor is None:
+        return False
+    login: str = actor["login"]
+    return actor["__typename"] == "Bot" or login.endswith("[bot]") or login in bots
+
+
+def marked(body: str | None) -> bool:
+    """The body carries the agent marker as a line of its own (D-62)"""
+    return any(AGENT_MARKER.fullmatch(line.strip()) for line in (body or "").splitlines())
+
+
+def agent_wrote(record: Node, bots: frozenset[str]) -> bool:
+    """A comment or an issue an agent wrote: the marker, or a bot author"""
+    return marked(record["body"]) or bot_author(record["author"], bots)
+
+
+def first_agent_comment(closed: Closed, bots: frozenset[str]) -> dt.datetime | None:
+    """The first comment, oldest first, at or before the release that an agent wrote"""
+    for comment in closed.issue["comments"]["nodes"]:
+        at = timestamp(comment["createdAt"])
+        if at > closed.release.published:
+            return None
+        if agent_wrote(comment, bots):
+            return at
+    return None
+
+
+def issue_to_agent_comment(data: Data, window: Window) -> Measure:
+    closed = closed_issues(data, window)
+    found = [(c, first_agent_comment(c, data.bots)) for c in closed]
+    values = [hours(c.opened, at) for c, at in found if at is not None]
+    left = len(closed) - len(values)
+    detail = f"{len(values)} issues; {left} with no agent comment by their release left out"
+    empty = f"no agent comment by its release on any of {left} issues, all left out" if closed else EMPTY_CLOSED
+    return durations("Issue to first agent comment", values, detail, empty)
+
+
+def issue_to_pr(data: Data, window: Window) -> Measure:
+    """A PR created before its issue counts negative, so the three stages sum to Issue to release"""
+    values = [hours(c.opened, c.created) for c in closed_issues(data, window)]
+    detail = f"{len(values)} issues, to the PR that closed them being opened"
+    return durations("Issue to PR opened", values, detail, EMPTY_CLOSED)
+
+
+def issue_to_pr_filed(data: Data, window: Window, by_agent: bool) -> Measure:
+    who = "agent" if by_agent else "person"
+    closed = [c for c in closed_issues(data, window) if agent_wrote(c.issue, data.bots) is by_agent]
+    values = [hours(c.opened, c.created) for c in closed]
+    detail = f"{len(values)} {who}-filed issues"
+    empty = f"no {who}-filed issue closed by a PR a stable release shipped in the window"
+    return durations(f"Issue to PR opened, {who}-filed", values, detail, empty)
+
+
+def issue_to_pr_person(data: Data, window: Window) -> Measure:
+    return issue_to_pr_filed(data, window, by_agent=False)
+
+
+def issue_to_pr_agent(data: Data, window: Window) -> Measure:
+    return issue_to_pr_filed(data, window, by_agent=True)
+
+
+def pr_to_merge(data: Data, window: Window) -> Measure:
+    values = [hours(c.created, c.merged) for c in closed_issues(data, window)]
+    detail = f"{len(values)} issues, their PR's opening to its merge"
+    return durations("PR opened to merged", values, detail, EMPTY_CLOSED)
+
+
+def merge_to_release(data: Data, window: Window) -> Measure:
+    values = [hours(c.merged, c.release.published) for c in closed_issues(data, window)]
+    detail = f"{len(values)} issues, their PR's merge to its release"
+    return durations("Merged to release", values, detail, EMPTY_CLOSED)
 
 
 def person(actor: Node | None, bots: frozenset[str]) -> bool:
@@ -717,6 +883,12 @@ def measures(data: Data, window: Window) -> list[Measure]:
             change_failure_rate,
             time_to_restore,
             issue_to_release,
+            issue_to_agent_comment,
+            issue_to_pr,
+            issue_to_pr_person,
+            issue_to_pr_agent,
+            pr_to_merge,
+            merge_to_release,
             human_touch,
             agent_share,
         )
@@ -782,8 +954,8 @@ def main() -> int:
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)  # noqa: UP017 (3.10 has no dt.UTC)
     end = now if args.until is None else until(args.until, now)
     window = Window(end - dt.timedelta(days=args.days), end)
-    data = fetch(args.repo, window, frozenset(args.environment), args.incident_label, args.blocker_label)
-    data.bots = frozenset(args.bot)
+    bots = frozenset(args.bot)
+    data = fetch(args.repo, window, frozenset(args.environment), args.incident_label, args.blocker_label, bots=bots)
     form_name = "json" if args.json else "markdown" if args.markdown else "table"
     print(render(args.repo, args.days, window, measures(data, window), form_name))
     return 0
