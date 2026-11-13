@@ -309,3 +309,34 @@ def test_s059_3_the_shipped_read_refuses_more_comments_than_it_reads() -> None:
     # a decided marker past the comments read would release inside its window
     with pytest.raises(ReleaseError, match="#2 has 101 comments, over the 100"):
         parse_shipped_pulls(_page([_node(2, _comments("hi", total=101), [])]))
+
+
+def _folded(*parts: str) -> str:
+    """A doc with its line wrapping folded, so a statement reads as one line"""
+    root = Path(__file__).resolve().parents[1]
+    return " ".join(root.joinpath(*parts).read_text(encoding="utf-8").split())
+
+
+def test_s059_12_the_docs_document_veto_lanes() -> None:
+    lanes = _folded("docs", "release-lanes.md")
+    assert '# veto_lanes = ["rc", "stable"]' in lanes  # beside blocker_lanes and freeze_lanes
+    # what a release ships
+    assert "**What a release ships**" in lanes
+    assert "merge commit is in the candidate's base and not in the lane's newest tag" in lanes
+    assert "the pull requests merged in the last 168 hours" in lanes
+    assert "<!-- shipmill:decided zone=<id> until=<UTC time> -->" in lanes
+    assert "<!-- shipmill:veto-handled -->" in lanes
+    # the wait, with the plan's reason
+    assert "**The wait.**" in lanes
+    assert "rc: 0.8.0rc17 waits for veto windows: #196 security until 2026-11-10 14:00 UTC" in lanes
+    assert "#196 security vetoed, until the veto is handled" in lanes
+    # a person's hand start, and a bot's
+    assert "**a person's hand start**" in lanes and "releases inside a window" in lanes
+    assert "A hand start by a `<name>[bot]` login, or one that names no actor, waits" in lanes
+    assert "`hotfix` can't be in `veto_lanes`" in lanes
+    # the hourly tick
+    assert "needs **the hourly tick**" in lanes
+    assert "or `[gates] veto_lanes` names an enabled lane" in lanes
+    needs = _folded("skills", "github-issue-triage", "references", "needs-decision.md")
+    holds = "a lane in `[gates] veto_lanes` holds a release that would ship a `notify` decision until its window ends"
+    assert holds in needs
