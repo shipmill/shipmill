@@ -82,6 +82,11 @@ files = re.compile(r"repos/(.+)/pulls/([0-9]+)/files[?]per_page=100")
 base = fake["base"]
 if args[:2] == ["pr", "view"]:
     print(json.dumps(fake[args[2]]))
+elif args[0] == "api" and any(a.endswith("/permission") for a in args):  # a relay's login (spec 055)
+    login = [a for a in args if a.endswith("/permission")][0].split("/")[-2]
+    if login not in fake["permissions"]:
+        sys.exit("gh: Not Found (HTTP 404)")
+    print(json.dumps({{"permission": fake["permissions"][login], "user": {{"login": login}}}}))
 elif args[0] == "api" and any(a.endswith("/status?per_page=100") for a in args):  # the base's statuses (D-75)
     statuses = base["statuses"]
     print(json.dumps({{"sha": base["sha"], "total_count": len(statuses), "statuses": statuses}}))
@@ -213,11 +218,13 @@ def run_gate(
     issues: dict[int, dict[str, Any]] | None = None,
     base: dict[str, Any] | None = None,
     threads: dict[int, dict[str, Any]] | None = None,
+    permissions: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """The gate with --checkout work, or, for None, run in a folder outside any checkout; issues
     are what GitHub's GraphQL answers for the repo demo/app's numbers; base, the base branch head's
     sha, statuses, and check_runs (default: a head with no checks); threads, each PR's comments
-    and force-pushes as GraphQL answers them (default: none of either)"""
+    and force-pushes as GraphQL answers them (default: none of either); permissions, each login's
+    permission on the repo (any other login's read is a 404)"""
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     gh = fakes / "gh"
@@ -230,6 +237,7 @@ def run_gate(
         "issues": {str(n): i for n, i in (issues or {}).items()},
         "base": {"sha": BASE_SHA, "statuses": [], "check_runs": [], **(base or {})},
         "threads": {str(n): (threads or {}).get(n, thread()) for n in prs},
+        "permissions": permissions or {},
     }
     data.write_text(json.dumps(fake), encoding="utf-8")
     env = {
@@ -1686,7 +1694,9 @@ def ready_line(head: str = HEAD_SHA) -> str:
 def protected(
     tmp_path: Path, work: Path, data: dict[str, Any], pr_thread: dict[str, Any], **kw: Any
 ) -> subprocess.CompletedProcess[str]:
-    """The gate on #7, an agent's PR changing the protected src/land.py, its thread pr_thread"""
+    """The gate on #7, an agent's PR changing the protected src/land.py, its thread pr_thread; romamo
+    has admin on the repo unless permissions says otherwise"""
+    kw.setdefault("permissions", {"romamo": "admin"})
     return run_gate(tmp_path, work, {7: data}, "--bot-login", BOT, threads={7: pr_thread}, **kw)
 
 
@@ -1740,6 +1750,68 @@ def test_s055_9_a_relay_by_another_bot_is_no_answer(tmp_path: Path, directed: Pa
     other = {**relay("Decision by @romamo", "1"), "author": {"login": "other-app", "__typename": "Bot"}}
     proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(), other))
     assert proc.returncode == 5 and proc.stdout.splitlines()[1:] == [PROTECTED_ASK], proc.stdout
+
+
+def permission_reads(tmp_path: Path) -> list[str]:
+    """The logins whose permission on the repo the gate read"""
+    found = [a for c in gh_calls(tmp_path) for a in c["args"] if a.endswith("/permission")]
+    return [a.split("/")[-2] for a in found]
+
+
+def roles_checkout(tmp_path: Path, maintainer: str) -> Path:
+    """checkout() with [agents] and `[agents.roles] maintainer = <maintainer>`, classify asking"""
+    config = f"{AGENTS}\n[agents.roles]\nmaintainer = {maintainer}\n"
+    work = checkout(tmp_path, {"docs/product.md": DIRECTION, "REVIEW.md": REVIEW, ".github/shipmill.toml": config})
+    classify_as(tmp_path, {7: [PROTECTED_ZONE]})
+    return work
+
+
+@pytest.mark.parametrize(
+    ("maintainer", "named", "permissions", "lands", "reads"),
+    [
+        ('["romamo", "@demo/core"]', "romamo", {}, True, []),  # listed: no permission read
+        ('["Romamo"]', "romamo", {}, True, []),  # GitHub logins ignore case
+        ('["romamo"]', "mallory", {"mallory": "admin"}, False, []),  # listed users only, admin or not
+        ('["@demo/core"]', "romamo", {"romamo": "admin"}, True, ["romamo"]),  # no user listed: admin
+        ('["@demo/core"]', "mallory", {"mallory": "write"}, False, ["mallory"]),
+        ('["@demo/core"]', "mallory", {}, False, ["mallory"]),  # a 404: unreadable, no maintainer
+    ],
+)
+def test_s055_9_a_relay_counts_only_when_it_names_the_maintainer(
+    tmp_path: Path, maintainer: str, named: str, permissions: dict[str, str], lands: bool, reads: list[str]
+) -> None:
+    work = roles_checkout(tmp_path, maintainer)
+    relayed = thread(asked(), relay(f"Decision by @{named}", "1"))
+    proc = protected(tmp_path, work, headed(files=("src/land.py",)), relayed, permissions=permissions)
+    if lands:
+        assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == 5, proc.stdout + proc.stderr
+        assert proc.stdout.splitlines()[1:] == [f"  needs-decision: protected: {PROTECTED_ZONE['reason']}"]
+    assert permission_reads(tmp_path) == reads
+
+
+def test_s055_9_without_a_roles_table_a_relay_naming_an_admin_counts(tmp_path: Path, directed: Path) -> None:
+    relayed = thread(asked(), relay("Decision by @romamo", "1"))
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), relayed, permissions={"romamo": "admin"})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+    assert permission_reads(tmp_path) == ["romamo"]
+    (tmp_path / "gh-calls").unlink()
+    held = protected(tmp_path, directed, headed(files=("src/land.py",)), relayed, permissions={})
+    assert held.returncode == 5 and held.stdout.splitlines()[1:] == [PROTECTED_ASK], held.stdout
+
+
+def test_s055_9_a_persons_answer_reads_no_permission(tmp_path: Path, directed: Path) -> None:
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(), comment("1", at(12))))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert permission_reads(tmp_path) == []
+
+
+def test_s055_9_a_roles_table_the_gate_cant_read_stops_it(tmp_path: Path) -> None:
+    work = roles_checkout(tmp_path, '"romamo"')
+    proc = protected(tmp_path, work, headed(files=("src/land.py",)), thread(asked()))
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "[agents.roles] maintainer is not an array" in proc.stderr
 
 
 NOT_TAKEN = "  needs-decision: the answer doesn't take the recommended option"

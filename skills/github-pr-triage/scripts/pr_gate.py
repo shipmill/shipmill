@@ -16,7 +16,10 @@ newest needs-decision question (its first line `<!-- shipmill:needs-decision -->
 OWNER, MEMBER, or COLLABORATOR or the --bot-login) on the PR, or, when the PR has none, on an
 issue its title or body closes or names as `Part of #N`; its first answer as retro.py reads one
 (a trusted person's reply without the agent marker, or the --bot-login's relay whose first line
-is `Decision by @<login>`); that answer taking the option marked (recommended) as it stands. It
+is `Decision by @<login>` naming the maintainer: a user `[agents.roles] maintainer` lists on that
+branch, or, when it lists none, a login whose permission on the repo is admin, one read of
+`repos/<o>/<r>/collaborators/<login>/permission` made only for a relay; one that can't be read is
+no maintainer); that answer taking the option marked (recommended) as it stands. It
 lifts the asks, and CI decides, when it covers the judged head: one given on an issue before the
 PR opened covers every head; any other covers the head the PR had when it was given (after a
 force-push since, the first push's beforeCommit; else the newest commit whose committedDate is
@@ -279,6 +282,9 @@ class Base:
     reviews: dict[str, str]  # REVIEW.md path -> its text
     agents: bool = False
     ref: str | None = None  # the ref it was read at
+    # the users [agents.roles] maintainer lists, lowercased; none: a login with admin on the repo is
+    # the maintainer (a relayed answer counts only when it names one, spec 055)
+    maintainers: frozenset[str] = frozenset()
 
     def protected(self, files: tuple[str, ...]) -> list[Protected]:
         wanted = {REVIEW}
@@ -598,7 +604,65 @@ def read_base(checkout: str, ref: str) -> Base:
     reviews = {n: git(checkout, "show", f"{ref}:{n}") for n in names if n.rsplit("/", 1)[-1] == REVIEW}
     ids = direction_ids(read) if DIRECTION in tree else None
     config = read(CONFIG)
-    return Base(ids, reviews, config is not None and has_agents(config, f"{CONFIG} at {ref}"), ref)
+    where = f"{CONFIG} at {ref}"
+    agents = config is not None and has_agents(config, where)
+    return Base(ids, reviews, agents, ref, frozenset() if config is None else maintainer_users(config, where))
+
+
+def maintainer_users(text: str, where: str) -> frozenset[str]:
+    """The users `[agents.roles] maintainer` lists, lowercased; a team names none here. A roles
+    table the gate can't read stops it, as every reader of the config does (S-036-2); on Python
+    3.10, without tomllib, an [agents.roles] table is not read but refused"""
+    ws = watch_state()
+    if ws.tomllib is None:
+        if any(name == "agents.roles" or name.startswith("agents.roles.") for name in ws.toml_tables(text)):
+            raise GateError(f"{where}: can't read [agents.roles] on Python 3.10: use 3.11+")
+        return frozenset()
+    try:
+        raw = ws.tomllib.loads(text)
+    except ws.tomllib.TOMLDecodeError as exc:
+        raise GateError(f"{where}: {exc}") from None
+    agents = raw.get("agents")
+    roles = agents.get("roles") if isinstance(agents, dict) else None
+    fillers = roles.get("maintainer") if isinstance(roles, dict) else None
+    if roles is not None and not isinstance(roles, dict):
+        raise GateError(f"{where}: [agents.roles] is not a table")
+    if fillers is None:
+        return frozenset()
+    if not isinstance(fillers, list) or not all(isinstance(f, str) for f in fillers):
+        raise GateError(f"{where}: [agents.roles] maintainer is not an array of logins and @org/team entries")
+    return frozenset(f.lower() for f in fillers if not f.startswith("@"))
+
+
+class Maintainers:
+    """Whether a login a relay names is the maintainer's (spec 055): one [agents.roles] maintainer
+    lists, or, when it lists no user, one whose permission on the repo is admin, read from GitHub
+    once per login and only when asked; a permission that can't be read is no maintainer's"""
+
+    def __init__(self, listed: frozenset[str], repo: str | None) -> None:
+        self.listed = listed
+        self.repo = repo
+        self.read: dict[str, bool] = {}
+
+    def __contains__(self, login: object) -> bool:
+        if not isinstance(login, str):
+            return False
+        if self.listed:
+            return login.lower() in self.listed
+        if login not in self.read:
+            self.read[login] = self.admin(login)
+        return self.read[login]
+
+    def admin(self, login: str) -> bool:
+        cmd, env = api([f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission"], self.repo)
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        if proc.returncode != 0:
+            return False  # a 404 or any other failure: not a maintainer, fail closed
+        try:
+            answer = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return False
+        return isinstance(answer, dict) and answer.get("permission") == "admin"
 
 
 def load(name: str, path: Path) -> ModuleType:
@@ -1186,12 +1250,13 @@ def same_change(checkout: str, base_ref: str, answered: str, head: str, specs: t
 
 
 def acceptance(
-    data: dict, number: int, repo: str | None, bot_login: str | None, checkout: str
+    data: dict, number: int, repo: str | None, bot_login: str | None, checkout: str, maintainers: Maintainers
 ) -> tuple[bool, str | None]:
     """Whether the maintainer's answer covers the judged head (spec 055), and, when it doesn't,
     the needs-decision line that says why (None for no line): the newest question on the pull
     request, else on an issue it closes or names as Part of #N; its first trusted answer, by
-    retro.py's answer_at (a relay by the --bot-login counts); taking the (recommended) option, by
+    retro.py's answer_at (a relay by the --bot-login counts when it names one of maintainers);
+    taking the (recommended) option, by
     retro.py's takes_recommended; given on an issue before the pull request opened, or at a head
     whose own change is the judged head's. Anything else leaves the question open"""
     rt = retro()
@@ -1208,7 +1273,7 @@ def acceptance(
             return False, None
         (comments, asked), on_issue = found, True
     later = comments[asked + 1 :]
-    answer = rt.answer_at(later, bots, None)
+    answer = rt.answer_at(later, bots, maintainers)
     if answer is None:
         return False, None
     index, said = answer
@@ -1361,6 +1426,7 @@ def main() -> int:
         specs: dict[tuple[int, str, str], tuple[str, ...]] = {}  # by PR, head, and body: a --wait reads each once
         closings: dict[tuple[int, str, str, str], tuple[str, ...]] = {}  # the same and the title, for its
         # closing keywords (D-76, #987)
+        maintainers: dict[frozenset[str], Maintainers] = {}  # who a relayed answer may name (spec 055)
         while True:
             gates = []
             heads: dict[str, tuple[str, list[dict]]] = {}  # each base branch's head, read once a pass (D-75)
@@ -1389,7 +1455,10 @@ def main() -> int:
                     zones = classifier.zones(number, base.ref, str(data["headRefOid"]))
                 judged = judge(data, number, base, agent, args.maintainer_accepted, zones, spec)
                 if judged.verdict == NEEDS_DECISION:  # the answer on GitHub lifts the asks (spec 055)
-                    covered, why = acceptance(data, number, args.repo, args.bot_login, bases.checkout)
+                    if base.maintainers not in maintainers:  # one per base read: its permission reads too
+                        maintainers[base.maintainers] = Maintainers(base.maintainers, args.repo)
+                    who = maintainers[base.maintainers]
+                    covered, why = acceptance(data, number, args.repo, args.bot_login, bases.checkout, who)
                     judged = replace(judged, asks=() if covered else (*judged.asks, *([why] if why else [])))
                 if data["state"] == "OPEN":
                     branch = str(data["baseRefName"])
