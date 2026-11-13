@@ -5,7 +5,8 @@ run the `pr_gate.py` the wheel ships on pull request n before gh runs, and merge
 it read READY: an unpinned merge is pinned to it, a merge pinned elsewhere is refused. Any other
 outcome, a gate that can't start or prints no verdict included, refuses the merge: it fails
 closed. Every rule that decides whether a pull request may land is a verdict of pr_gate.py;
-nothing here judges the pull request itself.
+nothing here judges the pull request itself. A QUEUED verdict raises Queued, so the merge, still
+refused, labels the pull request queued_label (S-056-8).
 """
 
 import re
@@ -13,6 +14,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from urllib.parse import quote
 
 from shipmill.app_gh import Merge, merge_pins, pinned
 from shipmill.bundle import skills_dir
@@ -20,7 +22,15 @@ from shipmill.errors import ReleaseError
 
 _GATE = ("github-pr-triage", "scripts", "pr_gate.py")
 _READY = "READY"
+_QUEUED = "QUEUED"
+_QUEUED_EXIT = 10  # pr_gate.py's exit for a held pull request the land window waits on (spec 056)
 _HEAD = re.compile(r"[0-9a-fA-F]{40}")
+
+
+class Queued(ReleaseError):
+    """S-056-8: pr_gate.py reads the pull request QUEUED, so the merge is refused like any other
+    verdict but READY, and `shipmill gh` labels it queued_label before exiting 2"""
+
 
 # the command and gh's env in, its exit code, stdout, and stderr out; OSError when it can't start
 GateRun = Callable[[Sequence[str], Mapping[str, str]], subprocess.CompletedProcess[str]]
@@ -64,7 +74,8 @@ def hold_gate(
     """S-055-1 to S-055-3: gh's args for the merge once pr_gate.py, run with the App's env,
     reads pull request number READY at head H: pinned to H when they pin nothing, as given when
     they pin H. Raises, so gh never runs, for any other exit, a gate that can't start, one that
-    prints no verdict line for number, a READY that names no full head, and a pin to another SHA"""
+    prints no verdict line for number, a READY that names no full head, and a pin to another SHA;
+    for QUEUED (exit 10) it raises Queued (S-056-8)"""
     pins = merge_pins(gh_args)  # before the gate: a pin that can't be read refuses the merge
     cmd = gate_command(number, repo, top, bot)
     refused = f"{merge.command} is refused"
@@ -83,6 +94,8 @@ def hold_gate(
         )
     line, verdict, reasons = found
     shown = "\n".join([line, *reasons])
+    if proc.returncode == _QUEUED_EXIT and verdict == _QUEUED:  # S-056-8
+        raise Queued(f"{refused}: pr_gate.py reads #{number} {verdict} (exit {proc.returncode})\n{shown}")
     if proc.returncode != 0 or verdict != _READY:
         raise ReleaseError(f"{refused}: pr_gate.py reads #{number} {verdict} (exit {proc.returncode})\n{shown}")
     head = _head(line)
@@ -98,3 +111,14 @@ def hold_gate(
             "head moved since it was read; read the pull request again, and merge the head the gate judged (spec 055)"
         )
     return gh_args if pins else pinned(gh_args, head)
+
+
+def label_args(repo: str, number: int, label: str) -> list[str]:
+    """S-056-8: gh's args that add label to pull request number of repo; the REST call, which
+    takes a label the repo lacks too"""
+    return ["api", "--silent", "-X", "POST", f"repos/{repo}/issues/{number}/labels", "-f", f"labels[]={label}"]
+
+
+def unlabel_args(repo: str, number: int, label: str) -> list[str]:
+    """S-056-8: gh's args that remove label from pull request number of repo"""
+    return ["api", "--silent", "-X", "DELETE", f"repos/{repo}/issues/{number}/labels/{quote(label, safe='')}"]
