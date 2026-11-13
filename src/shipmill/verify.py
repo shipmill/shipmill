@@ -15,8 +15,12 @@ result; a command that fails step 1 or 2 is not run:
    directory a `cd` before it set
 3. The run: `$SHELL -c` in the worktree, in a headless session's environment, for at most 30
    minutes; exit 127 names the program the PATH lacks
+
+The gate runs it on a real headless LAUNCH tick (gate.verified) when verify.json holds no result
+for the fingerprint of its inputs, or holds a failing one retry_hours old (S-064-6, S-064-7).
 """
 
+import datetime as dt
 import hashlib
 import importlib.util
 import json
@@ -40,6 +44,8 @@ from typing import Protocol
 
 from shipmill.errors import ReleaseError
 from shipmill.hooks import SETTINGS, HookRunner, pre_command, run_hook
+from shipmill.plugin import PLUGIN, effective, listed_installs, session_project
+from shipmill.walk import malformed, write
 
 TIMEOUT = 30 * 60.0  # seconds a command may run before the check stops it
 POLL = 0.05  # seconds between looks at whether a command exited
@@ -588,3 +594,156 @@ def check(
     with worktree(checkout, default, git) as where:
         allowlist = session.allowlist(where, checkout)
         return [judge(command, where, allowlist, session, hook, shell, timeout) for command in commands]
+
+
+# --- When the gate checks (S-064-6 to S-064-8) ---------------------------------------------------
+
+
+def fingerprint(
+    commands: Sequence[str],
+    session: Headless,
+    settings: Sequence[str | None],
+    plugin: str,
+) -> str:
+    """What a result holds for: the list, the session's tool flags, the settings files' text
+    (None for a file that doesn't exist), the gate's PATH, and the version of the plugin whose
+    hook step 2 runs. A change to any of them checks again"""
+    inputs = {
+        "commands": list(commands),
+        "allowed": list(session.allowed),
+        "disallowed": list(session.disallowed),
+        "settings": list(settings),
+        "path": session.env.get("PATH", ""),
+        "plugin": plugin,
+    }
+    return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class Planned:
+    """A check the gate may run: the fingerprint of its inputs, and the check itself"""
+
+    fingerprint: str
+    run: Callable[[], list[Entry]]
+
+
+Planner = Callable[[tuple[str, ...]], Planned]  # the list -> its fingerprint and check
+
+
+@dataclass(frozen=True, slots=True)
+class Verified:
+    """verify.json: the last check's fingerprint, its time, and its entries, and the
+    fingerprint a failing result last sent its notification for (None: none sent)"""
+
+    fingerprint: str
+    at: dt.datetime
+    entries: tuple[Entry, ...]
+    notified: str | None = None
+
+    @property
+    def failing(self) -> tuple[Entry, ...]:
+        return tuple(e for e in self.entries if e.result is not Result.OK)
+
+    def due(self, current: str, now: dt.datetime, retry: dt.timedelta) -> bool:
+        """Whether a tick checks again: another fingerprint, current, or a failing result retry
+        old, since installing a program into a folder already on PATH changes no input"""
+        return current != self.fingerprint or (bool(self.failing) and now - self.at >= retry)
+
+    def owes(self, notify: bool) -> bool:
+        """Whether a failing result still owes its one notification for its fingerprint"""
+        return notify and bool(self.failing) and self.notified != self.fingerprint
+
+    def line(self) -> str:
+        """The tick's `; verify: ...` suffix, without its `; verify: `"""
+        failing = self.failing
+        if not failing:
+            return f"{len(self.entries)} commands pass"
+        first = failing[0]
+        return f"{len(failing)} of {len(self.entries)} commands fail: {first.command} ({first.result})"
+
+    def message(self) -> str:
+        """The desktop notification's body: the count and the first failing command"""
+        first = self.failing[0]
+        return (
+            f"{len(self.failing)} of {len(self.entries)} [agents] verify commands fail from a headless"
+            f" session: {first.command} ({first.result}); shipmill doctor names the fix"
+        )
+
+    def record(self) -> dict[str, object]:
+        return {
+            "fingerprint": self.fingerprint,
+            "at": self.at.isoformat(),
+            "entries": [{"command": e.command, "result": str(e.result), "detail": e.detail} for e in self.entries],
+            "notified": self.notified,
+        }
+
+    def save(self, path: Path) -> None:
+        write(path, self.record())
+
+    @classmethod
+    def load(cls, path: Path) -> Verified | None:
+        """verify.json; None when there is none. Anything but exactly its record fails, naming
+        the file and its fix, as the gate's other state files do"""
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or set(data) != {"fingerprint", "at", "entries", "notified"}:
+                raise ValueError("expected exactly fingerprint, at, entries, and notified")
+            fp, at, entries, notified = data["fingerprint"], data["at"], data["entries"], data["notified"]
+            if not isinstance(fp, str) or not isinstance(at, str) or not isinstance(entries, list):
+                raise ValueError("fingerprint and at must be strings, entries a list")
+            if notified is not None and not isinstance(notified, str):
+                raise ValueError("notified must be a fingerprint or null")
+            moment = dt.datetime.fromisoformat(at)
+            if moment.tzinfo is None:
+                raise ValueError("at has no time zone")
+            return cls(fp, moment, tuple(_entry(e) for e in entries), notified)
+        except ValueError as exc:  # json.JSONDecodeError is one
+            raise malformed(path, exc) from None
+
+
+def _entry(value: object) -> Entry:
+    if not isinstance(value, dict) or set(value) != {"command", "result", "detail"}:
+        raise ValueError("an entry must be exactly command, result, and detail")
+    command, result, detail = value["command"], value["result"], value["detail"]
+    if not isinstance(command, str) or not isinstance(result, str) or not isinstance(detail, str):
+        raise ValueError("an entry's command, result, and detail must be strings")
+    return Entry(command, Result(result), detail)
+
+
+def plugin_root(checkout: Path, run: Git, home: Path) -> tuple[Path, str]:
+    """The folder and version of the shipmill@shipmill install a session in the checkout loads,
+    whose delivery hook step 2 runs, as the hook self-test finds it (spec 026)"""
+    common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], checkout)
+    installs = listed_installs(run(["claude", "plugin", "list", "--json"], checkout))
+    install = effective(installs, session_project(checkout, common))
+    if install is None:
+        raise ReleaseError(f"no {PLUGIN} install applies to {checkout}, so no delivery hook can judge the commands")
+    return install.files(home), str(install.version)
+
+
+def plan(
+    commands: tuple[str, ...],
+    checkout: Path,
+    session: Headless,
+    default: Callable[[], str],
+    show: Callable[[str, str], str | None],
+    plugin: Callable[[], tuple[Path, str]],
+    git: Git,
+) -> Planned:
+    """The gate's check of the list: its fingerprint, read from the user's settings, the
+    project's at origin/<default>, which the check's worktree holds, and the checkout's local
+    ones; and the check, with the hook of the plugin install a session loads"""
+    branch = default()
+    project, local = SETTINGS
+    user = session.home / ".claude" / "settings.json"
+    texts = (
+        user.read_text(encoding="utf-8") if user.is_file() else None,
+        show(f"origin/{branch}", project.as_posix()),
+        (checkout / local).read_text(encoding="utf-8") if (checkout / local).is_file() else None,
+    )
+    root, version = plugin()
+    shell = shutil.which("sh", path=session.env.get("PATH", "")) or "/bin/sh"
+    found = fingerprint(commands, session, texts, version)
+    return Planned(found, lambda: check(commands, checkout, branch, session, DeliveryHook(root, shell), git))
