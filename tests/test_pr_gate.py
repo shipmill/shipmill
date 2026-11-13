@@ -4,6 +4,7 @@ Protected areas from the default branch (spec 024), end to end with a stand-in g
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -170,12 +171,14 @@ def pr(
     added: tuple[str, ...] = (),
     commits: tuple[str, ...] = ("Change the app",),
     title: str = "Change the app",
+    labels: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """listed caps the files the files API returns (GitHub's stops at 3000); renamed maps a
     file's new path to its old one; the files API reads added's files `added`, the others
     `modified` (or `renamed`); commits are the PR's commit messages, each on its own commit"""
     return {
         "title": title,
+        "labels": [{"name": label} for label in labels],
         "commits": [
             {"oid": f"abc{i}234fff", "messageHeadline": m.split("\n", 1)[0], "messageBody": m.partition("\n")[2]}
             for i, m in enumerate(commits, start=1)
@@ -2063,3 +2066,247 @@ def test_s055_10_a_spec_prs_other_files_are_still_compared_byte_for_byte(tmp_pat
     proc = protected(tmp_path, agents, data, thread(asked(), comment("1", at(12))), issues=ISSUES)
     assert proc.returncode == 5, proc.stdout + proc.stderr
     assert proc.stdout.splitlines()[-1] == f"  needs-decision: answered at {answered[:7]}, and the change differs since"
+
+
+# Spec 056: the land window holds a green pull request of a held class as QUEUED
+
+WINDOW_CONFIG = """\
+[land.window]
+timezone = "Asia/Nicosia"
+labels = ["rollout:normal", "rollout:high"]
+bypass_labels = ["revert"]
+"""
+FAKE_WINDOW_UVX = """#!{python}
+import json, os, sys
+here = os.path.dirname(os.path.abspath(sys.argv[0]))
+with open(os.path.join(here, "uvx-calls"), "a") as calls:
+    calls.write(json.dumps(sys.argv[1:]) + "\\n")
+path = os.path.join(here, "window.json")
+if "window" not in sys.argv[1:] or not os.path.exists(path):
+    sys.exit("error: .github/shipmill.toml [land.window]: timezone 'Nowhere/Here' is not a known time zone")
+print(open(path).read())
+"""
+CLOSED = {
+    "open": False,
+    "opens": "2026-11-16T10:00:00+02:00",
+    "closes": None,
+    "next_merge": "2000-01-01T22:00:00+02:00",
+}
+OPEN = {"open": True, "opens": None, "closes": "2026-11-16T18:00:00+02:00", "next_merge": "2000-01-01T11:00:00+02:00"}
+SPACED = {**OPEN, "next_merge": "2099-01-01T11:30:00+02:00"}  # later than any now the test runs at
+HELD = ("rollout:high", "docs")
+
+
+def window_as(tmp_path: Path, state: dict[str, Any] | None) -> Path:
+    """A uvx on the gate's PATH whose `shipmill window --json` prints state (None: it fails, as
+    for a malformed [land.window]); its calls are recorded"""
+    fakes = tmp_path / "fakes"
+    fakes.mkdir(exist_ok=True)
+    uvx = fakes / "uvx"
+    uvx.write_text(FAKE_WINDOW_UVX.format(python=sys.executable), encoding="utf-8")
+    uvx.chmod(0o700)
+    if state is not None:
+        record = {
+            "configured": True,
+            "timezone": "Asia/Nicosia",
+            "labels": ["rollout:normal", "rollout:high"],
+            "bypass_labels": ["revert"],
+            "queued_label": "land-queued",
+            "spacing_minutes": 30,
+            "last_held_merge": None,
+            **state,
+        }
+        (fakes / "window.json").write_text(json.dumps(record), encoding="utf-8")
+    return fakes / "uvx-calls"
+
+
+@pytest.fixture
+def windowed(tmp_path: Path) -> Path:
+    return checkout(tmp_path, {".github/shipmill.toml": WINDOW_CONFIG})
+
+
+def held(**kw: Any) -> dict[str, Any]:
+    """A person's green PR carrying a held label and one that holds nothing"""
+    kw.setdefault("labels", HELD)
+    return pr(body="Fixes #7", login="amy", **kw)
+
+
+def label_reads(tmp_path: Path) -> list[list[str]]:
+    return [c["args"] for c in gh_calls(tmp_path) if c["args"][-2:] == ["--json", "labels"]]
+
+
+QUEUED_LINE = MAIN_READY.replace("READY", "QUEUED").rstrip("\n")
+
+
+def test_s056_4_a_held_pr_reads_queued_while_the_window_is_closed(tmp_path: Path, windowed: Path) -> None:
+    record = window_as(tmp_path, CLOSED)
+    proc = run_gate(tmp_path, windowed, {7: held()})
+    assert proc.returncode == gate.QUEUED == 10, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == [
+        QUEUED_LINE,
+        "  queued: held by the land window (rollout:high); opens 2026-11-16 10:00 Asia/Nicosia",
+    ]
+    cli = ["--repo", str(windowed), "window", "--json", "--ref", "origin/main"]
+    assert uvx_calls(record) == [[f"shipmill=={PLUGIN_VERSION}", *cli]]  # run as decide classify is
+    assert label_reads(tmp_path) == [["pr", "view", "7", "--json", "labels"]]
+
+
+def test_s056_4_the_window_is_read_once_per_base_and_pass(tmp_path: Path, windowed: Path) -> None:
+    record = window_as(tmp_path, CLOSED)
+    proc = run_gate(tmp_path, windowed, {7: held(), 8: held(labels=("rollout:normal",))})
+    assert proc.returncode == 10, proc.stdout + proc.stderr
+    assert "  queued: held by the land window (rollout:normal); opens 2026-11-16 10:00 Asia/Nicosia" in proc.stdout
+    assert len(uvx_calls(record)) == 1
+
+
+def test_s056_5_a_held_pr_reads_queued_while_the_spacing_holds_it(tmp_path: Path, windowed: Path) -> None:
+    window_as(tmp_path, SPACED)
+    proc = run_gate(tmp_path, windowed, {7: held()})
+    assert proc.returncode == 10, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == [QUEUED_LINE, "  queued: spacing: the next held merge after 11:30 Asia/Nicosia"]
+
+
+def test_s056_5_a_held_pr_reads_ready_once_the_spacing_passed(tmp_path: Path, windowed: Path) -> None:
+    window_as(tmp_path, OPEN)
+    proc = run_gate(tmp_path, windowed, {7: held()})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+
+
+def test_s056_5_the_spacing_is_read_against_the_given_now() -> None:
+    shown = {"configured": True, "timezone": "Asia/Nicosia", "labels": ["h"], "bypass_labels": []}
+    window = gate.parse_window(json.dumps({**shown, **OPEN, "next_merge": "2026-11-16T11:30:00+02:00"}), "origin/main")
+    assert window is not None
+    before = gate.datetime(2026, 11, 16, 9, 29, tzinfo=gate.timezone.utc)
+    assert window.queued(("h",), before) == ("spacing: the next held merge after 11:30 Asia/Nicosia",)
+    assert window.queued(("h",), before.replace(minute=30)) == ()  # next_merge is now: no longer later
+    assert window.queued(("other",), before) == ()
+
+
+@pytest.mark.parametrize("labels", [(), ("docs",), ("rollout:high", "revert")])
+@pytest.mark.parametrize("state", [CLOSED, SPACED])
+def test_s056_6_a_pr_with_no_held_label_or_a_bypass_label_reads_ready(
+    tmp_path: Path, windowed: Path, labels: tuple[str, ...], state: dict[str, Any]
+) -> None:
+    window_as(tmp_path, state)
+    proc = run_gate(tmp_path, windowed, {7: held(labels=labels)})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+
+
+def test_s056_6_a_base_without_land_window_reads_neither_window_nor_labels(tmp_path: Path) -> None:
+    work = checkout(tmp_path, {".github/shipmill.toml": "[lanes.stable]\n"})
+    record = window_as(tmp_path, CLOSED)
+    proc = run_gate(tmp_path, work, {7: held()})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert uvx_calls(record) == [] and label_reads(tmp_path) == []
+
+
+def test_s056_4_python_310_finds_every_form_of_land_window() -> None:
+    """Without tomllib, a dotted or inline [land.window] still runs `shipmill window`, never lets a held PR through"""
+    uv = shutil.which("uv")
+    assert uv is not None
+    configs = [
+        '[land.window]\ntimezone = "UTC"\n',
+        '[land]\nwindow.timezone = "UTC"\n',
+        'land.window.timezone = "UTC"\n',
+        'land = { window = { timezone = "UTC" } }\n',
+        '[lanes.stable]\nwindow = "x"\n',
+    ]
+    code = (
+        "import importlib.util, json, sys\n"
+        "spec = importlib.util.spec_from_file_location('pr_gate', sys.argv[1])\n"
+        "pg = importlib.util.module_from_spec(spec); sys.modules['pr_gate'] = pg; spec.loader.exec_module(pg)\n"
+        "assert pg.watch_state().tomllib is None, 'tomllib on 3.10'\n"
+        "print([pg.has_land_window(t, 'cfg') for t in json.loads(sys.argv[2])])\n"
+    )
+    command = [uv, "run", "--no-project", "--python", "3.10", "python", "-c", code, str(SCRIPT), json.dumps(configs)]
+    done = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "[True, True, True, True, False]"
+
+
+def test_s056_6_a_pr_into_another_branch_is_not_held(tmp_path: Path, windowed: Path) -> None:
+    """one window per repo, for pull requests into the default branch"""
+    record = window_as(tmp_path, CLOSED)
+    proc = run_gate(tmp_path, windowed, {7: {**held(), "baseRefName": "release"}})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert uvx_calls(record) == [] and label_reads(tmp_path) == []
+
+
+def red(**kw: Any) -> dict[str, Any]:
+    data = held(**kw)
+    data["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    return data
+
+
+def running(**kw: Any) -> dict[str, Any]:
+    data = held(**kw)
+    data["statusCheckRollup"] = [{"name": "test", "status": "IN_PROGRESS", "conclusion": None}]
+    return data
+
+
+@pytest.mark.parametrize(("data", "code"), [(red(), 1), (running(), 3)])
+def test_s056_6_a_held_red_or_pending_pr_keeps_its_verdict(
+    tmp_path: Path, windowed: Path, data: dict[str, Any], code: int
+) -> None:
+    window_as(tmp_path, CLOSED)
+    proc = run_gate(tmp_path, windowed, {7: data})
+    assert proc.returncode == code, proc.stdout + proc.stderr
+    assert "queued:" not in proc.stdout and label_reads(tmp_path) == []
+
+
+def test_s056_6_a_held_pr_refused_or_waiting_on_a_decision_keeps_its_verdict(tmp_path: Path) -> None:
+    files = {"docs/product.md": DIRECTION, "REVIEW.md": REVIEW, ".github/shipmill.toml": WINDOW_CONFIG}
+    work = checkout(tmp_path, files)
+    window_as(tmp_path, CLOSED)
+    refused = run_gate(tmp_path, work, {7: pr(body="none", labels=HELD)}, "--bot-login", BOT)
+    assert refused.returncode == 6, refused.stdout + refused.stderr
+    asking = run_gate(tmp_path, work, {7: pr(files=("src/land.py",), labels=HELD)}, "--bot-login", BOT)
+    assert asking.returncode == 5, asking.stdout + asking.stderr
+    assert "queued:" not in refused.stdout + asking.stdout
+
+
+def test_s056_6_queued_ranks_between_pending_and_blocked(tmp_path: Path, windowed: Path) -> None:
+    window_as(tmp_path, CLOSED)
+    assert run_gate(tmp_path, windowed, {7: running(), 8: held()}).returncode == 10
+    conflicting = held()
+    conflicting["mergeable"] = "CONFLICTING"
+    assert run_gate(tmp_path, windowed, {7: conflicting, 8: held()}).returncode == 4
+
+
+def test_s056_6_wait_doesnt_poll_on_queued() -> None:
+    queued = judged(PASSED, queued=("held by the land window (rollout:high); opens 2026-11-16 10:00 Asia/Nicosia",))
+    assert queued.verdict == gate.QUEUED
+    assert not gate.polls([queued])
+    assert not gate.polls([queued, judged(RUNNING)])  # the worst verdict decides, as for any other
+
+
+@pytest.mark.parametrize("data", [held(), red(), held(labels=())])
+def test_s056_7_a_failing_shipmill_window_exits_2(tmp_path: Path, windowed: Path, data: dict[str, Any]) -> None:
+    window_as(tmp_path, None)
+    proc = run_gate(tmp_path, windowed, {7: data})
+    assert (proc.returncode, proc.stdout) == (2, ""), proc.stdout + proc.stderr
+    assert "--ref origin/main` failed: error: .github/shipmill.toml [land.window]: timezone" in proc.stderr
+    assert "every PR into origin/main waits until it reads" in proc.stderr
+
+
+GIVEN = {"configured": True, "timezone": "UTC", "bypass_labels": []}
+
+
+@pytest.mark.parametrize(
+    ("text", "error"),
+    [
+        ("not json", "printed no JSON"),
+        ("{}", "no configured flag"),
+        (json.dumps({**GIVEN, "labels": ["h"]}), "no open flag"),
+        (json.dumps({**GIVEN, **CLOSED, "labels": "h"}), "labels 'h', not a list of labels"),
+        (json.dumps({**GIVEN, **CLOSED, "labels": [], "next_merge": "soon"}), "next_merge 'soon', not a time"),
+        (json.dumps({**GIVEN, **CLOSED, "labels": [], "next_merge": None}), "next_merge None, not a time"),
+    ],
+)
+def test_s056_7_a_window_the_gate_cant_read_stops_it(text: str, error: str) -> None:
+    with pytest.raises(gate.GateError, match=re.escape(error)):
+        gate.parse_window(text, "origin/main")
+
+
+def test_s056_7_configured_false_holds_nothing() -> None:
+    assert gate.parse_window('{"configured": false}', "origin/main") is None

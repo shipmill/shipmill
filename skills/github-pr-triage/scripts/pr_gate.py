@@ -100,21 +100,34 @@ when the title's or a commit's keyword names an issue its body lists as `Part of
 instead` when one names an open issue of the repo whose body has a `## Check` section. The issues
 are read in one GraphQL query, only when a keyword names one, or a commit names owner/repo#N or a URL.
 
+The land window (spec 056): when the base's .github/shipmill.toml has [land.window], the gate
+reads it with `shipmill --repo <checkout> window --json --ref <the base>`, run as `decide
+classify` is, once per base branch and pass for every open PR there, and the labels of a PR
+that would read READY with one `gh pr view N --json labels`; a PR into another branch than
+the one the config was read from is not held (one window per repo, for PRs into the default
+branch). A PR carrying one of its `labels` and none
+of its `bypass_labels` that would otherwise read READY reads QUEUED: while the window is closed,
+`  queued: held by the land window (<its held labels>); opens <YYYY-MM-DD HH:MM> <timezone>`,
+and while it is open and `next_merge` is later than now, `  queued: spacing: the next held merge
+after <HH:MM> <timezone>`. A red, pending, conflicting, refused, or held-for-a-decision PR keeps
+that verdict: QUEUED only takes READY's place.
+
 Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base's (D-75),
 or gh failed; 3 a check is still pending (or --wait timed out); 4 a PR is not open or
 conflicts; 5 a PR needs the maintainer's decision; 6 an agent's PR is refused for its plan, a
 spec PR names no open feature issue, or a PR's closing keyword names a Part of issue or an open
 one with a ## Check (D-76); 7 a PR only the maintainer
-merges, by hand (a `never` zone); 8 a draft PR (D-67); 2 bad arguments,
+merges, by hand (a `never` zone); 8 a draft PR (D-67); 10 a held PR waits for the land window
+or its spacing (spec 056); 2 bad arguments,
 a base branch the checkout lacks, a git failure, a REVIEW.md, docs/product.md, or config the
-gate can't read, or a `shipmill decide classify` that fails or prints what the gate can't
-read. With several PRs the exit code is
-the worst verdict's, ranked 0, 1, 3, 4, 8, 5, 7, 6.
+gate can't read, or a `shipmill decide classify` or `shipmill window` that fails or prints what
+the gate can't read. With several PRs the exit code is
+the worst verdict's, ranked 0, 1, 3, 10, 4, 8, 5, 7, 6.
 
 --wait polls while the worst verdict is PENDING, or is NEEDS_DECISION and a NEEDS_DECISION PR has
 a check still pending on its own head (#1028): the question waits until its CI finished, and the
 exit code and its ranking stay as above. The base's checks are never pending (D-75), a PR with no
-checks has none pending, and every other verdict stops the wait.
+checks has none pending, and every other verdict, QUEUED too, stops the wait.
 """
 
 from __future__ import annotations
@@ -137,10 +150,12 @@ from types import ModuleType
 
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 READY, FAILED, PENDING, BLOCKED, NEEDS_DECISION, REFUSED, MAINTAINER_ONLY, DRAFT = 0, 1, 3, 4, 5, 6, 7, 8
+QUEUED = 10  # a held PR outside the land window or inside its spacing (spec 056)
 LABELS = {
     READY: "READY",
     FAILED: "FAILED",
     PENDING: "PENDING",
+    QUEUED: "QUEUED",
     BLOCKED: "BLOCKED",
     NEEDS_DECISION: "NEEDS_DECISION",
     REFUSED: "REFUSED",
@@ -148,8 +163,9 @@ LABELS = {
     DRAFT: "DRAFT",
 }
 # the worst verdict last: MAINTAINER_ONLY ranks above NEEDS_DECISION and below REFUSED (spec 030); DRAFT
-# ranks above BLOCKED and below the verdicts that ask something of the maintainer (D-52, kept by D-67)
-RANK = (READY, FAILED, PENDING, BLOCKED, DRAFT, NEEDS_DECISION, MAINTAINER_ONLY, REFUSED)
+# ranks above BLOCKED and below the verdicts that ask something of the maintainer (D-52, kept by D-67);
+# QUEUED ranks between PENDING and BLOCKED (spec 056)
+RANK = (READY, FAILED, PENDING, QUEUED, BLOCKED, DRAFT, NEEDS_DECISION, MAINTAINER_ONLY, REFUSED)
 
 # github-ship-watch's watch_state.py: one reading of the config's [agents] and of the plugin's
 # pinned CLI for every skill script
@@ -237,6 +253,7 @@ class Gate:
     own: bool = False  # a draft the --bot-login authored: a gate session marks it ready (D-67, #914)
     base_red: tuple[str, ...] = ()  # the base head's failed checks no Repairs: line names (D-75)
     base_repairs: tuple[str, ...] = ()  # the ones a Repairs: line names, for the reviewer to check
+    queued: tuple[str, ...] = ()  # why a held PR waits for the land window or its spacing (spec 056)
 
     @property
     def verdict(self) -> int:
@@ -256,6 +273,8 @@ class Gate:
             return FAILED
         if not self.checks or any(not c.done for c in self.checks) or self.mergeable != "MERGEABLE":
             return PENDING
+        if self.queued:  # QUEUED only takes READY's place (spec 056)
+            return QUEUED
         return READY
 
 
@@ -286,6 +305,7 @@ class Base:
     # the users [agents.roles] maintainer lists, lowercased; none: a login with admin on the repo is
     # the maintainer (a relayed answer counts only when it names one, spec 055)
     maintainers: frozenset[str] = frozenset()
+    window: bool = False  # the config has [land.window]: `shipmill window` reads it (spec 056)
 
     def protected(self, files: tuple[str, ...]) -> list[Protected]:
         wanted = {REVIEW}
@@ -607,7 +627,29 @@ def read_base(checkout: str, ref: str) -> Base:
     config = read(CONFIG)
     where = f"{CONFIG} at {ref}"
     agents = config is not None and has_agents(config, where)
-    return Base(ids, reviews, agents, ref, frozenset() if config is None else maintainer_users(config, where))
+    maintainers = frozenset() if config is None else maintainer_users(config, where)
+    window = config is not None and has_land_window(config, where)
+    return Base(ids, reviews, agents, ref, maintainers, window)
+
+
+def has_land_window(text: str, where: str) -> bool:
+    """Whether the config has [land.window] (spec 056); `shipmill window` checks the section
+    itself. On Python 3.10, without tomllib, a [land.window] header, a window key or dotted key
+    under [land], or a land key or dotted key at the top counts: a form it can't read runs
+    `shipmill window`, which reads it, rather than letting a held PR through"""
+    ws = watch_state()
+    if ws.tomllib is None:
+        tables = ws.toml_tables(text)
+        under = re.search(r"^\s*[\"']?window[\"']?\s*[.=]", tables.get("land", ""), re.MULTILINE)
+        top = re.search(r"^\s*[\"']?land[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE)
+        headers = any(n == "land.window" or n.startswith("land.window.") for n in tables)
+        return headers or under is not None or top is not None
+    try:
+        raw = ws.tomllib.loads(text)
+    except ws.tomllib.TOMLDecodeError as exc:
+        raise GateError(f"{where}: {exc}") from None
+    land = raw.get("land")
+    return isinstance(land, dict) and "window" in land
 
 
 def maintainer_users(text: str, where: str) -> frozenset[str]:
@@ -752,6 +794,127 @@ class Classifier:
             f"{cli[-1]} is the release the plugin pins: if PyPI doesn't serve it yet, wait for its publish, "
             "or pass --tool <path or URL> to run another shipmill"
         )
+
+
+@dataclass(frozen=True)
+class Window:
+    """What the gate reads of `shipmill window --json` (spec 056)"""
+
+    timezone: str
+    open: bool
+    opens: datetime | None  # when closed: the next opening, in the window's zone
+    labels: tuple[str, ...]
+    bypass_labels: tuple[str, ...]
+    next_merge: datetime  # when the spacing allows the next held merge, in the window's zone
+
+    def held(self, labels: Iterable[str]) -> tuple[str, ...]:
+        """The PR's held labels: those of `labels` it carries, none when it carries a bypass label"""
+        carried = set(labels)
+        if carried & set(self.bypass_labels):
+            return ()
+        return tuple(label for label in self.labels if label in carried)
+
+    def queued(self, labels: Iterable[str], now: datetime) -> tuple[str, ...]:
+        """The queued: line of a held PR that would otherwise read READY, at now; none when the
+        PR isn't held or the window and its spacing let it through"""
+        held = self.held(labels)
+        if not held:
+            return ()
+        if not self.open:
+            opens = "doesn't open within a week" if self.opens is None else f"opens {self.opens:%Y-%m-%d %H:%M}"
+            return (f"held by the land window ({', '.join(held)}); {opens} {self.timezone}",)
+        if self.next_merge > now:
+            return (f"spacing: the next held merge after {self.next_merge:%H:%M} {self.timezone}",)
+        return ()
+
+
+class Windows:
+    """`shipmill --repo <checkout> window --json --ref <base>`, run as `decide classify` is, once
+    per base ref and pass (spec 056); a run that fails or prints what the gate can't read stops
+    the gate, so a malformed [land.window] holds every merge rather than letting a held one through"""
+
+    def __init__(self, checkout: str, tool: str | None) -> None:
+        self.checkout = checkout
+        self.tool = tool
+        self.found: dict[str, Window | None] = {}
+
+    def window(self, ref: str) -> Window | None:
+        if ref not in self.found:
+            self.found[ref] = self.run(ref)
+        return self.found[ref]
+
+    def run(self, ref: str) -> Window | None:
+        ws = watch_state()
+        try:
+            cli: list[str] = ws.shipmill_cli(self.tool)
+        except ws.Refused as refused:
+            raise GateError(str(refused).removeprefix("error: ")) from None
+        cmd = [*cli, "--repo", self.checkout, "window", "--json", "--ref", ref]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        except FileNotFoundError:
+            raise GateError(
+                f"{cmd[0]} is not on PATH: the gate reads the land window with `shipmill window`; install uv, "
+                "https://docs.astral.sh/uv/"
+            ) from None
+        if proc.returncode != 0:
+            why = proc.stderr.strip() or proc.stdout.strip()
+            raise GateError(f"`{' '.join(cmd)}` failed: {why}; every PR into {ref} waits until it reads")
+        return parse_window(proc.stdout, ref)
+
+
+def parse_window(text: str, ref: str) -> Window | None:
+    """`shipmill window --json`'s object; None for `configured: false`, and anything the gate can't
+    read stops it"""
+    what = f"`shipmill window --json --ref {ref}`"
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise GateError(f"{what} printed no JSON: {exc}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("configured"), bool):
+        raise GateError(f"{what} printed no configured flag")
+    if not data["configured"]:
+        return None
+
+    def strings(key: str) -> tuple[str, ...]:
+        found = data.get(key)
+        if not isinstance(found, list) or not all(isinstance(s, str) for s in found):
+            raise GateError(f"{what} printed {key} {found!r}, not a list of labels")
+        return tuple(found)
+
+    def when(key: str, missing: bool) -> datetime | None:
+        found = data.get(key)
+        if found is None and missing:
+            return None
+        if not isinstance(found, str):
+            raise GateError(f"{what} printed {key} {found!r}, not a time")
+        try:
+            moment = datetime.fromisoformat(found)
+        except ValueError:
+            raise GateError(f"{what} printed {key} {found!r}, not a time") from None
+        if moment.tzinfo is None:
+            raise GateError(f"{what} printed {key} {found!r}, a time without a zone")
+        return moment
+
+    if not isinstance(data.get("open"), bool) or not isinstance(data.get("timezone"), str):
+        raise GateError(f"{what} printed no open flag or timezone")
+    next_merge = when("next_merge", False)
+    assert next_merge is not None  # when() refuses a missing one
+    return Window(
+        data["timezone"], data["open"], when("opens", True), strings("labels"), strings("bypass_labels"), next_merge
+    )
+
+
+def labels_of(number: int, repo: str | None) -> tuple[str, ...]:
+    """The PR's labels, read only on a base with [land.window] (spec 056)"""
+    cmd = ["gh", "pr", "view", str(number), "--json", "labels"]
+    if repo:
+        cmd += ["-R", repo]
+    data = json.loads(gh(cmd, number))
+    found = data.get("labels") if isinstance(data, dict) else None
+    if not isinstance(found, list) or not all(isinstance(e, dict) and isinstance(e.get("name"), str) for e in found):
+        raise GateError(f"gh pr view {number} --json labels printed no labels list: {str(data)[:200]}")
+    return tuple(e["name"] for e in found)
 
 
 def parse_zones(text: str, number: int) -> tuple[Zone, ...]:
@@ -1366,6 +1529,8 @@ def render(gate: Gate) -> str:
     lines += [f"  maintainer-only: {reason}" for reason in gate.never]
     lines += [f"  needs-decision: {reason}" for reason in gate.asks]
     lines += [f"  notify: {reason}" for reason in gate.notices]
+    if gate.verdict == QUEUED:
+        lines += [f"  queued: {reason}" for reason in gate.queued]
     if gate.verdict == DRAFT and gate.own:
         lines.append(
             "  draft: the App's own, no session owns it: once nothing it waits on is open, mark it ready"
@@ -1433,6 +1598,7 @@ def main() -> int:
         while True:
             gates = []
             heads: dict[str, tuple[str, list[dict]]] = {}  # each base branch's head, read once a pass (D-75)
+            windows = Windows(bases.checkout, args.tool)  # each base's land window, read once a pass (spec 056)
             for number in args.prs:
                 data = fetch(number, args.repo)
                 base = bases.base(str(data["baseRefName"]))
@@ -1469,6 +1635,12 @@ def main() -> int:
                         heads[branch] = base_head(branch, number, args.repo)
                     red, repairs = base_failures(branch, *heads[branch], str(data.get("body") or ""))
                     judged = replace(judged, base_red=red, base_repairs=repairs)
+                    # one window per repo, for PRs into the branch its config was read from (spec 056)
+                    if base.window and base.ref == f"origin/{branch}":
+                        window = windows.window(base.ref)  # read for every PR there: a failure stops them all
+                        if window is not None and judged.verdict == READY:
+                            now = datetime.now(timezone.utc)  # noqa: UP017 (3.10)
+                            judged = replace(judged, queued=window.queued(labels_of(number, args.repo), now))
                 gates.append(judged)
             worst = max((g.verdict for g in gates), key=RANK.index)
             if not args.wait or not polls(gates) or time.monotonic() >= deadline:
