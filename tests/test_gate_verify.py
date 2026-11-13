@@ -159,6 +159,28 @@ def test_s064_6_a_check_that_errors_still_starts_the_session_and_writes_nothing(
     assert not verify_json(checkout).exists()  # so the next launch checks again
 
 
+@pytest.mark.parametrize("which", ["user", "project", "local"])
+def test_s064_6_a_settings_file_that_isnt_utf8_is_a_check_error(tmp_path: Path, which: str) -> None:
+    """The plan reads the settings files the check reads; one that isn't UTF-8 is a shipmill
+    error, as the check's permissions read makes it, so the tick reads `couldn't check` and
+    still starts the session instead of failing with a traceback"""
+    home, checkout = tmp_path / "home", tmp_path / "demo"
+    (home / ".claude").mkdir(parents=True)
+    (checkout / ".claude").mkdir(parents=True)
+    bad = b'{"permissions": {"allow": ["Bash(caf\xe9:*)"]}}'
+    if which == "user":
+        (home / ".claude" / "settings.json").write_bytes(bad)
+    if which == "local":
+        (checkout / ".claude" / "settings.local.json").write_bytes(bad)
+
+    def show(rev: str, path: str) -> str | None:
+        return bad.decode() if which == "project" else None
+
+    session = Headless.of([], {"PATH": "/usr/bin"}, home)
+    with pytest.raises(ReleaseError, match="UTF-8"):
+        plan(COMMANDS, checkout, session, lambda: "main", show, lambda: (tmp_path, "0.128.4"), no_git)
+
+
 def test_s064_6_a_malformed_verify_json_fails_the_tick_before_any_session(checkout: Git) -> None:
     verify_json(checkout).parent.mkdir(parents=True, exist_ok=True)
     verify_json(checkout).write_text('{"fingerprint": "x"}\n', encoding="utf-8")

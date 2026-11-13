@@ -723,6 +723,19 @@ def plugin_root(checkout: Path, run: Git, home: Path) -> tuple[Path, str]:
     return install.files(home), str(install.version)
 
 
+def _read(path: Path) -> str | None:
+    return path.read_text(encoding="utf-8") if path.is_file() else None
+
+
+def _settings_text(name: str, read: Callable[[], str | None]) -> str | None:
+    """A settings file's text for the fingerprint; one that isn't UTF-8 is a shipmill error, as
+    permissions makes it, so the tick reads `couldn't check` and still starts the session"""
+    try:
+        return read()
+    except UnicodeDecodeError as exc:
+        raise ReleaseError(f"{name} is not UTF-8 ({exc}), so its permissions can't be read") from None
+
+
 def plan(
     commands: tuple[str, ...],
     checkout: Path,
@@ -739,9 +752,9 @@ def plan(
     project, local = SETTINGS
     user = session.home / ".claude" / "settings.json"
     texts = (
-        user.read_text(encoding="utf-8") if user.is_file() else None,
-        show(f"origin/{branch}", project.as_posix()),
-        (checkout / local).read_text(encoding="utf-8") if (checkout / local).is_file() else None,
+        _settings_text(str(user), lambda: _read(user)),
+        _settings_text(f"origin/{branch}:{project}", lambda: show(f"origin/{branch}", project.as_posix())),
+        _settings_text(str(checkout / local), lambda: _read(checkout / local)),
     )
     root, version = plugin()
     shell = shutil.which("sh", path=session.env.get("PATH", "")) or "/bin/sh"
