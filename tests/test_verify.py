@@ -321,6 +321,13 @@ def test_substitutions_are_found_outside_single_quotes_nested_too() -> None:
             substitutions(unbalanced)
 
 
+def test_a_double_parenthesis_the_shell_runs_as_a_command_is_a_substitution() -> None:
+    # `$((` is arithmetic only when its inner `(` closes right before the last `)`; else the
+    # shell runs it as a command substitution of a subshell
+    assert substitutions("echo $((git push) && (make a))") == ["(git push) && (make a)"]
+    assert substitutions("echo $(( (1 + 2) * 3 )) $((1 + $(wc -l < f)))") == ["wc -l < f"]
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -328,8 +335,11 @@ def test_substitutions_are_found_outside_single_quotes_nested_too() -> None:
         "echo `git push --dry-run origin HEAD`",
         'echo "$(git push --dry-run origin HEAD)"',
         "echo $(echo $(git push --dry-run origin HEAD))",
+        "echo <(git push --dry-run origin HEAD)",
+        "echo >(git push --dry-run origin HEAD)",
+        "echo $((git push --dry-run origin HEAD) && (echo))",
     ],
-    ids=["dollar", "backtick", "double-quoted", "nested"],
+    ids=["dollar", "backtick", "double-quoted", "nested", "process-in", "process-out", "subshell"],
 )
 def test_a_denied_command_inside_a_substitution_is_denied_and_not_run(
     checkout: Repo, tmp_path: Path, command: str

@@ -163,8 +163,10 @@ def _paren_end(command: str, i: int) -> int:
 
 def substitutions(command: str) -> list[str]:
     """The commands of the `$(...)` and backtick substitutions in a command line, outermost
-    first, inside double quotes too and never inside single quotes; an arithmetic `$((...))`
-    gives the substitutions it holds. ValueError when a quote or a substitution isn't closed"""
+    first, inside double quotes too and never inside single quotes; an arithmetic `$((...))`,
+    one whose inner `(` closes right before its last `)`, gives the substitutions it holds, while
+    another `$((` is a subshell the shell runs, so a substitution. ValueError when a quote or a
+    substitution isn't closed"""
     found: list[str] = []
     i, quoted = 0, False
     while i < len(command):
@@ -178,7 +180,7 @@ def substitutions(command: str) -> list[str]:
         if command.startswith("$(", i):
             end = _paren_end(command, i + 2)
             body = command[i + 2 : end]
-            if body.startswith("(") and body.endswith(")"):
+            if body.startswith("(") and _paren_end(body, 1) == len(body) - 1:  # else a subshell
                 found += substitutions(body[1:-1])
             else:
                 found.append(body)
