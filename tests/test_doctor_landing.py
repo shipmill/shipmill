@@ -224,6 +224,12 @@ def test_s054_13_classic_protection_reports_its_refusing_parts(repo: Repo) -> No
     )
 
 
+def test_s054_10_classic_protection_with_no_refusing_part_passes_as_no_rule(repo: Repo) -> None:
+    body = {"allow_deletions": {"enabled": False}, "allow_force_pushes": {"enabled": False}}
+    [main, _] = landing(repo, FakeRules(classic={"main": Classic(True, body)}))
+    assert main == Check("PASS", "landing", "main has no rule that refuses landing's push")
+
+
 def test_s054_14_no_gh_warns_and_every_other_row_prints(repo: Repo) -> None:
     repo.write(str(CALLER), CALLER_TEXT)
     without = doctor(repo.root, repo.github, repo=REPO)

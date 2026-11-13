@@ -317,8 +317,8 @@ def _branch(
                 f" {_fix(landing, who, None)}"
             )
             fails.append(("FAIL", detail))
-        else:
-            passed.append("classic branch protection")
+        elif any(isinstance(classic.body.get(k), Mapping) for k in ("required_pull_request_reviews", "restrictions")):
+            passed.append("classic branch protection")  # its allowances name the identity
     if fails or warns:
         return fails + warns
     if not passed:
