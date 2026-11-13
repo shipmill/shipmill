@@ -10,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -47,7 +48,15 @@ import json, os, re, sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(json.dumps(args) + "\\n")
-if args[:2] == ["api", "graphql"]:
+if args[:2] == ["api", "graphql"] and "timelineItems(itemTypes: [LABELED_EVENT]" in "".join(args):
+    query = next(a for a in args if a.startswith("query="))
+    queued = json.loads(os.environ.get("FAKE_QUEUED", "{}"))
+    repository = {}
+    for n in re.findall(r"n(\\d+): pullRequest", query):
+        nodes = [{"createdAt": at, "label": {"name": name}} for at, name in queued[n]["events"]]
+        repository["n" + n] = {"title": queued[n]["title"], "timelineItems": {"nodes": nodes}}
+    print(json.dumps({"data": {"repository": repository}}))
+elif args[:2] == ["api", "graphql"]:
     query = next(a for a in args if a.startswith("query="))
     comments = json.loads(os.environ.get("FAKE_COMMENTS", "{}"))
     repository = {}
@@ -64,6 +73,13 @@ elif args[:2] == ["pr", "list"]:
 else:
     sys.stderr.write("unexpected gh call: " + " ".join(args) + "\\n")
     sys.exit(1)
+"""
+# `shipmill window --json` (spec 056): prints FAKE_WINDOW, its call logged with gh's
+FAKE_UVX = """#!{python}
+import json, os, sys
+with open(os.environ["FAKE_LOG"], "a") as log:
+    log.write(json.dumps(["uvx", *sys.argv[1:]]) + "\\n")
+print(os.environ["FAKE_WINDOW"])
 """
 
 
@@ -111,16 +127,29 @@ def known(**given: object) -> dict[str, object]:
 
 
 def tier(
-    tmp_path: Path, number: int, data: dict[str, object], *flags: str, comments: object = None
+    tmp_path: Path,
+    number: int,
+    data: dict[str, object],
+    *flags: str,
+    comments: object = None,
+    config: str = CONFIG,
+    window: object = None,
+    queued: object = None,
 ) -> tuple[list[dict[str, object]], list[list[str]]]:
-    """One --tier read, its rows and every gh call it made"""
+    """One --tier read, its rows and every gh call it made; window is what `shipmill window
+    --json` prints (spec 056), each of its calls logged as ["uvx", ...], and queued each queued
+    pull request's title and label events"""
     work = checkout(tmp_path)
+    (work / ".github" / "shipmill.toml").write_text(config, encoding="utf-8")
     fakes = tmp_path / "fakes"
     fakes.mkdir()
     (fakes / "gh").write_text(FAKE_GH.replace("{python}", sys.executable), encoding="utf-8")
     (fakes / "gh").chmod(0o700)
     log = tmp_path / "gh.log"
     log.touch()
+    if window is not None:
+        (fakes / "uvx").write_text(FAKE_UVX.replace("{python}", sys.executable), encoding="utf-8")
+        (fakes / "uvx").chmod(0o700)
     path = tmp_path / "known.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     env = {
@@ -128,6 +157,8 @@ def tier(
         "HOME": str(tmp_path),
         "FAKE_LOG": str(log),
         "FAKE_COMMENTS": json.dumps(comments or {}),
+        "FAKE_WINDOW": json.dumps(window),
+        "FAKE_QUEUED": json.dumps(queued or {}),
     }
     cmd = [sys.executable, str(SCRIPT), "o/r", "--repo-dir", str(work), "--json", "--tier", str(number)]
     proc = subprocess.run([*cmd, "--known", str(path), *flags], capture_output=True, text=True, env=env, check=False)
@@ -516,3 +547,163 @@ def test_s046_20_the_full_report_still_reads_the_host_rows(ws: ModuleType) -> No
     assert ws.report_rows.__defaults__ == (True,)
     args = ws.arguments().parse_args(["o/r"])
     assert (args.tier, args.sweep, args.known) == (None, False, None)
+
+
+# -- spec 056: the land window's queue
+
+LAND = '\n[land.window]\ntimezone = "Asia/Nicosia"\nlabels = ["rollout:high"]\nqueued_label = "rollout:queued"\n'
+QUEUED_LABEL = "rollout:queued"
+OPENED = {
+    "configured": True,
+    "timezone": "Asia/Nicosia",
+    "open": True,
+    "opens": None,
+    "next_merge": "2026-10-27T14:00:00+02:00",
+}
+
+
+def queue(ws: ModuleType, window: object, *entries: tuple[int, str, int]) -> object:
+    """A queue at NOW of pull requests (number, title, minutes before NOW its label was added)"""
+    queued = {n: ws.Queued(n, title, NOW - dt.timedelta(minutes=ago)) for n, title, ago in entries}
+    return ws.Queue(window, NOW, queued)
+
+
+def rows_of(found: list[Any]) -> list[tuple[str, str, str]]:
+    return [(r.state, r.subject, r.detail) for r in found]
+
+
+def test_s056_9_the_oldest_queued_pull_request_is_land_due_and_the_rest_wait_behind_it(ws: ModuleType) -> None:
+    window = ws.Window("Asia/Nicosia", True, None, NOW)  # open, next_merge now
+    due = queue(ws, window, (7, "Seven", 30), (5, "Five", 90), (6, "Six", 60))
+    prs = [pr(3), pr(5, QUEUED_LABEL), pr(6, QUEUED_LABEL), pr(7, QUEUED_LABEL)]
+    found = ws.intake("o/r", 0, "", prs, lambda n: [], queue=due)
+    assert rows_of(found) == [
+        ("LAND_DUE", "#5", "Five: the land window is open; queued since 2026-10-27 10:30 UTC"),
+        ("LAND_QUEUED", "#6", "Six: behind #5; queued since 2026-10-27 11:00 UTC"),
+        ("LAND_QUEUED", "#7", "Seven: behind #5; queued since 2026-10-27 11:30 UTC"),
+        ("PRS_OPEN", "o/r", "#3"),
+    ]
+    assert found[0].fix == "/shipmill:github-pr-triage o/r" and found[1].fix is None
+    # LAND_DUE is an action, so the watch exits 1 on it; the walk hands it as a land-stage item
+    assert "LAND_DUE" in ws.ACTION - ws.AGENT and "LAND_QUEUED" not in ws.ACTION | ws.AGENT | ws.FIXED
+    earlier = queue(ws, ws.Window("UTC", True, None, NOW - dt.timedelta(hours=1)), (5, "Five", 90))
+    assert rows_of(ws.intake("o/r", 0, "", [pr(5, QUEUED_LABEL)], lambda n: [], queue=earlier))[0][0] == "LAND_DUE"
+
+
+def test_s056_9_tier_3_reads_land_due_from_the_window_and_the_label_events(tmp_path: Path) -> None:
+    """tier 3, as the gate reads it: `shipmill window` at the default branch and one GraphQL read
+    of the queued pull requests' label events, the oldest by its newest LabeledEvent adding the label"""
+    prs = [pr(3), pr(5, QUEUED_LABEL), pr(6, QUEUED_LABEL, "rollout:high"), pr(8, "rollout:high")]
+    queued = {
+        "5": {
+            "title": "Five",
+            "events": [["2026-10-27T08:00:00Z", QUEUED_LABEL], ["2026-10-27T11:00:00Z", QUEUED_LABEL]],
+        },
+        "6": {"title": "Six", "events": [["2026-10-27T09:00:00Z", QUEUED_LABEL], ["2026-10-27T09:30:00Z", "other"]]},
+    }
+    rows, calls = tier(tmp_path, 3, known(prs=prs), config=CONFIG + LAND, window=OPENED, queued=queued)
+    assert [(r["state"], r["subject"], r["detail"]) for r in rows] == [
+        ("LAND_DUE", "#6", "Six: the land window is open; queued since 2026-10-27 09:00 UTC"),
+        ("PRS_OPEN", "o/r", "#3 #8"),
+    ]  # LAND_QUEUED is report only: no tier prints it
+    ref = ["--repo", str(tmp_path / "work"), "window", "--json", "--ref", "origin/main"]
+    assert calls[0][0] == "uvx" and calls[0][-6:] == ref
+    assert (
+        len(calls) == 2 and "n5: pullRequest(number: 5)" in calls[1][3] and "n6: pullRequest(number: 6)" in calls[1][3]
+    )
+
+
+@pytest.mark.parametrize(
+    ("window", "why"),
+    [
+        (
+            {**OPENED, "open": False, "opens": "2026-10-28T10:00:00+02:00"},
+            "the land window opens 2026-10-28 10:00 Asia/Nicosia",
+        ),
+        ({**OPENED, "open": False, "opens": None}, "the land window is closed and doesn't open within a week"),
+        (
+            {**OPENED, "next_merge": "2026-10-27T14:30:00+02:00"},
+            "spacing: the next held merge after 14:30 Asia/Nicosia",
+        ),
+    ],
+)
+def test_s056_10_a_closed_window_or_its_spacing_queues_each_and_hands_none(
+    ws: ModuleType, window: dict[str, object], why: str
+) -> None:
+    held = queue(ws, ws.parse_window(json.dumps(window)), (5, "Five", 90), (6, "Six", 60))
+    found = ws.intake("o/r", 0, "", [pr(3), pr(5, QUEUED_LABEL), pr(6, QUEUED_LABEL)], lambda n: [], queue=held)
+    assert rows_of(found) == [
+        ("LAND_QUEUED", "#5", f"Five: {why}; queued since 2026-10-27 10:30 UTC"),
+        ("LAND_QUEUED", "#6", f"Six: {why}; queued since 2026-10-27 11:00 UTC"),
+        ("PRS_OPEN", "o/r", "#3"),  # a queued pull request is not in PRS_OPEN
+    ]
+
+
+def test_s056_10_a_queued_pull_request_another_row_holds_stays_there(ws: ModuleType) -> None:
+    """the queue takes only what PRS_OPEN would list: a fork's with --trusted-only, a person's
+    assigned one, and a draft keep their rows"""
+    held = queue(ws, ws.Window("UTC", True, None, NOW), (5, "Five", 90), (6, "Six", 60), (7, "Seven", 30))
+    prs = [
+        pr(5, QUEUED_LABEL, fork=True),
+        pr(6, QUEUED_LABEL, "human", assignees=("amy",)),
+        pr(7, QUEUED_LABEL, draft=True),
+    ]
+    found = ws.intake("o/r", 0, "", prs, lambda n: [], None, True, queue=held)
+    assert [r.state for r in found] == ["PRS_PARKED", "UNTRUSTED"]
+
+
+def test_s056_10_without_the_section_or_a_queued_pull_request_nothing_more_is_read(tmp_path: Path) -> None:
+    prs = [pr(3), pr(5, QUEUED_LABEL)]
+    rows, calls = tier(tmp_path / "plain", 3, known(prs=prs))  # no [land.window]: the label holds nothing
+    assert [(r["state"], r["detail"]) for r in rows] == [("PRS_OPEN", "#3 #5")] and calls == []
+    drafted = known(prs=[pr(3), pr(4, QUEUED_LABEL, draft=True)])
+    rows, calls = tier(tmp_path / "none", 3, drafted, config=CONFIG + LAND, window=OPENED)
+    assert [(r["state"], r["detail"]) for r in rows] == [("PRS_OPEN", "#3")] and calls == []
+
+
+@pytest.mark.parametrize(
+    ("config", "label"),
+    [
+        ("", None),
+        (LAND, QUEUED_LABEL),
+        (LAND.replace('queued_label = "rollout:queued"\n', ""), "land-queued"),
+    ],
+)
+def test_s056_10_the_queued_label_is_read_from_the_config(ws: ModuleType, config: str, label: str | None) -> None:
+    assert ws.queued_label(CONFIG + config, Path("x.toml")) == label
+    assert ws.queued_label_310(CONFIG + config, Path("x.toml")) == label
+
+
+def test_s056_9_the_full_reports_queue_waits_for_pypi_as_its_other_reads_do(ws: ModuleType, tmp_path: Path) -> None:
+    def unserved(cmd: list[str]) -> str:
+        raise ws.PypiWait("9.9.9")
+
+    prs = [pr(5, QUEUED_LABEL)]
+    found, waits = ws.land_queue("o/r", tmp_path, CONFIG + LAND, "main", prs, NOW, execute=unserved)
+    assert found is None and [(r.state, r.detail) for r in waits] == [
+        ("PYPI_WAIT", "waits for PyPI; not read: the land window")
+    ]
+    events = {"nodes": [{"createdAt": "2026-10-27T08:00:00Z", "label": {"name": QUEUED_LABEL}}]}
+    answer = {"data": {"repository": {"n5": {"title": "Five", "timelineItems": events}}}}
+    found, waits = ws.land_queue(
+        "o/r",
+        tmp_path,
+        CONFIG + LAND,
+        "main",
+        prs,
+        NOW,
+        execute=lambda cmd: json.dumps(OPENED),
+        read=lambda cmd: json.dumps(answer),
+    )
+    assert waits == [] and found.entries[5].title == "Five" and found.window.open
+
+
+def test_s056_10_a_queued_pull_request_whose_label_events_dont_add_it_stops_the_watch(ws: ModuleType) -> None:
+    events = {"nodes": [{"createdAt": "2026-10-27T08:00:00Z", "label": {"name": "other"}}]}
+    answer = {"data": {"repository": {"n5": {"title": "Five", "timelineItems": events}}}}
+    with pytest.raises(
+        ws.Refused, match="o/r#5 carries rollout:queued but none of its newest 100 label events"
+    ) as raised:
+        ws.queued_since("o/r", [5], QUEUED_LABEL, lambda cmd: json.dumps(answer))
+    # Q-1: the message names the fix, a label event the read can find
+    assert str(raised.value).endswith("remove rollout:queued from o/r#5 and add it again")

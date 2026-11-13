@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import re
+import tomllib
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -26,6 +27,8 @@ from shipmill.gate import (
     Decision,
     Launch,
     Process,
+    StateRead,
+    WatchState,
     gate,
     save_launch,
     state_dir,
@@ -33,7 +36,22 @@ from shipmill.gate import (
     tick_record,
 )
 from shipmill.gitrepo import Git
-from shipmill.walk import CURSOR, CURSOR_OVERLAP, HANDED, SWEEP, Changes, Cursor, Hand, Handed, Swept, check, item_key
+from shipmill.land_window import LandWindow
+from shipmill.land_window import read as read_window
+from shipmill.walk import (
+    CURSOR,
+    CURSOR_OVERLAP,
+    HANDED,
+    SWEEP,
+    Changes,
+    Cursor,
+    Hand,
+    Handed,
+    Swept,
+    check,
+    item_key,
+    window_change,
+)
 
 from .test_gate import NO_PRUNE, FakeClaude, FakeNotifier, checkout, host
 from .test_gate_headless import PID, STARTED, log_of
@@ -67,10 +85,11 @@ class Source:
     asked: bool = False
     tag: str | None = None
     reads: list[str] = field(default_factory=list)
+    window: bool = False  # spec 056: the land window opened, or its spacing passed, with a queue
 
     def changes(self, since: dt.datetime | None) -> Changes:
         self.reads.append("changes")
-        return Changes(self.signature, self.updated, self.asked, self.tag)
+        return Changes(self.signature, self.updated, self.asked, self.tag, window=self.window)
 
     def tier(self, number: int, changes: Changes) -> list[Finding]:
         self.reads.append(f"tier {number}")
@@ -689,3 +708,146 @@ def test_926_a_walk_that_stops_early_keeps_the_hands_of_tiers_it_didnt_read(chec
     source.tiers, source.signature = {1: [INCIDENT], 6: [NEW]}, "incident"
     assert tick(checkout, source, LATER).work == (INCIDENT,)
     assert set(handed(checkout)) == {item_key(NEW), item_key(INCIDENT)}
+
+
+# -- spec 056: the land window's queue drains when the window opens
+
+LAND_DUE = Finding("LAND_DUE", "#5", "Deploy: the land window is open; queued since 2026-11-16 07:00 UTC", False)
+WINDOW = """
+[land.window]
+timezone = "Asia/Nicosia"
+open = ["Mon-Thu 10:00-18:00", "Fri 10:00-14:00"]
+closed = ["12:00-12:30"]
+labels = ["rollout:normal", "rollout:high"]
+queued_label = "rollout:queued"
+spacing_minutes = 30
+"""
+MONDAY = dt.datetime(2026, 11, 16, 0, 0, tzinfo=dt.UTC)  # Nicosia is UTC+2 in November: it opens at 08:00 UTC
+
+
+def utc(hour: int, minute: int = 0) -> dt.datetime:
+    return MONDAY.replace(hour=hour, minute=minute)
+
+
+def land_window(text: str = WINDOW) -> LandWindow:
+    found = read_window(Table(tomllib.loads(text), ".github/shipmill.toml"))
+    assert found is not None
+    return found
+
+
+def never_read() -> dt.datetime | None:
+    raise AssertionError("the last held merge was read")
+
+
+@pytest.mark.parametrize(
+    ("since", "now", "why"),
+    [
+        (utc(7, 50), utc(8, 5), "closed at since, open now: the window opened"),
+        (utc(9, 55), utc(10, 31), "closed for 12:00-12:30 local and open again since"),
+    ],
+)
+def test_s056_11_the_window_opening_since_the_cursor_is_a_change(
+    since: dt.datetime, now: dt.datetime, why: str
+) -> None:
+    assert window_change(land_window(), True, since, now, never_read), why
+
+
+@pytest.mark.parametrize(
+    ("queued", "since", "now", "why"),
+    [
+        (False, utc(7, 50), utc(8, 5), "no queued pull request: the opening counts for nothing"),
+        (True, utc(7, 0), utc(7, 50), "closed then and now"),
+        (True, utc(8, 50), utc(10, 5), "closed between: it is closed now"),
+        (True, None, utc(8, 5), "no cursor: the tick walks anyway"),
+    ],
+)
+def test_s056_11_no_opening_with_a_queue_is_no_change(
+    queued: bool, since: dt.datetime | None, now: dt.datetime, why: str
+) -> None:
+    assert not window_change(land_window(), queued, since, now, never_read), why
+
+
+@pytest.mark.parametrize(
+    ("last", "change"),
+    [
+        (utc(8, 45), True),  # its spacing passes at 09:15 UTC, after the cursor at 09:10
+        (utc(8, 30), False),  # passed at 09:00 UTC, before the cursor: the last walk saw it
+        (utc(9, 0), False),  # passes at 09:30 UTC, after now
+        (None, False),  # no held merge: nothing holds the next one
+    ],
+)
+def test_s056_11_next_merge_passing_since_the_cursor_while_open_is_a_change(
+    last: dt.datetime | None, change: bool
+) -> None:
+    reads: list[str] = []
+
+    def held() -> dt.datetime | None:
+        reads.append("last held merge")
+        return last
+
+    assert window_change(land_window(), True, utc(9, 10), utc(9, 20), held) is change
+    assert reads == ["last held merge"]
+    unspaced = land_window(WINDOW.replace("spacing_minutes = 30", "spacing_minutes = 0"))
+    assert not window_change(unspaced, True, utc(9, 10), utc(9, 20), never_read)  # open throughout, no spacing
+
+
+def test_s056_11_an_open_window_is_one_change_not_one_every_tick(checkout: Git) -> None:
+    """With nothing else changed on GitHub, the window opening makes the tick walk and hand the
+    queue's head; the next tick, with no new opening, is quiet"""
+    source = Source({3: [LAND_DUE]}, signature="same")
+    tick(checkout, source, agents=cfg(land=Autonomy.ACT))
+    (state_dir(checkout) / RECORD).unlink()
+    source.reads.clear()
+    source.window = True
+    opened = tick(checkout, source, LATER, agents=cfg(land=Autonomy.ACT, sweep_hours=48))
+    assert opened.walk is not None and opened.walk.change and "tier 3" in source.reads
+    source.window, source.reads = False, []
+    quiet = tick(checkout, source, LATER + dt.timedelta(minutes=15), agents=cfg(land=Autonomy.ACT, sweep_hours=48))
+    assert quiet.action is Action.QUIET and source.reads == ["changes"]
+
+
+def queued_pull(number: int, *labels: str, draft: bool = False) -> Any:
+    return {**pull(number), "labels": {"nodes": [{"name": n} for n in labels]}, "isDraft": draft}
+
+
+@pytest.mark.parametrize(
+    ("pulls", "change"),
+    [
+        ([queued_pull(5, "rollout:queued")], True),
+        ([queued_pull(5, "rollout:high"), queued_pull(6, "rollout:queued", draft=True)], False),
+    ],
+)
+def test_s056_11_the_gates_change_check_reads_the_window_and_the_queue(
+    tmp_path: Any, pulls: list[Any], change: bool
+) -> None:
+    """WatchState's change check: the queue from the labels its one query read, the window from
+    the checkout's config; with the cursor before the opening, a queue makes it a change"""
+    (tmp_path / ".github").mkdir()
+    (tmp_path / ".github" / "shipmill.toml").write_text(f'mode = "off"\n{WINDOW}', encoding="utf-8")
+    queries: list[str] = []
+
+    def gh(cmd: list[str], cwd: Any) -> str:
+        query = next(a for a in cmd if a.startswith("query="))
+        queries.append(query)
+        return json.dumps(graphql_answer(pulls=pulls))
+
+    source = WatchState(REPO, tmp_path, StateRead(), tmp_path / "state", utc(8, 5), gh=gh)
+    found = source.changes(utc(7, 50) - CURSOR_OVERLAP)
+    assert found.window is change
+    assert len(queries) == 1  # the opening reads no last held merge
+    assert source.changes(None).window is False  # no cursor: the tick walks anyway
+
+
+def test_s056_12_land_due_comes_before_prs_open_and_only_when_land_isnt_observe() -> None:
+    from shipmill.walk import TIERS, Rows, walk
+
+    assert TIERS[3][:2] == ("LAND_DUE", "PRS_OPEN")
+    rows = Rows((PRS, LAND_DUE))
+    swept = Swept(NOW, (), None)
+    for lands, item in ((False, None), (True, LAND_DUE)):
+        found = walk(rows, rows.changes(None), swept, Handed(), NOW, dt.timedelta(hours=6), lands)
+        assert (found.item, found.tier) == (item, None if item is None else 3)
+        assert LAND_DUE in found.rows  # read and reported either way
+    handed_due = Handed().handing(LAND_DUE, "s1", NOW)
+    found = walk(rows, rows.changes(None), swept, handed_due, NOW, dt.timedelta(hours=6), True)
+    assert found.item == PRS  # the queue's head handed: the walk goes on to PRS_OPEN

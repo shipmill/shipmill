@@ -107,6 +107,7 @@ ACTION = frozenset(
         "UPSTREAM_UNREADABLE",
         "VETOED",
         "AGENT_DRAFT",  # D-67: the App's own draft, resumed by a session (#914)
+        "LAND_DUE",  # spec 056: the land window's queue head
     }
 )
 REPO_ERROR = "REPO_ERROR"

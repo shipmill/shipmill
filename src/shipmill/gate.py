@@ -32,6 +32,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
+from shipmill import land_window
 from shipmill.agents import AgentsConfig, Mode, RolesConfig
 from shipmill.app import AppCheck, Identity
 from shipmill.autonomy import AGENT_STAGES, Autonomy, AutonomyPolicy, Hold, Stage, StageKind
@@ -54,6 +55,7 @@ from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.github_auth import GH_MISSING_FIX, GitHubAuth, GitHubPreflight
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
+from shipmill.land_window import LandWindow
 from shipmill.notify import Notifier, NotifyFailed
 from shipmill.plugin import (
     CLI_RECORD,
@@ -92,9 +94,11 @@ from shipmill.walk import (
     check,
     item_key,
     malformed,
+    queued,
     tier_of,
     walk,
     watched,
+    window_change,
     write,
 )
 from shipmill.walk import span as tier_span
@@ -930,6 +934,22 @@ def incident_label(root: Path) -> str:
     return OperateConfig.parse(Table(read(path), str(path)).table("operate", optional=True)).incident_label
 
 
+def land_window_of(root: Path) -> LandWindow | None:
+    """[land.window] (spec 056) of the checkout's config, as incident_label reads the config"""
+    path = config_path(root)
+    return land_window.read(Table(read(path), str(path)))
+
+
+@dataclass(frozen=True, slots=True)
+class Repository:
+    """GitHub's GraphQL for the repository, with $owner and $name set, as land_window reads it"""
+
+    ask: Callable[[str], dict[str, object]]
+
+    def graphql(self, query: str) -> Any:
+        return self.ask(query)
+
+
 class WatchState:
     """The gate's state read (spec 046): the change check through gh, and each tier and the
     sweep through watch_state.py, a tier given what the change check read (known.json in the
@@ -961,7 +981,15 @@ class WatchState:
     def changes(self, since: dt.datetime | None) -> Changes:
         label = incident_label(self._workspace)
         workflows = watched(self._workspace)
-        return check(self._repo, since, label, workflows, self._graphql, self._rest, self._now)
+        found = check(self._repo, since, label, workflows, self._graphql, self._rest, self._now)
+        window = land_window_of(self._workspace)
+        if window is None or since is None:
+            return found
+        owner, _, name = self._repo.partition("/")
+        github = Repository(lambda q: self._graphql(q, {"owner": owner, "name": name}))
+        held = queued(found, window.queued_label)
+        last = partial(land_window.last_held_merge, github, window.labels)
+        return replace(found, window=window_change(window, held, since + CURSOR_OVERLAP, self._now, last))
 
     def _rows(self, cmd: list[str], what: str) -> list[Finding]:
         proc = self._run(cmd)
@@ -1889,7 +1917,8 @@ def tick_walk(
     config-upgrade proposal (upgrades) first, so its rows see the issue it opened (S-047-1);
     sweep.json keeps what it did and the decision names it (S-047-10). A tick that doesn't
     sweep runs none (S-047-5). A change is a new
-    signature or an item updated since the cursor, and on the gate's side no cursor, a handed
+    signature or an item updated since the cursor, the land window opening or its spacing passing
+    with a pull request queued (spec 056), and on the gate's side no cursor, a handed
     item past retry, or a dead last session (S-046-2); walk_now and sweep_now force a walk and
     a sweep. A dead session's item is handed again, until DEAD_STREAK of them (capped) hold it
     for retry (S-046-15). Without handed.json, the last launch's item, gate.json's fingerprint,
@@ -1915,6 +1944,7 @@ def tick_walk(
         or cursor is None
         or changes.signature != cursor.signature
         or bool(changes.updated)
+        or changes.window  # spec 056: the land window opened, or its spacing passed, with a queue
         or handed.expired(now, retry)
         or unseen  # a capped one holds its item: its expiry is the change
     )
