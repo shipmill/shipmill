@@ -909,8 +909,14 @@ or a state shipmill refuses to act on.
 
 ## Limits
 
-- GitHub's token can't push past branch protection: let `github-actions[bot]` bypass the
-  rules on main and `release/*`, or the landing fails
+- Landing pushes the release commit, the tag, and the sync to main and `release/*` with
+  the workflow token, as `github-actions[bot]`, so a branch rule that blocks that push
+  fails the landing. On an organization repository GitHub gives it no way through: a
+  ruleset refuses the GitHub Actions integration as a bypass actor, and classic branch
+  protection accepts it in the pull request bypass list but stores an empty list. A
+  required status check blocks the push too, since the release commit's CI reports as
+  `ci / checks` rather than `checks`. Until landing changes (#1038), protect main there
+  only against force pushes and deletion
 - A run cancelled before its cleanup job gets a runner leaves its `shipmill/<tag>` work
   branch on origin. The next run's prepare deletes it and pushes its own when no other run
   of your Release workflow is queued or in progress, which takes `actions: read` on the

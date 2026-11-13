@@ -195,7 +195,7 @@ Work on a branch; everything below lands in one pull request.
 | A stable `vX.Y.Z` tag to count from | tag the last release; shipmill never invents one |
 | A CI workflow other workflows can call, on the commit they name | add the trigger below and pass `ref: ${{ inputs.ref }}` to `actions/checkout` |
 | A publish workflow started by hand with a `tag` input, building that tag | add the input; drop any check that the tag is on main, since rc and stable tags are off it |
-| `github-actions[bot]` can push main, `release/*`, and `v*` tags | let it bypass the branch rules, or landing fails |
+| `github-actions[bot]` can push main, `release/*`, and `v*` tags | a rule that blocks its push fails the landing; on an organization repository GitHub can't exempt it (a ruleset refuses it as a bypass actor, classic protection drops it) and the release commit's CI reports as `ci / checks`, not `checks`, so until #1038 protect main there only against force pushes and deletion ([Limits](release-lanes.md#limits)) |
 | No other release automation | remove or disable it in the same pull request, so two tools never tag |
 
 The CI trigger:
