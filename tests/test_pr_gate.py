@@ -1860,6 +1860,30 @@ def test_s055_9_the_apps_relay_counts_as_a_trusted_answer(tmp_path: Path, direct
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
 
 
+@pytest.mark.parametrize(
+    ("answer", "lands"),
+    [
+        ("1. Land it", True),  # the option as listed, number and text (#1150)
+        ("**1. Land it (recommended)**", True),
+        ("Option 1: Land it", True),
+        ("2. Land it", False),  # a number and a text naming different options
+        ("1. Hold it until the release", False),
+        ("1. Land it but rename the tag", False),
+        ("1. Land", False),  # a prefix of the option's text
+    ],
+)
+def test_s055_19_a_relay_naming_the_option_by_number_and_text_lifts_the_ask(
+    tmp_path: Path, directed: Path, answer: str, lands: bool
+) -> None:
+    relayed = thread(asked(), relay("Decision by `@romamo`, relayed by Claude Code", answer))
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), relayed)
+    if lands:
+        assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == 5, proc.stdout + proc.stderr
+        assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, NOT_TAKEN]
+
+
 def test_s055_9_a_relay_by_another_bot_is_no_answer(tmp_path: Path, directed: Path) -> None:
     other = {**relay("Decision by @romamo", "1"), "author": {"login": "other-app", "__typename": "Bot"}}
     proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(), other))

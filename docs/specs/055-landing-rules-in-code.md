@@ -89,7 +89,10 @@ edit without `[agents]`):
    maintainer. A question with a newer question after it is no longer the one answered
 3. **Acceptance.** The answer accepts when its whole reply takes the option the question marks
    `(recommended)` as it stands, read as S-030-18 reads it: its number alone (`1`, `1.`,
-   `Option 1`) or its text alone. The whole reply is every non-blank line of the comment, a
+   `Option 1`), its text alone, or the option as listed, its number and its own text together
+   (`1. <text>`, `1) <text>`, `1: <text>`, `Option 1: <text>`, the text the part before
+   ` (recommended)`, with or without that mark; #1150). A number and a text naming different
+   options, or a text that narrows or extends the option, takes neither. The whole reply is every non-blank line of the comment, a
    relay's after its `Decision by` line with the template's `Answered in the session:` taken
    off, the agent marker left out; a reply of more than one line (`1`, then `but rename X
    first`) answers in the person's own words. An answer in other words, another option, or no
@@ -193,6 +196,7 @@ it opens the pull request with.
 - S-055-16: `shipmill review record <n> --head <sha> --verdict merge|refuse --body-file <f>` posts, as the App, a pull request review with event `COMMENT`, `commit_id` the head, and a body whose first line is the verdict's marker; it exits 2 and writes nothing when the head isn't 40 hex characters or isn't pull request n's current head, or the App isn't available
 - S-055-17: `shipmill gh pr create`, with `[agents] app_id` set and `docs/product.md` on the default branch, exits 2 without running gh when the body it would send has no plan `plan_problems` accepts, printing each problem, and runs gh for a valid plan, for a body with a `Spec for #N` line, and in a repo without `docs/product.md` on its default branch
 - S-055-18: `github-pr-triage`'s `SKILL.md` and `landing.md` and `needs-decision.md` name no `--maintainer-accepted`; the reviewer brief and landing say the reviewed head is recorded with `shipmill review record`, and the implementer brief says the plan goes in the body the pull request is opened with
+- S-055-19: An answer that names the `(recommended)` option as listed, its number and its own text together (`1. <text>`, `1) <text>`, `1: <text>`, `Option 1: <text>`, `Option 1. <text>`, the text the part before ` (recommended)`, with or without that mark, emphasis and code marks aside), takes it, for `pr_gate.py`'s acceptance and the retro's `recommended` count alike, through retro.py's `takes_recommended`; a number and a text naming different options, a text that narrows the option or has words past it, and a prefix of its text do not
 
 ## Out of scope
 
@@ -221,5 +225,6 @@ it opens the pull request with.
 - shipmill/shipmill#1091: S-055-17
 - shipmill/shipmill#1093: S-055-1, S-055-2, S-055-3
 - shipmill/shipmill#1095: S-055-4
+- shipmill/shipmill#1150: S-055-19
 
 ## Verification
