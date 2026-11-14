@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.132.0] - 2026-11-14
+
+### Added
+
+- `docs/software-factory.md` maps shipmill to the terms of the in-progress `software-factory` skill at commit `5863806` (each slot and example task to the part that fills it, the stages after the merge, the terms it has no word for, and the three brakes), linked from the README and the site (#1141)
+
 ## [0.131.0] - 2026-11-13
 
 ### Added
@@ -2505,7 +2511,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.131.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.132.0...HEAD
+[0.132.0]: https://github.com/shipmill/shipmill/compare/v0.131.0...v0.132.0
 [0.131.0]: https://github.com/shipmill/shipmill/compare/v0.130.0...v0.131.0
 [0.130.0]: https://github.com/shipmill/shipmill/compare/v0.129.0...v0.130.0
 [0.129.0]: https://github.com/shipmill/shipmill/compare/v0.128.4...v0.129.0
