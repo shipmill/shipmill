@@ -17,7 +17,7 @@ import pytest
 
 from shipmill import evals
 from shipmill.cli import main
-from shipmill.doctor import CALLER, OPERATE_CALLER
+from shipmill.doctor import CALLER, OPERATE_CALLER, doctor
 from shipmill.errors import ReleaseError
 from shipmill.landing import land_environment
 
@@ -212,6 +212,17 @@ def test_s054_18_land_as_app_without_app_id_exits_2_naming_it_and_writes_nothing
     assert out.returncode == 2
     assert "[agents] app_id" in out.stderr and "init --caller --land-as-app" in out.stderr
     assert not (repo.root / CALLER).exists() and not (repo.root / ".github" / "shipmill.toml").exists()
+
+
+def test_s054_18_doctor_rewrites_an_opted_in_caller_keeping_the_opt_in(repo: Repo) -> None:
+    """doctor's schedule fix rewrites release.yml; for a caller with the opt-in, it keeps it,
+    or the rewrite would drop land-environment and the next land would meet the rules"""
+    head = repo.read(repo.policy_file).split("[lanes.dev]", 1)[0]
+    repo.write(repo.policy_file, head + '[lanes.rc]\nschedule = ["Mon 07:00 UTC"]\n' + APP_POLICY)
+    assert main(["--repo", str(repo.root), "init", "--caller", "--force", "--land-as-app"]) == 0
+    repo.write(repo.policy_file, head + '[lanes.rc]\nschedule = ["Tue 07:00 UTC"]\n' + APP_POLICY)
+    [fix] = [c.detail for c in doctor(repo.root, repo.github) if c.name == "schedule"]
+    assert fix.endswith("init --caller --force --land-as-app`")
 
 
 @pytest.mark.parametrize("flag", ["--operate", "--downstream"])
