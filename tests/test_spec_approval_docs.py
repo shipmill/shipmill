@@ -79,9 +79,9 @@ def test_620_the_answer_approves_the_spec_as_it_stood_when_given() -> None:
     section = gate.split("## Approved by an answer ", 1)[1].split(" ## ", 1)[0]
     changed = section.split("- **The spec changed after the answer**", 1)[1]
     assert "the answer approves the spec as it stood when the answer was given" in changed
-    # the answered head, named from the commits' dates or the force-push that rewrote them
-    assert "the newest commit of `gh pr view <n> --json commits` whose `committedDate`" in changed
-    assert "the `beforeCommit` of the first `HeadRefForcePushedEvent` after the answer" in changed
+    # the answered head is the one the question names, never a commit's date or a push (#1122)
+    assert "the head the question names on its `CI on <sha7>` line" in changed
+    assert "Never a commit's `committedDate`, which its author sets, nor a force-push's `beforeCommit`" in changed
     # the PR's own change to the spec file at both heads, so main's changes don't count
     assert "git diff $(git merge-base origin/<default> <head>) <head> -- docs/specs/NNN-<slug>.md" in changed
     assert "Main's changes brought in by a rebase fall outside these patches" in changed
@@ -91,7 +91,7 @@ def test_620_the_answer_approves_the_spec_as_it_stood_when_given() -> None:
     assert "a new marker comment that names what changed since the answer, quoting the script's exit-1" in changed
     assert "and repeats the question, and the `needs-decision` label" in changed
     assert "the old answer, which comes before it, doesn't answer it" in changed
-    assert "**The answered head can't be named**" in changed
+    assert "**The answered head can't be named** (the question names no head" in changed
     assert "ask again the same way rather than land" in changed
     skill = folded(PR_TRIAGE / "SKILL.md")
     bullet = skill.split("- **A spec pull request**", 1)[1].split(" - **An upgrade pull request**", 1)[0]
