@@ -1697,10 +1697,11 @@ def test_a_plan_inside_a_code_fence_is_not_a_plan() -> None:
 # Spec 055: the maintainer's acceptance is read from the answer on GitHub
 
 
-def question(head: str | None = HEAD_SHA) -> str:
-    """A needs-decision question asked at head, named on its `CI on <sha7>` line (#1028); None
-    names no head"""
+def question(head: str | None = HEAD_SHA, marker: bool = True) -> str:
+    """A needs-decision question asked at head: its `CI on <sha7>` line (#1028) and, with marker,
+    the full head on `<!-- shipmill:head <sha> -->` under it; None names no head"""
     ci = f"CI on {head[:7]}: 1 check green\n" if head is not None else ""
+    ci += f"<!-- shipmill:head {head} -->\n" if head is not None and marker else ""
     return (
         f"<!-- shipmill:needs-decision -->\n**Decision needed:** src/land.py pushes tags.\n{ci}\n"
         "1. Land it (recommended): the change is reviewed\n2. Hold it until the release\n\n<!-- shipmill:agent -->\n"
@@ -1794,7 +1795,7 @@ def test_s055_5_an_accepted_ask_zone_is_judged_on_ci_alone(tmp_path: Path, agent
 
 
 OLD_SHA = "0123456789abcdef0123456789abcdef01234567"  # an earlier head of the test's PR
-NO_HEAD = "  needs-decision: the question names no head: ask again with its `CI on <sha7>` line"
+NO_HEAD = "  needs-decision: the question names no head: ask again with its `<!-- shipmill:head <sha> -->` line"
 
 
 def test_s055_5_a_commit_dated_before_the_answer_but_pushed_after_it_is_not_covered(
@@ -1816,24 +1817,28 @@ def test_s055_5_the_head_the_question_names_is_covered_whatever_the_dates(tmp_pa
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
 
 
-def test_s055_5_a_question_naming_no_head_is_asked_again(tmp_path: Path, directed: Path) -> None:
-    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(head=None), comment("1", at(12))))
+@pytest.mark.parametrize("marker", [False, True])
+def test_s055_5_a_question_naming_no_full_head_is_asked_again(tmp_path: Path, directed: Path, marker: bool) -> None:
+    """a question with no head, or with only the visible `CI on <sha7>` line, names no head"""
+    asking = comment(question(None if marker else HEAD_SHA, marker=marker), at(11), "shipmill-demo", "NONE", True)
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asking, comment("1", at(12))))
     assert proc.returncode == 5, proc.stdout + proc.stderr
     assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, NO_HEAD]
 
 
-@pytest.mark.parametrize("named", ["0123456", "fffffff"])  # two commits start 0123456; none fffffff
-def test_s055_5_a_named_head_the_pr_never_had_or_two_heads_share_cant_be_named(
-    tmp_path: Path, directed: Path, named: str
-) -> None:
-    twin = "0123456" + "f" * 33
-    data = headed(commits=((OLD_SHA, at(10, 30)), (twin, at(10, 40)), (HEAD_SHA, at(10, 50))), files=("src/land.py",))
-    proc = protected(tmp_path, directed, data, thread(asked(head=named + "0" * 33), comment("1", at(12))))
+def test_s055_5_a_head_sharing_the_named_heads_7_hex_prefix_is_not_covered(tmp_path: Path, directed: Path) -> None:
+    """a 7-hex prefix is 2^28 tries away: after a plain push and a force-push to a commit made to
+    share the answered head's prefix, the answered head is gone from the PR, and only the full SHA
+    tells the new head from it"""
+    answered = "1234567" + "0" * 33
+    forged = "1234567" + "f" * 33
+    data = headed(forged, ((forged, at(14)),), files=("src/land.py",))
+    pushed = "abcdef" + "1" * 34  # the plain push after the answer, which the force-push replaced
+    answers = thread(asked(head=answered), comment("1", at(12)), pushes=(push(at(14), pushed),))
+    proc = protected(tmp_path, directed, data, answers)
     assert proc.returncode == 5, proc.stdout + proc.stderr
-    assert proc.stdout.splitlines()[1:] == [
-        PROTECTED_ASK,
-        "  needs-decision: the head the answer was given at can't be named",
-    ]
+    differs = f"  needs-decision: answered at {answered[:7]}, and the change differs since"
+    assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, differs]
 
 
 def test_s055_5_the_answer_is_read_once_and_only_for_a_pr_needing_a_decision(tmp_path: Path, directed: Path) -> None:

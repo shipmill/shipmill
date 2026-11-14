@@ -82,12 +82,13 @@ On hold: built under {owner/repo}#{opportunity}, the accepted opportunity.
 
 This hold sentence names the opportunity alone, the same way.
 
-In a gate session, the spec PR asks for its approval with the [needs-decision protocol](needs-decision.md), on the spec PR itself, with these options (D-49). Option 1 never asks the maintainer to merge by hand: a trusted answer taking it is the approval, and github-pr-triage lands the spec PR once it is green ([spec-gate.md](spec-gate.md), Approved by an answer). A spec PR that edits `docs/product.md` says instead that the maintainer merges it, since only they change the direction (D-34). The `CI on {sha7}` line names the PR's head when asked: the answer approves that head, and a question without it is asked again (S-055-5).
+In a gate session, the spec PR asks for its approval with the [needs-decision protocol](needs-decision.md), on the spec PR itself, with these options (D-49). Option 1 never asks the maintainer to merge by hand: a trusted answer taking it is the approval, and github-pr-triage lands the spec PR once it is green ([spec-gate.md](spec-gate.md), Approved by an answer). A spec PR that edits `docs/product.md` says instead that the maintainer merges it, since only they change the direction (D-34). The `CI on {sha7}` line shows the PR's head when asked, and the hidden `<!-- shipmill:head {sha} -->` line under it names that head's full SHA: the answer approves that exact head, and a question without the hidden line is asked again (S-055-5).
 
 ```markdown
 <!-- shipmill:needs-decision -->
 @{login} Decision needed: does spec {NNN}, {what it specifies} (#{feature issue}), set the behaviour the way you want, with the choices under "Decisions for you" in this PR's body?
 CI on {sha7}: {N checks green}
+<!-- shipmill:head {sha} -->
 
 1. Take every recommendation (recommended): your answer is the approval; shipmill rebases this PR if it needs it and merges it once it is mergeable and green, then files its build issues under #{feature issue}. You may still merge it by hand
 2. Change some of them: reply with the numbers and what you want instead; the spec is revised in this PR and you're asked again, and nothing merges until then

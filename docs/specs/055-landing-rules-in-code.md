@@ -96,13 +96,14 @@ edit without `[agents]`):
    answer leaves the verdict NEEDS_DECISION
 4. **The head it covers.** An answer covers the head its question names: a question on a pull
    request states the head's CI on the line under its first, `CI on <sha7>: ...`
-   (needs-decision.md, #1028), and that head is the one answered. A commit's `committedDate`
-   is its author's to set, and a force-push's `beforeCommit` may be a head pushed after the
-   answer, so neither names what the maintainer saw (#1122). The named SHA is read as the one
-   commit of the pull request, its head, or a head a force-push replaced that starts with it,
-   else as the commit the checkout resolves it to; a question that names no head leaves the
-   verdict NEEDS_DECISION, so it is asked again with its head. It covers the judged head
-   when the pull request's own change is the same at both heads: the patch of
+   (needs-decision.md, #1028), and names that head in full on a hidden line under it,
+   `<!-- shipmill:head <40-hex sha> -->`; that exact commit is the one answered. A commit's
+   `committedDate` is its author's to set, a force-push's `beforeCommit` may be a head pushed
+   after the answer, and a 7-hex prefix is matched by a commit made to order in about 2^28
+   tries, so none of them names what the maintainer saw (#1122). A question without the
+   hidden line leaves the verdict NEEDS_DECISION, so it is asked again with it. It covers the
+   judged head when it is that commit, or when the pull request's own change is the same at
+   both heads: the patch of
    `git diff $(git merge-base origin/<base> <head>) <head>` is equal, so a rebase or a merge of
    the base that changes nothing of the pull request's own still lands. A spec pull request
    compares its spec file with `specs.py same-approval` instead, so a format-only change lands
@@ -114,9 +115,8 @@ asks are lifted and CI decides, as `--maintainer-accepted` did. Without one, the
 `needs-decision:` lines stay, and one more line says why the last answer didn't count:
 `  needs-decision: answered at <sha7>, and the change differs since`,
 `  needs-decision: the answer doesn't take the recommended option`,
-`` needs-decision: the question names no head: ask again with its `CI on <sha7>` line ``, or
-`  needs-decision: the head the answer was given at can't be named` (a named SHA that no
-commit or two commits match). A `never` zone stays MAINTAINER_ONLY whatever the answer (D-48).
+or `` needs-decision: the question names no head: ask again with its `<!-- shipmill:head <sha> -->` line ``
+(a head the checkout can't fetch reads as differing). A `never` zone stays MAINTAINER_ONLY whatever the answer (D-48).
 
 ### A review of the merging head
 
@@ -179,7 +179,7 @@ it opens the pull request with.
 - S-055-2: When `pr_gate.py` reads READY at head H, a merge given no pin runs gh with `--match-head-commit H` (the API `PUT` with `sha=H`), a merge pinned to H runs as given, and a merge pinned to another full SHA exits 2 naming both SHAs without running gh
 - S-055-3: A `pr_gate.py` that exits 2, can't be started, or prints no verdict line makes the merge exit 2 without running gh
 - S-055-4: `pr_gate.py --maintainer-accepted` exits 2 with a message saying the maintainer's acceptance is read from the answer on GitHub
-- S-055-5: `pr_gate.py` reads a pull request with an `ask` zone (or a Protected areas glob without `[agents]`) on CI alone when the newest needs-decision question on it names the judged head on its `CI on <sha7>` line and has a first trusted answer that takes the `(recommended)` option; a commit's date and a force-push's `beforeCommit` name no answered head, and a question that names no head keeps NEEDS_DECISION with the line `` needs-decision: the question names no head: ask again with its `CI on <sha7>` line ``
+- S-055-5: `pr_gate.py` reads a pull request with an `ask` zone (or a Protected areas glob without `[agents]`) on CI alone when the newest needs-decision question on it names the judged head in full on its line `<!-- shipmill:head <40-hex sha> -->` (under its `CI on <sha7>` line) and has a first trusted answer that takes the `(recommended)` option; a commit's date, a force-push's `beforeCommit`, and a head sharing only the named head's 7-hex prefix are not covered, and a question without that line keeps NEEDS_DECISION with the line `` needs-decision: the question names no head: ask again with its `<!-- shipmill:head <sha> -->` line ``
 - S-055-6: The same answer covers a judged head after a rebase or a merge of the base whose own change (the patch from the merge-base to the head) equals the answered head's, and doesn't cover one whose own change differs, which reads NEEDS_DECISION with the line `needs-decision: answered at <sha7>, and the change differs since`
 - S-055-7: An accepting answer on an issue the pull request closes or names as `Part of #N`, when the pull request has no question of its own and the App or an OWNER, MEMBER, or COLLABORATOR opened it, counts as on the pull request; one given before the pull request opened covers every head. Any other author's pull request is answered only on its own question
 - S-055-8: `pr_gate.py` keeps NEEDS_DECISION for no answer, a CONTRIBUTOR's or another bot's reply, a reply carrying the agent marker, a reply that picks another option or answers in its own words, a reply with any line past the option (its whole reply is read; a relay's `Decision by` line, `Answered in the session:`, and the agent marker are no part of it), and an answer to a question a newer question follows

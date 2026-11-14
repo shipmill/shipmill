@@ -23,17 +23,16 @@ none, a login whose permission on the repo is admin, one read of
 no maintainer); that answer's whole reply (every non-blank line, a relay's past its first line
 and `Answered in the session:`) being one line that takes the option marked (recommended) as it
 stands. It lifts the asks, and CI decides, when it covers the judged head: one given on an issue
-before the PR opened covers every head; any other covers the head its question names on its
-`CI on <sha7>` line (the PR's one commit, head, or force-pushed-over head starting so, else the
-commit the checkout resolves it to) and every head whose own change, `git diff $(git merge-base
-origin/<base> <head>) <head>`, is the same, or, for a PR adding a spec, whose spec files
-`specs.py same-approval` reads the same (exit 0) and whose other files' patch is the same.
-Otherwise the asks stay, with `  needs-decision: answered at <sha7>, and the change differs
-since`, `  needs-decision: the answer doesn't take the recommended option`, `  needs-decision:
-the question names no head: ask again with its `CI on <sha7>` line`, or `  needs-decision: the
-head the answer was given at can't be named`. It costs one GraphQL read of the PR's opener,
-newest 100 comments, and force-pushes, and one of the issues' when the PR has no question; a
-never zone stays MAINTAINER_ONLY whatever the answer.
+before the PR opened covers every head; any other covers the head its question names in full
+on its line `<!-- shipmill:head <sha> -->` (under its visible `CI on <sha7>` line), that exact
+commit, and every head whose own change, `git diff $(git merge-base origin/<base> <head>)
+<head>`, is the same as that commit's, or, for a PR adding a spec, whose spec files `specs.py
+same-approval` reads the same (exit 0) and whose other files' patch is the same. Otherwise the
+asks stay, with `  needs-decision: answered at <sha7>, and the change differs since`,
+`  needs-decision: the answer doesn't take the recommended option`, or `  needs-decision: the
+question names no head: ask again with its `<!-- shipmill:head <sha> -->` line`. It costs one
+GraphQL read of the PR's opener, newest 100 comments, and force-pushes, and one of the issues'
+when the PR has no question; a never zone stays MAINTAINER_ONLY whatever the answer.
 
 REVIEW.md and docs/product.md are read from the default branch of the checkout
 (--checkout, default the current directory, at origin/HEAD, or at origin/<the PR's base
@@ -1281,12 +1280,12 @@ FORCE_PUSHES = (
 )
 OPENED_BY = "author { __typename login } authorAssociation"  # who opened the pull request (S-055-7)
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
-# the head a question on a pull request was asked at: its line `CI on <sha7>: ...` (needs-decision.md, #1028)
-ASKED_AT = re.compile(r"^`?CI on `?([0-9a-f]{7,40})(?![0-9a-f])")
+# the head a question on a pull request was asked at, in full: its hidden line under `CI on <sha7>: ...`
+# (needs-decision.md); a 7-hex prefix is no name, since a commit sharing it can be made to order
+ASKED_AT = re.compile(r"<!-- shipmill:head ([0-9a-f]{40}) -->")
 DIFFERS = "answered at {sha7}, and the change differs since"
 NOT_RECOMMENDED = "the answer doesn't take the recommended option"
-UNNAMED = "the head the answer was given at can't be named"
-NO_HEAD = "the question names no head: ask again with its `CI on <sha7>` line"
+NO_HEAD = "the question names no head: ask again with its `<!-- shipmill:head <sha> -->` line"
 
 
 def thread_read(number: int) -> list[str]:
@@ -1359,40 +1358,15 @@ def issue_question(data: dict, number: int, repo: str | None, bots: frozenset[st
 
 
 def asked_at(question: str) -> str | None:
-    """The head a question names on its `CI on <sha7>` line, abbreviated as written; None
-    without one (S-055-5): a commit's date is its author's to set, and a force-push's
-    beforeCommit may be a head pushed after the answer, so neither names what was answered"""
+    """The full head a question names on its line `<!-- shipmill:head <sha> -->`; None without
+    one (S-055-5): a commit's date is its author's to set, a force-push's beforeCommit may be a
+    head pushed after the answer, and a 7-hex prefix can be matched by a commit made to order,
+    so none of them names what was answered"""
     for line in question.splitlines():
-        found = ASKED_AT.match(line.strip())
+        found = ASKED_AT.fullmatch(line.strip())
         if found is not None:
             return found.group(1)
     return None
-
-
-def full_head(named: str, data: dict, thread: dict, checkout: str, number: int) -> str | None:
-    """The full SHA of the head a question names: the one commit of the pull request, its head,
-    or a head a force-push replaced that starts with it; else the commit the checkout resolves
-    it to. None when none or two of them do"""
-    items = thread.get("timelineItems")
-    nodes = items.get("nodes") if isinstance(items, dict) else None
-    if not isinstance(nodes, list):
-        raise GateError(f"the force-pushes of #{number} are not {{nodes, pageInfo}}: {items!r}")
-    known = {str(data["headRefOid"])}
-    for commit in data.get("commits") or ():
-        if not isinstance(commit, dict) or not isinstance(commit.get("oid"), str):
-            raise GateError(f"a commit of #{number} is not {{oid}}: {commit!r}")
-        known.add(commit["oid"])
-    for event in nodes:
-        if not isinstance(event, dict):
-            raise GateError(f"a force-push of #{number} is not {{createdAt, beforeCommit}}: {event!r}")
-        before = event.get("beforeCommit")
-        if isinstance(before, dict) and isinstance(before.get("oid"), str):
-            known.add(before["oid"])
-    found = {sha for sha in known if FULL_SHA.fullmatch(sha) and sha.startswith(named)}
-    if found:
-        return found.pop() if len(found) == 1 else None
-    sha = quiet(checkout, "rev-parse", "--verify", "--quiet", f"{named}^{{commit}}")
-    return sha.strip() if sha is not None and FULL_SHA.fullmatch(sha.strip()) else None
 
 
 def whole_reply(comment: dict, bots: frozenset[str]) -> str | None:
@@ -1451,9 +1425,9 @@ def acceptance(
     opened, on an issue it closes or names as Part of #N; its first trusted answer, by
     retro.py's answer_at (a relay by the --bot-login counts when it names one of maintainers);
     its whole reply taking the (recommended) option, by retro.py's takes_recommended; given on
-    an issue before the pull request opened, or at the head the question names (its `CI on
-    <sha7>` line) or one whose own change is the judged head's. Anything else leaves the
-    question open"""
+    an issue before the pull request opened, or at the head the question names in full (its
+    `<!-- shipmill:head <sha> -->` line) or one whose own change is the judged head's. Anything
+    else leaves the question open"""
     rt = retro()
     bots = frozenset({bot_login}) if bot_login else frozenset()
     thread = pr_thread(number, repo)
@@ -1481,12 +1455,9 @@ def acceptance(
     if on_issue and at < moment(thread.get("createdAt"), f"#{number}'s createdAt"):
         return True, None  # given before the pull request opened: it covers every head
     head = str(data["headRefOid"])
-    named = asked_at(comments[asked]["body"])
-    if named is None:
-        return False, NO_HEAD
-    answered = full_head(named, data, thread, checkout, number)
+    answered = asked_at(comments[asked]["body"])
     if answered is None:
-        return False, UNNAMED
+        return False, NO_HEAD
     if answered == head:
         return True, None
     base_ref = f"origin/{data['baseRefName']}"
