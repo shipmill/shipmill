@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.133.0] - 2026-11-14
+
+### Changed
+
+- The reviewer brief names a service's risks too: charges and refunds, status transitions, several writes without a transaction, repeated requests and retried jobs, and access to other users' records and migrations; and it asks the reviewer to find where the code holds each invariant the plan or issue lists (#1143)
+
 ## [0.132.0] - 2026-11-14
 
 ### Added
@@ -2511,7 +2517,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.132.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.133.0...HEAD
+[0.133.0]: https://github.com/shipmill/shipmill/compare/v0.132.0...v0.133.0
 [0.132.0]: https://github.com/shipmill/shipmill/compare/v0.131.0...v0.132.0
 [0.131.0]: https://github.com/shipmill/shipmill/compare/v0.130.0...v0.131.0
 [0.130.0]: https://github.com/shipmill/shipmill/compare/v0.129.0...v0.130.0
