@@ -232,7 +232,7 @@ def cant_start(result: subprocess.CompletedProcess[str]) -> None:
 
 def test_s026_19_hooks_json_declares_both_hooks() -> None:
     hooks = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
-    assert set(hooks) == set(MODES)
+    assert set(hooks) == {*MODES, "Stop"}  # spec 062 added the Stop hook
     assert [entry["matcher"] for entry in hooks["PreToolUse"]] == ["Bash"]
     assert [entry["matcher"] for entry in hooks["PostToolUse"]] == ["Edit|Write|MultiEdit"]
     for event, mode in MODES.items():
@@ -1586,7 +1586,7 @@ def test_s037_11_every_fixture_answers_alike_with_identity_set(
             data["tool_input"]["file_path"] = str(root / data["tool_input"]["file_path"].removeprefix(FIXTURE_ROOT))
             answers.append(anywhere(stub.run(data), root))
         else:
-            answers.append(anywhere(hook(data), root))
+            answers.append(anywhere(hook(data, "stop" if data["hook_event_name"] == "Stop" else "pre"), root))
     assert answers[0] == answers[1]
 
 
@@ -1785,3 +1785,418 @@ def test_d82_the_shipmill_gh_branch_still_reads_uv_and_uvx(box: Sandbox) -> None
         bash("uvx shipmill==0.126.0 gh pr merge 7 --rebase", box.app, env=gate_env()), "rebase-merge", "D-33"
     )
     assert squash[-1] == "--squash"
+
+
+# --- Spec 062: the Stop hook, a headless session's request to the maintainer on GitHub ---------
+
+LOGIN = "octo-maint"  # the login the fixtures' final texts name
+MAINTAINER = "SHIPMILL_MAINTAINER"
+STOP_LINES = [
+    f"shipmill hook request-on-github: your final message asks @{LOGIN} for something, and this session filed no"
+    " issue and labelled nothing needs-decision",
+    "Rule: a headless session's request to the maintainer is on GitHub before it ends (needs-decision.md, Gate"
+    " sessions)",
+    "Instead: post each request as a needs-decision question on its item, or file an issue for one with no item;"
+    " if each is already on GitHub, end with a line naming it as owner/repo#N. You can end after this.",
+]
+TRANSCRIPTS = {
+    "stop-refused.json": "stop-refused.jsonl",
+    "stop-active.json": "stop-refused.jsonl",
+    "stop-request.json": "stop-request.jsonl",
+    "stop-no-address.json": "stop-no-address.jsonl",
+}
+
+
+def stop_env() -> dict[str, str]:
+    """The hook's environment in a headless gate session: SHIPMILL_GATE=1 and the maintainer"""
+    return {**AVAILABLE, GATE_SESSION: "1", MAINTAINER: LOGIN}
+
+
+def stop_fixture(name: str, cwd: Path, **changes: object) -> dict[str, Any]:
+    """A Stop fixture run in cwd, its transcript_path the fixture transcript it pairs with"""
+    data = fixture(name, cwd)
+    data["transcript_path"] = str(FIXTURES / TRANSCRIPTS[name])
+    return {**data, **changes}
+
+
+def stop_hook(data: object, temp: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    """delivery.py's main in process for `stop`, its refusal records kept in temp"""
+    text = data if isinstance(data, str) else json.dumps(data)
+    stderr = io.StringIO()
+    code = DELIVERY.main(["stop"], io.StringIO(text), stderr, env=stop_env() if env is None else env, temp=temp)
+    assert isinstance(code, int)
+    return subprocess.CompletedProcess([str(SCRIPT), "stop"], code, "", stderr.getvalue())
+
+
+def stop_refused(result: subprocess.CompletedProcess[str], login: str = LOGIN) -> None:
+    assert (result.returncode, result.stdout) == (2, ""), result.stderr
+    assert result.stderr == "".join(f"{line.replace(LOGIN, login)}\n" for line in STOP_LINES)
+
+
+def unreadable(result: subprocess.CompletedProcess[str], what: str) -> None:
+    """Exit 1, never 2, with one stderr line naming what couldn't be read"""
+    assert (result.returncode, result.stdout) == (1, ""), result.stderr
+    assert len(result.stderr.splitlines()) == 1 and result.stderr.endswith("\n"), result.stderr
+    assert result.stderr.startswith("shipmill hook: ") and what in result.stderr, result.stderr
+
+
+def assistant(text: str | None = None, use: tuple[str, str] | None = None, sidechain: bool = False) -> dict[str, Any]:
+    """A transcript entry of the main session's assistant: a text block, or a Bash tool_use (id, command)"""
+    block: dict[str, Any] = (
+        {"type": "text", "text": text}
+        if use is None
+        else {"type": "tool_use", "id": use[0], "name": "Bash", "input": {"command": use[1], "description": "x"}}
+    )
+    message = {"id": f"msg_{use[0] if use else text}", "type": "message", "role": "assistant", "content": [block]}
+    return {"isSidechain": sidechain, "type": "assistant", "message": message, "uuid": "u"}
+
+
+def tool_result(use: str, error: bool) -> dict[str, Any]:
+    content = [{"tool_use_id": use, "type": "tool_result", "content": "out", "is_error": error}]
+    return {"isSidechain": False, "type": "user", "message": {"role": "user", "content": content}, "uuid": "u"}
+
+
+def transcript(folder: Path, entries: Sequence[object], name: str = "transcript.jsonl") -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    path.write_text("".join(f"{json.dumps(entry)}\n" for entry in entries), encoding="utf-8")
+    return path
+
+
+def checked_stop(cwd: Path, path: Path, **changes: object) -> dict[str, Any]:
+    return stop_fixture("stop-refused.json", cwd, transcript_path=str(path), **changes)
+
+
+# --- S-062-1, S-062-13: the hooks file and the fixtures ---
+
+
+def test_s062_1_hooks_json_declares_a_stop_hook_through_the_same_snippet() -> None:
+    hooks = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))["hooks"]
+    (entry,) = hooks["Stop"]
+    assert "matcher" not in entry
+    (declared,) = entry["hooks"]
+    assert (declared["type"], declared["timeout"]) == ("command", 10)
+    assert declared["command"] == hook_command("PreToolUse").replace(' "$d" pre;', ' "$d" stop;')
+    assert declared["command"].count('exec "$p" "$d" stop;') == 1
+
+
+def test_s062_1_the_stop_hook_refuses_through_the_shell(box: Sandbox, tmp_path: Path) -> None:
+    if shutil.which("uv") is None:
+        pytest.fail("uv runs the hooks")
+    env = {**os.environ, GATE_SESSION: "1", MAINTAINER: LOGIN, "TMPDIR": str(tmp_path)}
+    stop_refused(through_shell("Stop", stop_fixture("stop-refused.json", box.agents), env))
+    assert (tmp_path / "shipmill-stop-00000000-0000-4000-8000-000000000062").is_file()
+    assert through_shell("Stop", stop_fixture("stop-refused.json", box.agents), env).returncode == 0
+
+
+def test_s062_1_a_stop_hook_that_cant_start_exits_1(box: Sandbox, tmp_path: Path) -> None:
+    data = stop_fixture("stop-refused.json", box.agents)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    result = through_shell("Stop", data, {**clean_env(empty), GATE_SESSION: "1", MAINTAINER: LOGIN})
+    cant_start(result)
+    assert "(uv is not on PATH)" in result.stderr
+    fake = tmp_path / "fake"
+    fake.mkdir()
+    (fake / "uv").write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+    (fake / "uv").chmod(0o755)
+    result = through_shell("Stop", data, clean_env(fake))
+    cant_start(result)
+    assert "(uv can find or install no Python 3.11 or newer)" in result.stderr
+    result = through_shell("Stop", data, clean_env(only_uv(tmp_path / "bin")), tmp_path / "no-plugin")
+    cant_start(result)
+    assert f"(no file {tmp_path / 'no-plugin' / 'hooks' / 'delivery.py'})" in result.stderr
+
+
+def test_s062_13_fixtures_hold_the_four_stops_in_claude_codes_shape() -> None:
+    for name, jsonl in TRANSCRIPTS.items():
+        data = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+        assert set(data) == {"session_id", "transcript_path", "cwd", "permission_mode", "hook_event_name"} | {
+            "stop_hook_active"
+        }
+        assert data["hook_event_name"] == "Stop" and data["stop_hook_active"] is (name == "stop-active.json")
+        lines = (FIXTURES / jsonl).read_text(encoding="utf-8").splitlines()
+        entries = [json.loads(line) for line in lines]
+        assert entries[-1]["type"] == "assistant" and entries[-1]["message"]["stop_reason"] == "end_turn"
+        for entry in entries:
+            if entry["type"] in ("user", "assistant"):
+                assert {"parentUuid", "isSidechain", "sessionId", "uuid", "timestamp", "message"} <= set(entry)
+
+
+def test_s062_13_each_fixture_answers_as_its_case(box: Sandbox, tmp_path: Path) -> None:
+    for name in ("stop-request.json", "stop-active.json", "stop-no-address.json"):
+        allowed(stop_hook(stop_fixture(name, box.agents), tmp_path))
+    stop_refused(stop_hook(stop_fixture("stop-refused.json", box.agents), tmp_path))
+
+
+def test_s062_13_the_script_as_a_process_answers_as_main(box: Sandbox, tmp_path: Path) -> None:
+    for name in TRANSCRIPTS:
+        data = stop_fixture(name, box.app)
+        env = {**os.environ, **stop_env(), "TMPDIR": str(tmp_path / name / "process")}
+        (tmp_path / name / "process").mkdir(parents=True)
+        (tmp_path / name / "main").mkdir()
+        command = [sys.executable, str(SCRIPT), "stop"]
+        result = subprocess.run(command, input=json.dumps(data), env=env, capture_output=True, text=True, check=False)
+        assert answer(result) == answer(stop_hook(data, tmp_path / name / "main"))
+
+
+# --- S-062-2, S-062-3: where a stop is checked ---
+
+
+def test_s062_2_an_unchecked_stop_exits_0_and_reads_no_transcript(box: Sandbox, tmp_path: Path) -> None:
+    """The transcript path doesn't exist: a read would exit 1"""
+    data = stop_fixture("stop-refused.json", box.agents, transcript_path=str(tmp_path / "none.jsonl"))
+    for value in ("", "0", "true"):
+        allowed(stop_hook(data, tmp_path, {**stop_env(), GATE_SESSION: value}))
+    allowed(stop_hook(data, tmp_path, {k: v for k, v in stop_env().items() if k != GATE_SESSION}))
+    for folder in (box.outside, box.bare, box.release, box.release / ".github"):
+        allowed(stop_hook({**data, "cwd": str(folder)}, tmp_path))
+    unreadable(stop_hook(data, tmp_path), "the transcript can't be read")  # where it is checked, it reads
+
+
+def test_s062_2_only_a_stop_input_is_checked(box: Sandbox, tmp_path: Path) -> None:
+    data = stop_fixture("stop-refused.json", box.agents, hook_event_name="SubagentStop")
+    allowed(stop_hook(data, tmp_path))
+    unreadable(stop_hook("not json", tmp_path), "stdin is not JSON")
+    unreadable(stop_hook("[]", tmp_path), "stdin is not a JSON object")
+    unreadable(stop_hook("{}", tmp_path), "hook_event_name")
+
+
+def test_s062_3_stop_hook_active_exits_0_whatever_the_text(box: Sandbox, tmp_path: Path) -> None:
+    allowed(stop_hook(stop_fixture("stop-active.json", box.agents), tmp_path))
+    data = stop_fixture(
+        "stop-active.json",
+        box.agents,
+        transcript_path=str(tmp_path / "none.jsonl"),
+        last_assistant_message=f"@{LOGIN} For you: rotate the key",
+        session_id="../x",
+    )
+    allowed(stop_hook(data, tmp_path))
+    assert list(tmp_path.iterdir()) == []
+
+
+# --- S-062-4, S-062-5, S-062-9: the final text addresses the maintainer ---
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"Please rotate the key, @{LOGIN}.",
+        f"Asked `@{LOGIN}` nothing yet",
+        f"@{LOGIN.upper()} the log may hold a password",
+        f"(cc @{LOGIN.title()})",
+        f"@{LOGIN}",
+    ],
+)
+def test_s062_4_naming_the_login_is_refused(box: Sandbox, tmp_path: Path, text: str) -> None:
+    data = stop_fixture("stop-no-address.json", box.agents, last_assistant_message=text)
+    stop_refused(stop_hook(data, tmp_path))
+
+
+@pytest.mark.parametrize("text", [f"Thanks @{LOGIN}x", f"see @{LOGIN}-bot", f"{LOGIN} merged it", "@octo"])
+def test_s062_4_another_login_doesnt_address_the_maintainer(box: Sandbox, tmp_path: Path, text: str) -> None:
+    data = stop_fixture("stop-no-address.json", box.agents, last_assistant_message=text)
+    allowed(stop_hook(data, tmp_path))
+
+
+def test_s062_4_the_refusal_names_the_login_from_the_environment(box: Sandbox, tmp_path: Path) -> None:
+    data = stop_fixture("stop-no-address.json", box.agents, last_assistant_message="ask @Someone-Else now")
+    stop_refused(stop_hook(data, tmp_path, {**stop_env(), MAINTAINER: "someone-else"}), "someone-else")
+
+
+PHRASES = list(DELIVERY.ADDRESSES)
+MARKUP = ["", "   ", "## ", "> ", "- ", "* ", "**", "_", "1. ", "12. ", "- **", "> 2. *"]
+
+
+def test_s062_5_addresses_lists_the_specs_phrases() -> None:
+    assert PHRASES == [
+        "For you",
+        "For the maintainer",
+        "For @",
+        "Decision needed",
+        "Needs your decision",
+        "Action needed",
+        "Your turn",
+    ]
+
+
+@pytest.mark.parametrize("markup", MARKUP)
+@pytest.mark.parametrize("phrase", PHRASES)
+def test_s062_5_a_line_starting_with_a_phrase_is_refused(
+    box: Sandbox, tmp_path: Path, phrase: str, markup: str
+) -> None:
+    text = f"Landed owner/project#42.\n\n{markup}{phrase.upper() if markup == '_' else phrase} rotate the key"
+    data = stop_fixture("stop-no-address.json", box.agents, last_assistant_message=text)
+    stop_refused(stop_hook(data, tmp_path))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Landed owner/project#42; nothing is left for anyone.",
+        "This is for you to read later, maybe.",  # a phrase inside a line, not starting it
+        "Waiting on CI. Your turn comes later in the line",
+        "",
+    ],
+)
+def test_s062_5_a_text_that_addresses_no_one_exits_0(box: Sandbox, tmp_path: Path, text: str) -> None:
+    data = stop_fixture("stop-no-address.json", box.agents, last_assistant_message=text)
+    allowed(stop_hook(data, tmp_path))
+
+
+def test_s062_9_last_assistant_message_is_the_final_text(box: Sandbox, tmp_path: Path) -> None:
+    """The input's string wins over the transcript both ways"""
+    data = stop_fixture("stop-no-address.json", box.agents, last_assistant_message=f"For you: @{LOGIN}")
+    stop_refused(stop_hook(data, tmp_path))
+    data = stop_fixture("stop-refused.json", box.agents, last_assistant_message="Landed it.")
+    allowed(stop_hook(data, tmp_path))
+
+
+@pytest.mark.parametrize("value", [None, 7, ["For you"], {"text": "x"}])
+def test_s062_9_otherwise_the_transcripts_last_assistant_entry(box: Sandbox, tmp_path: Path, value: object) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    stop_refused(stop_hook(stop_fixture("stop-refused.json", box.agents, last_assistant_message=value), tmp_path / "a"))
+    allowed(stop_hook(stop_fixture("stop-no-address.json", box.agents, last_assistant_message=value), tmp_path / "b"))
+
+
+def test_s062_9_only_the_last_assistant_message_counts(box: Sandbox, tmp_path: Path) -> None:
+    """An earlier message's address, and a subagent's (sidechain) entry, aren't the final text"""
+    path = transcript(
+        tmp_path / "t",
+        [assistant(f"For you: @{LOGIN}"), assistant("Landed it."), assistant("For you", sidechain=True)],
+    )
+    allowed(stop_hook(checked_stop(box.agents, path), tmp_path))
+
+
+# --- S-062-6: the session put a request on GitHub ---
+
+PREFIXES = ["", "uvx shipmill==0.128.4 ", "shipmill ", "uvx --from git+https://github.com/x/shipmill shipmill "]
+REQUESTS = [
+    "gh issue create --title 'Rotate the key' --body-file tmp/b.md",
+    "gh issue edit 41 --add-label needs-decision",
+    "gh pr edit 42 --add-label bug,needs-decision",
+    "gh issue edit 41 --add-label=needs-decision",
+    "gh -R owner/project issue edit 41 --add-label needs-decision",
+]
+
+
+def requesting(folder: Path, command: str, error: bool) -> Path:
+    return transcript(
+        folder,
+        [assistant(use=("toolu_1", command)), tool_result("toolu_1", error), assistant(f"For you: @{LOGIN}")],
+    )
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+@pytest.mark.parametrize("write", REQUESTS)
+def test_s062_6_a_successful_request_lets_the_session_end(
+    box: Sandbox, tmp_path: Path, prefix: str, write: str
+) -> None:
+    allowed(stop_hook(checked_stop(box.agents, requesting(tmp_path / "ok", f"{prefix}{write}", False)), tmp_path))
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+@pytest.mark.parametrize("write", REQUESTS)
+def test_s062_6_a_failed_request_is_no_request(box: Sandbox, tmp_path: Path, prefix: str, write: str) -> None:
+    stop_refused(stop_hook(checked_stop(box.agents, requesting(tmp_path / "t", f"{prefix}{write}", True)), tmp_path))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gh issue comment 41 --body-file tmp/q.md",
+        "uvx shipmill==0.128.4 gh issue comment 41 --body 'needs-decision'",
+        "gh issue edit 41 --add-label bug",
+        "gh issue edit 41 --remove-label needs-decision",
+        "gh issue view 41",
+        "gh label create needs-decision",
+        "echo gh issue create",
+    ],
+)
+def test_s062_6_another_command_is_no_request(box: Sandbox, tmp_path: Path, command: str) -> None:
+    stop_refused(stop_hook(checked_stop(box.agents, requesting(tmp_path / "t", command, False)), tmp_path))
+
+
+def test_s062_6_a_request_with_no_result_or_a_subagents_is_no_request(box: Sandbox, tmp_path: Path) -> None:
+    create = ("toolu_1", "gh issue create --title x --body y")
+    no_result = transcript(tmp_path / "a", [assistant(use=create), assistant("For you")])
+    stop_refused(stop_hook(checked_stop(box.agents, no_result), tmp_path / "a"))
+    sidechain = transcript(
+        tmp_path / "b", [assistant(use=create, sidechain=True), tool_result("toolu_1", False), assistant("For you")]
+    )
+    stop_refused(stop_hook(checked_stop(box.agents, sidechain), tmp_path / "b"))
+
+
+def test_s062_6_a_request_in_a_compound_command_counts(box: Sandbox, tmp_path: Path) -> None:
+    path = requesting(
+        tmp_path / "t", "cd sub && gh issue view 41 && gh issue edit 41 --add-label needs-decision", False
+    )
+    allowed(stop_hook(checked_stop(box.agents, path), tmp_path))
+
+
+# --- S-062-7: at most one refusal per session ---
+
+
+def test_s062_7_a_session_is_refused_once(box: Sandbox, tmp_path: Path) -> None:
+    data = stop_fixture("stop-refused.json", box.agents)
+    stop_refused(stop_hook(data, tmp_path))
+    assert [p.name for p in tmp_path.iterdir()] == ["shipmill-stop-00000000-0000-4000-8000-000000000062"]
+    assert (tmp_path / "shipmill-stop-00000000-0000-4000-8000-000000000062").read_bytes() == b""
+    allowed(stop_hook(data, tmp_path))  # stop_hook_active false, the same session_id
+    stop_refused(stop_hook({**data, "session_id": "another-session"}, tmp_path))
+
+
+def test_s062_7_a_record_that_cant_be_created_lets_the_session_end(box: Sandbox, tmp_path: Path) -> None:
+    allowed(stop_hook(stop_fixture("stop-refused.json", box.agents), tmp_path / "no-such-folder"))
+
+
+# --- S-062-8: what the hook can't read lets the session end ---
+
+
+def test_s062_8_a_missing_transcript_exits_1(box: Sandbox, tmp_path: Path) -> None:
+    unreadable(stop_hook(checked_stop(box.agents, tmp_path / "none.jsonl"), tmp_path), "the transcript can't be read")
+    data = checked_stop(box.agents, tmp_path / "none.jsonl", last_assistant_message="For you")
+    unreadable(stop_hook(data, tmp_path), "the transcript can't be read")
+    no_path = stop_fixture("stop-refused.json", box.agents, transcript_path=None)
+    unreadable(stop_hook(no_path, tmp_path), "transcript_path")
+
+
+def test_s062_8_a_line_that_isnt_json_exits_1(box: Sandbox, tmp_path: Path) -> None:
+    path = transcript(tmp_path / "t", [assistant("For you")])
+    path.write_text(path.read_text(encoding="utf-8") + "{not json\n", encoding="utf-8")
+    unreadable(stop_hook(checked_stop(box.agents, path), tmp_path), "line 2 is not JSON")
+    path.write_text('"a string"\n', encoding="utf-8")
+    unreadable(stop_hook(checked_stop(box.agents, path), tmp_path), "line 1 is not a JSON object")
+
+
+def test_s062_8_no_assistant_text_exits_1(box: Sandbox, tmp_path: Path) -> None:
+    only_user = transcript(tmp_path / "a", [tool_result("toolu_1", False)])
+    unreadable(stop_hook(checked_stop(box.agents, only_user), tmp_path), "no assistant entry")
+    ends_in_a_tool = transcript(tmp_path / "b", [assistant("For you"), assistant(use=("toolu_1", "ls"))])
+    unreadable(stop_hook(checked_stop(box.agents, ends_in_a_tool), tmp_path), "holds no text")
+
+
+def test_s062_8_no_maintainer_exits_1(box: Sandbox, tmp_path: Path) -> None:
+    data = stop_fixture("stop-refused.json", box.agents)
+    for env in ({GATE_SESSION: "1"}, {GATE_SESSION: "1", MAINTAINER: ""}, {GATE_SESSION: "1", MAINTAINER: "a b"}):
+        unreadable(stop_hook(data, tmp_path, env), MAINTAINER)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("session", ["../../etc/x", "a/b", "", "a.b", 7, None])
+def test_s062_8_a_session_id_outside_the_pattern_exits_1(box: Sandbox, tmp_path: Path, session: object) -> None:
+    unreadable(stop_hook(stop_fixture("stop-refused.json", box.agents, session_id=session), tmp_path), "session_id")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_s062_8_a_broken_config_exits_1(tmp_path: Path) -> None:
+    root = git_repo(tmp_path / "broken", "[agents\n")
+    unreadable(stop_hook(stop_fixture("stop-refused.json", root), tmp_path), "the config doesn't parse")
+
+
+def test_s062_the_pre_and_post_hooks_still_read_their_own_events(box: Sandbox) -> None:
+    """Adding stop leaves the other modes' usage and event checks as they were"""
+    result = hook(stop_fixture("stop-refused.json", box.agents), "pre")
+    assert result.returncode == 1 and "tool_name" in result.stderr
+    assert hook("{}", "nope").stderr.startswith("usage: delivery.py pre|post|stop")
