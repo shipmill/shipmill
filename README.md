@@ -132,6 +132,7 @@ has the details.
 | [Direction](https://github.com/shipmill/shipmill/blob/main/docs/direction.md) | The `docs/product.md` you write when agents implement: what it holds, what the agents do with it, and how you change it |
 | [Release lanes](https://github.com/shipmill/shipmill/blob/main/docs/release-lanes.md) | The policy file, environments, operate, autonomy, versions, the CLI, and limits |
 | [Decisions](https://github.com/shipmill/shipmill/blob/main/docs/decisions.md) | The rules shipmill follows and why |
+| [Software factory](https://github.com/shipmill/shipmill/blob/main/docs/software-factory.md) | shipmill mapped to the terms of the `software-factory` skill: which part fills each slot and task, and the three brakes |
 | [Changelog](https://github.com/shipmill/shipmill/blob/main/CHANGELOG.md) | What changed in each release |
 
 ## Status
