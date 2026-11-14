@@ -867,6 +867,7 @@ ASKED = after(0)
         ([comment("Derive it in retro.py", after(1), association="MEMBER")], 1),  # the option's name
         ([bot(relay("1."), after(1))], 1),  # the App's relay, the login in a code span
         ([bot(relay("Answered in the session: 1", "@amy"), after(1))], 1),  # the template, bare login
+        ([bot(relay("Answered in the session: 1. Derive it in `retro.py`"), after(1))], 1),  # as listed (#1150)
         ([comment("1, narrowed: only the retro", after(1))], 0),  # narrows the option
         ([bot(relay("1, but only these commands"), after(1))], 0),
         ([comment("2", after(1))], 0),  # another option
@@ -889,6 +890,35 @@ def test_s030_18_a_question_without_answer_reads_the_first_answer_after_it(
     counts, _ = rt.decision_counts(threads, rt.weeks(END, 7, 1), ["contract-change"], bots, maintainers)
     assert counts[0]["contract-change"]["asks"] >= 1
     assert counts[0]["contract-change"]["recommended"] == recommended
+
+
+@pytest.mark.parametrize(
+    ("answer", "takes"),
+    [
+        ("1. Derive it in `retro.py`", True),  # the option as listed, number and text (#1150)
+        ("1) Derive it in retro.py", True),
+        ("1: Derive it in retro.py", True),
+        ("Option 1: Derive it in retro.py", True),
+        ("Option 1. Derive it in retro.py.", True),
+        ("**1. Derive it in `retro.py`**", True),  # bold
+        ("**1.** Derive it in retro.py", True),
+        ("1. Derive it in `retro.py` (recommended)", True),  # with its mark repeated
+        ("2. Derive it in retro.py", False),  # a number and a text naming different options
+        ("1. Keep the zone line", False),
+        ("2. Keep the zone line", False),  # another option, as listed
+        ("1. Derive it in retro.py but rename the count", False),  # extra words after the option
+        ("1. Derive it in retro.py, only the asks", False),  # narrows it
+        ("1. Derive it", False),  # a prefix of its text
+        ("1. Derive it in retro.py (recommended): every answer counts", False),  # past the mark
+        ("1.Derive it in retro.py", False),  # no space after the number's stop
+        ("1", True),  # the number alone and the text alone stay as they were
+        ("Option 1", True),
+        ("Derive it in retro.py", True),
+        ("Derive it", False),
+    ],
+)
+def test_s055_19_the_option_as_listed_number_and_text_takes_it(rt: ModuleType, answer: str, takes: bool) -> None:
+    assert rt.takes_recommended(OPTIONS, answer) is takes
 
 
 @pytest.mark.parametrize(("stated", "reply", "recommended"), [("other", "1", 0), ("recommended", "2", 1)])

@@ -41,7 +41,7 @@ gather   runs metrics.py over the --days to now and over the --days before that,
          question (a trusted person's reply without the agent marker, or a --bot login's
          relay `Decision by @<login>` naming the maintainer the --role flags give), its first
          non-blank line taking the option marked (recommended) as it stands, its number or
-         its text alone; and the questions over the last --lower-after windows. It
+         its text alone or both as listed (`1. <text>`); and the questions over the last --lower-after windows. It
          proposes `Decision policy: <zone> from notify to ask` for a zone at notify with
          --raise-at vetoes or more this window, and `<zone> from ask to notify` for a zone at
          ask, above its floor, whose questions over the --lower-after windows number at least
@@ -842,6 +842,8 @@ ZONE_MARK = re.compile(r"^<!-- shipmill:zone ([a-z][a-z-]*)(?: answer=(recommend
 OPTION = re.compile(r"^\s*([1-9][0-9]*)\.\s+(.+)$")
 RECOMMENDED = " (recommended)"
 NUMBER_ALONE = re.compile(r"(?:option\s*)?#?([1-9][0-9]*)")  # "1", "1.", "Option 1", read after plain()
+# "1. <text>", "1) <text>", "1: <text>", "Option 1: <text>": the option as listed, read after plain()
+NUMBER_AND_TEXT = re.compile(r"(?:option\s*)?#?([1-9][0-9]*)[.):]\s+(.+)")
 SESSION_ANSWER = "Answered in the session:"  # the relay's answer line (needs-decision.md)
 # A relay's first line (D-68, D-70), the login bare or in a code span (D-61), and the agent marker
 # (spec 050): copied from triage_state.py, which the skill scripts can't import from each other;
@@ -1093,8 +1095,10 @@ def plain(text: str) -> str:
 
 def takes_recommended(question: str, answer: str) -> bool:
     """Whether an answer takes the question's option marked (recommended) as it stands: its
-    number alone ("1", "1.", "Option 1") or its text alone; an answer that narrows or departs
-    from it, another option, or one that can't be read, does not"""
+    number alone ("1", "1.", "Option 1"), its text alone, or both as listed ("1. <text>",
+    "1) <text>", "1: <text>", "Option 1: <text>", S-055-19); an answer that narrows or departs
+    from it, another option, a number and a text naming different options, or one that can't
+    be read, does not"""
     for line in question.splitlines():
         option = OPTION.match(line)
         if option is None or RECOMMENDED not in option.group(2):
@@ -1104,7 +1108,10 @@ def takes_recommended(question: str, answer: str) -> bool:
         name = plain(option.group(2).split(RECOMMENDED, 1)[0])
         if number is not None:
             return number.group(1) == option.group(1)
-        return bool(name) and said in (name, name + RECOMMENDED)
+        texts = (name, name + RECOMMENDED)
+        listed = NUMBER_AND_TEXT.fullmatch(said)
+        both = listed is not None and listed.group(1) == option.group(1) and listed.group(2) in texts
+        return bool(name) and (said in texts or both)
     return False
 
 
