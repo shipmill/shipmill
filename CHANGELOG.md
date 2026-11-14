@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.134.0] - 2026-11-14
+
+### Changed
+
+- `pr_gate.py` binds the maintainer's answer to the full head SHA its question names on a hidden `<!-- shipmill:head <sha> -->` line under `CI on <sha7>`, never to a commit's date, a force-push's `beforeCommit`, or a 7-character prefix, and asks again when the question has no such line; it reads the whole reply, so `1` followed by a request is the person's own words; and an answer on a linked issue counts only for a pull request the App or an OWNER, MEMBER, or COLLABORATOR opened (spec 055, S-055-5, S-055-7, S-055-8 revised) (#1122)
+
 ## [0.133.0] - 2026-11-14
 
 ### Changed
@@ -2517,7 +2523,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.133.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.134.0...HEAD
+[0.134.0]: https://github.com/shipmill/shipmill/compare/v0.133.0...v0.134.0
 [0.133.0]: https://github.com/shipmill/shipmill/compare/v0.132.0...v0.133.0
 [0.132.0]: https://github.com/shipmill/shipmill/compare/v0.131.0...v0.132.0
 [0.131.0]: https://github.com/shipmill/shipmill/compare/v0.130.0...v0.131.0
