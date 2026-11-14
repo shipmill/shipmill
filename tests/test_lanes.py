@@ -158,6 +158,42 @@ def test_stable_on_an_unmoved_main_fast_forwards_it(repo: Repo) -> None:
     assert "## [1.1.0]" in repo.main_text("CHANGELOG.md")
 
 
+def test_s054_8_the_push_of_a_release_commit_plans_no_release(repo: Repo) -> None:
+    """Pushed as the App (spec 054), the release commit starts the Release workflow; its plan,
+    queued behind the land job in the shipmill group, sees the tag and nothing pending"""
+    repo.merge(1, "Added", "Feature A")
+    release(repo, plan(repo, at_day(1)))
+    sha = release(repo, plan(repo, at_day(4), event=Event.MANUAL, lane=Lane.STABLE))
+    assert repo.git.remote_branch("main") == sha
+    for when in (at_day(4), at_day(4, 12)):  # at once, and once main has been quiet for hours
+        decision = plan(repo, when, event=Event.PUSH)
+        assert decision.action == "skip", decision.reason
+        assert "rc: nothing pending" in decision.reason
+        assert "dev: v1.1.0 already holds main's head" in decision.reason
+
+
+def test_s054_8_the_push_of_a_sync_commit_plans_no_release(repo: Repo) -> None:
+    """A stable release off a moved main lands a sync commit; nothing merged since the commit
+    that moved main, so its push plans nothing: the sync leaves no released entry pending"""
+    repo.merge(1, "Added", "Feature A")
+    release(repo, plan(repo, at_day(1)))
+    repo.at(at_day(1, 9))
+    repo.git.run("checkout", "-q", "main")
+    repo.write("docs/notes.md", "no changelog entry\n")
+    repo.git.run("add", "-A")
+    repo.git.run("commit", "-q", "-m", "Docs, after the rc")
+    repo.git.run("push", "-q", "origin", "main")  # main moves on with nothing to release
+    moved = repo.git.remote_branch("main")
+    sha = release(repo, plan(repo, at_day(1, 9), event=Event.MANUAL, lane=Lane.STABLE))
+    synced = repo.git.remote_branch("main")
+    assert synced is not None and synced not in (moved, sha)  # main got a sync commit
+    assert repo.git.run("log", "-1", "--format=%s", synced).strip() == "Sync 1.1.0 into main"
+    decision = plan(repo, at_day(1, 9), event=Event.PUSH)
+    assert decision.action == "skip", decision.reason
+    assert "rc: nothing pending" in decision.reason
+    assert "stable: no rc after 1.1.0 to promote" in decision.reason
+
+
 LEGACY_RC_SECTIONS = """\
 # Changelog
 

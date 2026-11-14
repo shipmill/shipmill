@@ -1154,10 +1154,12 @@ def _schedule(policy: Policy, caller: str, today: dt.date) -> Check:
     lacks = ticks.missing(needs, ticks.crons(caller))
     if lacks:
         listed = ", ".join(f'"{line}"' for line in lacks)
+        # the rewrite keeps the land job's opt-in, which it would otherwise drop (spec 054)
+        opt_in = "" if land_environment(caller) is None else " --land-as-app"
         detail = (
             f"{CALLER} lacks the cron{'' if len(lacks) == 1 else 's'} {listed} the policy's triggers need,"
             " so a due lane waits for the next push:"
-            f" rewrite it with `{cli_command()} init --caller --force`"
+            f" rewrite it with `{cli_command()} init --caller --force{opt_in}`"
         )
         return Check("WARN", "schedule", detail)
     if needs.hourly:

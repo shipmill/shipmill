@@ -10,12 +10,13 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from shipmill import UVX, requires
+from shipmill import UVX, cli_command, requires
 from shipmill.autonomy import DEPLOY_DEFAULT, Autonomy, AutonomyPolicy
 from shipmill.config import CONFIG_PATH, config_path, loads
 from shipmill.doctor import CALLER, DOWNSTREAM_CALLER, OPERATE_CALLER
 from shipmill.errors import ReleaseError
 from shipmill.gitrepo import Git
+from shipmill.landing import ENVIRONMENT
 from shipmill.policy import Policy, Style, VersionFiles
 from shipmill.requires import Requires
 from shipmill.ticks import HOURLY_TICKS, Ticks, needed
@@ -231,12 +232,20 @@ github_release = true
 '''
 
 
-def caller_text(d: Detected, ci: str, runs_on: RunsOn | None = None, ticks: Ticks = HOURLY_TICKS) -> str:
+def caller_text(
+    d: Detected,
+    ci: str,
+    runs_on: RunsOn | None = None,
+    ticks: Ticks = HOURLY_TICKS,
+    land_environment: str | None = None,
+) -> str:
     """The Release workflow; runs_on: the runner prepare.yml's and land.yml's jobs run on,
     which without it stay on their default, ubuntu-latest; ticks: the schedule the policy
-    needs, the hourly tick by default (spec 015)"""
+    needs, the hourly tick by default (spec 015); land_environment: the environment whose
+    SHIPMILL_LAND_KEY the land job pushes the protected branches with, as the App (spec 054)"""
     uses = f"{BOT_REPO}/.github/workflows"
     runner = "" if runs_on is None else f"\n      runs-on: {runs_on.yaml()}"
+    land = "" if land_environment is None else f"\n      land-environment: {land_environment}"
     return f"""name: Release
 
 # shipmill: https://github.com/{BOT_REPO}. The policy in
@@ -299,7 +308,7 @@ jobs:
       lane: ${{{{ needs.prepare.outputs.lane }}}}
       version: ${{{{ needs.prepare.outputs.version }}}}
       sha: ${{{{ needs.prepare.outputs.sha }}}}
-      base: ${{{{ needs.prepare.outputs.base }}}}{runner}
+      base: ${{{{ needs.prepare.outputs.base }}}}{runner}{land}
     permissions:
       contents: write # main, release branches, tags, and releases
       actions: write # starts the lane's dispatch workflows
@@ -402,16 +411,20 @@ def init(
     fragments: bool = True,
     runs_on: RunsOn | None = None,
     today: dt.date | None = None,
+    land_as_app: bool = False,
 ) -> Initialized:
     """Write .github/shipmill.toml and the caller workflow, and with fragments the fragments
     folder's README.md (spec 013); runs_on: the caller passes it as the release workflows'
     runner, and its schedule is the one the written policy needs from today, by default the
     UTC date (spec 015). The policy or the caller already there refuses without force; with
-    force, they are overwritten. A README.md already in the folder is kept."""
+    force, they are overwritten. A README.md already in the folder is kept. land_as_app
+    refuses before any write: the policy init writes sets no [agents] app_id (spec 054)"""
     d = detect(root)
     policy = policy_text(d, fragments)
-    ticks = needed(Policy.parse(loads(policy, str(CONFIG_PATH)), CONFIG_PATH.name), today or _today())
-    files = [(root / CONFIG_PATH, policy), (root / CALLER, caller_text(d, ci, runs_on, ticks))]
+    parsed = Policy.parse(loads(policy, str(CONFIG_PATH)), CONFIG_PATH.name)
+    environment = land_as(parsed, land_as_app, "the policy init writes")
+    ticks = needed(parsed, today or _today())
+    files = [(root / CONFIG_PATH, policy), (root / CALLER, caller_text(d, ci, runs_on, ticks, environment))]
     present = [path for path, _ in files if path.exists()]
     if present and not force:
         names = ", ".join(str(p.relative_to(root)) for p in present)
@@ -425,16 +438,39 @@ def init(
     return Initialized(tuple(path for path, _ in files))
 
 
-def init_caller(root: Path, ci: str, force: bool, runs_on: RunsOn | None = None, today: dt.date | None = None) -> Path:
+def land_as(policy: Policy, land_as_app: bool, which: str) -> str | None:
+    """The environment the caller's land job names under `--land-as-app`, None without it;
+    the opt-in needs the App in [agents] app_id, which `which` policy must set (spec 054)"""
+    if not land_as_app:
+        return None
+    if policy.agents is None or policy.agents.app_id is None:
+        raise ReleaseError(
+            f"--land-as-app lands as the App in [agents] app_id, but {which} sets no [agents] app_id;"
+            f" set it in {CONFIG_PATH}, then run `{cli_command()} init --caller --land-as-app --force`."
+            " Nothing was written"
+        )
+    return ENVIRONMENT
+
+
+def init_caller(
+    root: Path,
+    ci: str,
+    force: bool,
+    runs_on: RunsOn | None = None,
+    today: dt.date | None = None,
+    land_as_app: bool = False,
+) -> Path:
     """Write only the caller workflow, from the policy already in .github/shipmill.toml, so
     its schedule follows an edited policy (spec 015); a policy that isn't there or doesn't
-    load refuses, and so does a caller already there without force"""
+    load refuses, and so does a caller already there without force, or land_as_app with a
+    policy that sets no [agents] app_id (spec 054)"""
     policy = Policy.load(config_path(root))
+    environment = land_as(policy, land_as_app, str(CONFIG_PATH))
     path = root / CALLER
     if path.exists() and not force:
         raise ReleaseError(f"{CALLER} exists; pass --force to overwrite")
     d = Detected(policy.name, policy.branch, policy.style, policy.version_files)
-    text = caller_text(d, ci, runs_on, needed(policy, today or _today()))
+    text = caller_text(d, ci, runs_on, needed(policy, today or _today()), environment)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return path
