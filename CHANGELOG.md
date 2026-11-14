@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.134.1] - 2026-11-14
+
+### Fixed
+
+- An answer that names the recommended option as listed, its number and its text together (`1. Take every recommendation`), now takes it, so `shipmill gh pr merge` lands a spec pull request the maintainer approved that way and the retro counts it as recommended (#1150)
+
 ## [0.134.0] - 2026-11-14
 
 ### Changed
@@ -2523,7 +2529,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.134.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.134.1...HEAD
+[0.134.1]: https://github.com/shipmill/shipmill/compare/v0.134.0...v0.134.1
 [0.134.0]: https://github.com/shipmill/shipmill/compare/v0.133.0...v0.134.0
 [0.133.0]: https://github.com/shipmill/shipmill/compare/v0.132.0...v0.133.0
 [0.132.0]: https://github.com/shipmill/shipmill/compare/v0.131.0...v0.132.0
