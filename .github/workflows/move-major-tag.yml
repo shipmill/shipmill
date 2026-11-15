@@ -11,7 +11,8 @@ name: Move the major tag
 # SHIPMILL_LAND_KEY secret, the private key of the App in [agents] app_id, as land.yml's land
 # job does: the marketplace commit's push to the default branch goes as the App, which a
 # ruleset can let past its rules. git gets the App's token from `shipmill app-token
-# --git-credential`, so no step holds it. The major tag's force-push stays with the workflow
+# --permission contents=write --git-credential` (D-90), so no step holds it and it can write
+# the repo's contents alone. The major tag's force-push stays with the workflow
 # token, as land's tags do (spec 054): a branch ruleset doesn't cover tags, and a tag pushed as
 # the App would start every `on: push` tag workflow. The marketplace commit, pushed as the App,
 # starts the `on: push` workflows on the default branch (ci.yml, release.yml), as land's commits
