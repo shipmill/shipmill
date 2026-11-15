@@ -784,6 +784,31 @@ def test_s030_18_gather_counts_each_zones_markers_in_the_window(
     assert "a marker on #60 names no zone id: interpretations" in text and "Proposals: none" in text
 
 
+def test_s067_10_gather_counts_accepted_spec_in_its_own_row_not_in_scope(
+    rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    day1, day3 = iso(END - dt.timedelta(days=1)), iso(END - dt.timedelta(days=3))
+    pulls = [
+        thread(
+            71,
+            bot(asked("accepted-spec", "recommended"), day3),
+            bot(decided("accepted-spec"), day1),
+            bot(asked("scope", "other"), day1),
+        ),
+    ]
+    _, run = commands()
+    src = sources(rt, run, graphql=thread_graphql(rt, [], pulls))
+    assert rt.gather(policy_args(tmp_path), src) == 0
+    report = json.loads(capsys.readouterr().out)["decisions"]
+    zones = [z["zone"] for z in report["zones"]]
+    assert zones[zones.index("scope") + 1] == "accepted-spec"
+    rows = {z["zone"]: z for z in report["zones"]}
+    pick = ("level", "floor", "decided", "asks", "answered", "recommended")
+    assert [rows["accepted-spec"][k] for k in pick] == ["ask", "notify", 1, 1, 1, 1]
+    assert [rows["scope"][k] for k in pick] == ["ask", "ask", 0, 1, 1, 0]
+    assert report["unknown_zones"] == []
+
+
 def test_s030_18_gather_reads_the_levels_from_the_checkouts_config(
     rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

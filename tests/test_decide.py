@@ -17,7 +17,7 @@ from .conftest import POLICY
 
 WHERE = "shipmill.toml [decisions]"
 ZONE_IDS = (
-    "direction, decision-policy, scope, rule-departure, contract-change, contract-addition, security, "
+    "direction, decision-policy, scope, accepted-spec, rule-departure, contract-change, contract-addition, security, "
     "deploy-step, protected, interpretation, triage-verdict, implementation, unknown"
 )
 LEVELS = "['act', 'notify', 'ask', 'never']"
@@ -25,6 +25,7 @@ DEFAULTS = {
     Zone.DIRECTION: Level.NEVER,
     Zone.DECISION_POLICY: Level.NEVER,
     Zone.SCOPE: Level.ASK,
+    Zone.ACCEPTED_SPEC: Level.ASK,
     Zone.RULE_DEPARTURE: Level.ASK,
     Zone.CONTRACT_CHANGE: Level.ASK,
     Zone.CONTRACT_ADDITION: Level.NOTIFY,
@@ -69,6 +70,40 @@ def test_s063_1_deploy_step_follows_security_at_ask_with_no_floor() -> None:
         assert decisions(section(f'deploy-step = "{level.value}"')).level(Zone.DEPLOY_STEP) is level
 
 
+def test_s067_2_accepted_spec_takes_notify_or_ask_and_refuses_act_naming_its_floor() -> None:
+    order = list(Zone)
+    assert order[order.index(Zone.SCOPE) + 1] is Zone.ACCEPTED_SPEC
+    rule = zones()[Zone.ACCEPTED_SPEC]
+    assert (rule.default, rule.floor) == (Level.ASK, Level.NOTIFY)
+    assert decisions("").level(Zone.ACCEPTED_SPEC) is Level.ASK  # D-63: no repository changes on upgrade
+    for level in (Level.NOTIFY, Level.ASK):
+        policy = decisions(section(f'accepted-spec = "{level.value}"'))
+        assert policy.level(Zone.ACCEPTED_SPEC) is level
+        assert policy.level(Zone.SCOPE) is Level.ASK
+    assert refused(section('accepted-spec = "act"')) == (
+        f'{WHERE}: accepted-spec = "act" is below its floor notify:'
+        " the maintainer may always veto the spec of work they accepted (D-48)"
+    )
+    assert refused(section('scope = "notify"')) == (
+        f'{WHERE}: scope = "notify" is below its floor ask:'
+        " only the maintainer accepts an opportunity, approves a spec, or plans a goal (D-10)"
+    )
+
+
+def test_s067_2_a_policy_below_accepted_specs_floor_exits_2(tmp_path: Path) -> None:
+    path = tmp_path / ".github" / "shipmill.toml"
+    path.parent.mkdir()
+    path.write_text(POLICY + section('accepted-spec = "act"'), encoding="utf-8")
+    done = subprocess.run(
+        [sys.executable, "-c", "from shipmill.cli import run; run()", "--repo", str(tmp_path), "settle-minutes"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 2
+    assert done.stderr.startswith(f'shipmill: {WHERE}: accepted-spec = "act" is below its floor notify: ')
+
+
 def test_s030_1_an_empty_section_is_the_defaults_too() -> None:
     assert decisions(section()) == DecisionPolicy()
 
@@ -109,6 +144,7 @@ FLOORS = {
         "ask",
         "only the maintainer accepts an opportunity, approves a spec, or plans a goal (D-10)",
     ),
+    "accepted-spec": ('"act"', "notify", "the maintainer may always veto the spec of work they accepted (D-48)"),
     "rule-departure": (
         '"notify"',
         "ask",

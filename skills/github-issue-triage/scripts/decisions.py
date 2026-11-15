@@ -76,6 +76,7 @@ ZONES: dict[str, tuple[str, str | None]] = {
     "direction": ("never", "ask"),
     "decision-policy": ("never", "never"),
     "scope": ("ask", "ask"),
+    "accepted-spec": ("ask", "notify"),  # spec 067: the spec of work the maintainer accepted
     "rule-departure": ("ask", "ask"),
     "contract-change": ("ask", None),
     "contract-addition": ("notify", None),

@@ -68,7 +68,7 @@ def test_s057_1_levels_json_lists_the_part_under_its_zone_and_no_paths_elsewhere
         "paths": [{"glob": ".github/workflows/**", "level": "notify", "source": "config"}],
     }
     assert all(r["paths"] == [] for zone, r in rows.items() if zone != "security")
-    assert len(rows) == 22
+    assert len(rows) == 23
 
 
 def test_s057_1_levels_text_prints_a_part_line_under_its_zone(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
@@ -78,7 +78,7 @@ def test_s057_1_levels_text_prints_a_part_line_under_its_zone(repo: Repo, capsys
     at = next(i for i, line in enumerate(out) if line.startswith("security "))
     assert out[at + 1].split() == ["part", '".github/workflows/**"', "notify", "config", "[decisions.paths.security]"]
     assert out[at + 2].startswith("deploy-step ")  # the next zone, spec 063
-    assert len(out) == 1 + 22 + 1
+    assert len(out) == 1 + 23 + 1
 
 
 # -- S-057-2: what may stand under paths, and the four levels ---------------------------------
@@ -234,3 +234,20 @@ def test_s057_2_a_bad_part_exits_2_naming_the_key(name: str, tmp_path: Path) -> 
     assert done.returncode == 2
     assert done.stderr.startswith(f"shipmill: {WHERE}: ")
     assert message in done.stderr
+
+
+def test_s067_3_accepted_spec_under_paths_exits_2_saying_it_takes_no_paths(tmp_path: Path) -> None:
+    assert refused(part("accepted-spec", "docs/specs/**", "notify")) == (
+        f"{WHERE}: [decisions.paths] accepted-spec takes no paths: {TAKES}"
+    )
+    path = tmp_path / ".github" / "shipmill.toml"
+    path.parent.mkdir()
+    path.write_text(POLICY + "\n" + part("accepted-spec", "docs/specs/**", "notify"), encoding="utf-8")
+    done = subprocess.run(
+        [sys.executable, "-c", "from shipmill.cli import run; run()", "--repo", str(tmp_path), "decide", "levels"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 2
+    assert done.stderr == f"shipmill: {WHERE}: [decisions.paths] accepted-spec takes no paths: {TAKES}\n"

@@ -17,7 +17,8 @@ Every session in a repo whose `.github/shipmill.toml` has `[agents]`, a gate ses
 |---|---|
 | `direction` | an edit of `docs/product.md` or `docs/product/` (D-34) |
 | `decision-policy` | the `[decisions]` section of `.github/shipmill.toml`; always `never` |
-| `scope` | accepting or declining an opportunity (D-10), approving a spec, accepting a goal plan, creating or editing a milestone |
+| `scope` | accepting or declining an opportunity (D-10), approving a spec not in `accepted-spec`, accepting a goal plan, creating or editing a milestone |
+| `accepted-spec` | approving a spec whose work is accepted: every issue on its pull request's `Spec for #N` lines is open and labelled `opportunity` and `planned`, or filed by an OWNER, MEMBER, or COLLABORATOR with no agent marker (spec 067); its floor is `notify` |
 | `rule-departure` | a change that departs from an active `D-n` or an approved spec's `S-NNN-k` |
 | `contract-change` | changing or removing a command, flag, argument, exit code, env var, output or file format, default, limit, public API, or stored state an upgrade reads |
 | `contract-addition` | adding one of those while every existing use behaves as before; a new runtime dependency |

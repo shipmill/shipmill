@@ -64,6 +64,7 @@ class Zone(StrEnum):
     DIRECTION = "direction"
     DECISION_POLICY = "decision-policy"
     SCOPE = "scope"
+    ACCEPTED_SPEC = "accepted-spec"
     RULE_DEPARTURE = "rule-departure"
     CONTRACT_CHANGE = "contract-change"
     CONTRACT_ADDITION = "contract-addition"
@@ -112,6 +113,7 @@ _WHY = {
     Zone.DIRECTION: "only the maintainer changes the direction (D-34)",
     Zone.DECISION_POLICY: "only the maintainer changes [decisions] (D-48)",
     Zone.SCOPE: "only the maintainer accepts an opportunity, approves a spec, or plans a goal (D-10)",
+    Zone.ACCEPTED_SPEC: "the maintainer may always veto the spec of work they accepted (D-48)",
     Zone.RULE_DEPARTURE: "a departure from a D-n or a spec's criterion needs the maintainer's approval (Q-5)",
     Zone.SECURITY: "a change to workflows, secrets, or permissions is always told (D-48)",
     Zone.UNKNOWN: "a decision no zone covers waits for the maintainer (D-48)",

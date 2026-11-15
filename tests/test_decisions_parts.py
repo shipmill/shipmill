@@ -99,6 +99,19 @@ def test_s057_10_a_malformed_part_raises_log_error(dm: ModuleType, tmp_path: Pat
     assert message in refused(dm, tmp_path, text)
 
 
+def test_s067_3_the_skill_scripts_refuse_accepted_spec_paths_and_act_as_the_package_does(
+    dm: ModuleType, tmp_path: Path
+) -> None:
+    assert refused(dm, tmp_path, part("accepted-spec", "docs/specs/**", "notify")) == (
+        f"[decisions.paths] accepted-spec takes no paths: {TAKES}"
+    )
+    assert refused(dm, tmp_path, '[decisions]\naccepted-spec = "act"\n') == (
+        "[decisions] accepted-spec = 'act' is below its floor notify"
+    )
+    found = dm.policy(config(tmp_path, '[decisions]\naccepted-spec = "notify"\n'))
+    assert (found.levels["accepted-spec"], found.levels["scope"]) == ("notify", "ask")
+
+
 def test_s057_10_a_part_at_or_above_the_floor_is_accepted(dm: ModuleType, tmp_path: Path) -> None:
     text = part("security", ".github/**", "notify") + "\n" + part("protected", "src/**", "act")
     assert dm.policy(config(tmp_path, text)).parts == {

@@ -140,8 +140,9 @@ def test_s030_5_levels_json_names_every_zone_with_its_level_floor_and_source(
     assert found["veto_hours"] == 48
     rows = {r["zone"]: r for r in found["zones"]}
     assert list(rows) == [
-        "direction", "decision-policy", "scope", "rule-departure", "contract-change", "contract-addition",
-        "security", "deploy-step", "protected", "interpretation", "triage-verdict", "implementation", "unknown",
+        "direction", "decision-policy", "scope", "accepted-spec", "rule-departure", "contract-change",
+        "contract-addition", "security", "deploy-step", "protected", "interpretation", "triage-verdict",
+        "implementation", "unknown",
         "release", "breaking-release", "deploy", "rollback", "intake", "upgrade", "triage", "fix", "land",
     ]  # fmt: skip
     assert all(set(r) == {"zone", "level", "floor", "source", "paths"} for r in found["zones"])  # S-057-1
@@ -189,8 +190,24 @@ def test_s030_5_levels_text_form(repo: Repo, capsys: pytest.CaptureFixture[str])
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "veto_hours: 24"
     assert out[1].split() == ["direction", "never", "floor", "ask", "default"]
-    assert len(out) == 1 + 22
+    assert len(out) == 1 + 23
+    assert out[4].split() == ["accepted-spec", "ask", "floor", "notify", "default"]
     assert out[-1].split() == ["land", "ask", "floor", "none", "autonomy"]
+
+
+def test_s067_1_levels_json_lists_accepted_spec_right_after_scope_at_ask_with_floor_notify(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(repo)  # a config without accepted-spec
+    zones = [{k: v for k, v in r.items() if k != "paths"} for r in run(repo, capsys, "levels")["zones"]]
+    names = [z["zone"] for z in zones]
+    assert names[names.index("scope") + 1] == "accepted-spec"
+    assert zones[names.index("accepted-spec")] == {
+        "zone": "accepted-spec",
+        "level": "ask",
+        "floor": "notify",
+        "source": "default",
+    }
 
 
 def test_s040_12_levels_list_triage_fix_and_land_from_autonomy_mapped_as_release_is(
