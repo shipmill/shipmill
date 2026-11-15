@@ -651,7 +651,14 @@ name counts as a write. To let writes go as your login:
 `shipmill app-token`
 works outside a checkout too: there it caches the token in
 `$XDG_CACHE_HOME/shipmill/<owner>/<repo>/app-token.json` (`~/.cache` when
-`XDG_CACHE_HOME` is unset), mode `0600`. `shipmill status` and `doctor` warn
+`XDG_CACHE_HOME` is unset), mode `0600`. With `--permission <name>=<read|write>`,
+repeatable, it asks GitHub for those permissions alone instead of a session's whole table,
+each one the table has at no more than its access there (metadata read comes with every
+token), and caches that token apart, in `app-token-<permissions>.json` beside
+`app-token.json`; a malformed, unknown, or broader one exits 2 before any request, and the
+flag goes with `--git-credential` but never `--check` or `--product` (D-90).
+`move-major-tag.yml` mints its marketplace push's token with `--permission contents=write`.
+`shipmill status` and `doctor` warn
 `AGENT_AS_PERSON` when agent text went out under a person's login in the last 7 days
 
 ### Run it headless

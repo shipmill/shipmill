@@ -21,6 +21,8 @@ from typing import Any
 import pytest
 
 from shipmill import evals
+from shipmill.app import Access, Narrowing, Permission
+from shipmill.cli import _parser
 from shipmill.landing import land_environment
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -295,6 +297,8 @@ def test_a_refused_check_fails_before_any_push_with_the_apps_settings_alone(push
     assert seen["GIT_TERMINAL_PROMPT"] == "0"
     assert (seen["GIT_CONFIG_COUNT"], seen["GIT_CONFIG_VALUE_0"], seen["GIT_CONFIG_VALUE_1"]) == ("3", "", "")
     assert seen["GIT_CONFIG_VALUE_2"].endswith("--git-credential")
+    # D-90: the dry run proves the same narrowed token the marketplace push uses
+    assert " --permission contents=write " in seen["GIT_CONFIG_VALUE_2"]
 
 
 def test_a_passed_check_hands_on_the_settings_and_pushes_nothing(pushable: Path, tmp_path: Path) -> None:
@@ -323,7 +327,8 @@ def test_the_push_config_clears_the_workflow_token_and_sends_the_apps_credential
     key = tmp_path / "shipmill-land-key.pem"
     github_env = _settings(pushable, tmp_path, key)
     tool = "!uvx --from shipmill==0.67.0 shipmill"
-    helper = f"{tool} app-token shipmill/shipmill --app-id 42 --app-key {key} --git-credential"
+    narrowed = "--permission contents=write"  # D-90: the push writes the marketplace file and nothing else
+    helper = f"{tool} app-token shipmill/shipmill {narrowed} --app-id 42 --app-key {key} --git-credential"
     assert _config(github_env) == {
         "GIT_CONFIG_COUNT": "3",
         "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
@@ -359,6 +364,8 @@ def test_a_key_path_with_a_space_reaches_the_helper_whole(pushable: Path, tmp_pa
         "shipmill",
         "app-token",
         "shipmill/shipmill",
+        "--permission",
+        "contents=write",
         "--app-id",
         "42",
         "--app-key",
@@ -389,3 +396,34 @@ def test_the_push_config_reaches_git(pushable: Path, tmp_path: Path) -> None:
         check=True,
     ).stdout.splitlines()
     assert headers[-1] == ""  # git's rule: the last, empty, value resets the list
+
+
+def test_the_helper_asks_only_for_contents_write_through_sh(pushable: Path, tmp_path: Path) -> None:
+    """D-90, #1189: git runs the `!` helper through sh, and `shipmill app-token` gets
+    `--permission contents=write` as its own arguments, which its parser reads as a narrowing
+    to Contents: write alone"""
+    github_env = _settings(pushable, tmp_path, tmp_path / "k.pem", "o/r")
+    argv_file = tmp_path / "argv"
+    fake = _fake(
+        tmp_path / "bin", "uvx", f'printf "%s\\n" "$@" > \'{argv_file}\'\nprintf "username=x\\npassword=y\\n"\n'
+    )
+    git_env = {"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path)} | _config(github_env)
+    filled = subprocess.run(
+        ["git", "-C", str(pushable), "credential", "fill"],
+        input="protocol=https\nhost=github.com\n\n",
+        env=git_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "password=y" in filled.stdout
+    argv = argv_file.read_text().splitlines()
+    assert argv[:3] == ["--from", "shipmill==0.67.0", "shipmill"]
+    args = _parser().parse_args(argv[3:])
+    assert (args.command, args.slug, args.permission, args.git_credential) == (
+        "app-token",
+        "o/r",
+        ["contents=write"],
+        "get",
+    )
+    assert Narrowing.parse(tuple(args.permission)) == Narrowing((Permission("contents", "Contents", Access.WRITE),))

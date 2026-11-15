@@ -11,7 +11,8 @@ name: Move the major tag
 # SHIPMILL_LAND_KEY secret, the private key of the App in [agents] app_id, as land.yml's land
 # job does: the marketplace commit's push to the default branch goes as the App, which a
 # ruleset can let past its rules. git gets the App's token from `shipmill app-token
-# --git-credential`, so no step holds it. The major tag's force-push stays with the workflow
+# --permission contents=write --git-credential` (D-90), so no step holds it and it can write
+# the repo's contents alone. The major tag's force-push stays with the workflow
 # token, as land's tags do (spec 054): a branch ruleset doesn't cover tags, and a tag pushed as
 # the App would start every `on: push` tag workflow. The marketplace commit, pushed as the App,
 # starts the `on: push` workflows on the default branch (ci.yml, release.yml), as land's commits
@@ -115,7 +116,8 @@ jobs:
       # nothing pushed. A dry run sends nothing, so --force only keeps a branch that moved
       # meanwhile from failing it. The checkout's persisted header, the workflow token's, is
       # cleared (an empty value resets the list), and the App's credential helper replaces any
-      # other. The helper mints the token, limited to this repository, from the release's own
+      # other. The helper mints the token, limited to this repository and contents write (D-90,
+      # #1189), so the check proves the same token the push uses, from the release's own
       # shipmill, which PyPI serves (D-50); git runs it through sh, so its words are quoted as
       # shlex quotes them. The settings name the key's path and hold no token
       - name: Check the App's token
@@ -130,7 +132,7 @@ jobs:
         run: |
           helper="!$(python3 -c 'import shlex, sys; print(shlex.join(sys.argv[1:]))' \
             uvx --from "shipmill==${TAG#v}" shipmill app-token "$GITHUB_REPOSITORY" \
-            --app-id "$APP_ID" --app-key "$APP_KEY" --git-credential)"
+            --permission contents=write --app-id "$APP_ID" --app-key "$APP_KEY" --git-credential)"
           config="$RUNNER_TEMP/shipmill-app-git.env"
           {
             echo "GIT_CONFIG_COUNT=3"
