@@ -2190,6 +2190,19 @@ def test_s055_7_an_answer_on_the_issue_after_the_pr_opened_binds_to_its_head(
     assert held.stdout.splitlines()[1:] == [PROTECTED_ASK, NO_HEAD]
 
 
+def test_s055_7_an_issue_answer_repeated_after_the_pr_opened_binds_to_the_head(tmp_path: Path, directed: Path) -> None:
+    """D-89: the newest answer is the one read, so a 1 given before the PR opened and repeated after
+    it no longer covers every head; it binds to the head the question names, here none"""
+    data = headed(files=("src/land.py",), body=ISSUE_BODIES[1])
+    once = thread(asked(at(8), head=None), comment("1", at(9)), created=at(7))
+    proc = protected(tmp_path, directed, data, thread(), issues={12: once})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+    twice = thread(asked(at(8), head=None), comment("1", at(9)), comment("1", at(12)), created=at(7))
+    held = protected(tmp_path, directed, data, thread(), issues={12: twice})
+    assert held.returncode == 5, held.stdout + held.stderr
+    assert held.stdout.splitlines()[1:] == [PROTECTED_ASK, NO_HEAD]
+
+
 @pytest.mark.parametrize(
     ("author", "association", "counts"),
     [
