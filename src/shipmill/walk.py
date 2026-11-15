@@ -952,6 +952,7 @@ def walk(
     now: dt.datetime,
     retry: dt.timedelta,
     lands: bool,
+    dead: str | None = None,
 ) -> Walked:
     """Read the tiers in order and stop at the first item not handed within retry: tiers 1, 3,
     4, and 6 from their own read, tier 2 from its read and the sweep's BOT_STALLED, 5 and 7
@@ -963,8 +964,9 @@ def walk(
     An item with subjects (spec 061) is taken whole when its fingerprint was handed within
     retry, as a handed.json from before spec 061 holds it; else it is the item cut to its
     subjects not taken, a subject taken when handed within retry or idle past it, and no item
-    when every one is. The updatedAt of a tier's issue subjects past retry is read once for the
-    tier, in one query per PAGE, and not at all when it has none"""
+    when every one is; a hand of the dead session (dead, a capped one whose hands handed keeps)
+    is never idle (spec 061). The updatedAt of a tier's issue subjects past retry is read once
+    for the tier, in one query per PAGE, and not at all when it has none"""
     read: list[int] = []
     rows: list[Finding] = []
     taken: tuple[Finding, Hand, str | None] | None = None
@@ -1003,7 +1005,7 @@ def walk(
                     left.append(n)
                 elif now - given.at < retry:
                     first = first or (key, given)
-                elif idle(given, n, changes.pulls, issues):
+                elif given.session != dead and idle(given, n, changes.pulls, issues):
                     marked.append(key)
                     first = first or (key, replace(given, idle=True))
                 else:

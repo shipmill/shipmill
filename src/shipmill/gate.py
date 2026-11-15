@@ -1993,7 +1993,9 @@ def tick_walk(
     noticed = permissions() if sweeping and permissions is not None else None
     held = None if noticed is None else noticed.stored
     swept = Swept(now, tuple(source.sweep(changes)), changes.tag, kept, held) if sweeping or known is None else known
-    found: Walked = walk(source, changes, swept, handed, now, retry, lands(land))
+    found: Walked = walk(
+        source, changes, swept, handed, now, retry, lands(land), None if dead is None else dead.session
+    )
     decision = replace(
         walked_decision(found, sessions, retry, land),
         walk=WalkRun(change, found.tiers, sweeping),

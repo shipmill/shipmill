@@ -14,7 +14,7 @@ import pytest
 from shipmill.agents import Mode
 from shipmill.errors import ReleaseError
 from shipmill.findings import Finding
-from shipmill.gate import CUT_LINE, RECORD, TICK, Action, state_dir
+from shipmill.gate import CUT_LINE, RECORD, TICK, Action, Deaths, state_dir
 from shipmill.gitrepo import Git
 from shipmill.walk import (
     CURSOR,
@@ -305,6 +305,20 @@ def test_s061_9_an_idle_hand_drops_when_its_session_ended_dead(checkout: Git) ->
     decision = tick(checkout, Source({6: [row]}, issued={842: BEFORE}), later, cfg(Mode.HEADLESS), claude)
     assert (decision.action, decision.work) == (Action.SESSION_DEAD, (row,)) and len(claude.started) == 1
     assert handed(checkout) == {"ISSUES VERIFY_DUE #842": {"session": str(ONE), "at": later.isoformat()}}
+
+
+def test_s061_4_a_subject_whose_session_ended_dead_is_never_idle(checkout: Git) -> None:
+    # review finding: after DEAD_STREAK deaths the dead session's hand stays for retry_hours (S-046-15);
+    # past them, its subject, which the dead session never wrote on, is handed again, not held idle
+    row = Finding("ISSUES", REPO, "VERIFY_DUE #842", True, (), "triage")
+    dead_launch(checkout, row, Deaths(2, NOW - dt.timedelta(minutes=30)))
+    seed(checkout, {"ISSUES VERIFY_DUE #842": hand(NOW, session=str(ONE))})
+    claude = FakeClaude()
+    later = NOW + dt.timedelta(hours=25)
+    source = Source({6: [row]}, issued={842: NOW - dt.timedelta(hours=1)})
+    decision = tick(checkout, source, later, cfg(Mode.HEADLESS, sweep_hours=48), claude)
+    assert decision.work == (row,) and len(claude.started) == 1
+    assert "idle" not in handed(checkout)["ISSUES VERIFY_DUE #842"]
 
 
 # -- a hand-off is read again
