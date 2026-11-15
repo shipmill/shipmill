@@ -16,7 +16,7 @@ The maintainer's answer (spec 055), read only for a PR that would read NEEDS_DEC
 newest needs-decision question (its first line `<!-- shipmill:needs-decision -->`, by an
 OWNER, MEMBER, or COLLABORATOR or the --bot-login) on the PR, or, when the PR has none and the
 --bot-login or an OWNER, MEMBER, or COLLABORATOR opened it, on an issue its title or body closes
-or names as `Part of #N`; its first answer as retro.py reads one (a trusted person's reply
+or names as `Part of #N`; its newest answer as retro.py reads one (D-89; a trusted person's reply
 without the agent marker, or the --bot-login's relay whose first line is `Decision by @<login>`
 naming the maintainer: a user `[agents.roles] maintainer` lists on that branch, or, when it lists
 none, a login whose permission on the repo is admin, one read of
@@ -208,7 +208,7 @@ DECISIONS = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scrip
 # github-issue-triage's triage_state.py: the closing-keyword rule and the ## Check section, one
 # reading for every script (#416, D-76)
 TRIAGE_STATE = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" / "triage_state.py"
-# github-ship-watch's retro.py: the needs-decision question, its first trusted answer, and whether
+# github-ship-watch's retro.py: the needs-decision question, its trusted answers, and whether
 # that answer takes the (recommended) option (S-030-18), one reading for every script (spec 055)
 RETRO = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "retro.py"
 # github-issue-triage's specs.py: same-approval compares a spec PR's answered and judged heads (D-81)
@@ -1464,9 +1464,10 @@ def acceptance(
     """Whether the maintainer's answer covers the judged head (spec 055), and, when it doesn't,
     the needs-decision line that says why (None for no line): the newest question on the pull
     request, else, for a pull request the --bot-login or an OWNER, MEMBER, or COLLABORATOR
-    opened, on an issue it closes or names as Part of #N; its first trusted answer, by
-    retro.py's answer_at (a relay by the --bot-login counts when it names one of maintainers);
-    its whole reply taking the (recommended) option, by retro.py's takes_recommended; given on
+    opened, on an issue it closes or names as Part of #N; its newest trusted answer, by
+    retro.py's newest_answer_at (a relay by the --bot-login counts when it names one of
+    maintainers; D-89), so a bare number after words takes the option and words after a bare
+    number hold it again; its whole reply taking the (recommended) option, by retro.py's takes_recommended; given on
     an issue before the pull request opened, or at the head the question names in full (its
     `<!-- shipmill:head <sha> -->` line) or one whose own change is the judged head's. Anything
     else leaves the question open. thread is the pull request's, when this pass already read it"""
@@ -1486,7 +1487,7 @@ def acceptance(
             return False, None
         (comments, asked), on_issue = found, True
     later = comments[asked + 1 :]
-    answer = rt.answer_at(later, bots, maintainers)
+    answer = rt.newest_answer_at(later, bots, maintainers)
     if answer is None:
         return False, None
     index = answer[0]
@@ -1773,7 +1774,7 @@ def polls(gates: list[Gate]) -> bool:
 
 MAINTAINER_ACCEPTED_GONE = (
     "--maintainer-accepted is gone (spec 055): the maintainer's acceptance is read from their answer on GitHub, "
-    "the first trusted reply to the newest needs-decision question taking its (recommended) option at the head "
+    "the newest trusted reply to the newest needs-decision question taking its (recommended) option at the head "
     "its `<!-- shipmill:head <sha> -->` line names; ask that question and run the gate again"
 )
 

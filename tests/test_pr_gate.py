@@ -2070,6 +2070,61 @@ def test_s055_8_anything_but_a_trusted_recommended_answer_keeps_the_question(
 
 
 @pytest.mark.parametrize(
+    ("comments", "lands"),
+    [
+        # #1199: a relay with words past the option, then a bare 1, as on #1182
+        ((asked(), relay("Decision by @romamo", "1\n\nbut rename the tag first"), comment("1", at(12, 20))), True),
+        ((asked(), comment("1\nbut rename the tag first", at(12)), comment("1", at(12, 20))), True),
+        ((asked(), comment("2", at(12)), relay("Decision by @romamo", "1", at(12, 20))), True),
+        # words after a bare 1 hold the item again
+        ((asked(), comment("1", at(12)), comment("1\nbut rename the tag first", at(12, 20))), False),
+        ((asked(), comment("1", at(12)), relay("Decision by @romamo", "Hold it", at(12, 20))), False),
+        # only a trusted answer counts as the newest
+        ((asked(), comment("1", at(12)), comment("2", at(12, 20), association="CONTRIBUTOR")), True),
+        ((asked(), comment("1", at(12)), comment("2\n\n<!-- shipmill:agent -->", at(12, 20))), True),
+        (
+            (asked(), comment("1", at(12)), comment("2", at(12, 20), login="dependabot", association="NONE", bot=True)),
+            True,
+        ),
+        ((asked(), comment("1", at(12)), relay("Decision by @mallory", "2", at(12, 20))), True),
+    ],
+)
+def test_s055_5_the_newest_trusted_answer_is_read(
+    tmp_path: Path, directed: Path, comments: tuple[dict[str, Any], ...], lands: bool
+) -> None:
+    """D-89: the newest trusted answer after the newest question is judged, by its whole reply"""
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(*comments))
+    if lands:
+        assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == 5, proc.stdout + proc.stderr
+        assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, NOT_TAKEN]
+
+
+def test_s055_5_the_gate_reads_the_newest_answer_and_the_retro_the_first() -> None:
+    """retro.py's answer_at keeps the first answer for the count (S-030-18); newest_answer_at is the gate's"""
+    rt = gate.retro()
+    bots = frozenset({BOT})
+    later = [
+        relay("Decision by @romamo", "1\n\nbut rename the tag first"),
+        comment("2", at(12, 10), association="CONTRIBUTOR"),
+        comment("1", at(12, 20)),
+        comment("2\n\n<!-- shipmill:agent -->", at(12, 30)),
+    ]
+    assert rt.answer_at(later, bots, {"romamo"}) == (0, "1")
+    assert rt.newest_answer_at(later, bots, {"romamo"}) == (2, "1")
+    assert rt.newest_answer_at([*later, asked(at(13)), comment("2", at(13, 10))], bots, {"romamo"}) == (2, "1")
+    assert rt.newest_answer_at(later[1:2], bots, {"romamo"}) is None
+
+
+def test_s055_8_an_answer_before_a_newer_question_still_answers_nothing(tmp_path: Path, directed: Path) -> None:
+    """the newest answer is read after the newest question only: a 1 before it doesn't stand in"""
+    comments = (asked(at(11)), comment("1", at(12)), asked(at(13)), comment("2", at(13, 30), association="CONTRIBUTOR"))
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(*comments))
+    assert proc.returncode == 5 and proc.stdout.splitlines()[1:] == [PROTECTED_ASK], proc.stdout
+
+
+@pytest.mark.parametrize(
     ("reply", "said"),
     [
         (comment("\n1\n\n", at(12)), "1"),
