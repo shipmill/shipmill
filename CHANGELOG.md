@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.136.0] - 2026-11-15
+
+### Added
+
+- `land.yml` takes a `land-environment` input: set, its `land` job runs in that environment, writes the environment's `SHIPMILL_LAND_KEY` secret, masked, to a mode 0600 file, and runs `shipmill land --app-key` with it, failing before land when the secret is empty; empty, it lands as before. `shipmill init --land-as-app` writes `land-environment: shipmill-land` on the release workflow's `land` job, and exits 2 when the config sets no `[agents] app_id` (#1079)
+- Delivery hooks: a `Stop` hook refuses, once per session, a headless gate session's end whose final message asks the maintainer for something while the session filed no issue and labelled nothing `needs-decision` (spec 062) (#1094)
+
 ## [0.135.0] - 2026-11-15
 
 ### Changed
@@ -2541,7 +2548,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.135.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.136.0...HEAD
+[0.136.0]: https://github.com/shipmill/shipmill/compare/v0.135.0...v0.136.0
 [0.135.0]: https://github.com/shipmill/shipmill/compare/v0.134.2...v0.135.0
 [0.134.2]: https://github.com/shipmill/shipmill/compare/v0.134.1...v0.134.2
 [0.134.1]: https://github.com/shipmill/shipmill/compare/v0.134.0...v0.134.1
