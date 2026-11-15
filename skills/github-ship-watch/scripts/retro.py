@@ -76,7 +76,7 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Container
+from collections.abc import Callable, Container, Iterator
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -1102,24 +1102,41 @@ def first_answer(later: list[dict[str, Any]], bots: frozenset[str], maintainers:
     return None if found is None else found[1]
 
 
-def answer_at(later: list[dict[str, Any]], bots: frozenset[str], maintainers: Container[str]) -> tuple[int, str] | None:
-    """The answer to a question from the comments after it, oldest first, up to a newer trusted
-    question, with its index in later: the first person's reply (an OWNER, MEMBER, or
-    COLLABORATOR, readable, without the needs-decision marker or the agent marker, D-62), its
-    first non-blank line; or a maintainer's relay, as relayed_answer reads it. None while there
-    is neither"""
+def answers_at(
+    later: list[dict[str, Any]], bots: frozenset[str], maintainers: Container[str]
+) -> Iterator[tuple[int, str]]:
+    """The answers to a question from the comments after it, oldest first, up to a newer trusted
+    question, each with its index in later: a person's reply (an OWNER, MEMBER, or COLLABORATOR,
+    readable, without the needs-decision marker or the agent marker, D-62), its first non-blank
+    line; or a maintainer's relay, as relayed_answer reads it"""
     for i, comment in enumerate(later):
         body = comment.get("body") or ""
         if first_line(body) == NEEDS_DECISION_MARK and trusted(comment, bots):
-            return None
+            return
         relayed = relayed_answer(comment, bots, maintainers)
         if relayed is not None:
-            return i, relayed
+            yield i, relayed
+            continue
         logins = login_names(comment.get("author"))
         person = bool(logins) and not logins & {b.lower() for b in bots}
         if person and str(comment.get("authorAssociation") or "NONE") in TRUSTED and not by_agent(body):
-            return i, first_line(body)
-    return None
+            yield i, first_line(body)
+
+
+def answer_at(later: list[dict[str, Any]], bots: frozenset[str], maintainers: Container[str]) -> tuple[int, str] | None:
+    """The first of answers_at, the answer the retro counts (S-030-18); None while there is none"""
+    return next(answers_at(later, bots, maintainers), None)
+
+
+def newest_answer_at(
+    later: list[dict[str, Any]], bots: frozenset[str], maintainers: Container[str]
+) -> tuple[int, str] | None:
+    """The newest of answers_at, the answer pr_gate.py's acceptance judges (D-89, S-055-5): a
+    later trusted reply replaces an earlier one; None while there is none"""
+    found = None
+    for answer in answers_at(later, bots, maintainers):
+        found = answer
+    return found
 
 
 def plain(text: str) -> str:
