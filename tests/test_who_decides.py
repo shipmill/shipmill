@@ -361,3 +361,12 @@ def test_s030_22_the_never_case_classifies_as_direction_never_from_its_fixture(t
     assert [(z.zone.value, z.level.value) for z in found.zones] == [("direction", "never")]
     calls = [json.loads(line) for line in (eval_dir / "gh.jsonl").read_text(encoding="utf-8").splitlines()]
     assert calls and all(call["kind"] == "read" for call in calls)
+
+
+# proves: S-057-12
+@pytest.mark.parametrize("path", [ROOT / "docs" / "flow.md", REFERENCE], ids=["flow", "needs-decision"])
+def test_who_decides_names_the_parts_their_zones_and_the_strictest_path(path: Path) -> None:
+    text = folded(section(path.read_text(encoding="utf-8"), "## Who decides"))
+    assert "[decisions.paths.<zone>]" in text
+    assert "`direction`, `security`, and `protected`" in text  # the three zones that take parts
+    assert "the strictest level among a change's paths wins" in text

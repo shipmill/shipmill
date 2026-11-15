@@ -112,6 +112,48 @@ def test_s030_19_decisions_without_agents_warns_that_nothing_reads_it(repo: Repo
     assert repo.github.label_reads == 0
 
 
+PARTS = (
+    '\n[decisions.paths.security]\n".github/workflows/**" = "notify"\n".github/CODEOWNERS" = "never"\n'
+    '\n[decisions.paths.protected]\n"deploy/migrations/**" = "act"\n'
+)
+
+
+def test_s057_11_one_pass_line_per_part_naming_its_zone_glob_and_level(repo: Repo) -> None:
+    configure(repo, APP + PARTS)
+    repo.github.repo_labels = {"decided"}
+    found = block(repo)
+    parts = [c for c in found if c.detail.startswith("part ")]
+    assert parts == [
+        Check("PASS", "decisions", 'part [decisions.paths.security] ".github/workflows/**" notify'),
+        Check("PASS", "decisions", 'part [decisions.paths.security] ".github/CODEOWNERS" never'),
+        Check("PASS", "decisions", 'part [decisions.paths.protected] "deploy/migrations/**" act'),
+    ]
+    assert Check("PASS", "decisions", "security ask (default)") in found  # the zone's line stays
+
+
+def test_s057_11_a_part_below_its_zone_default_warns_naming_both_levels(repo: Repo) -> None:
+    configure(repo, APP + PARTS)
+    repo.github.repo_labels = {"decided"}
+    warned = [c.detail for c in block(repo) if c.status == "WARN"]
+    assert warned == [  # never sits above security's ask: PASS only
+        '[decisions.paths.security] ".github/workflows/**" = "notify" is below security\'s default ask, so agents'
+        " involve you less on those paths than shipmill ships; delete the glob to give them the zone's level",
+        '[decisions.paths.protected] "deploy/migrations/**" = "act" is below protected\'s default ask, so agents'
+        " involve you less on those paths than shipmill ships; delete the glob to give them the zone's level",
+    ]
+
+
+def test_s057_11_a_config_without_parts_prints_no_part_line(repo: Repo) -> None:
+    configure(repo, APP + '\n[decisions]\nprotected = "never"\n')
+    repo.github.repo_labels = {"decided"}
+    assert [c for c in block(repo) if "paths" in c.detail or c.detail.startswith("part ")] == []
+
+
+def test_s057_11_parts_without_agents_keep_the_one_warn(repo: Repo) -> None:
+    configure(repo, PARTS)
+    assert [c.status for c in block(repo)] == ["WARN"]  # nothing reads [decisions] without [agents]
+
+
 def test_s030_19_no_agents_and_no_decisions_print_no_block(repo: Repo) -> None:
     # D-9: a release-only repo sees no decisions line and no decided label WARN
     assert block(repo) == []

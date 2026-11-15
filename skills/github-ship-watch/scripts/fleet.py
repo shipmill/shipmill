@@ -94,6 +94,7 @@ ACTION = frozenset(
         "GATE_NO_APP",
         "DIRECTION_MISSING",
         "GATE_SESSIONS_DEAD",
+        "GATE_CHECKOUT_MISSING",  # #1155
         "SKILL_SHADOWED",
         "PLUGIN_SHADOWING",
         "UPGRADE_PENDING",
@@ -107,6 +108,7 @@ ACTION = frozenset(
         "UPSTREAM_UNREADABLE",
         "VETOED",
         "AGENT_DRAFT",  # D-67: the App's own draft, resumed by a session (#914)
+        "LAND_DUE",  # spec 056: the land window's queue head
     }
 )
 REPO_ERROR = "REPO_ERROR"

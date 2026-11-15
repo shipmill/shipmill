@@ -1,6 +1,6 @@
 # S-056: A land window: pull requests of a held class merge only inside configured hours, and the queue drains when it opens
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -156,3 +156,18 @@ place of a line in `[agents] prompt`.
 - shipmill/shipmill#1104: S-056-14
 
 ## Verification
+
+- S-056-1: in a scratch repo whose `[land.window]` set `spacing_minutes = -1`, `shipmill window --json --ref HEAD` exited 2 with `[land.window]: spacing_minutes must be 0 or more, got -1`, and `shipmill doctor` printed `FAIL policy: shipmill.toml [land.window]: spacing_minutes must be 0 or more, got -1`
+- S-056-2: `shipmill window --json --ref origin/main` on this repo printed `{"configured": false}`; on the scratch repo with the spec's example section, on Friday 2026-11-13 at 21:10 in Asia/Nicosia, it printed `open: false` and `opens: 2026-11-16T10:00:00+02:00`, the Monday entry's start, with `closes: null`
+- S-056-3: the same run read GitHub for the scratch repo's origin, shipmill/shipmill, where no merged pull request carries `rollout:normal` or `rollout:high`: `last_held_merge: null` and `next_merge` now, despite `spacing_minutes = 30`
+- S-056-4: read `pr_gate.py` on main: `Window.queued` gives the `held by the land window (<labels>); opens <YYYY-MM-DD HH:MM> <timezone>` line while closed, and the per-base loop replaces only a READY verdict with it, exit 10
+- S-056-5: the same `Window.queued` gives `spacing: the next held merge after <HH:MM> <timezone>` while open and `next_merge` is later than now, and nothing once it isn't, so the verdict stays READY
+- S-056-6: `pr_gate.py` reads the window only for a base whose config `has_land_window`, only for PRs into the branch it was read from, and only when the verdict is READY; a PR with no held label or with a bypass label gets no `queued:` line; this repo's `origin/main` has no section, so its PRs are judged as before
+- S-056-7: read `pr_gate.py`: `Windows.run` raises `GateError` (exit 2) on a failing or unreadable `shipmill window`, and the loop calls it for every PR into a base with the section, whatever its verdict
+- S-056-8: read `cli.py` and `merge_gate.py` on main (#1137): pr_gate's exit 10 with QUEUED raises `Queued`, `_queue` adds the base's `queued_label` with the App's env and the merge still exits 2 without running gh, and `_unqueue` removes the label after a gh merge that exited 0
+- S-056-9: read `watch_state.py`'s `land_rows`: the queue sorted by the newest label time, LAND_DUE for its head when open and `next_merge` is past, with the fix `skill_fix("github-pr-triage", repo)`, LAND_DUE in the action set (exit 1), the rest LAND_QUEUED with `behind #M`
+- S-056-10: the same `land_rows` gives LAND_QUEUED naming `the land window opens <time> <zone>` when closed and no LAND_DUE; `intake` takes a pull request in the queue out of PRS_OPEN
+- S-056-11: read `gate.py`'s change check: `changes.window` counts the window opening or the spacing passing since the cursor only with a pull request carrying `queued_label` open
+- S-056-12: `walk.py`'s tier 3 is `(LAND_DUE, PRS_OPEN, AGENT_DRAFT)` and LAND_DUE is in `LANDING`, taken only when `land` isn't `observe`; `watch_state.py`'s TIERS agree
+- S-056-13: `setup_state.py shipmill/shipmill --repo-dir <the scratch repo>` printed `LABELS_MISSING    rollout:queued`; on this repo, without the section, its `LABELS_MISSING` named no queue label
+- S-056-14: read the four files in #1104: github-pr-triage's `SKILL.md` (hard rule 1 and the `pr_gate.py` row) and `landing.md` name QUEUED, exit 10, and LAND_DUE; github-ship-watch's `SKILL.md` has the LAND_DUE and LAND_QUEUED rows; shipmill-setup's `SKILL.md` has a Land window section naming `[land.window]` in place of an `[agents] prompt` line

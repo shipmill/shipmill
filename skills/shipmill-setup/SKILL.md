@@ -13,7 +13,7 @@ passed, and a breaking change waits for the maintainer's hand start.
 Run the tool with:
 
 ```bash
-CR="uvx shipmill==0.129.0"
+CR="uvx shipmill==0.135.0"
 ```
 
 the release this plugin pins, from PyPI (spec 031), in every session, a headless gate's
@@ -259,6 +259,21 @@ operate.yml -f approve=production -f dry-run=false`), and the same for rollbacks
 `.github/workflows/operate.yml` as an extra scheduled workflow, and skip it for a
 library with no environments.
 
+### Land window
+
+Ask whether a merge to the default branch deploys and some changes should land only while
+someone can watch; skip this when not. For hours that hold merges of labelled classes, write
+`[land.window]` into the policy (spec 056), never a line in `[agents] prompt`, which a
+session can misread: `timezone` and `labels` (the held classes, such as `rollout:high`), and
+as needed `open` and `closed` entries (`Mon-Thu 10:00-18:00`, `08:00-08:30` for a daily
+restart), `queued_label` (default `land-queued`), `spacing_minutes`, and `bypass_labels`
+(`revert`, `incident`); the keys are in
+[release-lanes.md](https://github.com/shipmill/shipmill/blob/main/docs/release-lanes.md#land-window).
+Outside the window `pr_gate.py` reads a held pull request QUEUED and the merge labels it
+`queued_label`; when the window opens the gate lands the queue oldest first. The repo needs
+the `queued_label` label: step 6's checklist wants it and `--fix` creates it. In step 5,
+`$CR window --json` shows the window and `$CR doctor` fails on a malformed section.
+
 ### Downstream tests
 
 For a library, ask whether other repositories depend on it and which of them the maintainer
@@ -345,7 +360,8 @@ or the tags are wrong; fix those, not the version.
    `role:<name>` for each role `[agents.roles]` defines, a role's item (spec 036), `human`,
    the older label for a person's item in a chain (spec 017), `shipmill-upgrade-later`, a config upgrade's "not now",
    `upstream`, a report for another repo, spec 038, and `decided`, a notify decision the
-   maintainer may veto, spec 030), and
+   maintainer may veto, spec 030; with `[land.window]`, with or without `[agents]`, its
+   `queued_label`, spec 056), and
    whether GitHub deletes a pull request's branch when it merges (`BRANCH_DELETE_ON` or
    `BRANCH_DELETE_OFF`, the repo setting `delete_branch_on_merge`). That setting matters
    because github-pr-triage's stacked merges rely on GitHub retargeting a stacked PR when
@@ -425,6 +441,12 @@ or the tags are wrong; fix those, not the version.
    line. It doesn't change the exit code, and `--fix` leaves it: those files are the
    maintainer's (D-42). Pass each one on to the user
 
+   A third warning row, `GATE_IN_TMP`, reads on a Mac when the repo's gate job runs in a
+   folder under the main checkout's `tmp/`, where setup put the gate's checkout before
+   #1156: a cleanup of `tmp/` deletes it. It doesn't change the exit code, and `--fix`
+   leaves it. Offer the move, [Move the gate](#move-the-gate), and make it only once the
+   person agrees
+
    The checklist reads the setup, not the factory. When checking an existing setup, also
    run `$CR status <owner/repo>` in the repo's checkout and report the verdict on its first
    line (`IDLE`, `WORKING`, `WAITS ON YOU`, or `STUCK`) and every line behind a waits-on-you
@@ -496,7 +518,7 @@ decision and any launch stand, and `shipmill factory`'s `prune` line shows it fa
 when, with its fix, `shipmill worktrees --prune`, which `shipmill status` counts on its
 `factory` line (spec 045). The worktrees a session leaves behind once it
 exits are the gate's prune's to remove (D-12); never the main checkout, the gate's own
-checkout, or a worktree elsewhere. `$CR --repo tmp/shipmill-gate worktrees` lists every
+checkout, or a worktree elsewhere. `$CR --repo ~/.local/share/shipmill/gates/<owner>/<repo> worktrees` lists every
 worktree as REMOVABLE or KEPT with why it is kept (`--json` for a record, `--prune
 --dry-run` for what a prune would remove); `shipmill factory` lists a kept one older than 7
 days with its fix, for a person to finish or remove.
@@ -701,8 +723,12 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    as the `[agents]` section. For each goal you write, offer a measure from the registry
    of spec 027, `<metric> <comparison> <target>` with a comparison of `<`, `<=`, `>`, or
    `>=`: `deploy_frequency` (`<n>/week`), `lead_time_median`, `lead_time_p90`,
-   `time_to_restore_median`, `issue_to_release_median`, `issue_to_release_p90` (`<n>h` or
-   `<n>d`), `change_failure_rate`, `human_touch`, `agent_share` (`<n>%`), such as
+   `time_to_restore_median`, `issue_to_release_median`, `issue_to_release_p90`, and issue to
+   release by stage (spec 066) `issue_to_agent_comment_median`, `issue_to_agent_comment_p90`,
+   `issue_to_pr_median`, `issue_to_pr_p90`, `issue_to_pr_person_median`,
+   `issue_to_pr_person_p90`, `issue_to_pr_agent_median`, `issue_to_pr_agent_p90`,
+   `pr_to_merge_median`, `pr_to_merge_p90`, `merge_to_release_median`,
+   `merge_to_release_p90` (`<n>h` or `<n>d`), `change_failure_rate`, `human_touch`, `agent_share` (`<n>%`), such as
    `issue_to_release_median < 2d`. Write only the measures the maintainer gives, each with
    `$CR product measure G-n "<metric> <comparison> <target>"`, never by hand; a goal they
    give no measure gets none, and you never pick the metric or the target for them. Never invent a goal, a user, a non-goal, or a quality-bar
@@ -974,12 +1000,15 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      https://www.githubstatus.com, since the next tick tries again. `$CR factory`'s gate line reads `tick.json`: a failing tick's cause and fix,
      STALLED, RUNNING's session, and QUIET's in-flight part
 5. **A dedicated checkout.** The session branches and commits where it starts, so never
-   use the user's working copy: `git worktree add --detach tmp/shipmill-gate
-   origin/<default>` inside the trusted checkout (a worktree outside it would need its
-   own trust prompt). If `git check-ignore tmp` prints nothing, add `tmp/` to
-   `.git/info/exclude`, which stays local. The gate moves the checkout to the default
-   branch's head before each launch
-6. **Try it once.** `$CR --repo tmp/shipmill-gate gate <owner/repo> --dry-run` prints the
+   use the user's working copy. From the user's checkout, `git worktree add --detach
+   ~/.local/share/shipmill/gates/<owner>/<repo> origin/<default>` makes a detached
+   worktree outside the repo, so a cleanup of the repo's `tmp/` can't delete it (#1155,
+   #1156). A folder outside the trusted checkout needs its own trust: for an interactive
+   gate, have the person open `claude` in it once and accept the trust prompt (a headless
+   session, `claude -p`, shows none). If `git check-ignore tmp` prints nothing, add `tmp/`
+   to `.git/info/exclude`, which stays local and holds for every worktree. The gate moves
+   the checkout to the default branch's head before each launch
+6. **Try it once.** `$CR --repo ~/.local/share/shipmill/gates/<owner>/<repo> gate <owner/repo> --dry-run` prints the
    decision and changes nothing. With `app_id` set, a tick that would launch also checks
    the key, the installation, and the permissions, writes no helpers and no token cache,
    and prints `would launch as <slug>[bot]`: that line proves the App's setup. A tick
@@ -988,9 +1017,10 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    step 7 until `app_id` is set and one of the two has passed. For the prune it follows
    the tick's schedule: `prune due at <time>` when not due, else the `would prune` lines;
    `$CR worktrees --prune --dry-run` lists them anytime
-7. **Schedule it.** `$CR --repo tmp/shipmill-gate launchd <owner/repo> --every 15` writes
+7. **Schedule it.** `$CR --repo ~/.local/share/shipmill/gates/<owner>/<repo> launchd <owner/repo> --every 15` writes
    `~/Library/LaunchAgents/dev.shipmill.gate.<owner>.<repo>.plist`, loads it, and runs
-   it once now. Its log is under `~/Library/Logs/shipmill/`. `--remove` unloads it; on
+   it once now. Leave `~` unquoted so the shell expands it: launchd expands no `~`, and
+   shipmill writes the absolute path as the job's `WorkingDirectory`. Its log is under `~/Library/Logs/shipmill/`. `--remove` unloads it; on
    Linux, run the same `gate` command from a systemd timer. With an App whose key isn't at
    the default path, add `--app-key <path>`: the job's gate gets it, made absolute, and
    install refuses it when `app_id` is unset or the key is missing or readable by others.
@@ -1014,6 +1044,31 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    <owner/repo> --remove`). In headless mode, tell them instead that a session never
    waits: `tail -f` its log under `shipmill/sessions/`, `claude --resume <uuid>` reopens
    it, and they answer a `needs-decision` item by replying on GitHub
+
+### Move the gate
+
+A gate set up before #1156 has its checkout at `<repo>/tmp/shipmill-gate`, where a cleanup
+of the repo's `tmp/` deletes it; launchd then fails every tick with exit 78, which
+github-ship-watch reports as `GATE_CHECKOUT_MISSING`. Such a gate keeps working where it
+is, and nothing moves it unasked. When `setup_state.py` reads `GATE_IN_TMP` (its job's
+`WorkingDirectory` is under the main checkout's `tmp/`), offer the move as one step, with
+AskUserQuestion, and run it only once the person agrees:
+
+1. **A new checkout.** From the main checkout, `git worktree add --detach
+   ~/.local/share/shipmill/gates/<owner>/<repo> origin/<default>`; for an interactive gate,
+   the person opens `claude` in it once and accepts the trust prompt
+2. **The job again.** Read the job's options from its plist, `plutil -p
+   ~/Library/LaunchAgents/dev.shipmill.gate.<owner>.<repo>.plist`: `StartInterval` (seconds,
+   so `--every` is it divided by 60), and in `ProgramArguments` any `--app-key <path>`,
+   `--claude-token <path>`, and each `--claude-arg=<flag>`. Then `$CR --repo
+   ~/.local/share/shipmill/gates/<owner>/<repo> launchd <owner/repo> --every <minutes>`
+   with each of those kept, which writes the job over the old one, loads it, and runs it
+   once now
+3. **The old checkout, last.** Once the new job ticks with exit 0 (`launchctl print
+   gui/$(id -u)/dev.shipmill.gate.<owner>.<repo>` reads `last exit code = 0`, and its log
+   shows the tick's decision), `git worktree remove tmp/shipmill-gate` in the main checkout.
+   Until then the old checkout stays, so a failed move leaves the person a gate to go back
+   to: the same `launchd` command with `--repo tmp/shipmill-gate`
 
 ## Migrating from hand-made or scripted releases
 

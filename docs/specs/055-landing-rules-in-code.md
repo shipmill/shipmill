@@ -78,33 +78,48 @@ edit without `[agents]`):
 
 1. **The question.** The newest needs-decision question (a comment whose first line is the
    marker `<!-- shipmill:needs-decision -->`, by the App or a trusted person) on the pull
-   request, or, when the pull request has none, on an issue it closes or names as `Part of #N`
+   request, or, when the pull request has none and the App or an OWNER, MEMBER, or
+   COLLABORATOR opened it, on an issue it closes or names as `Part of #N`. Anyone who can open
+   a pull request can write `Fixes #N` in its body, so an outsider's pull request is answered
+   on its own question only (#1122)
 2. **The answer.** The first reply after that question by the reply rules credit.py's
    `answers` and retro.py's `first_answer` already read (S-049-4, S-030-18): a comment by an
    OWNER, MEMBER, or COLLABORATOR whose body carries no agent marker, or the App's relay whose
    first line is `Decision by @<login>` (the login bare or in a code span) naming the
    maintainer. A question with a newer question after it is no longer the one answered
-3. **Acceptance.** The answer accepts when it takes the option the question marks
+3. **Acceptance.** The answer accepts when its whole reply takes the option the question marks
    `(recommended)` as it stands, read as S-030-18 reads it: its number alone (`1`, `1.`,
-   `Option 1`) or its text alone. An answer in other words, another option, or no answer
-   leaves the verdict NEEDS_DECISION
-4. **The head it covers.** An answer on the pull request covers the head the pull request had
-   when the answer was given: the newest commit whose `committedDate` is at or before the
-   answer's `createdAt`, or, after a force-push since the answer, the `beforeCommit` of the
-   first `HeadRefForcePushedEvent` after it (spec-gate.md's rule). It covers the judged head
-   when the pull request's own change is the same at both heads: the patch of
+   `Option 1`), its text alone, or the option as listed, its number and its own text together
+   (`1. <text>`, `1) <text>`, `1: <text>`, `Option 1: <text>`, the text the part before
+   ` (recommended)`, with or without that mark; #1150). A number and a text naming different
+   options, or a text that narrows or extends the option, takes neither. The whole reply is every non-blank line of the comment, a
+   relay's after its `Decision by` line with the template's `Answered in the session:` taken
+   off, the agent marker left out; a reply of more than one line (`1`, then `but rename X
+   first`) answers in the person's own words. An answer in other words, another option, or no
+   answer leaves the verdict NEEDS_DECISION
+4. **The head it covers.** An answer covers the head its question names: a question on a pull
+   request states the head's CI on the line under its first, `CI on <sha7>: ...`
+   (needs-decision.md, #1028), and names that head in full on a hidden line under it,
+   `<!-- shipmill:head <40-hex sha> -->`; that exact commit is the one answered. A commit's
+   `committedDate` is its author's to set, a force-push's `beforeCommit` may be a head pushed
+   after the answer, and a 7-hex prefix is matched by a commit made to order in about 2^28
+   tries, so none of them names what the maintainer saw (#1122). A question without the
+   hidden line leaves the verdict NEEDS_DECISION, so it is asked again with it. It covers the
+   judged head when it is that commit, or when the pull request's own change is the same at
+   both heads: the patch of
    `git diff $(git merge-base origin/<base> <head>) <head>` is equal, so a rebase or a merge of
    the base that changes nothing of the pull request's own still lands. A spec pull request
    compares its spec file with `specs.py same-approval` instead, so a format-only change lands
    on the answer (D-81). An answer on an issue given before the pull request opened covers
-   every head; one given after binds to the head as on the pull request
+   every head; one given after binds to the head its question names, as on the pull request
 
 With an accepting answer that covers the judged head, the `ask` zones and Protected areas
 asks are lifted and CI decides, as `--maintainer-accepted` did. Without one, the
 `needs-decision:` lines stay, and one more line says why the last answer didn't count:
-`  needs-decision: answered at <sha7>, and the change differs since` or
-`  needs-decision: the answer doesn't take the recommended option`. A `never` zone stays
-MAINTAINER_ONLY whatever the answer (D-48).
+`  needs-decision: answered at <sha7>, and the change differs since`,
+`  needs-decision: the answer doesn't take the recommended option`,
+or `` needs-decision: the question names no head: ask again with its `<!-- shipmill:head <sha> -->` line ``
+(a head the checkout can't fetch reads as differing). A `never` zone stays MAINTAINER_ONLY whatever the answer (D-48).
 
 ### A review of the merging head
 
@@ -167,10 +182,10 @@ it opens the pull request with.
 - S-055-2: When `pr_gate.py` reads READY at head H, a merge given no pin runs gh with `--match-head-commit H` (the API `PUT` with `sha=H`), a merge pinned to H runs as given, and a merge pinned to another full SHA exits 2 naming both SHAs without running gh
 - S-055-3: A `pr_gate.py` that exits 2, can't be started, or prints no verdict line makes the merge exit 2 without running gh
 - S-055-4: `pr_gate.py --maintainer-accepted` exits 2 with a message saying the maintainer's acceptance is read from the answer on GitHub
-- S-055-5: `pr_gate.py` reads a pull request with an `ask` zone (or a Protected areas glob without `[agents]`) on CI alone when the newest needs-decision question on it has a first trusted answer that takes the `(recommended)` option, given while the pull request's head was the judged head
+- S-055-5: `pr_gate.py` reads a pull request with an `ask` zone (or a Protected areas glob without `[agents]`) on CI alone when the newest needs-decision question on it names the judged head in full on its line `<!-- shipmill:head <40-hex sha> -->` (under its `CI on <sha7>` line) and has a first trusted answer that takes the `(recommended)` option; a commit's date, a force-push's `beforeCommit`, and a head sharing only the named head's 7-hex prefix are not covered, and a question without that line keeps NEEDS_DECISION with the line `` needs-decision: the question names no head: ask again with its `<!-- shipmill:head <sha> -->` line ``
 - S-055-6: The same answer covers a judged head after a rebase or a merge of the base whose own change (the patch from the merge-base to the head) equals the answered head's, and doesn't cover one whose own change differs, which reads NEEDS_DECISION with the line `needs-decision: answered at <sha7>, and the change differs since`
-- S-055-7: An accepting answer on an issue the pull request closes or names as `Part of #N`, when the pull request has no question of its own, counts as on the pull request; one given before the pull request opened covers every head
-- S-055-8: `pr_gate.py` keeps NEEDS_DECISION for no answer, a CONTRIBUTOR's or another bot's reply, a reply carrying the agent marker, a reply that picks another option or answers in its own words, and an answer to a question a newer question follows
+- S-055-7: An accepting answer on an issue the pull request closes or names as `Part of #N`, when the pull request has no question of its own and the App or an OWNER, MEMBER, or COLLABORATOR opened it, counts as on the pull request; one given before the pull request opened covers every head. Any other author's pull request is answered only on its own question
+- S-055-8: `pr_gate.py` keeps NEEDS_DECISION for no answer, a CONTRIBUTOR's or another bot's reply, a reply carrying the agent marker, a reply that picks another option or answers in its own words, a reply with any line past the option (its whole reply is read; a relay's `Decision by` line, `Answered in the session:`, and the agent marker are no part of it), and an answer to a question a newer question follows
 - S-055-9: A relayed answer, the App's comment whose first line is `Decision by @<login>` or ``Decision by `@<login>` ``, counts as a trusted answer for S-055-5 to S-055-7
 - S-055-10: For a spec pull request the answered and judged heads are compared with `specs.py same-approval`: exit 0 covers the judged head, exit 1 or 2 doesn't
 - S-055-11: A `never` zone reads MAINTAINER_ONLY, exit 7, whatever the answer
@@ -181,6 +196,7 @@ it opens the pull request with.
 - S-055-16: `shipmill review record <n> --head <sha> --verdict merge|refuse --body-file <f>` posts, as the App, a pull request review with event `COMMENT`, `commit_id` the head, and a body whose first line is the verdict's marker; it exits 2 and writes nothing when the head isn't 40 hex characters or isn't pull request n's current head, or the App isn't available
 - S-055-17: `shipmill gh pr create`, with `[agents] app_id` set and `docs/product.md` on the default branch, exits 2 without running gh when the body it would send has no plan `plan_problems` accepts, printing each problem, and runs gh for a valid plan, for a body with a `Spec for #N` line, and in a repo without `docs/product.md` on its default branch
 - S-055-18: `github-pr-triage`'s `SKILL.md` and `landing.md` and `needs-decision.md` name no `--maintainer-accepted`; the reviewer brief and landing say the reviewed head is recorded with `shipmill review record`, and the implementer brief says the plan goes in the body the pull request is opened with
+- S-055-19: An answer that names the `(recommended)` option as listed, its number and its own text together (`1. <text>`, `1) <text>`, `1: <text>`, `Option 1: <text>`, `Option 1. <text>`, the text the part before ` (recommended)`, with or without that mark, emphasis and code marks aside), takes it, for `pr_gate.py`'s acceptance and the retro's `recommended` count alike, through retro.py's `takes_recommended`; a number and a text naming different options, a text that narrows the option or has words past it, and a prefix of its text do not
 
 ## Out of scope
 
@@ -209,5 +225,6 @@ it opens the pull request with.
 - shipmill/shipmill#1091: S-055-17
 - shipmill/shipmill#1093: S-055-1, S-055-2, S-055-3
 - shipmill/shipmill#1095: S-055-4
+- shipmill/shipmill#1150: S-055-19
 
 ## Verification

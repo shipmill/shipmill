@@ -401,18 +401,22 @@ modes](design/agent-modes.md) has the details.
    both an action for you (D-19)
 
 2. **Give it its own checkout.** A session branches and commits where it starts, so never
-   your working copy. Inside the repo's trusted checkout:
+   your working copy. From the repo's checkout, make a detached worktree outside the repo,
+   where a cleanup of the repo's `tmp/` can't delete it:
 
    ```bash
-   git worktree add --detach tmp/shipmill-gate origin/main
+   git worktree add --detach ~/.local/share/shipmill/gates/<owner>/<repo> origin/main
    ```
 
-   If `git check-ignore tmp` prints nothing, add `tmp/` to `.git/info/exclude`
+   For an interactive gate, open `claude` in that folder once and accept its trust prompt:
+   it is outside the checkout you trusted. If `git check-ignore tmp` prints nothing, add
+   `tmp/` to `.git/info/exclude`. A gate set up before #1156 has its checkout at
+   `tmp/shipmill-gate` and keeps working there; shipmill-setup offers to move it
 
 3. **Try it once.** This prints the decision and changes nothing:
 
    ```bash
-   $CR --repo tmp/shipmill-gate gate <owner/repo> --dry-run
+   $CR --repo ~/.local/share/shipmill/gates/<owner>/<repo> gate <owner/repo> --dry-run
    ```
 
    Its prune follows the tick's schedule, every `prune_hours`: when one isn't due it
@@ -430,12 +434,14 @@ modes](design/agent-modes.md) has the details.
 4. **Schedule it.** On a Mac:
 
    ```bash
-   $CR --repo tmp/shipmill-gate launchd <owner/repo> --every 15
+   $CR --repo ~/.local/share/shipmill/gates/<owner>/<repo> launchd <owner/repo> --every 15
    ```
 
    This writes `~/Library/LaunchAgents/dev.shipmill.gate.<owner>.<repo>.plist`, loads it,
-   and runs it once now; the log is under `~/Library/Logs/shipmill/`. On Linux, run
-   `$CR --repo tmp/shipmill-gate gate <owner/repo> --refresh` from a systemd timer
+   and runs it once now; the log is under `~/Library/Logs/shipmill/`. The job holds the
+   checkout's absolute path, since launchd expands no `~`. On Linux, run
+   `$CR --repo ~/.local/share/shipmill/gates/<owner>/<repo> gate <owner/repo> --refresh`
+   from a systemd timer
 
    `$CR factory` checks this machine's side, one line per check: the launchd job and its
    log, the gate's sessions, the App, the shipmill installs, the checkout, and the
@@ -671,8 +677,8 @@ the gate's own environment to choose another ceiling.
    error), and install the job again so it gets them too:
 
    ```bash
-   $CR --repo tmp/shipmill-gate gate <owner/repo> --dry-run --claude-arg=--allowedTools --claude-arg "Bash(npm *)"
-   $CR --repo tmp/shipmill-gate launchd <owner/repo> --every 15 --claude-arg=--allowedTools --claude-arg "Bash(npm *)"
+   $CR --repo ~/.local/share/shipmill/gates/<owner>/<repo> gate <owner/repo> --dry-run --claude-arg=--allowedTools --claude-arg "Bash(npm *)"
+   $CR --repo ~/.local/share/shipmill/gates/<owner>/<repo> launchd <owner/repo> --every 15 --claude-arg=--allowedTools --claude-arg "Bash(npm *)"
    ```
 
    A headless gate refuses a `--claude-arg` of `--permission-mode`, `--permission-prompts`,
@@ -746,7 +752,7 @@ the App, so the skills draft there and a `gh` write you run yourself goes out as
 |---|---|
 | Pause releases and the gate | open an issue labelled `shipmill-hold`; a hotfix started by hand still runs (D-8, D-15) |
 | Stop releases | set `mode = "off"` in `.github/shipmill.toml` |
-| Stop the gate | `$CR --repo tmp/shipmill-gate launchd <owner/repo> --remove` |
+| Stop the gate | `$CR --repo ~/.local/share/shipmill/gates/<owner>/<repo> launchd <owner/repo> --remove` |
 | Remove the skills | `/plugin uninstall shipmill@shipmill` |
 | Remove the CLI | `uv tool uninstall shipmill` |
 

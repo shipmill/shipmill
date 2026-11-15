@@ -28,6 +28,8 @@ Every session in a repo whose `.github/shipmill.toml` has `[agents]`, a gate ses
 | `implementation` | work order, how a change splits into pull requests, internal design, refactors, tests, docs of existing behaviour |
 | `unknown` | a decision no other zone covers |
 
+The three zones code detects from a changed path, `direction`, `security`, and `protected`, may give part of their paths its own level: a glob under `[decisions.paths.<zone>]` with a level, above or below the zone's but never below its floor (spec 057). A part never adds a zone; it sets the level of a path the zone already covers, and the strictest level among a change's paths wins, which `shipmill decide classify` reports per path. `decide levels` lists each zone's parts under it.
+
 The release side's zones (`release`, `breaking-release`, `deploy`, `rollback`, `intake`, `upgrade`) and the agent stages (`triage`, `fix`, `land`, spec 040) take their levels from `[autonomy]` and D-39, and `decide levels` lists them too. Without `[agents]` there are no zones: the skills' own rules (the [design gate](design-gate.md)'s, the [spec gate](spec-gate.md)'s) say when to ask.
 
 ### Placing a decision
@@ -72,7 +74,7 @@ Reply with a comment starting with `veto` before 2026-10-20 14:00 UTC to reverse
 
 **Mentions (D-61).** A bare `@login` is an email, so shipmill writes one only in a needs-decision question, the hand-off of a person's item, and a decided comment, each of which waits on that person. Every other comment, pull request body, or commit message names a login in a code span, `` `@login` ``: a verdict on an answer, a verified or check-waiting line, an accepted or direction line, a login named inside a question.
 
-- **The work doesn't wait.** The session goes on at once, and a pull request carrying a `notify` decision merges when it is otherwise ready, inside the window too. `pr_gate.py` prints a `notify: <zone>: <reason>` line for one: post the decided comment before the merge, unless one for that zone is already on the pull request
+- **The work doesn't wait.** The session goes on at once, and a pull request carrying a `notify` decision merges when it is otherwise ready, inside the window too. `pr_gate.py` prints a `notify: <zone>: <reason>` line for one: post the decided comment before the merge, unless one for that zone is already on the pull request. The release can wait instead: a lane in `[gates] veto_lanes` holds a release that would ship a `notify` decision until its window ends, or until a veto of it is handled; a person's hand start of the lane releases anyway (spec 059, `docs/release-lanes.md`)
 - **A rule goes to the log.** When the decision sets something later work must respect (a format for a new output, a reading of a criterion the next pull request relies on), also record it with `decisions.py add --zone <id>`, which writes its `- Zone: <id> (notify, veto until <until>)` line; one decisions pull request per pass still holds ([design-gate.md](design-gate.md#recording-a-decision)). A decision that sets no rule is recorded by the comment alone
 
 ### Taking up a veto
@@ -101,13 +103,15 @@ Every place github-issue-triage, github-issue-resolve, and github-pr-triage woul
 
 ## Asking
 
-**A question on a pull request waits for its CI (#1028).** Ask it only once every check on the pull request's head has finished: run `pr_gate.py --wait`, which polls while a NEEDS_DECISION pull request has a `pending:` line. When a check failed, the CI failure comes first (github-pr-triage's [ci-failures.md](../../github-pr-triage/references/ci-failures.md)): fix it or hand it back, and ask once the head is green. The question's line right under `@<login> Decision needed: ...` states the head's CI state, such as `CI on <sha7>: 5 checks green`, so the maintainer doesn't have to open the checks.
+**A question on a pull request waits for its CI (#1028).** Ask it only once every check on the pull request's head has finished: run `pr_gate.py --wait`, which polls while a NEEDS_DECISION pull request has a `pending:` line. When a check failed, the CI failure comes first (github-pr-triage's [ci-failures.md](../../github-pr-triage/references/ci-failures.md)): fix it or hand it back, and ask once the head is green. The question's line right under `@<login> Decision needed: ...` states the head's CI state, such as `CI on <sha7>: 5 checks green`, so the maintainer doesn't have to open the checks. Right under it goes the head's full 40-character SHA in a hidden line, `<!-- shipmill:head <sha> -->` (the `headRefOid` the CI line reports on): that line binds the answer. `pr_gate.py` reads only it as the head answered, matched in full, never a commit's date, a push, or the 7-character prefix, which a commit can be made to share; a question on a pull request without it is asked again with it (spec 055, S-055-5). A question on an issue that a pull request closes counts for that pull request only when the App or an OWNER, MEMBER, or COLLABORATOR opened it (S-055-7). The whole reply is read: a reply that adds anything to the option it picks, such as a second line, answers in the person's own words (S-055-8).
 
 1. Post one comment on the issue or pull request the decision belongs to, through `--body-file` (never an inline `--body`):
 
    ```markdown
    <!-- shipmill:needs-decision -->
    @<login> Decision needed: <the question, one sentence>
+   CI on <sha7>: <N checks green>
+   <!-- shipmill:head <sha> -->
 
    1. <option> (recommended): <why>
    2. <option>: <what it costs>
@@ -115,7 +119,7 @@ Every place github-issue-triage, github-issue-resolve, and github-pr-triage woul
    Reply here with a number or your own answer; shipmill takes this up on the tick after your reply.
    ```
 
-   This mention stays bare: the question waits on that person, so GitHub's notification is how they hear of it. The marker is the comment's first line, with or without an App: it is how `triage_state.py` and `watch_state.py` tell the question from the reply when the session posts as the maintainer. `<login>` is the person the gate's prompt names (the host's `gh` login). Put the recommendation first, and say in each option what it means for users and what it costs, in words a user of the tool knows. Name `D-n` entries and `S-NNN-k` criteria when the question is a departure from one. With `[agents]` in the config, the question's zone goes on the second line, right under the marker ([The zone line](#the-zone-line))
+   The `CI on` and `shipmill:head` lines are a pull request's only; a question on an issue leaves both out. This mention stays bare: the question waits on that person, so GitHub's notification is how they hear of it. The marker is the comment's first line, with or without an App: it is how `triage_state.py` and `watch_state.py` tell the question from the reply when the session posts as the maintainer. `<login>` is the person the gate's prompt names (the host's `gh` login). Put the recommendation first, and say in each option what it means for users and what it costs, in words a user of the tool knows. Name `D-n` entries and `S-NNN-k` criteria when the question is a departure from one. With `[agents]` in the config, the question's zone goes on the second line, right under the marker ([The zone line](#the-zone-line))
 2. Add the `needs-decision` label to the item: `gh issue edit <n> --add-label needs-decision` (or `gh pr edit`). From now on the scripts read the item as waiting, not as work, so the gate doesn't start a session for it again
 3. **Interactive (`Gate session:`) only:** ask the same question, with the same options in the same order, with AskUserQuestion. An answer in the session: follow [Answered in the session](#answered-in-the-session). No answer: the item already waits on GitHub, and the gate's `max_wait_minutes` stops the waiting session (D-15); whoever answers on GitHub later is read as below
 4. **Headless:** Leave the item: don't build, push, merge, or comment on it further in this session. Go on with the other items, and report this one under the decisions you left
@@ -134,7 +138,7 @@ An interactive gate session that gets the answer through AskUserQuestion puts th
    Answered in the session: <the option or the user's own words>
    ```
 
-   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`). The login sits in a code span so the record doesn't email the person; a reader takes an older line with the login bare, `Decision by @<login>, relayed by <agent>`, as the same answer (D-61). `shipmill gh` ends the relay with the [agent marker](#the-agent-marker), so the relay is no reply: removing the label in the next step is what moves the item. With the label off, the scripts read a relay by the App after the question as the answer still to take up, until a newer triage comment or the item's next state shows it was: `watch_state.py`'s UPGRADE_PENDING and DIRECTION_PENDING say "answered; take up the answer", and `triage_state.py` reads any other issue as DECIDED, its note ending "relayed", where it would read NEW, NEEDS_PR, or TRIAGED
+   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`). An option the user picked is written as listed, its number, its text, or both (`1. Take every recommendation`), and each is read as that option; a number and a text naming different options, or words past the option, read as the user's own words (S-055-19). The login sits in a code span so the record doesn't email the person; a reader takes an older line with the login bare, `Decision by @<login>, relayed by <agent>`, as the same answer (D-61). `shipmill gh` ends the relay with the [agent marker](#the-agent-marker), so the relay is no reply: removing the label in the next step is what moves the item. With the label off, the scripts read a relay by the App after the question as the answer still to take up, until a newer triage comment or the item's next state shows it was: `watch_state.py`'s UPGRADE_PENDING and DIRECTION_PENDING say "answered; take up the answer", and `triage_state.py` reads any other issue as DECIDED, its note ending "relayed", where it would read NEW, NEEDS_PR, or TRIAGED
 2. Remove the `needs-decision` label: `gh issue edit <n> --remove-label needs-decision` (or `gh pr edit`). With `[agents] app_id` set, `shipmill gh pr merge` refuses a pull request that still carries it with exit 2 (S-030-23)
 3. Record the answer with `decisions.py add` when it sets a rule, as the [design gate](design-gate.md) says, and go on
 

@@ -38,12 +38,14 @@ max_wait_minutes = 15  # stop a session that waited this long (0..10080); 0: nev
 ```
 
 ```
-shipmill --repo ~/PycharmProjects/treaty/tmp/shipmill-gate gate romamo/treaty --refresh
-shipmill --repo ~/PycharmProjects/treaty/tmp/shipmill-gate launchd romamo/treaty --every 15
+shipmill --repo ~/.local/share/shipmill/gates/romamo/treaty gate romamo/treaty --refresh
+shipmill --repo ~/.local/share/shipmill/gates/romamo/treaty launchd romamo/treaty --every 15
 ```
 
-The gate runs in a dedicated checkout: a detached worktree inside the trusted repo, never
-the user's working copy, where the session would branch and commit. A session works in a
+The gate runs in a dedicated checkout: a detached worktree of the repo, outside it so a
+cleanup of the repo's `tmp/` can't delete it (#1156; a gate set up before it keeps its
+checkout at `tmp/shipmill-gate`), never the user's working copy, where the session would
+branch and commit. A session works in a
 new worktree and leaves this one as it found it; one it left on a branch is detached by
 the next `--refresh` tick (step 5). `launchd`, and a tick in the main working tree, refuse
 a checkout on a branch with `git -C <path> switch --detach origin/<default>` as the fix,

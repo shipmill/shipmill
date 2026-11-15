@@ -16,7 +16,7 @@ import pytest
 
 from shipmill import cli_command
 from shipmill.app import Answer
-from shipmill.app_gh import decided_in, write_command
+from shipmill.app_gh import GhCapture, decided_in, write_command
 from shipmill.app_login import (
     ACCESS_TOKEN,
     CLIENT_SECRET,
@@ -39,7 +39,7 @@ from shipmill.errors import ReleaseError
 
 from .conftest import POLICY, Repo
 from .test_app import APP_ID, REPO, FakeSigner
-from .test_app_gh_merge import CODE, FakeReads, Reader, connected
+from .test_app_gh_merge import CODE, FakeGate, FakeReads, Reader, connected, pinned_to
 from .test_app_token import FAKE_GH, MintApi, executable
 from .test_credit import (
     APP,
@@ -174,6 +174,8 @@ def gh(
     api: UserApi | None = None,
     web: FakeWeb | None = None,
     environ: Mapping[str, str] | None = None,
+    labels: tuple[str, ...] = (),
+    capture: GhCapture | None = None,
 ) -> int:
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
@@ -188,9 +190,11 @@ def gh(
         environ={"PATH": f"{fakes}:/usr/bin:/bin", **(environ or {})},
         home=home,
         gh_runner=runner,
-        merge_reader=Reader(FakeReads((CODE,))),
+        merge_reader=Reader(FakeReads((CODE,), labels=labels)),
+        merge_gate=FakeGate(),
         credit_reader=credit if credit is not None else refusing,
         web=web if web is not None else FakeWeb(),
+        gh_capture=capture,
     )
 
 
@@ -675,7 +679,7 @@ def test_s051_9_a_merge_no_record_decided_goes_as_the_app_saying_so(
     runner = EnvRunner(capsys)
     assert gh(repo, tmp_path, key, MERGE, runner, CreditReader(FakeCredit())) == 0
     as_app(runner, "no trusted person decided pull request #7")
-    assert runner.calls[0][1:] == MERGE  # as autonomous mode merges it: no decider, no trailer
+    assert runner.calls[0][1:] == pinned_to(MERGE)  # as autonomous mode merges it: no decider, no trailer
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from shipmill import fragments, milestones
+from shipmill import fragments, milestones, veto
 from shipmill.autonomy import Autonomy, Hold, Stage
 from shipmill.changelog import Changelog, Entry
 from shipmill.errors import ReleaseError
@@ -418,6 +418,15 @@ class Planner:
                     return f"open '{label}' issues: {', '.join(blockers)}"
         return None
 
+    def _veto_windows(self, lane: Lane, candidate: _Candidate) -> list[veto.Window]:
+        """The veto windows the candidate would ship (spec 059): read from the lane's newest
+        tag (the newest stable for a promotion) to the candidate's base"""
+        tags = self._lane_tags(lane)
+        newest = max(tags, key=lambda t: t.date) if tags else None
+        pulls = veto.shipped(self.git, self.github, candidate.base, newest, self.now)
+        app_id = self.policy.agents.app_id if self.policy.agents else None
+        return veto.holding(pulls, self.now, veto.Trust(self.github, app_id))
+
     def _autonomy(self, lane: Lane, candidate: _Candidate) -> tuple[Autonomy, str]:
         """How far a trigger releases the candidate by itself, and why not further. A breaking
         stable candidate is at most propose, as the hold makes every stage (D-8, D-39); a
@@ -546,6 +555,13 @@ class Planner:
                     skipped.append(f"{current}: {candidate.version} is due ({due}), but {cause}")
                 else:
                     proposals.append(Proposal(current, candidate.version, candidate.base, cause))
+                continue
+            # a lane in veto_lanes waits for the veto windows it would ship; a person's hand start
+            # reads nothing and releases, a bot's or an unnamed one waits as a trigger does (spec 059)
+            person = lane is not None and actor is not None and not actor.is_bot
+            if current in self.policy.veto_lanes and not person and (waits := self._veto_windows(current, candidate)):
+                listed = ", ".join(str(w) for w in waits)
+                skipped.append(f"{current}: {candidate.version} waits for veto windows: {listed}")
                 continue
             # a breaking stable proposal is opened or kept up to date while rc or dev release
             # its pre-releases (spec 029); only acting autonomy gets here with a proposal

@@ -32,6 +32,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
+from shipmill import land_window
 from shipmill.agents import AgentsConfig, Mode, RolesConfig
 from shipmill.app import AppCheck, Identity
 from shipmill.autonomy import AGENT_STAGES, Autonomy, AutonomyPolicy, Hold, Stage, StageKind
@@ -54,6 +55,7 @@ from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.github_auth import GH_MISSING_FIX, GitHubAuth, GitHubPreflight
 from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
+from shipmill.land_window import LandWindow
 from shipmill.notify import Notifier, NotifyFailed
 from shipmill.plugin import (
     CLI_RECORD,
@@ -70,6 +72,7 @@ from shipmill.refused import CATALOGUE, Refusal
 from shipmill.roles import LoginReader, ResolvedRole, arguments
 from shipmill.upgrades import Proposals, offers, propose
 from shipmill.upgrades import pending as pending_upgrades
+from shipmill.verify import Planner, Verified
 from shipmill.walk import (
     CURSOR,
     CURSOR_OVERLAP,
@@ -92,9 +95,11 @@ from shipmill.walk import (
     check,
     item_key,
     malformed,
+    queued,
     tier_of,
     walk,
     watched,
+    window_change,
     write,
 )
 from shipmill.walk import span as tier_span
@@ -108,6 +113,7 @@ AUTH = "claude-auth.json"  # the failing Claude Code login's episode: since, and
 PRUNE = "prune.json"  # the last prune's attempt: when, whether it worked, and since when it fails (spec 045)
 TICK = "tick.json"  # the last real tick's decision or error, its fix, and its run of failing ticks (spec 048)
 LAST_RESULT = "last-result.json"  # the last session that ended with a result: its id, item, and end (spec 048)
+VERIFY = "verify.json"  # the last check of [agents] verify: its fingerprint, time, and entries (spec 064)
 ERROR = "ERROR"  # tick.json's action for a tick a ReleaseError ended (S-048-9)
 DRY_RUN_FIX = "shipmill gate --dry-run"  # an error's fix when it names none: the same tick, printing it again
 # a headless session that ended this soon after its launch, by its log's last write, with no
@@ -413,6 +419,8 @@ class Decision:
     in_flight: InFlight | None = None  # what a QUIET tick says is in flight (spec 048); None otherwise
     refused: tuple[Refusal, ...] = ()  # the catalogued keys the config sets, which the tick runs without (S-052-10)
     upgrades: str | None = None  # what a swept tick's config-upgrade proposal did (S-047-10); None: none ran
+    verify: str | None = None  # the check of [agents] verify a launch ran (S-064-6); None: none ran
+    verify_notice: str | None = None  # its one notification per failing fingerprint (S-064-8); None: none due
 
 
 def refused_suffix(refusals: Iterable[Refusal]) -> str:
@@ -930,6 +938,22 @@ def incident_label(root: Path) -> str:
     return OperateConfig.parse(Table(read(path), str(path)).table("operate", optional=True)).incident_label
 
 
+def land_window_of(root: Path) -> LandWindow | None:
+    """[land.window] (spec 056) of the checkout's config, as incident_label reads the config"""
+    path = config_path(root)
+    return land_window.read(Table(read(path), str(path)))
+
+
+@dataclass(frozen=True, slots=True)
+class Repository:
+    """GitHub's GraphQL for the repository, with $owner and $name set, as land_window reads it"""
+
+    ask: Callable[[str], dict[str, object]]
+
+    def graphql(self, query: str) -> Any:
+        return self.ask(query)
+
+
 class WatchState:
     """The gate's state read (spec 046): the change check through gh, and each tier and the
     sweep through watch_state.py, a tier given what the change check read (known.json in the
@@ -961,7 +985,15 @@ class WatchState:
     def changes(self, since: dt.datetime | None) -> Changes:
         label = incident_label(self._workspace)
         workflows = watched(self._workspace)
-        return check(self._repo, since, label, workflows, self._graphql, self._rest, self._now)
+        found = check(self._repo, since, label, workflows, self._graphql, self._rest, self._now)
+        window = land_window_of(self._workspace)
+        if window is None or since is None:
+            return found
+        owner, _, name = self._repo.partition("/")
+        github = Repository(lambda q: self._graphql(q, {"owner": owner, "name": name}))
+        held = queued(found, window.queued_label)
+        last = partial(land_window.last_held_merge, github, window.labels)
+        return replace(found, window=window_change(window, held, since + CURSOR_OVERLAP, self._now, last))
 
     def _rows(self, cmd: list[str], what: str) -> list[Finding]:
         proc = self._run(cmd)
@@ -1889,7 +1921,8 @@ def tick_walk(
     config-upgrade proposal (upgrades) first, so its rows see the issue it opened (S-047-1);
     sweep.json keeps what it did and the decision names it (S-047-10). A tick that doesn't
     sweep runs none (S-047-5). A change is a new
-    signature or an item updated since the cursor, and on the gate's side no cursor, a handed
+    signature or an item updated since the cursor, the land window opening or its spacing passing
+    with a pull request queued (spec 056), and on the gate's side no cursor, a handed
     item past retry, or a dead last session (S-046-2); walk_now and sweep_now force a walk and
     a sweep. A dead session's item is handed again, until DEAD_STREAK of them (capped) hold it
     for retry (S-046-15). Without handed.json, the last launch's item, gate.json's fingerprint,
@@ -1915,6 +1948,7 @@ def tick_walk(
         or cursor is None
         or changes.signature != cursor.signature
         or bool(changes.updated)
+        or changes.window  # spec 056: the land window opened, or its spacing passed, with a queue
         or handed.expired(now, retry)
         or unseen  # a capped one holds its item: its expiry is the change
     )
@@ -2448,6 +2482,52 @@ def relaunching(decision: Decision) -> Decision:
     return replace(decision, action=Action.SESSION_DEAD, reason=f"{dead.summary()}; {again}; fix: {dead.fix}")
 
 
+def verified(
+    decision: Decision,
+    planner: Planner | None,
+    agents: AgentsConfig,
+    path: Path,
+    notifier: Notifier,
+    repo: str,
+    now: dt.datetime,
+    headless: bool,
+) -> Decision:
+    """Spec 064: a real headless LAUNCH, after the hook self-test and the preflight, checks
+    [agents] verify when verify.json holds no result for the fingerprint of the check's inputs,
+    or a failing one retry_hours old (S-064-6, S-064-7), writes verify.json, and carries the
+    `; verify: ...` suffix; the session starts whatever the result (D-64). With notify, a failing
+    result sends one notification per fingerprint, recorded in verify.json, and a failed send is
+    tried again next tick (S-064-8). A check that fails with a shipmill error is the suffix's
+    `couldn't check: <first line>` and writes nothing, so the next tick checks again; a
+    malformed verify.json fails the tick, as the gate's other state files do, before it stops
+    or starts anything. An interactive tick, planner None, and an empty list check nothing; a
+    dry run never reaches here"""
+    if planner is None or decision.action is not Action.LAUNCH or not headless or not agents.verify:
+        return decision
+    prior = Verified.load(path)
+    try:
+        planned = planner(agents.verify)
+        if prior is not None and not prior.due(planned.fingerprint, now, dt.timedelta(hours=agents.retry_hours)):
+            result, line = prior, None  # checked already: only a notification it still owes
+        else:
+            notified = None if prior is None else prior.notified
+            result = Verified(planned.fingerprint, now, tuple(planned.run()), notified)
+            line = result.line()
+    except ReleaseError as exc:
+        return replace(decision, verify=f"couldn't check: {error_line(exc)}")
+    notice = None
+    if result.owes(agents.notify):
+        try:
+            notifier.send(f"shipmill {repo}", result.message())
+        except NotifyFailed as exc:
+            notice = f"verify: notify failed: {exc}"
+        else:
+            result, notice = replace(result, notified=result.fingerprint), "verify: notified"
+    if line is not None or notice is not None:
+        result.save(path)
+    return replace(decision, verify=line, verify_notice=notice)
+
+
 RoleResolver = Callable[[RolesConfig, LoginReader], tuple[ResolvedRole, ...]]  # roles.resolve
 
 
@@ -2496,6 +2576,7 @@ def gate(
     stop: Stop | None = None,
     catch_up: Callable[[], bool] | None = None,
     upgrades: Upgrader | None = None,
+    verify: Planner | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -2627,7 +2708,12 @@ def gate(
     None, as in tests that don't exercise it, proposes none. It runs after the App check and
     before the sweep's read, writing as the App and with no [agents] app_id writing nothing;
     a tick that doesn't sweep runs none (D-58). Its failure is sweep.json's upgrades error
-    and the decision line's `upgrades failed: <first line>`, and changes nothing else (D-56)"""
+    and the decision line's `upgrades failed: <first line>`, and changes nothing else (D-56)
+
+    verify prepares the check of [agents] verify (spec 064, verified); None, as in tests that
+    don't exercise it, checks nothing. A real headless LAUNCH still standing after the hook
+    self-test checks the list when verify.json holds no result for its fingerprint, then starts
+    the session whatever the result, its decision line ending `; verify: ...`"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
     previous = None if dry_run else load_tick(tick)
     read: list[tuple[Refusal, ...]] = []  # the refusals of the tick's last config read, if it read one
@@ -2665,6 +2751,7 @@ def gate(
             github=github,
             stop=stop,
             upgrades=upgrades,
+            verify=verify,
         )
     except ReleaseError as exc:
         if not dry_run:
@@ -2726,6 +2813,7 @@ def decided(
     github: GitHubPreflight | None = None,
     stop: Stop | None = None,
     upgrades: Upgrader | None = None,
+    verify: Planner | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...]]:
     """gate's tick up to its decision, as gate describes it: the decision, the launched
     session's id, and what the waiting step did; gate records it and prunes after it"""
@@ -2874,6 +2962,7 @@ def decided(
     decision = self_tested(decision, hooks, headless)  # of the install the session loads
     if decision.action in (Action.PYPI_WAIT, Action.HOOKS_FAILED):
         return decision, None, waiting
+    decision = verified(decision, verify, agents, state / VERIFY, notifier, repo, now, headless)
     decision = relaunching(decision)
     for session in decision.stop:
         claude.stop(session)
@@ -2936,7 +3025,8 @@ def tick_lines(
     decision: Decision, launched: str | None, waiting: Sequence[Waiting], pruned: Sequence[Judged], dry_run: bool
 ) -> list[str]:
     """`shipmill gate`'s text: the decision (` as <slug>[bot]` when it launches as an App, then
-    each refused key, S-052-10, then a swept tick's config-upgrade proposal, S-047-10), the
+    each refused key, S-052-10, then a swept tick's config-upgrade proposal, S-047-10, then the
+    check of [agents] verify a launch ran, S-064-6), the
     branch the refresh detached the checkout from, one line
     per blocked session, the work and the launch, then one per pruned worktree, or the prune's
     failure (spec 045), then the default branch's catch-up when it moved, would, or failed (#886)"""
@@ -2945,9 +3035,12 @@ def tick_lines(
     if decision.credential is Kind.TOKEN_FILE and decision.action is Action.LAUNCH:
         who += " as token file"
     swept = "" if decision.upgrades is None else f"; {decision.upgrades}"  # S-047-10: a swept tick's proposal
-    lines = [f"{decision.action.value}: {decision.reason}{who}{refused_suffix(decision.refused)}{swept}"]
+    tail = "" if decision.verify is None else f"; verify: {decision.verify}"  # S-064-6: last on the line
+    lines = [f"{decision.action.value}: {decision.reason}{who}{refused_suffix(decision.refused)}{swept}{tail}"]
     if decision.auth_notice is not None:
         lines.append(f"  {decision.auth_notice}")
+    if decision.verify_notice is not None:
+        lines.append(f"  {decision.verify_notice}")
     # a launch that didn't start names the dead session; SESSION_DEAD's reason does, and QUIET has no work for one
     if decision.dead is not None and decision.action not in (Action.SESSION_DEAD, Action.QUIET):
         lines.append(f"  {decision.dead.line()}")

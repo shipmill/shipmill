@@ -711,3 +711,11 @@ entry that supersedes it, never by editing an old one.
 - Applies to: src/shipmill/app.py, src/shipmill/cli.py, src/shipmill/agents.py, shipmill gh, shipmill app-token, skills/github-issue-triage/scripts/triage_state.py, skills/github-issue-triage/scripts/chains.py, skills/github-issue-triage/SKILL.md, skills/github-issue-triage/references/triage-rubric.md, skills/github-issue-resolve/SKILL.md, docs/specs/038-product-coordinator.md, [product] home, [product] repos, home repo, component, coordinator
 - Enforced by: the read token's permissions (no write asked; a broader grant or another repo in GitHub's answer refuses the token); review, until spec 065 is built
 - Supersedes: D-47
+
+## D-85: An answer naming the recommended option by its number and its text together takes it
+
+- Decided: 2026-11-14, in shipmill/shipmill#1150
+- Rule: A relayed or direct answer to a needs-decision question that names the option marked (recommended) as listed, its number and its own text together (1. <text>, 1) <text>, 1: <text>, Option 1: <text>, Option 1. <text>, the text being the part before (recommended), with or without that mark, emphasis and code marks aside), takes that option, as its number alone or its text alone already do; a number and a text naming different options, a text that narrows or extends the option or has words past it, and a prefix of its text take none. retro.py's takes_recommended reads it, so pr_gate.py's acceptance and the retro's recommended count agree. This refines D-49
+- Why: A relay writes the option the maintainer picked as AskUserQuestion lists it, 1. Take every recommendation, which took neither the number-alone nor the text-alone path, so shipmill gh pr merge refused spec pull requests the maintainer had approved with the answer doesn't take the recommended option (#1150). The number and the text naming the same option is the same answer, said twice; `@romamo` chose this reading on #1150
+- Applies to: skills/github-ship-watch/scripts/retro.py, skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/references/needs-decision.md, docs/specs/055-landing-rules-in-code.md, docs/specs/030-decision-policy.md
+- Enforced by: tests/test_retro.py and tests/test_pr_gate.py (test_s055_19_*)

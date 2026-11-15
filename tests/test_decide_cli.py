@@ -543,3 +543,109 @@ def test_s030_8_a_missing_diff_for_a_file_a_rule_reads_exits_2(repo: Repo) -> No
     pulls = FakePulls((FileChange("CHANGELOG.md", "modified", None),), {(HEAD, "CHANGELOG.md"): "# Changelog\n"})
     with pytest.raises(ReleaseError, match="no diff for CHANGELOG.md"):
         main(["--repo", str(repo.root), "decide", "classify", "--pr", "13"], pulls=pulls)
+
+
+# -- spec 057: a part of a zone sets its paths' level -----------------------------------------
+
+WORKFLOWS_PART = '\n[decisions.paths.security]\n".github/workflows/**" = "notify"\n'
+CI = ".github/workflows/ci.yml"
+CODEOWNERS = ".github/CODEOWNERS"
+
+
+def security_of(found: dict[str, Any]) -> dict[str, Any]:
+    zone: dict[str, Any]
+    [zone] = [z for z in found["zones"] if z["zone"] == "security"]
+    return zone
+
+
+def test_s057_5_a_part_sets_its_paths_level_and_classify_names_where_it_came_from(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(repo, POLICY + WORKFLOWS_PART)
+    found = run(repo, capsys, "classify", "--files", CI)
+    assert zones_of(found) == {"security": "notify"}
+    assert found["level"] == "notify"
+    assert security_of(found)["paths"] == [
+        {"path": CI, "level": "notify", "source": "part", "glob": ".github/workflows/**"}
+    ]
+    found = run(repo, capsys, "classify", "--files", CODEOWNERS)
+    assert zones_of(found) == {"security": "ask"}
+    assert security_of(found)["paths"] == [{"path": CODEOWNERS, "level": "ask", "source": "default", "glob": None}]
+
+
+def test_s057_5_the_text_reason_ends_with_the_part_that_set_the_level(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(repo, POLICY + WORKFLOWS_PART)
+    assert main(["--repo", str(repo.root), "decide", "classify", "--files", CI, CODEOWNERS]) == 0
+    assert capsys.readouterr().out.splitlines()[1] == (
+        f"zone: security at ask: {CI} is under .github/"
+        ' (notify by [decisions.paths.security] ".github/workflows/**"); '
+        f"{CODEOWNERS} is under .github/"
+    )
+
+
+def test_s057_5_a_zone_level_the_config_sets_reads_source_config_and_a_pathless_zone_lists_no_paths(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(repo, POLICY + '\n[decisions]\nsecurity = "notify"\n')
+    found = run(repo, capsys, "classify", "--files", CODEOWNERS, CONFIG)
+    assert security_of(found)["paths"] == [
+        {"path": CODEOWNERS, "level": "notify", "source": "config", "glob": None},
+        {"path": CONFIG, "level": "notify", "source": "config", "glob": None},
+    ]
+    [policy] = [z for z in found["zones"] if z["zone"] == "decision-policy"]
+    assert (policy["level"], policy["paths"]) == ("never", [])
+
+
+def test_s057_6_the_strictest_level_among_the_paths_and_the_matching_parts_wins(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(repo, POLICY + WORKFLOWS_PART)
+    found = run(repo, capsys, "classify", "--files", CI, CODEOWNERS)
+    assert zones_of(found) == {"security": "ask"}
+    assert [p["level"] for p in security_of(found)["paths"]] == ["notify", "ask"]
+    commit(repo, POLICY + WORKFLOWS_PART + '".github/workflows/ci.yml" = "ask"\n')
+    found = run(repo, capsys, "classify", "--files", CI)
+    assert zones_of(found) == {"security": "ask"}
+    assert security_of(found)["paths"] == [
+        {"path": CI, "level": "ask", "source": "part", "glob": ".github/workflows/ci.yml"}
+    ]
+
+
+def test_s057_6_a_protected_part_raises_its_paths_above_the_zone_level(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    review = "# Review\n\n## Protected areas\n\n- `src/**`: the product\n"
+    config = POLICY + '\n[decisions]\nprotected = "notify"\n\n[decisions.paths.protected]\n"src/settings/**" = "ask"\n'
+    commit(repo, config, **{"REVIEW.md": review})
+    found = run(repo, capsys, "classify", "--files", "src/settings/prod.py")
+    assert zones_of(found) == {"protected": "ask"}
+    assert found["zones"][0]["paths"] == [
+        {"path": "src/settings/prod.py", "level": "ask", "source": "part", "glob": "src/settings/**"}
+    ]
+    assert zones_of(run(repo, capsys, "classify", "--files", "src/app.py")) == {"protected": "notify"}
+
+
+def test_s057_7_a_part_never_adds_a_zone(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
+    commit(repo, POLICY + '\n[decisions.paths.protected]\n"src/**" = "ask"\n')
+    found = run(repo, capsys, "classify", "--files", "src/x.py")
+    assert found == {"level": None, "zones": [], "candidates": [], "refused": []}
+
+
+def test_s057_8_a_pull_request_that_adds_a_part_is_judged_by_the_bases_parts(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(repo)
+    pulls = FakePulls(
+        (
+            FileChange(CONFIG, "modified", patch(*WORKFLOWS_PART.splitlines())),
+            FileChange(CI, "modified", patch("x")),
+        ),
+        {(BASE, CONFIG): POLICY, (HEAD, CONFIG): POLICY + WORKFLOWS_PART},
+    )
+    repo.write(CONFIG, POLICY + WORKFLOWS_PART)  # the pull request's checkout holds the part
+    found = run(repo, capsys, "classify", "--pr", "15", pulls=pulls)
+    assert zones_of(found) == {"decision-policy": "never", "security": "ask"}
+    assert security_of(found)["paths"] == [{"path": CI, "level": "ask", "source": "default", "glob": None}]
+    assert found["level"] == "never"

@@ -103,7 +103,12 @@ Every decision an agent meets falls in a **zone**, and each zone has one **level
 [decisions]
 veto_hours = 24                   # the notify window, 1 to 168
 contract-addition = "act"         # a zone id = a level; an absent zone keeps its default
+
+[decisions.paths.security]
+".github/workflows/**" = "notify" # a part: these paths take their own level, never below the floor
 ```
+
+The three zones code detects from a changed path, `direction`, `security`, and `protected`, take parts (spec 057): under `[decisions.paths.<zone>]`, a glob of the zone's paths gets its own level, above or below the zone's, never below its floor. A part never adds a zone to a change; it only sets the level of a path the zone already covers, and the strictest level among a change's paths wins, so a change to a workflow (`notify` above) and to `.github/CODEOWNERS` (no part: `ask`) reads `ask`. `shipmill decide levels` and `shipmill doctor` list every part.
 
 The release side's stages keep their levels in `[autonomy]` ([release-lanes.md](release-lanes.md#autonomy-and-the-stop-switch)), which `[decisions]` can't set, and so do the agent stages `triage`, `fix`, and `land` (spec 040): `release`, `deploy`, `rollback`, `intake`, `upgrade`, `triage`, `fix`, and `land` read `act` for `act`, `ask` for `propose` (the proposal issue is the question), and no level for `observe`, and `breaking-release` is always `ask`, since a breaking stable release waits for a person's hand start (D-39). `shipmill decide levels` shows both: every zone with its level, its floor, and where the level comes from. `shipmill decide classify`, given a pull request's number, names the zones code detects in its change, read from the default branch's config, so a pull request can't lower its own levels. A session asks the code first, then places what code doesn't see itself, and the strictest level among a decision's zones wins: the sessions' steps are in github-issue-triage's [needs-decision.md](../skills/github-issue-triage/references/needs-decision.md#who-decides).
 

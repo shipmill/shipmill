@@ -138,6 +138,7 @@ import webbrowser
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import TextIO
 
@@ -161,13 +162,13 @@ from shipmill import (
     spec_open,
     status,
 )
+from shipmill import verify as verifying
 from shipmill.agents import AgentsConfig, Author, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
 from shipmill.app import (
     BOT_IDS,
     CACHE,
     HELPERS,
     Api,
-    AppLogin,
     BotIds,
     Identity,
     NotInstalled,
@@ -348,6 +349,7 @@ from shipmill.launchd import (
     remove,
 )
 from shipmill.lineedit import LineText
+from shipmill.merge_gate import GateRun, Queued, hold_gate, label_args, run_gate, unlabel_args
 from shipmill.notify import Desktop
 from shipmill.operate import Http, Unreachable, UrllibHttp, approve, approve_rollback, operate, summary
 from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
@@ -1061,6 +1063,7 @@ def main(
     graphql: Callable[[], land_window.Graphql] | None = None,
     now: dt.datetime | None = None,
     rules_reader: RulesReader | None = None,
+    merge_gate: GateRun | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -1077,7 +1080,8 @@ def main(
     053), deprecation_reads for what `deprecations` reads of each repo and today for the date its
     report names (spec 047), graphql for the GitHub `window` reads the last held merge from and
     now for the moment it reads the window at (spec 056), and rules_reader for the branch rules
-    doctor's landing row reads (spec 054), as tests pass fakes; stdin is also a `shipmill gh` merge's
+    doctor's landing row reads (spec 054), and merge_gate for the pr_gate.py a `shipmill gh` merge
+    runs (spec 055), as tests pass fakes; stdin is also a `shipmill gh` merge's
     --body-file -, and gh_capture also the gh whose output `spec open` reads"""
     refused.begin()  # each refused key is said once per command, however often it loads the config
     head, passed = _split_gh(argv)
@@ -1089,13 +1093,21 @@ def main(
         if passed is None:  # such as `shipmill -- gh ...`
             raise ReleaseError("only --repo PATH may come before gh, as in `shipmill --repo PATH gh pr list`")
         readers = _GhReaders(
-            merge_reader or _gh_reader, credit_reader or _credit_reader, stdin or sys.stdin, gh_capture or capture_gh
+            merge_reader or _gh_reader,
+            credit_reader or _credit_reader,
+            stdin or sys.stdin,
+            gh_capture or capture_gh,
+            merge_gate or run_gate,
         )
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
         return _gh(root, passed, reach, env, user_home, gh_runner or run_gh, readers)
     if args.command == "spec" or (args.command == "review" and args.review_command == "record"):
         readers = _GhReaders(
-            merge_reader or _gh_reader, credit_reader or _credit_reader, stdin or sys.stdin, gh_capture or capture_gh
+            merge_reader or _gh_reader,
+            credit_reader or _credit_reader,
+            stdin or sys.stdin,
+            gh_capture or capture_gh,
+            merge_gate or run_gate,
         )
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
         through = _GhPath(reach, env, user_home, readers)
@@ -1410,6 +1422,20 @@ def _hook_test(root: Path, environ: Mapping[str, str], home: Path) -> Callable[[
     return lambda: self_test(root, run_command, run_hook, which, home, environ)
 
 
+def _verify(
+    root: Path, git: Git, claude_args: Sequence[str], environ: Mapping[str, str], home: Path
+) -> verifying.Planner:
+    """Spec 064's check of [agents] verify as a headless session in root meets it: the gate's
+    --claude-arg flags and environment, origin's default branch, and the plugin a session loads"""
+    session = verifying.Headless.of(claude_args, environ, home)
+    plugin = partial(verifying.plugin_root, root, run_command, home)
+
+    def planned(commands: tuple[str, ...]) -> verifying.Planned:
+        return verifying.plan(commands, root, session, git.default_branch, git.show, plugin, run_command)
+
+    return planned
+
+
 def _claude_auth(environ: Mapping[str, str]) -> Callable[[Token | None], ClaudeAuth]:
     """#500's preflight, with claude looked up on environ's PATH; with a token, spec 035's"""
     program = shutil.which("claude", path=environ.get("PATH", ""))
@@ -1497,6 +1523,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         stop=stop_group,
         catch_up=lambda: AgentsConfig.load(root, args.slug).catch_up,
         upgrades=Upgrader(lambda: head_config(git), upgrades_as_app, lambda: github),
+        verify=_verify(root, git, args.claude_arg, os.environ, Path.home()),
     )
     if args.json:
         refusals = refused.records(_refused_or_none(root))  # S-052-11
@@ -1797,7 +1824,11 @@ def _gh(
     current body can't be read exits 2 and gh never edits (spec 050). As the App, a `pr create`,
     or `api`'s POST on `repos/<owner>/<repo>/pulls`, whose body's plan pr_gate.py's
     plan_problems refuses, by the default branch's docs/product.md, exits 2 before any token
-    (S-055-17, `hold_plan`)"""
+    (S-055-17, `hold_plan`). As the App, a merge runs the wheel's pr_gate.py after those holds,
+    exits 2 unless it reads READY, and merges only the head it judged (S-055-1 to S-055-3,
+    `hold_gate`); on QUEUED it first adds the base's [land.window] queued_label as the App, and
+    a merge gh ran that exited 0 removes that label, as the App, when the pull request carries
+    it (S-056-8)"""
     api, signer = hub.api, hub.signer
     leading = _leading(passed)
     key = leading.key
@@ -1889,14 +1920,21 @@ def _gh(
         gh_args = edited_args(edit, default, binary, as_app(environ, token), readers.current)
     env = as_app(environ, token)
     # the App's bot login, read once however many readers ask for it
-    app = (
-        functools.cache(functools.partial(_app_login, app_login(signer, api), app_id, path, trailer))
-        if trailer
-        else None
-    )
+    bot_login = functools.cache(functools.partial(app_login(signer, api), app_id, path))
+    app = functools.partial(_app_login, bot_login, trailer) if trailer else None
     assisted = identity.author is Author.DECIDER  # whose trailer is set (S-051-3)
+    held: _Held | None = None
     if merge is not None:
-        pull = _hold_never(top, merge, env, binary, readers.merge)
+        held = _hold_never(top, merge, env, binary, readers.merge)
+        pull = held.repo, held.number
+        # S-055-1 to S-055-3: after the holds above, with the App's token, before any author's
+        try:
+            gh_args = hold_gate(
+                merge, held.number, held.repo, top, _gate_login(merge, bot_login), gh_args, env, readers.gate
+            )
+        except Queued as exc:  # S-056-8: labelled queued_label as the App, and still refused
+            _queue(held, exc, binary, env, readers.current)
+            raise
         if trailer is not None and app is not None:
             credit = _merge_credit(top, pull, gh_args, env, binary, readers, app)
             author = _AsApp(dict(env))
@@ -1923,7 +1961,53 @@ def _gh(
             gh_args = person_args(gh_args, author.writer.login.value)
         author.say()
         env = author.env
-    return runner([str(binary), *gh_args], env)  # S-051-12: every other command as the App
+    code = runner([str(binary), *gh_args], env)  # S-051-12: every other command as the App
+    if held is not None and code == 0:  # S-056-8: as the App, whoever the merge went out as
+        _unqueue(held, binary, as_app(environ, token), readers.current)
+    return code
+
+
+@dataclass(frozen=True, slots=True)
+class _Held:
+    """The pull request a merge names, once the holds of spec 030 let it through: its repo and
+    number, the base's [land.window] queued_label (None without the section), and that label as
+    the pull request carries it (None when it doesn't), for S-056-8"""
+
+    repo: str
+    number: int
+    queued_label: str | None
+    carried: str | None
+
+
+def _queue(held: _Held, refused: Queued, binary: Path, env: Mapping[str, str], current: GhCapture) -> None:
+    """S-056-8: add queued_label to the pull request pr_gate.py read QUEUED, with the App's env;
+    nothing when it carries it already. The merge stays refused either way: a label that can't
+    be added says so beside the refusal"""
+    label = held.queued_label
+    if label is None or held.carried is not None:
+        return
+    code, _ = current([str(binary), *label_args(held.repo, held.number, label)], env)
+    if code != 0:
+        raise ReleaseError(
+            f"{refused}\nand adding {label} to #{held.number} failed (gh exited {code}), so the land window's "
+            f"queue doesn't list it; add it with `{cli_command()} gh pr edit {held.number} -R {held.repo} "
+            f"--add-label {label}`"
+        ) from None
+
+
+def _unqueue(held: _Held, binary: Path, env: Mapping[str, str], current: GhCapture) -> None:
+    """S-056-8: remove queued_label, with the App's env, from the pull request a merge exited 0
+    on; nothing when it doesn't carry it. One that can't be removed exits 2 naming the merge as
+    done, so nothing merges it again"""
+    if held.carried is None:
+        return
+    code, _ = current([str(binary), *unlabel_args(held.repo, held.number, held.carried)], env)
+    if code != 0:
+        raise ReleaseError(
+            f"the merge of #{held.number} in {held.repo} went through, but removing its {held.carried} label failed "
+            f"(gh exited {code}), so the land window's queue still lists it; remove it with "
+            f"`{cli_command()} gh pr edit {held.number} -R {held.repo} --remove-label {held.carried}`"
+        )
 
 
 def _create_deciders(
@@ -2005,12 +2089,13 @@ def _bot_account(login: str, app_id: int, api: Api, token: str, decider: UserLog
 class _GhReaders:
     """What `shipmill gh` reads besides gh's arguments: the pull request a merge names (spec
     030), its deciders (spec 049), stdin, for a `--body-file -`, and an edit's current body
-    through gh (spec 050)"""
+    through gh (spec 050), and the pr_gate.py a merge as the App runs (spec 055)"""
 
     merge: MergeReader
     credit: CreditReader
     stdin: TextIO
     current: GhCapture
+    gate: GateRun
 
 
 def _credit_reader(top: Path, binary: Path, env: Mapping[str, str]) -> CreditReads:
@@ -2018,15 +2103,26 @@ def _credit_reader(top: Path, binary: Path, env: Mapping[str, str]) -> CreditRea
     return GhCli(top, gh=str(binary), env=env)
 
 
-def _app_login(login: AppLogin, app_id: int, key: Path, trailer: str) -> str:
+def _app_login(login: Callable[[], str], trailer: str) -> str:
     """The App's bot login, whose comments alone ask and relay a decision (S-049-4); exit 2
     when it can't be read, since the credit can't then tell the App from another bot. trailer
     names the setting that asked for the credit"""
     try:
-        return login(app_id, key)
+        return login()
     except ReleaseError as exc:
         raise ReleaseError(
             f"{trailer} in {CONFIG_PATH} needs the App's bot login, which can't be read: {exc}"
+        ) from None
+
+
+def _gate_login(merge: Merge, login: Callable[[], str]) -> str:
+    """S-055-1: the App's bot login pr_gate.py reads the agents' pull requests by; exit 2 when it
+    can't be read, so the merge fails closed"""
+    try:
+        return login()
+    except ReleaseError as exc:
+        raise ReleaseError(
+            f"{merge.command} is refused: pr_gate.py needs the App's bot login, which can't be read: {exc}"
         ) from None
 
 
@@ -2118,13 +2214,13 @@ def _gh_reader(top: Path, binary: Path, env: Mapping[str, str]) -> MergeReads:
     return GhCli(top, gh=str(binary), env=env)
 
 
-def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, reader: MergeReader) -> tuple[str, int]:
+def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, reader: MergeReader) -> _Held:
     """S-030-13: a merge of a pull request whose classification, by the levels at origin/HEAD,
     has a `never` zone exits 2, naming the zone and the maintainer's hand merge; approval in
     chat changes nothing, since nothing here reads it (D-48). S-030-23: so does one labelled
     needs-decision, whose question waits on an answer (D-21, D-49), read in the same call. Read
     with the App's token, in the checkout's own repo only, whose levels it holds. The pull
-    request held, repo and number"""
+    request held, with the queued_label of the same base's [land.window] (spec 056)"""
     origin = _origin_repo(top)
     if origin is None:
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so {merge.command}'s pull request can't be classified")
@@ -2157,7 +2253,8 @@ def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, r
             f"{merge.command} is refused: #{number} in {target} is labelled {DECISION_LABEL}, so its question still "
             "waits on an answer; answer its question and remove the label first, then merge (D-21, D-49)"
         )
-    found = classify_change(Base.read(git, DEFAULT_REF), reads, change)
+    base = Base.read(git, DEFAULT_REF)
+    found = classify_change(base, reads, change)
     never = [z for z in found.zones if z.level is decide.Level.NEVER]
     if never:
         zones = "; ".join(f"{z.zone.value}: {z.reason}" for z in never)
@@ -2166,7 +2263,12 @@ def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, r
             "merges it, by hand; an approval in chat doesn't change that (spec 030, D-48). Assign it to the "
             "maintainer and leave it"
         )
-    return target, number
+    window = base.policy.land_window
+    if window is None:
+        return _Held(target, number, None, None)
+    label = window.queued_label
+    carried = next((name for name in change.labels if name.lower() == label.lower()), None)
+    return _Held(target, number, label, carried)
 
 
 def _gh_product(

@@ -14,24 +14,26 @@ And does it keep to the repo's direction (spec 024)?
 
 The maintainer's answer (spec 055), read only for a PR that would read NEEDS_DECISION: the
 newest needs-decision question (its first line `<!-- shipmill:needs-decision -->`, by an
-OWNER, MEMBER, or COLLABORATOR or the --bot-login) on the PR, or, when the PR has none, on an
-issue its title or body closes or names as `Part of #N`; its first answer as retro.py reads one
-(a trusted person's reply without the agent marker, or the --bot-login's relay whose first line
-is `Decision by @<login>` naming the maintainer: a user `[agents.roles] maintainer` lists on that
-branch, or, when it lists none, a login whose permission on the repo is admin, one read of
+OWNER, MEMBER, or COLLABORATOR or the --bot-login) on the PR, or, when the PR has none and the
+--bot-login or an OWNER, MEMBER, or COLLABORATOR opened it, on an issue its title or body closes
+or names as `Part of #N`; its first answer as retro.py reads one (a trusted person's reply
+without the agent marker, or the --bot-login's relay whose first line is `Decision by @<login>`
+naming the maintainer: a user `[agents.roles] maintainer` lists on that branch, or, when it lists
+none, a login whose permission on the repo is admin, one read of
 `repos/<o>/<r>/collaborators/<login>/permission` made only for a relay; one that can't be read is
-no maintainer); that answer taking the option marked (recommended) as it stands. It
-lifts the asks, and CI decides, when it covers the judged head: one given on an issue before the
-PR opened covers every head; any other covers the head the PR had when it was given (after a
-force-push since, the first push's beforeCommit; else the newest commit whose committedDate is
-at or before it) and every head whose own change, `git diff $(git merge-base origin/<base>
-<head>) <head>`, is the same, or, for a PR adding a spec, whose spec files `specs.py
-same-approval` reads the same (exit 0) and whose other files' patch is the same. Otherwise
-the asks stay, with `  needs-decision:
-answered at <sha7>, and the change differs since`, `  needs-decision: the answer doesn't take
-the recommended option`, or `  needs-decision: the head the answer was given at can't be named`.
-It costs one GraphQL read of the PR's newest 100 comments and force-pushes, and one of the
-issues' when the PR has no question; a never zone stays MAINTAINER_ONLY whatever the answer.
+no maintainer); that answer's whole reply (every non-blank line, a relay's past its first line
+and `Answered in the session:`) being one line that takes the option marked (recommended) as it
+stands. It lifts the asks, and CI decides, when it covers the judged head: one given on an issue
+before the PR opened covers every head; any other covers the head its question names in full
+on its line `<!-- shipmill:head <sha> -->` (under its visible `CI on <sha7>` line), that exact
+commit, and every head whose own change, `git diff $(git merge-base origin/<base> <head>)
+<head>`, is the same as that commit's, or, for a PR adding a spec, whose spec files `specs.py
+same-approval` reads the same (exit 0) and whose other files' patch is the same. Otherwise the
+asks stay, with `  needs-decision: answered at <sha7>, and the change differs since`,
+`  needs-decision: the answer doesn't take the recommended option`, or `  needs-decision: the
+question names no head: ask again with its `<!-- shipmill:head <sha> -->` line`. It costs one
+GraphQL read of the PR's opener, newest 100 comments, and force-pushes, and one of the issues'
+when the PR has no question; a never zone stays MAINTAINER_ONLY whatever the answer.
 
 REVIEW.md and docs/product.md are read from the default branch of the checkout
 (--checkout, default the current directory, at origin/HEAD, or at origin/<the PR's base
@@ -117,22 +119,34 @@ head or a head whose own change is the same, as for the maintainer's answer abov
 unreviewed: the newest review of <sha7> on record refuses it; ...`; a merge, or a person's
 approval, lets it read READY.
 
+The land window (spec 056): when the base's .github/shipmill.toml has [land.window], the gate
+reads it with `shipmill --repo <checkout> window --json --ref <the base>`, run as `decide
+classify` is, once per base branch and pass for every open PR there, and the labels of a PR
+that would read READY with one `gh pr view N --json labels`; a PR into another branch than
+the one the config was read from is not held (one window per repo, for PRs into the default
+branch). A PR carrying one of its `labels` and none
+of its `bypass_labels` that would otherwise read READY reads QUEUED: while the window is closed,
+`  queued: held by the land window (<its held labels>); opens <YYYY-MM-DD HH:MM> <timezone>`,
+and while it is open and `next_merge` is later than now, `  queued: spacing: the next held merge
+after <HH:MM> <timezone>`. A red, pending, conflicting, refused, unreviewed, or
+held-for-a-decision PR keeps that verdict: QUEUED only takes READY's place.
+
 Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base's (D-75),
 or gh failed; 3 a check is still pending (or --wait timed out); 4 a PR is not open or
 conflicts; 5 a PR needs the maintainer's decision; 6 an agent's PR is refused for its plan, a
 spec PR names no open feature issue, or a PR's closing keyword names a Part of issue or an open
 one with a ## Check (D-76); 7 a PR only the maintainer
 merges, by hand (a `never` zone); 8 a draft PR (D-67); 9 an agent's code PR no review record
-covers (spec 055); 2 bad arguments,
-a base branch the checkout lacks, a git failure, a REVIEW.md, docs/product.md, or config the
-gate can't read, or a `shipmill decide classify` that fails or prints what the gate can't
-read. With several PRs the exit code is
-the worst verdict's, ranked 0, 1, 3, 9, 4, 8, 5, 7, 6.
+covers (spec 055); 10 a held PR waits for the land window or its spacing (spec 056); 2 bad
+arguments, a base branch the checkout lacks, a git failure, a REVIEW.md, docs/product.md, or
+config the gate can't read, or a `shipmill decide classify` or `shipmill window` that fails or
+prints what the gate can't read. With several PRs the exit code is
+the worst verdict's, ranked 0, 1, 3, 10, 9, 4, 8, 5, 7, 6.
 
 --wait polls while the worst verdict is PENDING, or is NEEDS_DECISION and a NEEDS_DECISION PR has
 a check still pending on its own head (#1028): the question waits until its CI finished, and the
 exit code and its ranking stay as above. The base's checks are never pending (D-75), a PR with no
-checks has none pending, and every other verdict, UNREVIEWED too, stops the wait.
+checks has none pending, and every other verdict, UNREVIEWED and QUEUED too, stops the wait.
 """
 
 from __future__ import annotations
@@ -156,10 +170,12 @@ from types import ModuleType
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 READY, FAILED, PENDING, BLOCKED, NEEDS_DECISION, REFUSED, MAINTAINER_ONLY, DRAFT = 0, 1, 3, 4, 5, 6, 7, 8
 UNREVIEWED = 9  # an agent's code PR no review record covers (spec 055)
+QUEUED = 10  # a held PR outside the land window or inside its spacing (spec 056)
 LABELS = {
     READY: "READY",
     FAILED: "FAILED",
     PENDING: "PENDING",
+    QUEUED: "QUEUED",
     BLOCKED: "BLOCKED",
     NEEDS_DECISION: "NEEDS_DECISION",
     REFUSED: "REFUSED",
@@ -169,8 +185,9 @@ LABELS = {
 }
 # the worst verdict last: MAINTAINER_ONLY ranks above NEEDS_DECISION and below REFUSED (spec 030); DRAFT
 # ranks above BLOCKED and below the verdicts that ask something of the maintainer (D-52, kept by D-67);
-# UNREVIEWED between PENDING and BLOCKED (spec 055)
-RANK = (READY, FAILED, PENDING, UNREVIEWED, BLOCKED, DRAFT, NEEDS_DECISION, MAINTAINER_ONLY, REFUSED)
+# QUEUED (spec 056) and UNREVIEWED (spec 055) rank between PENDING and BLOCKED, QUEUED first: it
+# only waits, an unreviewed PR waits on a review
+RANK = (READY, FAILED, PENDING, QUEUED, UNREVIEWED, BLOCKED, DRAFT, NEEDS_DECISION, MAINTAINER_ONLY, REFUSED)
 
 # github-ship-watch's watch_state.py: one reading of the config's [agents] and of the plugin's
 # pinned CLI for every skill script
@@ -259,6 +276,7 @@ class Gate:
     base_red: tuple[str, ...] = ()  # the base head's failed checks no Repairs: line names (D-75)
     base_repairs: tuple[str, ...] = ()  # the ones a Repairs: line names, for the reviewer to check
     unreviewed: str = ""  # why an agent's code PR that reads READY otherwise has no review record (spec 055)
+    queued: tuple[str, ...] = ()  # why a held PR waits for the land window or its spacing (spec 056)
 
     @property
     def verdict(self) -> int:
@@ -278,7 +296,11 @@ class Gate:
             return FAILED
         if not self.checks or any(not c.done for c in self.checks) or self.mergeable != "MERGEABLE":
             return PENDING
-        return UNREVIEWED if self.unreviewed else READY
+        if self.unreviewed:
+            return UNREVIEWED
+        if self.queued:  # QUEUED only takes READY's place (spec 056)
+            return QUEUED
+        return READY
 
 
 @dataclass(frozen=True)
@@ -308,6 +330,7 @@ class Base:
     # the users [agents.roles] maintainer lists, lowercased; none: a login with admin on the repo is
     # the maintainer (a relayed answer counts only when it names one, spec 055)
     maintainers: frozenset[str] = frozenset()
+    window: bool = False  # the config has [land.window]: `shipmill window` reads it (spec 056)
 
     def protected(self, files: tuple[str, ...]) -> list[Protected]:
         wanted = {REVIEW}
@@ -629,7 +652,29 @@ def read_base(checkout: str, ref: str) -> Base:
     config = read(CONFIG)
     where = f"{CONFIG} at {ref}"
     agents = config is not None and has_agents(config, where)
-    return Base(ids, reviews, agents, ref, frozenset() if config is None else maintainer_users(config, where))
+    maintainers = frozenset() if config is None else maintainer_users(config, where)
+    window = config is not None and has_land_window(config, where)
+    return Base(ids, reviews, agents, ref, maintainers, window)
+
+
+def has_land_window(text: str, where: str) -> bool:
+    """Whether the config has [land.window] (spec 056); `shipmill window` checks the section
+    itself. On Python 3.10, without tomllib, a [land.window] header, a window key or dotted key
+    under [land], or a land key or dotted key at the top counts: a form it can't read runs
+    `shipmill window`, which reads it, rather than letting a held PR through"""
+    ws = watch_state()
+    if ws.tomllib is None:
+        tables = ws.toml_tables(text)
+        under = re.search(r"^\s*[\"']?window[\"']?\s*[.=]", tables.get("land", ""), re.MULTILINE)
+        top = re.search(r"^\s*[\"']?land[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE)
+        headers = any(n == "land.window" or n.startswith("land.window.") for n in tables)
+        return headers or under is not None or top is not None
+    try:
+        raw = ws.tomllib.loads(text)
+    except ws.tomllib.TOMLDecodeError as exc:
+        raise GateError(f"{where}: {exc}") from None
+    land = raw.get("land")
+    return isinstance(land, dict) and "window" in land
 
 
 def maintainer_users(text: str, where: str) -> frozenset[str]:
@@ -774,6 +819,127 @@ class Classifier:
             f"{cli[-1]} is the release the plugin pins: if PyPI doesn't serve it yet, wait for its publish, "
             "or pass --tool <path or URL> to run another shipmill"
         )
+
+
+@dataclass(frozen=True)
+class Window:
+    """What the gate reads of `shipmill window --json` (spec 056)"""
+
+    timezone: str
+    open: bool
+    opens: datetime | None  # when closed: the next opening, in the window's zone
+    labels: tuple[str, ...]
+    bypass_labels: tuple[str, ...]
+    next_merge: datetime  # when the spacing allows the next held merge, in the window's zone
+
+    def held(self, labels: Iterable[str]) -> tuple[str, ...]:
+        """The PR's held labels: those of `labels` it carries, none when it carries a bypass label"""
+        carried = set(labels)
+        if carried & set(self.bypass_labels):
+            return ()
+        return tuple(label for label in self.labels if label in carried)
+
+    def queued(self, labels: Iterable[str], now: datetime) -> tuple[str, ...]:
+        """The queued: line of a held PR that would otherwise read READY, at now; none when the
+        PR isn't held or the window and its spacing let it through"""
+        held = self.held(labels)
+        if not held:
+            return ()
+        if not self.open:
+            opens = "doesn't open within a week" if self.opens is None else f"opens {self.opens:%Y-%m-%d %H:%M}"
+            return (f"held by the land window ({', '.join(held)}); {opens} {self.timezone}",)
+        if self.next_merge > now:
+            return (f"spacing: the next held merge after {self.next_merge:%H:%M} {self.timezone}",)
+        return ()
+
+
+class Windows:
+    """`shipmill --repo <checkout> window --json --ref <base>`, run as `decide classify` is, once
+    per base ref and pass (spec 056); a run that fails or prints what the gate can't read stops
+    the gate, so a malformed [land.window] holds every merge rather than letting a held one through"""
+
+    def __init__(self, checkout: str, tool: str | None) -> None:
+        self.checkout = checkout
+        self.tool = tool
+        self.found: dict[str, Window | None] = {}
+
+    def window(self, ref: str) -> Window | None:
+        if ref not in self.found:
+            self.found[ref] = self.run(ref)
+        return self.found[ref]
+
+    def run(self, ref: str) -> Window | None:
+        ws = watch_state()
+        try:
+            cli: list[str] = ws.shipmill_cli(self.tool)
+        except ws.Refused as refused:
+            raise GateError(str(refused).removeprefix("error: ")) from None
+        cmd = [*cli, "--repo", self.checkout, "window", "--json", "--ref", ref]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+        except FileNotFoundError:
+            raise GateError(
+                f"{cmd[0]} is not on PATH: the gate reads the land window with `shipmill window`; install uv, "
+                "https://docs.astral.sh/uv/"
+            ) from None
+        if proc.returncode != 0:
+            why = proc.stderr.strip() or proc.stdout.strip()
+            raise GateError(f"`{' '.join(cmd)}` failed: {why}; every PR into {ref} waits until it reads")
+        return parse_window(proc.stdout, ref)
+
+
+def parse_window(text: str, ref: str) -> Window | None:
+    """`shipmill window --json`'s object; None for `configured: false`, and anything the gate can't
+    read stops it"""
+    what = f"`shipmill window --json --ref {ref}`"
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise GateError(f"{what} printed no JSON: {exc}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("configured"), bool):
+        raise GateError(f"{what} printed no configured flag")
+    if not data["configured"]:
+        return None
+
+    def strings(key: str) -> tuple[str, ...]:
+        found = data.get(key)
+        if not isinstance(found, list) or not all(isinstance(s, str) for s in found):
+            raise GateError(f"{what} printed {key} {found!r}, not a list of labels")
+        return tuple(found)
+
+    def when(key: str, missing: bool) -> datetime | None:
+        found = data.get(key)
+        if found is None and missing:
+            return None
+        if not isinstance(found, str):
+            raise GateError(f"{what} printed {key} {found!r}, not a time")
+        try:
+            moment = datetime.fromisoformat(found)
+        except ValueError:
+            raise GateError(f"{what} printed {key} {found!r}, not a time") from None
+        if moment.tzinfo is None:
+            raise GateError(f"{what} printed {key} {found!r}, a time without a zone")
+        return moment
+
+    if not isinstance(data.get("open"), bool) or not isinstance(data.get("timezone"), str):
+        raise GateError(f"{what} printed no open flag or timezone")
+    next_merge = when("next_merge", False)
+    assert next_merge is not None  # when() refuses a missing one
+    return Window(
+        data["timezone"], data["open"], when("opens", True), strings("labels"), strings("bypass_labels"), next_merge
+    )
+
+
+def labels_of(number: int, repo: str | None) -> tuple[str, ...]:
+    """The PR's labels, read only on a base with [land.window] (spec 056)"""
+    cmd = ["gh", "pr", "view", str(number), "--json", "labels"]
+    if repo:
+        cmd += ["-R", repo]
+    data = json.loads(gh(cmd, number))
+    found = data.get("labels") if isinstance(data, dict) else None
+    if not isinstance(found, list) or not all(isinstance(e, dict) and isinstance(e.get("name"), str) for e in found):
+        raise GateError(f"gh pr view {number} --json labels printed no labels list: {str(data)[:200]}")
+    return tuple(e["name"] for e in found)
 
 
 def parse_zones(text: str, number: int) -> tuple[Zone, ...]:
@@ -1137,17 +1303,21 @@ FORCE_PUSHES = (
     "timelineItems(last: 100, itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT]) { pageInfo { hasPreviousPage } "
     "nodes { ... on HeadRefForcePushedEvent { createdAt beforeCommit { oid } } } }"
 )
+OPENED_BY = "author { __typename login } authorAssociation"  # who opened the pull request (S-055-7)
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
+# the head a question on a pull request was asked at, in full: its hidden line under `CI on <sha7>: ...`
+# (needs-decision.md); a 7-hex prefix is no name, since a commit sharing it can be made to order
+ASKED_AT = re.compile(r"<!-- shipmill:head ([0-9a-f]{40}) -->")
 DIFFERS = "answered at {sha7}, and the change differs since"
 NOT_RECOMMENDED = "the answer doesn't take the recommended option"
-UNNAMED = "the head the answer was given at can't be named"
+NO_HEAD = "the question names no head: ask again with its `<!-- shipmill:head <sha> -->` line"
 
 
 def thread_read(number: int) -> list[str]:
     """`gh api`'s arguments for the GraphQL read of pull request number's thread"""
     query = (
         "query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { "
-        f"pullRequest(number: {number}) {{ {THREAD} {FORCE_PUSHES} }} }} }}"
+        f"pullRequest(number: {number}) {{ {OPENED_BY} {THREAD} {FORCE_PUSHES} }} }} }}"
     )
     return ["graphql", "-F", "owner={owner}", "-F", "repo={repo}", "-f", f"query={query}"]
 
@@ -1212,36 +1382,31 @@ def issue_question(data: dict, number: int, repo: str | None, bots: frozenset[st
     return None if newest is None else (newest[1], newest[2])
 
 
-def head_at(data: dict, thread: dict, at: datetime, number: int) -> str | None:
-    """The pull request's head when the answer was given (spec-gate.md's rule): after a force-push
-    since then, the beforeCommit of the first one after it; else the newest commit whose
-    committedDate is at or before it. None when neither can be named"""
-    items = thread.get("timelineItems")
-    nodes = items.get("nodes") if isinstance(items, dict) else None
-    info = items.get("pageInfo") if isinstance(items, dict) else None
-    if not isinstance(nodes, list) or not isinstance(info, dict):
-        raise GateError(f"the force-pushes of #{number} are not {{nodes, pageInfo}}: {items!r}")
-    pushes = []
-    for event in nodes:
-        if not isinstance(event, dict):
-            raise GateError(f"a force-push of #{number} is not {{createdAt, beforeCommit}}: {event!r}")
-        before = event.get("beforeCommit")
-        oid = before.get("oid") if isinstance(before, dict) else None
-        pushes.append((moment(event.get("createdAt"), f"a force-push of #{number}'s createdAt"), oid))
-    after = [push for push in pushes if push[0] > at]
-    if after:
-        if info.get("hasPreviousPage") is not False and len(after) == len(pushes):
-            return None  # the first push after the answer may be older than the ones read
-        oid = min(after, key=lambda push: push[0])[1]
-        return oid if isinstance(oid, str) and FULL_SHA.fullmatch(oid) else None
-    newest: tuple[datetime, str] | None = None
-    for commit in data.get("commits") or ():
-        if not isinstance(commit, dict) or not isinstance(commit.get("oid"), str):
-            raise GateError(f"a commit of #{number} is not {{oid, committedDate}}: {commit!r}")
-        when = moment(commit.get("committedDate"), f"a commit of #{number}'s committedDate")
-        if when <= at and (newest is None or when >= newest[0]):
-            newest = (when, commit["oid"])
-    return None if newest is None else newest[1]
+def asked_at(question: str) -> str | None:
+    """The full head a question names on its line `<!-- shipmill:head <sha> -->`; None without
+    one (S-055-5): a commit's date is its author's to set, a force-push's beforeCommit may be a
+    head pushed after the answer, and a 7-hex prefix can be matched by a commit made to order,
+    so none of them names what was answered"""
+    for line in question.splitlines():
+        found = ASKED_AT.fullmatch(line.strip())
+        if found is not None:
+            return found.group(1)
+    return None
+
+
+def whole_reply(comment: dict, bots: frozenset[str]) -> str | None:
+    """The answer as its whole reply reads (S-055-8): every non-blank line of a person's reply,
+    or of a relay past its `Decision by` line and the template's `Answered in the session:`,
+    leaving out the agent marker. One line is the answer; none or more than one is None, so a
+    line past the option is the person's own words and takes no option"""
+    rt = retro()
+    lines = [line.strip() for line in str(comment["body"]).splitlines()]
+    lines = [line for line in lines if line and not rt.AGENT_MARKER.fullmatch(line)]
+    if rt.login_names(comment.get("author")) & {b.lower() for b in bots}:  # the App's relay
+        lines = lines[1:]
+        if lines and lines[0].startswith(rt.SESSION_ANSWER):
+            lines = [said for said in (lines[0][len(rt.SESSION_ANSWER) :].strip(), *lines[1:]) if said]
+    return lines[0] if len(lines) == 1 else None
 
 
 def has_commit(checkout: str, sha: str) -> bool:
@@ -1281,11 +1446,13 @@ def acceptance(
 ) -> tuple[bool, str | None]:
     """Whether the maintainer's answer covers the judged head (spec 055), and, when it doesn't,
     the needs-decision line that says why (None for no line): the newest question on the pull
-    request, else on an issue it closes or names as Part of #N; its first trusted answer, by
+    request, else, for a pull request the --bot-login or an OWNER, MEMBER, or COLLABORATOR
+    opened, on an issue it closes or names as Part of #N; its first trusted answer, by
     retro.py's answer_at (a relay by the --bot-login counts when it names one of maintainers);
-    taking the (recommended) option, by
-    retro.py's takes_recommended; given on an issue before the pull request opened, or at a head
-    whose own change is the judged head's. Anything else leaves the question open"""
+    its whole reply taking the (recommended) option, by retro.py's takes_recommended; given on
+    an issue before the pull request opened, or at the head the question names in full (its
+    `<!-- shipmill:head <sha> -->` line) or one whose own change is the judged head's. Anything
+    else leaves the question open"""
     rt = retro()
     bots = frozenset({bot_login}) if bot_login else frozenset()
     thread = pr_thread(number, repo)
@@ -1295,6 +1462,8 @@ def acceptance(
     if asked is None:
         if not whole:
             return False, None  # its own question may be older than the comments read
+        if not rt.trusted(thread, bots):
+            return False, None  # anyone may write `Fixes #N` in a body: an outsider's PR asks its own
         found = issue_question(data, number, repo, bots)
         if found is None:
             return False, None
@@ -1303,16 +1472,17 @@ def acceptance(
     answer = rt.answer_at(later, bots, maintainers)
     if answer is None:
         return False, None
-    index, said = answer
-    if not rt.takes_recommended(comments[asked]["body"], said):
+    index = answer[0]
+    said = whole_reply(later[index], bots)
+    if said is None or not rt.takes_recommended(comments[asked]["body"], said):
         return False, NOT_RECOMMENDED
     at = moment(later[index]["createdAt"], f"the answer on #{number}'s createdAt")
     if on_issue and at < moment(thread.get("createdAt"), f"#{number}'s createdAt"):
         return True, None  # given before the pull request opened: it covers every head
     head = str(data["headRefOid"])
-    answered = head_at(data, thread, at, number)
+    answered = asked_at(comments[asked]["body"])
     if answered is None:
-        return False, UNNAMED
+        return False, NO_HEAD
     if answered == head:
         return True, None
     specs = added_specs(data, number, repo)
@@ -1505,6 +1675,8 @@ def render(gate: Gate) -> str:
     lines += [f"  needs-decision: {reason}" for reason in gate.asks]
     lines += [f"  notify: {reason}" for reason in gate.notices]
     lines += [f"  unreviewed: {gate.unreviewed}"] if gate.verdict == UNREVIEWED else []
+    if gate.verdict == QUEUED:
+        lines += [f"  queued: {reason}" for reason in gate.queued]
     if gate.verdict == DRAFT and gate.own:
         lines.append(
             "  draft: the App's own, no session owns it: once nothing it waits on is open, mark it ready"
@@ -1572,6 +1744,7 @@ def main() -> int:
         while True:
             gates = []
             heads: dict[str, tuple[str, list[dict]]] = {}  # each base branch's head, read once a pass (D-75)
+            windows = Windows(bases.checkout, args.tool)  # each base's land window, read once a pass (spec 056)
             for number in args.prs:
                 data = fetch(number, args.repo)
                 base = bases.base(str(data["baseRefName"]))
@@ -1609,10 +1782,16 @@ def main() -> int:
                         heads[branch] = base_head(branch, number, args.repo)
                     red, repairs = base_failures(branch, *heads[branch], str(data.get("body") or ""))
                     judged = replace(judged, base_red=red, base_repairs=repairs)
-                # a review of the merging head (spec 055)
+                # a review of the merging head (spec 055), before the window: QUEUED only takes READY's place
                 if judged.verdict == READY and agent and not docs_only(data, number, args.repo):
                     why = unreviewed(data, number, args.repo, args.bot_login, bases.checkout, bases.inside)
                     judged = replace(judged, unreviewed=why)
+                # one window per repo, for PRs into the branch its config was read from (spec 056)
+                if data["state"] == "OPEN" and base.window and base.ref == f"origin/{data['baseRefName']}":
+                    window = windows.window(base.ref)  # read for every PR there: a failure stops them all
+                    if window is not None and judged.verdict == READY:
+                        now = datetime.now(timezone.utc)  # noqa: UP017 (3.10)
+                        judged = replace(judged, queued=window.queued(labels_of(number, args.repo), now))
                 gates.append(judged)
             worst = max((g.verdict for g in gates), key=RANK.index)
             if not args.wait or not polls(gates) or time.monotonic() >= deadline:

@@ -25,6 +25,7 @@ from shipmill.github import (
     OpenMilestone,
     PullRequest,
     RunState,
+    ShippedPull,
     WorkflowRun,
 )
 from shipmill.gitrepo import Git
@@ -148,6 +149,9 @@ class FakeGitHub:
     no_run_url: bool = False  # dispatch names no run, as a gh too old to print its URL
     repo_labels: set[str] = field(default_factory=set)  # the repository's labels, as label_names reads them
     label_reads: int = 0  # label_names calls
+    shipped: list[ShippedPull] = field(default_factory=list)  # merged pull requests shipped_pulls reads
+    shipped_reads: list[dt.datetime] = field(default_factory=list)  # the since of each shipped_pulls call
+    shipped_error: str = ""  # when set, reading the shipped pull requests fails with it
 
     def deploy(self, environment: str, ref: str, at: dt.datetime, *states: DeploymentState) -> int:
         """Record a deployment of ref, with its statuses one minute apart from at; its id"""
@@ -286,6 +290,12 @@ class FakeGitHub:
         if self.merged_error:
             raise ReleaseError(f"gh api graphql failed: {self.merged_error}")
         return sorted((p for p in self.merged if p.head in branches), key=lambda p: p.number)
+
+    def shipped_pulls(self, since: dt.datetime) -> list[ShippedPull]:
+        self.shipped_reads.append(since)
+        if self.shipped_error:
+            raise ReleaseError(f"gh api graphql failed: {self.shipped_error}")
+        return sorted(self.shipped, key=lambda p: p.number)
 
 
 @dataclass

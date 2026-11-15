@@ -125,6 +125,7 @@ blocker_label = "release-blocker" # an open issue with it holds blocker_lanes
 blocker_lanes = ["rc", "stable"]
 freeze = ["2026-12-24..2027-01-02"]
 freeze_lanes = ["dev", "rc", "stable"]
+# veto_lanes = ["rc", "stable"]   # optional: a release waits for the veto window of each notify decision it ships (below)
 
 [lanes.dev]
 quiet_minutes = 30                # due once main has been quiet this long
@@ -206,6 +207,42 @@ reads nothing without a lane that sets `milestone = true`. github-ship-watch's
 `watch_state.py` runs it, so `shipmill status`, its `--rows` and `--json`, and a watch pass
 show both rows, and under "watch" the pass renames an overtaken milestone.
 
+`[gates] veto_lanes`, empty by default, makes a lane wait for the veto window of each
+`notify` decision it would ship (spec 059), since a published version can only be yanked.
+**What a release ships** is read from GitHub alone: the merged pull requests whose merge
+commit is in the candidate's base and not in the lane's newest tag (for a stable promotion,
+from the newest stable tag to the rc's base), and the issues each closes; a lane with no tag
+yet reads the pull requests merged in the last 168 hours. On each item, a comment whose first
+line is a decided marker, `<!-- shipmill:decided zone=<id> until=<UTC time> -->`, by the App
+of `[agents] app_id` or by an OWNER, MEMBER, or COLLABORATOR (D-29), opens a window until its
+`until`. A veto after the marker (an OWNER, MEMBER, or COLLABORATOR's comment whose first
+word is `veto`, without the agent marker) keeps it open past `until`, until a newer trusted
+`<!-- shipmill:veto-handled -->` comment answers it. A trusted marker whose `until` isn't a
+UTC time, or lies more than 168 hours after its comment, fails the plan with exit 2 naming
+the item.
+
+**The wait.** A lane in `veto_lanes` that a trigger made due and no gate holds skips while any
+window it would ship is open, naming each item, its zone, and when its window ends, oldest
+first, and the plan goes on to the next lane:
+
+```
+rc: 0.8.0rc17 waits for veto windows: #196 security until 2026-11-10 14:00 UTC
+rc: 0.8.0rc17 waits for veto windows: #196 security vetoed, until the veto is handled
+```
+
+The trigger stays due, so the first run after every window has ended and every veto is
+handled releases. A lane not in `veto_lanes` reads nothing new. The wait is a trigger's, not
+a gate: **a person's hand start** (`gh workflow run release.yml -f lane=<lane>`, whose
+triggering actor the workflow passes to `shipmill plan --actor`) reads no decisions and
+releases inside a window, the way to ship an urgent fix. A hand start by a `<name>[bot]`
+login, or one that names no actor, waits as a trigger does, so an agent that starts a lane
+can't skip the window; `lane=policy` waits like a scheduled run. `hotfix` can't be in
+`veto_lanes` (exit 2): a hotfix is started by hand, which never waits. A window ends on the
+clock, not with a push, so a policy whose `veto_lanes` names an enabled lane needs **the
+hourly tick** in `release.yml` (below), and `doctor` warns when it is missing. `doctor` also
+prints a `gates` line naming the lanes, a WARN without `[agents] app_id`, since only a
+person's own decided marker can then hold a release.
+
 ### Retired keys
 
 A config that loaded keeps loading (D-63). A key shipmill retires is first deprecated: it
@@ -264,9 +301,10 @@ To retire a key:
 `.github/shipmill.toml`, so run it after editing the lanes (with the same `--ci` and
 `--runs-on`):
 
-- **The hourly tick** (`7 * * * *`) when any lane sets `milestone = true`, or the stable
-  lane sets both `promote_from` and `quiet_minutes`: a milestone empties when an issue
-  closes, and an rc to promote is tagged off main, and neither starts a run
+- **The hourly tick** (`7 * * * *`) when any lane sets `milestone = true`, the stable
+  lane sets both `promote_from` and `quiet_minutes`, or `[gates] veto_lanes` names an
+  enabled lane: a milestone empties when an issue closes, an rc to promote is tagged off
+  main, and a veto window ends on the clock, and none of them starts a run
 - **One cron per window time** when the lanes trigger on `schedule` (and on `quiet_minutes`
   without a promoting stable lane): each window's starts over the next year, in UTC, so a
   time zone with daylight saving time gets a line for each of its offsets

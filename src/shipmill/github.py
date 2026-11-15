@@ -65,6 +65,26 @@ _MERGED_FRAGMENT = (
     f"timelineItems(itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT], last: {HISTORY_LIMIT}) "
     "{ nodes { ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } } } } }"
 )
+# what shipped_pulls reads (spec 059): merged pull requests a page, an item's newest comments,
+# and a pull request's closing issues; an item with more comments or closing issues is refused,
+# since a decided marker missed could release inside its veto window
+SHIPPED_PER_PAGE = 25
+SHIPPED_PAGES = 40  # 1,000 merged pull requests at most; a longer range is refused
+SHIPPED_COMMENTS = 100
+SHIPPED_CLOSES = 20
+_SHIPPED_COMMENTS = (
+    f"comments(last: {SHIPPED_COMMENTS}) {{ totalCount "
+    "nodes { createdAt body authorAssociation author { __typename login } } }"
+)
+_SHIPPED_QUERY = (
+    "query($owner: String!, $name: String!, $after: String) { repository(owner: $owner, name: $name) { "
+    "nameWithOwner "
+    f"pullRequests(states: MERGED, orderBy: {{field: UPDATED_AT, direction: DESC}}, first: {SHIPPED_PER_PAGE}, "
+    "after: $after) { pageInfo { hasNextPage endCursor } "
+    f"nodes {{ number updatedAt mergedAt mergeCommit {{ oid }} {_SHIPPED_COMMENTS} "
+    f"closingIssuesReferences(first: {SHIPPED_CLOSES}) {{ totalCount "
+    f"nodes {{ number repository {{ nameWithOwner }} {_SHIPPED_COMMENTS} }} }} }} }} }} }}"
+)
 _LABEL_DESCRIPTIONS = {
     PROPOSAL_LABEL: "Opened by shipmill: a release or deploy waiting for a person",
     UPGRADE_LABEL: "Opened by shipmill: a config upgrade waiting for the maintainer's decision",
@@ -167,6 +187,36 @@ class IssueClose:
     @property
     def open(self) -> bool:
         return self.reason is None
+
+
+@dataclass(frozen=True, slots=True)
+class ShippedIssue:
+    """An issue a merged pull request closes by GitHub's closing references, with its newest
+    comments, oldest first; repo is None for one of this repository (spec 059)"""
+
+    number: int
+    repo: str | None
+    comments: tuple[IssueComment, ...]
+
+    @property
+    def name(self) -> str:
+        return f"{self.repo or ''}#{self.number}"
+
+
+@dataclass(frozen=True, slots=True)
+class ShippedPull:
+    """A merged pull request a release may ship: the commit it landed as, when it merged, its
+    newest comments, oldest first, and the issues it closes (spec 059)"""
+
+    number: int
+    merge: str  # the merge commit's full SHA
+    merged_at: dt.datetime
+    comments: tuple[IssueComment, ...]
+    closes: tuple[ShippedIssue, ...]
+
+    @property
+    def name(self) -> str:
+        return f"#{self.number}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -351,6 +401,12 @@ class GitHub(Protocol):
     def active_runs(self, workflow: str) -> list[WorkflowRun]:
         """The workflow's runs on any branch that haven't finished (ACTIVE_STATUSES), newest
         first (the newest 100 of each status); Forbidden when the token can't read Actions"""
+        ...
+
+    def shipped_pulls(self, since: dt.datetime) -> list[ShippedPull]:
+        """Every merged pull request updated at or after since, so every one merged since, by
+        number, with its comments and the issues it closes (spec 059); read only for a lane in
+        [gates] veto_lanes"""
         ...
 
 
@@ -819,6 +875,131 @@ class GhCli:
             pulls.update((pull.number, pull) for pull in parse_merged_pulls(found, len(chunk)))
         return [pulls[n] for n in sorted(pulls)]
 
+    def shipped_pulls(self, since: dt.datetime) -> list[ShippedPull]:
+        pulls: dict[int, ShippedPull] = {}
+        after: str | None = None
+        for _ in range(SHIPPED_PAGES):
+            cursor = ("-F", "after=null") if after is None else ("-f", f"after={after}")
+            found = json.loads(
+                self._gh(
+                    "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", *cursor,
+                    "-f", f"query={_SHIPPED_QUERY}",
+                )
+            )  # fmt: skip
+            page = parse_shipped_pulls(found)
+            pulls.update((pull.number, pull) for pull in page.pulls)
+            if not page.more or page.oldest < since:
+                return [pulls[n] for n in sorted(pulls)]
+            after = page.cursor
+        raise ReleaseError(
+            f"more than {SHIPPED_PAGES * SHIPPED_PER_PAGE} merged pull requests were updated since"
+            f" {since:%Y-%m-%d %H:%M} UTC; shipmill reads fewer for [gates] veto_lanes"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ShippedPage:
+    """A page of shipped_pulls' query: its pull requests, the oldest updatedAt on it, and the
+    cursor of the next page when there is one"""
+
+    pulls: tuple[ShippedPull, ...]
+    oldest: dt.datetime
+    more: bool
+    cursor: str | None
+
+
+def parse_shipped_pulls(found: Any) -> ShippedPage:
+    """A page of shipped_pulls' GraphQL answer; anything else is refused, as is an item with
+    more comments or closing issues than it reads, since a decided marker missed could release
+    inside its veto window (spec 059)"""
+
+    def refuse(what: str) -> ReleaseError:
+        return ReleaseError(f"gh api graphql printed {what} for the merged pull requests: {str(found)[:300]}")
+
+    if not isinstance(found, dict) or found.get("errors"):
+        raise refuse("errors or no object")
+    data = found.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
+    if not isinstance(repository, dict) or not isinstance(repository.get("nameWithOwner"), str):
+        raise refuse("no repository")
+    here = str(repository["nameWithOwner"]).lower()
+    connection = repository.get("pullRequests")
+    info = connection.get("pageInfo") if isinstance(connection, dict) else None
+    if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list) or not isinstance(info, dict):
+        raise refuse("no pullRequests connection")
+    more, cursor = info.get("hasNextPage"), info.get("endCursor")
+    if not isinstance(more, bool) or (more and not isinstance(cursor, str)):
+        raise refuse("no pageInfo")
+    pulls = []
+    oldest: dt.datetime | None = None
+    for node in connection["nodes"]:
+        if not isinstance(node, dict) or not isinstance(node.get("number"), int):
+            raise refuse("a pull request without a number")
+        number = int(node["number"])
+        updated, merged = node.get("updatedAt"), node.get("mergedAt")
+        if not isinstance(updated, str) or not isinstance(merged, str):
+            raise refuse(f"#{number} without updatedAt or mergedAt")
+        when = _time(updated)
+        oldest = when if oldest is None or when < oldest else oldest
+        merge = _oid(node, "mergeCommit")
+        if merge is None:
+            raise refuse(f"#{number}, merged, without a mergeCommit")
+        closes = []
+        for issue in _counted(node, "closingIssuesReferences", SHIPPED_CLOSES, f"#{number}"):
+            repo = issue.get("repository") if isinstance(issue, dict) else None
+            if not isinstance(issue, dict) or not isinstance(issue.get("number"), int):
+                raise refuse(f"an issue #{number} closes without a number")
+            if not isinstance(repo, dict) or not isinstance(repo.get("nameWithOwner"), str):
+                raise refuse(f"an issue #{number} closes without a repository")
+            other = str(repo["nameWithOwner"])
+            closes.append(
+                ShippedIssue(
+                    int(issue["number"]),
+                    None if other.lower() == here else other,
+                    _comments(issue, f"#{issue['number']}"),
+                )
+            )
+        pulls.append(ShippedPull(number, merge, _time(merged), _comments(node, f"#{number}"), tuple(closes)))
+    if oldest is None:
+        if more:
+            raise refuse("an empty page with more after it")
+        oldest = dt.datetime.max.replace(tzinfo=dt.UTC)  # nothing more to read
+    return ShippedPage(tuple(pulls), oldest, more, cursor if more else None)
+
+
+def _counted(holder: dict[str, Any], key: str, limit: int, item: str) -> list[Any]:
+    """holder[key]'s nodes, refused when its totalCount is over the limit read"""
+    connection = holder.get(key)
+    if not isinstance(connection, dict) or not isinstance(connection.get("nodes"), list):
+        raise ReleaseError(f"gh api graphql printed no {key} for {item}")
+    total = connection.get("totalCount")
+    if not isinstance(total, int):
+        raise ReleaseError(f"gh api graphql printed no {key} totalCount for {item}")
+    if total > limit:
+        raise ReleaseError(f"{item} has {total} {key}, over the {limit} shipmill reads for [gates] veto_lanes")
+    return list(connection["nodes"])
+
+
+def _comments(holder: dict[str, Any], item: str) -> tuple[IssueComment, ...]:
+    return tuple(_comment(c, item) for c in _counted(holder, "comments", SHIPPED_COMMENTS, item))
+
+
+def _comment(c: Any, item: str) -> IssueComment:
+    """A GraphQL comment node: a deleted account's author reads as ghost, never a Bot"""
+    if (
+        not isinstance(c, dict)
+        or not isinstance(c.get("createdAt"), str)
+        or not isinstance(c.get("body"), str)
+        or not isinstance(c.get("authorAssociation"), str)
+    ):
+        raise ReleaseError(f"gh api graphql printed {c!r} for {item}: a comment needs createdAt, body, author")
+    author = c.get("author")  # null for a deleted account
+    if author is not None and (not isinstance(author, dict) or not isinstance(author.get("login"), str)):
+        raise ReleaseError(f"gh api graphql printed {author!r} for {item}: an author needs a login")
+    login = str(author["login"]) if author else "ghost"
+    bot = isinstance(author, dict) and author.get("__typename") == "Bot"
+    return IssueComment(login, bot, c["authorAssociation"], _time(c["createdAt"]), c["body"])
+
 
 def parse_merged_pulls(found: Any, aliases: int) -> list[MergedPull]:
     """The `b<i>` connections of merged_pull_requests' GraphQL answer; anything else is refused,
@@ -1013,19 +1194,5 @@ def _issue_close(node: dict[str, Any]) -> IssueClose:
     for pr in _nodes(node, "closedByPullRequestsReferences", number):
         if (oid := _merged_oid(pr, number)) is not None and oid not in fixes:
             fixes.append(oid)
-    comments = []
-    for c in _nodes(node, "comments", number):
-        if (
-            not isinstance(c, dict)
-            or not isinstance(c.get("createdAt"), str)
-            or not isinstance(c.get("body"), str)
-            or not isinstance(c.get("authorAssociation"), str)
-        ):
-            raise ReleaseError(f"gh api graphql printed {c!r} for #{number}: a comment needs createdAt, body, author")
-        author = c.get("author")  # null for a deleted account
-        if author is not None and (not isinstance(author, dict) or not isinstance(author.get("login"), str)):
-            raise ReleaseError(f"gh api graphql printed {author!r} for #{number}: an author needs a login")
-        login = str(author["login"]) if author else "ghost"
-        bot = isinstance(author, dict) and author.get("__typename") == "Bot"
-        comments.append(IssueComment(login, bot, c["authorAssociation"], _time(c["createdAt"]), c["body"]))
-    return IssueClose(number, CloseReason(reason), closed_at, tuple(fixes), tuple(comments))
+    comments = tuple(_comment(c, f"#{number}") for c in _nodes(node, "comments", number))
+    return IssueClose(number, CloseReason(reason), closed_at, tuple(fixes), comments)

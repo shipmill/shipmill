@@ -4,16 +4,22 @@ Protected areas from the default branch (spec 024), end to end with a stand-in g
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Any
 
 import pytest
 
-from .conftest import copy_tree, no_auto_maintenance
+from shipmill.classify import Base, RepoPath, classify_paths
+from shipmill.config import loads
+from shipmill.policy import Policy
+from shipmill.review import parse as parse_review
+
+from .conftest import POLICY, copy_tree, no_auto_maintenance
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "github-pr-triage" / "scripts" / "pr_gate.py"
 BOT = "shipmill-demo[bot]"
@@ -170,12 +176,14 @@ def pr(
     added: tuple[str, ...] = (),
     commits: tuple[str, ...] = ("Change the app",),
     title: str = "Change the app",
+    labels: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """listed caps the files the files API returns (GitHub's stops at 3000); renamed maps a
     file's new path to its old one; the files API reads added's files `added`, the others
     `modified` (or `renamed`); commits are the PR's commit messages, each on its own commit"""
     return {
         "title": title,
+        "labels": [{"name": label} for label in labels],
         "commits": [
             {"oid": f"abc{i}234fff", "messageHeadline": m.split("\n", 1)[0], "messageBody": m.partition("\n")[2]}
             for i, m in enumerate(commits, start=1)
@@ -227,15 +235,25 @@ def recorded(verdict: str, commit: str = HEAD_SHA) -> dict[str, Any]:
 OPENED = "2026-11-01T10:00:00Z"  # when a test's PR opened
 
 
+APP_AUTHOR = {"login": "shipmill-demo", "__typename": "Bot"}  # the App, as GraphQL spells it
+
+
 def thread(
-    *comments: dict[str, Any], pushes: tuple[dict[str, Any], ...] = (), created: str = OPENED, whole: bool = True
+    *comments: dict[str, Any],
+    pushes: tuple[dict[str, Any], ...] = (),
+    created: str = OPENED,
+    whole: bool = True,
+    author: dict[str, Any] | None = APP_AUTHOR,
+    association: str = "NONE",
 ) -> dict[str, Any]:
-    """A pull request's or an issue's thread as GraphQL answers it: its comments, oldest first,
-    and a pull request's force-pushes; whole False says older comments went unread"""
+    """A pull request's or an issue's thread as GraphQL answers it: who opened it, its comments,
+    oldest first, and a pull request's force-pushes; whole False says older comments went unread"""
     return {
         "__typename": "Issue",
         "state": "OPEN",
         "body": "",
+        "author": author,
+        "authorAssociation": association,
         "createdAt": created,
         "comments": {"pageInfo": {"hasPreviousPage": not whole}, "nodes": list(comments)},
         "timelineItems": {"pageInfo": {"hasPreviousPage": False}, "nodes": list(pushes)},
@@ -1610,6 +1628,46 @@ def test_s030_11_a_zone_the_gate_doesnt_know_stops_it() -> None:
         gate.parse_zones("{}", 7)
 
 
+def part_zones(config: str, *paths: str) -> list[dict[str, Any]]:
+    """The zones shipmill's own classify gives the paths, the base holding config and a REVIEW.md
+    that protects src/land.py, as `decide classify --json` prints them"""
+    rubric, problems = parse_review("## Protected areas\n\n- `src/land.py`: pushes\n", PurePosixPath("REVIEW.md"))
+    assert problems == ()
+    policy = Policy.parse(loads(POLICY + config, "base"), "base")
+    found = classify_paths(Base(policy, {"REVIEW.md": rubric.protected}, None), [RepoPath(p) for p in paths])
+    zones: list[dict[str, Any]] = found.record()["zones"]
+    return zones
+
+
+def test_s057_9_a_protected_part_at_never_is_maintainer_only(tmp_path: Path, agents: Path) -> None:
+    zones = part_zones('\n[decisions.paths.protected]\n"src/land.py" = "never"\n', "src/land.py")
+    assert [(z["zone"], z["level"]) for z in zones] == [("protected", "never")]
+    classify_as(tmp_path, {7: zones})
+    proc = run_gate(tmp_path, agents, {7: pr(files=("src/land.py",))}, "--bot-login", BOT, "--maintainer-accepted")
+    assert proc.returncode == gate.MAINTAINER_ONLY == 7, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [
+        "  maintainer-only: protected: src/land.py matches `src/land.py` (REVIEW.md): pushes"
+        ' (never by [decisions.paths.protected] "src/land.py")'
+    ]
+
+
+def test_s057_9_a_security_part_at_notify_keeps_the_ci_verdict_and_prints_a_notify_line(
+    tmp_path: Path, agents: Path
+) -> None:
+    ci = ".github/workflows/ci.yml"
+    zones = part_zones('\n[decisions.paths.security]\n".github/workflows/**" = "notify"\n', ci)
+    assert [(z["zone"], z["level"]) for z in zones] == [("security", "notify")]
+    classify_as(tmp_path, {7: zones})
+    notify = f'  notify: security: {ci} is under .github/ (notify by [decisions.paths.security] ".github/workflows/**")'
+    proc = run_gate(tmp_path, agents, {7: pr(files=(ci,))}, "--bot-login", BOT)
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY + notify + "\n"), proc.stderr
+    failing = pr(files=(ci,))
+    failing["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    red = run_gate(tmp_path, agents, {7: failing}, "--bot-login", BOT)
+    assert red.returncode == 1
+    assert red.stdout.splitlines()[1:] == ["  failed: test (FAILURE)", notify]
+
+
 def test_s030_11_tool_runs_classify_from_another_shipmill(tmp_path: Path, agents: Path) -> None:
     record = classify_as(tmp_path, {7: []})
     proc = run_gate(tmp_path, agents, {7: pr()}, "--bot-login", BOT, "--tool", "git+https://example.com/x")
@@ -1678,10 +1736,19 @@ def test_a_plan_inside_a_code_fence_is_not_a_plan() -> None:
 
 # Spec 055: the maintainer's acceptance is read from the answer on GitHub
 
-QUESTION = (
-    "<!-- shipmill:needs-decision -->\n**Decision needed:** src/land.py pushes tags.\n\n"
-    "1. Land it (recommended): the change is reviewed\n2. Hold it until the release\n\n<!-- shipmill:agent -->\n"
-)
+
+def question(head: str | None = HEAD_SHA, marker: bool = True) -> str:
+    """A needs-decision question asked at head: its `CI on <sha7>` line (#1028) and, with marker,
+    the full head on `<!-- shipmill:head <sha> -->` under it; None names no head"""
+    ci = f"CI on {head[:7]}: 1 check green\n" if head is not None else ""
+    ci += f"<!-- shipmill:head {head} -->\n" if head is not None and marker else ""
+    return (
+        f"<!-- shipmill:needs-decision -->\n**Decision needed:** src/land.py pushes tags.\n{ci}\n"
+        "1. Land it (recommended): the change is reviewed\n2. Hold it until the release\n\n<!-- shipmill:agent -->\n"
+    )
+
+
+QUESTION = question()
 PROTECTED_ASK = "  needs-decision: src/land.py matches `src/land.py` (REVIEW.md): it pushes tags"
 
 
@@ -1702,8 +1769,8 @@ def comment(
     }
 
 
-def asked(when: str = at(11)) -> dict[str, Any]:
-    return comment(QUESTION, when, login="shipmill-demo", association="NONE", bot=True)
+def asked(when: str = at(11), head: str | None = HEAD_SHA) -> dict[str, Any]:
+    return comment(question(head), when, login="shipmill-demo", association="NONE", bot=True)
 
 
 def relay(line: str, answer: str, when: str = at(12)) -> dict[str, Any]:
@@ -1747,7 +1814,7 @@ def protected(
         comment("1", at(12)),
         comment("Option 1.", at(12), association="MEMBER"),
         comment("Land it", at(12), association="COLLABORATOR"),
-        comment("**1**\n\nThanks, go ahead.", at(12)),
+        comment("\n**1**\n\n", at(12)),
     ],
 )
 def test_s055_5_an_answer_taking_the_recommended_option_lifts_a_protected_glob(
@@ -1768,6 +1835,53 @@ def test_s055_5_an_accepted_ask_zone_is_judged_on_ci_alone(tmp_path: Path, agent
     assert ci.returncode == 1 and ci.stdout.splitlines()[1:] == ["  failed: test (FAILURE)"], ci.stdout
 
 
+OLD_SHA = "0123456789abcdef0123456789abcdef01234567"  # an earlier head of the test's PR
+NO_HEAD = "  needs-decision: the question names no head: ask again with its `<!-- shipmill:head <sha> -->` line"
+
+
+def test_s055_5_a_commit_dated_before_the_answer_but_pushed_after_it_is_not_covered(
+    tmp_path: Path, directed: Path
+) -> None:
+    """#1122 (1): a commit's date is its author's to set, so the answer binds to the head its
+    question names, never to the newest commit dated before it"""
+    data = headed(commits=((OLD_SHA, at(10, 30)), (HEAD_SHA, at(11, 30))), files=("src/land.py",))
+    proc = protected(tmp_path, directed, data, thread(asked(head=OLD_SHA), comment("1", at(12))))
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    differs = f"  needs-decision: answered at {OLD_SHA[:7]}, and the change differs since"
+    assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, differs]
+
+
+def test_s055_5_the_head_the_question_names_is_covered_whatever_the_dates(tmp_path: Path, directed: Path) -> None:
+    """a head committed after the answer, and asked about once pushed, is the head answered"""
+    data = headed(commits=((OLD_SHA, at(10, 30)), (HEAD_SHA, at(12, 30))), files=("src/land.py",))
+    proc = protected(tmp_path, directed, data, thread(asked(at(13)), comment("1", at(14))))
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("marker", [False, True])
+def test_s055_5_a_question_naming_no_full_head_is_asked_again(tmp_path: Path, directed: Path, marker: bool) -> None:
+    """a question with no head, or with only the visible `CI on <sha7>` line, names no head"""
+    asking = comment(question(None if marker else HEAD_SHA, marker=marker), at(11), "shipmill-demo", "NONE", True)
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asking, comment("1", at(12))))
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, NO_HEAD]
+
+
+def test_s055_5_a_head_sharing_the_named_heads_7_hex_prefix_is_not_covered(tmp_path: Path, directed: Path) -> None:
+    """a 7-hex prefix is 2^28 tries away: after a plain push and a force-push to a commit made to
+    share the answered head's prefix, the answered head is gone from the PR, and only the full SHA
+    tells the new head from it"""
+    answered = "1234567" + "0" * 33
+    forged = "1234567" + "f" * 33
+    data = headed(forged, ((forged, at(14)),), files=("src/land.py",))
+    pushed = "abcdef" + "1" * 34  # the plain push after the answer, which the force-push replaced
+    answers = thread(asked(head=answered), comment("1", at(12)), pushes=(push(at(14), pushed),))
+    proc = protected(tmp_path, directed, data, answers)
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    differs = f"  needs-decision: answered at {answered[:7]}, and the change differs since"
+    assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, differs]
+
+
 def test_s055_5_the_answer_is_read_once_and_only_for_a_pr_needing_a_decision(tmp_path: Path, directed: Path) -> None:
     run_gate(tmp_path, directed, {7: headed()}, "--bot-login", BOT)
     # a READY PR reads no thread
@@ -1785,6 +1899,30 @@ def test_s055_5_the_answer_is_read_once_and_only_for_a_pr_needing_a_decision(tmp
 def test_s055_9_the_apps_relay_counts_as_a_trusted_answer(tmp_path: Path, directed: Path, line: str) -> None:
     proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(), relay(line, "1")))
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("answer", "lands"),
+    [
+        ("1. Land it", True),  # the option as listed, number and text (#1150)
+        ("**1. Land it (recommended)**", True),
+        ("Option 1: Land it", True),
+        ("2. Land it", False),  # a number and a text naming different options
+        ("1. Hold it until the release", False),
+        ("1. Land it but rename the tag", False),
+        ("1. Land", False),  # a prefix of the option's text
+    ],
+)
+def test_s055_19_a_relay_naming_the_option_by_number_and_text_lifts_the_ask(
+    tmp_path: Path, directed: Path, answer: str, lands: bool
+) -> None:
+    relayed = thread(asked(), relay("Decision by `@romamo`, relayed by Claude Code", answer))
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), relayed)
+    if lands:
+        assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == 5, proc.stdout + proc.stderr
+        assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, NOT_TAKEN]
 
 
 def test_s055_9_a_relay_by_another_bot_is_no_answer(tmp_path: Path, directed: Path) -> None:
@@ -1868,6 +2006,11 @@ NOT_TAKEN = "  needs-decision: the answer doesn't take the recommended option"
         ((asked(), comment("1\n\n<!-- shipmill:agent -->", at(12))), []),
         ((asked(), comment("2", at(12))), [NOT_TAKEN]),
         ((asked(), comment("Land it, but rename the tag first", at(12))), [NOT_TAKEN]),
+        # #1122 (4): the whole reply is read, so a line past the option is the person's own words
+        ((asked(), comment("1\nbut rename the tag first", at(12))), [NOT_TAKEN]),
+        ((asked(), comment("**1**\n\nThanks, go ahead.", at(12))), [NOT_TAKEN]),
+        ((asked(), relay("Decision by @romamo", "1\n\nbut rename the tag first")), [NOT_TAKEN]),
+        ((asked(), relay("Decision by @romamo", "")), [NOT_TAKEN]),
         ((asked(), relay("Decision by @romamo", "2")), [NOT_TAKEN]),
         ((asked(), comment("1", at(12)), asked(at(13))), []),  # a newer question follows the answer
         ((comment(QUESTION, at(11), login="eve", association="CONTRIBUTOR"), comment("1", at(12))), []),
@@ -1880,6 +2023,24 @@ def test_s055_8_anything_but_a_trusted_recommended_answer_keeps_the_question(
     proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(*comments))
     assert proc.returncode == 5, proc.stdout + proc.stderr
     assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, *why]
+
+
+@pytest.mark.parametrize(
+    ("reply", "said"),
+    [
+        (comment("\n1\n\n", at(12)), "1"),
+        (comment("1\nbut rename the tag first", at(12)), None),
+        (comment("", at(12)), None),
+        (relay("Decision by `@romamo`, relayed by Claude Code", "1. Land it"), "1. Land it"),  # one line: #1150's
+        (relay("Decision by @romamo", "\n1"), "1"),
+        (relay("Decision by @romamo", "1\n\nbut rename the tag first"), None),
+        (relay("Decision by @romamo", ""), None),
+    ],
+)
+def test_s055_8_the_whole_reply_is_read(reply: dict[str, Any], said: str | None) -> None:
+    """a relay's `Decision by` line, `Answered in the session:`, and the agent marker are no words
+    of the person's; any other line past the option is"""
+    assert gate.whole_reply(reply, frozenset({BOT})) == said
 
 
 def test_s055_8_a_question_older_than_the_comments_read_is_not_taken_from_an_issue(
@@ -1924,13 +2085,39 @@ def test_s055_7_an_answer_on_the_issue_after_the_pr_opened_binds_to_its_head(
     data = headed(files=("src/land.py",), body=body)
     proc = protected(tmp_path, directed, data, thread(), issues={12: issue})
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
-    unnamed = headed(files=("src/land.py",), body=body, commits=((HEAD_SHA, at(13)),))  # no commit that old
-    held = protected(tmp_path, directed, unnamed, thread(), issues={12: issue})
+    unnamed = thread(asked(at(11), head=None), comment("1", at(12)), created=at(7))  # S-055-5: names no head
+    held = protected(tmp_path, directed, data, thread(), issues={12: unnamed})
     assert held.returncode == 5, held.stdout + held.stderr
-    assert held.stdout.splitlines()[1:] == [
-        PROTECTED_ASK,
-        "  needs-decision: the head the answer was given at can't be named",
-    ]
+    assert held.stdout.splitlines()[1:] == [PROTECTED_ASK, NO_HEAD]
+
+
+@pytest.mark.parametrize(
+    ("author", "association", "counts"),
+    [
+        (APP_AUTHOR, "NONE", True),
+        ({"login": "romamo", "__typename": "User"}, "OWNER", True),
+        ({"login": "amy", "__typename": "User"}, "MEMBER", True),
+        ({"login": "bob", "__typename": "User"}, "COLLABORATOR", True),
+        ({"login": "eve", "__typename": "User"}, "CONTRIBUTOR", False),
+        ({"login": "eve", "__typename": "User"}, "NONE", False),
+        ({"login": "other-app", "__typename": "Bot"}, "NONE", False),
+        (None, "NONE", False),  # a deleted account
+    ],
+)
+def test_s055_7_an_issues_answer_counts_only_for_a_pr_the_app_or_a_trusted_person_opened(
+    tmp_path: Path, directed: Path, author: dict[str, Any] | None, association: str, counts: bool
+) -> None:
+    """#1122 (3): anyone who writes a PR body could name an issue answered earlier with `Fixes #N`"""
+    issue = thread(asked(at(8)), comment("1", at(9)), created=at(7))
+    data = headed(files=("src/land.py",), body=ISSUE_BODIES[1])
+    proc = protected(tmp_path, directed, data, thread(author=author, association=association), issues={12: issue})
+    if counts:
+        assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == 5 and proc.stdout.splitlines()[1:] == [PROTECTED_ASK], proc.stdout + proc.stderr
+        # an outsider's PR reads no linked issue's thread at all
+        reads = [a for c in gh_calls(tmp_path) for a in c["args"] if "issueOrPullRequest" in a]
+        assert reads and not any("comments(last:" in a for a in reads), reads
 
 
 def test_s055_7_the_prs_own_question_comes_before_the_issues(tmp_path: Path, directed: Path) -> None:
@@ -1970,7 +2157,7 @@ def test_s055_6_a_rebase_with_the_same_own_change_is_still_covered(tmp_path: Pat
     git(directed, "rebase", "-q", "origin/main")
     head = git(directed, "rev-parse", "HEAD").strip()
     data = headed(head, ((head, at(13)),), files=("src/land.py",))
-    rebased = thread(asked(), comment("1", at(12)), pushes=(push(at(13), answered),))
+    rebased = thread(asked(head=answered), comment("1", at(12)), pushes=(push(at(13), answered),))
     proc = protected(tmp_path, directed, data, rebased)
     assert (proc.returncode, proc.stdout) == (0, ready_line(head)), proc.stdout + proc.stderr
 
@@ -1980,7 +2167,7 @@ def test_s055_6_a_merge_of_the_base_with_the_same_own_change_is_still_covered(tm
     git(directed, "merge", "-q", "--no-edit", "origin/main")
     head = git(directed, "rev-parse", "HEAD").strip()
     data = headed(head, ((answered, at(10, 30)), (head, at(13))), files=("src/land.py",))
-    proc = protected(tmp_path, directed, data, thread(asked(), comment("1", at(12))))
+    proc = protected(tmp_path, directed, data, thread(asked(head=answered), comment("1", at(12))))
     assert (proc.returncode, proc.stdout) == (0, ready_line(head)), proc.stdout + proc.stderr
 
 
@@ -1988,23 +2175,38 @@ def test_s055_6_a_head_whose_own_change_differs_needs_the_decision_again(tmp_pat
     answered = branched(tmp_path, directed, {"src/land.py": "tag = 1\n"})
     head = committed(directed, {"src/land.py": "tag = 2\n"}, "Change more")
     data = headed(head, ((answered, at(10, 30)), (head, at(13))), files=("src/land.py",))
-    proc = protected(tmp_path, directed, data, thread(asked(), comment("1", at(12))))
+    proc = protected(tmp_path, directed, data, thread(asked(head=answered), comment("1", at(12))))
     assert proc.returncode == 5, proc.stdout + proc.stderr
     differs = f"  needs-decision: answered at {answered[:7]}, and the change differs since"
     assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, differs]
 
 
-def test_s055_6_a_force_push_since_the_answer_binds_it_to_the_head_before_the_push(
+def test_s055_6_a_force_push_since_the_answer_still_binds_it_to_the_head_the_question_names(
     tmp_path: Path, directed: Path
 ) -> None:
-    """a rebase rewrites every commit's date, so the push's beforeCommit names the answered head"""
+    """a rebase rewrites every commit's date; the question's head still names what was answered"""
     answered = branched(tmp_path, directed, {"src/land.py": "tag = 1\n"})
     git(directed, "rebase", "-q", "origin/main")
     head = committed(directed, {"src/land.py": "tag = 2\n"}, "Change more")
     data = headed(head, ((head, at(11, 30)),), files=("src/land.py",))  # dated before the answer
-    proc = protected(tmp_path, directed, data, thread(asked(), comment("1", at(12)), pushes=(push(at(13), answered),)))
+    answers = thread(asked(head=answered), comment("1", at(12)), pushes=(push(at(13), answered),))
+    proc = protected(tmp_path, directed, data, answers)
     assert proc.returncode == 5, proc.stdout + proc.stderr
     assert proc.stdout.splitlines()[-1] == f"  needs-decision: answered at {answered[:7]}, and the change differs since"
+
+
+def test_s055_5_a_plain_push_after_the_answer_then_a_force_push_is_not_covered(tmp_path: Path, directed: Path) -> None:
+    """#1122 (2): the force-push's beforeCommit is the plain-pushed head, which nobody answered"""
+    answered = branched(tmp_path, directed, {"src/land.py": "tag = 1\n"})
+    pushed = committed(directed, {"src/land.py": "tag = 2\n"}, "Change more")  # a plain push at 13
+    git(directed, "rebase", "-q", "origin/main")  # then a force-push at 14: the same own change as pushed
+    head = git(directed, "rev-parse", "HEAD").strip()
+    data = headed(head, ((head, at(14)),), files=("src/land.py",))
+    answers = thread(asked(head=answered), comment("1", at(12)), pushes=(push(at(14), pushed),))
+    proc = protected(tmp_path, directed, data, answers)
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    differs = f"  needs-decision: answered at {answered[:7]}, and the change differs since"
+    assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, differs]
 
 
 SPEC_TEXT = """\
@@ -2038,7 +2240,7 @@ def test_s055_10_a_spec_pr_compares_its_heads_with_same_approval(
     answered = branched(tmp_path, agents, {SPEC: SPEC_TEXT})
     head = committed(agents, {SPEC: edit}, "Edit the spec")
     data = headed(head, ((answered, at(10, 30)), (head, at(13))), body=SPEC_BODY, files=(SPEC,), added=(SPEC,))
-    proc = protected(tmp_path, agents, data, thread(asked(), comment("1", at(12))), issues=ISSUES)
+    proc = protected(tmp_path, agents, data, thread(asked(head=answered), comment("1", at(12))), issues=ISSUES)
     if covered:
         assert (proc.returncode, proc.stdout) == (0, ready_line(head)), proc.stdout + proc.stderr
     else:
@@ -2056,7 +2258,7 @@ def test_s055_10_a_spec_prs_other_files_are_still_compared_byte_for_byte(tmp_pat
     head = committed(agents, {"src/land.py": "tag = 2\n"}, "Change the code")
     files = (SPEC, "src/land.py")
     data = headed(head, ((answered, at(10, 30)), (head, at(13))), body=SPEC_BODY, files=files, added=(SPEC,))
-    proc = protected(tmp_path, agents, data, thread(asked(), comment("1", at(12))), issues=ISSUES)
+    proc = protected(tmp_path, agents, data, thread(asked(head=answered), comment("1", at(12))), issues=ISSUES)
     assert proc.returncode == 5, proc.stdout + proc.stderr
     assert proc.stdout.splitlines()[-1] == f"  needs-decision: answered at {answered[:7]}, and the change differs since"
 
@@ -2248,3 +2450,267 @@ def test_s055_15_a_persons_pr_needs_no_record(tmp_path: Path, files: tuple[str, 
     proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy", files=files)}, "--bot-login", BOT)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
     assert "reviews" not in calls_of(tmp_path)
+
+
+# Spec 056: the land window holds a green pull request of a held class as QUEUED
+
+WINDOW_CONFIG = """\
+[land.window]
+timezone = "Asia/Nicosia"
+labels = ["rollout:normal", "rollout:high"]
+bypass_labels = ["revert"]
+"""
+FAKE_WINDOW_UVX = """#!{python}
+import json, os, sys
+here = os.path.dirname(os.path.abspath(sys.argv[0]))
+with open(os.path.join(here, "uvx-calls"), "a") as calls:
+    calls.write(json.dumps(sys.argv[1:]) + "\\n")
+path = os.path.join(here, "window.json")
+if "window" not in sys.argv[1:] or not os.path.exists(path):
+    sys.exit("error: .github/shipmill.toml [land.window]: timezone 'Nowhere/Here' is not a known time zone")
+print(open(path).read())
+"""
+CLOSED = {
+    "open": False,
+    "opens": "2026-11-16T10:00:00+02:00",
+    "closes": None,
+    "next_merge": "2000-01-01T22:00:00+02:00",
+}
+OPEN = {"open": True, "opens": None, "closes": "2026-11-16T18:00:00+02:00", "next_merge": "2000-01-01T11:00:00+02:00"}
+SPACED = {**OPEN, "next_merge": "2099-01-01T11:30:00+02:00"}  # later than any now the test runs at
+HELD = ("rollout:high", "docs")
+
+
+def window_as(tmp_path: Path, state: dict[str, Any] | None) -> Path:
+    """A uvx on the gate's PATH whose `shipmill window --json` prints state (None: it fails, as
+    for a malformed [land.window]); its calls are recorded"""
+    fakes = tmp_path / "fakes"
+    fakes.mkdir(exist_ok=True)
+    uvx = fakes / "uvx"
+    uvx.write_text(FAKE_WINDOW_UVX.format(python=sys.executable), encoding="utf-8")
+    uvx.chmod(0o700)
+    if state is not None:
+        record = {
+            "configured": True,
+            "timezone": "Asia/Nicosia",
+            "labels": ["rollout:normal", "rollout:high"],
+            "bypass_labels": ["revert"],
+            "queued_label": "land-queued",
+            "spacing_minutes": 30,
+            "last_held_merge": None,
+            **state,
+        }
+        (fakes / "window.json").write_text(json.dumps(record), encoding="utf-8")
+    return fakes / "uvx-calls"
+
+
+@pytest.fixture
+def windowed(tmp_path: Path) -> Path:
+    return checkout(tmp_path, {".github/shipmill.toml": WINDOW_CONFIG})
+
+
+def held(**kw: Any) -> dict[str, Any]:
+    """A person's green PR carrying a held label and one that holds nothing"""
+    kw.setdefault("labels", HELD)
+    return pr(body="Fixes #7", login="amy", **kw)
+
+
+def label_reads(tmp_path: Path) -> list[list[str]]:
+    return [c["args"] for c in gh_calls(tmp_path) if c["args"][-2:] == ["--json", "labels"]]
+
+
+QUEUED_LINE = MAIN_READY.replace("READY", "QUEUED").rstrip("\n")
+
+
+def test_s056_4_a_held_pr_reads_queued_while_the_window_is_closed(tmp_path: Path, windowed: Path) -> None:
+    record = window_as(tmp_path, CLOSED)
+    proc = run_gate(tmp_path, windowed, {7: held()})
+    assert proc.returncode == gate.QUEUED == 10, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == [
+        QUEUED_LINE,
+        "  queued: held by the land window (rollout:high); opens 2026-11-16 10:00 Asia/Nicosia",
+    ]
+    cli = ["--repo", str(windowed), "window", "--json", "--ref", "origin/main"]
+    assert uvx_calls(record) == [[f"shipmill=={PLUGIN_VERSION}", *cli]]  # run as decide classify is
+    assert label_reads(tmp_path) == [["pr", "view", "7", "--json", "labels"]]
+
+
+def test_s056_4_the_window_is_read_once_per_base_and_pass(tmp_path: Path, windowed: Path) -> None:
+    record = window_as(tmp_path, CLOSED)
+    proc = run_gate(tmp_path, windowed, {7: held(), 8: held(labels=("rollout:normal",))})
+    assert proc.returncode == 10, proc.stdout + proc.stderr
+    assert "  queued: held by the land window (rollout:normal); opens 2026-11-16 10:00 Asia/Nicosia" in proc.stdout
+    assert len(uvx_calls(record)) == 1
+
+
+def test_s056_5_a_held_pr_reads_queued_while_the_spacing_holds_it(tmp_path: Path, windowed: Path) -> None:
+    window_as(tmp_path, SPACED)
+    proc = run_gate(tmp_path, windowed, {7: held()})
+    assert proc.returncode == 10, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines() == [QUEUED_LINE, "  queued: spacing: the next held merge after 11:30 Asia/Nicosia"]
+
+
+def test_s056_5_a_held_pr_reads_ready_once_the_spacing_passed(tmp_path: Path, windowed: Path) -> None:
+    window_as(tmp_path, OPEN)
+    proc = run_gate(tmp_path, windowed, {7: held()})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+
+
+def test_s056_5_the_spacing_is_read_against_the_given_now() -> None:
+    shown = {"configured": True, "timezone": "Asia/Nicosia", "labels": ["h"], "bypass_labels": []}
+    window = gate.parse_window(json.dumps({**shown, **OPEN, "next_merge": "2026-11-16T11:30:00+02:00"}), "origin/main")
+    assert window is not None
+    before = gate.datetime(2026, 11, 16, 9, 29, tzinfo=gate.timezone.utc)
+    assert window.queued(("h",), before) == ("spacing: the next held merge after 11:30 Asia/Nicosia",)
+    assert window.queued(("h",), before.replace(minute=30)) == ()  # next_merge is now: no longer later
+    assert window.queued(("other",), before) == ()
+
+
+@pytest.mark.parametrize("labels", [(), ("docs",), ("rollout:high", "revert")])
+@pytest.mark.parametrize("state", [CLOSED, SPACED])
+def test_s056_6_a_pr_with_no_held_label_or_a_bypass_label_reads_ready(
+    tmp_path: Path, windowed: Path, labels: tuple[str, ...], state: dict[str, Any]
+) -> None:
+    window_as(tmp_path, state)
+    proc = run_gate(tmp_path, windowed, {7: held(labels=labels)})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+
+
+def test_s056_6_a_base_without_land_window_reads_neither_window_nor_labels(tmp_path: Path) -> None:
+    work = checkout(tmp_path, {".github/shipmill.toml": "[lanes.stable]\n"})
+    record = window_as(tmp_path, CLOSED)
+    proc = run_gate(tmp_path, work, {7: held()})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+    assert uvx_calls(record) == [] and label_reads(tmp_path) == []
+
+
+def test_s056_4_python_310_finds_every_form_of_land_window() -> None:
+    """Without tomllib, a dotted or inline [land.window] still runs `shipmill window`, never lets a held PR through"""
+    uv = shutil.which("uv")
+    assert uv is not None
+    configs = [
+        '[land.window]\ntimezone = "UTC"\n',
+        '[land]\nwindow.timezone = "UTC"\n',
+        'land.window.timezone = "UTC"\n',
+        'land = { window = { timezone = "UTC" } }\n',
+        '[lanes.stable]\nwindow = "x"\n',
+    ]
+    code = (
+        "import importlib.util, json, sys\n"
+        "spec = importlib.util.spec_from_file_location('pr_gate', sys.argv[1])\n"
+        "pg = importlib.util.module_from_spec(spec); sys.modules['pr_gate'] = pg; spec.loader.exec_module(pg)\n"
+        "assert pg.watch_state().tomllib is None, 'tomllib on 3.10'\n"
+        "print([pg.has_land_window(t, 'cfg') for t in json.loads(sys.argv[2])])\n"
+    )
+    command = [uv, "run", "--no-project", "--python", "3.10", "python", "-c", code, str(SCRIPT), json.dumps(configs)]
+    done = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "[True, True, True, True, False]"
+
+
+def test_s056_6_a_pr_into_another_branch_is_not_held(tmp_path: Path, windowed: Path) -> None:
+    """one window per repo, for pull requests into the default branch"""
+    record = window_as(tmp_path, CLOSED)
+    proc = run_gate(tmp_path, windowed, {7: {**held(), "baseRefName": "release"}})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert uvx_calls(record) == [] and label_reads(tmp_path) == []
+
+
+def red(**kw: Any) -> dict[str, Any]:
+    data = held(**kw)
+    data["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    return data
+
+
+def running(**kw: Any) -> dict[str, Any]:
+    data = held(**kw)
+    data["statusCheckRollup"] = [{"name": "test", "status": "IN_PROGRESS", "conclusion": None}]
+    return data
+
+
+@pytest.mark.parametrize(("data", "code"), [(red(), 1), (running(), 3)])
+def test_s056_6_a_held_red_or_pending_pr_keeps_its_verdict(
+    tmp_path: Path, windowed: Path, data: dict[str, Any], code: int
+) -> None:
+    window_as(tmp_path, CLOSED)
+    proc = run_gate(tmp_path, windowed, {7: data})
+    assert proc.returncode == code, proc.stdout + proc.stderr
+    assert "queued:" not in proc.stdout and label_reads(tmp_path) == []
+
+
+def test_s056_6_a_held_pr_refused_or_waiting_on_a_decision_keeps_its_verdict(tmp_path: Path) -> None:
+    files = {"docs/product.md": DIRECTION, "REVIEW.md": REVIEW, ".github/shipmill.toml": WINDOW_CONFIG}
+    work = checkout(tmp_path, files)
+    window_as(tmp_path, CLOSED)
+    refused = run_gate(tmp_path, work, {7: pr(body="none", labels=HELD)}, "--bot-login", BOT)
+    assert refused.returncode == 6, refused.stdout + refused.stderr
+    asking = run_gate(tmp_path, work, {7: pr(files=("src/land.py",), labels=HELD)}, "--bot-login", BOT)
+    assert asking.returncode == 5, asking.stdout + asking.stderr
+    assert "queued:" not in refused.stdout + asking.stdout
+
+
+def test_s056_6_queued_ranks_between_pending_and_blocked(tmp_path: Path, windowed: Path) -> None:
+    window_as(tmp_path, CLOSED)
+    assert run_gate(tmp_path, windowed, {7: running(), 8: held()}).returncode == 10
+    conflicting = held()
+    conflicting["mergeable"] = "CONFLICTING"
+    assert run_gate(tmp_path, windowed, {7: conflicting, 8: held()}).returncode == 4
+
+
+def test_s056_6_wait_doesnt_poll_on_queued() -> None:
+    queued = judged(PASSED, queued=("held by the land window (rollout:high); opens 2026-11-16 10:00 Asia/Nicosia",))
+    assert queued.verdict == gate.QUEUED
+    assert not gate.polls([queued])
+    assert not gate.polls([queued, judged(RUNNING)])  # the worst verdict decides, as for any other
+
+
+@pytest.mark.parametrize("data", [held(), red(), held(labels=())])
+def test_s056_7_a_failing_shipmill_window_exits_2(tmp_path: Path, windowed: Path, data: dict[str, Any]) -> None:
+    window_as(tmp_path, None)
+    proc = run_gate(tmp_path, windowed, {7: data})
+    assert (proc.returncode, proc.stdout) == (2, ""), proc.stdout + proc.stderr
+    assert "--ref origin/main` failed: error: .github/shipmill.toml [land.window]: timezone" in proc.stderr
+    assert "every PR into origin/main waits until it reads" in proc.stderr
+
+
+GIVEN = {"configured": True, "timezone": "UTC", "bypass_labels": []}
+
+
+@pytest.mark.parametrize(
+    ("text", "error"),
+    [
+        ("not json", "printed no JSON"),
+        ("{}", "no configured flag"),
+        (json.dumps({**GIVEN, "labels": ["h"]}), "no open flag"),
+        (json.dumps({**GIVEN, **CLOSED, "labels": "h"}), "labels 'h', not a list of labels"),
+        (json.dumps({**GIVEN, **CLOSED, "labels": [], "next_merge": "soon"}), "next_merge 'soon', not a time"),
+        (json.dumps({**GIVEN, **CLOSED, "labels": [], "next_merge": None}), "next_merge None, not a time"),
+    ],
+)
+def test_s056_7_a_window_the_gate_cant_read_stops_it(text: str, error: str) -> None:
+    with pytest.raises(gate.GateError, match=re.escape(error)):
+        gate.parse_window(text, "origin/main")
+
+
+def test_s056_7_configured_false_holds_nothing() -> None:
+    assert gate.parse_window('{"configured": false}', "origin/main") is None
+
+
+def test_s055_13_s056_6_an_unreviewed_held_pr_reads_unreviewed_not_queued(tmp_path: Path, windowed: Path) -> None:
+    """QUEUED only takes READY's place: a held agent's code PR with no record reads UNREVIEWED, and
+    QUEUED once a merge record covers its head; the window is read either way"""
+    record = window_as(tmp_path, CLOSED)
+    data = pr(labels=HELD)
+    proc = run_gate(tmp_path, windowed, {7: data}, "--bot-login", BOT, reviews={7: []})
+    assert (proc.returncode, proc.stdout) == (9, MAIN_UNREVIEWED + NO_RECORD + "\n"), proc.stderr
+    assert len(uvx_calls(record)) == 1 and label_reads(tmp_path) == []
+    reviewed = run_gate(tmp_path, windowed, {7: data}, "--bot-login", BOT, reviews={7: [recorded("merge")]})
+    assert reviewed.returncode == 10, reviewed.stdout + reviewed.stderr
+    assert "  queued: held by the land window (rollout:high)" in reviewed.stdout
+    assert gate.RANK.index(gate.QUEUED) < gate.RANK.index(gate.UNREVIEWED)
+
+
+def test_s055_13_s056_6_unreviewed_outranks_queued_and_stops_the_wait() -> None:
+    held_back = judged(PASSED, unreviewed="no review", queued=("spacing",))
+    assert held_back.verdict == gate.UNREVIEWED
+    assert not gate.polls([held_back, judged(PASSED, queued=("spacing",))])

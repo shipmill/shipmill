@@ -20,6 +20,7 @@ from typing import Any, Protocol
 
 from shipmill.errors import ReleaseError
 from shipmill.findings import ISSUES, PRS_OPEN, Finding, fingerprint
+from shipmill.land_window import LandWindow
 from shipmill.upgrades import Proposals
 
 CURSOR = "cursor.json"  # the last walk's cursor and the change check's signature
@@ -40,14 +41,16 @@ LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?")  # w
 AUTHOR = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?")
 # D-67 (#914): watch_state.py's row for the App's own draft with nothing open on it, a session's to resume
 AGENT_DRAFT = "AGENT_DRAFT"
-LANDING = frozenset({PRS_OPEN, AGENT_DRAFT})  # land-stage items: a walk takes them only when land isn't observe
+LAND_DUE = "LAND_DUE"  # spec 056: watch_state.py's head of the land window's queue, due to land
+# land-stage items: a walk takes them only when land isn't observe
+LANDING = frozenset({LAND_DUE, PRS_OPEN, AGENT_DRAFT})
 
 # The tiers a walk reads in order, each its kinds in the order a walk takes them: the state,
 # or ISSUES and its triage state. A kind no tier names is read in tier 6 (S-046-12)
 TIERS: dict[int, tuple[str, ...]] = {
     1: ("INCIDENT_OPEN", "OPERATE_FAILED"),
     2: ("BOT_FAILED", "NOT_PUBLISHED", "WORK_BRANCH_STALE", "BOT_STALLED"),
-    3: (PRS_OPEN, AGENT_DRAFT),
+    3: (LAND_DUE, PRS_OPEN, AGENT_DRAFT),
     4: ("VETOED", f"{ISSUES} DECIDED"),
     5: ("UPGRADE_PENDING", "UPSTREAM_DUE"),
     6: tuple(
@@ -334,7 +337,9 @@ class Changes:
     issues and pull requests updated at or after the cursor, whether one of them is labelled
     needs-decision, the newest release's tag, and what watch_state.py --known reads. forced: a
     source that can't tell, so every tick is a change. flight: the work in flight, from the
-    same query (spec 048); None from a source that reads no pull requests, as rows a test hands"""
+    same query (spec 048); None from a source that reads no pull requests, as rows a test hands.
+    window: with a pull request queued for the land window, the window opened or its spacing
+    let the next held merge through since the cursor (spec 056, window_change)"""
 
     signature: str
     updated: tuple[int, ...] = ()
@@ -343,6 +348,7 @@ class Changes:
     known: Mapping[str, object] = field(default_factory=dict)
     forced: bool = False
     flight: Flight | None = None
+    window: bool = False
 
 
 GraphQL = Callable[[str, Mapping[str, str]], dict[str, Any]]  # (query, variables) -> its data
@@ -614,6 +620,40 @@ def changes_of(
     return Changes(signature, numbers, asked, tag, known, flight=flight_of(pulls, default))
 
 
+def queued(changes: Changes, label: str) -> bool:
+    """Whether an open non-draft pull request the change check read carries the land window's
+    queued_label (spec 056): its labels are in the same query, so this reads nothing more"""
+    prs = changes.known.get("prs", [])
+    if not isinstance(prs, list):
+        raise ReleaseError(f"the change check's pull requests are {str(prs)[:200]}, not a list")
+    return any(not p["isDraft"] and any(x["name"] == label for x in p["labels"]) for p in prs)
+
+
+def window_change(
+    window: LandWindow,
+    queued: bool,
+    since: dt.datetime | None,
+    now: dt.datetime,
+    last_held_merge: Callable[[], dt.datetime | None],
+) -> bool:
+    """S-056-11: with a pull request queued, a change when the window is open now and it opened
+    after since, or its spacing let the next held merge through after since (last_held_merge plus
+    spacing_minutes, read only then: the one GitHub read of `shipmill window`'s). since is the
+    last walk's start: the window runs on the gate's clock, so no tick after that walk reads the
+    same opening again, and an open window is no change by itself"""
+    if not queued or since is None or since >= now or not window.is_open(now):
+        return False
+    before = window.state(since)
+    if not before.open or (before.closes is not None and before.closes <= now):
+        return True  # closed at since, or closed and opened again since
+    if window.spacing_minutes == 0:
+        return False
+    last = last_held_merge()
+    if last is None:
+        return False
+    return since < last + dt.timedelta(minutes=window.spacing_minutes) <= now
+
+
 WAITS_ON_CI = frozenset({None, "PENDING", "EXPECTED"})  # a head with no checks yet waits on them too
 LANDS = frozenset({"SUCCESS"})
 FAILS_CI = frozenset({"FAILURE", "ERROR"})
@@ -727,8 +767,9 @@ def walk(
     4, and 6 from their own read, tier 2 from its read and the sweep's BOT_STALLED, 5 and 7
     from the sweep; a sweep row of a kind no longer swept (an UNANNOUNCED written before D-69)
     is never an item.
-    An item is a row that needs an agent, but a land-stage one (PRS_OPEN, and AGENT_DRAFT, whose
-    session marks a draft ready, #914) only when land isn't observe"""
+    An item is a row that needs an agent, but a land-stage one (LAND_DUE, the land window's queue
+    head, spec 056; PRS_OPEN; and AGENT_DRAFT, whose session marks a draft ready, #914) only when
+    land isn't observe"""
     read: list[int] = []
     rows: list[Finding] = []
     taken: tuple[Finding, Hand] | None = None

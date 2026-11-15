@@ -41,7 +41,7 @@ from shipmill.claude_token import FLAG as TOKEN_FLAG
 from shipmill.claude_token import MAX_AGE, SETUP, Credential, Kind, Token
 from shipmill.config import config_path, policy_branch
 from shipmill.config import read as read_config
-from shipmill.decide import VETO_HOURS_KEY, Zone, zones
+from shipmill.decide import PART_ZONES, VETO_HOURS_KEY, DecisionPolicy, Zone, zones
 from shipmill.downstream import (
     INPUTS,
     RUN_NAME_RULE,
@@ -55,7 +55,7 @@ from shipmill.downstream import (
     not_installed,
 )
 from shipmill.errors import ReleaseError
-from shipmill.gate import skills_dir
+from shipmill.gate import VERIFY, skills_dir, state_dir
 from shipmill.github import UPGRADE_LABEL, GitHub
 from shipmill.gitrepo import REMOTE, Git
 from shipmill.hooks import HookTest
@@ -72,6 +72,8 @@ from shipmill.requires import Requires
 from shipmill.requires import check as check_requires
 from shipmill.stamp import project_version
 from shipmill.upgrades import offers, pending
+from shipmill.verify import Result, Verified
+from shipmill.verify import fix as verify_fix
 from shipmill.version import Part, Version
 
 CALLER = Path(".github") / "workflows" / "release.yml"
@@ -283,6 +285,8 @@ def doctor(
             checks.append(token_check(uses, launchd_job, now or dt.datetime.now(dt.UTC)))
         if auth is not None and (uses is None or uses.refused is None):  # a refused file can't be asked about
             checks.append(auth_check(auth(None if uses is None else uses.token)))
+        if policy.agents.verify:  # D-9: no list, no row and no read of the gate's state
+            checks.extend(verify_checks(policy.agents.verify, state_dir(Git(root)) / VERIFY))
     checks.extend(decisions_checks(policy, raw, github))
     if (veto := veto_lanes_check(policy)) is not None:
         checks.append(veto)
@@ -497,6 +501,7 @@ def decisions_checks(policy: Policy, raw: Mapping[str, Any], github: GitHub | No
             " less there than shipmill ships; delete the key to restore the default"
         )
         checks.append(Check("WARN", DECISIONS_SECTION, detail))
+    checks.extend(_part_checks(decisions))
     if agents.app_id is None:
         detail = (
             "no [agents] app_id (hooks: app-writes off), so a never zone holds by the skills and pr_gate.py only:"
@@ -505,6 +510,26 @@ def decisions_checks(policy: Policy, raw: Mapping[str, Any], github: GitHub | No
         )
         checks.append(Check("WARN", DECISIONS_SECTION, detail))
     checks.append(_decided_label(github, agents.app_id is not None))
+    return checks
+
+
+def _part_checks(decisions: DecisionPolicy) -> list[Check]:
+    """S-057-11: one PASS per part of a zone, naming its zone, glob, and level, then a WARN for
+    each part set below its zone's default, naming both levels; nothing without parts (D-9)"""
+    parts = [part for zone in PART_ZONES for part in decisions.parts_of(zone)]
+    checks = [
+        Check("PASS", DECISIONS_SECTION, f'part [{DECISIONS_SECTION}.paths.{part.zone}] "{part.glob}" {part.level}')
+        for part in parts
+    ]
+    for part in parts:
+        default = zones()[part.zone].default
+        if part.level.below(default):
+            detail = (
+                f'[{DECISIONS_SECTION}.paths.{part.zone}] "{part.glob}" = "{part.level}" is below {part.zone}\'s'
+                f" default {default}, so agents involve you less on those paths than shipmill ships; delete the"
+                " glob to give them the zone's level"
+            )
+            checks.append(Check("WARN", DECISIONS_SECTION, detail))
     return checks
 
 
@@ -524,6 +549,32 @@ def veto_lanes_check(policy: Policy) -> Check | None:
     return Check(
         "PASS", "gates", f"veto_lanes {lanes}: a release waits for the veto window of each notify decision it ships"
     )
+
+
+VERIFY_ROW = "verify command"  # doctor's row for each [agents] verify command (spec 064)
+
+
+def verify_checks(commands: tuple[str, ...], path: Path) -> list[Check]:
+    """S-064-9: one row per [agents] verify command from the gate's verify.json: PASS for ok, FAIL
+    with the result, its detail, and its fix, and WARN for each command when the file holds no
+    result for the current list (none, or one checked for another list); no row without a list
+    (D-9). A malformed verify.json is one FAIL naming the file and its fix, as the gate refuses it"""
+    if not commands:
+        return []
+    try:
+        found = Verified.load(path)
+    except ReleaseError as exc:
+        return [Check("FAIL", VERIFY_ROW, str(exc))]
+    if found is None or tuple(e.command for e in found.entries) != commands:
+        later = "not checked yet: the gate checks it before its next headless session"
+        return [Check("WARN", VERIFY_ROW, f"{command}: {later}") for command in commands]
+    at = found.at.astimezone(dt.UTC).strftime("%Y-%m-%d %H:%M UTC")
+    return [
+        Check("PASS", VERIFY_ROW, f"{e.command}: ok at {at}")
+        if e.result is Result.OK
+        else Check("FAIL", VERIFY_ROW, f"{e.command}: {e.result}: {e.detail}; {verify_fix(e)}")
+        for e in found.entries
+    ]
 
 
 def _decided_label(github: GitHub | None, app: bool) -> Check:

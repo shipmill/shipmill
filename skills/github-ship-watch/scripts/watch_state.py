@@ -174,7 +174,18 @@ Intake (github-issue-triage's triage_state.py):
                   propose): none under act, a person merges the ones labelled shipmill-ready
                   under propose, [autonomy] land named under observe, and adding [agents]
                   without one
-  PRS_PARKED      open non-draft pull requests that are a person's item, labelled human or
+  LAND_DUE        with [land.window] (spec 056), the oldest of the pull requests PRS_OPEN would
+                  list that carry its queued_label (by the newest LabeledEvent adding it), when
+                  `shipmill window --json` reads the window open and next_merge now or earlier:
+                  #N <title>: the land window is open; queued since <time>. An action whose fix
+                  is /shipmill:github-pr-triage <repo>, the landing session's where [autonomy]
+                  land isn't observe, never an agent row's
+  LAND_QUEUED     each other such pull request, #N <title>: <why>, the why being the next
+                  opening, the spacing, or behind #M (reported, never an action by itself). A
+                  queued pull request is in neither PRS_OPEN nor, without the window, read at
+                  all: `shipmill window` and one GraphQL read of the queued ones' newest label
+                  events run only while one is open
+  PRS_PARKED     open non-draft pull requests that are a person's item, labelled human or
                   role:<name> with an assignee, as WITH_PERSON #N (@login ...) (reported,
                   never an action: no session starts for one, #853); one with the label and
                   no assignee stays in PRS_OPEN, for a session to assign
@@ -307,6 +318,21 @@ Agents (all reported, never an action by itself):
                   in a row and the session log's last line. A person clears it (`claude auth
                   login`, or reading the session's log or `claude logs <id>`), so an action
                   but never an agent's
+  GATE_CHECKOUT_MISSING  on a Mac, one row per gate job on the host, this repo's or another's
+                  (each dev.shipmill.gate.*.plist in ~/Library/LaunchAgents, no other plist),
+                  whose WorkingDirectory is not a folder: launchd exits 78 before shipmill
+                  gate runs, so the gate never reports it (#1155). Subject the job's label;
+                  detail its repo (the owner/name after gate in its ProgramArguments), the
+                  missing folder, and launchctl's last exit code when it has one. The fix adds
+                  the folder back as a worktree of its main checkout and kickstarts the job
+                  when the folder is <main>/tmp/shipmill-gate and <main> is a git checkout;
+                  when it is ~/.local/share/shipmill/gates/<owner>/<name> for the job's repo
+                  (#1156), the same from the person's checkout of the repo, named
+                  <its checkout>; else writes the job again with shipmill launchd from a
+                  fresh clone. A gate
+                  plist that isn't one, or names no one repo after gate, or no
+                  WorkingDirectory, exits 2. An action for a person, never an agent's, and
+                  in no tier
 
 Gate setup (the config's [agents] table):
   GATE_NO_APP     an [agents] prompt with no app_id: no GitHub App is connected, so the
@@ -323,7 +349,8 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
                   that apply to the repo (user scope, and local or project scope in the
                   checkout or the gate's launchd working directory, each taken as the project
                   Claude Code loads it as: a linked worktree's main checkout), the gate's
-                  checkout's own installs (tmp/shipmill-gate, the launchd working directory,
+                  checkout's own installs (tmp/shipmill-gate,
+                  ~/.local/share/shipmill/gates/<owner>/<name>, the launchd working directory,
                   or the checkout itself when it is a linked worktree: Claude Code keys an
                   install on each), the install a session in the gate's folder loads
                   ("a session loads <scope> <version> (<project>)": the most specific scope
@@ -395,9 +422,9 @@ Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when an
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED,
 ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MISSING, GATE_SESSIONS_DEAD,
-SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_CYCLE,
+GATE_CHECKOUT_MISSING, SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_CYCLE,
 CHAIN_UNREADABLE, MILESTONE_OVERTAKEN,
-UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, or VETOED row is present, 2
+UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, VETOED, AGENT_DRAFT, or LAND_DUE row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill
 milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
 `shipmill: ` error is the BOT_PLAN_FAILED row instead, and uv finding no pinned version the
@@ -408,7 +435,7 @@ direction's check and its plans); claude on PATH only for the rows that read liv
 and plugin installs. Python 3.10+, standard library only.
 
 --host sessions or --host shipmill prints only that section's rows of this host, as `shipmill
-factory` reads them (spec 044): the AGENT_SESSION (or HOST_UNKNOWN) rows, or the
+factory` reads them (spec 044): the AGENT_SESSION (or HOST_UNKNOWN) and GATE_CHECKOUT_MISSING rows, or the
 SHIPMILL_VERSION, SHIPMILL_OUTDATED, PLUGIN_SHADOWING, and SKILL_SHADOWED rows. It reads none
 of the pipeline: no fetch, no issue, pull request, or run; exit 1 when a row it prints is an
 action row, as above. PLUGIN_SHADOWING counts only the keyed installs on the repo's main
@@ -417,18 +444,20 @@ counts every one on the host, as `shipmill factory` reads it (#764). --no-host i
 report without those two sections, which
 `shipmill status` reads with --host, each on its own, so a failing `claude` or marketplace
 read is one factory check's error rather than the report's end (#745); the gate's launchd
-rows (LOOP, GATE_SESSIONS_DEAD) stay in it.
+rows (LOOP, GATE_SESSIONS_DEAD) stay in it; GATE_CHECKOUT_MISSING, a host-wide row, is the
+sessions section's.
 
 --tier N and --sweep are the reads shipmill gate's walk makes (spec 046), and print no host
 row and no report-only row. The gate walks seven tiers in order and stops at the first item no
 session has taken: 1 INCIDENT_OPEN, OPERATE_FAILED; 2 BOT_FAILED, NOT_PUBLISHED,
-WORK_BRANCH_STALE, BOT_STALLED; 3 PRS_OPEN; 4 VETOED and triage's DECIDED; 5 UPGRADE_PENDING,
+WORK_BRANCH_STALE, BOT_STALLED; 3 LAND_DUE, PRS_OPEN; 4 VETOED and triage's DECIDED; 5 UPGRADE_PENDING,
 UPSTREAM_DUE; 6 triage's other action states and SPEC_UNSPLIT; 7 DIRECTION_PENDING, PLANS
 (D-69 retired tier 8, UNANNOUNCED). --tier N prints that tier's rows, and NEEDS_DECISION
 in tiers 3 and 4, where the gate's headless notifications read it; its ISSUES rows are one
 per triage state, `STATE #N ...`. Tier 2 reads NOT_PUBLISHED for the newest tag alone and
 leaves BOT_STALLED to the sweep; tier 3 reads the open pull requests and one batched GraphQL
-read of the comments of those labelled needs-decision or decided; tier 4 runs triage_state.py --label needs-decision
+read of the comments of those labelled needs-decision or decided, and the land window's queue
+as the full report does; tier 4 runs triage_state.py --label needs-decision
 --label decided, less a DECIDED read from a relay; tier 6 runs triage_state.py on every open
 issue, and gives its DECIDED read from a relay with the label off, then fetches the landing
 branch and gives SPEC_UNSPLIT (spec 053), read on every tier 6 read, not on a sweep: a spec
@@ -467,6 +496,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from xml.parsers.expat import ExpatError
 
 try:
     import tomllib
@@ -552,7 +582,10 @@ PLUGIN = "shipmill@shipmill"  # the Claude Code plugin, in its marketplace
 # in place of the plugin's /shipmill:<name> (#236)
 USER_SKILLS = (Path(".claude/skills"), Path(".agents/skills"))
 PLUGIN_CACHE = Path(".claude/plugins/cache") / PLUGIN.partition("@")[2]  # the plugin's own copies, by version
-GATE_CHECKOUT = Path("tmp/shipmill-gate")  # where shipmill-setup puts the gate's checkout
+GATE_CHECKOUT = Path("tmp/shipmill-gate")  # where shipmill-setup put the gate's checkout before #1156
+# #1156: where shipmill-setup puts it now, under the home folder, as <GATES>/<owner>/<name>:
+# outside the repo, so a cleanup of the repo's tmp/ no longer deletes it
+GATES = Path(".local/share/shipmill/gates")
 # the gate log's decision lines: QUIET, LAUNCH, RUNNING, WAITING, UNCHANGED, HELD,
 # PYPI_WAIT, HOOKS_FAILED, CLAUDE_AUTH, SESSION_DEAD, or an error
 GATE_DECISION = re.compile(r"^(?:[A-Z][A-Z_]*|error): ")
@@ -580,6 +613,7 @@ ACTION = {
     "GATE_NO_APP",
     "DIRECTION_MISSING",
     "GATE_SESSIONS_DEAD",
+    "GATE_CHECKOUT_MISSING",  # #1155: a gate job's WorkingDirectory is gone, a person adds it back
     "SKILL_SHADOWED",
     "PLUGIN_SHADOWING",
     "UPGRADE_PENDING",
@@ -593,6 +627,7 @@ ACTION = {
     "UPSTREAM_UNREADABLE",
     VETOED,
     "AGENT_DRAFT",  # D-67: the App's own draft with nothing open on it, a session marks it ready (#914)
+    "LAND_DUE",  # spec 056: the land window's queue head, landed where [autonomy] land isn't observe
 }
 # the states whose row needs an agent: --json marks each row's "agent" from this, and
 # shipmill gate starts a session on those rows (SKILL.md's repair table says what it does)
@@ -2793,6 +2828,225 @@ def declined(found: list[dict[str, Any]]) -> list[int]:
     return sorted(int(p["number"]) for p in found if p["state"] == "CLOSED" and p["isCrossRepository"] is False)
 
 
+# -- the land window (spec 056) ---------------------------------------------------------------
+
+QUEUED_DEFAULT = "land-queued"  # [land.window] queued_label's default, shipmill's land_window.DEFAULT_QUEUED_LABEL
+LABELED_LAST = 100  # a queued pull request's newest label events read, for when its queued_label was added
+
+
+def queued_label(text: str, policy: Path) -> str | None:
+    """[land.window] queued_label, its default without the key, or None without the section,
+    read with tomllib on Python 3.11+ and from a plain [land.window] table on 3.10 (any other
+    form refused rather than misread); `shipmill window` checks the rest of the section"""
+    if tomllib is None:
+        return queued_label_310(text, policy)
+    try:
+        raw = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise Refused(f"error: {policy}: {exc}") from None
+    land = raw.get("land")
+    window = land.get("window") if isinstance(land, dict) else None
+    if land is not None and (not isinstance(land, dict) or (window is not None and not isinstance(window, dict))):
+        raise Refused(f"error: {policy}: [land.window] must be a table")
+    if window is None:
+        return None
+    label = window.get("queued_label", QUEUED_DEFAULT)
+    if not isinstance(label, str) or not label.strip():
+        raise Refused(f"error: {policy}: [land.window] queued_label must be a non-empty string, got {label!r}")
+    return label
+
+
+def queued_label_310(text: str, policy: Path) -> str | None:
+    tables = toml_tables(text)
+    unreadable = Refused(
+        f"error: {policy}: can't read [land.window] on Python 3.10: use 3.11+ or a plain [land.window] table"
+    )
+    if re.search(r"^\s*[\"']?land[\"']?\s*[.=]", tables.get("", ""), re.MULTILINE):
+        raise unreadable
+    if re.search(r"^\s*[\"']?window[\"']?\s*[.=]", tables.get("land", ""), re.MULTILINE):
+        raise unreadable
+    if "land.window" not in tables:
+        return None
+    body = tables["land.window"]
+    label = toml_string(body, "queued_label")
+    if label is None and re.search(r"^\s*[\"']?queued_label[\"']?\s*=", body, re.MULTILINE):
+        raise unreadable
+    if label is not None and not label.strip():
+        raise Refused(f"error: {policy}: [land.window] queued_label must be a non-empty string, got {label!r}")
+    return QUEUED_DEFAULT if label is None else label
+
+
+@dataclass(frozen=True)
+class Window:
+    """What the watch reads of `shipmill window --json`: open now, the next opening when closed,
+    and when the spacing allows the next held merge, each in the window's zone"""
+
+    timezone: str
+    open: bool
+    opens: dt.datetime | None
+    next_merge: dt.datetime
+
+
+def parse_window(text: str) -> Window | None:
+    """`shipmill window --json`'s object, None for `configured: false`; anything else it prints
+    stops the watch"""
+    what = "shipmill window --json"
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: {what} printed no JSON: {exc}") from None
+    if not isinstance(data, dict) or not isinstance(data.get("configured"), bool):
+        raise Refused(f"error: {what} printed {text[:200]!r}, not a window")
+    if not data["configured"]:
+        return None
+    if not isinstance(data.get("open"), bool) or not isinstance(data.get("timezone"), str):
+        raise Refused(f"error: {what} printed {text[:200]!r}, without open or timezone")
+
+    def moment(key: str, missing: bool) -> dt.datetime | None:
+        found = data.get(key)
+        if found is None and missing:
+            return None
+        try:
+            when = dt.datetime.fromisoformat(found) if isinstance(found, str) else None
+        except ValueError:
+            when = None
+        if when is None or when.tzinfo is None:
+            raise Refused(f"error: {what} printed {key} {found!r}, not a time with a zone")
+        return when
+
+    next_merge = moment("next_merge", False)
+    assert next_merge is not None  # moment() refuses a missing one
+    return Window(data["timezone"], data["open"], moment("opens", True), next_merge)
+
+
+def window_run(
+    repo_dir: Path, branch: str, tool: str | None, execute: Callable[[list[str]], str] = pinned_run
+) -> Window | None:
+    """`shipmill window --json` at the default branch; PypiWait passes through"""
+    ref = f"origin/{branch}"
+    return parse_window(execute([*shipmill_cli(tool), "--repo", str(repo_dir), "window", "--json", "--ref", ref]))
+
+
+@dataclass(frozen=True)
+class Queued:
+    """A pull request carrying queued_label: its title, and when the label was last added"""
+
+    number: int
+    title: str
+    since: dt.datetime
+
+
+@dataclass(frozen=True)
+class Queue:
+    """The land window's queue (spec 056): the window, now, and the open pull requests carrying
+    its queued_label, by number"""
+
+    window: Window
+    now: dt.datetime
+    entries: dict[int, Queued]
+
+
+def queued_since(
+    repo: str, numbers: Sequence[int], label: str, read: Callable[[list[str]], str] = run
+) -> dict[int, Queued]:
+    """Each pull request's title and the newest LabeledEvent adding label, from its newest
+    LABELED_LAST label events, in one GraphQL query per COMMENTS_CHUNK pull requests; one whose
+    events hold none adding it is refused"""
+    owner, _, name = repo.partition("/")
+    wanted = sorted(set(numbers))
+    found: dict[int, Queued] = {}
+    events = (
+        f"timelineItems(itemTypes: [LABELED_EVENT], last: {LABELED_LAST})"
+        " { nodes { ... on LabeledEvent { createdAt label { name } } } }"
+    )
+    for start in range(0, len(wanted), COMMENTS_CHUNK):
+        chunk = wanted[start : start + COMMENTS_CHUNK]
+        parts = " ".join(f"n{n}: pullRequest(number: {n}) {{ title {events} }}" for n in chunk)
+        query = f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {parts} }} }}"
+        data = json.loads(
+            read(["gh", "api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}"])
+        )
+        repository = data.get("data", {}).get("repository") if isinstance(data, dict) else None
+        if not isinstance(repository, dict):
+            raise Refused(f"error: gh api graphql printed {str(data)[:200]} for the queued pull requests' labels")
+        for n in chunk:
+            item = repository.get(f"n{n}")
+            nodes = item.get("timelineItems", {}).get("nodes") if isinstance(item, dict) else None
+            if not isinstance(item, dict) or not isinstance(item.get("title"), str) or not isinstance(nodes, list):
+                raise Refused(f"error: gh api graphql printed {str(item)[:200]} for {repo}#{n}")
+            added = [
+                parse_time(str(e["createdAt"]))
+                for e in nodes
+                if isinstance(e, dict) and isinstance(e.get("label"), dict) and e["label"].get("name") == label
+            ]
+            if not added:
+                raise Refused(
+                    f"error: {repo}#{n} carries {label} but none of its newest {LABELED_LAST} label events adds it;"
+                    f" remove {label} from {repo}#{n} and add it again"
+                )
+            found[n] = Queued(n, item["title"], max(added))
+    return found
+
+
+def land_queue(
+    repo: str,
+    repo_dir: Path,
+    text: str | None,
+    branch: str,
+    prs: Sequence[dict[str, Any]],
+    now: dt.datetime,
+    tool: str | None = None,
+    execute: Callable[[list[str]], str] = pinned_run,
+    read: Callable[[list[str]], str] = run,
+) -> tuple[Queue | None, list[Row]]:
+    """The queue, for a config with [land.window] and an open non-draft pull request carrying
+    its queued_label; `shipmill window` and the label events are read only then. The PYPI_WAIT
+    row stands in its place while PyPI doesn't serve the pinned shipmill (#597)"""
+    label = None if text is None else queued_label(text, POLICY)
+    if label is None:
+        return None, []
+    carrying = [int(p["number"]) for p in prs if not p["isDraft"] and any(x["name"] == label for x in p["labels"])]
+    if not carrying:
+        return None, []
+    try:
+        window = window_run(repo_dir, branch, tool, execute)
+    except PypiWait as wait:
+        return None, [pypi_wait_row(wait.version, "the land window")]
+    if window is None:
+        return None, []
+    return Queue(window, now, queued_since(repo, carrying, label, read)), []
+
+
+def utc_stamp(moment: dt.datetime) -> str:
+    return moment.astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")  # noqa: UP017 (3.10)
+
+
+def land_rows(queue: Queue, numbers: Sequence[int], repo: str) -> list[Row]:
+    """S-056-9, S-056-10: the queued pull requests, oldest first by when queued_label was last
+    added; while the window is open and next_merge is now or earlier, the oldest is LAND_DUE (an
+    action, the landing session's), and each other one LAND_QUEUED, report only, with why it waits"""
+    entries = sorted((queue.entries[n] for n in numbers), key=lambda e: (e.since, e.number))
+    window = queue.window
+    due = window.open and window.next_merge <= queue.now
+    rows = []
+    for i, entry in enumerate(entries):
+        since = f"queued since {utc_stamp(entry.since)}"
+        if due and i == 0:
+            detail = f"{entry.title}: the land window is open; {since}"
+            rows.append(Row("LAND_DUE", f"#{entry.number}", detail, skill_fix("github-pr-triage", repo)))
+            continue
+        if due:
+            why = f"behind #{entries[0].number}"
+        elif window.open:
+            why = f"spacing: the next held merge after {window.next_merge:%H:%M} {window.timezone}"
+        elif window.opens is None:
+            why = "the land window is closed and doesn't open within a week"
+        else:
+            why = f"the land window opens {window.opens:%Y-%m-%d %H:%M} {window.timezone}"
+        rows.append(Row("LAND_QUEUED", f"#{entry.number}", f"{entry.title}: {why}; {since}"))
+    return rows
+
+
 def intake(
     repo: str,
     code: int,
@@ -2807,6 +3061,7 @@ def intake(
     closed_prs: Sequence[dict[str, Any]] = (),
     directions: frozenset[int] = frozenset(),
     hold_states: HoldStates | None = None,
+    queue: Queue | None = None,
 ) -> list[Row]:
     """The intake rows from triage_state.py's exit code and --json lines, and the open pull
     requests (number, isDraft, isCrossRepository, labels, headRefOid, assignees, author). Each pull
@@ -2831,7 +3086,8 @@ def intake(
     left out (spec 028), whatever triage_state.py reads it as. directions are the open
     direction issues (spec 034), shipmill's question: none is in the issue rows, one whose
     question waits on the maintainer is in NEEDS_DECISION, and one triage_state.py reads as
-    UNTRUSTED stays there, as an upgrade issue does"""
+    UNTRUSTED stays there, as an upgrade issue does. queue is the land window's (spec 056): a
+    pull request PRS_OPEN would list that is in it is in LAND_DUE or LAND_QUEUED instead"""
     if land is not None and (not isinstance(land, str) or land not in AUTONOMY):
         raise ValueError(f"land must be None or one of {list(AUTONOMY)}, got {land!r}")
     owned = (upgrades.owned if upgrades is not None else frozenset()) | directions
@@ -2877,6 +3133,7 @@ def intake(
     parked: list[tuple[int, list[str]]] = []  # #853: a person's pull request, with whom it waits on
     drafts: list[int] = []  # D-67: the App's own drafts with nothing open on them (#914)
     held: list[tuple[int, str]] = []  # and the ones still held, with what holds each
+    queued: list[int] = []  # spec 056: the ones in the land window's queue, out of PRS_OPEN
     for pr in prs:
         number = int(pr["number"])
         labels = {label["name"] for label in pr["labels"]}
@@ -2899,6 +3156,8 @@ def intake(
             continue  # a person's draft is theirs until marked ready: it starts no session (D-67)
         elif people := pr_people(pr):
             parked.append((number, people))
+        elif queue is not None and number in queue.entries:
+            queued.append(number)
         else:
             ready.append((number, head_sha(pr)))
     for pr in closed_prs:
@@ -2907,6 +3166,8 @@ def intake(
             continue  # a fork's closed pull request starts no unattended session (D-16)
         if TRIAGE.vetoed(comments_of(number), bot_login) is not None:
             vetoed.append(number)
+    if queue is not None and queued:
+        rows += land_rows(queue, queued, repo)
     if ready:
         listed = " ".join(f"#{n}" for n, _ in ready)
         rows.append(Row("PRS_OPEN", repo, listed, land_fix(land, repo), tuple(sorted(ready))))
@@ -3088,19 +3349,22 @@ def intake_rows(
     now: dt.datetime,
     directions: frozenset[int] = frozenset(),
     read: Callable[[list[str]], str] = run,
+    queue_of: Callable[[list[dict[str, Any]]], tuple[Queue | None, list[Row]]] | None = None,
 ) -> list[Row]:
     """The intake rows from triage_run's exit code and lines, the open pull requests, and the
     closed and merged ones labelled decided and updated in the veto window (spec 030);
     land is the effective [autonomy] land level, None without [agents]; directions are the
     open direction issues, never in the issue rows (spec 034). The comments of every pull
     request intake may ask about, a labelled open one or a closed one, save a fork's with
-    trusted_only, are one batched read, not one read each (#842)"""
+    trusted_only, are one batched read, not one read each (#842). queue_of reads the land
+    window's queue from the open pull requests (spec 056, land_queue), with its PYPI_WAIT row"""
     prs = json.loads(read(["gh", "pr", "list", "-R", repo, "--json", PR_FIELDS, "-L", "100"]))
     closed = decided_prs(repo, now, read)
     wanted = [pr for pr in prs if asked(pr) or own_draft(pr, bot_login)] + list(closed)
     numbers = [int(pr["number"]) for pr in wanted if not (trusted_only and pr["isCrossRepository"])]
     comments = batched_comments(repo, numbers, read)
-    return intake(
+    queue, waits = (None, []) if queue_of is None else queue_of(prs)
+    return waits + intake(
         repo,
         code,
         triage,
@@ -3113,6 +3377,7 @@ def intake_rows(
         untrusted_plans,
         closed,
         directions,
+        queue=queue,
     )
 
 
@@ -3959,8 +4224,17 @@ def live_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
 
 
 def agent_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
-    """The sessions and, on a Mac, the gate's launchd job; what this host can see"""
-    return [*live_rows(repo, repo_dir, now), *launchd_rows(repo, now)]
+    """The sessions and, on a Mac, the gate's launchd job and the host's gate jobs whose
+    checkout is gone; what this host can see"""
+    return [*live_rows(repo, repo_dir, now), *launchd_rows(repo, now), *gate_checkout_rows()]
+
+
+def launchctl_print(label: str) -> str | None:
+    """`launchctl print` of the job in this user's GUI domain; None when it isn't loaded"""
+    proc = subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True, text=True, check=False
+    )
+    return proc.stdout if proc.returncode == 0 else None
 
 
 def launchd_rows(repo: str, now: dt.datetime) -> list[Row]:
@@ -3971,10 +4245,7 @@ def launchd_rows(repo: str, now: dt.datetime) -> list[Row]:
     plist = gate_plist(repo)
     if plist is None:
         return [loop_row(label, None, None, None, now)]
-    proc = subprocess.run(
-        ["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True, text=True, check=False
-    )
-    printed = proc.stdout if proc.returncode == 0 else None
+    printed = launchctl_print(label)
     log_path = plist.get("StandardOutPath")
     log = Path(log_path).read_text(errors="replace") if isinstance(log_path, str) and Path(log_path).is_file() else None
     dead = dead_rows(label, log, log_path if isinstance(log_path, str) else None)
@@ -4005,6 +4276,102 @@ def dead_rows(label: str, log: str | None, log_path: str | None) -> list[Row]:
     else:
         fix = f"launchctl print gui/{os.getuid()}/{label}"
     return [Row("GATE_SESSIONS_DEAD", label, line[len(SESSION_DEAD) :], fix)]
+
+
+GATE_PREFIX = "dev.shipmill.gate."  # shipmill's launchd.LABEL_PREFIX: each gate job's label and plist name
+GATE_OPTIONS = ("--repo", "--from")  # shipmill's launchd.OPTIONS: options before gate whose value could read "gate"
+DEFAULT_EVERY = 15  # shipmill's launchd.DEFAULT_EVERY: the minutes `shipmill launchd` runs the gate every
+GATE_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")  # owner/name, matched whole
+SOME_CHECKOUT = "<its checkout>"  # the checkout a person clones, named in the fix unquoted
+
+
+def gate_job(path: Path) -> tuple[str, dict[str, object], list[str]]:
+    """A gate job's plist: its repo, the owner/name after `gate` in its ProgramArguments as
+    shipmill's launchd.gate_repos reads it, the job, and its arguments. A plist that isn't one,
+    names no one repo, or another repo's job, is refused, as factory refuses it"""
+    with path.open("rb") as handle:
+        try:
+            job = plistlib.load(handle)
+        except (ValueError, ExpatError) as exc:  # InvalidFileException is a ValueError
+            raise Refused(f"error: {path} is not a plist: {exc}") from None
+    if not isinstance(job, dict):
+        raise Refused(f"error: {path} is not a launchd job")
+    args = job.get("ProgramArguments")
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise Refused(f"error: {path} has no ProgramArguments list of strings")
+    named = [args[i + 1] for i in range(1, len(args) - 1) if args[i] == "gate" and args[i - 1] not in GATE_OPTIONS]
+    if len(named) != 1 or GATE_REPO.fullmatch(named[0]) is None:
+        raise Refused(f"error: {path} names no one repo after gate in its ProgramArguments")
+    if f"{gate_label(named[0])}.plist" != path.name:
+        raise Refused(f"error: {path} runs the gate for {named[0]}, whose job is {gate_label(named[0])}")
+    return named[0], job, args
+
+
+def relaunch_fix(repo: str, job: dict[str, object], args: list[str]) -> str:
+    """The job written again from a checkout a person clones, as shipmill's launchd.cli_fix
+    writes it: its interval, App key, Claude token file, and Claude Code flags kept"""
+    command = [*shipmill_cli(), "--repo", SOME_CHECKOUT, "launchd", repo]
+    interval = job.get("StartInterval")
+    if isinstance(interval, int) and interval // 60 != DEFAULT_EVERY:
+        command += ["--every", str(interval // 60)]
+    for option in ("--app-key", "--claude-token"):
+        if option in args[:-1]:
+            command += [option, args[args.index(option) + 1]]
+    command += [a for a in args if a.startswith("--claude-arg=")]
+    shown = " ".join(word if word == SOME_CHECKOUT else shlex.quote(word) for word in command)
+    return f"clone {repo}, then write its job again from that checkout: {shown}"
+
+
+def checkout_missing_rows(agents: Path, platform: str, uid: int, printed: Callable[[str], str | None]) -> list[Row]:
+    """#1155: on a Mac, GATE_CHECKOUT_MISSING for each gate job on the host, this repo's or
+    another's, whose WorkingDirectory is not a folder: launchd exits 78 before shipmill gate
+    runs, so the gate never reports it. agents is the LaunchAgents folder, printed `launchctl
+    print` of a label (None when not loaded). Only dev.shipmill.gate.*.plist is read. The fix
+    adds the gate's checkout back as a worktree of its main checkout when that is still a git
+    checkout; for a folder where shipmill-setup puts it outside the repo (#1156), whose path
+    names no main checkout, the same from the person's checkout of the repo; else writes the
+    job again from a fresh clone"""
+    if platform != "darwin":
+        return []
+    rows = []
+    for path in sorted(agents.glob(f"{GATE_PREFIX}*.plist")):
+        repo, job, args = gate_job(path)
+        folder = job.get("WorkingDirectory")
+        if not isinstance(folder, str) or not folder:
+            raise Refused(f"error: {path} has no WorkingDirectory")
+        if Path(folder).is_dir():
+            continue
+        label = path.stem
+        detail = f"{repo}: its WorkingDirectory {folder} is missing, so launchd stops it before shipmill gate runs"
+        code = re.search(r"^\tlast exit code = (.+)$", printed(label) or "", re.MULTILINE)
+        if code:
+            detail += f"; last exit {code.group(1)}"
+        gone = Path(folder)
+        main = gone.parent.parent
+        kickstart = f"launchctl kickstart gui/{uid}/{label}"
+        if gone.parts[-2:] == GATE_CHECKOUT.parts and (main / ".git").exists():
+            where, checkout = shlex.quote(str(main)), shlex.quote(folder)
+            fix = (
+                f"git -C {where} worktree prune && git -C {where} worktree add --detach {checkout} origin/HEAD"
+                f" && {kickstart}"
+            )
+        elif gone.parts[-len(GATES.parts) - 2 :] == (*GATES.parts, *repo.split("/")):
+            checkout = shlex.quote(folder)
+            fix = (
+                f"from your checkout of {repo}: git -C {SOME_CHECKOUT} worktree prune"
+                f" && git -C {SOME_CHECKOUT} worktree add --detach {checkout} origin/HEAD && {kickstart}"
+            )
+        else:
+            fix = relaunch_fix(repo, job, args)
+        rows.append(Row("GATE_CHECKOUT_MISSING", label, detail, fix))
+    return rows
+
+
+def gate_checkout_rows() -> list[Row]:
+    """This host's gate jobs whose checkout is gone (#1155), read host-wide on every watch"""
+    if sys.platform != "darwin":  # no launchd, and no os.getuid on every platform
+        return []
+    return checkout_missing_rows(LAUNCH_AGENTS, sys.platform, os.getuid(), launchctl_print)
 
 
 # Spec 039: the one supported install is at user scope; its update refreshes the marketplace
@@ -4343,17 +4710,25 @@ def project_folder(folder: Path) -> Path:
     return main_checkout(folder, proc.stdout)
 
 
-def plugin_folders(repo_dir: Path, workdir: Path | None) -> tuple[list[Path], list[Path]]:
+def gate_home(repo: str, home: Path) -> Path:
+    """The gate's checkout for owner/name where shipmill-setup puts it (#1156)"""
+    owner, _, name = repo.partition("/")
+    return home / GATES / owner / name
+
+
+def plugin_folders(repo_dir: Path, workdir: Path | None, outside: Path | None = None) -> tuple[list[Path], list[Path]]:
     """The projects Claude Code loads for the checkout and the gate's working directory, and
     the gate's checkouts, keyed apart from them (#233): the conventional tmp/shipmill-gate,
-    the working directory, and the checkout itself when either is a linked worktree. A
-    tmp/shipmill-gate that is a clone of its own is a project too, whose installs its sessions
-    load"""
+    outside (gate_home, #1156) when it is a folder, the working directory, and the checkout
+    itself when either is a linked worktree. A conventional checkout that is a clone of its
+    own is a project too, whose installs its sessions load"""
     main = project_folder(repo_dir)
     folders, gates = [main], [main / GATE_CHECKOUT]
-    conventional = main / GATE_CHECKOUT
-    if conventional.is_dir() and project_folder(conventional) == conventional:  # a clone of its own, not a worktree
-        folders.append(conventional)
+    if outside is not None and outside.is_dir():
+        gates.append(outside)
+    for conventional in gates:
+        if conventional.is_dir() and project_folder(conventional) == conventional:  # a clone of its own
+            folders.append(conventional)
     for folder in [repo_dir] if workdir is None else [repo_dir, workdir]:
         project = project_folder(folder)
         if project not in folders:
@@ -4408,8 +4783,9 @@ def shipmill_rows(repo: str, repo_dir: Path, *, host_wide: bool) -> list[Row]:
     latest = latest_release()
     plist = gate_plist(repo)
     workdir = plist.get("WorkingDirectory") if plist else None
-    folders, gates = plugin_folders(repo_dir, Path(workdir) if isinstance(workdir, str) else None)
-    session = project_folder(gate_folder(repo_dir, workdir if isinstance(workdir, str) else None))
+    outside = gate_home(repo, Path.home())
+    folders, gates = plugin_folders(repo_dir, Path(workdir) if isinstance(workdir, str) else None, outside)
+    session = project_folder(gate_folder(repo_dir, workdir if isinstance(workdir, str) else None, outside))
     claude = shutil.which("claude")
     if claude is None:
         return plugin_rows(None, None, latest, folders, gates)
@@ -4419,11 +4795,15 @@ def shipmill_rows(repo: str, repo_dir: Path, *, host_wide: bool) -> list[Row]:
     return plugin_rows(plugins, market, latest, folders, gates, session, path_cli, counted)
 
 
-def gate_folder(repo_dir: Path, workdir: str | None) -> Path:
-    """The folder the gate starts its sessions in: launchd's working directory, else the
-    conventional tmp/shipmill-gate beside the main checkout when it exists, else the checkout"""
+def gate_folder(repo_dir: Path, workdir: str | None, outside: Path | None = None) -> Path:
+    """The folder the gate starts its sessions in: launchd's working directory, else outside
+    (gate_home, where shipmill-setup puts it since #1156) when it exists, else the
+    tmp/shipmill-gate beside the main checkout of a gate set up before it when that exists,
+    else the checkout"""
     if workdir is not None:
         return Path(workdir)
+    if outside is not None and outside.is_dir():
+        return outside
     beside = project_folder(repo_dir) / GATE_CHECKOUT
     return beside if beside.is_dir() else repo_dir
 
@@ -4559,8 +4939,8 @@ HOST_SECTIONS = ("sessions", "shipmill")
 def host_rows(section: str, repo: str, repo_dir: Path, now: dt.datetime, *, host_wide: bool) -> list[Row]:
     """host_wide: shipmill factory's read of the shipmill section, whose PLUGIN_SHADOWING counts
     every keyed install on the host; shipmill status reads the repo's (#764)"""
-    if section == "sessions":
-        return live_rows(repo, repo_dir, now)
+    if section == "sessions":  # #1155: with the host's gate jobs whose checkout is gone, as factory reads them
+        return [*live_rows(repo, repo_dir, now), *gate_checkout_rows()]
     return [*shipmill_rows(repo, repo_dir, host_wide=host_wide), *shadow_rows(Path.home(), skill_names())]
 
 
@@ -4574,7 +4954,8 @@ def host_rows(section: str, repo: str, repo_dir: Path, now: dt.datetime, *, host
 TIERS: dict[int, tuple[str, ...]] = {
     1: ("INCIDENT_OPEN", "OPERATE_FAILED"),
     2: ("BOT_FAILED", "NOT_PUBLISHED", "WORK_BRANCH_STALE", "BOT_STALLED"),
-    3: ("PRS_OPEN", "AGENT_DRAFT", "NEEDS_DECISION"),  # AGENT_DRAFT: the App's own draft to resume (D-67)
+    # LAND_DUE: the land window's queue head (spec 056); AGENT_DRAFT: the App's own draft to resume (D-67)
+    3: ("LAND_DUE", "PRS_OPEN", "AGENT_DRAFT", "NEEDS_DECISION"),
     4: (VETOED, "ISSUES", "NEEDS_DECISION"),
     5: ("UPGRADE_PENDING", "UPSTREAM_DUE"),
     6: ("ISSUES",),
@@ -4836,15 +5217,19 @@ def land_level(args: argparse.Namespace, text: str | None, known: Known | None, 
     return held_land(config(text, POLICY, args.incident_label).land, held)
 
 
-def landing_rows(args: argparse.Namespace, text: str | None, known: Known | None, now: dt.datetime) -> list[Row]:
-    """Tier 3: PRS_OPEN and AGENT_DRAFT from the change check's pull requests, and the ones
-    waiting on a decision, whose comments, with those labelled decided and the --bot-login's
-    drafts (D-67), are one batched read"""
+def landing_rows(
+    args: argparse.Namespace, repo_dir: Path, text: str | None, known: Known | None, now: dt.datetime
+) -> list[Row]:
+    """Tier 3: LAND_DUE (spec 056), PRS_OPEN, and AGENT_DRAFT from the change check's pull
+    requests, and the ones waiting on a decision, whose comments, with those labelled decided
+    and the --bot-login's drafts (D-67), are one batched read. The land window and its queue's
+    label events are read only with a queued pull request open"""
     prs = known.prs if known is not None else open_prs(args.repo)
     wanted = [int(pr["number"]) for pr in prs if asked(pr) or own_draft(pr, args.bot_login)]
     comments = batched_comments(args.repo, wanted)
     land = land_level(args, text, known, now)
-    rows = intake(args.repo, 0, "", prs, comments.__getitem__, args.bot_login, args.trusted_only, land)
+    queue, _ = land_queue(args.repo, repo_dir, text, default_branch(args.repo, known), prs, now, args.tool)
+    rows = intake(args.repo, 0, "", prs, comments.__getitem__, args.bot_login, args.trusted_only, land, queue=queue)
     return [r for r in rows if r.state in TIERS[3]]
 
 
@@ -4981,7 +5366,7 @@ def tier_rows(tier: int, args: argparse.Namespace, repo_dir: Path, known: Known 
     if tier == 2:
         return lane_rows(args, repo_dir, text, known, now)
     if tier == 3:
-        return landing_rows(args, text, known, now)
+        return landing_rows(args, repo_dir, text, known, now)
     if tier == 4:
         return asked_rows(args, repo_dir, text, known, now)
     return issue_rows(args, repo_dir, text, known)
@@ -5155,6 +5540,7 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role)
         # the open direction issues, from triage_state.py's lines: no gh call of their own (spec 034)
         directions = triage_directions(triage) if table is not None else frozenset()
+        default = view["defaultBranchRef"]["name"]
         rows += intake_rows(
             args.repo,
             code,
@@ -5166,6 +5552,7 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
             plans.untrusted,
             now,
             directions,
+            queue_of=lambda prs: land_queue(args.repo, repo_dir, text, default, prs, now, args.tool),
         )
         rows += chain_rows(args.repo, triage, args.bot_login)
         rows += spec_rows(args.repo, repo_dir, branch, triage)  # spec 053, at the branch fetched above

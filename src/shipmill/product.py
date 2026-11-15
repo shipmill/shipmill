@@ -67,6 +67,19 @@ class Metric(StrEnum):
     ISSUE_TO_RELEASE_P90 = "issue_to_release_p90"  # Issue to release, p90
     HUMAN_TOUCH = "human_touch"  # Human touch
     AGENT_SHARE = "agent_share"  # Agent share
+    # Issue to release by stage (spec 066)
+    ISSUE_TO_AGENT_COMMENT_MEDIAN = "issue_to_agent_comment_median"  # Issue to first agent comment
+    ISSUE_TO_AGENT_COMMENT_P90 = "issue_to_agent_comment_p90"
+    ISSUE_TO_PR_MEDIAN = "issue_to_pr_median"  # Issue to PR opened
+    ISSUE_TO_PR_P90 = "issue_to_pr_p90"
+    ISSUE_TO_PR_PERSON_MEDIAN = "issue_to_pr_person_median"  # Issue to PR opened, person-filed
+    ISSUE_TO_PR_PERSON_P90 = "issue_to_pr_person_p90"
+    ISSUE_TO_PR_AGENT_MEDIAN = "issue_to_pr_agent_median"  # Issue to PR opened, agent-filed
+    ISSUE_TO_PR_AGENT_P90 = "issue_to_pr_agent_p90"
+    PR_TO_MERGE_MEDIAN = "pr_to_merge_median"  # PR opened to merged
+    PR_TO_MERGE_P90 = "pr_to_merge_p90"
+    MERGE_TO_RELEASE_MEDIAN = "merge_to_release_median"  # Merged to release
+    MERGE_TO_RELEASE_P90 = "merge_to_release_p90"
 
     @property
     def unit(self) -> Unit:
@@ -83,6 +96,18 @@ _METRIC_UNITS = {
     Metric.ISSUE_TO_RELEASE_P90: Unit.HOURS,
     Metric.HUMAN_TOUCH: Unit.RATIO,
     Metric.AGENT_SHARE: Unit.RATIO,
+    Metric.ISSUE_TO_AGENT_COMMENT_MEDIAN: Unit.HOURS,
+    Metric.ISSUE_TO_AGENT_COMMENT_P90: Unit.HOURS,
+    Metric.ISSUE_TO_PR_MEDIAN: Unit.HOURS,
+    Metric.ISSUE_TO_PR_P90: Unit.HOURS,
+    Metric.ISSUE_TO_PR_PERSON_MEDIAN: Unit.HOURS,
+    Metric.ISSUE_TO_PR_PERSON_P90: Unit.HOURS,
+    Metric.ISSUE_TO_PR_AGENT_MEDIAN: Unit.HOURS,
+    Metric.ISSUE_TO_PR_AGENT_P90: Unit.HOURS,
+    Metric.PR_TO_MERGE_MEDIAN: Unit.HOURS,
+    Metric.PR_TO_MERGE_P90: Unit.HOURS,
+    Metric.MERGE_TO_RELEASE_MEDIAN: Unit.HOURS,
+    Metric.MERGE_TO_RELEASE_P90: Unit.HOURS,
 }
 
 

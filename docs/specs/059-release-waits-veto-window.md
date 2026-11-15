@@ -1,6 +1,6 @@
 # S-059: A release waits for the veto window of a notify decision it ships
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -146,14 +146,23 @@ merges without waiting, adds that a lane in `veto_lanes` holds its release inste
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-NNN-1, S-NNN-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
-
 - shipmill/shipmill#1083: S-059-1, S-059-10, S-059-11
 - shipmill/shipmill#1084: S-059-2, S-059-3, S-059-4, S-059-5, S-059-6, S-059-7, S-059-8, S-059-9
 - shipmill/shipmill#1086: S-059-12
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+Checked on main at 74c6f305 (#1083 and #1084 merged) plus #1086's docs: `tests/test_veto_lanes.py` and `tests/test_veto_wait.py` pass, `specs.py coverage --spec 059` lists a test for every criterion, and the config, tick, and doctor line were run directly on this repo's `.github/shipmill.toml`.
+
+- S-059-1: parsed this repo's `.github/shipmill.toml` with `Policy.parse`, then with `veto_lanes = ["rc", "stable"]` and `["hotfix"]`; empty, rc and stable, and `veto_lanes can't hold hotfix` as a ReleaseError naming the key, holds
+- S-059-2: read `planner.py`'s wait: `current in self.policy.veto_lanes` is checked before `_veto_windows`, the only caller of `veto.shipped`, so a lane not in `veto_lanes` reads nothing new; `test_veto_wait.py` passes, holds
+- S-059-3: read `veto.windows` and `Window.__str__` (`#<n> <zone> until <time> UTC`, a window holds while `until > now`) and the planner's `waits for veto windows:` reason; `test_veto_wait.py` passes, holds
+- S-059-4: read `veto.holding` (the pull requests' closing issues read once each) and `veto.shipped` (a tag's range is `commits_since(tag, base)`); `test_veto_wait.py` passes, holds
+- S-059-5: read `veto.Trust` (OWNER, MEMBER, COLLABORATOR, or a Bot whose App id is `[agents] app_id`) and `DECIDED.fullmatch(first_line(...))`; `test_veto_wait.py` passes, holds
+- S-059-6: read `veto.windows` and `by_person` (a trusted non-bot comment without the agent marker, first word `veto` in any case, newer than the last trusted veto-handled comment); `test_veto_wait.py` passes, holds
+- S-059-7: read `planner.py`: `person = lane is not None and actor is not None and not actor.is_bot` skips the read; `prepare.yml` passes the triggering actor as `--actor`; `test_veto_wait.py` passes, holds
+- S-059-8: read `veto.shipped`: no tag reads `shipped_pulls(now - 168h)` filtered to base's ancestors, and `_veto_windows` takes `_lane_tags(lane)`, the stable tags for a promotion; `test_veto_wait.py` passes, holds
+- S-059-9: read `veto._until`: a trusted marker's `until` must match `YYYY-MM-DDTHH:MM[:SS]Z`, parse, and lie within 168 hours of the comment, else a ReleaseError naming the item; `test_veto_wait.py` passes, holds
+- S-059-10: `ticks.needed` on this repo's config with `veto_lanes = ["rc", "stable"]` gives `Ticks(hourly=True, windows=())`; `test_veto_lanes.py` passes, holds
+- S-059-11: `doctor.veto_lanes_check` gives `PASS gates veto_lanes rc, stable: ...` with them and None on this repo's config without them; `test_veto_lanes.py` passes, holds
+- S-059-12: read `docs/release-lanes.md` (the `[gates]` example, the `veto_lanes` paragraphs, the hourly tick's bullet) and `needs-decision.md`'s "The work doesn't wait" line; `test_s059_12_the_docs_document_veto_lanes` passes, holds

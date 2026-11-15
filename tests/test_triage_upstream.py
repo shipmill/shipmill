@@ -113,15 +113,23 @@ FAKE_GH = """#!{python}
 import os
 print(open(os.environ["FAKE_GH_DATA"]).read())
 """
+# `shipmill gh --product` refusing the read token, as for a home that doesn't list the repo (S-065-3)
+FAKE_UVX = """#!{python}
+import sys
+sys.stderr.write("error: D-84: the home's [product] repos doesn't list this repo\\n")
+sys.exit(2)
+"""
 
 
 def run_triage(tmp_path: Path, nodes: list[dict[str, Any]], *args: str) -> subprocess.CompletedProcess[str]:
-    """triage_state.py over a fake gh that answers every query with one first page"""
+    """triage_state.py over a fake gh that answers every query with one first page, and a fake
+    uvx whose `shipmill gh --product` can't read the product's other repos"""
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
-    gh = fakes / "gh"
-    gh.write_text(FAKE_GH.format(python=sys.executable), encoding="utf-8")
-    gh.chmod(0o700)
+    for tool, text in (("gh", FAKE_GH), ("uvx", FAKE_UVX)):
+        fake = fakes / tool
+        fake.write_text(text.format(python=sys.executable), encoding="utf-8")
+        fake.chmod(0o700)
     data = tmp_path / "gh.json"
     data.write_text(json.dumps({"data": {"repository": first_page(nodes)}}), encoding="utf-8")
     env = {"PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]), "FAKE_GH_DATA": str(data)}

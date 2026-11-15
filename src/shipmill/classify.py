@@ -15,6 +15,10 @@ request's (--pr) by its files and their patches too, read through gh:
   the merge base, both read whole
 - contract-change: an added line under a heading [bump] major lists, in the changelog or a
   changelog fragment
+
+A path that puts direction, security, or protected in takes the level of the strictest of that
+zone's parts ([decisions.paths.<zone>] at the base, spec 057) whose glob matches it, else the
+zone's level; the zone's level is the strictest among its paths'. A part never adds a zone.
 """
 
 import fnmatch
@@ -22,12 +26,13 @@ import re
 import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 
 from shipmill import cli_command
 from shipmill.config import CONFIG_PATH, loads
-from shipmill.decide import Candidate, Level, Zone, candidates
+from shipmill.decide import Candidate, Level, Part, Zone, candidates
 from shipmill.errors import ReleaseError
 from shipmill.github import FileChange, PullChange
 from shipmill.gitrepo import Git
@@ -81,16 +86,56 @@ class RepoPath:
         return self.value
 
 
+class PathSource(StrEnum):
+    """Where a changed path's level in its zone comes from (spec 057)"""
+
+    DEFAULT = "default"
+    CONFIG = "config"
+    PART = "part"
+
+
+@dataclass(frozen=True, slots=True)
+class PathLevel:
+    """A changed path that put its zone in, at its level: the strictest part of the zone whose
+    glob matches it, else the zone's level (spec 057)"""
+
+    path: str
+    level: Level
+    source: PathSource
+    part: Part | None = None
+
+    def __post_init__(self) -> None:
+        if (self.part is None) != (self.source is not PathSource.PART):
+            raise ReleaseError("a path's level comes from a part exactly when its source is part")
+
+    def note(self) -> str:
+        """What a reason ends with when a part set the level; empty otherwise"""
+        if self.part is None:
+            return ""
+        return f' ({self.level.value} by [decisions.paths.{self.part.zone.value}] "{self.part.glob}")'
+
+    def record(self) -> dict[str, str | None]:
+        glob = None if self.part is None else self.part.glob
+        return {"path": self.path, "level": self.level.value, "source": self.source.value, "glob": glob}
+
+
 @dataclass(frozen=True, slots=True)
 class Detected:
-    """A zone code detects in a change, at the base's level, with why"""
+    """A zone code detects in a change, at the base's level, with why, and the changed paths
+    that put it in, each at its own level (none for a zone detected without a path rule)"""
 
     zone: Zone
     level: Level
     reason: str
+    paths: tuple[PathLevel, ...] = ()
 
-    def record(self) -> dict[str, str]:
-        return {"zone": self.zone.value, "level": self.level.value, "reason": self.reason}
+    def record(self) -> dict[str, Any]:
+        return {
+            "zone": self.zone.value,
+            "level": self.level.value,
+            "reason": self.reason,
+            "paths": [p.record() for p in self.paths],
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +207,17 @@ class Base:
     def level(self, zone: Zone) -> Level:
         return self.policy.decisions.level(zone)
 
+    def path_level(self, zone: Zone, path: str) -> PathLevel:
+        """The path's level in the zone: the strictest of the zone's parts whose glob matches it,
+        the first such part in the config's order on a tie; else the zone's level"""
+        decisions = self.policy.decisions
+        matching = [part for part in decisions.parts_of(zone) if matches(part.glob, path)]
+        if matching:
+            part = max(matching, key=lambda p: p.level.rank)
+            return PathLevel(path, part.level, PathSource.PART, part)
+        source = PathSource.CONFIG if decisions.is_configured(zone) else PathSource.DEFAULT
+        return PathLevel(path, self.level(zone), source)
+
     def covering(self, path: str) -> list[Protected]:
         """The Protected areas of the root's REVIEW.md and its folders' on the way to path that
         cover it, as pr_gate.py reads them"""
@@ -189,20 +245,36 @@ def covers(area: Protected, path: str) -> bool:
 
 
 class _Found:
-    """The reasons found per zone, kept in the zone table's order"""
+    """The reasons found per zone, kept in the zone table's order, with the changed paths that
+    put each zone in. A part only sets a path's level: it never adds a zone (S-057-7)"""
 
     def __init__(self, base: Base) -> None:
         self.base = base
         self.reasons: dict[Zone, list[str]] = {}
+        self.paths: dict[Zone, dict[str, PathLevel]] = {}
+        self.pathless: set[Zone] = set()  # zones a rule put in without a path, at the zone's level
 
-    def add(self, zone: Zone, reason: str) -> None:
+    def add(self, zone: Zone, reason: str, path: str | None = None) -> None:
+        if path is None:
+            self.pathless.add(zone)
+        else:
+            at = self.paths.setdefault(zone, {}).setdefault(path, self.base.path_level(zone, path))
+            reason += at.note()
         listed = self.reasons.setdefault(zone, [])
         if reason not in listed:
             listed.append(reason)
 
+    def level(self, zone: Zone) -> Level:
+        """The strictest among the zone's paths' levels, and the zone's own when a rule without
+        a path put it in"""
+        levels = [p.level for p in self.paths.get(zone, {}).values()]
+        if zone in self.pathless:
+            levels.append(self.base.level(zone))
+        return Level.strictest(levels)
+
     def result(self, paths: Sequence[str]) -> Classification:
         detected = tuple(
-            Detected(zone, self.base.level(zone), "; ".join(self.reasons[zone]))
+            Detected(zone, self.level(zone), "; ".join(self.reasons[zone]), tuple(self.paths.get(zone, {}).values()))
             for zone in Zone
             if zone in self.reasons
         )
@@ -213,11 +285,12 @@ class _Found:
 def _by_path(found: _Found, path: str) -> None:
     """The rules a path alone decides; the config's own path is its caller's to judge"""
     if path == DIRECTION or path.startswith(DIRECTION_DIR):
-        found.add(Zone.DIRECTION, f"{path} edits the product's direction, which only the maintainer changes (D-34)")
+        reason = f"{path} edits the product's direction, which only the maintainer changes (D-34)"
+        found.add(Zone.DIRECTION, reason, path)
     if path.startswith(GITHUB_DIR) and path != CONFIG:
-        found.add(Zone.SECURITY, f"{path} is under {GITHUB_DIR}")
+        found.add(Zone.SECURITY, f"{path} is under {GITHUB_DIR}", path)
     for area in found.base.covering(path):
-        found.add(Zone.PROTECTED, f"{path} matches `{area.glob}` ({area.file}): {area.why}")
+        found.add(Zone.PROTECTED, f"{path} matches `{area.glob}` ({area.file}): {area.why}", path)
 
 
 def classify_paths(base: Base, paths: Iterable[RepoPath]) -> Classification:
@@ -229,7 +302,7 @@ def classify_paths(base: Base, paths: Iterable[RepoPath]) -> Classification:
         _by_path(found, path)
         if path == CONFIG:
             found.add(Zone.DECISION_POLICY, f"{CONFIG} changes, and paths alone can't tell whether [decisions] did")
-            found.add(Zone.SECURITY, f"{CONFIG} changes, and paths alone can't tell which of its tables did")
+            found.add(Zone.SECURITY, f"{CONFIG} changes, and paths alone can't tell which of its tables did", CONFIG)
     return found.result(listed)
 
 
@@ -275,13 +348,13 @@ def _config(found: _Found, pulls: Pulls, change: PullChange, file: FileChange) -
         except tomllib.TOMLDecodeError as exc:
             reason = f"{CONFIG} at {side[:7]} doesn't parse ({exc}), so its tables can't be compared"
             found.add(Zone.DECISION_POLICY, reason)
-            found.add(Zone.SECURITY, reason)
+            found.add(Zone.SECURITY, reason, CONFIG)
             return
     before, after = sides
     if before.get(DECISIONS_TABLE, {}) != after.get(DECISIONS_TABLE, {}):  # an empty table sets nothing
         found.add(Zone.DECISION_POLICY, f"{CONFIG} changes its [{DECISIONS_TABLE}] table")
     if _rest(before) != _rest(after):
-        found.add(Zone.SECURITY, f"{CONFIG} changes outside [{DECISIONS_TABLE}]")
+        found.add(Zone.SECURITY, f"{CONFIG} changes outside [{DECISIONS_TABLE}]", CONFIG)
 
 
 def _is_spec(path: str) -> bool:

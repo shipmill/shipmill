@@ -2,7 +2,7 @@
 
 Fill in the `{...}` fields and send one brief per PR, all in one message so the agents run in parallel (`subagent_type: general-purpose`, `isolation: "worktree"`). Don't hand the reviewer a verdict; hand it the PR's specific risks.
 
-**The rubric, the direction, and the plan (spec 024).** Read them in a checkout at `origin/<default>` after `git fetch`, never on the PR's branch, which could rewrite its own rules; run each as `uvx shipmill==0.129.0 <command>`, the release this plugin pins, in every session:
+**The rubric, the direction, and the plan (spec 024).** Read them in a checkout at `origin/<default>` after `git fetch`, never on the PR's branch, which could rewrite its own rules; run each as `uvx shipmill==0.135.0 <command>`, the release this plugin pins, in every session:
 
 - `{review_rubric}`: `shipmill review show --path <file> ...` with every file of `gh api repos/{owner}/{repo}/pulls/<N>/files --paginate --jq '.[].filename'` (gh fills in `{owner}/{repo}`; `gh pr diff --name-only` fails with HTTP 406 past 300 files), which merges the root `REVIEW.md` with those of the directories the diff touches: Important rules (`I-n`, a subdirectory's cited as `skills/I-2`), the nit cap, Protected areas, and the free sections as they are. Without a `REVIEW.md`, drop the field
 - `{direction}`: `shipmill product show --section goals --section non-goals --section quality`. Without `docs/product.md`, drop the field
@@ -34,6 +34,7 @@ Review GitHub PR #{N} of {owner/repo} ("{title}", fixes #{issue}). The repo is a
 2. Run the project's fast checks and the tests of the files the PR touches: {check_commands}. Leave the full suite to the PR's CI, which `pr_gate.py --wait` waits on before any merge{, unless the repo's CI doesn't run it: then run `{suite_command}` once, in the foreground (timeout 600000 ms), through the machine-wide queue}. Known flaky tests: {flakes}. For any other failure, say whether it also fails on origin/{default}.
 3. Read `git diff origin/{default}...HEAD` and the linked issue (`gh issue view {issue}`). Look for:
    - Correctness: {pr_specific_risks, for example: edge-case inputs to test, concurrent callers, platform-only paths, and the cases that must NOT change}
+   - Invariants: when the plan or the linked issue lists invariants, find where the code holds each one and what could break it
    - Security: secrets reaching output, logs, error messages, or another concurrent caller's output; input validation on every entry path
    - Whether it resolves the issue fully or only partially
    - The repo's rules in {rules_files, e.g. AGENTS.md, CLAUDE.md}
@@ -70,3 +71,8 @@ Post-merge review of GitHub PR #{N} of {owner/repo} ("{title}"). It is already m
 | Retry, locking, files | Platform-only branches; masking real errors; a no-op on other platforms; readers as well as writers |
 | Audit or lint rules | False positives on already-compliant code; false negatives in nested types; suggested fixes that would themselves be rejected |
 | Defaults or limits | Upgrade path for existing state; every doc and spec that names the old value |
+| Charges, credits, quotas | Charge before or after the action; refund when it fails; a double charge or double refund; access granted without payment |
+| Status fields | Every transition; a status a record can get stuck in; what the user sees in each |
+| Several writes in one operation | A crash between two writes: what stays in the database, who repairs it, whether a transaction covers it |
+| Handlers, jobs, webhooks | A repeated request, a double submit, a retried job, two workers on one record: idempotency and races |
+| Queries and records | Access to another user's records; data written by the old code; the migration and its way back |

@@ -45,7 +45,7 @@ from shipmill.github import FileChange, GhCli
 
 from .conftest import POLICY, Repo
 from .test_app import APP_ID, REPO, FakeSigner
-from .test_app_gh_merge import CODE, DIRECTION, FakeReads, Reader, connected
+from .test_app_gh_merge import CODE, DIRECTION, FULL, FakeGate, FakeReads, Reader, connected, pinned_to
 from .test_app_token import FAKE_GH, MintApi, executable
 
 APP_LOGIN = "demo-agent[bot]"  # the App FakeApi answers GET /app for
@@ -57,6 +57,7 @@ OCTOCAT_TRAILER = "Co-authored-by: The Octocat <583231+octocat@users.noreply.git
 HUBOT = Account(7, "hubot", None)
 HUBOT_TRAILER = "Co-authored-by: hubot <7+hubot@users.noreply.github.com>"
 APP = Person(APP_LOGIN, True)
+PIN = ["--match-head-commit", FULL]  # the head FakeGate reads READY, which shipmill gh pins the merge to (S-055-2)
 
 
 def approved(
@@ -179,6 +180,7 @@ def gh(
         home=home,
         gh_runner=runner,
         merge_reader=Reader(FakeReads(files)),
+        merge_gate=FakeGate(),
         credit_reader=credit if credit is not None else refusing,
     )
 
@@ -254,7 +256,7 @@ def test_s049_2_with_credit_off_gh_gets_its_arguments_and_no_record_is_read(
     key = connected(repo, tmp_path, config)
     runner = Runner(capsys)
     assert gh(repo, tmp_path, key, args, runner) == 0  # the reader raises when called
-    assert [argv[1:] for argv in runner.calls] == [args]
+    assert [argv[1:] for argv in runner.calls] == [pinned_to(args)]  # pinned to the gate's READY head (S-055-2)
     assert runner.stderr == [""]
 
 
@@ -366,7 +368,7 @@ def test_s049_7_a_pull_request_no_record_names_merges_with_its_arguments_unchang
     credit, runner = CreditReader(FakeCredit(reviews=reviews)), Runner(capsys)
     args = ["pr", "merge", "7", "--squash", "--body", "x"]
     assert gh(repo, tmp_path, key, args, runner, credit) == 0
-    assert [argv[1:] for argv in runner.calls] == [args]
+    assert [argv[1:] for argv in runner.calls] == [pinned_to(args)]
     assert runner.stderr == [""]
     # no account is looked up
     assert credit.reads.read == ["pull 7", "reviews 7", "comments 7", "closes 7", "closes 7", "closes 7"]
@@ -397,7 +399,7 @@ def test_s049_8_a_given_body_is_kept_and_replaced_by_one_body_and_the_subject_re
     credit, runner = CreditReader(FakeCredit(reviews=[approved("octocat")])), Runner(capsys)
     assert gh(repo, tmp_path, key, args, runner, credit) == 0
     [argv] = runner.calls
-    assert argv[1:] == [*kept, "--body", f"Given.\n\n{OCTOCAT_TRAILER}"]
+    assert argv[1:] == [*kept, *PIN, "--body", f"Given.\n\n{OCTOCAT_TRAILER}"]
     assert "repo" not in credit.reads.read and "commits 7" not in credit.reads.read  # no default body is built
 
 
@@ -410,8 +412,8 @@ def test_s049_8_a_body_file_or_stdin_is_the_body(
     assert gh(repo, tmp_path, key, ["pr", "merge", "7", "-s", "-F", str(tmp_path / "body.md")], runner, credit) == 0
     assert gh(repo, tmp_path, key, ["pr", "merge", "7", "-s", "--body-file", "-"], runner, credit, stdin="Piped.") == 0
     assert [argv[1:] for argv in runner.calls] == [
-        ["pr", "merge", "7", "-s", "--body", f"From a file.\n\n{OCTOCAT_TRAILER}"],
-        ["pr", "merge", "7", "-s", "--body", f"Piped.\n\n{OCTOCAT_TRAILER}"],
+        ["pr", "merge", "7", "-s", *PIN, "--body", f"From a file.\n\n{OCTOCAT_TRAILER}"],
+        ["pr", "merge", "7", "-s", *PIN, "--body", f"Piped.\n\n{OCTOCAT_TRAILER}"],
     ]
 
 
@@ -423,7 +425,7 @@ def test_s049_8_a_stdin_body_already_naming_the_decider_still_reaches_gh(
     credit, runner = CreditReader(FakeCredit(reviews=[approved("octocat")])), Runner(capsys)
     piped = f"Piped.\n\n{OCTOCAT_TRAILER}"
     assert gh(repo, tmp_path, key, ["pr", "merge", "7", "-s", "--body-file", "-"], runner, credit, stdin=piped) == 0
-    assert [argv[1:] for argv in runner.calls] == [["pr", "merge", "7", "-s", "--body", piped]]
+    assert [argv[1:] for argv in runner.calls] == [["pr", "merge", "7", "-s", *PIN, "--body", piped]]
 
 
 def test_s049_8_a_missing_body_file_exits_2(repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -508,7 +510,7 @@ def test_s049_8_a_decider_already_named_by_email_gets_no_second_trailer(
     credit, runner = CreditReader(FakeCredit(reviews=[approved("octocat")])), Runner(capsys)
     args = ["pr", "merge", "7", "-s", "--body", named]
     assert gh(repo, tmp_path, key, args, runner, credit) == 0
-    assert [argv[1:] for argv in runner.calls] == [args]  # nothing to add: gh gets its arguments
+    assert [argv[1:] for argv in runner.calls] == [pinned_to(args)]  # nothing to add: gh gets its arguments
 
 
 def test_s049_8_an_empty_body_holds_the_trailers_alone() -> None:
@@ -549,7 +551,7 @@ def test_s049_8_a_rebase_or_turning_auto_merge_off_is_left_alone(
     key = connected(repo, tmp_path, POLICY + ON)
     credit, runner = CreditReader(FakeCredit(reviews=[approved("octocat")])), Runner(capsys)
     assert gh(repo, tmp_path, key, args, runner, credit) == 0
-    assert ([argv[1:] for argv in runner.calls], credit.envs) == ([args], [])
+    assert ([argv[1:] for argv in runner.calls], credit.envs) == ([pinned_to(args)], [])
 
 
 @pytest.mark.parametrize(

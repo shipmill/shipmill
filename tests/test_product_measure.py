@@ -104,7 +104,15 @@ def test_s027_1_every_registry_metric_and_comparison_parses_in_its_unit(
     assert read(root).goals[0].measure == measure
 
 
-def test_s027_1_the_registry_is_the_spec_s_nine_metrics() -> None:
+STAGE_METRICS = tuple(
+    f"{stage}_{statistic}"
+    for stage in ("issue_to_agent_comment", "issue_to_pr", "issue_to_pr_person", "issue_to_pr_agent")
+    + ("pr_to_merge", "merge_to_release")
+    for statistic in ("median", "p90")
+)
+
+
+def test_s027_1_the_registry_is_the_spec_s_nine_metrics_and_spec_066_s_stages() -> None:
     assert {m.value: m.unit.value for m in Metric} == {
         "deploy_frequency": "per week",
         "lead_time_median": "hours",
@@ -115,7 +123,37 @@ def test_s027_1_the_registry_is_the_spec_s_nine_metrics() -> None:
         "issue_to_release_p90": "hours",
         "human_touch": "ratio",
         "agent_share": "ratio",
+        **dict.fromkeys(STAGE_METRICS, "hours"),
     }
+
+
+@pytest.mark.parametrize("metric", STAGE_METRICS)
+def test_s066_7_check_takes_each_stage_metric_in_hours_and_refuses_a_ratio_or_rate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], metric: str
+) -> None:
+    assert len(STAGE_METRICS) == 12
+    for target, hours in (("12h", 12.0), ("1.5d", 36.0)):
+        root = write(tmp_path / target, WELL_FORMED.replace(G1_MEASURE, f"  measure: {metric} < {target}\n"))
+        assert check(root) == ()
+        assert run(root, "check") == 0
+        capsys.readouterr()
+        assert run(root, "show", "--json") == 0
+        assert json.loads(capsys.readouterr().out)["goals"][0]["measure"] == {
+            "metric": metric,
+            "comparison": "<",
+            "target": hours,
+            "unit": "hours",
+            "text": f"{metric} < {target}",
+        }
+    for target in ("20%", "5/week"):
+        root = write(
+            tmp_path / target.replace("/", "-"), WELL_FORMED.replace(G1_MEASURE, f"  measure: {metric} < {target}\n")
+        )
+        assert [str(p) for p in check(root)] == [
+            f"docs/product.md:14: `{metric}` takes a target in `<n>h` or `<n>d`, a non-negative number; got `{target}`"
+        ]
+        assert run(root, "check") == 1
+        capsys.readouterr()
 
 
 KNOWN = ", ".join(m.value for m in Metric)

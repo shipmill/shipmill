@@ -1046,6 +1046,7 @@ REPORT_ROWS = [
     "BRANCH_DELETE_OFF",
     "GATE_NO_APP",
     "GATE_SESSIONS_DEAD",
+    "GATE_CHECKOUT_MISSING",  # #1155
     "CHAIN_NO_GATE",
     "CHAIN_CYCLE",
     "CHAIN_UNREADABLE",
@@ -1450,6 +1451,102 @@ def test_no_dead_row_once_a_session_runs_or_without_a_log(ws: ModuleType, log: s
     assert ws.dead_rows("l", log, "/logs/gate.log") == []
 
 
+EXITED_78 = "gui/501/x = {\n\tstate = not running\n\tlast exit code = 78: EX_CONFIG\n}\n"
+
+
+def gate_job(agents: Path, repo: str, checkout: Path, *extra: str) -> str:
+    """A gate job's plist as shipmill launchd writes it, in a LaunchAgents folder of the test's"""
+    import plistlib
+
+    from shipmill import launchd
+
+    name = launchd.label(repo)
+    args = ["/u/bin/uvx", "--from", "shipmill@latest", "shipmill", "--repo", str(checkout), "gate", repo, "--refresh"]
+    job = {"Label": name, "ProgramArguments": [*args, *extra], "WorkingDirectory": str(checkout)}
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / f"{name}.plist").write_bytes(plistlib.dumps({**job, "StartInterval": 1800}))
+    return name
+
+
+def test_a_gate_job_whose_checkout_is_gone_is_an_action_for_a_person(ws: ModuleType, tmp_path: Path) -> None:
+    # #1155: tmp/ was deleted with tmp/shipmill-gate in it; launchd exited 78 for 15 hours, before the gate ran
+    agents = tmp_path / "LaunchAgents"
+    live = tmp_path / "live"
+    (live / "tmp" / "shipmill-gate").mkdir(parents=True)
+    gate_job(agents, "o/live", live / "tmp" / "shipmill-gate")
+    main = tmp_path / "web"
+    (main / ".git").mkdir(parents=True)
+    gone = main / "tmp" / "shipmill-gate"
+    web = gate_job(agents, "acme/web", gone, "--app-key", "/k/app.pem")
+    orphan = tmp_path / "old" / "tmp" / "shipmill-gate"  # its main checkout is gone too
+    old = gate_job(agents, "acme/old", orphan, "--app-key", "/k/app.pem", "--claude-arg=--model=opus")
+    (agents / "com.other.agent.plist").write_text("not a plist\n")  # not a gate's: never read
+    printed = {web: EXITED_78}
+    rows = ws.checkout_missing_rows(agents, "darwin", 501, printed.get)
+    assert [(r.state, r.subject) for r in rows] == [("GATE_CHECKOUT_MISSING", old), ("GATE_CHECKOUT_MISSING", web)]
+    assert rows[1].detail == (
+        f"acme/web: its WorkingDirectory {gone} is missing, so launchd stops it before shipmill gate runs;"
+        " last exit 78: EX_CONFIG"
+    )
+    assert rows[1].fix == (
+        f"git -C {main} worktree prune && git -C {main} worktree add --detach {gone} origin/HEAD"
+        f" && launchctl kickstart gui/501/{web}"
+    )
+    assert rows[0].detail == (
+        f"acme/old: its WorkingDirectory {orphan} is missing, so launchd stops it before shipmill gate runs"
+    )
+    cli = " ".join(ws.shipmill_cli())
+    assert rows[0].fix == (
+        f"clone acme/old, then write its job again from that checkout: {cli} --repo <its checkout> launchd acme/old"
+        " --every 30 --app-key /k/app.pem --claude-arg=--model=opus"
+    )
+    assert "GATE_CHECKOUT_MISSING" in ws.ACTION and "GATE_CHECKOUT_MISSING" not in ws.AGENT
+    assert not any("GATE_CHECKOUT_MISSING" in states for states in ws.TIERS.values())  # D-58: never a tier's
+    assert rows[1].json()["agent"] is False
+
+
+def test_1156_a_gone_gate_checkout_outside_the_repo_is_added_back_from_the_persons_checkout(
+    ws: ModuleType, tmp_path: Path
+) -> None:
+    # #1156: shipmill-setup puts the checkout under the home folder, whose path names no main checkout
+    agents = tmp_path / "LaunchAgents"
+    gone = ws.gate_home("acme/web", tmp_path / "home")
+    web = gate_job(agents, "acme/web", gone)
+    other = gate_job(agents, "acme/api", ws.gate_home("acme/other", tmp_path / "home"))  # another repo's folder
+    rows = {r.subject: r for r in ws.checkout_missing_rows(agents, "darwin", 501, lambda label: None)}
+    assert gone == tmp_path / "home/.local/share/shipmill/gates/acme/web"
+    assert rows[web].fix == (
+        "from your checkout of acme/web: git -C <its checkout> worktree prune"
+        f" && git -C <its checkout> worktree add --detach {gone} origin/HEAD && launchctl kickstart gui/501/{web}"
+    )
+    assert rows[other].fix.startswith("clone acme/api, then write its job again from that checkout: ")
+
+
+def test_no_checkout_row_off_a_mac_or_without_a_gate_job(ws: ModuleType, tmp_path: Path) -> None:
+    agents = tmp_path / "LaunchAgents"
+    assert ws.checkout_missing_rows(agents, "darwin", 501, lambda label: None) == []  # no LaunchAgents folder
+    gate_job(agents, "acme/web", tmp_path / "gone")
+    # a CI Linux runner: a stray plist naming a missing folder is never read
+    assert ws.checkout_missing_rows(agents, "linux", 501, lambda label: None) == []
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        b"not a plist\n",
+        b'<?xml version="1.0"?><plist version="1.0"><array/></plist>',
+        b'<?xml version="1.0"?><plist version="1.0"><dict><key>WorkingDirectory</key><string>/gone</string></dict>'
+        b"</plist>",
+    ],
+)
+def test_a_malformed_gate_job_is_refused(ws: ModuleType, tmp_path: Path, document: bytes) -> None:
+    agents = tmp_path / "LaunchAgents"
+    agents.mkdir()
+    (agents / "dev.shipmill.gate.acme.web.plist").write_bytes(document)
+    with pytest.raises(ws.Refused, match="dev.shipmill.gate.acme.web.plist"):
+        ws.checkout_missing_rows(agents, "darwin", 501, lambda label: None)
+
+
 @pytest.mark.parametrize("state", ["TRIAGE_MODE", "AGENT_SESSION", "LOOP", "HOST_UNKNOWN"])
 def test_the_agent_rows_are_report_only(ws: ModuleType, state: str) -> None:
     assert state not in ws.ACTION and state not in ws.AGENT
@@ -1687,6 +1784,16 @@ def test_the_gate_folder_is_launchds_then_the_conventional_checkout(ws: ModuleTy
     assert ws.gate_folder(tmp_path, None) == tmp_path / "tmp" / "shipmill-gate"
 
 
+def test_1156_the_gate_folder_outside_the_repo_is_found_without_a_launchd_job(ws: ModuleType, tmp_path: Path) -> None:
+    repo = tmp_path / "r"
+    (repo / "tmp" / "shipmill-gate").mkdir(parents=True)  # an old gate's, read only without the new one
+    outside = ws.gate_home("acme/r", tmp_path / "home")
+    assert ws.gate_folder(repo, None, outside) == repo / "tmp" / "shipmill-gate"
+    outside.mkdir(parents=True)
+    assert ws.gate_folder(repo, None, outside) == outside
+    assert ws.gate_folder(repo, "/srv/gate", outside) == Path("/srv/gate")  # launchd's working directory first
+
+
 def test_without_gates_a_gate_keyed_install_is_still_left_out_of_the_version_row(ws: ModuleType) -> None:
     installed = registry(install("project", "0.32.1", "/work/r"), install("project", "0.25.0", str(GATE)))
     rows = ws.plugin_rows(installed, MARKETPLACE, "v0.32.1", [Path("/work/r")])
@@ -1711,6 +1818,20 @@ def test_the_gate_checkout_is_found_beside_the_main_checkout(ws: ModuleType, tmp
     elsewhere = tmp_path / "gate2"
     subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "--detach", str(elsewhere)], check=True)
     assert ws.plugin_folders(main, elsewhere.resolve()) == ([main], [main / "tmp/shipmill-gate", elsewhere.resolve()])
+
+
+def test_1156_a_gate_checkout_outside_the_repo_is_keyed_as_the_gates(ws: ModuleType, tmp_path: Path) -> None:
+    main = tmp_path / "r"
+    main.mkdir()
+    for cmd in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "x"]):
+        subprocess.run(["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", *cmd], check=True)
+    main = main.resolve()
+    outside = ws.gate_home("acme/r", tmp_path.resolve() / "home")
+    assert ws.plugin_folders(main, None, outside) == ([main], [main / "tmp/shipmill-gate"])  # not made yet
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "--detach", str(outside)], check=True)
+    assert ws.plugin_folders(main, None, outside) == ([main], [main / "tmp/shipmill-gate", outside])
+    assert ws.plugin_folders(main, outside, outside) == ([main], [main / "tmp/shipmill-gate", outside])  # launchd's
+    assert ws.project_folder(ws.gate_folder(main, None, outside)) == main  # its sessions load the main checkout's
 
 
 def test_s031_16_a_gate_checkout_that_is_its_own_clone_is_a_project_not_unloaded(
@@ -1774,6 +1895,13 @@ OVERTAKEN = {
 }
 
 
+def gone_checkout(home: Path) -> Path:
+    """A LaunchAgents folder holding the gate job of o/r, whose checkout under a main one is gone"""
+    (home / "web" / ".git").mkdir(parents=True)
+    gate_job(home / "LaunchAgents", REPO, home / "web" / "tmp" / "shipmill-gate")
+    return home / "LaunchAgents"
+
+
 def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
     """A row of every FIXED state, each built by the script's own row code, from titles that
     hold MARKER"""
@@ -1813,6 +1941,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         *[r for r in outdated if r.state in ("SHIPMILL_OUTDATED", "PLUGIN_SHADOWING")],
         *ws.gate_app_rows({"prompt": '"/github-issue-triage {repo}"'}),
         *ws.dead_rows("dev.shipmill.gate.o.r", DEAD_AUTH_LOG, None),
+        *ws.checkout_missing_rows(gone_checkout(home), "darwin", 501, lambda label: None),  # #1155
         *ws.chain_no_gate_rows(
             {"rows": [{"ref": "x/b#2", "gate": "NO_GATE", "waits_on": [], "waited_on_by": ["o/r#3"]}]}
         ),
@@ -1836,6 +1965,8 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         ws.upstream_unreadable_row(REPO, CHECKOUT, f"error: {TITLE}"),
         ws.pypi_wait_row("0.66.0", "the release plan"),
         ws.deployments_forbidden_row(REPO, ["staging", "production"]),  # #973
+        # spec 056: the land window's queue head, its title MARKER's
+        *ws.land_rows(ws.Queue(ws.Window("UTC", True, None, NOW), NOW, {3: ws.Queued(3, TITLE, NOW)}), [3], REPO),
         *ws.direction_rows(REPO, "main", False, list, lambda: [], list, lambda n: [], None, lambda n: None).rows,
     ]
     found: dict[str, list[Any]] = {}
@@ -1874,6 +2005,10 @@ FIXES = {
     "PLUGIN_SHADOWING": ["uvx shipmill=={version} plugin-clean"],
     "GATE_NO_APP": ["run shipmill-setup's step 3 (app-create), then set app_id in [agents]"],
     "GATE_SESSIONS_DEAD": ["claude auth login"],
+    "GATE_CHECKOUT_MISSING": [  # #1155
+        "git -C {home}/web worktree prune && git -C {home}/web worktree add --detach {home}/web/tmp/shipmill-gate"
+        " origin/HEAD && launchctl kickstart gui/501/dev.shipmill.gate.o.r"
+    ],
     "CHAIN_NO_GATE": ["set up a gate on x/b (/shipmill:shipmill-setup x/b), or do x/b#2 by hand"],
     "CHAIN_CYCLE": ["answer which link is wrong and remove it: uv run --no-project python {chains} show o/r#3"],
     "CHAIN_UNREADABLE": ["see why: uv run --no-project python {chains} show --trusted-only x/b#2"],
@@ -1893,6 +2028,7 @@ FIXES = {
     "UPSTREAM_UNREADABLE": ["see why: uv run --directory /work/r --no-project python {upstream} o/r"],
     "VETOED": ["take up each veto (needs-decision.md): /shipmill:github-issue-triage o/r"],
     "AGENT_DRAFT": ["mark each ready, then land it: /shipmill:github-pr-triage o/r"],  # #914
+    "LAND_DUE": ["/shipmill:github-pr-triage o/r"],  # spec 056
     "PYPI_WAIT": [
         "check the publish.yml run for v0.66.0: gh run list --repo shipmill/shipmill --workflow publish.yml;"
         " if none passed, publish it: gh workflow run publish.yml --repo shipmill/shipmill -f tag=v0.66.0"
@@ -1945,7 +2081,7 @@ def test_s011_3_each_fixed_state_carries_the_fix_behaviour_names(ws: ModuleType,
     found = fixed_rows(ws, tmp_path)
     copy = tmp_path / ".agents" / "skills" / "github-pr-triage"
     assert [r.fix for r in found[state]] == [
-        f.format(copy=copy, chains=ws.CHAINS, upstream=ws.UPSTREAM_STATE, version=ws.plugin_version())
+        f.format(copy=copy, chains=ws.CHAINS, upstream=ws.UPSTREAM_STATE, version=ws.plugin_version(), home=tmp_path)
         for f in FIXES[state]
     ]
 
@@ -2118,7 +2254,9 @@ def test_s011_8_every_fix_names_its_target_and_quotes_no_title(ws: ModuleType, t
         for flag in re.findall(r"\bgit (\S+)", row.fix):
             git_fixes += 1
             assert flag == "-C", row.fix
-    assert gh_fixes >= 8 and git_fixes == 0  # spec 044: the worktrees fix, the one git fix, moved to shipmill factory
+    # spec 044: the worktrees fix moved to shipmill factory; #1155's GATE_CHECKOUT_MISSING adds the
+    # gate's checkout back with two, each with -C
+    assert gh_fixes >= 8 and git_fixes == 2
 
 
 def test_s011_8_a_proposals_fix_never_copies_a_shell_word_from_its_body(ws: ModuleType) -> None:
