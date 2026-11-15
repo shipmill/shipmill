@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.140.0] - 2026-11-15
+
+### Removed
+
+- github-pr-triage: `pr_gate.py --maintainer-accepted` exits 2 before any GitHub read, saying the maintainer's acceptance is read from their answer on GitHub; an `ask` zone, a Protected areas glob, or a direction edit is lifted only by an accepting answer to the needs-decision question that covers the judged head, and a `never` zone stays MAINTAINER_ONLY (#1095)
+
 ## [0.139.0] - 2026-11-15
 
 ### Added
@@ -2578,7 +2584,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.139.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.140.0...HEAD
+[0.140.0]: https://github.com/shipmill/shipmill/compare/v0.139.0...v0.140.0
 [0.139.0]: https://github.com/shipmill/shipmill/compare/v0.138.0...v0.139.0
 [0.138.0]: https://github.com/shipmill/shipmill/compare/v0.137.0...v0.138.0
 [0.137.0]: https://github.com/shipmill/shipmill/compare/v0.136.0...v0.137.0
