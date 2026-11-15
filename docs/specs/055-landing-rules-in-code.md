@@ -1,6 +1,6 @@
 # S-055: Landing rules are held by code: the merge runs the gate, reads the answer, and needs a review and a plan
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -228,3 +228,25 @@ it opens the pull request with.
 - shipmill/shipmill#1150: S-055-19
 
 ## Verification
+
+Ran the S-055 tests on `main` at 4c0fda22 (`pytest -k s055` over tests/test_merge_gate.py, tests/test_pr_gate.py, tests/test_review_record.py, tests/test_pr_create_plan.py, tests/test_retro.py): 290 passed.
+
+- S-055-1: ran tests/test_merge_gate.py's S-055-1 tests: every spelling of a merge as the App runs the wheel's `pr_gate.py`, and a verdict other than READY exits 2 printing `is refused` and the gate's lines without running gh, holds
+- S-055-2: ran tests/test_merge_gate.py's S-055-2 tests: an unpinned merge runs pinned to the READY head, a pin to that head runs as given, and a pin to another head exits 2 naming both, holds
+- S-055-3: ran tests/test_merge_gate.py's S-055-3 tests: a gate that exits 2, can't start, or prints no verdict line refuses the merge, holds
+- S-055-4: ran tests/test_pr_gate.py's `test_s055_4_*` (#1184): `--maintainer-accepted` exits 2 before any GitHub read, saying the acceptance is read from the answer on GitHub, holds
+- S-055-5: ran tests/test_pr_gate.py's S-055-5 tests: an accepting answer to a question naming the judged head on its `shipmill:head` line lifts the ask; a date, a `beforeCommit`, and a 7-hex prefix don't, and a question without the line keeps NEEDS_DECISION with its line, holds
+- S-055-6: ran tests/test_pr_gate.py's S-055-6 tests: a rebase with the same own change is covered, a changed one reads `answered at <sha7>, and the change differs since`, holds
+- S-055-7: ran tests/test_pr_gate.py's S-055-7 tests: an answer on the closed or `Part of` issue counts for the App's or a trusted opener's PR, and an outsider's PR is answered on its own question only, holds
+- S-055-8: ran tests/test_pr_gate.py's S-055-8 tests: no answer, an untrusted or marked reply, another option, own words, extra lines, and a superseded question keep NEEDS_DECISION, holds
+- S-055-9: ran tests/test_pr_gate.py's S-055-9 tests: the App's `Decision by` relay, bare or in a code span, counts, holds
+- S-055-10: ran tests/test_pr_gate.py's S-055-10 tests: a spec PR's heads compare with `specs.py same-approval`, exit 0 covers and 1 or 2 doesn't, holds
+- S-055-11: ran tests/test_pr_gate.py's S-055-11 tests: a `never` zone reads MAINTAINER_ONLY, exit 7, with an accepting answer, holds
+- S-055-12: ran tests/test_pr_gate.py's S-055-12 tests: a body with the agent marker on its own line is an agent's PR whoever opened it, holds
+- S-055-13: ran tests/test_pr_gate.py's S-055-13 tests: an agent's ready code PR with no record reads UNREVIEWED, exit 9, naming the head, holds
+- S-055-14: ran tests/test_pr_gate.py's S-055-14 tests: the App's merge record or a trusted APPROVED review at the head or a same-change head reads READY, and a newer refuse record keeps it UNREVIEWED, holds
+- S-055-15: ran tests/test_pr_gate.py's S-055-15 tests: a docs-only PR and a person's PR read READY with no record, and `skills/` counts as code, holds
+- S-055-16: ran tests/test_review_record.py's S-055-16 tests: `shipmill review record` posts a COMMENT review at the head with the verdict's marker, and a short head, a moved head, or no App writes nothing, holds; this pass recorded #1184's review with it
+- S-055-17: ran tests/test_pr_create_plan.py's S-055-17 tests: `shipmill gh pr create` without a valid plan exits 2 printing each problem, and a valid plan, a `Spec for #N` body, and a repo without a direction run gh, holds
+- S-055-18: ran tests/test_review_record.py's S-055-18 tests: the landing skills name no `--maintainer-accepted`, landing records the reviewed head, and the implementer brief opens the PR with its plan, holds
+- S-055-19: ran tests/test_pr_gate.py's and tests/test_retro.py's S-055-19 tests: the option named by number and text takes it, for the gate and the retro alike, holds
