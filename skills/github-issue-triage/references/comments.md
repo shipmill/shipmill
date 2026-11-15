@@ -109,9 +109,13 @@ The plan:
 - {design point}
 
 {Answers to the issue's open questions, "unless someone objects".}
+
+Revisit on: `{path}`, `{path/**}`
 ```
 
 Then add the label: `gh issue edit <n> --add-label postponed`.
+
+The `Revisit on:` line names the paths the decision depends on, each in backticks, separated by commas, relative to the repo's root: `**` matches any run of characters, `/` included, `*` any run without `/`, and `?` one character other than `/` (spec 061). `triage_state.py` then reads REVISIT only when a stable release changed a file one of them matches, and POSTPONED, `waits on <paths>`, otherwise; without the line, REVISIT comes on every stable release. Leave the line out when no path decides it. When the issue waits on another issue or pull request rather than on files, put a `Depends on #N` line in the issue's body instead ([Chains](../SKILL.md#chains)): it reads BLOCKED until that one closes and UNBLOCKED then, so the line adds nothing. Revisiting a postponed issue whose comment has no `Revisit on:` line, add one when you postpone it again.
 
 ### Postpone (no goal)
 
@@ -121,7 +125,11 @@ A feature, new behaviour the maintainer already wants, that serves no goal of `d
 Triage: **postponed**: it serves no goal of the direction. {What it asks for, in one sentence}: new behaviour, and none of the goals in `docs/product.md` ({G-n: its words, for the nearest one}) covers it.
 
 It would need a goal such as "{the outcome it would serve}". The maintainer adds that goal to the direction, and this is decided again, or lets it wait.
+
+Revisit on: `docs/product.md`, `docs/product/**`
 ```
+
+A goal added to the direction is what it waits on, so the `Revisit on:` line names the direction's files: it reads REVISIT once a stable release changed one of them.
 
 ## Won't fix (non-goal)
 

@@ -321,6 +321,17 @@ Agents (all reported, never an action by itself):
                   in a row and the session log's last line. A person clears it (`claude auth
                   login`, or reading the session's log or `claude logs <id>`), so an action
                   but never an agent's
+  GATE_IDLE       one row per hand the gate marked idle (spec 061): an issue or pull request
+                  its last session wrote nothing on, which the gate hands to no session until
+                  it changes on GitHub. Read from handed.json in the state directory of the
+                  gate's folder (launchd's working directory, else
+                  ~/.local/share/shipmill/gates/<owner>/<name>, else tmp/shipmill-gate beside
+                  the main checkout, else the checkout), <git rev-parse --git-common-dir>/
+                  shipmill; oldest first. Subject the hand's `<kind> #<N>`; detail `idle since
+                  <YYYY-MM-DD HH:MM> UTC (<age> ago): session <id> wrote nothing on it; waits
+                  for a change`. No file, or no idle hand, no row; a handed.json that isn't the
+                  JSON object of hands the gate writes exits 2. In the full report and
+                  --no-host, never --tier, --sweep, or --host. Reported, never an action
   GATE_CHECKOUT_MISSING  on a Mac, one row per gate job on the host, this repo's or another's
                   (each dev.shipmill.gate.*.plist in ~/Library/LaunchAgents, no other plist),
                   whose WorkingDirectory is not a folder: launchd exits 78 before shipmill
@@ -447,7 +458,7 @@ counts every one on the host, as `shipmill factory` reads it (#764). --no-host i
 report without those two sections, which
 `shipmill status` reads with --host, each on its own, so a failing `claude` or marketplace
 read is one factory check's error rather than the report's end (#745); the gate's launchd
-rows (LOOP, GATE_SESSIONS_DEAD) stay in it; GATE_CHECKOUT_MISSING, a host-wide row, is the
+rows (LOOP, GATE_SESSIONS_DEAD) and GATE_IDLE stay in it; GATE_CHECKOUT_MISSING, a host-wide row, is the
 sessions section's.
 
 --tier N and --sweep are the reads shipmill gate's walk makes (spec 046), and print no host
@@ -4291,6 +4302,99 @@ def dead_rows(label: str, log: str | None, log_path: str | None) -> list[Row]:
     return [Row("GATE_SESSIONS_DEAD", label, line[len(SESSION_DEAD) :], fix)]
 
 
+HANDED = "handed.json"  # shipmill's walk.HANDED: the gate's hands, in its state directory (spec 046, 061)
+# shipmill's walk.HAND_KEYS, PULL_KEYS, and SUBJECT_KEY: a hand's fields, and a subject's key `<kind> #<N>`
+HAND_KEYS = frozenset({"session", "at"})
+PULL_KEYS = frozenset({"head", "rollup"})
+SUBJECT_KEY = re.compile(r"[A-Z][A-Z_]*(?: [A-Z][A-Z_]*)? #\d+")
+
+
+def gate_state(folder: Path) -> Path | None:
+    """The gate's state directory for its folder, `<git rev-parse --git-common-dir>/shipmill`
+    as shipmill's gate.state_dir reads it; None for a missing folder or one outside git, where
+    no gate keeps one"""
+    if not folder.is_dir():
+        return None
+    cmd = ["git", "-C", str(folder), "rev-parse", "--path-format=absolute", "--git-common-dir"]
+    # LC_ALL=C: the "not a git repository" check reads git's message, which a localized git translates
+    env = {**os.environ, "LC_ALL": "C"}
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    if proc.returncode != 0 and "not a git repository" in proc.stderr:
+        return None
+    if proc.returncode != 0:
+        raise Refused(f"error: git rev-parse in {folder}: {proc.stderr.strip()}")
+    return Path(proc.stdout.strip()) / "shipmill"
+
+
+def idle_hand(path: Path, key: object, entry: object) -> tuple[str, dt.datetime] | None:
+    """A hand of handed.json, checked as shipmill's walk.hand_of reads it: its session and at
+    when it is marked idle, None when it isn't; anything else the gate never writes is refused"""
+    where = f"error: {path}: {key}"
+    if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | {"idle"}:
+        raise Refused(f"{where}: expected session and at, head and rollup or neither, and idle or not")
+    session, at, idle = entry["session"], entry["at"], entry.get("idle", False)
+    if not isinstance(session, str) or not session:
+        raise Refused(f"{where}: session must be a non-empty string")
+    if set(entry) & PULL_KEYS:
+        if not set(entry) >= PULL_KEYS or not isinstance(entry["head"], str) or not entry["head"]:
+            raise Refused(f"{where}: a pull request's hand needs a head SHA and its rollup")
+        if entry["rollup"] is not None and not isinstance(entry["rollup"], str):
+            raise Refused(f"{where}: rollup must be a string or null")
+    if not isinstance(idle, bool):
+        raise Refused(f"{where}: idle must be true or false")
+    try:
+        when = dt.datetime.fromisoformat(at) if isinstance(at, str) else None
+    except ValueError:
+        when = None
+    if when is None or when.tzinfo is None:
+        raise Refused(f"{where}: at must be an ISO 8601 time with its offset")
+    if not idle:
+        return None
+    if not isinstance(key, str) or SUBJECT_KEY.fullmatch(key) is None:
+        raise Refused(f"{where}: only a subject's hand, `<kind> #<N>`, is idle")
+    return session, when.astimezone(dt.timezone.utc)  # noqa: UP017 (dt.UTC needs 3.11)
+
+
+def idle_rows(path: Path, now: dt.datetime) -> list[Row]:
+    """Spec 061: one GATE_IDLE row per hand in the gate's handed.json marked idle, oldest first;
+    none without the file. Reported, never an action: the subject waits on someone or
+    something outside the gate. A file that isn't the JSON object of hands the gate writes is
+    refused, naming its path"""
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise Refused(f"error: {path}: not JSON: {exc}") from None
+    if not isinstance(data, dict):
+        raise Refused(f"error: {path}: expected a JSON object of hands, as shipmill gate writes it")
+    idle = []
+    for key, entry in data.items():
+        hand = idle_hand(path, key, entry)
+        if hand is not None:
+            idle.append((hand[1], key, hand[0]))
+    return [
+        Row(
+            "GATE_IDLE",
+            key,
+            f"idle since {at:%Y-%m-%d %H:%M} UTC ({ago(now - at)} ago): session {session} wrote nothing on it;"
+            " waits for a change",
+        )
+        for at, key, session in sorted(idle)
+    ]
+
+
+def gate_idle_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
+    """The GATE_IDLE rows of the gate's folder (gate_folder: launchd's working directory, else
+    where shipmill-setup puts it, else tmp/shipmill-gate beside the main checkout, else the
+    checkout), read from its state directory's handed.json"""
+    plist = gate_plist(repo)
+    workdir = plist.get("WorkingDirectory") if plist else None
+    folder = gate_folder(repo_dir, workdir if isinstance(workdir, str) else None, gate_home(repo, Path.home()))
+    state = gate_state(folder)
+    return [] if state is None else idle_rows(state / HANDED, now)
+
+
 GATE_PREFIX = "dev.shipmill.gate."  # shipmill's launchd.LABEL_PREFIX: each gate job's label and plist name
 GATE_OPTIONS = ("--repo", "--from")  # shipmill's launchd.OPTIONS: options before gate whose value could read "gate"
 DEFAULT_EVERY = 15  # shipmill's launchd.DEFAULT_EVERY: the minutes `shipmill launchd` runs the gate every
@@ -5577,9 +5681,9 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         return merged_waits(rows)
     rows += active_rows(fetch_active(args.repo), now, lambda r: fetch_jobs(args.repo, r.id))
     if args.no_host:  # shipmill status reads the host sections with --host, each on its own (#745)
-        rows += launchd_rows(args.repo, now)
-    else:
-        rows += agent_rows(args.repo, repo_dir, now)
+        rows += [*launchd_rows(args.repo, now), *gate_idle_rows(args.repo, repo_dir, now)]
+    else:  # GATE_IDLE beside LOOP (spec 061), and in no --host section
+        rows += [*agent_rows(args.repo, repo_dir, now), *gate_idle_rows(args.repo, repo_dir, now)]
         rows += shipmill_rows(args.repo, repo_dir, host_wide=False)
         rows += shadow_rows(Path.home(), skill_names())
     return merged_waits(rows)

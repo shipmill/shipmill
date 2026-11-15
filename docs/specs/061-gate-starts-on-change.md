@@ -1,6 +1,6 @@
 # S-061: The gate starts a session only when something changed that it can act on
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -292,5 +292,30 @@ up its next REVISIT adds the line when it postpones again.
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+Checked against the default branch with #1161, #1162, #1163, and #1167 on it: `uv run pytest
+-q tests/test_gate_hands.py tests/test_revisit_on.py tests/test_watch_tiers.py
+tests/test_status_autonomy.py tests/test_watch_gate_idle.py` passes, and each criterion's tests
+are below; pass for every one.
+
+- S-061-1: verified, `test_s061_1_a_launch_of_tier_3_4_or_6_records_one_hand_per_subject`, `test_s061_1_a_launch_of_tier_1_records_its_fingerprint_as_before`, `test_s061_1_subjects_are_digits_the_gate_parsed`, `test_s061_1_handed_json_round_trips_and_refuses_a_malformed_hand` (`tests/test_gate_hands.py`)
+- S-061-2: verified, `test_s061_2_an_item_is_cut_to_its_subjects_not_taken`, `test_s061_2_an_item_with_no_subject_taken_is_handed_whole_and_named_as_before`
+- S-061-3: verified, `test_s061_3_an_item_whose_every_subject_is_taken_is_no_item`
+- S-061-4: verified, `test_s061_4_an_issue_unchanged_since_its_hand_is_idle`, `test_s061_4_a_subject_whose_session_ended_dead_is_never_idle`
+- S-061-5: verified, `test_s061_5_a_pull_request_unchanged_since_its_hand_is_idle`, `test_s061_5_a_pull_request_that_changed_is_handed_again_and_its_hand_replaced`
+- S-061-6: verified, `test_s061_6_an_issue_updated_since_its_hand_is_handed_again`, `test_s061_6_an_issue_whose_updated_at_github_doesnt_give_reads_changed`
+- S-061-7: verified, `test_s061_7_a_walk_reads_issue_updated_at_once_and_none_without_a_subject_past_retry`, `test_s061_7_issue_updated_at_is_one_graphql_query_per_100`
+- S-061-8: verified, `test_s061_8_an_expired_hand_walks_once_then_its_idle_mark_is_quiet`, `test_s061_8_an_idle_subject_updated_on_github_is_handed_again`, `test_s061_8_an_idle_hand_a_launch_above_it_didnt_meet_loses_its_mark_when_it_changed`
+- S-061-9: verified, `test_s061_9_an_idle_hand_drops_when_a_full_walk_no_longer_finds_its_subject`, `test_s061_9_an_idle_hand_drops_when_its_session_ended_dead`
+- S-061-10: verified, `test_s061_10_an_unchanged_tick_whose_first_subject_is_idle_says_it_waits_for_a_change`
+- S-061-11: verified, `test_s061_11_tier_3_parks_a_ready_pull_request_to_merge_under_propose_alone`, `test_s061_11_the_full_report_parks_a_ready_pull_request_to_merge_under_propose_alone` (`tests/test_watch_tiers.py`), `test_s061_11_status_reads_watch_states_to_merge_part_as_before` (`tests/test_status_autonomy.py`)
+- S-061-12: verified, `test_s061_12_a_hand_off_is_read_again_and_started_for_what_is_still_due`
+- S-061-13: verified, `test_s061_13_a_hand_off_no_longer_due_starts_nothing_and_writes_no_cursor`
+- S-061-14: verified, `test_s061_14_a_postpone_whose_paths_did_not_change_waits`, `test_s061_14_a_postpone_whose_path_changed_is_revisited_naming_it`, `test_s061_14_the_script_reads_the_compare_for_a_postponed_issue` and the rest of `tests/test_revisit_on.py`'s S-061-14 tests
+- S-061-15: verified, `test_s061_15_the_compare_is_read_once_per_base_tag`, `test_s061_15_a_full_page_of_files_reads_the_next_page`, `test_s061_15_a_compare_at_githubs_cap_of_300_files_reads_revisit`, `test_s061_15_no_stable_tag_before_the_comment_reads_revisit`
+- S-061-16: verified, `test_s061_16_without_the_line_it_reads_as_before`
+- S-061-17: verified, `test_s061_17_an_unreadable_line_reads_revisit_quoting_it`, `test_s061_17_the_unreadable_line_is_cut_to_100_characters`
+- S-061-18: verified, `test_s061_18_a_path_matches_by_its_own_glob_rules`
+- S-061-19: verified, `test_s061_19_the_docs_say_what_spec_061s_docs_list_says` (`tests/test_watch_gate_idle.py`), which reads each file of the Docs list and `watch_state.py`'s help text
+- S-061-20: verified, `test_s061_20_the_idle_hands_are_two_rows_oldest_first`, `test_s061_20_the_rows_read_handed_json_as_the_gate_writes_it` (a `handed.json` written by the gate's own `Handed.save`, at an offset other than UTC), `test_s061_20_the_full_report_gives_the_two_gate_idle_rows` (the full report as a subprocess), `test_s061_20_the_hands_are_read_from_the_gate_folders_state_directory`
+- S-061-21: verified, `test_s061_21_a_gate_idle_row_is_no_agents_and_changes_no_exit_code`, `test_s061_21_tier_sweep_and_host_reads_print_no_gate_idle_row`, `test_s061_21_no_handed_json_or_no_idle_hand_gives_no_row`
+- S-061-22: verified, `test_s061_22_a_malformed_handed_json_is_refused_naming_its_path`, `test_s061_22_the_watch_exits_2_on_a_malformed_handed_json`

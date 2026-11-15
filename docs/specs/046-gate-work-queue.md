@@ -187,6 +187,7 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
   default head, a new release tag, a new open incident, a finished release or operate run, a
   handed item past `retry_hours`, and a dead last session counts as a change and makes the
   tick walk
+  - Amended by spec 061 (#1161): the gate hands an item of tier 3, 4, or 6 by its subjects, one by one, and keeps an idle subject's hand past `retry_hours`; a hand past `retry_hours` is a change on the first tick after it runs out, and once a walk marks it idle it is no change on later ticks, since a change to its subject shows in the change check itself (S-061-8)
 - S-046-3: the change check is one GraphQL query, paged only past 100 open issues or pull
   requests, and one `gh api .../actions/workflows/<file>/runs` read per watched workflow,
   each with `per_page` of at most 10, and no repo-wide `actions/runs` read (revised in #762,
@@ -214,6 +215,7 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
   is read in tier 6
 - S-046-13: a LAUNCH's prompt names exactly one item, the walk's first not handed within
   `retry_hours` with the same fingerprint, with its tier, and `handed.json` records it
+  - Amended by spec 061 (#1161): an item of tier 3, 4, or 6 is handed cut to its subjects not taken, one hand per subject in `handed.json` keyed `<kind> #<N>`, and an idle subject's hand stays past `retry_hours` until its subject changes (S-061-1, S-061-2, S-061-4)
 - S-046-14: with tier 1's only item handed within `retry_hours` and an item in tier 2, the tick
   launches tier 2's; with every item handed, it reads UNCHANGED naming the first
 - S-046-15: a dead session's item is handed again on the next tick, and after `DEAD_STREAK`
