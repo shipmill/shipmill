@@ -105,6 +105,10 @@ class Forbidden(ReleaseError):
     """GitHub refused the call for the token's permissions (HTTP 403, not a rate limit)"""
 
 
+class Missing(ReleaseError):
+    """GitHub has no such record, or no longer has it (HTTP 404 or 410)"""
+
+
 @dataclass(frozen=True, slots=True)
 class FileChange:
     """A file a pull request changes, as GitHub's pull request files list it: its unified diff
@@ -621,6 +625,8 @@ class GhCli:
             # gh prints "<GitHub's message> (HTTP 403)"; a 403 for a rate limit isn't a permission
             if re.search(r"\bHTTP 403\b", error) and "rate limit" not in error.lower():
                 raise Forbidden(message)
+            if re.search(r"\bHTTP (?:404|410)\b", error):
+                raise Missing(message)
             raise ReleaseError(message)
         return proc.stdout
 
@@ -842,7 +848,7 @@ class GhCli:
 
     def spec_issue(self, number: int) -> SpecIssue:
         """The issue a spec pull request's `Spec for #N` line names: its state, labels, author,
-        and body (spec 067); a GET"""
+        and body (spec 067); a GET. Missing when GitHub has no such issue"""
         return spec_issue_of(self._api("-X", "GET", f"repos/{{owner}}/{{repo}}/issues/{number}"), number)
 
     def pull_of(self, selector: str | None) -> str:

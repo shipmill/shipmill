@@ -43,7 +43,7 @@ from shipmill import agent_marker, cli_command
 from shipmill.config import CONFIG_PATH, loads
 from shipmill.decide import Candidate, Level, Part, Zone, candidates
 from shipmill.errors import ReleaseError
-from shipmill.github import FileChange, PullChange, RunAttempt, RunJob, SpecIssue
+from shipmill.github import FileChange, Missing, PullChange, RunAttempt, RunJob, SpecIssue
 from shipmill.gitrepo import Git
 from shipmill.policy import Policy
 from shipmill.review import REVIEW, Protected
@@ -456,7 +456,8 @@ def spec_refs(body: str) -> list[tuple[str | None, int]]:
 def spec_work(pulls: Pulls, change: PullChange) -> SpecWork:
     """The pull request's spec work is accepted when every issue its body's `Spec for` lines
     name is an issue of its repository and accepted; the issues are read in order, up to the
-    first that isn't, so a failure to read one stops it rather than deciding"""
+    first that isn't, so a failure to read one stops it rather than deciding; a number GitHub
+    has no issue for (HTTP 404 or 410) is not accepted"""
     numbers: list[int] = []
     for repo, number in spec_refs(change.body):
         if repo is not None and (change.repo is None or repo.lower() != change.repo.lower()):
@@ -467,7 +468,11 @@ def spec_work(pulls: Pulls, change: PullChange) -> SpecWork:
         return SpecWork(False, None)
     notes: list[str] = []
     for number in numbers:
-        accepted, note = accepted_issue(pulls.spec_issue(number))
+        try:
+            issue = pulls.spec_issue(number)
+        except Missing:  # a body anyone writes names it: not accepted, so it asks (S-067-5)
+            return SpecWork(False, f"#{number} is no issue GitHub has")
+        accepted, note = accepted_issue(issue)
         if not accepted:
             return SpecWork(False, f"#{number} {note}")
         notes.append(f"#{number} {note}")

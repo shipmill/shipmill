@@ -582,6 +582,33 @@ def test_s067_4_gh_reads_a_spec_for_issue_with_its_state_labels_author_and_body(
     assert (tmp_path / "args").read_text(encoding="utf-8").splitlines() == ["api -X GET repos/{owner}/{repo}/issues/12"]
 
 
+@pytest.mark.parametrize("status", [404, 410])
+def test_s067_5_a_spec_for_issue_github_has_not_stays_scope_rather_than_exiting_2(
+    repo: Repo, capsys: pytest.CaptureFixture[str], tmp_path: Path, status: int
+) -> None:
+    """A body anyone can write names a number GitHub has no issue for (never filed, or deleted):
+    the work is not accepted, so it asks in scope; exiting 2 would stop pr_gate for every PR"""
+    commit(repo, POLICY + '\n[decisions]\naccepted-spec = "notify"\n')
+    script = tmp_path / "gh"
+    script.write_text(f'#!/bin/sh\necho "gh: Not Found (HTTP {status})" >&2\nexit 1\n', encoding="utf-8")
+    script.chmod(0o755)
+    cli = GhCli(tmp_path, gh=str(script))
+
+    @dataclass
+    class Unfiled(FakePulls):
+        def spec_issue(self, number: int) -> SpecIssue:
+            self.issue_reads.append(number)
+            return cli.spec_issue(number)
+
+    texts = {(BASE, SPEC): spec_text("draft"), (HEAD, SPEC): spec_text("approved")}
+    pulls = Unfiled((APPROVES,), texts, body="Spec for #12\nSpec for #13")
+    found = run(repo, capsys, "classify", "--pr", "8", pulls=pulls)
+    assert zones_of(found) == {"scope": "ask"}
+    reason = f"{SPEC}'s status line becomes approved; its work is not accepted: #12 is no issue GitHub has"
+    assert found["zones"][0]["reason"] == reason
+    assert pulls.issue_reads == [12]
+
+
 def test_s067_5_a_field_gh_gives_no_readable_value_for_reads_as_none() -> None:
     assert spec_issue_of({"pull_request": {}, "user": None, "labels": [{"color": "x"}]}, 14) == SpecIssue(
         14, None, None, None, None, None, None, True
