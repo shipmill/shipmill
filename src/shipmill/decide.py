@@ -68,6 +68,7 @@ class Zone(StrEnum):
     CONTRACT_CHANGE = "contract-change"
     CONTRACT_ADDITION = "contract-addition"
     SECURITY = "security"
+    DEPLOY_STEP = "deploy-step"
     PROTECTED = "protected"
     INTERPRETATION = "interpretation"
     TRIAGE_VERDICT = "triage-verdict"

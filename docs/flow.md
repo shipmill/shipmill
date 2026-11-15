@@ -93,6 +93,7 @@ Every decision an agent meets falls in a **zone**, and each zone has one **level
 | `contract-change` | changing or removing a command, flag, exit code, format, default, limit, public API, or stored state | `ask` | none |
 | `contract-addition` | adding one of those while every existing use behaves as before; a new runtime dependency | `notify` | none |
 | `security` | `.github/**`, secrets, permissions, the delivery hooks' rules, the gate's allowlist | `ask` | `notify` |
+| `deploy-step` | a change to a deploy workflow's job that no run named on the `Proof:` line ran (spec 063) | `ask` | none |
 | `protected` | a file a `REVIEW.md` Protected areas glob covers | `ask` | none |
 | `interpretation` | choosing between readings of a spec, a `D-n`, or an issue that all meet it | `notify` | none |
 | `triage-verdict` | won't fix, duplicate, postpone, or close as done | `notify` | none |

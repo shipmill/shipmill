@@ -15,6 +15,10 @@ request's (--pr) by its files and their patches too, read through gh:
   the merge base, both read whole
 - contract-change: an added line under a heading [bump] major lists, in the changelog or a
   changelog fragment
+- deploy-step (spec 063): a changed job of a deploy workflow, one an [environments] table at
+  the base names or with a job holding `environment:` at the base or the head, that no run a
+  Proof: line of the pull request's body names ran at the head's content of the file; given
+  as paths, each deploy workflow at the ref
 
 A path that puts direction, security, or protected in takes the level of the strictest of that
 zone's parts ([decisions.paths.<zone>] at the base, spec 057) whose glob matches it, else the
@@ -25,7 +29,7 @@ import fnmatch
 import re
 import tomllib
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any, Protocol
@@ -34,11 +38,12 @@ from shipmill import cli_command
 from shipmill.config import CONFIG_PATH, loads
 from shipmill.decide import Candidate, Level, Part, Zone, candidates
 from shipmill.errors import ReleaseError
-from shipmill.github import FileChange, PullChange
+from shipmill.github import FileChange, PullChange, RunAttempt, RunJob
 from shipmill.gitrepo import Git
 from shipmill.policy import Policy
 from shipmill.review import REVIEW, Protected
 from shipmill.review import parse as parse_review
+from shipmill.workflows import WORKFLOWS_DIR, Job, has_environment, is_workflow, jobs
 
 DIRECTION = "docs/product.md"
 DIRECTION_DIR = "docs/product/"
@@ -51,17 +56,33 @@ DEFAULT_REF = "origin/HEAD"
 FRAGMENTS_README = "README.md"
 
 _HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_SIDES = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")  # pr_gate.py's
+_PROOF = re.compile(r"^\s*(?:[-*]\s+)?Proof:(.*)$")  # pr_gate.py's plan field, after an optional bullet
+_RUN_URL = re.compile(
+    r"https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/actions/runs/(?P<run>\d+)"
+    r"(?:/attempts/(?P<attempt>\d+)|/job/\d+)?/?(?![\w/])"
+)
+NO_BASE = ("added", "copied")  # statuses with no file at the base
+EVERY_JOB = ("added", "renamed", "copied")  # statuses whose every job at the head counts as changed
 _TITLE = re.compile(r"^# S-\d{3,}: \S")  # specs.py's TITLE and STATUS
 _STATUS = re.compile(r"^status: (\S+)$")
 APPROVED = "approved"
 
 
 class Pulls(Protocol):
-    """What classify reads of a pull request; GhCli is one, tests pass a fake"""
+    """What classify reads of a pull request, and of the runs its Proof: lines name; every read
+    is a GET (spec 063). GhCli is one, tests pass a fake"""
 
     def pull_change(self, number: int) -> PullChange: ...
 
     def text_at(self, sha: str, path: str) -> str: ...
+
+    def run_attempt(self, run: int, attempt: int | None) -> RunAttempt: ...
+
+    def attempt_jobs(self, run: int, attempt: int) -> tuple[RunJob, ...]: ...
+
+    def blob_at(self, sha: str, path: str) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,12 +196,13 @@ def policy_at(git: Git, ref: str) -> Policy:
 
 @dataclass(frozen=True, slots=True)
 class Base:
-    """What the base ref holds: the policy, every REVIEW.md's Protected areas, and the
-    decisions log (None without one)"""
+    """What the base ref holds: the policy, every REVIEW.md's Protected areas, the decisions
+    log (None without one), and the text of each workflow file (spec 063)"""
 
     policy: Policy
     protected: Mapping[str, tuple[Protected, ...]]  # by the REVIEW.md listing them
     log: str | None
+    workflows: Mapping[str, str] = field(default_factory=dict)  # by path
 
     @classmethod
     def read(cls, git: Git, ref: str) -> Base:
@@ -202,10 +224,20 @@ class Base:
             protected[name] = rubric.protected
         tree = set(names)
         log = next((git.show(ref, n) for n in LOGS if n in tree), None)
-        return cls(policy, protected, log)
+        workflows: dict[str, str] = {}
+        for name in filter(is_workflow, names):
+            text = git.show(ref, name)
+            if text is None:
+                raise ReleaseError(f"can't read {name} at {ref}")
+            workflows[name] = text
+        return cls(policy, protected, log, workflows)
 
     def level(self, zone: Zone) -> Level:
         return self.policy.decisions.level(zone)
+
+    def environment_workflow(self, path: str) -> bool:
+        """Whether an [environments.<name>] workflow names the path"""
+        return any(f"{WORKFLOWS_DIR}/{env.workflow}" == path for env in self.policy.environments.values())
 
     def path_level(self, zone: Zone, path: str) -> PathLevel:
         """The path's level in the zone: the strictest of the zone's parts whose glob matches it,
@@ -300,6 +332,9 @@ def classify_paths(base: Base, paths: Iterable[RepoPath]) -> Classification:
     listed = list(dict.fromkeys(str(p) for p in paths))
     for path in listed:
         _by_path(found, path)
+        text = base.workflows.get(path)
+        if is_workflow(path) and (base.environment_workflow(path) or (text is not None and has_environment(text))):
+            found.add(Zone.DEPLOY_STEP, f"{path} is a deploy workflow, and paths alone show no run", path)
         if path == CONFIG:
             found.add(Zone.DECISION_POLICY, f"{CONFIG} changes, and paths alone can't tell whether [decisions] did")
             found.add(Zone.SECURITY, f"{CONFIG} changes, and paths alone can't tell which of its tables did", CONFIG)
@@ -316,6 +351,7 @@ def classify_change(base: Base, pulls: Pulls, change: PullChange) -> Classificat
     number = change.number
     found = _Found(base)
     listed = list(dict.fromkeys(p for f in change.files for p in f.paths))
+    runs = _Runs(pulls, change)
     for file in change.files:
         for path in file.paths:
             _by_path(found, path)
@@ -323,6 +359,8 @@ def classify_change(base: Base, pulls: Pulls, change: PullChange) -> Classificat
             _config(found, pulls, change, file)
         if file.status == "removed":
             continue
+        if is_workflow(file.path):
+            _deploy_step(found, pulls, change, file, runs)
         if _is_spec(file.path) and _becomes_approved(pulls, change, file):
             found.add(Zone.SCOPE, f"{file.path}'s status line becomes approved")
         if _changelog(base.policy, file.path):
@@ -450,3 +488,175 @@ def _heading(lines: Sequence[str], at: int) -> str | None:
         if line.startswith("#"):
             return None
     return None
+
+
+# -- deploy-step (spec 063): a changed deploy job that no named run ran ------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ProofRun:
+    """A GitHub Actions run a Proof: line names by its URL: its repo, its id, and the attempt
+    the URL names (None: the run's latest attempt)"""
+
+    repo: str
+    run: int
+    attempt: int | None
+
+
+def unfenced(text: str) -> list[str]:
+    """The lines of a body outside fenced code, as pr_gate.py reads them"""
+    found: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines():
+        opened = _FENCE.match(line)
+        if fence is not None:
+            if opened is not None and opened.group(1)[0] == fence[0] and len(opened.group(1)) >= len(fence):
+                fence = None
+        elif opened is not None:
+            fence = opened.group(1)
+        else:
+            found.append(line)
+    return found
+
+
+def proof_runs(body: str) -> tuple[ProofRun, ...]:
+    """Each run URL on a Proof: line of the body, outside a code fence, in order, once each"""
+    found: dict[ProofRun, None] = {}
+    for line in unfenced(body):
+        proof = _PROOF.match(line)
+        if proof is None:
+            continue
+        for url in _RUN_URL.finditer(proof.group(1)):
+            attempt = url.group("attempt")
+            found[ProofRun(url.group("repo"), int(url.group("run")), None if attempt is None else int(attempt))] = None
+    return tuple(found)
+
+
+class _Runs:
+    """The runs the pull request's Proof: lines name, each read once, by GETs only"""
+
+    def __init__(self, pulls: Pulls, change: PullChange) -> None:
+        self.pulls = pulls
+        self.change = change
+        self.named = proof_runs(change.body)
+        self._attempts: dict[ProofRun, RunAttempt] = {}
+        self._jobs: dict[tuple[int, int], tuple[RunJob, ...]] = {}
+        self._blobs: dict[tuple[str, str], str] = {}
+
+    @property
+    def repo(self) -> str:
+        if self.change.repo is None:
+            raise ReleaseError(
+                f"#{self.change.number}'s repo is unknown, so the runs its Proof: lines name can't be read"
+            )
+        return self.change.repo
+
+    def attempt(self, proof: ProofRun) -> RunAttempt:
+        if proof not in self._attempts:
+            self._attempts[proof] = self.pulls.run_attempt(proof.run, proof.attempt)
+        return self._attempts[proof]
+
+    def jobs(self, attempt: RunAttempt) -> tuple[RunJob, ...]:
+        key = (attempt.run, attempt.attempt)
+        if key not in self._jobs:
+            self._jobs[key] = self.pulls.attempt_jobs(attempt.run, attempt.attempt)
+        return self._jobs[key]
+
+    def blob(self, sha: str, path: str) -> str:
+        if (sha, path) not in self._blobs:
+            self._blobs[(sha, path)] = self.pulls.blob_at(sha, path)
+        return self._blobs[(sha, path)]
+
+
+def _deploy_step(found: _Found, pulls: Pulls, change: PullChange, file: FileChange, runs: _Runs) -> None:
+    """deploy-step for each changed job of a deploy workflow that no named run covers"""
+    before = None if file.status in NO_BASE else (file.previous or file.path)
+    head = jobs(pulls.text_at(change.head, file.path))
+    base = () if before is None or not is_workflow(before) else jobs(pulls.text_at(change.base, before))
+    named = found.base.environment_workflow(file.path) or (
+        before is not None and found.base.environment_workflow(before)
+    )
+    if not (named or any(j.environment for j in head) or any(j.environment for j in base)):
+        return
+    changed = _changed_jobs(file, base, head)
+    if changed:
+        _cover(found, runs, file.path, changed)
+
+
+def _changed_jobs(file: FileChange, base: Sequence[Job], head: Sequence[Job]) -> list[Job]:
+    """The jobs at the head the file's patch changes (S-063-4): those holding an added line, or
+    whose block at the base holds a removed one; every job for a change outside every job, an
+    added or renamed file, or no patch; none for a job the head no longer has"""
+    if file.status in EVERY_JOB or file.patch is None:
+        return list(head)
+    added, removed = _sides(file.patch)
+    ids: set[str] = set()
+    for lines, side in ((added, head), (removed, base)):
+        for line in lines:
+            job = next((j for j in side if j.holds(line)), None)
+            if job is None:
+                return list(head)
+            ids.add(job.id)
+    return [j for j in head if j.id in ids]
+
+
+def _sides(patch: str) -> tuple[list[int], list[int]]:
+    """The line numbers of the patch's added lines at the head and its removed lines at the base"""
+    added: list[int] = []
+    removed: list[int] = []
+    old = new = 0
+    for text in patch.splitlines():
+        hunk = _SIDES.match(text)
+        if hunk is not None:
+            old, new = int(hunk.group(1)), int(hunk.group(2))
+        elif text.startswith("+"):
+            added.append(new)
+            new += 1
+        elif text.startswith("-"):
+            removed.append(old)
+            old += 1
+        elif not text.startswith("\\"):  # "\ No newline at end of file"
+            old += 1
+            new += 1
+    return added, removed
+
+
+def _ran(job: Job, listed: Sequence[RunJob]) -> bool:
+    """Whether the attempt ran the job and every leg of it succeeded: a job by its display name,
+    a matrix leg `<name> (...)`, or a reusable workflow's job `<name> / ...`"""
+    legs = [j for j in listed if j.name == job.name or j.name.startswith((f"{job.name} (", f"{job.name} / "))]
+    return bool(legs) and all(leg.succeeded for leg in legs)
+
+
+def _cover(found: _Found, runs: _Runs, path: str, changed: Sequence[Job]) -> None:
+    """deploy-step for each changed job no named run covers, then why each named run that
+    doesn't count doesn't: another repo, another workflow, another content, or no successful job"""
+    uncovered = list(changed)
+    missing: dict[str, list[ProofRun]] = {}  # by job id: the runs of this content that didn't run it
+    why: list[str] = []
+    for proof in runs.named:
+        if proof.repo.lower() != runs.repo.lower():
+            why.append(f"run {proof.run} is not in {runs.repo}")
+            continue
+        attempt = runs.attempt(proof)
+        if attempt.path != path:
+            why.append(f"run {proof.run} ran {attempt.path}")
+            continue
+        if runs.blob(attempt.head_sha, path) != runs.blob(runs.change.head, path):
+            why.append(f"run {proof.run} ran another content of {path}")
+            continue
+        listed = runs.jobs(attempt)
+        for job in list(uncovered):
+            if _ran(job, listed):
+                uncovered.remove(job)
+            else:
+                missing.setdefault(job.id, []).append(proof)
+    if not uncovered:
+        return
+    for job in uncovered:
+        found.add(Zone.DEPLOY_STEP, f"{path}: job {job.id} changed and no Proof: run ran it at this content", path)
+    for reason in why:
+        found.add(Zone.DEPLOY_STEP, reason, path)
+    for job in uncovered:
+        for proof in missing.get(job.id, []):
+            found.add(Zone.DEPLOY_STEP, f"run {proof.run} has no successful job {job.name}", path)

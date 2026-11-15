@@ -68,7 +68,7 @@ def test_s057_1_levels_json_lists_the_part_under_its_zone_and_no_paths_elsewhere
         "paths": [{"glob": ".github/workflows/**", "level": "notify", "source": "config"}],
     }
     assert all(r["paths"] == [] for zone, r in rows.items() if zone != "security")
-    assert len(rows) == 21
+    assert len(rows) == 22
 
 
 def test_s057_1_levels_text_prints_a_part_line_under_its_zone(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
@@ -77,8 +77,8 @@ def test_s057_1_levels_text_prints_a_part_line_under_its_zone(repo: Repo, capsys
     out = capsys.readouterr().out.splitlines()
     at = next(i for i, line in enumerate(out) if line.startswith("security "))
     assert out[at + 1].split() == ["part", '".github/workflows/**"', "notify", "config", "[decisions.paths.security]"]
-    assert out[at + 2].startswith("protected ")
-    assert len(out) == 1 + 21 + 1
+    assert out[at + 2].startswith("deploy-step ")  # the next zone, spec 063
+    assert len(out) == 1 + 22 + 1
 
 
 # -- S-057-2: what may stand under paths, and the four levels ---------------------------------

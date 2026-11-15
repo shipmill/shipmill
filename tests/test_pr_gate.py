@@ -1525,6 +1525,28 @@ def test_s030_12_an_ask_zone_needs_a_decision_until_the_maintainer_accepts(tmp_p
     assert ci.stdout.splitlines()[1:] == ["  failed: test (FAILURE)"]
 
 
+DEPLOY_WORKFLOW = ".github/workflows/deploy.yml"
+
+
+def test_s063_8_a_deploy_step_zone_needs_a_decision_until_the_maintainer_accepts(tmp_path: Path, agents: Path) -> None:
+    """The zone and its reason as shipmill's own classify gives them, at the default levels"""
+    text = "on: workflow_dispatch\njobs:\n  deploy:\n    environment: production\n    runs-on: x\n"
+    policy = Policy.parse(loads(POLICY, "base"), "base")
+    found = classify_paths(Base(policy, {}, None, {DEPLOY_WORKFLOW: text}), [RepoPath(DEPLOY_WORKFLOW)])
+    zones: list[dict[str, Any]] = found.record()["zones"]
+    [deploy] = [z for z in zones if z["zone"] == "deploy-step"]
+    assert deploy["level"] == "ask"
+    classify_as(tmp_path, {7: zones})
+    proc = run_gate(tmp_path, agents, {7: pr(files=(DEPLOY_WORKFLOW,))}, "--bot-login", BOT)
+    assert proc.returncode == gate.NEEDS_DECISION == 5, proc.stdout + proc.stderr
+    assert f"  needs-decision: deploy-step: {deploy['reason']}" in proc.stdout.splitlines()
+    accepted = run_gate(
+        tmp_path, agents, {7: pr(files=(DEPLOY_WORKFLOW,))}, "--bot-login", BOT, "--maintainer-accepted"
+    )
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert accepted.stdout.startswith(MAIN_READY)
+
+
 def test_s030_12_a_notify_zone_keeps_the_ci_verdict_and_prints_a_notify_line(tmp_path: Path, agents: Path) -> None:
     classify_as(tmp_path, {7: [SECURITY_ZONE, {"zone": "protected", "level": "act", "reason": "x"}]})
     proc = run_gate(tmp_path, agents, {7: pr(files=(".github/workflows/ci.yml",))}, "--bot-login", BOT)

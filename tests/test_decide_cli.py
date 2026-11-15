@@ -7,11 +7,11 @@ from typing import Any
 
 import pytest
 
-from shipmill.classify import RepoPath
+from shipmill.classify import Pulls, RepoPath
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
-from shipmill.github import FileChange, GhCli, PullChange
+from shipmill.github import FileChange, GhCli, PullChange, RunAttempt, RunJob
 
 from .conftest import POLICY, Repo
 
@@ -59,18 +59,36 @@ REVIEW = """\
 
 @dataclass
 class FakePulls:
-    """A pull request as GhCli.pull_change and text_at read it, with no network"""
+    """A pull request as GhCli.pull_change and text_at read it, and the runs its Proof: lines
+    name as run_attempt, attempt_jobs, and blob_at read them, with no network"""
 
     files: tuple[FileChange, ...] = ()
     texts: dict[tuple[str, str], str] = field(default_factory=dict)
     reads: list[tuple[str, str]] = field(default_factory=list)
+    body: str = ""
+    attempts: dict[tuple[int, int | None], RunAttempt] = field(default_factory=dict)
+    jobs: dict[tuple[int, int], tuple[RunJob, ...]] = field(default_factory=dict)
+    blobs: dict[tuple[str, str], str] = field(default_factory=dict)
+    run_reads: list[tuple[str, object]] = field(default_factory=list)
 
     def pull_change(self, number: int) -> PullChange:
-        return PullChange(number, BASE, HEAD, self.files)
+        return PullChange(number, BASE, HEAD, self.files, (), self.body, "o/demo")
 
     def text_at(self, sha: str, path: str) -> str:
         self.reads.append((sha, path))
         return self.texts[(sha, path)]
+
+    def run_attempt(self, run: int, attempt: int | None) -> RunAttempt:
+        self.run_reads.append(("run", (run, attempt)))
+        return self.attempts[(run, attempt)]
+
+    def attempt_jobs(self, run: int, attempt: int) -> tuple[RunJob, ...]:
+        self.run_reads.append(("jobs", (run, attempt)))
+        return self.jobs[(run, attempt)]
+
+    def blob_at(self, sha: str, path: str) -> str:
+        self.run_reads.append(("blob", (sha, path)))
+        return self.blobs[(sha, path)]
 
 
 def commit(repo: Repo, config: str = POLICY, **files: str) -> None:
@@ -84,7 +102,7 @@ def commit(repo: Repo, config: str = POLICY, **files: str) -> None:
     repo.git.run("remote", "set-head", "origin", "main")
 
 
-def run(repo: Repo, capsys: pytest.CaptureFixture[str], *args: str, pulls: FakePulls | None = None) -> dict[str, Any]:
+def run(repo: Repo, capsys: pytest.CaptureFixture[str], *args: str, pulls: Pulls | None = None) -> dict[str, Any]:
     assert main(["--repo", str(repo.root), "decide", *args, "--json"], pulls=pulls or FakePulls()) == 0
     found: dict[str, Any] = json.loads(capsys.readouterr().out)
     return found
@@ -123,7 +141,7 @@ def test_s030_5_levels_json_names_every_zone_with_its_level_floor_and_source(
     rows = {r["zone"]: r for r in found["zones"]}
     assert list(rows) == [
         "direction", "decision-policy", "scope", "rule-departure", "contract-change", "contract-addition",
-        "security", "protected", "interpretation", "triage-verdict", "implementation", "unknown",
+        "security", "deploy-step", "protected", "interpretation", "triage-verdict", "implementation", "unknown",
         "release", "breaking-release", "deploy", "rollback", "intake", "upgrade", "triage", "fix", "land",
     ]  # fmt: skip
     assert all(set(r) == {"zone", "level", "floor", "source", "paths"} for r in found["zones"])  # S-057-1
@@ -171,7 +189,7 @@ def test_s030_5_levels_text_form(repo: Repo, capsys: pytest.CaptureFixture[str])
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "veto_hours: 24"
     assert out[1].split() == ["direction", "never", "floor", "ask", "default"]
-    assert len(out) == 1 + 21
+    assert len(out) == 1 + 22
     assert out[-1].split() == ["land", "ask", "floor", "none", "autonomy"]
 
 
@@ -466,7 +484,8 @@ def test_s030_8_gh_reads_the_merge_base_the_head_and_every_file_with_its_patch(t
     """GhCli.pull_change and text_at, against a gh that answers from a script"""
     merge_base = "a" * 40
     labels = [{"name": "needs-decision", "color": "d93f0b"}, {"name": "bug"}]
-    pull = json.dumps({"head": {"sha": HEAD}, "base": {"sha": "t" * 40}, "labels": labels})
+    base = {"sha": "t" * 40, "repo": {"full_name": "o/demo"}}
+    pull = json.dumps({"head": {"sha": HEAD}, "base": base, "labels": labels, "body": "- Proof: tests"})
     files = (
         json.dumps(
             {"filename": "docs/specs/031-x.md", "status": "modified", "patch": "@@ -3 +3 @@\n+status: approved"}
@@ -491,6 +510,7 @@ def test_s030_8_gh_reads_the_merge_base_the_head_and_every_file_with_its_patch(t
     change = hub.pull_change(5)
     assert (change.number, change.base, change.head) == (5, merge_base, HEAD)
     assert change.labels == ("needs-decision", "bug")  # S-030-23: read in the same call
+    assert (change.body, change.repo) == ("- Proof: tests", "o/demo")  # spec 063: read in the same call
     assert change.files == (
         FileChange("docs/specs/031-x.md", "modified", "@@ -3 +3 @@\n+status: approved"),
         FileChange("docs/product/goals.md", "renamed", None, "docs/goals.md"),
@@ -515,7 +535,7 @@ def test_s030_8_a_pure_rename_has_an_empty_diff_and_classifies(repo: Repo, capsy
 
 
 def test_s030_8_gh_reads_a_pure_rename_as_an_empty_patch(tmp_path: Path) -> None:
-    pull = json.dumps({"head": {"sha": HEAD}, "base": {"sha": "t" * 40}, "labels": []})
+    pull = json.dumps({"head": {"sha": HEAD}, "base": {"sha": "t" * 40, "repo": {"full_name": "o/demo"}}, "labels": []})
     renamed = {"filename": "docs/specs/032-x.md", "status": "renamed", "changes": 0}
     large = {"filename": "docs/specs/033-x.md", "status": "modified", "changes": 9000}
     files = (json.dumps({**renamed, "previous_filename": "docs/specs/031-x.md"}), json.dumps(large))
@@ -642,7 +662,7 @@ def test_s057_8_a_pull_request_that_adds_a_part_is_judged_by_the_bases_parts(
             FileChange(CONFIG, "modified", patch(*WORKFLOWS_PART.splitlines())),
             FileChange(CI, "modified", patch("x")),
         ),
-        {(BASE, CONFIG): POLICY, (HEAD, CONFIG): POLICY + WORKFLOWS_PART},
+        {(BASE, CONFIG): POLICY, (HEAD, CONFIG): POLICY + WORKFLOWS_PART, (BASE, CI): "on: push\n", (HEAD, CI): "x"},
     )
     repo.write(CONFIG, POLICY + WORKFLOWS_PART)  # the pull request's checkout holds the part
     found = run(repo, capsys, "classify", "--pr", "15", pulls=pulls)
