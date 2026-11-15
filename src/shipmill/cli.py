@@ -352,6 +352,7 @@ from shipmill.lineedit import LineText
 from shipmill.merge_gate import GateRun, Queued, hold_gate, label_args, run_gate, unlabel_args
 from shipmill.notify import Desktop
 from shipmill.operate import Http, Unreachable, UrllibHttp, approve, approve_rollback, operate, summary
+from shipmill.permission_notice import Seams, api_reads
 from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
 from shipmill.plugin import CLI_RECORD, MARKERS, GateCli, PluginHost, Runner, load_cli
 from shipmill.policy import Lane, Policy
@@ -1475,7 +1476,7 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         """The helpers go in the checkout's state folder and run this very shipmill"""
         return prepare_session(identity, state_dir(git) / HELPERS, Path(sys.executable), root, args.slug, path)
 
-    def upgrades_as_app(identity: Identity) -> GitHub:
+    def upgrades_as_app(identity: Identity) -> GhCli:
         """Spec 047: gh as the App, its token limited to the gate's repo and cached where
         `shipmill gh` in this checkout caches it; minted only when a sweep proposes"""
         when = dt.datetime.now(dt.UTC)
@@ -1528,6 +1529,8 @@ def _gate(root: Path, args: argparse.Namespace, github: GitHub, sessions: Sessio
         catch_up=lambda: AgentsConfig.load(root, args.slug).catch_up,
         upgrades=Upgrader(lambda: head_config(git), upgrades_as_app, lambda: github),
         verify=_verify(root, git, args.claude_arg, os.environ, Path.home()),
+        # spec 060: the installation read with the notice's own token, written with the gate's
+        permissions=Seams(api_reads(args.slug, Openssl(), UrllibApi()), upgrades_as_app),
     )
     if args.json:
         refusals = refused.records(_refused_or_none(root))  # S-052-11

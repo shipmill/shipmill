@@ -528,6 +528,17 @@ By hand instead:
    before it was asked for gets it once you add it in the App's permissions and the owner
    accepts it on the App's installation page.
 
+   You are told to (spec 060): when a repo of the installation needs an optional permission
+   its installation lacks (Deployments: read, for a config with `[environments]`), the gate
+   files one item per installation on a sweep, in one repo of it, the carrier (a product's
+   home first, else the first repo by name). The issue is labelled `shipmill-permission` and
+   `role:maintainer`, assigned to the maintainer, and gives the two steps with their links;
+   once the installation grants the permission, the gate of the repo holding it closes it as
+   completed. No second one is filed while one exists in any repo of the installation, open
+   or closed, so closing it as not planned declines it for good. To read the installation the
+   gate mints a token over all its repos with only metadata, contents, and issues read, which
+   it keeps to itself; it writes only in its own repo, with its own token.
+
 2. **Install it** only on the repos the gate works on ("Only select repositories")
 
 3. **Save its private key** where the gate looks for it, readable by you alone. Generate

@@ -1,6 +1,6 @@
 # S-060: The App's owner gets an item when a release adds a permission to grant
 
-status: approved
+status: built
 serves: G-4
 
 ## Problem
@@ -50,7 +50,8 @@ them files:
 
 - The candidates are the installation's repos whose `.github/shipmill.toml` parses, sets
   `[agents] app_id` to this App, and turns the permission on (its `needed` check holds). A
-  repo whose config is missing or doesn't parse runs no gate, so it is no candidate
+  repo whose config is missing or doesn't parse runs no gate, so it is no candidate; nor is an
+  archived repo, which is read-only, so its gate can't file (its issues still count as filed)
 - A candidate that is a product's home (its config has `[product] repos`, spec 038) comes
   first: the coordinator already builds the maintainer's queue there. With no home among the
   candidates, or more than one, the carrier is the first by full name, case ignored
@@ -181,5 +182,18 @@ no longer needs to carry the owner's steps: the item does.
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+- S-060-1: read `OPTIONAL_PERMISSIONS` in `src/shipmill/app.py`, each entry an `OptionalPermission` whose `needed` is required (keyword-only, no default), and ran `test_s060_1_*` against a parsed config with and without `[environments]`, holds
+- S-060-2: ran a sweeping tick through `gate()` with the notice's fakes (`test_s060_2_the_carriers_sweep_files_one_issue_in_its_own_repo`), one issue whose first line is the marker, labelled `shipmill-permission` and `role:maintainer`, assigned to the maintainer role's users; read `GhCli.create_issue` passing `--assignee` per login, holds
+- S-060-3: rendered the body for a user-owned and an organization-owned App with `permission_notice.body` and read it: the permission, its `serves`, each candidate with `[environments]`, the two permissions-page links, the installation page, and `## Check` naming `shipmill doctor`'s `app` row, holds
+- S-060-4: read `notice()`: any issue with the marker in any repo of the installation, open or closed, files nothing; ran the open, closed, own-repo, and other-repo cases and a second sweep, holds
+- S-060-5: ran the notice for an installation whose repos declare no `[environments]`: nothing filed, the line says `needed by no repo`, holds
+- S-060-6: ran a granted installation with the issue open in the gate's repo, carrier and not: a comment whose first line is `<!-- shipmill:verified -->` then the close (`gh issue close`, GitHub's default reason completed); a gate whose repo doesn't hold it wrote nothing, holds
+- S-060-7: read `tick_walk`: the notice runs only when sweeping; ran the non-sweeping, no-`app_id`, and dry-run ticks: no read or write, `permissions: none read, [agents] sets no app_id`, and `permissions: would file Deployments: read`, holds
+- S-060-8: ran a sweeping tick: the first line ends `; permissions: filed #<n> Deployments: read` and `sweep.json` keeps `permissions`; a 403 on the write is `permissions failed: ...` there and the tick's action, work, and walk match a tick without the notice, holds
+- S-060-9: read `doctor.optional_permission_checks` and `Installation.notices`, which read no config; ran doctor and a gate tick with a config needing no optional permission: both still name Deployments: read, holds
+- S-060-10: ran `setup_state.py`'s `wanted_labels` and `labels_row` for configs with and without `[agents] app_id`: `LABELS_MISSING` names `shipmill-permission` only with it, holds
+- S-060-11: read `docs/install.md` under the App's permissions: the gate files one item per installation for a permission a repo needs and its installation lacks, and closing it as not planned declines it, holds
+- S-060-12: ran the notice as each of three candidates' gates, with and without a home among them: every gate picks the same carrier, the home first, else the first by name with case ignored, and the others say `permissions: carried by <owner/name>`, holds
+- S-060-13: ran the notice with a first-by-name repo whose config is missing, doesn't parse, has no `[agents]`, no `app_id`, another App's, or no `[environments]`: none is a candidate; and with an archived first-by-name repo needing it: no candidate, while an item already in it still counts, holds
+- S-060-14: read `app.mint_installation` and `ApiReads`: the token asks `metadata`, `contents`, `issues` read with no repositories, a broader answer is refused, it is cached nowhere and `ApiReads` has no write; ran a sweeping LAUNCH: the token is in no session env and no state file, and writes go through `Seams.writer`, the gate's repo-limited token in `cli._gate`, holds
+- S-060-15: ran a sweep whose token mint answered 403 and one whose repo list was refused: nothing filed, `permissions failed: ...` names it, and the tick launched its item as without it, holds
