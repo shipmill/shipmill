@@ -42,7 +42,7 @@ test "$(git rev-list --count origin/<default>.."$sha")" -gt 0
 Once the reviewer's head is the PR's head (its fixes pushed, as above), record the reviewer's verdict on it, with its report as the body, through the App:
 
 ```bash
-uvx shipmill==0.141.0 review record <n> --head <reviewed head> --verdict merge|refuse --body-file <report>
+uvx shipmill==0.142.0 review record <n> --head <reviewed head> --verdict merge|refuse --body-file <report>
 ```
 
 It posts a COMMENT review at that head whose first line is `<!-- shipmill:review merge -->` or `<!-- shipmill:review refuse -->`, and exits 2 writing nothing when the head isn't the full 40-character SHA, isn't the PR's current head (it moved since the review: review the new head), or the App isn't available (hard rule 8). Then run the gate again. A record covers the judged head at its own commit, and after a rebase or a merge of the base that leaves the PR's own change the same; a push that changes the PR's own change needs a review of the new head and a new record. The App's newest record covering the head counts, so a refuse keeps the PR UNREVIEWED until a merge record follows it. A trusted person's APPROVED review without the agent marker is a record too.
@@ -93,7 +93,7 @@ scripts/changelog_guard.py check --base origin/<default>
 scripts/changelog_guard.py move --base origin/<default>
 scripts/changelog_guard.py check --base origin/<default>
 git commit --amend --no-edit CHANGELOG.md  # the planner reads the committed CHANGELOG, not the working tree
-# then the release planner's dry run, where the repo has one (shipmill: `uvx shipmill==0.141.0 plan --dry-run`, the release this plugin pins, in every session)
+# then the release planner's dry run, where the repo has one (shipmill: `uvx shipmill==0.142.0 plan --dry-run`, the release this plugin pins, in every session)
 awk '/^## \[Unreleased\]/{p=1; print; next} /^## \[/{p=0} p' CHANGELOG.md
 ```
 

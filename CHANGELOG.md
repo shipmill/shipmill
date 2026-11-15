@@ -7,6 +7,14 @@ bot.
 
 ## [Unreleased]
 
+## [0.142.0] - 2026-11-15
+
+### Added
+
+- `shipmill decide classify --pr N` reports `accepted-spec` in place of `scope` for a spec whose status line becomes `approved` when every `Spec for #N` issue of the pull request's body is open and either an accepted opportunity (`opportunity` and `planned`) or filed by an OWNER, MEMBER, or COLLABORATOR with no agent marker in its body; the reason names the issues, and anything else, an issue that can't be read included, stays `scope` (#1191)
+- `triage_state.py` reads a build issue of a spec approved at `notify` (zone `accepted-spec`, spec 067) BLOCKED, noted `veto window of #<spec PR> until <time>`, until `veto_hours` after the spec pull request's merge, and noted `#<spec PR> vetoed by @<login>` while a trusted veto of it is unanswered; then as before. The skills take up such a veto by reverting the spec to `draft` in a pull request, closing its build issues as not planned, and asking on the feature issue in `scope` (#1192)
+- `pr_gate.py` lands a spec pull request in `accepted-spec` at `notify` (the base's `[decisions]`, never the PR's) on the `--bot-login`'s newest decided comment naming the zone and the judged head, or a head whose spec change `specs.py same-approval` reads as format only; until then it reads NEEDS_DECISION with a `needs-decision: accepted-spec: <why>` line, which the maintainer's answer also lifts. The skills say how a session decides such a spec pull request: take every recommendation and post the decided comment with its `<!-- shipmill:head <sha> -->` line. Spec 067 is built (#1193)
+
 ## [0.141.0] - 2026-11-15
 
 ### Fixed
@@ -2594,7 +2602,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.141.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.142.0...HEAD
+[0.142.0]: https://github.com/shipmill/shipmill/compare/v0.141.0...v0.142.0
 [0.141.0]: https://github.com/shipmill/shipmill/compare/v0.140.0...v0.141.0
 [0.140.0]: https://github.com/shipmill/shipmill/compare/v0.139.0...v0.140.0
 [0.139.0]: https://github.com/shipmill/shipmill/compare/v0.138.0...v0.139.0
