@@ -204,7 +204,7 @@ line, naming the criteria that issue delivers. Each criterion belongs to exactly
 
 ## Verification
 
-- S-062-1: read `hooks/hooks.json`: a `Stop` entry with no matcher runs the PreToolUse start snippet ending `exec "$p" "$d" stop` with `"timeout": 10`; `test_s062_1_*` pass, including the snippet exiting 1 with one stderr line naming `shipmill doctor` when it can't start the script
+- S-062-1: read `hooks/hooks.json`: a `Stop` entry with no matcher runs the PreToolUse start snippet ending `exec "$p" "$d" stop` with `"timeout": 10`; `test_s062_1_*` pass, including the snippet exiting 1 with one stderr line naming `shipmill doctor` when it can't start the script; the Behaviour's probe ran by hand on Claude Code 2.1.317 (shipmill/shipmill#1119): a project Stop hook exiting 2 once continued a `claude -p` session, and the hook ran again with `stop_hook_active` true
 - S-062-2: `hooks/delivery.py stop` on `stop-refused.json` without `SHIPMILL_GATE` and with cwd `/`, outside a repo, exited 0 with no output; `test_s062_2_*` pass for no config and no `[agents]` too
 - S-062-3: `stop-active.json` on the refusing transcript exited 0 with no output; `test_s062_3_*` pass
 - S-062-4: `stop-refused.json` with a `last_assistant_message` naming `@RomAmo` in a code span and `SHIPMILL_MAINTAINER=romamo` exited 2 with exactly the three lines the Behaviour gives; `test_s062_4_*` pass, `@<login>x` among them
@@ -216,5 +216,5 @@ line, naming the criteria that issue delivers. Each criterion belongs to exactly
 - S-062-10: read `ClaudeCli.start` in `src/shipmill/gate.py`: the headless `--settings` env sets `SHIPMILL_MAINTAINER` to the paragraph's login beside `SHIPMILL_GATE=1`, the interactive launch neither; `test_s062_10_*` pass
 - S-062-11: read `headless_paragraph` in `src/shipmill/gate.py`: it ends with the sentence; `test_s062_11_*` pass
 - S-062-12: `self_test` against a copy of this checkout's `hooks/` as the install passed with both Stop cases, and with its Stop hook replaced by `exit 0` it FAILed naming `claude plugin update shipmill@shipmill --scope user`, a HOOKS_FAILED reason; `test_s062_12_*` pass, a headless tick on that result starting no session
-- S-062-13: `tests/fixtures/hooks/` holds `stop-refused`, `stop-request`, `stop-active`, and `stop-no-address` inputs and their JSONL transcripts; `test_s062_13_*` pass
+- S-062-13: `tests/fixtures/hooks/` holds `stop-refused`, `stop-request`, `stop-active`, and `stop-no-address` inputs and their JSONL transcripts, written from Claude Code's documented JSONL shape rather than copied from a real headless session as the Behaviour asked (shipmill/shipmill#1119); `test_s062_13_*` pass
 - S-062-14: read needs-decision.md's Gate sessions, `docs/install.md`'s hooks paragraph, and spec 026 under S-026-19: each says what the Docs list says; `test_s062_14_*` pass
