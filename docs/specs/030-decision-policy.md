@@ -63,6 +63,7 @@ reaches, orders zones of the same reversibility.
 | `direction` | an edit of `docs/product.md` or `docs/product/`: the mission, users, goals, non-goals, quality bar (D-34) | `never` | `ask` | a changed path |
 | `decision-policy` | the `[decisions]` section of `.github/shipmill.toml` | `never` | `never` | a changed key in that section |
 | `scope` | accepting or declining an opportunity (D-10), approving a spec, accepting a goal plan (spec 028), creating or editing a milestone | `ask` | `ask` | a spec whose status line becomes `approved`; the `planned` label |
+| `accepted-spec` | approving a spec whose work the maintainer already accepted ([spec 067](067-accepted-spec-notify.md)) | `ask` | `notify` | a spec whose status line becomes `approved`, when every `Spec for #N` issue of its pull request is accepted |
 | `rule-departure` | a change that departs from an active `D-n` or an approved spec's `S-NNN-k` (Q-5) | `ask` | `ask` | candidates only: `decisions.py find` on the changed paths |
 | `contract-change` | changing or removing a command, flag, argument, exit code, env var, output or file format, default, limit, public API, or stored state an upgrade reads | `ask` | none | an added changelog entry under a `major` heading of `[bump]` |
 | `contract-addition` | adding one of those while every existing use behaves as before; a new runtime dependency | `notify` | none | no |
