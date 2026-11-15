@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.134.2] - 2026-11-15
+
+### Fixed
+
+- github-ship-watch reports a gate job on this Mac whose checkout is gone as `GATE_CHECKOUT_MISSING`, an action for a person with the fix that adds the folder back and restarts the job: launchd stops such a job before `shipmill gate` runs, so it had stopped unreported. Every watch on the host reads every gate job, and `shipmill factory`'s sessions check fails on it (#1155)
+
 ## [0.134.1] - 2026-11-14
 
 ### Fixed
@@ -2529,7 +2535,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.134.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.134.2...HEAD
+[0.134.2]: https://github.com/shipmill/shipmill/compare/v0.134.1...v0.134.2
 [0.134.1]: https://github.com/shipmill/shipmill/compare/v0.134.0...v0.134.1
 [0.134.0]: https://github.com/shipmill/shipmill/compare/v0.133.0...v0.134.0
 [0.133.0]: https://github.com/shipmill/shipmill/compare/v0.132.0...v0.133.0
