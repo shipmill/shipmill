@@ -87,7 +87,12 @@ replace = 'uvx shipmill=={version}'
 
 [[version_lines]]
 file = "skills/github-pr-triage/references/landing.md"
-pattern = 'uvx shipmill==\d+\.\d+\.\d+'
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= plan )'
+replace = 'uvx shipmill=={version}'
+
+[[version_lines]]
+file = "skills/github-pr-triage/references/landing.md"
+pattern = 'uvx shipmill==\d+\.\d+\.\d+(?= review record )'
 replace = 'uvx shipmill=={version}'
 
 [[version_lines]]
