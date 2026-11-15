@@ -2037,6 +2037,9 @@ def test_s062_5_a_line_starting_with_a_phrase_is_refused(
         "This is for you to read later, maybe.",  # a phrase inside a line, not starting it
         "Waiting on CI. Your turn comes later in the line",
         "",
+        "For your information, the run is green.",  # a phrase is whole words, not a word's start
+        "Your turnaround was quick.",
+        "Mail went to dev@octo-maint.io",  # an address names no login
     ],
 )
 def test_s062_5_a_text_that_addresses_no_one_exits_0(box: Sandbox, tmp_path: Path, text: str) -> None:

@@ -1495,11 +1495,18 @@ def parse_stop(data: Mapping[str, object]) -> StopInput:
 
 def addresses(text: str, login: str) -> bool:
     """The final text names @<login>, in any case and not followed by another login character,
-    or starts a line, past the listed markup, with one of ADDRESSES"""
-    if re.search(rf"@{re.escape(login)}(?![A-Za-z0-9-])", text, re.IGNORECASE):
+    or starts a line, past the listed markup, with one of ADDRESSES as whole words: an email
+    address such as dev@<login>.io names no login, and a line starting For your starts no phrase"""
+    if re.search(rf"(?<![A-Za-z0-9_.+-])@{re.escape(login)}(?![A-Za-z0-9-])", text, re.IGNORECASE):
         return True
-    phrases = tuple(phrase.casefold() for phrase in ADDRESSES)
-    return any(LINE_MARKUP.sub("", line).casefold().startswith(phrases) for line in text.splitlines())
+    phrases = [phrase.casefold() for phrase in ADDRESSES]
+
+    def starts(line: str, phrase: str) -> bool:
+        rest = line[len(phrase) :]
+        return line.startswith(phrase) and (phrase.endswith("@") or not rest[:1].isalnum())
+
+    lines = [LINE_MARKUP.sub("", line).casefold() for line in text.splitlines()]
+    return any(starts(line, phrase) for line in lines for phrase in phrases)
 
 
 def read_transcript(path: object) -> list[Mapping[str, object]]:
