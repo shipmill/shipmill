@@ -1,3 +1,0 @@
-### Changed
-
-- The decision retro (`retro.py gather --decisions`) proposes a zone from `ask` to `notify` on a rate: at least `--lower-rate` (90) percent of at least `--lower-min` (10) answered questions over the `--lower-after` windows took the recommended option, so one departure no longer resets it and a question still open no longer blocks it; it counts the questions with no zone line under `unzoned` and every question under `all`, and per zone what became of each decided item, vetoed, reverted (its issue reopened, or its merged pull request reverted, within `--revert-days`, 14), or held, which no proposal reads (spec 058) (#1159)

@@ -7,6 +7,24 @@ bot.
 
 ## [Unreleased]
 
+## [0.137.0] - 2026-11-15
+
+### Added
+
+- `docs/release-lanes.md` has a Protected default branch section: how to land as the App on a protected default branch (`[agents] app_id`, the `shipmill-land` environment limited to the default branch with its `SHIPMILL_LAND_KEY` secret, `land-environment` on the land job, and `shipmill ruleset`), the workflows an App push starts, doctor's `landing` row, and its limits; its Limits, `docs/install.md`'s prerequisites, and shipmill-setup's Branch protection check name the opt-in (#1082)
+- `shipmill doctor`'s hooks self-test, and the headless gate's before a session, run the install's Stop hook too: on a final message asking the maintainer with no request on GitHub it must refuse (exit 2), and with `stop_hook_active` true let the session end (exit 0); either failing, or an install with no Stop hook, is a FAIL naming the plugin update, and a headless gate starts no session (#1097)
+- Each optional permission of the App now says which config needs it: Deployments: read is needed by a config that declares `[environments]` (spec 060). `shipmill doctor`'s `app` row and the gate's `warning:` line still name every optional permission the installation lacks, needed or not, and `setup_state.py` wants the `shipmill-permission` label in a repo whose config sets `[agents] app_id` (#1160)
+- `triage_state.py`: a postpone comment's `` Revisit on: `<path>` `` line keeps its issue POSTPONED (`waits on <paths>`) until a file a path matches changes between the newest stable tag before the comment and the newest one, then reads REVISIT naming the file, instead of REVISIT on every stable tag; one compare per base tag, and no base tag, a compare at GitHub's 300-file cap, or no line read REVISIT as before, an unreadable line at once (spec 061) (#1163)
+- The `deploy-step` zone (default `ask`, no floor): `shipmill decide classify --pr N` names each changed job of a deploy workflow (one an `[environments]` table names, or with an `environment:` key) that no run on the pull request's `Proof:` line ran at the head's content of the file, and `--files` names each deploy workflow, so `pr_gate.py` reads such a pull request as NEEDS_DECISION until the maintainer accepts it; classify only reads the runs, with GETs (spec 063) (#1164)
+- `shipmill doctor` warns, in a `deploy runner` row, of a job whose `actions/checkout` sets no `path:` and runs on a self-hosted runner a deploy job deploys from, since its checkout cleans the workspace the deploy left; a PASS row names the deploy jobs checked, and a repo with no deploy job on a self-hosted runner sees no row (#1165)
+- The gate tells the App's owner when a release adds a permission to grant (spec 060): on a sweep, when a repo of the App's installation needs an optional permission the installation lacks (Deployments: read, for a config with `[environments]`), the gate of one repo of it, the carrier (a product's home first, else the first by name), files one `shipmill-permission` issue labelled `role:maintainer` and assigned to the maintainer, with the two steps and their links. No second one is filed while one exists in any repo of the installation, so closing it as not planned declines it; once the installation grants the permission, the gate of the repo holding it closes it as completed. It reads the installation with a token of its own asking only metadata, contents, and issues read, writes only in its own repo with its own token, and its decision line and `sweep.json` say what it did (`permissions: ...`) (#1166)
+
+### Changed
+
+- The decision retro (`retro.py gather --decisions`) proposes a zone from `ask` to `notify` on a rate: at least `--lower-rate` (90) percent of at least `--lower-min` (10) answered questions over the `--lower-after` windows took the recommended option, so one departure no longer resets it and a question still open no longer blocks it; it counts the questions with no zone line under `unzoned` and every question under `all`, and per zone what became of each decided item, vetoed, reverted (its issue reopened, or its merged pull request reverted, within `--revert-days`, 14), or held, which no proposal reads (spec 058) (#1159)
+- Gate: a tick hands an item of tier 3, 4, or 6 by its subjects, one hand per `#N` in `handed.json` (a pull request's with its head and check rollup), cuts the item and its prompt to the subjects not taken, keeps a subject whose session wrote nothing on it idle past `retry_hours` until GitHub shows it changed (UNCHANGED names it), and reads an `ISSUES HANDOFF_DUE` item again before its session starts, QUIET when none is still due (spec 061) (#1161)
+- Under `[autonomy] land = "propose"`, `watch_state.py` lists an open pull request labelled `shipmill-ready` in PRS_PARKED as `TO_MERGE #N` (`WITH_PERSON #4 (@a); TO_MERGE #12`), not in PRS_OPEN, in `--tier 3` and the full report, so the gate starts no more sessions on a pull request that waits on the maintainer's merge; under `act` and `observe` nothing changes, and `shipmill status` reports it to merge as before (#1162)
+
 ## [0.136.0] - 2026-11-15
 
 ### Added
@@ -2548,7 +2566,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.136.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.137.0...HEAD
+[0.137.0]: https://github.com/shipmill/shipmill/compare/v0.136.0...v0.137.0
 [0.136.0]: https://github.com/shipmill/shipmill/compare/v0.135.0...v0.136.0
 [0.135.0]: https://github.com/shipmill/shipmill/compare/v0.134.2...v0.135.0
 [0.134.2]: https://github.com/shipmill/shipmill/compare/v0.134.1...v0.134.2
