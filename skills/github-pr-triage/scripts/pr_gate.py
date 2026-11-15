@@ -10,7 +10,7 @@ And does it keep to the repo's direction (spec 024)?
   docs/product.md the plan isn't checked. A person's PR is never refused for its plan
 - A PR whose files match a REVIEW.md Protected areas glob, or that edits docs/product.md
   or docs/product/, waits on the maintainer (needs-decision) until their answer on GitHub
-  accepts it (below), or --maintainer-accepted says they accepted it
+  accepts it (below)
 
 The maintainer's answer (spec 055), read only for a PR that would read NEEDS_DECISION: the
 newest needs-decision question (its first line `<!-- shipmill:needs-decision -->`, by an
@@ -33,7 +33,9 @@ asks stay, with `  needs-decision: answered at <sha7>, and the change differs si
 `  needs-decision: the answer doesn't take the recommended option`, or `  needs-decision: the
 question names no head: ask again with its `<!-- shipmill:head <sha> -->` line`. It costs one
 GraphQL read of the PR's opener, newest 100 comments, and force-pushes, and one of the issues'
-when the PR has no question; a never zone stays MAINTAINER_ONLY whatever the answer.
+when the PR has no question; a never zone stays MAINTAINER_ONLY whatever the answer. The answer
+is the only acceptance: --maintainer-accepted, which once said the maintainer accepted, exits 2
+before any read.
 
 REVIEW.md and docs/product.md are read from the default branch of the checkout
 (--checkout, default the current directory, at origin/HEAD, or at origin/<the PR's base
@@ -53,10 +55,10 @@ branch> --json`, run as `uvx shipmill==<the version in the plugin's plugin.json>
 --from <tool> shipmill` with --tool), in place of the direction and Protected areas checks
 above; the plan check stays. Each zone by its level, read from that branch, never the PR:
 
-- never: MAINTAINER_ONLY, `  maintainer-only: <zone>: <reason>`; --maintainer-accepted
-  doesn't lift it, since only the maintainer merges it, by hand (D-48)
+- never: MAINTAINER_ONLY, `  maintainer-only: <zone>: <reason>`; no answer lifts it, since
+  only the maintainer merges it, by hand (D-48)
 - ask: NEEDS_DECISION, `  needs-decision: <zone>: <reason>`, until the maintainer's answer
-  or --maintainer-accepted
+  accepts it
 - notify: the verdict stays, with `  notify: <zone>: <reason>`; the skill posts the decided
   comment before it merges
 - act: nothing
@@ -68,7 +70,7 @@ A spec pull request (spec 053), one that adds a file docs/specs/NNN-<slug>.md (t
 of its body, outside a code fence, starting `Spec for #N` (after an optional list bullet;
 `owner/repo#N` of the same repo reads the same) whose N is an open issue of the repo, not a pull
 request. Without one it is REFUSED, `  spec: names no feature issue: ...`, whoever opened it,
-and --maintainer-accepted doesn't lift it. The check reads the files API, and GitHub's GraphQL
+and the maintainer's answer doesn't lift it. The check reads the files API, and GitHub's GraphQL
 once for the issues the lines name; a PR that gh pr view lists whole, with no spec path, reads
 neither.
 
@@ -1613,14 +1615,14 @@ def judge(
     number: int,
     base: Base,
     agent: bool,
-    accepted: bool,
     zones: tuple[Zone, ...] | None = None,
     spec: tuple[str, ...] = (),
 ) -> Gate:
     """zones, classify's for the PR, are given when the base's config has [agents] (spec 030);
     they replace the direction and Protected areas checks. spec is spec_problems' answer, which
-    --maintainer-accepted doesn't lift (spec 053). A draft is judged for nothing else (D-67);
-    agent, for a draft, says the --bot-login authored it, so its line says to mark it ready"""
+    the maintainer's answer doesn't lift (spec 053); the asks are lifted only by acceptance, read
+    after this (spec 055). A draft is judged for nothing else (D-67); agent, for a draft, says the
+    --bot-login authored it, so its line says to mark it ready"""
     checks = newest_checks(data.get("statusCheckRollup") or ())
     if data["isDraft"]:
         head = data["headRefOid"]
@@ -1634,10 +1636,10 @@ def judge(
     never: list[str] = []
     notices: list[str] = []
     if zones is not None:
-        never = [z.line() for z in zones if z.level == "never"]  # --maintainer-accepted never lifts it (D-48)
-        asks = [] if accepted else [z.line() for z in zones if z.level == "ask"]
+        never = [z.line() for z in zones if z.level == "never"]  # no answer lifts it (D-48)
+        asks = [z.line() for z in zones if z.level == "ask"]
         notices = [z.line() for z in zones if z.level == "notify"]
-    elif not accepted and (base.ids is not None or base.reviews):
+    elif base.ids is not None or base.reviews:
         edited = [f for f in files if f == DIRECTION or f.startswith(DIRECTION_DIR)]
         asks += [f"{f} edits the product's direction, which only the maintainer changes (D-34)" for f in edited]
         for area in base.protected(files):
@@ -1699,6 +1701,13 @@ def polls(gates: list[Gate]) -> bool:
     )
 
 
+MAINTAINER_ACCEPTED_GONE = (
+    "--maintainer-accepted is gone (spec 055): the maintainer's acceptance is read from their answer on GitHub, "
+    "the first trusted reply to the newest needs-decision question taking its (recommended) option at the head "
+    "its `<!-- shipmill:head <sha> -->` line names; ask that question and run the gate again"
+)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("prs", nargs="+", type=int, help="PR numbers")
@@ -1717,18 +1726,16 @@ def main() -> int:
     )
     parser.add_argument("--bot-login", help="the login agents write as, such as <slug>[bot]; its PRs are agents'")
     parser.add_argument("--agent", action="store_true", help="every PR named is an agent's (a handover)")
-    parser.add_argument(
-        "--maintainer-accepted",
-        action="store_true",
-        help="the maintainer accepted these PRs' protected or direction changes, or their ask zones; don't ask "
-        "again (a never zone stays: the maintainer merges it by hand)",
-    )
+    # gone (spec 055): parsed only to refuse it by name, before any read
+    parser.add_argument("--maintainer-accepted", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--tool",
         help="with [agents] on the base: where uvx gets shipmill for `decide classify` (default: "
         "shipmill==<the plugin.json version>)",
     )
     args = parser.parse_args()
+    if args.maintainer_accepted:
+        parser.error(MAINTAINER_ACCEPTED_GONE)
     if args.interval < 1 or args.timeout < 1:
         parser.error("--interval and --timeout must be positive")
     if args.bot_login is not None and not args.bot_login.strip():
@@ -1750,7 +1757,7 @@ def main() -> int:
                 base = bases.base(str(data["baseRefName"]))
                 own = args.bot_login is not None and author_of(data.get("author") or {}) == args.bot_login
                 if data["isDraft"]:  # neither its files nor its zones are read (D-67)
-                    gates.append(judge(data, number, base, own, args.maintainer_accepted))
+                    gates.append(judge(data, number, base, own))
                     continue
                 if base.ids is not None or base.reviews:
                     data["files"] = all_files(data, number, args.repo)
@@ -1769,7 +1776,7 @@ def main() -> int:
                 zones = None
                 if base.agents and base.ref is not None:
                     zones = classifier.zones(number, base.ref, str(data["headRefOid"]))
-                judged = judge(data, number, base, agent, args.maintainer_accepted, zones, spec)
+                judged = judge(data, number, base, agent, zones, spec)
                 if judged.verdict == NEEDS_DECISION:  # the answer on GitHub lifts the asks (spec 055)
                     if base.maintainers not in maintainers:  # one per base read: its permission reads too
                         maintainers[base.maintainers] = Maintainers(base.maintainers, args.repo)
