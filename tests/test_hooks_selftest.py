@@ -143,7 +143,10 @@ def test_s026_15_the_self_test_passes_on_the_installs_own_refusal(agents_repo: R
     files = install_copy(tmp_path / "install")
     found = run_test(agents_repo.root, Host(files), tmp_path / "home")
     assert found.ok, found.line()
-    assert found.line() == f"self-test: shipmill@shipmill 0.52.0 (user scope) refused `{REFUSED}` (exit 2)"
+    assert found.line() == (
+        f"self-test: shipmill@shipmill 0.52.0 (user scope) refused `{REFUSED}` and a final message asking the"
+        " maintainer with no request on GitHub (exit 2), and let it end on stop_hook_active"
+    )
     checks = hooks_block(doctor(agents_repo.root, hooks=lambda: found))
     assert checks[-1] == Check("PASS", "hooks", found.line())
 
@@ -435,3 +438,98 @@ def test_s026_16_a_tick_that_launches_nothing_runs_no_self_test(checkout: Git) -
     claude = FakeClaude([bg("live", "busy", "working")])
     decision, _, _, _ = tick(checkout, Mode.HEADLESS, tests, claude)
     assert decision.action is Action.RUNNING and tests.runs == 0
+
+
+# --- S-062-12: the Stop cases of doctor's and the gate's self-test --------------------------
+
+REFUSES = "cat >/dev/null; echo 'shipmill hook request-on-github: your final message asks' >&2; exit 2"
+
+
+def with_stop(command: str | None) -> str:
+    """This repo's hooks.json with its Stop hook running command, or with no Stop hook"""
+    data = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    if command is None:
+        del data["hooks"]["Stop"]
+    else:
+        data["hooks"]["Stop"][0]["hooks"][0]["command"] = command
+    return json.dumps(data)
+
+
+@pytest.mark.parametrize(
+    ("command", "problem"),
+    [
+        (
+            "cat >/dev/null; exit 0",
+            "exited 0 on a final message asking the maintainer with no request on GitHub, not 2",
+        ),
+        (
+            "cat >/dev/null; echo \"shipmill hook: can't start hooks/delivery.py (uv is not on PATH);"
+            ' this command runs unchecked, see shipmill doctor" >&2; exit 1',
+            "exited 1 on a final message asking the maintainer with no request on GitHub, not 2",
+        ),
+        ("cat >/dev/null; echo 'shipmill hook: boom' >&2; exit 2", "exited 2 on a final message asking"),
+        (REFUSES, "exited 2 on a final message asking the maintainer with no request on GitHub with stop_hook_active"),
+    ],
+    ids=["allows", "cant-start", "exit-2-without-the-refusal", "refuses-when-active"],
+)
+def test_s062_12_doctor_fails_naming_the_fix_when_the_stop_hook_misbehaves(
+    agents_repo: Repo, tmp_path: Path, command: str, problem: str
+) -> None:
+    """A Stop hook that doesn't exit 2 with its refusal on the refusing fixture, or doesn't exit
+    0 on it with stop_hook_active true, is a FAIL naming the fix, as the PreToolUse case is"""
+    files = install_copy(tmp_path / "install", with_stop(command))
+    found = run_test(agents_repo.root, Host(files), tmp_path / "home")
+    assert found.failed, found.line()
+    assert found.problem is not None and found.problem.startswith("the Stop hook of shipmill@shipmill 0.52.0")
+    assert problem in found.problem
+    assert found.fix is not None and "claude plugin update shipmill@shipmill --scope user" in found.fix
+    (last,) = [c for c in hooks_block(doctor(agents_repo.root, hooks=lambda: found)) if c.status == "FAIL"]
+    assert last.detail == found.line()
+
+
+def test_s062_12_an_install_without_a_stop_hook_fails_naming_the_update(agents_repo: Repo, tmp_path: Path) -> None:
+    files = install_copy(tmp_path / "install", with_stop(None))
+    found = run_test(agents_repo.root, Host(files), tmp_path / "home")
+    assert found.failed and found.problem is not None
+    assert found.problem.endswith("declares 0 Stop commands, not one")
+    assert found.fix is not None and found.fix.endswith("claude plugin update shipmill@shipmill --scope user")
+
+
+def test_s062_12_the_stop_cases_run_as_a_headless_gate_session_with_an_empty_tmpdir(
+    agents_repo: Repo, tmp_path: Path
+) -> None:
+    """Each Stop case sees SHIPMILL_GATE=1, SHIPMILL_MAINTAINER, a new empty TMPDIR, and a
+    transcript whose final message addresses the maintainer; the real hook refuses it once"""
+    seen = tmp_path / "seen"
+    seen.mkdir()
+    record = (
+        f'cat >"{seen}/$(ls "{seen}" | wc -l | tr -d " ").json"; '
+        f'echo "$SHIPMILL_GATE $SHIPMILL_MAINTAINER $(ls -A "$TMPDIR" | wc -l | tr -d " ")" >>"{tmp_path}/env"; '
+    )
+    files = install_copy(tmp_path / "install", with_stop(record + REFUSES.removeprefix("cat >/dev/null; ")))
+    found = run_test(agents_repo.root, Host(files), tmp_path / "home")
+    assert found.failed  # refuses even with stop_hook_active: the second case fails
+    inputs = [json.loads((seen / f"{n}.json").read_text(encoding="utf-8")) for n in (0, 1)]
+    assert [i["stop_hook_active"] for i in inputs] == [False, True]
+    assert {i["hook_event_name"] for i in inputs} == {"Stop"}
+    assert (tmp_path / "env").read_text(encoding="utf-8").splitlines() == ["1 shipmill-self-test 0"] * 2
+    transcript = Path(inputs[0]["transcript_path"])
+    assert not transcript.exists()  # the test's own temporary folder is gone
+
+
+def test_s062_12_a_headless_gate_whose_stop_hook_fails_starts_no_session(
+    agents_repo: Repo, checkout: Git, tmp_path: Path
+) -> None:
+    files = install_copy(tmp_path / "install", with_stop("cat >/dev/null; exit 0"))
+    found = run_test(agents_repo.root, Host(files), tmp_path / "home")
+    claude = FakeClaude()
+    decision, launched, waiting, pruned = tick(checkout, Mode.HEADLESS, FakeSelfTest(found), claude)
+    assert (decision.action, launched, claude.started) == (Action.HOOKS_FAILED, None, [])
+    assert decision.reason == (
+        f"a session here would run without the delivery hooks: {found.problem}:"
+        f" no session starts until the self-test passes: {found.fix}"
+    )
+    assert tick_lines(decision, launched, waiting, pruned, dry_run=False)[0] == f"HOOKS_FAILED: {decision.reason}"
+    claude = FakeClaude()
+    decision, launched, _, _ = tick(checkout, Mode.INTERACTIVE, FakeSelfTest(found), claude)
+    assert decision.action is Action.LAUNCH and launched is not None  # an interactive gate launches, as before

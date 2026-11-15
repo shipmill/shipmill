@@ -266,6 +266,11 @@ that exists.
 - S-026-18: `skills/github-pr-triage/SKILL.md` rule 8, `skills/github-pr-triage/references/landing.md`, `skills/shipmill-setup/SKILL.md`, `docs/release-lanes.md`, and `docs/install.md` name the hooks as the Behaviour's Docs list says, and a comment above `HEADLESS_TOOLS` in `src/shipmill/gate.py` points to `hooks/delivery.py`
 - S-026-19: `hooks/hooks.json` declares a PreToolUse hook matching `Bash` and a PostToolUse hook matching `Edit|Write|MultiEdit`, each running `hooks/delivery.py` under `${CLAUDE_PLUGIN_ROOT}` with a Python 3.11 or newer that uv finds or installs, and the file each names exists; run with no such Python (uv offline with none installed, or `python-downloads = "never"`), with no `uv` on PATH, or with the script missing, each hook command exits 1 with one stderr line naming `shipmill doctor`, never 2, and a refused fixture through the same command still exits 2
 
+Spec 062 added a third hook, `Stop` with no matcher, which runs `hooks/delivery.py stop` through
+the same start snippet and refuses once a headless gate session's stop whose final message asks
+the maintainer while the session put no request on GitHub; the self-test of S-026-15 and
+S-026-16 runs its two cases too (S-062-12).
+
 ## Out of scope
 
 - Stopping a determined or hostile agent: a hook reads one command's text, so `bash -c`,

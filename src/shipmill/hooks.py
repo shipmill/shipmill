@@ -11,6 +11,12 @@ isn't on PATH, when no install applies to the checkout, or when the install has 
 hooks/hooks.json (one older than spec 026). Any other exit, including the 1 of a hook that
 can't start its script (D-40), fails with the hook's stderr.
 
+Then it runs the install's Stop hook twice (spec 062, S-062-12), as a headless gate session
+would (SHIPMILL_GATE=1, SHIPMILL_MAINTAINER set, TMPDIR a new empty directory), on a transcript
+whose final message asks the maintainer while the session filed nothing on GitHub: it must
+exit 2 with its request-on-github refusal, and exit 0 with stop_hook_active true. Either one
+failing, or a hooks.json with no Stop hook, fails with the hook's stderr and the plugin update.
+
 Only those are failures (S-026-15). What stops the test from reading what a session would load
 (the plugin listing, git, sh, a settings file that isn't a JSON object) is a warning: the
 verdict is unread, doctor WARNs, and the gate starts the session, as D-35 does on a failed read.
@@ -18,6 +24,7 @@ verdict is unread, doctor WARNs, and the gate starts the session, as D-35 does o
 
 import json
 import subprocess
+import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +42,11 @@ from shipmill.plugin import (
 
 REFUSED = "gh pr merge 1 --rebase"  # what the hook is shown; rebase-merge refuses it in every repo with [agents]
 REFUSAL = "shipmill hook rebase-merge: "  # the refusal's first line starts so
+SESSION = "00000000-0000-4000-8000-000000000000"  # the self-test inputs' session_id
+MAINTAINER = "shipmill-self-test"  # the Stop cases' SHIPMILL_MAINTAINER (spec 062)
+ASKED = "Triaged the issue.\n\nFor you: @shipmill-self-test, decide whether to rotate the key."  # asks, files nothing
+CASE = "a final message asking the maintainer with no request on GitHub"  # the Stop cases, as failures name them
+STOP_REFUSAL = "shipmill hook request-on-github: "  # the Stop refusal's first line starts so
 SETTINGS = (Path(".claude") / "settings.json", Path(".claude") / "settings.local.json")  # project, then local
 DEFAULT_TIMEOUT = 60  # Claude Code's, for a hook that sets none
 
@@ -155,33 +167,45 @@ def settings_files(checkout: Path, project: Path, home: Path) -> list[Path]:
     return [folder / name for folder in folders for name in SETTINGS] + [home / ".claude" / "settings.json"]
 
 
-def pre_command(hooks_json: Path) -> tuple[str, float]:
-    """The command hooks.json runs for a Bash PreToolUse, and its timeout"""
+def declared(hooks_json: Path, event: str, matcher: str | None) -> tuple[str, float]:
+    """The one command hooks.json runs for event with matcher (None: an entry with no matcher),
+    and its timeout"""
+    named = f"{matcher} {event}" if matcher is not None else event
     try:
         data = json.loads(hooks_json.read_text(encoding="utf-8"))
-        entries = data["hooks"]["PreToolUse"]
+        entries = data["hooks"].get(event, [])
         found = [
             (h["command"], h.get("timeout", DEFAULT_TIMEOUT))
             for e in entries
-            if e.get("matcher") == "Bash"
+            if e.get("matcher") == matcher
             for h in e["hooks"]
             if h.get("type") == "command"
         ]
     except (json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError, AttributeError) as exc:
         raise ReleaseError(f"{hooks_json} isn't a hooks file: {exc!r}") from None
     if len(found) != 1:
-        raise ReleaseError(f"{hooks_json} declares {len(found)} Bash PreToolUse commands, not one")
+        raise ReleaseError(f"{hooks_json} declares {len(found)} {named} commands, not one")
     command, timeout = found[0]
     if not isinstance(command, str) or isinstance(timeout, bool) or not isinstance(timeout, int | float):
-        raise ReleaseError(f"{hooks_json}: the Bash PreToolUse command or its timeout is malformed")
+        raise ReleaseError(f"{hooks_json}: the {named} command or its timeout is malformed")
     return command, float(timeout)
+
+
+def pre_command(hooks_json: Path) -> tuple[str, float]:
+    """The command hooks.json runs for a Bash PreToolUse, and its timeout"""
+    return declared(hooks_json, "PreToolUse", "Bash")
+
+
+def stop_command(hooks_json: Path) -> tuple[str, float]:
+    """The command hooks.json runs on Stop, from its entry with no matcher, and its timeout"""
+    return declared(hooks_json, "Stop", None)
 
 
 def hook_input(cwd: Path) -> str:
     """A PreToolUse input for REFUSED, in the shape Claude Code sends"""
     return json.dumps(
         {
-            "session_id": "00000000-0000-4000-8000-000000000000",
+            "session_id": SESSION,
             "transcript_path": "",
             "cwd": str(cwd),
             "permission_mode": "default",
@@ -191,6 +215,73 @@ def hook_input(cwd: Path) -> str:
             "tool_use_id": "toolu_shipmill_self_test",
         }
     )
+
+
+def stop_transcript(cwd: Path) -> str:
+    """A headless session's JSONL transcript, in Claude Code's shape: a task, then a final
+    message that asks the maintainer while the session filed nothing on GitHub"""
+    session = {"isSidechain": False, "userType": "external", "cwd": str(cwd), "sessionId": SESSION}
+    task_id, final_id = "10000000-0000-4000-8000-000000000001", "10000000-0000-4000-8000-000000000002"
+    task = {
+        **session,
+        "parentUuid": None,
+        "type": "user",
+        "message": {"role": "user", "content": "shipmill doctor's Stop hook self-test"},
+        "uuid": task_id,
+    }
+    final = {
+        **session,
+        "parentUuid": task_id,
+        "type": "assistant",
+        "message": {
+            "id": "msg_shipmill_self_test",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": ASKED}],
+            "stop_reason": "end_turn",
+        },
+        "uuid": final_id,
+    }
+    return "".join(json.dumps(entry) + "\n" for entry in (task, final))
+
+
+def stop_input(cwd: Path, transcript: Path, active: bool) -> str:
+    """A Stop input for the self-test's transcript, in the shape Claude Code sends"""
+    return json.dumps(
+        {
+            "session_id": SESSION,
+            "transcript_path": str(transcript),
+            "cwd": str(cwd),
+            "permission_mode": "bypassPermissions",
+            "hook_event_name": "Stop",
+            "stop_hook_active": active,
+        }
+    )
+
+
+def stop_test(
+    checkout: Path, command: str, timeout: float, shell: str, hook: HookRunner, env: Mapping[str, str], named: str
+) -> tuple[str, str] | None:
+    """S-062-12: the Stop hook, in a headless gate session's environment, refuses the stop of
+    a final message asking the maintainer with no request on GitHub, and lets the same stop end
+    with stop_hook_active true. Each case gets a new empty TMPDIR, so no refusal record of an
+    earlier run lets it end; None when both hold, else what failed and how it exited"""
+    with tempfile.TemporaryDirectory(prefix="shipmill-stop-test-") as folder:
+        transcript = Path(folder) / "transcript.jsonl"
+        transcript.write_text(stop_transcript(checkout), encoding="utf-8")
+        for active in (False, True):
+            temp = Path(folder) / ("active" if active else "refused")
+            temp.mkdir()
+            gate = {**env, "SHIPMILL_GATE": "1", "SHIPMILL_MAINTAINER": MAINTAINER, "TMPDIR": str(temp)}
+            done = hook([shell, "-c", command], stop_input(checkout, transcript, active), checkout, gate, timeout)
+            said = done.stderr.strip().splitlines()
+            exited = "didn't finish" if done.code is None else f"exited {done.code}"
+            shown = "; ".join(said)[:300] or "no stderr"
+            if not active and not (done.code == 2 and said and said[0].startswith(STOP_REFUSAL)):
+                return f"the Stop hook of {named} {exited} on {CASE}, not 2 with its refusal", shown
+            if active and done.code != 0:
+                return f"the Stop hook of {named} {exited} on {CASE} with stop_hook_active true, not 0", shown
+    return None
 
 
 def self_test(
@@ -236,17 +327,24 @@ def self_test(
         command, timeout = pre_command(hooks_json)
     except ReleaseError as exc:
         return failed(str(exc), update)
-    done = hook(
-        [shell, "-c", command], hook_input(checkout), checkout, {**environ, "CLAUDE_PLUGIN_ROOT": str(root)}, timeout
-    )
+    env = {**environ, "CLAUDE_PLUGIN_ROOT": str(root)}
+    done = hook([shell, "-c", command], hook_input(checkout), checkout, env, timeout)
     said = done.stderr.strip().splitlines()
-    if done.code == 2 and said and said[0].startswith(REFUSAL):
-        if unreadable is not None:
-            return unreadable
-        return HookTest(None, None, f"self-test: {named} refused `{REFUSED}` (exit 2)")
-    shown = "; ".join(said)[:300] or "no stderr"
-    exited = "didn't finish" if done.code is None else f"exited {done.code}"
-    return failed(
-        f"the PreToolUse hook of {named} {exited} on `{REFUSED}`, not 2 with its refusal: {shown}",
-        f"fix what its stderr names, or update the plugin: {update}",
+    fix = f"fix what its stderr names, or update the plugin: {update}"
+    if not (done.code == 2 and said and said[0].startswith(REFUSAL)):
+        shown = "; ".join(said)[:300] or "no stderr"
+        exited = "didn't finish" if done.code is None else f"exited {done.code}"
+        return failed(f"the PreToolUse hook of {named} {exited} on `{REFUSED}`, not 2 with its refusal: {shown}", fix)
+    try:  # S-062-12: the Stop cases, against the same install
+        stop, stop_timeout = stop_command(hooks_json)
+    except ReleaseError as exc:
+        return failed(str(exc), update)
+    stopped = stop_test(checkout, stop, stop_timeout, shell, hook, env, named)
+    if stopped is not None:
+        problem, shown = stopped
+        return failed(f"{problem}: {shown}", fix)
+    if unreadable is not None:
+        return unreadable
+    return HookTest(
+        None, None, f"self-test: {named} refused `{REFUSED}` and {CASE} (exit 2), and let it end on stop_hook_active"
     )
