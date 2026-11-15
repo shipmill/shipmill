@@ -1,7 +1,8 @@
-"""#1179: move-major-tag.yml pushes the major tag and the marketplace commit as the App when its
+"""#1179: move-major-tag.yml pushes the marketplace commit as the App when its
 `land-environment` input names the environment land.yml lands through (spec 054), since a
-ruleset whose only bypass actor is the App refuses the workflow token's push to main. Empty,
-it pushes with the workflow token, as before.
+ruleset whose only bypass actor is the App refuses the workflow token's push to main. The
+major tag's force-push stays with the workflow token, as land's tags do (spec 054: a branch
+ruleset doesn't cover tags). Empty, both push with the workflow token, as before.
 
 The workflow is read with the eval suite's strict YAML reader, and its key and App steps run
 here as bash with the env GitHub gives them, so their exits, files, and the git config they
@@ -108,42 +109,20 @@ def test_only_the_key_step_reads_a_secret_and_the_app_steps_run_only_when_the_in
     # the push steps read no key and no token: the App's credential reaches git through GITHUB_ENV
     for name in (TAG_STEP, MARKETPLACE_STEP):
         assert "APP_KEY" not in _step(name).get("env", {}) and "token" not in str(_step(name)).lower()
+        assert "GIT_CONFIG" not in str(_step(name))
 
 
-def test_the_app_steps_run_before_either_push_and_the_major_tag_stays_a_force_push() -> None:
+def test_the_major_tag_pushes_before_the_app_config_exists_and_stays_a_force_push() -> None:
+    """GITHUB_ENV reaches only the steps after the one that writes it: the major tag's push,
+    before it, goes with the workflow token (spec 054); the marketplace's, after it, as the App.
+    The key step's checks come before either push, so a half-done opt-in pushes nothing"""
     names = [s.get("name") for s in STEPS]
-    assert names.index(KEY_STEP) < names.index(APP_STEP) < names.index(TAG_STEP) < names.index(MARKETPLACE_STEP)
+    assert names.index(KEY_STEP) < names.index(TAG_STEP) < names.index(APP_STEP) < names.index(MARKETPLACE_STEP)
     assert 'git push -f origin "refs/tags/$major"' in _script(TAG_STEP)
+    assert "GITHUB_ENV" not in _script(KEY_STEP)
 
 
 # Set, the key becomes a 0600 file and git a credential helper that holds no token
-
-
-def test_the_key_step_hands_over_only_a_path() -> None:
-    key = _step(KEY_STEP)
-    assert key["id"] == "key"
-    assert key["env"] == {"KEY": "${{ secrets.SHIPMILL_LAND_KEY }}", "ENVIRONMENT": "${{ inputs.land-environment }}"}
-    assert _step(APP_STEP)["env"]["APP_KEY"] == "${{ steps.key.outputs.path }}"
-
-
-def test_the_key_is_masked_and_written_mode_0600_under_runner_temp(tmp_path: Path) -> None:
-    proc, _ = _bash(KEY_STEP, tmp_path, tmp_path, {"KEY": PEM, "ENVIRONMENT": "shipmill-land"})
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.splitlines() == [f"::add-mask::{line}" for line in PEM.splitlines()]
-    outputs = _outputs(tmp_path)
-    assert set(outputs) == {"path"}
-    path = Path(outputs["path"])
-    assert path.parent == tmp_path
-    assert path.read_text(encoding="utf-8") == PEM + "\n"
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
-
-
-def test_an_empty_secret_fails_naming_it_and_the_environment(tmp_path: Path) -> None:
-    proc, _ = _bash(KEY_STEP, tmp_path, tmp_path, {"KEY": "", "ENVIRONMENT": "shipmill-land"})
-    assert proc.returncode == 1
-    assert proc.stdout.startswith("::error::move-major-tag: the environment shipmill-land has no SHIPMILL_LAND_KEY")
-    assert "Nothing was pushed" in proc.stdout
-    assert _outputs(tmp_path) == {}
 
 
 @pytest.fixture
@@ -154,11 +133,49 @@ def checkout(tmp_path: Path) -> Path:
     return work
 
 
+def test_the_key_step_hands_over_only_a_path_and_the_app_id() -> None:
+    key = _step(KEY_STEP)
+    assert key["id"] == "key"
+    assert key["env"] == {"KEY": "${{ secrets.SHIPMILL_LAND_KEY }}", "ENVIRONMENT": "${{ inputs.land-environment }}"}
+    app = _step(APP_STEP)["env"]
+    assert (app["APP_KEY"], app["APP_ID"]) == ("${{ steps.key.outputs.path }}", "${{ steps.key.outputs.app-id }}")
+
+
+def test_the_key_is_masked_and_written_mode_0600_under_runner_temp(checkout: Path, tmp_path: Path) -> None:
+    proc, _ = _bash(KEY_STEP, checkout, tmp_path, {"KEY": PEM, "ENVIRONMENT": "shipmill-land"})
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == [f"::add-mask::{line}" for line in PEM.splitlines()]
+    outputs = _outputs(tmp_path)
+    assert set(outputs) == {"path", "app-id"}
+    assert outputs["app-id"] == "42"
+    path = Path(outputs["path"])
+    assert path.parent == tmp_path
+    assert path.read_text(encoding="utf-8") == PEM + "\n"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_an_empty_secret_fails_naming_it_and_the_environment(checkout: Path, tmp_path: Path) -> None:
+    proc, _ = _bash(KEY_STEP, checkout, tmp_path, {"KEY": "", "ENVIRONMENT": "shipmill-land"})
+    assert proc.returncode == 1
+    assert proc.stdout.startswith("::error::move-major-tag: the environment shipmill-land has no SHIPMILL_LAND_KEY")
+    assert "Nothing was pushed" in proc.stdout
+    assert _outputs(tmp_path) == {}
+
+
+def test_without_an_app_id_the_key_step_fails_naming_it_before_any_push(checkout: Path, tmp_path: Path) -> None:
+    (checkout / ".github" / "shipmill.toml").write_text('mode = "auto"\n')
+    proc, _ = _bash(KEY_STEP, checkout, tmp_path, {"KEY": PEM, "ENVIRONMENT": "shipmill-land"})
+    assert proc.returncode == 1
+    assert "[agents] app_id" in proc.stdout and "Nothing was pushed" in proc.stdout
+    assert _outputs(tmp_path) == {}
+    assert not (tmp_path / "shipmill-land-key.pem").exists()
+
+
 def test_the_push_config_clears_the_workflow_token_and_sends_the_apps_credential(
     checkout: Path, tmp_path: Path
 ) -> None:
     key = tmp_path / "shipmill-land-key.pem"
-    env = {"APP_KEY": str(key), "TAG": "v0.67.0", "GITHUB_REPOSITORY": "shipmill/shipmill"}
+    env = {"APP_KEY": str(key), "APP_ID": "42", "TAG": "v0.67.0", "GITHUB_REPOSITORY": "shipmill/shipmill"}
     proc, github_env = _bash(APP_STEP, checkout, tmp_path, env)
     assert proc.returncode == 0, proc.stderr
     tool = "!uvx --from shipmill==0.67.0 shipmill"
@@ -182,7 +199,7 @@ def test_the_push_config_reaches_git(checkout: Path, tmp_path: Path) -> None:
         ["git", "-C", str(checkout), "config", "http.https://github.com/.extraheader", "AUTHORIZATION: basic x"],
         check=True,
     )
-    env = {"APP_KEY": str(tmp_path / "k.pem"), "TAG": "v0.67.0", "GITHUB_REPOSITORY": "shipmill/shipmill"}
+    env = {"APP_KEY": str(tmp_path / "k.pem"), "APP_ID": "42", "TAG": "v0.67.0", "GITHUB_REPOSITORY": "o/r"}
     proc, github_env = _bash(APP_STEP, checkout, tmp_path, env)
     assert proc.returncode == 0, proc.stderr
     git_env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path)} | _config(github_env)
@@ -202,12 +219,3 @@ def test_the_push_config_reaches_git(checkout: Path, tmp_path: Path) -> None:
         check=True,
     ).stdout.splitlines()
     assert headers[-1] == ""  # git's rule: the last, empty, value resets the list
-
-
-def test_without_an_app_id_the_step_fails_naming_it(checkout: Path, tmp_path: Path) -> None:
-    (checkout / ".github" / "shipmill.toml").write_text('mode = "auto"\n')
-    env = {"APP_KEY": str(tmp_path / "k.pem"), "TAG": "v0.67.0", "GITHUB_REPOSITORY": "shipmill/shipmill"}
-    proc, github_env = _bash(APP_STEP, checkout, tmp_path, env)
-    assert proc.returncode == 1
-    assert "[agents] app_id" in proc.stdout and "Nothing was pushed" in proc.stdout
-    assert github_env.read_text() == ""
