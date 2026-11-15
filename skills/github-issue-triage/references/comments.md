@@ -96,6 +96,8 @@ CI on {sha7}: {N checks green}
 Reply here with a number or your own answer; shipmill takes this up on the tick after your reply.
 ```
 
+A spec PR in `accepted-spec` at `notify`, in no stricter zone and with no item under "Decisions for you" in a stricter one, asks nothing: the session takes every recommendation and posts the [decided comment](needs-decision.md#a-decided-comment) on the spec PR instead, its zone `accepted-spec`, with the `decided` label and the head it decided on in the hidden `<!-- shipmill:head {sha} -->` line under its first sentence, `@{login} Decided without waiting: spec {NNN}, {what it specifies}, is approved for #{feature issue}, which you accepted, taking every recommendation under "Decisions for you".` Its `Why:` names D-88, and its `Not taken:` says the build waits for the window (spec 067, [spec-gate.md](spec-gate.md#approved-at-notify)). github-pr-triage lands it on that comment once it is green; a change to the spec since that isn't format only needs a new one.
+
 Once the spec merges, edit the issue body to link it and split the spec into build issues ([spec-gate.md](spec-gate.md), Split it into build issues). Comment the Implement template on each build issue, naming the spec and the criteria it delivers.
 
 ## Postpone

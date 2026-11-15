@@ -1,0 +1,3 @@
+### Added
+
+- `pr_gate.py` lands a spec pull request in `accepted-spec` at `notify` (the base's `[decisions]`, never the PR's) on the `--bot-login`'s newest decided comment naming the zone and the judged head, or a head whose spec change `specs.py same-approval` reads as format only; until then it reads NEEDS_DECISION with a `needs-decision: accepted-spec: <why>` line, which the maintainer's answer also lifts. The skills say how a session decides such a spec pull request: take every recommendation and post the decided comment with its `<!-- shipmill:head <sha> -->` line. Spec 067 is built (#1193)

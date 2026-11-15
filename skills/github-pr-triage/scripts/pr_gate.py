@@ -63,6 +63,15 @@ above; the plan check stays. Each zone by its level, read from that branch, neve
   comment before it merges
 - act: nothing
 
+The spec of accepted work (spec 067): classify's `accepted-spec` zone at notify, a level read from
+that branch, never the PR, lifts no ask on its own. The --bot-login's newest decided comment on the
+PR (its first line `<!-- shipmill:decided zone=<id> until=<time> -->`, read from the PR's thread as
+the answer is) must name the zone accepted-spec and, on its line `<!-- shipmill:head <sha> -->`, the
+judged head, or a head whose own change is the judged head's as the answer's is (the spec files by
+`specs.py same-approval`, every other file byte for byte). Otherwise the PR reads NEEDS_DECISION,
+`  needs-decision: accepted-spec: <why>`, which a new decided comment or the maintainer's answer
+lifts; a decided comment by anyone else, the maintainer too, never counts.
+
 Without [agents] on that branch the gate judges as it did before spec 030.
 
 A spec pull request (spec 053), one that adds a file docs/specs/NNN-<slug>.md (the files API's
@@ -1444,7 +1453,13 @@ def same_change(checkout: str, base_ref: str, answered: str, head: str, specs: t
 
 
 def acceptance(
-    data: dict, number: int, repo: str | None, bot_login: str | None, checkout: str, maintainers: Maintainers
+    data: dict,
+    number: int,
+    repo: str | None,
+    bot_login: str | None,
+    checkout: str,
+    maintainers: Maintainers,
+    thread: dict | None = None,
 ) -> tuple[bool, str | None]:
     """Whether the maintainer's answer covers the judged head (spec 055), and, when it doesn't,
     the needs-decision line that says why (None for no line): the newest question on the pull
@@ -1454,10 +1469,10 @@ def acceptance(
     its whole reply taking the (recommended) option, by retro.py's takes_recommended; given on
     an issue before the pull request opened, or at the head the question names in full (its
     `<!-- shipmill:head <sha> -->` line) or one whose own change is the judged head's. Anything
-    else leaves the question open"""
+    else leaves the question open. thread is the pull request's, when this pass already read it"""
     rt = retro()
     bots = frozenset({bot_login}) if bot_login else frozenset()
-    thread = pr_thread(number, repo)
+    thread = pr_thread(number, repo) if thread is None else thread
     comments, whole = comments_of(thread, f"#{number}")
     asked = newest_question(comments, bots)
     on_issue = False
@@ -1491,6 +1506,61 @@ def acceptance(
     if same_change(checkout, base_of(data, checkout), answered, head, specs):
         return True, None
     return False, DIFFERS.format(sha7=answered[:7])
+
+
+# The spec of accepted work at notify (spec 067): the --bot-login's decided comment covers its head
+ACCEPTED_SPEC = "accepted-spec"
+# a decided comment's first line (needs-decision.md, A decided comment), as retro.py's DECIDED_MARK
+DECIDED_FIRST = re.compile(r"<!-- shipmill:decided zone=([a-z][a-z-]*) until=\S+ -->")
+NO_BOT = "no --bot-login names who posts the decided comment, so none counts"
+NOT_DECIDED = (
+    "no decided comment of {bot} on record; post one naming the head with its `<!-- shipmill:head <sha> -->` line"
+)
+OTHER_ZONE = "the newest decided comment of {bot} is for the zone {zone}; post one for accepted-spec naming the head"
+DECIDED_NO_HEAD = "the decided comment names no head: post it again with its `<!-- shipmill:head <sha> -->` line"
+DECIDED_DIFFERS = "decided at {sha7}, and the change differs since; post a new decided comment naming the head"
+
+
+def notify_zone(zones: tuple[Zone, ...] | None, zone: str) -> bool:
+    """Whether classify reports the zone at notify, the level it read from the base"""
+    return any(z.zone == zone and z.level == "notify" for z in zones or ())
+
+
+def decided(
+    data: dict, number: int, repo: str | None, bot_login: str | None, checkout: str, thread: dict
+) -> str | None:
+    """Why the spec of accepted work at notify isn't decided at the judged head (spec 067), or None
+    when it is: the --bot-login's newest decided comment on the pull request, its zone accepted-spec,
+    naming in full on its `<!-- shipmill:head <sha> -->` line the judged head or a head whose own
+    change is the judged head's (same_change: the spec files by specs.py same-approval, D-81, every
+    other file byte for byte). A decided comment by anyone else never counts, the maintainer's too:
+    the maintainer approves by an answer (D-49)"""
+    if not bot_login:
+        return NO_BOT
+    rt = retro()
+    comments, _ = comments_of(thread, f"#{number}")
+    bot = bot_login.lower()
+    mine = [
+        c
+        for c in comments
+        if DECIDED_FIRST.fullmatch(rt.first_line(c["body"])) and bot in rt.login_names(c.get("author"))
+    ]
+    if not mine:
+        return NOT_DECIDED.format(bot=bot_login)
+    newest = mine[-1]["body"]
+    found = DECIDED_FIRST.fullmatch(rt.first_line(newest))
+    assert found is not None  # mine holds only decided comments
+    if found.group(1) != ACCEPTED_SPEC:
+        return OTHER_ZONE.format(bot=bot_login, zone=found.group(1))
+    named = asked_at(newest)
+    if named is None:
+        return DECIDED_NO_HEAD
+    head = str(data["headRefOid"])
+    if named == head:
+        return None
+    if same_change(checkout, base_of(data, checkout), named, head, added_specs(data, number, repo)):
+        return None
+    return DECIDED_DIFFERS.format(sha7=named[:7])
 
 
 # a review of the merging head (spec 055): the records the App writes with `shipmill review record`
@@ -1777,11 +1847,17 @@ def main() -> int:
                 if base.agents and base.ref is not None:
                     zones = classifier.zones(number, base.ref, str(data["headRefOid"]))
                 judged = judge(data, number, base, agent, zones, spec)
+                thread: dict | None = None  # the PR's thread, read once a pass for both checks below
+                if data["state"] == "OPEN" and notify_zone(zones, ACCEPTED_SPEC):  # spec 067
+                    thread = pr_thread(number, args.repo)
+                    why = decided(data, number, args.repo, args.bot_login, bases.checkout, thread)
+                    if why is not None:
+                        judged = replace(judged, asks=(*judged.asks, f"{ACCEPTED_SPEC}: {why}"))
                 if judged.verdict == NEEDS_DECISION:  # the answer on GitHub lifts the asks (spec 055)
                     if base.maintainers not in maintainers:  # one per base read: its permission reads too
                         maintainers[base.maintainers] = Maintainers(base.maintainers, args.repo)
                     who = maintainers[base.maintainers]
-                    covered, why = acceptance(data, number, args.repo, args.bot_login, bases.checkout, who)
+                    covered, why = acceptance(data, number, args.repo, args.bot_login, bases.checkout, who, thread)
                     judged = replace(judged, asks=() if covered else (*judged.asks, *([why] if why else [])))
                 if data["state"] == "OPEN":
                     branch = str(data["baseRefName"])
