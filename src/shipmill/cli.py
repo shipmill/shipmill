@@ -65,9 +65,10 @@
                   --prune removes the REMOVABLE ones and their local branches
   app-token       print a GitHub App installation token limited to one repo, cached while it has
                   10 minutes left (in the checkout, else under $XDG_CACHE_HOME/shipmill);
-                  --git-credential answers as git's credential helper; --product, in the
-                  product's home repo, prints the coordinator's token over the listed repos of
-                  the repo's owner (spec 038)
+                  --git-credential answers as git's credential helper; --permission NAME=ACCESS,
+                  repeatable, asks for those permissions alone, cached apart (D-90); --product, in
+                  the product's home repo, prints the coordinator's token over the listed repos
+                  of the repo's owner (spec 038)
   gh              run gh with the arguments that follow, as the repo's GitHub App when
                   [agents] app_id is set (the token limited to gh's -R/--repo, else origin's
                   repo); exits with gh's code. Without app_id a read runs as the host's gh
@@ -171,6 +172,7 @@ from shipmill.app import (
     Api,
     BotIds,
     Identity,
+    Narrowing,
     NotInstalled,
     Openssl,
     Signer,
@@ -795,6 +797,17 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "answer git's credential protocol on stdin: get prints username=x-access-token and the token "
             "as password for https://github.com; store, erase, and other operations print nothing"
+        ),
+    )
+    p.add_argument(
+        "--permission",
+        action="append",
+        metavar="NAME=ACCESS",
+        help=(
+            "repeatable: ask for this permission alone instead of a session's whole table, such as "
+            "contents=write; each NAME is one the App's table has, at read or write but no more than the table's "
+            "access (metadata read comes with every token); the token is cached apart in "
+            "app-token-<permissions>.json; with --git-credential too, never with --check or --product (D-90)"
         ),
     )
     p.add_argument(
@@ -1623,6 +1636,11 @@ def _app_token(
         raise ReleaseError(f"--app-id must be 1 or more, got {app_id}")
     key: Path = args.app_key if args.app_key is not None else session_key(app_id, environ, home)
     if args.product:
+        if args.permission is not None:
+            raise ReleaseError(
+                "--permission narrows a token limited to one repo, never --product's, "
+                "whose permissions are fixed (D-90)"
+            )
         if args.git_credential is not None:
             raise ReleaseError(
                 "--product's token never goes to git: the coordinator's pushes reach only the home repo, "
@@ -1637,11 +1655,12 @@ def _app_token(
         cache = state_dir(Git(top)) / product_cache(args.slug.partition("/")[0])
         print(product_token(cache, repos, app_id, key, dt.datetime.now(dt.UTC), signer, api))
         return 0
+    narrowing = None if args.permission is None else Narrowing.parse(tuple(args.permission))
     cache = _cache(root, args.slug, environ, home)
     _component_token(root, args.slug)
 
     def token() -> str:
-        return app_token(cache, args.slug, app_id, key, dt.datetime.now(dt.UTC), signer, api)
+        return app_token(cache, args.slug, app_id, key, dt.datetime.now(dt.UTC), signer, api, narrowing)
 
     if args.git_credential is None:
         print(token())
@@ -1660,6 +1679,7 @@ def _app_check(root: Path, args: argparse.Namespace, environ: Mapping[str, str],
         "--app-id": args.app_id,
         "--app-key": args.app_key,
         "--git-credential": args.git_credential,
+        "--permission": args.permission,
         "--product": args.product or None,
     }
     given = [flag for flag, value in passed.items() if value is not None]

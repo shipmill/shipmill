@@ -21,6 +21,10 @@ from the coordinator's session still reaches only the home repo.
 A component has a third (spec 065, D-84): over its home and the repos the home lists, of one
 owner, with READ_PERMISSIONS, cached apart in `app-token-read-<owner>.json`; it too never
 reaches the session's cache or helpers.
+
+A narrowed token (D-90), `shipmill app-token --permission`, asks for the named permissions
+alone, each at no more than the session's table grants, and is cached apart in
+`app-token-<permissions>.json`.
 """
 
 import base64
@@ -160,6 +164,66 @@ LAND_PERMISSIONS = (
     Permission("contents", "Contents", Access.WRITE),
     Permission("workflows", "Workflows", Access.WRITE),
 )
+
+# D-90: what `shipmill app-token --permission` may name: the session's table and its optional
+# permissions (D-77), each at no more than its access there
+_NARROWABLE: dict[str, Permission] = {p.key: p for p in PERMISSIONS + OPTIONAL_PERMISSIONS}
+# GitHub grants it to every installation token, asked or not
+IMPLIED = Permission("metadata", "Metadata", Access.READ)
+
+
+def _narrow_refusal(given: str, reason: str) -> ReleaseError:
+    return ReleaseError(f"--permission {given!r}: {reason}; no token was asked for (D-90)")
+
+
+@dataclass(frozen=True, slots=True)
+class Narrowing:
+    """D-90: the permissions a narrowed `shipmill app-token` asks GitHub for instead of a
+    session's table: each one the table knows, at no more than the table's access, one per
+    name, sorted by name. Its token is cached apart from the session's `app-token.json`"""
+
+    permissions: tuple[Permission, ...]
+
+    def __post_init__(self) -> None:
+        keys = [p.key for p in self.permissions]
+        if not keys or keys != sorted(set(keys)):
+            raise ReleaseError("a narrowed token asks for one or more permissions, each named once, sorted by name")
+        for p in self.permissions:
+            known = _NARROWABLE.get(p.key)
+            if known is None or not known.access.covers(p.access):
+                raise ReleaseError(f"a narrowed token asks for no permission beyond the App's table, got {p.named()}")
+
+    @classmethod
+    def parse(cls, given: tuple[str, ...]) -> Narrowing:
+        """The repeatable `--permission <name>=<read|write>`; a malformed one, a name the table
+        doesn't know, an access word but read or write, an access above the table's, or one
+        name at two accesses raises before any request. The same one twice is one"""
+        chosen: dict[str, Permission] = {}
+        for each in given:
+            name, equals, word = each.partition("=")
+            if not equals or not name or "=" in word:
+                raise _narrow_refusal(each, "it is <name>=<read|write>, such as contents=write")
+            known = _NARROWABLE.get(name)
+            if known is None:
+                raise _narrow_refusal(each, f"the App's table has no {name!r}; it has {', '.join(sorted(_NARROWABLE))}")
+            if word not in (Access.READ.value, Access.WRITE.value):
+                raise _narrow_refusal(each, f"the access is read or write, not {word!r}")
+            access = Access(word)
+            if not known.access.covers(access):
+                raise _narrow_refusal(each, f"the App's table has {known.named()}, and a token asks for no more")
+            prior = chosen.get(name)
+            if prior is not None and prior.access is not access:
+                raise _narrow_refusal(each, f"{name} is also asked as {prior.access}; name it once")
+            chosen[name] = Permission(known.key, known.label, access, known.serves)
+        if not chosen:
+            raise ReleaseError("--permission names no permission; no token was asked for (D-90)")
+        return cls(tuple(chosen[key] for key in sorted(chosen)))
+
+    @property
+    def cache(self) -> str:
+        """The token's cache file, beside the session's `app-token.json` and never it, nor a
+        product or read token's: each part is a table's name and its access, sorted by name"""
+        return "app-token-" + "-".join(f"{p.key}-{p.access}" for p in self.permissions) + ".json"
 
 
 def default_key(app_id: int, home: Path) -> Path:
@@ -827,11 +891,13 @@ def mint(
     api: Api,
     table: tuple[Permission, ...] = PERMISSIONS,
     optional: tuple[Permission, ...] = (),
+    exact: bool = False,
 ) -> Token:
     """Spec 004, Tokens: an installation token limited to repo and the table's permissions (a
     session's, unless another is given), plus each optional one the installation grants (D-77):
     GitHub refuses a token asking for a permission the installation hasn't accepted, so one it
-    lacks is never asked for, only named in the token's notices"""
+    lacks is never asked for, only named in the token's notices. Exact (D-90), a token GitHub
+    gives with a permission it wasn't asked for, or broader, but metadata read, is refused"""
     name = repo_name(repo)
     bearer = jwt(app_id, check_key(key), now, signer)
     found = installation(app_id, repo, bearer, api, table)
@@ -851,18 +917,49 @@ def mint(
     if expires is None:
         raise ReleaseError(f"POST {path} gave no expires_at with an offset")
     _scope(data, repo, path)
+    if exact:
+        _no_broader(data, asked, path)
     return Token(value, expires, repo, app_id, found.notices(repo, optional))
 
 
-def app_token(cache: Path, repo: str, app_id: int, key: Path, now: dt.datetime, signer: Signer, api: Api) -> str:
+def _no_broader(data: Mapping[str, object], asked: tuple[Permission, ...], path: str) -> None:
+    """D-90: GitHub's answer grants nothing but the asked permissions at their access, and
+    metadata read, which it adds to every token"""
+    granted = data.get("permissions")
+    if not isinstance(granted, dict):
+        raise ReleaseError(f"POST {path} gave a token without its permissions; refusing it")
+    allowed = {IMPLIED.key: IMPLIED.access} | {p.key: p.access for p in asked}
+    for key, value in granted.items():
+        access = _ACCESS.get(value) if isinstance(value, str) else None
+        wanted = allowed.get(key) if isinstance(key, str) else None
+        if access is None or wanted is None or not wanted.covers(access) or value == "admin":
+            raise ReleaseError(f"POST {path} gave a token with {key}: {value}, broader than it asked; refusing it")
+
+
+def app_token(
+    cache: Path,
+    repo: str,
+    app_id: int,
+    key: Path,
+    now: dt.datetime,
+    signer: Signer,
+    api: Api,
+    narrowing: Narrowing | None = None,
+) -> str:
     """The cached token while it has at least 10 minutes left by this host's clock, else a new
     one, cached. GitHub's expiry is an hour out, so the margin also absorbs a host clock up to
-    10 minutes behind GitHub's"""
+    10 minutes behind GitHub's. Narrowed (D-90), the token asks for the narrowing's permissions
+    alone and is cached beside the session's cache under the narrowing's name, never in it"""
     repo_name(repo)
+    if narrowing is not None:
+        cache = cache.with_name(narrowing.cache)
     cached = load_token(cache)
     if cached is not None and cached.reusable(repo, app_id, now):
         return cached.value
-    fresh = mint(app_id, repo, key, now, signer, api, PERMISSIONS, OPTIONAL_PERMISSIONS)
+    if narrowing is None:
+        fresh = mint(app_id, repo, key, now, signer, api, PERMISSIONS, OPTIONAL_PERMISSIONS)
+    else:
+        fresh = mint(app_id, repo, key, now, signer, api, narrowing.permissions, exact=True)
     save_token(cache, fresh)
     return fresh.value
 

@@ -1,0 +1,3 @@
+### Added
+
+- `shipmill app-token <owner/name>` takes a repeatable `--permission <name>=<read|write>`: given, the token asks GitHub for exactly those permissions (metadata read comes with every token), each one the App's table has at no more than its access there, else it exits 2 before any request; the narrowed token is cached apart in `app-token-<permissions>.json`, never in the session's `app-token.json`, and the flag goes with `--git-credential` but not `--check` or `--product`. `move-major-tag.yml`'s marketplace push now mints its token with `--permission contents=write`, so it no longer carries issues and pull requests write it never used; without the flag nothing changes (D-90) (#1189)
