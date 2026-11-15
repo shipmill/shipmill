@@ -73,6 +73,28 @@ def test_s026_18_install_says_the_hooks_come_with_the_plugin_need_uv_and_doctor_
     assert phrase in folded("docs", "install.md")
 
 
+def test_s062_14_needs_decision_says_the_stop_hook_refuses_a_request_left_in_the_final_message() -> None:
+    gate = section(
+        folded("skills", "github-issue-triage", "references", "needs-decision.md"), "## Gate sessions", " ## "
+    )
+    assert "A headless session's request is on GitHub before it ends (spec 062)" in gate
+    assert "can't end with a request to the maintainer only there" in gate
+    assert "The plugin's Stop hook refuses the first such stop" in gate
+
+
+def test_s062_14_install_lists_the_stop_hook_and_what_it_checks() -> None:
+    text = folded("docs", "install.md")
+    assert "A Stop hook checks a headless gate session's end (spec 062)" in text
+    assert "the session filed no issue and labelled nothing `needs-decision`, it refuses that stop once" in text
+    assert "the Stop hook doesn't refuse a stop that asks the maintainer" in text
+
+
+def test_s062_14_spec_026_says_spec_062_added_the_stop_hook_under_s026_19() -> None:
+    text = folded("docs", "specs", "026-delivery-hooks.md")
+    after = section(text, "- S-026-19: `hooks/hooks.json` declares", " ## ")
+    assert "Spec 062 added a third hook, `Stop` with no matcher" in after
+
+
 def test_s026_18_a_comment_above_headless_tools_points_to_the_hooks() -> None:
     lines = (ROOT / "src" / "shipmill" / "gate.py").read_text(encoding="utf-8").splitlines()
     at = next(i for i, line in enumerate(lines) if line.startswith("HEADLESS_TOOLS = ("))

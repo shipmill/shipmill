@@ -161,14 +161,19 @@ command to run instead. In a session `shipmill gate` started headless they also 
 `uv run` of anything but Python and the project's tools (D-82), which `[hooks] uv_run`
 widens; `uv run python -c`, `uvx`, and its long form `uv tool run`
 still start any program, a known limit. Everywhere
-else they allow every command. They need `uv` on your
+else they allow every command. A Stop hook checks a headless gate session's end (spec 062):
+when its final message addresses the maintainer (names `@<login>`, or starts a line with
+`For you`, `Decision needed`, or another of its phrases) and the session filed no issue and
+labelled nothing `needs-decision`, it refuses that stop once with exit 2, so the session puts
+the request on GitHub; an interactive session or a person's is never checked. They need `uv` on your
 `PATH`, which runs them on a Python 3.11 or newer it finds or installs. When a hook can't
 start its script (no `uv`, no such Python to be had, offline or with `python-downloads =
 "never"`, or the script missing), it prints `shipmill hook: can't start hooks/delivery.py
 (<the reason>); this command runs unchecked, see shipmill doctor` and exits 1, so the
 command runs unchecked rather than every command being blocked. `$CR doctor` tests them:
 for a repo with `[agents]` it prints one line per rule, on or off, and runs a self-test
-that FAILs naming the fix when the hook doesn't refuse, which keeps a headless gate from
+that FAILs naming the fix when the PreToolUse hook doesn't refuse, or the Stop hook doesn't
+refuse a stop that asks the maintainer or doesn't let it end once refused, which keeps a headless gate from
 starting a session. The switches are in [the policy](release-lanes.md#delivery-hooks).
 
 For a checkout of shipmill you edit, or for Codex, link the skill folders instead:
