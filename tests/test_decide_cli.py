@@ -7,11 +7,12 @@ from typing import Any
 
 import pytest
 
+from shipmill.agent_marker import MARKER
 from shipmill.classify import Pulls, RepoPath
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
-from shipmill.github import FileChange, GhCli, PullChange, RunAttempt, RunJob
+from shipmill.github import FileChange, GhCli, PullChange, RunAttempt, RunJob, SpecIssue, spec_issue_of
 
 from .conftest import POLICY, Repo
 
@@ -70,6 +71,8 @@ class FakePulls:
     jobs: dict[tuple[int, int], tuple[RunJob, ...]] = field(default_factory=dict)
     blobs: dict[tuple[str, str], str] = field(default_factory=dict)
     run_reads: list[tuple[str, object]] = field(default_factory=list)
+    issues: dict[int, SpecIssue] = field(default_factory=dict)
+    issue_reads: list[int] = field(default_factory=list)
 
     def pull_change(self, number: int) -> PullChange:
         return PullChange(number, BASE, HEAD, self.files, (), self.body, "o/demo")
@@ -89,6 +92,10 @@ class FakePulls:
     def blob_at(self, sha: str, path: str) -> str:
         self.run_reads.append(("blob", (sha, path)))
         return self.blobs[(sha, path)]
+
+    def spec_issue(self, number: int) -> SpecIssue:
+        self.issue_reads.append(number)
+        return self.issues[number]
 
 
 def commit(repo: Repo, config: str = POLICY, **files: str) -> None:
@@ -380,6 +387,207 @@ def test_s030_8_a_header_going_from_draft_to_approved_is_scope_whatever_else_the
         {(BASE, SPEC): spec_text("draft", "status: approved"), (HEAD, SPEC): spec_text("approved")},
     )
     assert zones_of(run(repo, capsys, "classify", "--pr", "8", pulls=pulls)) == {"scope": "ask"}
+
+
+# -- accepted-spec (spec 067) -----------------------------------------------------------------
+
+APPROVES = FileChange(SPEC, "modified", patch("status: approved", removed=("status: draft",), start=3))
+
+
+def issue(
+    number: int = 12,
+    *,
+    state: str | None = "open",
+    labels: tuple[str, ...] | None = (),
+    login: str | None = "maintainer",
+    bot: bool | None = False,
+    association: str | None = "OWNER",
+    body: str | None = "Build the thing",
+    pull: bool = False,
+) -> SpecIssue:
+    return SpecIssue(number, state, labels, login, bot, association, body, pull)
+
+
+def opportunity(number: int = 12, *labels: str) -> SpecIssue:
+    """An opportunity as product intake files it: by the App, with the agent marker"""
+    found = labels or ("opportunity", "planned")
+    return issue(number, labels=found, login="shipmill-romamo", bot=True, association="NONE", body=f"x\n\n{MARKER}")
+
+
+def approving(body: str, *issues: SpecIssue, files: tuple[FileChange, ...] = ()) -> FakePulls:
+    """A pull request that approves SPEC, with the body and the issues its `Spec for` lines name"""
+    texts = {(BASE, SPEC): spec_text("draft"), (HEAD, SPEC): spec_text("approved")}
+    return FakePulls((APPROVES, *files), texts, body=body, issues={i.number: i for i in issues})
+
+
+@pytest.mark.parametrize(
+    ("body", "issues", "why"),
+    [
+        pytest.param("Spec for #12", (opportunity(),), "#12 is an accepted opportunity", id="opportunity-planned"),
+        pytest.param("Spec for #12", (opportunity(12, "Opportunity", "Planned"),), None, id="labels-any-case"),
+        pytest.param("Spec for #12", (issue(),), "#12 was filed by maintainer (OWNER)", id="owner"),
+        pytest.param("Spec for #12", (issue(association="MEMBER"),), None, id="member"),
+        pytest.param("Spec for #12", (issue(association="COLLABORATOR", body=""),), None, id="collaborator"),
+        pytest.param("- Spec for o/demo#12", (issue(),), None, id="owner-repo-of-its-own-repo"),
+        pytest.param(
+            "Spec for #12\nSpec for #13\nSpec for #12",
+            (opportunity(), issue(13)),
+            "#12 is an accepted opportunity, #13 was filed by maintainer (OWNER)",
+            id="every-issue-accepted",
+        ),
+    ],
+)
+def test_s067_4_a_spec_of_accepted_work_is_accepted_spec_not_scope(
+    repo: Repo, capsys: pytest.CaptureFixture[str], body: str, issues: tuple[SpecIssue, ...], why: str | None
+) -> None:
+    commit(repo)
+    pulls = approving(f"{body}\n\n## Plan\n", *issues)
+    found = run(repo, capsys, "classify", "--pr", "8", pulls=pulls)
+    assert zones_of(found) == {"accepted-spec": "ask"}  # the default level (D-63)
+    assert found["level"] == "ask"
+    if why is not None:
+        assert found["zones"][0]["reason"] == f"{SPEC}'s status line becomes approved, and its work is accepted: {why}"
+    assert sorted(pulls.issue_reads) == sorted({i.number for i in issues})  # each read once
+
+
+def test_s067_4_accepted_spec_takes_the_bases_level_and_the_issues_are_read_once_per_pull_request(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(repo, POLICY + '\n[decisions]\naccepted-spec = "notify"\n')
+    other = "docs/specs/032-y.md"
+    pulls = approving("Spec for #12", opportunity(), files=(FileChange(other, "added", patch("x")),))
+    pulls.texts[(HEAD, other)] = spec_text("approved")
+    found = run(repo, capsys, "classify", "--pr", "8", pulls=pulls)
+    assert zones_of(found) == {"accepted-spec": "notify"}
+    assert found["level"] == "notify"
+    assert pulls.issue_reads == [12]
+
+
+@pytest.mark.parametrize(
+    ("body", "issues", "why"),
+    [
+        pytest.param(
+            "Spec for #12",
+            (opportunity(12, "opportunity"),),
+            "#12 is an opportunity without planned, and was filed by shipmill-romamo, a bot",
+            id="opportunity-without-planned",
+        ),
+        pytest.param(
+            "Spec for #12",
+            (issue(labels=("planned",), association="CONTRIBUTOR", login="someone"),),
+            "#12 was filed by someone (CONTRIBUTOR), not an OWNER, MEMBER, or COLLABORATOR",
+            id="outside-contributor",
+        ),
+        pytest.param(
+            "Spec for #12",
+            (issue(login="shipmill-romamo", bot=True, association="NONE"),),
+            "#12 was filed by shipmill-romamo, a bot",
+            id="filed-by-the-app",
+        ),
+        pytest.param(
+            "Spec for #12",
+            (issue(login="shipmill-romamo", bot=True, association="MEMBER"),),
+            None,
+            id="a-trusted-bot-is-not-the-maintainer",
+        ),
+        pytest.param(
+            "Spec for #12",
+            (issue(body=f"Build it\n\n{MARKER}"),),
+            "#12 carries the agent marker",
+            id="agent-marker-by-the-owner",
+        ),
+        pytest.param("Spec for #12", (issue(association="NONE"),), None, id="no-association"),
+        pytest.param("Spec for #12", (issue(state="closed"),), "#12 is not open", id="closed"),
+        pytest.param(
+            "Spec for #12\nSpec for #13", (opportunity(), issue(13, state="closed")), "#13 is not open", id="one-closed"
+        ),
+        pytest.param("Spec for #12", (issue(pull=True),), "#12 is a pull request, not an issue", id="a-pull-request"),
+        pytest.param("Spec for #12", (issue(labels=None),), "#12 has labels that can't be read", id="labels-unread"),
+        pytest.param("Spec for #12", (issue(login=None),), "#12 has an author that can't be read", id="author-gone"),
+        pytest.param("Spec for #12", (issue(bot=None),), None, id="author-kind-unread"),
+        pytest.param("Spec for #12", (issue(association=None),), None, id="association-unread"),
+        pytest.param("Spec for #12", (issue(state=None),), "#12 has a state that can't be read", id="state-unread"),
+        pytest.param("Spec for #12", (issue(body=None),), "#12 has a body that can't be read", id="body-unread"),
+        pytest.param("Spec for other/repo#12", (), "other/repo#12 is not an issue of o/demo", id="another-repos-issue"),
+    ],
+)
+def test_s067_5_a_spec_whose_work_is_not_accepted_stays_scope(
+    repo: Repo, capsys: pytest.CaptureFixture[str], body: str, issues: tuple[SpecIssue, ...], why: str | None
+) -> None:
+    commit(repo, POLICY + '\n[decisions]\naccepted-spec = "notify"\n')
+    found = run(repo, capsys, "classify", "--pr", "8", pulls=approving(body, *issues))
+    assert zones_of(found) == {"scope": "ask"}
+    if why is not None:
+        assert found["zones"][0]["reason"] == f"{SPEC}'s status line becomes approved; its work is not accepted: {why}"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("", id="no-body"),
+        pytest.param("Adds the spec. Spec for #12", id="mid-line"),
+        pytest.param("```\nSpec for #12\n```", id="in-a-code-fence"),
+    ],
+)
+def test_s067_5_a_body_naming_no_spec_for_issue_stays_scope_and_reads_none(
+    repo: Repo, capsys: pytest.CaptureFixture[str], body: str
+) -> None:
+    commit(repo, POLICY + '\n[decisions]\naccepted-spec = "notify"\n')
+    pulls = approving(body, issue())
+    found = run(repo, capsys, "classify", "--pr", "8", pulls=pulls)
+    assert zones_of(found) == {"scope": "ask"}
+    assert found["zones"][0]["reason"] == f"{SPEC}'s status line becomes approved"
+    assert pulls.issue_reads == []
+
+
+def test_s067_6_direction_and_decision_policy_are_reported_beside_accepted_spec(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(repo, POLICY + '\n[decisions]\naccepted-spec = "notify"\n')
+    direction = approving("Spec for #12", opportunity(), files=(FileChange("docs/product.md", "modified", patch("x")),))
+    found = run(repo, capsys, "classify", "--pr", "8", pulls=direction)
+    assert zones_of(found) == {"direction": "never", "accepted-spec": "notify"}
+    assert found["level"] == "never"  # the strictest wins
+    policy = approving("Spec for #12", opportunity(), files=(FileChange(CONFIG, "modified", patch("x")),))
+    policy.texts[(BASE, CONFIG)] = POLICY + '\n[decisions]\naccepted-spec = "notify"\n'
+    policy.texts[(HEAD, CONFIG)] = POLICY + '\n[decisions]\naccepted-spec = "ask"\n'
+    found = run(repo, capsys, "classify", "--pr", "8", pulls=policy)
+    assert zones_of(found) == {"decision-policy": "never", "accepted-spec": "notify"}
+    assert found["level"] == "never"
+
+
+def test_s067_4_gh_reads_a_spec_for_issue_with_its_state_labels_author_and_body(tmp_path: Path) -> None:
+    """GhCli.spec_issue, against a gh that answers from a script"""
+    found = {
+        "number": 12,
+        "state": "open",
+        "labels": [{"name": "opportunity"}, {"name": "planned"}],
+        "user": {"login": "shipmill-romamo[bot]", "type": "Bot"},
+        "author_association": "NONE",
+        "body": None,
+    }
+    script = tmp_path / "gh"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{tmp_path / "args"}"\n'
+        'case "$*" in\n'
+        f"  *issues/12) echo '{json.dumps(found)}' ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    read = GhCli(tmp_path, gh=str(script)).spec_issue(12)
+    assert read == SpecIssue(12, "open", ("opportunity", "planned"), "shipmill-romamo[bot]", True, "NONE", "")
+    assert (tmp_path / "args").read_text(encoding="utf-8").splitlines() == ["api -X GET repos/{owner}/{repo}/issues/12"]
+
+
+def test_s067_5_a_field_gh_gives_no_readable_value_for_reads_as_none() -> None:
+    assert spec_issue_of({"pull_request": {}, "user": None, "labels": [{"color": "x"}]}, 14) == SpecIssue(
+        14, None, None, None, None, None, None, True
+    )
+    with pytest.raises(ReleaseError, match="not an issue"):
+        spec_issue_of([], 14)
 
 
 def test_s030_8_a_changelog_line_under_a_major_heading_is_contract_change(

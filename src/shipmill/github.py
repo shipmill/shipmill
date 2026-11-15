@@ -161,6 +161,52 @@ class RunJob:
 
 
 @dataclass(frozen=True, slots=True)
+class SpecIssue:
+    """An issue a spec pull request's `Spec for #N` line names, as classify reads it (spec 067).
+    A field GitHub gave no readable value for is None, and counts as not accepted: an issue with
+    no labels read is no accepted opportunity, one with no author or body read no maintainer's
+    (D-62). A GitHub body of null is an empty body, which reads"""
+
+    number: int
+    state: str | None  # open or closed, as GitHub's REST API spells it
+    labels: tuple[str, ...] | None
+    login: str | None  # the author's; None for a deleted account
+    bot: bool | None  # whether the author is a Bot account, such as an App
+    association: str | None  # the author's: OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE, ...
+    body: str | None
+    pull: bool = False  # the number is a pull request's, not an issue's
+
+
+def spec_issue_of(found: Any, number: int) -> SpecIssue:
+    """The issue as `gh api repos/{owner}/{repo}/issues/N` prints it; output that is no JSON
+    object stops it, a field that doesn't read is None"""
+    if not isinstance(found, dict):
+        raise ReleaseError(f"gh api of issue #{number} printed {str(found)[:300]}, not an issue")
+    state = found.get("state")
+    raw = found.get("labels")
+    labels = (
+        tuple(str(x["name"]) for x in raw)
+        if isinstance(raw, list) and all(isinstance(x, dict) and isinstance(x.get("name"), str) for x in raw)
+        else None
+    )
+    user = found.get("user")
+    login = user.get("login") if isinstance(user, dict) else None
+    kind = user.get("type") if isinstance(user, dict) else None
+    association = found.get("author_association")
+    body = "" if "body" in found and found["body"] is None else found.get("body")
+    return SpecIssue(
+        number,
+        state if isinstance(state, str) else None,
+        labels,
+        login if isinstance(login, str) else None,
+        kind == "Bot" if isinstance(kind, str) else None,
+        association if isinstance(association, str) else None,
+        body if isinstance(body, str) else None,
+        "pull_request" in found,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class Milestone:
     open_issues: int
     closed_issues: int
@@ -793,6 +839,11 @@ class GhCli:
         if not re.fullmatch(r"[0-9a-f]{40}", blob):
             raise ReleaseError(f"gh api {where} named no blob, got {blob!r}")
         return blob
+
+    def spec_issue(self, number: int) -> SpecIssue:
+        """The issue a spec pull request's `Spec for #N` line names: its state, labels, author,
+        and body (spec 067); a GET"""
+        return spec_issue_of(self._api("-X", "GET", f"repos/{{owner}}/{{repo}}/issues/{number}"), number)
 
     def pull_of(self, selector: str | None) -> str:
         """The URL of the pull request gh resolves selector to (a branch; None for the current
