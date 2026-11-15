@@ -206,9 +206,11 @@ def test_853_a_persons_assigned_pull_request_is_no_tier_3_item(tmp_path: Path) -
     held = pr(160, "role:maintainer", assignees=("romamo",))
     prs = [pr(3), held, pr(161, "Human"), pr(162, "ROLE:Infra", draft=True, assignees=("amy",))]
     rows, _ = tier(tmp_path, 3, known(prs=prs))
-    assert [(r["state"], r["detail"]) for r in rows] == [("PRS_OPEN", "#3 #161")]
+    parked = ("PRS_PARKED", "WITH_PERSON #160 (@romamo)")  # report only, beside PRS_OPEN (S-061-11)
+    assert [(r["state"], r["detail"]) for r in rows] == [("PRS_OPEN", "#3 #161"), parked]
     only, _ = tier(tmp_path / "held", 3, known(prs=[held]))
-    assert only == []  # no row in tier 3 at all, so the gate's walk hands no session for it
+    # only its report-only PRS_PARKED row (S-061-11), so the gate's walk hands no session for it
+    assert [(r["state"], r["agent"]) for r in only] == [("PRS_PARKED", False)]
 
 
 def test_853_the_full_report_lists_a_persons_pull_request_as_with_person(ws: ModuleType) -> None:
@@ -222,6 +224,42 @@ def test_853_the_full_report_lists_a_persons_pull_request_as_with_person(ws: Mod
     malformed = {**prs[1], "assignees": [{"name": "Rom"}]}
     with pytest.raises(ws.Refused, match="#160's assignees"):
         ws.intake("o/r", 0, "", [malformed], lambda n: [])
+
+
+# -- #1162 (spec 061): under land = "propose", a pull request labelled shipmill-ready waits on a merge
+
+READY_PRS = [pr(3), pr(12, "shipmill-ready"), pr(4, "role:maintainer", "shipmill-ready", assignees=("a",))]
+AS_BEFORE = [("PRS_OPEN", "#3 #12"), ("PRS_PARKED", "WITH_PERSON #4 (@a)")]
+TO_MERGE = [("PRS_OPEN", "#3"), ("PRS_PARKED", "WITH_PERSON #4 (@a); TO_MERGE #12")]
+
+
+@pytest.mark.parametrize(
+    ("autonomy", "held", "expected"),
+    [
+        ("", False, TO_MERGE),  # land propose by default
+        ('\n[autonomy]\nland = "act"\n', True, TO_MERGE),  # a hold turns act into propose
+        ('\n[autonomy]\nland = "act"\n', False, AS_BEFORE),
+        ('\n[autonomy]\nland = "observe"\n', False, AS_BEFORE),
+    ],
+)
+def test_s061_11_tier_3_parks_a_ready_pull_request_to_merge_under_propose_alone(
+    tmp_path: Path, autonomy: str, held: bool, expected: list[tuple[str, str]]
+) -> None:
+    rows, calls = tier(tmp_path, 3, known(prs=READY_PRS, held=held), config=CONFIG + autonomy)
+    assert [(r["state"], r["detail"]) for r in rows] == expected
+    assert calls == []  # the labels the change check read are enough: no read of its own
+    parked = [f for f in parse_findings("\n".join(json.dumps(r) for r in rows)) if f.state == "PRS_PARKED"]
+    assert [f.agent for f in parked] == [False]  # report only: the gate's walk hands no session for it
+
+
+def test_s061_11_the_full_report_parks_a_ready_pull_request_to_merge_under_propose_alone(ws: ModuleType) -> None:
+    def found(land: str | None) -> list[tuple[str, str]]:
+        return [(r.state, r.detail) for r in ws.intake("o/r", 0, "", READY_PRS, lambda n: [], land=land)]
+
+    assert found("propose") == TO_MERGE
+    assert found("act") == found("observe") == found(None) == AS_BEFORE
+    alone = ws.intake("o/r", 0, "", [pr(12, "shipmill-ready"), pr(9, "shipmill-ready")], lambda n: [], land="propose")
+    assert [(r.state, r.detail, r.fix) for r in alone] == [("PRS_PARKED", "TO_MERGE #9 #12", None)]
 
 
 def test_853_known_needs_each_pull_requests_assignees(tmp_path: Path) -> None:
@@ -418,7 +456,8 @@ def test_s046_7_the_rows_a_tier_prints_read_as_the_gates_findings(tmp_path: Path
 
 def test_s046_7_no_tier_prints_a_host_or_report_only_row(ws: ModuleType) -> None:
     printed = {state for states in ws.TIERS.values() for state in states}
-    assert printed - ws.ACTION == {"PRS_OPEN"}  # the one non-action row, the gate's work under land
+    # PRS_OPEN, the gate's work under land; PRS_PARKED, what tier 3 left out of it (S-061-11)
+    assert printed - ws.ACTION == {"PRS_OPEN", "PRS_PARKED"}
     assert not printed & {"AGENT_SESSION", "HOST_UNKNOWN", "SHIPMILL_VERSION", "LOOP", "BOT_OK", "ISSUES_OPEN"}
     assert set(ws.SWEPT) <= ws.AGENT
     # every state that needs an agent has its tier, so the gate's walk reads it (S-046-12)

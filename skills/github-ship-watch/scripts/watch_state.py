@@ -188,7 +188,10 @@ Intake (github-issue-triage's triage_state.py):
   PRS_PARKED     open non-draft pull requests that are a person's item, labelled human or
                   role:<name> with an assignee, as WITH_PERSON #N (@login ...) (reported,
                   never an action: no session starts for one, #853); one with the label and
-                  no assignee stays in PRS_OPEN, for a session to assign
+                  no assignee stays in PRS_OPEN, for a session to assign. Under [autonomy]
+                  land = "propose", the ones labelled shipmill-ready wait on a person's merge
+                  and follow as TO_MERGE #N, after a "; " when both parts are there:
+                  WITH_PERSON #4 (@a); TO_MERGE #12 (spec 061); --tier 3 prints this row too
   AGENT_DRAFT     open draft pull requests the --bot-login authored (D-67, #914) with nothing
                   open on them: no needs-decision question waiting on a reply and no hold
                   comment naming an item still open. An agent's row: a session marks each
@@ -3072,7 +3075,9 @@ def intake(
     AGENT_DRAFT, or AGENT_DRAFT_HELD while a hold comment names an item still open (hold_states,
     triage_state.py's upstream_states by default, reads their states) or its question waits too,
     else in no row when a person's draft, else in PRS_PARKED as WITH_PERSON #N (@login ...) when a person's
-    item with an assignee (pr_people, #853), else in PRS_OPEN. closed_prs are the closed and
+    item with an assignee (pr_people, #853), else in the land window's queue, else in PRS_PARKED
+    as TO_MERGE #N when land is propose and it is labelled shipmill-ready, waiting on a person's
+    merge (S-061-11), else in PRS_OPEN. closed_prs are the closed and
     merged pull requests labelled decided in the veto window (number, isCrossRepository):
     each with such a veto is VETOED too, save a fork's with trusted_only. VETOED issues and
     pull requests share one row, an agent's (spec 030), and an issue in it is in no other
@@ -3134,6 +3139,7 @@ def intake(
     drafts: list[int] = []  # D-67: the App's own drafts with nothing open on them (#914)
     held: list[tuple[int, str]] = []  # and the ones still held, with what holds each
     queued: list[int] = []  # spec 056: the ones in the land window's queue, out of PRS_OPEN
+    to_merge: list[int] = []  # S-061-11: under land = "propose", the ones labelled shipmill-ready
     for pr in prs:
         number = int(pr["number"])
         labels = {label["name"] for label in pr["labels"]}
@@ -3158,6 +3164,8 @@ def intake(
             parked.append((number, people))
         elif queue is not None and number in queue.entries:
             queued.append(number)
+        elif land == "propose" and READY_LABEL in labels:
+            to_merge.append(number)  # S-061-11: reviewed and labelled, it waits on a person's merge
         else:
             ready.append((number, head_sha(pr)))
     for pr in closed_prs:
@@ -3171,9 +3179,13 @@ def intake(
     if ready:
         listed = " ".join(f"#{n}" for n, _ in ready)
         rows.append(Row("PRS_OPEN", repo, listed, land_fix(land, repo), tuple(sorted(ready))))
+    parts = []
     if parked:
-        named = " ".join(f"#{n} ({' '.join(people)})" for n, people in sorted(parked))
-        rows.append(Row("PRS_PARKED", repo, f"WITH_PERSON {named}"))
+        parts.append("WITH_PERSON " + " ".join(f"#{n} ({' '.join(people)})" for n, people in sorted(parked)))
+    if to_merge:
+        parts.append("TO_MERGE " + " ".join(f"#{n}" for n in sorted(to_merge)))
+    if parts:
+        rows.append(Row("PRS_PARKED", repo, "; ".join(parts)))
     if drafts:
         fix = f"mark each ready, then land it: {skill_fix('github-pr-triage', repo)}"
         rows.append(Row("AGENT_DRAFT", repo, " ".join(f"#{n}" for n in sorted(drafts)), fix))
@@ -4955,7 +4967,8 @@ TIERS: dict[int, tuple[str, ...]] = {
     1: ("INCIDENT_OPEN", "OPERATE_FAILED"),
     2: ("BOT_FAILED", "NOT_PUBLISHED", "WORK_BRANCH_STALE", "BOT_STALLED"),
     # LAND_DUE: the land window's queue head (spec 056); AGENT_DRAFT: the App's own draft to resume (D-67)
-    3: ("LAND_DUE", "PRS_OPEN", "AGENT_DRAFT", "NEEDS_DECISION"),
+    # PRS_PARKED: report only, so tier 3 shows what it left out of PRS_OPEN (S-061-11)
+    3: ("LAND_DUE", "PRS_OPEN", "AGENT_DRAFT", "NEEDS_DECISION", "PRS_PARKED"),
     4: (VETOED, "ISSUES", "NEEDS_DECISION"),
     5: ("UPGRADE_PENDING", "UPSTREAM_DUE"),
     6: ("ISSUES",),
