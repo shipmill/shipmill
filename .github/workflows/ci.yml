@@ -88,10 +88,11 @@ jobs:
           (out / 'release-list.yml').write_text(caller_text(d, 'ci.yml', RunsOn.parse('[\"self-hosted\", \"linux\"]')))
           (out / 'release-windows.yml').write_text(caller_text(d, 'ci.yml', ticks=windows))
           (out / 'release-push.yml').write_text(caller_text(d, 'ci.yml', ticks=Ticks(hourly=False)))
+          (out / 'release-land.yml').write_text(caller_text(d, 'ci.yml', land_environment='shipmill-land'))
           " "$RUNNER_TEMP"
           actionlint -ignore 'ci.yml' \
             "$RUNNER_TEMP/release.yml" "$RUNNER_TEMP/release-label.yml" "$RUNNER_TEMP/release-list.yml" \
-            "$RUNNER_TEMP/release-windows.yml" "$RUNNER_TEMP/release-push.yml"
+            "$RUNNER_TEMP/release-windows.yml" "$RUNNER_TEMP/release-push.yml" "$RUNNER_TEMP/release-land.yml"
           uv run python -c "from shipmill.init import operate_caller_text; print(operate_caller_text())" \
             > "$RUNNER_TEMP/operate.yml"
           actionlint "$RUNNER_TEMP/operate.yml"

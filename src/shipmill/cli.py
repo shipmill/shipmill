@@ -335,6 +335,7 @@ from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
 from shipmill.land import ActionsRun, AppPush, Prepared, Stop, Waiting, cleanup, land, mint_land, prepare, work_branch
+from shipmill.landing import ENVIRONMENT as LAND_ENVIRONMENT
 from shipmill.landing import GhRules, RulesReader
 from shipmill.launchd import (
     DEFAULT_EVERY,
@@ -684,6 +685,12 @@ def _parser() -> argparse.ArgumentParser:
         "--caller",
         action="store_true",
         help=f"write only {CALLER}, from the existing {CONFIG_PATH}: its schedule follows the policy's triggers",
+    )
+    p.add_argument(
+        "--land-as-app",
+        action="store_true",
+        help=f"set land-environment: {LAND_ENVIRONMENT} on {CALLER}'s land job, so land pushes the protected"
+        " branches as the App in [agents] app_id with the environment's SHIPMILL_LAND_KEY; needs app_id",
     )
     p.add_argument(
         "--runs-on",
@@ -1163,6 +1170,7 @@ def main(
                 ("--operate", args.operate),
                 ("--no-fragments", args.no_fragments),
                 ("--runs-on", runs_on is not None),
+                ("--land-as-app", args.land_as_app),
             )
             for flag, given in others:
                 if given:
@@ -1174,8 +1182,15 @@ def main(
             for flag, given in (("--operate", args.operate), ("--no-fragments", args.no_fragments)):
                 if given:
                     raise ReleaseError(f"--caller writes only {CALLER}, from the existing policy; drop {flag}")
-            print(f"wrote {init_caller(root, args.ci, args.force, runs_on).relative_to(root)}")
-            print(f"next: run `{cli_command()} doctor`")
+            path = init_caller(root, args.ci, args.force, runs_on, land_as_app=args.land_as_app)
+            print(f"wrote {path.relative_to(root)}")
+            if args.land_as_app:
+                print(
+                    f"next: create the {LAND_ENVIRONMENT} environment, limited to the default branch, with the App's"
+                    f" private key as its SHIPMILL_LAND_KEY secret, then run `{cli_command()} doctor`"
+                )
+            else:
+                print(f"next: run `{cli_command()} doctor`")
             return 0
         if args.operate:
             if runs_on is not None:
@@ -1183,11 +1198,17 @@ def main(
                     f"--runs-on sets {CALLER}'s runner; --operate leaves {CALLER} alone and writes"
                     f" {OPERATE_CALLER}, which takes no runner"
                 )
+            if args.land_as_app:
+                raise ReleaseError(
+                    f"--land-as-app sets {CALLER}'s land job; --operate leaves {CALLER} alone; drop --land-as-app"
+                )
             for path in init_operate(root, args.force):
                 print(f"wrote {path.relative_to(root)}")
             print(f"next: run `{cli_command()} doctor`")
             return 0
-        initialized = init(root, args.ci, args.force, fragments=not args.no_fragments, runs_on=runs_on)
+        initialized = init(
+            root, args.ci, args.force, fragments=not args.no_fragments, runs_on=runs_on, land_as_app=args.land_as_app
+        )
         for path in initialized.written:
             print(f"wrote {path.relative_to(root)}")
         print(f"next: review the policy, then run `{cli_command()} doctor`")

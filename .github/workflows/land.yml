@@ -10,6 +10,12 @@ name: shipmill land
 # release = "propose", or for a stable lane that can hold a breaking change (spec 029), it
 # then closes the lane's proposal issue, and it proposes the config upgrades the repo hasn't
 # decided (spec 014).
+#
+# With land-environment set (spec 054), the land job runs in that environment of the caller's
+# repository and reads its SHIPMILL_LAND_KEY secret, the private key of the App in [agents]
+# app_id: the release commit's push to main, a hotfix's to release/X.Y, and the sync commit's
+# go as the App, which a ruleset can let past its rules. The tag, the work branch, the GitHub
+# release, and the dispatches stay with the workflow token. Empty, it lands as before.
 
 on:
   workflow_call:
@@ -36,6 +42,10 @@ on:
         description: "The runner for every job: a label, or a JSON list of labels"
         type: string
         default: "ubuntu-latest"
+      land-environment:
+        description: "The environment holding SHIPMILL_LAND_KEY, the App's key the protected branches are pushed with; empty: the workflow token"
+        type: string
+        default: ""
 
 # No workflow-level permissions: each job sets its own, except close-proposal and upgrade,
 # which take the caller's grant, so a caller that grants no `issues: write` still starts this
@@ -44,6 +54,8 @@ on:
 jobs:
   land:
     if: inputs.ci-result == 'success'
+    # empty, the job names no environment and reads no secret (S-054-1)
+    environment: ${{ inputs.land-environment }}
     concurrency:
       group: shipmill
       cancel-in-progress: false
@@ -61,6 +73,28 @@ jobs:
         with:
           version: "0.13.7"
 
+      # The environment's secret, masked line by line before anything prints, in a file only
+      # this job's user reads; its path is the step's output, never the key (S-054-3)
+      - name: Write the App's key
+        id: key
+        if: inputs.land-environment != ''
+        shell: bash
+        env:
+          KEY: ${{ secrets.SHIPMILL_LAND_KEY }}
+          ENVIRONMENT: ${{ inputs.land-environment }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::shipmill land: the environment $ENVIRONMENT has no SHIPMILL_LAND_KEY secret; add the App's private key to it as SHIPMILL_LAND_KEY, or drop land-environment from the land job in .github/workflows/release.yml. Nothing was pushed"
+            exit 1
+          fi
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then echo "::add-mask::$line"; fi
+          done <<<"$KEY"
+          key="$RUNNER_TEMP/shipmill-land-key.pem"
+          (umask 077; printf '%s\n' "$KEY" > "$key")
+          chmod 600 "$key"
+          echo "path=$key" >> "$GITHUB_OUTPUT"
+
       - name: Land, tag, and publish
         shell: bash # -eo pipefail: a failed land fails the step, though its output goes through tee
         env:
@@ -70,9 +104,11 @@ jobs:
           VERSION: ${{ inputs.version }}
           SHA: ${{ inputs.sha }}
           BASE: ${{ inputs.base }}
+          APP_KEY: ${{ steps.key.outputs.path }}
         run: |
-          uvx --from "$TOOL" shipmill land --lane "$LANE" --version "$VERSION" --sha "$SHA" --base "$BASE" \
-            | tee -a "$GITHUB_STEP_SUMMARY"
+          args=(land --lane "$LANE" --version "$VERSION" --sha "$SHA" --base "$BASE")
+          if [ -n "$APP_KEY" ]; then args+=(--app-key "$APP_KEY"); fi
+          uvx --from "$TOOL" shipmill "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Closes the lane's "Ready to release" issue, with the tag and this run. It sets no
   # permissions, so it runs with the caller's grant: under release = "propose", or on a stable
