@@ -115,6 +115,7 @@ def test_s063_9_the_row_is_never_a_fail_and_leaves_the_exit_code(
         notify("[self-hosted, windows]"),  # not a subset of the deploy job's labels
         notify("${{ inputs.runner }}"),
         notify("self-hosted", "      - uses: actions/setup-python@v5\n"),
+        notify("[self-hosted,\n              gpu]"),  # a flow list over two lines, not a subset
     ],
 )
 def test_s063_10_no_warning_when_the_checkout_sets_path_or_the_labels_differ(repo: Repo, notify_text: str) -> None:
@@ -138,6 +139,16 @@ def test_s063_10_a_deploy_job_on_a_github_hosted_label_prints_no_row(repo: Repo)
 def test_s063_10_no_deploy_job_prints_no_row(repo: Repo) -> None:
     repo.write(".github/workflows/notify.yml", notify("self-hosted"))
     assert rows(repo) == []
+
+
+def test_s063_9_jobs_indented_by_four_spaces_are_read(repo: Repo) -> None:
+    def four(text: str) -> str:
+        return "\n".join(line if line.startswith(("name", "on", "jobs")) else "  " + line for line in text.split("\n"))
+
+    repo.write(".github/workflows/deploy.yml", four(DEPLOY))
+    repo.write(".github/workflows/notify.yml", four(notify("[self-hosted, prod]")))
+    repo.write(".github/workflows/empty.yml", "on: push\njobs:\n  # none yet\n")
+    assert rows(repo) == [warning("self-hosted, prod")]
 
 
 def test_s063_10_the_deploy_jobs_own_checkout_and_a_group_only_runs_on_are_not_compared(repo: Repo) -> None:

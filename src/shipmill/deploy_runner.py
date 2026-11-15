@@ -2,8 +2,8 @@
 self-hosted runner a deploy job deploys from cleans the workspace the deploy left (#1165)
 
 A text reading, not a YAML parse, as doctor reads workflows: under the top-level `jobs:` key a
-job starts at a line `  <id>:` and runs to the next one; its keys sit at the indent of its
-first key line"""
+job starts at a line `<id>:` at the indent of the body's first key and runs to the next one;
+its keys sit at the indent of its first key line"""
 
 import re
 from collections.abc import Collection
@@ -15,7 +15,6 @@ WARN = "WARN"
 PASS = "PASS"
 _HOSTED = ("ubuntu-", "windows-", "macos-")  # GitHub-hosted labels: a hosted runner starts clean for each job
 _JOBS = re.compile(r"^jobs:[ \t]*(?:#.*)?$(?P<body>(?:\n(?:[ \t#].*)?)*)", re.MULTILINE)
-_JOB = re.compile(r"^  (?P<id>[\w-]+):[ \t]*(?:#.*)?$", re.MULTILINE)
 _CHECKOUT = re.compile(r"actions/checkout@\S+")
 
 
@@ -84,10 +83,14 @@ def read(root: Path, path: Path, environment_workflows: Collection[str]) -> list
     if found is None:
         return []
     body = found["body"]
-    starts = list(_JOB.finditer(body))
+    code = [line for line in map(_code, body.splitlines()) if line.strip()]
+    if not code:
+        return []
+    # a job's id sits at the indent of the body's first key, whatever indent the file uses
+    starts = list(re.finditer(rf"^ {{{_indent(code[0])}}}(?P<id>[\w-]+):[ \t]*(?:#.*)?$", body, re.MULTILINE))
     jobs = []
-    for start, end in zip(starts, [*starts[1:], None], strict=True):
-        block = body[start.end() : len(body) if end is None else end.start()]
+    for start, end in zip(starts, [s.start() for s in starts[1:]] + [len(body)], strict=True):
+        block = body[start.end() : end]
         keys = _keys(block.splitlines())
         runs_on = keys.get("runs-on")
         jobs.append(
@@ -145,7 +148,8 @@ def _labels(inline: str, under: list[str]) -> tuple[str, ...] | None:
     if "${{" in inline or any("${{" in line for line in under):
         return None
     if inline.startswith("["):
-        return _flow(inline) or None
+        # a flow list may run over the lines under its key
+        return _flow(" ".join([inline, *(line.strip() for line in under)])) or None
     if inline.startswith("{"):
         found = re.search(r"\blabels\s*:\s*(\[[^\]]*\]|[^,}]+)", inline)
         if found is None:
