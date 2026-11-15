@@ -242,17 +242,116 @@ def row_of(data: object) -> Finding:
     return Finding(data["state"], data["subject"], data["detail"], data["agent"], (), data["fix"])
 
 
+# -- subjects (spec 061) ----------------------------------------------------------------------
+
+SUBJECTED = frozenset({PRS_OPEN, AGENT_DRAFT, "VETOED"})  # with each ISSUES row of a triage state
+NUMBER = re.compile(r"#(\d+)")
+SUBJECT_KEY = re.compile(r"[A-Z][A-Z_]*(?: [A-Z][A-Z_]*)? #\d+")  # a subject's hand, `<kind> #<N>`
+
+
+def subjects(item: Finding) -> tuple[int, ...] | None:
+    """The issues and pull requests an item of tier 3, 4, or 6 names (spec 061): the `#N` of
+    a PRS_OPEN, AGENT_DRAFT, or VETOED row's detail, or of an ISSUES row's after its triage
+    state, digits the gate parsed (D-16). None for every other item, and for a detail with any
+    other word in it (SPEC_UNSPLIT names a spec, not an issue): it is handed by its fingerprint"""
+    if item.state == ISSUES and item.kind != ISSUES:
+        words = item.detail.split(" ")[1:]
+    elif item.state in SUBJECTED:
+        words = item.detail.split(" ")
+    else:
+        return None
+    found = [NUMBER.fullmatch(w) for w in words]
+    if not words or not all(found):
+        return None
+    return tuple(dict.fromkeys(int(m.group(1)) for m in found if m is not None))
+
+
+def subject_key(item: Finding, number: int) -> str:
+    """A handed subject's key in handed.json: `ISSUES VERIFY_DUE #842`, `PRS_OPEN #12`"""
+    return f"{item.kind} #{number}"
+
+
+def cut(item: Finding, numbers: Sequence[int]) -> Finding:
+    """The item cut to these of its subjects: its detail keeps only their `#N`, after an ISSUES
+    row's triage state, and a PRS_OPEN row only their heads"""
+    state = f"{item.detail.split(' ', 1)[0]} " if item.state == ISSUES else ""
+    heads = tuple((n, sha) for n, sha in item.heads if n in numbers)
+    return replace(item, detail=state + " ".join(f"#{n}" for n in numbers), heads=heads)
+
+
+@dataclass(frozen=True, slots=True)
+class Head:
+    """A pull request's head SHA and its check rollup state (None: no checks), as the change
+    check read it"""
+
+    sha: str
+    rollup: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class Pull:
+    """An open pull request as the change check read it: its head and when GitHub last updated it"""
+
+    head: Head
+    updated: dt.datetime
+
+
 @dataclass(frozen=True, slots=True)
 class Hand:
-    """One handed item in handed.json: the session it went to, and when"""
+    """One hand in handed.json: the session it went to, and when; for a pull request subject
+    the head it had then (spec 061); idle once a walk past retry_hours found nothing changed on
+    its subject since"""
 
     session: str
     at: dt.datetime
+    head: Head | None = None
+    idle: bool = False
+
+    def record(self) -> dict[str, object]:
+        found: dict[str, object] = {"session": self.session, "at": self.at.isoformat()}
+        if self.head is not None:
+            found |= {"head": self.head.sha, "rollup": self.head.rollup}
+        return found | ({"idle": True} if self.idle else {})
+
+
+HAND_KEYS = frozenset({"session", "at"})
+PULL_KEYS = frozenset({"head", "rollup"})
+
+
+def hand_of(key: str, entry: object) -> Hand:
+    if not isinstance(entry, dict) or not HAND_KEYS <= set(entry) <= HAND_KEYS | PULL_KEYS | {"idle"}:
+        raise ValueError(f"{key}: expected session and at, head and rollup or neither, and idle or not")
+    if not isinstance(entry["session"], str) or not entry["session"]:
+        raise ValueError(f"{key}: session must be a non-empty string")
+    head = None
+    if set(entry) & PULL_KEYS:
+        sha, state = entry.get("head"), entry.get("rollup")
+        if not set(entry) >= PULL_KEYS or not isinstance(sha, str) or not sha:
+            raise ValueError(f"{key}: a pull request's hand needs a head SHA and its rollup")
+        if state is not None and not isinstance(state, str):
+            raise ValueError(f"{key}: rollup must be a string or null")
+        head = Head(sha, state)
+    idle = entry.get("idle", False)
+    if not isinstance(idle, bool):
+        raise ValueError(f"{key}: idle must be true or false")
+    if idle and SUBJECT_KEY.fullmatch(key) is None:
+        raise ValueError(f"{key}: only a subject's hand is idle")
+    return Hand(entry["session"], moment(entry["at"], f"{key}.at"), head, idle)
 
 
 @dataclass(frozen=True, slots=True)
 class Handed:
-    """handed.json: each item a session was handed, by its fingerprint (S-046-13)"""
+    """handed.json, in the gate's state directory beside cursor.json (D-58, N-2): a JSON object
+    of hands, each a key and an object.
+
+    The key is an item's fingerprint (S-046-13) for an item of tier 1, 2, 5, or 7, or one with
+    no subjects; for an item of tier 3, 4, or 6 it is one subject, `<kind> #<N>`, such as
+    `ISSUES VERIFY_DUE #842` or `PRS_OPEN #12` (spec 061). The object holds `session` (the id of
+    the session handed it) and `at` (when, an ISO 8601 time with its offset); a pull request
+    subject's also `head` (its head SHA) and `rollup` (its head's check rollup state, or null
+    with no checks) from the change check; and `"idle": true` once a walk past retry_hours found
+    its subject unchanged since `at` (absent otherwise). It is a cache of the gate's own
+    launches: deleted, every subject reads not taken and is handed once more"""
 
     hands: Mapping[str, Hand] = field(default_factory=dict)
 
@@ -264,19 +363,12 @@ class Handed:
             data = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError("expected a JSON object")
-            hands = {}
-            for key, entry in data.items():
-                if not isinstance(entry, dict) or set(entry) != {"session", "at"}:
-                    raise ValueError(f"{key}: expected exactly session and at")
-                if not isinstance(entry["session"], str) or not entry["session"]:
-                    raise ValueError(f"{key}: session must be a non-empty string")
-                hands[key] = Hand(entry["session"], moment(entry["at"], f"{key}.at"))
-            return cls(hands)
+            return cls({key: hand_of(key, entry) for key, entry in data.items()})
         except ValueError as exc:
             raise malformed(path, exc) from None
 
     def save(self, path: Path) -> None:
-        write(path, {k: {"session": h.session, "at": h.at.isoformat()} for k, h in sorted(self.hands.items())})
+        write(path, {k: h.record() for k, h in sorted(self.hands.items())})
 
     def taken(self, item: Finding, now: dt.datetime, retry: dt.timedelta) -> Hand | None:
         """The hand of an item handed within retry with the same fingerprint, or None"""
@@ -284,25 +376,58 @@ class Handed:
         return hand if hand is not None and now - hand.at < retry else None
 
     def expired(self, now: dt.datetime, retry: dt.timedelta) -> bool:
-        """An entry whose retry_hours ran out: a change on the gate's side (S-046-2)"""
-        return any(now - h.at >= retry for h in self.hands.values())
+        """An entry whose retry_hours ran out: a change on the gate's side (S-046-2); an idle
+        hand is none, as a change to its subject shows in the change check itself (spec 061)"""
+        return any(now - h.at >= retry and not h.idle for h in self.hands.values())
 
     def kept(self, now: dt.datetime, retry: dt.timedelta) -> Handed:
-        return Handed({k: h for k, h in self.hands.items() if now - h.at < retry})
+        """The hands within retry, and the idle ones, which stay past it (spec 061)"""
+        return Handed({k: h for k, h in self.hands.items() if now - h.at < retry or h.idle})
+
+    def stopped(self, now: dt.datetime, retry: dt.timedelta) -> Handed:
+        """After a walk that stopped at an item: as kept, and every subject's hand, since the
+        walk didn't meet the items after it to find them idle or changed"""
+        return Handed(
+            {k: h for k, h in self.hands.items() if now - h.at < retry or SUBJECT_KEY.fullmatch(k) is not None}
+        )
 
     def found(self, rows: Iterable[Finding]) -> Handed:
         """The hands of items a walk that read every tier still found (#926): one gone, as a
         pull request whose needs-decision question waits, loses its hand, so when it returns
-        with the same fingerprint, the answer in, it is handed on the next tick"""
-        keys = {item_key(row) for row in rows}
+        with the same fingerprint, the answer in, it is handed on the next tick; a subject the
+        walk no longer finds, closed or out of its triage state, loses its own (spec 061)"""
+        keys = set()
+        for row in rows:
+            keys.add(item_key(row))
+            keys.update(subject_key(row, n) for n in subjects(row) or ())
         return Handed({k: h for k, h in self.hands.items() if k in keys})
 
     def without(self, session: str) -> Handed:
         """A dead session's handing doesn't count (S-046-15)"""
         return Handed({k: h for k, h in self.hands.items() if h.session != session})
 
-    def handing(self, item: Finding, session: str, now: dt.datetime) -> Handed:
-        return Handed({**self.hands, item_key(item): Hand(session, now)})
+    def handing(self, item: Finding, session: str, now: dt.datetime, pulls: Mapping[int, Pull] | None = None) -> Handed:
+        """A launch's hands: one per subject of the (cut) item, a pull request's with its head
+        from the change check (S-061-1), else the item's fingerprint"""
+        numbers = subjects(item)
+        if numbers is None:
+            return Handed({**self.hands, item_key(item): Hand(session, now)})
+        found = pulls or {}
+        new = {}
+        for n in numbers:
+            pull = found.get(n)
+            new[subject_key(item, n)] = Hand(session, now, None if pull is None else pull.head)
+        return Handed({**self.hands, **new})
+
+    def marked(self, keys: Iterable[str]) -> Handed:
+        """These hands marked idle"""
+        idle = set(keys)
+        return Handed({k: replace(h, idle=True) if k in idle else h for k, h in self.hands.items()})
+
+    def unmarked(self, keys: Iterable[str]) -> Handed:
+        """These hands no longer marked idle"""
+        busy = set(keys)
+        return Handed({k: replace(h, idle=False) if k in busy else h for k, h in self.hands.items()})
 
 
 # -- the change check --------------------------------------------------------------------------
@@ -345,7 +470,8 @@ class Changes:
     source that can't tell, so every tick is a change. flight: the work in flight, from the
     same query (spec 048); None from a source that reads no pull requests, as rows a test hands.
     window: with a pull request queued for the land window, the window opened or its spacing
-    let the next held merge through since the cursor (spec 056, window_change)"""
+    let the next held merge through since the cursor (spec 056, window_change). pulls: every
+    open pull request the query read, by number, with its head and updatedAt (spec 061)"""
 
     signature: str
     updated: tuple[int, ...] = ()
@@ -355,6 +481,7 @@ class Changes:
     forced: bool = False
     flight: Flight | None = None
     window: bool = False
+    pulls: Mapping[int, Pull] = field(default_factory=dict)
 
 
 GraphQL = Callable[[str, Mapping[str, str]], dict[str, Any]]  # (query, variables) -> its data
@@ -623,7 +750,40 @@ def changes_of(
         "runs": [{k: r[k] for k in ("workflow", "status", "conclusion", "createdAt", "url")} for r in runs],
     }
     numbers = tuple(sorted({int(n["number"]) for n in updated}))
-    return Changes(signature, numbers, asked, tag, known, flight=flight_of(pulls, default))
+    opened = {
+        int(p["number"]): Pull(Head(str(p["headRefOid"]), rollup(p)), moment(p["updatedAt"], "updatedAt"))
+        for p in pulls
+    }
+    return Changes(signature, numbers, asked, tag, known, flight=flight_of(pulls, default), pulls=opened)
+
+
+def issue_query(numbers: Sequence[int]) -> str:
+    """One query for these subjects' updatedAt (spec 061), aliased once per number; a pull
+    request no longer open (a vetoed one) answers as one"""
+    aliases = " ".join(
+        f"i{n}: issueOrPullRequest(number: {n}) {{ ... on Issue {{ updatedAt }} ... on PullRequest {{ updatedAt }} }}"
+        for n in numbers
+    )
+    return f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {aliases} }} }}"
+
+
+def issue_updates(repo: str, numbers: Iterable[int], graphql: GraphQL) -> dict[int, dt.datetime]:
+    """Each subject's updatedAt on GitHub, in one GraphQL query per PAGE of them (S-061-7); none
+    for no number. One GitHub answers null for (gone) is left out: it reads as changed"""
+    owner, _, name = repo.partition("/")
+    wanted = sorted(set(numbers))
+    found: dict[int, dt.datetime] = {}
+    for start in range(0, len(wanted), PAGE):
+        chunk = wanted[start : start + PAGE]
+        data = repository(graphql(issue_query(chunk), {"owner": owner, "name": name}), "the subjects' updatedAt")
+        for n in chunk:
+            node = data.get(f"i{n}")
+            if node is None:
+                continue
+            if not isinstance(node, dict) or "updatedAt" not in node:
+                raise ReleaseError(f"gh api graphql printed {str(node)[:200]} for #{n}, not its updatedAt")
+            found[n] = moment(node["updatedAt"], f"#{n}'s updatedAt")
+    return found
 
 
 def queued(changes: Changes, label: str) -> bool:
@@ -719,22 +879,28 @@ def last_landed(default: Mapping[str, Any]) -> Landed | None:
 
 
 class Source(Protocol):
-    """Where a walk reads the state: the change check, one tier, and the sweep"""
+    """Where a walk reads the state: the change check, one tier, the sweep, and the updatedAt
+    of issue subjects past retry_hours (spec 061)"""
 
     def changes(self, since: dt.datetime | None) -> Changes: ...
     def tier(self, number: int, changes: Changes) -> list[Finding]: ...
     def sweep(self, changes: Changes) -> list[Finding]: ...
+    def issues(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]: ...
 
 
 @dataclass(frozen=True, slots=True)
 class Rows:
     """A source of rows read whole, as a test hands them: every tick is a change, a tier is its
-    rows (with NEEDS_DECISION in the waiting tier), and the sweep the timed sections' rows"""
+    rows (with NEEDS_DECISION in the waiting tier), and the sweep the timed sections' rows; it
+    knows no subject's updatedAt, so none reads idle"""
 
     rows: tuple[Finding, ...]
 
     def changes(self, since: dt.datetime | None) -> Changes:
         return Changes("rows", forced=True)
+
+    def issues(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
+        return {}
 
     def tier(self, number: int, changes: Changes) -> list[Finding]:
         found = [r for r in self.rows if r.state not in SWEPT and tier_of(r) == number]
@@ -749,7 +915,10 @@ class Rows:
 class Walked:
     """What a walk found (S-046-4): the item it hands, with its tier, or the first item it
     found handed; the tiers it read in order, every row they printed, and the sweep record as
-    the walk left it"""
+    the walk left it. subject: the key of the first handed item's first subject when it has
+    subjects (spec 061), hand being that subject's hand. cut: the subjects of an item cut to
+    those not taken, () for an item handed whole. handed: handed.json with the hands this walk
+    found idle marked so"""
 
     item: Finding | None
     tier: int | None
@@ -758,6 +927,21 @@ class Walked:
     tiers: tuple[int, ...]
     rows: tuple[Finding, ...]
     swept: Swept
+    subject: str | None = None
+    cut: tuple[int, ...] = ()
+    handed: Handed = Handed()
+
+
+def idle(hand: Hand, number: int, pulls: Mapping[int, Pull], issues: Mapping[int, dt.datetime]) -> bool:
+    """Nothing changed on a subject since its hand (spec 061): its updatedAt earlier than the
+    hand's at less CURSOR_OVERLAP, and an open pull request's head and rollup the hand's. One
+    whose updatedAt the gate couldn't read reads changed: one more session, never a missed one"""
+    edge = hand.at - CURSOR_OVERLAP
+    pull = pulls.get(number)
+    if pull is not None:
+        return hand.head == pull.head and pull.updated < edge
+    updated = issues.get(number)
+    return updated is not None and updated < edge
 
 
 def walk(
@@ -775,10 +959,17 @@ def walk(
     is never an item.
     An item is a row that needs an agent, but a land-stage one (LAND_DUE, the land window's queue
     head, spec 056; PRS_OPEN; and AGENT_DRAFT, whose session marks a draft ready, #914) only when
-    land isn't observe"""
+    land isn't observe.
+    An item with subjects (spec 061) is taken whole when its fingerprint was handed within
+    retry, as a handed.json from before spec 061 holds it; else it is the item cut to its
+    subjects not taken, a subject taken when handed within retry or idle past it, and no item
+    when every one is. The updatedAt of a tier's issue subjects past retry is read once for the
+    tier, in one query per PAGE, and not at all when it has none"""
     read: list[int] = []
     rows: list[Finding] = []
-    taken: tuple[Finding, Hand] | None = None
+    taken: tuple[Finding, Hand, str | None] | None = None
+    marked: list[str] = []
+    met: set[str] = set()  # the subjects this walk met
     for number in TIERS:
         found: list[Finding] = []
         own: list[Finding] = []  # this tier's own read, which may hold an earlier tier's kind
@@ -792,10 +983,82 @@ def walk(
         # off, which tier 4 never reads): it is taken here; the sweep's rows only in their own tier
         mine = [f for f in found if tier_of(f) == number or (f in own and tier_of(f) < number)]
         items = order(f for f in mine if (f.agent and f.state not in LANDING) or (lands and f.state in LANDING))
+        issues = source.issues(past) if (past := past_issues(items, changes, handed, now, retry)) else {}
         for item in items:
             hand = handed.taken(item, now, retry)
-            if hand is None:
-                return Walked(item, number, None, None, tuple(read), tuple(rows), swept)
-            taken = taken or (item, hand)
-    first, hand = (None, None) if taken is None else taken
-    return Walked(None, None, first, hand, tuple(read), tuple(rows), swept)
+            numbers = subjects(item)
+            if hand is not None:
+                taken = taken or (item, hand, None)
+                continue
+            if numbers is None:
+                kept = handed.marked(marked).unmarked(unmet(handed, met, changes))
+                return Walked(item, number, None, None, tuple(read), tuple(rows), swept, handed=kept)
+            left: list[int] = []
+            first: tuple[str, Hand] | None = None
+            for n in numbers:
+                key = subject_key(item, n)
+                met.add(key)
+                given = handed.hands.get(key)
+                if given is None:
+                    left.append(n)
+                elif now - given.at < retry:
+                    first = first or (key, given)
+                elif idle(given, n, changes.pulls, issues):
+                    marked.append(key)
+                    first = first or (key, replace(given, idle=True))
+                else:
+                    left.append(n)  # changed since its hand: handed again, its hand replaced
+            if left:
+                whole = len(left) == len(numbers)
+                return Walked(
+                    item if whole else cut(item, left),
+                    number,
+                    None,
+                    None,
+                    tuple(read),
+                    tuple(rows),
+                    swept,
+                    cut=() if whole else tuple(left),
+                    handed=handed.marked(marked).unmarked(unmet(handed, met, changes)),
+                )
+            if first is not None:
+                taken = taken or (item, first[1], first[0])
+    first_item, hand, taken_key = (None, None, None) if taken is None else taken
+    # a walk that read every tier met every item: an idle hand it didn't meet is no item's now
+    marks = handed.marked(marked)
+    kept = Handed({k: h for k, h in marks.hands.items() if not h.idle or k in met})
+    return Walked(None, None, first_item, hand, tuple(read), tuple(rows), swept, taken_key, (), kept)
+
+
+def unmet(handed: Handed, met: set[str], changes: Changes) -> list[str]:
+    """The idle hands a walk that stopped at an item didn't meet, whose subject the change check
+    shows changed since the cursor (updated, or a pull request's head moved): their mark comes
+    off, so they count as past retry_hours again and the next walk reads them, since the next
+    change check, from the new cursor, no longer shows that change. With a source that can't
+    tell (forced), every one"""
+    found = []
+    for key, hand in handed.hands.items():
+        if not hand.idle or key in met:
+            continue
+        number = int(key.rsplit("#", 1)[1])
+        pull = changes.pulls.get(number)
+        moved = pull is not None and pull.head != hand.head
+        if changes.forced or number in changes.updated or moved:
+            found.append(key)
+    return found
+
+
+def past_issues(
+    items: Sequence[Finding], changes: Changes, handed: Handed, now: dt.datetime, retry: dt.timedelta
+) -> list[int]:
+    """The issue subjects of a tier's items whose hands are past retry, not taken whole: the
+    ones whose updatedAt the walk reads; a pull request's comes from the change check"""
+    found = set()
+    for item in items:
+        if handed.taken(item, now, retry) is not None:
+            continue
+        for n in subjects(item) or ():
+            hand = handed.hands.get(subject_key(item, n))
+            if hand is not None and now - hand.at >= retry and n not in changes.pulls:
+                found.add(n)
+    return sorted(found)

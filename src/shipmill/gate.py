@@ -47,6 +47,7 @@ from shipmill.config import CONFIG_PATH, Table, config_path, loads, read
 from shipmill.environments import OperateConfig
 from shipmill.errors import ReleaseError
 from shipmill.findings import HEAD_SHA as HEAD_SHA
+from shipmill.findings import ISSUES
 from shipmill.findings import NEEDS_DECISION as NEEDS_DECISION
 from shipmill.findings import PRS_OPEN as PRS_OPEN
 from shipmill.findings import Finding as Finding
@@ -95,6 +96,8 @@ from shipmill.walk import (
     Swept,
     Walked,
     check,
+    cut,
+    issue_updates,
     item_key,
     malformed,
     queued,
@@ -105,6 +108,7 @@ from shipmill.walk import (
     write,
 )
 from shipmill.walk import span as tier_span
+from shipmill.walk import subjects as subjects_of
 from shipmill.worktrees import Judged, Sessions, Verdict, judge, prune
 
 RECORD = "gate.json"
@@ -417,6 +421,7 @@ class Decision:
     catch_up: CatchUp | None = None  # the default branch's catch-up after the prune (#886); None: none ran
     walk: WalkRun | None = None  # how far the tick's walk went (spec 046); None: the tick read no state
     tier: int | None = None  # the tier of the item a LAUNCH hands (spec 046)
+    subjects: tuple[int, ...] = ()  # the subjects of a LAUNCH's item cut to those not taken (spec 061); (): whole
     running: Running | None = None  # the session a RUNNING or STALLED tick waits on (S-048-16); None otherwise
     in_flight: InFlight | None = None  # what a QUIET tick says is in flight (spec 048); None otherwise
     refused: tuple[Refusal, ...] = ()  # the catalogued keys the config sets, which the tick runs without (S-052-10)
@@ -505,7 +510,13 @@ def walked_decision(found: Walked, sessions: Sequence[Session], retry: dt.timede
     if found.item is not None:
         finished = tuple(s.id for s in sessions if s.finished)
         reason = f"{found.item.brief()} needs an agent (tier {found.tier}); {read}"
-        return Decision(Action.LAUNCH, reason, (found.item,), finished, tier=found.tier)
+        return Decision(Action.LAUNCH, reason, (found.item,), finished, tier=found.tier, subjects=found.cut)
+    if found.taken is not None and found.hand is not None and found.subject is not None and found.hand.idle:
+        reason = (
+            f"every item was handed; the first, {found.subject}, went to session {found.hand.session},"
+            " which wrote nothing on it; it waits for a change"
+        )
+        return Decision(Action.UNCHANGED, f"{reason}; {read}", (found.taken,))
     if found.taken is not None and found.hand is not None:
         again = (found.hand.at + retry).isoformat(timespec="minutes")
         first = f"{found.taken.brief()} (tier {tier_of(found.taken)})"
@@ -572,23 +583,30 @@ def prompt(
     bot: str | None = None,
     roles: Sequence[ResolvedRole] = (),
     levels: Levels = DEFAULT_LEVELS,
+    subjects: Sequence[int] = (),
 ) -> str:
     """The session's prompt lists each finding by state and subject only, never its detail
     (#114), with its tier and its fix line, built from trusted values only (spec 046); bot,
     the App's <slug>[bot] when [agents] app_id is set, adds bot_line; roles, the resolved
     roles the state read passed (spec 036), add role_line; levels, the agent stages' levels
-    (spec 040), add their Autonomy: line after it, in every prompt"""
+    (spec 040), add their Autonomy: line after it, in every prompt. subjects, a cut item's
+    numbers (spec 061), digits the gate parsed, follow its brief, with CUT_LINE under the list"""
+    named = f": {' '.join(f'#{int(n)}' for n in subjects)}" if subjects else ""
     found = "\n".join(
-        f"- {f.brief()} (tier {tier_of(f)})" + ("" if f.fix is None else f"\n  fix: {f.fix}") for f in work
+        f"- {f.brief()}{named} (tier {tier_of(f)})" + ("" if f.fix is None else f"\n  fix: {f.fix}") for f in work
     )
+    cut_line = f"\n{CUT_LINE}" if subjects else ""
     stamp = now.isoformat(timespec="minutes")
     head = template.replace("{repo}", repo)
     app = "" if bot is None else f"\n\n{bot_line(bot)}"
     passed = f"\n\n{role_line(roles)}" if roles else ""
     return (
-        f"{head}\n\nThe shipmill gate found this at {stamp} (from code):\n{found}\n\n{UNTRUSTED}{app}{passed}"
+        f"{head}\n\nThe shipmill gate found this at {stamp} (from code):\n{found}{cut_line}\n\n{UNTRUSTED}{app}{passed}"
         f"\n\n{levels.line()}"
     )
+
+
+CUT_LINE = "Work on the numbers named; the others were handed to an earlier session and nothing changed on them since."
 
 
 def headless_paragraph(login: str) -> str:
@@ -612,9 +630,10 @@ def headless_prompt(
     bot: str | None = None,
     roles: Sequence[ResolvedRole] = (),
     levels: Levels = DEFAULT_LEVELS,
+    subjects: Sequence[int] = (),
 ) -> str:
     """The mode 1 prompt with the headless paragraph at its end"""
-    return f"{prompt(template, repo, work, now, bot, roles, levels)}\n\n{headless_paragraph(login)}"
+    return f"{prompt(template, repo, work, now, bot, roles, levels, subjects)}\n\n{headless_paragraph(login)}"
 
 
 def gate_paragraph(login: str) -> str:
@@ -638,9 +657,10 @@ def interactive_prompt(
     bot: str | None = None,
     roles: Sequence[ResolvedRole] = (),
     levels: Levels = DEFAULT_LEVELS,
+    subjects: Sequence[int] = (),
 ) -> str:
     """The mode 1 prompt with the gate paragraph at its end"""
-    return f"{prompt(template, repo, work, now, bot, roles, levels)}\n\n{gate_paragraph(login)}"
+    return f"{prompt(template, repo, work, now, bot, roles, levels, subjects)}\n\n{gate_paragraph(login)}"
 
 
 def refuse_headless_args(args: Sequence[str]) -> None:
@@ -1013,6 +1033,10 @@ class WatchState:
 
     def sweep(self, changes: Changes) -> list[Finding]:
         return self._rows(watch_command(self._repo, self._workspace, self._read, sweep=True), "--sweep")
+
+    def issues(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
+        """The issue subjects' updatedAt (spec 061): one GraphQL query per 100 of them"""
+        return issue_updates(self._repo, numbers, self._graphql)
 
 
 def as_source(found: Source | Sequence[Finding]) -> Source:
@@ -1933,7 +1957,9 @@ def tick_walk(
     for retry (S-046-15). Without handed.json, the last launch's item, gate.json's fingerprint,
     counts as handed within retry, as one gate.json recorded before handed.json did. A walk that
     reads every tier drops the hand of an item it no longer finds (#926). With no change and no
-    sweep due the tick reads nothing more: QUIET, `no change since <cursor>` (S-046-1)"""
+    sweep due the tick reads nothing more: QUIET, `no change since <cursor>` (S-046-1). An item
+    of tier 3, 4, or 6 is handed by its subjects (spec 061, walk): a subject's hand that a walk
+    found idle stays past retry_hours, marked so, and is no change by itself (S-061-8)"""
     cursor = Cursor.load(state / CURSOR)
     recorded = (state / HANDED).is_file()
     handed = Handed.load(state / HANDED)
@@ -1967,7 +1993,7 @@ def tick_walk(
     noticed = permissions() if sweeping and permissions is not None else None
     held = None if noticed is None else noticed.stored
     swept = Swept(now, tuple(source.sweep(changes)), changes.tag, kept, held) if sweeping or known is None else known
-    found: Walked = walk(source, changes, swept, handed.kept(now, retry), now, retry, lands(land))
+    found: Walked = walk(source, changes, swept, handed, now, retry, lands(land))
     decision = replace(
         walked_decision(found, sessions, retry, land),
         walk=WalkRun(change, found.tiers, sweeping),
@@ -1976,8 +2002,9 @@ def tick_walk(
     )
     stored = found.swept if sweeping or found.swept != known else None
     after = Cursor(now - CURSOR_OVERLAP, changes.signature)
-    hands = handed.kept(now, retry)
-    # a walk that stopped at an item didn't read the tiers below it, so it keeps their hands
+    # a walk that stopped at an item didn't read the tiers below it, so it keeps their hands,
+    # a subject's past retry_hours too (spec 061); one that read every tier keeps the idle ones
+    hands = found.handed.stopped(now, retry) if found.item is not None else found.handed.kept(now, retry)
     hands = hands if found.item is not None else hands.found(found.rows)
     return Ticked(decision, changes, after, stored, hands, found.rows, found.hand)
 
@@ -2969,15 +2996,12 @@ def decided(
     if identity is not None:
         decision = replace(decision, identity=identity.login)
     host = host_read()
-    if headless:
-        text = headless_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login, read.roles, levels)
-        if identity is None:  # GitHub doesn't notify anyone of their own mention (spec 005)
-            decision = replace(decision, asks_as=host)
-    else:
-        text = interactive_prompt(agents.prompt, repo, decision.work, now, host, read.bot_login, read.roles, levels)
+    if headless and identity is None:  # GitHub doesn't notify anyone of their own mention (spec 005)
+        decision = replace(decision, asks_as=host)
     if dry_run:
         checked_plugin = plugin_read(decision, git, plugin, agents.notify, notifier, dry_run)
-        return relaunching(self_tested(checked_plugin, hooks, headless)), None, waiting
+        tested = self_tested(checked_plugin, hooks, headless)
+        return relaunching(handed_off(tested, source, ticked.changes)), None, waiting
     env = None
     if identity is not None:
         if app_env is None:
@@ -2987,25 +3011,64 @@ def decided(
     decision = self_tested(decision, hooks, headless)  # of the install the session loads
     if decision.action in (Action.PYPI_WAIT, Action.HOOKS_FAILED):
         return decision, None, waiting
+    decision = handed_off(decision, source, ticked.changes)
+    if decision.action is not Action.LAUNCH:  # S-061-13: no cursor.json or handed.json, so the next tick walks
+        return decision, None, waiting
     decision = verified(decision, verify, agents, state / VERIFY, notifier, repo, now, headless)
     decision = relaunching(decision)
     for session in decision.stop:
         claude.stop(session)
     name = f"{session_name(repo)} {now:%Y-%m-%d %H:%M}"
     (item,) = decision.work
+    told = headless_prompt if headless else interactive_prompt  # built once the item is cut (spec 061)
+    text = told(agents.prompt, repo, decision.work, now, host, read.bot_login, read.roles, levels, decision.subjects)
+    pulls = ticked.changes.pulls
     # the run of dead sessions is this item's: another item starts its own (S-046-15)
     deaths = None if dead is None or last is None or item_key(item) != last.fingerprint else dead.deaths
     if not headless:
         launched = claude.launch(git.root, name, text, env, token)
         save_launch(record, Launch(item_key(item), launched, now, None, deaths, item.brief()))
-        settled(ticked.handed.handing(item, launched, now))
+        settled(ticked.handed.handing(item, launched, now, pulls))
         return decision, launched, waiting
     session_id = new_session()
     log = session_log(state, str(session_id))
     pid = claude.start(git.root, name, text, session_id, log, env, token, maintainer=host)
     save_launch(record, Launch(item_key(item), str(session_id), now, Process(pid, started(pid)), deaths, item.brief()))
-    settled(ticked.handed.handing(item, str(session_id), now))
+    settled(ticked.handed.handing(item, str(session_id), now, pulls))
     return replace(decision, follow=f"tail -f {log}"), str(session_id), waiting
+
+
+HANDOFF_DUE = f"{ISSUES} HANDOFF_DUE"
+
+
+def handed_off(decision: Decision, source: Source, changes: Changes) -> Decision:
+    """Spec 061: before a LAUNCH of an `ISSUES HANDOFF_DUE` item, after the preflights, tier 6
+    is read again with the change check's data and the item cut to the subjects that still
+    read HANDOFF_DUE (S-061-12). With none, the tick is QUIET and starts nothing; the caller
+    writes no cursor.json or handed.json, so the next tick walks again (S-061-13)"""
+    if decision.action is not Action.LAUNCH or len(decision.work) != 1 or decision.work[0].kind != HANDOFF_DUE:
+        return decision
+    (item,) = decision.work
+    numbers = subjects_of(item) or ()
+    due = {n for row in source.tier(6, changes) if row.kind == HANDOFF_DUE for n in subjects_of(row) or ()}
+    still = tuple(n for n in numbers if n in due)
+    if not still:
+        named = " ".join(f"#{n}" for n in numbers)
+        reason = f"HANDOFF_DUE {named} read again: no longer due; the next tick walks again"
+        return replace(
+            decision,
+            action=Action.QUIET,
+            reason=reason,
+            work=(),
+            stop=(),
+            identity=None,
+            asks_as=None,
+            tier=None,
+            subjects=(),
+        )
+    if len(still) == len(numbers):
+        return decision
+    return replace(decision, work=(cut(item, still),), subjects=still)
 
 
 def tick_record(
