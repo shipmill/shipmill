@@ -116,4 +116,9 @@ question or a decided comment in it is no longer counted in `scope`.
 
 ## Issues
 
+- shipmill/shipmill#1190: S-067-1, S-067-2, S-067-3, S-067-10
+- shipmill/shipmill#1191: S-067-4, S-067-5, S-067-6
+- shipmill/shipmill#1193: S-067-7, S-067-8
+- shipmill/shipmill#1192: S-067-9
+
 ## Verification
