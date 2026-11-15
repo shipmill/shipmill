@@ -285,8 +285,10 @@ up its next REVISIT adds the line when it postpones again.
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-NNN-1, S-NNN-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
+- shipmill/shipmill#1161: S-061-1, S-061-2, S-061-3, S-061-4, S-061-5, S-061-6, S-061-7, S-061-8, S-061-9, S-061-10, S-061-12, S-061-13
+- shipmill/shipmill#1162: S-061-11
+- shipmill/shipmill#1163: S-061-14, S-061-15, S-061-16, S-061-17, S-061-18
+- shipmill/shipmill#1167: S-061-19, S-061-20, S-061-21, S-061-22
 
 ## Verification
 

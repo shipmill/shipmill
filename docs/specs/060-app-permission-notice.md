@@ -176,8 +176,8 @@ no longer needs to carry the owner's steps: the item does.
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-NNN-1, S-NNN-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
+- shipmill/shipmill#1160: S-060-1, S-060-9, S-060-10
+- shipmill/shipmill#1166: S-060-2, S-060-3, S-060-4, S-060-5, S-060-6, S-060-7, S-060-8, S-060-11, S-060-12, S-060-13, S-060-14, S-060-15
 
 ## Verification
 
