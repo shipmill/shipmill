@@ -7,6 +7,17 @@ bot.
 
 ## [Unreleased]
 
+## [0.143.0] - 2026-11-15
+
+### Fixed
+
+- `move-major-tag.yml` with `land-environment` set proves the App's token with a dry-run push to the default branch before the major tag moves, so a bad `SHIPMILL_LAND_KEY` or an App that can't push fails with nothing pushed instead of leaving the major tag on the new release and the marketplace on the old one; a missing `.github/shipmill.toml` fails with an error naming the fix, not a traceback, the App's credential helper quotes the key's path so one with a space works, and a release that isn't the newest stable one no longer reads the key at all (#1188)
+- The merge gate reads the newest trusted answer to a needs-decision question, not the first: a bare `1` after a reply with words takes the recommended option, and a reply with words after a bare `1` holds the item again; the retro's answer count keeps reading the first answer (#1199)
+
+### Added
+
+- `shipmill app-token <owner/name>` takes a repeatable `--permission <name>=<read|write>`: given, the token asks GitHub for exactly those permissions (metadata read comes with every token), each one the App's table has at no more than its access there, else it exits 2 before any request; the narrowed token is cached apart in `app-token-<permissions>.json`, never in the session's `app-token.json`, and the flag goes with `--git-credential` but not `--check` or `--product`. `move-major-tag.yml`'s marketplace push now mints its token with `--permission contents=write`, so it no longer carries issues and pull requests write it never used; without the flag nothing changes (D-90) (#1189)
+
 ## [0.142.0] - 2026-11-15
 
 ### Added
@@ -2602,7 +2613,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.142.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.143.0...HEAD
+[0.143.0]: https://github.com/shipmill/shipmill/compare/v0.142.0...v0.143.0
 [0.142.0]: https://github.com/shipmill/shipmill/compare/v0.141.0...v0.142.0
 [0.141.0]: https://github.com/shipmill/shipmill/compare/v0.140.0...v0.141.0
 [0.140.0]: https://github.com/shipmill/shipmill/compare/v0.139.0...v0.140.0
