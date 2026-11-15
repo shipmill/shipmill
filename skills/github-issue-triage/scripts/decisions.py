@@ -80,6 +80,7 @@ ZONES: dict[str, tuple[str, str | None]] = {
     "contract-change": ("ask", None),
     "contract-addition": ("notify", None),
     "security": ("ask", "notify"),
+    "deploy-step": ("ask", None),  # spec 063: a changed deploy job no run covers
     "protected": ("ask", None),
     "interpretation": ("notify", None),
     "triage-verdict": ("notify", None),

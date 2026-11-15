@@ -18,7 +18,7 @@ from .conftest import POLICY
 WHERE = "shipmill.toml [decisions]"
 ZONE_IDS = (
     "direction, decision-policy, scope, rule-departure, contract-change, contract-addition, security, "
-    "protected, interpretation, triage-verdict, implementation, unknown"
+    "deploy-step, protected, interpretation, triage-verdict, implementation, unknown"
 )
 LEVELS = "['act', 'notify', 'ask', 'never']"
 DEFAULTS = {
@@ -29,6 +29,7 @@ DEFAULTS = {
     Zone.CONTRACT_CHANGE: Level.ASK,
     Zone.CONTRACT_ADDITION: Level.NOTIFY,
     Zone.SECURITY: Level.ASK,
+    Zone.DEPLOY_STEP: Level.ASK,
     Zone.PROTECTED: Level.ASK,
     Zone.INTERPRETATION: Level.NOTIFY,
     Zone.TRIAGE_VERDICT: Level.NOTIFY,
@@ -57,6 +58,15 @@ def test_s030_1_without_the_section_every_zone_has_its_default_and_the_window_is
     assert list(policy.levels) == list(DEFAULTS)  # the zone table's order
     assert int(policy.veto_hours) == 24
     assert not any(policy.is_configured(zone) for zone in Zone)
+
+
+def test_s063_1_deploy_step_follows_security_at_ask_with_no_floor() -> None:
+    order = list(Zone)
+    assert order[order.index(Zone.SECURITY) + 1] is Zone.DEPLOY_STEP
+    rule = zones()[Zone.DEPLOY_STEP]
+    assert (rule.default, rule.floor) == (Level.ASK, None)
+    for level in Level:  # no floor: [decisions] sets it to any level
+        assert decisions(section(f'deploy-step = "{level.value}"')).level(Zone.DEPLOY_STEP) is level
 
 
 def test_s030_1_an_empty_section_is_the_defaults_too() -> None:

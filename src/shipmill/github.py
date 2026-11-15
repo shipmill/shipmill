@@ -121,14 +121,40 @@ class FileChange:
 @dataclass(frozen=True, slots=True)
 class PullChange:
     """A pull request's change: the commit it branched from on its base (the merge base, the
-    side its diff is against), its head commit, its files, and its labels' names as GitHub
-    spells them (S-030-23)"""
+    side its diff is against), its head commit, its files, its labels' names as GitHub
+    spells them (S-030-23), its body, and its base repo's owner/name (spec 063)"""
 
     number: int
     base: str
     head: str
     files: tuple[FileChange, ...]
     labels: tuple[str, ...] = ()
+    body: str = ""
+    repo: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RunAttempt:
+    """A workflow run as of one attempt: the workflow file it ran (its `path`) and the commit it
+    ran at (spec 063)"""
+
+    run: int
+    attempt: int
+    path: str
+    head_sha: str
+
+
+@dataclass(frozen=True, slots=True)
+class RunJob:
+    """A job of a run's attempt, by the name GitHub shows, with its status and conclusion"""
+
+    name: str
+    status: str
+    conclusion: str | None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == "completed" and self.conclusion == "success"
 
 
 @dataclass(frozen=True, slots=True)
@@ -730,7 +756,39 @@ class GhCli:
                     None if entry.get("previous_filename") is None else str(entry["previous_filename"]),
                 )
             )
-        return PullChange(number, base, head, tuple(files), tuple(str(label["name"]) for label in labels))
+        names = tuple(str(label["name"]) for label in labels)
+        # GitHub always names the base repo; a recorded answer may not, and then a run a Proof:
+        # line names can't be placed (spec 063), which classify refuses only when there is one
+        held = pull["base"].get("repo")
+        repo = held.get("full_name") if isinstance(held, dict) else None
+        if repo is not None and (not isinstance(repo, str) or repo.count("/") != 1):
+            raise ReleaseError(f"gh api of pull request #{number} named no owner/name base repo, got {repo!r}")
+        body = pull.get("body")
+        return PullChange(number, base, head, tuple(files), names, "" if body is None else str(body), repo)
+
+    def run_attempt(self, run: int, attempt: int | None) -> RunAttempt:
+        """The run as of the attempt, or of its latest attempt for None (spec 063); a GET"""
+        where = f"repos/{{owner}}/{{repo}}/actions/runs/{run}" + ("" if attempt is None else f"/attempts/{attempt}")
+        found = self._api("-X", "GET", where)
+        path, sha, number = found.get("path"), found.get("head_sha"), found.get("run_attempt")
+        if not isinstance(path, str) or not isinstance(sha, str) or not isinstance(number, int):
+            raise ReleaseError(f"gh api {where} gave no path, head_sha, and run_attempt: {str(found)[:300]}")
+        return RunAttempt(run, number, path, sha)
+
+    def attempt_jobs(self, run: int, attempt: int) -> tuple[RunJob, ...]:
+        """Every job of the run's attempt, across its pages (spec 063); a GET"""
+        where = f"repos/{{owner}}/{{repo}}/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100"
+        listed = self._gh("api", "-X", "GET", "--paginate", where, "--jq", ".jobs[]")
+        found = [json.loads(line) for line in listed.splitlines() if line.strip()]
+        return tuple(RunJob(str(j["name"]), str(j["status"]), j.get("conclusion")) for j in found)
+
+    def blob_at(self, sha: str, path: str) -> str:
+        """The file's blob sha at a commit, through the contents API (spec 063); a GET"""
+        where = f"repos/{{owner}}/{{repo}}/contents/{quote(path)}?ref={sha}"
+        blob = self._gh("api", "-X", "GET", where, "--jq", ".sha").strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", blob):
+            raise ReleaseError(f"gh api {where} named no blob, got {blob!r}")
+        return blob
 
     def pull_of(self, selector: str | None) -> str:
         """The URL of the pull request gh resolves selector to (a branch; None for the current

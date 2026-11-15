@@ -13,7 +13,7 @@ from shipmill.app_gh import GhCapture, Merge, merge_of
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
-from shipmill.github import FileChange, PullChange
+from shipmill.github import FileChange, PullChange, RunAttempt, RunJob
 
 from .conftest import POLICY, Repo
 from .test_agent_marker import HOST_IDENTITY, sent
@@ -43,6 +43,15 @@ class FakeReads:
 
     def text_at(self, sha: str, path: str) -> str:
         raise AssertionError(f"no file is read for these paths, got {path} at {sha}")
+
+    def run_attempt(self, run: int, attempt: int | None) -> RunAttempt:
+        raise AssertionError(f"no Proof: run is read for these paths, got run {run}")
+
+    def attempt_jobs(self, run: int, attempt: int) -> tuple[RunJob, ...]:
+        raise AssertionError(f"no Proof: run is read for these paths, got run {run}")
+
+    def blob_at(self, sha: str, path: str) -> str:
+        raise AssertionError(f"no blob is read for these paths, got {path} at {sha}")
 
     def pull_of(self, selector: str | None) -> str:
         self.selectors.append(selector)

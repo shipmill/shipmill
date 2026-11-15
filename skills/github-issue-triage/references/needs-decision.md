@@ -22,6 +22,7 @@ Every session in a repo whose `.github/shipmill.toml` has `[agents]`, a gate ses
 | `contract-change` | changing or removing a command, flag, argument, exit code, env var, output or file format, default, limit, public API, or stored state an upgrade reads |
 | `contract-addition` | adding one of those while every existing use behaves as before; a new runtime dependency |
 | `security` | `.github/**`, a secret or credential, a token's or a workflow's permissions, the delivery hooks' rules, the gate's tool allowlist |
+| `deploy-step` | a change to a deploy workflow's job (one an `[environments]` table names, or with an `environment:` key) that no run named on the pull request's `Proof:` line ran at its content (spec 063) |
 | `protected` | a file a `REVIEW.md` Protected areas glob covers |
 | `interpretation` | choosing between readings of an approved spec, a `D-n`, or an issue, where each reading meets the criteria |
 | `triage-verdict` | won't fix, duplicate, postpone, or close as done on an issue |

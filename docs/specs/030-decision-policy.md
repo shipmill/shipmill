@@ -67,6 +67,7 @@ reaches, orders zones of the same reversibility.
 | `contract-change` | changing or removing a command, flag, argument, exit code, env var, output or file format, default, limit, public API, or stored state an upgrade reads | `ask` | none | an added changelog entry under a `major` heading of `[bump]` |
 | `contract-addition` | adding one of those while every existing use behaves as before; a new runtime dependency | `notify` | none | no |
 | `security` | `.github/**` (workflows, CODEOWNERS, the config outside `[decisions]`), a secret or credential, a token's or a workflow's permissions, the delivery hooks' rules, the gate's tool allowlist | `ask` | `notify` | a changed path |
+| `deploy-step` | a change to a deploy workflow's job that no run named on the pull request's `Proof:` line ran at its content ([spec 063](063-deploy-step-first-run.md)) | `ask` | none | a changed deploy job and the named runs |
 | `protected` | a file matching a `REVIEW.md` Protected areas glob (spec 024) | `ask` | none | a changed path |
 | `interpretation` | choosing between readings of an approved spec, a `D-n`, or an issue, where each reading meets the criteria | `notify` | none | no |
 | `triage-verdict` | won't fix, duplicate, postpone, or close as done on an issue | `notify` | none | no |
