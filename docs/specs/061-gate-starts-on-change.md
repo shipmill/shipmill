@@ -316,6 +316,6 @@ are below; pass for every one.
 - S-061-17: verified, `test_s061_17_an_unreadable_line_reads_revisit_quoting_it`, `test_s061_17_the_unreadable_line_is_cut_to_100_characters`
 - S-061-18: verified, `test_s061_18_a_path_matches_by_its_own_glob_rules`
 - S-061-19: verified, `test_s061_19_the_docs_say_what_spec_061s_docs_list_says` (`tests/test_watch_gate_idle.py`), which reads each file of the Docs list and `watch_state.py`'s help text
-- S-061-20: verified, `test_s061_20_the_idle_hands_are_two_rows_oldest_first`, `test_s061_20_the_full_report_gives_the_two_gate_idle_rows` (the full report as a subprocess, with a `handed.json` the gate's own `Handed.save` format), `test_s061_20_the_hands_are_read_from_the_gate_folders_state_directory`
+- S-061-20: verified, `test_s061_20_the_idle_hands_are_two_rows_oldest_first`, `test_s061_20_the_rows_read_handed_json_as_the_gate_writes_it` (a `handed.json` written by the gate's own `Handed.save`, at an offset other than UTC), `test_s061_20_the_full_report_gives_the_two_gate_idle_rows` (the full report as a subprocess), `test_s061_20_the_hands_are_read_from_the_gate_folders_state_directory`
 - S-061-21: verified, `test_s061_21_a_gate_idle_row_is_no_agents_and_changes_no_exit_code`, `test_s061_21_tier_sweep_and_host_reads_print_no_gate_idle_row`, `test_s061_21_no_handed_json_or_no_idle_hand_gives_no_row`
 - S-061-22: verified, `test_s061_22_a_malformed_handed_json_is_refused_naming_its_path`, `test_s061_22_the_watch_exits_2_on_a_malformed_handed_json`
