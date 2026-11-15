@@ -113,7 +113,9 @@ Labels (the triage skills and shipmill read them):
                    now", spec 014), upstream (a report for another repo, spec
                    038), decided (a notify decision, spec 030), and
                    shipmill-direction (the question for a missing direction,
-                   spec 034) don't exist, and with a [land.window] section, with
+                   spec 034) don't exist, with [agents] app_id also
+                   shipmill-permission (the App owner's item for a permission
+                   to grant, spec 060), and with a [land.window] section, with
                    or without [agents], its queued_label (default land-queued,
                    the land window's queue, spec 056); --fix creates
                    them on GitHub through `uvx shipmill==<version> gh` (the version in
@@ -230,6 +232,10 @@ DECIDED_LABEL = ("bfd4f2", "A shipmill session decided here without waiting; the
 # Wanted wherever needs-decision is (spec 034): shipmill's question for the product's direction
 DIRECTION = "shipmill-direction"
 DIRECTION_LABEL = ("1d76db", "shipmill's question for the product's direction")
+# Wanted with [agents] app_id (spec 060): the App's owner's item for a permission a release
+# added, which the gate finds its issue by
+PERMISSION = "shipmill-permission"
+PERMISSION_LABEL = ("d93f0b", "A permission the App's owner grants and accepts on its installation")
 # Wanted with [land.window] (spec 056): a held pull request waiting for the land window, named
 # by the section's queued_label
 QUEUED_DEFAULT = "land-queued"
@@ -364,7 +370,7 @@ def agents_row(repo_dir: Path) -> Row:
     section = agents_section(repo_dir)
     if section is None or not re.search(r"^prompt\s*=", section, re.MULTILINE):
         return Row("AGENTS_MISSING", f"no [agents] prompt in {CONFIG}: needed only for `shipmill gate`")
-    if not re.search(r"^[ \t]*app_id\s*=", section, re.MULTILINE):  # TOML allows an indented key
+    if not sets_app_id(section):
         return Row("AGENTS_NO_APP", NO_APP)
     if not re.search(r"^[ \t]*mode\s*=", section, re.MULTILINE):
         return Row("AGENTS_NO_MODE", NO_MODE)
@@ -842,7 +848,8 @@ def wanted_labels(repo_dir: Path, ws: ModuleType | None = None) -> dict[str, tup
     config = config_file(repo_dir)
     blocker = policy_value(config.read_text(encoding="utf-8"), "blocker_label") if config else None
     wanted[blocker or "release-blocker"] = BLOCKER
-    if agents_section(repo_dir) is not None:  # every gate session asks this way, in either mode (D-21)
+    section = agents_section(repo_dir)
+    if section is not None:  # every gate session asks this way, in either mode (D-21)
         wanted[NEEDS_DECISION] = NEEDS_DECISION_LABEL
         wanted.update(role_labels(repo_dir, ws or watch_module()))  # a role's item (spec 036)
         wanted[HUMAN] = HUMAN_LABEL  # a person's item in a chain (spec 017)
@@ -850,11 +857,18 @@ def wanted_labels(repo_dir: Path, ws: ModuleType | None = None) -> dict[str, tup
         wanted[UPSTREAM] = UPSTREAM_LABEL  # a report for another repo (spec 038)
         wanted[DECIDED] = DECIDED_LABEL  # a notify decision, open to a veto (spec 030)
         wanted[DIRECTION] = DIRECTION_LABEL  # the question for a missing direction (spec 034)
+        if sets_app_id(section):  # the App's owner's item for a permission to grant (spec 060)
+            wanted[PERMISSION] = PERMISSION_LABEL
     mentions_land = config is not None and "land" in config.read_text(encoding="utf-8")
     queued = queued_label(repo_dir, ws) if mentions_land else None
     if queued is not None:  # the land window's queue (spec 056), with or without [agents]
         wanted[queued] = QUEUED_LABEL
     return wanted
+
+
+def sets_app_id(section: str) -> bool:
+    """Whether the [agents] section sets app_id, read as agents_row reads it"""
+    return re.search(r"^[ \t]*app_id\s*=", section, re.MULTILINE) is not None  # TOML allows an indented key
 
 
 def queued_label(repo_dir: Path, ws: ModuleType | None = None) -> str | None:
@@ -963,7 +977,7 @@ def labels_row(missing: list[str], wanted: dict[str, tuple[str, str]]) -> Row:
         return Row("LABELS_MISSING", ", ".join(missing))
     extra = "".join(
         f" {label},"
-        for label in (NEEDS_DECISION, HUMAN, UPGRADE_LATER, UPSTREAM, DECIDED, DIRECTION)
+        for label in (NEEDS_DECISION, HUMAN, UPGRADE_LATER, UPSTREAM, DECIDED, DIRECTION, PERMISSION)
         if label in wanted
     )
     extra += "".join(f" {label}," for label, value in wanted.items() if value == QUEUED_LABEL)

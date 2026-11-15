@@ -294,11 +294,52 @@ def test_d21_interactive_wants_the_needs_decision_label_too(ss: ModuleType, tmp_
     # #206, D-21: an interactive gate session posts its questions as needs-decision too
     write(tmp_path, ".github/shipmill.toml", text)
     wanted = ss.wanted_labels(tmp_path)
-    assert set(wanted) == BASE_LABELS | AGENT_LABELS | ROLE_LABELS
+    app = {"shipmill-permission"} if "app_id" in text else set()  # spec 060: only with app_id
+    assert set(wanted) == BASE_LABELS | AGENT_LABELS | ROLE_LABELS | app
     assert ss.labels_row([], wanted).detail == (
         "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream, decided,"
-        " shipmill-direction, and the blocker label exist"
+        f" shipmill-direction,{' shipmill-permission,' if app else ''} and the blocker label exist"
     )
+
+
+PERMISSION_LABEL = ("d93f0b", "A permission the App's owner grants and accepts on its installation")
+
+
+# proves: S-060-10
+@pytest.mark.parametrize(
+    "text",
+    [
+        '[agents]\nprompt = "x"\napp_id = 7\nmode = "headless"\n',
+        "[agents]\napp_id = 7\n",
+        "[agents]\n  app_id = 7  # indented\n",
+    ],
+)
+def test_s060_10_labels_missing_names_shipmill_permission_with_app_id(
+    ss: ModuleType, tmp_path: Path, text: str
+) -> None:
+    write(tmp_path, ".github/shipmill.toml", text)
+    wanted = ss.wanted_labels(tmp_path)
+    assert wanted["shipmill-permission"] == PERMISSION_LABEL
+    have = BASE_LABELS | AGENT_LABELS | ROLE_LABELS
+    row = ss.labels_row([name for name in wanted if name not in have], wanted)
+    assert (row.state, row.detail) == ("LABELS_MISSING", "shipmill-permission")
+    gh = FakeGh("")
+    ss.create_labels("me/demo", wanted, ["shipmill-permission"], ["gh"], gh)
+    assert gh.calls == [
+        [
+            *["gh", "label", "create", "shipmill-permission", "-R", "me/demo", "--color", "d93f0b"],
+            *["--description", PERMISSION_LABEL[1]],
+        ]
+    ]
+
+
+# proves: S-060-10
+@pytest.mark.parametrize("text", ["", 'mode = "release"\n', HEADLESS, '[agents]\nprompt = "x"\n# app_id = 7\n'])
+def test_s060_10_shipmill_permission_isnt_wanted_without_app_id(ss: ModuleType, tmp_path: Path, text: str) -> None:
+    write(tmp_path, ".github/shipmill.toml", text)
+    wanted = ss.wanted_labels(tmp_path)
+    assert "shipmill-permission" not in wanted
+    assert "shipmill-permission" not in ss.labels_row([], wanted).detail
 
 
 @pytest.mark.parametrize("text", ["", 'mode = "release"\n', '[lanes.dev]\nmode = "headless"\n'])
@@ -312,7 +353,8 @@ def test_s005_16_no_agents_doesnt_want_the_label(ss: ModuleType, tmp_path: Path,
 
 def test_s005_16_a_headless_mode_outside_agents_doesnt_count(ss: ModuleType, tmp_path: Path) -> None:
     write(tmp_path, ".github/shipmill.toml", '[agents]\nprompt = "x"\napp_id = 1\n[lanes.dev]\nmode = "headless"\n')
-    assert set(ss.wanted_labels(tmp_path)) == BASE_LABELS | AGENT_LABELS | ROLE_LABELS  # the [agents] section, D-21
+    # the [agents] section, D-21, and its app_id's shipmill-permission (spec 060)
+    assert set(ss.wanted_labels(tmp_path)) == BASE_LABELS | AGENT_LABELS | ROLE_LABELS | {"shipmill-permission"}
     assert ss.agents_row(tmp_path).state == "AGENTS_NO_MODE"  # another table's mode isn't [agents]'s
 
 
@@ -380,7 +422,7 @@ def test_s030_20_decided_is_wanted_with_agents(ss: ModuleType, tmp_path: Path, t
     wanted = ss.wanted_labels(tmp_path)
     description = "A shipmill session decided here without waiting; the maintainer may veto it"
     assert wanted["decided"] == ("bfd4f2", description)
-    have = BASE_LABELS | ROLE_LABELS | AGENT_LABELS - {"decided"}
+    have = (BASE_LABELS | ROLE_LABELS | AGENT_LABELS | {"shipmill-permission"}) - {"decided"}
     row = ss.labels_row([name for name in wanted if name not in have], wanted)
     assert (row.state, row.detail) == ("LABELS_MISSING", "decided")
     gh = FakeGh("")

@@ -42,10 +42,13 @@ import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from shipmill import cli_command
 from shipmill.errors import ReleaseError
+
+if TYPE_CHECKING:  # policy imports agents, which imports this module
+    from shipmill.policy import Policy
 
 API = "https://api.github.com"
 TIMEOUT = 30.0  # seconds a GitHub API call may take
@@ -80,6 +83,21 @@ class Permission:
         return f"{self.label}: {self.access}"
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OptionalPermission(Permission):
+    """D-77, spec 060: a permission the App asks for beyond PERMISSIONS, with the check saying
+    whether a repo's config turns on what it serves. The warnings name it, needed or not; the
+    gate's notice files an item for it only where a config needs it (D-9)"""
+
+    needed: Callable[[Policy], bool]
+
+
+def declares_environments(policy: Policy) -> bool:
+    """Deployments: read's check: the config declares an environment, whose deployments the
+    report reads"""
+    return bool(policy.environments)
+
+
 # The spec's table: what a session needs on the repo, and nothing more. installation()
 # requires every one, so adding one here stops every gate whose installation hasn't
 # accepted it (D-63); a new permission goes in OPTIONAL_PERMISSIONS instead (D-77)
@@ -97,9 +115,16 @@ PERMISSIONS = (
 
 # D-77: what the App asks for beyond PERMISSIONS. A session's token asks for one only where
 # the installation grants it, and an installation without it still launches sessions;
-# doctor and the gate's GitHub preflight name it as a warning saying what to accept
-OPTIONAL_PERMISSIONS = (
-    Permission("deployments", "Deployments", Access.READ, "the report reads the environments' deployments with it"),
+# doctor and the gate's GitHub preflight name it as a warning saying what to accept. Each entry
+# comes with its `needed` check (spec 060), so this table stays the one place one is added
+OPTIONAL_PERMISSIONS: tuple[OptionalPermission, ...] = (
+    OptionalPermission(
+        "deployments",
+        "Deployments",
+        Access.READ,
+        "the report reads the environments' deployments with it",
+        needed=declares_environments,
+    ),
 )
 
 # Spec 038, D-47: the coordinator's second token, over the product's repos: it reads their code
