@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.138.0] - 2026-11-15
+
+### Added
+
+- github-ship-watch's `watch_state.py` lists each issue or pull request the gate keeps idle as a GATE_IDLE row, read from `handed.json` in the gate folder's state directory: `idle since <time> UTC (<age> ago): session <id> wrote nothing on it; waits for a change`, oldest first, in the full report and `--no-host`, never an action or an agent's row, and a malformed `handed.json` exits 2 naming its path; the postpone templates carry a `Revisit on:` line, and the triage, setup, and watch docs say how the gate hands subjects one by one (spec 061 is built) (#1167)
+
 ## [0.137.0] - 2026-11-15
 
 ### Added
@@ -2566,7 +2572,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.137.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.138.0...HEAD
+[0.138.0]: https://github.com/shipmill/shipmill/compare/v0.137.0...v0.138.0
 [0.137.0]: https://github.com/shipmill/shipmill/compare/v0.136.0...v0.137.0
 [0.136.0]: https://github.com/shipmill/shipmill/compare/v0.135.0...v0.136.0
 [0.135.0]: https://github.com/shipmill/shipmill/compare/v0.134.2...v0.135.0
