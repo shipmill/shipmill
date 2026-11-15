@@ -196,6 +196,20 @@ def test_s002_3_main_current_and_foreign_worktrees_are_kept(repo: Checkout, tmp_
     assert gate.is_dir()
 
 
+def test_s002_3_a_gate_checkout_outside_the_repo_is_kept(repo: Checkout, tmp_path: Path) -> None:
+    # #1156: shipmill-setup puts the gate's checkout at ~/.local/share/shipmill/gates/<owner>/<repo>
+    gate = repo.add(str(tmp_path / "home/.local/share/shipmill/gates/acme/web"), "--detach")
+    session = repo.add(str(gate / ".claude/worktrees/s"), "-b", "s")  # a session's, under the gate's checkout
+
+    def by_gate(where: Path | None) -> dict[str, str | None]:
+        return {path.rpartition("gates/")[2]: reason for path, reason in repo.reasons(where).items()}
+
+    assert by_gate(None)["acme/web"] == "not a shipmill worktree"
+    assert by_gate(None)["acme/web/.claude/worktrees/s"] != "not a shipmill worktree"  # still the prune's to judge
+    assert by_gate(gate)["acme/web"] == "current checkout"  # the gate's own tick
+    assert gate.is_dir() and session.is_dir()
+
+
 def test_s002_4_missing_locked_detached_and_default_branch_are_kept(repo: Checkout) -> None:
     gone = repo.add("tmp/wt-gone", "-b", "gone")
     shutil.rmtree(gone)

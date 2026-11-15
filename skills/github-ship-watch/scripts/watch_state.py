@@ -325,8 +325,11 @@ Agents (all reported, never an action by itself):
                   detail its repo (the owner/name after gate in its ProgramArguments), the
                   missing folder, and launchctl's last exit code when it has one. The fix adds
                   the folder back as a worktree of its main checkout and kickstarts the job
-                  when the folder is <main>/tmp/shipmill-gate and <main> is a git checkout,
-                  else writes the job again with shipmill launchd from a fresh clone. A gate
+                  when the folder is <main>/tmp/shipmill-gate and <main> is a git checkout;
+                  when it is ~/.local/share/shipmill/gates/<owner>/<name> for the job's repo
+                  (#1156), the same from the person's checkout of the repo, named
+                  <its checkout>; else writes the job again with shipmill launchd from a
+                  fresh clone. A gate
                   plist that isn't one, or names no one repo after gate, or no
                   WorkingDirectory, exits 2. An action for a person, never an agent's, and
                   in no tier
@@ -346,7 +349,8 @@ shipmill on this host (from `claude plugin list --json` and `claude plugin marke
                   that apply to the repo (user scope, and local or project scope in the
                   checkout or the gate's launchd working directory, each taken as the project
                   Claude Code loads it as: a linked worktree's main checkout), the gate's
-                  checkout's own installs (tmp/shipmill-gate, the launchd working directory,
+                  checkout's own installs (tmp/shipmill-gate,
+                  ~/.local/share/shipmill/gates/<owner>/<name>, the launchd working directory,
                   or the checkout itself when it is a linked worktree: Claude Code keys an
                   install on each), the install a session in the gate's folder loads
                   ("a session loads <scope> <version> (<project>)": the most specific scope
@@ -578,7 +582,10 @@ PLUGIN = "shipmill@shipmill"  # the Claude Code plugin, in its marketplace
 # in place of the plugin's /shipmill:<name> (#236)
 USER_SKILLS = (Path(".claude/skills"), Path(".agents/skills"))
 PLUGIN_CACHE = Path(".claude/plugins/cache") / PLUGIN.partition("@")[2]  # the plugin's own copies, by version
-GATE_CHECKOUT = Path("tmp/shipmill-gate")  # where shipmill-setup puts the gate's checkout
+GATE_CHECKOUT = Path("tmp/shipmill-gate")  # where shipmill-setup put the gate's checkout before #1156
+# #1156: where shipmill-setup puts it now, under the home folder, as <GATES>/<owner>/<name>:
+# outside the repo, so a cleanup of the repo's tmp/ no longer deletes it
+GATES = Path(".local/share/shipmill/gates")
 # the gate log's decision lines: QUIET, LAUNCH, RUNNING, WAITING, UNCHANGED, HELD,
 # PYPI_WAIT, HOOKS_FAILED, CLAUDE_AUTH, SESSION_DEAD, or an error
 GATE_DECISION = re.compile(r"^(?:[A-Z][A-Z_]*|error): ")
@@ -4321,7 +4328,9 @@ def checkout_missing_rows(agents: Path, platform: str, uid: int, printed: Callab
     runs, so the gate never reports it. agents is the LaunchAgents folder, printed `launchctl
     print` of a label (None when not loaded). Only dev.shipmill.gate.*.plist is read. The fix
     adds the gate's checkout back as a worktree of its main checkout when that is still a git
-    checkout, else writes the job again from a fresh clone"""
+    checkout; for a folder where shipmill-setup puts it outside the repo (#1156), whose path
+    names no main checkout, the same from the person's checkout of the repo; else writes the
+    job again from a fresh clone"""
     if platform != "darwin":
         return []
     rows = []
@@ -4339,11 +4348,18 @@ def checkout_missing_rows(agents: Path, platform: str, uid: int, printed: Callab
             detail += f"; last exit {code.group(1)}"
         gone = Path(folder)
         main = gone.parent.parent
+        kickstart = f"launchctl kickstart gui/{uid}/{label}"
         if gone.parts[-2:] == GATE_CHECKOUT.parts and (main / ".git").exists():
             where, checkout = shlex.quote(str(main)), shlex.quote(folder)
             fix = (
                 f"git -C {where} worktree prune && git -C {where} worktree add --detach {checkout} origin/HEAD"
-                f" && launchctl kickstart gui/{uid}/{label}"
+                f" && {kickstart}"
+            )
+        elif gone.parts[-len(GATES.parts) - 2 :] == (*GATES.parts, *repo.split("/")):
+            checkout = shlex.quote(folder)
+            fix = (
+                f"from your checkout of {repo}: git -C {SOME_CHECKOUT} worktree prune"
+                f" && git -C {SOME_CHECKOUT} worktree add --detach {checkout} origin/HEAD && {kickstart}"
             )
         else:
             fix = relaunch_fix(repo, job, args)
@@ -4694,17 +4710,25 @@ def project_folder(folder: Path) -> Path:
     return main_checkout(folder, proc.stdout)
 
 
-def plugin_folders(repo_dir: Path, workdir: Path | None) -> tuple[list[Path], list[Path]]:
+def gate_home(repo: str, home: Path) -> Path:
+    """The gate's checkout for owner/name where shipmill-setup puts it (#1156)"""
+    owner, _, name = repo.partition("/")
+    return home / GATES / owner / name
+
+
+def plugin_folders(repo_dir: Path, workdir: Path | None, outside: Path | None = None) -> tuple[list[Path], list[Path]]:
     """The projects Claude Code loads for the checkout and the gate's working directory, and
     the gate's checkouts, keyed apart from them (#233): the conventional tmp/shipmill-gate,
-    the working directory, and the checkout itself when either is a linked worktree. A
-    tmp/shipmill-gate that is a clone of its own is a project too, whose installs its sessions
-    load"""
+    outside (gate_home, #1156) when it is a folder, the working directory, and the checkout
+    itself when either is a linked worktree. A conventional checkout that is a clone of its
+    own is a project too, whose installs its sessions load"""
     main = project_folder(repo_dir)
     folders, gates = [main], [main / GATE_CHECKOUT]
-    conventional = main / GATE_CHECKOUT
-    if conventional.is_dir() and project_folder(conventional) == conventional:  # a clone of its own, not a worktree
-        folders.append(conventional)
+    if outside is not None and outside.is_dir():
+        gates.append(outside)
+    for conventional in gates:
+        if conventional.is_dir() and project_folder(conventional) == conventional:  # a clone of its own
+            folders.append(conventional)
     for folder in [repo_dir] if workdir is None else [repo_dir, workdir]:
         project = project_folder(folder)
         if project not in folders:
@@ -4759,8 +4783,9 @@ def shipmill_rows(repo: str, repo_dir: Path, *, host_wide: bool) -> list[Row]:
     latest = latest_release()
     plist = gate_plist(repo)
     workdir = plist.get("WorkingDirectory") if plist else None
-    folders, gates = plugin_folders(repo_dir, Path(workdir) if isinstance(workdir, str) else None)
-    session = project_folder(gate_folder(repo_dir, workdir if isinstance(workdir, str) else None))
+    outside = gate_home(repo, Path.home())
+    folders, gates = plugin_folders(repo_dir, Path(workdir) if isinstance(workdir, str) else None, outside)
+    session = project_folder(gate_folder(repo_dir, workdir if isinstance(workdir, str) else None, outside))
     claude = shutil.which("claude")
     if claude is None:
         return plugin_rows(None, None, latest, folders, gates)
@@ -4770,11 +4795,15 @@ def shipmill_rows(repo: str, repo_dir: Path, *, host_wide: bool) -> list[Row]:
     return plugin_rows(plugins, market, latest, folders, gates, session, path_cli, counted)
 
 
-def gate_folder(repo_dir: Path, workdir: str | None) -> Path:
-    """The folder the gate starts its sessions in: launchd's working directory, else the
-    conventional tmp/shipmill-gate beside the main checkout when it exists, else the checkout"""
+def gate_folder(repo_dir: Path, workdir: str | None, outside: Path | None = None) -> Path:
+    """The folder the gate starts its sessions in: launchd's working directory, else outside
+    (gate_home, where shipmill-setup puts it since #1156) when it exists, else the
+    tmp/shipmill-gate beside the main checkout of a gate set up before it when that exists,
+    else the checkout"""
     if workdir is not None:
         return Path(workdir)
+    if outside is not None and outside.is_dir():
+        return outside
     beside = project_folder(repo_dir) / GATE_CHECKOUT
     return beside if beside.is_dir() else repo_dir
 

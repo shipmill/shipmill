@@ -149,9 +149,18 @@ Contributor rules (a warning, read only when the config's [changelog] sets fragm
                    leaves CHANGELOG.md alone, so a rule to edit Unreleased is stale. The
                    repo's own docs are the maintainer's (D-42): --fix leaves them
 
+Gate checkout (a warning, read only on a Mac with the repo's gate job in ~/Library/LaunchAgents):
+  GATE_IN_TMP    the job's WorkingDirectory is under the main checkout's tmp/, where
+                 shipmill-setup put the gate's checkout before #1156: a cleanup of tmp/
+                 deletes it, and launchd then fails every tick with exit 78 (#1155). The
+                 detail names the folder and ~/.local/share/shipmill/gates/<owner>/<name>,
+                 where shipmill-setup's Move the gate step moves it once the person agrees.
+                 --fix leaves it: the job and the folder are the person's. A job with no
+                 WorkingDirectory exits 2
+
 Exit 0 when every row is RELEASE_READY, AGENTS_OK, PRODUCT_OK, PLUGIN_OK, SKILLS_OK,
-LABELS_OK, or BRANCH_DELETE_ON (RUNNER_SHARED and CHANGELOG_RULES, warnings, leave the exit
-code alone), 1 otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT,
+LABELS_OK, or BRANCH_DELETE_ON (RUNNER_SHARED, CHANGELOG_RULES, and GATE_IN_TMP, warnings,
+leave the exit code alone), 1 otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT,
 PRODUCT_LISTED, PRODUCT_SIBLINGS, PLUGIN_COMMITTED, PLUGIN_OUTDATED, PLUGIN_SHADOWING, and
 SKILL_SHADOWED included; --fix reads the rows after its changes, so a PLUGIN_COMMITTED it
 removed reads as the host's install), 2 on bad input, a malformed
@@ -237,7 +246,7 @@ NO_MODE = (
 )
 DONE = {"RELEASE_READY", "AGENTS_OK", "PRODUCT_OK", "PLUGIN_OK", "SKILLS_OK", "LABELS_OK", "BRANCH_DELETE_ON"}
 # rows that warn without being part of setup's done states: they leave the exit code alone
-WARNINGS = {"RUNNER_SHARED", "CHANGELOG_RULES"}
+WARNINGS = {"RUNNER_SHARED", "CHANGELOG_RULES", "GATE_IN_TMP"}
 # the repo's own contributor rules, read for a stale rule to edit Unreleased and never written (D-42)
 RULES_FILES = ("CLAUDE.md", "AGENTS.md", "CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md")
 UNRELEASED = re.compile(r"\bUnreleased\b")
@@ -776,6 +785,36 @@ def outdated_installs(repo: str, repo_dir: Path, ws: ModuleType) -> list[Row]:
     return found
 
 
+def gate_rows(repo: str, main: Path, home: Path, job: dict[str, Any] | None, ws: ModuleType) -> list[Row]:
+    """GATE_IN_TMP when the repo's gate job, job (None without one), runs in a folder under
+    the main checkout's tmp/, which a cleanup of tmp/ deletes (#1155); the detail names
+    where shipmill-setup puts the checkout now (#1156)"""
+    if job is None:
+        return []
+    folder = job.get("WorkingDirectory")
+    if not isinstance(folder, str) or not folder:
+        fail(f"the launchd job for {repo} has no WorkingDirectory")
+    tmp = (main / "tmp").resolve()
+    where = Path(folder).resolve()
+    if where != tmp and tmp not in where.parents:
+        return []
+    detail = (
+        f"the gate's checkout {folder} is under the repo's tmp/, which a cleanup of tmp/ deletes, and launchd"
+        f" then fails every tick (#1155); move it to {ws.gate_home(repo, home)} with shipmill-setup's"
+        " Move the gate step"
+    )
+    return [Row("GATE_IN_TMP", detail)]
+
+
+def gate_job(repo: str, ws: ModuleType) -> dict[str, Any] | None:
+    """The repo's gate job on this Mac, as github-ship-watch reads it; None without one"""
+    try:
+        job: dict[str, Any] | None = ws.gate_plist(repo)
+    except ws.Refused as refused:
+        fail(str(refused).removeprefix("error: "))
+    return job
+
+
 def skill_rows(home: Path, ws: ModuleType) -> list[Row]:
     """watch_state.py's SKILL_SHADOWED rows for the home folder, each as `<name>: <detail>`,
     or SKILLS_OK (#236)"""
@@ -1304,6 +1343,7 @@ def main() -> int:
         branch_delete_row(args.repo, args.fix),
         *runner_rows(repo_dir, ws),
         *changelog_rule_rows(repo_dir, ws),
+        *gate_rows(args.repo, ws.project_folder(repo_dir), Path.home(), gate_job(args.repo, ws), ws),
     ]
     for row in rows:
         print(json.dumps({"state": row.state, "detail": row.detail}) if args.json else row.text())
