@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.141.0] - 2026-11-15
+
+### Fixed
+
+- `move-major-tag.yml` takes a `land-environment` input, as `land.yml` does: set, it pushes the marketplace commit to the default branch as the App, with the environment's `SHIPMILL_LAND_KEY`, so a ruleset whose only bypass actor is the App no longer leaves the marketplace on the previous release; the major tag's force-push stays with the workflow token, as land's tags do (spec 054); empty, the default, both push with the workflow token as before (#1179)
+
+### Added
+
+- The decision policy gains the zone `accepted-spec`, right after `scope`: approving the spec of work the maintainer already accepted, default `ask` and floor `notify`, so `[decisions] accepted-spec = "notify"` is accepted while `"act"` exits 2 naming the floor, and `[decisions.paths.accepted-spec]` exits 2 as the zone takes no paths; `shipmill decide levels` lists it and `retro.py gather --decisions` counts its questions and decided comments in its own row; the default stays `ask`, so no repository changes behaviour on upgrade (spec 067) (#1190)
+
 ## [0.140.0] - 2026-11-15
 
 ### Removed
@@ -2584,7 +2594,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.140.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.141.0...HEAD
+[0.141.0]: https://github.com/shipmill/shipmill/compare/v0.140.0...v0.141.0
 [0.140.0]: https://github.com/shipmill/shipmill/compare/v0.139.0...v0.140.0
 [0.139.0]: https://github.com/shipmill/shipmill/compare/v0.138.0...v0.139.0
 [0.138.0]: https://github.com/shipmill/shipmill/compare/v0.137.0...v0.138.0
