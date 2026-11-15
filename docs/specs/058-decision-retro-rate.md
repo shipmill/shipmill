@@ -1,6 +1,6 @@
 # S-058: The decision retro lowers a level on a rate, counts every question, and counts reverted decisions
 
-status: approved
+status: built
 serves: G-1, G-2
 
 ## Problem
@@ -161,3 +161,15 @@ zone's line in `[decisions]`.
 - shipmill/shipmill#1159: S-058-1, S-058-2, S-058-3, S-058-4, S-058-5, S-058-6, S-058-7, S-058-8, S-058-9, S-058-10, S-058-11
 
 ## Verification
+
+- S-058-1: `test_s058_1_*` in `tests/test_retro.py` (9 of 10 proposes with the `why` naming the counts and thresholds; 17 of 20 and 9 of 9 propose nothing; the flags move the thresholds); pass
+- S-058-2: `test_s058_2_*` in `tests/test_retro.py` (an open question is left out of `answered` and a 9 of 10 zone with 3 open questions is still proposed; an unreadable or departing answer is answered, not recommended; `answer=recommended` and `answer=other` count without a reply); pass
+- S-058-3: `test_s058_3_*` in `tests/test_retro.py` (`scope`, `rule-departure`, `unknown` at 100% and at `--lower-rate 1 --lower-min 1` get nothing; `security` at `ask` is proposed; zones at `notify` are never proposed `act`); pass
+- S-058-4: `test_s058_4_*` in `tests/test_retro.py` (`retro.py`'s `parse` defaults 90, 10, 14, and exits 2 for `--lower-rate` 0 and 101, `--lower-min` 0, `--revert-days` 0); pass
+- S-058-5: `test_s058_5_*` in `tests/test_retro.py` (`gather --json` gives `answered_over_windows` 3 and `rate_over_windows` 66 for 2 of 3, `null` for a zone with none); pass
+- S-058-6: `test_s058_6_*` in `tests/test_retro.py` (`unzoned` and `all` counts and items from issue and pull request threads, an untrusted question in neither, the `no zone line:` and `every question over the windows:` text lines); pass
+- S-058-7: `test_s058_7_*` in `tests/test_retro.py` (an issue reopened 5 days after its marker counts reverted, 18 days after or before it held, a trusted veto-handled marker for the zone vetoed, another zone's or an untrusted one's not); pass
+- S-058-8: `test_s058_8_*` in `tests/test_retro.py` (a merged revert by `Reverts o/r#N`, `Reverts #N`, or `Revert "<title>"` counts reverted; an open or unmerged revert, another repo's `#N`, a revert after `--revert-days`, or an unmerged original does not); pass. The GraphQL fields the fetch adds (an issue's `REOPENED_EVENT` timeline since the windows' start, a pull request's `title`, `body`, `mergedAt`) were run against GitHub and answered
+- S-058-9: `test_s058_9_*` in `tests/test_retro.py` (a marker 14 days old held, a 3-day one in none of the three, one before the windows not counted, every zone row carrying the four `*_over_windows` outcome keys, and the text line); pass
+- S-058-10: `test_s058_10_*` in `tests/test_retro.py` (5 reverted items on a `notify` zone with `--raise-at 1` propose nothing; one veto-handled marker then proposes `notify` to `ask`); pass
+- S-058-11: `test_s058_11_*` in `tests/test_retro.py` (the Weekly retro section names the three flags with their defaults, its Decisions section the rate, the outcomes, and the no-zone-line row; the usage names the rule and the flags; `MIN_ASKS` is gone); pass
