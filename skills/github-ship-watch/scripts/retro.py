@@ -5,6 +5,7 @@ Usage: retro.py gather <owner/repo> [--days 7] [--environment NAME ...]
                        [--incident-label incident] [--bot LOGIN ...] [--json]
                        [--goals [--checkout DIR] [--stalled-weeks 3] [--met-weeks 4]]
                        [--decisions [--checkout DIR] [--raise-at 2] [--lower-after 4]
+                                    [--lower-rate 90] [--lower-min 10] [--revert-days 14]
                                     [--role NAME=FILLER[,FILLER...] ...]]
        retro.py dedupe <owner/repo> --title TITLE [--title TITLE ...] [--json]
 
@@ -36,16 +37,27 @@ gather   runs metrics.py over the --days to now and over the --days before that,
          the zones, defaults, and floors from github-issue-triage's decisions.py). Per zone,
          on the issues' and pull requests' comments posted in this --days window by a
          trusted author as above: the decided markers, the veto-handled markers, the
-         needs-decision questions with a zone line, and those answered with the recommended
-         option: the zone line's answer= when it has one, else the first answer after the
-         question (a trusted person's reply without the agent marker, or a --bot login's
-         relay `Decision by @<login>` naming the maintainer the --role flags give), its first
-         non-blank line taking the option marked (recommended) as it stands, its number or
-         its text alone or both as listed (`1. <text>`); and the questions over the last --lower-after windows. It
+         needs-decision questions with a zone line, those answered, and those answered with
+         the recommended option: the zone line's answer= when it has one, else the first
+         answer after the question (a trusted person's reply without the agent marker, or a
+         --bot login's relay `Decision by @<login>` naming the maintainer the --role flags
+         give), its first non-blank line taking the option marked (recommended) as it stands,
+         its number or its text alone or both as listed (`1. <text>`); an answer that can't be
+         read is answered and not recommended, a question with no answer yet is not answered;
+         and the same over the last --lower-after windows, with the rate, the percent
+         recommended of answered, rounded down. Questions whose second line is no zone line
+         are counted apart (`unzoned`, with their items) and with the rest under `all`, never
+         in a zone. Per zone, the decided markers over the windows and what became of each
+         item (spec 058): vetoed (a veto-handled marker for the zone after it), else reverted
+         (within --revert-days after it, an issue reopened, or a merged pull request reverted
+         by another merged one: a body line `Reverts <owner/repo>#N` or `Reverts #N`, or the
+         title `Revert "<its title>"`), else held once the marker is --revert-days old. It
          proposes `Decision policy: <zone> from notify to ask` for a zone at notify with
-         --raise-at vetoes or more this window, and `<zone> from ask to notify` for a zone at
-         ask, above its floor, whose questions over the --lower-after windows number at least
-         5 and were all answered recommended. A marker naming no zone id is listed apart
+         --raise-at vetoes or more this window (reverted items count for nothing), and
+         `<zone> from ask to notify` for a zone at ask, above its floor, whose answered
+         questions over the --lower-after windows number at least --lower-min (10) with at
+         least --lower-rate (90, 1 to 100) percent recommended; never notify to act. A marker
+         naming no zone id is listed apart
 dedupe   each proposed issue title against the repo's open issues: DUPLICATE with the open
          issue whose title matches (ignoring case, punctuation, and spacing), else NEW.
          Read-only: the retro opens only the NEW ones
@@ -858,8 +870,13 @@ MAINTAINER = "maintainer"
 ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")
 USER = re.compile(LOGIN_PATTERN)
 TEAM = re.compile(r"@" + LOGIN_PATTERN + r"/[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
-MIN_ASKS = 5  # the questions a zone needs over --lower-after windows before it is proposed lower
-COUNTS = ("decided", "vetoes", "asks", "recommended")
+COUNTS = ("decided", "vetoes", "asks", "answered", "recommended")
+QUESTION_COUNTS = ("asks", "answered", "recommended")
+OUTCOMES = ("decided", "vetoed", "reverted", "held")  # what became of a decided item (spec 058)
+# The line GitHub's Revert button writes in a revert pull request's body, and its title
+REVERTS = re.compile(r"^\s*Reverts (?:([\w.-]+/[\w.-]+))?#([1-9][0-9]*)\s*$")
+REVERT_TITLE = 'Revert "{}"'
+REOPENINGS = 100  # an issue's reopenings since the windows' start; more is refused, not truncated
 
 THREAD_FIELDS = """
         number updatedAt
@@ -876,7 +893,13 @@ query($owner: String!, $name: String!, $size: Int!, $cursor: String, $since: Dat
       pageInfo { hasNextPage endCursor }
       nodes {"""
     + THREAD_FIELDS
-    + """      }
+    + """        timelineItems(itemTypes: [REOPENED_EVENT], since: $since, first: """
+    + str(REOPENINGS)
+    + """) {
+          pageInfo { hasNextPage }
+          nodes { ... on ReopenedEvent { createdAt } }
+        }
+      }
     }
   }
 }
@@ -890,7 +913,8 @@ query($owner: String!, $name: String!, $size: Int!, $cursor: String) {
       pageInfo { hasNextPage endCursor }
       nodes {"""
     + THREAD_FIELDS
-    + """      }
+    + """        title body mergedAt
+      }
     }
   }
 }
@@ -944,7 +968,9 @@ def read_policy(sources: Sources, checkout: Path) -> Levels:
 
 
 def fetch_threads(sources: Sources, repo: str, since: dt.datetime) -> list[dict[str, Any]]:
-    """Issues and pull requests updated since, each with its comments paged back past since"""
+    """Issues and pull requests updated since, each with its comments paged back past since;
+    an issue with its reopenings since then, a pull request with its title, body, and merge
+    time (spec 058)"""
     owner, _, name = repo.partition("/")
     base: Variables = {"owner": owner, "name": name}
     sizes = {ISSUE_THREADS: 50, PULL_THREADS: 50, ISSUE_COMMENTS: 100, PULL_COMMENTS: 100}
@@ -987,7 +1013,15 @@ def fetch_threads(sources: Sources, repo: str, since: dt.datetime) -> list[dict[
                 older = dig(page, [key, "comments"], f"the comments of #{thread['number']}")
                 comments["nodes"] = older["nodes"] + comments["nodes"]
                 comments["pageInfo"] = older["pageInfo"]
-            threads.append({"kind": kind, "number": thread["number"], "comments": comments["nodes"]})
+            found_thread: dict[str, Any] = {"kind": kind, "number": thread["number"], "comments": comments["nodes"]}
+            if kind == "issue":
+                timeline = thread["timelineItems"]
+                if timeline["pageInfo"]["hasNextPage"]:
+                    raise fail(f"#{thread['number']} was reopened {REOPENINGS}+ times since {since:%Y-%m-%d}")
+                found_thread["reopened"] = [timestamp(e["createdAt"]) for e in timeline["nodes"]]
+            else:
+                found_thread.update(title=thread["title"], body=thread["body"], mergedAt=thread["mergedAt"])
+            threads.append(found_thread)
     return threads
 
 
@@ -1115,59 +1149,172 @@ def takes_recommended(question: str, answer: str) -> bool:
     return False
 
 
+@dataclass(frozen=True)
+class Tally:
+    """What decision_counts finds: per window, per zone, the markers and questions; the markers
+    naming no zone id; per window, the questions with no zone line and every question; and
+    this window's questions with no zone line"""
+
+    counts: list[dict[str, dict[str, int]]]
+    unknown: list[dict[str, Any]]
+    unzoned: list[dict[str, int]]
+    every: list[dict[str, int]]
+    unzoned_items: list[dict[str, Any]]
+
+
 def decision_counts(
     threads: list[dict[str, Any]],
     windows: list[Window],
     zones: list[str],
     bots: frozenset[str],
     maintainers: frozenset[str] = frozenset(),
-) -> tuple[list[dict[str, dict[str, int]]], list[dict[str, Any]]]:
+) -> Tally:
     """Per window, per zone, the trusted markers posted in it: decided markers, veto-handled
-    markers, zoned needs-decision questions, and those answered with the recommended option
-    (the zone line's answer= when it has one, else the first answer after the question, a
-    relay counting only when it names one of maintainers); and the markers naming no zone id,
-    so a mistyped zone shows instead of vanishing"""
+    markers, zoned needs-decision questions, those answered (the zone line's answer= when it
+    has one, else the first answer after the question, a relay counting only when it names one
+    of maintainers), and those answered with the recommended option; and the markers naming no
+    zone id, so a mistyped zone shows instead of vanishing. A trusted question whose second
+    line is no zone line is counted apart, read for its answer the same way (spec 058)"""
     counts = [{zone: dict.fromkeys(COUNTS, 0) for zone in zones} for _ in windows]
+    unzoned = [dict.fromkeys(QUESTION_COUNTS, 0) for _ in windows]
+    every = [dict.fromkeys(QUESTION_COUNTS, 0) for _ in windows]
     unknown: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     for thread in threads:
         for i, comment in enumerate(thread["comments"]):
             found = marker(comment["body"])
-            if found is None or not trusted(comment, bots):
+            question = found is None and first_line(comment["body"]) == NEEDS_DECISION_MARK
+            if (found is None and not question) or not trusted(comment, bots):
                 continue
-            kind, zone, recommended = found
+            kind, zone, recommended = found if found is not None else ("asks", None, False)
+            answered = kind == "asks" and stated_answer(comment["body"]) is not None
             if kind == "asks" and stated_answer(comment["body"]) is None:
                 answer = first_answer(thread["comments"][i + 1 :], bots, maintainers)
+                answered = answer is not None
                 recommended = answer is not None and takes_recommended(comment["body"], answer)
             posted = timestamp(comment["createdAt"])
-            for week, window in zip(counts, windows, strict=True):
+            for k, (week, window) in enumerate(zip(counts, windows, strict=True)):
                 if posted not in window:
+                    continue
+                if kind == "asks":
+                    every[k]["asks"] += 1
+                    every[k]["answered"] += int(answered)
+                    every[k]["recommended"] += int(recommended)
+                if zone is None:
+                    unzoned[k]["asks"] += 1
+                    unzoned[k]["answered"] += int(answered)
+                    unzoned[k]["recommended"] += int(recommended)
+                    if k == 0:
+                        items.append({"kind": thread["kind"], "number": thread["number"]})
                     continue
                 if zone not in week:
                     unknown.append({"kind": thread["kind"], "number": thread["number"], "zone": zone})
                     continue
                 week[zone][kind] += 1
+                week[zone]["answered"] += int(answered)
                 week[zone]["recommended"] += int(recommended)
-    return counts, sorted(unknown, key=lambda u: (u["number"], u["zone"]))
+    return Tally(
+        counts,
+        sorted(unknown, key=lambda u: (u["number"], u["zone"])),
+        unzoned,
+        every,
+        sorted(items, key=lambda u: (u["number"], u["kind"])),
+    )
+
+
+def rate(recommended: int, answered: int) -> int | None:
+    """The percent of answered questions that took the recommended option, rounded down; None
+    with no answered question"""
+    return recommended * 100 // answered if answered else None
+
+
+def reverted(
+    thread: dict[str, Any], posted: dt.datetime, until: dt.datetime, merged: list[dict[str, Any]], repo: str
+) -> bool:
+    """Spec 058: whether the item a decided marker posted at posted sits on was undone by until:
+    an issue reopened after it, or a merged pull request that another pull request merged after
+    it reverts (a body line `Reverts <owner/repo>#N` or `Reverts #N`, or the title
+    `Revert "<its title>"`)"""
+    if thread["kind"] == "issue":
+        return any(posted < moment <= until for moment in thread["reopened"])
+    if not thread["mergedAt"]:
+        return False
+    for pull in merged:
+        if pull["number"] == thread["number"] or not posted < timestamp(pull["mergedAt"]) <= until:
+            continue
+        if pull["title"] == REVERT_TITLE.format(thread["title"]):
+            return True
+        for line in (pull["body"] or "").splitlines():
+            found = REVERTS.match(line)
+            same_repo = found is not None and (found.group(1) is None or found.group(1).lower() == repo.lower())
+            if found is not None and same_repo and int(found.group(2)) == thread["number"]:
+                return True
+    return False
+
+
+def decided_outcomes(
+    threads: list[dict[str, Any]],
+    windows: list[Window],
+    zones: list[str],
+    bots: frozenset[str],
+    repo: str,
+    revert_days: int,
+    end: dt.datetime,
+) -> dict[str, dict[str, int]]:
+    """Per zone, the trusted decided markers posted in the windows, and what became of each
+    item they sit on: vetoed (a trusted veto-handled marker for the zone after it), else
+    reverted within revert_days after it, else held once the marker is revert_days old; a
+    younger one is counted in none of the three (spec 058)"""
+    found = {zone: dict.fromkeys(OUTCOMES, 0) for zone in zones}
+    span = dt.timedelta(days=revert_days)
+    merged = [t for t in threads if t["kind"] == "pull" and t["mergedAt"]]
+    for thread in threads:
+        comments = thread["comments"]
+        for i, comment in enumerate(comments):
+            mark = marker(comment["body"])
+            if mark is None or mark[0] != "decided" or mark[1] not in found or not trusted(comment, bots):
+                continue
+            posted = timestamp(comment["createdAt"])
+            if not any(posted in window for window in windows):
+                continue
+            row = found[mark[1]]
+            row["decided"] += 1
+            if any(marker(c["body"]) == ("vetoes", mark[1], False) and trusted(c, bots) for c in comments[i + 1 :]):
+                row["vetoed"] += 1
+            elif reverted(thread, posted, posted + span, merged, repo):
+                row["reverted"] += 1
+            elif end - posted >= span:
+                row["held"] += 1
+    return found
 
 
 def decision_proposals(
-    policy: Levels, counts: list[dict[str, dict[str, int]]], raise_at: int, lower_after: int
+    policy: Levels,
+    counts: list[dict[str, dict[str, int]]],
+    raise_at: int,
+    lower_after: int,
+    lower_rate: int,
+    lower_min: int,
 ) -> list[dict[str, str]]:
-    """A zone at notify with raise_at vetoes or more this window goes up to ask; a zone at ask,
-    above its floor, whose questions over the last lower_after windows number MIN_ASKS or more
-    and were all answered with the recommended option goes down to notify"""
+    """A zone at notify with raise_at vetoes or more this window goes up to ask (reverted
+    items count for nothing); a zone at ask, above its floor, whose answered questions over the
+    last lower_after windows number lower_min or more, at least lower_rate percent of them
+    answered with the recommended option, goes down to notify (spec 058)"""
     found = []
     for zone, level in policy.levels.items():
         now = counts[0][zone]
-        asks = sum(week[zone]["asks"] for week in counts[:lower_after])
+        answered = sum(week[zone]["answered"] for week in counts[:lower_after])
         recommended = sum(week[zone]["recommended"] for week in counts[:lower_after])
         floor = policy.floors[zone]
         above_floor = floor is None or floor in ("act", "notify")
         if level == "notify" and now["vetoes"] >= raise_at:
             why = f"{now['vetoes']} vetoes this window, at least {raise_at}"
             found.append(proposal(zone, "notify", "ask", why))
-        elif level == "ask" and above_floor and asks >= MIN_ASKS and recommended == asks:
-            why = f"all {asks} questions over {lower_after} windows answered with the recommended option"
+        elif level == "ask" and above_floor and answered >= lower_min and recommended * 100 >= lower_rate * answered:
+            why = (
+                f"{recommended} of {answered} answered questions ({rate(recommended, answered)}%) over {lower_after}"
+                f" windows took the recommended option, at least {lower_rate}% of at least {lower_min}"
+            )
             found.append(proposal(zone, "ask", "notify", why))
     return found
 
@@ -1180,32 +1327,55 @@ def proposal(zone: str, before: str, after: str, why: str) -> dict[str, str]:
 def decisions_report(
     args: argparse.Namespace, sources: Sources, policy: Levels, end: dt.datetime, maintainers: frozenset[str]
 ) -> dict[str, Any]:
-    """The JSON `decisions` key of spec 030: per zone this window's counts and the questions
-    over --lower-after windows, and the proposed level changes"""
+    """The JSON `decisions` key of spec 030: per zone this window's counts, the questions over
+    --lower-after windows with their rate, and what became of the decided items (spec 058);
+    the questions with no zone line and every question; and the proposed level changes"""
     windows = weeks(end, args.days, max(1, args.lower_after))
     threads = fetch_threads(sources, args.repo, windows[-1].start)
     zones = list(policy.levels)
-    counts, unknown = decision_counts(threads, windows, zones, frozenset(args.bot), maintainers)
+    bots = frozenset(args.bot)
+    tally = decision_counts(threads, windows, zones, bots, maintainers)
+    counts = tally.counts
+    outcomes = decided_outcomes(threads, windows, zones, bots, args.repo, args.revert_days, end)
     rows = []
     for zone in zones:
-        now = counts[0][zone]
+        over = {key: sum(week[zone][key] for week in counts) for key in QUESTION_COUNTS}
         rows.append(
             {
                 "zone": zone,
                 "level": policy.levels[zone],
                 "floor": policy.floors[zone],
-                **now,
-                "asks_over_windows": sum(week[zone]["asks"] for week in counts),
-                "recommended_over_windows": sum(week[zone]["recommended"] for week in counts),
+                **counts[0][zone],
+                **{f"{key}_over_windows": value for key, value in over.items()},
+                "rate_over_windows": rate(over["recommended"], over["answered"]),
+                **{f"{key}_over_windows": value for key, value in outcomes[zone].items()},
             }
         )
     return {
         "veto_hours": policy.veto_hours,
         "windows": len(windows),
         "zones": rows,
-        "proposals": decision_proposals(policy, counts, args.raise_at, args.lower_after),
-        "unknown_zones": unknown,
+        "unzoned": {**questions(tally.unzoned), "items": tally.unzoned_items},
+        "all": questions(tally.every),
+        "proposals": decision_proposals(
+            policy, counts, args.raise_at, args.lower_after, args.lower_rate, args.lower_min
+        ),
+        "unknown_zones": tally.unknown,
     }
+
+
+def questions(per_window: list[dict[str, int]]) -> dict[str, int | None]:
+    """This window's asks, answered, and recommended, the same over the windows, and the rate"""
+    over = {key: sum(week[key] for week in per_window) for key in QUESTION_COUNTS}
+    return {
+        **per_window[0],
+        **{f"{key}_over_windows": value for key, value in over.items()},
+        "rate_over_windows": rate(over["recommended"], over["answered"]),
+    }
+
+
+def rate_text(value: int | None) -> str:
+    return "no answered question" if value is None else f"rate {value}%"
 
 
 def decisions_text(decisions: dict[str, Any]) -> list[str]:
@@ -1214,8 +1384,22 @@ def decisions_text(decisions: dict[str, Any]) -> list[str]:
         lines.append(
             f"  {z['zone']} ({z['level']}): decided {z['decided']}, vetoes {z['vetoes']},"
             f" asks {z['asks']} ({z['recommended']} recommended);"
-            f" over the windows {z['asks_over_windows']} asks ({z['recommended_over_windows']} recommended)"
+            f" over the windows {z['asks_over_windows']} asks ({z['recommended_over_windows']} recommended),"
+            f" {z['answered_over_windows']} answered, {rate_text(z['rate_over_windows'])};"
+            f" decided {z['decided_over_windows']} over the windows: {z['vetoed_over_windows']} vetoed,"
+            f" {z['reverted_over_windows']} reverted, {z['held_over_windows']} held"
         )
+    unzoned, every = decisions["unzoned"], decisions["all"]
+    listed = ", ".join(f"#{item['number']}" for item in unzoned["items"]) or "none"
+    lines.append(
+        f"  no zone line: asks {unzoned['asks']} ({unzoned['answered']} answered,"
+        f" {unzoned['recommended']} recommended): {listed}"
+    )
+    lines.append(
+        f"  every question over the windows: asks {every['asks_over_windows']}"
+        f" ({every['answered_over_windows']} answered, {every['recommended_over_windows']} recommended),"
+        f" {rate_text(every['rate_over_windows'])}"
+    )
     for u in decisions["unknown_zones"]:
         lines.append(f"  a marker on #{u['number']} names no zone id: {u['zone']}")
     lines.append(f"  Proposals: {len(decisions['proposals']) or 'none'}")
@@ -1264,7 +1448,8 @@ def dedupe_command(args: argparse.Namespace) -> int:
     return 1 if any(v.duplicate is not None for v in verdicts) else 0
 
 
-def main() -> int:
+def parse(argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line, checked: a value out of range exits 2"""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     g = sub.add_parser("gather", help="the two windows' metrics and the window's refused and reworked PRs")
@@ -1296,7 +1481,26 @@ def main() -> int:
         "--lower-after",
         type=int,
         default=4,
-        help="with --decisions: windows whose questions, all answered recommended, propose ask to notify",
+        help="with --decisions: the windows whose answered questions can propose ask to notify",
+    )
+    g.add_argument(
+        "--lower-rate",
+        type=int,
+        default=90,
+        help="with --decisions: the percent of answered questions, 1 to 100, that took the recommended option "
+        "for ask to notify (spec 058)",
+    )
+    g.add_argument(
+        "--lower-min",
+        type=int,
+        default=10,
+        help="with --decisions: the answered questions a zone needs over --lower-after windows for ask to notify",
+    )
+    g.add_argument(
+        "--revert-days",
+        type=int,
+        default=14,
+        help="with --decisions: the days after a decided marker in which a revert or reopening counts against it",
     )
     g.add_argument(
         "--role",
@@ -1310,7 +1514,7 @@ def main() -> int:
     d.add_argument("repo", help="owner/name")
     d.add_argument("--title", action="append", required=True, help="a proposed issue's title")
     d.add_argument("--json", action="store_true", help="JSON lines")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
         parser.error("repo must be owner/name")
     if args.command == "gather":
@@ -1320,6 +1524,16 @@ def main() -> int:
             parser.error("--stalled-weeks and --met-weeks must be at least 1")
         if args.raise_at < 1 or args.lower_after < 1:
             parser.error("--raise-at and --lower-after must be at least 1")
+        if not 1 <= args.lower_rate <= 100:
+            parser.error("--lower-rate must be 1 to 100")
+        if args.lower_min < 1 or args.revert_days < 1:
+            parser.error("--lower-min and --revert-days must be at least 1")
+    return args
+
+
+def main() -> int:
+    args = parse()
+    if args.command == "gather":
         return gather(args, sources_for(args))
     return dedupe_command(args)
 
