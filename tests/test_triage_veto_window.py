@@ -228,6 +228,13 @@ def test_s067_9_an_unreadable_until_exits_2(
     assert message in capsys.readouterr().err
 
 
+def test_s067_9_an_until_without_seconds_reads_as_the_release_reads_it(ts: ModuleType) -> None:
+    # src/shipmill/veto.py accepts 2026-11-16T09:00Z: the same comment never stops triage for the repo
+    body = "<!-- shipmill:decided zone=accepted-spec until=2026-11-16T09:00Z -->\n@amy x"
+    held = windows(ts, "2026-11-15T13:00:00Z", pull(comments=[app(body)]))
+    assert held == {7: "veto window of #50 until 2026-11-16T12:00:00Z"}
+
+
 def test_s067_9_paging_reads_every_comment_and_file_and_stops_past_14_days(ts: ModuleType) -> None:
     chatter = [note(f"+1 ({i})", "2026-11-15T10:00:00Z") for i in range(ts.COMMENTS_CAP)]
     busy = pull(51, comments=chatter, files=("src/a.py",), more_files="f1")

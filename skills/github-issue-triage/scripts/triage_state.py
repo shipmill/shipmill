@@ -1306,11 +1306,14 @@ def fetch_decided_prs(
 
 
 def until_time(text: str, number: int) -> dt.datetime:
-    """A decided comment's until=, a UTC time such as 2026-10-20T14:00:00Z (spec 030)"""
-    try:
-        return dt.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-    except ValueError:
-        fail(f"pull request #{number}'s decided comment has until={text}, not a UTC time such as 2026-10-20T14:00:00Z")
+    """A decided comment's until=, a UTC time such as 2026-10-20T14:00:00Z, its seconds optional
+    as the release's veto.py reads it (spec 030, spec 059)"""
+    for shape in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%MZ"):
+        try:
+            return dt.datetime.strptime(text, shape).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    fail(f"pull request #{number}'s decided comment has until={text}, not a UTC time such as 2026-10-20T14:00:00Z")
 
 
 def window_hold(pull: dict[str, Any], bot_login: str | None, now: dt.datetime) -> str | None:
