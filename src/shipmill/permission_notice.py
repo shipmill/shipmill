@@ -24,6 +24,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from shipmill import cli_command
 from shipmill.agents import MAINTAINER
 from shipmill.app import (
     OPTIONAL_PERMISSIONS,
@@ -67,6 +68,15 @@ class Filed:
         return f"{self.repo}#{self.number}"
 
 
+@dataclass(frozen=True, slots=True)
+class Listed:
+    """A repo of the installation, as owner/name, and whether it is archived: read-only, so no
+    gate of it can file the item (S-060-13)"""
+
+    name: str
+    archived: bool
+
+
 class Reads(Protocol):
     """What the notice reads of the App's installation, through its installation-wide token"""
 
@@ -80,8 +90,8 @@ class Reads(Protocol):
         """The installation on the gate's repo: its permissions and page"""
         ...
 
-    def repos(self) -> tuple[str, ...]:
-        """Every repo of the installation, as owner/name"""
+    def repos(self) -> tuple[Listed, ...]:
+        """Every repo of the installation"""
         ...
 
     def issues(self, repo: str) -> tuple[Filed, ...]:
@@ -126,8 +136,8 @@ class ApiReads:
     token: str = field(repr=False)
     api: Api = field(repr=False)
 
-    def repos(self) -> tuple[str, ...]:
-        found: list[str] = []
+    def repos(self) -> tuple[Listed, ...]:
+        found: list[Listed] = []
         page = 1
         while True:
             path = f"/installation/repositories?per_page={PAGE}&page={page}"
@@ -139,7 +149,10 @@ class ApiReads:
                 full = each.get("full_name") if isinstance(each, dict) else None
                 if not isinstance(full, str) or "/" not in full:
                     raise ReleaseError(f"GET {path} gave a repository with no full_name")
-                found.append(full)
+                archived = each.get("archived")
+                if not isinstance(archived, bool):
+                    raise ReleaseError(f"GET {path} gave {full} without its archived flag")
+                found.append(Listed(full, archived))
             if len(listed) < PAGE:
                 return tuple(found)
             page += 1
@@ -231,7 +244,7 @@ def body(permission: OptionalPermission, app: AppRecord, page: str, candidates: 
         f"1. In the App's settings, set {permission.label} to {permission.access}: {app.permissions_page}\n"
         f"2. Accept the new permission on the installation's page: {page}\n\n"
         "## Check\n\n"
-        f"`shipmill doctor` in `{repo}` shows the `app` row as PASS for {permission.named()}, not WARN.\n"
+        f"`{cli_command()} doctor` in `{repo}` shows the `app` row as PASS for {permission.named()}, not WARN.\n"
     )
 
 
@@ -300,7 +313,8 @@ def notice(
                 parts.append(f"{'would close' if dry_run else 'closed'} #{item.number}")
     if not lacking:
         return Notice(tuple(parts))
-    names = reads.repos()
+    listed = reads.repos()
+    names = [r.name for r in listed]
     filed = [*own, *(f for r in names if not _same(r, repo) for f in reads.issues(r))]
     policies: dict[str, Policy | None] = {}
 
@@ -317,7 +331,7 @@ def notice(
             continue
         candidates = [
             Candidate(name, found.product is not None and bool(found.product.repos))
-            for name in sorted(names, key=str.lower)
+            for name in sorted((r.name for r in listed if not r.archived), key=str.lower)  # read-only: no gate files
             if (found := policy(name)) is not None and permission.needed(found)
         ]
         if not candidates:  # S-060-5, D-9

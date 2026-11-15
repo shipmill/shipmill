@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from shipmill import cli_command
 from shipmill.agents import Login, RoleName
 from shipmill.app import (
     NOTICE_PERMISSIONS,
@@ -34,6 +35,7 @@ from shipmill.permission_notice import (
     ApiReads,
     Candidate,
     Filed,
+    Listed,
     Notice,
     Seams,
     carrier,
@@ -77,14 +79,15 @@ class FakeReads:
     granted: Mapping[str, Access] = field(default_factory=lambda: dict(SESSION))
     app: AppRecord = USER_APP
     log: list[str] = field(default_factory=list)
+    archived: frozenset[str] = frozenset()
 
     @property
     def installation(self) -> Installation:
         return Installation("demo-agent", 77, self.granted, PAGE)
 
-    def repos(self) -> tuple[str, ...]:
+    def repos(self) -> tuple[Listed, ...]:
         self.log.append("repos")
-        return tuple(self.configs)
+        return tuple(Listed(name, name in self.archived) for name in self.configs)
 
     def issues(self, repo: str) -> tuple[Filed, ...]:
         self.log.append(f"issues {repo}")
@@ -202,7 +205,7 @@ def test_s060_3_the_body_names_the_permission_its_use_the_repos_the_links_and_th
         assert f"1. In the App's settings, set Deployments to read: {link}\n" in body
         assert f"2. Accept the new permission on the installation's page: {PAGE}\n" in body
         check = body.split("## Check\n", 1)[1]
-        assert f"`shipmill doctor` in `{other}` shows the `app` row as PASS for Deployments: read" in check
+        assert f"`{cli_command()} doctor` in `{other}` shows the `app` row as PASS for Deployments: read" in check
 
 
 @pytest.mark.parametrize("where", [REPO, "romamo/other"], ids=["own", "another"])
@@ -383,6 +386,23 @@ def test_s060_13_a_repo_whose_config_doesnt_turn_it_on_for_this_app_is_no_candid
     assert "romamo/aaa" not in body
 
 
+def test_s060_13_an_archived_repo_is_no_candidate_but_its_item_still_counts() -> None:
+    """An archived repo is read-only, so its gate can't file: as the carrier, no gate would ever
+    file the item. Its issues still hold an item already filed"""
+    reads = FakeReads({"romamo/aaa": NEEDING + HOME, REPO: NEEDING}, archived=frozenset({"romamo/aaa"}))
+    done, writer = run(reads)
+    assert done.line() == "permissions: filed #100 Deployments: read"
+    [(_, body, _, _)] = writer.created
+    assert "romamo/aaa" not in body
+    held = FakeReads(
+        {"romamo/aaa": NEEDING, REPO: NEEDING},
+        {"romamo/aaa": [Filed("romamo/aaa", 5, MARKER, False)]},
+        archived=frozenset({"romamo/aaa"}),
+    )
+    done, writer = run(held)
+    assert writer.created == [] and done.line() == "permissions: Deployments: read in romamo/aaa#5 (closed)"
+
+
 # -- the installation-wide token
 
 
@@ -405,11 +425,14 @@ class InstallationApi:
         if path == f"/repos/{REPO}/installation":
             return Answer(200, json.dumps({"id": 77, "permissions": {k: str(v) for k, v in SESSION.items()}}))
         if path.startswith("/installation/repositories"):
-            return Answer(200, json.dumps({"total_count": 1, "repositories": [{"full_name": REPO}]}))
+            listed = [{"full_name": REPO, "archived": False}, {"full_name": "romamo/old", "archived": True}]
+            return Answer(200, json.dumps({"total_count": 2, "repositories": listed}))
         if path.startswith(f"/repos/{REPO}/issues?"):
             pull = {"number": 9, "state": "open", "body": MARKER, "pull_request": {}}
             return Answer(200, json.dumps([{"number": 4, "state": "closed", "body": f"{MARKER}\r\ntext"}, pull]))
-        if path.startswith(f"/repos/{REPO}/contents/"):
+        if path.startswith("/repos/romamo/old/issues?"):
+            return Answer(200, "[]")
+        if path.startswith((f"/repos/{REPO}/contents/", "/repos/romamo/old/contents/")):
             return Answer(404, '{"message": "Not Found"}')
         raise AssertionError(f"unexpected GET {path}")
 
@@ -429,7 +452,7 @@ def test_s060_14_the_installation_wide_token_asks_only_metadata_contents_and_iss
     assert body == {"permissions": {"metadata": "read", "contents": "read", "issues": "read"}}  # no repositories
     assert {p.key: str(p.access) for p in NOTICE_PERMISSIONS} == body["permissions"]
     assert "ghs_installation-wide" not in repr(reads)
-    assert reads.repos() == (REPO,)
+    assert reads.repos() == (Listed(REPO, False), Listed("romamo/old", True))
     assert reads.issues(REPO) == (Filed(REPO, 4, MARKER, False),)  # the pull request is no issue
     assert all(call.startswith("GET") or call == "POST /app/installations/77/access_tokens" for call in api.calls)
 
@@ -511,7 +534,7 @@ def test_s060_15_a_refused_token_files_nothing_names_the_failure_and_the_tick_go
 def test_s060_15_a_refused_read_files_nothing() -> None:
     @dataclass
     class Unreadable(FakeReads):
-        def repos(self) -> tuple[str, ...]:
+        def repos(self) -> tuple[Listed, ...]:
             raise ReleaseError("GET /installation/repositories?per_page=100&page=1 answered 403: refused")
 
     reads = Unreadable({REPO: NEEDING})
