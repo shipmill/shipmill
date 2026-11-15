@@ -1251,3 +1251,35 @@ def test_s043_3_the_skill_and_the_docstring_name_the_rows(ss: ModuleType) -> Non
     for state in ("PRODUCT_LISTED", "PRODUCT_SIBLINGS", "PRODUCT_OK"):
         assert f"`{state}`" in skill
         assert state in (ss.__doc__ or "")
+
+
+# -- #1156: GATE_IN_TMP --------------------------------------------------------------------
+
+
+def test_1156_a_gate_job_under_the_repos_tmp_is_a_warning_naming_the_move(ss: ModuleType, tmp_path: Path) -> None:
+    main, home = tmp_path / "web", tmp_path / "home"
+    ws = ss.watch_module()
+    job = {"WorkingDirectory": str(main / "tmp" / "shipmill-gate")}
+    rows = ss.gate_rows("acme/web", main, home, job, ws)
+    assert [row.state for row in rows] == ["GATE_IN_TMP"]
+    assert rows[0].detail == (
+        f"the gate's checkout {main / 'tmp' / 'shipmill-gate'} is under the repo's tmp/, which a cleanup of tmp/"
+        " deletes, and launchd then fails every tick (#1155); move it to"
+        f" {home / '.local/share/shipmill/gates/acme/web'} with shipmill-setup's Move the gate step"
+    )
+    done = [ss.Row(state, "") for state in sorted(ss.DONE)]
+    assert ss.exit_code([*done, *rows]) == 0  # a warning: an old gate keeps working (D-63)
+    skill = (SCRIPT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
+    assert "`GATE_IN_TMP`" in skill and "### Move the gate" in skill and "GATE_IN_TMP" in (ss.__doc__ or "")
+
+
+def test_1156_no_gate_row_outside_the_repos_tmp_or_without_a_job(ss: ModuleType, tmp_path: Path) -> None:
+    main, home = tmp_path / "web", tmp_path / "home"
+    ws = ss.watch_module()
+    outside = {"WorkingDirectory": str(ws.gate_home("acme/web", home))}
+    assert ss.gate_rows("acme/web", main, home, outside, ws) == []
+    assert ss.gate_rows("acme/web", main, home, {"WorkingDirectory": str(main / "tmpx")}, ws) == []
+    assert ss.gate_rows("acme/web", main, home, None, ws) == []
+    with pytest.raises(SystemExit) as exc:
+        ss.gate_rows("acme/web", main, home, {"Label": "x"}, ws)
+    assert exc.value.code == 2

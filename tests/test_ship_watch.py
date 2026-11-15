@@ -1505,6 +1505,23 @@ def test_a_gate_job_whose_checkout_is_gone_is_an_action_for_a_person(ws: ModuleT
     assert rows[1].json()["agent"] is False
 
 
+def test_1156_a_gone_gate_checkout_outside_the_repo_is_added_back_from_the_persons_checkout(
+    ws: ModuleType, tmp_path: Path
+) -> None:
+    # #1156: shipmill-setup puts the checkout under the home folder, whose path names no main checkout
+    agents = tmp_path / "LaunchAgents"
+    gone = ws.gate_home("acme/web", tmp_path / "home")
+    web = gate_job(agents, "acme/web", gone)
+    other = gate_job(agents, "acme/api", ws.gate_home("acme/other", tmp_path / "home"))  # another repo's folder
+    rows = {r.subject: r for r in ws.checkout_missing_rows(agents, "darwin", 501, lambda label: None)}
+    assert gone == tmp_path / "home/.local/share/shipmill/gates/acme/web"
+    assert rows[web].fix == (
+        "from your checkout of acme/web: git -C <its checkout> worktree prune"
+        f" && git -C <its checkout> worktree add --detach {gone} origin/HEAD && launchctl kickstart gui/501/{web}"
+    )
+    assert rows[other].fix.startswith("clone acme/api, then write its job again from that checkout: ")
+
+
 def test_no_checkout_row_off_a_mac_or_without_a_gate_job(ws: ModuleType, tmp_path: Path) -> None:
     agents = tmp_path / "LaunchAgents"
     assert ws.checkout_missing_rows(agents, "darwin", 501, lambda label: None) == []  # no LaunchAgents folder
@@ -1767,6 +1784,16 @@ def test_the_gate_folder_is_launchds_then_the_conventional_checkout(ws: ModuleTy
     assert ws.gate_folder(tmp_path, None) == tmp_path / "tmp" / "shipmill-gate"
 
 
+def test_1156_the_gate_folder_outside_the_repo_is_found_without_a_launchd_job(ws: ModuleType, tmp_path: Path) -> None:
+    repo = tmp_path / "r"
+    (repo / "tmp" / "shipmill-gate").mkdir(parents=True)  # an old gate's, read only without the new one
+    outside = ws.gate_home("acme/r", tmp_path / "home")
+    assert ws.gate_folder(repo, None, outside) == repo / "tmp" / "shipmill-gate"
+    outside.mkdir(parents=True)
+    assert ws.gate_folder(repo, None, outside) == outside
+    assert ws.gate_folder(repo, "/srv/gate", outside) == Path("/srv/gate")  # launchd's working directory first
+
+
 def test_without_gates_a_gate_keyed_install_is_still_left_out_of_the_version_row(ws: ModuleType) -> None:
     installed = registry(install("project", "0.32.1", "/work/r"), install("project", "0.25.0", str(GATE)))
     rows = ws.plugin_rows(installed, MARKETPLACE, "v0.32.1", [Path("/work/r")])
@@ -1791,6 +1818,20 @@ def test_the_gate_checkout_is_found_beside_the_main_checkout(ws: ModuleType, tmp
     elsewhere = tmp_path / "gate2"
     subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "--detach", str(elsewhere)], check=True)
     assert ws.plugin_folders(main, elsewhere.resolve()) == ([main], [main / "tmp/shipmill-gate", elsewhere.resolve()])
+
+
+def test_1156_a_gate_checkout_outside_the_repo_is_keyed_as_the_gates(ws: ModuleType, tmp_path: Path) -> None:
+    main = tmp_path / "r"
+    main.mkdir()
+    for cmd in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "x"]):
+        subprocess.run(["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t", *cmd], check=True)
+    main = main.resolve()
+    outside = ws.gate_home("acme/r", tmp_path.resolve() / "home")
+    assert ws.plugin_folders(main, None, outside) == ([main], [main / "tmp/shipmill-gate"])  # not made yet
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "--detach", str(outside)], check=True)
+    assert ws.plugin_folders(main, None, outside) == ([main], [main / "tmp/shipmill-gate", outside])
+    assert ws.plugin_folders(main, outside, outside) == ([main], [main / "tmp/shipmill-gate", outside])  # launchd's
+    assert ws.project_folder(ws.gate_folder(main, None, outside)) == main  # its sessions load the main checkout's
 
 
 def test_s031_16_a_gate_checkout_that_is_its_own_clone_is_a_project_not_unloaded(
