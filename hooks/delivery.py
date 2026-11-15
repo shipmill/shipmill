@@ -1592,7 +1592,7 @@ def is_request(command: str, cwd: Path) -> bool:
             continue
         args = call.args(cmd)
         group, sub = gh_command(args)
-        if (group, sub) == ("issue", "create"):
+        if (group, sub) in (("issue", "create"), ("issue", "new")):  # new is gh's alias of create
             return True
         if (group, sub) in (("issue", "edit"), ("pr", "edit")) and NEEDS_DECISION in _labels(args):
             return True

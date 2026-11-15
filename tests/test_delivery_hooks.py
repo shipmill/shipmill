@@ -2077,6 +2077,7 @@ def test_s062_9_only_the_last_assistant_message_counts(box: Sandbox, tmp_path: P
 PREFIXES = ["", "uvx shipmill==0.128.4 ", "shipmill ", "uvx --from git+https://github.com/x/shipmill shipmill "]
 REQUESTS = [
     "gh issue create --title 'Rotate the key' --body-file tmp/b.md",
+    "gh issue new --title 'Rotate the key' --body-file tmp/b.md",  # gh's alias of issue create
     "gh issue edit 41 --add-label needs-decision",
     "gh pr edit 42 --add-label bug,needs-decision",
     "gh issue edit 41 --add-label=needs-decision",
