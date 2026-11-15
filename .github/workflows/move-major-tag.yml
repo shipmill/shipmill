@@ -6,6 +6,14 @@ name: Move the major tag
 # serves the version, so neither ever names a release PyPI can't serve. A ref the release
 # commit already moved is left as it is. A release that isn't the newest stable one, such as a
 # hotfix on an older series, moves neither.
+#
+# With land-environment set (spec 054, #1179), the job runs in that environment and reads its
+# SHIPMILL_LAND_KEY secret, the private key of the App in [agents] app_id, as land.yml's land
+# job does: the major tag's force-push and the marketplace commit's push to the default branch
+# go as the App, which a ruleset can let past its rules. git gets the App's token from
+# `shipmill app-token --git-credential`, so no step holds it. land starts this workflow with the
+# tag alone, so the input's default is what a release gets: keep it the land-environment of
+# release.yml's land job. Empty, both pushes go with the workflow token, as before.
 
 on:
   workflow_dispatch:
@@ -14,12 +22,18 @@ on:
         description: "The release tag, such as v0.2.0"
         type: string
         required: true
+      land-environment:
+        description: "The environment holding SHIPMILL_LAND_KEY, the App's key the major tag and the marketplace commit are pushed with; empty: the workflow token"
+        type: string
+        default: ""
 
 permissions:
   contents: write
 
 jobs:
   move:
+    # empty, the job names no environment and reads no secret
+    environment: ${{ inputs.land-environment }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -47,6 +61,62 @@ jobs:
             echo "newest=false" >> "$GITHUB_OUTPUT"
             echo "$TAG is not the newest stable release ($newest is): the major tag and the marketplace stay"
           fi
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        if: inputs.land-environment != ''
+        with:
+          version: "0.13.7"
+
+      # The environment's secret, masked line by line before anything prints, in a file only
+      # this job's user reads; its path is the step's output, never the key
+      - name: Write the App's key
+        id: key
+        if: inputs.land-environment != ''
+        shell: bash
+        env:
+          KEY: ${{ secrets.SHIPMILL_LAND_KEY }}
+          ENVIRONMENT: ${{ inputs.land-environment }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::move-major-tag: the environment $ENVIRONMENT has no SHIPMILL_LAND_KEY secret; add the App's private key to it as SHIPMILL_LAND_KEY, or dispatch with an empty land-environment. Nothing was pushed"
+            exit 1
+          fi
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then echo "::add-mask::$line"; fi
+          done <<<"$KEY"
+          key="$RUNNER_TEMP/shipmill-land-key.pem"
+          (umask 077; printf '%s\n' "$KEY" > "$key")
+          chmod 600 "$key"
+          echo "path=$key" >> "$GITHUB_OUTPUT"
+
+      # git's settings for the pushes that follow, through its environment: the checkout's
+      # persisted header, the workflow token's, cleared (an empty value resets the list), and
+      # the App's credential helper in place of any other. The helper mints the token, limited
+      # to this repository, from the release's own shipmill, which PyPI serves (D-50); the
+      # settings name the key's path and hold no token
+      - name: Push as the App
+        if: inputs.land-environment != ''
+        shell: bash
+        env:
+          APP_KEY: ${{ steps.key.outputs.path }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          app_id=$(python3 -c 'import tomllib; print(tomllib.load(open(".github/shipmill.toml", "rb")).get("agents", {}).get("app_id", ""))')
+          if ! [[ "$app_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::move-major-tag: .github/shipmill.toml sets no [agents] app_id, the App whose key SHIPMILL_LAND_KEY is; set it, or dispatch with an empty land-environment. Nothing was pushed"
+            exit 1
+          fi
+          helper="!uvx --from shipmill==${TAG#v} shipmill app-token $GITHUB_REPOSITORY --app-id $app_id --app-key $APP_KEY --git-credential"
+          {
+            echo "GIT_CONFIG_COUNT=3"
+            echo "GIT_CONFIG_KEY_0=http.https://github.com/.extraheader"
+            echo "GIT_CONFIG_VALUE_0="
+            echo "GIT_CONFIG_KEY_1=credential.https://github.com.helper"
+            echo "GIT_CONFIG_VALUE_1="
+            echo "GIT_CONFIG_KEY_2=credential.https://github.com.helper"
+            echo "GIT_CONFIG_VALUE_2=$helper"
+          } >> "$GITHUB_ENV"
+          echo "the major tag and the marketplace commit push as the App $app_id"
 
       - name: Point the major tag at the release
         if: steps.check.outputs.newest == 'true'
