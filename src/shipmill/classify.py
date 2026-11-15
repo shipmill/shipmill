@@ -13,6 +13,11 @@ request's (--pr) by its files and their patches too, read through gh:
 - protected: a path a REVIEW.md Protected areas glob on the base covers, as pr_gate.py matches
 - scope: a docs/specs/*.md whose header's status line reads approved at the head and not at
   the merge base, both read whole
+- accepted-spec (spec 067): in scope's place, when the spec's work is accepted: every issue a
+  `Spec for #N` line of the pull request's body names is an open issue of its repo, and either
+  labelled opportunity and planned, or filed by an OWNER, MEMBER, or COLLABORATOR, not a bot,
+  with no agent marker in its body (D-62); a body naming none, an issue of another repo, and a
+  field that can't be read stay scope
 - contract-change: an added line under a heading [bump] major lists, in the changelog or a
   changelog fragment
 - deploy-step (spec 063): a changed job of a deploy workflow, one an [environments] table at
@@ -34,11 +39,11 @@ from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 
-from shipmill import cli_command
+from shipmill import agent_marker, cli_command
 from shipmill.config import CONFIG_PATH, loads
 from shipmill.decide import Candidate, Level, Part, Zone, candidates
 from shipmill.errors import ReleaseError
-from shipmill.github import FileChange, PullChange, RunAttempt, RunJob
+from shipmill.github import FileChange, Missing, PullChange, RunAttempt, RunJob, SpecIssue
 from shipmill.gitrepo import Git
 from shipmill.policy import Policy
 from shipmill.review import REVIEW, Protected
@@ -68,6 +73,10 @@ EVERY_JOB = ("added", "renamed", "copied")  # statuses whose every job at the he
 _TITLE = re.compile(r"^# S-\d{3,}: \S")  # specs.py's TITLE and STATUS
 _STATUS = re.compile(r"^status: (\S+)$")
 APPROVED = "approved"
+_SPEC_FOR = re.compile(r"^\s*(?:[-*]\s+)?Spec for\s+([\w.-]+/[\w.-]+)?#([0-9]+)\b")  # pr_gate.py's
+OPEN = "open"
+OPPORTUNITY = ("opportunity", "planned")  # an accepted opportunity carries both (spec 067)
+TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})  # D-16
 
 
 class Pulls(Protocol):
@@ -83,6 +92,8 @@ class Pulls(Protocol):
     def attempt_jobs(self, run: int, attempt: int) -> tuple[RunJob, ...]: ...
 
     def blob_at(self, sha: str, path: str) -> str: ...
+
+    def spec_issue(self, number: int) -> SpecIssue: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,6 +363,7 @@ def classify_change(base: Base, pulls: Pulls, change: PullChange) -> Classificat
     found = _Found(base)
     listed = list(dict.fromkeys(p for f in change.files for p in f.paths))
     runs = _Runs(pulls, change)
+    work: SpecWork | None = None  # read once, for the first spec that becomes approved
     for file in change.files:
         for path in file.paths:
             _by_path(found, path)
@@ -362,7 +374,8 @@ def classify_change(base: Base, pulls: Pulls, change: PullChange) -> Classificat
         if is_workflow(file.path):
             _deploy_step(found, pulls, change, file, runs)
         if _is_spec(file.path) and _becomes_approved(pulls, change, file):
-            found.add(Zone.SCOPE, f"{file.path}'s status line becomes approved")
+            work = spec_work(pulls, change) if work is None else work
+            _approval(found, file.path, work)
         if _changelog(base.policy, file.path):
             head = pulls.text_at(change.head, file.path)
             for line, heading in _major_entries(base.policy, file, head, number):
@@ -408,6 +421,92 @@ def _becomes_approved(pulls: Pulls, change: PullChange, file: FileChange) -> boo
         return True
     before = file.previous if file.status == "renamed" and file.previous is not None else file.path
     return _spec_status(pulls.text_at(change.base, before)) != APPROVED
+
+
+@dataclass(frozen=True, slots=True)
+class SpecWork:
+    """Whether a spec pull request's work is accepted (spec 067), and why: the issues, or the
+    first one that isn't; why is None when the body names no issue"""
+
+    accepted: bool
+    why: str | None
+
+
+def _approval(found: _Found, path: str, work: SpecWork) -> None:
+    """accepted-spec for a spec of accepted work, scope for any other (spec 067)"""
+    reason = f"{path}'s status line becomes approved"
+    if work.accepted:
+        found.add(Zone.ACCEPTED_SPEC, f"{reason}, and its work is accepted: {work.why}")
+    else:
+        found.add(Zone.SCOPE, reason if work.why is None else f"{reason}; its work is not accepted: {work.why}")
+
+
+def spec_refs(body: str) -> list[tuple[str | None, int]]:
+    """pr_gate.py's: each `Spec for` line's issue, in order, its owner/repo (None for a plain
+    #N) and number; only a line that starts with it, after an optional list bullet, outside a
+    fence, names one"""
+    found: list[tuple[str | None, int]] = []
+    for line in unfenced(body):
+        named = _SPEC_FOR.match(line)
+        if named is not None:
+            found.append((named.group(1), int(named.group(2))))
+    return found
+
+
+def spec_work(pulls: Pulls, change: PullChange) -> SpecWork:
+    """The pull request's spec work is accepted when every issue its body's `Spec for` lines
+    name is an issue of its repository and accepted; the issues are read in order, up to the
+    first that isn't, so a failure to read one stops it rather than deciding; a number GitHub
+    has no issue for (HTTP 404 or 410) is not accepted"""
+    numbers: list[int] = []
+    for repo, number in spec_refs(change.body):
+        if repo is not None and (change.repo is None or repo.lower() != change.repo.lower()):
+            return SpecWork(False, f"{repo}#{number} is not an issue of {change.repo or 'its repository'}")
+        if number not in numbers:
+            numbers.append(number)
+    if not numbers:
+        return SpecWork(False, None)
+    notes: list[str] = []
+    for number in numbers:
+        try:
+            issue = pulls.spec_issue(number)
+        except Missing:  # a body anyone writes names it: not accepted, so it asks (S-067-5)
+            return SpecWork(False, f"#{number} is no issue GitHub has")
+        accepted, note = accepted_issue(issue)
+        if not accepted:
+            return SpecWork(False, f"#{number} {note}")
+        notes.append(f"#{number} {note}")
+    return SpecWork(True, ", ".join(notes))
+
+
+def accepted_issue(issue: SpecIssue) -> tuple[bool, str]:
+    """Whether the issue is accepted work (spec 067), and why or why not: open, and an accepted
+    opportunity or the maintainer's. Labels or an author that can't be read is not accepted, and
+    a body that can't be read is an agent's (D-62)"""
+    if issue.pull:
+        return False, "is a pull request, not an issue"
+    if issue.state != OPEN:
+        return False, "is not open" if issue.state is not None else "has a state that can't be read"
+    if issue.labels is None:
+        return False, "has labels that can't be read"
+    if issue.login is None or issue.bot is None or issue.association is None:
+        return False, "has an author that can't be read"
+    labels = {label.lower() for label in issue.labels}
+    if all(label in labels for label in OPPORTUNITY):
+        return True, "is an accepted opportunity"
+    author = f"{issue.login} ({issue.association})"
+    if issue.bot:
+        why = f"was filed by {issue.login}, a bot"
+    elif issue.association not in TRUSTED:
+        why = f"was filed by {author}, not an OWNER, MEMBER, or COLLABORATOR"
+    elif issue.body is None:
+        why = "has a body that can't be read"
+    elif agent_marker.carries(issue.body):
+        why = "carries the agent marker"
+    else:
+        return True, f"was filed by {author}"
+    opportunity = "is an opportunity without planned, and " if "opportunity" in labels else ""
+    return False, opportunity + why
 
 
 def _spec_status(text: str) -> str | None:

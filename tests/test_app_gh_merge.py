@@ -13,7 +13,7 @@ from shipmill.app_gh import GhCapture, Merge, merge_of
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
-from shipmill.github import FileChange, PullChange, RunAttempt, RunJob
+from shipmill.github import FileChange, PullChange, RunAttempt, RunJob, SpecIssue
 
 from .conftest import POLICY, Repo
 from .test_agent_marker import HOST_IDENTITY, sent
@@ -52,6 +52,9 @@ class FakeReads:
 
     def blob_at(self, sha: str, path: str) -> str:
         raise AssertionError(f"no blob is read for these paths, got {path} at {sha}")
+
+    def spec_issue(self, number: int) -> SpecIssue:
+        raise AssertionError(f"no Spec for issue is read for these paths, got #{number}")
 
     def pull_of(self, selector: str | None) -> str:
         self.selectors.append(selector)
