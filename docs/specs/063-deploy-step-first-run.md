@@ -179,4 +179,7 @@ their checkouts are affected.
 
 ## Issues
 
+- shipmill/shipmill#1164: S-063-1, S-063-2, S-063-3, S-063-4, S-063-5, S-063-6, S-063-7, S-063-8, S-063-11
+- shipmill/shipmill#1165: S-063-9, S-063-10
+
 ## Verification

@@ -158,4 +158,6 @@ zone's line in `[decisions]`.
 
 ## Issues
 
+- shipmill/shipmill#1159: S-058-1, S-058-2, S-058-3, S-058-4, S-058-5, S-058-6, S-058-7, S-058-8, S-058-9, S-058-10, S-058-11
+
 ## Verification
