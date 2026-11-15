@@ -94,6 +94,7 @@ ACTION = frozenset(
         "GATE_NO_APP",
         "DIRECTION_MISSING",
         "GATE_SESSIONS_DEAD",
+        "GATE_CHECKOUT_MISSING",  # #1155
         "SKILL_SHADOWED",
         "PLUGIN_SHADOWING",
         "UPGRADE_PENDING",
