@@ -47,6 +47,7 @@ from shipmill.walk import (
     Cursor,
     Hand,
     Handed,
+    Pull,
     Swept,
     check,
     item_key,
@@ -86,10 +87,16 @@ class Source:
     tag: str | None = None
     reads: list[str] = field(default_factory=list)
     window: bool = False  # spec 056: the land window opened, or its spacing passed, with a queue
+    pulls: dict[int, Pull] = field(default_factory=dict)  # spec 061: the open pull requests the change check read
+    issued: dict[int, dt.datetime] = field(default_factory=dict)  # spec 061: each issue's updatedAt on GitHub
 
     def changes(self, since: dt.datetime | None) -> Changes:
         self.reads.append("changes")
-        return Changes(self.signature, self.updated, self.asked, self.tag, window=self.window)
+        return Changes(self.signature, self.updated, self.asked, self.tag, window=self.window, pulls=dict(self.pulls))
+
+    def issues(self, numbers: Sequence[int]) -> Mapping[int, dt.datetime]:
+        self.reads.append(f"issues {' '.join(f'#{n}' for n in numbers)}")
+        return {n: self.issued[n] for n in numbers if n in self.issued}
 
     def tier(self, number: int, changes: Changes) -> list[Finding]:
         self.reads.append(f"tier {number}")
@@ -707,7 +714,11 @@ def test_926_a_walk_that_stops_early_keeps_the_hands_of_tiers_it_didnt_read(chec
     tick(checkout, source)
     source.tiers, source.signature = {1: [INCIDENT], 6: [NEW]}, "incident"
     assert tick(checkout, source, LATER).work == (INCIDENT,)
-    assert set(handed(checkout)) == {item_key(NEW), item_key(INCIDENT)}
+    assert set(handed(checkout)) == {
+        "ISSUES NEW #5",
+        "ISSUES NEW #6",
+        item_key(INCIDENT),
+    }  # NEW's by subject (spec 061)
 
 
 # -- spec 056: the land window's queue drains when the window opens
