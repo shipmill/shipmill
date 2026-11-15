@@ -1,6 +1,6 @@
 # S-063: A deploy step's first run is not in production
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -183,3 +183,15 @@ their checkouts are affected.
 - shipmill/shipmill#1165: S-063-9, S-063-10
 
 ## Verification
+
+- S-063-1: `shipmill decide levels` on main lists `deploy-step  ask  floor none  default` right after `security`, and `shipmill doctor` prints `decisions: deploy-step ask (default)`; `test_s063_1_*` in `tests/test_decide.py` parses `[decisions] deploy-step = "notify"`; pass
+- S-063-2: `test_s063_2_*` in `tests/test_deploy_step.py` (a changed job of a workflow `[environments]` names, with no `Proof:` run, reads `deploy-step` at the base's level, the reason naming the file and the job id; the level read at the base, never the change); pass
+- S-063-3: `test_s063_3_*` in `tests/test_deploy_step.py` (an `environment:` key at the base or the head makes a deploy workflow; a workflow with neither gets no zone); pass
+- S-063-4: `test_s063_4_*` in `tests/test_deploy_step.py` (a change inside one job names it alone, a removed line placed by the base's numbers, a change outside every job and an added, renamed, or unpatched file name every job, a removed file or job names none); pass
+- S-063-5: `test_s063_5_*` in `tests/test_deploy_step.py` (a run of the same path and blob with every leg green covers the jobs; an attempt URL reads that attempt; a scripted `gh` checks every request classify makes is a GET with no body); pass
+- S-063-6: `test_s063_6_*` in `tests/test_deploy_step.py` (a skipped, failed, or unfinished job, another path, content, or repo each leave the job named with the reason; a run URL outside a `Proof:` line or in a fence isn't read); pass
+- S-063-7: `shipmill decide classify --files .github/workflows/deploy.yml` on main prints `zone: deploy-step at ask: .github/workflows/deploy.yml is a deploy workflow, and paths alone show no run`; `test_s063_7_*`; pass
+- S-063-8: `test_s063_8_*` in `tests/test_pr_gate.py` (NEEDS_DECISION, exit 5, with the `needs-decision: deploy-step:` line, and READY with `--maintainer-accepted` and green checks); pass
+- S-063-9: `test_s063_9_*` in `tests/test_doctor_deploy_runner.py` (a plain checkout on a subset of a self-hosted deploy job's labels warns naming the file and job, jobs at any indent, never a FAIL and doctor exits 0); pass
+- S-063-10: `test_s063_10_*` in `tests/test_doctor_deploy_runner.py` (no WARN with `path:`, other labels, a GitHub-hosted deploy job, or a `${{` runs-on; the PASS row and no row when no deploy job runs self-hosted); `shipmill doctor` on main prints no `deploy runner` row, since this repo's deploy job runs GitHub-hosted; pass
+- S-063-11: `test_s063_11_*` in `tests/test_deploy_step.py` reads the `deploy-step` row in `needs-decision.md`'s and spec 030's zone tables and the `Proof:` rule in github-issue-resolve's `SKILL.md`; pass
