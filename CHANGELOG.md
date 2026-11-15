@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.135.0] - 2026-11-15
+
+### Changed
+
+- shipmill-setup and `docs/install.md` put a gate's checkout at `~/.local/share/shipmill/gates/<owner>/<repo>`, a detached worktree outside the repo, so a cleanup of the repo's `tmp/` no longer deletes it. A gate under `tmp/shipmill-gate` keeps working and reading as before; setup_state.py warns about it as `GATE_IN_TMP` and shipmill-setup offers to move it once you agree. github-ship-watch reads a gate checkout at the new place as the gate's, and its `GATE_CHECKOUT_MISSING` fix adds one there back as a worktree of your checkout (#1156)
+
 ## [0.134.2] - 2026-11-15
 
 ### Fixed
@@ -2535,7 +2541,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.134.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.135.0...HEAD
+[0.135.0]: https://github.com/shipmill/shipmill/compare/v0.134.2...v0.135.0
 [0.134.2]: https://github.com/shipmill/shipmill/compare/v0.134.1...v0.134.2
 [0.134.1]: https://github.com/shipmill/shipmill/compare/v0.134.0...v0.134.1
 [0.134.0]: https://github.com/shipmill/shipmill/compare/v0.133.0...v0.134.0
