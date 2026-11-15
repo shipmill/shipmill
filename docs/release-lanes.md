@@ -634,6 +634,129 @@ that was valid keeps working, and `doctor` keeps warning until the keys are set.
 must name an environment in `[environments]`. `deploy` and `rollback` take effect in
 `shipmill operate` (see Operate above).
 
+## Protected default branch
+
+Land pushes the release commit to the default branch, a hotfix to `release/X.Y`, and a
+stable release made off a moved branch back into it as a `Sync X.Y.Z into <branch>` commit.
+By default it pushes them with the workflow token, as `github-actions[bot]`, which an
+organization repository can't let past a rule requiring a pull request or a status check
+(see [Limits](#limits)). A repository that sets `[agents] app_id` can opt in to landing those three
+pushes as its App instead, which a ruleset accepts as a bypass actor (spec 054). The rule
+then reads "pull request and `checks` required; bypass: the App", and the App is the one
+identity that writes the default branch without a pull request. A repository that doesn't
+opt in lands exactly as before.
+
+| Push | Without the opt-in | With it |
+|---|---|---|
+| The release commit to the default branch | workflow token | the App |
+| A hotfix's release commit to `release/X.Y` | workflow token | the App |
+| The sync commit into the default branch | workflow token | the App |
+| The release tag `vX.Y.Z` | workflow token | workflow token |
+| The work branch `shipmill/<tag>`, its push and its delete | workflow token | workflow token |
+| The GitHub release and the lane's dispatches | workflow token | workflow token |
+
+### The opt-in
+
+1. Install the App in `[agents] app_id` on the repository with Contents: read and write and
+   Workflows: read and write (a hotfix's cherry-picked merges may touch
+   `.github/workflows/`)
+2. Create a GitHub environment, `shipmill-land`, whose deployment branches are limited to
+   the default branch, and add the App's private key to it as the secret
+   `SHIPMILL_LAND_KEY`: `gh secret set SHIPMILL_LAND_KEY --env shipmill-land < app.pem`.
+   Give it no required reviewers, or every landing waits for one
+3. Add `land-environment: shipmill-land` to the `with:` of the `land` job in
+   `.github/workflows/release.yml`; `shipmill init --caller --land-as-app --force` rewrites
+   the calling workflow with it, and exits 2 naming `[agents] app_id` when the config sets
+   none
+4. Create the ruleset: `uvx shipmill ruleset | gh api -X POST repos/<owner>/<repo>/rulesets
+   --input -`, with a login that has admin rights on the repository
+5. Run `shipmill doctor`: its `landing` row passes once every rule that refuses land's push
+   lists the App as a bypass actor
+
+An environment's secret reaches only a job that names the environment, and its deployment
+branch policy refuses a job from any other branch. So a collaborator who pushes a workflow to
+another branch can't read the key and push the default branch as the App, which a repository
+secret would allow. With `land-environment` set, `land.yml`'s `land` job runs in that
+environment, masks the key, writes it to a mode 0600 file under `$RUNNER_TEMP`, and runs
+`shipmill land --app-key <file>`. An empty `SHIPMILL_LAND_KEY` fails that step before
+`shipmill land` runs, naming the secret and the environment, so a half-done opt-in never
+lands as the workflow token.
+
+`shipmill land --app-key` mints one installation token limited to the repository with
+`contents: write` and `workflows: write`, before its first push. A missing or unreadable
+key, an App not installed on the repository, or an installation without those permissions
+exits 2 naming the problem and its fix, having pushed nothing: it never falls back to the
+workflow token. The token reaches git through its environment, never a process argument or
+a line of output.
+
+### `shipmill ruleset`
+
+`shipmill ruleset` prints, on stdout, the JSON body of a branch ruleset for GitHub's
+create-ruleset API; it writes nothing and calls no API. The ruleset is active and covers the
+default branch (`~DEFAULT_BRANCH`), plus `refs/heads/release/*` when the policy has a hotfix
+lane. Its rules refuse a deletion and a force push, require a pull request (with 0 approving
+reviews; raise it to taste), and require one status check per job of the CI workflow
+`.github/workflows/release.yml` calls, by the name a pull request reports. Its one bypass
+actor is the App in `[agents] app_id`, as an `Integration` with `bypass_mode` `always`.
+Without `[agents] app_id` it exits 2: a protected branch on an organization repository
+lands unattended only through an App. A CI job whose check name its text doesn't tell (a
+matrix, a reusable workflow's call, a name with an expression) exits 2 too, naming the job:
+give it a plain `name:`, or add its checks to the printed body by hand.
+
+### What an App push starts
+
+A push made with the workflow token starts no workflow; one made with an App's token does.
+After the opt-in:
+
+- The release commit and the sync commit start the repository's `on: push` workflows on the
+  default branch: CI runs on them, so the default branch's head carries its checks, and the
+  sync commit, which ran no CI before, now does
+- The Release workflow starts on that push too, and plans no release when nothing was merged
+  since: the release commit leaves no pending changelog entry
+- Every other `on: push` workflow on the default branch (a docs deploy, say) runs on the
+  release commit and the sync commit
+- The tag stays with the workflow token, so it starts no `on: push: tags` workflow, and
+  publishing still goes through the lane's `dispatch` in the order D-50 sets
+
+### `doctor`'s `landing` row
+
+`shipmill doctor` reads, with your `gh` login, the rules every active ruleset applies to the
+default branch (and to `release/<series>` of the newest stable tag with a hotfix lane), each
+of those rulesets' bypass list, and the branch's classic protection. It names the landing
+identity, the App under the opt-in and `github-actions[bot]` without it, and:
+
+- PASS when no rule refuses land's push, or when every refusing ruleset lists the landing
+  identity as a bypass actor with `bypass_mode` `always`
+- FAIL per ruleset whose `pull_request`, `required_status_checks`, `required_signatures`,
+  `required_deployments`, or `update` rule (or `creation`, for a new `release/X.Y`) refuses
+  that identity, and for classic protection whose required reviews (unless their bypass
+  allowances name the App), required status checks, required signatures, or push
+  restrictions (unless they name the App) refuse it, with the fix: without the opt-in, the
+  steps above; with it, adding the App to the named ruleset's bypass list, or replacing the
+  classic protection with the ruleset `shipmill ruleset` prints
+- FAIL when the release workflow sets `land-environment` and the config sets no
+  `[agents] app_id`
+- WARN when it can't read the rules or a bypass list (no `gh`, or a 403 or 404 for a login
+  without admin rights), and for an active tag ruleset that matches the next release tag and
+  doesn't let the GitHub Actions integration (15368) bypass it: the tag is pushed as
+  `github-actions[bot]`
+
+When a push is refused anyway and git's error carries GitHub's rule refusal (`GH013`, or
+`protected branch`), land's error names the branch and the identity it refused and adds
+`run shipmill doctor, and see Protected default branch in docs/release-lanes.md`. The work
+branch is cleaned up as on any failed landing, so the next run plans the release again.
+
+### Limits of the opt-in
+
+- The tag is pushed with the workflow token: a branch ruleset doesn't cover tags, and a tag
+  ruleset must let the GitHub Actions integration bypass it; shipmill doesn't create one
+- The opt-in needs `[agents]`: a repository where shipmill only cuts releases has no App id
+  to land as
+- `shipmill sync`, a person's recovery of a failed sync, only edits their checkout: on a
+  protected branch they land its commit through a pull request, as any other change
+- Signed release commits are not made; the App's bypass covers a `required_signatures` rule
+- The ruleset is printed, never applied: creating it takes admin rights on the repository
+
 ## Land window
 
 Where a merge to the default branch deploys, `[land.window]` holds the pull requests of
@@ -963,7 +1086,8 @@ The workflows call these; you can run them locally too.
 
 | Command | What it does |
 |---|---|
-| `init` | Write the policy and the calling workflow; `--caller` rewrites the calling workflow alone from the policy, `--runs-on` names the runner, `--operate` writes the operate one and adds `rollback` and each `deploy.<env>` to `[autonomy]`, `init --downstream` the downstream tests one |
+| `init` | Write the policy and the calling workflow; `--caller` rewrites the calling workflow alone from the policy, `--runs-on` names the runner, `--operate` writes the operate one and adds `rollback` and each `deploy.<env>` to `[autonomy]`, `init --downstream` the downstream tests one, `--land-as-app` sets the land job's `land-environment` ([Protected default branch](#protected-default-branch)) |
+| `ruleset` | Print a branch ruleset that protects the default branch and lets the App land, for `gh api -X POST repos/<owner>/<repo>/rulesets --input -` |
 | `operate` | Check environment health, promote after the bake, roll back; `--approve <env>`, `--approve-rollback <env>`, `--dry-run` |
 | `doctor` | Check the repository is ready; exit 1 on a failure; `--app-key` checks the `[downstream]` App's installations |
 | `downstream start`, `downstream collect` | Start each downstream's tests on a pull request and write their checks; run by the reusable `downstream.yml` |
@@ -987,14 +1111,14 @@ or a state shipmill refuses to act on.
 
 ## Limits
 
-- Landing pushes the release commit, the tag, and the sync to main and `release/*` with
-  the workflow token, as `github-actions[bot]`, so a branch rule that blocks that push
-  fails the landing. On an organization repository GitHub gives it no way through: a
-  ruleset refuses the GitHub Actions integration as a bypass actor, and classic branch
-  protection accepts it in the pull request bypass list but stores an empty list. A
-  required status check blocks the push too, since the release commit's CI reports as
-  `ci / checks` rather than `checks`. Until landing changes (#1038), protect main there
-  only against force pushes and deletion
+- Without the opt-in, landing pushes the release commit, the tag, and the sync to main and
+  `release/*` with the workflow token, as `github-actions[bot]`, so a branch rule that
+  blocks that push fails the landing. On an organization repository the workflow token
+  can't pass branch rules: a ruleset refuses the GitHub Actions integration as a bypass
+  actor, and classic branch protection accepts it in the pull request bypass list but
+  stores an empty list. A required status check blocks the push too, since the release
+  commit's CI reports as `ci / checks` rather than `checks`. To protect the default branch
+  there, land as the App ([Protected default branch](#protected-default-branch))
 - A run cancelled before its cleanup job gets a runner leaves its `shipmill/<tag>` work
   branch on origin. The next run's prepare deletes it and pushes its own when no other run
   of your Release workflow is queued or in progress, which takes `actions: read` on the
@@ -1002,7 +1126,8 @@ or a state shipmill refuses to act on.
   permission the run stops at the branch, stays green, and says so in a "Work branch held"
   warning and the run summary; delete the branch by hand, or add the permission
 - A push made with the workflow token starts no workflow: that is why publishing goes
-  through `dispatch`, and why the sync commit on main runs no CI of its own
+  through `dispatch`, and why, without the opt-in, the sync commit on main runs no CI of
+  its own
 - A publish workflow must accept a tag whose commit is not on main: pre-releases and
   promoted stable releases are tagged off main
 - The version comes from `pyproject.toml` or from tags; other version files are covered by
