@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from shipmill import cli_command, deprecations, fragments, ticks
+from shipmill import cli_command, deploy_runner, deprecations, fragments, ticks
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
 from shipmill.agents import AgentsConfig, Author, Credit, ProductConfig, RolesError
@@ -418,6 +418,8 @@ def doctor(
     for env in policy.environments.values():
         watched = env.source is not None or bool(env.health)  # D-9: only these need operate
         checks.append(_deploy(root / ".github" / "workflows" / env.workflow, env.name, operate_caller, watched))
+    named = {env.workflow for env in policy.environments.values()}
+    checks.extend(Check(status, deploy_runner.ROW, detail) for status, detail in deploy_runner.check(root, named))
     if policy.downstream is not None:  # D-9: no downstream line without [downstream]
         checks.extend(downstream_checks(root, policy.downstream, downstream, app))
     if refused is not None:  # S-038-27: a FAIL row, after which every other check still runs
