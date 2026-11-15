@@ -743,3 +743,19 @@ entry that supersedes it, never by editing an old one.
 - Why: The maintainer keeps deciding what is built, and on 2026-11-13 agreed that the spec of work they already accepted may go ahead on the agent's recommendations; N-3 changed to match on 2026-11-15 (#1186), so asking twice for one accepted feature only delays its build
 - Applies to: the decision policy's zones, src/shipmill/decide.py, src/shipmill/classify.py, skills/github-issue-triage/scripts/decisions.py, skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/scripts/triage_state.py, spec approval
 - Enforced by: spec 067: decide levels and Policy.parse (S-067-1 to S-067-3), decide classify (S-067-4 to S-067-6), pr_gate.py (S-067-7, S-067-8), triage_state.py (S-067-9), retro.py (S-067-10)
+
+## D-89: The merge gate reads the newest trusted answer to a question
+
+- Decided: 2026-11-15, in shipmill/shipmill#1199
+- Rule: pr_gate.py's acceptance reads the newest trusted answer after the newest needs-decision question, by the rules S-055-5 to S-055-9 apply to an answer (a trusted author, no agent marker, a relay by the --bot-login naming a maintainer), and judges its whole reply as S-055-8 says: a bare number after a reply with words takes the option, and a reply with words after a bare number holds the item again; retro.py's count of answers (S-030-18) keeps reading the first answer. This refines S-055-5
+- Why: A corrected reply never counted, so every reply with words cost a re-ask and a third reply (#1182, cloudfall-dev/cloudfall#335); the newest reply is the person's latest word, while the retro measures how a question was first answered
+- Applies to: skills/github-pr-triage/scripts/pr_gate.py, skills/github-pr-triage/scripts/retro.py, docs/specs/055-landing-rules-in-code.md, needs-decision answers
+- Enforced by: tests/test_pr_gate.py
+
+## D-90: shipmill app-token mints a narrower token on request, and move-major-tag asks only for contents write
+
+- Decided: 2026-11-15, in shipmill/shipmill#1189
+- Rule: shipmill app-token <owner/name> takes a repeatable --permission <name>=<read|write>; given, the token asks GitHub for exactly those permissions (metadata read aside), each one the App's table knows at no more than the table's access, else exit 2 before any request; a narrowed token is cached apart (app-token-<sorted permissions>.json), never in the session's app-token.json; the flag combines with --git-credential and is refused with --check, --product, and the read token; move-major-tag.yml mints its marketplace push's token with --permission contents=write. Without the flag nothing changes
+- Why: A token leaked from the marketplace push job should only write the repo's contents; a generic flag instead of a fixed preset means a later narrow use needs no new CLI word
+- Applies to: src/shipmill/app.py, src/shipmill/cli.py, .github/workflows/move-major-tag.yml, shipmill app-token
+- Enforced by: review
