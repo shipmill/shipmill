@@ -845,22 +845,47 @@ def to_land(rows: Sequence[Row]) -> list[int]:
 
 
 PARKED_PULL = re.compile(r" #(\d+) \((@[^()]+)\)")
+PARKED_MERGE = re.compile(r"TO_MERGE((?: #\d+)+)")
 
 
-def parked_pulls(rows: Sequence[Row]) -> list[tuple[int, str]]:
-    """#853: the PRS_PARKED row's pull requests, newest first, each with whom it waits on as
-    watch_state.py names them; its detail is `WITH_PERSON #N (@login ...) ...` and nothing else"""
-    found: list[tuple[int, str]] = []
+@dataclass(frozen=True, slots=True)
+class Parked:
+    """The PRS_PARKED rows' pull requests, newest first: a person's, each with whom it waits on
+    (#853), and under land = "propose" the ones labelled shipmill-ready, to merge (S-061-11)"""
+
+    people: list[tuple[int, str]]
+    merge: list[int]
+
+
+def parked(rows: Sequence[Row]) -> Parked:
+    """The PRS_PARKED rows as watch_state.py writes them: `WITH_PERSON #N (@login ...) ...`,
+    `TO_MERGE #N ...`, or both in that order joined by `; `, and nothing else"""
+    people: list[tuple[int, str]] = []
+    merge: list[int] = []
     for r in rows:
         if r.state != PRS_PARKED:
             continue
-        rest = r.detail.removeprefix("WITH_PERSON")
-        pulls = PARKED_PULL.findall(rest)
-        named = all(p[:1] == "@" and LOGIN.match(p[1:]) for _, people in pulls for p in people.split(" "))
-        if rest == r.detail or not pulls or "".join(f" #{n} ({p})" for n, p in pulls) != rest or not named:
+        parts = r.detail.split("; ")
+        ordered = len(parts) == 1 or parts[0].startswith("WITH_PERSON ") and parts[1].startswith("TO_MERGE ")
+        if len(parts) > 2 or not ordered:
             raise ReleaseError(f"watch_state.py's {PRS_PARKED} row is unreadable: {r.detail!r}")
-        found += [(int(n), people) for n, people in pulls]
-    return sorted(found, reverse=True)
+        for part in parts:
+            if (to_merge := PARKED_MERGE.fullmatch(part)) is not None:
+                merge += [int(n) for n in re.findall(r"#(\d+)", to_merge.group(1))]
+                continue
+            rest = part.removeprefix("WITH_PERSON")
+            pulls = PARKED_PULL.findall(rest)
+            named = all(p[:1] == "@" and LOGIN.match(p[1:]) for _, who in pulls for p in who.split(" "))
+            if rest == part or not pulls or "".join(f" #{n} ({p})" for n, p in pulls) != rest or not named:
+                raise ReleaseError(f"watch_state.py's {PRS_PARKED} row is unreadable: {r.detail!r}")
+            people += [(int(n), who) for n, who in pulls]
+    return Parked(sorted(people, reverse=True), sorted(set(merge), reverse=True))
+
+
+def parked_pulls(rows: Sequence[Row]) -> list[tuple[int, str]]:
+    """#853: the PRS_PARKED row's person's pull requests, newest first, each with whom it waits
+    on as watch_state.py names them"""
+    return parked(rows).people
 
 
 def land_stage(facts: Facts) -> StageLevel:
@@ -873,11 +898,12 @@ def land_stage(facts: Facts) -> StageLevel:
 
 def to_merge(facts: Facts) -> list[int]:
     """S-040-11: under land = "propose", with a gate, the pull requests to land that are
-    labelled shipmill-ready: a person's to merge. None under observe, act, or without [agents]"""
+    labelled shipmill-ready: a person's to merge, which watch_state.py lists in PRS_PARKED as
+    TO_MERGE (S-061-11). None under observe, act, or without [agents]"""
     if facts.gate.agents is None or land_stage(facts).effective is not Autonomy.PROPOSE:
         return []
     ready = {p.number for p in facts.pulls if p.ready}
-    return [n for n in to_land(facts.rows) if n in ready]
+    return sorted({*(n for n in to_land(facts.rows) if n in ready), *parked(facts.rows).merge}, reverse=True)
 
 
 def landing_fix(facts: Facts) -> str | None:
@@ -898,7 +924,8 @@ def landing_reasons(facts: Facts) -> tuple[list[Reason], list[str]]:
     gate or land = "observe"; under propose, those labelled shipmill-ready waiting on you to
     merge and the rest the gate's work; under act, all the gate's work"""
     found = to_land(facts.rows)
-    if not found:
+    merge = to_merge(facts)
+    if not found and not merge:
         return [], []
     fix = landing_fix(facts)
     listed = f"pull request {numbers(found)}"
@@ -906,7 +933,6 @@ def landing_reasons(facts: Facts) -> tuple[list[Reason], list[str]]:
         return [Reason(f"{listed} wait to land: no gate lands pull requests (no [agents] in the config)", fix)], []
     if fix is not None:
         return [Reason(f"{listed} wait to land: [autonomy] land is observe, so no session lands them", fix)], []
-    merge = to_merge(facts)
     rest = [n for n in found if n not in merge]
     yours = [Reason(f"pull request {numbers(merge)} labelled {READY_LABEL} wait on you to merge", MERGE_FIX)]
     working = [f"pull request {numbers(rest)} to land"]

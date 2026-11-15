@@ -199,6 +199,7 @@ without `--tier` or `--sweep`, every section, and is not changed by this spec.
   comment read for pull requests labelled `needs-decision` or `decided`
 - S-046-7: `watch_state.py --tier <n>` prints only that tier's rows, and neither it nor
   `--sweep` prints a host row or a report-only row
+  - Amended by spec 061 (#1162): `--tier 3` prints the report-only PRS_PARKED row too, so it shows what it left out of PRS_OPEN; it carries `agent` false, so the gate's walk takes no item from it (S-061-11)
 - S-046-8: a tick sweeps when `sweep.json` records none or one `sweep_hours` or more ago, with
   or without a change; tiers 2, 5, 7, and 8 read the sweep's stored rows between sweeps
   - Amended by spec 047: a sweep first proposes the config upgrades as the App, so its UPGRADE_PENDING rows see the issue it opened, and `sweep.json` keeps what the proposal did in `upgrades` (S-047-1, S-047-9)

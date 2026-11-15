@@ -182,6 +182,30 @@ def test_s040_11_under_propose_the_ready_ones_wait_on_you_to_merge_and_the_rest_
     assert report(facts(OPEN, gate=gate(agents=NO_PRS))).verdict is Verdict.WORKING
 
 
+def test_s061_11_status_reads_watch_states_to_merge_part_as_before() -> None:
+    # watch_state.py now lists the ready one in PRS_PARKED as TO_MERGE, not in PRS_OPEN
+    parked = Row("PRS_PARKED", REPO, "WITH_PERSON #160 (@romamo); TO_MERGE #409", False)
+    pulls = [Pull(409, False, "CLEAN", "main", ready=True), Pull(408, False, "CLEAN", "main")]
+    found = facts(Row("PRS_OPEN", REPO, "#408", False), parked, pulls=pulls)
+    done = report(found)
+    assert done.verdict is Verdict.WAITS
+    assert [(r.text, r.fix) for r in done.reasons] == [
+        ("pull request #409 labelled shipmill-ready wait on you to merge", MERGE)
+    ]
+    text = lines(found)
+    at = text.index(f"  to land        #408 {URL}/pull/408")
+    assert text[at + 1 : at + 3] == [f"  to merge       #409 {URL}/pull/409", f"{FIX}{MERGE}"]
+    assert f"  parked         #160 {URL}/pull/160 (@romamo)" in text
+    assert not any("409" in line for line in text if "(@" in line)  # not on the parked line
+    # the ready one alone: still yours to merge, with nothing to land
+    alone = report(facts(Row("PRS_PARKED", REPO, "TO_MERGE #409", False), pulls=pulls[:1]))
+    assert [r.text for r in alone.reasons] == ["pull request #409 labelled shipmill-ready wait on you to merge"]
+    assert alone.working == []
+    for detail in ("TO_MERGE", "TO_MERGE #9; WITH_PERSON #1 (@a)", "WITH_PERSON #1 (@a); TO_MERGE #9; TO_MERGE #8"):
+        with pytest.raises(ReleaseError, match="PRS_PARKED row is unreadable"):
+            lines(facts(Row("PRS_PARKED", REPO, detail, False)))
+
+
 def test_s040_11_under_act_every_open_pull_request_is_the_gates_work() -> None:
     pulls = [Pull(409, False, "CLEAN", "main", ready=True)]
     found = facts(OPEN, pulls=pulls, autonomy=AutonomyPolicy(land=Autonomy.ACT), gate=gate(agents=NO_PRS))
