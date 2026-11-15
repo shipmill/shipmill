@@ -50,7 +50,23 @@ For each open issue:
                    body depends on and whatever GitHub records holds it. With --home,
                    holds on other repos of the product are read with the read token,
                    and a hold on an item of the home it still can't read adds the
-                   coordinator's note (below)
+                   coordinator's note (below). Or, triaged or not, it is a build issue
+                   (its body's first line "Builds part of spec S-NNN,
+                   `docs/specs/NNN-<slug>.md`", as specs.py split writes it) of a spec
+                   approved at notify (spec 067): a merged pull request labelled decided
+                   that changed that file carries a decided comment whose first line is
+                   <!-- shipmill:decided zone=accepted-spec until=<time> --> by the
+                   --bot-login or an OWNER, MEMBER, or COLLABORATOR, and its veto window
+                   is open: veto_hours (that comment's until= less its post time) from
+                   the merge, never ending before until=. Its note starts "veto window of
+                   #<PR> until <time>" (UTC), then the holds. An unanswered veto of that
+                   pull request (as VETOED reads one) holds it whenever it came, its note
+                   starting "#<PR> vetoed by @<login>": its take-up closes the build
+                   issues. Once the window has passed it reads as it would without it.
+                   The merged pull requests labelled decided and updated in the last 14
+                   days are read in one more query, only when an open issue is a build
+                   issue; one whose until= isn't a UTC time within 168 hours after its
+                   comment exits 2
   UNFILLED         a "Depends on" line of its body still names a placeholder such
                    as #{B1} from specs.py split: put in the dependency's number
   MALFORMED_DEPENDS once triaged (or a person's item), a "Depends on" line of its body
@@ -584,6 +600,53 @@ query($owner: String!, $name: String!, $size: Int!, $cursor: String!) {
 """
 )
 
+# Spec 067: the merged pull requests labelled decided, most recently updated first, with the
+# files each changed and its comments, read only when an open issue is a spec's build issue:
+# one query for them all, never a call per issue
+DECIDED_PRS_PAGE = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    decided: pullRequests(states: MERGED, labels: [\""""
+    + DECIDED_LABEL
+    + """\"], first: $size, after: $cursor,
+                          orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number mergedAt updatedAt
+        files(first: 100) { pageInfo { hasNextPage endCursor } nodes { path } }
+        comments(last: 50) { nodes { """
+    + COMMENT
+    + """ } }
+      }
+    }
+  }
+}
+"""
+)
+PR_FILES_PAGE = """
+query($owner: String!, $name: String!, $size: Int!, $number: Int!, $cursor: String!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      files(first: $size, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { path } }
+    }
+  }
+}
+"""
+PR_COMMENTS_PAGE = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      comments(last: $size, before: $cursor) { pageInfo { hasPreviousPage startCursor } nodes { """
+    + COMMENT
+    + """ } }
+    }
+  }
+}
+"""
+)
+
 COMMENTS_CAP = 50  # comments(last: 50) in OPEN_ISSUE
 CLOSED_COMMENTS_CAP = 5  # comments(last: 5) of a closed issue in CLOSED_AND_TAGS
 # Each query's first page size, and what a page holds, for the error line. Older open
@@ -599,6 +662,9 @@ SIZES = {
     REFS_PAGE: 100,
     TAGS_PAGE: 100,
     VETOABLE_PAGE: VETOABLE_FIRST,
+    DECIDED_PRS_PAGE: 50,
+    PR_FILES_PAGE: 100,
+    PR_COMMENTS_PAGE: 100,
     **{query: 100 for query in NATIVE_PAGES.values()},
 }
 # A rejected page halves down to this floor; one that fails at the floor ends the run.
@@ -693,6 +759,11 @@ DIRECTION_MARKER = "<!-- shipmill-direction -->"
 # A spec file an issue's body names (spec 053), specs.py's NAME under docs/specs/: a link to
 # it reads too, a longer word around it doesn't
 SPEC_FILE = re.compile(r"(?<![\w.-])docs/specs/\d{3,}-[a-z0-9]+(?:-[a-z0-9]+)*\.md(?![\w-]|\.\w)")
+# A build issue specs.py split filed: its body's first line names the spec it builds part of
+BUILDS = re.compile(r"\ABuilds part of spec S-\d{3,}, `(docs/specs/\d{3,}-[a-z0-9]+(?:-[a-z0-9]+)*\.md)`")
+# Spec 067: a spec approved at notify carries this decided marker on its merged pull request
+ACCEPTED_SPEC = re.compile(r"^<!-- shipmill:decided zone=accepted-spec until=(\S+) -->$")
+LONGEST_WINDOW = dt.timedelta(hours=168)  # veto_hours' ceiling (spec 030)
 # A goal's plan (spec 028): product-intake's intake_state.py PLAN_LABEL, and the verdict its
 # triage comment on a plan starts with, "Triage: **plan**. ..."
 PLAN_LABEL = "goal-plan"
@@ -1153,6 +1224,145 @@ def fetch_pages(
         tags["nodes"] = page["nodes"] + tags["nodes"]
         tags["pageInfo"] = page["pageInfo"]
     return data
+
+
+def build_spec(issue: dict[str, Any]) -> str | None:
+    """The spec file a build issue builds part of: its body's first line as specs.py split
+    writes it, "Builds part of spec S-NNN, `docs/specs/NNN-<slug>.md`: ..."; None for any
+    other issue, one that merely names a spec included"""
+    found = BUILDS.match((issue.get("body") or "").lstrip())
+    return found.group(1) if found else None
+
+
+def pr_page(
+    run: Runner, query: str, base: Variables, sizes: Sizes, number: int, field: str, cursor: str | None
+) -> dict[str, Any]:
+    """One page of a pull request's files or comments; with no cursor, its first (for comments,
+    the newest)"""
+    variables: Variables = {**base, "number": number}
+    if cursor is not None:
+        variables["cursor"] = cursor
+    pull = sized(run, query, variables, sizes, f"the {field} of pull request #{number}").get("pullRequest")
+    if pull is None:
+        fail(f"pull request #{number} vanished while paging its {field}")
+    page: dict[str, Any] = pull[field]
+    return page
+
+
+def accepted_spec_marks(pull: dict[str, Any], bot_login: str | None) -> list[tuple[dict[str, Any], str]]:
+    """A pull request's decided comments for the zone accepted-spec (spec 067), oldest first,
+    each with its until= text: the first line is the marker, by the --bot-login or an OWNER,
+    MEMBER, or COLLABORATOR (D-16); anyone else's never counts"""
+    marks = []
+    for comment in pull["comments"]["nodes"]:
+        found = ACCEPTED_SPEC.match(first_line(comment["body"]))
+        author, association = login(comment.get("author")), str(comment.get("authorAssociation") or "NONE")
+        if found is not None and trusted(author, association, bot_login):
+            marks.append((comment, found.group(1)))
+    return marks
+
+
+def fetch_decided_prs(
+    repo: str, bot_login: str | None, now: dt.datetime, run: Runner = gh_graphql
+) -> list[dict[str, Any]]:
+    """Spec 067: the merged pull requests labelled decided and updated in the last VETO_WINDOW
+    (a merged pull request whose window is still open was updated in its last 168 hours), with
+    every comment, and every file of one that carries an accepted-spec decided comment"""
+    owner, _, name = repo.partition("/")
+    base: Variables = {"owner": owner, "name": name}
+    sizes = dict(SIZES)
+    since = now - VETO_WINDOW
+    pulls: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    variables: Variables = dict(base)
+    while True:
+        page = sized(run, DECIDED_PRS_PAGE, variables, sizes, "the merged decided pull requests")["decided"]
+        recent = [p for p in page["nodes"] if timestamp(p["updatedAt"]) >= since]
+        pulls += recent
+        if len(recent) < len(page["nodes"]) or not page["pageInfo"]["hasNextPage"]:
+            break
+        variables = {**base, "cursor": advance(page["pageInfo"]["endCursor"], seen, "merged decided pull requests")}
+    for pull in pulls:
+        number = pull["number"]
+        if len(pull["comments"]["nodes"]) >= COMMENTS_CAP:
+            comments = pr_page(run, PR_COMMENTS_PAGE, base, sizes, number, "comments", None)
+            seen = set()
+            while comments["pageInfo"]["hasPreviousPage"]:
+                cursor = advance(comments["pageInfo"]["startCursor"], seen, f"comments on pull request #{number}")
+                page = pr_page(run, PR_COMMENTS_PAGE, base, sizes, number, "comments", cursor)
+                comments["nodes"] = page["nodes"] + comments["nodes"]
+                comments["pageInfo"] = page["pageInfo"]
+            pull["comments"] = comments
+        if not accepted_spec_marks(pull, bot_login):
+            continue
+        files = pull["files"]
+        seen = set()
+        while files["pageInfo"]["hasNextPage"]:
+            cursor = advance(files["pageInfo"]["endCursor"], seen, f"files of pull request #{number}")
+            page = pr_page(run, PR_FILES_PAGE, base, sizes, number, "files", cursor)
+            files["nodes"] = files["nodes"] + page["nodes"]
+            files["pageInfo"] = page["pageInfo"]
+    return pulls
+
+
+def until_time(text: str, number: int) -> dt.datetime:
+    """A decided comment's until=, a UTC time such as 2026-10-20T14:00:00Z, its seconds optional
+    as the release's veto.py reads it (spec 030, spec 059)"""
+    for shape in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%MZ"):
+        try:
+            return dt.datetime.strptime(text, shape).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    fail(f"pull request #{number}'s decided comment has until={text}, not a UTC time such as 2026-10-20T14:00:00Z")
+
+
+def window_hold(pull: dict[str, Any], bot_login: str | None, now: dt.datetime) -> str | None:
+    """What a merged spec pull request approved at notify (an accepted-spec decided comment,
+    spec 067) holds its build issues on, or None once nothing does. An unanswered trusted veto
+    holds them whenever it came: a veto never releases them, its take-up closes them. Else its
+    veto window holds them, veto_hours from its merge: the newest such comment's until= less
+    its post time is veto_hours, run from the merge, and never ending before until= itself"""
+    marks = accepted_spec_marks(pull, bot_login)
+    if not marks:
+        return None  # approved at ask or by a person's merge: nothing to wait for
+    number = pull["number"]
+    who = vetoed(comment_tuples(pull), bot_login)
+    if who is not None:
+        return f"#{number} vetoed by @{who}"
+    comment, text = marks[-1]
+    until = until_time(text, number)
+    span = until - timestamp(comment["createdAt"])
+    if not dt.timedelta(0) < span <= LONGEST_WINDOW:
+        fail(f"pull request #{number}'s decided comment has until={text}, not within 168 hours after the comment")
+    end = max(until, timestamp(pull["mergedAt"]) + span)
+    if now >= end:
+        return None
+    return f"veto window of #{number} until {end.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}"
+
+
+def veto_windows(
+    repo: str,
+    issues: list[dict[str, Any]],
+    bot_login: str | None,
+    now: dt.datetime | None = None,
+    run: Runner = gh_graphql,
+) -> dict[int, str]:
+    """Spec 067 (S-067-9): each open build issue held by its spec's approval at notify, as its
+    BLOCKED note. The decided pull requests are read once, and only when an open issue is a
+    build issue; ``now`` (default: the clock) is when the windows are read"""
+    builds = {issue["number"]: build_spec(issue) for issue in issues}
+    if not any(builds.values()):
+        return {}
+    moment = now if now is not None else dt.datetime.now(UTC)
+    holds: dict[str, list[str]] = {}
+    pulls = fetch_decided_prs(repo, bot_login, moment, run)
+    for pull in sorted(pulls, key=lambda p: (p["mergedAt"], p["number"])):
+        hold = window_hold(pull, bot_login, moment)
+        if hold is None:
+            continue
+        for path in dict.fromkeys(str(f["path"]) for f in pull["files"]["nodes"]):
+            holds.setdefault(path, []).append(hold)
+    return {n: " | ".join(holds[path]) for n, path in builds.items() if path is not None and path in holds}
 
 
 def keyword_closes(title: str, body: str) -> set[int]:
@@ -1764,6 +1974,7 @@ def classify_open(
     cycle: Cycle | None = None,
     home: str | None = None,
     revisits: Revisits | None = None,
+    window: str | None = None,
 ) -> tuple[str, str]:
     """An open issue's state once gated found none; ``closes`` says when each closed hold
     closed, which a person's item (labelled human or role:<name>) reads its hand-off against.
@@ -1774,7 +1985,9 @@ def classify_open(
     ``home``, the --home, adds the coordinator's note to a BLOCKED one held on an item of the
     home this session can't read (home_hold_note, D-60). ``revisits`` reads a postponed
     issue's ``Revisit on:`` line against the tags' changes (spec 061); without it, such an
-    issue reads REVISIT on every stable tag, as one without the line does"""
+    issue reads REVISIT on every stable tag, as one without the line does. ``window``, a build
+    issue's hold by its spec's approval at notify (veto_windows, spec 067), reads BLOCKED, its
+    note first, whether triaged or not; without it the issue reads as before"""
     missed = off_milestone(issue, repo) if milestone else None
     if missed is not None:
         return "OFF_MILESTONE", missed
@@ -1859,6 +2072,9 @@ def classify_open(
         if breaker is not None:
             said += f" waits on {breaker[0]}/{breaker[1]}#{breaker[2]}"
         return ("CYCLE" if breaker is None else "BLOCKED"), " | ".join([said, shown] if shown else [said])
+    if window is not None:
+        # Spec 067: no implementer starts while a veto of its spec's approval can still stop it
+        return "BLOCKED", " | ".join([window, shown] if shown else [window])
     if waits or "blocked" in labels:
         if any(states.get(r) == "CLOSED_UNMERGED" for r in waits):
             return "SPEC_REFUSED", shown
@@ -2481,6 +2697,8 @@ def main() -> int:
     gates = {issue["number"]: gated(issue, args.bot_login, args.trusted_only, args.home) for issue in issues}
     untrusted = {n for n, verdict in gates.items() if verdict is not None and verdict[0] == "UNTRUSTED"}
     loops = cycles(issues, (owner, name), args.marker, untrusted)
+    # Spec 067: the build issues of a spec approved at notify wait out its veto window
+    windows = veto_windows(args.repo, issues, args.bot_login)
 
     def read(issue: dict[str, Any], cycle: Cycle | None = None) -> tuple[str, str]:
         return gates[issue["number"]] or classify_open(
@@ -2496,6 +2714,7 @@ def main() -> int:
             cycle=cycle,
             home=args.home,
             revisits=revisits,
+            window=windows.get(issue["number"]),
         )
 
     # An issue on a loop that waits on a question, or reads MALFORMED_DEPENDS (read before
