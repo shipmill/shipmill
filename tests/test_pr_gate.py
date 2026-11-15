@@ -2758,3 +2758,190 @@ def test_s055_13_s056_6_unreviewed_outranks_queued_and_stops_the_wait() -> None:
     held_back = judged(PASSED, unreviewed="no review", queued=("spacing",))
     assert held_back.verdict == gate.UNREVIEWED
     assert not gate.polls([held_back, judged(PASSED, queued=("spacing",))])
+
+
+# S-067-7, S-067-8: the spec of accepted work lands at notify on the App's decided comment
+
+# classify as the gate runs it: the accepted-spec zone at the level the config at --ref sets
+FAKE_LEVEL_UVX = """#!{python}
+import json, subprocess, sys
+args = sys.argv[1:]
+repo, ref = args[args.index("--repo") + 1], args[args.index("--ref") + 1]
+show = ["git", "-C", repo, "show", ref + ":.github/shipmill.toml"]
+config = subprocess.run(show, capture_output=True, text=True, check=True).stdout
+level = "notify" if 'accepted-spec = "notify"' in config else "ask"
+zone = {{"zone": "accepted-spec", "level": level, "reason": "{reason}"}}
+print(json.dumps({{"level": level, "zones": [zone], "candidates": []}}))
+"""
+ACCEPTED_REASON = "docs/specs/054-release-digest.md approves the spec of accepted #12"
+NOTIFY_CONFIG = AGENTS + '\n[decisions]\naccepted-spec = "notify"\n'
+ASK_CONFIG = AGENTS + '\n[decisions]\naccepted-spec = "ask"\n'
+NOTIFY_LINE = f"  notify: accepted-spec: {ACCEPTED_REASON}"
+ACCEPTED_ASK = f"  needs-decision: accepted-spec: {ACCEPTED_REASON}"
+
+
+def classify_levels(tmp_path: Path) -> None:
+    """A uvx on the gate's PATH whose classify reads the accepted-spec level from the config at --ref"""
+    fakes = tmp_path / "fakes"
+    fakes.mkdir(exist_ok=True)
+    uvx = fakes / "uvx"
+    uvx.write_text(FAKE_LEVEL_UVX.format(python=sys.executable, reason=ACCEPTED_REASON), encoding="utf-8")
+    uvx.chmod(0o700)
+
+
+def based(tmp_path: Path, work: Path, config: str | None) -> None:
+    """origin's main with config as its .github/shipmill.toml (None keeps the [agents] alone), fetched"""
+    classify_levels(tmp_path)
+    if config is not None:
+        committed(tmp_path / "origin", {".github/shipmill.toml": config}, "Set the levels")
+        git(work, "fetch", "-q", "origin")
+
+
+def decided_comment(
+    head: str | None = HEAD_SHA,
+    zone: str = "accepted-spec",
+    login: str = "shipmill-demo",
+    association: str = "NONE",
+    bot: bool = True,
+    when: str = at(11),
+) -> dict[str, Any]:
+    """The decided comment a session posts on a spec PR in accepted-spec at notify (needs-decision.md,
+    A decided comment): its head line names head in full; None leaves it out"""
+    named = f"<!-- shipmill:head {head} -->\n" if head is not None else ""
+    body = (
+        f"<!-- shipmill:decided zone={zone} until=2026-11-02T11:00:00Z -->\n"
+        f"@romamo Decided without waiting: spec 054 is approved, taking every recommendation.\n{named}\n"
+        "Why: #12 is accepted work (S-067-4).\nNot taken: asking you first.\n\n<!-- shipmill:agent -->\n"
+    )
+    return comment(body, when, login=login, association=association, bot=bot)
+
+
+def spec_gate(
+    tmp_path: Path, work: Path, data: dict[str, Any], pr_thread: dict[str, Any], *args: str
+) -> subprocess.CompletedProcess[str]:
+    """The gate on #7, the App's spec PR for the open #12, its thread pr_thread"""
+    flags = args or ("--bot-login", BOT)
+    return run_gate(tmp_path, work, {7: data}, *flags, issues=ISSUES, threads={7: pr_thread})
+
+
+def test_s067_7_a_spec_pr_lands_on_the_apps_decided_comment_naming_its_head(tmp_path: Path, agents: Path) -> None:
+    """no question and no answer: the base sets accepted-spec to notify, and the App decided at the head"""
+    based(tmp_path, agents, NOTIFY_CONFIG)
+    proc = spec_gate(tmp_path, agents, spec_pr(), thread(decided_comment()))
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY + NOTIFY_LINE + "\n"), proc.stderr
+
+
+def test_s067_7_a_head_whose_spec_changed_only_in_format_is_still_covered(tmp_path: Path, agents: Path) -> None:
+    """a decided head, then a rebase and a rewrap: specs.py same-approval reads them the same (D-81)"""
+    based(tmp_path, agents, NOTIFY_CONFIG)
+    decided_at = branched(tmp_path, agents, {SPEC: SPEC_TEXT})
+    git(agents, "rebase", "-q", "origin/main")
+    head = committed(agents, {SPEC: SPEC_TEXT.replace("out and nobody", "out\nand nobody")}, "Rewrap")
+    data = headed(head, ((head, at(13)),), body=SPEC_BODY, files=(SPEC,), added=(SPEC,))
+    proc = spec_gate(tmp_path, agents, data, thread(decided_comment(decided_at)))
+    assert (proc.returncode, proc.stdout) == (0, ready_line(head) + NOTIFY_LINE + "\n"), proc.stderr
+
+
+@pytest.mark.parametrize("config", [None, ASK_CONFIG], ids=["unset", "ask"])
+def test_s067_8_a_base_at_ask_or_unset_needs_the_maintainers_answer(
+    tmp_path: Path, agents: Path, config: str | None
+) -> None:
+    """the App's decided comment counts for nothing at ask; the maintainer's answer still lands it"""
+    based(tmp_path, agents, config)
+    proc = spec_gate(tmp_path, agents, spec_pr(), thread(decided_comment()))
+    assert proc.returncode == gate.NEEDS_DECISION == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [ACCEPTED_ASK]
+    answered = spec_gate(tmp_path, agents, spec_pr(), thread(decided_comment(), asked(at(12)), comment("1", at(13))))
+    assert (answered.returncode, answered.stdout) == (0, MAIN_READY), answered.stderr
+
+
+def test_s067_8_the_heads_config_at_notify_lifts_nothing(tmp_path: Path, agents: Path) -> None:
+    """the levels are the base's (D-48): a spec PR setting accepted-spec to notify itself still asks"""
+    based(tmp_path, agents, None)
+    decided_at = branched(tmp_path, agents, {SPEC: SPEC_TEXT, ".github/shipmill.toml": NOTIFY_CONFIG})
+    data = headed(decided_at, body=SPEC_BODY, files=(SPEC, ".github/shipmill.toml"), added=(SPEC,))
+    proc = spec_gate(tmp_path, agents, data, thread(decided_comment(decided_at)))
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [ACCEPTED_ASK]
+
+
+def test_s067_8_a_spec_changed_since_the_decided_head_needs_a_new_decided_comment(tmp_path: Path, agents: Path) -> None:
+    based(tmp_path, agents, NOTIFY_CONFIG)
+    decided_at = branched(tmp_path, agents, {SPEC: SPEC_TEXT})
+    head = committed(agents, {SPEC: SPEC_TEXT + "- S-054-2: the digest names each pull request\n"}, "Add one")
+    data = headed(head, ((head, at(13)),), body=SPEC_BODY, files=(SPEC,), added=(SPEC,))
+    proc = spec_gate(tmp_path, agents, data, thread(decided_comment(decided_at)))
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [
+        f"  needs-decision: accepted-spec: decided at {decided_at[:7]}, and the change differs since; post a new "
+        "decided comment naming the head",
+        NOTIFY_LINE,
+    ]
+    renewed = spec_gate(tmp_path, agents, data, thread(decided_comment(decided_at), decided_comment(head, when=at(14))))
+    assert (renewed.returncode, renewed.stdout) == (0, ready_line(head) + NOTIFY_LINE + "\n"), renewed.stderr
+
+
+NOT_DECIDED = (
+    f"  needs-decision: accepted-spec: no decided comment of {BOT} on record; post one naming the head with its "
+    "`<!-- shipmill:head <sha> -->` line"
+)
+
+
+@pytest.mark.parametrize(
+    ("comments", "line"),
+    [
+        pytest.param((), NOT_DECIDED, id="none"),
+        pytest.param(
+            (decided_comment(zone="interpretation"),),
+            f"  needs-decision: accepted-spec: the newest decided comment of {BOT} is for the zone interpretation; "
+            "post one for accepted-spec naming the head",
+            id="another zone",
+        ),
+        pytest.param(
+            (decided_comment(), decided_comment(zone="security", when=at(12))),
+            f"  needs-decision: accepted-spec: the newest decided comment of {BOT} is for the zone security; "
+            "post one for accepted-spec naming the head",
+            id="a newer one for another zone",
+        ),
+        pytest.param((decided_comment(login="romamo", association="OWNER", bot=False),), NOT_DECIDED, id="the owner"),
+        pytest.param((decided_comment(login="amy", association="NONE", bot=False),), NOT_DECIDED, id="an outsider"),
+        pytest.param((decided_comment(login="other-app"),), NOT_DECIDED, id="another bot"),
+        pytest.param(
+            (decided_comment(head=None),),
+            "  needs-decision: accepted-spec: the decided comment names no head: post it again with its "
+            "`<!-- shipmill:head <sha> -->` line",
+            id="no head line",
+        ),
+        pytest.param(
+            (decided_comment(head=HEAD_SHA[:7] + "0" * 33),),
+            "  needs-decision: accepted-spec: decided at abcdef0, and the change differs since; post a new decided "
+            "comment naming the head",
+            id="a head sharing the prefix",
+        ),
+    ],
+)
+def test_s067_8_only_the_apps_newest_decided_comment_for_accepted_spec_counts(
+    tmp_path: Path, agents: Path, comments: tuple[dict[str, Any], ...], line: str
+) -> None:
+    based(tmp_path, agents, NOTIFY_CONFIG)
+    proc = spec_gate(tmp_path, agents, spec_pr(), thread(*comments))
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [line, NOTIFY_LINE]
+
+
+def test_s067_8_without_bot_login_no_decided_comment_counts(tmp_path: Path, agents: Path) -> None:
+    based(tmp_path, agents, NOTIFY_CONFIG)
+    proc = spec_gate(tmp_path, agents, spec_pr(), thread(decided_comment()), "--agent")
+    assert proc.returncode == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [
+        "  needs-decision: accepted-spec: no --bot-login names who posts the decided comment, so none counts",
+        NOTIFY_LINE,
+    ]
+
+
+def test_s067_7_the_thread_is_read_once_for_the_decided_comment_and_the_answer(tmp_path: Path, agents: Path) -> None:
+    """with no decided comment the maintainer's answer at the head still lands it, from one thread read"""
+    based(tmp_path, agents, NOTIFY_CONFIG)
+    proc = spec_gate(tmp_path, agents, spec_pr(), thread(asked(), comment("1", at(12))))
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY + NOTIFY_LINE + "\n"), proc.stderr
+    assert calls_of(tmp_path).count("graphql") == 2  # the spec's issue, and the thread once

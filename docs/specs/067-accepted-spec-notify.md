@@ -1,6 +1,6 @@
 # S-067: Approve the spec of already accepted work with notice
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -122,3 +122,16 @@ question or a decided comment in it is no longer counted in `scope`.
 - shipmill/shipmill#1192: S-067-9
 
 ## Verification
+
+Ran the S-067 tests on `main` at 229ac9da plus #1193 (`pytest -k s067` over tests/test_decide_cli.py, tests/test_decide.py, tests/test_decide_parts.py, tests/test_decisions_parts.py, tests/test_pr_gate.py, tests/test_triage_veto_window.py, tests/test_retro.py): 78 passed.
+
+- S-067-1: ran `shipmill decide levels --json` in this repo, whose config leaves `accepted-spec` out: it lists `accepted-spec` right after `scope` with `level` `ask`, `floor` `notify`, `source` `default`; tests/test_decide_cli.py's `test_s067_1_*` asserts the same, holds
+- S-067-2: ran tests/test_decide.py's S-067-2 tests: `accepted-spec = "notify"` and `"ask"` parse, `"act"` exits 2 naming the floor `notify` and its reason, and `scope = "notify"` still exits 2 naming the floor `ask`, holds
+- S-067-3: ran tests/test_decide_parts.py's and tests/test_decisions_parts.py's S-067-3 tests: `[decisions.paths.accepted-spec]` exits 2 saying the zone takes no paths, in the package and in `decisions.py` alike, holds
+- S-067-4: ran tests/test_decide_cli.py's S-067-4 tests: `decide classify --pr N` reports `accepted-spec`, not `scope`, for a spec becoming `approved` whose every `Spec for` issue is open and an accepted opportunity or the maintainer's filing without the agent marker, at the base's level, reading the issues once per pull request, holds
+- S-067-5: ran tests/test_decide_cli.py's S-067-5 tests: an opportunity without `planned`, the App's or a marked issue, an outsider's, a closed one, one GitHub lacks, and one whose labels or author can't be read keep the spec in `scope`, holds
+- S-067-6: ran tests/test_decide_cli.py's `test_s067_6_*`: `direction` and `decision-policy` are reported beside `accepted-spec`, holds
+- S-067-7: ran tests/test_pr_gate.py's S-067-7 tests: with the base at `notify`, the App's decided comment for `accepted-spec` naming the head, or a head whose spec change since is a rebase and a rewrap, lets the spec PR read READY with its `notify: accepted-spec:` line and no question; the thread is read once, holds
+- S-067-8: ran tests/test_pr_gate.py's S-067-8 tests: the base at `ask` or unset, only the head's config at `notify`, a criterion added since the decided head, a newest decided comment for another zone, one by the owner, an outsider, or another bot, one with no head line or naming a head that shares only the 7-hex prefix, and no `--bot-login` each read NEEDS_DECISION with a `needs-decision: accepted-spec:` line; the maintainer's answer still lands it, holds
+- S-067-9: ran tests/test_triage_veto_window.py's S-067-9 tests: a build issue of a spec approved at `notify` reads BLOCKED `veto window of #<spec PR> until <time>` while the window is open, keeps its other holds, and reads as without it once the window has passed; an unanswered veto holds past it, holds
+- S-067-10: ran tests/test_retro.py's `test_s067_10_*`: `retro.py gather --decisions` counts questions and decided comments naming `accepted-spec` in their own row, not in `scope`, holds
