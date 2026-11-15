@@ -3,18 +3,20 @@ asks for it only where the installation grants it, an installation without it st
 sessions, and doctor and the gate's GitHub preflight warn naming what the owner accepts"""
 
 import json
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from shipmill.agents import Mode
-from shipmill.app import OPTIONAL_PERMISSIONS, PERMISSIONS, Answer, mint
+from shipmill.app import OPTIONAL_PERMISSIONS, PERMISSIONS, Answer, OptionalPermission, mint
 from shipmill.cli import _gate_exit
 from shipmill.doctor import APP, doctor, optional_permission_checks, session_app_on_host
 from shipmill.downstream import DISPATCH_PERMISSIONS
 from shipmill.gate import Action, tick_lines
 from shipmill.github_auth import github_auth
 from shipmill.gitrepo import Git
+from shipmill.policy import Policy
 
 from .conftest import POLICY, Repo
 from .test_app import APP_ID, GRANTED, REPO, FakeSigner, key_file
@@ -142,3 +144,47 @@ def test_d77_doctor_adds_the_warn_without_a_fail(repo: Repo, tmp_path: Path) -> 
     [row] = [c for c in with_probe if c.name == APP]
     assert row.status == "WARN"
     assert [c for c in with_probe if c.name != APP] == without  # every other row, and so the exit code, unchanged
+
+
+ENVIRONMENTS = '\n[environments.production]\nlane = "stable"\nworkflow = "deploy.yml"\n'
+
+
+def parsed(text: str) -> Policy:
+    return Policy.parse(tomllib.loads(text), "shipmill.toml")
+
+
+def test_s060_1_each_optional_permission_has_a_needed_check() -> None:
+    assert OPTIONAL_PERMISSIONS
+    assert all(isinstance(p, OptionalPermission) and callable(p.needed) for p in OPTIONAL_PERMISSIONS)
+    assert all(p.serves for p in OPTIONAL_PERMISSIONS)  # what each serves, which its warning names (D-77)
+
+
+def test_s060_1_deployments_read_is_needed_by_a_config_with_environments_only() -> None:
+    [deployments] = [p for p in OPTIONAL_PERMISSIONS if p.key == "deployments"]
+    assert deployments.named() == "Deployments: read"
+    assert deployments.needed(parsed(POLICY + ENVIRONMENTS)) is True
+    assert deployments.needed(parsed(POLICY)) is False
+    assert deployments.needed(parsed(POLICY + "\n" + WITH_APP)) is False  # an App alone needs no environment's reads
+
+
+# proves: S-060-9
+def test_s060_9_doctor_warns_for_a_missing_optional_permission_no_config_needs(repo: Repo, tmp_path: Path) -> None:
+    repo.write(".github/shipmill.toml", POLICY + "\n" + WITH_APP)
+    assert not any(p.needed(parsed(POLICY + "\n" + WITH_APP)) for p in OPTIONAL_PERMISSIONS)
+    probe = session_app_on_host(key_file(tmp_path), tmp_path, FakeSigner(), Granting(), lambda: NOW)
+    [row] = [c for c in doctor(repo.root, repo.github, repo=REPO, session_app=probe) if c.name == APP]
+    assert row.status == "WARN" and "lacks the optional permission Deployments: read" in row.detail
+
+
+# proves: S-060-9
+def test_s060_9_the_gate_preflight_warns_for_a_missing_optional_permission_no_config_needs(
+    checkout: Git, tmp_path: Path
+) -> None:
+    """The preflight reads no config's [environments]: its warning names the permission whether
+    or not a config needs it (the checkout here declares none)"""
+    assert not (checkout.root / ".github" / "shipmill.toml").exists()
+    api = Granting()
+    preflight = github_auth(REPO, checkout.root, FakeSigner(), api, run=no_host, clock=lambda: NOW)
+    decision = tick(checkout, tmp_path, config(Mode.HEADLESS, APP_ID), FakeClaude(), preflight, auth_of([]), api)
+    [warning] = [line for line in tick_lines(decision, "s1", (), (), False) if line.startswith("  warning: ")]
+    assert "lacks the optional permission Deployments: read" in warning
