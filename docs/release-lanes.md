@@ -640,7 +640,7 @@ Land pushes the release commit to the default branch, a hotfix to `release/X.Y`,
 stable release made off a moved branch back into it as a `Sync X.Y.Z into <branch>` commit.
 By default it pushes them with the workflow token, as `github-actions[bot]`, which an
 organization repository can't let past a rule requiring a pull request or a status check
-(see Limits). A repository that sets `[agents] app_id` can opt in to landing those three
+(see [Limits](#limits)). A repository that sets `[agents] app_id` can opt in to landing those three
 pushes as its App instead, which a ruleset accepts as a bypass actor (spec 054). The rule
 then reads "pull request and `checks` required; bypass: the App", and the App is the one
 identity that writes the default branch without a pull request. A repository that doesn't
@@ -727,10 +727,13 @@ identity, the App under the opt-in and `github-actions[bot]` without it, and:
 
 - PASS when no rule refuses land's push, or when every refusing ruleset lists the landing
   identity as a bypass actor with `bypass_mode` `always`
-- FAIL per ruleset or classic protection whose `pull_request`, `required_status_checks`,
-  `required_signatures`, `required_deployments`, or `update` rule (or `creation`, for a new
-  `release/X.Y`) refuses that identity, with the fix: without the opt-in, the steps above;
-  with it, adding the App to the named ruleset's bypass list
+- FAIL per ruleset whose `pull_request`, `required_status_checks`, `required_signatures`,
+  `required_deployments`, or `update` rule (or `creation`, for a new `release/X.Y`) refuses
+  that identity, and for classic protection whose required reviews (unless their bypass
+  allowances name the App), required status checks, required signatures, or push
+  restrictions (unless they name the App) refuse it, with the fix: without the opt-in, the
+  steps above; with it, adding the App to the named ruleset's bypass list, or replacing the
+  classic protection with the ruleset `shipmill ruleset` prints
 - FAIL when the release workflow sets `land-environment` and the config sets no
   `[agents] app_id`
 - WARN when it can't read the rules or a bypass list (no `gh`, or a 403 or 404 for a login
@@ -743,7 +746,7 @@ When a push is refused anyway and git's error carries GitHub's rule refusal (`GH
 `run shipmill doctor, and see Protected default branch in docs/release-lanes.md`. The work
 branch is cleaned up as on any failed landing, so the next run plans the release again.
 
-### Limits
+### Limits of the opt-in
 
 - The tag is pushed with the workflow token: a branch ruleset doesn't cover tags, and a tag
   ruleset must let the GitHub Actions integration bypass it; shipmill doesn't create one
