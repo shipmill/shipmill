@@ -451,7 +451,8 @@ rows (LOOP, GATE_SESSIONS_DEAD) stay in it; GATE_CHECKOUT_MISSING, a host-wide r
 sessions section's.
 
 --tier N and --sweep are the reads shipmill gate's walk makes (spec 046), and print no host
-row and no report-only row. The gate walks seven tiers in order and stops at the first item no
+row and no report-only row, save tier 3's PRS_PARKED (S-061-11), on which no session starts.
+The gate walks seven tiers in order and stops at the first item no
 session has taken: 1 INCIDENT_OPEN, OPERATE_FAILED; 2 BOT_FAILED, NOT_PUBLISHED,
 WORK_BRANCH_STALE, BOT_STALLED; 3 LAND_DUE, PRS_OPEN; 4 VETOED and triage's DECIDED; 5 UPGRADE_PENDING,
 UPSTREAM_DUE; 6 triage's other action states and SPEC_UNSPLIT; 7 DIRECTION_PENDING, PLANS
