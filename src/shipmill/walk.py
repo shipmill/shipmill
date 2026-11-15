@@ -21,6 +21,7 @@ from typing import Any, Protocol
 from shipmill.errors import ReleaseError
 from shipmill.findings import ISSUES, PRS_OPEN, Finding, fingerprint
 from shipmill.land_window import LandWindow
+from shipmill.permission_notice import Notice
 from shipmill.upgrades import Proposals
 
 CURSOR = "cursor.json"  # the last walk's cursor and the change check's signature
@@ -181,13 +182,15 @@ class Cursor:
 class Swept:
     """sweep.json: when the last sweep started, its rows, the newest release tag the change
     check read then (kept for the file's form; D-69 retired the UNANNOUNCED it once covered),
-    and what its config-upgrade proposal did (spec 047), None when it ran none; a file written
-    before spec 047 has no upgrades"""
+    and what its config-upgrade proposal did (spec 047), None when it ran none, and its
+    permission notice (spec 060), None when it ran none; a file written before spec 047 has no
+    upgrades, one before spec 060 no permissions"""
 
     at: dt.datetime
     rows: tuple[Finding, ...]
     tag: str | None
     upgrades: Proposals | None = None
+    permissions: Notice | None = None
 
     @classmethod
     def load(cls, path: Path) -> Swept | None:
@@ -195,15 +198,16 @@ class Swept:
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or set(data) - {"upgrades"} != {"at", "rows", "tag"}:
-                raise ValueError("expected exactly at, rows, and tag, and upgrades or not")
+            if not isinstance(data, dict) or set(data) - {"upgrades", "permissions"} != {"at", "rows", "tag"}:
+                raise ValueError("expected exactly at, rows, and tag, and upgrades and permissions or not")
             if data["tag"] is not None and not isinstance(data["tag"], str):
                 raise ValueError("tag must be a string or null")
             if not isinstance(data["rows"], list):
                 raise ValueError("rows must be a list")
             rows = tuple(row_of(r) for r in data["rows"])
             upgrades = Proposals.of(data["upgrades"]) if "upgrades" in data else None
-            return cls(moment(data["at"], "at"), rows, data["tag"], upgrades)
+            permissions = Notice.of(data["permissions"]) if "permissions" in data else None
+            return cls(moment(data["at"], "at"), rows, data["tag"], upgrades, permissions)
         except (KeyError, TypeError, ValueError) as exc:
             raise malformed(path, exc) from None
 
@@ -215,6 +219,8 @@ class Swept:
         }
         if self.upgrades is not None:
             data["upgrades"] = self.upgrades.record()
+        if self.permissions is not None:
+            data["permissions"] = self.permissions.record()
         write(path, data)
 
     def due(self, now: dt.datetime, hours: int) -> bool:

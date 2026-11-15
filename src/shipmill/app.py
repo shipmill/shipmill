@@ -90,6 +90,12 @@ class OptionalPermission(Permission):
     gate's notice files an item for it only where a config needs it (D-9)"""
 
     needed: Callable[[Policy], bool]
+    by: str  # the config that turns it on, as the notice's item names it for each repo (spec 060)
+
+    @property
+    def marker(self) -> str:
+        """The first line of the notice's item for it (spec 060)"""
+        return f"<!-- shipmill-permission: {self.key} {self.access} -->"
 
 
 def declares_environments(policy: Policy) -> bool:
@@ -124,6 +130,7 @@ OPTIONAL_PERMISSIONS: tuple[OptionalPermission, ...] = (
         Access.READ,
         "the report reads the environments' deployments with it",
         needed=declares_environments,
+        by="[environments]",
     ),
 )
 
@@ -1044,6 +1051,68 @@ def mint_read(
     """Spec 065: one installation token over repos, all of one owner, asking READ_PERMISSIONS;
     refused, never returned, when GitHub's answer covers other repos or grants more (S-065-4)"""
     return mint_product(app_id, repos, key, now, signer, api, _READ)
+
+
+@dataclass(frozen=True, slots=True)
+class AppRecord:
+    """The App as `GET /app` gives it: its slug and the account that owns it (spec 060)"""
+
+    slug: str
+    owner: str
+    organization: bool  # owned by an organization, not a user
+
+    @property
+    def permissions_page(self) -> str:
+        """Where the owner sets the App's permissions"""
+        if self.organization:
+            return f"https://github.com/organizations/{self.owner}/settings/apps/{self.slug}/permissions"
+        return f"https://github.com/settings/apps/{self.slug}/permissions"
+
+
+def app_record(app_id: int, bearer: str, api: Api) -> AppRecord:
+    """Spec 060: the App's slug and owner, from GET /app with its JWT"""
+    found = _ok(api.get("/app", bearer), "/app", app_id)
+    slug, owner = found.get("slug"), found.get("owner")
+    if not isinstance(slug, str) or not slug:
+        raise ReleaseError(f"GET /app for app_id {app_id} gave no slug")
+    login = owner.get("login") if isinstance(owner, dict) else None
+    kind = owner.get("type") if isinstance(owner, dict) else None
+    if not isinstance(login, str) or not _plain(login) or kind not in ("User", "Organization"):
+        raise ReleaseError(f"GET /app for app_id {app_id} gave no owner with a login and a User or Organization type")
+    return AppRecord(slug, login, kind == "Organization")
+
+
+# Spec 060, S-060-14: the permission notice's token over the whole installation reads its repos,
+# their configs, and their issues, and writes nothing
+NOTICE_PERMISSIONS = (
+    Permission("metadata", "Metadata", Access.READ),
+    Permission("contents", "Contents", Access.READ),
+    Permission("issues", "Issues", Access.READ),
+)
+
+
+def mint_installation(app_id: int, installation: int, bearer: str, api: Api) -> str:
+    """Spec 060: a token over every repo of the installation, asking NOTICE_PERMISSIONS alone;
+    refused, never returned, when GitHub's answer grants more (S-060-14). It is cached nowhere
+    and handed to no session: the notice holds it for its reads"""
+    path = f"/app/installations/{installation}/access_tokens"
+    body = {"permissions": {p.key: str(p.access) for p in NOTICE_PERMISSIONS}}
+    data = _ok(api.post(path, bearer, body), path, app_id, "POST", 201)
+    value = data.get("token")
+    if not isinstance(value, str) or not value or any(c.isspace() for c in value):
+        raise ReleaseError(f"POST {path} gave no token")
+    granted = data.get("permissions")
+    if not isinstance(granted, dict):
+        raise ReleaseError(f"POST {path} gave a token without its permissions; refusing it")
+    asked = {p.key: p.access for p in NOTICE_PERMISSIONS}
+    for key, level in granted.items():
+        access = _ACCESS.get(level) if isinstance(level, str) else None
+        wanted = asked.get(key) if isinstance(key, str) else None
+        if access is None or wanted is None or not wanted.covers(access) or level == "admin":
+            raise ReleaseError(
+                f"POST {path} gave a token with {key}: {level}, broader than the notice asks; refusing it"
+            )
+    return value
 
 
 def contents(repo: str, file: str, token: str, api: Api) -> str | None:

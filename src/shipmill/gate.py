@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from shipmill import land_window
+from shipmill.agents import MAINTAINER as MAINTAINER_ROLE
 from shipmill.agents import AgentsConfig, Mode, RolesConfig
 from shipmill.app import AppCheck, Identity
 from shipmill.autonomy import AGENT_STAGES, Autonomy, AutonomyPolicy, Hold, Stage, StageKind
@@ -57,6 +58,7 @@ from shipmill.gitrepo import Git
 from shipmill.hooks import HookTest
 from shipmill.land_window import LandWindow
 from shipmill.notify import Notifier, NotifyFailed
+from shipmill.permission_notice import Seams, SweptPermissions, sweep_permissions
 from shipmill.plugin import (
     CLI_RECORD,
     Loaded,
@@ -419,6 +421,7 @@ class Decision:
     in_flight: InFlight | None = None  # what a QUIET tick says is in flight (spec 048); None otherwise
     refused: tuple[Refusal, ...] = ()  # the catalogued keys the config sets, which the tick runs without (S-052-10)
     upgrades: str | None = None  # what a swept tick's config-upgrade proposal did (S-047-10); None: none ran
+    permissions: str | None = None  # what a swept tick's permission notice did (S-060-8); None: none ran
     verify: str | None = None  # the check of [agents] verify a launch ran (S-064-6); None: none ran
     verify_notice: str | None = None  # its one notification per failing fingerprint (S-064-8); None: none due
 
@@ -1916,11 +1919,13 @@ def tick_walk(
     walk_now: bool = False,
     sweep_now: bool = False,
     upgrades: Callable[[], SweptUpgrades] | None = None,
+    permissions: Callable[[], SweptPermissions] | None = None,
 ) -> Ticked:
     """The change check, then the sweep when due, then the walk (spec 046). A sweep runs the
     config-upgrade proposal (upgrades) first, so its rows see the issue it opened (S-047-1);
     sweep.json keeps what it did and the decision names it (S-047-10). A tick that doesn't
-    sweep runs none (S-047-5). A change is a new
+    sweep runs none (S-047-5). The permission notice (permissions, spec 060) runs right after
+    the proposal, on a sweep alone, kept and named the same way. A change is a new
     signature or an item updated since the cursor, the land window opening or its spacing passing
     with a pull request queued (spec 056), and on the gate's side no cursor, a handed
     item past retry, or a dead last session (S-046-2); walk_now and sweep_now force a walk and
@@ -1958,12 +1963,16 @@ def tick_walk(
         return Ticked(quiet, changes, None, None, handed, (), None)
     proposal = upgrades() if sweeping and upgrades is not None else None  # before the sweep's read (S-047-1)
     kept = None if proposal is None else proposal.stored
-    swept = Swept(now, tuple(source.sweep(changes)), changes.tag, kept) if sweeping or known is None else known
+    # spec 060: after the proposal, and only on a sweep (S-060-7)
+    noticed = permissions() if sweeping and permissions is not None else None
+    held = None if noticed is None else noticed.stored
+    swept = Swept(now, tuple(source.sweep(changes)), changes.tag, kept, held) if sweeping or known is None else known
     found: Walked = walk(source, changes, swept, handed.kept(now, retry), now, retry, lands(land))
     decision = replace(
         walked_decision(found, sessions, retry, land),
         walk=WalkRun(change, found.tiers, sweeping),
         upgrades=None if proposal is None else proposal.line,
+        permissions=None if noticed is None else noticed.line,
     )
     stored = found.swept if sweeping or found.swept != known else None
     after = Cursor(now - CURSOR_OVERLAP, changes.signature)
@@ -2577,6 +2586,7 @@ def gate(
     catch_up: Callable[[], bool] | None = None,
     upgrades: Upgrader | None = None,
     verify: Planner | None = None,
+    permissions: Seams | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...], tuple[Judged, ...]]:
     """Decide, and on LAUNCH stop the finished sessions and start a new one. Returns the
     decision, the launched session's id, what the waiting step did for each blocked
@@ -2713,7 +2723,14 @@ def gate(
     verify prepares the check of [agents] verify (spec 064, verified); None, as in tests that
     don't exercise it, checks nothing. A real headless LAUNCH still standing after the hook
     self-test checks the list when verify.json holds no result for its fingerprint, then starts
-    the session whatever the result, its decision line ending `; verify: ...`"""
+    the session whatever the result, its decision line ending `; verify: ...`
+
+    permissions runs spec 060's permission notice on a tick that sweeps, right after the
+    upgrade proposal (sweep_permissions); None, as in tests that don't exercise it, runs none.
+    It reads the installation with a token of its own and writes with the gate's, as the App;
+    with no [agents] app_id it reads and writes nothing. Its failure is sweep.json's
+    permissions error and the decision line's `permissions failed: <first line>`, and changes
+    nothing else"""
     tick = state_dir(git) / TICK  # first: a folder with no git directory has nowhere to record an error
     previous = None if dry_run else load_tick(tick)
     read: list[tuple[Refusal, ...]] = []  # the refusals of the tick's last config read, if it read one
@@ -2752,6 +2769,7 @@ def gate(
             stop=stop,
             upgrades=upgrades,
             verify=verify,
+            permissions=permissions,
         )
     except ReleaseError as exc:
         if not dry_run:
@@ -2814,6 +2832,7 @@ def decided(
     stop: Stop | None = None,
     upgrades: Upgrader | None = None,
     verify: Planner | None = None,
+    permissions: Seams | None = None,
 ) -> tuple[Decision, str | None, tuple[Waiting, ...]]:
     """gate's tick up to its decision, as gate describes it: the decision, the launched
     session's id, and what the waiting step did; gate records it and prunes after it"""
@@ -2897,6 +2916,11 @@ def decided(
     capped = dead is not None and dead.deaths.count >= DEAD_STREAK  # retry_hours holds the item again
     source = as_source(findings(read))
     proposal = None if upgrades is None else partial(sweep_upgrades, upgrades, identity, repo, dry_run)
+    # spec 060: the item goes to the users the maintainer role resolves to on this tick
+    maintainers = tuple(str(u) for r in resolved if r.name.value == MAINTAINER_ROLE for u in r.users)
+    noticing = (
+        None if permissions is None else partial(sweep_permissions, permissions, identity, repo, maintainers, dry_run)
+    )
     ticked = tick_walk(
         source,
         state,
@@ -2911,6 +2935,7 @@ def decided(
         walk_now,
         sweep_now,
         proposal,
+        noticing,
     )
     waits = waiting_rows(ticked, source, state / DECISIONS, repo) if headless else []
     if ticked.swept is not None and not dry_run:  # every read went through: the sweep stands, whatever the decision
@@ -3025,7 +3050,8 @@ def tick_lines(
     decision: Decision, launched: str | None, waiting: Sequence[Waiting], pruned: Sequence[Judged], dry_run: bool
 ) -> list[str]:
     """`shipmill gate`'s text: the decision (` as <slug>[bot]` when it launches as an App, then
-    each refused key, S-052-10, then a swept tick's config-upgrade proposal, S-047-10, then the
+    each refused key, S-052-10, then a swept tick's config-upgrade proposal, S-047-10, and its
+    permission notice, S-060-8, then the
     check of [agents] verify a launch ran, S-064-6), the
     branch the refresh detached the checkout from, one line
     per blocked session, the work and the launch, then one per pruned worktree, or the prune's
@@ -3035,6 +3061,7 @@ def tick_lines(
     if decision.credential is Kind.TOKEN_FILE and decision.action is Action.LAUNCH:
         who += " as token file"
     swept = "" if decision.upgrades is None else f"; {decision.upgrades}"  # S-047-10: a swept tick's proposal
+    swept += "" if decision.permissions is None else f"; {decision.permissions}"  # S-060-8: then its notice
     tail = "" if decision.verify is None else f"; verify: {decision.verify}"  # S-064-6: last on the line
     lines = [f"{decision.action.value}: {decision.reason}{who}{refused_suffix(decision.refused)}{swept}{tail}"]
     if decision.auth_notice is not None:

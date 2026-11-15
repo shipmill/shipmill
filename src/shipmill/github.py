@@ -88,6 +88,9 @@ _SHIPPED_QUERY = (
 _LABEL_DESCRIPTIONS = {
     PROPOSAL_LABEL: "Opened by shipmill: a release or deploy waiting for a person",
     UPGRADE_LABEL: "Opened by shipmill: a config upgrade waiting for the maintainer's decision",
+    # spec 060's item, as setup_state.py describes both labels
+    "shipmill-permission": "A permission the App's owner grants and accepts on its installation",
+    "role:maintainer": "A step for the maintainer role: its people do it",
 }
 # GitHub's limits, in characters: an issue's body or a comment, and a release's notes (#499)
 BODY_LIMIT = AGENT_BODY_LIMIT
@@ -657,9 +660,10 @@ class GhCli:
                 if proc.returncode != 0 and "already exists" not in proc.stderr:
                     raise ReleaseError(f"gh label create {label} failed: {proc.stderr.strip()}")
 
-    def create_issue(self, title: str, body: str, labels: Sequence[str] = ()) -> int:
+    def create_issue(self, title: str, body: str, labels: Sequence[str] = (), assignees: Sequence[str] = ()) -> int:
         self._create_labels(labels)
         args = [a for label in labels for a in ("--label", label)]
+        args += [a for login in assignees for a in ("--assignee", login)]  # spec 060: a person's item, assigned at once
         url = self._gh("issue", "create", "--title", title, "--body-file", "-", *args, stdin=self._marked(body))
         url = url.strip()
         number = url.rsplit("/", 1)[-1]
