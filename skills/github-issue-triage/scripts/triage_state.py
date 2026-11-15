@@ -78,9 +78,20 @@ For each open issue:
                    request merged: resume it. One closed as not planned shows as
                    owner/repo#N:not_planned in the note: its work never landed, so
                    decide whether the issue still makes sense before resuming
-  POSTPONED        has the postponed label
+  POSTPONED        has the postponed label. When its newest triage comment has a line
+                   "Revisit on: `<path>`, `<path>`" (spec 061), its note is "waits on
+                   <paths>"
   REVISIT          postponed before the newest stable tag: decide again. Stable means
-                   the tag matches --stable-tag-regex (default: vX.Y.Z, no pre-release)
+                   the tag matches --stable-tag-regex (default: vX.Y.Z, no pre-release).
+                   With a "Revisit on:" line, only when a file one of its paths matches
+                   changed between the newest stable tag before the comment and the
+                   newest stable tag ("postponed before <tag>; <file> changed"), read from
+                   one `gh api repos/<repo>/compare/<base>...<newest>` per base tag, paged
+                   with per_page=100. A path's ** matches across "/", * and ? within one
+                   segment, anything else itself. No stable tag before the comment, or a
+                   compare that lists 300 files (GitHub's cap), reads REVISIT as without
+                   the line; a line that isn't backticked paths separated by commas
+                   reads REVISIT at once, "revisit line unreadable: <the line>"
   TRIAGED          triaged, nothing pending (clarify, waiting on the reporter, ...). A
                    goal's plan (labelled goal-plan, spec 028) whose newest triage comment
                    is product intake's own, "Triage: **plan**", reads TRIAGED whatever the
@@ -301,6 +312,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any, NoReturn
+from urllib.parse import quote
 
 # An open PR's isDraft, author, and labels tell the App's own draft (D-67, #914) from other work
 PR_DRAFT = "isDraft author { __typename login } labels(first: 10) { nodes { name } }"
@@ -1550,6 +1562,176 @@ def latest_stable(tags: list[dict[str, Any]], pattern: re.Pattern[str] = STABLE)
     return max(stable) if stable else None
 
 
+# A postpone comment's line naming the paths its decision depends on (spec 061):
+# Revisit on: `src/shipmill/gate.py`, `skills/github-ship-watch/**`
+REVISIT_LINE = re.compile(r"^[ \t]*Revisit on:(?P<paths>.*)$")
+REVISIT_PATHS = re.compile(r"[ \t]*`[^`]+`(?:[ \t]*,[ \t]*`[^`]+`)*[ \t]*")
+BACKTICKED = re.compile(r"`([^`]+)`")
+UNREADABLE_CUT = 100  # the unreadable line, as its note quotes it
+COMPARE_PAGE = 100  # per_page of GitHub's compare
+COMPARE_FILES_CAP = 300  # GitHub's compare lists at most this many changed files
+
+
+def revisit_line(body: str) -> tuple[list[str] | None, str] | None:
+    """The paths a triage comment's ``Revisit on:`` lines name, outside a ``` or ~~~ fence,
+    with the first line, or None with no such line. A line that isn't backticked paths
+    separated by commas reads unreadable: (None, that line)"""
+    paths: list[str] = []
+    first = ""
+    fenced = False
+    for line in body.splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        found = None if fenced else REVISIT_LINE.match(line)
+        if found is None:
+            continue
+        first = first or line.strip()
+        if not REVISIT_PATHS.fullmatch(found["paths"]):
+            return None, line.strip()
+        paths += [p for p in BACKTICKED.findall(found["paths"]) if p not in paths]
+    return (paths, first) if first else None
+
+
+def glob_regex(path: str) -> re.Pattern[str]:
+    """A ``Revisit on:`` path as a regex (S-061-18): ``**`` any run of characters, ``/``
+    included, ``*`` any run without ``/``, ``?`` one character other than ``/``, anything else
+    itself. fnmatch's ``*`` crosses ``/`` and its ``[...]`` is a class, so it isn't used"""
+    parts = []
+    i = 0
+    while i < len(path):
+        if path.startswith("**", i):
+            parts.append(".*")
+            i += 2
+        elif path[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif path[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(path[i]))
+            i += 1
+    return re.compile("".join(parts), re.DOTALL)
+
+
+def glob_match(path: str, filename: str) -> bool:
+    return glob_regex(path).fullmatch(filename) is not None
+
+
+class Revisits:
+    """What a postponed issue's ``Revisit on:`` line is read against (spec 061): the newest
+    stable tag created before its comment, paging back through older tags only when none is in
+    hand, and the files changed from that tag to the newest stable one, one compare per base
+    tag in a run, whatever the number of issues that share it"""
+
+    def __init__(
+        self,
+        owner: str,
+        name: str,
+        tags: dict[str, Any],
+        pattern: re.Pattern[str] = STABLE,
+        run: Runner = gh_graphql,
+        execute: Execute = capture,
+    ) -> None:
+        self.owner = owner
+        self.name = name
+        self.tags = tags  # the first query's tags connection, oldest first; paged further back here
+        self.pattern = pattern
+        self.run = run
+        self.execute = execute
+        self.sizes = dict(SIZES)
+        self.seen: set[str] = set()
+        self.compares: dict[tuple[str, str], list[str] | None] = {}
+
+    def base(self, moment: dt.datetime) -> str | None:
+        """The newest stable tag created before ``moment``, or None when there is none"""
+        while True:
+            before = latest_stable([t for t in self.tags["nodes"] if tag_date(t, moment)], self.pattern)
+            if before is not None or not self.tags["pageInfo"]["hasPreviousPage"]:
+                return None if before is None else before[1]
+            cursor = advance(self.tags["pageInfo"]["startCursor"], self.seen, "tags")
+            variables: Variables = {"owner": self.owner, "name": self.name, "cursor": cursor}
+            page = sized(self.run, TAGS_PAGE, variables, self.sizes, "older tags")["tags"]
+            self.tags["nodes"] = page["nodes"] + self.tags["nodes"]
+            self.tags["pageInfo"] = page["pageInfo"]
+
+    def changed(self, base: str, newest: str) -> list[str] | None:
+        """The files changed from ``base`` to ``newest``, a renamed file under both names, or
+        None when GitHub's compare can't list every one (it lists at most 300)"""
+        key = (base, newest)
+        if key not in self.compares:
+            self.compares[key] = self.compare(base, newest)
+        return self.compares[key]
+
+    def compare(self, base: str, newest: str) -> list[str] | None:
+        where = f"{quote(base, safe='')}...{quote(newest, safe='')}"
+        files: list[str] = []
+        listed = 0
+        page = 1
+        while True:
+            url = f"repos/{self.owner}/{self.name}/compare/{where}?per_page={COMPARE_PAGE}&page={page}"
+            proc = self.execute(["gh", "api", url])
+            if proc.returncode != 0:
+                sys.stderr.write(proc.stderr)
+                fail(f"gh api {url} exited {proc.returncode}")
+            try:
+                answer = json.loads(proc.stdout)
+            except ValueError:
+                answer = None
+            nodes = answer.get("files", []) if isinstance(answer, dict) else None
+            if not isinstance(nodes, list) or not all(isinstance(f, dict) and f.get("filename") for f in nodes):
+                fail(f"gh api {url} answered no compare with a list of files")
+            listed += len(nodes)
+            for f in nodes:
+                files += [str(f["filename"])] + ([str(f["previous_filename"])] if f.get("previous_filename") else [])
+            if listed >= COMPARE_FILES_CAP:
+                return None
+            # GitHub lists the files on the first page; a full page may still have more after it
+            if len(nodes) < COMPARE_PAGE:
+                return files
+            page += 1
+
+
+def tag_date(tag: dict[str, Any], moment: dt.datetime) -> bool:
+    """Whether a tag was created before ``moment``; an undated tag never is"""
+    target = tag["target"] or {}
+    date = (target.get("tagger") or {}).get("date") or target.get("committedDate")
+    return bool(date) and timestamp(date) < moment
+
+
+def postponed_state(
+    triaged: list[dict[str, Any]], stable: tuple[dt.datetime, str] | None, note: str, revisits: Revisits | None
+) -> tuple[str, str]:
+    """A postponed issue's REVISIT or POSTPONED (spec 061). Without a ``Revisit on:`` line in
+    its newest triage comment, REVISIT once that comment is older than the newest stable tag;
+    with one, only when a file it names changed between the newest stable tag before the
+    comment and the newest one. No such base tag, a compare that can't list every file, or no
+    ``revisits`` to read it with, reads REVISIT as without the line; an unreadable line reads
+    REVISIT so a session rewrites it"""
+    recorded = revisit_line(triaged[-1]["body"]) if triaged else None
+    if recorded is not None and recorded[0] is None:
+        return "REVISIT", f"revisit line unreadable: {recorded[1][:UNREADABLE_CUT]}"
+    # Comments come oldest first: a re-decision after the tag clears REVISIT
+    when = timestamp(triaged[-1]["createdAt"]) if triaged else None
+    if stable is not None and when is not None and when < stable[0]:
+        said = f"postponed before {stable[1]}"
+        if recorded is None or revisits is None:
+            return "REVISIT", said
+        base = revisits.base(when)
+        files = None if base is None else revisits.changed(base, stable[1])
+        if files is None:
+            return "REVISIT", said
+        paths = recorded[0] or []
+        hit = next((f for f in files if any(glob_match(p, f) for p in paths)), None)
+        if hit is not None:
+            return "REVISIT", f"{said}; {hit} changed"
+    if recorded is not None:
+        waits = f"waits on {', '.join(recorded[0] or [])}"
+        return "POSTPONED", f"{waits} {note}" if note else waits
+    return "POSTPONED", note
+
+
 def off_milestone(issue: dict[str, Any], repo: tuple[str, str]) -> str | None:
     """The note of OFF_MILESTONE (spec 022): a build issue whose feature issue, its sub-issue
     parent in this repository, is in a milestone the build issue isn't in; None when it is
@@ -1581,6 +1763,7 @@ def classify_open(
     roles: Roles | None = None,
     cycle: Cycle | None = None,
     home: str | None = None,
+    revisits: Revisits | None = None,
 ) -> tuple[str, str]:
     """An open issue's state once gated found none; ``closes`` says when each closed hold
     closed, which a person's item (labelled human or role:<name>) reads its hand-off against.
@@ -1589,7 +1772,9 @@ def classify_open(
     ``cycle`` is the issue's loop when it is on a cycle (cycles), with the issue on it that
     breaks the loop, if any: it reads CYCLE, or BLOCKED waiting on that issue (spec 041).
     ``home``, the --home, adds the coordinator's note to a BLOCKED one held on an item of the
-    home this session can't read (home_hold_note, D-60)"""
+    home this session can't read (home_hold_note, D-60). ``revisits`` reads a postponed
+    issue's ``Revisit on:`` line against the tags' changes (spec 061); without it, such an
+    issue reads REVISIT on every stable tag, as one without the line does"""
     missed = off_milestone(issue, repo) if milestone else None
     if missed is not None:
         return "OFF_MILESTONE", missed
@@ -1686,10 +1871,7 @@ def classify_open(
         if not human:
             return "UNBLOCKED", shown
     if postponed in labels:
-        # Comments come oldest first: a re-decision after the tag clears REVISIT
-        if stable and triaged and timestamp(triaged[-1]["createdAt"]) < stable[0]:
-            return "REVISIT", f"postponed before {stable[1]}"
-        return "POSTPONED", note
+        return postponed_state(triaged, stable, note, revisits)
     if human:
         # Every hold has closed: the person's turn starts at the newest close
         ends = [timestamp(closes[r]) for r in waits if r in closes and states.get(r) in CLOSED_STATES]
@@ -2292,6 +2474,7 @@ def main() -> int:
     # with each one's close time too: a person's hand-off is dated against it
     closes = {**closes, **{r: c for r, (_, _, c) in holds.items() if c is not None}}
     stable = latest_stable(data["tags"]["nodes"], stable_pattern)
+    revisits = Revisits(owner, name, data["tags"], stable_pattern)
     people: set[int] = set()
     busy: set[int] = set()  # OFF_MILESTONE over an open PR: still in progress under --wip
     issues: list[dict[str, Any]] = data["open"]["nodes"]
@@ -2312,6 +2495,7 @@ def main() -> int:
             roles=roles,
             cycle=cycle,
             home=args.home,
+            revisits=revisits,
         )
 
     # An issue on a loop that waits on a question, or reads MALFORMED_DEPENDS (read before
@@ -2330,7 +2514,16 @@ def main() -> int:
         state, note = read(issue, None if loop is None else (loop, breaker))
         if state == "OFF_MILESTONE":
             usual = classify_open(
-                issue, args.marker, args.postponed_label, states, stable, (owner, name), args.bot_login, closes, False
+                issue,
+                args.marker,
+                args.postponed_label,
+                states,
+                stable,
+                (owner, name),
+                args.bot_login,
+                closes,
+                False,
+                revisits=revisits,
             )
             if usual[0] in IN_FLIGHT:
                 busy.add(issue["number"])
