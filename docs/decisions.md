@@ -719,3 +719,19 @@ entry that supersedes it, never by editing an old one.
 - Why: A relay writes the option the maintainer picked as AskUserQuestion lists it, 1. Take every recommendation, which took neither the number-alone nor the text-alone path, so shipmill gh pr merge refused spec pull requests the maintainer had approved with the answer doesn't take the recommended option (#1150). The number and the text naming the same option is the same answer, said twice; `@romamo` chose this reading on #1150
 - Applies to: skills/github-ship-watch/scripts/retro.py, skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/references/needs-decision.md, docs/specs/055-landing-rules-in-code.md, docs/specs/030-decision-policy.md
 - Enforced by: tests/test_retro.py and tests/test_pr_gate.py (test_s055_19_*)
+
+## D-86: The permission notice reads its App's whole installation, read only and outside sessions
+
+- Decided: 2026-11-15, in shipmill/shipmill#1063
+- Rule: As D-14 and D-47, save what the gate's permission notice (spec 060) reads on a sweeping tick: to pick the carrier and find an item already filed, it reads every repo of its App's installation, their .github/shipmill.toml and their shipmill-permission issues, through an installation-wide token asking only metadata, contents, and issues read, minted for the sweep, never cached, never written to a session's environment, and never handed to git. Every write the notice makes (the item, its verified comment, its close) goes through the gate's token limited to its own repo. Everything else of D-14 and D-47 holds. This refines D-14 and D-47
+- Why: An owner of an existing App is told of nothing when a release adds an optional permission (#999). One item per permission across an installation needs every gate to pick the same carrier and to see an item filed in another repo, which a repo-limited token can't read. Reading, never writing, keeps the point of D-14 and D-47; the maintainer approved the departure by merging spec 060 (#1063), whose Decisions relied on asks for this record
+- Applies to: src/shipmill/permission_notice.py, src/shipmill/gate.py, src/shipmill/app.py, docs/specs/060-app-permission-notice.md, docs/install.md, [agents] app_id
+- Enforced by: tests of spec 060 (test_s060_12_*, test_s060_13_*, test_s060_14_*, test_s060_15_*); review, until spec 060 is built
+
+## D-87: The gate hands an item's issues and pull requests one by one, and an idle one waits until it changes
+
+- Decided: 2026-11-15, in shipmill/shipmill#1068
+- Rule: As D-58, save how a tick hands work of tiers 3, 4, and 6 (spec 061): it hands an item's issues and pull requests one by one, recording each hand in handed.json in the gate's state directory. A subject whose last session wrote nothing on it (its updatedAt, and a pull request's head and check rollup, unchanged since the hand) waits past retry_hours until it changes, and github-ship-watch's report lists it as GATE_IDLE; tiers 1, 2, 5, and 7 keep retry_hours. The state directory holds only which subjects the gate handed and when; the deciding facts are read from GitHub. This refines D-58
+- Why: 126 of 595 gate sessions across 14 connected repos wrote nothing to GitHub, each started for a state the last one already reported (#969). A per-subject hand stops one issue joining or leaving a state from handing all of an item's issues again, and reading the change from GitHub needs no new state beyond a cache of the gate's own launches (N-2). The maintainer chose this design and the GATE_IDLE listing on #1068
+- Applies to: src/shipmill/gate.py, src/shipmill/walk.py, skills/github-ship-watch/scripts/watch_state.py, docs/specs/061-gate-starts-on-change.md, docs/specs/046-gate-work-queue.md, [agents] retry_hours, handed.json
+- Enforced by: tests of spec 061 (test_s061_1_* to test_s061_10_*, test_s061_20_* to test_s061_22_*); review, until spec 061 is built
