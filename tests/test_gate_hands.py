@@ -14,7 +14,7 @@ import pytest
 from shipmill.agents import Mode
 from shipmill.errors import ReleaseError
 from shipmill.findings import Finding
-from shipmill.gate import CUT_LINE, RECORD, TICK, Action, Deaths, state_dir
+from shipmill.gate import CUT_LINE, RECORD, TICK, Action, Deaths, Decision, state_dir
 from shipmill.gitrepo import Git
 from shipmill.walk import (
     CURSOR,
@@ -148,18 +148,28 @@ def test_s061_3_an_item_whose_every_subject_is_taken_is_no_item(checkout: Git) -
 # -- a subject is taken
 
 
-def test_s061_4_and_s061_10_an_issue_unchanged_since_its_hand_is_idle(checkout: Git) -> None:
+def idle_tick(checkout: Git, claude: FakeClaude) -> Decision:
+    """A tick whose only item's subject, #842, is unchanged since its hand past retry_hours"""
     seed(checkout, {"ISSUES VERIFY_DUE #842": hand()})
     source = Source({6: [Finding("ISSUES", REPO, "VERIFY_DUE #842", True, (), "triage")]})
     source.issued = {842: BEFORE - dt.timedelta(minutes=6)}
+    return tick(checkout, source, claude=claude, agents=cfg(sweep_hours=48))
+
+
+def test_s061_4_an_issue_unchanged_since_its_hand_is_idle(checkout: Git) -> None:
     claude = FakeClaude()
-    decision = tick(checkout, source, claude=claude, agents=cfg(sweep_hours=48))
+    decision = idle_tick(checkout, claude)
     assert decision.action is Action.UNCHANGED and not claude.launched
+    assert handed(checkout) == {"ISSUES VERIFY_DUE #842": {"session": "s0", "at": BEFORE.isoformat(), "idle": True}}
+
+
+def test_s061_10_an_unchanged_tick_whose_first_subject_is_idle_says_it_waits_for_a_change(checkout: Git) -> None:
+    decision = idle_tick(checkout, FakeClaude())
+    assert decision.action is Action.UNCHANGED
     assert decision.reason.startswith(
         "every item was handed; the first, ISSUES VERIFY_DUE #842, went to session s0, which wrote nothing on it;"
         " it waits for a change; read tiers"
     )
-    assert handed(checkout) == {"ISSUES VERIFY_DUE #842": {"session": "s0", "at": BEFORE.isoformat(), "idle": True}}
 
 
 @pytest.mark.parametrize(
