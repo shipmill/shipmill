@@ -764,7 +764,8 @@ def test_s024_7_a_diff_matching_a_protected_glob_needs_a_decision(tmp_path: Path
 
 
 def test_s024_7_the_maintainers_acceptance_lets_the_protected_change_through(tmp_path: Path, directed: Path) -> None:
-    proc = run_gate(tmp_path, directed, {7: pr(files=("src/land.py",))}, "--bot-login", BOT, "--maintainer-accepted")
+    """the acceptance is the maintainer's answer on GitHub (spec 055)"""
+    proc = protected(tmp_path, directed, pr(files=("src/land.py",)), accepting())
     assert proc.returncode == 0, proc.stdout
 
 
@@ -862,7 +863,7 @@ def test_547_a_spec_pr_is_landable_like_any_other_once_green(tmp_path: Path, dir
 
 
 def test_547_a_spec_pr_editing_the_direction_still_waits_on_the_maintainer(tmp_path: Path, directed: Path) -> None:
-    # D-34: the spec's answer is no --maintainer-accepted, so the direction's edit holds it
+    # D-34: the spec's approval is no acceptance of the direction's edit, so that edit holds it
     files = ("docs/specs/030-decision-policy.md", "docs/product.md")
     proc = run_gate(tmp_path, directed, {7: spec_pr(files=files)}, "--bot-login", BOT, issues={12: OPEN_ISSUE})
     assert proc.returncode == 5, proc.stdout
@@ -910,10 +911,11 @@ def calls_of(tmp_path: Path) -> list[str]:
 def test_s053_9_a_spec_pr_naming_no_issue_is_refused_whoever_opened_it(
     tmp_path: Path, directed: Path, login: str
 ) -> None:
-    """an agent's PR with a valid plan and a person's alike, and --maintainer-accepted lifts nothing"""
-    for accepted in ((), ("--maintainer-accepted",)):
+    """an agent's PR with a valid plan and a person's alike, and the maintainer's accepting answer
+    lifts nothing"""
+    for threads in (None, {7: accepting()}):
         data = {7: spec_pr(body=PLAN, login=login)}
-        proc = run_gate(tmp_path, directed, data, "--bot-login", BOT, *accepted, issues=ISSUES)
+        proc = run_gate(tmp_path, directed, data, "--bot-login", BOT, issues=ISSUES, threads=threads)
         assert proc.returncode == gate.REFUSED == 6, proc.stdout + proc.stderr
         assert proc.stdout == MAIN_REFUSED
     # outside a checkout nothing is read from the default branch, and the spec is still checked
@@ -943,11 +945,11 @@ def test_s053_9_a_spec_for_line_naming_no_open_issue_of_the_repo_is_refused(
 
 
 def test_s053_9_an_ask_or_never_zone_doesnt_hide_the_refusal(tmp_path: Path, agents: Path) -> None:
-    """a spec PR reads the scope zone until --maintainer-accepted: the refusal holds with it, and
-    REFUSED ranks above MAINTAINER_ONLY"""
+    """a spec PR reads the scope zone until the maintainer's answer accepts it: the refusal holds
+    with it, and REFUSED ranks above MAINTAINER_ONLY"""
     classify_as(tmp_path, {7: [PROTECTED_ZONE], 8: [DIRECTION_ZONE]})
-    for accepted in ((), ("--maintainer-accepted",)):
-        proc = run_gate(tmp_path, agents, {7: spec_pr(body=PLAN)}, "--bot-login", BOT, *accepted, issues=ISSUES)
+    for threads in (None, {7: accepting()}):
+        proc = run_gate(tmp_path, agents, {7: spec_pr(body=PLAN)}, "--bot-login", BOT, issues=ISSUES, threads=threads)
         assert proc.returncode == 6, proc.stdout + proc.stderr
         assert NO_ISSUE in proc.stdout.splitlines()
     never = run_gate(tmp_path, agents, {8: spec_pr(body=PLAN)}, "--bot-login", BOT, issues=ISSUES)
@@ -1351,13 +1353,13 @@ def test_914_the_apps_own_draft_says_to_mark_it_ready(tmp_path: Path, directed: 
 
 
 def test_673_a_draft_is_judged_for_nothing_else(tmp_path: Path, directed: Path) -> None:
-    """no plan, a protected file, a conflict, a failed check: still its author's, and --maintainer-accepted
-    changes nothing"""
+    """no plan, a protected file, a conflict, a failed check: still its author's, and the
+    maintainer's accepting answer changes nothing"""
     draft = pr(body="none", files=("src/land.py",), draft=True)
     draft["mergeable"] = "CONFLICTING"
     draft["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
-    for accepted in ((), ("--maintainer-accepted",)):
-        proc = run_gate(tmp_path, directed, {7: draft}, "--bot-login", BOT, *accepted)
+    for threads in (None, {7: accepting()}):
+        proc = run_gate(tmp_path, directed, {7: draft}, "--bot-login", BOT, threads=threads)
         assert proc.returncode == 8, proc.stdout + proc.stderr
         assert proc.stdout.startswith("#7 DRAFT state=OPEN mergeable=CONFLICTING")
         assert "refused:" not in proc.stdout and "needs-decision:" not in proc.stdout
@@ -1525,9 +1527,10 @@ def agents(tmp_path: Path, agents_template: Path) -> Path:
 
 
 def test_s030_11_a_never_zone_is_maintainer_only_with_or_without_acceptance(tmp_path: Path, agents: Path) -> None:
+    """D-48: the maintainer's accepting answer on GitHub doesn't lift a never zone"""
     record = classify_as(tmp_path, {7: [DIRECTION_ZONE]})
-    for accepted in ((), ("--maintainer-accepted",)):
-        proc = run_gate(tmp_path, agents, {7: pr(files=("docs/product.md",))}, "--bot-login", BOT, *accepted)
+    for threads in (None, {7: accepting()}):
+        proc = run_gate(tmp_path, agents, {7: pr(files=("docs/product.md",))}, "--bot-login", BOT, threads=threads)
         assert proc.returncode == gate.MAINTAINER_ONLY == 7, proc.stdout + proc.stderr
         lines = proc.stdout.splitlines()
         assert lines[0].startswith("#7 MAINTAINER_ONLY state=OPEN")
@@ -1556,11 +1559,12 @@ def test_s030_12_an_ask_zone_needs_a_decision_until_the_maintainer_accepts(tmp_p
     proc = run_gate(tmp_path, agents, {7: pr(files=("src/land.py",))}, "--bot-login", BOT)
     assert proc.returncode == 5, proc.stdout + proc.stderr
     assert proc.stdout.splitlines()[1:] == [f"  needs-decision: protected: {PROTECTED_ZONE['reason']}"]
-    accepted = run_gate(tmp_path, agents, {7: pr(files=("src/land.py",))}, "--bot-login", BOT, "--maintainer-accepted")
+    # the maintainer's accepting answer on GitHub (spec 055)
+    accepted = protected(tmp_path, agents, pr(files=("src/land.py",)), accepting())
     assert (accepted.returncode, accepted.stdout) == (0, MAIN_READY)
     failing = pr(files=("src/land.py",))
     failing["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
-    ci = run_gate(tmp_path, agents, {7: failing}, "--bot-login", BOT, "--maintainer-accepted")
+    ci = protected(tmp_path, agents, failing, accepting())
     assert ci.returncode == 1, ci.stdout  # CI alone judges it
     assert ci.stdout.splitlines()[1:] == ["  failed: test (FAILURE)"]
 
@@ -1580,9 +1584,7 @@ def test_s063_8_a_deploy_step_zone_needs_a_decision_until_the_maintainer_accepts
     proc = run_gate(tmp_path, agents, {7: pr(files=(DEPLOY_WORKFLOW,))}, "--bot-login", BOT)
     assert proc.returncode == gate.NEEDS_DECISION == 5, proc.stdout + proc.stderr
     assert f"  needs-decision: deploy-step: {deploy['reason']}" in proc.stdout.splitlines()
-    accepted = run_gate(
-        tmp_path, agents, {7: pr(files=(DEPLOY_WORKFLOW,))}, "--bot-login", BOT, "--maintainer-accepted"
-    )
+    accepted = protected(tmp_path, agents, pr(files=(DEPLOY_WORKFLOW,)), accepting())  # the answer (spec 055)
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
     assert accepted.stdout.startswith(MAIN_READY)
 
@@ -1665,7 +1667,7 @@ def test_s057_9_a_protected_part_at_never_is_maintainer_only(tmp_path: Path, age
     zones = part_zones('\n[decisions.paths.protected]\n"src/land.py" = "never"\n', "src/land.py")
     assert [(z["zone"], z["level"]) for z in zones] == [("protected", "never")]
     classify_as(tmp_path, {7: zones})
-    proc = run_gate(tmp_path, agents, {7: pr(files=("src/land.py",))}, "--bot-login", BOT, "--maintainer-accepted")
+    proc = protected(tmp_path, agents, pr(files=("src/land.py",)), accepting())  # no answer lifts it (D-48)
     assert proc.returncode == gate.MAINTAINER_ONLY == 7, proc.stdout + proc.stderr
     assert proc.stdout.splitlines()[1:] == [
         "  maintainer-only: protected: src/land.py matches `src/land.py` (REVIEW.md): pushes"
@@ -1828,6 +1830,26 @@ def protected(
     kw.setdefault("permissions", {"romamo": "admin"})
     kw.setdefault("reviews", {7: [review(commit=data["headRefOid"])]})
     return run_gate(tmp_path, work, {7: data}, "--bot-login", BOT, threads={7: pr_thread}, **kw)
+
+
+def accepting() -> dict[str, Any]:
+    """A PR's thread whose needs-decision question, asked at HEAD_SHA, the owner answered with the
+    recommended option: the maintainer's acceptance as GitHub holds it (spec 055)"""
+    return thread(asked(), comment("1", at(12)))
+
+
+@pytest.mark.parametrize("directed_work", [True, False])
+def test_s055_4_maintainer_accepted_exits_2_before_any_github_read(
+    tmp_path: Path, directed: Path, directed_work: bool
+) -> None:
+    """the flag is refused by name, saying the acceptance is read from the answer on GitHub, and
+    the gate reads nothing first"""
+    work = directed if directed_work else None
+    proc = run_gate(tmp_path, work, {7: pr(files=("src/land.py",))}, "--bot-login", BOT, "--maintainer-accepted")
+    assert (proc.returncode, proc.stdout) == (2, ""), proc.stdout + proc.stderr
+    assert "--maintainer-accepted" in proc.stderr
+    assert "the maintainer's acceptance is read from their answer on GitHub" in proc.stderr
+    assert not (tmp_path / "gh-calls").exists()  # no GitHub read
 
 
 @pytest.mark.parametrize(
