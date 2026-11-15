@@ -498,6 +498,18 @@ decision line says how far the walk went (`read tiers 1-3`), and `--json` adds `
 `item`. `--walk` walks and `--sweep` sweeps whether or not they are due, for a run by hand;
 `--dry-run` writes none of these files. `shipmill status` still reads the full report.
 
+A tick hands the items of tiers 3, 4, and 6 (open PRs, vetoes and decided items, and the
+issues triage owes) by their issues and pull requests, one by one (spec 061, D-87): each
+`#N` an item names is a subject, recorded in `handed.json` as `<kind> #<N>` (`ISSUES
+VERIFY_DUE #842`, `PRS_OPEN #12`), and the walk hands an item cut to its subjects not taken,
+so one issue joining a triage state hands only that one. A subject whose last session wrote
+nothing on it (its `updatedAt` on GitHub, and a pull request's head and checks, unchanged
+since the hand) is idle: past `retry_hours` it is handed to no session and waits until it
+changes, by a comment, a label, an edit, a close, a push, or its checks finishing.
+github-ship-watch lists each one as a GATE_IDLE row, so it never waits unseen. Before
+starting a session for HANDOFF_DUE the gate reads tier 6 again and hands only the issues
+that still read so. Tiers 1, 2, 5, and 7 keep `retry_hours`.
+
 The sweep also proposes config upgrades, as the App (spec 047): before its read it runs
 `shipmill upgrade --propose` for the config at the default branch's head, at `[autonomy]
 upgrade`, so a repo that releases rarely still hears of one; the release workflow's
