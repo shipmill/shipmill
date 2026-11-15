@@ -318,6 +318,18 @@ Agents (all reported, never an action by itself):
                   in a row and the session log's last line. A person clears it (`claude auth
                   login`, or reading the session's log or `claude logs <id>`), so an action
                   but never an agent's
+  GATE_CHECKOUT_MISSING  on a Mac, one row per gate job on the host, this repo's or another's
+                  (each dev.shipmill.gate.*.plist in ~/Library/LaunchAgents, no other plist),
+                  whose WorkingDirectory is not a folder: launchd exits 78 before shipmill
+                  gate runs, so the gate never reports it (#1155). Subject the job's label;
+                  detail its repo (the owner/name after gate in its ProgramArguments), the
+                  missing folder, and launchctl's last exit code when it has one. The fix adds
+                  the folder back as a worktree of its main checkout and kickstarts the job
+                  when the folder is <main>/tmp/shipmill-gate and <main> is a git checkout,
+                  else writes the job again with shipmill launchd from a fresh clone. A gate
+                  plist that isn't one, or names no one repo after gate, or no
+                  WorkingDirectory, exits 2. An action for a person, never an agent's, and
+                  in no tier
 
 Gate setup (the config's [agents] table):
   GATE_NO_APP     an [agents] prompt with no app_id: no GitHub App is connected, so the
@@ -406,7 +418,7 @@ Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when an
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED,
 ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MISSING, GATE_SESSIONS_DEAD,
-SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_CYCLE,
+GATE_CHECKOUT_MISSING, SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_CYCLE,
 CHAIN_UNREADABLE, MILESTONE_OVERTAKEN,
 UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, VETOED, AGENT_DRAFT, or LAND_DUE row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill
@@ -419,7 +431,7 @@ direction's check and its plans); claude on PATH only for the rows that read liv
 and plugin installs. Python 3.10+, standard library only.
 
 --host sessions or --host shipmill prints only that section's rows of this host, as `shipmill
-factory` reads them (spec 044): the AGENT_SESSION (or HOST_UNKNOWN) rows, or the
+factory` reads them (spec 044): the AGENT_SESSION (or HOST_UNKNOWN) and GATE_CHECKOUT_MISSING rows, or the
 SHIPMILL_VERSION, SHIPMILL_OUTDATED, PLUGIN_SHADOWING, and SKILL_SHADOWED rows. It reads none
 of the pipeline: no fetch, no issue, pull request, or run; exit 1 when a row it prints is an
 action row, as above. PLUGIN_SHADOWING counts only the keyed installs on the repo's main
@@ -428,7 +440,8 @@ counts every one on the host, as `shipmill factory` reads it (#764). --no-host i
 report without those two sections, which
 `shipmill status` reads with --host, each on its own, so a failing `claude` or marketplace
 read is one factory check's error rather than the report's end (#745); the gate's launchd
-rows (LOOP, GATE_SESSIONS_DEAD) stay in it.
+rows (LOOP, GATE_SESSIONS_DEAD) stay in it; GATE_CHECKOUT_MISSING, a host-wide row, is the
+sessions section's.
 
 --tier N and --sweep are the reads shipmill gate's walk makes (spec 046), and print no host
 row and no report-only row. The gate walks seven tiers in order and stops at the first item no
@@ -479,6 +492,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from xml.parsers.expat import ExpatError
 
 try:
     import tomllib
@@ -592,6 +606,7 @@ ACTION = {
     "GATE_NO_APP",
     "DIRECTION_MISSING",
     "GATE_SESSIONS_DEAD",
+    "GATE_CHECKOUT_MISSING",  # #1155: a gate job's WorkingDirectory is gone, a person adds it back
     "SKILL_SHADOWED",
     "PLUGIN_SHADOWING",
     "UPGRADE_PENDING",
@@ -4202,8 +4217,17 @@ def live_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
 
 
 def agent_rows(repo: str, repo_dir: Path, now: dt.datetime) -> list[Row]:
-    """The sessions and, on a Mac, the gate's launchd job; what this host can see"""
-    return [*live_rows(repo, repo_dir, now), *launchd_rows(repo, now)]
+    """The sessions and, on a Mac, the gate's launchd job and the host's gate jobs whose
+    checkout is gone; what this host can see"""
+    return [*live_rows(repo, repo_dir, now), *launchd_rows(repo, now), *gate_checkout_rows()]
+
+
+def launchctl_print(label: str) -> str | None:
+    """`launchctl print` of the job in this user's GUI domain; None when it isn't loaded"""
+    proc = subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True, text=True, check=False
+    )
+    return proc.stdout if proc.returncode == 0 else None
 
 
 def launchd_rows(repo: str, now: dt.datetime) -> list[Row]:
@@ -4214,10 +4238,7 @@ def launchd_rows(repo: str, now: dt.datetime) -> list[Row]:
     plist = gate_plist(repo)
     if plist is None:
         return [loop_row(label, None, None, None, now)]
-    proc = subprocess.run(
-        ["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True, text=True, check=False
-    )
-    printed = proc.stdout if proc.returncode == 0 else None
+    printed = launchctl_print(label)
     log_path = plist.get("StandardOutPath")
     log = Path(log_path).read_text(errors="replace") if isinstance(log_path, str) and Path(log_path).is_file() else None
     dead = dead_rows(label, log, log_path if isinstance(log_path, str) else None)
@@ -4248,6 +4269,93 @@ def dead_rows(label: str, log: str | None, log_path: str | None) -> list[Row]:
     else:
         fix = f"launchctl print gui/{os.getuid()}/{label}"
     return [Row("GATE_SESSIONS_DEAD", label, line[len(SESSION_DEAD) :], fix)]
+
+
+GATE_PREFIX = "dev.shipmill.gate."  # shipmill's launchd.LABEL_PREFIX: each gate job's label and plist name
+GATE_OPTIONS = ("--repo", "--from")  # shipmill's launchd.OPTIONS: options before gate whose value could read "gate"
+DEFAULT_EVERY = 15  # shipmill's launchd.DEFAULT_EVERY: the minutes `shipmill launchd` runs the gate every
+GATE_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")  # owner/name, matched whole
+SOME_CHECKOUT = "<its checkout>"  # the checkout a person clones, named in the fix unquoted
+
+
+def gate_job(path: Path) -> tuple[str, dict[str, object], list[str]]:
+    """A gate job's plist: its repo, the owner/name after `gate` in its ProgramArguments as
+    shipmill's launchd.gate_repos reads it, the job, and its arguments. A plist that isn't one,
+    names no one repo, or another repo's job, is refused, as factory refuses it"""
+    with path.open("rb") as handle:
+        try:
+            job = plistlib.load(handle)
+        except (ValueError, ExpatError) as exc:  # InvalidFileException is a ValueError
+            raise Refused(f"error: {path} is not a plist: {exc}") from None
+    if not isinstance(job, dict):
+        raise Refused(f"error: {path} is not a launchd job")
+    args = job.get("ProgramArguments")
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise Refused(f"error: {path} has no ProgramArguments list of strings")
+    named = [args[i + 1] for i in range(1, len(args) - 1) if args[i] == "gate" and args[i - 1] not in GATE_OPTIONS]
+    if len(named) != 1 or GATE_REPO.fullmatch(named[0]) is None:
+        raise Refused(f"error: {path} names no one repo after gate in its ProgramArguments")
+    if f"{gate_label(named[0])}.plist" != path.name:
+        raise Refused(f"error: {path} runs the gate for {named[0]}, whose job is {gate_label(named[0])}")
+    return named[0], job, args
+
+
+def relaunch_fix(repo: str, job: dict[str, object], args: list[str]) -> str:
+    """The job written again from a checkout a person clones, as shipmill's launchd.cli_fix
+    writes it: its interval, App key, Claude token file, and Claude Code flags kept"""
+    command = [*shipmill_cli(), "--repo", SOME_CHECKOUT, "launchd", repo]
+    interval = job.get("StartInterval")
+    if isinstance(interval, int) and interval // 60 != DEFAULT_EVERY:
+        command += ["--every", str(interval // 60)]
+    for option in ("--app-key", "--claude-token"):
+        if option in args[:-1]:
+            command += [option, args[args.index(option) + 1]]
+    command += [a for a in args if a.startswith("--claude-arg=")]
+    shown = " ".join(word if word == SOME_CHECKOUT else shlex.quote(word) for word in command)
+    return f"clone {repo}, then write its job again from that checkout: {shown}"
+
+
+def checkout_missing_rows(agents: Path, platform: str, uid: int, printed: Callable[[str], str | None]) -> list[Row]:
+    """#1155: on a Mac, GATE_CHECKOUT_MISSING for each gate job on the host, this repo's or
+    another's, whose WorkingDirectory is not a folder: launchd exits 78 before shipmill gate
+    runs, so the gate never reports it. agents is the LaunchAgents folder, printed `launchctl
+    print` of a label (None when not loaded). Only dev.shipmill.gate.*.plist is read. The fix
+    adds the gate's checkout back as a worktree of its main checkout when that is still a git
+    checkout, else writes the job again from a fresh clone"""
+    if platform != "darwin":
+        return []
+    rows = []
+    for path in sorted(agents.glob(f"{GATE_PREFIX}*.plist")):
+        repo, job, args = gate_job(path)
+        folder = job.get("WorkingDirectory")
+        if not isinstance(folder, str) or not folder:
+            raise Refused(f"error: {path} has no WorkingDirectory")
+        if Path(folder).is_dir():
+            continue
+        label = path.stem
+        detail = f"{repo}: its WorkingDirectory {folder} is missing, so launchd stops it before shipmill gate runs"
+        code = re.search(r"^\tlast exit code = (.+)$", printed(label) or "", re.MULTILINE)
+        if code:
+            detail += f"; last exit {code.group(1)}"
+        gone = Path(folder)
+        main = gone.parent.parent
+        if gone.parts[-2:] == GATE_CHECKOUT.parts and (main / ".git").exists():
+            where, checkout = shlex.quote(str(main)), shlex.quote(folder)
+            fix = (
+                f"git -C {where} worktree prune && git -C {where} worktree add --detach {checkout} origin/HEAD"
+                f" && launchctl kickstart gui/{uid}/{label}"
+            )
+        else:
+            fix = relaunch_fix(repo, job, args)
+        rows.append(Row("GATE_CHECKOUT_MISSING", label, detail, fix))
+    return rows
+
+
+def gate_checkout_rows() -> list[Row]:
+    """This host's gate jobs whose checkout is gone (#1155), read host-wide on every watch"""
+    if sys.platform != "darwin":  # no launchd, and no os.getuid on every platform
+        return []
+    return checkout_missing_rows(LAUNCH_AGENTS, sys.platform, os.getuid(), launchctl_print)
 
 
 # Spec 039: the one supported install is at user scope; its update refreshes the marketplace
@@ -4802,8 +4910,8 @@ HOST_SECTIONS = ("sessions", "shipmill")
 def host_rows(section: str, repo: str, repo_dir: Path, now: dt.datetime, *, host_wide: bool) -> list[Row]:
     """host_wide: shipmill factory's read of the shipmill section, whose PLUGIN_SHADOWING counts
     every keyed install on the host; shipmill status reads the repo's (#764)"""
-    if section == "sessions":
-        return live_rows(repo, repo_dir, now)
+    if section == "sessions":  # #1155: with the host's gate jobs whose checkout is gone, as factory reads them
+        return [*live_rows(repo, repo_dir, now), *gate_checkout_rows()]
     return [*shipmill_rows(repo, repo_dir, host_wide=host_wide), *shadow_rows(Path.home(), skill_names())]
 
 

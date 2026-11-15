@@ -340,6 +340,27 @@ def test_s039_4_factory_shows_the_host_wide_shadowing_row() -> None:
     assert factory.exit_code(found) == 1
 
 
+def test_a_gate_job_whose_checkout_is_gone_fails_the_sessions_check() -> None:
+    # #1155: launchd exits 78 on a missing WorkingDirectory before the gate runs, so only the watch can say it
+    fix = "git -C /src/old worktree prune && launchctl kickstart gui/501/dev.shipmill.gate.acme.old"
+    detail = "acme/old: its WorkingDirectory /src/old/tmp/shipmill-gate is missing; last exit 78: EX_CONFIG"
+    missing = Row("GATE_CHECKOUT_MISSING", "dev.shipmill.gate.acme.old", detail, False, fix)
+    found = run_checks(fake_host(sessions=(SESSION, missing)))
+    sessions = found[LABELS.index("sessions")]
+    assert not sessions.ok
+    assert sessions.lines() == [
+        "  sessions       1: gate busy (s1); 1 gate job without its checkout",
+        f"  checkout gone  dev.shipmill.gate.acme.old: {detail}",
+        f"                 fix: {fix}",
+    ]
+    assert [(r.text, r.fix) for r in sessions.yours] == [(f"gate job dev.shipmill.gate.acme.old: {detail}", fix)]
+    assert factory.exit_code(found) == 1
+    # status's verdict waits on you for it, and its summary places the row on no "other" line
+    picture = facts(missing)
+    assert report(picture).verdict is Verdict.WAITS
+    assert not any(line.startswith("  other") for line in lines(picture))
+
+
 @pytest.mark.parametrize(
     ("changed", "code"),
     [

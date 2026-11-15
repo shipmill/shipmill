@@ -97,6 +97,8 @@ CHAIN_ROWS = ("CHAIN_NO_GATE", "CHAIN_CYCLE", "CHAIN_UNREADABLE")  # CHAIN_CYCLE
 MILESTONE_WAITING = "MILESTONE_WAITING"
 MILESTONE_OVERTAKEN = "MILESTONE_OVERTAKEN"
 PRS_PARKED = "PRS_PARKED"  # #853: a person's open pull requests, each waiting on its assignees
+# #1155: a gate job on this host whose WorkingDirectory is gone, from watch_state.py's sessions section
+CHECKOUT_MISSING = "GATE_CHECKOUT_MISSING"
 YOURS_ROWS = (
     "HOLD",
     "PROMOTION_DUE",
@@ -129,6 +131,7 @@ PLACED = {
     "SKILL_SHADOWED",
     "GATE_NO_APP",  # D-19's row; the github app line says the same
     "GATE_SESSIONS_DEAD",  # #500: the gate line says it, from the same SESSION_DEAD decision
+    CHECKOUT_MISSING,  # #1155: the sessions check says it, a reason that waits on you
     "HOST_UNKNOWN",  # the sessions line says it
     "UPGRADE_PENDING",  # spec 014: the upgrade lines say it, each with its issue (S-014-15)
     MILESTONE_WAITING,  # spec 022: the milestone lines say both
@@ -1588,9 +1591,17 @@ def gate_check(gate: Gate, repo: str, now: dt.datetime, command: str) -> Check:
 
 
 def sessions_check(rows: Sequence[Row], gate: Gate | None) -> Check:
-    """The gate's live sessions, counted, or none; or why they weren't read"""
+    """The gate's live sessions, counted, or none; or why they weren't read. A gate job on
+    this host whose checkout is gone (#1155), this repo's or another's, is a problem that waits
+    on you, with the row's fix: launchd stops it before the gate runs, so nothing else says it"""
     values = session_values(rows, gate)
-    return Check("sessions", True, "; ".join(values) or "none")
+    missing = [r for r in rows if r.state == CHECKOUT_MISSING and r.fix is not None]
+    if missing:
+        jobs = "gate job without its checkout" if len(missing) == 1 else "gate jobs without their checkout"
+        values.append(f"{len(missing)} {jobs}")
+    details = tuple(Detail("checkout gone", f"{r.subject}: {r.detail}", r.fix) for r in missing)
+    yours = tuple(Reason(f"gate job {r.subject}: {r.detail}", r.fix) for r in missing if r.fix is not None)
+    return Check("sessions", not missing, "; ".join(values) or "none", details=details, yours=yours)
 
 
 def github_app_check(gate: Gate, repo: str, command: str) -> Check:
