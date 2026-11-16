@@ -664,6 +664,11 @@ def test_s002_20_1207_a_pull_head_that_cannot_be_fetched_keeps_the_worktree(repo
         ("feat/review-12", None),
         ("land-4-x", None),
         ("fix/12-x", None),
+        ("myreview-12", None),
+        ("review-999999999", 999999999),
+        # GitHub refuses the whole read for a number its Int can't hold, failing every prune
+        ("review-99999999999999999999", None),
+        ("push-1234567890", None),
     ],
 )
 def test_s002_20_1207_the_numbered_branch_names(branch: str, number: int | None) -> None:

@@ -31,8 +31,10 @@ EXCLUDE = "CHANGELOG.md"  # its conflicts are often resolved by hand, so a secon
 LOOSE = ("--", ":(top)", f":(top,exclude){EXCLUDE}")  # from the top, as --repo may name a subdirectory
 DIFF = ("--no-color", "--no-ext-diff")
 HEADS = "refs/heads/"
-# github-pr-triage's local branches for pull request #N, which have no upstream (#1207)
-NUMBERED = re.compile(r"review-(?P<review>[1-9][0-9]*)(?:-.+)?|push-(?P<push>[1-9][0-9]*)|land-(?P<land>[1-9][0-9]*)")
+# github-pr-triage's local branches for pull request #N, which have no upstream (#1207); at
+# most 9 digits, as GitHub refuses the whole read for a number GraphQL's Int can't hold
+_N = "[1-9][0-9]{0,8}"
+NUMBERED = re.compile(rf"review-(?P<review>{_N})(?:-.+)?|push-(?P<push>{_N})|land-(?P<land>{_N})")
 PatchIds = tuple[frozenset[str], frozenset[str]]  # exact, and without CHANGELOG.md
 NO_IDS: PatchIds = (frozenset(), frozenset())
 
