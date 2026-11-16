@@ -137,7 +137,7 @@ It changes no verdict: the gate still works, and the worktrees wait.
 
 ## Decisions relied on
 
-- D-24: the gate's prune owns a worktree once its session has exited, and removes only what
+- D-91 (supersedes D-24): the gate's prune owns a worktree once its session has exited, and removes only what
   the checks prove landed
 - D-55: `shipmill status` reports the pipeline; the host's machinery is `shipmill factory`'s
 - D-56: the gate's prune runs after the tick's decision, every `prune_hours`, and a prune

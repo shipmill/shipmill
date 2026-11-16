@@ -2,9 +2,10 @@
 
 Each worktree gets one verdict, REMOVABLE or KEPT; a KEPT one carries the first check it
 failed, in the spec's order. Judging reads git, `claude agents --json`, one `gh pr list`, and
-one GraphQL read of the merged pull requests from the worktrees' branches, and changes nothing
-but the fetched `origin/<default>`, where default is the config's `branch`, else origin/HEAD
-(#694). Pruning removes the REMOVABLE ones
+one GraphQL read of the merged pull requests from the worktrees' branches and the numbers in
+their names, and changes nothing but the fetched `origin/<default>`, where default is the
+config's `branch`, else origin/HEAD (#694), and the objects of a merged pull request's
+`refs/pull/<N>/head`, fetched without a ref (#1207). Pruning removes the REMOVABLE ones
 of that same judgement, each with the local branch it held, and nothing else.
 """
 
@@ -13,6 +14,7 @@ import datetime as dt
 import enum
 import json
 import os
+import re
 import subprocess
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -29,6 +31,19 @@ EXCLUDE = "CHANGELOG.md"  # its conflicts are often resolved by hand, so a secon
 LOOSE = ("--", ":(top)", f":(top,exclude){EXCLUDE}")  # from the top, as --repo may name a subdirectory
 DIFF = ("--no-color", "--no-ext-diff")
 HEADS = "refs/heads/"
+# github-pr-triage's local branches for pull request #N, which have no upstream (#1207)
+NUMBERED = re.compile(r"review-(?P<review>[1-9][0-9]*)(?:-.+)?|push-(?P<push>[1-9][0-9]*)|land-(?P<land>[1-9][0-9]*)")
+PatchIds = tuple[frozenset[str], frozenset[str]]  # exact, and without CHANGELOG.md
+NO_IDS: PatchIds = (frozenset(), frozenset())
+
+
+def pull_number(branch: str) -> int | None:
+    """The pull request a local branch named `review-<N>`, `review-<N>-<suffix>`, `push-<N>`, or
+    `land-<N>` is for; None for any other name"""
+    found = NUMBERED.fullmatch(branch)
+    if found is None:
+        return None
+    return int(next(n for n in found.groups() if n is not None))
 
 
 class Verdict(enum.StrEnum):
@@ -190,7 +205,8 @@ class Landing:
     def __init__(self, git: Git, onto: str) -> None:
         self.git = git
         self.onto = onto
-        self._window: tuple[frozenset[str], frozenset[str]] | None = None
+        self._window: PatchIds | None = None
+        self._pulls: dict[int, PatchIds] = {}
 
     def _ids(self, patch: bytes) -> list[str]:
         out = self.git.run("patch-id", "--stable", stdin=patch)
@@ -200,7 +216,7 @@ class Landing:
         ids = self._ids(patch)
         return ids[0] if ids else None
 
-    def window(self) -> tuple[frozenset[str], frozenset[str]]:
+    def window(self) -> PatchIds:
         """The patch ids of the newest WINDOW non-merge commits of onto: exact, and without CHANGELOG.md"""
         if self._window is None:
             log = ("log", "-p", *DIFF, "--no-merges", f"-n{WINDOW}", self.onto)
@@ -209,27 +225,62 @@ class Landing:
             self._window = (exact, loose)
         return self._window
 
-    def _matches(self, exact_patch: bytes, loose_patch: bytes) -> bool:
+    def pull_ids(self, pulls: Iterable[MergedPull]) -> PatchIds:
+        """The patch ids of the merged pull requests' own non-merge commits, exact and without
+        CHANGELOG.md (#1207). Each pull request's `refs/pull/<N>/head` is fetched once, for its
+        objects only: no ref and no FETCH_HEAD is written. A fetch that fails, or a commit it
+        didn't bring, gives no id, so the worktree's commits it would have matched stay unlanded"""
+        exact: set[str] = set()
+        loose: set[str] = set()
+        for pull in pulls:
+            if pull.number not in self._pulls:
+                self._pulls[pull.number] = self._read_pull(pull)
+            exact |= self._pulls[pull.number][0]
+            loose |= self._pulls[pull.number][1]
+        return frozenset(exact), frozenset(loose)
+
+    def _read_pull(self, pull: MergedPull) -> PatchIds:
+        if not pull.commits:
+            return NO_IDS
+        ref = f"refs/pull/{pull.number}/head"
+        if not self.git.ok("fetch", "-q", "--no-write-fetch-head", "--no-tags", REMOTE, ref):
+            return NO_IDS
+        present = [c for c in sorted(pull.commits) if self.git.ok("cat-file", "-e", f"{c}^{{commit}}")]
+        if not present:
+            return NO_IDS
+        own = self.git.run("rev-list", "--no-walk", "--no-merges", *present).split()
+        if not own:
+            return NO_IDS
+        # one git show of all of them: patch-id reads each commit's patch on its own
+        exact = frozenset(self._ids(self.git.run_bytes("show", *DIFF, *own)))
+        loose = frozenset(self._ids(self.git.run_bytes("show", *DIFF, *own, *LOOSE)))
+        return exact, loose
+
+    def _matches(self, exact_patch: bytes, loose_patch: bytes, pulls: PatchIds = NO_IDS) -> bool:
         """A commit without its CHANGELOG.md changes has no loose id when it changes only CHANGELOG.md"""
         exact, loose = self.window()
         pid = self._one(exact_patch)
-        if pid is not None and pid in exact:
+        if pid is not None and (pid in exact or pid in pulls[0]):
             return True
         loose_id = self._one(loose_patch)
-        return loose_id is not None and loose_id in loose
+        return loose_id is not None and (loose_id in loose or loose_id in pulls[1])
 
-    def unlanded(self, branch: str, merged_heads: frozenset[str] = frozenset()) -> int:
+    def unlanded(self, branch: str, merged_heads: frozenset[str] = frozenset(), pulls: PatchIds = NO_IDS) -> int:
         """How many of the branch's commits are not on onto; 0 when its whole diff landed as one
         commit. merged_heads are the commits that were, at some point, the head of a merged pull
         request from this branch: a commit of the branch that is one of them landed with it, and so
-        did every commit before it, so only the commits after the newest such one can count"""
+        did every commit before it, so only the commits after the newest such one can count. pulls
+        are the patch ids of those pull requests' commits: a commit whose patch id is one of them,
+        each commit compared on its own, landed with them (#1207)"""
         tip = f"{HEADS}{branch}"
         commits = self.git.run("rev-list", "--no-merges", f"{self.onto}..{tip}").split()
         # rev-list leaves out every commit onto holds, so ancestry needs no check of its own
         missing = [
             c
             for c in commits
-            if not self._matches(self.git.run_bytes("show", *DIFF, c), self.git.run_bytes("show", *DIFF, c, *LOOSE))
+            if not self._matches(
+                self.git.run_bytes("show", *DIFF, c), self.git.run_bytes("show", *DIFF, c, *LOOSE), pulls
+            )
         ]
         if not missing or self._squashed(tip):
             return 0
@@ -341,9 +392,12 @@ def _landed_reason(ctx: _Context, tree: Worktree, merged: Sequence[MergedPull]) 
     if tree.branch is None:
         raise ReleaseError(f"{tree.path} passed the local checks without a branch")
     names = {tree.branch, ctx.upstream.get(tree.branch, tree.branch)}
-    landed = (pr for pr in merged if pr.head in names and pr.base == ctx.default)
+    number = pull_number(tree.branch)
+    landed = [pr for pr in merged if (pr.head in names or pr.number == number) and pr.base == ctx.default]
     merged_heads = frozenset[str]().union(*(pr.heads for pr in landed))
     unlanded = ctx.landing.unlanded(tree.branch, merged_heads)
+    if unlanded and landed:  # only then are the pull requests' commits fetched and compared
+        unlanded = ctx.landing.unlanded(tree.branch, merged_heads, ctx.landing.pull_ids(landed))
     if unlanded:
         return f"{unlanded} commit(s) not landed"
     for pr in ctx.pulls:
@@ -352,17 +406,24 @@ def _landed_reason(ctx: _Context, tree: Worktree, merged: Sequence[MergedPull]) 
     return None
 
 
-def _ahead(git: Git, trees: Iterable[Worktree], default: str, onto: str, upstream: dict[str, str]) -> list[str]:
+def _ahead(
+    git: Git, trees: Iterable[Worktree], default: str, onto: str, upstream: dict[str, str]
+) -> tuple[list[str], list[int]]:
     """The branch names, local and upstream, of the worktrees whose branch holds a commit onto
-    doesn't: the only ones a merged pull request can prove landed. The default branch is never
-    one, though a branch made from origin/<default> tracks it"""
+    doesn't, and the pull request numbers their names carry (pull_number): the only ones a
+    merged pull request can prove landed. The default branch is never one, though a branch made
+    from origin/<default> tracks it"""
     names = set()
+    numbers = set()
     for tree in trees:
         if tree.branch is None or tree.branch == default:
             continue
         if not git.ok("merge-base", "--is-ancestor", f"{HEADS}{tree.branch}", onto):
             names.update({tree.branch, upstream.get(tree.branch, tree.branch)})
-    return sorted(names - {default})
+            number = pull_number(tree.branch)
+            if number is not None:
+                numbers.add(number)
+    return sorted(names - {default}), sorted(numbers)
 
 
 def _hours(age: dt.timedelta) -> int:
@@ -402,7 +463,7 @@ def judge(git: Git, github: GitHub, sessions: Sessions, now: dt.datetime) -> lis
         age = None if when is None else now - when
         local.append((tree, path, when, age, _local_reason(ctx, tree, path, age)))
     undecided = [tree for tree, _, _, _, reason in local if reason is None]
-    merged = tuple(github.merged_pull_requests(_ahead(git, undecided, default, onto, upstream)))
+    merged = tuple(github.merged_pull_requests(*_ahead(git, undecided, default, onto, upstream)))
     judged = []
     for tree, path, when, age, found in local:
         reason = found if found is not None else _landed_reason(ctx, tree, merged)

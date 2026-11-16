@@ -91,6 +91,19 @@ merged pull requests with that head, each with its last 100 commits and its last
 force-pushes. A gh failure, or an answer shipmill can't read, exits 2 and removes nothing,
 as a failing `gh pr list` does.
 
+Since #1207 (D-91, superseding D-24), a local branch named `review-<N>`,
+`review-<N>-<suffix>`, `push-<N>`, or `land-<N>` (github-pr-triage's, with no upstream) is
+also read as pull request #N: the same request reads #N by number, and a number GitHub has
+no pull request for (its `NOT_FOUND` error on that alias, and no other error) or an unmerged
+one finds nothing. And once a pull request merged into the default branch is found by name,
+upstream, or number, a commit of the branch also landed when its patch id matches one of
+that pull request's own non-merge commits, exactly or with `CHANGELOG.md` left out of both,
+compared commit by commit: a rebase made locally and never pushed has no SHA GitHub knows.
+Those commits come from `git fetch --no-write-fetch-head origin refs/pull/<N>/head`, once per
+such pull request and only when the SHA rule leaves a commit unlanded; it writes no ref, and
+a fetch that fails gives no patch id, so the commits stay unlanded. A commit with a change the
+pull request never had, such as an unpushed review fix, still counts as not landed.
+
 **Live sessions.** The command runs `claude agents --json` (no `--cwd`, which filters to
 background sessions only) and reads every row's `cwd`. On this machine it prints a JSON
 array of the active sessions, interactive and background, each with `pid`, `cwd`, `kind`,
@@ -186,6 +199,7 @@ a failing plan does.
 - S-002-18: `skills/github-ship-watch/SKILL.md` documents where the kept worktrees are reported (the `WORKTREE_STALE` row until #731, a pointer to `shipmill factory` since spec 044), and `skills/shipmill-setup/SKILL.md`'s gate section documents the gate's prune and `shipmill worktrees`, and the github-issue-resolve, github-pr-triage, and github-issue-triage skills each say that the worktrees a session leaves behind once it exits are the gate's prune's to remove
 - S-002-19: a candidate worktree that holds another worktree of the repository inside it, even under an ignored path, is KEPT as `holds worktree <path>`, its path relative to the main checkout (added in #131)
 - S-002-20: a candidate worktree whose branch tip is, or was before a force-push, the head of a pull request merged into the default branch whose head branch is its branch or that branch's upstream, matched by commit SHA, and that passes every other check, is REMOVABLE; one with commits after such a head is KEPT as `<N> commit(s) not landed`, counting only those commits; the merged pull requests are read in one request before judging, and a failing read exits 2 and removes nothing (added in #244)
+  - Amended by D-91 (#1207): a local branch named `review-<N>`, `review-<N>-<suffix>`, `push-<N>`, or `land-<N>` also finds pull request #N, read by number in the same request (a number with no pull request finds nothing); once a pull request merged into the default branch is found by name, upstream, or number, a commit whose patch id matches one of its commits (from `refs/pull/<N>/head`), exactly or without `CHANGELOG.md`, landed too, so a locally rebased copy is REMOVABLE and one with a commit of its own is KEPT as `1 commit(s) not landed`; a `refs/pull/<N>/head` that can't be fetched proves nothing
 
 ## Out of scope
 
@@ -199,7 +213,7 @@ a failing plan does.
 ## Decisions relied on
 
 - D-15
-- D-24 (supersedes D-12)
+- D-91 (supersedes D-24, which superseded D-12)
 
 ## Issues
 
@@ -235,4 +249,4 @@ so `gh pr list` and `claude agents --json` ran for real) with one worktree per c
 - S-002-17: dropped in #731; before it, `watch_state.py shipmill/shipmill --repo-dir <scratch>/tmp/shipmill-gate --json` printed `WORKTREE_STALE` rows with `agent: false` for `tmp/wt-dirty` (`uncommitted changes; created 9d ago`) and `tmp/wt-wip` (`1 commit(s) not landed; created 10d ago`) and none for `.`, `tmp/shipmill-gate`, the 2-day-old detached worktree, or the REMOVABLE one; WORKTREE_STALE is in neither `ACTION` nor `AGENT`, and the gate's dry run counted it as no work; holds
 - S-002-18: `test_s002_18_the_skills_document_the_report_and_the_gates_prune` reads the five SKILL.md files: github-ship-watch's repair and agent tables list WORKTREE_STALE, shipmill-setup's The gate describes the prune and `shipmill worktrees`, and github-issue-resolve, github-pr-triage, and github-issue-triage each say the worktrees a session leaves behind once it exits are the gate's prune's to remove (D-12); holds
 - S-002-19: `tmp/wt-outer` holding the worktree `tmp/wt-outer/tmp/wt-inner` (under the ignored `tmp/`) read `holds worktree tmp/wt-outer/tmp/wt-inner`; holds
-- S-002-20: the GraphQL read against romamo/treaty for `feat/54-audit-false` returned #75 with heads `7a275f8` and the force-pushed-away `b2e3b25`, the worktree's only commit; the treaty case, a rebased and review-fixed squash merge through an upstream of another name, a commit after the merged head (`1 commit(s) not landed`), a reused branch name, and a failing read, by the tests; holds
+- S-002-20: the GraphQL read against romamo/treaty for `feat/54-audit-false` returned #75 with heads `7a275f8` and the force-pushed-away `b2e3b25`, the worktree's only commit; the treaty case, a rebased and review-fixed squash merge through an upstream of another name, a commit after the merged head (`1 commit(s) not landed`), a reused branch name, and a failing read, by the tests; holds. Amended in #1207: the read against shipmill/shipmill for `review-1203` and the numbers 1203, 1207 (an issue), and 999999 returned #1203 alone, merged into `main` with its 2 commits, and `git fetch --no-write-fetch-head origin refs/pull/1203/head` succeeded; the numbered names, a `review-<N>` at #N's head, a locally rebased copy (one commit's `CHANGELOG.md` resolved against a newer main), a rebased copy with a commit of its own, an open #N, #N merged elsewhere, a missing #N, and a `refs/pull/<N>/head` that can't be fetched, by the tests; holds

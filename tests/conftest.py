@@ -140,7 +140,7 @@ class FakeGitHub:
     pulls_error: str = ""  # when set, listing the open pull requests fails with it, as gh would
     merged: list[MergedPull] = field(default_factory=list)  # merged pull requests
     merged_error: str = ""  # when set, reading the merged pull requests fails with it, as gh would
-    merged_reads: list[tuple[str, ...]] = field(default_factory=list)  # the branch names of each read
+    merged_reads: list[tuple[str, ...]] = field(default_factory=list)  # each read's branch names, then its `#<number>`s
     active: dict[str, list[WorkflowRun]] = field(default_factory=dict)  # unfinished runs by workflow file
     actions_error: str = ""  # when set, listing runs fails with it: Forbidden when it holds "(HTTP 403)"
     # what each read of a run gives, by run id, in turn; the last stays. A run without any passed
@@ -283,13 +283,14 @@ class FakeGitHub:
             raise ReleaseError(f"gh pr list failed: {self.pulls_error}")
         return sorted(self.pulls, key=lambda p: p.number)
 
-    def merged_pull_requests(self, branches: Sequence[str]) -> list[MergedPull]:
-        if not branches:
+    def merged_pull_requests(self, branches: Sequence[str], numbers: Sequence[int] = ()) -> list[MergedPull]:
+        if not branches and not numbers:
             return []
-        self.merged_reads.append(tuple(branches))
+        self.merged_reads.append((*branches, *(f"#{n}" for n in numbers)))
         if self.merged_error:
             raise ReleaseError(f"gh api graphql failed: {self.merged_error}")
-        return sorted((p for p in self.merged if p.head in branches), key=lambda p: p.number)
+        found = (p for p in self.merged if p.head in branches or p.number in numbers)
+        return sorted(found, key=lambda p: p.number)
 
     def shipped_pulls(self, since: dt.datetime) -> list[ShippedPull]:
         self.shipped_reads.append(since)

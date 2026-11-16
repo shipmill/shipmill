@@ -166,7 +166,7 @@ tells three failures apart, so a question names the right cause and the right fi
 
 - D-4: `[agents] verify` lives in `.github/shipmill.toml`
 - D-9: no `verify command` row without a list
-- D-24: whoever creates a worktree removes it; the check's has no pull request, so it goes when the check ends
+- D-91 (supersedes D-24): whoever creates a worktree removes it; the check's has no pull request, so it goes when the check ends
 - D-16: the list is read from the default branch, never from a pull request
 - D-17: the check runs where headless sessions run, with their environment
 - D-55: a host-side failure is reported on the host, not filed on GitHub
