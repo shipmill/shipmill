@@ -28,6 +28,7 @@ from shipmill.worktrees import (
     parse_worktrees,
     prune,
     pull_number,
+    verbatim_patch_ids,
 )
 
 from .conftest import FakeGitHub, copy_tree, no_auto_maintenance
@@ -649,6 +650,71 @@ def test_s002_20_1207_a_pull_head_that_cannot_be_fetched_keeps_the_worktree(repo
     squash_on_main(repo, {"a.py": "A = 1\n"}, "Feature (#7)")
     repo.github.merged = [MergedPull(7, "feat/7", frozenset({fake_sha(9)}), "main", frozenset({fake_sha(9)}))]
     assert repo.reasons()[".claude/worktrees/r7"] == "1 commit(s) not landed"
+
+
+INDENTED = "if READY:\n    A = 1\n    B = 2\n"
+REINDENTED = "if READY:\n    A = 1\nB = 2\n"  # B moved out of the if: whitespace alone, a change of meaning
+
+
+def test_s002_21_1213_a_whitespace_only_change_of_a_landed_commit_is_kept(repo: Checkout) -> None:
+    """#1213: `git patch-id --stable` ignores whitespace, so a commit that only re-indents the
+    landed one hashed the same and its worktree was removed; a byte-identical copy still lands"""
+    same = repo.add("tmp/wt-same", "-b", "same")
+    repo.commit(same, {"w.py": INDENTED}, "Indented, rebased")
+    moved = repo.add("tmp/wt-moved", "-b", "moved")
+    repo.commit(moved, {"w.py": REINDENTED}, "Re-indented, never pushed")
+    repo.commit(repo.root, {"other.py": "O = 1\n"}, "Someone else first")
+    repo.commit(repo.root, {"w.py": INDENTED}, "Indented")
+    repo.push_main()
+    reasons = repo.reasons()
+    assert reasons["tmp/wt-same"] is None
+    assert reasons["tmp/wt-moved"] == "1 commit(s) not landed"
+
+
+def test_s002_21_1213_a_whitespace_only_change_of_a_merged_prs_commit_is_kept(repo: Checkout) -> None:
+    """The merged pull request's own commits are hashed with whitespace kept too (#1207's rule)"""
+    pr = pull_in_origin(repo, 7, [{"w.py": INDENTED}])
+    same = repo.add(".claude/worktrees/r7", "-b", "review-7")
+    repo.commit(same, {"w.py": INDENTED}, "One, rebased")
+    moved = repo.add(".claude/worktrees/l7", "-b", "land-7")
+    repo.commit(moved, {"w.py": REINDENTED}, "One, re-indented")
+    squash_on_main(repo, {"w.py": INDENTED}, "Feature (#7)")
+    repo.github.merged = [MergedPull(7, "feat/7", frozenset(pr), "main", frozenset(pr))]
+    reasons = repo.reasons()
+    assert reasons[".claude/worktrees/r7"] is None
+    assert reasons[".claude/worktrees/l7"] == "1 commit(s) not landed"
+
+
+def test_s002_22_1213_a_git_without_verbatim_matches_no_commit_by_patch_id(repo: Checkout) -> None:
+    """A git older than 2.40 has no `--verbatim`: no commit lands by patch id, the window's or a
+    merged pull request's, so a rebased copy stays KEPT; ancestry and a merged head still land"""
+    assert verbatim_patch_ids(repo.git())  # this host's git has it; the old one is injected below
+    rebased = repo.add("tmp/wt-rebased", "-b", "rebased")
+    one = repo.commit(rebased, {"a.py": "A = 1\n"}, "One")
+    pulled = repo.add(".claude/worktrees/r7", "-b", "review-7")
+    pr = pull_in_origin(repo, 7, [{"p.py": "P = 1\n"}])
+    repo.commit(pulled, {"p.py": "P = 1\n"}, "Pull, rebased")
+    ancestor = repo.add("tmp/wt-ancestor", "-b", "ancestor")
+    repo.commit(ancestor, {"m.py": "M = 1\n"}, "Merged")
+    repo.commit(repo.root, {"other.py": "O = 1\n"}, "Someone else first")
+    repo.git().run("cherry-pick", one)
+    repo.git().run("merge", "-q", "--no-ff", "-m", "Merge ancestor", "ancestor")
+    squash_on_main(repo, {"p.py": "P = 1\n"}, "Feature (#7)")
+    headed = repo.add("tmp/wt-headed", "-b", "headed")
+    head = repo.commit(headed, {"h.py": "H = 1\n"}, "Head")
+    repo.github.merged = [
+        MergedPull(7, "feat/7", frozenset(pr), "main", frozenset(pr)),
+        MergedPull(8, "headed", frozenset({head}), "main"),
+    ]
+    now = dt.datetime.now(dt.UTC)
+    reasons = {j.path: j.reason for j in judge(repo.git(), repo.github, repo.sessions, now, verbatim=False)}
+    assert reasons["tmp/wt-rebased"] == "1 commit(s) not landed"
+    assert reasons[".claude/worktrees/r7"] == "1 commit(s) not landed"
+    assert reasons["tmp/wt-ancestor"] is None
+    assert reasons["tmp/wt-headed"] is None
+    assert not repo.git().ok("cat-file", "-e", f"{pr[0]}^{{commit}}")  # nothing fetched for a patch id
+    found = {j.path: j.reason for j in judge(repo.git(), repo.github, repo.sessions, now)}
+    assert (found["tmp/wt-rebased"], found[".claude/worktrees/r7"]) == (None, None)
 
 
 @pytest.mark.parametrize(

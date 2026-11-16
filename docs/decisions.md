@@ -769,3 +769,11 @@ entry that supersedes it, never by editing an old one.
 - Applies to: src/shipmill/worktrees.py, src/shipmill/gate.py, skills/*/SKILL.md, skills/github-pr-triage/references/reviewer-brief.md, skills/github-issue-triage/references/implementer-brief.md, worktrees, docs/specs/002-*
 - Enforced by: the worktrees tests (with the implementing PR)
 - Supersedes: D-24
+
+## D-92: The worktree prune matches patch ids with whitespace kept, and on a Git without that matches none
+
+- Decided: 2026-11-16, in shipmill/shipmill#1213
+- Rule: The prune of shipmill worktrees, by hand or by the gate, computes every patch id (the default branch window, the squash rule, and the own commits of a merged pull request, exact and without CHANGELOG.md) with patch-id --verbatim, never --stable, so a commit that differs from every landed one only in whitespace has not landed; on a Git that refuses --verbatim (older than 2.40), asked once per run, no commit lands by patch id and those worktrees stay KEPT, while ancestry and the heads of a merged pull request still prove landing; shipmill states no minimum Git version for this
+- Why: Hashing with --stable drops whitespace, so an unpushed commit that only re-indented Python lines, a change of meaning, hashed the same as the landed commit and its worktree was removed with the change (#1213). Decided by `@romamo` on #1213 (option 1): keeping more worktrees on an old Git is safer than refusing to prune or removing unlanded work
+- Applies to: src/shipmill/worktrees.py, src/shipmill/gitrepo.py, worktrees, worktree prune, docs/specs/002-*
+- Enforced by: the worktrees tests of S-002-21 and S-002-22

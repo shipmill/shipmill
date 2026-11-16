@@ -64,9 +64,18 @@ none means its tip is on the default branch. The rules are those of
 commits of `origin/<default>`. A commit landed when:
 
 - It is an ancestor of `origin/<default>`, or
-- Its `git patch-id --stable` matches a commit in the window, or
+- Its `git patch-id --verbatim` matches a commit in the window, or
 - Its patch id without `CHANGELOG.md` matches one in the window computed the same way (a
   commit that changes only `CHANGELOG.md` has no such id and counts as not landed)
+
+Since #1213 (D-92), every patch id here, and in the merged pull request rule below, keeps
+whitespace (`--verbatim`, where landed.py's `--stable` drops it): a re-indented line can change
+what code means, as in Python, so a commit that differs from every landed one only in
+whitespace has not landed. `--verbatim` needs git 2.40 or later; the command asks git once
+per run (`git patch-id --verbatim` on an empty patch), and on a git that refuses it no commit
+lands by patch id at all, in the window, in the squash rule, or against a merged pull
+request's commits, so those worktrees stay KEPT for a person to clean up; ancestry and a
+merged pull request's heads still prove a commit landed.
 
 When some commit fails those, the branch still landed as a squash merge if the patch id of
 its whole diff (`git diff <merge-base> <tip>`) matches one commit in the window, exactly or
@@ -186,6 +195,7 @@ a failing plan does.
 - S-002-6: a candidate worktree whose path is, or contains, the `cwd` of a session `claude agents --json` lists is KEPT as `live session <name>`
 - S-002-7: a candidate worktree with a modified, staged, or untracked file is KEPT as `uncommitted changes`
 - S-002-8: a candidate worktree whose branch has a commit not on `origin/<default>` by ancestry, by patch id, or by patch id without `CHANGELOG.md`, and whose whole diff matches no default-branch commit either, is KEPT as `<N> commit(s) not landed`; a commit that changes only `CHANGELOG.md` counts as not landed
+  - Amended by D-92 (#1213): every patch id is `git patch-id --verbatim`, whitespace kept, in place of `--stable`
 - S-002-9: a candidate worktree whose branch was rebase-merged, merged with a merge commit, or squash-merged from several commits (with or without a hand-resolved `CHANGELOG.md`), and that passes every other check, is REMOVABLE
 - S-002-10: a candidate worktree whose branch, or its upstream branch, is the head of an open pull request is KEPT as `open PR #<n>`
 - S-002-11: when `claude` is missing, `claude agents --json` exits non-zero, prints anything but a JSON array, or prints a row without a string `cwd`, `shipmill worktrees` (with or without `--prune`) exits 2 with a message naming the problem and removes no worktree and no branch; a failing `gh pr list` does the same
@@ -200,6 +210,8 @@ a failing plan does.
 - S-002-19: a candidate worktree that holds another worktree of the repository inside it, even under an ignored path, is KEPT as `holds worktree <path>`, its path relative to the main checkout (added in #131)
 - S-002-20: a candidate worktree whose branch tip is, or was before a force-push, the head of a pull request merged into the default branch whose head branch is its branch or that branch's upstream, matched by commit SHA, and that passes every other check, is REMOVABLE; one with commits after such a head is KEPT as `<N> commit(s) not landed`, counting only those commits; the merged pull requests are read in one request before judging, and a failing read exits 2 and removes nothing (added in #244)
   - Amended by D-91 (#1207): a local branch named `review-<N>`, `review-<N>-<suffix>`, `push-<N>`, or `land-<N>` also finds pull request #N, read by number in the same request (a number with no pull request finds nothing); once a pull request merged into the default branch is found by name, upstream, or number, a commit whose patch id matches one of its commits (from `refs/pull/<N>/head`), exactly or without `CHANGELOG.md`, landed too, so a locally rebased copy is REMOVABLE and one with a commit of its own is KEPT as `1 commit(s) not landed`; a `refs/pull/<N>/head` that can't be fetched proves nothing
+- S-002-21: a candidate worktree whose commit differs from a landed commit, on the default branch or among a merged pull request's commits, only in whitespace (such as a re-indented line) is KEPT as `1 commit(s) not landed`, while a copy identical byte for byte, whitespace included, is REMOVABLE (added in #1213)
+- S-002-22: on a git without `git patch-id --verbatim` (older than 2.40), no commit lands by patch id, so a rebased copy of a landed commit or of a merged pull request's commit is KEPT as `1 commit(s) not landed` and no `refs/pull/<N>/head` is fetched, while a branch whose commits are ancestors of `origin/<default>`, or whose tip was a merged pull request's head, is still REMOVABLE (added in #1213)
 
 ## Out of scope
 
@@ -214,6 +226,7 @@ a failing plan does.
 
 - D-15
 - D-91 (supersedes D-24, which superseded D-12)
+- D-92
 
 ## Issues
 
@@ -222,6 +235,7 @@ a failing plan does.
 - shipmill/shipmill#124: S-002-15, S-002-16
 - shipmill/shipmill#125: S-002-17, S-002-18
 - shipmill/shipmill#244: S-002-20
+- shipmill/shipmill#1213: S-002-21, S-002-22
 
 ## Verification
 
@@ -250,3 +264,5 @@ so `gh pr list` and `claude agents --json` ran for real) with one worktree per c
 - S-002-18: `test_s002_18_the_skills_document_the_report_and_the_gates_prune` reads the five SKILL.md files: github-ship-watch's repair and agent tables list WORKTREE_STALE, shipmill-setup's The gate describes the prune and `shipmill worktrees`, and github-issue-resolve, github-pr-triage, and github-issue-triage each say the worktrees a session leaves behind once it exits are the gate's prune's to remove (D-12); holds
 - S-002-19: `tmp/wt-outer` holding the worktree `tmp/wt-outer/tmp/wt-inner` (under the ignored `tmp/`) read `holds worktree tmp/wt-outer/tmp/wt-inner`; holds
 - S-002-20: the GraphQL read against romamo/treaty for `feat/54-audit-false` returned #75 with heads `7a275f8` and the force-pushed-away `b2e3b25`, the worktree's only commit; the treaty case, a rebased and review-fixed squash merge through an upstream of another name, a commit after the merged head (`1 commit(s) not landed`), a reused branch name, and a failing read, by the tests; holds. Amended in #1207: the read against shipmill/shipmill for `review-1203` and the numbers 1203, 1207 (an issue), and 999999 returned #1203 alone, merged into `main` with its 2 commits, and `git fetch --no-write-fetch-head origin refs/pull/1203/head` succeeded; the numbered names, a `review-<N>` at #N's head, a locally rebased copy (one commit's `CHANGELOG.md` resolved against a newer main), a rebased copy with a commit of its own, an open #N, #N merged elsewhere, a missing #N, and a `refs/pull/<N>/head` that can't be fetched, by the tests; holds
+- S-002-21: by the tests only, on git 2.50.1: a commit that moves one Python line out of an `if` by its indentation alone read `1 commit(s) not landed` against both a default-branch commit and a merged pull request's commit, each of which read REMOVABLE with `--stable`, and the byte-identical copies read REMOVABLE; holds in the tests
+- S-002-22: by the tests only, with the capability injected as missing (no git older than 2.40 on the host): a cherry-picked copy and a rebased copy of a merged pull request's commit read `1 commit(s) not landed` with no `refs/pull/<N>/head` fetched, while a branch merged with a merge commit and one whose tip was a merged head read REMOVABLE; the real `git patch-id --verbatim` probe returned true on git 2.50.1; holds in the tests
