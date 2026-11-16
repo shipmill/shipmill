@@ -155,6 +155,10 @@ upgrade = "act"                   # shipmill config migrations land without a qu
 
 # Who decides (spec 030, Roman 2026-11-13). shipmill is a pre-1.0 alpha: a
 # changed command, flag, format or default is listed under Changed and undone by a revert within
-# veto_hours. scope, rule-departure, security and protected stay ask
+# veto_hours. scope, rule-departure, security and protected stay ask.
+# accepted-spec (spec 067, D-88; Roman 2026-11-14): the spec of work he already accepted, an
+# opportunity he planned or an issue he filed, is approved on the recommended options and
+# reported; its build waits for the veto window. Accepting the work itself stays in scope
 [decisions]
 contract-change = "notify"
+accepted-spec = "notify"
