@@ -262,6 +262,26 @@ def test_s041_11_link_child_refuses_a_child_that_already_waits_on_its_parent(
     assert no_writes(forge)
 
 
+def test_s041_11_link_blocked_by_refuses_a_part_held_on_its_own_parent(
+    ch: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A hold "decided in" the parent, linked as comments.md's Hold says, would deadlock the
+    # part (#772, #1205): the parent waits on its sub-issue, so the link closes a cycle
+    forge = Forge(ch)
+    p = forge.add("o/r#5", "The feature\n")
+    c = forge.add("o/r#6", "A part\n")
+    forge.parents[c] = p  # C is P's sub-issue: P waits on C
+    with pytest.raises(SystemExit) as exit_:
+        link(ch, forge, "o/r#6", "--blocked-by", "o/r#5")
+    assert exit_.value.code == 2
+    assert "closes a cycle: o/r#6 -> o/r#5 -> o/r#6" in capsys.readouterr().err
+    assert no_writes(forge) and forge.body("o/r#6") == "A part\n"
+    # and the Hold section says what to do then: no hold line, which would deadlock it too
+    comments = " ".join((SCRIPTS.parent / "references" / "comments.md").read_text(encoding="utf-8").split())
+    assert "When it exits 2 with `closes a cycle:`, the issue would wait on itself" in comments
+    assert "post no hold line either" in comments
+
+
 def test_s041_11_both_halves_in_place_on_a_cycle_are_refused_too(
     ch: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
