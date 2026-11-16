@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.145.0] - 2026-11-16
+
+### Changed
+
+- Spec 054, landing as the App on a protected default branch, is built: shipmill's own v0.144.0 landed, tagged, and published as the App past a ruleset requiring a pull request and the `check` status, and a test pins the ruleset `shipmill ruleset` prints for this repository (#1082)
+- github-issue-triage holds an issue on another issue with `chains.py link --blocked-by` before it posts the hold sentence, for an accepted opportunity's request, a hold "decided in" an issue, a postpone that waits on an issue (in place of a hand-written `Depends on` line), and a DECIDED reply that says the item waits on an issue, so the blocked-by relation and the body's `Depends on` line show the hold in GitHub's dependency view and to tools outside the gate; a hold on or naming a pull request stays the sentence alone, a link refused for closing a cycle (a part held on its own parent) posts no hold line either, and in a component a wait on another repo's item still goes through a local stand-in (#1205)
+
 ## [0.144.0] - 2026-11-16
 
 ### Changed
@@ -2626,7 +2633,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.144.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.145.0...HEAD
+[0.145.0]: https://github.com/shipmill/shipmill/compare/v0.144.0...v0.145.0
 [0.144.0]: https://github.com/shipmill/shipmill/compare/v0.143.0...v0.144.0
 [0.143.0]: https://github.com/shipmill/shipmill/compare/v0.142.0...v0.143.0
 [0.142.0]: https://github.com/shipmill/shipmill/compare/v0.141.0...v0.142.0
