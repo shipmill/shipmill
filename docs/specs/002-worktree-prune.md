@@ -69,7 +69,7 @@ commits of `origin/<default>`. A commit landed when:
   commit that changes only `CHANGELOG.md` has no such id and counts as not landed)
 
 Since #1213 (D-92), every patch id here, and in the merged pull request rule below, keeps
-whitespace (`--verbatim`, where landed.py's `--stable` drops it): a re-indented line can change
+whitespace (`--verbatim`, as landed.py's do since #1215): a re-indented line can change
 what code means, as in Python, so a commit that differs from every landed one only in
 whitespace has not landed. `--verbatim` needs git 2.40 or later; the command asks git once
 per run (`git patch-id --verbatim` on an empty patch), and on a git that refuses it no commit
