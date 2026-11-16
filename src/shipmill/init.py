@@ -245,7 +245,14 @@ def caller_text(
     SHIPMILL_LAND_KEY the land job pushes the protected branches with, as the App (spec 054)"""
     uses = f"{BOT_REPO}/.github/workflows"
     runner = "" if runs_on is None else f"\n      runs-on: {runs_on.yaml()}"
-    land = "" if land_environment is None else f"\n      land-environment: {land_environment}"
+    # a called workflow reads no secret, its environment's SHIPMILL_LAND_KEY included, unless
+    # the caller passes it (#1180)
+    land = (
+        ""
+        if land_environment is None
+        else f"\n      land-environment: {land_environment}"
+        "\n    secrets: inherit # the land job reads SHIPMILL_LAND_KEY"
+    )
     return f"""name: Release
 
 # shipmill: https://github.com/{BOT_REPO}. The policy in

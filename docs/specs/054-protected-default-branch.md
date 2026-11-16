@@ -181,6 +181,10 @@ From GitHub's documentation, unless marked:
   branch policy refuses a job from another branch. In a reusable workflow the job names the
   caller repository's environment and reads its secret by name; the caller can't pass an
   environment secret through `secrets:`
+- Observed (#1180): the called job reads its environment's secret only when the caller's job
+  sets `secrets: inherit`; without it the secret comes back empty, though the job ran in the
+  environment. The caller's `land` job sets it, which also hands `land.yml` the caller's
+  repository secrets
 - Unverified: that `environment:` given an expression that is empty runs the job with no
   environment. If GitHub refuses it, `land.yml` splits the `land` job into two, one per case,
   chosen by `if:` on `land-environment`
@@ -224,7 +228,7 @@ From GitHub's documentation, unless marked:
 - S-054-15: `shipmill doctor` prints a FAIL `landing` row naming `[agents] app_id` when the release workflow sets `land-environment` and the config sets no `app_id`
 - S-054-16: `shipmill doctor` prints a WARN on the `landing` row for an active tag ruleset whose `include` matches the next release tag's ref and doesn't bypass the GitHub Actions integration
 - S-054-17: `shipmill ruleset` prints a JSON body GitHub's create-ruleset API accepts, with the default branch (and `refs/heads/release/*` with a hotfix lane), the `pull_request` and `required_status_checks` rules, one context per job of the called CI workflow, and the App as an `Integration` bypass actor with `bypass_mode` `always`; it exits 2 naming `[agents] app_id` when the config sets none
-- S-054-18: `shipmill init --land-as-app` writes `land-environment: shipmill-land` on the release workflow's `land` job and exits 2 naming `[agents] app_id` when the config sets none; `shipmill init` without it writes the release workflow it writes today
+- S-054-18: `shipmill init --land-as-app` writes `land-environment: shipmill-land` and `secrets: inherit` on the release workflow's `land` job and exits 2 naming `[agents] app_id` when the config sets none; `shipmill init` without it writes the release workflow it writes today
 - S-054-19: `docs/release-lanes.md` has a Protected default branch section covering the opt-in, the environment limited to the default branch with its `SHIPMILL_LAND_KEY` secret, `shipmill ruleset`, and the workflows an App push starts, and its Limits, `docs/install.md`'s prerequisites row, and `skills/shipmill-setup/SKILL.md`'s Branch protection row name the opt-in
 - S-054-20: On an organization repository whose default branch has an active ruleset requiring a pull request and the `checks` status, with the App as its only bypass actor, a stable lane lands, tags, and publishes with no person, and a collaborator's direct push to the default branch is refused
 

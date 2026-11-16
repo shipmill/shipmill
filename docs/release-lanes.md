@@ -665,9 +665,10 @@ opt in lands exactly as before.
    `SHIPMILL_LAND_KEY`: `gh secret set SHIPMILL_LAND_KEY --env shipmill-land < app.pem`.
    Give it no required reviewers, or every landing waits for one
 3. Add `land-environment: shipmill-land` to the `with:` of the `land` job in
-   `.github/workflows/release.yml`; `shipmill init --caller --land-as-app --force` rewrites
-   the calling workflow with it, and exits 2 naming `[agents] app_id` when the config sets
-   none
+   `.github/workflows/release.yml`, and `secrets: inherit` to that job: a called workflow
+   reads no secret, its environment's included, unless the caller passes it.
+   `shipmill init --caller --land-as-app --force` rewrites the calling workflow with both,
+   and exits 2 naming `[agents] app_id` when the config sets none
 4. Create the ruleset: `uvx shipmill ruleset | gh api -X POST repos/<owner>/<repo>/rulesets
    --input -`, with a login that has admin rights on the repository
 5. Run `shipmill doctor`: its `landing` row passes once every rule that refuses land's push
@@ -678,9 +679,11 @@ branch policy refuses a job from any other branch. So a collaborator who pushes 
 another branch can't read the key and push the default branch as the App, which a repository
 secret would allow. With `land-environment` set, `land.yml`'s `land` job runs in that
 environment, masks the key, writes it to a mode 0600 file under `$RUNNER_TEMP`, and runs
-`shipmill land --app-key <file>`. An empty `SHIPMILL_LAND_KEY` fails that step before
-`shipmill land` runs, naming the secret and the environment, so a half-done opt-in never
-lands as the workflow token.
+`shipmill land --app-key <file>`. An empty `SHIPMILL_LAND_KEY`, from an environment without
+the secret or a caller without `secrets: inherit`, fails that step before `shipmill land`
+runs, naming the secret and the environment, so a half-done opt-in never lands as the
+workflow token. `secrets: inherit` hands `land.yml` the caller's repository secrets too; only
+its key step reads one.
 
 `shipmill land --app-key` mints one installation token limited to the repository with
 `contents: write` and `workflows: write`, before its first push. A missing or unreadable
