@@ -7,6 +7,19 @@ bot.
 
 ## [Unreleased]
 
+## [0.144.0] - 2026-11-16
+
+### Changed
+
+- shipmill's own releases land through the `shipmill-land` environment as the App, so `main` can be protected by a ruleset whose only bypass actor is the App (spec 054, #1180)
+
+### Fixed
+
+- A release workflow opted in to landing as the App now passes its `land` job `secrets: inherit`, so `land.yml` reads the `shipmill-land` environment's `SHIPMILL_LAND_KEY`: without it a called workflow saw the secret empty and no stable release landed. `shipmill init --caller --land-as-app --force` writes it; a caller written before needs the line added (#1180)
+- `shipmill worktrees --prune` no longer keeps a merged pull request's worktree forever when its branch is a local `review-<N>`, `push-<N>`, or `land-<N>` with no upstream, or when its commits are a local rebase of the pull request's that was never pushed: it finds #N by the number in the name and matches each commit by patch id against the pull request's commits, so a commit with a change the pull request never had still keeps the worktree, per D-91 (#1207)
+- `shipmill worktrees --prune` and the gate's prune no longer remove a worktree whose unpushed commit differs from a landed one only in whitespace, such as re-indented Python lines: patch ids are computed with `git patch-id --verbatim`, and on a git older than 2.40, which lacks it, no commit counts as landed by patch id, so those worktrees are kept (#1213)
+- github-pr-triage's `landed.py` no longer reads a commit as landed when it differs from a landed one only in whitespace, such as re-indented Python lines: patch ids are computed with `git patch-id --verbatim`, and on a git older than 2.40, which lacks it, no commit counts as landed by patch id, so such commits read NOT LANDED and their worktrees and branches are kept (#1215)
+
 ## [0.143.0] - 2026-11-15
 
 ### Fixed
@@ -2613,7 +2626,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.143.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.144.0...HEAD
+[0.144.0]: https://github.com/shipmill/shipmill/compare/v0.143.0...v0.144.0
 [0.143.0]: https://github.com/shipmill/shipmill/compare/v0.142.0...v0.143.0
 [0.142.0]: https://github.com/shipmill/shipmill/compare/v0.141.0...v0.142.0
 [0.141.0]: https://github.com/shipmill/shipmill/compare/v0.140.0...v0.141.0
