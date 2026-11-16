@@ -62,8 +62,8 @@ class Git:
         proc = self._proc(("apply", "--3way", "--index", "-"), patch)
         return "" if proc.returncode == 0 else proc.stderr.decode(errors="replace").strip()
 
-    def ok(self, *args: str) -> bool:
-        return self._proc(args).returncode == 0
+    def ok(self, *args: str, stdin: bytes | None = None) -> bool:
+        return self._proc(args, stdin).returncode == 0
 
     def sha(self, rev: str = "HEAD") -> str:
         return self.run("rev-parse", "--verify", f"{rev}^{{commit}}").strip()

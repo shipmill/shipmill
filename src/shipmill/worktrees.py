@@ -200,18 +200,31 @@ class ClaudeSessions:
         return parse_live_sessions(proc.stdout)
 
 
+def verbatim_patch_ids(git: Git) -> bool:
+    """Whether this git hashes a patch with its whitespace kept: `git patch-id --verbatim`, git
+    2.40 or later, run on an empty patch. An older git refuses the option, and then no commit
+    is matched by patch id at all (#1213)"""
+    return git.ok("patch-id", "--verbatim", stdin=b"")
+
+
 class Landing:
     """Did a branch land on origin/<default>? landed.py's rules (ancestry, patch id, patch id
-    without CHANGELOG.md) per commit, then the whole branch diff as one squashed commit"""
+    without CHANGELOG.md) per commit, then the whole branch diff as one squashed commit. A patch
+    id keeps whitespace (`--verbatim`), as a re-indented line can change what the code means;
+    without verbatim (a git older than 2.40) no patch id is computed, so only ancestry and the
+    merged heads can prove a commit landed (#1213)"""
 
-    def __init__(self, git: Git, onto: str) -> None:
+    def __init__(self, git: Git, onto: str, verbatim: bool) -> None:
         self.git = git
         self.onto = onto
+        self.verbatim = verbatim
         self._window: PatchIds | None = None
         self._pulls: dict[int, PatchIds] = {}
 
     def _ids(self, patch: bytes) -> list[str]:
-        out = self.git.run("patch-id", "--stable", stdin=patch)
+        if not self.verbatim:
+            return []
+        out = self.git.run("patch-id", "--verbatim", stdin=patch)
         return [line.split()[0] for line in out.splitlines() if line.strip()]
 
     def _one(self, patch: bytes) -> str | None:
@@ -220,6 +233,8 @@ class Landing:
 
     def window(self) -> PatchIds:
         """The patch ids of the newest WINDOW non-merge commits of onto: exact, and without CHANGELOG.md"""
+        if self._window is None and not self.verbatim:
+            self._window = NO_IDS
         if self._window is None:
             log = ("log", "-p", *DIFF, "--no-merges", f"-n{WINDOW}", self.onto)
             exact = frozenset(self._ids(self.git.run_bytes(*log)))
@@ -242,7 +257,7 @@ class Landing:
         return frozenset(exact), frozenset(loose)
 
     def _read_pull(self, pull: MergedPull) -> PatchIds:
-        if not pull.commits:
+        if not pull.commits or not self.verbatim:
             return NO_IDS
         ref = f"refs/pull/{pull.number}/head"
         if not self.git.ok("fetch", "-q", "--no-write-fetch-head", "--no-tags", REMOTE, ref):
@@ -432,12 +447,15 @@ def _hours(age: dt.timedelta) -> int:
     return max(0, int(age.total_seconds() // 3600))
 
 
-def judge(git: Git, github: GitHub, sessions: Sessions, now: dt.datetime) -> list[Judged]:
+def judge(
+    git: Git, github: GitHub, sessions: Sessions, now: dt.datetime, *, verbatim: bool | None = None
+) -> list[Judged]:
     """Every worktree of the repository whose checkout git names, with its verdict, in git's
     order (the main checkout first). Reads the live sessions, the open pull requests, and the merged ones from
     the branches of the worktrees the local checks leave undecided before returning any
     verdict, so a failure of any judges nothing. Landing is measured against the branch
-    releases land on: the config's `branch`, else origin/HEAD (#694)"""
+    releases land on: the config's `branch`, else origin/HEAD (#694). verbatim says whether
+    git can hash a patch with its whitespace kept; None asks this git (verbatim_patch_ids)"""
     default = git.landing_branch()
     onto = f"refs/remotes/{REMOTE}/{default}"
     git.run("fetch", "-q", REMOTE, f"+{HEADS}{default}:{onto}")
@@ -457,7 +475,7 @@ def judge(git: Git, github: GitHub, sessions: Sessions, now: dt.datetime) -> lis
         live=tuple(LiveSession(s.name, s.cwd.resolve()) for s in live),
         pulls=pulls,
         upstream=upstream,
-        landing=Landing(git, onto),
+        landing=Landing(git, onto, verbatim_patch_ids(git) if verbatim is None else verbatim),
     )
     local = []
     for tree, path in zip(trees, resolved, strict=True):
