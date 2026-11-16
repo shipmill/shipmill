@@ -2,14 +2,18 @@
 lets the App land"""
 
 import json
+from pathlib import Path
 
 import pytest
 
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
+from shipmill.policy import Policy
+from shipmill.ruleset import RELEASE_BRANCHES, ruleset
 
 from .conftest import POLICY, Repo
 
+ROOT = Path(__file__).resolve().parents[1]
 APP = 42
 WITH_APP = POLICY + f'\n[agents]\nprompt = "/t"\napp_id = {APP}\n'
 CALLER = """\
@@ -135,6 +139,26 @@ def test_a_quoted_name_keeps_its_hash(repo: Repo, capsys: pytest.CaptureFixture[
     rules = body["rules"]
     assert isinstance(rules, list)
     assert rules[3]["parameters"]["required_status_checks"] == [{"context": "checks"}, {"context": "Lint #1"}]
+
+
+def test_s054_20_this_repositorys_ruleset_requires_check_and_lets_only_the_app_past() -> None:
+    """This repository's half of S-054-20, from its own files: the ruleset shipmill prints for
+    it requires a pull request and the `check` context (ci.yml's job; the criterion says
+    `checks`), with the App as its only bypass actor. That its release workflow opts in
+    (`land-environment: shipmill-land`, `secrets: inherit`) and move-major-tag.yml's default
+    follows it is pinned in test_land_environment.py and test_move_major_tag_app.py. The live
+    half, a release with no person and a push the rules refuse, is in the spec's Verification
+    (#1180, #1082)"""
+    policy = Policy.load(ROOT / ".github" / "shipmill.toml")
+    assert policy.agents is not None and policy.agents.app_id is not None
+    body = ruleset(policy, ROOT)
+    assert body["conditions"] == {"ref_name": {"include": ["~DEFAULT_BRANCH", RELEASE_BRANCHES], "exclude": []}}
+    rules = {rule["type"]: rule.get("parameters") for rule in body["rules"]}
+    assert set(rules) == {"deletion", "non_fast_forward", "pull_request", "required_status_checks"}
+    assert rules["required_status_checks"]["required_status_checks"] == [{"context": "check"}]
+    assert body["bypass_actors"] == [
+        {"actor_id": policy.agents.app_id, "actor_type": "Integration", "bypass_mode": "always"}
+    ]
 
 
 def test_a_release_workflow_without_one_ci_call_is_refused(repo: Repo) -> None:
