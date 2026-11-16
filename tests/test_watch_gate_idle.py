@@ -222,7 +222,9 @@ def test_s061_19_the_docs_say_what_spec_061s_docs_list_says(ws: ModuleType) -> N
     # both postpone templates carry the Revisit on: line, and a Depends on line is the other form
     assert comments.count("Revisit on: `") == 2
     assert "Revisit on: `docs/product.md`, `docs/product/**`" in comments
-    assert "put a `Depends on #N` line in the issue's body instead" in comments
+    # a wait on an issue goes through chains.py link, which writes the line too (#1205)
+    assert "which writes the blocked-by relation and the body's `Depends on` line" in comments
+    assert "put the `Depends on #N` line in the issue's body by hand" in comments
     for path in ((*triage, "SKILL.md"), (*triage, "references", "triage-rubric.md")):
         text = folded(*path)
         assert "changed a path its postpone comment's `Revisit on:` line names" in text, path

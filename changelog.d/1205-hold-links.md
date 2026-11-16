@@ -1,0 +1,3 @@
+### Changed
+
+- github-issue-triage holds an issue on another issue with `chains.py link --blocked-by` before it posts the hold sentence, for an accepted opportunity's request, a hold "decided in" an issue, a postpone that waits on an issue (in place of a hand-written `Depends on` line), and a DECIDED reply that says the item waits on an issue, so the blocked-by relation and the body's `Depends on` line show the hold in GitHub's dependency view and to tools outside the gate; a hold on or naming a pull request stays the sentence alone, a link refused for closing a cycle (a part held on its own parent) posts no hold line either, and in a component a wait on another repo's item still goes through a local stand-in (#1205)
