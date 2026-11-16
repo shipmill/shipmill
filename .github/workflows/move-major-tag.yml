@@ -32,7 +32,7 @@ on:
       land-environment:
         description: "The environment holding SHIPMILL_LAND_KEY, the App's key the marketplace commit is pushed with; empty: the workflow token"
         type: string
-        default: ""
+        default: "shipmill-land"
 
 permissions:
   contents: write
