@@ -84,7 +84,7 @@ jobs:
           ENVIRONMENT: ${{ inputs.land-environment }}
         run: |
           if [ -z "$KEY" ]; then
-            echo "::error::shipmill land: the environment $ENVIRONMENT has no SHIPMILL_LAND_KEY secret; add the App's private key to it as SHIPMILL_LAND_KEY, or drop land-environment from the land job in .github/workflows/release.yml. Nothing was pushed"
+            echo "::error::shipmill land: the environment $ENVIRONMENT has no SHIPMILL_LAND_KEY secret; add the App's private key to it as SHIPMILL_LAND_KEY and set secrets: inherit on the land job in .github/workflows/release.yml, which a called workflow needs to read it, or drop land-environment from that job. Nothing was pushed"
             exit 1
           fi
           while IFS= read -r line; do

@@ -45,6 +45,7 @@ LAND_ENV = {
 }
 APP_POLICY = '\n[agents]\nprompt = "/t"\napp_id = 42\n'
 OPT_IN = "      land-environment: shipmill-land\n"
+INHERIT = "    secrets: inherit # the land job reads SHIPMILL_LAND_KEY\n"
 
 
 def _step(name: str) -> dict[str, Any]:
@@ -112,6 +113,15 @@ def test_s054_1_only_the_key_step_reads_a_secret_and_only_when_the_input_is_set(
     assert _step(KEY_STEP)["if"] == "inputs.land-environment != ''"
     other_jobs = {name: job for name, job in DOC["jobs"].items() if name != "land"}
     assert not [name for name, job in other_jobs.items() if "secrets." in str(job) or "environment" in job]
+
+
+def test_s054_3_shipmills_own_release_workflow_passes_its_land_job_the_secrets() -> None:
+    """shipmill's own caller opts in, so its land job inherits the secrets, or land.yml reads
+    an empty SHIPMILL_LAND_KEY and no release lands (#1180)"""
+    caller = (ROOT / CALLER).read_text(encoding="utf-8")
+    assert land_environment(caller) == "shipmill-land"
+    doc: Any = evals._Yaml(caller, "release.yml").mapping()
+    assert doc["jobs"]["land"]["secrets"] == "inherit"
 
 
 def test_s054_1_without_the_key_land_runs_with_todays_arguments(tmp_path: Path) -> None:
@@ -192,8 +202,12 @@ def test_s054_18_caller_land_as_app_sets_the_environment_on_the_land_job(
     jobs = _jobs(text)
     assert OPT_IN in jobs["land"].split("    with:\n", 1)[1].split("    permissions:\n", 1)[0]
     assert not [name for name in jobs if name != "land" and "land-environment" in jobs[name]]
-    # apart from the one line, the file is the one written without the flag
-    assert text.replace(OPT_IN, "") == _unscheduled()
+    # a called workflow reads no secret, its environment's included, unless the caller passes
+    # it: without inherit SHIPMILL_LAND_KEY came back empty in a real run (#1180)
+    assert INHERIT in jobs["land"].split("    permissions:\n", 1)[0]
+    assert not [name for name in jobs if name != "land" and "secrets:" in jobs[name]]
+    # apart from those two lines, the file is the one written without the flag
+    assert text.replace(OPT_IN + INHERIT, "") == _unscheduled()
     assert land_environment(text) == "shipmill-land"  # as doctor's landing row reads it
     assert "SHIPMILL_LAND_KEY" in capsys.readouterr().out
 

@@ -63,6 +63,7 @@ jobs:
       base: ${{ needs.prepare.outputs.base }}
       tool: "."
       land-environment: shipmill-land
+    secrets: inherit # a called workflow reads no secret, its environment's included, unless the caller passes it (#1180)
     permissions:
       contents: write
       actions: write
