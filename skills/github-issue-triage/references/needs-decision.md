@@ -181,6 +181,7 @@ Once a trusted person replies, `triage_state.py` reads an issue as DECIDED, an a
 1. Reads the reply. A reply that answers none of the options, or asks something back, is a new question: ask again with this protocol
 2. Removes the `needs-decision` label before it acts on the answer: `gh issue edit <n> --remove-label needs-decision` (or `gh pr edit`)
 3. Records the answer with `decisions.py add` when it sets a rule, as the [design gate](design-gate.md) says, and goes on
+4. When the reply says the item waits on an issue, links the two with `chains.py link <owner/repo#item> --blocked-by <owner/repo#M>` ([Chains](../SKILL.md#chains)) before it posts the hold sentence, so the relation and the body's `Depends on` line carry the hold and the sentence gives its reason ([comments.md](comments.md), Hold). A hold on a pull request stays the sentence alone, and in a component a wait on another repo's issue goes through a local stand-in, since `chains.py link` refuses another repo's item (S-038-11)
 
 On a pull request, an answer that keeps the merge for the maintainer ("hold it: I merge it by hand") is taken up as `never` is: besides removing `needs-decision`, the session labels it `role:maintainer` and assigns the maintainer, so `watch_state.py` lists it in PRS_PARKED as `WITH_PERSON #N (@login)`, not in PRS_OPEN, and it starts no session.
 

@@ -70,7 +70,7 @@ The spec is in #{spec PR} (`docs/specs/{NNN}-{slug}.md`), with its acceptance cr
 On hold: the build waits on {owner/repo}#{spec PR}, the spec PR.
 ```
 
-The hold sentence names the spec PR alone: `triage_state.py` holds the issue on every reference in a sentence that says "On hold", "blocked" or "waits on". Context such as the issue the spec is for goes in a sentence of its own, with no hold phrase, or the issue also holds on that issue, which can be its own parent.
+The hold sentence names the spec PR alone: `triage_state.py` holds the issue on every reference in a sentence that says "On hold", "blocked" or "waits on". Context such as the issue the spec is for goes in a sentence of its own, with no hold phrase, or the issue also holds on that issue, which can be its own parent. This hold stays a sentence alone: GitHub has no blocked-by relation on a pull request.
 
 A request an accepted opportunity covers is built under that opportunity: its spec is the opportunity's, so the request holds on the opportunity issue, which closes when the build does. Add the request to the opportunity's Evidence section too.
 
@@ -80,7 +80,7 @@ Triage: **feature**.{ Serves: G-n.} This asks for the outcome of #{opportunity},
 On hold: built under {owner/repo}#{opportunity}, the accepted opportunity.
 ```
 
-This hold sentence names the opportunity alone, the same way.
+This hold sentence names the opportunity alone, the same way. Before posting it, hold the request on the opportunity with `chains.py link <owner/repo#request> --blocked-by <owner/repo#opportunity>` ([Chains](../SKILL.md#chains)): it writes the blocked-by relation and the body's `Depends on` line, so GitHub's dependency view and tools outside the gate see the hold too, and the sentence stays as its reason.
 
 In a gate session, the spec PR asks for its approval with the [needs-decision protocol](needs-decision.md), on the spec PR itself, with these options (D-49). Option 1 never asks the maintainer to merge by hand: a trusted answer taking it is the approval, and github-pr-triage lands the spec PR once it is green ([spec-gate.md](spec-gate.md), Approved by an answer). A spec PR that edits `docs/product.md` says instead that the maintainer merges it, since only they change the direction (D-34). The `CI on {sha7}` line shows the PR's head when asked, and the hidden `<!-- shipmill:head {sha} -->` line under it names that head's full SHA: the answer approves that exact head, and a question without the hidden line is asked again (S-055-5).
 
@@ -225,6 +225,8 @@ On hold: {why, e.g. #PR goes below the spec's default of 5 rotated files}, decid
 ```
 
 Put the same line on the held PR.
+
+When the line holds an issue on an issue, link the two first with `chains.py link <owner/repo#held> --blocked-by <owner/repo#N>` ([Chains](../SKILL.md#chains)), as the Upstream report does: it writes the blocked-by relation and the body's `Depends on` line (`text only:` where the forge refuses the relation), so the hold shows in GitHub's dependency view and to tools outside the gate, and the line stays as its reason. A hold that names a pull request, or a hold on a pull request, stays the line alone: GitHub has no blocked-by relation on a pull request. In a component, `chains.py link` refuses another repo's item (S-038-11): wait on a local stand-in instead ([Upstream report](#upstream-report)).
 
 ## A cycle
 
