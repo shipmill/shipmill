@@ -120,8 +120,8 @@ def test_s054_3_shipmills_own_release_workflow_passes_its_land_job_the_secrets()
     an empty SHIPMILL_LAND_KEY and no release lands (#1180)"""
     caller = (ROOT / CALLER).read_text(encoding="utf-8")
     assert land_environment(caller) == "shipmill-land"
-    land = evals._Yaml(caller, "release.yml").mapping()["jobs"]["land"]
-    assert land["secrets"] == "inherit"
+    doc: Any = evals._Yaml(caller, "release.yml").mapping()
+    assert doc["jobs"]["land"]["secrets"] == "inherit"
 
 
 def test_s054_1_without_the_key_land_runs_with_todays_arguments(tmp_path: Path) -> None:
