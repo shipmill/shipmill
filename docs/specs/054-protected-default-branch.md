@@ -1,6 +1,6 @@
 # S-054: Land as the App on a protected default branch
 
-status: approved
+status: built
 serves: G-1, G-2
 
 ## Problem
@@ -282,9 +282,6 @@ From GitHub's documentation, unless marked:
 
 ## Issues
 
-The build issues, filled in once they are filed: one `- owner/repo#N: S-054-1, S-054-2` per
-line, naming the criteria that issue delivers. Each criterion belongs to exactly one.
-
 - shipmill/shipmill#1075: S-054-2, S-054-4, S-054-5, S-054-6, S-054-7, S-054-9
 - shipmill/shipmill#1079: S-054-1, S-054-3, S-054-8, S-054-18
 - shipmill/shipmill#1080: S-054-10, S-054-11, S-054-12, S-054-13, S-054-14, S-054-15, S-054-16
@@ -293,5 +290,23 @@ line, naming the criteria that issue delivers. Each criterion belongs to exactly
 
 ## Verification
 
-Filled in when the spec reaches `built`: one line per criterion id, saying how it was
-checked against the default branch (beyond its tests) and the result.
+- S-054-1: read `.github/workflows/land.yml` (the `land-environment` input defaults to `""`, the job's `environment` is that input, and only the key step reads a secret, under `if: inputs.land-environment != ''`), ran tests/test_land_environment.py's `test_s054_1_*`, which run the land step's script with an empty key and get today's `shipmill land` arguments, and ran actionlint on the file, clean, holds
+- S-054-2: ran tests/test_land_as_app.py's `test_s054_2_without_the_app_every_push_is_as_before` for a stable lane on an unmoved branch, a stable lane off a moved branch, a hotfix, and a pre-release: the same refspecs with the workflow token's credential, holds
+- S-054-3: ran tests/test_land_environment.py's `test_s054_3_*`: the key step runs before land, masks each line, writes a mode `0600` file under `$RUNNER_TEMP`, land gets `--app-key <file>`, and an empty secret fails before land naming `SHIPMILL_LAND_KEY` and the environment; this repository's own release workflow opts in with `secrets: inherit`, holds
+- S-054-4: ran tests/test_land_as_app.py's `test_s054_4_an_app_key_without_app_id_exits_2_naming_the_key`: exit 2 naming `[agents] app_id`, no push, holds
+- S-054-5: ran tests/test_land_as_app.py's `test_s054_5_*`: one token minted for the repository with `contents: write` and `workflows: write` before the first push; a missing key or an App that can't push exits 2 naming the fix with no push, and the mint never falls back, holds
+- S-054-6: ran tests/test_land_as_app.py's `test_s054_6_*`: the release, hotfix, and sync pushes carry the App's credential through `GIT_CONFIG_*`, the tag and the work branch the workflow token's; release run 43907008578 landed `Release 0.144.0` past the ruleset, holds
+- S-054-7: ran tests/test_land_as_app.py's `test_s054_7_no_process_argument_holds_the_token` and the output check in `test_s054_5_land_mints_one_token_for_the_repo_with_contents_and_workflows_write`: neither the token nor the key appears, holds
+- S-054-8: ran tests/test_lanes.py's `test_s054_8_*`: the push of a release commit and of a sync commit with nothing merged since plans no release, holds
+- S-054-9: ran tests/test_land_as_app.py's `test_s054_9_*`: a `GH013` or `protected branch` refusal names `shipmill doctor` and the docs section, a sync refused so fails at once, any other refusal keeps today's message and retries, holds
+- S-054-10: ran tests/test_doctor_landing.py's `test_s054_10_*`: no refusing rule, or classic protection with no refusing part, is a PASS `landing` row, shown only where land pushes, holds
+- S-054-11: ran tests/test_doctor_landing.py's `test_s054_11_*`: a ruleset with `pull_request` and `required_status_checks` that doesn't bypass the GitHub Actions integration is a FAIL naming the ruleset, its rule types, `github-actions[bot]`, and the App opt-in, holds
+- S-054-12: ran tests/test_doctor_landing.py's `test_s054_12_with_the_opt_in_the_app_must_bypass_each_ruleset_always`: PASS when every refusing ruleset lists the App `always`, FAIL naming each one that doesn't, `pull_request` mode included, holds
+- S-054-13: ran tests/test_doctor_landing.py's `test_s054_13_*`: `release/<series>` is read with a hotfix lane, `creation` refuses a release branch GitHub hasn't got, and classic protection's reviews, checks, signatures, and restrictions are refusing rules, holds
+- S-054-14: ran tests/test_doctor_landing.py's `test_s054_14_*`: no `gh`, a 403 or 404, or a ruleset answer without its bypass list is a WARN naming the read, with every other row printed; the App's own `gh` reads ruleset 27356180 here without `bypass_actors`, the case this covers, holds
+- S-054-15: ran tests/test_doctor_landing.py's `test_s054_15_the_opt_in_without_an_app_id_fails_naming_the_key`: FAIL naming `[agents] app_id`, holds
+- S-054-16: ran tests/test_doctor_landing.py's `test_s054_16_a_tag_ruleset_matching_the_next_tag_warns`: a WARN on the `landing` row, holds
+- S-054-17: ran `uv run shipmill ruleset` in this repository: it prints `~DEFAULT_BRANCH` and `refs/heads/release/*`, `pull_request` and `required_status_checks` with the context `check`, and the App 5209412 as an `Integration` bypass actor `always`, the body GitHub accepted as ruleset 27356180; tests/test_ruleset.py's `test_s054_17_*` cover the hotfix-less body and the exit 2 without `app_id`, holds
+- S-054-18: ran tests/test_land_environment.py's `test_s054_18_*`: `init --land-as-app` writes `land-environment: shipmill-land` and `secrets: inherit` on the land job, exits 2 naming `[agents] app_id` without it, and `init` without the flag writes today's workflow, holds
+- S-054-19: ran tests/test_protected_branch_docs.py's `test_s054_19_*` and read `docs/release-lanes.md`'s Protected default branch section, its Limits, `docs/install.md`'s prerequisites row, and `skills/shipmill-setup/SKILL.md`'s Branch protection row (#1173): each names the opt-in, the environment and its `SHIPMILL_LAND_KEY`, `shipmill ruleset`, and the workflows an App push starts, holds
+- S-054-20: on shipmill/shipmill, an organization repository, `gh api repos/shipmill/shipmill/rulesets/27356180` reads one active ruleset on `~DEFAULT_BRANCH` and `refs/heads/release/*` with `deletion`, `non_fast_forward`, `pull_request`, and `required_status_checks` with the context `check` (the criterion's `checks`: this repository's CI job, and so the required context, is `check` in ci.yml), and the maintainer's admin read on 2026-11-16 found its `bypass_actors` holding only the App (`Integration` 5209412, `always`) and `shipmill doctor` printing PASS `landing` (#1180); release run 43907008578, dispatched by `shipmill-romamo[bot]`, passed every job, `land / land` included, its deployment to `shipmill-land` created by `shipmill-romamo[bot]` with no approval, pushed `Release 0.144.0` (c12d8e0) to main, tagged v0.144.0, and PyPI serves 0.144.0, so a stable lane landed, tagged, and published with no person. A collaborator's direct push to main was not tried: its refusal is read from the active rules, `gh api repos/shipmill/shipmill/rules/branches/main` applying that ruleset's `pull_request` and `required_status_checks` rules to main, which only the App bypasses. tests/test_ruleset.py's `test_s054_20_*` pins the ruleset this repository's config prints, holds
