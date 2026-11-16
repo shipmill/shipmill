@@ -204,6 +204,7 @@ entry that supersedes it, never by editing an old one.
 - Applies to: src/shipmill/worktrees.py, src/shipmill/gate.py, skills/*/SKILL.md, worktrees, docs/specs/002-*
 - Enforced by: the worktrees tests (with the implementing PR)
 - Supersedes: D-12
+- Superseded by: D-91
 
 ## D-25: A stable promotion folds its version's rc sections into one section
 
@@ -759,3 +760,12 @@ entry that supersedes it, never by editing an old one.
 - Why: A token leaked from the marketplace push job should only write the repo's contents; a generic flag instead of a fixed preset means a later narrow use needs no new CLI word
 - Applies to: src/shipmill/app.py, src/shipmill/cli.py, .github/workflows/move-major-tag.yml, shipmill app-token
 - Enforced by: review
+
+## D-91: A worktree whose commits match a merged PR's, found by name, upstream, or the number in its name, has landed
+
+- Decided: 2026-11-16, in shipmill/shipmill#1207
+- Rule: Whoever creates a worktree removes it once its PR merges; once the creating session has exited, shipmill gate's prune owns it and removes only what the spec's checks prove landed. A branch also counts as landed by a pull request merged into the default branch whose head branch is the worktree's branch or its upstream, or whose number a local branch named review-<N>, review-<N>-<suffix>, push-<N>, or land-<N> carries: a commit landed when it is, or was before a force-push, that pull request's head, or when its patch id matches one of the pull request's commits (read from refs/pull/<N>/head), exactly or with CHANGELOG.md left out of both, compared commit by commit; a commit with a change the pull request never had keeps the worktree
+- Why: github-pr-triage's reviewer worktrees sit on local branches named for the pull request's number with no upstream, so no merged pull request was ever found for them, and review often rebases a pull request's commits locally without pushing them, so their SHAs were never a head; they held the merged changes and stayed forever (#1207). Comparing each commit's patch id against the pull request's own commits proves the same change landed, and an unpushed fix still has no match
+- Applies to: src/shipmill/worktrees.py, src/shipmill/gate.py, skills/*/SKILL.md, skills/github-pr-triage/references/reviewer-brief.md, skills/github-issue-triage/references/implementer-brief.md, worktrees, docs/specs/002-*
+- Enforced by: the worktrees tests (with the implementing PR)
+- Supersedes: D-24

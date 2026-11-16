@@ -235,7 +235,7 @@ waiting it is unchanged.
 
 - D-3: prose calls the release automation shipmill
 - D-4: the fixes name `.github/shipmill.toml` as the one config file
-- D-24: a stale worktree is the person's to finish or remove; the fix says how, never does it
+- D-91 (supersedes D-24): a stale worktree is the person's to finish or remove; the fix says how, never does it
 - D-14: `status` writes nothing, so it still runs as the user's `gh`
 - D-15: a hold is the person's to lift; its fix is the decision and the close command
 - D-16: a fix never quotes untrusted issue or pull request text, and untrusted items go to

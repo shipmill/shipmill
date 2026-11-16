@@ -60,10 +60,11 @@ _CLOSE_FRAGMENT = (
     "{ nodes { createdAt body authorAssociation author { __typename login } } } }"
 )
 _MERGED_FRAGMENT = (
-    "fragment merged on PullRequestConnection { nodes { number headRefName baseRefName headRefOid "
+    "fragment merged on PullRequestConnection { nodes { ...pull } } "
+    "fragment pull on PullRequest { number merged headRefName baseRefName headRefOid "
     f"commits(last: {HISTORY_LIMIT}) {{ nodes {{ commit {{ oid }} }} }} "
     f"timelineItems(itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT], last: {HISTORY_LIMIT}) "
-    "{ nodes { ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } } } } }"
+    "{ nodes { ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } } } }"
 )
 # what shipped_pulls reads (spec 059): merged pull requests a page, an item's newest comments,
 # and a pull request's closing issues; an item with more comments or closing issues is refused,
@@ -326,6 +327,7 @@ class MergedPull:
     head: str  # the head branch's name
     heads: frozenset[str]  # full commit SHAs
     base: str  # the branch it merged into: only a merge into the default branch landed
+    commits: frozenset[str] = frozenset()  # its commits' full SHAs (the last HISTORY_LIMIT), a subset of heads
 
 
 class DeploymentState(StrEnum):
@@ -471,10 +473,12 @@ class GitHub(Protocol):
         """The open pull requests, by number (the newest PULL_LIMIT)"""
         ...
 
-    def merged_pull_requests(self, branches: Sequence[str]) -> list[MergedPull]:
-        """The merged pull requests whose head branch is named one of branches, by number, with
-        their head history (the newest MERGED_PER_BRANCH per name, the last HISTORY_LIMIT
-        commits and force-pushes of each); one request for all the names, none for no name"""
+    def merged_pull_requests(self, branches: Sequence[str], numbers: Sequence[int] = ()) -> list[MergedPull]:
+        """The merged pull requests whose head branch is named one of branches, or whose number
+        is one of numbers, by number, with their head history (the newest MERGED_PER_BRANCH per
+        name, the last HISTORY_LIMIT commits and force-pushes of each); one request for all the
+        names and numbers, none for neither. A number with no pull request, or an unmerged one,
+        finds nothing"""
         ...
 
     def active_runs(self, workflow: str) -> list[WorkflowRun]:
@@ -620,14 +624,7 @@ class GhCli:
     def _gh(self, *args: str, stdin: str | None = None) -> str:
         proc = self._run(*args, stdin=stdin)
         if proc.returncode != 0:
-            error = proc.stderr.strip()
-            message = f"gh {' '.join(args[:3])} failed: {error}"
-            # gh prints "<GitHub's message> (HTTP 403)"; a 403 for a rate limit isn't a permission
-            if re.search(r"\bHTTP 403\b", error) and "rate limit" not in error.lower():
-                raise Forbidden(message)
-            if re.search(r"\bHTTP (?:404|410)\b", error):
-                raise Missing(message)
-            raise ReleaseError(message)
+            raise _failure(args, proc.stderr)
         return proc.stdout
 
     def graphql(self, query: str) -> Any:
@@ -971,27 +968,37 @@ class GhCli:
     def open_pull_requests(self) -> list[PullRequest]:
         return parse_open_pulls(self._gh(*open_pulls_command()))
 
-    def merged_pull_requests(self, branches: Sequence[str]) -> list[MergedPull]:
-        names = sorted(set(branches))
+    def merged_pull_requests(self, branches: Sequence[str], numbers: Sequence[int] = ()) -> list[MergedPull]:
+        # a number alias costs GitHub less than a name's, so both count against one limit
+        wanted: list[str | int] = [*sorted(set(branches)), *sorted(set(numbers))]
         pulls: dict[int, MergedPull] = {}
-        for start in range(0, len(names), BRANCHES_PER_QUERY):
-            chunk = names[start : start + BRANCHES_PER_QUERY]
-            params = "".join(f", $b{i}: String!" for i in range(len(chunk)))
+        for start in range(0, len(wanted), BRANCHES_PER_QUERY):
+            chunk = wanted[start : start + BRANCHES_PER_QUERY]
+            names = [w for w in chunk if isinstance(w, str)]
+            nums = [w for w in chunk if isinstance(w, int)]
+            params = "".join(f", $b{i}: String!" for i in range(len(names)))
+            params += "".join(f", $n{i}: Int!" for i in range(len(nums)))
             aliases = " ".join(
-                f"b{i}: pullRequests(headRefName: $b{i}, states: MERGED, last: {MERGED_PER_BRANCH}) {{ ...merged }}"
-                for i in range(len(chunk))
+                [
+                    f"b{i}: pullRequests(headRefName: $b{i}, states: MERGED, last: {MERGED_PER_BRANCH}) {{ ...merged }}"
+                    for i in range(len(names))
+                ]
+                + [f"n{i}: pullRequest(number: $n{i}) {{ ...pull }}" for i in range(len(nums))]
             )
             query = (
                 f"query($owner: String!, $name: String!{params}) "
                 f"{{ repository(owner: $owner, name: $name) {{ {aliases} }} }} {_MERGED_FRAGMENT}"
             )
-            variables = [a for i, n in enumerate(chunk) for a in ("-f", f"b{i}={n}")]
-            found = json.loads(
-                self._gh(
-                    "api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", f"query={query}", *variables,
-                )
-            )  # fmt: skip
-            pulls.update((pull.number, pull) for pull in parse_merged_pulls(found, len(chunk)))
+            variables = [a for i, n in enumerate(names) for a in ("-f", f"b{i}={n}")]
+            variables += [a for i, n in enumerate(nums) for a in ("-F", f"n{i}={n}")]
+            args = ("api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", f"query={query}", *variables)
+            proc = self._run(*args)
+            # gh exits 1 on any GraphQL error, printing the answer: a number GitHub has no pull
+            # request for is one (NOT_FOUND on its alias), and only such answers are read on
+            if proc.returncode != 0 and not _missing_numbers_only(_json_or_none(proc.stdout), len(nums)):
+                raise _failure(args, proc.stderr)
+            found = json.loads(proc.stdout)
+            pulls.update((pull.number, pull) for pull in parse_merged_pulls(found, len(names), len(nums)))
         return [pulls[n] for n in sorted(pulls)]
 
     def shipped_pulls(self, since: dt.datetime) -> list[ShippedPull]:
@@ -1120,19 +1127,70 @@ def _comment(c: Any, item: str) -> IssueComment:
     return IssueComment(login, bot, c["authorAssociation"], _time(c["createdAt"]), c["body"])
 
 
-def parse_merged_pulls(found: Any, aliases: int) -> list[MergedPull]:
-    """The `b<i>` connections of merged_pull_requests' GraphQL answer; anything else is refused,
-    since a pull request misread could prove a branch landed that didn't"""
+def _failure(args: Sequence[str], stderr: str) -> ReleaseError:
+    """The error a gh command that exited non-zero raises"""
+    error = stderr.strip()
+    message = f"gh {' '.join(args[:3])} failed: {error}"
+    # gh prints "<GitHub's message> (HTTP 403)"; a 403 for a rate limit isn't a permission
+    if re.search(r"\bHTTP 403\b", error) and "rate limit" not in error.lower():
+        return Forbidden(message)
+    if re.search(r"\bHTTP (?:404|410)\b", error):
+        return Missing(message)
+    return ReleaseError(message)
+
+
+def _json_or_none(text: str) -> Any:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _missing_numbers(found: Any, numbers: int) -> set[str] | None:
+    """The `n<i>` aliases a GraphQL answer's errors say GitHub has no pull request for; None when
+    it holds an error of any other kind, or for no alias of the numbers asked"""
+    errors = found.get("errors") if isinstance(found, dict) else None
+    if not errors:
+        return set()
+    if not isinstance(errors, list):
+        return None
+    missing = set()
+    aliases = {f"n{i}" for i in range(numbers)}
+    for error in errors:
+        if not isinstance(error, dict):
+            return None
+        path = error.get("path")
+        if error.get("type") != "NOT_FOUND" or not isinstance(path, list) or len(path) != 2:
+            return None
+        if path[0] != "repository" or path[1] not in aliases:
+            return None
+        missing.add(str(path[1]))
+    return missing
+
+
+def _missing_numbers_only(found: Any, numbers: int) -> bool:
+    """An answer whose every error is a number GitHub has no pull request for, and that has some"""
+    missing = _missing_numbers(found, numbers)
+    return bool(missing) and isinstance(found, dict) and isinstance(found.get("data"), dict)
+
+
+def parse_merged_pulls(found: Any, aliases: int, numbers: int = 0) -> list[MergedPull]:
+    """The `b<i>` connections and `n<i>` pull requests of merged_pull_requests' GraphQL answer;
+    an `n<i>` that is null with GitHub's NOT_FOUND error for it, or not merged, finds nothing.
+    Anything else is refused, since a pull request misread could prove a branch landed that
+    didn't"""
 
     def refuse(what: str) -> ReleaseError:
         return ReleaseError(f"gh api graphql printed {what} for the merged pull requests: {str(found)[:300]}")
 
-    if not isinstance(found, dict) or found.get("errors"):
+    missing = _missing_numbers(found, numbers)
+    if not isinstance(found, dict) or missing is None:
         raise refuse("errors or no object")
     data = found.get("data")
     repository = data.get("repository") if isinstance(data, dict) else None
     if not isinstance(repository, dict):
         raise refuse("no repository")
+    unreadable = "a pull request without a number, headRefName, baseRefName, headRefOid, commits, or timeline"
     pulls: dict[int, MergedPull] = {}
     for i in range(aliases):
         connection = repository.get(f"b{i}")
@@ -1141,9 +1199,19 @@ def parse_merged_pulls(found: Any, aliases: int) -> list[MergedPull]:
         for node in connection["nodes"]:
             pull = _merged_pull(node)
             if pull is None:
-                raise refuse(
-                    "a pull request without a number, headRefName, baseRefName, headRefOid, commits, or timeline"
-                )
+                raise refuse(unreadable)
+            pulls[pull.number] = pull
+    for i in range(numbers):
+        node = repository.get(f"n{i}")
+        if node is None:
+            if f"n{i}" not in missing:
+                raise refuse(f"no n{i} pull request and no NOT_FOUND error for it")
+            continue
+        merged = node.get("merged") if isinstance(node, dict) else None
+        pull = _merged_pull(node)
+        if pull is None or not isinstance(merged, bool):
+            raise refuse(unreadable + ", or merged")
+        if merged:
             pulls[pull.number] = pull
     return [pulls[n] for n in sorted(pulls)]
 
@@ -1177,11 +1245,13 @@ def _merged_pull(node: Any) -> MergedPull | None:
     ):
         return None
     heads = {oid}
+    own = set()
     for c in commits["nodes"]:
         sha = _oid(c, "commit")
         if sha is None:
             raise ReleaseError(f"gh api graphql printed {c!r} for #{number}: a commit needs an oid")
-        heads.add(sha)
+        own.add(sha)
+    heads |= own
     for event in timeline["nodes"]:
         if not isinstance(event, dict):
             raise ReleaseError(f"gh api graphql printed {event!r} for #{number}: not a force-push event")
@@ -1189,7 +1259,7 @@ def _merged_pull(node: Any) -> MergedPull | None:
             sha = _oid(event, key)
             if sha is not None:
                 heads.add(sha)
-    return MergedPull(number, head, frozenset(heads), base)
+    return MergedPull(number, head, frozenset(heads), base, frozenset(own))
 
 
 _ISSUE_URL = re.compile(r"^https://[^/]+/([\w.-]+/[\w.-]+)/issues/(\d+)$")

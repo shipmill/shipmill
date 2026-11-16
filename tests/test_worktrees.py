@@ -27,6 +27,7 @@ from shipmill.worktrees import (
     parse_live_sessions,
     parse_worktrees,
     prune,
+    pull_number,
 )
 
 from .conftest import FakeGitHub, copy_tree, no_auto_maintenance
@@ -547,6 +548,133 @@ def test_s002_20_a_pr_merged_into_another_branch_proves_nothing(repo: Checkout) 
     assert repo.reasons()["tmp/wt-child"] == "1 commit(s) not landed"
 
 
+def pull_in_origin(repo: Checkout, number: int, commits: list[dict[str, str]]) -> list[str]:
+    """Pull request #number's commits, made in a clone of origin from its main and pushed to
+    refs/pull/<number>/head only, so the main checkout never had them until it fetches them"""
+    other = repo.root.parent / f"pull-{number}"
+    run("git", "clone", "-q", str(repo.root.parent / "origin.git"), str(other))
+    shas = [repo.commit(other, files, f"Pull #{number}, commit {i}") for i, files in enumerate(commits)]
+    repo.git(other).run("push", "-q", "origin", f"HEAD:refs/pull/{number}/head")
+    return shas
+
+
+def squash_on_main(repo: Checkout, files: dict[str, str], message: str) -> None:
+    """The merged pull request as a squash commit that also holds review's own change, so no
+    commit of the worktree's matches it by patch id"""
+    repo.commit(repo.root, {**files, "review.py": f"# {message}\n"}, message)
+    repo.push_main()
+
+
+def test_s002_20_1207_a_review_worktree_at_the_merged_head_is_removable(repo: Checkout) -> None:
+    """#1207: github-pr-triage's `review-<N>` has no upstream and isn't #N's head branch; the
+    number in its name finds #N, and its tip is #N's head"""
+    review = repo.add(".claude/worktrees/r", "-b", "review-5")
+    tip = repo.commit(review, {"a.py": "A = 1\n"}, "Feature")
+    push = repo.add("tmp/wt-push", "-b", "push-6")
+    pushed = repo.commit(push, {"p.py": "P = 1\n"}, "Pushed")
+    again = repo.add("tmp/wt-again", "-b", "review-7-r2")
+    second = repo.commit(again, {"r.py": "R = 1\n"}, "Second round")
+    squash_on_main(repo, {"a.py": "A = 1\n", "p.py": "P = 1\n", "r.py": "R = 1\n"}, "Features (#5, #6, #7)")
+    assert repo.reasons()[".claude/worktrees/r"] == "1 commit(s) not landed"  # S-002-8 alone
+    repo.github.merged = [
+        MergedPull(5, "feat/a", frozenset({tip}), "main", frozenset({tip})),
+        MergedPull(6, "feat/p", frozenset({pushed}), "main", frozenset({pushed})),
+        MergedPull(7, "feat/r", frozenset({second}), "main", frozenset({second})),
+    ]
+    reasons = repo.reasons()
+    assert (reasons[".claude/worktrees/r"], reasons["tmp/wt-push"], reasons["tmp/wt-again"]) == (None, None, None)
+    assert repo.github.merged_reads[-1] == ("push-6", "review-5", "review-7-r2", "#5", "#6", "#7")
+
+
+def test_s002_20_1207_a_locally_rebased_copy_of_the_merged_commits_is_removable(repo: Checkout) -> None:
+    """#1207: review rebased #7's commits onto a newer main and never pushed them, so no SHA
+    matches; their patch ids match #7's commits, the CHANGELOG.md one only without it"""
+    pr = pull_in_origin(repo, 7, [{"a.py": "A = 1\n"}, {"b.py": "B = 1\n", "CHANGELOG.md": changelog("B (#7)")}])
+    repo.commit(repo.root, {"CHANGELOG.md": changelog("Other (#4)")}, "Other first")
+    repo.push_main()
+    review = repo.add(".claude/worktrees/r7", "-b", "land-7")
+    repo.commit(review, {"a.py": "A = 1\n"}, "One, rebased")
+    repo.commit(review, {"b.py": "B = 1\n", "CHANGELOG.md": changelog("Other (#4)", "B (#7)")}, "Two, rebased")
+    squash_on_main(repo, {"a.py": "A = 1\n", "b.py": "B = 1\n"}, "Feature (#7)")
+    repo.github.merged = [MergedPull(7, "feat/7", frozenset({pr[-1]}), "main", frozenset(pr))]
+    assert repo.reasons()[".claude/worktrees/r7"] is None
+    assert not repo.git().ok("rev-parse", "--verify", "-q", "refs/pull/7/head")  # objects only, no ref
+
+
+def test_s002_20_1207_a_rebased_copy_with_a_commit_of_its_own_is_kept(repo: Checkout) -> None:
+    """An unpushed review fix is a change #7 never had: it keeps the worktree, counted alone"""
+    pr = pull_in_origin(repo, 7, [{"a.py": "A = 1\n"}])
+    repo.commit(repo.root, {"other.py": "O = 1\n"}, "Other first")
+    repo.push_main()
+    review = repo.add(".claude/worktrees/r7", "-b", "review-7")
+    repo.commit(review, {"a.py": "A = 1\n"}, "One, rebased")
+    repo.commit(review, {"fix.py": "F = 1\n"}, "Review fix, never pushed")
+    squash_on_main(repo, {"a.py": "A = 1\n"}, "Feature (#7)")
+    repo.github.merged = [MergedPull(7, "feat/7", frozenset(pr), "main", frozenset(pr))]
+    assert repo.reasons()[".claude/worktrees/r7"] == "1 commit(s) not landed"
+
+
+def test_s002_20_1207_a_changelog_only_difference_is_the_only_one_forgiven(repo: Checkout) -> None:
+    """Without CHANGELOG.md the patch ids leave out that file alone: a commit whose other
+    files differ from every commit of #7 has not landed"""
+    pr = pull_in_origin(repo, 7, [{"a.py": "A = 1\n", "CHANGELOG.md": changelog("A (#7)")}])
+    review = repo.add(".claude/worktrees/r7", "-b", "review-7")
+    repo.commit(review, {"a.py": "A = 2\n", "CHANGELOG.md": changelog("A (#7)")}, "One, changed")
+    squash_on_main(repo, {"a.py": "A = 1\n"}, "Feature (#7)")
+    repo.github.merged = [MergedPull(7, "feat/7", frozenset(pr), "main", frozenset(pr))]
+    assert repo.reasons()[".claude/worktrees/r7"] == "1 commit(s) not landed"
+
+
+def test_s002_20_1207_an_open_or_elsewhere_merged_number_proves_nothing(repo: Checkout) -> None:
+    """`review-<N>` of an open #N, of #N merged into a branch that isn't the default one, or of
+    a number GitHub has no merged pull request for, keeps its worktree"""
+    pr = pull_in_origin(repo, 8, [{"c.py": "C = 1\n"}])
+    for name in ("review-8", "review-9", "review-10"):
+        tree = repo.add(f"tmp/wt-{name}", "-b", name)
+        repo.commit(tree, {"c.py": "C = 1\n"}, name)
+    squash_on_main(repo, {"c.py": "C = 1\n"}, "Feature (#8)")
+    repo.github.pulls = [PullRequest(8, "feat/8")]  # open: GitHub lists no merged #8
+    repo.github.merged = [MergedPull(9, "feat/9", frozenset(pr), "feat/parent", frozenset(pr))]
+    reasons = repo.reasons()
+    assert reasons["tmp/wt-review-8"] == "1 commit(s) not landed"
+    assert reasons["tmp/wt-review-9"] == "1 commit(s) not landed"
+    assert reasons["tmp/wt-review-10"] == "1 commit(s) not landed"
+
+
+def test_s002_20_1207_a_pull_head_that_cannot_be_fetched_keeps_the_worktree(repo: Checkout) -> None:
+    """GitHub says #7 merged, but origin has no refs/pull/7/head: the commits can't be compared,
+    so they count as not landed"""
+    review = repo.add(".claude/worktrees/r7", "-b", "review-7")
+    repo.commit(review, {"a.py": "A = 1\n"}, "One, rebased")
+    squash_on_main(repo, {"a.py": "A = 1\n"}, "Feature (#7)")
+    repo.github.merged = [MergedPull(7, "feat/7", frozenset({fake_sha(9)}), "main", frozenset({fake_sha(9)}))]
+    assert repo.reasons()[".claude/worktrees/r7"] == "1 commit(s) not landed"
+
+
+@pytest.mark.parametrize(
+    ("branch", "number"),
+    [
+        ("review-12", 12),
+        ("review-12-r2", 12),
+        ("push-3", 3),
+        ("land-40", 40),
+        ("review-", None),
+        ("review-0", None),
+        ("review-12x", None),
+        ("feat/review-12", None),
+        ("land-4-x", None),
+        ("fix/12-x", None),
+        ("myreview-12", None),
+        ("review-999999999", 999999999),
+        # GitHub refuses the whole read for a number its Int can't hold, failing every prune
+        ("review-99999999999999999999", None),
+        ("push-1234567890", None),
+    ],
+)
+def test_s002_20_1207_the_numbered_branch_names(branch: str, number: int | None) -> None:
+    assert pull_number(branch) == number
+
+
 def test_s002_20_merged_prs_are_read_once_for_the_branches_ahead_only(repo: Checkout) -> None:
     ahead = repo.add("tmp/wt-ahead", "-b", "ahead")
     repo.commit(ahead, {"x.py": "X = 1\n"}, "Ahead")
@@ -621,7 +749,7 @@ def test_s002_20_gh_reads_each_merged_heads_history(tmp_path: Path) -> None:
     bin_dir = fake_tool(tmp_path, "gh", f'printf "%s\\n" "$@" > "{args}"\ncat "{out}"\n')
     gh = GhCli(tmp_path, str(bin_dir / "gh"))
     assert gh.merged_pull_requests(["feat/54", "feat/x", "feat/54"]) == [
-        MergedPull(75, "feat/54", frozenset({"a" * 40, "b" * 40, "c" * 40}), "main")
+        MergedPull(75, "feat/54", frozenset({"a" * 40, "b" * 40, "c" * 40}), "main", frozenset({"c" * 40}))
     ]
     sent = args.read_text(encoding="utf-8").splitlines()
     assert sent[:2] == ["api", "graphql"]
@@ -672,6 +800,67 @@ def test_s002_11_a_merged_pr_answer_shipmill_cannot_read_is_refused(
     bin_dir = fake_tool(tmp_path, "gh", "echo 'HTTP 401' >&2\nexit 1\n")
     with pytest.raises(ReleaseError, match="HTTP 401"):
         GhCli(tmp_path, str(bin_dir / "gh")).merged_pull_requests(["a"])
+
+
+def numbered_node(number: int, merged: bool) -> dict[str, object]:
+    return {
+        "number": number,
+        "merged": merged,
+        "headRefName": f"feat/{number}",
+        "baseRefName": "main",
+        "headRefOid": "d" * 40,
+        "commits": {"nodes": [{"commit": {"oid": "e" * 40}}, {"commit": {"oid": "d" * 40}}]},
+        "timelineItems": {"nodes": []},
+    }
+
+
+def test_s002_20_1207_gh_reads_pull_requests_by_number_in_the_same_request(tmp_path: Path) -> None:
+    """#1207: a number GitHub has no pull request for is a NOT_FOUND error on its alias, and gh
+    exits 1 printing the answer; that alone is read as no pull request, an open one is dropped"""
+    answer = {
+        "data": {
+            "repository": {
+                "b0": {"nodes": []},
+                "n0": numbered_node(5, merged=True),
+                "n1": numbered_node(6, merged=False),
+                "n2": None,
+            }
+        },
+        "errors": [{"type": "NOT_FOUND", "path": ["repository", "n2"], "message": "Could not resolve"}],
+    }
+    out = tmp_path / "out.json"
+    out.write_text(json.dumps(answer), encoding="utf-8")
+    args = tmp_path / "args.txt"
+    bin_dir = fake_tool(tmp_path, "gh", f'printf "%s\\n" "$@" > "{args}"\ncat "{out}"\necho Could not >&2\nexit 1\n')
+    gh = GhCli(tmp_path, str(bin_dir / "gh"))
+    assert gh.merged_pull_requests(["review-5"], [6, 5, 404, 5]) == [
+        MergedPull(5, "feat/5", frozenset({"d" * 40, "e" * 40}), "main", frozenset({"d" * 40, "e" * 40}))
+    ]
+    sent = args.read_text(encoding="utf-8").splitlines()
+    assert sent.count("api") == 1 and "b0=review-5" in sent
+    assert [a for a in sent if a[:1] == "n" and a[1:2].isdigit()] == ["n0=5", "n1=6", "n2=404"]
+    query = next(a for a in sent if a.startswith("query="))
+    assert "n0: pullRequest(number: $n0)" in query and "$n0: Int!" in query
+    assert gh.merged_pull_requests([], []) == []
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"data": {"repository": {"n0": None}}, "errors": [{"type": "FORBIDDEN", "path": ["repository", "n0"]}]},
+        {"data": {"repository": {"n0": None}}, "errors": [{"type": "NOT_FOUND", "path": ["repository", "b0"]}]},
+        {"data": {"repository": {"n0": None}}},
+        {"data": {"repository": {"n0": {**numbered_node(5, merged=True), "merged": None}}}},
+        {"data": None, "errors": [{"type": "NOT_FOUND", "path": ["repository"]}]},
+    ],
+)
+def test_s002_11_1207_any_other_error_on_a_number_is_refused(tmp_path: Path, answer: dict[str, object]) -> None:
+    out = tmp_path / "out.json"
+    out.write_text(json.dumps(answer), encoding="utf-8")
+    code = "exit 1\n" if "errors" in answer else ""
+    bin_dir = fake_tool(tmp_path, "gh", f'cat "{out}"\necho boom >&2\n{code}')
+    with pytest.raises(ReleaseError):
+        GhCli(tmp_path, str(bin_dir / "gh")).merged_pull_requests([], [5])
 
 
 def test_s002_10_an_open_pull_request_keeps_a_worktree(repo: Checkout) -> None:
