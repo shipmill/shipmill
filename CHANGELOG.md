@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.146.0] - 2026-11-18
+
+### Changed
+
+- A relayed answer is read by one relay grammar: lines after a `Note:` line are not read, a `Basis:` line is recorded only, and `own: <text>` is the maintainer's own words; a relay with any other line past its answer is no longer read as the maintainer's own words but refused with `needs-decision: relay not counted: format`, and the session that asks again says why under the question's zone line. A direct reply and a one-line relay take the same options as before (#1222)
+
 ## [0.145.0] - 2026-11-16
 
 ### Changed
@@ -2633,7 +2639,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.145.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.146.0...HEAD
+[0.146.0]: https://github.com/shipmill/shipmill/compare/v0.145.0...v0.146.0
 [0.145.0]: https://github.com/shipmill/shipmill/compare/v0.144.0...v0.145.0
 [0.144.0]: https://github.com/shipmill/shipmill/compare/v0.143.0...v0.144.0
 [0.143.0]: https://github.com/shipmill/shipmill/compare/v0.142.0...v0.143.0
