@@ -173,7 +173,7 @@ approved the work, never an outside author of a request.
 ## Decisions relied on
 
 - D-14
-- D-33
+- D-96 (supersedes D-33)
 - D-54
 - D-61
 - D-62
