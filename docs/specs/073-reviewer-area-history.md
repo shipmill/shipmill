@@ -106,4 +106,8 @@ Touched areas: `src/shipmill/review_history.py`, `src/shipmill/cli.py` (`review 
 
 ## Issues
 
+- shipmill/shipmill#1249: S-073-1, S-073-4, S-073-5, S-073-6, S-073-7, S-073-8
+- shipmill/shipmill#1254: S-073-2, S-073-3
+- shipmill/shipmill#1257: S-073-9
+
 ## Verification

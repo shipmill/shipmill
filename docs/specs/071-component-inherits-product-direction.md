@@ -152,4 +152,8 @@ non-goals reach them through the same call; their texts say what to do with them
 
 ## Issues
 
+- shipmill/shipmill#1248: S-071-1, S-071-2, S-071-9, S-071-10, S-071-11
+- shipmill/shipmill#1251: S-071-3, S-071-4, S-071-5, S-071-6, S-071-7, S-071-8, S-071-13
+- shipmill/shipmill#1256: S-071-12
+
 ## Verification

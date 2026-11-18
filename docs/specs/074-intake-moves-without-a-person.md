@@ -140,4 +140,7 @@ change only when the set of due issues does.
 
 ## Issues
 
+- shipmill/shipmill#1252: S-074-1, S-074-2
+- shipmill/shipmill#1258: S-074-3, S-074-4, S-074-5, S-074-6, S-074-7, S-074-8, S-074-9
+
 ## Verification
