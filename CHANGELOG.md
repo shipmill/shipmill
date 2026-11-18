@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.146.1] - 2026-11-18
+
+### Fixed
+
+- Every reader of a relayed answer now follows the relay grammar: triage reads a relay out of its grammar as NEEDS_DECISION with the note `relay not counted: format` instead of DECIDED, product intake stops reading a plan relay at its `Note:` line, and the format check compares the words after an option's number with punctuation stripped, so `1. <option>: more` and `1. <option> and more` get the same reason (#1261)
+- The github-pr-triage gate's `pr_gate.py` keeps a maintainer's answer, and the decided comment of an accepted spec, on a spec pull request rebased with the `D-n` it claims renumbered: it reads the decisions log by entry against each head's own merge-base, with the claimed ids mapped old to new as `specs.py same-approval` maps them, and the lines in the PR's other files citing them too, so it no longer asks `answered at <sha7>, and the change differs since` again; a changed entry, an edit to an existing one, a second new entry, or a line citing another decision still differs (#1265)
+
 ## [0.146.0] - 2026-11-18
 
 ### Changed
@@ -2639,7 +2646,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.146.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.146.1...HEAD
+[0.146.1]: https://github.com/shipmill/shipmill/compare/v0.146.0...v0.146.1
 [0.146.0]: https://github.com/shipmill/shipmill/compare/v0.145.0...v0.146.0
 [0.145.0]: https://github.com/shipmill/shipmill/compare/v0.144.0...v0.145.0
 [0.144.0]: https://github.com/shipmill/shipmill/compare/v0.143.0...v0.144.0
