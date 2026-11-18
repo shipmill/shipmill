@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.146.2] - 2026-11-18
+
+### Fixed
+
+- Triage: a relayed answer out of its grammar on an item with the `needs-decision` label off reads RELAY_REFUSED, an action the gate hands in tier 6, so a session asks again; the watch's upgrade and direction rows say `relay not counted: <reason>; ask again` instead of taking it as answered (#1302)
+
 ## [0.146.1] - 2026-11-18
 
 ### Fixed
@@ -2646,7 +2652,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.146.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.146.2...HEAD
+[0.146.2]: https://github.com/shipmill/shipmill/compare/v0.146.1...v0.146.2
 [0.146.1]: https://github.com/shipmill/shipmill/compare/v0.146.0...v0.146.1
 [0.146.0]: https://github.com/shipmill/shipmill/compare/v0.145.0...v0.146.0
 [0.145.0]: https://github.com/shipmill/shipmill/compare/v0.144.0...v0.145.0
