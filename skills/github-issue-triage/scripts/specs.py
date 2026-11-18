@@ -977,16 +977,15 @@ def format_free(text: str, placeholder: dict[str, list[str]]) -> dict[str, list[
     return found
 
 
-def claimed(base: str, head: str) -> dict[int, str]:
+def claimed(base: str, head: str, read: Callable[[str, str], str | None] = file_at) -> dict[int, str]:
     """The decisions (D-n to title) the log has at head and not at its merge base: the ones
-    the pull request claims"""
+    the pull request claims; read(commit, path) is a file's text at a commit, None without it
+    (pr_gate.py reads them from its checkout)"""
     for log in DECISION_LOGS:
-        text = file_at(head, log.as_posix())
+        text = read(head, log.as_posix())
         if text is None:
             continue
-        before = {
-            m.group(1) for m in map(DECISION_HEADING.match, (file_at(base, log.as_posix()) or "").splitlines()) if m
-        }
+        before = {m.group(1) for m in map(DECISION_HEADING.match, (read(base, log.as_posix()) or "").splitlines()) if m}
         added = (m for m in map(DECISION_HEADING.match, text.splitlines()) if m and m.group(1) not in before)
         return {int(m.group(1)): m.group(2).strip() for m in added}
     return {}
