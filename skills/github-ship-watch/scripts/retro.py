@@ -864,6 +864,7 @@ BASIS = re.compile(r"Basis:\s*(item|round|standing)")
 BASIS_START = "basis:"
 NOTE_START = "note:"
 FORMAT = "format"  # the reason a relay out of its grammar is not counted
+WORD = re.compile(r"\w+")  # a word as relay_refusal compares an answer to an option, punctuation left out
 # A relay's first line (D-68, D-70), the login bare or in a code span (D-61), and the agent marker
 # (spec 050): copied from triage_state.py, which the skill scripts can't import from each other;
 # a test checks they agree
@@ -1132,9 +1133,15 @@ def parse_relay(body: str) -> Relay:
     return Relay(answer, own, basis, FORMAT if malformed else None)
 
 
+def bare_words(text: str) -> list[str]:
+    """Text's words as plain() reads them, punctuation stripped: `recommendation: more` and
+    `recommendation and more` start with the same word (#1261)"""
+    return WORD.findall(plain(text))
+
+
 def option_names(question: str) -> list[list[str]]:
-    """The words of each option's name in a question, as plain() reads them: an option's text
-    before ` (recommended)`, or before its first `: ` when it has no mark"""
+    """The words of each option's name in a question, as bare_words reads them: an option's
+    text before ` (recommended)`, or before its first `: ` when it has no mark"""
     names = []
     for line in question.splitlines():
         option = OPTION.match(line)
@@ -1142,7 +1149,7 @@ def option_names(question: str) -> list[list[str]]:
             continue
         text = option.group(2)
         name = text.split(RECOMMENDED, 1)[0] if RECOMMENDED in text else text.split(": ", 1)[0]
-        names.append(plain(name).split())
+        names.append(bare_words(name))
     return names
 
 
@@ -1150,14 +1157,15 @@ def relay_refusal(question: str, relay: Relay) -> str | None:
     """Why pr_gate.py doesn't count a relay to the question (D-93), or None when it does: its
     own refusal, or an answer line of a number followed by words (`1. <words>`, read as
     takes_recommended reads it) that is no option as listed, its words naming no option's name,
-    the start of one, or one followed by more words, word for word; `own:` is never refused here"""
+    the start of one, or one followed by more words, word for word with punctuation stripped
+    (bare_words); `own:` is never refused here"""
     if relay.refused is not None or relay.own:
         return relay.refused
     listed = NUMBER_AND_TEXT.fullmatch(plain(relay.answer))
     if listed is None:
         return None
-    words = listed.group(2).split()
-    named = any(words[: len(name)] == name[: len(words)] for name in option_names(question) if name)
+    words = bare_words(listed.group(2))
+    named = bool(words) and any(words[: len(name)] == name[: len(words)] for name in option_names(question) if name)
     return None if named else FORMAT
 
 

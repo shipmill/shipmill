@@ -270,6 +270,7 @@ DECISION_BY = re.compile(
     r"Decision by (?:@(" + LOGIN_PATTERN + r")(?=$|\s|[,;:)]|[.!?](?:\s|$))|`@(" + LOGIN_PATTERN + r")`(?![\w`-]))"
 )
 AGENT_MARKER = re.compile(r"<!-- shipmill:agent(?:\s[^>]*)?-->")  # triage_state.py's, which shipmill gh appends
+NOTE_START = "note:"  # retro.py's: a relay's line starting `Note:` ends what is read (D-93); a test checks they agree
 # The --role flags, as triage_state.py takes them (spec 036): only the maintainer's logins are read here
 MAINTAINER = "maintainer"
 ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")
@@ -935,15 +936,22 @@ def relayed_answer(
 ) -> str | None:
     """D-68: the answer a maintainer gave in a session, from a comment by the --bot-login whose
     first line is the relay `Decision by @<login>` naming a maintainer: the text from its next
-    non-blank line on, the agent marker left out. None for any other comment, for a relay
-    naming anyone else, and for one with no answer line or a session's own text there"""
+    non-blank line on, up to a line starting `Note:`, which ends what is read (D-93), the agent
+    marker left out. None for any other comment, for a relay naming anyone else, and for one
+    with no answer line or a session's own text there"""
     if bot_login is None or PLANS.login(comment.get("author")).lower() != bot_login.lower():
         return None
     head, _, rest = (comment.get("body") or "").strip().partition("\n")
     found = DECISION_BY.match(head.strip())
     if found is None or (found[1] or found[2]).lower() not in maintainers:
         return None
-    answer = "\n".join(line for line in rest.splitlines() if not AGENT_MARKER.fullmatch(line.strip())).strip()
+    read: list[str] = []
+    for line in rest.splitlines():
+        if line.strip().casefold().startswith(NOTE_START):
+            break
+        if not AGENT_MARKER.fullmatch(line.strip()):
+            read.append(line)
+    answer = "\n".join(read).strip()
     return answer if answer and own_text(answer, marker) else None
 
 

@@ -566,6 +566,21 @@ def test_s028_18_a_relayed_declines_reason_leaves_the_agent_marker_out(ist: Modu
     assert state_of(ist, bare, maintainers=MAINTAINERS) == ("PLAN_DECLINED", "closed as not planned with no reason")
 
 
+def test_d93_a_relayed_plan_answer_ends_at_a_note_line(ist: ModuleType) -> None:
+    """#1261: a `Note:` line ends what is read of a relay, as retro.py's parse_relay reads one"""
+    closed = {"state": "CLOSED", "reason": "NOT_PLANNED"}
+    noted = open_plan(20, relay("decline\n\nNote: the maintainer said so in chat", 10), **closed)
+    assert state_of(ist, noted, maintainers=MAINTAINERS) == ("PLAN_DECLINED", "closed as not planned with no reason")
+    reasoned = open_plan(20, relay("decline: not this quarter\n\nnote: checked\n\nmore", 10), **closed)
+    assert state_of(ist, reasoned, maintainers=MAINTAINERS) == ("PLAN_DECLINED", "not this quarter")
+    only = open_plan(20, relay("Note: nothing was answered", 10))
+    assert state_of(ist, only, maintainers=MAINTAINERS) == ("PLAN_OPEN", "")  # no answer before it
+    inline = open_plan(20, relay("decline Note: inline\n\nNote: x", 10), **closed)
+    assert state_of(ist, inline, maintainers=MAINTAINERS) == ("PLAN_DECLINED", "Note: inline")  # ends nothing
+    split = relay("Split W-2 in two\nKeep W-3\n\nNote: relayed from the session", 10)
+    assert ist.relayed_answer(split, BOT, "Triage:", MAINTAINERS) == "Split W-2 in two\nKeep W-3"
+
+
 def test_s028_18_a_relay_older_than_the_newest_revision_is_stale(ist: ModuleType) -> None:
     stale = open_plan(20, relay("Split W-2", 10), revised(2, 11))
     assert state_of(ist, stale, maintainers=MAINTAINERS) == ("PLAN_OPEN", "")
@@ -629,6 +644,7 @@ def test_s028_18_the_relay_pattern_is_triage_states(ist: ModuleType) -> None:
     sys.modules[spec.name] = triage
     spec.loader.exec_module(triage)
     assert ist.DECISION_BY.pattern == triage.DECISION_BY.pattern
+    assert ist.NOTE_START == triage.retro_module().NOTE_START  # D-93: one place Note: ends a relay
     for values in (["maintainer=alice,@o/t", "dev=bob"], ["maintainer=Alice,alice"]):
         assert ist.maintainer_logins(values) == frozenset(
             u.lower() for u in triage.parse_roles(values)["maintainer"][0]

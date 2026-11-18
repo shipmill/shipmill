@@ -1047,7 +1047,11 @@ def test_d93_parse_relay_reads_the_relay_grammar(rt: ModuleType, answer: str, re
     ("answer", "why"),
     [
         ("1. Take every recommendation: extra words", "format"),  # names no option of the question
-        ("1. Derive it in retro.py: and more", "format"),
+        ("1. Take every recommendation and more", "format"),
+        ("1. --", "format"),  # no words past the punctuation
+        ("1. Derive it in retro.py: and more", None),  # punctuation stripped: as `... and more` (#1261)
+        ("1. Derive it in retro.py and more", None),
+        ("1. Derive it in retro.py, only the asks", None),
         ("1. Derive it in `retro.py`", None),
         ("2. Derive it in retro.py", None),  # another option's name: read as listed (S-055-19)
         ("1. Keep the zone line", None),
@@ -1062,6 +1066,15 @@ def test_d93_relay_refusal_reads_a_number_and_words_against_the_options(
     rt: ModuleType, answer: str, why: str | None
 ) -> None:
     assert rt.relay_refusal(OPTIONS, rt.parse_relay(relay(answer))) == why
+
+
+def test_d93_punctuation_after_an_options_name_gives_the_reason_words_give(rt: ModuleType) -> None:
+    """#1261: `1. Take every recommendation: more` reads as `1. Take every recommendation and
+    more` does, a narrowing the gate holds as not taking the option, not a relay out of format"""
+    options = "\n\n1. Take every recommendation (recommended): items 1-7\n2. Hold it: nothing lands"
+    for answer in ("1. Take every recommendation: more", "1. Take every recommendation and more"):
+        assert rt.relay_refusal(options, rt.parse_relay(relay(answer))) is None
+        assert rt.takes_recommended(options, answer) is False
 
 
 @pytest.mark.parametrize(("stated", "reply", "recommended"), [("other", "1", 0), ("recommended", "2", 1)])
