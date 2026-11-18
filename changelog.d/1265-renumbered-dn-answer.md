@@ -1,0 +1,3 @@
+### Fixed
+
+- The github-pr-triage gate's `pr_gate.py` keeps a maintainer's answer, and the decided comment of an accepted spec, on a spec pull request rebased with the `D-n` it claims renumbered: it reads the decisions log by entry against each head's own merge-base, with the claimed ids mapped old to new as `specs.py same-approval` maps them, and the lines in the PR's other files citing them too, so it no longer asks `answered at <sha7>, and the change differs since` again; a changed entry, an edit to an existing one, a second new entry, or a line citing another decision still differs (#1265)

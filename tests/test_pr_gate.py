@@ -2435,6 +2435,109 @@ def test_s055_10_a_spec_prs_other_files_are_still_compared_byte_for_byte(tmp_pat
     assert proc.stdout.splitlines()[-1] == f"  needs-decision: answered at {answered[:7]}, and the change differs since"
 
 
+# #1265: a spec PR rebased with the D-n it claims renumbered (D-49) is the same change (D-81)
+
+LOG = "docs/decisions.md"
+FRAGMENT = "changelog.d/12-release-digest.md"
+
+
+def entry(number: int, title: str, rule: str = "a digest is posted with each release") -> str:
+    return (
+        f"\n## D-{number}: {title}\n\n- Decided: 2026-11-01, in o/r#12\n- Rule: {rule}\n- Why: w\n"
+        "- Applies to: docs/specs/\n- Enforced by: review\n"
+    )
+
+
+DECISIONS_LOG = "# Decisions\n" + entry(1, "First", "r")
+
+
+def claiming(number: int, cited: int | None = None) -> dict[str, str]:
+    """A spec PR's files claiming D-number: its spec, the log's entry, and a fragment, citing it"""
+    spec = SPEC_TEXT.replace("nobody reads", f"nobody reads, as D-{number} says,")
+    spec += f"\n## Decisions relied on\n\n- D-{number}: Digest\n"
+    fragment = f"### Added\n\n- A release digest, by D-{cited or number} (#12)\n"
+    return {SPEC: spec, FRAGMENT: fragment}
+
+
+def renumbered(tmp_path: Path, work: Path, head_files: dict[str, str]) -> tuple[str, str]:
+    """A spec PR answered while it claims D-2; main then takes D-2, and the PR is rebuilt on it
+    with head_files: the answered head and the judged one"""
+    origin = tmp_path / "origin"
+    for where in (work, origin):
+        git(where, "config", "user.email", "t@example.com")
+        git(where, "config", "user.name", "t")
+    committed(origin, {LOG: DECISIONS_LOG}, "The log")
+    git(work, "fetch", "-q", "origin")
+    git(work, "switch", "-q", "-c", "feat", "origin/main")
+    answered = committed(work, {**claiming(2), LOG: DECISIONS_LOG + entry(2, "Digest")}, "Spec")
+    committed(origin, {LOG: DECISIONS_LOG + entry(2, "Theirs", "theirs")}, "Main takes D-2")
+    git(work, "fetch", "-q", "origin")
+    git(work, "switch", "-q", "-c", "rebuilt", "origin/main")
+    return answered, committed(work, head_files, "Spec, rebuilt")
+
+
+THEIRS = DECISIONS_LOG + entry(2, "Theirs", "theirs")
+
+
+@pytest.mark.parametrize(
+    ("head_files", "covered"),
+    [
+        pytest.param({**claiming(3), LOG: THEIRS + entry(3, "Digest")}, True, id="renumbered"),
+        pytest.param(
+            {**claiming(3), LOG: THEIRS + entry(3, "Digest", "a digest is posted weekly")}, False, id="rule changed"
+        ),
+        pytest.param({**claiming(3), LOG: THEIRS + entry(3, "Digest") + entry(4, "More")}, False, id="a second entry"),
+        pytest.param(
+            {**claiming(3), LOG: THEIRS.replace("- Why: w", "- Why: ours", 1) + entry(3, "Digest")},
+            False,
+            id="an existing entry edited",
+        ),
+        pytest.param({**claiming(3, cited=1), LOG: THEIRS + entry(3, "Digest")}, False, id="another citation"),
+    ],
+)
+def test_1265_a_claimed_decision_renumbered_by_a_rebase_is_still_covered(
+    tmp_path: Path, agents: Path, head_files: dict[str, str], covered: bool
+) -> None:
+    classify_as(tmp_path, {7: [SCOPE_ZONE]})
+    answered, head = renumbered(tmp_path, agents, head_files)
+    files = (SPEC, FRAGMENT, LOG)
+    data = headed(head, ((head, at(13)),), body=SPEC_BODY, files=files, added=(SPEC, FRAGMENT))
+    proc = protected(tmp_path, agents, data, thread(asked(head=answered), comment("1", at(12))), issues=ISSUES)
+    if covered:
+        assert (proc.returncode, proc.stdout) == (0, ready_line(head)), proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == 5, proc.stdout + proc.stderr
+        assert proc.stdout.splitlines()[1:] == [
+            "  needs-decision: scope: a new spec",
+            f"  needs-decision: answered at {answered[:7]}, and the change differs since",
+        ]
+
+
+def test_1271_a_covering_answer_clears_the_accepted_spec_ask_with_a_stricter_zone(tmp_path: Path, agents: Path) -> None:
+    """accepted-spec at notify with no decided comment, and scope at ask: the maintainer's answer
+    covering the head lifts both asks"""
+    notify = {"zone": "accepted-spec", "level": "notify", "reason": ACCEPTED_REASON}
+    classify_as(tmp_path, {7: [notify, SCOPE_ZONE]})
+    proc = spec_gate(tmp_path, agents, spec_pr(), thread(asked(), comment("1", at(12))))
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY + NOTIFY_LINE + "\n"), proc.stdout + proc.stderr
+    unanswered = spec_gate(tmp_path, agents, spec_pr(), thread(asked()))
+    assert unanswered.returncode == 5, unanswered.stdout + unanswered.stderr
+    assert NOT_DECIDED in unanswered.stdout.splitlines()
+
+
+def test_1265_an_id_not_moved_keeps_its_spelling() -> None:
+    """Renumbering rewrites only the ids moved: a zero-padded D-01 the PR didn't move stays as
+    written, so a log entry citing it reads the same on both heads"""
+    assert gate.renumbered("D-01, D-2 and D-07", {2: 3}) == "D-01, D-3 and D-07"
+    log = "# Decisions\n\n## D-1: First\n\n- Rule: as D-01 says\n"
+    texts = {("base", LOG): "# Decisions\n", ("answered", LOG): log, ("head", LOG): log}
+
+    def read(commit: str, path: str) -> str | None:
+        return texts.get((commit, path))
+
+    assert gate.log_change(read, "base", "answered", LOG, {}) == gate.log_change(read, "base", "head", LOG, {})
+
+
 # S-055-12 to S-055-15: an agent's code pull request needs a review record of its head
 
 NO_RECORD = (

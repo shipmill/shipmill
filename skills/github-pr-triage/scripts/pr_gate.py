@@ -73,7 +73,8 @@ that branch, never the PR, lifts no ask on its own. The --bot-login's newest dec
 PR (its first line `<!-- shipmill:decided zone=<id> until=<time> -->`, read from the PR's thread as
 the answer is) must name the zone accepted-spec and, on its line `<!-- shipmill:head <sha> -->`, the
 judged head, or a head whose own change is the judged head's as the answer's is (the spec files by
-`specs.py same-approval`, every other file byte for byte). Otherwise the PR reads NEEDS_DECISION,
+`specs.py same-approval`, the decisions log by entry, every other file byte for byte; a D-n the PR
+claims renumbered by a rebase, and the lines citing it, read the same, #1265). Otherwise the PR reads NEEDS_DECISION,
 `  needs-decision: accepted-spec: <why>`, which a new decided comment or the maintainer's answer
 lifts; a decided comment by anyone else, the maintainer too, never counts.
 
@@ -1297,16 +1298,26 @@ def commit_closes(ts: ModuleType, message: str) -> list[tuple[str | None, int]]:
     return [(owner or url_owner or None, int(n or url_n)) for owner, n, url_owner, url_n in closer.findall(message)]
 
 
-def retro() -> ModuleType:
-    """retro.py, which imports metrics from its own folder, as when it runs from there"""
-    if "shipmill_retro" not in _MODULES:
-        folder = str(RETRO.parent)
+def beside(name: str, path: Path) -> ModuleType:
+    """A sibling skill's script that imports from its own folder, loaded as when it runs from there"""
+    if name not in _MODULES:
+        folder = str(path.parent)
         sys.path.insert(0, folder)
         try:
-            _MODULES["shipmill_retro"] = load("shipmill_retro", RETRO)
+            _MODULES[name] = load(name, path)
         finally:
             sys.path.remove(folder)
-    return _MODULES["shipmill_retro"]
+    return _MODULES[name]
+
+
+def retro() -> ModuleType:
+    """retro.py, which imports metrics from its own folder"""
+    return beside("shipmill_retro", RETRO)
+
+
+def specs_script() -> ModuleType:
+    """specs.py, which imports decisions from its own folder"""
+    return beside("shipmill_specs", SPECS)
 
 
 # what the answer is read from (spec 055): a pull request's or an issue's creation and its newest
@@ -1452,14 +1463,99 @@ def same_approval(checkout: str, base_ref: str, spec: str, answered: str, head: 
     return subprocess.run(cmd, capture_output=True, text=True, cwd=checkout).returncode == 0
 
 
+def file_in(checkout: str) -> Callable[[str, str], str | None]:
+    """A reader of a file's text at a commit of the checkout, None when the commit hasn't it"""
+
+    def read(commit: str, path: str) -> str | None:
+        if quiet(checkout, "cat-file", "-e", f"{commit}:{path}") is None:
+            return None
+        return git(checkout, "show", f"{commit}:{path}")
+
+    return read
+
+
+def log_entries(text: str) -> dict[str, str]:
+    """A decisions log by entry: each `## D-n: <title>` heading's D-n to its lines, the heading's
+    included, and "" to the lines before the first; blank lines at either end of one dropped"""
+    found: dict[str, list[str]] = {"": []}
+    key = ""
+    for line in text.splitlines():
+        heading = specs_script().DECISION_HEADING.match(line)
+        if heading is not None:
+            key = f"D-{int(heading.group(1))}"
+            found.setdefault(key, [])  # an id twice reads as one entry of both: a change all the same
+        found[key].append(line.rstrip())
+    return {k: "\n".join(lines).strip("\n") for k, lines in found.items()}
+
+
+def renumbered(text: str, moved: dict[int, int]) -> str:
+    """text with each D-n moved names written as the D-n it moved to, in one pass; any other id
+    stays as written (a zero-padded D-01 too)"""
+    ids = specs_script().DECISION_ID
+    return ids.sub(lambda m: f"D-{moved[int(m.group(1))]}" if int(m.group(1)) in moved else m.group(0), text)
+
+
+def log_change(
+    read: Callable[[str, str], str | None], merge_base: str, sha: str, log: str, moved: dict[int, int]
+) -> dict[str, tuple[str | None, str | None]]:
+    """The pull request's own change to a decisions log at a head, by entry: each entry it adds,
+    edits, or removes, before and after, its text at the head with the D-n ids moved renumbered"""
+    before = log_entries(read(merge_base, log) or "")
+    after = log_entries(renumbered(read(sha, log) or "", moved))
+    return {k: (before.get(k), after.get(k)) for k in before.keys() | after.keys() if before.get(k) != after.get(k)}
+
+
+def file_patches(patch: str) -> list[str]:
+    """A patch split by file, each piece from its `diff --git` line"""
+    return [piece for piece in re.split(r"(?m)^(?=diff --git )", patch) if piece]
+
+
+def without_index(piece: str) -> str:
+    """A file's patch without its `index <blob>..<blob>` line, which names the blobs' hashes"""
+    return re.sub(r"(?m)^index [0-9a-f]+\.\.[0-9a-f]+.*\n", "", piece, count=1)
+
+
+def same_patches(answered: str, head: str, moved: dict[int, int]) -> bool:
+    """Whether two own changes' patches are the same, file by file: byte for byte, or, for a text
+    file whose lines cite a D-n moved, the same once the answered side's ids are renumbered, the
+    index line aside (the renumbering changes the blob)"""
+    then, now = file_patches(answered), file_patches(head)
+    if len(then) != len(now):
+        return False
+    for before, after in zip(then, now, strict=True):
+        mapped = renumbered(before, moved)
+        if mapped == before or "\n@@ " not in mapped:  # nothing moved, or binary: byte for byte
+            if before != after:
+                return False
+        elif without_index(mapped) != without_index(after):
+            return False
+    return True
+
+
 def same_change(checkout: str, base_ref: str, answered: str, head: str, specs: tuple[str, ...]) -> bool:
-    """Whether the answered head's own change is the judged head's: a spec PR's spec files by
-    same-approval, every other file's patch byte for byte; a head the checkout can't read isn't"""
+    """Whether the answered head's own change is the judged head's, each against its own merge-base:
+    a spec PR's spec files by same-approval (D-81), the decisions log by entry, every other file's
+    patch byte for byte. A D-n the PR claims (a heading its change to the log adds) renumbered by a
+    rebase (D-49) is format, matched by its title as same-approval matches it: the one id mapping
+    old to new is applied to the answered side's log and other files, so an entry that differs
+    only in its id, and the lines citing it, read the same, while a changed entry, a second new
+    one, or a line citing another decision differs. A head the checkout can't read isn't"""
     if not has_commit(checkout, answered) or not has_commit(checkout, head):
         return False
     if not all(same_approval(checkout, base_ref, spec, answered, head) for spec in specs):
         return False
-    return own_change(checkout, base_ref, answered, specs) == own_change(checkout, base_ref, head, specs)
+    sp, read = specs_script(), file_in(checkout)
+    answered_base = git(checkout, "merge-base", base_ref, answered).strip()
+    head_base = git(checkout, "merge-base", base_ref, head).strip()
+    moved = sp.renumbering(sp.claimed(answered_base, answered, read), sp.claimed(head_base, head, read))
+    logs = tuple(log.as_posix() for log in sp.DECISION_LOGS)
+    for log in logs:
+        if log_change(read, answered_base, answered, log, moved) != log_change(read, head_base, head, log, {}):
+            return False
+    leaving = (*specs, *logs)
+    return same_patches(
+        own_change(checkout, base_ref, answered, leaving), own_change(checkout, base_ref, head, leaving), moved
+    )
 
 
 def acceptance(
@@ -1549,8 +1645,9 @@ def decided(
     """Why the spec of accepted work at notify isn't decided at the judged head (spec 067), or None
     when it is: the --bot-login's newest decided comment on the pull request, its zone accepted-spec,
     naming in full on its `<!-- shipmill:head <sha> -->` line the judged head or a head whose own
-    change is the judged head's (same_change: the spec files by specs.py same-approval, D-81, every
-    other file byte for byte). A decided comment by anyone else never counts, the maintainer's too:
+    change is the judged head's (same_change: the spec files by specs.py same-approval, D-81, the
+    decisions log by entry, a claimed D-n renumbered read the same, every other file byte for
+    byte). A decided comment by anyone else never counts, the maintainer's too:
     the maintainer approves by an answer (D-49)"""
     if not bot_login:
         return NO_BOT
