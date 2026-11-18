@@ -857,6 +857,13 @@ NUMBER_ALONE = re.compile(r"(?:option\s*)?#?([1-9][0-9]*)")  # "1", "1.", "Optio
 # "1. <text>", "1) <text>", "1: <text>", "Option 1: <text>": the option as listed, read after plain()
 NUMBER_AND_TEXT = re.compile(r"(?:option\s*)?#?([1-9][0-9]*)[.):]\s+(.+)")
 SESSION_ANSWER = "Answered in the session:"  # the relay's answer line (needs-decision.md)
+# The relay grammar (needs-decision.md, Answered in the session; D-93): past the header, the answer
+# line may say `own: <text>`, an optional `Basis:` line follows it, and a `Note:` line ends what is read
+OWN = "own:"
+BASIS = re.compile(r"Basis:\s*(item|round|standing)")
+BASIS_START = "basis:"
+NOTE_START = "note:"
+FORMAT = "format"  # the reason a relay out of its grammar is not counted
 # A relay's first line (D-68, D-70), the login bare or in a code span (D-61), and the agent marker
 # (spec 050): copied from triage_state.py, which the skill scripts can't import from each other;
 # a test checks they agree
@@ -1078,22 +1085,95 @@ def by_agent(body: str) -> bool:
     return any(AGENT_MARKER.fullmatch(line.strip()) for line in body.splitlines())
 
 
+@dataclass(frozen=True)
+class Relay:
+    """A relay's body as the relay grammar reads it (D-93): its answer line past `Answered in the
+    session:` and `own:` ("" with none), whether that line is the person's own words (`own:`),
+    the `Basis:` it names (recorded only: it changes no zone's outcome), and why the relay is not
+    counted (FORMAT), None when it is"""
+
+    answer: str
+    own: bool
+    basis: str | None
+    refused: str | None
+
+    @property
+    def option(self) -> str:
+        """The answer as takes_recommended reads it: "" for the person's own words or a relay
+        not counted, which take no option"""
+        return "" if self.own or self.refused else self.answer
+
+
+def parse_relay(body: str) -> Relay:
+    """The one reading of a relay (D-93; pr_gate.py's whole_reply, the retro's count): past its
+    first line, the header, and leaving out the agent marker, an optional `Answered in the
+    session:` line (its rest, when it has one, is the answer line), the answer line (the first
+    non-blank line: an option as listed, or `own: <text>`), an optional `Basis: item|round|
+    standing` line, then nothing or a line starting `Note:`, after which nothing is read. Any
+    other line before `Note:` (a paragraph, an HTML comment, a second `Basis:`), a malformed
+    `Basis:`, or an empty `own:` refuses the relay with FORMAT. A header and one line reads as
+    before: that line is the answer"""
+    lines = [line.strip() for line in body.strip().splitlines()[1:]]
+    lines = [line for line in lines if line and not AGENT_MARKER.fullmatch(line)]
+    if lines and lines[0].startswith(SESSION_ANSWER):
+        lines = [said for said in (lines[0][len(SESSION_ANSWER) :].strip(), *lines[1:]) if said]
+    if not lines:
+        return Relay("", False, None, None)
+    answer, rest = lines[0], lines[1:]
+    own = answer.casefold().startswith(OWN)
+    if own:
+        answer = answer[len(OWN) :].strip()
+    basis = None
+    if rest and rest[0].casefold().startswith(BASIS_START):
+        found = BASIS.fullmatch(rest[0])
+        basis = found.group(1) if found else None
+        rest = rest[1:] if found else rest
+    malformed = (own and not answer) or (bool(rest) and not rest[0].casefold().startswith(NOTE_START))
+    return Relay(answer, own, basis, FORMAT if malformed else None)
+
+
+def option_names(question: str) -> list[list[str]]:
+    """The words of each option's name in a question, as plain() reads them: an option's text
+    before ` (recommended)`, or before its first `: ` when it has no mark"""
+    names = []
+    for line in question.splitlines():
+        option = OPTION.match(line)
+        if option is None:
+            continue
+        text = option.group(2)
+        name = text.split(RECOMMENDED, 1)[0] if RECOMMENDED in text else text.split(": ", 1)[0]
+        names.append(plain(name).split())
+    return names
+
+
+def relay_refusal(question: str, relay: Relay) -> str | None:
+    """Why pr_gate.py doesn't count a relay to the question (D-93), or None when it does: its
+    own refusal, or an answer line of a number followed by words (`1. <words>`, read as
+    takes_recommended reads it) that is no option as listed, its words naming no option's name,
+    the start of one, or one followed by more words, word for word; `own:` is never refused here"""
+    if relay.refused is not None or relay.own:
+        return relay.refused
+    listed = NUMBER_AND_TEXT.fullmatch(plain(relay.answer))
+    if listed is None:
+        return None
+    words = listed.group(2).split()
+    named = any(words[: len(name)] == name[: len(words)] for name in option_names(question) if name)
+    return None if named else FORMAT
+
+
 def relayed_answer(comment: dict[str, Any], bots: frozenset[str], maintainers: Container[str]) -> str | None:
     """D-68, D-70: from a comment by a --bot login whose first line is the relay `Decision by
     @<login>` naming a maintainer (the lowercased login in maintainers, asked only for a relay:
-    pr_gate.py's reads GitHub then, spec 055), its first non-blank line after the relay line,
-    past the template's `Answered in the session:` ("" with none); None for any other comment"""
+    pr_gate.py's reads GitHub then, spec 055), its answer as parse_relay reads it, past the
+    template's `Answered in the session:` ("" with none, for the person's own words, and for a
+    relay not counted, D-93); None for any other comment"""
     if not login_names(comment.get("author")) & {b.lower() for b in bots}:
         return None
-    head, _, rest = (comment.get("body") or "").strip().partition("\n")
-    found = DECISION_BY.match(head.strip())
+    body = (comment.get("body") or "").strip()
+    found = DECISION_BY.match(body.partition("\n")[0].strip())
     if found is None or (found[1] or found[2]).lower() not in maintainers:
         return None
-    for line in rest.splitlines():
-        if line.strip() and not AGENT_MARKER.fullmatch(line.strip()):
-            said = line.strip()
-            return said[len(SESSION_ANSWER) :].strip() if said.startswith(SESSION_ANSWER) else said
-    return ""
+    return parse_relay(body).option
 
 
 def first_answer(later: list[dict[str, Any]], bots: frozenset[str], maintainers: frozenset[str]) -> str | None:

@@ -967,6 +967,10 @@ ASKED = after(0)
         ([comment("2", after(1))], 0),  # another option
         ([comment("sounds good, do whatever", after(1))], 0),  # unreadable
         ([bot(relay(""), after(1))], 0),  # a relay with no answer line
+        ([bot(relay("1\n\nNote: checked in the session\n\nmore"), after(1))], 1),  # D-93: Note: ends it
+        ([bot(relay("1\n\nBasis: round"), after(1))], 1),
+        ([bot(relay("1\n\nbut rename it first"), after(1))], 0),  # out of the grammar: not counted
+        ([bot(relay("own: Derive it in retro.py"), after(1))], 0),  # the person's own words
         ([comment("2", after(1)), comment("1", after(2))], 0),  # the first answer counts
         ([comment("1", after(1), association="NONE", login="outsider")], 0),  # no trusted reply
         ([comment("1" + AGENT, after(1))], 0),  # the agent marker: an agent's text (D-62)
@@ -1013,6 +1017,51 @@ def test_s030_18_a_question_without_answer_reads_the_first_answer_after_it(
 )
 def test_s055_19_the_option_as_listed_number_and_text_takes_it(rt: ModuleType, answer: str, takes: bool) -> None:
     assert rt.takes_recommended(OPTIONS, answer) is takes
+
+
+@pytest.mark.parametrize(
+    ("answer", "read"),
+    [
+        ("1", ("1", False, None, None)),  # a header and one line, as before
+        ("Answered in the session: 1", ("1", False, None, None)),
+        ("Answered in the session:\n\n1", ("1", False, None, None)),
+        ("", ("", False, None, None)),
+        ("1\n\nNote: approved in chat\n\nwhatever follows", ("1", False, None, None)),
+        ("1\n\nBasis: round", ("1", False, "round", None)),
+        ("1\n\nBasis: standing\n\nNote: x", ("1", False, "standing", None)),
+        ("own: only h2", ("only h2", True, None, None)),
+        ("Answered in the session: own: only h2\n\nBasis: item", ("only h2", True, "item", None)),
+        ("1\n\nmore words", ("1", False, None, "format")),
+        ("1\n\n<!-- shipmill:zone scope -->\n\nNote: x", ("1", False, None, "format")),
+        ("1\n\nBasis: sometimes", ("1", False, None, "format")),
+        ("own:", ("", True, None, "format")),
+        ("1 Note: inline", ("1 Note: inline", False, None, None)),  # Note: inside the answer line
+    ],
+)
+def test_d93_parse_relay_reads_the_relay_grammar(rt: ModuleType, answer: str, read: tuple[Any, ...]) -> None:
+    found = rt.parse_relay(relay(answer))
+    assert (found.answer, found.own, found.basis, found.refused) == read
+
+
+@pytest.mark.parametrize(
+    ("answer", "why"),
+    [
+        ("1. Take every recommendation: extra words", "format"),  # names no option of the question
+        ("1. Derive it in retro.py: and more", "format"),
+        ("1. Derive it in `retro.py`", None),
+        ("2. Derive it in retro.py", None),  # another option's name: read as listed (S-055-19)
+        ("1. Keep the zone line", None),
+        ("1. Derive it", None),
+        ("1. Derive it in retro.py but rename the count", None),
+        ("1", None),
+        ("Hold it", None),  # no number: not this check's
+        ("own: 1. Something else", None),
+    ],
+)
+def test_d93_relay_refusal_reads_a_number_and_words_against_the_options(
+    rt: ModuleType, answer: str, why: str | None
+) -> None:
+    assert rt.relay_refusal(OPTIONS, rt.parse_relay(relay(answer))) == why
 
 
 @pytest.mark.parametrize(("stated", "reply", "recommended"), [("other", "1", 0), ("recommended", "2", 1)])

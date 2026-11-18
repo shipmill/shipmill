@@ -100,7 +100,11 @@ edit without `[agents]`):
    relay's after its `Decision by` line with the template's `Answered in the session:` taken
    off, the agent marker left out; a reply of more than one line (`1`, then `but rename X
    first`) answers in the person's own words. An answer in other words, another option, or no
-   answer leaves the verdict NEEDS_DECISION
+   answer leaves the verdict NEEDS_DECISION. (Note, D-93, #1222: a relay is now read by the
+   relay grammar of needs-decision.md instead of whole: lines after a `Note:` line are not
+   read, a `Basis:` line is recorded only, `own: <text>` is the person's own words, and a relay
+   with any other line past its answer is not counted, `needs-decision: relay not counted:
+   format`; a person's direct reply and a relay of its header and one line read as above)
 4. **The head it covers.** An answer covers the head its question names: a question on a pull
    request states the head's CI on the line under its first, `CI on <sha7>: ...`
    (needs-decision.md, #1028), and names that head in full on a hidden line under it,

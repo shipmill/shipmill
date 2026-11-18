@@ -108,7 +108,7 @@ Every place github-issue-triage, github-issue-resolve, and github-pr-triage woul
 
 ## Asking
 
-**A question on a pull request waits for its CI (#1028).** Ask it only once every check on the pull request's head has finished: run `pr_gate.py --wait`, which polls while a NEEDS_DECISION pull request has a `pending:` line. When a check failed, the CI failure comes first (github-pr-triage's [ci-failures.md](../../github-pr-triage/references/ci-failures.md)): fix it or hand it back, and ask once the head is green. The question's line right under `@<login> Decision needed: ...` states the head's CI state, such as `CI on <sha7>: 5 checks green`, so the maintainer doesn't have to open the checks. Right under it goes the head's full 40-character SHA in a hidden line, `<!-- shipmill:head <sha> -->` (the `headRefOid` the CI line reports on): that line binds the answer. `pr_gate.py` reads only it as the head answered, matched in full, never a commit's date, a push, or the 7-character prefix, which a commit can be made to share; a question on a pull request without it is asked again with it (spec 055, S-055-5). A question on an issue that a pull request closes counts for that pull request only when the App or an OWNER, MEMBER, or COLLABORATOR opened it (S-055-7). The whole reply is read: a reply that adds anything to the option it picks, such as a second line, answers in the person's own words (S-055-8). When several trusted replies follow the question, the newest one is read: a bare number after a reply with words takes the option, and a reply with words after a bare number holds the item again (S-055-5).
+**A question on a pull request waits for its CI (#1028).** Ask it only once every check on the pull request's head has finished: run `pr_gate.py --wait`, which polls while a NEEDS_DECISION pull request has a `pending:` line. When a check failed, the CI failure comes first (github-pr-triage's [ci-failures.md](../../github-pr-triage/references/ci-failures.md)): fix it or hand it back, and ask once the head is green. The question's line right under `@<login> Decision needed: ...` states the head's CI state, such as `CI on <sha7>: 5 checks green`, so the maintainer doesn't have to open the checks. Right under it goes the head's full 40-character SHA in a hidden line, `<!-- shipmill:head <sha> -->` (the `headRefOid` the CI line reports on): that line binds the answer. `pr_gate.py` reads only it as the head answered, matched in full, never a commit's date, a push, or the 7-character prefix, which a commit can be made to share; a question on a pull request without it is asked again with it (spec 055, S-055-5). A question on an issue that a pull request closes counts for that pull request only when the App or an OWNER, MEMBER, or COLLABORATOR opened it (S-055-7). The whole reply is read: a reply that adds anything to the option it picks, such as a second line, answers in the person's own words (S-055-8). A relay is read by [its grammar](#the-relay-grammar) instead (D-93). When several trusted replies follow the question, the newest one is read: a bare number after a reply with words takes the option, and a reply with words after a bare number holds the item again (S-055-5).
 
 1. Post one comment on the issue or pull request the decision belongs to, through `--body-file` (never an inline `--body`):
 
@@ -143,9 +143,43 @@ An interactive gate session that gets the answer through AskUserQuestion puts th
    Answered in the session: <the option or the user's own words>
    ```
 
-   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`). An option the user picked is written as listed, its number, its text, or both (`1. Take every recommendation`), and each is read as that option; a number and a text naming different options, or words past the option, read as the user's own words (S-055-19). The login sits in a code span so the record doesn't email the person; a reader takes an older line with the login bare, `Decision by @<login>, relayed by <agent>`, as the same answer (D-61). `shipmill gh` ends the relay with the [agent marker](#the-agent-marker), so the relay is no reply: removing the label in the next step is what moves the item. With the label off, the scripts read a relay by the App after the question as the answer still to take up, until a newer triage comment or the item's next state shows it was: `watch_state.py`'s UPGRADE_PENDING and DIRECTION_PENDING say "answered; take up the answer", and `triage_state.py` reads any other issue as DECIDED, its note ending "relayed", where it would read NEW, NEEDS_PR, or TRIAGED
+   `<login>` is the person who answered, `<agent>` the tool that relays it (`Claude Code`). An option the user picked is written as listed, its number, its text, or both (`1. Take every recommendation`), and each is read as that option; a number and a text naming different options, or words past the option, read as the user's own words (S-055-19). The user's own words go after `own:` (`Answered in the session: own: only h2`). Anything more goes in the lines [the relay grammar](#the-relay-grammar) allows, never on the answer line. The login sits in a code span so the record doesn't email the person; a reader takes an older line with the login bare, `Decision by @<login>, relayed by <agent>`, as the same answer (D-61). `shipmill gh` ends the relay with the [agent marker](#the-agent-marker), so the relay is no reply: removing the label in the next step is what moves the item. With the label off, the scripts read a relay by the App after the question as the answer still to take up, until a newer triage comment or the item's next state shows it was: `watch_state.py`'s UPGRADE_PENDING and DIRECTION_PENDING say "answered; take up the answer", and `triage_state.py` reads any other issue as DECIDED, its note ending "relayed", where it would read NEW, NEEDS_PR, or TRIAGED
 2. Remove the `needs-decision` label: `gh issue edit <n> --remove-label needs-decision` (or `gh pr edit`). With `[agents] app_id` set, `shipmill gh pr merge` refuses a pull request that still carries it with exit 2 (S-030-23)
 3. Record the answer with `decisions.py add` when it sets a rule, as the [design gate](design-gate.md) says, and go on
+
+### The relay grammar
+
+A relay is read by one grammar (D-93), the same for `pr_gate.py`, the retro's count, and the session that takes it up (retro.py's `parse_relay`). Its lines, each on its own line, blank lines and the agent marker aside:
+
+```markdown
+Decision by `@<login>`, relayed by <agent>
+
+Answered in the session: <the answer line>
+
+Basis: item
+
+Note: <anything the relaying session wants on the thread>
+```
+
+1. **The header**, `Decision by ...`, as above
+2. **`Answered in the session:`** (optional): the rest of its line is the answer line; with nothing after it, the next line is
+3. **The answer line**, the first line after those: the option as listed (its number, its text, or both, S-055-19, D-85), or `own: <text>` for an answer in the user's own words, a departure from or a narrowing of an option, which takes none
+4. **`Basis: item`, `Basis: round`, or `Basis: standing`** (optional): whether the user answered this item, a round of several, or by a standing approval. It is recorded and changes no zone's outcome; a `never` zone stays the maintainer's merge (S-055-11)
+5. **`Note:`** (optional), a line starting `Note:`: nothing after it is read, so what the relaying session verified can stay on the thread. A `Note:` inside the answer line ends nothing
+
+Any other line before `Note:` (a paragraph, an HTML comment, a second `Basis:`), a malformed `Basis:`, an empty `own:`, or an answer line of a number followed by words that name no option as listed (`1. Take every recommendation: items 1-7` against an option named otherwise) puts the relay out of its grammar: it isn't counted, and `pr_gate.py` reads `needs-decision: relay not counted: format`. A header and one line read as before. A person's direct reply has no grammar: any line past the option is still their own words (S-055-8).
+
+**A relay not counted is asked again with its reason.** The session that takes it up asks again with this protocol, and puts right under the question's zone line the hidden reason and its visible line:
+
+```markdown
+<!-- shipmill:needs-decision -->
+<!-- shipmill:zone rule-departure -->
+<!-- shipmill:relay-refused format -->
+Relay not counted: format
+@<login> Decision needed: <the question, one sentence>
+```
+
+For a zone that needs the maintainer's own reply on GitHub, the lines are `<!-- shipmill:relay-refused zone -->` and `Relay not counted: zone <zone> needs your own reply`. Never put the `needs-decision` label back on an item a relay answered without that comment: the maintainer has to see why their answer didn't count.
 
 ## A denied tool call is a decision
 

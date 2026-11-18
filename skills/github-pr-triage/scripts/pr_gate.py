@@ -21,9 +21,14 @@ without the agent marker, or the --bot-login's relay whose first line is `Decisi
 naming the maintainer: a user `[agents.roles] maintainer` lists on that branch, or, when it lists
 none, a login whose permission on the repo is admin, one read of
 `repos/<o>/<r>/collaborators/<login>/permission` made only for a relay; one that can't be read is
-no maintainer); that answer's whole reply (every non-blank line, a relay's past its first line
-and `Answered in the session:`) being one line that takes the option marked (recommended) as it
-stands. It lifts the asks, and CI decides, when it covers the judged head: one given on an issue
+no maintainer); that answer's whole reply (every non-blank line) being one line that takes the
+option marked (recommended) as it stands. A relay is read by its grammar (needs-decision.md,
+D-93; retro.py's parse_relay): past its first line, an optional `Answered in the session:`, the
+answer line (an option as listed, or `own: <text>`, the person's own words), an optional
+`Basis: item|round|standing` (recorded, deciding nothing), and a `Note:` line after which nothing
+is read; a relay with any other line before `Note:`, or a number followed by words naming no
+option as listed, is not counted, `  needs-decision: relay not counted: format`. It lifts the
+asks, and CI decides, when it covers the judged head: one given on an issue
 before the PR opened covers every head; any other covers the head its question names in full
 on its line `<!-- shipmill:head <sha> -->` (under its visible `CI on <sha7>` line), that exact
 commit, and every head whose own change, `git diff $(git merge-base origin/<base> <head>)
@@ -1321,6 +1326,7 @@ FULL_SHA = re.compile(r"[0-9a-f]{40}")
 ASKED_AT = re.compile(r"<!-- shipmill:head ([0-9a-f]{40}) -->")
 DIFFERS = "answered at {sha7}, and the change differs since"
 NOT_RECOMMENDED = "the answer doesn't take the recommended option"
+RELAY_NOT_COUNTED = "relay not counted: {reason}"  # a relay out of its grammar (D-93)
 NO_HEAD = "the question names no head: ask again with its `<!-- shipmill:head <sha> -->` line"
 
 
@@ -1405,18 +1411,22 @@ def asked_at(question: str) -> str | None:
     return None
 
 
+def by_bots(comment: dict, bots: frozenset[str]) -> bool:
+    """Whether the --bot-login wrote the comment: an answer of its is a relay"""
+    return bool(retro().login_names(comment.get("author")) & {b.lower() for b in bots})
+
+
 def whole_reply(comment: dict, bots: frozenset[str]) -> str | None:
     """The answer as its whole reply reads (S-055-8): every non-blank line of a person's reply,
-    or of a relay past its `Decision by` line and the template's `Answered in the session:`,
-    leaving out the agent marker. One line is the answer; none or more than one is None, so a
-    line past the option is the person's own words and takes no option"""
+    leaving out the agent marker; one line is the answer, none or more than one is None, so a
+    line past the option is the person's own words and takes no option. A relay is read by its
+    grammar, retro.py's parse_relay (D-93): its answer line, None for `own:`, for a relay it
+    refuses, and for one with no answer line"""
     rt = retro()
+    if by_bots(comment, bots):  # the App's relay
+        return rt.parse_relay(str(comment["body"])).option or None
     lines = [line.strip() for line in str(comment["body"]).splitlines()]
     lines = [line for line in lines if line and not rt.AGENT_MARKER.fullmatch(line)]
-    if rt.login_names(comment.get("author")) & {b.lower() for b in bots}:  # the App's relay
-        lines = lines[1:]
-        if lines and lines[0].startswith(rt.SESSION_ANSWER):
-            lines = [said for said in (lines[0][len(rt.SESSION_ANSWER) :].strip(), *lines[1:]) if said]
     return lines[0] if len(lines) == 1 else None
 
 
@@ -1467,10 +1477,12 @@ def acceptance(
     opened, on an issue it closes or names as Part of #N; its newest trusted answer, by
     retro.py's newest_answer_at (a relay by the --bot-login counts when it names one of
     maintainers; D-89), so a bare number after words takes the option and words after a bare
-    number hold it again; its whole reply taking the (recommended) option, by retro.py's takes_recommended; given on
-    an issue before the pull request opened, or at the head the question names in full (its
-    `<!-- shipmill:head <sha> -->` line) or one whose own change is the judged head's. Anything
-    else leaves the question open. thread is the pull request's, when this pass already read it"""
+    number hold it again; a relay out of its grammar not counted, `relay not counted: format`
+    (retro.py's relay_refusal, D-93); its whole reply taking the (recommended) option, by
+    retro.py's takes_recommended; given on an issue before the pull request opened, or at the
+    head the question names in full (its `<!-- shipmill:head <sha> -->` line) or one whose own
+    change is the judged head's. Anything else leaves the question open. thread is the pull
+    request's, when this pass already read it"""
     rt = retro()
     bots = frozenset({bot_login}) if bot_login else frozenset()
     thread = pr_thread(number, repo) if thread is None else thread
@@ -1491,6 +1503,10 @@ def acceptance(
     if answer is None:
         return False, None
     index = answer[0]
+    if by_bots(later[index], bots):
+        refused = rt.relay_refusal(comments[asked]["body"], rt.parse_relay(str(later[index]["body"])))
+        if refused is not None:
+            return False, RELAY_NOT_COUNTED.format(reason=refused)
     said = whole_reply(later[index], bots)
     if said is None or not rt.takes_recommended(comments[asked]["body"], said):
         return False, NOT_RECOMMENDED
