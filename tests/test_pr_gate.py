@@ -2038,6 +2038,7 @@ def test_s055_9_a_roles_table_the_gate_cant_read_stops_it(tmp_path: Path) -> Non
 
 
 NOT_TAKEN = "  needs-decision: the answer doesn't take the recommended option"
+NOT_COUNTED = "  needs-decision: relay not counted: format"
 
 
 @pytest.mark.parametrize(
@@ -2053,7 +2054,8 @@ NOT_TAKEN = "  needs-decision: the answer doesn't take the recommended option"
         # #1122 (4): the whole reply is read, so a line past the option is the person's own words
         ((asked(), comment("1\nbut rename the tag first", at(12))), [NOT_TAKEN]),
         ((asked(), comment("**1**\n\nThanks, go ahead.", at(12))), [NOT_TAKEN]),
-        ((asked(), relay("Decision by @romamo", "1\n\nbut rename the tag first")), [NOT_TAKEN]),
+        # D-93: a relay's paragraph without `Note:` is out of its grammar, not the person's words
+        ((asked(), relay("Decision by @romamo", "1\n\nbut rename the tag first")), [NOT_COUNTED]),
         ((asked(), relay("Decision by @romamo", "")), [NOT_TAKEN]),
         ((asked(), relay("Decision by @romamo", "2")), [NOT_TAKEN]),
         ((asked(), comment("1", at(12)), asked(at(13))), []),  # a newer question follows the answer
@@ -2111,7 +2113,7 @@ def test_s055_5_the_gate_reads_the_newest_answer_and_the_retro_the_first() -> No
         comment("1", at(12, 20)),
         comment("2\n\n<!-- shipmill:agent -->", at(12, 30)),
     ]
-    assert rt.answer_at(later, bots, {"romamo"}) == (0, "1")
+    assert rt.answer_at(later, bots, {"romamo"}) == (0, "")  # a relay out of its grammar takes nothing (D-93)
     assert rt.newest_answer_at(later, bots, {"romamo"}) == (2, "1")
     assert rt.newest_answer_at([*later, asked(at(13)), comment("2", at(13, 10))], bots, {"romamo"}) == (2, "1")
     assert rt.newest_answer_at(later[1:2], bots, {"romamo"}) is None
@@ -2140,6 +2142,64 @@ def test_s055_8_the_whole_reply_is_read(reply: dict[str, Any], said: str | None)
     """a relay's `Decision by` line, `Answered in the session:`, and the agent marker are no words
     of the person's; any other line past the option is"""
     assert gate.whole_reply(reply, frozenset({BOT})) == said
+
+
+RELAY_HEADER = "Decision by `@romamo`, relayed by Claude Code"
+
+
+def bare_relay(*lines: str) -> dict[str, Any]:
+    """The App's relay of the header and lines, one per paragraph, as shipmill gh posts it (#1222)"""
+    body = "\n\n".join((RELAY_HEADER, *lines)) + "\n\n<!-- shipmill:agent -->\n"
+    return comment(body, at(12), login="shipmill-demo", association="NONE", bot=True)
+
+
+@pytest.mark.parametrize(
+    ("lines", "why"),
+    [
+        (("1", "Note: Roman approved this in chat.", "He was shown both options."), None),  # read up to Note:
+        (("Answered in the session: 1", "Note:", "<!-- shipmill:relay-refused format -->"), None),
+        (("1", "Basis: round"), None),  # Basis: is recorded, deciding nothing
+        (("1", "Basis: item", "Note: checked"), None),
+        (("1",), None),  # a header and one line read as before
+        (("own: only h2",), NOT_TAKEN),  # the person's own words take no option
+        (("own: Land it",), NOT_TAKEN),
+        (("1. Take every recommendation: extra words",), NOT_COUNTED),  # a number and words naming no option
+        (("1", "Thanks, and rename the tag later."), NOT_COUNTED),  # a paragraph without Note:
+        (("1", "<!-- shipmill:head abc -->", "Note: x"), NOT_COUNTED),  # an HTML comment before Note:
+        (("1", "Basis: always"), NOT_COUNTED),
+        (("1", "Basis: round", "Basis: item"), NOT_COUNTED),
+        (("own:",), NOT_COUNTED),
+        (("1. Land it Note: rename the tag",), NOT_TAKEN),  # Note: inside the answer line ends nothing
+        (("2. Land it",), NOT_TAKEN),  # options as listed read as before (S-055-19)
+        (("1. Land it but rename the tag",), NOT_TAKEN),
+    ],
+)
+def test_d93_a_relay_is_read_by_its_grammar(
+    tmp_path: Path, directed: Path, lines: tuple[str, ...], why: str | None
+) -> None:
+    """#1222: past the header, the answer line (an option or `own:`), an optional `Basis:`, then
+    `Note:` ends what is read; anything else is not counted, with its fixed reason"""
+    proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(), bare_relay(*lines)))
+    if why is None:
+        assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
+    else:
+        assert proc.returncode == 5, proc.stdout + proc.stderr
+        assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, why]
+
+
+def test_d93_a_persons_reply_is_read_whole_as_before(tmp_path: Path, directed: Path) -> None:
+    """Note: and Basis: belong to a relay: a person's line past the option is still their own words"""
+    for body in ("1\n\nNote: rename the tag first", "1\nBasis: round"):
+        proc = protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(), comment(body, at(12))))
+        assert proc.returncode == 5, proc.stdout + proc.stderr
+        assert proc.stdout.splitlines()[1:] == [PROTECTED_ASK, NOT_TAKEN]
+
+
+def test_d93_s055_11_a_relay_with_a_basis_leaves_a_never_zone_maintainer_only(tmp_path: Path, agents: Path) -> None:
+    classify_as(tmp_path, {7: [DIRECTION_ZONE, PROTECTED_ZONE]})
+    data = headed(files=("docs/product.md", "src/land.py"))
+    proc = protected(tmp_path, agents, data, thread(asked(), bare_relay("1", "Basis: standing")))
+    assert proc.returncode == gate.MAINTAINER_ONLY == 7, proc.stdout + proc.stderr
 
 
 def test_s055_8_a_question_older_than_the_comments_read_is_not_taken_from_an_issue(
