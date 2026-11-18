@@ -1489,9 +1489,10 @@ def log_entries(text: str) -> dict[str, str]:
 
 
 def renumbered(text: str, moved: dict[int, int]) -> str:
-    """text with each D-n moved names written as the D-n it moved to, in one pass"""
+    """text with each D-n moved names written as the D-n it moved to, in one pass; any other id
+    stays as written (a zero-padded D-01 too)"""
     ids = specs_script().DECISION_ID
-    return ids.sub(lambda m: f"D-{moved.get(int(m.group(1)), int(m.group(1)))}", text)
+    return ids.sub(lambda m: f"D-{moved[int(m.group(1))]}" if int(m.group(1)) in moved else m.group(0), text)
 
 
 def log_change(

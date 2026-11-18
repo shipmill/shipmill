@@ -2525,6 +2525,19 @@ def test_1271_a_covering_answer_clears_the_accepted_spec_ask_with_a_stricter_zon
     assert NOT_DECIDED in unanswered.stdout.splitlines()
 
 
+def test_1265_an_id_not_moved_keeps_its_spelling() -> None:
+    """Renumbering rewrites only the ids moved: a zero-padded D-01 the PR didn't move stays as
+    written, so a log entry citing it reads the same on both heads"""
+    assert gate.renumbered("D-01, D-2 and D-07", {2: 3}) == "D-01, D-3 and D-07"
+    log = "# Decisions\n\n## D-1: First\n\n- Rule: as D-01 says\n"
+    texts = {("base", LOG): "# Decisions\n", ("answered", LOG): log, ("head", LOG): log}
+
+    def read(commit: str, path: str) -> str | None:
+        return texts.get((commit, path))
+
+    assert gate.log_change(read, "base", "answered", LOG, {}) == gate.log_change(read, "base", "head", LOG, {})
+
+
 # S-055-12 to S-055-15: an agent's code pull request needs a review record of its head
 
 NO_RECORD = (
