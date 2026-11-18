@@ -155,4 +155,8 @@ Touched areas: `skills/github-pr-triage/scripts/test_proof.py`,
 
 ## Issues
 
+- shipmill/shipmill#1283: S-076-1, S-076-2, S-076-3, S-076-4, S-076-5, S-076-6, S-076-7, S-076-8, S-076-9, S-076-10
+- shipmill/shipmill#1285: S-076-11
+- shipmill/shipmill#1286: S-076-12, S-076-13, S-076-14
+
 ## Verification

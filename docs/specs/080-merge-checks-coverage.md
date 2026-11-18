@@ -166,4 +166,8 @@ step), `docs/install.md`, and `tests/test_merge_checks.py`.
 
 ## Issues
 
+- shipmill/shipmill#1297: S-080-3, S-080-4, S-080-5, S-080-6, S-080-7
+- shipmill/shipmill#1298: S-080-1, S-080-2, S-080-8, S-080-9, S-080-10, S-080-11, S-080-12, S-080-13, S-080-14, S-080-16
+- shipmill/shipmill#1299: S-080-15, S-080-17
+
 ## Verification

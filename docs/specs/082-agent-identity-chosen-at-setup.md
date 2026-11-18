@@ -235,4 +235,10 @@ Touched areas: `src/shipmill/agents.py` (`[agents] identity`), `src/shipmill/cli
 
 ## Issues
 
+- shipmill/shipmill#1273: S-082-1, S-082-7
+- shipmill/shipmill#1276: S-082-8
+- shipmill/shipmill#1278: S-082-2, S-082-3, S-082-4, S-082-5, S-082-6
+- shipmill/shipmill#1281: S-082-10
+- shipmill/shipmill#1282: S-082-9, S-082-11, S-082-12
+
 ## Verification

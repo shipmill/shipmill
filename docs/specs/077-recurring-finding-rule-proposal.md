@@ -228,4 +228,8 @@ Touched areas: `skills/github-ship-watch/scripts/retro.py` (`findings`, `proposa
 
 ## Issues
 
+- shipmill/shipmill#1277: S-077-1, S-077-2, S-077-3, S-077-4, S-077-5
+- shipmill/shipmill#1280: S-077-6, S-077-7, S-077-8, S-077-9
+- shipmill/shipmill#1284: S-077-10, S-077-11, S-077-12, S-077-13, S-077-14
+
 ## Verification

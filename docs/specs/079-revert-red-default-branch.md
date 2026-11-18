@@ -245,4 +245,11 @@ and `tests/test_base_red.py`, `tests/test_revert.py`.
 
 ## Issues
 
+- shipmill/shipmill#1287: S-079-1, S-079-12
+- shipmill/shipmill#1288: S-079-2, S-079-3, S-079-4, S-079-5
+- shipmill/shipmill#1290: S-079-13
+- shipmill/shipmill#1292: S-079-6, S-079-7
+- shipmill/shipmill#1294: S-079-8, S-079-9, S-079-10, S-079-11
+- shipmill/shipmill#1296: S-079-14
+
 ## Verification
