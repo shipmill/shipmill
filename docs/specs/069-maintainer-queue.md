@@ -100,4 +100,8 @@ state: each row comes from a state script that already reads it, on the same fre
 
 ## Issues
 
+- shipmill/shipmill#1244: S-069-1, S-069-5, S-069-6, S-069-7, S-069-8, S-069-9, S-069-10, S-069-11, S-069-12
+- shipmill/shipmill#1245: S-069-2, S-069-3
+- shipmill/shipmill#1246: S-069-4, S-069-13
+
 ## Verification

@@ -121,4 +121,9 @@ of them: they wait on the maintainer's choice, which no session makes.
 
 ## Issues
 
+- shipmill/shipmill#1247: S-070-1, S-070-2, S-070-11, S-070-12, S-070-13
+- shipmill/shipmill#1250: S-070-3, S-070-4, S-070-6
+- shipmill/shipmill#1253: S-070-5, S-070-7, S-070-8, S-070-9, S-070-10
+- shipmill/shipmill#1255: S-070-14, S-070-15
+
 ## Verification
