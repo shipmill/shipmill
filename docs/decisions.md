@@ -786,7 +786,7 @@ entry that supersedes it, never by editing an old one.
 - Applies to: skills/github-ship-watch/scripts/retro.py, skills/github-pr-triage/scripts/pr_gate.py, skills/github-issue-triage/references/needs-decision.md, skills/github-pr-triage/SKILL.md, docs/specs/055-landing-rules-in-code.md, needs-decision answers, Decision by
 - Enforced by: tests/test_pr_gate.py and tests/test_retro.py (test_d93_*)
 
-## D-102: Private terms and secret sources live in a machine file outside every repo, and no session can switch the leak check off
+## D-94: Private terms and secret sources live in a machine file outside every repo, and no session can switch the leak check off
 
 - Decided: 2026-11-18, in shipmill/shipmill#1234
 - Rule: As D-4, save the private terms and the secret sources the leak check reads: they live in one file on the machine, ~/.config/shipmill/private.toml, next to the App's key, never in .github/shipmill.toml or any file of a repo. Before it leaves the machine, a write through shipmill gh and a git push the delivery hook sees are refused with exit 2 when what they send names a listed term and the repo is public, or holds a secret's exact value or a known token format in any repo; a repo whose visibility can't be read counts as public, and a high-entropy string only warns. The check has no switch: no environment variable, flag, config key, or marker in the text turns a detector off or names another file, and a person's own terminal is the way through (spec 081). This refines D-4 for this one file and adds the leaks rule to the hook rules of D-54

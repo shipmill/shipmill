@@ -28,7 +28,7 @@ it grows with the share of writes no person reads before they are sent.
 ### The private file
 
 The terms and the secret sources live in one file on the machine, outside every repo:
-`~/.config/shipmill/private.toml`, next to the App's key (D-102). shipmill ships the
+`~/.config/shipmill/private.toml`, next to the App's key (D-94). shipmill ships the
 mechanism, never the terms; `.github/shipmill.toml` holds none of this, since a public
 repo's config would publish the very names it hides.
 
@@ -48,7 +48,7 @@ Both keys are optional. An unknown key, a wrong type, a term under 3 characters,
 isn't TOML, or a `secret_files` path that can't be read fails every check that would read it
 with exit 2 naming the key and the file (Q-1). With no file, no term is checked and only the
 checkout's own secret files are read. No environment variable or flag names another path or
-turns a check off: a session can't switch it off for itself (D-102).
+turns a check off: a session can't switch it off for itself (D-94).
 
 ### What is checked
 
@@ -209,7 +209,7 @@ Touched areas: `src/shipmill/leaks.py`, `src/shipmill/cli.py` (`leaks check`, `l
 - D-4
 - D-50
 - D-54
-- D-102
+- D-94
 
 ## Issues
 
