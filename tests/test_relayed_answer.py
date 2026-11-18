@@ -111,6 +111,43 @@ def test_a_relay_with_the_label_off_reads_decided(ts: ModuleType, relay: str) ->
     assert "DECIDED" in ts.ACTION
 
 
+def relay_of(*lines: str) -> str:
+    """The App's relay of the header and lines, one per paragraph (#1222)"""
+    return "\n\n".join(("Decision by `@romamo`, relayed by Claude Code", *lines)) + AGENT
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("1", "Thanks, and rename the flag later."),  # a paragraph without Note:
+        ("1", "<!-- shipmill:head abc -->", "Note: x"),  # an HTML comment before Note:
+        ("1", "Basis: always"),
+        ("own:",),
+        ("1. Take every recommendation: extra words",),  # a number and words naming no option
+    ],
+)
+def test_d93_a_relay_out_of_its_grammar_reads_needs_decision(ts: ModuleType, lines: tuple[str, ...]) -> None:
+    """#1261: triage reads a relay by retro.py's parse_relay and relay_refusal, as pr_gate.py does"""
+    item = issue(VERDICT, comment(QUESTION, BOT, "NONE"), comment(relay_of(*lines), BOT, "NONE"), labels=())
+    assert state(ts, item) == ("NEEDS_DECISION", "relay not counted: format")
+    assert "NEEDS_DECISION" not in ts.ACTION
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("Answered in the session: 1",),  # a header and one answer line, as before
+        ("1", "Note: approved in chat", "whatever follows"),
+        ("1", "Basis: round"),
+        ("own: only --x on Linux",),  # the person's own words: answered, taking no option
+        ("2. --y",),  # another option as listed
+    ],
+)
+def test_d93_a_relay_in_its_grammar_reads_decided(ts: ModuleType, lines: tuple[str, ...]) -> None:
+    item = issue(VERDICT, comment(QUESTION, BOT, "NONE"), comment(relay_of(*lines), BOT, "NONE"), labels=())
+    assert state(ts, item) == ("DECIDED", "answered by @romamo, relayed")
+
+
 def test_a_triage_comment_after_the_relay_took_it_up(ts: ModuleType) -> None:
     taken = comment("Triage: implement, on `@romamo`'s answer", BOT, "NONE")
     item = issue(VERDICT, comment(QUESTION, BOT, "NONE"), comment(SPAN, BOT, "NONE"), taken, labels=())

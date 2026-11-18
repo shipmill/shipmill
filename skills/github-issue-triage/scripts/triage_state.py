@@ -133,7 +133,10 @@ For each open issue:
                    read NEW, NEEDS_PR, or TRIAGED, when a relay by the --bot-login
                    came after its question and no triage comment after the relay: a
                    comment whose first line is "Decision by @<login>" or
-                   "Decision by `@<login>`" (D-61), an answer given in a session
+                   "Decision by `@<login>`" (D-61), an answer given in a session. A
+                   relay out of its grammar, as retro.py's parse_relay and
+                   relay_refusal read it (D-93), reads NEEDS_DECISION instead, its note
+                   "relay not counted: format", as pr_gate.py words it
   VETOED           labelled decided (spec 030, a decision taken at notify) and a veto
                    came after its first decided marker, the comment whose first line is
                    <!-- shipmill:decided ... --> by the --bot-login or an OWNER, MEMBER,
@@ -681,6 +684,9 @@ Sizes = dict[str, int]
 Execute = Callable[[list[str]], subprocess.CompletedProcess[str]]
 # Where how a skill script runs the CLI is read from (spec 031): github-ship-watch's script
 WATCH_STATE = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "watch_state.py"
+# github-ship-watch's retro.py: the relay grammar's one reading (D-93), parse_relay and relay_refusal
+RETRO = Path(__file__).resolve().parents[2] / "github-ship-watch" / "scripts" / "retro.py"
+RELAY_NOT_COUNTED = "relay not counted: {reason}"  # as pr_gate.py words a relay out of its grammar
 
 
 class ResourceLimitsExceeded(Exception):
@@ -1610,6 +1616,26 @@ def watch_module() -> ModuleType:
     return ws
 
 
+def retro_module() -> ModuleType:
+    """github-ship-watch's retro.py, loaded once, which imports metrics from its own folder, as
+    when it runs from there (pr_gate.py's retro())"""
+    loaded = sys.modules.get("shipmill_retro")
+    if loaded is not None:
+        return loaded
+    spec = importlib.util.spec_from_file_location("shipmill_retro", RETRO)
+    if spec is None or spec.loader is None:
+        fail(f"can't load {RETRO}")
+    rt = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = rt  # its dataclasses look their module up by name
+    folder = str(RETRO.parent)
+    sys.path.insert(0, folder)
+    try:
+        spec.loader.exec_module(rt)
+    finally:
+        sys.path.remove(folder)
+    return rt
+
+
 def capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
@@ -2094,9 +2120,13 @@ def classify_open(
         since = max(ends, default=None)
         return person_state(issue["comments"]["nodes"], people, bot_login, since, shown, teams)
     # An answer relayed from a session after the label came off, no triage comment after it: it
-    # still waits to be taken up, as a reply does while the label is on
+    # still waits to be taken up, as a reply does while the label is on; one out of the relay
+    # grammar is not counted (D-93) and the question still waits
     relay = relayed(comment_tuples(issue), bot_login)
     if relay is not None and relay[0] > verdict:
+        refused = relay_refused(comment_tuples(issue), bot_login, relay[0])
+        if refused is not None:
+            return "NEEDS_DECISION", RELAY_NOT_COUNTED.format(reason=refused)
         return "DECIDED", f"answered by @{relay[1]}, {RELAYED}"
     if not triage:
         return "NEW", note
@@ -2199,6 +2229,19 @@ def relayed(comments: list[tuple[str, str, str]], bot_login: str | None) -> tupl
         if found is not None:
             return i, found[1] or found[2]
     return None
+
+
+def relay_refused(comments: list[tuple[str, str, str]], bot_login: str | None, at: int) -> str | None:
+    """Why the relay at index at isn't counted against its question, as pr_gate.py's acceptance
+    reads it (D-93): retro.py's relay_refusal of its parse_relay, a reason such as "format", or
+    None when it counts; comments are (login, author association, body), oldest first, and at
+    is relayed's index, so the item has a question"""
+    asked = question(comments, bot_login)
+    if asked is None:
+        fail(f"relay_refused wants a relay after a question, got index {at} with none")
+    rt = retro_module()
+    refused: str | None = rt.relay_refusal(comments[asked][2], rt.parse_relay(comments[at][2]))
+    return refused
 
 
 def trusted(author: str, association: str, bot_login: str | None) -> bool:
