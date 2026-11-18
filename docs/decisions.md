@@ -793,3 +793,11 @@ entry that supersedes it, never by editing an old one.
 - Why: An agent named a private project in a public issue, and the edit history and the notification emails can't be recalled (#1219); a name or key in a pushed commit costs a history rewrite. A list of private names in a public repo's config would publish the names it hides, so this setting can't follow D-4. A switch a session could set would be set by the agent the check exists for. The maintainer accepted the outcome on #1234 and widened it to code and secrets on #1219
 - Applies to: src/shipmill/leaks.py, src/shipmill/app_gh.py, src/shipmill/doctor.py, hooks/delivery.py, hooks/hooks.json, docs/leaks.md, ~/.config/shipmill/private.toml, shipmill gh, git push, private terms, secrets
 - Enforced by: tests/test_leaks.py (S-081-4, S-081-16) and the delivery hook tests (with the implementing PRs)
+
+## D-95: A lane's close_milestone lets its release close its milestone and move what's left to the next
+
+- Decided: 2026-11-18, in shipmill/shipmill#336
+- Rule: A lane with milestone = true that also sets close_milestone = true lets its stable release of X, once tagged and published, close the open milestone titled X, first moving X's open issues to the open milestone titled the lowest stable version above X when one exists; with open issues and no such milestone it writes nothing and spec 022's overtaken rename applies. The release never creates a milestone or adds an issue the milestone didn't hold. Setting the key is the maintainer's decision to have the release edit that milestone, so no agent asks it again per release; without the key the release touches no milestone and status proposes the close. This refines D-32 and the scope zone's 'editing a milestone': a milestone stays the maintainer's list, and the key is the maintainer letting the release keep it in step with what shipped
+- Why: A milestone tied to a release works once and then stops: nothing closes it when its version ships or moves what's left, so the lane loses its milestone trigger until the maintainer notices, a manual step G-1 leaves out (#336, seen in two repos in one week)
+- Applies to: src/shipmill/land.py, src/shipmill/policy.py, src/shipmill/github.py, src/shipmill/status.py, milestones, docs/specs/068-*
+- Enforced by: review, until spec 068 is built
