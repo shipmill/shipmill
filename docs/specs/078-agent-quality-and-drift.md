@@ -211,4 +211,9 @@ Touched areas: `skills/github-ship-watch/scripts/metrics.py`,
 
 ## Issues
 
+- shipmill/shipmill#1289: S-078-1, S-078-2, S-078-3, S-078-4, S-078-5, S-078-6
+- shipmill/shipmill#1291: S-078-7
+- shipmill/shipmill#1293: S-078-8, S-078-9, S-078-10, S-078-11, S-078-12, S-078-13, S-078-14, S-078-15
+- shipmill/shipmill#1295: S-078-16, S-078-17, S-078-18
+
 ## Verification

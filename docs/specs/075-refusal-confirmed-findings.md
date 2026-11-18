@@ -133,4 +133,9 @@ and `tests/test_retro.py`.
 
 ## Issues
 
+- shipmill/shipmill#1272: S-075-4, S-075-5, S-075-6
+- shipmill/shipmill#1274: S-075-7
+- shipmill/shipmill#1275: S-075-8
+- shipmill/shipmill#1279: S-075-1, S-075-2, S-075-3, S-075-9
+
 ## Verification
