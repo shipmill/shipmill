@@ -135,8 +135,15 @@ For each open issue:
                    comment whose first line is "Decision by @<login>" or
                    "Decision by `@<login>`" (D-61), an answer given in a session. A
                    relay out of its grammar, as retro.py's parse_relay and
-                   relay_refusal read it (D-93), reads NEEDS_DECISION instead, its note
-                   "relay not counted: format", as pr_gate.py words it
+                   relay_refusal read it (D-93), reads RELAY_REFUSED instead
+  RELAY_REFUSED    the label is off and a relay by the --bot-login came after its
+                   question, no triage comment after it, but the relay is out of its
+                   grammar (D-93), so it isn't counted (#1302): ask again by the
+                   needs-decision protocol, with the relay-refused marker and its visible
+                   line under the zone line. Its note is "relay not counted: <reason>",
+                   such as "format", as pr_gate.py words it. Once the new question is
+                   posted the relay is older than it, so the item reads NEEDS_DECISION as
+                   any asked item does
   VETOED           labelled decided (spec 030, a decision taken at notify) and a veto
                    came after its first decided marker, the comment whose first line is
                    <!-- shipmill:decided ... --> by the --bot-login or an OWNER, MEMBER,
@@ -302,7 +309,8 @@ BLOCKED. Without --home, or with --home naming the repo itself, no `shipmill gh`
 uvx, or a broken plugin.json, when a read is due exits 2.
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
-MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, VETOED, SUSPECT_CLOSE, HANDOFF_DUE,
+MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, RELAY_REFUSED, VETOED, SUSPECT_CLOSE,
+HANDOFF_DUE,
 VERIFY_DUE, NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, OFF_MILESTONE, or AGENT_DRAFT (never for NEEDS_DECISION,
 UNTRUSTED, UPSTREAM, WITH_PERSON, or AGENT_DRAFT_HELD),
 1 too when any is CHECK_FAILED (spec 042), 2 on bad input (an issue with more than 100
@@ -815,6 +823,7 @@ ACTION = {
     "REVISIT",
     "DONE_NOT_CLOSED",
     "DECIDED",
+    "RELAY_REFUSED",  # #1302: a relay out of its grammar with the label off: a session asks again
     "VETOED",
     "SUSPECT_CLOSE",
     "HANDOFF_DUE",
@@ -2121,12 +2130,12 @@ def classify_open(
         return person_state(issue["comments"]["nodes"], people, bot_login, since, shown, teams)
     # An answer relayed from a session after the label came off, no triage comment after it: it
     # still waits to be taken up, as a reply does while the label is on; one out of the relay
-    # grammar is not counted (D-93) and the question still waits
+    # grammar is not counted (D-93), and with the label off nobody else asks again (#1302)
     relay = relayed(comment_tuples(issue), bot_login)
     if relay is not None and relay[0] > verdict:
         refused = relay_refused(comment_tuples(issue), bot_login, relay[0])
         if refused is not None:
-            return "NEEDS_DECISION", RELAY_NOT_COUNTED.format(reason=refused)
+            return "RELAY_REFUSED", RELAY_NOT_COUNTED.format(reason=refused)
         return "DECIDED", f"answered by @{relay[1]}, {RELAYED}"
     if not triage:
         return "NEW", note
@@ -2640,7 +2649,8 @@ def main() -> int:
         epilog=(
             "States: NEW NEEDS_PR IN_PROGRESS AGENT_DRAFT AGENT_DRAFT_HELD DONE_NOT_CLOSED BLOCKED UNFILLED "
             "MALFORMED_DEPENDS CYCLE SPEC_REFUSED "
-            "UNBLOCKED POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED VETOED UNTRUSTED UPSTREAM OFF_MILESTONE; "
+            "UNBLOCKED POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED RELAY_REFUSED VETOED UNTRUSTED UPSTREAM "
+            "OFF_MILESTONE; "
             "for an issue labelled human or role:<name> "
             "(a person's item) NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
             "SUSPECT_CLOSE VERIFY_CLOSED VETOED; for a parent with a ## Check VERIFY_DUE CHECK_FAILED "
@@ -2813,6 +2823,7 @@ def main() -> int:
         "VERIFY_CLOSED",
         "DONE_NOT_CLOSED",
         "DECIDED",
+        "RELAY_REFUSED",
         "VETOED",
         "OFF_MILESTONE",
         "VERIFY_DUE",

@@ -541,6 +541,7 @@ TRIAGE_ACTION = {
     "REVISIT",
     "DONE_NOT_CLOSED",
     "DECIDED",
+    "RELAY_REFUSED",  # #1302: a relay out of its grammar with the label off, triage asks again (tier 6)
     "VETOED",
     "SUSPECT_CLOSE",
     "HANDOFF_DUE",
@@ -2552,6 +2553,21 @@ def upgrade_id(issue: Issue) -> str | None:
     return name
 
 
+ANSWERED = "answered; take up the answer"  # an upgrade or direction issue's answer, a reply or a relay
+
+
+def relay_pending(comments: Comments, bot_login: str | None) -> str | None:
+    """What an upgrade or direction issue with the needs-decision label off owes a relay by the
+    App after its question (triage_state.py's relayed): ANSWERED, or for one out of the relay
+    grammar (D-93, triage_state.py's relay_refused) "relay not counted: <reason>; ask again"
+    (#1302); None without such a relay"""
+    relay = TRIAGE.relayed(comments, bot_login)
+    if relay is None:
+        return None
+    refused: str | None = TRIAGE.relay_refused(comments, bot_login, relay[0])
+    return ANSWERED if refused is None else f"{TRIAGE.RELAY_NOT_COUNTED.format(reason=refused)}; ask again"
+
+
 def upgrade_open(issue: Issue, level: str) -> bool:
     """Whether an upgrade issue is taken up, or waits on its question, under [autonomy] upgrade
     level: not under observe, nor once answered "not now" or closed by an open pull request"""
@@ -2575,7 +2591,8 @@ def upgrade_rows(
     does: close it as not planned when a pull request on its branch closed unmerged
     (declined_of, read only then; a merged one closed the issue already), take up the answer
     (a reply, or with the label off an answer relayed from a session after the question,
-    triage_state.py's relayed), open the pull request (act), or ask. The id comes from the
+    triage_state.py's relayed), ask again when that relay is out of its grammar (D-93, #1302:
+    "relay not counted: <reason>; ask again"), open the pull request (act), or ask. The id comes from the
     marker only; the fix never holds issue text (D-16)"""
     rows: list[Row] = []
     waiting: list[int] = []
@@ -2596,8 +2613,10 @@ def upgrade_rows(
         if declined:
             pr = f"#{max(declined)}"
             detail = f"{name}: pull request {pr} closed unmerged, a decline: close #{issue.number} as not planned"
-        elif asked or TRIAGE.relayed(comments_of(issue.number), bot_login) is not None:
-            detail = f"{name}: answered; take up the answer"
+        elif asked:
+            detail = f"{name}: {ANSWERED}"
+        elif (taken := relay_pending(comments_of(issue.number), bot_login)) is not None:
+            detail = f"{name}: {taken}"
         elif level == "act" and not held:
             detail = f"{name}: open the pull request (upgrade = act)"
         else:
@@ -2745,7 +2764,9 @@ def direction_rows(
     an issue labelled needs-decision: with no trusted reply after its question it waits, in
     NEEDS_DECISION, no DIRECTION_PENDING. With the label off it is read unless a pull request
     declined the direction: an answer relayed from a session after the question
-    (triage_state.py's relayed) is the maintainer's answer too. Each fix is built from the repo, the numbers, and
+    (triage_state.py's relayed) is the maintainer's answer too, unless it is out of its grammar
+    (D-93, #1302): then DIRECTION_PENDING says "relay not counted: <reason>; ask again". Each fix
+    is built from the repo, the numbers, and
     the path, never from an issue's text (D-16)"""
     subject = DIRECTION.as_posix()
     absent = f"no {subject} on origin/{branch}"
@@ -2785,8 +2806,12 @@ def direction_rows(
         pr = declined_own[-1]
         stands = f"pull request #{pr} for #{number} closed unmerged"
         pending = f"pull request #{pr} closed unmerged, a decline: close #{number} as not planned"
-    elif asked or TRIAGE.relayed(comments_of(number), bot_login) is not None:
-        stands, pending = f"#{number} has the maintainer's answer", "answered; take up the answer"
+    elif asked:
+        stands, pending = f"#{number} has the maintainer's answer", ANSWERED
+    elif (taken := relay_pending(comments_of(number), bot_login)) is not None:
+        answered = taken == ANSWERED
+        stands = f"#{number} has the maintainer's answer" if answered else f"#{number}'s relay was not counted"
+        pending = taken
     else:
         stands, pending = f"#{number} is open, its question not asked", "ask the maintainer"
     return Direction(

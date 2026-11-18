@@ -126,11 +126,55 @@ def relay_of(*lines: str) -> str:
         ("1. Take every recommendation: extra words",),  # a number and words naming no option
     ],
 )
-def test_d93_a_relay_out_of_its_grammar_reads_needs_decision(ts: ModuleType, lines: tuple[str, ...]) -> None:
-    """#1261: triage reads a relay by retro.py's parse_relay and relay_refusal, as pr_gate.py does"""
+def test_d93_a_relay_out_of_its_grammar_reads_relay_refused(ts: ModuleType, lines: tuple[str, ...]) -> None:
+    """#1261: triage reads a relay by retro.py's parse_relay and relay_refusal, as pr_gate.py does;
+    #1302: the label is off, so the refused relay is an action, a session asks again"""
     item = issue(VERDICT, comment(QUESTION, BOT, "NONE"), comment(relay_of(*lines), BOT, "NONE"), labels=())
-    assert state(ts, item) == ("NEEDS_DECISION", "relay not counted: format")
-    assert "NEEDS_DECISION" not in ts.ACTION
+    assert state(ts, item) == ("RELAY_REFUSED", "relay not counted: format")
+    assert "RELAY_REFUSED" in ts.ACTION  # the script exits 1 on it
+
+
+REFUSED = relay_of("1", "Thanks, and rename the flag later.")  # a paragraph before Note:, out of the grammar
+# the session's new question after a refused relay, its reason right under the zone line (D-93)
+REASKED = QUESTION.replace(
+    "\n",
+    "\n<!-- shipmill:zone rule-departure -->\n<!-- shipmill:relay-refused format -->\nRelay not counted: format\n",
+    1,
+)
+
+
+def test_1302_a_question_asked_again_after_a_refused_relay_reads_needs_decision(ts: ModuleType) -> None:
+    thread = (VERDICT, comment(QUESTION, BOT, "NONE"), comment(REFUSED, BOT, "NONE"), comment(REASKED, BOT, "NONE"))
+    assert state(ts, issue(*thread)) == ("NEEDS_DECISION", "waits on a reply")
+    # before the label is back on, the relay is older than the newest question: no relay to read
+    assert state(ts, issue(*thread, labels=()))[0] == "TRIAGED"
+
+
+def test_1302_a_refused_relay_with_the_label_on_still_waits(ts: ModuleType) -> None:
+    item = issue(VERDICT, comment(QUESTION, BOT, "NONE"), comment(REFUSED, BOT, "NONE"))
+    assert state(ts, item) == ("NEEDS_DECISION", "waits on a reply")
+
+
+def test_1302_a_refused_relay_reads_ask_again_on_an_upgrade_issue(ws: ModuleType) -> None:
+    thread = [(BOT, "NONE", UPGRADE_QUESTION), (BOT, "NONE", REFUSED)]
+    upgrades = Upgrades(ws, [upgrade_issue(ws, 12)], comments={12: thread})
+    assert upgrades.pending == [("#12", "changelog-fragments: relay not counted: format; ask again")]
+
+
+def test_1302_a_refused_relay_reads_ask_again_on_a_direction_issue(ws: ModuleType) -> None:
+    thread = [(DIRECTION_BOT, "NONE", DIRECTION_QUESTION), (DIRECTION_BOT, "NONE", REFUSED)]
+    direction = rows(ws, found=[direction_issue(12)], prs=[], comments=thread)
+    assert pending(direction) == [("#12", "relay not counted: format; ask again")]
+    assert direction.rows[0].detail == "no docs/product.md on origin/main; #12's relay was not counted"
+
+
+def test_1302_tier_6_hands_relay_refused_and_tier_4_never_does(ws: ModuleType) -> None:
+    assert "RELAY_REFUSED" in ws.TRIAGE_ACTION and "RELAY_REFUSED" not in ws.DECIDED_STATES
+    triage = "\n".join([line(7, "RELAY_REFUSED", "relay not counted: format"), line(5, "NEW", "")])
+    issues = [r for r in ws.intake("o/r", 1, triage, [], lambda n: [], BOT) if r.state == "ISSUES"]
+    assert [r.detail for r in ws.split_issues(issues, decided=False)] == ["NEW #5", "RELAY_REFUSED #7"]
+    assert ws.split_issues(issues, decided=True) == []
+    assert ws.relayed_rows(issues, triage) == []  # never read as a relayed DECIDED
 
 
 @pytest.mark.parametrize(

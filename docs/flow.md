@@ -132,6 +132,7 @@ An agent's text is told from a person's by its marker, never by its author (spec
 | SPEC_REFUSED | The PR it waits on (its spec PR) closed without merging | Decide again: revise the spec in a new PR, postpone, or won't fix |
 | UNBLOCKED | The upstream issue it waited on has closed, its spec PR merged, or its last dependency closed | Resume; a dependency noted `:not_planned` never landed, so decide again first |
 | DECIDED | Labelled `needs-decision`, and a trusted person answered its question | Read the reply, remove the label, and act on it |
+| RELAY_REFUSED | The `needs-decision` label is off and a relay by the App after its question is out of the relay grammar (D-93), so it isn't counted; its note is `relay not counted: <reason>` | Ask again by the needs-decision protocol, with `<!-- shipmill:relay-refused <reason> -->` and its visible `Relay not counted` line under the zone line |
 | POSTPONED | Labelled `postponed` | Skip it |
 | REVISIT | Postponed before the newest stable release | Decide again |
 | TRIAGED | Triaged, with nothing pending: a request handed to product intake (`opportunity`) reads this too | Nothing; intake groups the handed-over requests |
