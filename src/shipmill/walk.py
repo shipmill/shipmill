@@ -74,6 +74,7 @@ TIERS: dict[int, tuple[str, ...]] = {
             "MALFORMED_DEPENDS",
             "CYCLE",
             "SPEC_REFUSED",
+            "RELAY_REFUSED",  # #1302: a relay out of its grammar with the label off, triage asks again
             "REVISIT",
         )
     ),
