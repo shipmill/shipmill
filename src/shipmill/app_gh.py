@@ -1124,6 +1124,75 @@ def body_edit(args: Sequence[str], read: BodyRead) -> BodyEdit | None:
     return BodyEdit(what, repo, path, body, tuple(args), tuple(kept), tuple(tail), False, len(taken) == 1 and not stdin)
 
 
+# -- #1312: the needs-decision label moves only as the protocol says -------------------------------
+
+DECISION_LABEL = "needs-decision"
+_LABEL_KINDS = {"issue": "issue", "pr": "pull request"}
+
+
+@dataclass(frozen=True, slots=True)
+class LabelEdit:
+    """An edit gh's args ask for that adds or removes the needs-decision label: the command as
+    a refusal names it, the item's repo as the args name it (None for the repo gh picks), its
+    number, and which way the label goes"""
+
+    what: str  # such as `gh issue edit`
+    repo: str | None
+    number: int
+    adds: bool
+    removes: bool
+
+    def target(self, default: str | None) -> str:
+        """The item's repo: the one the args name, else default, the repo gh works on; exit 2
+        without one"""
+        repo = self.repo or default
+        if repo is None:
+            raise ReleaseError(
+                f"{self.what} with {DECISION_LABEL} is refused: shipmill gh reads the item's question before the label "
+                "moves (#1312), and can't tell its repo here; name it with -R owner/name"
+            )
+        return repo
+
+
+def _names_decision(value: str) -> bool:
+    """Whether a label flag's value names needs-decision, alone or in gh's comma list, in any case"""
+    return any(part.strip().lower() == DECISION_LABEL for part in value.split(","))
+
+
+def label_edit(args: Sequence[str]) -> LabelEdit | None:
+    """#1312: the needs-decision label edit gh's args ask for: `issue edit` or `pr edit` with
+    --add-label or --remove-label naming it, alone or in a comma list; None for every other
+    call. One that names no one item by its number or URL exits 2, since its question can't be
+    read"""
+    if not args or args[0] not in _LABEL_KINDS:
+        return None
+    group = _GROUP_FLAGS[args[0]]
+    positional, _ = _scan(args[1:], group.long, group.short)
+    if not positional or positional[0] != "edit":
+        return None
+    positional, flags = _scan(args[1:], _EDIT_FLAGS.long, _EDIT_FLAGS.short)
+    if _helped(flags):
+        return None
+    adds = any(name == "--add-label" and _names_decision(value) for name, value in flags)
+    removes = any(name == "--remove-label" and _names_decision(value) for name, value in flags)
+    if not adds and not removes:
+        return None
+    what = f"gh {args[0]} edit"
+    kind = _LABEL_KINDS[args[0]]
+    targets = positional[1:]
+    url = _ITEM_URL.fullmatch(targets[0]) if len(targets) == 1 else None
+    numbered = _NUMBER.fullmatch(targets[0]) if len(targets) == 1 else None
+    if url is not None:
+        return LabelEdit(what, url.group(1), int(url.group(2)), adds, removes)
+    if numbered is not None:
+        return LabelEdit(what, named_repo(args), int(numbered.group(1)), adds, removes)
+    named = "names none" if not targets else f"names {' '.join(targets)}"
+    raise ReleaseError(
+        f"{what} with {DECISION_LABEL} {named}: shipmill gh reads the {kind}'s needs-decision question before the "
+        f"label moves (#1312), and needs one {kind} by its number or URL; edit each on its own"
+    )
+
+
 def _api_edit(args: Sequence[str], read: BodyRead) -> BodyEdit | None:
     """`gh api -X PATCH` on a body endpoint with a `body` field, as `body_edit` reads it"""
     positional, flags = _scan(args[1:], _API_LONG, _API_SHORT)

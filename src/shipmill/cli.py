@@ -237,6 +237,7 @@ from shipmill.app_gh import (
     edited_args,
     hold_short_head,
     is_read,
+    label_edit,
     marked_args,
     merge_flags,
     merge_of,
@@ -282,6 +283,7 @@ from shipmill.credit import (
     issue_deciders,
     with_parents,
 )
+from shipmill.decision_label import hold_label
 from shipmill.doctor import (
     CALLER,
     DOWNSTREAM_CALLER,
@@ -1878,7 +1880,10 @@ def _gh(
     exits 2 unless it reads READY, and merges only the head it judged (S-055-1 to S-055-3,
     `hold_gate`); on QUEUED it first adds the base's [land.window] queued_label as the App, and
     a merge gh ran that exited 0 removes that label, as the App, when the pull request carries
-    it (S-056-8)"""
+    it (S-056-8). As the App, an `issue edit` or `pr edit` that adds needs-decision exits 2
+    unless the item carries a question, and one that removes it unless a reply, a counted relay,
+    or a withdrawn marker follows the newest question, read with the App's token before gh runs
+    (#1312, `hold_label`)"""
     api, signer = hub.api, hub.signer
     leading = _leading(passed)
     key = leading.key
@@ -1961,6 +1966,7 @@ def _gh(
     edit = body_edit(gh_args, read)
     gh_args = marked_args(gh_args, read) if edit is None else gh_args
     hold_plan(top, gh_args, repo)  # S-055-17: `pr create` and the api's create, before any token, so gh never runs
+    labelled = label_edit(gh_args)  # #1312: read from the args before any token, checked once it is had
     try:
         token = app_token(cache, repo, app_id, path, dt.datetime.now(dt.UTC), signer, api)
     except NotInstalled as exc:
@@ -1971,6 +1977,8 @@ def _gh(
     env = as_app(environ, token)
     # the App's bot login, read once however many readers ask for it
     bot_login = functools.cache(functools.partial(app_login(signer, api), app_id, path))
+    if labelled is not None:  # #1312: as the App, before gh runs, by triage_state.py's readers
+        hold_label(labelled, _gh_default(environ, _known_origin(top)), binary, env, readers.current, bot_login)
     app = functools.partial(_app_login, bot_login, trailer) if trailer else None
     assisted = identity.author is Author.DECIDER  # whose trailer is set (S-051-3)
     held: _Held | None = None
