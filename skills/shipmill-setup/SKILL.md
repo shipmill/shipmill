@@ -610,6 +610,7 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    mode = "interactive" # step 4's answer: sessions ask you; "headless": they ask on GitHub
    # wip = 3          # at most 3 issues in progress at once (1..100); unset: no limit
    # author = "app"   # whose account agents' issues, PRs, merges go out as (spec 051); unset: the App's, no trailer
+   # merge = "merge"  # land with a merge commit, each commit of a branch kept (spec 072, D-96); unset: "squash"
    ```
 
    Gate sessions load the installed plugin, which runs the CLI release it pins (spec 031,

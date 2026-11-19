@@ -165,7 +165,16 @@ from shipmill import (
     status,
 )
 from shipmill import verify as verifying
-from shipmill.agents import AgentsConfig, Author, GhIdentity, ProductConfig, WriteAs, app_id_of, gh_identity_of
+from shipmill.agents import (
+    AgentsConfig,
+    Author,
+    GhIdentity,
+    MergeMethod,
+    ProductConfig,
+    WriteAs,
+    app_id_of,
+    gh_identity_of,
+)
 from shipmill.app import (
     BOT_IDS,
     CACHE,
@@ -235,12 +244,14 @@ from shipmill.app_gh import (
     created_body,
     decided_in,
     edited_args,
+    hold_method,
     hold_short_head,
     is_read,
     label_edit,
     marked_args,
     merge_flags,
     merge_of,
+    named_method,
     named_repo,
     person_args,
     product_refusal,
@@ -1954,9 +1965,10 @@ def _gh(
     merge = merge_of(gh_args)
     trailer = identity.trailer  # S-051-3, S-051-4: author, else the deprecated credit; None: as before (S-051-2)
     if merge is not None and gh_args[0] == "api" and trailer is not None:  # S-049-10, before any token
-        raise ReleaseError(
+        raise ReleaseError(  # S-072-7: the command names the method [agents] merge does
             f"{merge.command} is refused: {trailer} in {CONFIG_PATH}, and a merge through the API "
-            f"leaves out who decided it (spec 049); run `{cli_command()} gh pr merge {merge.number} --squash` instead"
+            f"leaves out who decided it (spec 049); run `{cli_command()} gh pr merge {merge.number} "
+            f"--{identity.merge_method}` instead"
         )
     binary = find_gh(environ)
     cache = state_dir(Git(top)) / CACHE
@@ -1987,7 +1999,7 @@ def _gh(
     assisted = identity.author is Author.DECIDER  # whose trailer is set (S-051-3)
     held: _Held | None = None
     if merge is not None:
-        held = _hold_never(top, merge, env, binary, readers.merge)
+        held = _hold_never(top, merge, gh_args, identity.merge, env, binary, readers.merge)
         pull = held.repo, held.number
         # S-055-1 to S-055-3: after the holds above, with the App's token, before any author's
         try:
@@ -2012,7 +2024,7 @@ def _gh(
                         bot = _bot_account(app(), app_id, api, token, author.writer.login)
                     except AsApp as exc:  # S-051-9: as the App, with autonomous mode's trailer
                         author = _AsApp(dict(env), None, f"author: the App; {exc}")
-                gh_args = _credit(gh_args, credit, readers, trailer, author.writer, bot)
+                gh_args = _credit(gh_args, credit, readers, trailer, identity.merge_method, author.writer, bot)
             author.say()
             env = author.env
     elif assisted and app is not None and write_command(gh_args) in (ISSUE_CREATE, PR_CREATE):
@@ -2224,13 +2236,15 @@ def _credit(
     credit: _MergeCredit,
     readers: _GhReaders,
     trailer: str,
+    method: MergeMethod,
     writer: Writer | None,
     bot: Account | None,
 ) -> list[str]:
     """Spec 049: gh's arguments for the merge credit read, with one `--body` in place of any
     given, the body it would have had followed by a Co-authored-by trailer for each decider it
     doesn't name yet, and one stderr line per decider; unchanged when no record names one.
-    trailer names the setting that asked for the credit (spec 051). Written as a person
+    trailer names the setting that asked for the credit (spec 051), and method the one
+    [agents] merge names, which a merge naming none is told to add (S-072-7). Written as a person
     (writer, S-051-11), the merge's author is them as the token's user (D-73), so the trailers name
     every other decider and then the App's bot"""
     number, reads, record, found = credit.number, credit.reads, credit.record, credit.found
@@ -2242,9 +2256,10 @@ def _credit(
     elif flags.body_file is not None:
         base = readers.stdin.read() if flags.body_file == "-" else _body_file(flags.body_file)
     elif flags.method is None:
+        add = "--merge" if method is MergeMethod.MERGE else "--squash (or --merge for a stack's base, D-96)"
         raise ReleaseError(
             f"gh pr merge names no method, and {trailer} in {CONFIG_PATH} needs it to write the "
-            f"body GitHub would: add --squash (or --merge for a stack's base, D-33)"
+            f"body GitHub would: add {add}"
         )
     else:
         squash = flags.method == "squash"
@@ -2276,13 +2291,23 @@ def _gh_reader(top: Path, binary: Path, env: Mapping[str, str]) -> MergeReads:
     return GhCli(top, gh=str(binary), env=env)
 
 
-def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, reader: MergeReader) -> _Held:
+def _hold_never(
+    top: Path,
+    merge: Merge,
+    gh_args: Sequence[str],
+    setting: MergeMethod | None,
+    env: Mapping[str, str],
+    binary: Path,
+    reader: MergeReader,
+) -> _Held:
     """S-030-13: a merge of a pull request whose classification, by the levels at origin/HEAD,
     has a `never` zone exits 2, naming the zone and the maintainer's hand merge; approval in
     chat changes nothing, since nothing here reads it (D-48). S-030-23: so does one labelled
-    needs-decision, whose question waits on an answer (D-21, D-49), read in the same call. Read
-    with the App's token, in the checkout's own repo only, whose levels it holds. The pull
-    request held, with the queued_label of the same base's [land.window] (spec 056)"""
+    needs-decision, whose question waits on an answer (D-21, D-49), read in the same call.
+    S-072-6: so does one naming a method the repo's settings don't allow, setting being
+    [agents] merge (None without the key). Read with the App's token, in the checkout's own
+    repo only, whose levels it holds. The pull request held, with the queued_label of the same
+    base's [land.window] (spec 056)"""
     origin = _origin_repo(top)
     if origin is None:
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so {merge.command}'s pull request can't be classified")
@@ -2325,6 +2350,8 @@ def _hold_never(top: Path, merge: Merge, env: Mapping[str, str], binary: Path, r
             "merges it, by hand; an approval in chat doesn't change that (spec 030, D-48). Assign it to the "
             "maintainer and leave it"
         )
+    if named_method(gh_args) is not None:  # S-072-6: the repo's settings read only for a named method
+        hold_method(merge, gh_args, reads.merge_methods(), setting)
     window = base.policy.land_window
     if window is None:
         return _Held(target, number, None, None)

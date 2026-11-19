@@ -165,6 +165,7 @@ def gh(
     files: tuple[FileChange, ...] = (CODE,),
     stdin: str = "",
     api: MintApi | None = None,
+    merge: FakeReads | None = None,
 ) -> int:
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
@@ -179,7 +180,7 @@ def gh(
         environ={"PATH": f"{fakes}:/usr/bin:/bin"},
         home=home,
         gh_runner=runner,
-        merge_reader=Reader(FakeReads(files)),
+        merge_reader=Reader(FakeReads(files) if merge is None else merge),
         merge_gate=FakeGate(),
         credit_reader=credit if credit is not None else refusing,
     )

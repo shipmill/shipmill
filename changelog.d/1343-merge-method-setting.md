@@ -1,0 +1,3 @@
+### Added
+
+- `[agents] merge` in `.github/shipmill.toml` picks the method a pull request lands with, `"squash"` (the default, and with no key) or `"merge"`; any other value fails to load. `shipmill gh pr merge` (and the merge API through it) reads the repo's `allow_squash_merge` and `allow_merge_commit` before a merge that names `--squash` or `--merge`, and exits 2 naming the repo setting, and the key when it names that method, rather than landing with the other method; under a trailer setting, the refusals that name a merge command name the setting's method, and `--merge` writes the body of GitHub's `merge_commit_message` before the Co-authored-by trailers (spec 072, D-96) (#1343)

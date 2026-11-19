@@ -121,6 +121,25 @@ def trailer_setting(author: Author | None, credit: Credit | None) -> str | None:
     return None
 
 
+class MergeMethod(StrEnum):
+    """[agents] merge: the method a pull request lands with (spec 072, D-96); a stack's base
+    takes a merge commit under either"""
+
+    SQUASH = "squash"  # the default, and with no key (D-63)
+    MERGE = "merge"  # a merge commit, so each of the branch's commits reaches the default branch
+
+
+def merge_method_of(table: Table) -> MergeMethod | None:
+    """[agents] merge: None when absent, which reads as "squash"; any other value, or one that
+    isn't a string, exits 2 naming the key and both values (S-072-1)"""
+    if "merge" not in table.raw:
+        return None
+    value = table.raw["merge"]
+    if not isinstance(value, str) or value not in {m.value for m in MergeMethod}:
+        raise ReleaseError(f'{CONFIG_PATH}: [agents] merge must be "squash" or "merge", got {value!r}')
+    return MergeMethod(value)
+
+
 def verify_of(table: Table) -> tuple[str, ...]:
     """[agents] verify (spec 064): the commands a headless session relies on for verification,
     one Bash line each, in the order the check runs them; () when absent. A value that isn't a
@@ -310,6 +329,7 @@ class AgentsConfig:
     credit: Credit | None = None
     author: Author | None = None  # [agents] author: whose account an agent writes as (spec 051)
     verify: tuple[str, ...] = ()  # [agents] verify: the commands a headless session must be able to run (spec 064)
+    merge: MergeMethod | None = None  # [agents] merge: the landing method (spec 072); None: the default, squash
     # [autonomy] with spec 040's legacy reading of the prompt, as `shipmill autonomy` reads it;
     # load and Policy.parse set it, parse alone can't, as it sees [agents] only
     autonomy: AutonomyPolicy = AutonomyPolicy()
@@ -340,6 +360,7 @@ class AgentsConfig:
             "credit",
             "author",
             "verify",
+            "merge",
         )
         roles = RolesConfig.parse(table.raw["roles"]) if "roles" in table.raw else RolesConfig()
         prompt = table.string("prompt").strip()
@@ -380,6 +401,7 @@ class AgentsConfig:
             credit=credit_of(table),
             author=author_of(table, app_id),
             verify=verify_of(table),
+            merge=merge_method_of(table),
             refused=refusals,
         )
 
@@ -387,6 +409,11 @@ class AgentsConfig:
     def trailer(self) -> str | None:
         """The setting that names a merge's deciders in Co-authored-by; None: no trailer"""
         return trailer_setting(self.author, self.credit)
+
+    @property
+    def merge_method(self) -> MergeMethod:
+        """The method a pull request lands with: [agents] merge, squash without the key (D-96)"""
+        return self.merge or MergeMethod.SQUASH
 
     @classmethod
     def load(cls, root: Path, repo: str | None = None) -> AgentsConfig:
@@ -421,19 +448,25 @@ def app_id_of(root: Path) -> int | None:
 @dataclass(frozen=True, slots=True)
 class GhIdentity:
     """What `shipmill gh` reads of a checkout's config (spec 037): [agents] app_id, identity,
-    credit (spec 049), and author (spec 051), and whether the config file exists, which the
-    refusal names"""
+    credit (spec 049), author (spec 051), and merge (spec 072), and whether the config file
+    exists, which the refusal names"""
 
     config: bool  # .github/shipmill.toml exists
     app_id: int | None = None
     identity: WriteAs = WriteAs.APP
     credit: Credit | None = None
     author: Author | None = None
+    merge: MergeMethod | None = None  # None: no key, which reads as squash
 
     @property
     def trailer(self) -> str | None:
         """The setting that names a merge's deciders in Co-authored-by; None: no trailer"""
         return trailer_setting(self.author, self.credit)
+
+    @property
+    def merge_method(self) -> MergeMethod:
+        """The method a pull request lands with: [agents] merge, squash without the key (D-96)"""
+        return self.merge or MergeMethod.SQUASH
 
 
 def gh_identity_of(root: Path) -> GhIdentity:
@@ -447,7 +480,7 @@ def gh_identity_of(root: Path) -> GhIdentity:
         return GhIdentity(config=True)
     agents = AgentsConfig.parse(Table(raw, path.name).table("agents"))
     catalogue.report(agents.refused)
-    return GhIdentity(True, agents.app_id, agents.identity, agents.credit, agents.author)
+    return GhIdentity(True, agents.app_id, agents.identity, agents.credit, agents.author, agents.merge)
 
 
 @dataclass(frozen=True, slots=True)
