@@ -2106,6 +2106,63 @@ def test_d82_pyproject_is_read_once_and_only_when_needed(delivery: ModuleType, t
     assert counted("uv run env X=1 ls") == Counted(0, 2)  # env could be one of the project's
 
 
+PROOF = "skills/github-pr-triage/scripts/test_proof.py"
+PROOF_CALLS = [
+    f"uv run --no-project python {PROOF} fix --base origin/main --plan-file tmp/pr.md -- {{inner}}",
+    f"uv run --no-project python3 -X utf8 {PROOF} refactor --base origin/main -- {{inner}}",
+    f"python {PROOF} fix --base origin/main -- {{inner}}",
+    f"python3 -I {PROOF} fix --base origin/main -- {{inner}}",
+    f"uv run --no-project {PROOF} fix --base origin/main -- {{inner}}",
+    f"./{PROOF} fix --base origin/main -- {{inner}}",
+    f"git status && uv run -- python {PROOF} fix --base origin/main -- {{inner}}",
+    # python's own option syntax: `--` before the script, a bundled -X/-W, a long value option
+    f"uv run --no-project python -I -- {PROOF} fix --base origin/main -- {{inner}}",
+    f"uv run --no-project python -IX dev {PROOF} fix --base origin/main -- {{inner}}",
+    f"uv run --no-project python -Wignore {PROOF} fix --base origin/main -- {{inner}}",
+    f"uv run --no-project python --check-hash-based-pycs default {PROOF} fix --base origin/main -- {{inner}}",
+]
+PROOF_REFUSED = ["uv run sh -c 'pytest {tests}'", "uv run env X=1 pytest {tests}", "env X=1 uv run sh -c ls"]
+PROOF_ALLOWED = ["uv run pytest tests/test_a.py", "uv run pytest -q {tests}", "uv run --no-project python -m pytest"]
+
+
+@pytest.mark.parametrize("call", PROOF_CALLS)
+@pytest.mark.parametrize("inner", PROOF_REFUSED)
+def test_s076_11_a_test_proof_call_whose_command_would_be_refused_is_refused(
+    box: Sandbox, call: str, inner: str
+) -> None:
+    command = call.format(inner=inner)
+    for root in (box.app, box.agents):
+        instead = refused(bash(command, root, env=gate_env()), "uv-run", "D-82")
+        assert "needs-decision" in instead and "uv_run" in instead
+    allowed(bash(command, box.app))  # a person's session: unchanged
+    allowed(bash(command, box.outside, env=gate_env()))  # no [agents]: unchanged
+
+
+@pytest.mark.parametrize("call", PROOF_CALLS)
+@pytest.mark.parametrize("inner", PROOF_ALLOWED)
+def test_s076_11_a_test_proof_call_whose_command_would_pass_passes(box: Sandbox, call: str, inner: str) -> None:
+    allowed(bash(call.format(inner=inner), box.app, env=gate_env()))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"uv run --no-project python {PROOF} fix --base origin/main",  # no --: test_proof.py runs nothing
+        "uv run python -m test_proof -- uv run sh",  # no test_proof.py script
+        f"uv run python -c 'print(1)' {PROOF} -- uv run sh",  # -c: the script word is an argument
+        f"uv run pytest {PROOF} -- uv run sh",  # pytest, not test_proof.py, starts what follows
+        f"uv run --no-project python {PROOF}.bak -- uv run sh",
+    ],
+)
+def test_s076_11_only_a_call_to_test_proof_py_has_its_command_judged(box: Sandbox, command: str) -> None:
+    allowed(bash(command, box.app, env=gate_env()))
+
+
+def test_s076_11_the_outer_uv_run_is_still_judged(box: Sandbox) -> None:
+    command = f"uv run sh {PROOF} fix --base origin/main -- uv run pytest"
+    refused(bash(command, box.app, env=gate_env()), "uv-run", "D-82")
+
+
 def test_d82_the_shipmill_gh_branch_still_reads_uv_and_uvx(box: Sandbox) -> None:
     """The app-writes rule's uvx/uv detection of shipmill gh is unchanged in a gate session"""
     for command in ("uvx shipmill==0.126.0 gh pr comment 7 --body hi", "uvx --from x shipmill gh issue close 8"):

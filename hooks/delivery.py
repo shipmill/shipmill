@@ -32,7 +32,8 @@ with one stat and never read. A command's own NAME=value assignments are never r
 The uv-run rule (D-82) applies only in a session shipmill gate started headless, whose
 --settings env sets SHIPMILL_GATE=1, read from the hook's own environment alone: there `uv run`
 starts only python, pytest, ruff, mypy, a [hooks] uv_run program, a path to a .py file, or an
-entry of the checkout's [project.scripts]. Its known limit: `uv run python -c`, the
+entry of the checkout's [project.scripts]; a call to test_proof.py, which starts the command
+after its `--`, is refused when that command would be (S-076-11). Its known limit: `uv run python -c`, the
 allowlist's `Bash(uvx *)`, and `uv tool run`, the long form of uvx, still start any program,
 so it narrows the routing around a denied command without closing it.
 """
@@ -1501,6 +1502,7 @@ class UvRun:
 
     program: str | None
     unknown: str | None
+    at: int | None = None  # the program's index in the command's words
 
 
 def uv_run(cmd: Simple) -> UvRun | None:
@@ -1528,7 +1530,65 @@ def uv_run(cmd: Simple) -> UvRun | None:
         if after is None:
             return UvRun(None, words[i])
         i = after
-    return UvRun(words[i] if i < len(words) else None, None)
+    return UvRun(words[i], None, i) if i < len(words) else UvRun(None, None)
+
+
+# A call to test_proof.py starts the command after its `--` (spec 076), so a gate session judges
+# that command as a call of its own (S-076-11)
+TEST_PROOF = "test_proof.py"
+PYTHONS = frozenset({"python", "python3"})
+PYTHON_CODE_OPTIONS = "cm"  # -c and -m: no script; the rest is the program's arguments
+PYTHON_SHORT_VALUES = "XW"  # -X and -W: the rest of the word, or the next word, is the value
+PYTHON_LONG_VALUES = frozenset({"--check-hash-based-pycs"})
+
+
+def _python_option(words: Sequence[str], i: int) -> int | None:
+    """The index past python's option at words[i] and its value, short options bundled as in
+    -IX dev; None for -c or -m"""
+    word = words[i]
+    if word.startswith("--"):
+        return i + 2 if word in PYTHON_LONG_VALUES else i + 1
+    letters = word[1:]
+    for k, ch in enumerate(letters):
+        if ch in PYTHON_CODE_OPTIONS:
+            return None
+        if ch in PYTHON_SHORT_VALUES:
+            return i + 1 if letters[k + 1 :] else i + 2
+    return i + 1
+
+
+def _python_script(words: Sequence[str], at: int) -> int | None:
+    """The index of the script `python ... <script>` at words[at] runs, past python's options and
+    a `--`; None for -c, -m, or no script"""
+    i = at + 1
+    while i < len(words) and _is_option(words[i]):
+        if words[i] == "--":
+            i += 1
+            break
+        after = _python_option(words, i)
+        if after is None:
+            return None
+        i = after
+    return i if i < len(words) else None
+
+
+def proof_command(cmd: Simple) -> Simple | None:
+    """The command a call to test_proof.py runs, the words after its first `--`, read as a call of
+    its own: run directly, through python or python3, or through uv run either way. None for any
+    other command, and for a call with no `--`, which test_proof.py refuses running nothing"""
+    words = cmd.words
+    at: int | None = 0
+    found = uv_run(cmd)
+    if found is not None:
+        at = found.at
+    if at is None:
+        return None
+    if os.path.basename(words[at]) in PYTHONS:
+        at = _python_script(words, at)
+    if at is None or os.path.basename(words[at]) != TEST_PROOF or "--" not in words[at + 1 :]:
+        return None
+    rest = words[at + 1 :]
+    return _simple(list(rest[rest.index("--") + 1 :]), cmd.cwd)
 
 
 UV_RUN_INSTEAD = (
@@ -1542,7 +1602,13 @@ def _uv_run_check(cmd: Simple, config: Config, ctx: Context) -> str | None:
     """D-82: in a gate session, a uv run of anything but python, pytest, ruff, mypy, a [hooks]
     uv_run program, a path to a .py file, or the checkout's [project.scripts] entry; a NAME=value
     word where the program goes is refused too. pyproject.toml is read only when the program is
-    none of the others"""
+    none of the others. A call to test_proof.py is refused when the command after its `--` is
+    (S-076-11)"""
+    inner = proof_command(cmd)
+    if inner is not None:
+        refused = _uv_run_check(inner, config, ctx)
+        if refused is not None:
+            return refused
     found = uv_run(cmd)
     if found is None:
         return None
@@ -1616,7 +1682,7 @@ RULES = (
         "in a headless session shipmill gate starts, uv run starts only python, pytest, ruff, mypy, a [project.scripts]"
         " entry, a .py file, or a [hooks] uv_run program; never env, sh, another program, or a NAME=value word",
         "D-82",
-        lambda cmd: uv_run(cmd) is not None,
+        lambda cmd: uv_run(cmd) is not None or proof_command(cmd) is not None,
         _uv_run_check,
         gate=True,
     ),
