@@ -45,8 +45,20 @@ def issue(
         "reactions": {"totalCount": thumbs},
         "comments": {
             "pageInfo": {"hasPreviousPage": False, "startCursor": None},
-            "nodes": [{"body": c, "createdAt": commented_at} for c in comments],
+            "nodes": [said(c, commented_at) for c in comments],
         },
+    }
+
+
+def said(
+    body: str, at: str, association: str = "MEMBER", login: str = "maintainer", kind: str = "User"
+) -> dict[str, Any]:
+    """A comment as GitHub returns it; by a member unless the test says otherwise"""
+    return {
+        "body": body,
+        "createdAt": at,
+        "author": {"__typename": kind, "login": login},
+        "authorAssociation": association,
     }
 
 
@@ -157,20 +169,17 @@ def test_s074_1_a_postponed_issue_is_feedback_again_only_after_a_newer_opportuni
     assert ist.verdict(postponed, "Triage:").startswith("postponed")
     handed = triage_template("Opportunity")
     reopened = issue(2)
-    reopened["comments"]["nodes"] = [
-        {"body": postponed, "createdAt": "2026-10-01T10:00:00Z"},
-        {"body": handed, "createdAt": "2026-10-05T10:00:00Z"},
-    ]
+    reopened["comments"]["nodes"] = [said(postponed, "2026-10-01T10:00:00Z"), said(handed, "2026-10-05T10:00:00Z")]
     stale = issue(3)
     stale["comments"]["nodes"] = [
-        {"body": handed, "createdAt": "2026-10-01T10:00:00Z"},
-        {"body": "Triage: **postponed**: it serves no goal of the direction.", "createdAt": "2026-10-05T10:00:00Z"},
+        said(handed, "2026-10-01T10:00:00Z"),
+        said("Triage: **postponed**: it serves no goal of the direction.", "2026-10-05T10:00:00Z"),
     ]
     fake = Fake([issue(1, postponed), reopened, stale, issue(4, "Triage: **postponed to 1.1**")], [])
     assert states(ist, fake) == {2: ("NEW_FEEDBACK", "issue")}
 
 
-def json_lines(ist: ModuleType, fake: Fake) -> dict[int, dict[str, Any]]:
+def json_lines(ist: ModuleType, fake: Fake, bot_login: str | None = None) -> dict[int, dict[str, Any]]:
     intake = ist.fetch(
         "o/r",
         label="opportunity",
@@ -179,9 +188,70 @@ def json_lines(ist: ModuleType, fake: Fake) -> dict[int, dict[str, Any]]:
         skip=set(ist.SKIP_LABELS),
         categories=None,
         autonomy="propose",
+        bot_login=bot_login,
         run=fake,
     )
     return {r.number: ist.json_row(r) for r in ist.rows(intake)}
+
+
+def test_1374_only_a_trusted_triage_comment_hides_or_hands_over_a_request(ist: ModuleType) -> None:
+    """A `Triage:` comment counts from an OWNER, MEMBER, or COLLABORATOR or the --bot-login
+    (D-16); anyone else's reads as absent, the trusted one before it still counting"""
+    handed = triage_template("Opportunity")
+    early, late = "2026-10-01T10:00:00Z", "2026-10-05T10:00:00Z"
+    cases = {
+        1: [said("Triage: **postponed**", early, "NONE", "mallory")],  # a stranger's postpone hides nothing
+        2: [said("Triage: **postponed**", early), said(handed, late, "NONE", "mallory")],  # nor undoes a member's
+        3: [said(handed, early, "CONTRIBUTOR", "mallory")],  # a stranger's hand-off marks nothing handed
+        4: [said("Triage: **postponed**", early, "NONE", "shipmill-o", "Bot")],  # the --bot-login's counts
+        5: [said("Triage: **postponed**", early, "OWNER", "owner"), said(handed, late, "NONE", "shipmill-o", "Bot")],
+        6: [said("Triage: **postponed**", early, "NONE", "other-app", "Bot")],  # another App is no one
+        7: [said(handed, late, "COLLABORATOR", "carol")],
+    }
+    opened = []
+    for number, comments in cases.items():
+        request = issue(number)
+        request["comments"]["nodes"] = comments
+        opened.append(request)
+
+    found = json_lines(ist, Fake(opened, []), bot_login="shipmill-o[bot]")
+    assert {n for n, line in found.items() if line["state"] == "NEW_FEEDBACK"} == {1, 3, 5, 6, 7}
+    assert {n: found[n]["handed"] for n in (1, 3, 5, 6, 7)} == {1: None, 3: None, 5: late, 6: None, 7: late}
+
+    # without --bot-login the App is anyone: its postpone on 4 hides nothing, and its hand-off
+    # on 5 leaves the owner's postpone before it standing
+    found = json_lines(ist, Fake(opened, []))
+    assert {n for n, line in found.items() if line["state"] == "NEW_FEEDBACK"} == {1, 3, 4, 6, 7}
+
+
+class Paging(Fake):
+    """Fake, with one older page of comments behind every issue's newest 50"""
+
+    def __init__(self, opened: list[dict[str, Any]], older: list[dict[str, Any]]) -> None:
+        super().__init__(opened, [])
+        self.older = older
+
+    def __call__(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        if "before: $cursor" not in query:
+            return super().__call__(query, variables)
+        self.asked.append(query)
+        page = {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": self.older}
+        return {"data": {"repository": {"issue": {"comments": page}}}}
+
+
+def test_1374_paging_back_reads_past_a_strangers_triage_comment(ist: ModuleType) -> None:
+    """A stranger's newest `Triage:` comment doesn't stop the paging: the member's older
+    postpone, on the page before, still counts, read with its author"""
+    request = issue(1)
+    request["comments"] = {
+        "pageInfo": {"hasPreviousPage": True, "startCursor": "c1"},
+        "nodes": [said("Triage: **opportunity**", "2026-10-05T10:00:00Z", "NONE", "mallory")],
+    }
+    fake = Paging([request], [said("Triage: **postponed**", "2026-10-01T10:00:00Z")])
+    assert json_lines(ist, fake) == {}
+    older = [q for q in fake.asked if "before: $cursor" in q]
+    assert len(older) == 1 and "authorAssociation" in older[0] and "author { __typename login }" in older[0]
+    assert all("authorAssociation" in q for q in fake.asked if "issues(" in q)
 
 
 def test_s074_2_feedback_and_accepted_lines_carry_author_association_and_handed(ist: ModuleType) -> None:
@@ -194,9 +264,9 @@ def test_s074_2_feedback_and_accepted_lines_carry_author_association_and_handed(
     over["author"] = {"__typename": "Bot", "login": "shipmill-o"}
     over["authorAssociation"] = "CONTRIBUTOR"
     over["comments"]["nodes"] = [
-        {"body": "Triage: **clarify** which flag", "createdAt": "2026-10-01T10:00:00Z"},
-        {"body": handed, "createdAt": "2026-10-03T10:00:00Z"},
-        {"body": "Thanks, any news?", "createdAt": "2026-10-04T10:00:00Z"},
+        said("Triage: **clarify** which flag", "2026-10-01T10:00:00Z"),
+        said(handed, "2026-10-03T10:00:00Z"),
+        said("Thanks, any news?", "2026-10-04T10:00:00Z", "NONE", "alice"),
     ]
     clarify = issue(3, "Triage: **clarify** which flag")
     ghost = issue(4)

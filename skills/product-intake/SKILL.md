@@ -58,7 +58,7 @@ There is no `act`: shipmill refuses it, since an opportunity is a proposal by na
 
 What the script decides for you, so the pass doesn't re-derive it:
 
-- **Feedback** is an open issue with no skip label and no closing triage verdict, plus each open discussion outside Announcements when Discussions are on (`--category` names the ones to count). The skip labels are `SKIP_LABELS` at the top of `intake_state.py`: `bug`, `roadmap` (a tracking issue isn't a request), and shipmill's own. `--skip-label L` (repeatable) adds to them for one run; for a label every pass should skip, add it to `SKIP_LABELS`
+- **Feedback** is an open issue with no skip label and no closing triage verdict (a `Triage:` comment counts only from an OWNER, MEMBER, or COLLABORATOR, or from the `--bot-login '<slug>[bot]'`, so pass it whenever `[agents] app_id` is set, `--plans` or not; anyone else's reads as absent, D-16), plus each open discussion outside Announcements when Discussions are on (`--category` names the ones to count). The skip labels are `SKIP_LABELS` at the top of `intake_state.py`: `bug`, `roadmap` (a tracking issue isn't a request), and shipmill's own. `--skip-label L` (repeatable) adds to them for one run; for a label every pass should skip, add it to `SKIP_LABELS`
 - **A member** of an opportunity is any issue or discussion its `## Evidence` section links in this repo (`#N`, `owner/repo#N`, or a github.com link). Membership is what the opportunity's body says, so editing the Evidence section is how a request joins or leaves
 - **Evidence** per opportunity: its member count, and the thumbs-up reactions on the members and on the opportunity itself, closed members included
 - **The triage marker**: a comment starting `Triage:` with the verdict in bold. Intake's own comments use `Triage: **opportunity**`, so `triage_state.py` reads a grouped request or an opportunity as triaged instead of NEW. Never put the word "implement" in one: `triage_state.py` would read it as NEEDS_PR
@@ -89,9 +89,11 @@ github-issue-triage sends a user's request for a new capability here instead of 
 ### 1. Take stock
 
 ```bash
-uv run --no-project python <skill>/scripts/intake_state.py <owner/repo>
+uv run --no-project python <skill>/scripts/intake_state.py <owner/repo> [--bot-login '<slug>[bot]']
 gh label list -R <owner/repo>
 ```
+
+Pass `--bot-login` whenever `[agents] app_id` is set: without it the App's own `Triage:` comments read as absent, and a request it postponed comes back as NEW_FEEDBACK.
 
 When the default branch has `docs/product.md`, read the parts of the direction intake uses (rule 8), from the checkout after `git fetch`, each as `uvx shipmill==0.148.0 product show ...`, the release this plugin pins, in every session:
 
