@@ -18,8 +18,9 @@ gather   runs metrics.py over the --days to now and over the --days before that,
          changes). Read-only
          --goals adds the report per goal of the direction (spec 027), read from DIR, a
          checkout whose HEAD is origin/HEAD's commit (else exit 2), through `shipmill product
-         show --json` (as `uvx shipmill==<version>`, the version in the plugin's
-         .claude-plugin/plugin.json, spec 031; a direction it refuses exits 2); without
+         show --json --local` (as `uvx shipmill==<version>`, the version in the plugin's
+         .claude-plugin/plugin.json, spec 031; a direction it refuses exits 2; --local: the
+         repo's own goals, never a component's product home's, spec 071); without
          docs/product.md it says so and exits 0. "A week" is one --days window. Per goal: the
          issues closed as completed and the pull requests merged that served it, this week
          and the week before (an issue by its latest trusted verdict comment's `Serves:`, or
@@ -476,12 +477,14 @@ def at_origin_head(sources: Sources, checkout: Path) -> None:
 
 
 def read_direction(sources: Sources, checkout: Path) -> dict[str, Any] | None:
-    """The direction as `shipmill product show --json` gives it, None without docs/product.md;
-    exit 2 when the checkout isn't at origin/HEAD or shipmill refuses the direction"""
+    """The direction as `shipmill product show --json --local` gives it, None without
+    docs/product.md; exit 2 when the checkout isn't at origin/HEAD or shipmill refuses the
+    direction. --local: the report per goal reads only the repo's own goals, so a component
+    never reads its product home's here, and a home it can't read doesn't stop it (spec 071, #1417)"""
     at_origin_head(sources, checkout)
     if not (checkout / DIRECTION).is_file():
         return None
-    proc = sources.command([*sources.shipmill, "product", "show", "--json", "--repo", str(checkout)])
+    proc = sources.command([*sources.shipmill, "product", "show", "--json", "--local", "--repo", str(checkout)])
     if proc.returncode != 0:
         raise fail(
             f"shipmill product show refused {checkout / DIRECTION}: {proc.stderr.strip()}; "
