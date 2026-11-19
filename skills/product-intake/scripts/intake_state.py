@@ -24,14 +24,16 @@ github.com link to an issue or a discussion. A member stays a member after it cl
 
 For each opportunity:
   OPPORTUNITY_OPEN  open: waiting for the maintainer to accept or decline it
-  ACCEPTED          open and labelled --accepted-label, and its newest triage comment is
-                    intake's own (Triage: **opportunity**) or there is none: hand it to
+  ACCEPTED          open and labelled --accepted-label, and its newest trusted triage
+                    comment (as feedback reads it, D-16) is intake's own
+                    (Triage: **opportunity**) or there is none: hand it to
                     github-issue-triage's spec gate as a feature
-  HANDED_OFF        accepted, and triage gave it a newer verdict (feature, with its spec
-                    PR on a hold line): triage owns it now
+  HANDED_OFF        accepted, and triage gave it a newer trusted verdict (feature, with its
+                    spec PR on a hold line): triage owns it now
   DECLINED          closed as not planned. The note is the reason: the first line of the
-                    oldest non-triage comment from an hour before the close on, so a later
-                    comment on the closed issue doesn't replace it. Its members
+                    oldest comment from an hour before the close on that isn't a trusted
+                    triage comment (anyone else's `Triage:` comment is an ordinary one), so
+                    a later comment on the closed issue doesn't replace it. Its members
                     read as declined and are never proposed again
   NO_REASON         closed as not planned with no such comment: the reason isn't recorded
   DONE              closed as completed
@@ -68,7 +70,8 @@ first line is the plan marker <!-- shipmill:plan goal=G-n rev=k -->) reads:
                     no-work          nothing open serves the goal: no spec in docs/specs/
                                      at the default branch's head with status draft or
                                      approved whose serves: line names it, no open issue
-                                     whose newest triage comment names it in `Serves:`,
+                                     whose newest trusted triage comment names it in
+                                     `Serves:`,
                                      no open pull request whose `## Plan` names it in
                                      `Serves:`, no open opportunity whose body names it in
                                      `Serves:`, and no open plan item (an issue whose
@@ -436,20 +439,6 @@ def verdict(body: str, marker: str) -> str | None:
     return rest.split(maxsplit=1)[0].lower() if rest else ""
 
 
-def newest_triage(issue: dict[str, Any], marker: str) -> str | None:
-    """The body of the issue's newest triage comment, None without one"""
-    for comment in reversed(issue["comments"]["nodes"]):
-        if verdict(comment["body"], marker) is not None:
-            body: str = comment["body"]
-            return body
-    return None
-
-
-def newest_verdict(issue: dict[str, Any], marker: str) -> str | None:
-    body = newest_triage(issue, marker)
-    return None if body is None else verdict(body, marker)
-
-
 def trusted_triage(issue: dict[str, Any], marker: str, bot_login: str | None) -> dict[str, Any] | None:
     """The issue's newest triage comment by an OWNER, MEMBER, or COLLABORATOR or the
     --bot-login (D-16), None without one: anyone else's `Triage:` comment is read as absent,
@@ -533,30 +522,33 @@ def timestamp(text: str) -> dt.datetime:
     return moment
 
 
-def decline_reason(issue: dict[str, Any], marker: str) -> str | None:
-    """The first line of the oldest comment that isn't a triage comment, from an hour before
-    the close on: the maintainer's reason, not a later reply on the closed issue; None when
-    there is none"""
+def decline_reason(issue: dict[str, Any], marker: str, bot_login: str | None = None) -> str | None:
+    """The first line of the oldest comment that isn't a trusted triage comment, from an hour
+    before the close on: the maintainer's reason, not a later reply on the closed issue; None
+    when there is none. Anyone else's `Triage:` comment is an ordinary comment here (#1384)"""
     closed = timestamp(issue["closedAt"]) - REASON_WINDOW
     for comment in issue["comments"]["nodes"]:
-        if verdict(comment["body"], marker) is None and timestamp(comment["createdAt"]) >= closed:
+        triage = verdict(comment["body"], marker) is not None and PLANS.trusted(comment, bot_login)
+        if not triage and timestamp(comment["createdAt"]) >= closed:
             lines = [line.strip() for line in comment["body"].splitlines() if line.strip()]
             if lines:
                 return lines[0]
     return None
 
 
-def opportunity_state(issue: dict[str, Any], accepted: str, marker: str) -> tuple[str, str]:
+def opportunity_state(
+    issue: dict[str, Any], accepted: str, marker: str, bot_login: str | None = None
+) -> tuple[str, str]:
     if issue["state"] == "CLOSED":
         if issue["stateReason"] == "NOT_PLANNED":
-            reason = decline_reason(issue, marker)
+            reason = decline_reason(issue, marker, bot_login)
             return ("DECLINED", reason) if reason else ("NO_REASON", "closed as not planned with no comment")
         if issue["stateReason"] == "DUPLICATE":
             return "MERGED", "closed as a duplicate"
         return "DONE", ""
     if accepted not in labels(issue):
         return "OPPORTUNITY_OPEN", ""
-    found = newest_verdict(issue, marker)
+    found = trusted_verdict(issue, marker, bot_login)
     if found is None or found.startswith(OWN_VERDICT):
         return "ACCEPTED", "hand it to triage's spec gate"
     return "HANDED_OFF", f"triage: {found}"
@@ -650,7 +642,7 @@ def fetch(
                 feedback.append(Item(d["number"], "discussion", d["title"], thumbs_up, True, author=opener(d)))
     opportunities = []
     for issue in opps:
-        state, note = opportunity_state(issue, accepted, marker)
+        state, note = opportunity_state(issue, accepted, marker, bot_login)
         members = sorted(evidence(issue["body"], owner, name) - {issue["number"]})
         item = Item(issue["number"], "opportunity", issue["title"], issue["reactions"]["totalCount"])
         item.state, item.note, item.members = state, note, members
@@ -903,7 +895,8 @@ def plan_rows(
             served |= serves(opp.get("body") or "")
     requests: dict[str, int] = {}
     for issue in open_issues:
-        served |= serves(newest_triage(issue, marker) or "")
+        triage = trusted_triage(issue, marker, bot_login)  # D-16: a stranger's `Serves:` serves nothing (#1384)
+        served |= serves(triage["body"] if triage else "")
         first = PLANS.first_line(issue.get("body") or "")
         item = PLAN_ITEM.match(first)
         if item and PLANS.trusted(issue, bot_login) and int(item.group(1)) in plans_of:
@@ -1108,7 +1101,7 @@ def plan_state(
             return None
         answer = plan_answer(issue, bot_login, marker, maintainers)
         reason = decline_text(answer) if answer is not None and answer.kind == "decline" else ""
-        reason = reason or decline_reason(issue, marker) or "closed as not planned with no reason"
+        reason = reason or decline_reason(issue, marker, bot_login) or "closed as not planned with no reason"
         return PlanRow(goal, "PLAN_DECLINED", title, reason, number, "plan")
     plan, problems = PLANS.parse(issue.get("body") or "", goals)
     if plan is None:

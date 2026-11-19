@@ -39,6 +39,11 @@ def comment(
     }
 
 
+def triaged(body: str) -> dict[str, Any]:
+    """A triage comment by a member: only a trusted one serves a goal (D-16, #1384)"""
+    return comment(body, association="MEMBER", author="maintainer")
+
+
 def issue(
     number: int,
     *comments: str | dict[str, Any],
@@ -185,9 +190,9 @@ def test_s028_1_a_goal_nothing_serves_reads_no_work(ist: ModuleType) -> None:
 
 
 def test_s028_1_each_kind_of_open_work_serves_its_goal(ist: ModuleType) -> None:
-    triaged = issue(5, "Triage: **feature**. Serves: G-1, G-2. A thing")
+    request = issue(5, triaged("Triage: **feature**. Serves: G-1, G-2. A thing"))
     pull = "## Plan\n\n- Serves: G-3\n- Files: x\n- Order: y\n- Proof: z\n"
-    assert due(ist, Fake([triaged])) == {"G-3": ("PLAN_DUE", "no-work")}
+    assert due(ist, Fake([request])) == {"G-3": ("PLAN_DUE", "no-work")}
     assert due(ist, Fake(pulls=[pull])) == {"G-1": ("PLAN_DUE", "no-work"), "G-2": ("PLAN_DUE", "no-work")}
     opp = issue(7, body="Serves: G-2\n\n## Problem\n\nSlow.\n", labels=("opportunity",))
     assert set(due(ist, Fake(opportunities=[opp]))) == {"G-1", "G-3"}
@@ -198,7 +203,8 @@ def test_s028_1_each_kind_of_open_work_serves_its_goal(ist: ModuleType) -> None:
 def test_s028_1_closed_built_or_unrelated_work_serves_nothing(ist: ModuleType) -> None:
     fake = Fake(
         [
-            issue(5, "Triage: **feature**. Serves: G-1.", "Triage: **implement**. A fix"),  # newest verdict counts
+            # the newest verdict counts
+            issue(5, triaged("Triage: **feature**. Serves: G-1."), triaged("Triage: **implement**. A fix")),
             issue(6, "I think this serves G-2", body="Serves: G-2"),  # not a triage comment
             issue(8, "Triage: **opportunity**. Serves no goal."),
         ],
@@ -241,19 +247,19 @@ def test_s028_2_a_request_still_proposes_after_a_decline(ist: ModuleType) -> Non
 @pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR"])
 def test_s028_3_a_trusted_goal_plan_issue_is_a_request(ist: ModuleType, association: str) -> None:
     request = issue(25, title="Plan for G-2, please", labels=("goal-plan",), association=association)
-    served = issue(5, "Triage: **feature**. Serves: G-2.")  # a request plans a served goal too
+    served = issue(5, triaged("Triage: **feature**. Serves: G-2."))  # a request plans a served goal too
     assert due(ist, Fake([request, served]))["G-2"] == ("PLAN_DUE", "requested in #25")
 
 
 @pytest.mark.parametrize("association", ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE"])
 def test_s028_3_anyone_elses_goal_plan_issue_is_no_request(ist: ModuleType, association: str) -> None:
     request = issue(25, title="Plan G-2", labels=("goal-plan",), association=association, author="drive-by")
-    served = issue(5, "Triage: **feature**. Serves: G-2.")
+    served = issue(5, triaged("Triage: **feature**. Serves: G-2."))
     assert "G-2" not in due(ist, Fake([request, served]))
 
 
 def test_s028_3_a_request_names_exactly_one_listed_goal(ist: ModuleType) -> None:
-    served = issue(5, "Triage: **feature**. Serves: G-1, G-2, G-3.")
+    served = issue(5, triaged("Triage: **feature**. Serves: G-1, G-2, G-3."))
     for title in ("Plan G-1 and G-2", "Plan G-9", "Plan a goal", "Plan XG-1", "Plan G-10"):
         request = issue(25, title=title, labels=("goal-plan",), association="OWNER")
         assert due(ist, Fake([request, served])) == {}, title
@@ -266,7 +272,7 @@ def test_s028_3_a_request_names_exactly_one_listed_goal(ist: ModuleType) -> None
 def test_s028_3_two_requests_make_one_row_naming_the_oldest(ist: ModuleType) -> None:
     newer = issue(30, title="Plan G-1", labels=("goal-plan",), association="OWNER")
     older = issue(25, title="G-1 needs a plan", labels=("goal-plan",), association="MEMBER")
-    served = issue(5, "Triage: **feature**. Serves: G-1, G-2, G-3.")
+    served = issue(5, triaged("Triage: **feature**. Serves: G-1, G-2, G-3."))
     assert due(ist, Fake([older, newer, served])) == {"G-1": ("PLAN_DUE", "requested in #25")}
 
 
@@ -304,7 +310,7 @@ def test_s028_4_the_room_is_triage_states(ist: ModuleType, tmp_path: Path) -> No
 
 
 def test_s028_4_the_room_is_read_only_when_a_goal_waits_on_it(ist: ModuleType) -> None:
-    served = issue(5, "Triage: **feature**. Serves: G-1, G-2, G-3.")
+    served = issue(5, triaged("Triage: **feature**. Serves: G-1, G-2, G-3."))
 
     def never(limit: int) -> int:
         raise AssertionError("triage_state.py ran with nothing waiting")
