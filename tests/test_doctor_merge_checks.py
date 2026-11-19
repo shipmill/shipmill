@@ -13,6 +13,7 @@ from shipmill.doctor import CALLER, Check, doctor
 from shipmill.merge_checks import ROW, report
 
 from .conftest import POLICY, Repo
+from .test_doctor_deploy_runner import PUBLISH, RELEASE
 from .test_merge_checks import CI, SLUG, FakeRules, checks_rule
 from .test_product import WELL_FORMED
 
@@ -93,11 +94,16 @@ def test_s080_15_a_warn_on_the_row_leaves_the_exit_code(repo: Repo, capsys: pyte
     # proves: S-080-15
     configure(repo, POLICY + AGENTS + '\n[autonomy]\nland = "act"\n')
     repo.write("docs/product.md", WELL_FORMED)
-    code = main(["--repo", str(repo.root), "doctor"], environ={"PATH": ""}, rules_reader=build_only())
+    repo.write(".github/workflows/release.yml", RELEASE)  # the fixture's own FAIL rows, fixed
+    repo.write(".github/workflows/publish.yml", PUBLISH)
+    code = main(
+        ["--repo", str(repo.root), "doctor"], github=repo.github, environ={"PATH": ""}, rules_reader=build_only()
+    )
     lines = capsys.readouterr().out.splitlines()
     mine = [line for line in lines if line.split(" ", 1)[-1].startswith(f"{ROW}:")]
     assert mine and all(line.startswith("WARN ") for line in mine)  # the fixture's origin isn't on GitHub
-    assert code == (1 if any(line.startswith("FAIL ") for line in lines) else 0)
+    assert [line for line in lines if line.startswith("FAIL ")] == []  # no other FAIL, so only a WARN could move it
+    assert code == 0
 
 
 def _autonomy_step(setup: str) -> str:
