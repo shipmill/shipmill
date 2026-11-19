@@ -420,6 +420,8 @@ def doctor(
         checks.append(_deploy(root / ".github" / "workflows" / env.workflow, env.name, operate_caller, watched))
     named = {env.workflow for env in policy.environments.values()}
     checks.extend(Check(status, deploy_runner.ROW, detail) for status, detail in deploy_runner.check(root, named))
+    if policy.trends is not None:  # D-9: no trends line without [trends] (spec 078)
+        add(True, "trends", str(policy.trends))
     if policy.downstream is not None:  # D-9: no downstream line without [downstream]
         checks.extend(downstream_checks(root, policy.downstream, downstream, app))
     if refused is not None:  # S-038-27: a FAIL row, after which every other check still runs
