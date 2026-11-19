@@ -20,6 +20,7 @@ from shipmill.propose import Outcome, close_released, marker, propose, run_url
 from shipmill.version import Version
 
 from .conftest import POLICY, Repo, at_day
+from .test_decide_cli import commit
 from .test_lanes import plan
 
 HELD = Hold(("#7 Investigating the 1.1 regression",))
@@ -188,6 +189,50 @@ def test_s040_3_the_hold_turns_an_agent_stage_act_into_propose_only() -> None:
     assert [defaults.effective(s, HELD) for s in AGENT_STAGES.values()] == [Autonomy.PROPOSE] * 3
     assert defaults.cause(AGENT_STAGES[StageKind.LAND], HELD) == f"held by {HOLD_LABEL} #7"
     assert autonomy('fix = "observe"\n').cause(AGENT_STAGES[StageKind.FIX], HELD) == "fix autonomy is observe"
+
+
+# -- revert: backing out a red default branch (spec 079) -------------------------------------
+
+
+def test_s079_1_revert_reads_observe_without_the_key_and_takes_each_level(repo: Repo) -> None:
+    for parsed in (repo.policy.autonomy, autonomy(""), AutonomyPolicy()):
+        assert parsed.revert is Autonomy.OBSERVE  # no repo reverts a merge by upgrading (D-63)
+    for level in Autonomy:
+        parsed = autonomy(f'revert = "{level}"\n')
+        assert parsed.revert is level
+        assert parsed.reverts(Hold()) is level
+        assert parsed.reverts(HELD) is (Autonomy.PROPOSE if level is Autonomy.ACT else level)  # D-15
+    # not a stage of doctor's release-side list, and the other stages read as before
+    parsed = autonomy('revert = "act"\n')
+    assert [str(s) for s in parsed.stages()] == ["release", "rollback"]
+    assert (parsed.land, parsed.upgrade) == (Autonomy.PROPOSE, Autonomy.PROPOSE)
+
+
+@pytest.mark.parametrize("value", ['"auto"', '"Act"', '""', "true", "1", '["act"]', '{ level = "act" }'])
+def test_s079_1_revert_outside_the_three_levels_exits_2(repo: Repo, value: str) -> None:
+    levels = r"\['observe', 'propose', 'act'\]"
+    with pytest.raises(ReleaseError, match=rf"^shipmill\.toml \[autonomy\]: revert must be one of {levels}, got "):
+        autonomy(f"revert = {value}\n")
+    # the CLI's run() turns the ReleaseError into exit 2, naming the key and the levels
+    commit(repo, POLICY + f"\n[autonomy]\nrevert = {value}\n")
+    with pytest.raises(ReleaseError, match=rf"revert must be one of {levels}, got "):
+        main(["--repo", str(repo.root), "autonomy"], github=repo.github)
+
+
+def test_s079_1_shipmill_autonomy_prints_the_revert_level_and_propose_under_the_hold(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(repo, POLICY + '\n[autonomy]\nrevert = "act"\n')
+    assert main(["--repo", str(repo.root), "autonomy"], github=repo.github) == 0
+    assert capsys.readouterr().out.splitlines()[-1].split() == ["revert", "act", "act", "config"]
+    assert main(["--repo", str(repo.root), "autonomy", "--json"], github=repo.github) == 0
+    [row] = [s for s in json.loads(capsys.readouterr().out)["stages"] if s["stage"] == "revert"]
+    assert row == {"stage": "revert", "configured": "act", "effective": "act", "source": "config"}
+    repo.github.holds = ["#88 deploy broke login"]
+    assert main(["--repo", str(repo.root), "autonomy"], github=repo.github) == 0
+    assert capsys.readouterr().out.splitlines()[-1].split() == ["revert", "act", "propose", "hold"]
+    found = checks(repo, repo.github)["autonomy"][1]
+    assert found.endswith("; revert propose for a red default branch")  # doctor prints it under the hold too
 
 
 # -- release autonomy in the planner ---------------------------------------------------------
@@ -403,6 +448,7 @@ def test_doctor_reports_autonomy_and_the_hold(repo: Repo) -> None:
     )
     assert found["autonomy"][1].endswith(
         "; intake propose in the product-intake skill; upgrade propose for config upgrades"
+        "; revert observe for a red default branch"
     )
     repo.github.holds = ["#7 Investigating"]
     found = checks(repo, repo.github)

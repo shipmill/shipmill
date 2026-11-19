@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -492,6 +492,36 @@ def test_s056_13_python_310_reads_the_queued_label_from_a_plain_table(
 def test_s056_13_python_310_refuses_a_section_it_cant_read(ss: ModuleType, tmp_path: Path, text: str) -> None:
     with pytest.raises(SystemExit) as exc:
         ss.queued_label_310(text, tmp_path / ".github/shipmill.toml", ss.watch_module())
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("level", ["propose", "act"])
+@pytest.mark.parametrize("on_310", [False, True])
+def test_s079_1_labels_missing_names_revert_once_the_key_isnt_observe(
+    ss: ModuleType, tmp_path: Path, level: str, on_310: bool
+) -> None:
+    write(tmp_path, ".github/shipmill.toml", f'[autonomy]\nrevert = "{level}"\n')
+    ws = ss.watch_module()
+    reader = SimpleNamespace(tomllib=None, autonomy_string_310=ws.autonomy_string_310, Refused=ws.Refused)
+    wanted = ss.wanted_labels(tmp_path, reader if on_310 else ws)
+    assert wanted["revert"] == ("b60205", "Backs out the merge that turned the default branch red")
+    row = ss.labels_row(["revert"], wanted)
+    assert (row.state, row.detail) == ("LABELS_MISSING", "revert")
+    assert " revert, and the blocker label exist" in ss.labels_row([], wanted).detail
+
+
+@pytest.mark.parametrize(
+    "text", ["", '[autonomy]\nrevert = "observe"\n', '[autonomy]\nland = "act"\n', "# revert comes later\n"]
+)
+def test_s079_1_no_revert_label_is_wanted_under_observe(ss: ModuleType, tmp_path: Path, text: str) -> None:
+    write(tmp_path, ".github/shipmill.toml", text)
+    assert "revert" not in ss.wanted_labels(tmp_path)
+
+
+def test_s079_1_a_revert_level_outside_the_three_exits_2(ss: ModuleType, tmp_path: Path) -> None:
+    write(tmp_path, ".github/shipmill.toml", '[autonomy]\nrevert = "auto"\n')
+    with pytest.raises(SystemExit) as exc:
+        ss.wanted_labels(tmp_path)
     assert exc.value.code == 2
 
 

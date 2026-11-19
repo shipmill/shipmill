@@ -54,9 +54,11 @@ def test_s040_4_autonomy_json_lists_every_stage_with_configured_effective_and_so
         "rollback": ("observe", "observe", "config"),
         "intake": ("propose", "propose", "default"),
         "upgrade": ("propose", "propose", "default"),
+        "revert": ("observe", "observe", "default"),  # spec 079
     }
     assert list(stages(found)) == [
         "triage", "fix", "land", "release", "deploy.production", "deploy.staging", "rollback", "intake", "upgrade",
+        "revert",
     ]  # fmt: skip
 
 
@@ -73,6 +75,7 @@ def test_s040_4_the_hold_lowers_each_act_and_names_its_issues(repo: Repo, capsys
         "rollback": ("act", "propose", "hold"),
         "intake": ("propose", "propose", "default"),  # never acts: nothing to lower
         "upgrade": ("act", "propose", "hold"),
+        "revert": ("observe", "observe", "default"),
     }
 
 
@@ -86,7 +89,7 @@ def test_s040_4_the_text_form_prints_the_hold_then_a_row_per_stage(
     assert out[0] == "hold: #88 deploy broke login"
     assert out[1].split() == ["triage", "act", "propose", "hold"]
     assert out[3].split() == ["land", "propose", "propose", "default"]
-    assert len(out) == 1 + 7
+    assert len(out) == 1 + 8
     long = POLICY + "\n[environments.github-pages-preview]\nlane = 'rc'\nworkflow = 'd.yml'\n"
     commit(repo, long)
     assert main(["--repo", str(repo.root), "autonomy"], github=repo.github) == 0

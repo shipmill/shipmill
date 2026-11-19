@@ -1291,6 +1291,7 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
     detail += " in agent sessions"
     detail += f"; intake {policy.autonomy.intake} in the product-intake skill"
     detail += f"; upgrade {policy.autonomy.upgrades(hold)} for config upgrades"
+    detail += f"; revert {policy.autonomy.reverts(hold)} for a red default branch"
     checks.append(Check("PASS", "autonomy", detail))
     unread = [str(stage) for stage in agent_stages if policy.autonomy.is_set(stage)]
     if unread and policy.agents is None:  # S-040-17: as decisions_checks does for [decisions]

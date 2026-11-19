@@ -58,7 +58,7 @@ CHECKOUT = Path("/src/web")
 # spec 040: the autonomy line after the repo line, every stage at its default (S-040-10)
 AUTONOMY = (
     "  autonomy       triage act · fix act · land propose · release act · rollback act · intake propose"
-    " · upgrade propose"
+    " · upgrade propose · revert observe"
 )
 OBSERVE = AutonomyPolicy(land=Autonomy.OBSERVE)
 

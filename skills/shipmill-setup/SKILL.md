@@ -567,6 +567,12 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      green CI
    - **release, deploy, rollback:** `observe` reports only; `propose` opens an issue saying
      what it would do, and a person does it; `act` does it
+   - **revert** (spec 079, default `observe`): how far shipmill backs out the merge that
+     turned the default branch red. `observe` reports it, and landing waits for a repair
+     (D-75); `propose` re-runs the failed run once, finds the merge, opens the revert pull
+     request (labelled `revert`, which the checklist then wants), and reopens its issues, for
+     a person to merge; `act` does the same, and the revert lands through `pr_gate.py` like
+     any pull request. A config without the key reads `observe`
 
    And the stop switch: one open issue labelled `shipmill-hold` turns every `act` into
    `propose`, for these stages and the release side alike, until it is closed; the gate
