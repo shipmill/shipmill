@@ -62,7 +62,12 @@ them now:
   PROMOTION   an open "Ready to promote" proposal issue in PROMOTION_DUE; since its opening
 triage_state.py --json --trusted-only (with the --bot-login) and, in the clone,
 intake_state.py --json (with the --bot-login, and --plans when the clone has
-docs/product.md, as the watch runs it) name these, read the same way:
+docs/product.md, as the watch runs it) name these, read the same way. Each runs with the
+clone's roles as the watch does: the --role flags `shipmill roles --flags` prints, run in the
+clone with the CLI the plugin pins (spec 036; to intake_state.py only with --plans), so a plan
+answer the --bot-login relays for the maintainer counts (D-68). With no maintainer in the
+clone's [agents.roles], `shipmill roles` takes SHIPMILL_MAINTAINER when set, else the host's gh
+login:
   YOUR_ITEM   an open item triage_state.py reads WITH_PERSON whose "assignees" include the
               reader (logins compared ignoring case); one assigned only to other logins or
               only to a team is none; since the time its note gives ("since <time>")
@@ -78,11 +83,11 @@ Each line: the repo, the kind, #N, what is asked (a fixed phrase, then the title
 long it has waited (3d 4h, 5h, 12m), oldest first across repos, a tie to the fleet file's
 order, then the number. --login names the reader (default: `gh api user`'s login). --json
 prints {"login", "items": [{"repo", "kind", "number", "url", "asked", "title", "since",
-"waited_minutes"}], "errors": [{"repo", "step", "error"}]}. A repo whose clone, watch,
-triage_state.py, intake_state.py, or GitHub read fails gets one REPO_ERROR line after the
-queue, naming the step and the error's first line. Exit 0 on an empty queue, 1 with a row,
-2 after printing everything when a repo's read failed, and 2 on a malformed fleet file.
-Reads only.
+"waited_minutes"}], "errors": [{"repo", "step", "error"}]}. A repo whose clone, roles read,
+watch, triage_state.py, intake_state.py, or GitHub read fails gets one REPO_ERROR line after
+the queue, naming the step and the error's first line; a repo is never read without its roles.
+Exit 0 on an empty queue, 1 with a row, 2 after printing everything when a repo's read
+failed, and 2 on a malformed fleet file. Reads only.
 """
 
 from __future__ import annotations
@@ -561,19 +566,45 @@ def queue_watch_command(e: Entry, checkout: Path, bot_login: str | None) -> list
     return cmd + (["--bot-login", bot_login] if bot_login is not None else [])
 
 
-def triage_command(e: Entry, bot_login: str | None) -> list[str]:
-    """triage_state.py for one repo's person's items, with the watch's trust (D-16)"""
+def roles_command(checkout: Path) -> list[str]:
+    """The pinned CLI's `shipmill roles --flags` on the clone, as the watch runs the CLI: the
+    clone's [agents.roles] resolved, the maintainer included (spec 036, #1409)"""
+    return [*WS.shipmill_cli(), "--repo", str(checkout), "roles", "--flags"]
+
+
+def role_values(text: str, repo: str) -> list[str]:
+    """The NAME=FILLER[,FILLER...] values of `shipmill roles --flags`' one line, `--role VALUE`
+    pairs; Refused when it prints anything else (exit 2: never a queue read without its roles)"""
+    words = text.split()
+    words = words if len(words) % 2 == 0 else []  # an odd count is malformed, refused below
+    pairs = list(zip(words[::2], words[1::2], strict=True))
+    if not pairs or any(flag != "--role" or value.startswith("-") for flag, value in pairs):
+        raise Refused(f"error: shipmill roles --flags for {repo} printed {text[:200]!r}, not --role NAME=FILLER flags")
+    return [value for _, value in pairs]
+
+
+def role_flags(roles: Sequence[str]) -> list[str]:
+    """Each role's value as its own --role, as the watch passes them"""
+    return [item for value in roles for item in ("--role", value)]
+
+
+def triage_command(e: Entry, bot_login: str | None, roles: Sequence[str] = ()) -> list[str]:
+    """triage_state.py for one repo's person's items, with the watch's trust (D-16) and the
+    clone's roles (spec 036)"""
     cmd = [sys.executable, str(WS.TRIAGE_STATE), e.repo, "--json", "--trusted-only"]
-    return cmd + (["--bot-login", bot_login] if bot_login is not None else [])
+    return cmd + (["--bot-login", bot_login] if bot_login is not None else []) + role_flags(roles)
 
 
-def intake_command(e: Entry, bot_login: str | None, plans: bool) -> list[str]:
+def intake_command(e: Entry, bot_login: str | None, plans: bool, roles: Sequence[str] = ()) -> list[str]:
     """intake_state.py for one repo's opportunities, and with plans its plans, run in the
     clone, where it reads the config and the direction; the --bot-login's triage comments and
     revisions count. plans only when the clone has docs/product.md, as the watch runs it:
-    --plans fails without a direction"""
+    --plans fails without a direction. With plans the clone's roles go as --role flags, so a
+    plan answer the --bot-login relays for the maintainer counts (D-68); without, none, which
+    intake_state.py would refuse"""
     cmd = [sys.executable, str(WS.INTAKE_STATE), e.repo, *(["--plans"] if plans else []), "--json"]
-    return cmd + (["--bot-login", bot_login] if bot_login is not None else [])
+    cmd += ["--bot-login", bot_login] if bot_login is not None else []
+    return cmd + (role_flags(roles) if plans else [])
 
 
 def json_lines(text: str, what: str) -> list[dict[str, Any]]:
@@ -788,19 +819,24 @@ def read_items(
 
 def queue_repo(e: Entry, runner: Runner, workdir: Path, bot_login: str | None, login: str) -> list[Item] | RepoError:
     """One repo's rows: the watch, triage_state.py, and intake_state.py on a fresh clone name
-    the items, GitHub times them; an item in QUESTION is in no other row (S-069-6)"""
+    the items, GitHub times them; an item in QUESTION is in no other row (S-069-6). The clone's
+    roles are read first, and a failed read is the repo's REPO_ERROR, never a queue without them"""
     checkout = workdir / e.repo
     checkout.parent.mkdir(parents=True, exist_ok=True)
     cloned = runner(clone_command(e, checkout))
     if cloned.returncode != 0:
         return RepoError(e.repo, "gh repo clone", first_line(cloned, "gh repo clone"))
+    read_roles = WS.pinned(roles_command(checkout), lambda cmd: runner(cmd, cwd=checkout))
+    if read_roles.returncode != 0:
+        return RepoError(e.repo, "shipmill roles --flags", first_line(read_roles, "shipmill roles --flags"))
+    roles = role_values(read_roles.stdout, e.repo)
     watched = runner(queue_watch_command(e, checkout, bot_login))
     if watched.returncode not in (0, 1):
         return RepoError(e.repo, "watch_state.py", first_line(watched, "watch_state.py"))
-    triaged = runner(triage_command(e, bot_login))
+    triaged = runner(triage_command(e, bot_login, roles))
     if triaged.returncode not in (0, 1):
         return RepoError(e.repo, "triage_state.py", first_line(triaged, "triage_state.py"))
-    intake = runner(intake_command(e, bot_login, (checkout / WS.DIRECTION).is_file()), cwd=checkout)
+    intake = runner(intake_command(e, bot_login, (checkout / WS.DIRECTION).is_file(), roles), cwd=checkout)
     if intake.returncode not in (0, 1):
         return RepoError(e.repo, "intake_state.py", first_line(intake, "intake_state.py"))
     kinds = wanted(watch_rows(e.repo, watched.stdout))
