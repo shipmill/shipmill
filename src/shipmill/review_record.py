@@ -5,8 +5,9 @@ github-pr-triage's landing session records its reviewer's verdict on the head it
 judges. The record is a pull request review posted as the App: event COMMENT, `commit_id` the
 head, and a body whose first line is the verdict's marker, then, after a second look at a refusal
 (spec 075), the findings line with its counts, followed by the reviewer's report.
-Every check runs before the write: the head's form, the report's file, the App, and that the head
-is still the pull request's current one; a failure writes nothing.
+Every check runs before the write: the head's form, the report's file, the App, the leak check of
+the report (spec 081), and that the head is still the pull request's current one; a failure writes
+nothing.
 """
 
 import re
@@ -131,10 +132,11 @@ class Request:
     findings: Findings | str | None = None
 
 
-def record(request: Request, hub: Hub, app: Callable[[], None]) -> str:
+def record(request: Request, hub: Hub, app: Callable[[], None], leaks: Callable[[str], None]) -> str:
     """S-055-16: the checks, then the review; the line saying what was recorded. app raises, as
     `shipmill gh` would before a write, when the App isn't available. Any failure raises with
-    nothing written. S-075-4: given findings, their line follows the verdict's marker"""
+    nothing written. S-075-4: given findings, their line follows the verdict's marker.
+    S-081-12: leaks raises when the report holds what the leak check refuses"""
     if request.number < 1:
         raise ReleaseError(f"the pull request's number is 1 or more; got {request.number}")
     head = Head.parse(request.head)
@@ -143,6 +145,7 @@ def record(request: Request, hub: Hub, app: Callable[[], None]) -> str:
         findings.check(request.verdict)
     report = _report(request.body_file)
     app()
+    leaks(report)
     current = hub.head(request.number)
     if current != head.sha:
         raise ReleaseError(

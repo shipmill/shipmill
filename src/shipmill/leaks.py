@@ -16,7 +16,7 @@ A fourth, `high-entropy`, only warns: a long random-looking string outside lock 
 
 A finding names a term, but a secret only by its variable and file, or by its format and its
 first 4 characters: no line this module writes holds a secret's value (S-081-14). The callers
-(`shipmill gh`, and later `leaks push`, `leaks check`, `spec open`, `review record`) gather the
+(`shipmill gh`, `leaks push`, `leaks check`, `spec open`, `review record`) gather the
 texts and the destination and print `refusal`'s lines.
 """
 
