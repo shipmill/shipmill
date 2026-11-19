@@ -157,7 +157,7 @@ NOW = dt.datetime(2026, 10, 5, 7, 0, tzinfo=dt.timezone.utc)  # noqa: UP017 (run
 NOT_FOUND = "GraphQL: Could not resolve to a Repository with the name 'owner/gone'. (repository)\nmore"
 
 
-def row(state: str, subject: str, detail: str = "") -> dict[str, str]:
+def row(state: str, subject: str, detail: str = "") -> dict[str, object]:
     return {"state": state, "subject": subject, "detail": detail}
 
 
@@ -183,7 +183,7 @@ def measures(*texts: str) -> dict[str, Any]:
 class Fake:
     """Answers each repo's clone, watch_state.py, and metrics.py as a real run would"""
 
-    watch: dict[str, list[dict[str, str]]] = field(default_factory=dict)  # rows by repo; exit 1 on an action
+    watch: dict[str, list[dict[str, object]]] = field(default_factory=dict)  # rows by repo; exit 1 on an action
     metrics: dict[str, dict[str, Any]] = field(default_factory=dict)
     failing: dict[str, tuple[str, str]] = field(default_factory=dict)  # repo: (the step that fails, its stderr)
     configs: dict[str, str] = field(default_factory=dict)  # repo: the .github/shipmill.toml its clone holds
@@ -208,8 +208,10 @@ class Fake:
             return proc(0)
         if step == "watch_state.py":
             rows = self.watch[repo]
-            action = any(r["state"] in WATCH_ACTION for r in rows)
-            lines = (json.dumps({**r, "agent": r["state"] in WATCH_ACTION}, sort_keys=True) + "\n" for r in rows)
+            # a row may say its own agent, as watch_state.py's FEEDBACK_DUE does by the intake level
+            shown = [{"agent": r["state"] in WATCH_ACTION, **r} for r in rows]
+            action = any(r["agent"] for r in shown)
+            lines = (json.dumps(r, sort_keys=True) + "\n" for r in shown)
             return proc(1 if action else 0, "".join(lines))
         assert step == "metrics.py", cmd
         return proc(0, json.dumps(self.metrics[repo]))
@@ -292,6 +294,23 @@ def test_s001_2_the_report_exits_1_on_any_action_row_and_0_on_none(
     assert fleet_run(fl, tmp_path, capsys, fake, FLEET)[0] == 0  # a HOLD and PRS_OPEN are report-only
     fake.watch["owner/other"].append(row("ISSUES", "owner/other", "NEW #12"))
     assert fleet_run(fl, tmp_path, capsys, fake, FLEET)[0] == 1
+
+
+def test_s074_6_an_observe_feedback_due_is_reported_and_no_action_in_the_fleet(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = quiet_fake()
+    # under [autonomy] intake = "observe" watch_state.py prints FEEDBACK_DUE as no agent's row
+    observed = {**row("FEEDBACK_DUE", "owner/other", "NEW_FEEDBACK #31"), "agent": False}
+    fake.watch["owner/other"].append(observed)
+    code, out = fleet_run(fl, tmp_path, capsys, fake, FLEET)
+    assert code == 0
+    line = "owner/other     FEEDBACK_DUE   owner/other      NEW_FEEDBACK #31"
+    assert line in out.splitlines() and out.splitlines()[0] != line  # listed, never among the actions
+    # under propose it is an agent's row: an action, listed first
+    fake.watch["owner/other"][-1] = {**observed, "agent": True}
+    code, out = fleet_run(fl, tmp_path, capsys, fake, FLEET)
+    assert code == 1 and out.splitlines()[0] == line
 
 
 def test_s001_5_a_failed_check_is_one_repo_error_row_and_the_rest_is_reported(

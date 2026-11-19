@@ -141,6 +141,9 @@ ACTION = frozenset(
     }
 )
 REPO_ERROR = "REPO_ERROR"
+# watch_state.py's one state whose row is report-only by a level: FEEDBACK_DUE under [autonomy]
+# intake = "observe", which it prints with "agent": false (spec 074)
+REPORT_ONLY_BY_LEVEL = "FEEDBACK_DUE"
 ROW_KEYS = {"state", "subject", "detail", "agent"}  # a watch_state.py --json line
 FIX_KEY = "fix"  # and its fix (spec 011), a string or null, which this report doesn't print
 KEYS = ("repo", "incident_label")  # the keys of a [[repos]] entry
@@ -303,9 +306,18 @@ def run(cmd: Sequence[str]) -> subprocess.CompletedProcess[str]:
 
 @dataclass(frozen=True)
 class Row:
+    """One watch row; report_only marks a FEEDBACK_DUE read under [autonomy] intake = "observe",
+    which watch_state.py prints with "agent": false (spec 074): reported, never an action"""
+
     state: str
     subject: str
     detail: str
+    report_only: bool = False
+
+    @property
+    def action(self) -> bool:
+        """watch_state.py's Row.action: a state in ACTION, save a report-only one"""
+        return self.state in ACTION and not self.report_only
 
     def json(self) -> dict[str, str]:
         return {"state": self.state, "subject": self.subject, "detail": self.detail}
@@ -354,7 +366,10 @@ def watch_rows(repo: str, out: str) -> list[Row]:
             or not isinstance(found.get(FIX_KEY), (str, type(None)))
         ):
             raise Refused(f"error: watch_state.py for {repo} printed {line!r}, not a row")
-        rows.append(Row(str(found["state"]), str(found["subject"]), str(found["detail"])))
+        state = str(found["state"])
+        # spec 074: watch_state.py's report-only FEEDBACK_DUE is the one it prints as no agent's
+        report_only = state == REPORT_ONLY_BY_LEVEL and not found["agent"]
+        rows.append(Row(state, str(found["subject"]), str(found["detail"]), report_only))
     return rows
 
 
@@ -391,7 +406,7 @@ def report(entries: list[Entry], runner: Runner, workdir: Path, until: str | Non
 
 def leads(row: Row) -> bool:
     """A row the table puts first: an action, or a repo whose check failed"""
-    return row.state in ACTION or row.state == REPO_ERROR
+    return row.action or row.state == REPO_ERROR
 
 
 def table(reports: list[RepoReport]) -> list[str]:
@@ -430,7 +445,7 @@ def metrics_table(reports: list[RepoReport]) -> list[str]:
 def exit_code(reports: list[RepoReport]) -> int:
     if any(r.failed for r in reports):
         return 2
-    return 1 if any(row.state in ACTION for r in reports for row in r.rows) else 0
+    return 1 if any(row.action for r in reports for row in r.rows) else 0
 
 
 def utc_now() -> dt.datetime:
