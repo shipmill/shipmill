@@ -1321,7 +1321,8 @@ def _autonomy(policy: Policy, github: GitHub | None, caller: Path) -> tuple[list
 def _land_grant(policy: Policy, upgrades: int, caller: Path) -> Check | None:
     """One WARN naming every reason the caller's land job needs `issues: write` and lacks it
     (D-9): closing a proposal issue, under release = "propose" or for a breaking stable
-    candidate (spec 029), and proposing the upgrades pending under propose or act (spec 014)"""
+    candidate (spec 029), proposing the upgrades pending under propose or act (spec 014), and
+    closing the milestone of a lane that sets close_milestone (spec 068)"""
     # None, no land job at all, is the workflow check's failure, not this one's
     if not caller.is_file() or _job_grants(caller.read_text("utf-8"), "land.yml", "issues") is not False:
         return None
@@ -1330,6 +1331,10 @@ def _land_grant(policy: Policy, upgrades: int, caller: Path) -> Check | None:
         reasons.append("release autonomy is propose, so a release closes its lane's proposal issue")
     elif policy.can_break:
         reasons.append(f"{_BREAKING}, so a release closes its lane's proposal issue")
+    if closing := [str(rule.lane) for rule in policy.lanes.values() if rule.close_milestone]:
+        lanes = ", ".join(f"lanes.{lane}" for lane in closing)
+        verb = "sets" if len(closing) == 1 else "set"
+        reasons.append(f"{lanes} {verb} close_milestone, so a release closes its milestone and moves what's left")
     if upgrades:
         reasons.append(f"upgrade autonomy is {policy.autonomy.upgrade} and {upgrades} upgrade(s) pending")
     if not reasons:

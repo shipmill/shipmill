@@ -139,6 +139,7 @@ github_release = true             # a GitHub release, marked pre-release
 quiet_minutes = 30                # main's head after every batch of merges
 # promote_from = "rc"             # or: the newest rc's code, whatever its age
 # milestone = true                # or: due once the milestone named "1.5.0" is done (below)
+# close_milestone = true          # with milestone: the release closes its milestone (spec 068)
 github_release = true
 dispatch = ["publish.yml"]
 # after_publish = ["move-major-tag.yml"]  # optional: started once each dispatch run passed (below)

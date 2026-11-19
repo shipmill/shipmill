@@ -125,6 +125,9 @@ class LaneRule:
     # workflows started the same way once each dispatch run succeeded and PyPI serves the
     # version (D-50): what moves the release's references, such as a floating major tag
     after_publish: tuple[str, ...] = ()
+    # milestone lanes only: a stable release closes the milestone named after it and moves
+    # what's left to the next (spec 068, D-95); false when absent (D-63)
+    close_milestone: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,7 +430,11 @@ def _lane(lane: Lane, t: Table) -> LaneRule:
     if lane is Lane.HOTFIX:
         t.allow("github_release", "dispatch", "after_publish")  # a hotfix is cut by hand only
     else:
-        t.allow(*triggers, *extra, "github_release", "dispatch", "after_publish")
+        t.allow(*triggers, *extra, "close_milestone", "github_release", "dispatch", "after_publish")
+    milestone = t.boolean("milestone", default=False)
+    close_milestone = t.boolean("close_milestone", default=False)
+    if close_milestone and not milestone:
+        raise ReleaseError(f"{t.where}: close_milestone = true needs milestone = true on the lane")
     quiet = t.integer("quiet_minutes", default=None, low=0, high=_MAX_QUIET)
     promote_from = t.string("promote_from", default="") if lane is Lane.STABLE else ""
     if promote_from not in ("", "rc"):
@@ -451,12 +458,13 @@ def _lane(lane: Lane, t: Table) -> LaneRule:
         lane=lane,
         quiet_minutes=quiet,
         schedule=tuple(Window.parse(w) for w in t.strings("schedule", default=())),
-        milestone=t.boolean("milestone", default=False),
+        milestone=milestone,
         promote=bool(promote_from),
         marker=marker,
         github_release=t.boolean("github_release", default=False),
         dispatch=dispatch,
         after_publish=after_publish,
+        close_milestone=close_milestone,
     )
 
 
