@@ -2076,8 +2076,6 @@ def classify_open(
     human = bool(own_roles)
     triaged = [c for c in issue["comments"]["nodes"] if c["body"].lstrip().startswith(marker)]
     triage = [c["body"] for c in triaged]
-    prs = linked_prs(issue)
-    open_prs = [n for n, s, _ in prs if s == "OPEN"]
     # Spec 079: a merged #N whose revert #R the --bot-login reopened the issue over closes it
     # no more while #R stands (open or merged); once #R closed unmerged, #N counts again
     standing = {
@@ -2085,6 +2083,11 @@ def classify_open(
         for n, r in reverts(issue, bot_login).items()
         if states.get((*repo, r)) != "CLOSED_UNMERGED"
     }
+    # #R, titled Revert "<#N's title>", carries any closing keyword #N's title had: it is no
+    # work on the issue, open or merged
+    undoing = {r for r, _ in standing.values()}
+    prs = [p for p in linked_prs(issue) if p[0] not in undoing]
+    open_prs = [n for n, s, _ in prs if s == "OPEN"]
     merged = [n for n, s, whole in prs if s == "MERGED" and whole and n not in standing]
     note = " ".join(
         f"#{n}:{'reverted' if s == 'MERGED' and n in standing else s.lower()}" + ("" if whole else "(part)")

@@ -482,6 +482,22 @@ def test_s079_13_an_issue_a_revert_reopened_reads_as_work_again(
     assert read_reopened(ts, item, revert) == expected
 
 
+# proves: S-079-13
+@pytest.mark.parametrize(
+    ("revert", "expected"),
+    [("OPEN", ("BLOCKED", "revert #30 of #8 open")), ("MERGED", ("NEEDS_PR", "#8:reverted"))],
+)
+def test_s079_13_a_revert_titled_after_a_closing_title_is_no_work_on_the_issue(
+    ts: ModuleType, revert: str, expected: tuple[str, str]
+) -> None:
+    # #8 linked by "Fix #12" in its title, so its revert, titled Revert "<title>", links too
+    item = reopened({"login": "shipmill-app", "__typename": "Bot"})
+    item["timelineItems"]["nodes"][0]["source"].update(title="Fix #12 flag", body="")
+    pr = {"number": 30, "state": revert, "title": 'Revert "Fix #12 flag"', "body": "Reverts #8"}
+    item["timelineItems"]["nodes"].append({"willCloseTarget": False, "isCrossRepository": False, "source": pr})
+    assert read_reopened(ts, item, revert) == expected
+
+
 def test_s079_13_a_merged_revert_leaves_a_triaged_issue_s_other_state(ts: ModuleType) -> None:
     item = reopened({"login": "shipmill-app", "__typename": "Bot"}, "Triage: clarify, which flag?")
     assert read_reopened(ts, item, "MERGED") == ("TRIAGED", "#8:reverted")
