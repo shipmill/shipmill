@@ -112,10 +112,10 @@ with the `<!-- shipmill-upgrade: <id> <version> -->` marker on its first line):
 
 The direction (spec 034; only for a config with an [agents] table, which nothing reads
 without): `git cat-file -e origin/<branch>:docs/product.md` after the fetch of the default
-branch, and when it is there `shipmill --repo <repo-dir> product check --ref origin/<branch>`;
-any other failure of either stops the watch (exit 2). The direction issues (labelled
-shipmill-direction, open and closed, one REST read) are read only while the file is absent,
-and the pull requests from shipmill/direction only while one is open:
+branch, and when it is there `shipmill --repo <repo-dir> product check --ref origin/<branch>
+--local` (this repo's own file, never a product home's); any other failure of either stops
+the watch (exit 2). The direction issues (labelled shipmill-direction, open and closed, one
+REST read) are read only while the file is absent, and the pull requests from shipmill/direction only while one is open:
   DIRECTION_MISSING  subject docs/product.md: the file is absent, or product check refuses it
                   (its first problem). The fix names where the question stands: the open
                   direction issue's URL, the open shipmill/direction pull request's (the repo's
@@ -2926,12 +2926,13 @@ def direction_present(repo_dir: Path, branch: str, execute: Spawn = spawn) -> bo
 
 
 def direction_check_command(repo_dir: Path, branch: str, tool: str | None) -> list[str]:
-    """`shipmill product check` at origin/<branch>, the pinned CLI or --tool's (spec 034)"""
-    return [*shipmill_cli(tool), "--repo", str(repo_dir), "product", "check", "--ref", f"origin/{branch}"]
+    """`shipmill product check` at origin/<branch>, the pinned CLI or --tool's (spec 034), with
+    --local: a component's own docs/product.md only, never its product home's (spec 071, #1408)"""
+    return [*shipmill_cli(tool), "--repo", str(repo_dir), "product", "check", "--ref", f"origin/{branch}", "--local"]
 
 
 def direction_problems(repo_dir: Path, branch: str, tool: str | None, execute: Spawn = spawn) -> list[str]:
-    """The problems `shipmill product check --ref origin/<branch>` names, one per line; none
+    """The problems `shipmill product check --ref origin/<branch> --local` names, one per line; none
     for a well-formed direction (exit 0). An exit 1 that names none, or any other exit, stops
     the watch (exit 2), never read as a direction; PyPI's wait for the pinned CLI raises
     PypiWait (#597)"""
