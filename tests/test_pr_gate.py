@@ -1385,7 +1385,7 @@ def test_1321_a_keyword_closing_an_open_pull_request_is_refused(
     proc = run_gate(tmp_path, None, {7: data}, issues=PULLS)
     assert proc.returncode == gate.REFUSED == 6, proc.stdout + proc.stderr
     assert proc.stdout == REFUSED_LINE + f"  refused: {where} closes #22, an open pull request\n"
-    [graphql] = [c for c in gh_calls(tmp_path) if "graphql" in c["args"]]  # the one read, as before
+    [graphql, _] = [c for c in gh_calls(tmp_path) if "graphql" in c["args"]]  # the closing read, then the thread's
     assert "... on PullRequest { state }" in next(a for a in graphql["args"] if a.startswith("query="))
 
 
