@@ -155,7 +155,7 @@ recommendation:
 | Lanes | `stable`, `hotfix` | add `rc` (and `dev`) only for people who try pre-releases |
 | rc cadence | by hand, or `schedule = ["Mon-Fri 07:00 <their zone>"]` | the zone is an IANA name |
 | Stable | `quiet_minutes = 30`, no `promote_from`, no soak | releases main's head after every batch of merges; a breaking change waits for the maintainer's hand start. `promote_from = "rc"` only when every stable release must be a pre-release people installed; it promotes the newest rc at any age |
-| Milestones | `milestone = true` and `close_milestone = true` on stable | due once the milestone titled with the version has no open issues; with `close_milestone`, the release closes that milestone and moves any issue left open to the next one (spec 068). Create the first milestone with the MILESTONE_MISSING row's fix once the user names it |
+| Milestones | `milestone = true` and `close_milestone = true` on stable | due once the milestone titled with the version has no open issues. `close_milestone` is the key a lane sets so its release closes that milestone (spec 068); the release reads it only once #1335 lands, and until then `shipmill milestones` reports MILESTONE_RELEASED with the close. `shipmill milestones` also reports MILESTONE_MISSING when no milestone is open for the next version, with the fix that creates it: run it once the user names the first milestone |
 | Bump rule | `from = "headings"` for keep-a-changelog | `from = "paths"` when headings are topics, such as a spec |
 | Where releases go | `github_release = true`; `dispatch = ["publish.yml"]` | per lane; pre-releases are marked pre-release |
 | Holds | `release-blocker` holding `rc` and `stable` | create the label; add `freeze` ranges for holidays |
@@ -994,8 +994,9 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      has an `[agents]` section, interactive or headless (D-21), and with it
      `role:maintainer` and `role:<name>` for each role `[agents.roles]` defines (a role's
      item, spec 036), `human` (the older label for a person's item, spec 017), `upstream` (a report for another repo, spec 038), and
-     `decided` (a notify decision, spec 030), and `opportunity` and `planned` (an
-     opportunity and its accept, spec 068); it
+     `decided` (a notify decision, spec 030), `opportunity` and `planned` (an
+     opportunity and its accept, spec 068), and `expedite` and `fixed-date` (an accepted
+     opportunity's classes of service, spec 070); it
      reads `LABELS_MISSING` until then. Without `[agents]` none is wanted
    - **Notifications:** with `app_id`, the question is `<slug>[bot]`'s, so its mention
      notifies the user on GitHub and the gate sends no desktop notification. Without it,
