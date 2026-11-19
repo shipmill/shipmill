@@ -58,6 +58,10 @@ def missing() -> None:
     raise ReleaseError("no App private key at /k.pem")
 
 
+def clean(report: str) -> None:
+    """The report holds nothing the leak check refuses"""
+
+
 # --- S-055-16: the record, and every refusal before a write ----------------------------------------
 
 
@@ -66,7 +70,7 @@ def test_s055_16_the_record_is_the_verdicts_marker_then_the_report_at_the_head(
     tmp_path: Path, verdict: Verdict
 ) -> None:
     hub = FakeHub()
-    said = record(Request(PULL, HEAD.upper(), verdict, report(tmp_path)), hub, available)
+    said = record(Request(PULL, HEAD.upper(), verdict, report(tmp_path)), hub, available, clean)
     assert hub.posts == [(PULL, HEAD, f"<!-- shipmill:review {verdict} -->\n\nVerdict: MERGE\n\nNo findings.")]
     assert said == f"recorded {verdict} for #{PULL} at {HEAD}"
 
@@ -75,28 +79,28 @@ def test_s055_16_the_record_is_the_verdicts_marker_then_the_report_at_the_head(
 def test_s055_16_a_head_that_isnt_40_hex_characters_exits_2_before_any_read(tmp_path: Path, head: str) -> None:
     hub = FakeHub()
     with pytest.raises(ReleaseError, match="40 hex characters"):
-        record(Request(PULL, head, Verdict.MERGE, report(tmp_path)), hub, available)
+        record(Request(PULL, head, Verdict.MERGE, report(tmp_path)), hub, available, clean)
     assert (hub.reads, hub.posts) == ([], [])
 
 
 def test_s055_16_a_head_that_isnt_the_prs_current_one_writes_nothing(tmp_path: Path) -> None:
     hub = FakeHub(current=OTHER)
     with pytest.raises(ReleaseError, match=f"--head {HEAD} is not #{PULL}'s current head, {OTHER}"):
-        record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path)), hub, available)
+        record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path)), hub, available, clean)
     assert (hub.reads, hub.posts) == ([PULL], [])
 
 
 def test_s055_16_without_the_app_nothing_is_read_or_written(tmp_path: Path) -> None:
     hub = FakeHub()
     with pytest.raises(ReleaseError, match="no App private key"):
-        record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path)), hub, missing)
+        record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path)), hub, missing, clean)
     assert (hub.reads, hub.posts) == ([], [])
 
 
 def test_s055_16_a_report_that_cant_be_read_writes_nothing(tmp_path: Path) -> None:
     hub = FakeHub()
     with pytest.raises(ReleaseError, match="--body-file .* can't be read"):
-        record(Request(PULL, HEAD, Verdict.MERGE, tmp_path / "none.md"), hub, available)
+        record(Request(PULL, HEAD, Verdict.MERGE, tmp_path / "none.md"), hub, available, clean)
     assert (hub.reads, hub.posts) == ([], [])
 
 
@@ -218,7 +222,7 @@ def test_s075_4_a_refusal_carries_the_findings_line_after_its_marker_keys_in_one
     tmp_path: Path, findings: str
 ) -> None:
     hub = FakeHub()
-    record(Request(PULL, HEAD, Verdict.REFUSE, report(tmp_path), findings), hub, available)
+    record(Request(PULL, HEAD, Verdict.REFUSE, report(tmp_path), findings), hub, available, clean)
     (_, _, body), *rest = hub.posts
     assert rest == []
     assert body == f"<!-- shipmill:review refuse -->\n{REFUSE_LINE}\n\nVerdict: MERGE\n\nNo findings."
@@ -227,7 +231,10 @@ def test_s075_4_a_refusal_carries_the_findings_line_after_its_marker_keys_in_one
 def test_s075_4_without_a_report_the_body_ends_at_the_findings_line(tmp_path: Path) -> None:
     hub = FakeHub()
     record(
-        Request(PULL, HEAD, Verdict.REFUSE, report(tmp_path, "\n"), "confirmed=2,rejected=1,minor=0"), hub, available
+        Request(PULL, HEAD, Verdict.REFUSE, report(tmp_path, "\n"), "confirmed=2,rejected=1,minor=0"),
+        hub,
+        available,
+        clean,
     )
     assert hub.posts == [(PULL, HEAD, f"<!-- shipmill:review refuse -->\n{REFUSE_LINE}")]
 
@@ -279,7 +286,7 @@ def test_s075_5_a_malformed_findings_value_exits_2_naming_the_form_before_any_re
 ) -> None:
     hub = FakeHub()
     with pytest.raises(ReleaseError, match="--findings is confirmed=N,rejected=N,minor=N, each key once") as raised:
-        record(Request(PULL, HEAD, Verdict.REFUSE, report(tmp_path), findings), hub, available)
+        record(Request(PULL, HEAD, Verdict.REFUSE, report(tmp_path), findings), hub, available, clean)
     assert re.search(says, str(raised.value)), str(raised.value)
     assert (hub.reads, hub.posts) == ([], [])
 
@@ -301,7 +308,7 @@ def test_s075_5_a_verdict_the_counts_contradict_exits_2_before_any_read(
 ) -> None:
     hub = FakeHub()
     with pytest.raises(ReleaseError, match=says):
-        record(Request(PULL, HEAD, verdict, report(tmp_path), findings), hub, available)
+        record(Request(PULL, HEAD, verdict, report(tmp_path), findings), hub, available, clean)
     assert (hub.reads, hub.posts) == ([], [])
 
 
@@ -324,16 +331,18 @@ def test_s075_5_the_cli_exits_2_on_bad_findings_before_any_gh_call(tmp_path: Pat
 @pytest.mark.parametrize("verdict", list(Verdict))
 def test_s075_6_without_findings_the_body_is_as_before(tmp_path: Path, verdict: Verdict) -> None:
     hub = FakeHub()
-    record(Request(PULL, HEAD, verdict, report(tmp_path)), hub, available)
+    record(Request(PULL, HEAD, verdict, report(tmp_path)), hub, available, clean)
     assert hub.posts == [(PULL, HEAD, f"<!-- shipmill:review {verdict} -->\n\nVerdict: MERGE\n\nNo findings.")]
     empty = FakeHub()
-    record(Request(PULL, HEAD, verdict, report(tmp_path, "")), empty, available)
+    record(Request(PULL, HEAD, verdict, report(tmp_path, "")), empty, available, clean)
     assert empty.posts == [(PULL, HEAD, f"<!-- shipmill:review {verdict} -->")]
 
 
 def test_s075_6_an_overturned_refusal_records_merge_with_its_findings_line(tmp_path: Path) -> None:
     hub = FakeHub()
-    record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path), "confirmed=0,rejected=2,minor=1"), hub, available)
+    record(
+        Request(PULL, HEAD, Verdict.MERGE, report(tmp_path), "confirmed=0,rejected=2,minor=1"), hub, available, clean
+    )
     assert hub.posts == [
         (
             PULL,
@@ -346,7 +355,7 @@ def test_s075_6_an_overturned_refusal_records_merge_with_its_findings_line(tmp_p
 
 def test_s075_6_a_parsed_findings_value_is_taken_as_it_is(tmp_path: Path) -> None:
     hub = FakeHub()
-    record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path), Findings(0, 2, 1)), hub, available)
+    record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path), Findings(0, 2, 1)), hub, available, clean)
     assert hub.posts[0][2].splitlines()[1] == "<!-- shipmill:findings confirmed=0 rejected=2 minor=1 -->"
 
 

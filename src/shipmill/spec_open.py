@@ -1,7 +1,8 @@
 """`spec open` (spec 053): open a spec's pull request that the spec gate can follow.
 
 Every check runs before the first write: the path, `specs.py check`, the spec's status, the
-App, the feature issue, and the branch on origin. Then one commit on `spec/NNN-<slug>` from
+App, the leak check of --body-file (spec 081), the feature issue, and the branch on origin.
+Then one commit, checked for leaks before it is pushed, on `spec/NNN-<slug>` from
 origin's default branch and its push, the pull request whose body starts `Spec for #N`, and the
 feature verdict on #N in comments.md's Feature template, whose hold line holds the issue on the
 pull request until it merges. It never files the feature issue and asks no question.
@@ -92,8 +93,24 @@ class Checkout(Protocol):
         """The branch's commit on origin; None when origin has no such branch"""
         ...
 
-    def publish(self, branch: str, base: str, paths: Sequence[PurePosixPath], message: str) -> None:
-        """Push branch to origin: one commit on origin's base holding the working tree's paths"""
+    def publish(
+        self, branch: str, base: str, paths: Sequence[PurePosixPath], message: str, vet: Callable[[str], None]
+    ) -> None:
+        """Push branch to origin: one commit on origin's base holding the working tree's paths;
+        vet gets the push's refspec, `<commit>:refs/heads/<branch>`, before it is sent, and
+        raises to stop it"""
+        ...
+
+
+class Leaks(Protocol):
+    """The leak check (spec 081) on what spec open sends; each raises before anything is sent"""
+
+    def body(self, text: str) -> None:
+        """--body-file's text, as the pull request's body sends it"""
+        ...
+
+    def push(self, refspec: str) -> None:
+        """The commit a push of refspec to origin would send"""
         ...
 
 
@@ -121,10 +138,13 @@ class Request:
     body_file: Path | None = None
 
 
-def open_spec(top: Path, repo: str, request: Request, checkout: Checkout, hub: Hub, app: Callable[[], None]) -> str:
+def open_spec(
+    top: Path, repo: str, request: Request, checkout: Checkout, hub: Hub, app: Callable[[], None], leaks: Leaks
+) -> str:
     """S-053-1 to S-053-7: every check, then the writes; the pull request's URL. app raises,
     as `shipmill gh` would before a write, when the App isn't available. Any failure before
-    the writes raises with nothing written: no branch, commit, push, or GitHub write"""
+    the writes raises with nothing written: no branch, commit, push, or GitHub write. S-081-12:
+    leaks checks --body-file's text before the first write, and the commit before its push"""
     if request.issue is None:
         raise ReleaseError(NO_ISSUE)
     if request.issue < 1:
@@ -142,6 +162,8 @@ def open_spec(top: Path, repo: str, request: Request, checkout: Checkout, hub: H
             f"`status: {APPROVED}` once it holds what the maintainer approves by merging it"
         )
     app()
+    if request.body_file is not None:
+        leaks.body(text)
     issue = request.issue
     found = hub.record(issue)
     if found is None:
@@ -157,7 +179,7 @@ def open_spec(top: Path, repo: str, request: Request, checkout: Checkout, hub: H
             f"origin already has the branch {branch}: a pull request for this spec may be open; update that branch, "
             "or delete it once nothing needs it"
         )
-    checkout.publish(branch, base, paths, f"Spec {spec_path.number}: {lowered(spec.title)}")
+    checkout.publish(branch, base, paths, f"Spec {spec_path.number}: {lowered(spec.title)}", leaks.push)
     body = f"Spec for #{issue}\n\n{text}" if text else f"Spec for #{issue}"
     try:
         url = hub.open_pull(f"Spec {spec_path.number}: {spec.title}", body, branch, base)
@@ -296,7 +318,9 @@ class GitCheckout:
     def remote_branch(self, branch: str) -> str | None:
         return self._git.remote_branch(branch)
 
-    def publish(self, branch: str, base: str, paths: Sequence[PurePosixPath], message: str) -> None:
+    def publish(
+        self, branch: str, base: str, paths: Sequence[PurePosixPath], message: str, vet: Callable[[str], None]
+    ) -> None:
         tracking = f"refs/remotes/{REMOTE}/{base}"
         self._git.run("fetch", "-q", REMOTE, f"+refs/heads/{base}:{tracking}")
         with tempfile.TemporaryDirectory() as folder:
@@ -312,6 +336,8 @@ class GitCheckout:
             listed = ", ".join(p.as_posix() for p in paths)
             raise ReleaseError(f"{listed} read the same on {REMOTE}/{base}: the spec pull request would change nothing")
         commit = self._git.run("commit-tree", tree, "-p", tracking, "-m", message).strip()
-        failed = self._git.push(f"{commit}:refs/heads/{branch}")
+        refspec = f"{commit}:refs/heads/{branch}"
+        vet(refspec)  # S-081-12: no hook sees this push
+        failed = self._git.push(refspec)
         if failed:
             raise ReleaseError(f"git push of {branch} to {REMOTE} failed: {failed}")

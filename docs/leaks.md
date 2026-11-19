@@ -86,6 +86,10 @@ Rewrite the text in general terms: describe the case by its traits, never by the
 customer, or host it came from, and take the secret out. A person can post it with plain gh
 ```
 
+`shipmill spec open` and `shipmill review record` check their `--body-file` the same way
+before their first write, and `spec open` also checks the commit it pushes, which no hook
+sees.
+
 **A `git push` by an agent.** In a repo with `[agents]`, the plugin's delivery hook checks
 what a push would send before it runs: each unpushed commit's message, the paths it adds or
 renames to, and the lines it adds, read commit by commit, so a line one commit adds and a
@@ -96,6 +100,18 @@ check that can't finish refuses the push too, so no push goes out unchecked.
 
 Your own terminal isn't checked: a plain `gh` or `git push` there is the way through for a
 finding you judge harmless.
+
+## Check a text before you write it
+
+`shipmill leaks check [--repo DIR] [--to <owner/name>] [--field NAME] [FILE]` runs the
+detectors over a file, or stdin without one, as a write of it to `--to` would be checked
+(without `--to`, the repo of the checkout's origin; outside a checkout, no repo, checked as
+public). It exits 2 with the findings, as a refusal lists them, and 0 otherwise, after any
+warnings; `--field body` names the text `the body` in a finding:
+
+```bash
+shipmill leaks check --to acme/widgets --field body tmp/pr-body.md
+```
 
 ## Check the setup
 

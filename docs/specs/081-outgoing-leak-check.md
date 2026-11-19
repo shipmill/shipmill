@@ -1,6 +1,6 @@
 # S-081: Agents never leak a private name or a secret from the machine to a repo
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -220,3 +220,21 @@ Touched areas: `src/shipmill/leaks.py`, `src/shipmill/cli.py` (`leaks check`, `l
 - shipmill/shipmill#1319: S-081-15, S-081-17
 
 ## Verification
+
+- S-081-1: `tests/test_leaks.py` runs each listed `issue` and `pr` write with the term in its title, `--body`, `--body-file`, or stdin to a public repo through `main`; each raised the refusal naming the term and the field with the gh runner never called, and `AcmeRocketry` passed
+- S-081-2: `tests/test_leaks.py` refused `gh api -X POST` writes with the term in a `-f`/`-F` value, an `@file` field, and an `--input` file, and read the visibility of the endpoint's `repos/<owner>/<name>`; a GET through `gh api` was not checked
+- S-081-3: `tests/test_leaks.py` passed the term to repos read `private` and `internal`, and refused it when the visibility read failed, the remote was off github.com, and the write went to a gist
+- S-081-4: `tests/test_leaks.py` read no visibility without the private file or without terms, and each malformed file (unknown key, wrong type, short term, invalid TOML, unreadable `secret_files`) exited 2 naming the key and the file for writes, `leaks push` (`tests/test_leak_push.py`), and `leaks check` (`tests/test_leaks_check.py`)
+- S-081-5: `tests/test_leaks.py` refused an untracked `.env`'s `API_TOKEN` value and a `secret_files` value to a private repo naming the variable and file, never the value; short values, other names, and a tracked `.env.example` passed
+- S-081-6: `tests/test_leaks.py` refused each built-in format in any repo naming the format and its first 4 characters; `https://x-access-token:${TOKEN}@github.com` passed
+- S-081-7: `tests/test_leaks.py` with a stand-in gitleaks 8.19 or newer refused its finding as `secret-format`, and a `gitleaks:allow` comment, a repo `.gitleaks.toml`, and a `GITLEAKS_CONFIG` passed nothing; an older or absent gitleaks left the built-in formats alone
+- S-081-8: `tests/test_leaks.py`, `tests/test_leak_push.py`, and `tests/test_leaks_check.py` printed `shipmill leaks: warning:` for a random 40-character string and kept the command's own exit code; a hex SHA and a string in `uv.lock` printed none
+- S-081-9: `tests/test_leak_push.py` on temporary repos refused a term in an added line, an added or renamed path, a message, and a destination ref, naming the commit, path, and line; a term in an unchanged line or a pushed commit passed
+- S-081-10: `tests/test_leak_push.py` refused a secret value and a GitHub token in a private repo's unpushed commit though a later unpushed commit removed the line
+- S-081-11: `tests/test_leaks_hook.py` ran `hooks/delivery.py pre` on a `git push` in a repo with `[agents]`: it ran the pinned `leaks push` with the push's remote and refspecs, exited 2 on its exit 2, on a runner that couldn't start, and past 45 seconds, started nothing for other commands; `hooks/hooks.json`'s Bash timeout reads 60
+- S-081-12: `tests/test_leaks_check.py` ran `spec open` and `review record` through `main` with a `--body-file` holding the term or a GitHub token: each exited 2 with the refusal, the fake checkout published nothing and gh saw no write (only the visibility read); `open_spec` on a real clone with the term in the spec refused the commit before its push and origin got no branch
+- S-081-13: `tests/test_leaks_check.py` ran `leaks check --to acme/widgets` over a file and over stdin: a term, a token, and a `.env` value each exited 2 with the findings, a clean text exited 0 with its warning on stderr, and a malformed `--to` exited 2 before stdin or gh was read; run by hand, `uv run shipmill leaks check --field body` over a file holding an AWS key id exited 2 naming `the body, line 3`, and over `README.md` exited 0
+- S-081-14: `tests/test_leaks.py` checked that no refusal or warning line holds a secret beyond 4 characters and that a refusal lists 10 findings then `and N more`; `tests/test_leaks_doctor.py` and `tests/test_leaks_check.py` print the count of terms or the found term only, never an unfound one
+- S-081-15: `tests/test_leaks_doctor.py` printed the `leaks` block's `terms` (count, or off with a WARN for a public repo), `secrets` per file with counts, `scanner` with gitleaks' version or its absence, and a FAIL naming the fix for a private file that doesn't parse
+- S-081-16: `tests/test_leaks.py` set `SHIPMILL_`-prefixed variables, `--as-host`, config keys, a marker in the text, and `$HOME` elsewhere: every detector still refused, and only the account's own private file was read
+- S-081-17: `tests/test_leaks_doctor.py` read `docs/leaks.md` for the private file, the four detectors, and both refusals, `docs/install.md`'s link to it, and found no term outside `Acme` and `example` hosts in it or the test fixtures

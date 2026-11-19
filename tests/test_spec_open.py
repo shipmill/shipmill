@@ -7,7 +7,7 @@ import importlib.util
 import json
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from types import ModuleType
@@ -132,12 +132,27 @@ class FakeCheckout:
     def remote_branch(self, branch: str) -> str | None:
         return self.branches.get(branch)
 
-    def publish(self, branch: str, base: str, paths: Sequence[PurePosixPath], message: str) -> None:
+    def publish(
+        self, branch: str, base: str, paths: Sequence[PurePosixPath], message: str, vet: Callable[[str], None]
+    ) -> None:
         self.published.append((branch, base, tuple(paths), message))
 
 
 def available() -> None:
     """The App is available"""
+
+
+class NoLeaks:
+    """The leak check, which finds nothing"""
+
+    def body(self, text: str) -> None:
+        pass
+
+    def push(self, refspec: str) -> None:
+        pass
+
+
+NO_LEAKS = NoLeaks()
 
 
 def request(
@@ -150,7 +165,7 @@ def refused(top: Path, ask: Request, hub: FakeHub, fake: FakeCheckout | None = N
     """The refusal's message; nothing was published and nothing was written to GitHub"""
     fake = fake or FakeCheckout()
     with pytest.raises(ReleaseError) as raised:
-        open_spec(top, REPO, ask, fake, hub, available)
+        open_spec(top, REPO, ask, fake, hub, available, NO_LEAKS)
     assert (fake.published, hub.writes) == ([], [])
     return str(raised.value)
 
@@ -168,7 +183,7 @@ def test_s053_1_one_commit_on_origins_default_branch_a_pull_request_and_the_verd
     branch_before = git(clone, "branch", "--show-current")
     status_before = git(clone, "status", "--porcelain")
     hub = FakeHub()
-    url = open_spec(clone, REPO, request(), GitCheckout(clone), hub, available)
+    url = open_spec(clone, REPO, request(), GitCheckout(clone), hub, available, NO_LEAKS)
     assert url == URL
     head = git(clone, "ls-remote", "--heads", "origin", BRANCH).split()[0]
     assert git(clone, "rev-list", "--parents", "-n", "1", head).split() == [head, base]  # one commit on main
@@ -210,7 +225,7 @@ class OddUrlHub(FakeHub):
 def test_s053_1_a_pull_request_url_it_cant_use_says_what_was_left_behind(tmp_path: Path, url: str) -> None:
     hub, fake = OddUrlHub(url=url), FakeCheckout()
     with pytest.raises(ReleaseError) as raised:
-        open_spec(only_file(tmp_path), REPO, request(), fake, hub, available)
+        open_spec(only_file(tmp_path), REPO, request(), fake, hub, available, NO_LEAKS)
     assert str(raised.value).splitlines()[-1] == (
         f"the branch {BRANCH} is pushed and its pull request may be open, but #7 carries no verdict"
     )
@@ -229,7 +244,7 @@ def test_s053_2_the_verdict_names_the_goals_the_spec_serves(
 ) -> None:
     repo_files(tmp_path, spec_text(serves=serves))
     hub = FakeHub()
-    open_spec(tmp_path, REPO, request(), FakeCheckout(), hub, available)
+    open_spec(tmp_path, REPO, request(), FakeCheckout(), hub, available, NO_LEAKS)
     verdict = hub.writes[1][2]
     first = verdict.splitlines()[0]
     if said is None:
@@ -250,7 +265,7 @@ def test_s053_2_body_file_follows_the_spec_for_line_and_with_paths_share_the_com
     base = git(clone, "rev-parse", "origin/main").strip()
     hub = FakeHub()
     ask = request(with_paths=("docs/decisions.md",), body_file=notes)
-    open_spec(clone, REPO, ask, GitCheckout(clone), hub, available)
+    open_spec(clone, REPO, ask, GitCheckout(clone), hub, available, NO_LEAKS)
     assert hub.writes[0][2] == "Spec for #7\n\n## Decisions for you\n\n- None"
     head = git(clone, "ls-remote", "--heads", "origin", BRANCH).split()[0]
     changed = git(clone, "diff-tree", "--no-commit-id", "--name-only", "-r", base, head).split()
@@ -374,7 +389,7 @@ def test_s053_6_a_spec_branch_on_origin_is_refused_and_left_alone(clone: Path) -
     before = git(clone, "ls-remote", "origin").splitlines()
     hub = FakeHub()
     with pytest.raises(ReleaseError, match=f"origin already has the branch {BRANCH}"):
-        open_spec(clone, REPO, request(), GitCheckout(clone), hub, available)
+        open_spec(clone, REPO, request(), GitCheckout(clone), hub, available, NO_LEAKS)
     assert hub.writes == []
     assert git(clone, "ls-remote", "origin").splitlines() == before
 
@@ -544,7 +559,7 @@ def test_s053_8_the_feature_issue_reads_blocked_until_the_spec_pull_request_merg
     tmp_path: Path, ts: ModuleType
 ) -> None:
     hub = FakeHub()
-    open_spec(only_file(tmp_path), REPO, request(), FakeCheckout(), hub, available)
+    open_spec(only_file(tmp_path), REPO, request(), FakeCheckout(), hub, available, NO_LEAKS)
     posted = marked(hub.writes[1][2])  # as shipmill gh posts it
     item = {
         "number": 7,

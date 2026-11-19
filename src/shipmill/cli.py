@@ -361,7 +361,7 @@ from shipmill.gate import (
 )
 from shipmill.github import UPGRADE_LABEL, GhCli, GitHub, find_gh
 from shipmill.github_auth import github_auth
-from shipmill.gitrepo import Git
+from shipmill.gitrepo import REMOTE, Git
 from shipmill.handoff_close import hold_close, issue_close
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
@@ -381,10 +381,13 @@ from shipmill.launchd import (
 )
 from shipmill.leak_push import PUSH_FIX, Push, outgoing
 from shipmill.leaks import (
+    FIX,
     Destination,
+    Finding,
     Gitleaks,
     LeakRefused,
     Private,
+    Text,
     Visibility,
     account_home,
     high_entropy,
@@ -1087,6 +1090,17 @@ def _parser() -> argparse.ArgumentParser:
     q.add_argument("--mirror", action="store_true", help="the push mirrors every ref")
     q.add_argument("remote", nargs="?", help="the push's remote or URL (default: git's for the current branch)")
     q.add_argument("refspec", nargs="*", help="the push's refspecs (default: the current branch)")
+    q = leaking.add_parser(
+        "check", help="exit 2 naming each finding a write of a file or stdin to a repo would be refused for"
+    )
+    q.add_argument(
+        "--repo", type=Path, default=argparse.SUPPRESS, help="the checkout whose .env files hold secrets (default: .)"
+    )
+    q.add_argument(
+        "--to", metavar="owner/name", help="the GitHub repo the text goes to (default: the checkout's origin, if any)"
+    )
+    q.add_argument("--field", metavar="NAME", help="what a finding calls the text, as `the NAME` (such as body)")
+    q.add_argument("file", nargs="?", metavar="FILE", help="the text to check (default, or `-`: stdin)")
 
     p = sub.add_parser("evals", help="check the agents' eval suite, evals/, and compare its runs (spec 025)")
     evaluating = p.add_subparsers(dest="evals", required=True)
@@ -1273,7 +1287,9 @@ def main(
         if args.command == "review":
             return _review_record(root, args, through)
         return _spec_open(root, args, through, spec_checkout)
-    if args.command == "leaks":  # reads no config: the private file and the push alone (spec 081)
+    if args.command == "leaks":  # reads no config: the private file and what is checked alone (spec 081)
+        if args.leaks == "check":
+            return _leaks_check(root, args, env, gh_capture or capture_gh, private_home, stdin or sys.stdin)
         return _leaks_push(root, args, env, gh_capture or capture_gh, private_home)
     if args.command == "plugin-clean":  # needs no --repo and no config (spec 039)
         where = stdin or sys.stdin
@@ -2803,15 +2819,8 @@ def _leak_check(sent: _Sent, reach: _Reach, private_home: Path) -> bytes | None:
         return taken[0].decode("utf-8", errors="replace")
 
     texts = sent_texts(sent.gh_args, read)
-    known = secrets(sent.top, _tracked_dotenvs(sent.top), private)
-    repo = write_repo(sent.gh_args, sent.default)
-    visibility = _visibility(repo, reach) if private.terms and repo is not None else None
-    destination = Destination(repo, visibility)
-    findings = scan(texts, private.terms if destination.public else (), known, Gitleaks.find(reach.env))
-    if findings:
-        raise refusal("shipmill gh", destination, findings)
-    for line in warning_lines(high_entropy(texts)):  # S-081-8: a warning, the write goes on
-        print(line, file=sys.stderr)
+    vet = _Vet(private, sent.top, functools.partial(_visibility, reach=reach), reach.env)
+    vet.check("shipmill gh", texts, write_repo(sent.gh_args, sent.default))
     return taken[0] if taken else None
 
 
@@ -2853,25 +2862,108 @@ def _leaks_push(
         git, Push(args.remote, tuple(args.refspec), all_branches=args.all_branches, tags=args.tags, mirror=args.mirror)
     )
     top = Path(git.run("rev-parse", "--show-toplevel").strip())
-    known = secrets(top, _tracked_dotenvs(top), private)
-    visibility = None
-    if private.terms and sent.repo is not None:
-        binary = shutil.which("gh", path=environ.get("PATH", ""))
-        visibility = _visibility(sent.repo, _Reach(Path(binary), as_host(environ), capture)) if binary else None
-    destination = Destination(sent.repo, visibility)
-    terms = private.terms if destination.public else ()
-    findings = sent.placed(scan(sent.texts, terms, known, Gitleaks.find(environ)))
-    if findings:
-        raise refusal("shipmill leaks push", destination, findings, PUSH_FIX)
-    for line in warning_lines(sent.placed(high_entropy(sent.texts))):
-        print(line, file=sys.stderr)
+    vet = _Vet(private, top, _host_visibility(environ, capture), environ)
+    vet.check("shipmill leaks push", sent.texts, sent.repo, PUSH_FIX, sent.placed)
     return 0
+
+
+_FIELD = re.compile(r"[A-Za-z0-9_.-]+(?: [A-Za-z0-9_.-]+)*")  # `leaks check --field`'s words
+
+
+def _leaks_check(
+    root: Path,
+    args: argparse.Namespace,
+    environ: Mapping[str, str],
+    capture: GhCapture,
+    private_home: Path,
+    stdin: TextIO,
+) -> int:
+    """S-081-13: `leaks check` exits 2 naming each finding a write of FILE's text, or stdin's, to
+    --to (else the checkout's origin; a write to no repo without one) would be refused for, as
+    `shipmill gh` refuses it; 0 otherwise, after its high-entropy warnings. A malformed --to or
+    --field exits 2 before anything is read"""
+    if args.to is not None and not is_plain_repo(args.to):
+        raise ReleaseError(f"--to needs owner/name of letters, digits, '.', '-', or '_'; got {args.to!r}")
+    if args.field is not None and _FIELD.fullmatch(args.field) is None:
+        raise ReleaseError(
+            f"--field names the text in words of letters, digits, '.', '-', or '_', one space apart; got {args.field!r}"
+        )
+    if not root.is_dir():
+        raise ReleaseError(f"--repo {root} is not a folder")
+    private = Private.load(private_home)
+    git = Git(root)
+    top = Path(git.run("rev-parse", "--show-toplevel").strip()) if git.ok("rev-parse", "--show-toplevel") else None
+    repo = args.to if args.to is not None else (_known_origin(top) if top is not None else None)
+    source: str | None = args.file
+    if source is None or source == "-":
+        source, where, raw = None, "the text on stdin", stdin_bytes(stdin)
+    else:
+        try:
+            raw = Path(source).read_bytes()
+        except OSError as exc:
+            raise ReleaseError(f"{source} can't be read: {exc.strerror}") from None
+        where = f"the file {source}"
+    if args.field is not None:
+        where = f"the {args.field}"
+    # as `shipmill gh` reads stdin: a byte that doesn't decode is U+FFFD, the text around it still read
+    text = Text(where, raw.decode("utf-8", errors="replace"), source)
+    _Vet(private, top, _host_visibility(environ, capture), environ).check("shipmill leaks check", [text], repo)
+    return 0
+
+
+@dataclass(frozen=True, slots=True)
+class _Vet:
+    """What the leak check reads besides the texts (spec 081): the private file as loaded, the
+    checkout whose untracked .env files hold secrets (None outside one), the reader of a repo's
+    visibility, and the env gitleaks is looked up in"""
+
+    private: Private
+    top: Path | None
+    visibility: Callable[[str], Visibility | None]
+    environ: Mapping[str, str]
+
+    def check(
+        self,
+        command: str,
+        texts: Sequence[Text],
+        repo: str | None,
+        fix: str = FIX,
+        placed: Callable[[Sequence[Finding]], list[Finding]] = list,
+    ) -> None:
+        """Exits 2 with command's refusal when texts, sent to repo (None: to no repo), hold a
+        private term and the repo is public, or a secret's exact value or a known token format
+        in any repo; else prints their high-entropy warnings (S-081-8). The repo's visibility is
+        read only when a term is listed (S-081-3, S-081-4); placed puts each finding where its
+        text came from"""
+        known = secrets(self.top, _tracked_dotenvs(self.top), self.private)
+        visibility = self.visibility(repo) if self.private.terms and repo is not None else None
+        destination = Destination(repo, visibility)
+        terms = self.private.terms if destination.public else ()
+        findings = placed(scan(texts, terms, known, Gitleaks.find(self.environ)))
+        if findings:
+            raise refusal(command, destination, findings, fix)
+        for line in warning_lines(placed(high_entropy(texts))):
+            print(line, file=sys.stderr)
+
+
+def _host_visibility(environ: Mapping[str, str], capture: GhCapture) -> Callable[[str], Visibility | None]:
+    """A repo's visibility as the host's gh reads it; None without gh on PATH (S-081-3)"""
+
+    def read(repo: str) -> Visibility | None:
+        binary = shutil.which("gh", path=environ.get("PATH", ""))
+        return _visibility(repo, _Reach(Path(binary), as_host(environ), capture)) if binary else None
+
+    return read
 
 
 def _visibility(repo: str, reach: _Reach) -> Visibility | None:
     """S-081-3: the repo's visibility as `gh api repos/<repo>` reads it; None when the read
     fails or says something else, which the check reads as public"""
-    code, out = reach.capture([str(reach.binary), "api", f"repos/{repo}", "--jq", ".visibility"], reach.env)
+    return _visibility_of(*reach.capture([str(reach.binary), "api", f"repos/{repo}", "--jq", ".visibility"], reach.env))
+
+
+def _visibility_of(code: int, out: str) -> Visibility | None:
+    """The visibility a `gh api repos/<repo> --jq .visibility` that exited code printed out"""
     if code != 0:
         return None
     try:
@@ -2905,11 +2997,46 @@ def _spec_open(root: Path, args: argparse.Namespace, path: _GhPath, checkout: sp
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so spec open has no repo to open the pull request in")
     request = spec_open.Request(args.path, args.issue, tuple(args.with_paths), args.body_file)
     hub = _SpecHub(top, repo, path)
+    leaks = _SpecLeaks(top, repo, _through_vet(top, path))
     url = spec_open.open_spec(
-        top, repo, request, checkout or spec_open.GitCheckout(top), hub, lambda: _spec_writes(top, path)
+        top, repo, request, checkout or spec_open.GitCheckout(top), hub, lambda: _spec_writes(top, path), leaks
     )
     print(url)
     return 0
+
+
+SPEC_PUSH_FIX = (
+    "Rewrite the spec and its --with files in general terms: describe the case by its traits, never\n"
+    "by the project, customer, or host it came from, and take the secret out; spec open commits them anew"
+)
+
+
+def _through_vet(top: Path, path: _GhPath) -> _Vet:
+    """The leak check of a command of shipmill's own whose GitHub calls go through `shipmill gh`
+    (spec 053): the repo's visibility read through it too"""
+
+    def visibility(repo: str) -> Visibility | None:
+        return _visibility_of(*_through_gh(top, path, ["api", f"repos/{repo}", "--jq", ".visibility"]))
+
+    return _Vet(Private.load(path.readers.private_home), top, visibility, path.environ)
+
+
+@dataclass(frozen=True, slots=True)
+class _SpecLeaks:
+    """S-081-12: spec open's leak check: --body-file's text as the pull request's body to the
+    checkout's repo, and the commit it pushes to origin as `leaks push` reads a push, which no
+    hook sees"""
+
+    top: Path
+    repo: str
+    vet: _Vet
+
+    def body(self, text: str) -> None:
+        self.vet.check("shipmill spec open", [Text("the body", text)], self.repo)
+
+    def push(self, refspec: str) -> None:
+        sent = outgoing(Git(self.top), Push(REMOTE, (refspec,)))
+        self.vet.check("shipmill spec open", sent.texts, sent.repo, SPEC_PUSH_FIX, sent.placed)
 
 
 def _spec_writes(top: Path, path: _GhPath) -> None:
@@ -3004,7 +3131,12 @@ def _review_record(root: Path, args: argparse.Namespace, path: _GhPath) -> int:
     request = review_record.Request(
         args.number, args.head, review_record.Verdict(args.verdict), args.body_file, args.findings
     )
-    print(review_record.record(request, _ReviewHub(top, repo, path), lambda: _review_writes(top, path)))
+    vet = _through_vet(top, path)
+
+    def leaks(report: str) -> None:  # S-081-12: the report, as the review's body
+        vet.check("shipmill review record", [Text("the body", report)], repo)
+
+    print(review_record.record(request, _ReviewHub(top, repo, path), lambda: _review_writes(top, path), leaks))
     return 0
 
 
