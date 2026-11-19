@@ -1363,6 +1363,76 @@ def test_993_a_commit_url_naming_no_issue_of_the_repo_is_ready(tmp_path: Path, c
     assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
 
 
+# #1321: a closing keyword naming an open pull request, or a Dependabot alert written as #N, closes
+# the repo's pull request of that number on merge
+
+PULLS = {**CLOSING, 22: {"__typename": "PullRequest", "state": "OPEN"}, 23: {"__typename": "PullRequest"}}
+PULLS[24] = {"__typename": "PullRequest", "state": "MERGED"}
+
+
+@pytest.mark.parametrize(
+    ("title", "commits", "body", "where"),
+    [
+        pytest.param("Serve it", ("Serve it\n\nFixes #22",), "Serves it", "commit abc1234", id="in a commit"),
+        pytest.param("Fixes #22: serve it", ("Serve it",), "Serves it", "the title", id="in the title"),
+        pytest.param("Serve it", ("Serve it",), "Serves it\n\nCloses #22", "the body", id="in the body"),
+    ],
+)
+def test_1321_a_keyword_closing_an_open_pull_request_is_refused(
+    tmp_path: Path, title: str, commits: tuple[str, ...], body: str, where: str
+) -> None:
+    data = pr(body=body, login="amy", commits=commits, title=title)
+    proc = run_gate(tmp_path, None, {7: data}, issues=PULLS)
+    assert proc.returncode == gate.REFUSED == 6, proc.stdout + proc.stderr
+    assert proc.stdout == REFUSED_LINE + f"  refused: {where} closes #22, an open pull request\n"
+    [graphql, _] = [c for c in gh_calls(tmp_path) if "graphql" in c["args"]]  # the closing read, then the thread's
+    assert "... on PullRequest { state }" in next(a for a in graphql["args"] if a.startswith("query="))
+
+
+def test_1321_a_keyword_naming_a_closed_or_merged_pull_request_or_this_one_is_ready(tmp_path: Path) -> None:
+    pulls = {**PULLS, 7: {"__typename": "PullRequest", "state": "OPEN"}}
+    data = part_of(("Serve it\n\nFixes #23\nFixes #24",), body="Fixes #7")
+    proc = run_gate(tmp_path, None, {7: data}, issues=pulls)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+
+
+@pytest.mark.parametrize(
+    ("text", "numbers"),
+    [
+        pytest.param("Pin urllib3 (Dependabot #22, #23)", [22, 23], id="Dependabot #N, #M"),
+        pytest.param("(Dependabot alerts #22 and #23: decompression bombs)", [22, 23], id="alerts and"),
+        pytest.param("Pin urllib3 for dependabot alert #22", [22], id="alert, lower case"),
+        pytest.param("Pin it (DEPENDABOT ALERTS #22, #23, and #24)", [22, 23, 24], id="upper case, a list"),
+        pytest.param("Pin it (Dependabot: #22 & #23)", [22, 23], id="a colon and an ampersand"),
+    ],
+)
+@pytest.mark.parametrize("in_title", [True, False])
+def test_1321_a_dependabot_alert_written_as_a_number_is_refused(
+    tmp_path: Path, text: str, numbers: list[int], in_title: bool
+) -> None:
+    """no closing keyword needed: an alert's #N is read as the repo's own number either way"""
+    title, commit, where = (
+        (text, "Pin it", "the title") if in_title else ("Pin it", f"Pin it\n\n{text}", "commit abc1234")
+    )
+    proc = run_gate(tmp_path, None, {7: pr(body="Serves it", login="amy", commits=(commit,), title=title)})
+    assert proc.returncode == 6, proc.stdout + proc.stderr
+    lines = [f"  refused: {where} writes Dependabot alert #{n}: write alert {n} or its URL" for n in numbers]
+    assert proc.stdout.splitlines()[1:] == lines
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("Pin urllib3 (Dependabot alerts 22 and 23)", id="alert N"),
+        pytest.param("Pin urllib3 (https://github.com/demo/app/security/dependabot/22)", id="its URL"),
+        pytest.param("Bump certifi, see #22 for Dependabot", id="a #N not after Dependabot"),
+    ],
+)
+def test_1321_an_alert_named_as_alert_n_or_by_its_url_is_ready(tmp_path: Path, text: str) -> None:
+    proc = run_gate(tmp_path, None, {7: pr(body="Serves it", login="amy", commits=(text,), title=text)})
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
+
+
 def test_the_worst_verdict_across_prs_is_the_exit_code(tmp_path: Path, directed: Path) -> None:
     proc = run_gate(tmp_path, directed, {7: pr(), 8: pr(body="none")}, "--bot-login", BOT)
     assert proc.returncode == 6

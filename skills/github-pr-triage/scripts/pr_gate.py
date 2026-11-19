@@ -132,8 +132,14 @@ title is the squash commit's subject (D-33), so it reads as a commit (#987). Who
 is REFUSED, `  refused: <the title or commit <sha7>> closes #N, which the body lists as Part of #N`,
 when the title's or a commit's keyword names an issue its body lists as `Part of #N`, and `  refused:
 <the title, commit <sha7>, or the body> closes #N, an open issue with a ## Check: write Part of #N
-instead` when one names an open issue of the repo whose body has a `## Check` section. The issues
-are read in one GraphQL query, only when a keyword names one, or a commit names owner/repo#N or a URL.
+instead` when one names an open issue of the repo whose body has a `## Check` section, and `  refused:
+<where> closes #N, an open pull request` when one names an open pull request of the repo other than
+this one (#1321). The issues and pull requests are read in one GraphQL query, only when a keyword
+names one, or a commit names owner/repo#N or a URL. Read from the text alone, a title or a commit
+message that writes a Dependabot alert as #N (`Dependabot #N`, `Dependabot alert #N`, `Dependabot
+alerts #N and #M`, in any case), which GitHub reads as the repo's issue or pull request #N, is
+REFUSED, `  refused: <the title or commit <sha7>> writes Dependabot alert #N: write alert N or its
+URL`, one line for each number.
 
 A review of the merging head (spec 055): an agent's PR that changes code and would otherwise read
 READY reads UNREVIEWED, `  unreviewed: no review of <sha7> on record; review it, then record it with
@@ -167,8 +173,9 @@ Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base'
 or gh failed; 3 a check is still pending, on the PR's head or a base check rerunning a failure
 (#1310) (or --wait timed out); 4 a PR is not open, conflicts, or holds an unhandled veto
 (#1309); 5 a PR needs the maintainer's decision; 6 an agent's PR is refused for its plan, a
-spec PR names no open feature issue, or a PR's closing keyword names a Part of issue or an open
-one with a ## Check (D-76); 7 a PR only the maintainer
+spec PR names no open feature issue, or a PR's closing keyword names a Part of issue, an open
+one with a ## Check (D-76), or an open pull request, or its title or a commit writes a Dependabot
+alert as #N (#1321); 7 a PR only the maintainer
 merges, by hand (a `never` zone); 8 a draft PR (D-67); 9 an agent's code PR no review record
 covers (spec 055); 10 a held PR waits for the land window or its spacing (spec 056); 2 bad
 arguments, a base branch the checkout lacks, a git failure, a REVIEW.md, docs/product.md, or
@@ -1097,12 +1104,14 @@ def added_specs(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
     return tuple(f for f, status in statuses.items() if status == "added" and SPEC_FILE.fullmatch(f))
 
 
-def issues_read(numbers: list[int], wanted: str = "state", pull: str = "") -> list[str]:
+def issues_read(numbers: list[int], wanted: str = "state", pull: str = "", on_pull: str = "") -> list[str]:
     """`gh api`'s arguments for the GraphQL read of the numbers, each under the alias i<N>, an issue
-    with the wanted fields, after pull (a pullRequest field of the same repository, or nothing); the
-    github-pr-triage eval cases record this read, so a change here re-records it there"""
+    with the wanted fields, and a pull request with the on_pull fields when any are named (#1321),
+    after pull (a pullRequest field of the same repository, or nothing); the github-pr-triage eval
+    cases record this read, so a change here re-records it there"""
+    as_pull = f" ... on PullRequest {{ {on_pull} }}" if on_pull else ""
     fields = " ".join(
-        f"i{n}: issueOrPullRequest(number: {n}) {{ __typename ... on Issue {{ {wanted} }} }}" for n in numbers
+        f"i{n}: issueOrPullRequest(number: {n}) {{ __typename ... on Issue {{ {wanted} }}{as_pull} }}" for n in numbers
     )
     query = (
         "query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { nameWithOwner "
@@ -1112,22 +1121,23 @@ def issues_read(numbers: list[int], wanted: str = "state", pull: str = "") -> li
 
 
 def issues_of(
-    numbers: list[int], number: int, repo: str | None, wanted: str = "state"
+    numbers: list[int], number: int, repo: str | None, wanted: str = "state", on_pull: str = ""
 ) -> tuple[str, dict[int, dict | None]]:
     """The repo's owner/name and, for each number, its issue or pull request ({__typename} and, for
-    an issue, the wanted fields), or None for a number the repo lacks: one GraphQL read. A NOT_FOUND
-    error for one of the numbers is an answer; any other failure exits 1, as gh's always has"""
-    found, nodes = repository_of(numbers, number, repo, wanted)
+    an issue, the wanted fields, for a pull request the on_pull ones), or None for a number the repo
+    lacks: one GraphQL read. A NOT_FOUND error for one of the numbers is an answer; any other
+    failure exits 1, as gh's always has"""
+    found, nodes = repository_of(numbers, number, repo, wanted, on_pull=on_pull)
     return found["nameWithOwner"], nodes
 
 
 def repository_of(
-    numbers: list[int], number: int, repo: str | None, wanted: str = "state", pull: str = ""
+    numbers: list[int], number: int, repo: str | None, wanted: str = "state", pull: str = "", on_pull: str = ""
 ) -> tuple[dict, dict[int, dict | None]]:
     """issues_of's read, with pull's field too: the repository object GraphQL answers and the
     numbers' nodes"""
     aliases = {f"i{n}": n for n in numbers}
-    cmd, env = api(issues_read(numbers, wanted, pull), repo)
+    cmd, env = api(issues_read(numbers, wanted, pull, on_pull), repo)
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     try:
         answer = json.loads(proc.stdout) if proc.stdout.strip() else None
@@ -1308,35 +1318,60 @@ def closing_problems(data: dict, number: int, repo: str | None) -> list[str]:
     The title's or a commit's keyword naming an issue its body lists as Part of #N, then the
     title's, a commit's, or the body's naming an open issue of the repo with a ## Check section,
     read once in GraphQL for every number the keywords name; a commit naming owner/repo#N or an
-    issue's URL takes that read even when nothing else is named, since it names the PR's repo"""
+    issue's URL takes that read even when nothing else is named, since it names the PR's repo. In
+    the same read, a keyword naming an open pull request other than this one (#1321). And, read
+    from the text alone, a title or a commit writing a Dependabot alert as #N (dependabot_alerts)"""
     ts = triage_state()
     body = str(data.get("body") or "")
+    title_text = str(data.get("title") or "")
+    messages = commit_messages(data, number)
+    alerts = [("the title", n) for n in dependabot_alerts(title_text)]
+    alerts += [(f"commit {sha}", n) for sha, text in messages for n in dependabot_alerts(text)]
     parts = {int(n) for n in PART_OF.findall(body)}
-    title = [("the title", n) for n in sorted(ts.keyword_closes(str(data.get("title") or ""), ""))]
-    commits = [(f"commit {sha}", ref) for sha, text in commit_messages(data, number) for ref in commit_closes(ts, text)]
+    title = [("the title", n) for n in sorted(ts.keyword_closes(title_text, ""))]
+    commits = [(f"commit {sha}", ref) for sha, text in messages for ref in commit_closes(ts, text)]
     in_body = [("the body", n) for n in closed_by(ts, body)]
     read: tuple[str, dict[int, dict | None]] | None = None
     if any(owner is not None for _, (owner, _) in commits):
         every = {n for _, n in title + in_body} | {n for _, (_, n) in commits}
         wanted = sorted(n for n in every if 0 < n <= GRAPHQL_INT)
-        read = issues_of(wanted, number, repo, "state body") if wanted else ("", {})
+        read = issues_of(wanted, number, repo, "state body", "state") if wanted else ("", {})
     own = read[0].lower() if read is not None else ""
     # the title and the commits: what lands as commits under a squash merge
     landed = title + [(where, n) for where, (owner, n) in commits if owner is None or owner.lower() == own]
     parted = [(where, n) for where, n in landed if n in parts]
     problems = [f"{where} closes #{n}, which the body lists as Part of #{n}" for where, n in parted]
+    problems += [f"{where} writes Dependabot alert #{n}: write alert {n} or its URL" for where, n in alerts]
     named = [pair for pair in landed if pair not in parted] + in_body
     numbers = sorted({n for _, n in named if 0 < n <= GRAPHQL_INT})
     if not numbers:
         return problems
-    _, nodes = read if read is not None else issues_of(numbers, number, repo, "state body")
+    _, nodes = read if read is not None else issues_of(numbers, number, repo, "state body", "state")
     for where, n in named:
         node = nodes.get(n)
-        if not isinstance(node, dict) or node.get("__typename") != "Issue" or node.get("state") != "OPEN":
+        if not isinstance(node, dict) or node.get("state") != "OPEN":
             continue
-        if ts.CHECK.search(str(node.get("body") or "")) is not None:
+        if node.get("__typename") == "PullRequest" and n != number:
+            problems.append(f"{where} closes #{n}, an open pull request")
+        elif node.get("__typename") == "Issue" and ts.CHECK.search(str(node.get("body") or "")) is not None:
             problems.append(f"{where} closes #{n}, an open issue with a ## Check: write Part of #{n} instead")
     return problems
+
+
+# a Dependabot alert written as #N (#1321): `Dependabot #N`, `Dependabot alert #N`, `Dependabot
+# alerts #N and #M`, `#N, #M` and `#N, and #M` too, in any case; each #N of it is an alert's number,
+# which GitHub reads as the repo's issue or pull request of that number
+DEPENDABOT = re.compile(
+    r"\bdependabot(?:\s+alerts?)?:?\s+#[0-9]+\b(?:\s*(?:,\s*(?:and\s+)?|and\s+|&\s*)#[0-9]+\b)*", re.IGNORECASE
+)
+
+
+def dependabot_alerts(text: str) -> list[int]:
+    """The alert numbers a text writes as #N after Dependabot, in order, each once"""
+    found: list[int] = []
+    for match in DEPENDABOT.finditer(text):
+        found += [n for n in map(int, re.findall(r"#([0-9]+)", match.group(0))) if n not in found]
+    return found
 
 
 def closed_by(ts: ModuleType, text: str) -> list[int]:
