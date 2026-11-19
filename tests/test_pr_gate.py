@@ -2705,10 +2705,13 @@ A digest is posted with each release.
 
 - S-054-1: a digest is posted with each release
 
+## Issues
+
 ## Verification
 """
 BUILT_SPEC = APPROVED_SPEC.replace("status: approved", "status: built")
 VERIFIED = "\n- S-054-1: tests/test_digest.py passes on main\n"
+SPLIT = APPROVED_SPEC.replace("## Issues\n", "## Issues\n\n- demo/app#30: S-054-1\n")  # the split's docs PR
 CHANGES_BEHAVIOUR = f"  spec: {SPEC} changes approved Behaviour"
 
 
@@ -2741,6 +2744,13 @@ def spec_edit(tmp_path: Path, base_text: str, head_text: str) -> tuple[Path, dic
         ),
         pytest.param(APPROVED_SPEC, BUILT_SPEC + VERIFIED, False, id="a build PR: status built, Verification filled"),
         pytest.param(BUILT_SPEC, BUILT_SPEC + VERIFIED, False, id="only Verification filled"),
+        pytest.param(APPROVED_SPEC, SPLIT, False, id="only Issues filled, the split's docs PR"),
+        pytest.param(
+            APPROVED_SPEC,
+            SPLIT.replace("each release.\n", "each week.\n"),
+            True,
+            id="Issues filled beside a Behaviour change",
+        ),
         pytest.param(APPROVED_SPEC, BUILT_SPEC, False, id="only status moved"),
         pytest.param(
             BUILT_SPEC, BUILT_SPEC.replace("go out and nobody", "go out\nand nobody"), False, id="only rewrapped"

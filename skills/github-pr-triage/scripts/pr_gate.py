@@ -103,9 +103,10 @@ An approved spec changed (D-81, #1311): in a checkout, for every spec file a PR 
 API's `status: modified`, from the read above) whose text on origin/<base> says `status: approved`
 or `status: built`, the gate runs `specs.py same-approval --base origin/<base> <spec> <merge-base>
 <head>`, the PR's own change to the spec against none. Format only, the `status:` line, or a change
-to Verification alone (what a build PR fills in) keeps the verdict; any other change reads
-NEEDS_DECISION, `  spec: <file> changes approved Behaviour`, whoever opened the PR, a spec PR too,
-until the maintainer's answer accepts it. Outside a checkout it isn't read.
+to Issues or Verification alone (what the split's docs PR and a build PR fill in) keeps the
+verdict; any other change reads NEEDS_DECISION, `  spec: <file> changes approved Behaviour`,
+whoever opened the PR, a spec PR too, until the maintainer's answer accepts it. Outside a checkout
+it isn't read.
 
 A draft PR is read as DRAFT, whatever its checks, plan, or zones, and the gate reads neither its
 files nor its zones (D-67). A person's draft belongs to them: it enters triage once marked ready.
@@ -1628,9 +1629,10 @@ def same_approval(checkout: str, base_ref: str, spec: str, answered: str, head: 
 
 APPROVED_STATUSES = ("approved", "built")  # a spec whose Behaviour a change asks about (D-81, #1311)
 CHANGES_APPROVED = "{spec} changes approved Behaviour"
-# the section a build pull request fills in on its spec, beside its status: line (spec-gate.md,
-# Verify the whole spec): the one section same-approval reads as a change that asks nothing here
-FILLED_ON_BUILD = "Verification"
+# the sections filled in on an approved spec after its approval, which same-approval reads as a
+# change but which ask nothing here: Issues, by the split's docs PR (spec-gate.md, Split it, step 5),
+# and Verification, by the build PR beside its status: line (spec-gate.md, Verify the whole spec)
+FILLED_AFTER_APPROVAL = frozenset({"Issues", "Verification"})
 
 
 def modified_specs(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
@@ -1655,8 +1657,9 @@ def approved_edits(data: dict, number: int, repo: str | None, checkout: str) -> 
     it modifies whose text on origin/<base> says `status: approved` or `status: built`, specs.py
     same-approval --base origin/<base> compares the PR's own change to it, base against head (the
     merge-base as the answered head, whose own change is none). Exit 0, only format or the status:
-    line, keeps the verdict, and so does exit 1 when every section it names is Verification, which a
-    build pull request fills in; any other section asks. A spec PR's added spec is spec_problems'"""
+    line, keeps the verdict, and so does exit 1 when every section it names is Issues or
+    Verification, which the split's docs PR and the build PR fill in; any other section asks. A spec
+    PR's added spec is spec_problems'"""
     candidates = modified_specs(data, number, repo)
     if not candidates:
         return []
@@ -1676,7 +1679,7 @@ def approved_edits(data: dict, number: int, repo: str | None, checkout: str) -> 
         if proc.returncode not in (0, 1):
             raise GateError(f"specs.py same-approval {spec} failed for #{number}: {proc.stderr.strip()}")
         sections = {line[3:].strip() for line in proc.stdout.splitlines() if line.startswith("## ")}
-        if proc.returncode == 1 and not sections <= {FILLED_ON_BUILD}:
+        if proc.returncode == 1 and not sections <= FILLED_AFTER_APPROVAL:
             found.append(CHANGES_APPROVED.format(spec=spec))
     return found
 
