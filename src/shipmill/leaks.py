@@ -123,8 +123,16 @@ class Private:
                 "list a longer one, since a short one matches common words"
             )
         terms = tuple(Term.of(text.strip()) for text in listed)
-        files = tuple((given, Path(given).expanduser()) for given in _strings(data, "secret_files", path))
+        files = tuple((given, _expanded(given, home)) for given in _strings(data, "secret_files", path))
         return cls(path, True, terms, files)
+
+
+def _expanded(given: str, home: Path) -> Path:
+    """A secret_files path with a leading `~` as home, the private file's own, never $HOME,
+    which a session can set (D-94); `~user` as the password database has it"""
+    if given == "~" or given.startswith("~/"):
+        return home / given[2:]
+    return Path(given).expanduser()
 
 
 def _strings(data: dict[str, object], key: str, path: Path) -> list[str]:

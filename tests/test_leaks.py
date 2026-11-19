@@ -805,6 +805,18 @@ def test_s081_1_a_gist_edit_reading_no_local_file_runs(tmp_path: Path, host: Hos
     assert feed.calls == [([host.gh, "gist", "edit", "abc123", "-f", "notes.md", "-"], CLEAN)]
 
 
+def test_s081_16_secret_files_home_is_the_accounts_not_home_variable(tmp_path: Path, host: Host) -> None:
+    """`~` in secret_files is the account's home, as the private file's is: $HOME names no other file"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    (host.home / "acme.env").write_text(f"API_TOKEN={TOKEN_VALUE}\n", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "acme.env").write_text("API_TOKEN=nothing-secret-here\n", encoding="utf-8")
+    private(host, 'secret_files = ["~/acme.env"]\n')
+    said = refused(root, ["issue", "comment", "250", "--body", TOKEN_VALUE], host, environ={"HOME": str(elsewhere)})
+    assert "the value of API_TOKEN from ~/acme.env" in said
+
+
 def test_stdin_is_named_where_it_is_read() -> None:
     texts = sent_texts(["api", "-X", "POST", "repos/o/r/labels", "--input", "-"], lambda flag, path: "x")
     assert texts[-1] == Text("the --input on stdin", "x")
