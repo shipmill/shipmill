@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.149.2] - 2026-11-19
+
+### Fixed
+
+- A component whose product home can't be read no longer stops the weekly retro or product intake's plans: `retro.py --goals` and `intake_state.py --plans` read the repo's own goals with `shipmill product show --local`, as they only ever used those, and every failure of `product show` still exits 2 (#1417)
+
 ## [0.149.1] - 2026-11-19
 
 ### Fixed
@@ -2767,7 +2773,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.149.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.149.2...HEAD
+[0.149.2]: https://github.com/shipmill/shipmill/compare/v0.149.1...v0.149.2
 [0.149.1]: https://github.com/shipmill/shipmill/compare/v0.149.0...v0.149.1
 [0.149.0]: https://github.com/shipmill/shipmill/compare/v0.148.2...v0.149.0
 [0.148.2]: https://github.com/shipmill/shipmill/compare/v0.148.1...v0.148.2
