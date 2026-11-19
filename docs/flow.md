@@ -135,7 +135,7 @@ An agent's text is told from a person's by its marker, never by its author (spec
 | RELAY_REFUSED | The `needs-decision` label is off and a relay by the App after its question is out of the relay grammar (D-93), so it isn't counted; its note is `relay not counted: <reason>` | Ask again by the needs-decision protocol, with `<!-- shipmill:relay-refused <reason> -->` and its visible `Relay not counted` line under the zone line |
 | POSTPONED | Labelled `postponed` | Skip it |
 | REVISIT | Postponed before the newest stable release | Decide again |
-| TRIAGED | Triaged, with nothing pending: a request handed to product intake (`opportunity`) reads this too | Nothing; intake groups the handed-over requests |
+| TRIAGED | Triaged, with nothing pending: a request handed to product intake (`opportunity`) reads this too | Nothing; intake groups the handed-over requests: once one has waited 24 hours (`FEEDBACK_AFTER`), the watch reports FEEDBACK_DUE and, under `[autonomy] intake = "propose"`, the gate starts an intake pass. An opportunity you accept (`planned`) reads SPEC_DUE in the watch, and the gate hands it to triage's spec gate (spec 074) |
 | ASSIGN_DUE | A role's item (labelled `role:<name>`, or the older `human`, which counts as `role:maintainer`) nobody is assigned to, even while it is held | The session assigns the role's users from `[agents.roles]`, or the maintainer's when nobody fills the role |
 | NO_ASSIGNEE | A role's item nobody is assigned to, read without the `--role` flags the gate passes | The session reads the state again with them; it never asks who does a step |
 | HANDOFF_DUE | A person's item whose holds all closed, not yet handed off | The session mentions its assignees and its role's teams with what to do |

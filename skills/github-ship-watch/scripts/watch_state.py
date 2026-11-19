@@ -238,17 +238,33 @@ Intake (github-issue-triage's triage_state.py):
                   One in it is in no other row; an item labelled decided without such a veto
                   reads as it would without the label
   UNTRUSTED       with --trusted-only, the issues triage_state.py reads as UNTRUSTED, the
-                  open plan issues the --bot-login didn't open (PLANS), and the pull
+                  open plan issues the --bot-login didn't open (PLANS), the outsiders'
+                  requests and opportunities (SPEC_DUE, FEEDBACK_DUE), and the pull
                   requests whose head is in a fork, as #N only (reported, never an
                   action: an interactive session takes them up, D-16)
   PLANS           goals' plans that need a session (spec 028), from product-intake's
-                  `intake_state.py --plans --json` (run in the checkout, with --tool when given, the
-                  --bot-login, [agents] wip as --wip, and the --role flags; only when the checkout has
-                  docs/product.md): PLAN_DUE with its goals (G-n), PLAN_MALFORMED,
+                  `intake_state.py --json`, run once per repo in the checkout with the
+                  --bot-login, and with --plans (with --tool when given, [agents] wip as
+                  --wip, and the --role flags) only when the checkout has docs/product.md:
+                  PLAN_DUE with its goals (G-n), PLAN_MALFORMED,
                   PLAN_ANSWERED, and PLAN_ACCEPTED with their plan issues (#N); the session
                   runs product intake. With --trusted-only, an open plan issue the
                   --bot-login didn't open is in none of these and in UNTRUSTED, and in no
                   other row (D-16)
+  SPEC_DUE        from the same intake_state.py run (spec 074): `ACCEPTED #N ...`, every
+                  opportunity the maintainer accepted that triage hasn't taken, oldest first;
+                  the session runs github-issue-triage's spec gate on each. An agent's row at
+                  any [autonomy] intake level
+  FEEDBACK_DUE    from the same run: `NEW_FEEDBACK #N ...`, the requests triage handed to
+                  intake (their "handed" not null) at least FEEDBACK_AFTER (24 hours) before
+                  the read, oldest hand-off first; one intake pass groups them all. A request
+                  handed over later, one triage never handed over, and a discussion are in
+                  no row. Under [autonomy] intake = "observe" (intake_state.py's autonomy
+                  line) it is report-only: the full report prints it, and no --tier or
+                  --sweep read does; under propose it is an agent's row. With --trusted-only,
+                  a request or opportunity whose opener is neither an OWNER, MEMBER, or
+                  COLLABORATOR nor the --bot-login is in neither row and in UNTRUSTED (D-16).
+                  Both rows name issue numbers only, never a title or body
   CHAIN_NO_GATE   an item of a chain one of the repo's open issues belongs to (spec 017,
                   github-issue-triage's chains.py show --trusted-only, run once over the open
                   issues but the ones read as UNTRUSTED or closed, and never reading or
@@ -296,7 +312,8 @@ PyPI's window (#597; the pinned `uvx shipmill==<version>` form only, never --too
                   error), even run once more as `uvx --refresh-package shipmill ...`, since a
                   release's tag moves minutes before PyPI serves it and uv caches the index up to
                   10 minutes: one row per version, naming the reads it stands in for (the release
-                  plan, worktrees, milestones, the direction, plans, upstream reports; with --trusted-only, a
+                  plan, worktrees, milestones, the direction, plans and feedback (the one
+                  intake_state.py run), upstream reports; with --trusted-only, a
                   plans read takes the issues and pull requests with it, since its untrusted plan
                   issues aren't known), with the release's publish.yml run as the fix. The rest of
                   the watch stands; reported, never an action by itself, and never an agent's
@@ -443,7 +460,8 @@ deployments read GitHub refuses the App, the DEPLOYMENTS_FORBIDDEN row (#973).
 
 --json prints one JSON object per row: state, subject, detail, and agent, true when the
 row needs an agent (BOT_FAILED, BOT_STALLED, WORK_BRANCH_STALE, NOT_PUBLISHED,
-ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING, DIRECTION_PENDING, UPSTREAM_DUE, VETOED): the rows
+ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING, DIRECTION_PENDING, UPSTREAM_DUE, VETOED,
+SPEC_DUE, and FEEDBACK_DUE but under intake = "observe"): the rows
 shipmill gate starts a
 session for. A waiting
 item is in no agent row, so it neither starts a session nor changes the gate's fingerprint.
@@ -465,9 +483,10 @@ NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MIS
 GATE_CHECKOUT_MISSING, SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_CYCLE,
 CHAIN_UNREADABLE, MILESTONE_OVERTAKEN, MILESTONE_RELEASED,
 UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, VETOED, AGENT_DRAFT, LAND_DUE, CLASS_CONFLICT,
-FIXED_DATE_AT_RISK, or FIXED_DATE_NO_DATE row is present, 2
+FIXED_DATE_AT_RISK, FIXED_DATE_NO_DATE, SPEC_DUE, or FEEDBACK_DUE (not under intake = "observe")
+row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill
-milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
+milestones`, or a failing intake_state.py; a `shipmill plan` failing with its own
 `shipmill: ` error is the BOT_PLAN_FAILED row instead, and uv finding no pinned version the
 PYPI_WAIT row), and on a missing or malformed
 .claude-plugin/plugin.json (spec 031).
@@ -493,8 +512,8 @@ row and no report-only row, save tier 3's PRS_PARKED (S-061-11), on which no ses
 The gate walks seven tiers in order and stops at the first item no
 session has taken: 1 INCIDENT_OPEN, OPERATE_FAILED; 2 BOT_FAILED, NOT_PUBLISHED,
 WORK_BRANCH_STALE, BOT_STALLED; 3 LAND_DUE, PRS_OPEN; 4 VETOED and triage's DECIDED; 5 UPGRADE_PENDING,
-UPSTREAM_DUE; 6 triage's other action states and SPEC_UNSPLIT; 7 DIRECTION_PENDING, PLANS
-(D-69 retired tier 8, UNANNOUNCED). --tier N prints that tier's rows, and NEEDS_DECISION
+UPSTREAM_DUE; 6 triage's other action states and SPEC_UNSPLIT; 7 DIRECTION_PENDING, PLANS,
+SPEC_DUE, FEEDBACK_DUE (D-69 retired tier 8, UNANNOUNCED). --tier N prints that tier's rows, and NEEDS_DECISION
 in tiers 3 and 4, where the gate's headless notifications read it; its ISSUES rows are one
 per triage state, `STATE #N ...`. Tier 2 reads NOT_PUBLISHED for the newest tag alone and
 leaves BOT_STALLED to the sweep; tier 3 reads the open pull requests and one batched GraphQL
@@ -505,7 +524,8 @@ issue, and gives its DECIDED read from a relay with the label off, then fetches 
 branch and gives SPEC_UNSPLIT (spec 053), read on every tier 6 read, not on a sweep: a spec
 merging or an issue changing is a change the gate's check sees; tiers 5 and 7 run their
 sections whole. --sweep prints the timed sections' rows, read whole: BOT_STALLED,
-UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING, and PLANS. --known FILE (with --tier)
+UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING, PLANS, SPEC_DUE, and FEEDBACK_DUE
+(FEEDBACK_DUE only under intake = "propose"). --known FILE (with --tier)
 holds what the gate's change check read already: GitHub's default branch, whether a hold is
 open, the open pull requests, the open incidents, and the newest workflow runs, so tiers 1
 and 3 make no gh read of them again; a workflow none of those runs belongs to is read with gh
@@ -556,6 +576,13 @@ DIRECTION = Path("docs/product.md")  # the product's direction (spec 024), whose
 PLAN_ACTION = ("PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED")
 PLAN_STATES = frozenset({*PLAN_ACTION, "PLAN_WAITS", "PLAN_OPEN", "PLAN_FILED", "PLAN_DECLINED"})
 GOAL_ID = re.compile(r"G-[1-9]\d*")
+# spec 074: intake_state.py's feedback lines the watch places, the kinds they come in, its intake
+# levels, the wait after triage's hand-off before an intake pass is due, and the trusted openers
+FEEDBACK_STATES = frozenset({"NEW_FEEDBACK", "ACCEPTED"})
+FEEDBACK_KINDS = frozenset({"issue", "discussion", "opportunity"})
+INTAKE_LEVELS = ("observe", "propose")
+FEEDBACK_AFTER = dt.timedelta(hours=24)
+TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 # triage_state.py's person's item under a closed parent (#1313), and what clears it
 STALE_HANDOFF = "STALE_HANDOFF"
 STALE_FIX = "close it or say why it still waits on the maintainer"
@@ -680,6 +707,8 @@ ACTION = {
     "CLASS_CONFLICT",
     "FIXED_DATE_AT_RISK",
     "FIXED_DATE_NO_DATE",
+    "SPEC_DUE",  # spec 074: accepted opportunities the spec gate hasn't taken
+    "FEEDBACK_DUE",  # spec 074: handed-over requests, report-only under [autonomy] intake = "observe"
 }
 # the states whose row needs an agent: --json marks each row's "agent" from this, and
 # shipmill gate starts a session on those rows (SKILL.md's repair table says what it does)
@@ -697,6 +726,8 @@ AGENT = {
     "DIRECTION_PENDING",
     "UPSTREAM_DUE",
     "AGENT_DRAFT",
+    "SPEC_DUE",
+    "FEEDBACK_DUE",
 }
 # the states whose every row carries a fix, the one line that clears it (spec 011): every
 # action, and the report-only rows a person still has to act on. PRS_OPEN carries one unless
@@ -794,19 +825,29 @@ class Row:
     repo, numbers, run ids, tags, paths, config keys), never an issue's or a pull request's
     text (D-16); a FIXED state without one is a programming error. heads, on a PRS_OPEN row
     only, is each listed pull request's head SHA by number: in --json only, so the gate sees
-    a push to one (#546)"""
+    a push to one (#546). report_only, on a FEEDBACK_DUE row only, marks one read under
+    [autonomy] intake = "observe" (spec 074): no action and no agent's, and in no --tier or
+    --sweep read"""
 
     state: str
     subject: str
     detail: str
     fix: str | None = None
     heads: tuple[tuple[int, str], ...] = ()
+    report_only: bool = False
 
     def __post_init__(self) -> None:
         if self.state in FIXED and not self.fix:
             raise ValueError(f"a {self.state} row needs a fix: {self.subject} {self.detail}")
         if self.heads and self.state != "PRS_OPEN":
             raise ValueError(f"only a PRS_OPEN row has heads, not {self.state}")
+        if self.report_only and self.state != "FEEDBACK_DUE":
+            raise ValueError(f"only a FEEDBACK_DUE row is report-only by its level, not {self.state}")
+
+    @property
+    def action(self) -> bool:
+        """Whether the row needs action, so the watch exits 1"""
+        return self.state in ACTION and not self.report_only
 
     def text(self) -> str:
         line = f"{self.state:<14} {self.subject:<16} {self.detail}"
@@ -819,7 +860,7 @@ class Row:
             "state": self.state,
             "subject": self.subject,
             "detail": self.detail,
-            "agent": self.state in AGENT,
+            "agent": self.state in AGENT and not self.report_only,
             "fix": self.fix,
         }
         if self.heads:
@@ -3806,7 +3847,7 @@ def spec_rows(repo: str, repo_dir: Path, branch: str, triage: str, read: Callabl
 
 @dataclass(frozen=True)
 class Plans:
-    """What intake_state.py --plans adds to the report"""
+    """What intake_state.py --plans's plan rows add to the report"""
 
     rows: list[Row]  # PLANS, one row for every plan state that needs a session
     untrusted: frozenset[int]  # with trusted_only, the open plan issues the --bot-login didn't open
@@ -3822,30 +3863,35 @@ def plan_wip(table: dict[str, str] | None, policy: Path) -> int | None:
     return int(value)
 
 
-def plans_run(
+def intake_run(
     repo: str,
     repo_dir: Path,
+    plans: bool,
     tool: str | None = None,
     bot_login: str | None = None,
     wip: int | None = None,
     execute: Spawn = spawn,
     roles: Sequence[str] = (),
 ) -> str:
-    """intake_state.py --plans --json's lines, run in the checkout, where it reads the
-    direction with `shipmill product show` (the plugin's pinned version, or --tool's when a
-    person passed one) and the config, with each of roles as a --role, so a relayed answer
-    naming a maintainer counts (D-68); a failure (exit 2) stops the watch, save the pinned
-    shipmill's "no version" error, which it has retried already: that raises PypiWait (#597)"""
-    cmd = [sys.executable, str(INTAKE_STATE), repo, "--plans", "--json"]
-    cmd += ["--tool", tool] if tool is not None else []
-    cmd += ["--wip", str(wip)] if wip is not None else []
+    """intake_state.py --json's lines, run once per repo in the checkout, where it reads the
+    config (spec 074). With plans (a checkout with docs/product.md, spec 028) it runs with
+    --plans and reads the direction with `shipmill product show` (the plugin's pinned version,
+    or --tool's when a person passed one), with wip as --wip and each of roles as a --role, so
+    a relayed answer naming a maintainer counts (D-68); without, none of those flags. A failure
+    (exit 2) stops the watch, save the pinned shipmill's "no version" error, which it has
+    retried already: that raises PypiWait (#597)"""
+    cmd = [sys.executable, str(INTAKE_STATE), repo, *(["--plans"] if plans else []), "--json"]
+    if plans:
+        cmd += ["--tool", tool] if tool is not None else []
+        cmd += ["--wip", str(wip)] if wip is not None else []
     cmd += ["--bot-login", bot_login] if bot_login is not None else []
-    cmd += [item for value in roles for item in ("--role", value)]
+    cmd += [item for value in roles for item in ("--role", value)] if plans else []
     proc = execute(cmd, repo_dir, None)
-    if proc.returncode == 2 and tool is None and no_version(proc.stderr) == plugin_version():
+    if proc.returncode == 2 and plans and tool is None and no_version(proc.stderr) == plugin_version():
         raise PypiWait(plugin_version())
     if proc.returncode not in (0, 1):  # 1 is "something needs action", not a failure
-        raise Refused(f"error: intake_state.py --plans failed with exit {proc.returncode}: {proc.stderr.strip()}")
+        ran = "intake_state.py --plans" if plans else "intake_state.py"
+        raise Refused(f"error: {ran} failed with exit {proc.returncode}: {proc.stderr.strip()}")
     return proc.stdout
 
 
@@ -3894,6 +3940,104 @@ def plans_rows(text: str, repo: str, bot_login: str | None = None, trusted_only:
     detail = "; ".join(f"{s} {' '.join(listed[s])}" for s in PLAN_ACTION if s in listed)
     rows = [Row("PLANS", repo, detail, skill_fix("product-intake", repo))] if detail else []
     return Plans(rows, frozenset(untrusted))
+
+
+# -- handed-over requests and accepted opportunities (spec 074) ------------------------------
+
+
+@dataclass(frozen=True)
+class Feedback:
+    """What intake_state.py --json's feedback lines add to the report (spec 074)"""
+
+    rows: list[Row]  # SPEC_DUE and FEEDBACK_DUE, at most one of each per repo
+    untrusted: frozenset[int]  # with trusted_only, the outsiders' requests and opportunities
+
+
+def intake_level(text: str) -> str:
+    """The [autonomy] intake level from the autonomy line intake_state.py --json prints first"""
+    first = text.splitlines()[0] if text else ""
+    try:
+        line = json.loads(first)
+    except json.JSONDecodeError:
+        line = None
+    level = line.get("autonomy") if isinstance(line, dict) and set(line) == {"autonomy"} else None
+    if level not in INTAKE_LEVELS:
+        raise Refused(f"error: intake_state.py printed {first[:200]!r} first, not its autonomy line")
+    return str(level)
+
+
+def feedback_line(line: str) -> dict[str, Any] | None:
+    """One of intake_state.py's --json lines when it is a NEW_FEEDBACK or ACCEPTED row,
+    checked; None for the autonomy line, the other feedback states, and the plan rows"""
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: intake_state.py printed {line[:200]!r}, not JSON: {exc}") from None
+    if not isinstance(row, dict) or row.get("kind") not in FEEDBACK_KINDS or row.get("state") not in FEEDBACK_STATES:
+        return None
+    number, author, association, handed = (row.get(k) for k in ("number", "author", "association", "handed"))
+    well_formed = isinstance(number, int) and not isinstance(number, bool) and number > 0
+    well_formed &= (row["kind"] == "opportunity") == (row["state"] == "ACCEPTED")
+    well_formed &= author is None or (isinstance(author, str) and bool(author))
+    well_formed &= association is None or (isinstance(association, str) and association.isupper())
+    well_formed &= handed is None or (isinstance(handed, str) and zoned_time(handed) is not None)
+    if not well_formed or not {"author", "association", "handed"} <= set(row):
+        raise Refused(f"error: intake_state.py printed a malformed feedback row: {line[:200]!r}")
+    return row
+
+
+def zoned_time(text: str) -> dt.datetime | None:
+    """A timestamp with its time zone, as GitHub prints createdAt; None for anything else"""
+    try:
+        found = parse_time(text)
+    except ValueError:
+        return None
+    return found if found.tzinfo is not None else None
+
+
+def opener_trusted(row: dict[str, Any], bot_login: str | None) -> bool:
+    """D-16's trust in a feedback row's opener: an OWNER, MEMBER, or COLLABORATOR, or the
+    --bot-login (logins compare in any case)"""
+    if row["association"] in TRUSTED_ASSOCIATIONS:
+        return True
+    return bot_login is not None and row["author"] is not None and row["author"].lower() == bot_login.lower()
+
+
+def feedback_rows(
+    text: str, repo: str, now: dt.datetime, bot_login: str | None = None, trusted_only: bool = False
+) -> Feedback:
+    """SPEC_DUE and FEEDBACK_DUE from intake_state.py --json's lines (spec 074). SPEC_DUE names
+    every ACCEPTED opportunity, oldest (lowest number) first, for triage's spec gate.
+    FEEDBACK_DUE names every NEW_FEEDBACK issue triage handed over at least FEEDBACK_AFTER
+    before now, oldest hand-off first, for one intake pass; one handed over later, one triage
+    never handed over (handed null), and a discussion are in no row. Under [autonomy] intake =
+    "observe" (the autonomy line) FEEDBACK_DUE is report-only. With trusted_only, a request or
+    opportunity whose opener isn't trusted (opener_trusted) is in neither row and in untrusted
+    (D-16). Numbers only, never an issue's or a discussion's text (D-16)"""
+    report_only = intake_level(text) == "observe"
+    accepted: list[int] = []
+    due: list[tuple[dt.datetime, int]] = []
+    untrusted: set[int] = set()
+    for line in text.splitlines():
+        row = feedback_line(line)
+        if row is None or row["kind"] == "discussion":
+            continue  # triage never hands a discussion over: in no row
+        if trusted_only and not opener_trusted(row, bot_login):
+            untrusted.add(row["number"])
+            continue
+        if row["state"] == "ACCEPTED":
+            accepted.append(row["number"])
+        elif row["handed"] is not None and now - parse_time(row["handed"]) >= FEEDBACK_AFTER:
+            due.append((parse_time(row["handed"]), row["number"]))
+    rows = []
+    if accepted:
+        listed = " ".join(f"#{n}" for n in sorted(accepted))
+        rows.append(Row("SPEC_DUE", repo, f"ACCEPTED {listed}", skill_fix("github-issue-triage", repo)))
+    if due:
+        listed = " ".join(f"#{n}" for _, n in sorted(due))
+        fix = skill_fix("product-intake", repo)
+        rows.append(Row("FEEDBACK_DUE", repo, f"NEW_FEEDBACK {listed}", fix, report_only=report_only))
+    return Feedback(rows, frozenset(untrusted))
 
 
 # triage_state.py's states of an issue that isn't open (SUSPECT_CLOSE, VERIFY_CLOSED), or
@@ -5310,9 +5454,10 @@ TIERS: dict[int, tuple[str, ...]] = {
     4: (VETOED, "ISSUES", "NEEDS_DECISION"),
     5: ("UPGRADE_PENDING", "UPSTREAM_DUE"),
     6: ("ISSUES",),
-    7: ("DIRECTION_PENDING", "PLANS"),
+    # SPEC_DUE and FEEDBACK_DUE: accepted opportunities and handed-over requests (spec 074)
+    7: ("DIRECTION_PENDING", "PLANS", "SPEC_DUE", "FEEDBACK_DUE"),
 }
-SWEPT = ("BOT_STALLED", "UPGRADE_PENDING", "UPSTREAM_DUE", "DIRECTION_PENDING", "PLANS")
+SWEPT = ("BOT_STALLED", "UPGRADE_PENDING", "UPSTREAM_DUE", "DIRECTION_PENDING", "PLANS", "SPEC_DUE", "FEEDBACK_DUE")
 DECIDED_STATES = frozenset({"DECIDED"})  # triage_state.py's states in tier 4; VETOED has its own row
 ASKED = (TRIAGE.DECISION_LABEL, TRIAGE.DECIDED_LABEL)  # tier 4's items; tier 3 reads these pull requests' comments
 COMMENTS_LAST = 100  # comments a batched read takes of each item; one with more is read whole
@@ -5500,7 +5645,8 @@ def plan_trust(args: argparse.Namespace, repo_dir: Path, table: dict[str, str] |
     if not args.trusted_only or not (repo_dir / DIRECTION).is_file():
         return frozenset()
     try:
-        lines = plans_run(args.repo, repo_dir, args.tool, args.bot_login, plan_wip(table, POLICY), roles=args.role)
+        wip = plan_wip(table, POLICY)
+        lines = intake_run(args.repo, repo_dir, True, args.tool, args.bot_login, wip, roles=args.role)
     except PypiWait:
         return None
     return plans_rows(lines, args.repo, args.bot_login, True).untrusted
@@ -5878,20 +6024,26 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         )  # its rows come with the intake's, which knows which issues triage_state.py trusts
 
     plans = Plans([], frozenset())
+    feedback = Feedback([], frozenset())
     unplanned = None  # PyPI's wait for the plans' pinned shipmill (#597)
-    if (repo_dir / DIRECTION).is_file():  # a goal's plan needs goals (spec 028)
-        try:
-            lines = plans_run(args.repo, repo_dir, args.tool, args.bot_login, plan_wip(table, POLICY), roles=args.role)
-            plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only)
-        except PypiWait as wait:
-            unplanned = wait
+    planned = (repo_dir / DIRECTION).is_file()  # a goal's plan needs goals (spec 028)
+    try:  # one intake_state.py run per repo, its plans only with goals (spec 074)
+        wip = plan_wip(table, POLICY) if planned else None
+        roles = args.role if planned else ()
+        lines = intake_run(args.repo, repo_dir, planned, args.tool, args.bot_login, wip, roles=roles)
+        plans = plans_rows(lines, args.repo, args.bot_login, args.trusted_only) if planned else plans
+        feedback = feedback_rows(lines, args.repo, now, args.bot_login, args.trusted_only)
+    except PypiWait as wait:
+        unplanned = wait
     rows += plans.rows
+    # a --tier or --sweep read prints no report-only row: FEEDBACK_DUE under intake = "observe"
+    rows += [r for r in feedback.rows if host or not r.report_only]
     if unplanned is not None and args.trusted_only:
         # the plan issues the --bot-login didn't open are unknown, so no issue or pull request
         # is read either: one of them could start a session (D-16)
-        rows.append(pypi_wait_row(unplanned.version, "plans, issues, and pull requests"))
+        rows.append(pypi_wait_row(unplanned.version, "plans, feedback, issues, and pull requests"))
     else:
-        rows += [] if unplanned is None else [pypi_wait_row(unplanned.version, "plans")]
+        rows += [] if unplanned is None else [pypi_wait_row(unplanned.version, "plans and feedback")]
         code, triage = triage_run(args.repo, args.bot_login, args.trusted_only, home, args.role)
         # the open direction issues, from triage_state.py's lines: no gh call of their own (spec 034)
         directions = triage_directions(triage) if table is not None else frozenset()
@@ -5904,7 +6056,8 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
             args.trusted_only,
             land,
             upgrades,
-            plans.untrusted,
+            # an outsider's request or opportunity joins UNTRUSTED (S-074-7), save an upgrade issue
+            plans.untrusted | (feedback.untrusted - (upgrades.owned if upgrades is not None else frozenset())),
             now,
             directions,
             queue_of=lambda prs: land_queue(args.repo, repo_dir, text, default, prs, now, args.tool),
@@ -5958,7 +6111,7 @@ def main() -> int:
         found = host_rows(args.host, args.repo, repo_dir, now, host_wide=args.host_wide)
         for row in found:
             print(json.dumps(row.json(), sort_keys=True) if args.json else row.text())
-        return 1 if any(r.state in ACTION for r in found) else 0
+        return 1 if any(r.action for r in found) else 0
     if policy_file(repo_dir) is not None:  # first, as shipmill checks it before the config's other keys
         check_requires((repo_dir / POLICY).read_text(encoding="utf-8"), POLICY)
     now = dt.datetime.now(dt.timezone.utc)  # noqa: UP017 (dt.UTC needs 3.11)
@@ -5971,7 +6124,7 @@ def main() -> int:
         rows = report_rows(args, repo_dir, now)
     for row in ordered(rows):
         print(json.dumps(row.json(), sort_keys=True) if args.json else row.text())
-    return 1 if any(r.state in ACTION for r in rows) else 0
+    return 1 if any(r.action for r in rows) else 0
 
 
 if __name__ == "__main__":

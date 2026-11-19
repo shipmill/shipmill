@@ -79,12 +79,15 @@ TIERS: dict[int, tuple[str, ...]] = {
             "REVISIT",
         )
     ),
-    7: ("DIRECTION_PENDING", "PLANS"),
+    # spec 074: an accepted opportunity for the spec gate, then the requests handed to intake
+    7: ("DIRECTION_PENDING", "PLANS", "SPEC_DUE", "FEEDBACK_DUE"),
 }
 UNPLACED = 6  # the tier of a kind no tier names
 READ = (1, 2, 3, 4, 6)  # the tiers a walk reads from GitHub; 5 and 7 come from the sweep
 # the timed sections; D-69 (#921) retired UNANNOUNCED, so a sweep.json row of it is never an item
-SWEPT = frozenset({"BOT_STALLED", "UPGRADE_PENDING", "UPSTREAM_DUE", "DIRECTION_PENDING", "PLANS"})
+SWEPT = frozenset(
+    {"BOT_STALLED", "UPGRADE_PENDING", "UPSTREAM_DUE", "DIRECTION_PENDING", "PLANS", "SPEC_DUE", "FEEDBACK_DUE"}
+)
 DECISION_LABEL = "needs-decision"  # github-issue-triage's needs-decision.md
 WAITING_TIER = 4  # the tier whose read holds the items waiting on a decision
 
