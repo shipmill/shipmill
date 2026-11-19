@@ -398,6 +398,12 @@ def test_s082_11_no_instruction_files_prose_decides_the_identity(skill: str) -> 
     assert "no instruction file's prose" in rule and "decides the identity" in rule
 
 
+@pytest.mark.parametrize("skill", SIX_SKILLS)
+def test_s082_11_no_other_paragraph_runs_shipmill_gh_only_with_app_id(skill: str) -> None:
+    # a write named outside the rule mustn't read as plain `gh` without app_id (the rule's "in every repo")
+    assert "through `shipmill gh` with `[agents] app_id` set" not in folded("skills", skill, "SKILL.md")
+
+
 def test_s082_11_the_version_pins_still_match_once_each() -> None:
     config = tomllib.loads((ROOT / ".github" / "shipmill.toml").read_text(encoding="utf-8"))
     lines = [line for line in config["version_lines"] if line["file"].endswith("/SKILL.md")]
