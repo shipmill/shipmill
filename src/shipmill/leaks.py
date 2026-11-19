@@ -8,7 +8,11 @@ another file or turns a detector off. Three detectors refuse:
 - `term`: a term of the private file, in a write to a public repo
 - `secret-value`: the exact value of a secret from the checkout's untracked `.env` files or the
   private file's `secret_files`, in any repo
-- `secret-format`: a known token format, in any repo
+- `secret-format`: a known token format, in any repo, and each finding of `gitleaks` 8.19 or
+  newer when it is on PATH, run with its default rules only (S-081-7)
+
+A fourth, `high-entropy`, only warns: a long random-looking string outside lock files prints a
+`shipmill leaks: warning:` line and changes no exit code (S-081-8).
 
 A finding names a term, but a secret only by its variable and file, or by its format and its
 first 4 characters: no line this module writes holds a secret's value (S-081-14). The callers
@@ -16,14 +20,21 @@ first 4 characters: no line this module writes holds a secret's value (S-081-14)
 texts and the destination and print `refusal`'s lines.
 """
 
+import json
+import math
 import os
 import pwd
 import re
+import shutil
+import subprocess
+import tempfile
 import tomllib
-from collections.abc import Iterable, Sequence
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Protocol
 
 from shipmill.errors import ReleaseError
 
@@ -63,6 +74,7 @@ class Detector(StrEnum):
     TERM = "term"
     SECRET_VALUE = "secret-value"
     SECRET_FORMAT = "secret-format"
+    HIGH_ENTROPY = "high-entropy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,10 +259,12 @@ URL_PASSWORD = "a URL with a password"
 @dataclass(frozen=True, slots=True)
 class Text:
     """A text a write sends, with how a finding names where it is: `the body`, `the title`,
-    `the field note`, `the --input file x.json`"""
+    `the field note`, `the --input file x.json`; path is the repo file it comes from, when it
+    does, whose name tells a lock file the high-entropy warning skips"""
 
     where: str
     text: str
+    path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,11 +301,199 @@ def _formats(text: str) -> list[tuple[int, str]]:
     return sorted(found)
 
 
-def scan(texts: Sequence[Text], terms: Sequence[Term], known: Sequence[Secret]) -> list[Finding]:
-    """Every finding in texts, in order of the texts and then of where each starts: terms (pass
-    none for a repo that isn't public), the exact values of known, and the known formats"""
+GITLEAKS_FLOOR = (8, 19)  # the least gitleaks whose findings the check takes
+GITLEAKS_TIMEOUT = 30  # seconds one gitleaks run may take before the check fails
+_GITLEAKS_VERSION = re.compile(r"v?(\d+)\.(\d+)(?:\.\d+)?")
+_GITLEAKS_ENV = ("PATH", "TMPDIR", "SYSTEMROOT")  # all gitleaks gets of the env: no GITLEAKS_CONFIG
+_JOINED = "\n\n"  # between two texts in gitleaks' one run
+
+
+@dataclass(frozen=True, slots=True)
+class Gitleaks:
+    """A `gitleaks` 8.19 or newer on PATH (S-081-7): it reads each outgoing text through
+    `gitleaks stdin` with its default rules alone. It runs in an empty folder of its own with no
+    GITLEAKS_ variable, so no `.gitleaks.toml`, `.gitleaksignore`, or config variable of the
+    checked repo or the session applies, and with `--ignore-gitleaks-allow`, so a
+    `gitleaks:allow` comment in the text passes nothing"""
+
+    binary: Path
+    version: str
+    env: Mapping[str, str] = field(repr=False)
+
+    @classmethod
+    def find(cls, environ: Mapping[str, str]) -> Gitleaks | None:
+        """The gitleaks on environ's PATH when its `version` reads 8.19 or newer; None when it
+        is missing, older, or its version can't be read, so the built-in formats alone decide"""
+        found = shutil.which("gitleaks", path=environ.get("PATH", ""))
+        if found is None:
+            return None
+        env = {name: environ[name] for name in _GITLEAKS_ENV if name in environ}
+        try:
+            proc = subprocess.run(
+                [found, "version"], capture_output=True, text=True, env=env, timeout=GITLEAKS_TIMEOUT, check=False
+            )
+        except OSError, subprocess.TimeoutExpired:
+            return None
+        matched = _GITLEAKS_VERSION.search(proc.stdout) if proc.returncode == 0 else None
+        if matched is None or (int(matched.group(1)), int(matched.group(2))) < GITLEAKS_FLOOR:
+            return None
+        return cls(Path(found), matched.group(0).removeprefix("v"), env)
+
+    def findings(self, texts: Sequence[str]) -> list[list[tuple[int, str]]]:
+        """gitleaks' findings in each of texts, read in one run over them all, a blank line
+        between two: where each starts, and how a finding names it, with at most the secret's
+        first 4 characters. A secret is placed in each text that holds it as it stands, else (a
+        decoded one) at the start of the text its line falls in. A run that fails exits 2: the
+        check never passes a text it couldn't finish"""
+        found: list[list[tuple[int, str]]] = [[] for _ in texts]
+        if not texts:
+            return found
+        starts: list[int] = []  # the line of the run's input each text starts on
+        line = 1
+        for text in texts:
+            starts.append(line)
+            line += text.count("\n") + 2
+        for rule, secret, at_line in self._report(_JOINED.join(texts)):
+            what = f"gitleaks' {rule} ({secret[:SHOWN_PREFIX]}…)"
+            holders = [index for index, text in enumerate(texts) if secret in text]
+            if not holders:
+                holders = [max((i for i, start in enumerate(starts) if start <= at_line), default=0)]
+            for index in holders:
+                place = (max(texts[index].find(secret), 0), what)
+                if place not in found[index]:
+                    found[index].append(place)
+        return found
+
+    def _report(self, text: str) -> list[tuple[str, str, int]]:
+        """gitleaks' report on text: each finding's rule, secret, and line (0 when it names none)"""
+        with tempfile.TemporaryDirectory(prefix="shipmill-gitleaks-") as folder:
+            report = Path(folder) / "report.json"
+            argv = [
+                str(self.binary),
+                "stdin",
+                "--no-banner",
+                "--log-level",
+                "error",
+                "--exit-code",
+                "0",
+                "--ignore-gitleaks-allow",
+                "--report-format",
+                "json",
+                "--report-path",
+                str(report),
+            ]
+            try:
+                proc = subprocess.run(
+                    argv,
+                    input=text.encode("utf-8"),
+                    capture_output=True,
+                    cwd=folder,
+                    env=dict(self.env),
+                    timeout=GITLEAKS_TIMEOUT,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                raise ReleaseError(
+                    f"gitleaks {self.version} didn't finish in {GITLEAKS_TIMEOUT}s; "
+                    "the leak check refuses until it does"
+                ) from None
+            except OSError as exc:
+                raise ReleaseError(f"gitleaks at {self.binary} can't run ({exc.strerror})") from None
+            if proc.returncode != 0:
+                said = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
+                raise ReleaseError(
+                    f"gitleaks {self.version} failed (exit {proc.returncode}"
+                    + (f": {said[-1]}" if said else "")
+                    + "); the leak check refuses until it runs"
+                )
+            try:
+                rows = json.loads(report.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise ReleaseError(f"gitleaks {self.version} wrote no report the leak check can read ({exc})") from None
+        if not isinstance(rows, list):
+            raise ReleaseError(f"gitleaks {self.version}'s report isn't a list of findings")
+        found: list[tuple[str, str, int]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ReleaseError(f"gitleaks {self.version}'s report holds a finding that isn't an object")
+            rule = row.get("RuleID")
+            secret = row.get("Secret") or row.get("Match")
+            if not isinstance(rule, str) or not isinstance(secret, str) or not secret:
+                raise ReleaseError(f"gitleaks {self.version}'s report holds a finding without RuleID and Secret")
+            at_line = row.get("StartLine")
+            found.append((rule, secret, at_line if isinstance(at_line, int) else 0))
+        return found
+
+
+ENTROPY_RUN = 32  # a high-entropy string's least length
+ENTROPY_BITS = 4.0  # its least Shannon entropy, in bits per character
+WARNED = 5  # the high-entropy warnings printed before `and N more`
+WARNING = "shipmill leaks: warning:"
+_RUN = re.compile(rf"[A-Za-z0-9+/=_-]{{{ENTROPY_RUN},}}")
+_HEX = re.compile(r"[0-9A-Fa-f]+")
+_LOCK_FILES = frozenset({"package-lock.json"})  # beside every `*.lock`, such as uv.lock
+
+
+def _lock_file(path: str | None) -> bool:
+    if path is None:
+        return False
+    name = PurePosixPath(path).name
+    return name.endswith(".lock") or name in _LOCK_FILES
+
+
+def _entropy(run: str) -> float:
+    """run's Shannon entropy in bits per character"""
+    total = len(run)
+    return -sum(count / total * math.log2(count / total) for count in Counter(run).values())
+
+
+def _random_looking(run: str) -> bool:
+    """S-081-8: a run holding a letter and a digit, not hex only (a commit SHA, a checksum), of
+    4.0 bits per character or more"""
+    letter = any(char.isalpha() for char in run)
+    digit = any(char.isdigit() for char in run)
+    return letter and digit and _HEX.fullmatch(run) is None and _entropy(run) >= ENTROPY_BITS
+
+
+def high_entropy(texts: Sequence[Text]) -> list[Finding]:
+    """The high-entropy strings in texts outside lock files, which warn and refuse nothing: a
+    run of 32 or more characters of `A-Z a-z 0-9 + / = _ -` that looks random"""
     findings: list[Finding] = []
     for item in texts:
+        if _lock_file(item.path):
+            continue
+        for m in _RUN.finditer(item.text):
+            run = m.group(0)
+            if _random_looking(run):
+                what = f"a high-entropy string of {len(run)} characters ({run[:SHOWN_PREFIX]}…)"
+                findings.append(Finding(Detector.HIGH_ENTROPY, item.where, _line(item.text, m.start()), what))
+    return findings
+
+
+def warning_lines(findings: Sequence[Finding]) -> list[str]:
+    """The stderr lines of high-entropy findings: at most 5, then `and N more`"""
+    lines = [f"{WARNING} {finding.said()}" for finding in findings[:WARNED]]
+    if len(findings) > WARNED:
+        lines.append(f"{WARNING} and {len(findings) - WARNED} more")
+    return lines
+
+
+class Scanner(Protocol):
+    """A secret scanner beside the built-in formats, such as `Gitleaks`"""
+
+    def findings(self, texts: Sequence[str]) -> list[list[tuple[int, str]]]: ...
+
+
+def scan(
+    texts: Sequence[Text], terms: Sequence[Term], known: Sequence[Secret], scanner: Scanner | None = None
+) -> list[Finding]:
+    """Every refused finding in texts, in order of the texts and then of where each starts:
+    terms (pass none for a repo that isn't public), the exact values of known, the known
+    formats, and scanner's findings (gitleaks', when it is on PATH) where no built-in format
+    starts"""
+    findings: list[Finding] = []
+    scanned = scanner.findings([item.text for item in texts]) if scanner is not None and texts else []
+    for index, item in enumerate(texts):
         text = item.text
         found: list[tuple[int, Finding]] = []
         for term in terms:
@@ -303,8 +505,14 @@ def scan(texts: Sequence[Text], terms: Sequence[Term], known: Sequence[Secret]) 
             if at >= 0:
                 what = f"the value of {secret.name} from {secret.source}"
                 found.append((at, Finding(Detector.SECRET_VALUE, item.where, _line(text, at), what)))
-        for at, what in _formats(text):
+        built_in = _formats(text)
+        for at, what in built_in:
             found.append((at, Finding(Detector.SECRET_FORMAT, item.where, _line(text, at), what)))
+        if scanned:
+            starts = {at for at, _ in built_in}
+            for at, what in scanned[index]:
+                if at not in starts:
+                    found.append((at, Finding(Detector.SECRET_FORMAT, item.where, _line(text, at), what)))
         findings.extend(finding for _, finding in sorted(found, key=lambda pair: pair[0]))
     return findings
 
