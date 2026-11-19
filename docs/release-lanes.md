@@ -1037,8 +1037,9 @@ In a repo whose config has `[agents]`, the shipmill plugin's delivery hooks
 `gh` write without `shipmill gh` while `[agents] app_id` is set and the App is available
 to the session, its key at `~/.config/shipmill/app-<app_id>.pem` or `SHIPMILL_APP_KEY` set
 (D-14, D-54), a push to the
-default branch, a rebase merge (D-33), a force push without a lease pinned to a commit,
-and a copy of a private path out of the repo. In a session `shipmill gate` started headless
+default branch, a rebase merge (D-96), a merge with the method `[agents] merge` doesn't
+name (`--squash` under `merge = "merge"`, the `merge-method` rule, D-96), a force push
+without a lease pinned to a commit, and a copy of a private path out of the repo. In a session `shipmill gate` started headless
 (its `--settings` env sets `SHIPMILL_GATE=1`, which the hook reads from its own environment
 alone), it also refuses a `uv run` of anything but `python`, `pytest`, `ruff`, `mypy`, an
 entry of the checkout's `[project.scripts]`, or a path to a `.py` file (D-82): `uv run env`,

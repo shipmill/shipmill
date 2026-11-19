@@ -151,7 +151,7 @@ nothing), anywhere in its message, mid-line, in backticks, and in a fence too. T
 triage_state.py's keyword_closes, the rule shipped.py reads too (#416): in the body, a keyword
 starting a line, after an optional list bullet, outside a fence; in the title, one anywhere outside
 a code span; one mid-line in the body, in backticks, or naming owner/repo#N names nothing there. The
-title is the squash commit's subject (D-33), so it reads as a commit (#987). Whoever opened it, it
+title is the squash commit's subject (D-96), so it reads as a commit (#987). Whoever opened it, it
 is REFUSED, `  refused: <the title or commit <sha7>> closes #N, which the body lists as Part of #N`,
 when the title's or a commit's keyword names an issue its body lists as `Part of #N`, and `  refused:
 <the title, commit <sha7>, or the body> closes #N, an open issue with a ## Check: write Part of #N
@@ -1408,7 +1408,7 @@ def closing_problems(data: dict, number: int, repo: str | None) -> list[str]:
     body are read by triage_state.py's keyword_closes, the rule shipped.py reads too (#416): in the
     body, one starting a line, after an optional list bullet, outside a fence; in the title, one
     anywhere outside a code span; in either, mid-line in the body, in backticks, or naming
-    owner/repo#N, it names nothing. The title is read as the squash commit it becomes (D-33, #987).
+    owner/repo#N, it names nothing. The title is read as the squash commit it becomes (D-96, #987).
     The title's or a commit's keyword naming an issue its body lists as Part of #N, then the
     title's, a commit's, or the body's naming an open issue of the repo with a ## Check section,
     read once in GraphQL for every number the keywords name; a commit naming owner/repo#N or an

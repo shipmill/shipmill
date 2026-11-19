@@ -1,6 +1,6 @@
 # S-072: Choose between a squash and a merge commit for landing pull requests
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -171,3 +171,16 @@ hooks section name D-96.
 - shipmill/shipmill#1345: S-072-9, S-072-10, S-072-11
 
 ## Verification
+
+- S-072-1: `test_s072_1_*` in `tests/test_merge_method.py` load no key, `"squash"`, `"merge"`, and other strings and non-strings through `AgentsConfig.parse`; the default reads as squash, the others exit 2 naming `[agents] merge` and both values, pass
+- S-072-2: `test_s072_2_*` in `tests/test_delivery_hooks.py` run the real hook on `--squash`, `-s`, `-ds`, `shipmill gh pr merge --squash`, and `merge_method=squash` under `"merge"`; each exits 2 naming `merge-method` and D-96 with the `--merge` command, and `--merge` exits 0, pass
+- S-072-3: `test_s072_3_*` run `--squash` and `--merge` through the hook under `"squash"` and no key; both exit 0, pass
+- S-072-4: `test_s072_4_*` run `--rebase`, `-r`, and `merge_method=rebase` under all three values; each exits 2 naming `rebase-merge` and D-96, `Instead:` taking `--squash` or `--merge` by the setting, pass
+- S-072-5: `test_s072_5_*` run a guarded and an unguarded command under a malformed `[agents] merge`; the guarded ones exit 2 with the config's error on `Rule:`, `git status` exits 0, pass
+- S-072-6: `test_s072_6_*` in `tests/test_merge_method.py` run `shipmill gh pr merge` against fake repo settings; a disallowed method exits 2 before any merge call naming the repo setting and `[agents] merge`, never retried with the other, pass
+- S-072-7: `test_s072_7_*` check the API-merge and no-method refusals under each value; they name `--merge` under `"merge"` and `--squash` otherwise, pass
+- S-072-8: `test_s072_8_*` check the `--body` under `"merge"` (from `merge_commit_message`) and `"squash"` (from `squash_merge_commit_message`), each with the decider's trailer, pass
+- S-072-9: `test_s072_9_*` in `tests/test_merge_method_doctor.py` cover each source, each setting that is off, a failed read, no gh, and no `[agents]`; `uv run shipmill doctor` in this repo printed `PASS merge: squash (default, D-96)` from the live settings, pass
+- S-072-10: `test_s072_10_*` read the hooks block under each value; the same doctor run printed `merge-method on: always, [agents] merge is squash (default), so it refuses none` and a `rebase-merge` line ending `(D-96)`, pass
+- S-072-11: `test_s072_11_*` read landing.md's Merge style, the pr-triage SKILL.md, flow.md's How a pull request lands, and release-lanes.md for `[agents] merge`, D-96, no D-33, the in-between commits, and no fallback text; read by hand too, pass
+- S-072-12: `test_s072_12_the_fixtures_hold_the_rules_cases_and_a_config_for_each_value` reads `tests/fixtures/hooks/`, pass

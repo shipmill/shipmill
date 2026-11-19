@@ -194,6 +194,20 @@ Clone https://github.com/shipmill/shipmill into tmp/shipmill (or pull it if pres
 tmp/shipmill/skills/github-ship-watch/SKILL.md for <owner/repo> — watch and triage
 ```
 
+### How a pull request lands
+
+`[agents] merge` (spec 072, D-96) picks the method an agent's merge takes:
+
+```toml
+[agents]
+merge = "merge"   # or "squash", the default
+```
+
+- **`"squash"`, or no key:** each pull request lands as one commit with its number in the subject, as before
+- **`"merge"`:** a merge commit, so each of the branch's commits reaches the default branch and counts on its author's contribution graph. That includes an agent's in-between commits, such as "fix lint" or "address review", so squash stays the default while agents don't shape their commits
+- **A stack's base** lands with a merge commit under either value, so its child retargets and rebases clean; under `"squash"` in a repo that doesn't allow merge commits, it lands with a squash and its child is rebased. No pull request is rebase-merged
+- **A method the repo doesn't allow fails, never falls back.** Where the repo's settings (`allow_squash_merge`, `allow_merge_commit`, Settings > General > Pull Requests) don't allow the method the setting names, `shipmill gh pr merge` exits 2 naming both, and `shipmill doctor`'s `merge` row warns. The plugin's delivery hook refuses `--squash` under `"merge"` (its `merge-method` rule) as it refuses a rebase merge
+
 ### Who the work is credited to
 
 A merge the App makes is authored by its bot, so your contribution graph doesn't show the change you decided to land. `[agents] author` (spec 051) picks whose account an agent's issue, pull request, and merge commit go out as. Every write still goes through the App (D-54); only those three commands change author, and comments, labels, reviews, edits, closes, and `shipmill gh api` calls stay the App's:

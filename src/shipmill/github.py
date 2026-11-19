@@ -486,6 +486,10 @@ class GitHub(Protocol):
         """The names of the repository's labels (the first 1000), in one read"""
         ...
 
+    def merge_methods(self) -> MergeMethods:
+        """The merge methods the repo's settings allow (spec 072), in one read"""
+        ...
+
     def deployments(self, environment: str) -> list[Deployment]:
         """The environment's deployments, newest first (the newest 100)"""
         ...

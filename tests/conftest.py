@@ -20,6 +20,7 @@ from shipmill.github import (
     Issue,
     IssueClose,
     MergedPull,
+    MergeMethods,
     Milestone,
     MilestoneIssues,
     OpenMilestone,
@@ -152,6 +153,8 @@ class FakeGitHub:
     shipped: list[ShippedPull] = field(default_factory=list)  # merged pull requests shipped_pulls reads
     shipped_reads: list[dt.datetime] = field(default_factory=list)  # the since of each shipped_pulls call
     shipped_error: str = ""  # when set, reading the shipped pull requests fails with it
+    allowed: MergeMethods = MergeMethods(squash=True, merge=True)  # the repo's merge settings (spec 072)
+    allowed_error: str = ""  # when set, reading the merge settings fails with it, as gh would
 
     def deploy(self, environment: str, ref: str, at: dt.datetime, *states: DeploymentState) -> int:
         """Record a deployment of ref, with its statuses one minute apart from at; its id"""
@@ -256,6 +259,11 @@ class FakeGitHub:
     def label_names(self) -> frozenset[str]:
         self.label_reads += 1
         return frozenset(self.repo_labels)
+
+    def merge_methods(self) -> MergeMethods:
+        if self.allowed_error:
+            raise ReleaseError(f"gh api -X GET failed: {self.allowed_error}")
+        return self.allowed
 
     def close_issue(self, number: int, comment: str) -> None:
         self.closed_issues[number] = replace(self.issues.pop(number), closed_at=self.now)
