@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from shipmill import cli_command, deploy_runner, deprecations, fragments, ticks
+from shipmill import merge_checks as gating
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
 from shipmill.agents import AgentsConfig, Author, Credit, MergeMethod, ProductConfig, RolesError
@@ -266,8 +267,9 @@ def doctor(
     home, where the hooks block looks for the App's key (spec 033); None takes Path.home().
     session_app reads [agents] app_id's installation on repo for its optional permissions
     (D-77); None, or a probe without the key, checks none. rules builds the reader of the branch
-    rules the landing row reads (spec 054), only with a release workflow and releases on; None
-    checks none, and a builder that returns None (no gh) reports that it can't read them. leaks
+    rules the landing row reads (spec 054), only with a release workflow and releases on, and
+    the merge-checks row (spec 080), only with [agents]; None checks neither, and a builder that
+    returns None (no gh) reports that it can't read them. leaks
     reads the leak check's private file, secrets, and scanner, only with [agents] (spec 081);
     None checks none"""
     checks: list[Check] = []
@@ -294,6 +296,8 @@ def doctor(
         checks.append(direction_check(root))
         checks.extend(hooks_checks(policy, Git(root), hooks, Path.home() if home is None else home))
         checks.extend(merge_checks(policy.agents, github))
+        if rules is not None:  # spec 080, D-9: what gates a merge, only where agents merge
+            checks.extend(merge_checks_rows(root, policy, repo, rules()))
         if leaks is not None:
             checks.extend(leaks_checks(root, leaks))
         checks.extend(deprecation_checks(policy, "credit") or [credit_check(policy.agents)])
@@ -1165,6 +1169,17 @@ def merge_checks(agents: AgentsConfig, github: GitHub | None) -> list[Check]:
         )
         checks.append(Check("WARN", MERGE_ROW, detail))
     return checks or [Check("PASS", MERGE_ROW, named)]
+
+
+def merge_checks_rows(root: Path, policy: Policy, repo: str | None, reader: RulesReader | None) -> list[Check]:
+    """S-080-15: the lines `shipmill merge-checks` prints, judged at the configured [autonomy]
+    land, never the hold's, as its rows; reader None: gh isn't installed. The row is never a
+    FAIL: a checkout whose workflows or package.json can't be read is a WARN naming the file"""
+    try:
+        found = gating.report(root, repo, policy.branch, policy.autonomy.land, reader)
+    except ReleaseError as exc:
+        return [Check("WARN", gating.ROW, f"can't read the checks gating a merge: {exc}")]
+    return [Check(status, gating.ROW, detail) for status, detail in found.lines()]
 
 
 LEAKS_ROW = "leaks"  # doctor's block for the leak check (spec 081)

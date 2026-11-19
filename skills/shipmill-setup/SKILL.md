@@ -555,6 +555,14 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    | Ship by itself | act | act | act | act | act | act |
    | Custom | asked one stage at a time | | | | | |
 
+   Before you ask, run `$CR merge-checks --land act` (spec 080): it reads the status checks
+   a merge to the default branch requires and what each one's jobs run, and judges them as
+   if land were `act`: whether the green CI `act` merges on proves anything. Show its lines with
+   the `land` lines below, in a gate session inside the needs-decision question. When its
+   last line is a WARN, put that warning beside every option that sets `land = "act"`: the
+   "Ship by itself" profile and Custom's `land = "act"`. The recommendation stays as it is;
+   the maintainer decides, and shipmill changes no check, ruleset, or workflow.
+
    Recommend "Recommended for the first weeks". Under the question, show what each level
    means for each stage:
 
@@ -567,7 +575,7 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    - **land:** `observe` reviews in the session only, with no push and no comment; `propose`
      reviews, pushes small fixes with regression tests, posts the review, and labels a pull
      request that passes every check `shipmill-ready`, for a person to merge; `act` merges on
-     green CI
+     green CI. Under these lines, show the output of `$CR merge-checks --land act` (above)
    - **release, deploy, rollback:** `observe` reports only; `propose` opens an issue saying
      what it would do, and a person does it; `act` does it
    - **revert** (spec 079, default `observe`): how far shipmill backs out the merge that

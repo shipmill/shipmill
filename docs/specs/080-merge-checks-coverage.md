@@ -1,6 +1,6 @@
 # S-080: doctor says what the checks gating a merge prove
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -171,3 +171,23 @@ step), `docs/install.md`, and `tests/test_merge_checks.py`.
 - shipmill/shipmill#1299: S-080-15, S-080-17
 
 ## Verification
+
+Checked on the default branch plus #1299's pull request, by running `shipmill merge-checks` and `shipmill doctor` on this repo's checkout (one required check, `check`, from the ruleset "shipmill: protected default branch"; classic protection answers 403 to a login without admin), besides the tests `specs.py coverage --spec 080` lists in `tests/test_merge_checks.py` and `tests/test_doctor_merge_checks.py`.
+
+- S-080-1: this repo's line reads `` `check` (ruleset "shipmill: protected default branch") ``; a context both a ruleset and classic protection require is listed once with both sources in `test_s080_1_*`
+- S-080-2: `check` matched `ci.yml job check`; matrix, local reusable workflow, push-only, expression-named, and remote-workflow contexts are asserted in `test_s080_2_*`, the unmatched ones with `no job in .github/workflows reports it by a name its text tells`
+- S-080-3: `--json` lists ci.yml's `run:` blocks split into parts (`uv sync --locked`, `uv run ruff check ...`, the actionlint download's `curl`, `sha256sum`, `tar` parts) with no comment line, and `actions/checkout`, `astral-sh/setup-uv`, `actions/cache/restore`, `actions/cache/save` under `actions not read`
+- S-080-4: `uv run pytest -q -n auto` reads `tests`, `uv run mypy` `type check`, `uv run ruff check src tests skills hooks` `lint`; the wrappers and assignments are asserted in `test_s080_4_*`
+- S-080-5: `npm test` and `pnpm run lint` resolved through `package.json`, and a missing file or script and a script calling another as `unknown`, in `test_s080_5_*`
+- S-080-6: `uv sync --locked`, `uv run shipmill product check`, and `uv run --no-project python skills/.../specs.py check` print by their text under `unknown`
+- S-080-7: this repo's `check` lists `tests, type check, lint`; `build only` and `unknown` checks in `test_s080_7_*` and the `--land act` WARN of `test_s080_8_*`
+- S-080-8: the two WARN texts and the PASS with a proving check are asserted in `test_s080_8_*`; this repo's check proves, so its last line under act names `1 proves (tests, type check, lint)`
+- S-080-9: `--land propose` prints the same check line and `land is propose`; a repository with no required check passes under observe and propose in `test_s080_9_*`
+- S-080-10: without `--land`, this repo's configured `land = "act"` is judged (`land is act`); under an open hold the configured level still counts in `test_s080_10_*`
+- S-080-11: `--json` printed one object with `branch`, `land`, `status`, `summary`, `required` (with `context`, `sources`, `jobs` holding `workflow`, `job`, and `commands` of `text` and `kind`, and `kinds`), and `unrequired`
+- S-080-12: this repo's line ends its lint list with `and 1 more` and its unknown list with `and 10 more`
+- S-080-13: classic protection's 403 made the last line a WARN at act and at propose naming the read, with the ruleset's check still printed, exit 0; no `gh` and a non-GitHub origin in `test_s080_13_*`
+- S-080-14: `--land merge` exited 2 with `--land 'merge' isn't a level: use one of observe, propose, act`; a config with no `[agents]` runs in `test_s080_14_*`
+- S-080-15: `shipmill doctor` on this repo printed the two `merge-checks` lines after the `merge` row, its WARN with exit 0; without `[agents]` no row and no call to the rules reader, and with the row's WARN the exit code still following the FAIL rows alone, in `test_s080_15_*`
+- S-080-16: `RulesReader` has only `branch_rules`, `ruleset`, `rulesets`, and `protection`; `git status --porcelain` was unchanged after the runs above, and `test_s080_16_*` asserts a clean `git status --ignored`
+- S-080-17: shipmill-setup's Autonomy step runs `$CR merge-checks --land act` before its question, shows it with the `land` lines, and names its WARN beside "Ship by itself" and Custom's `land = "act"`; `docs/install.md` lists the row among doctor's checks; both read in `test_s080_17_*`

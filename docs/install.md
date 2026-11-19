@@ -267,6 +267,11 @@ $CR plan --lane stable --dry-run
   `incident_label`
 - No `[tool.uv.sources]` entry taken from a local path, which CI and users don't have
 - No branch named `shipmill` on origin, which would block the `shipmill/<tag>` work branches
+- With an `[agents]` section, a `merge-checks` row: the lines `$CR merge-checks` prints
+  (spec 080), each status check a merge to the default branch requires and what its jobs
+  run, judged at the configured `[autonomy] land`. Under `land = "act"` it is a WARN when no
+  check is required or none that is runs tests, a type check, a lint, or an import-boundary
+  check; the row is never a FAIL, and its WARN leaves doctor's exit code as it is
 - The `shipmill@shipmill` plugin installs on this host, as `status` reads them: a WARN with
   the update when the user install is behind the latest release (read with `gh`), and a
   `PLUGIN_SHADOWING` WARN naming `plugin-clean` for the project- and local-scope installs;
