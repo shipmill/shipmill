@@ -1196,9 +1196,20 @@ def base_head(branch: str, number: int, repo: str | None) -> tuple[str, list[dic
     check runs, every page, every attempt (filter=all; the default lists only the latest). Each
     check is rollup-shaped, with the URLs a Repairs: line may name, and marked rerunning when it
     is not done and its previous attempt on the head failed (#1310)"""
+
+    def read(args: list[str]) -> str:
+        cmd, env = api(args, repo)
+        return gh(cmd, number, env)
+
+    return head_checks(branch, read)
+
+
+def head_checks(branch: str, read: Callable[[list[str]], str]) -> tuple[str, list[dict]]:
+    """base_head's reading of a branch's head and its checks, through read, which runs `gh api`
+    with the arguments given and returns its output; base_red.py reads a red default branch by
+    it (spec 079), so the two never disagree on which check is red or rerunning"""
     ref = urllib.parse.quote(branch, safe="")
-    cmd, env = api([f"repos/{{owner}}/{{repo}}/commits/{ref}/status?per_page=100"], repo)
-    combined = json.loads(gh(cmd, number, env))
+    combined = json.loads(read([f"repos/{{owner}}/{{repo}}/commits/{ref}/status?per_page=100"]))
     sha = combined.get("sha") if isinstance(combined, dict) else None
     statuses = combined.get("statuses") if isinstance(combined, dict) else None
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{7,64}", sha) or not isinstance(statuses, list):
@@ -1207,8 +1218,8 @@ def base_head(branch: str, number: int, repo: str | None) -> tuple[str, list[dic
         raise GateError(f"{branch}@{sha[:7]} has more than 100 commit statuses; the gate judges no partial list")
     entries = [status_entry(s, branch) for s in statuses]
     path = f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?per_page=100&filter=all"
-    cmd, env = api(["--paginate", path, "--jq", ".check_runs[]"], repo)
-    entries += [run_entry(json.loads(line), branch) for line in gh(cmd, number, env).splitlines() if line.strip()]
+    lines = read(["--paginate", path, "--jq", ".check_runs[]"]).splitlines()
+    entries += [run_entry(json.loads(line), branch) for line in lines if line.strip()]
     return sha, [{**entry, "rerunning": rerunning(entry, entries)} for entry in newest_entries(entries)]
 
 
@@ -1258,6 +1269,7 @@ def run_entry(run_: object, branch: str) -> dict:
         "startedAt": run_.get("started_at"),
         "urls": [str(run_.get(k) or "") for k in ("html_url", "details_url")],
         "id": run_["id"],
+        "app": app.get("id") if isinstance(app := run_.get("app"), dict) else None,  # base_red.py's (spec 079)
     }
 
 
