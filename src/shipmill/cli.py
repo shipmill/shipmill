@@ -309,9 +309,12 @@ from shipmill.doctor import (
     CALLER,
     DOWNSTREAM_CALLER,
     OPERATE_CALLER,
+    LeakProbe,
     doctor,
+    gitleaks_version,
     product_on_host,
     read_plugin_rows,
+    repo_visibility,
     session_app_on_host,
 )
 from shipmill.downstream import (
@@ -1431,6 +1434,7 @@ def main(
             home=user_home,
             session_app=session_app_on_host(key, user_home, hub_signer, hub_api, lambda: dt.datetime.now(dt.UTC)),
             rules=lambda: rules_reader or (GhRules(root) if has_gh else None),
+            leaks=LeakProbe(private_home, gitleaks_version, lambda: repo_visibility(root, slug)),
         )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")

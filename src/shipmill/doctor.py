@@ -4,7 +4,9 @@ workflows the bot calls"""
 import datetime as dt
 import importlib.util
 import re
+import shutil
 import stat
+import subprocess
 import sys
 import tomllib
 from collections.abc import Callable, Mapping
@@ -62,6 +64,7 @@ from shipmill.hooks import HookTest
 from shipmill.land import BLOCKING_BRANCH, WORK_PREFIX, blocked
 from shipmill.landing import ROW as LANDING
 from shipmill.landing import Branch, Landing, RulesReader, land_environment, landing_checks
+from shipmill.leaks import PRIVATE_FILE, Private, Visibility, checkout_dotenvs, secrets
 from shipmill.plugin import PLUGIN, USER_UPDATE, Fetch, GateCli, PyPI, publish_fix
 from shipmill.plugin import pypi as ask_pypi
 from shipmill.policy import BumpFrom, Lane, Mode, Policy, VersionFiles
@@ -114,6 +117,17 @@ HookTester = Callable[[], HookTest]  # the delivery hooks' self-test (spec 026)
 AppProbe = Callable[[int], Installed | None]  # [downstream] app_id's installation check; None: no key on the host
 # [agents] app_id's installation on the repo, read with the App's key; None: no key on the host
 SessionApp = Callable[[int, str], Installation | None]
+
+
+@dataclass(frozen=True, slots=True)
+class LeakProbe:
+    """What the leaks block reads besides the checkout (spec 081): the account's home, where
+    the private file is (D-94); gitleaks' version, None when it isn't on PATH; and the repo's
+    visibility, None when it can't be read, which the check reads as public"""
+
+    home: Path
+    gitleaks: Callable[[], str | None]
+    visibility: Callable[[], Visibility | None]
 
 
 def read_plugin_rows(repo: str, root: Path) -> list[PluginRow]:
@@ -228,6 +242,7 @@ def doctor(
     home: Path | None = None,
     session_app: SessionApp | None = None,
     rules: Callable[[], RulesReader | None] | None = None,
+    leaks: LeakProbe | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -252,7 +267,9 @@ def doctor(
     session_app reads [agents] app_id's installation on repo for its optional permissions
     (D-77); None, or a probe without the key, checks none. rules builds the reader of the branch
     rules the landing row reads (spec 054), only with a release workflow and releases on; None
-    checks none, and a builder that returns None (no gh) reports that it can't read them"""
+    checks none, and a builder that returns None (no gh) reports that it can't read them. leaks
+    reads the leak check's private file, secrets, and scanner, only with [agents] (spec 081);
+    None checks none"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -277,6 +294,8 @@ def doctor(
         checks.append(direction_check(root))
         checks.extend(hooks_checks(policy, Git(root), hooks, Path.home() if home is None else home))
         checks.extend(merge_checks(policy.agents, github))
+        if leaks is not None:
+            checks.extend(leaks_checks(root, leaks))
         checks.extend(deprecation_checks(policy, "credit") or [credit_check(policy.agents)])
         checks.append(author_check(policy.agents, Path.home() if home is None else home))
         if session_app is not None and policy.agents.app_id is not None and repo is not None:
@@ -1146,6 +1165,140 @@ def merge_checks(agents: AgentsConfig, github: GitHub | None) -> list[Check]:
         )
         checks.append(Check("WARN", MERGE_ROW, detail))
     return checks or [Check("PASS", MERGE_ROW, named)]
+
+
+LEAKS_ROW = "leaks"  # doctor's block for the leak check (spec 081)
+GITLEAKS_FLOOR = (8, 19)  # the least gitleaks the check runs
+_GITLEAKS_VERSION = re.compile(r"v?(\d+)\.(\d+)(?:\.\d+)?")
+_SHOWN_PRIVATE = f"~/{PRIVATE_FILE}"  # the private file as the rows name it
+
+
+def leaks_checks(root: Path, probe: LeakProbe) -> list[Check]:
+    """S-081-15: the leak check's block, for a repo with [agents]. `terms` on with their count,
+    never a term (S-081-14), or off, a WARN when the repo is public or its visibility can't be
+    read, which the check reads as public; `secrets` with each file read and how many values it
+    gave, never a name or a value; `scanner` with gitleaks' version or its absence. A private
+    file that doesn't load, or a secret file that can't be read, is a FAIL naming the fix, as
+    the check then refuses every write"""
+    checks: list[Check] = []
+    try:
+        private = Private.load(probe.home)
+    except ReleaseError as exc:
+        detail = (
+            f"private file: {exc}; until it loads, every shipmill gh write and every push the hook"
+            " checks is refused: fix it as docs/leaks.md describes"
+        )
+        checks.append(Check("FAIL", LEAKS_ROW, detail))
+    else:
+        checks.append(_terms_check(private, probe))
+        checks.append(_secrets_check(root, private))
+    checks.append(_scanner_check(probe))
+    return checks
+
+
+def _terms_check(private: Private, probe: LeakProbe) -> Check:
+    """The terms line: their count, or off and whether the repo is public"""
+    count = len(private.terms)
+    if count:
+        return Check("PASS", LEAKS_ROW, f"terms on: {count} term{'' if count == 1 else 's'} from {_SHOWN_PRIVATE}")
+    off = f"terms off: {_SHOWN_PRIVATE} lists no terms" if private.present else f"terms off: no {_SHOWN_PRIVATE}"
+    visibility = probe.visibility()
+    if visibility in (Visibility.PRIVATE, Visibility.INTERNAL):
+        return Check("PASS", LEAKS_ROW, f"{off} (the repo is {visibility})")
+    seen = "the repo is public" if visibility is Visibility.PUBLIC else "the repo's visibility can't be read"
+    detail = (
+        f"{off}, and {seen}, so a private name in an agent's write goes out unchecked: list your private"
+        f" names under terms in {_SHOWN_PRIVATE}, as docs/leaks.md describes"
+    )
+    return Check("WARN", LEAKS_ROW, detail)
+
+
+def _secrets_check(root: Path, private: Private) -> Check:
+    """The secrets line: each secret file the check reads and how many values it gave"""
+    tracked = _tracked_dotenvs(root)
+    try:
+        found = secrets(root, tracked, private)
+    except ReleaseError as exc:
+        return Check("FAIL", LEAKS_ROW, f"secrets: {exc}")
+    files = [*checkout_dotenvs(root, tracked), *(given for given, _ in private.secret_files)]
+    if not files:
+        return Check(
+            "PASS",
+            LEAKS_ROW,
+            f"secrets: no untracked .env file in the checkout's root and no secret_files in {_SHOWN_PRIVATE};"
+            " known token formats are still checked",
+        )
+    counts = ", ".join(f"{name} {sum(1 for s in found if s.source == name)}" for name in files)
+    return Check("PASS", LEAKS_ROW, f"secrets: values by file: {counts}")
+
+
+def _tracked_dotenvs(root: Path) -> list[str]:
+    """The `.env` and `.env.*` files in root that git tracks, whose values are no secrets"""
+    names = [entry.name for entry in root.iterdir() if entry.name == ".env" or entry.name.startswith(".env.")]
+    if not names:
+        return []
+    out = Git(root).run("ls-files", "-z", "--", *(f":(literal){name}" for name in names))
+    return [name for name in out.split("\0") if name]
+
+
+def _scanner_check(probe: LeakProbe) -> Check:
+    """The scanner line: gitleaks' version beside the built-in formats, or its absence"""
+    try:
+        version = probe.gitleaks()
+    except ReleaseError as exc:
+        return Check("WARN", LEAKS_ROW, f"scanner: built-in formats; can't tell gitleaks' version: {exc}")
+    if version is None:
+        return Check("PASS", LEAKS_ROW, "scanner: built-in formats; gitleaks is not on PATH")
+    found = _GITLEAKS_VERSION.search(version)
+    floor = ".".join(str(part) for part in GITLEAKS_FLOOR)
+    if found is None or (int(found.group(1)), int(found.group(2))) < GITLEAKS_FLOOR:
+        detail = (
+            f"scanner: built-in formats; gitleaks {version} is on PATH, but the check runs only {floor} or"
+            f" newer: upgrade gitleaks"
+        )
+        return Check("WARN", LEAKS_ROW, detail)
+    return Check("PASS", LEAKS_ROW, f"scanner: built-in formats and gitleaks {version}")
+
+
+def gitleaks_version() -> str | None:
+    """`gitleaks version`'s output, None when gitleaks isn't on PATH; a run that fails stops"""
+    found = shutil.which("gitleaks")
+    if found is None:
+        return None
+    try:
+        done = subprocess.run(
+            [found, "version"], capture_output=True, text=True, encoding="utf-8", timeout=10, check=False
+        )
+    except subprocess.TimeoutExpired:
+        raise ReleaseError(f"{found} version didn't finish in 10 seconds") from None
+    if done.returncode != 0:
+        raise ReleaseError(f"{found} version exited {done.returncode}: {done.stderr.strip()[:200]}")
+    return done.stdout.strip()
+
+
+def repo_visibility(root: Path, repo: str | None) -> Visibility | None:
+    """The repo's visibility as `gh api repos/<repo>` reads it; None without a repo or gh, or
+    when the read fails or says something else, which the leak check reads as public"""
+    if repo is None or shutil.which("gh") is None:
+        return None
+    try:
+        done = subprocess.run(
+            ["gh", "api", f"repos/{repo}", "--jq", ".visibility"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None
+    if done.returncode != 0:
+        return None
+    try:
+        return Visibility(done.stdout.strip())
+    except ValueError:
+        return None
 
 
 def hooks_checks(policy: Policy, git: Git, test: HookTester | None, home: Path) -> list[Check]:
