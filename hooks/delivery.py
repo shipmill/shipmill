@@ -1699,9 +1699,18 @@ def run_timed(cmd: Sequence[str], cwd: Path, timeout: float) -> subprocess.Compl
 def leaks_args(cmd: Simple, call: GitCall) -> list[str]:
     """`shipmill leaks push`'s arguments for a git push: its --all, --branches, --tags, or
     --mirror, then its remote and refspecs; a --delete push's refspecs as `:<ref>`, which send
-    no commit"""
+    no commit; with no remote given, --repo's, as git reads it"""
     positionals, options = _push_positionals(cmd.words, call.sub + 1)
     words = [cmd.words[at] for at in positionals]
+    if not words:
+        given = cmd.words[call.sub + 1 :]
+        for at, word in enumerate(given):  # the last --repo wins, as for every git option
+            if word == "--":
+                break
+            if word == "--repo" and at + 1 < len(given):
+                words = [given[at + 1]]
+            elif word.startswith("--repo="):
+                words = [word.removeprefix("--repo=")]
     if words[1:] and options & {"-d", "--delete"}:
         words = [words[0], *(f":{word.removeprefix('+')}" for word in words[1:])]
     flags = [flag for flag in LEAKS_FLAGS if flag in options]

@@ -91,6 +91,9 @@ def leaks_argv(where: Path, *args: str) -> list[str]:
         ("git push -d origin feat/x", ["--", "origin", ":feat/x"]),
         ("git push --delete origin feat/x feat/y", ["--", "origin", ":feat/x", ":feat/y"]),
         ("git push -o ci.skip origin feat/x", ["--", "origin", "feat/x"]),
+        ("git push --repo=upstream", ["--", "upstream"]),  # --repo names the remote when no argument does
+        ("git push --repo upstream", ["--", "upstream"]),
+        ("git push --repo=upstream origin feat/x", ["--", "origin", "feat/x"]),
     ],
 )
 def test_s081_11_a_push_runs_the_pinned_leak_check_with_its_remote_and_refspecs(
