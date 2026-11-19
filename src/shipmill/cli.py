@@ -1545,10 +1545,19 @@ def main(
                     "placed": landed.placed,
                     "synced": landed.synced,
                     "published": list(landed.published),
+                    "milestone": landed.milestone.said,
                 },
                 indent=2,
             )
         )
+        if landed.milestone.said:
+            print(landed.milestone.said)  # stdout is the Release run's summary (land.yml)
+        if landed.milestone.failed:
+            # S-068-6: the tag is pushed and the release published; the job fails after them
+            problem = f"{landed.tag} is released; {landed.milestone.failed}"
+            print(problem)
+            print(f"shipmill: {problem}", file=sys.stderr)
+            return 1
     elif args.command == "close-proposal":
         print(close_released(policy, hub(), Lane(args.lane), args.version, run_url(os.environ)))
     elif args.command == "cleanup":

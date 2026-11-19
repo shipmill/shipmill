@@ -435,6 +435,14 @@ class GitHub(Protocol):
         """Every issue of the milestone with the title, open and closed (MILESTONE_LIMIT at most)"""
         ...
 
+    def close_milestone(self, number: int) -> None:
+        """Close the milestone with GitHub's number for it (spec 068)"""
+        ...
+
+    def set_milestone(self, issue: int, milestone: int) -> None:
+        """Put the issue in the milestone with GitHub's number for it, out of the one it was in (spec 068)"""
+        ...
+
     def issue_closes(self, numbers: Sequence[int]) -> list[IssueClose]:
         """How each of the repository's issues closed, by number; batched, none for no number"""
         ...
@@ -561,6 +569,17 @@ def cut_from(stored: str, wanted: str, limit: int, kept: int = 0) -> bool:
     _, mark, line = stored.partition(f"\n\n{CUT_MARK}\n")
     link = line.rpartition(" the full text is at ")[2].removesuffix("_")
     return bool(mark) and len(wanted) > limit - kept and stored == fit(wanted, limit, link, kept).strip()
+
+
+def close_milestone_args(number: int) -> tuple[str, ...]:
+    """gh's arguments that close the milestone with GitHub's number for it; gh fills in
+    {owner}/{repo} from the checkout's repository (spec 068)"""
+    return ("api", "-X", "PATCH", f"repos/{{owner}}/{{repo}}/milestones/{number}", "-f", "state=closed")
+
+
+def set_milestone_args(issue: int, milestone: int) -> tuple[str, ...]:
+    """gh's arguments that put the issue in the milestone with GitHub's number for it (spec 068)"""
+    return ("api", "-X", "PATCH", f"repos/{{owner}}/{{repo}}/issues/{issue}", "-F", f"milestone={milestone}")
 
 
 def labelled_command(label: str) -> tuple[str, ...]:
@@ -729,6 +748,12 @@ class GhCli:
             )
         )  # fmt: skip
         return parse_milestone_issues(found, title)
+
+    def close_milestone(self, number: int) -> None:
+        self._gh(*close_milestone_args(number))
+
+    def set_milestone(self, issue: int, milestone: int) -> None:
+        self._gh(*set_milestone_args(issue, milestone))
 
     def issue_closes(self, numbers: Sequence[int]) -> list[IssueClose]:
         wanted = sorted(set(numbers))

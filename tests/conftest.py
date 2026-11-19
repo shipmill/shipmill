@@ -123,6 +123,9 @@ class FakeGitHub:
     milestone_reads: list[str] = field(default_factory=list)  # the titles milestone_issues read
     open: list[OpenMilestone] = field(default_factory=list)  # the open milestones
     open_reads: int = 0  # open_milestones calls
+    # each milestone write in turn: ("close", milestone number) or ("#<issue>", milestone number)
+    milestone_writes: list[tuple[str, int]] = field(default_factory=list)
+    milestone_write_error: str = ""  # when set, a milestone write fails with it, as gh would
     closes: dict[int, IssueClose] = field(default_factory=dict)  # how issues closed, by number
     close_reads: list[tuple[int, ...]] = field(default_factory=list)  # the numbers of each issue_closes call
     apps: dict[str, int] = field(default_factory=dict)  # App ids by slug
@@ -189,6 +192,17 @@ class FakeGitHub:
     def milestone_issues(self, title: str) -> MilestoneIssues:
         self.milestone_reads.append(title)
         return self.milestone_lists.get(title, MilestoneIssues("o/demo", ()))
+
+    def close_milestone(self, number: int) -> None:
+        self.milestone_writes.append(("close", number))
+        if self.milestone_write_error:
+            raise ReleaseError(f"gh api -X PATCH failed: {self.milestone_write_error}")
+        self.open = [m for m in self.open if m.number != number]
+
+    def set_milestone(self, issue: int, milestone: int) -> None:
+        self.milestone_writes.append((f"#{issue}", milestone))
+        if self.milestone_write_error:
+            raise ReleaseError(f"gh api -X PATCH failed: {self.milestone_write_error}")
 
     def issue_closes(self, numbers: Sequence[int]) -> list[IssueClose]:
         self.close_reads.append(tuple(numbers))

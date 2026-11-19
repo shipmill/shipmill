@@ -1,6 +1,6 @@
 # S-068: A release closes its milestone and rolls what's left to the next
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -154,3 +154,17 @@ issue read in `github.py`; nothing else is read.
 - shipmill/shipmill#1334: S-068-13
 
 ## Verification
+
+- S-068-1: loaded configs with the key absent, `true` on a milestone lane, a string, `true` without `milestone`, and on hotfix (`tests/test_close_milestone_key.py`); absent reads `false`, each bad value exits 2 naming `close_milestone` and the lane
+- S-068-2: landed 1.1.0 on a stable lane with the key and an empty open milestone 1.1.0 against a bare origin (`tests/test_milestone_rollover.py`); the tag and release exist, milestone 1.1.0 is closed, and `shipmill land` prints `milestone 1.1.0 closed`, which land.yml tees into the Release run's summary
+- S-068-3: the same with #12 and #14 open and #11 closed in 1.1.0 among milestones 2.0.0, 1.2.0, 1.1.1rc1, 1.0.9, and Someday; #12 and #14 move to 1.2.0, then 1.1.0 closes, #11 is never written, and the summary reads `milestone 1.1.0 closed; #12, #14 moved to 1.2.0`
+- S-068-4: with an open issue in 1.1.0 and no stable milestone above it, land writes no milestone, and `shipmill milestones`' read then gives MILESTONE_OVERTAKEN for 1.1.0 with its number
+- S-068-5: an rc of a lane with the key, a stable lane without it, and no milestone titled 1.1.0; the first two read no milestone at all, the third reads the open milestones once and writes none
+- S-068-6: `shipmill land` with the close, a move, and the issue read failing; each exits 1 after the tag is on origin, main moved, the GitHub release made, and publish.yml dispatched, and its message names the milestone and the `shipmill gh api -X PATCH repos/{owner}/{repo}/...` command for the write left undone
+- S-068-7: `shipmill milestones` with a released, an open-issue, and an untagged milestone (`tests/test_milestone_rollover_status.py`); only the released one reads MILESTONE_RELEASED, with the close through `shipmill gh` when `app_id` is set and plain `gh` without it
+- S-068-8: with and without an open milestone above the newest stable tag; MILESTONE_MISSING names the version the lane cuts next and the create only without one
+- S-068-9: `watch_state.py` on `shipmill milestones --json` (`tests/test_milestone_rollover_watch.py`) lists both rows, MILESTONE_RELEASED as an action and MILESTONE_MISSING as a person's fix, and github-ship-watch's SKILL.md runs the close under "watch" and never the create
+- S-068-10: milestones whose open issues each carry `shipmill-hold` or `needs-decision`, and one with another open issue or an open pull request; the first reads MILESTONE_WAITING with one reason per issue in both forms, the others read none
+- S-068-11: `shipmill doctor` on a caller whose land job grants no `issues: write` (`tests/test_close_milestone_key.py`); its land-grant WARN names `close_milestone` and the lanes that set it, and gives no such reason without the key
+- S-068-12: every config `shipmill init` writes, across styles, version files, and fragments; init writes `milestone = true` on no lane, so `close_milestone` matches it on every lane, and the policy loads; `docs/release-lanes.md` shows the commented `close_milestone = true` beside `# milestone = true`
+- S-068-13: `setup_state.py` on a repo with `[agents]` lacking the labels (`tests/test_setup_state.py`); LABELS_MISSING names `opportunity` and `planned`, `--fix` creates them, and neither is wanted without `[agents]`
