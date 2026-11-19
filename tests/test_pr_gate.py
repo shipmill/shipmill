@@ -113,12 +113,12 @@ elif args[0] == "api" and "--paginate" in args and args[args.index("--jq") + 1] 
         old = pr["renamed"].get(path)
         status = "renamed" if old else "added" if path in pr["added"] else "modified"
         print(json.dumps({{"filename": path, "status": status, **({{"previous_filename": old}} if old else {{}})}}))
-elif args[0] == "api" and "graphql" in args and "pullRequest(number:" in [a for a in args if a.startswith("query=")][0]:
-    number = re.search(r"pullRequest[(]number: ([0-9]+)[)]", [a for a in args if a.startswith("query=")][0])
-    print(json.dumps({{"data": {{"repository": {{"pullRequest": fake["threads"][number.group(1)]}}}}}}))
-elif args[0] == "api" and "graphql" in args:  # the issues a spec PR's lines name, as GitHub answers them
+elif args[0] == "api" and "graphql" in args:  # a PR's thread and the issues named, as GitHub answers them
     query = [a for a in args if a.startswith("query=")][0]
     found, errors = {{"nameWithOwner": fake["repo"]}}, []
+    number = re.search(r"pullRequest[(]number: ([0-9]+)[)]", query)
+    if number:
+        found["pullRequest"] = fake["threads"][number.group(1)]
     for alias, number in re.findall(r"(i[0-9]+): issueOrPullRequest[(]number: ([0-9]+)[)]", query):
         found[alias] = fake["issues"].get(number)
         if found[alias] is None:
@@ -638,7 +638,7 @@ def test_963_a_green_pr_on_a_red_base_fails(tmp_path: Path) -> None:
     proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy")}, base={"check_runs": [base_run("failure")]})
     assert proc.returncode == gate.FAILED == 1, proc.stdout + proc.stderr
     assert proc.stdout.splitlines() == [MAIN_READY.replace("READY", "FAILED").rstrip("\n"), RED]
-    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS]  # Fixes #7 names an issue
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *THREAD_READ, *BASE_READS]  # Fixes #7 names an issue
 
 
 @pytest.mark.parametrize(
@@ -720,7 +720,15 @@ def test_963_the_base_is_read_once_for_prs_that_share_it(tmp_path: Path) -> None
         tmp_path, None, {7: pr(login="amy"), 8: pr(login="amy")}, base={"check_runs": [base_run("failure")]}
     )
     assert proc.returncode == 1, proc.stdout + proc.stderr
-    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS, "pr view", *CLOSERS_READ]
+    assert calls_of(tmp_path) == [
+        "pr view",
+        *CLOSERS_READ,
+        *THREAD_READ,
+        *BASE_READS,
+        "pr view",
+        *CLOSERS_READ,
+        *THREAD_READ,
+    ]
 
 
 def test_without_origin_head_the_prs_base_branch_is_read(tmp_path: Path, directed: Path) -> None:
@@ -789,6 +797,7 @@ def gh_calls(tmp_path: Path) -> list[dict[str, Any]]:
 
 FILES_API = "repos/{owner}/{repo}/pulls/7/files?per_page=100"
 BASE_READS = ["status", "check-runs"]  # the base head's checks, one read per endpoint (D-75)
+THREAD_READ = ["thread"]  # an open PR's thread and its issues', one read for the veto and the answer (#1309)
 CLOSERS_READ = ["graphql"]  # the issues PLAN's Fixes #7 names, read for a ## Check (D-76)
 REVIEWS_READ = ["reviews"]  # an agent's code PR's review records, read once it reads READY otherwise (spec 055)
 
@@ -818,7 +827,7 @@ def test_630_r_names_the_repo_the_files_api_reads(tmp_path: Path, directed: Path
 def test_630_a_pr_gh_pr_view_lists_whole_reads_no_more(tmp_path: Path, directed: Path) -> None:
     proc = run_gate(tmp_path, directed, {7: pr(files=tuple(f"src/m{i}.py" for i in range(100)))}, "--bot-login", BOT)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS, *REVIEWS_READ]
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *THREAD_READ, *BASE_READS, *REVIEWS_READ]
 
 
 def test_630_a_list_short_of_changed_files_stops_the_gate(tmp_path: Path, directed: Path) -> None:
@@ -891,8 +900,9 @@ def spec_pr(body: str = SPEC_BODY, files: tuple[str, ...] = (SPEC,), **kw: Any) 
 
 
 def calls_of(tmp_path: Path) -> list[str]:
-    """Each gh call the gate made, by its kind: `pr view`, `files` (the files API), `graphql`, the
-    base head's `status` and `check-runs` (D-75), or the review records' `reviews` (spec 055)"""
+    """Each gh call the gate made, by its kind: `pr view`, `files` (the files API), `thread` (the PR's
+    thread and its issues', #1309), any other `graphql`, the base head's `status` and `check-runs`
+    (D-75), or the review records' `reviews` (spec 055)"""
     kinds = []
     for call in gh_calls(tmp_path):
         args = call["args"]
@@ -901,9 +911,12 @@ def calls_of(tmp_path: Path) -> list[str]:
             for a in args
             if a.startswith("repos/") and ("/commits/" in a or "/reviews?" in a)
         ]
-        kinds.append(
-            base[0] if base else "graphql" if "graphql" in args else "files" if args[0] == "api" else " ".join(args[:2])
-        )
+        if base:
+            kinds.append(base[0])
+        elif "graphql" in args:
+            kinds.append("thread" if any("pullRequest(number:" in a for a in args) else "graphql")
+        else:
+            kinds.append("files" if args[0] == "api" else " ".join(args[:2]))
     return kinds
 
 
@@ -941,7 +954,14 @@ def test_s053_9_a_spec_for_line_naming_no_open_issue_of_the_repo_is_refused(
 ) -> None:
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=f"{line}\n\n{PLAN}")}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (6, MAIN_REFUSED), proc.stderr
-    assert calls_of(tmp_path) == ["pr view", "files", *(["graphql"] if reads else []), *CLOSERS_READ, *BASE_READS]
+    assert calls_of(tmp_path) == [
+        "pr view",
+        "files",
+        *(["graphql"] if reads else []),
+        *CLOSERS_READ,
+        *THREAD_READ,
+        *BASE_READS,
+    ]
 
 
 def test_s053_9_an_ask_or_never_zone_doesnt_hide_the_refusal(tmp_path: Path, agents: Path) -> None:
@@ -977,7 +997,7 @@ def test_s053_9_a_spec_past_the_first_hundred_files_is_found(
     proc = run_gate(tmp_path, checkout_, {7: spec_pr(body=PLAN, files=files)}, "--agent", issues=ISSUES)
     assert proc.returncode == 6, proc.stdout + proc.stderr
     assert NO_ISSUE in proc.stdout.splitlines()
-    assert calls_of(tmp_path) == ["pr view", "files", *CLOSERS_READ, *BASE_READS]
+    assert calls_of(tmp_path) == ["pr view", "files", *CLOSERS_READ, *THREAD_READ, *BASE_READS]
 
 
 @pytest.mark.parametrize(
@@ -993,15 +1013,21 @@ def test_s053_9_a_spec_past_the_first_hundred_files_is_found(
 def test_s053_10_a_spec_pr_naming_an_open_issue_is_not_refused(tmp_path: Path, directed: Path, body: str) -> None:
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=body)}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
-    assert calls_of(tmp_path) == ["pr view", "files", "graphql", *BASE_READS]  # one read for every line's issue
+    assert calls_of(tmp_path) == [
+        "pr view",
+        "files",
+        "graphql",
+        *THREAD_READ,
+        *BASE_READS,
+    ]  # one read for every line's issue
 
 
 def test_s053_10_r_names_the_repo_the_issues_are_read_from(tmp_path: Path, directed: Path) -> None:
     git(directed, "remote", "set-url", "origin", "git@github.com:demo/app.git")
     proc = run_gate(tmp_path, directed, {7: spec_pr()}, "--bot-login", BOT, "-R", "github.com/demo/app", issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
-    [_, files, graphql, status, runs] = gh_calls(tmp_path)
-    for call in (files, graphql, status, runs):
+    [_, files, graphql, threads, status, runs] = gh_calls(tmp_path)
+    for call in (files, graphql, threads, status, runs):
         assert call["args"][:3] == ["api", "--hostname", "github.com"]
         assert call["GH_REPO"] == "github.com/demo/app"
     assert graphql["args"][3:8] == ["graphql", "-F", "owner={owner}", "-F", "repo={repo}"]
@@ -1017,14 +1043,14 @@ def test_s053_10_r_names_the_repo_the_issues_are_read_from(tmp_path: Path, direc
 def test_s053_10_a_pr_that_only_edits_a_spec_is_not_checked(tmp_path: Path, directed: Path, kw: Any) -> None:
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=PLAN, **kw)}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
-    assert calls_of(tmp_path) == ["pr view", "files", *CLOSERS_READ, *BASE_READS]  # no spec issue to read
+    assert calls_of(tmp_path) == ["pr view", "files", *CLOSERS_READ, *THREAD_READ, *BASE_READS]  # no spec issue to read
 
 
 def test_s053_10_a_pr_adding_no_spec_path_reads_nothing_more(tmp_path: Path, directed: Path) -> None:
     files = ("docs/specs/TEMPLATE.md", "docs/specs/README.md", "docs/specs/54-short.md", "src/app.py")
     proc = run_gate(tmp_path, directed, {7: spec_pr(body=PLAN, files=files)}, "--bot-login", BOT, issues=ISSUES)
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
-    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS, *REVIEWS_READ]
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *THREAD_READ, *BASE_READS, *REVIEWS_READ]
 
 
 def test_s053_9_a_failing_issue_read_exits_1(tmp_path: Path, directed: Path) -> None:
@@ -1046,8 +1072,9 @@ def test_s053_9_a_failing_issue_read_exits_1(tmp_path: Path, directed: Path) -> 
 
 # D-76 (#965): a merge never closes an issue its PR is only part of, or one whose check has not run
 
-CHECKED = {"__typename": "Issue", "state": "OPEN", "body": "Serve it.\n\n## Check\n\n`curl` shows it\n"}
-LEAF = {"__typename": "Issue", "state": "OPEN", "body": "Serve it.\n"}
+# each with its thread too: the gate reads the threads of the issues a PR closes for a veto (#1309)
+CHECKED = {**thread(), "body": "Serve it.\n\n## Check\n\n`curl` shows it\n"}
+LEAF = {**thread(), "body": "Serve it.\n"}
 CLOSING = {12: LEAF, 13: CHECKED, 14: {**CHECKED, "state": "CLOSED"}, 15: {"__typename": "PullRequest"}}
 REFUSED_LINE = MAIN_READY.replace("READY", "REFUSED")
 
@@ -1060,7 +1087,7 @@ def test_965_a_commit_closing_a_part_of_issue_is_refused(tmp_path: Path) -> None
     proc = run_gate(tmp_path, None, {7: part_of(("Serve it\n\nFixes #12",))}, issues=CLOSING)
     assert proc.returncode == gate.REFUSED == 6, proc.stdout + proc.stderr
     assert proc.stdout == REFUSED_LINE + "  refused: commit abc1234 closes #12, which the body lists as Part of #12\n"
-    assert calls_of(tmp_path) == ["pr view", *BASE_READS]  # its issue needs no read
+    assert calls_of(tmp_path) == ["pr view", *THREAD_READ, *BASE_READS]  # its issue needs no read
 
 
 def test_965_a_commit_closing_an_issue_the_body_doesnt_list_as_part_of_is_ready(tmp_path: Path) -> None:
@@ -1094,7 +1121,8 @@ def test_965_one_read_holds_every_issue_the_keywords_name(tmp_path: Path) -> Non
         "  refused: commit abc2234 closes #14, which the body lists as Part of #14",
         "  refused: commit abc1234 closes #13, an open issue with a ## Check: write Part of #13 instead",
     ]
-    [graphql] = [c for c in gh_calls(tmp_path) if "graphql" in c["args"]]
+    # the closing keywords' one read, then the thread read for a veto (#1309)
+    [graphql, _] = [c for c in gh_calls(tmp_path) if "graphql" in c["args"]]
     query = next(a for a in graphql["args"] if a.startswith("query="))
     assert [f"i{n}:" in query for n in (12, 13, 14, 15)] == [True, True, False, True]  # #14 is Part of
 
@@ -1115,7 +1143,7 @@ def test_965_one_read_holds_every_issue_the_keywords_name(tmp_path: Path) -> Non
 def test_965_a_keyword_that_names_nothing_reads_nothing(tmp_path: Path, commits: tuple[str, ...], body: str) -> None:
     proc = run_gate(tmp_path, None, {7: part_of(commits, body=body)}, issues=CLOSING)
     assert (proc.returncode, proc.stdout, proc.stderr) == (0, MAIN_READY, "")
-    assert calls_of(tmp_path) == ["pr view", *BASE_READS]
+    assert calls_of(tmp_path) == ["pr view", *THREAD_READ, *BASE_READS]
 
 
 def test_965_a_closed_issue_a_pull_request_or_no_issue_with_a_check_is_ready(tmp_path: Path) -> None:
@@ -1147,7 +1175,7 @@ def test_987_a_title_closing_a_part_of_issue_is_refused(tmp_path: Path) -> None:
     proc = run_gate(tmp_path, None, {7: titled("Fixes #12: serve it", "Part of #12")}, issues=CLOSING)
     assert proc.returncode == 6, proc.stdout + proc.stderr
     assert proc.stdout == REFUSED_LINE + "  refused: the title closes #12, which the body lists as Part of #12\n"
-    assert calls_of(tmp_path) == ["pr view", *BASE_READS]  # its issue needs no read
+    assert calls_of(tmp_path) == ["pr view", *THREAD_READ, *BASE_READS]  # its issue needs no read
 
 
 @pytest.mark.parametrize("title", ["Fixes #13: serve it", "Serve it, which closes #13"])
@@ -1928,8 +1956,9 @@ def test_s055_5_a_head_sharing_the_named_heads_7_hex_prefix_is_not_covered(tmp_p
 
 def test_s055_5_the_answer_is_read_once_and_only_for_a_pr_needing_a_decision(tmp_path: Path, directed: Path) -> None:
     run_gate(tmp_path, directed, {7: headed()}, "--bot-login", BOT)
-    # a READY PR reads no thread
-    assert not any("pullRequest(number:" in " ".join(c["args"]) for c in gh_calls(tmp_path))
+    # a READY PR reads its thread once, for a veto (#1309), and no answer
+    reads = [c for c in gh_calls(tmp_path) if "pullRequest(number:" in " ".join(c["args"])]
+    assert [c["args"] for c in reads] == [["api", *gate.thread_read(7)]]
     (tmp_path / "gh-calls").unlink()
     protected(tmp_path, directed, headed(files=("src/land.py",)), thread(asked(), comment("1", at(12))))
     reads = [c for c in gh_calls(tmp_path) if "pullRequest(number:" in " ".join(c["args"])]
@@ -2218,7 +2247,7 @@ def test_s055_11_a_never_zone_stays_maintainer_only_whatever_the_answer(tmp_path
     proc = protected(tmp_path, agents, data, thread(asked(), comment("1", at(12))))
     assert proc.returncode == gate.MAINTAINER_ONLY == 7, proc.stdout + proc.stderr
     assert f"  maintainer-only: direction: {DIRECTION_ZONE['reason']}" in proc.stdout.splitlines()
-    assert not any("pullRequest(number:" in " ".join(c["args"]) for c in gh_calls(tmp_path))
+    assert calls_of(tmp_path).count("thread") == 1  # read once, for a veto (#1309), whatever the answer
 
 
 # S-055-7: an answer on the issue the PR closes or is part of
@@ -2287,9 +2316,8 @@ def test_s055_7_an_issues_answer_counts_only_for_a_pr_the_app_or_a_trusted_perso
         assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stdout + proc.stderr
     else:
         assert proc.returncode == 5 and proc.stdout.splitlines()[1:] == [PROTECTED_ASK], proc.stdout + proc.stderr
-        # an outsider's PR reads no linked issue's thread at all
-        reads = [a for c in gh_calls(tmp_path) for a in c["args"] if "issueOrPullRequest" in a]
-        assert reads and not any("comments(last:" in a for a in reads), reads
+        # an outsider's PR reads its linked issue's thread only with its own, for a veto (#1309)
+        assert calls_of(tmp_path).count("thread") == 1, calls_of(tmp_path)
 
 
 def test_s055_7_the_prs_own_question_comes_before_the_issues(tmp_path: Path, directed: Path) -> None:
@@ -2580,7 +2608,7 @@ def test_s055_13_an_agents_code_pr_without_a_record_reads_unreviewed(
     proc = run_gate(tmp_path, directed, {7: pr()}, *flags, reviews={7: []})
     assert proc.returncode == gate.UNREVIEWED == 9, proc.stdout + proc.stderr
     assert proc.stdout == MAIN_UNREVIEWED + NO_RECORD + "\n"
-    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *BASE_READS, *REVIEWS_READ]
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *THREAD_READ, *BASE_READS, *REVIEWS_READ]
 
 
 def test_s055_13_only_a_pr_that_would_read_ready_reads_its_records(tmp_path: Path) -> None:
@@ -3175,4 +3203,88 @@ def test_s067_7_the_thread_is_read_once_for_the_decided_comment_and_the_answer(t
     based(tmp_path, agents, NOTIFY_CONFIG)
     proc = spec_gate(tmp_path, agents, spec_pr(), thread(asked(), comment("1", at(12))))
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY + NOTIFY_LINE + "\n"), proc.stderr
-    assert calls_of(tmp_path).count("graphql") == 2  # the spec's issue, and the thread once
+    calls = calls_of(tmp_path)
+    assert (calls.count("graphql"), calls.count("thread")) == (1, 1)  # the spec's issue, and the thread once
+
+
+# #1309: a trusted veto of a decision taken at notify blocks the merge (D-48)
+
+DECIDED_MARK = (
+    "<!-- shipmill:decided zone=security until=2026-11-02T11:00:00Z -->\n"
+    "@romamo Decided without waiting: the workflow change lands.\n\n<!-- shipmill:agent -->\n"
+)
+VETO = comment("Veto: keep the old workflow", at(12))
+VETOED_LINE = "  decided: vetoed by @romamo at 2026-11-01T12:00:00Z, not handled"
+MAIN_BLOCKED = MAIN_READY.replace("READY", "BLOCKED")
+
+
+def decided_by_app(when: str = at(11)) -> dict[str, Any]:
+    return comment(DECIDED_MARK, when, login="shipmill-demo", association="NONE", bot=True)
+
+
+def veto_gate(
+    tmp_path: Path, body: str = "Fixes #12", pr_comments: tuple[dict[str, Any], ...] = (), **kw: Any
+) -> subprocess.CompletedProcess[str]:
+    """The gate on #7, a person's PR with body, its thread holding pr_comments, outside a checkout"""
+    data = pr(body=body, login="amy")
+    return run_gate(tmp_path, None, {7: data}, "--bot-login", BOT, threads={7: thread(*pr_comments)}, **kw)
+
+
+def test_1309_a_veto_on_the_pr_blocks_the_merge(tmp_path: Path) -> None:
+    proc = veto_gate(tmp_path, pr_comments=(decided_by_app(), VETO))
+    assert (proc.returncode, proc.stdout) == (gate.BLOCKED, MAIN_BLOCKED + VETOED_LINE + "\n"), proc.stderr
+
+
+def test_1309_a_veto_on_the_issue_the_pr_closes_blocks_the_merge(tmp_path: Path) -> None:
+    proc = veto_gate(tmp_path, issues={12: thread(decided_by_app(), VETO)})
+    assert (proc.returncode, proc.stdout) == (gate.BLOCKED, MAIN_BLOCKED + VETOED_LINE + "\n"), proc.stderr
+    # the PR's thread and its issue's in one read, besides the closing keywords' issue read (D-76)
+    assert calls_of(tmp_path) == ["pr view", *CLOSERS_READ, *THREAD_READ, *BASE_READS]
+    threads = [a for c in gh_calls(tmp_path) for a in c["args"] if "pullRequest(number: 7)" in a]
+    assert len(threads) == 1 and "i12: issueOrPullRequest(number: 12)" in threads[0], threads
+
+
+HANDLED = comment(
+    "<!-- shipmill:veto-handled zone=security -->\nReverted the decision.\n\n<!-- shipmill:agent -->\n",
+    at(13),
+    login="shipmill-demo",
+    association="NONE",
+    bot=True,
+)
+
+
+@pytest.mark.parametrize(
+    "comments",
+    [
+        pytest.param((decided_by_app(), VETO, HANDLED), id="a handled veto"),
+        pytest.param(
+            (decided_by_app(), comment("Veto", at(12), login="amy", association="CONTRIBUTOR")), id="outsider"
+        ),
+        pytest.param((decided_by_app(), comment("veto\n\n<!-- shipmill:agent -->", at(12))), id="agent marker"),
+        pytest.param((decided_by_app(), comment("I would not veto this", at(12))), id="veto mid-comment"),
+        pytest.param((VETO, decided_by_app(at(13))), id="a veto older than the marker"),
+        pytest.param((VETO,), id="no decided marker"),
+    ],
+)
+def test_1309_a_veto_triage_state_doesnt_read_as_vetoed_keeps_the_verdict(
+    tmp_path: Path, comments: tuple[dict[str, Any], ...]
+) -> None:
+    on_pr = veto_gate(tmp_path, pr_comments=comments)
+    assert (on_pr.returncode, on_pr.stdout) == (0, MAIN_READY), on_pr.stderr
+    on_issue = veto_gate(tmp_path, issues={12: thread(*comments)})
+    assert (on_issue.returncode, on_issue.stdout) == (0, MAIN_READY), on_issue.stderr
+
+
+def test_1309_a_veto_on_an_issue_the_pr_is_only_part_of_keeps_the_verdict(tmp_path: Path) -> None:
+    proc = veto_gate(tmp_path, body="Part of #12", issues={12: thread(decided_by_app(), VETO)})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+
+
+def test_1309_a_vetoed_pr_reads_blocked_over_a_decision_or_red_ci(tmp_path: Path, directed: Path) -> None:
+    """a vetoed PR waits on the veto's take-up first, even when a decision or red CI holds it too"""
+    data = pr(files=("src/land.py",))
+    data["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    proc = run_gate(tmp_path, directed, {7: data}, "--bot-login", BOT, threads={7: thread(decided_by_app(), VETO)})
+    assert proc.returncode == gate.BLOCKED, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[0].startswith("#7 BLOCKED ")
+    assert VETOED_LINE in proc.stdout.splitlines()
