@@ -1537,16 +1537,38 @@ def uv_run(cmd: Simple) -> UvRun | None:
 # that command as a call of its own (S-076-11)
 TEST_PROOF = "test_proof.py"
 PYTHONS = frozenset({"python", "python3"})
-PYTHON_VALUE_OPTIONS = frozenset({"-X", "-W"})
+PYTHON_CODE_OPTIONS = "cm"  # -c and -m: no script; the rest is the program's arguments
+PYTHON_SHORT_VALUES = "XW"  # -X and -W: the rest of the word, or the next word, is the value
+PYTHON_LONG_VALUES = frozenset({"--check-hash-based-pycs"})
+
+
+def _python_option(words: Sequence[str], i: int) -> int | None:
+    """The index past python's option at words[i] and its value, short options bundled as in
+    -IX dev; None for -c or -m"""
+    word = words[i]
+    if word.startswith("--"):
+        return i + 2 if word in PYTHON_LONG_VALUES else i + 1
+    letters = word[1:]
+    for k, ch in enumerate(letters):
+        if ch in PYTHON_CODE_OPTIONS:
+            return None
+        if ch in PYTHON_SHORT_VALUES:
+            return i + 1 if letters[k + 1 :] else i + 2
+    return i + 1
 
 
 def _python_script(words: Sequence[str], at: int) -> int | None:
-    """The index of the script `python ... <script>` at words[at] runs; None for -c, -m, or no script"""
+    """The index of the script `python ... <script>` at words[at] runs, past python's options and
+    a `--`; None for -c, -m, or no script"""
     i = at + 1
     while i < len(words) and _is_option(words[i]):
-        if words[i] in ("-c", "-m") or words[i] == "--":
+        if words[i] == "--":
+            i += 1
+            break
+        after = _python_option(words, i)
+        if after is None:
             return None
-        i += 2 if words[i] in PYTHON_VALUE_OPTIONS else 1
+        i = after
     return i if i < len(words) else None
 
 

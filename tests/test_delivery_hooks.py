@@ -2108,6 +2108,11 @@ PROOF_CALLS = [
     f"uv run --no-project {PROOF} fix --base origin/main -- {{inner}}",
     f"./{PROOF} fix --base origin/main -- {{inner}}",
     f"git status && uv run -- python {PROOF} fix --base origin/main -- {{inner}}",
+    # python's own option syntax: `--` before the script, a bundled -X/-W, a long value option
+    f"uv run --no-project python -I -- {PROOF} fix --base origin/main -- {{inner}}",
+    f"uv run --no-project python -IX dev {PROOF} fix --base origin/main -- {{inner}}",
+    f"uv run --no-project python -Wignore {PROOF} fix --base origin/main -- {{inner}}",
+    f"uv run --no-project python --check-hash-based-pycs default {PROOF} fix --base origin/main -- {{inner}}",
 ]
 PROOF_REFUSED = ["uv run sh -c 'pytest {tests}'", "uv run env X=1 pytest {tests}", "env X=1 uv run sh -c ls"]
 PROOF_ALLOWED = ["uv run pytest tests/test_a.py", "uv run pytest -q {tests}", "uv run --no-project python -m pytest"]
