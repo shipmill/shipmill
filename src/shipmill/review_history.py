@@ -42,6 +42,7 @@ REVERTS_COMMIT = re.compile(r"^This reverts commit ([0-9a-f]{7,40})\b", re.MULTI
 REVERTS_PULL = re.compile(r"^\s*Reverts (?:([\w.-]+/[\w.-]+))?#([1-9][0-9]*)\s*$")
 SQUASHED = re.compile(r" \(#([1-9][0-9]*)\)$")  # a squash merge's subject ends with its number
 MERGED = re.compile(r"^Merge pull request #([1-9][0-9]*) from ")
+NAMED = re.compile(r"#([1-9][0-9]*)\b")  # a pull request a revert's title names
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,19 +328,41 @@ def _reverted_pulls(body: str, slug: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(numbers))
 
 
+def _revert(commit: Logged, pulls: Mapping[int, PullText], slug: str) -> tuple[PullText | None, tuple[str, ...]]:
+    """The pull request a commit's subject names, if GitHub has it, and the `#M` its body reverts"""
+    pull = None if commit.pull is None else pulls.get(commit.pull)
+    return pull, (() if pull is None or not pull.merged else _reverted_pulls(pull.body, slug))
+
+
+def named(commits: Sequence[Logged], pulls: Mapping[int, PullText], slug: str, trust: Trust) -> set[int]:
+    """The pull requests a trusted revert's title names (`#M`, as `git revert` of a squash commit
+    quotes it) or its `Reverts #M` lines do (GitHub's Revert button, whose title quotes the
+    undone pull request's): the title takes their authors' trust too (D-16)"""
+    numbers: set[int] = set()
+    for commit in commits:
+        pull, undone_pulls = _revert(commit, pulls, slug)
+        if (commit.is_revert or undone_pulls) and (pull is None or trust(pull.author)):
+            title = commit.subject if pull is None else pull.title
+            numbers.update(int(n) for n in NAMED.findall(title))
+            numbers.update(int(n.removeprefix("#")) for n in undone_pulls)
+    return numbers
+
+
 def reverts(commits: Sequence[Logged], pulls: Mapping[int, PullText], slug: str, trust: Trust) -> list[Item]:
     """S-073-1: a commit whose message reverts a commit, or whose subject starts `Revert "`, and
     a merged pull request whose body has a `Reverts #M` line, one item per commit"""
     items = []
     for commit in commits:
         number = commit.pull
-        pull = None if number is None else pulls.get(number)
-        undone_pulls = () if pull is None or not pull.merged else _reverted_pulls(pull.body, slug)
+        pull, undone_pulls = _revert(commit, pulls, slug)
         if not commit.is_revert and not undone_pulls:
             continue
         # a commit no pull request names was pushed to the default branch, by someone who may
         trusted = True if pull is None else trust(pull.author)
         title = pull.title if pull is not None else commit.subject
+        # a title quoting a pull request it names, or one its body reverts, is that author's text
+        quoted = {int(n) for n in NAMED.findall(title)} | {int(n.removeprefix("#")) for n in undone_pulls}
+        trusted = trusted and all(trust(pulls[n].author) for n in sorted(quoted) if n in pulls)
         fields = {
             "kind": "revert",
             "commit": commit.sha,
@@ -400,7 +423,10 @@ def pack(git: Git, reads: Reads, number: int, window: Window, app_id: int | None
     trust = Trust(reads, app_id)
     commits = log(git, repository.default, touched, window) if touched else []
     numbers = sorted({n for n in (c.pull for c in commits) if n is not None and n != number})
-    pulls = reads.pulls(numbers) if numbers else {}
+    pulls = dict(reads.pulls(numbers)) if numbers else {}
+    quoted = sorted(named(commits, pulls, repository.slug, trust) - set(numbers))
+    if quoted:
+        pulls.update(reads.pulls(quoted))
     found = {
         "reverts": reverts(commits, pulls, repository.slug, trust),
         "settled_decisions": [],  # S-073-2, a later build
