@@ -177,8 +177,11 @@ shipmill:review refuse -->`, and an APPROVED review by an OWNER, MEMBER, or COLL
 bot, whose body carries no agent marker. One covers the judged head when its commit_id is that
 head or a head whose own change is the same, as for the maintainer's answer above. The
 --bot-login's newest record that covers it counts: a refuse keeps the PR UNREVIEWED, `
-unreviewed: the newest review of <sha7> on record refuses it; ...`; a merge, or a person's
-approval, lets it read READY.
+unreviewed: the newest review of <sha7> on record refuses it on N confirmed finding(s); ...` when
+the line right after its marker is exactly `<!-- shipmill:findings confirmed=N rejected=N minor=N
+-->` (spec 075), else `  unreviewed: the newest review of <sha7> on record refuses it on findings
+no second reviewer checked; ...`; a merge, with or without that line, or a person's approval, lets
+it read READY.
 
 The land window (spec 056): when the base's .github/shipmill.toml has [land.window], the gate
 reads it with `shipmill --repo <checkout> window --json --ref <the base>`, run as `decide
@@ -2017,9 +2020,17 @@ DOC_SUFFIXES = (".md", ".mdx", ".rst", ".txt")
 INSTRUCTION_DIRS = ("skills/", ".claude/", ".claude-plugin/")  # the agents' instructions: code to review
 INSTRUCTION_NAMES = frozenset({"CLAUDE.md", "AGENTS.md", "REVIEW.md"})
 NO_REVIEW = "no review of {sha7} on record; review it, then record it with shipmill review record"
+# S-075-7: the line `shipmill review record --findings` writes right after the verdict's marker
+FINDINGS_LINE = re.compile(
+    r"<!-- shipmill:findings confirmed=(0|[1-9][0-9]*) rejected=(?:0|[1-9][0-9]*) minor=(?:0|[1-9][0-9]*) -->"
+)
 REVIEW_REFUSED = (
-    "the newest review of {sha7} on record refuses it; fix it, review it again, then record it with "
-    "shipmill review record"
+    "the newest review of {sha7} on record refuses it on {confirmed} confirmed finding(s); fix them, review it "
+    "again, then record it with shipmill review record"
+)
+REVIEW_UNVERIFIED = (
+    "the newest review of {sha7} on record refuses it on findings no second reviewer checked; verify them "
+    "(reviewer-brief.md, Verify a refusal), then record it again"
 )
 
 
@@ -2083,6 +2094,14 @@ def record_of(review: dict, bot: str | None, ts: ModuleType) -> str | None:
     return None if ts.by_agent(body) else "approved"
 
 
+def confirmed_of(review: dict) -> int | None:
+    """S-075-7: the confirmed count of a record's findings line, the line right after its marker,
+    or None when that line isn't exactly `<!-- shipmill:findings confirmed=N rejected=N minor=N -->`"""
+    lines = str(review.get("body") or "").lstrip().split("\n")
+    found = FINDINGS_LINE.fullmatch(lines[1].strip()) if len(lines) > 1 else None
+    return None if found is None else int(found.group(1))
+
+
 def unreviewed(data: dict, number: int, repo: str | None, bot_login: str | None, checkout: str, inside: bool) -> str:
     """Why an agent's code pull request has no review record covering its judged head (spec 055),
     or "" when one does: the --bot-login's newest record covering it, else a trusted person's
@@ -2096,7 +2115,7 @@ def unreviewed(data: dict, number: int, repo: str | None, bot_login: str | None,
         kind = record_of(review, bot, ts)
         commit = review.get("commit_id")
         if kind is not None and isinstance(commit, str) and FULL_SHA.fullmatch(commit):
-            records.append((commit, kind))
+            records.append((commit, kind, review))
     known: dict[str, bool] = {head: True}
 
     def covers(commit: str) -> bool:
@@ -2107,12 +2126,15 @@ def unreviewed(data: dict, number: int, repo: str | None, bot_login: str | None,
     def specs() -> tuple[str, ...]:
         return added_specs(data, number, repo)
 
-    for commit, kind in reversed(records):
+    for commit, kind, review in reversed(records):
         if kind != "approved" and covers(commit):
             if kind == "refuse":
-                return REVIEW_REFUSED.format(sha7=head[:7])
+                confirmed = confirmed_of(review)
+                if confirmed is None:
+                    return REVIEW_UNVERIFIED.format(sha7=head[:7])
+                return REVIEW_REFUSED.format(sha7=head[:7], confirmed=confirmed)
             return ""
-    if any(kind == "approved" and covers(commit) for commit, kind in records):
+    if any(kind == "approved" and covers(commit) for commit, kind, _ in records):
         return ""
     return NO_REVIEW.format(sha7=head[:7])
 
