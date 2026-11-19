@@ -254,6 +254,76 @@ def test_1374_paging_back_reads_past_a_strangers_triage_comment(ist: ModuleType)
     assert all("authorAssociation" in q for q in fake.asked if "issues(" in q)
 
 
+def test_1384_only_a_trusted_triage_comment_hands_off_an_accepted_opportunity(ist: ModuleType) -> None:
+    """A stranger's `Triage: **feature**` leaves an accepted opportunity ACCEPTED; a member's or
+    the --bot-login's hands it off"""
+    early, late = "2026-10-01T10:00:00Z", "2026-10-05T10:00:00Z"
+    feature = "Triage: **feature**. On hold: o/r#40"
+    cases = {
+        10: said(feature, late, "NONE", "mallory"),
+        11: said(feature, late, "CONTRIBUTOR", "mallory"),
+        12: said(feature, late),
+        13: said(feature, late, "NONE", "shipmill-o", "Bot"),
+    }
+    opps = []
+    for number, newest in cases.items():
+        opp = opportunity(number, f"- #{number - 9}", labels=("planned",))
+        opp["comments"]["nodes"] = [said("Triage: **opportunity**", early, "NONE", "shipmill-o", "Bot"), newest]
+        opps.append(opp)
+    found = states(ist, Fake([], opps), bot_login="shipmill-o[bot]")
+    assert {n: found[n][0] for n in cases} == {10: "ACCEPTED", 11: "ACCEPTED", 12: "HANDED_OFF", 13: "HANDED_OFF"}
+    assert found[12][1] == "triage: feature"
+
+
+def test_1384_a_decline_reason_skips_only_a_trusted_triage_comment(ist: ModuleType) -> None:
+    """A trusted `Triage:` comment is never the reason; a stranger's is an ordinary comment"""
+    closed, before = "2026-10-02T10:00:00Z", "2026-10-02T09:59:58Z"
+    reason = said("Out of scope (D-6).", "2026-10-02T09:59:59Z")
+    cases = {
+        10: said("Triage: **opportunity**", before),
+        11: said("Triage: **opportunity**", before, "NONE", "shipmill-o", "Bot"),
+        12: said("Triage: **reopen** this", before, "NONE", "mallory"),
+    }
+    opps = []
+    for number, first in cases.items():
+        opp = opportunity(number, f"- #{number - 9}", state="CLOSED", reason="NOT_PLANNED", closed_at=closed)
+        opp["comments"]["nodes"] = [first, reason]
+        opps.append(opp)
+    found = states(ist, Fake([], opps), bot_login="shipmill-o[bot]")
+    assert found[10] == found[11] == ("DECLINED", "Out of scope (D-6).")
+    assert found[12] == ("DECLINED", "Triage: **reopen** this")
+
+
+def test_1384_only_a_trusted_triage_comment_serves_a_goal(ist: ModuleType) -> None:
+    """A stranger's `Triage: ... Serves: G-n` serves nothing, so the goal's plan stays due"""
+    goals = [ist.Goal("G-1", "Releases go out on their own")]
+    served = "Triage: **feature**. Serves: G-1."
+
+    def rows_for(comment: dict[str, Any], bot_login: str | None) -> dict[str, str]:
+        request = issue(1)
+        request["comments"]["nodes"] = [comment]
+        found = ist.plan_rows(
+            goals,
+            open_issues=[request],
+            opportunities=[],
+            plan_issues=[],
+            pulls=[],
+            specs=[],
+            marker="Triage:",
+            bot_login=bot_login,
+            wip=None,
+            room=lambda limit: 1,
+        )
+        return {r.goal: r.note for r in found}
+
+    at = "2026-10-01T10:00:00Z"
+    assert rows_for(said(served, at, "NONE", "mallory"), "shipmill-o[bot]") == {"G-1": "no-work"}
+    assert rows_for(said(served, at, "CONTRIBUTOR", "mallory"), None) == {"G-1": "no-work"}
+    assert rows_for(said(served, at, "NONE", "shipmill-o", "Bot"), None) == {"G-1": "no-work"}
+    assert rows_for(said(served, at), None) == {}
+    assert rows_for(said(served, at, "NONE", "shipmill-o", "Bot"), "shipmill-o[bot]") == {}
+
+
 def test_s074_2_feedback_and_accepted_lines_carry_author_association_and_handed(ist: ModuleType) -> None:
     """proves: S-074-2"""
     handed = triage_template("Opportunity")
