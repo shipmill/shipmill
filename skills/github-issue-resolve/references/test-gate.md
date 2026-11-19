@@ -13,6 +13,10 @@ Answer each question from the code, in order. The first "yes" is the proof; stop
 
 Never add a test that only restates a data shape (a key exists, a field has a type) when the type checker or a boundary model already guarantees it; never replay one regression at every layer it crosses.
 
+## Commit order
+
+A new or changed test is committed before the fix (spec 076): its own first commit, touching test files only, which fails on the old code; the fix follows in the commits after it, and no later commit removes or changes a line of that test. The plan then says `Kind: fix`, and the reviewer's `test_proof.py fix` reads the history for it. A proof by questions 1 to 3 that changes no test (an unchanged existing test, the checker, a model) touches no test file, writes no `Kind:` line, and is judged as below.
+
 ## In the PR
 
 The Test plan names the proof and shows it failing on the old code: the existing test's name and its failure, the checker's error line, the model's rejection, or the new test and its failure. A repo rule such as "a fix comes with a test that fails without it" is met by any of these; if the repo's `REVIEW.md` says "test" literally, follow it and say in the PR that the gate would have chosen otherwise, so the maintainer can update the rule.

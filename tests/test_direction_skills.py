@@ -147,6 +147,80 @@ def test_s024_11_pr_triage_never_merges_a_direction_edit_on_its_own() -> None:
     assert "only when the maintainer asked for that merge in this session" in rule
 
 
+def _phase4() -> str:
+    return flat(read(RESOLVE).split("\n## Phase 4:", 1)[1].split("\n## Phase 5:", 1)[0])
+
+
+def test_s076_12_resolve_writes_kind_and_tests_changed_in_the_plan() -> None:
+    phase = _phase4()
+    assert "**Say what kind of change it is (spec 076).**" in phase
+    assert "a bug fix whose proof is a new or changed test adds `- Kind: fix`" in phase
+    assert "a change meant to leave behaviour as it is adds `- Kind: refactor`" in phase
+    assert "any other change writes no `Kind:` line" in phase
+    assert "`- Tests changed:` names each existing test file the change had to edit" in phase
+    assert "in backticks, each followed by `: ` and its reason, entries separated by `;`" in phase
+    assert "`pr_gate.py` reads neither line" in phase
+    # the template keeps the four lines pr_gate.py reads (S-024-9); the two optional lines sit outside it
+    assert "Kind:" not in fenced(read(RESOLVE).split("\n## Phase 4:", 1)[1].split("\n## Phase 5:", 1)[0])[0]
+
+
+def test_s076_12_a_fix_commits_its_test_first_and_a_refactor_leaves_tests_alone() -> None:
+    phase = _phase4()
+    assert "**A `Kind: fix` change commits its test first and alone.**" in phase
+    assert "The first commit touches test files only and holds the new or changed test" in phase
+    assert "the fix comes in the commits after it" in phase
+    assert "no later commit removes or changes a line of the files that first commit touched" in phase
+    assert "**A `Kind: refactor` change leaves existing test files alone.**" in phase
+    assert "It modifies, deletes, or renames no test file the default branch has" in phase
+    assert "commit that test on its own, before the fix" in phase
+
+
+def test_s076_12_the_implementer_brief_and_the_test_gate_carry_the_commit_order() -> None:
+    brief = flat(read(TRIAGE / "references" / "implementer-brief.md"))
+    assert "Commit order (spec 076): a bug fix proven by a new or changed test (`Kind: fix`)" in brief
+    assert "commits that test first and alone, a commit touching test files only" in brief
+    assert "then the fix in the commits after it" in brief
+    assert "a refactor (`Kind: refactor`) leaves existing test files alone" in brief
+    assert "plus `- Kind: fix`" in brief and "`- Kind: refactor`" in brief and "`- Tests changed:`" in brief
+    gate = flat(section(read(RESOLVE.parent / "references" / "test-gate.md"), "## Commit order"))
+    assert "A new or changed test is committed before the fix (spec 076)" in gate
+    assert "its own first commit, touching test files only" in gate
+
+
+def _open_pr_brief() -> str:
+    return section(read(PR_TRIAGE / "references" / "reviewer-brief.md"), "## Open PR")
+
+
+def test_s076_13_the_open_pr_brief_runs_test_proof_after_the_rebase_before_own_fixes() -> None:
+    brief = _open_pr_brief()
+    step2 = flat(brief.split("\n2. ", 1)[1].split("\n3. ", 1)[0])
+    assert "{When the brief's plan has a `Kind:` line:} Test proof (spec 076)" in step2
+    assert "after the rebase and before any fix of your own" in step2
+    assert "`{test_proof_script} <kind> --base origin/{default} --plan-file tmp/pr-{N}-body.md --" in step2
+    assert "`UNPROVEN` is a finding quoting its `fail:` lines" in step2
+    assert "`NO_TEST` on a `Kind: fix` plan is a finding" in step2
+    assert "`BASELINE_RED` is the base's failure, reported as such and not a finding against the PR" in step2
+    assert brief.index("\n1. ") < brief.index("Test proof (spec 076)") < brief.index("\n4. Reproduce each real bug")
+
+
+def test_s076_13_a_missing_kind_line_is_a_finding_and_the_report_holds_a_test_proof_line() -> None:
+    brief = _open_pr_brief()
+    step3 = flat(brief.split("\n3. ", 1)[1].split("\n4. ", 1)[0])
+    assert "calls it a bug fix with a new or changed test, or a refactor, while its plan has no `Kind:` line" in step3
+    step5 = flat(brief.split("\n5. ", 1)[1])
+    assert 'a "Test proof" line with `test_proof.py`\'s verdict' in step5
+    assert "which goes into the review record" in step5
+
+
+def test_s076_13_the_post_merge_brief_has_none_of_it_and_the_scripts_table_lists_it() -> None:
+    post = section(read(PR_TRIAGE / "references" / "reviewer-brief.md"), "## Post-merge review")
+    for word in ("test_proof", "Kind:", "Test proof", "UNPROVEN", "BASELINE_RED", "NO_TEST"):
+        assert word not in post
+    table = read(PR_TRIAGE / "SKILL.md")
+    assert "| `test_proof.py fix\\|refactor --base <ref> [--plan-file <file>] -- <command>` |" in table
+    assert (PR_TRIAGE / "scripts" / "test_proof.py").is_file()
+
+
 def test_s024_12_setup_asks_for_the_direction_and_never_invents_it() -> None:
     gate = flat(read(SETUP).split("\n## The gate", 1)[1])
     part = gate.split("**The product's direction (D-34, spec 024).**", 1)[1].split("3. **Its own identity", 1)[0]
