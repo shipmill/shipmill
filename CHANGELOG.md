@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.147.2] - 2026-11-19
+
+### Fixed
+
+- `shipmill gh issue|pr edit` reads the App's relay against the needs-decision question it guards, a person's when an OWNER, MEMBER, or COLLABORATOR asked after the App, so a counted relay to that question lets `--remove-label needs-decision` run and refuses `--add-label`, and an uncounted one is refused with its `Relay not counted` reason (#1340)
+
 ## [0.147.1] - 2026-11-19
 
 ### Fixed
@@ -2677,7 +2683,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.147.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.147.2...HEAD
+[0.147.2]: https://github.com/shipmill/shipmill/compare/v0.147.1...v0.147.2
 [0.147.1]: https://github.com/shipmill/shipmill/compare/v0.147.0...v0.147.1
 [0.147.0]: https://github.com/shipmill/shipmill/compare/v0.146.2...v0.147.0
 [0.146.2]: https://github.com/shipmill/shipmill/compare/v0.146.1...v0.146.2
