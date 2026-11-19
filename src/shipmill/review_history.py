@@ -1,21 +1,25 @@
 """`shipmill review history <N>` (spec 073): the history of the files pull request #N touches,
 read from the checkout and GitHub only (D-6), for the PR reviewer to check the change against.
 
-Four kinds, in this order: reverts, settled decisions, incidents, and open pull requests. This
-build fills reverts and open pull requests; settled decisions and incidents print `none` until
-their build (S-073-2, S-073-3). Text from an author who isn't an OWNER, MEMBER, COLLABORATOR,
-or the App is never printed (D-16). A failed read exits 2 and prints nothing, never a partial
-pack (S-073-8)"""
+Four kinds, in this order: reverts, settled decisions, incidents, and open pull requests. Text
+from an author who isn't an OWNER, MEMBER, COLLABORATOR, or the App is never printed (D-16). A
+failed read exits 2 and prints nothing, never a partial pack (S-073-8)"""
 
 import datetime as dt
 import json
+import posixpath
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Protocol
 
+from shipmill import veto
+from shipmill.config import CONFIG_PATH, Table, read
+from shipmill.credit import MARKER as QUESTION_MARKER
+from shipmill.environments import OperateConfig
 from shipmill.errors import ReleaseError
-from shipmill.github import Missing
+from shipmill.github import IssueComment, Missing
 from shipmill.gitrepo import REMOTE, Git
 
 KINDS = ("reverts", "settled_decisions", "incidents", "open_pull_requests")  # the pack's order (S-073-5)
@@ -35,6 +39,13 @@ OPEN_PER_PAGE = 100
 OPEN_PAGES = 10  # 1,000 open pull requests at most; a repository with more is refused
 FILES_PER_PULL = 100  # an open pull request's files read with it; one with more is read on its own
 PULLS_PER_QUERY = 50  # merged pull requests read per GraphQL query
+COMMENTS_PER_PAGE = 100  # a pull request's comments read with it; more are read a page at a time
+COMMENT_PAGES = 10  # 1,000 comments on one pull request at most; one with more is refused
+INCIDENTS_PER_PAGE = 100
+INCIDENT_PAGES = 10  # 1,000 incident issues at most; a repository with more is refused
+ANSWER_CHARS = 600  # an answer's text is cut here, then `…` (S-073-2)
+POSTMORTEMS = "docs/postmortems"
+GHOST = "ghost"  # the login a deleted account's comment reads with, as veto.py reads it
 SHA = re.compile(r"[0-9a-f]{7,40}")
 # git's revert message, and the line GitHub's Revert button writes in a revert pull request's
 # body (spec 058's reading)
@@ -43,6 +54,9 @@ REVERTS_PULL = re.compile(r"^\s*Reverts (?:([\w.-]+/[\w.-]+))?#([1-9][0-9]*)\s*$
 SQUASHED = re.compile(r" \(#([1-9][0-9]*)\)$")  # a squash merge's subject ends with its number
 MERGED = re.compile(r"^Merge pull request #([1-9][0-9]*) from ")
 NAMED = re.compile(r"#([1-9][0-9]*)\b")  # a pull request a revert's title names
+# the mention and label a needs-decision question or a decided comment opens with (needs-decision.md)
+OPENING = re.compile(r"^(?:`?@[\w-]+(?:\[bot\])?`?[,:]?\s+)*(?:(?:Decision needed|Decided without waiting):\s*)?")
+SENTENCE = re.compile(r"^.*?[.?!](?=\s|$)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,12 +71,26 @@ class Author:
 
 @dataclass(frozen=True, slots=True)
 class PullText:
-    """A pull request a squash or merge subject on the default branch names"""
+    """A pull request a squash or merge subject on the default branch names, with its
+    comments, oldest first"""
 
     number: int
     title: str
     body: str
     merged: bool
+    author: Author
+    comments: tuple[IssueComment, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class Incident:
+    """An issue labelled [operate] incident_label; closed None while it is open"""
+
+    number: int
+    title: str
+    body: str
+    created: dt.datetime
+    closed: dt.datetime | None
     author: Author
 
 
@@ -98,7 +126,12 @@ class Reads(Protocol):
     def repository(self) -> Repository: ...
 
     def pulls(self, numbers: Sequence[int]) -> Mapping[int, PullText]:
-        """The pull requests of numbers GitHub has; a number it has none for is left out"""
+        """The pull requests of numbers GitHub has, each with all its comments; a number it
+        has none for is left out"""
+        ...
+
+    def incidents(self, label: str) -> tuple[Incident, ...]:
+        """Every issue labelled label, open or closed"""
         ...
 
     def app_id(self, slug: str) -> int:
@@ -205,13 +238,33 @@ def _title(text: str) -> str:
     return flat if len(flat) <= TITLE_CHARS else flat[: TITLE_CHARS - 1] + "…"
 
 
+def _named(paths: Sequence[str]) -> str:
+    shown = ", ".join(paths[:FILES_SHOWN])
+    more = len(paths) - FILES_SHOWN
+    return f"names {shown}" + (f" and {more} more" if more > 0 else "")
+
+
 def _line(item: Item) -> str:
     f = item.fields
+    when = item.date.astimezone(dt.UTC).strftime("%Y-%m-%d")
+    if item.kind == "settled decision":
+        head = f"{item.id} #{f['pull']} {_title(f['title'])} ({when})"
+        if f["decision"] == "decided":
+            followed = "a veto followed" if f["vetoed"] else "no veto followed"
+            return f'{head}: decided "{_title(f["question"])}" by @{f["author"]}; {followed}'
+        answer = " ".join(f["answer"].split())
+        return f'{head}: asked "{_title(f["question"])}"; @{f["author"]} answered "{answer}"'
+    if item.kind == "incident":
+        who = "" if f["author"] is None else f", @{f['author']}"
+        return (
+            f"{item.id} incident #{f['issue']} {_title(f['title'])} ({f['state']}, {when}{who}); {_named(f['files'])}"
+        )
+    if item.kind == "postmortem":
+        return f"{item.id} postmortem {f['path']} {_title(f['title'])} ({when}); {_named(f['files'])}"
     who = "" if f["author"] is None else f", @{f['author']}"
     if item.kind == "revert":
         number = "" if f["pull"] is None else f" #{f['pull']}"
         undone = f": reverts {', '.join(f['reverts'])}" if f["reverts"] else ""
-        when = item.date.astimezone(dt.UTC).strftime("%Y-%m-%d")
         named = f"{item.id} revert {f['commit'][:12]}{number} {_title(f['title'])}"
         return f"{named} ({when}{who}){undone}; {_shares(f['files'])}"
     where = ", ".join(part for part in (f["head"], who.removeprefix(", ")) if part)
@@ -271,6 +324,18 @@ class Logged:
         return bool(self.reverted_commits) or self.subject.startswith('Revert "')
 
 
+def _reader(git: Git) -> Git:
+    """git in the checkout with paths matched literally and printed unquoted"""
+    reader = Git(git.root)
+    reader.env = {
+        "GIT_LITERAL_PATHSPECS": "1",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.quotePath",
+        "GIT_CONFIG_VALUE_0": "false",
+    }
+    return reader
+
+
 def log(git: Git, default: str, files: Sequence[str], window: Window) -> list[Logged]:
     """The commits on origin/<default> in the window that touched one of files, newest first,
     each with the files of those it changed. History is read in full, so a merge commit of a
@@ -280,13 +345,7 @@ def log(git: Git, default: str, files: Sequence[str], window: Window) -> list[Lo
         raise ReleaseError(
             f"the checkout {git.root} has no {REMOTE}/{default}: `git -C {git.root} fetch {REMOTE} {default}` first"
         )
-    reader = Git(git.root)
-    reader.env = {
-        "GIT_LITERAL_PATHSPECS": "1",
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "core.quotePath",
-        "GIT_CONFIG_VALUE_0": "false",
-    }
+    reader = _reader(git)
     out = reader.run(
         "log",
         tracking,
@@ -378,6 +437,200 @@ def reverts(commits: Sequence[Logged], pulls: Mapping[int, PullText], slug: str,
     return items
 
 
+def _commenter(comment: IssueComment) -> Author:
+    return Author(None if comment.author.lower() == GHOST else comment.author, comment.association, comment.bot)
+
+
+def _sentence(body: str) -> str:
+    """The first sentence of a question or a decided comment, past its marker line and the
+    mention and label it opens with (needs-decision.md)"""
+    lines = body.strip().split("\n", 1)
+    text = OPENING.sub("", " ".join((lines[1] if len(lines) > 1 else "").split()))
+    found = SENTENCE.match(text)
+    return text if found is None else found.group(0)
+
+
+def _cut(text: str) -> str:
+    """S-073-2: an answer's text, at most ANSWER_CHARS characters, then `…`"""
+    text = text.strip()
+    return text if len(text) <= ANSWER_CHARS else text[:ANSWER_CHARS] + "…"
+
+
+def _answer(later: Sequence[IssueComment], trust: Trust) -> IssueComment | None:
+    """A question's answer: the first comment after it by a person (veto.by_person: an OWNER,
+    MEMBER, or COLLABORATOR, not a bot, without the agent marker, D-62) that isn't a question
+    itself, before the next trusted question; None while it waits"""
+    for comment in later:
+        asks = veto.first_line(comment.body) == QUESTION_MARKER
+        if asks and trust(_commenter(comment)):
+            return None
+        if not asks and veto.by_person(comment):
+            return comment
+    return None
+
+
+def settled(
+    commits: Sequence[Logged], pulls: Mapping[int, PullText], number: int, window: Window, trust: Trust
+) -> list[Item]:
+    """S-073-2: on each pull request a squash or merge subject in the log names, other than the
+    one under review, a needs-decision question by the App or a trusted person with its first
+    answer by the protocol's reply rules (an OWNER, MEMBER, or COLLABORATOR other than the App,
+    not a bot, without the agent marker, D-62), and each decided comment by the App or a trusted
+    person with whether a person's veto followed it; only comments dated before the window's
+    end count (S-073-7). Newest first, by the answer's or the decided comment's date"""
+    files: dict[int, list[str]] = {}
+    for commit in commits:
+        if commit.pull is not None and commit.pull != number:
+            shared = files.setdefault(commit.pull, [])
+            shared.extend(name for name in commit.files if name not in shared)
+    items = []
+    for pull_number, shared in files.items():
+        pull = pulls.get(pull_number)
+        if pull is None:
+            continue
+        comments = [c for c in pull.comments if c.created_at < window.end]
+        title = pull.title if trust(pull.author) else UNTRUSTED
+        for i, comment in enumerate(comments):
+            line = veto.first_line(comment.body)
+            if not trust(_commenter(comment)):
+                continue
+            later = comments[i + 1 :]
+            decision: dict[str, Any]
+            if line == QUESTION_MARKER:
+                answer = _answer(later, trust)
+                if answer is None:
+                    continue
+                decision = {"decision": "question", "answer": _cut(answer.body), "vetoed": None}
+                author, date = answer.author, answer.created_at
+            elif veto.DECIDED.fullmatch(line):
+                vetoed = any(veto.by_person(c) and veto.VETO.match(veto.first_line(c.body)) for c in later)
+                decision = {"decision": "decided", "answer": None, "vetoed": vetoed}
+                author, date = comment.author, comment.created_at
+            else:
+                continue
+            fields = {
+                "kind": "settled decision",
+                "pull": pull_number,
+                "title": title,
+                **decision,
+                "question": _sentence(comment.body),
+                "author": author,
+                "files": list(shared),
+                "date": date.isoformat(),
+                "trusted": title != UNTRUSTED,
+            }
+            items.append(Item("settled decision", date, title != UNTRUSTED, fields))
+    return sorted(items, key=lambda i: i.date, reverse=True)
+
+
+def _path_pattern(path: str, directory: bool) -> re.Pattern[str]:
+    """A path named in text as a whole path, not part of a longer one; a directory with or
+    without its trailing slash, not a path inside it"""
+    if directory:
+        return re.compile(rf"(?<![\w./-]){re.escape(path)}/?(?![\w/-]|\.\w)")
+    return re.compile(rf"(?<![\w./-]){re.escape(path)}(?![\w/-]|\.\w)")
+
+
+def names(text: str, touched: Sequence[str]) -> list[str]:
+    """S-073-3: the touched files text names, and the directories holding them it names (with
+    a trailing `/`), in the touched files' order, each once"""
+    found: list[str] = []
+    for path in touched:
+        if path not in found and _path_pattern(path, False).search(text):
+            found.append(path)
+        folder = posixpath.dirname(path)
+        if folder and f"{folder}/" not in found and _path_pattern(folder, True).search(text):
+            found.append(f"{folder}/")
+    return found
+
+
+def incidents(found: Sequence[Incident], touched: Sequence[str], window: Window, trust: Trust) -> list[Item]:
+    """S-073-3: each issue labelled the incident label, open or closed in the window, whose
+    title or body names a touched file or its directory, newest first"""
+    items = []
+    for issue in found:
+        if issue.created >= window.end or (issue.closed is not None and issue.closed < window.start):
+            continue
+        named_paths = names(f"{issue.title}\n{issue.body}", touched)
+        if not named_paths:
+            continue
+        trusted = trust(issue.author)
+        closed = issue.closed is not None and issue.closed < window.end
+        fields = {
+            "kind": "incident",
+            "issue": issue.number,
+            "path": None,
+            "title": issue.title if trusted else UNTRUSTED,
+            "state": "closed" if closed else "open",
+            "files": named_paths,
+            "date": issue.created.isoformat(),
+            "author": issue.author.login,
+            "trusted": trusted,
+        }
+        items.append(Item("incident", issue.created, trusted, fields))
+    return items
+
+
+def postmortems(git: Git, default: str, touched: Sequence[str], window: Window) -> list[Item]:
+    """S-073-3: each file under docs/postmortems/ a commit on origin/<default> changed in the
+    window whose text, at the window's end, names a touched file or its directory; dated by its
+    newest such commit, newest first. A file gone by then is left out"""
+    tracking = f"refs/remotes/{REMOTE}/{default}"
+    reader = _reader(git)
+    out = reader.run(
+        "log",
+        tracking,
+        "--name-only",
+        "--format=%x1e%cI",
+        f"--since={window.start.isoformat()}",
+        f"--until={window.end.isoformat()}",
+        "--",
+        f"{POSTMORTEMS}/",
+    )
+    changed: dict[str, dt.datetime] = {}
+    for record in out.split("\x1e"):
+        if not record.strip():
+            continue
+        when, *paths = record.strip().splitlines()
+        date = dt.datetime.fromisoformat(when.strip())
+        if date < window.start or (window.before is not None and date >= window.end):
+            continue
+        for path in paths:
+            if path.startswith(f"{POSTMORTEMS}/") and (path not in changed or changed[path] < date):
+                changed[path] = date
+    at = window.before or tracking
+    items = []
+    for path, date in changed.items():
+        if not reader.ok("cat-file", "-e", f"{at}:{path}"):
+            continue
+        text = reader.run("show", f"{at}:{path}")
+        named_paths = names(text, touched)
+        if not named_paths:
+            continue
+        heading = next((line[2:].strip() for line in text.splitlines() if line.startswith("# ")), path)
+        fields = {
+            "kind": "postmortem",
+            "issue": None,
+            "path": path,
+            "title": heading,
+            "state": "postmortem",
+            "files": named_paths,
+            "date": date.isoformat(),
+            "author": None,
+            "trusted": True,
+        }
+        items.append(Item("postmortem", date, True, fields))
+    return items
+
+
+def incident_label(root: Path) -> str:
+    """[operate] incident_label of the checkout's config, as the gate reads it, or its default
+    (`incident`) with no config file"""
+    path = root / CONFIG_PATH
+    raw = read(path) if path.is_file() else {}
+    return OperateConfig.parse(Table(raw, str(path)).table("operate", optional=True)).incident_label
+
+
 def open_pulls(
     repository: Repository, number: int, touched: Sequence[str], window: Window, reads: Reads, trust: Trust
 ) -> list[Item]:
@@ -407,9 +660,9 @@ def open_pulls(
     return sorted(items, key=lambda i: i.date, reverse=True)
 
 
-def pack(git: Git, reads: Reads, number: int, window: Window, app_id: int | None) -> Pack:
-    """Spec 073's history pack of pull request #number: every read first, then the ids, so a
-    failed read leaves nothing printed"""
+def pack(git: Git, reads: Reads, number: int, window: Window, app_id: int | None, label: str) -> Pack:
+    """Spec 073's history pack of pull request #number, with label the incident label: every
+    read first, then the ids, so a failed read leaves nothing printed"""
     if number < 1:
         raise ReleaseError(f"#{number} is no pull request: give its number, from 1")
     try:
@@ -427,10 +680,15 @@ def pack(git: Git, reads: Reads, number: int, window: Window, app_id: int | None
     quoted = sorted(named(commits, pulls, repository.slug, trust) - set(numbers))
     if quoted:
         pulls.update(reads.pulls(quoted))
+    if touched:
+        issues = incidents(reads.incidents(label), touched, window, trust)
+        files = postmortems(git, repository.default, touched, window)
+    else:
+        issues, files = [], []
     found = {
         "reverts": reverts(commits, pulls, repository.slug, trust),
-        "settled_decisions": [],  # S-073-2, a later build
-        "incidents": [],  # S-073-3, a later build
+        "settled_decisions": settled(commits, pulls, number, window, trust),
+        "incidents": sorted([*issues, *files], key=lambda i: i.date, reverse=True),
         "open_pull_requests": open_pulls(repository, number, touched, window, reads, trust),
     }
     shown: dict[str, tuple[Item, ...]] = {}
@@ -452,12 +710,13 @@ def history(
     limit: int,
     before: str | None,
     app_id: int | None,
+    label: str,
     now: dt.datetime,
     as_json: bool,
 ) -> str:
     """The pack as text, or as JSON with as_json; the window is checked before GitHub is asked"""
     window = Window.of(git, days, limit, before, now)
-    built = pack(git, reads(), number, window, app_id)
+    built = pack(git, reads(), number, window, app_id, label)
     return json.dumps(built.to_json(), indent=2) + "\n" if as_json else built.render()
 
 
@@ -485,11 +744,75 @@ _OPEN_QUERY = (
     f" nodes {{ number title headRefName createdAt {_AUTHOR}"
     f" files(first: {FILES_PER_PULL}) {{ totalCount nodes {{ path }} }} }} }} }} }}"
 )
-_PULL_FIELDS = f"number title body merged {_AUTHOR}"
+_COMMENTS = f"pageInfo {{ hasNextPage endCursor }} nodes {{ body createdAt {_AUTHOR} }}"
+_PULL_FIELDS = f"number title body merged {_AUTHOR} comments(first: {COMMENTS_PER_PAGE}) {{ {_COMMENTS} }}"
+_MORE_COMMENTS = (
+    "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {"
+    f" pullRequest(number: NUMBER) {{ comments(first: {COMMENTS_PER_PAGE}, after: AFTER) {{ {_COMMENTS} }} }} }} }}"
+)
+_INCIDENT_QUERY = (
+    "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {"
+    f" issues(labels: [LABEL], first: {INCIDENTS_PER_PAGE}, after: AFTER,"
+    " orderBy: {field: CREATED_AT, direction: DESC}) { pageInfo { hasNextPage endCursor }"
+    f" nodes {{ number title body state createdAt closedAt {_AUTHOR} }} }} }} }}"
+)
 
 
 def _refuse(what: str, found: Any) -> ReleaseError:
     return ReleaseError(f"gh api graphql printed {what}: {str(found)[:300]}")
+
+
+def _page(connection: Any, what: str) -> tuple[list[Any], str | None]:
+    """A connection's nodes and the next page's cursor (None on the last)"""
+    info = connection.get("pageInfo") if isinstance(connection, dict) else None
+    nodes = connection.get("nodes") if isinstance(connection, dict) else None
+    if not isinstance(info, dict) or not isinstance(info.get("hasNextPage"), bool) or not isinstance(nodes, list):
+        raise _refuse(f"no page of {what}", connection)
+    cursor = info.get("endCursor") if info["hasNextPage"] else None
+    if info["hasNextPage"] and not isinstance(cursor, str):
+        raise _refuse(f"a next page of {what} without its cursor", info)
+    return nodes, cursor
+
+
+def parse_comments(connection: Any, number: int) -> tuple[list[IssueComment], str | None]:
+    """A page of pull request #number's comments, oldest first, and the next page's cursor; a
+    deleted account's comment reads as ghost's, as veto.py reads it"""
+    nodes, cursor = _page(connection, f"#{number}'s comments")
+    comments = []
+    for node in nodes:
+        if not isinstance(node, dict) or not isinstance(node.get("body"), str):
+            raise _refuse(f"a comment of #{number} without its body", node)
+        author = _author(node)
+        login = GHOST if author.login is None else author.login
+        comments.append(
+            IssueComment(login, author.bot, author.association, _time(node.get("createdAt"), node), node["body"])
+        )
+    return comments, cursor
+
+
+def parse_incidents(found: Any) -> tuple[list[Incident], str | None]:
+    """A page of the incident-labelled issues and the next page's cursor; anything else is refused"""
+    if not isinstance(found, dict) or found.get("errors"):
+        raise _refuse("errors or no object for the incident issues", found)
+    data = found.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
+    if not isinstance(repository, dict):
+        raise _refuse("no repository for the incident issues", found)
+    nodes, cursor = _page(repository.get("issues"), "incident issues")
+    issues = []
+    for node in nodes:
+        if (
+            not isinstance(node, dict)
+            or not isinstance(node.get("number"), int)
+            or not isinstance(node.get("title"), str)
+            or not isinstance(node.get("body"), str)
+            or node.get("state") not in ("OPEN", "CLOSED")
+        ):
+            raise _refuse("an incident issue without its number, title, body, or state", node)
+        closed = None if node["state"] == "OPEN" else _time(node.get("closedAt"), node)
+        created = _time(node.get("createdAt"), node)
+        issues.append(Incident(node["number"], node["title"], node["body"], created, closed, _author(node)))
+    return issues, cursor
 
 
 def _author(node: Mapping[str, Any]) -> Author:
@@ -551,8 +874,9 @@ def parse_open_page(found: Any) -> tuple[str, str, list[OpenPull], str | None]:
     return str(repository["nameWithOwner"]), str(branch["name"]), pulls, cursor
 
 
-def parse_pulls(found: Any, numbers: Sequence[int]) -> dict[int, PullText]:
-    """The `n<i>` pull requests of a pulls query; a null alias, which graphql_numbers lets
+def parse_pulls(found: Any, numbers: Sequence[int]) -> tuple[dict[int, PullText], dict[int, str]]:
+    """The `n<i>` pull requests of a pulls query, with their first page of comments, and the
+    cursor of the next page for each that has more; a null alias, which graphql_numbers lets
     through only for GitHub's NOT_FOUND, is a number with no pull request"""
     if not isinstance(found, dict):
         raise _refuse("no object for the merged pull requests", found)
@@ -561,6 +885,7 @@ def parse_pulls(found: Any, numbers: Sequence[int]) -> dict[int, PullText]:
     if not isinstance(repository, dict):
         raise _refuse("no repository for the merged pull requests", found)
     pulls = {}
+    more = {}
     for i, number in enumerate(numbers):
         node = repository.get(f"n{i}")
         if node is None:
@@ -573,14 +898,20 @@ def parse_pulls(found: Any, numbers: Sequence[int]) -> dict[int, PullText]:
             or not isinstance(node.get("body"), str | None)
         ):
             raise _refuse(f"pull request #{number} without its number, title, body, or merged state", node)
-        pulls[number] = PullText(number, node["title"], node.get("body") or "", node["merged"], _author(node))
-    return pulls
+        comments, cursor = parse_comments(node.get("comments"), number)
+        if cursor is not None:
+            more[number] = cursor
+        body = node.get("body") or ""
+        pulls[number] = PullText(number, node["title"], body, node["merged"], _author(node), tuple(comments))
+    return pulls, more
 
 
 class GhReads:
     """Reads through gh, batched: the touched files one paginated REST read, the open pull
     requests a GraphQL page of OPEN_PER_PAGE, the merged pull requests PULLS_PER_QUERY a
-    query, and an App's id once per bot"""
+    query with their first COMMENTS_PER_PAGE comments (a pull request with more reads the rest
+    a page at a time), the incident issues a page of INCIDENTS_PER_PAGE, and an App's id once
+    per bot"""
 
     def __init__(self, gh: Gh) -> None:
         self._gh = gh
@@ -610,8 +941,51 @@ class GhReads:
             query = (
                 f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {aliases} }} }}"
             )
-            found.update(parse_pulls(self._gh.graphql_numbers(query, len(chunk)), chunk))
+            pulls, more = parse_pulls(self._gh.graphql_numbers(query, len(chunk)), chunk)
+            for number, cursor in more.items():
+                pulls[number] = replace(pulls[number], comments=pulls[number].comments + self._comments(number, cursor))
+            found.update(pulls)
         return found
+
+    def _comments(self, number: int, after: str) -> tuple[IssueComment, ...]:
+        """Pull request #number's comments past the first page, a page at a time"""
+        comments: list[IssueComment] = []
+        cursor: str | None = after
+        for _ in range(COMMENT_PAGES - 1):
+            if cursor is None:
+                return tuple(comments)
+            query = _MORE_COMMENTS.replace("NUMBER", str(number)).replace("AFTER", json.dumps(cursor))
+            found = self._gh.graphql(query)
+            if not isinstance(found, dict) or found.get("errors"):
+                raise _refuse(f"errors or no object for #{number}'s comments", found)
+            data = found.get("data")
+            repository = data.get("repository") if isinstance(data, dict) else None
+            pull = repository.get("pullRequest") if isinstance(repository, dict) else None
+            if not isinstance(pull, dict):
+                raise _refuse(f"no pull request #{number} for its comments", found)
+            page, cursor = parse_comments(pull.get("comments"), number)
+            comments.extend(page)
+        if cursor is None:
+            return tuple(comments)
+        raise ReleaseError(
+            f"pull request #{number} has more than {COMMENT_PAGES * COMMENTS_PER_PAGE} comments, more than review"
+            " history reads"
+        )
+
+    def incidents(self, label: str) -> tuple[Incident, ...]:
+        after: str | None = None
+        issues: list[Incident] = []
+        for _ in range(INCIDENT_PAGES):
+            query = _INCIDENT_QUERY.replace("LABEL", json.dumps(label))
+            query = query.replace("AFTER", "null" if after is None else json.dumps(after))
+            page, after = parse_incidents(self._gh.graphql(query))
+            issues.extend(page)
+            if after is None:
+                return tuple(issues)
+        raise ReleaseError(
+            f"the repo has more than {INCIDENT_PAGES * INCIDENTS_PER_PAGE} issues labelled {label!r}, more than"
+            " review history reads"
+        )
 
     def app_id(self, slug: str) -> int:
         return self._gh.app_id(slug)
