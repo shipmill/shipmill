@@ -135,7 +135,7 @@ person decided the change, which is not a claim they wrote it.
 ## Decisions relied on
 
 - D-14
-- D-33
+- D-96 (supersedes D-33)
 - D-49
 - D-61
 

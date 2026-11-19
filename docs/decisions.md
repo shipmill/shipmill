@@ -277,6 +277,7 @@ entry that supersedes it, never by editing an old one.
 - Why: The repo allows all three methods and its history mixes squash and merge commits, so "match the repo's history" left each session to choose: on 2026-10-16 a squash of a stack's base meant the child had to be rebased and force-pushed by hand. A squash keeps main one commit per pull request, which is how a reader and a revert see it; a merge commit keeps a stack's base SHAs, so its child retargets and rebases clean; a rebase merge rewrites SHAs and gives neither
 - Applies to: skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md (Merge style), gh pr merge
 - Enforced by: review
+- Superseded by: D-96
 
 ## D-34: Agents work toward the product's written direction
 
@@ -801,3 +802,12 @@ entry that supersedes it, never by editing an old one.
 - Why: A milestone tied to a release works once and then stops: nothing closes it when its version ships or moves what's left, so the lane loses its milestone trigger until the maintainer notices, a manual step G-1 leaves out (#336, seen in two repos in one week)
 - Applies to: src/shipmill/land.py, src/shipmill/policy.py, src/shipmill/github.py, src/shipmill/status.py, milestones, docs/specs/068-*
 - Enforced by: review, until spec 068 is built
+
+## D-96: The merge method is the maintainer's setting, squash by default; the hook holds it
+
+- Decided: 2026-10-29, in shipmill/shipmill#794
+- Rule: A pull request lands with the method [agents] merge in .github/shipmill.toml names: "squash" (the default, and with no key) or "merge", a merge commit; any other value fails to load. Under either value the base of a stack (a pull request another open pull request is stacked on) lands with a merge commit, save under "squash" in a repo that doesn't allow merge commits, where it lands with a squash and its child is rebased; no pull request is rebase-merged. Where the repo's GitHub settings don't allow the method the setting names, the merge fails naming the setting and the repo setting, and never falls back to the other method. In a repo with [agents], the plugin's delivery hook refuses --squash under "merge" with the --merge command to run, as it refuses a rebase merge, and the messages that name a merge command name the setting's method. This supersedes D-33, whose rule it keeps as the default
+- Why: The only way to get merge commits was to turn off squash merging in the repo's settings, which took the squash from people merging by hand too, and D-33's fallback was a rule the gate was told, enforced by review. Maintainers who review a branch as curated commits, or want each commit on its author's contribution graph, need merge commits; squash stays the default while agents don't shape their commits. The maintainer asked for the choice and accepted it with the hook and the no-fallback rule on #794 (spec 072)
+- Applies to: skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md (Merge style), hooks/delivery.py, src/shipmill/agents.py, src/shipmill/cli.py, src/shipmill/app_gh.py, src/shipmill/doctor.py, [agents] merge, gh pr merge, shipmill gh pr merge
+- Supersedes: D-33
+- Enforced by: the delivery hook's merge-method and rebase-merge rules, and the tests of spec 072
