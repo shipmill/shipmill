@@ -7,6 +7,27 @@ bot.
 
 ## [Unreleased]
 
+## [0.150.0] - 2026-11-19
+
+### Added
+
+- `fleet.py queue` lists an open spec pull request that nothing lands by itself as a `SPEC_TO_MERGE` row, read with `pr_gate.py`'s readers: no question waiting, no trusted answer taking every recommendation, and no App decided comment at `accepted-spec`, or one that edits the product's direction; github-ship-watch's Fleet section documents the queue, its rows, and a `/schedule` routine for it; spec 069 is built (#1246)
+- In a component (`[product] home`), triage, product intake, and the PR reviewer treat a non-goal of the product as the component's own: a request that hits one is **won't fix** citing `<owner/home> N-n`, an opportunity says `hits <owner/home> N-n` on its `Serves` line and is never proposed on demand, and a change that hits one is a review finding; while `shipmill product show` can't read the home's direction, none of them gives a verdict, opportunity, or finding on new behaviour (#1256)
+- A PR reviewer's REFUSE gets a second look before it is recorded or handed back: the reviewer lists each unfixed finding as `F-n`, `blocking` or nit; a fresh agent, given the blocking findings and not the verdict, marks each `confirmed` with a failure scenario, `rejected` with the code that handles it, or `minor`; the PR is refused only on a confirmed finding, the record carries a "Second look" part and `--findings` counts, and the weekly retro passes `--reviews` (#1279)
+- `shipmill doctor` prints one `identity` row in every repo: with `[agents] app_id`, a PASS naming the App's id, `<slug>[bot]`, and the repo when the token minted for the repo reads it, a FAIL naming the installation page and `shipmill app-install <owner/repo>` when it can't, and a WARN when the key isn't on this host; without it, a PASS for `identity = "host"` or `"none"`, a WARN naming the three choices and the setup line when nothing is recorded in an `[agents]` section, and a PASS without one. Doctor writes nothing (#1281)
+- The weekly retro proposes a review finding that recurs across two or more pull requests once, as a rule or check in the strongest place the repo's CI can hold it, shown failing in a throwaway worktree and checked with `retro.py proposal`, filed as the App with the `rule-proposal` and `needs-decision` labels (new `skills/github-ship-watch/references/rule-proposal.md`); triage takes up the answer as a person's item or a decline, shipmill writes none of the rule, and `setup_state.py --fix` creates the `rule-proposal` label for a repo with `[agents]` (S-077-10 to S-077-14) (#1284)
+- The watch's full report, for a config with `[trends]`, runs `trends.py` and adds a DRIFT row for each series at the `report` tier, with its diagnosis and the `trends.py` command as its fix; the row is reported and never acted on: it leaves the exit code as it was, no `--tier` or `--sweep` read prints it or runs `trends.py`, and `--no-trends` leaves the read out. `fleet.py report` lists it among a repo's report-only rows, and github-ship-watch's skill documents the four agent quality measures and a new Trends section (S-078-16 to S-078-18) (#1295)
+- `shipmill doctor` prints the `merge-checks` lines as a row in a repo with `[agents]`, judged at the configured `[autonomy] land`: the status checks a merge to the default branch requires and what each one's jobs prove, a WARN under `act` when none proves anything, which never changes doctor's exit code; shipmill-setup's Autonomy step shows `merge-checks --land act` beside the `land` choice and its warning beside every option that sets `land = "act"` (spec 080) (#1299)
+- Leak check: `shipmill leaks check [--repo DIR] [--to owner/name] [--field NAME] [FILE]` runs the detectors over a file or stdin and exits 2 with the findings, 0 with any warnings otherwise; `shipmill spec open` and `shipmill review record` check their `--body-file` before their first write, and `spec open` checks the commit it pushes, which no hook sees (#1318)
+
+### Fixed
+
+- `fleet.py report` and `queue` read a `PRS_OPEN` row that carries its pull requests' heads instead of refusing it as not a row (#1246)
+
+### Changed
+
+- shipmill-setup asks "Whom do agents write to GitHub as in this repo?" once, only while the Identity row reads `IDENTITY_UNCHOSEN`: the App (recommended, the row's App or `shipmill app-create`, written as `app_id` only after `shipmill app-install <owner/repo> --app-id <id> --check` exits 0), the owner's login with its warning, or nobody, and installs no gate for `host` or `none`. The "Write as the App" rule of the six skills now runs every write as `shipmill gh` and `shipmill app-token --check` before the first write in every repo, whatever the config sets; on the owner's choice (`identity = "none"`) a skill stops, says so, and hands over each write's text with its target, never passing `--as-host`; no instruction file's prose decides the identity. `docs/install.md` documents the three values, the setup question, that `identity = "none"` refuses `--as-host` too, and what an App on All repositories reaches and grants (#1282)
+
 ## [0.149.2] - 2026-11-19
 
 ### Fixed
@@ -2773,7 +2794,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.149.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.150.0...HEAD
+[0.150.0]: https://github.com/shipmill/shipmill/compare/v0.149.2...v0.150.0
 [0.149.2]: https://github.com/shipmill/shipmill/compare/v0.149.1...v0.149.2
 [0.149.1]: https://github.com/shipmill/shipmill/compare/v0.149.0...v0.149.1
 [0.149.0]: https://github.com/shipmill/shipmill/compare/v0.148.2...v0.149.0
