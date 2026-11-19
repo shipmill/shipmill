@@ -159,6 +159,7 @@ from shipmill import (
     refused,
     requires,
     review,
+    review_history,
     review_record,
     roles,
     spec_open,
@@ -619,6 +620,28 @@ def _parser() -> argparse.ArgumentParser:
     q.add_argument(
         "--body-file", required=True, type=Path, help="the reviewer's report, written after the verdict's marker line"
     )
+    q = reviews.add_parser(
+        "history",
+        help="print the history of the files a pull request touches: reverts and open pull requests (spec 073)",
+    )
+    q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    q.add_argument("number", type=int, metavar="N", help="the pull request")
+    q.add_argument(
+        "--days",
+        type=int,
+        default=review_history.DAYS,
+        help=f"the days of history read (default {review_history.DAYS})",
+    )
+    q.add_argument(
+        "--limit",
+        type=int,
+        default=review_history.LIMIT,
+        help=f"the most items per kind (default {review_history.LIMIT})",
+    )
+    q.add_argument(
+        "--before", metavar="SHA", help="read the history as it stood at this commit: only items dated before it count"
+    )
+    q.add_argument("--json", action="store_true", help="print the pack as one JSON object")
 
     p = sub.add_parser("status", help="say whether the factory works or is stuck (specs 008, 009)")
     p.add_argument(
@@ -1089,6 +1112,7 @@ def main(
     now: dt.datetime | None = None,
     rules_reader: RulesReader | None = None,
     merge_gate: GateRun | None = None,
+    history_reads: Callable[[Path], review_history.Reads] | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -1106,7 +1130,8 @@ def main(
     report names (spec 047), graphql for the GitHub `window` reads the last held merge from and
     now for the moment it reads the window at (spec 056), and rules_reader for the branch rules
     doctor's landing row reads (spec 054), and merge_gate for the pr_gate.py a `shipmill gh` merge
-    runs (spec 055), as tests pass fakes; stdin is also a `shipmill gh` merge's
+    runs (spec 055), and history_reads for what `review history` reads of GitHub in a checkout
+    (spec 073), as tests pass fakes; stdin is also a `shipmill gh` merge's
     --body-file -, and gh_capture also the gh whose output `spec open` reads"""
     refused.begin()  # each refused key is said once per command, however often it loads the config
     head, passed = _split_gh(argv)
@@ -1180,6 +1205,9 @@ def main(
         return _upgrade(root, args, github or GhCli(root))
     if args.command == "product":
         return _product(root, args)
+    if args.command == "review" and args.review_command == "history":
+        history_of = history_reads or (lambda top: review_history.GhReads(GhCli(top)))
+        return _review_history(root, args, history_of, now or dt.datetime.now(dt.UTC))
     if args.command == "review":
         return _review(root, args)
     if args.command == "decide":
@@ -3280,6 +3308,28 @@ def _window(root: Path, ref: str, as_json: bool, graphql: Callable[[], land_wind
     for key, value in record.items():
         shown = ", ".join(value) if isinstance(value, list) else json.dumps(value).strip('"')
         print(f"{key}: {shown}")
+    return 0
+
+
+def _review_history(
+    root: Path, args: argparse.Namespace, reads: Callable[[Path], review_history.Reads], now: dt.datetime
+) -> int:
+    """Spec 073: the history pack of the files pull request N touches, in the checkout's repo;
+    printed only once every read is done, so a failure prints nothing (S-073-8)"""
+    if not root.is_dir():
+        raise ReleaseError(f"--repo {root} is not a folder")
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(
+            f"review history runs in the repo's checkout, and git can't read {root}: `git -C {root} status`"
+        )
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    checkout = Git(top)
+    app_id = gh_identity_of(top).app_id
+    text = review_history.history(
+        checkout, lambda: reads(top), args.number, args.days, args.limit, args.before, app_id, now, args.json
+    )
+    sys.stdout.write(text)
     return 0
 
 
