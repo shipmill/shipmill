@@ -1,3 +1,0 @@
-### Added
-
-- `shipmill gh` refuses a write, with exit 2 before gh runs, whose title, body, field, or file names a private term from `~/.config/shipmill/private.toml` and goes to a public repo, or holds a secret's exact value from the checkout's untracked `.env` files or the file's `secret_files`, or a GitHub, Anthropic, AWS, or Slack token, a PEM private key, or a URL with a password, in any repo; the refusal names a term, but a secret only by its variable and file or its format and first 4 characters, and nothing turns the check off. A text gh would read from stdin is read and checked first, then fed to gh's stdin with its arguments as given, per spec 081 (#1315)
