@@ -72,7 +72,7 @@ from shipmill.plugin import (
     session_project,
 )
 from shipmill.refused import CATALOGUE, Refusal
-from shipmill.roles import LoginReader, ResolvedRole, arguments
+from shipmill.roles import GATE_MAINTAINER, LoginReader, ResolvedRole, arguments
 from shipmill.upgrades import Proposals, offers, propose
 from shipmill.upgrades import pending as pending_upgrades
 from shipmill.verify import Planner, Verified
@@ -151,8 +151,9 @@ HEADLESS_TOOLS = (
 # environment to tell a gate session from a person's (D-82)
 GATE_SESSION = "SHIPMILL_GATE"
 # Beside it, the login the headless paragraph names: the Stop hook refuses a final message that
-# asks this login for something the session put nowhere on GitHub (spec 062)
-MAINTAINER = "SHIPMILL_MAINTAINER"
+# asks this login for something the session put nowhere on GitHub (spec 062), and `shipmill
+# roles` reads it as the maintainer when [agents.roles] lists nobody (#1314)
+MAINTAINER = GATE_MAINTAINER
 # --claude-arg flags a headless gate refuses, alone or as --flag=value: each brings prompts
 # back, drops the allowlist, or breaks how the gate tracks the session
 HEADLESS_REFUSED = (

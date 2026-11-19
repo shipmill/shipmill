@@ -49,7 +49,8 @@
                   makes one's edit in the checkout and commits nothing; --propose opens or updates
                   one shipmill-upgrade issue per pending upgrade, as land.yml runs it after a release
   roles           print who receives each step an agent can't do (spec 036): [agents.roles] resolved,
-                  maintainer first (its listed users and teams, else the host's gh login), a role
+                  maintainer first (its listed users and teams, else in a gate session its
+                  SHIPMILL_MAINTAINER, else the host's gh login), a role
                   nobody fills marked fallback with the maintainer's; --json for one JSON object,
                   --flags for triage_state.py's --role arguments
   init            write a starting policy, the calling workflow, and changelog.d/README.md for changelog
@@ -1149,9 +1150,14 @@ def main(
     if args.command == "app-create":
         ask = input if sys.stdin.isatty() and not args.owner else None
         return _app_create(root, args, api or UrllibApi(), signer or Openssl(), ask=ask)
+    # #1314: in a gate session the maintainer is the gate's SHIPMILL_MAINTAINER, since `gh api
+    # user` answers 403 under the App's token; a test that fakes the login without an environment
+    # never reads the one it runs in
+    maintainer = "" if login is not None and environ is None else env.get(roles.GATE_MAINTAINER, "")
     if args.command == "status":
         host = login or (lambda: host_login(root))
-        return _status(root, args, state or run_state, api or UrllibApi(), signer or Openssl(), host)
+        hub_api, hub_signer = api or UrllibApi(), signer or Openssl()
+        return _status(root, args, state or run_state, hub_api, hub_signer, host, gate_maintainer=maintainer)
     if args.command == "factory":
         hub_api, hub_signer = api or UrllibApi(), signer or Openssl()
         return _factory(root, args, state or run_state, hub_api, hub_signer, github, sessions, user_home)
@@ -1161,7 +1167,7 @@ def main(
         reads = deprecation_reads or deprecations_report.GhReads(state or run_state)
         return _deprecations(args, reads, user_home, today or dt.datetime.now(dt.UTC).date())
     if args.command == "roles":
-        resolved = roles.resolve(roles.configured(root), login or (lambda: host_login(root)))
+        resolved = roles.resolve(roles.configured(root), login or (lambda: host_login(root)), maintainer)
         if args.json:
             sys.stdout.write(roles.as_json(resolved, refused.in_checkout(root)))
         else:
@@ -2756,12 +2762,15 @@ def _status(
     home: Path | None = None,
     platform: str = sys.platform,
     now: dt.datetime | None = None,
+    gate_maintainer: str = "",
 ) -> int:
     """Specs 008 and 009: the factory's picture for the checkout's repo, or with --rows or
     --json github-ship-watch's report passed through; exit 1 when a row needs action, 2 when
     the script failed rather than reported. Both reads pass the resolved roles as the gate's
-    do (S-036-5), the maintainer the host's login (login) when the config lists nobody; a
-    malformed [agents.roles] or an unreadable login needed for it exits 2 before any read"""
+    do (S-036-5), the maintainer, when the config lists nobody, the gate's SHIPMILL_MAINTAINER
+    (gate_maintainer) when non-empty, else the host's login (login, #1314); a malformed
+    [agents.roles], a malformed gate_maintainer, or an unreadable login needed for it exits 2
+    before any read"""
     git = Git(root)
     if not git.ok("rev-parse", "--show-toplevel"):  # S-008-9: first, before any other git call
         raise ReleaseError(f"{root} is not a git checkout; run status in a checkout of the repo, or pass --repo PATH")
@@ -2774,7 +2783,7 @@ def _status(
     else:
         check_checkout(Git(top), slug)
     picture = not (args.rows or args.json)
-    resolved = roles.resolve(roles.configured(top), login)
+    resolved = roles.resolve(roles.configured(top), login, gate_maintainer)
     # S-040-10: the picture and --json show the levels; a malformed [autonomy] exits 2 first
     autonomy, environments = status.read_autonomy(top) if not args.rows else (AutonomyPolicy(), ())
     home = home if home is not None else Path.home()
