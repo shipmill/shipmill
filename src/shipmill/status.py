@@ -48,7 +48,14 @@ from shipmill.gate import (
 from shipmill.github import UPGRADE_LABEL, GitHub, labelled_command, parse_labelled
 from shipmill.gitrepo import Git
 from shipmill.launchd import label
-from shipmill.planner import MilestoneOvertaken, MilestoneWaiting, Planner
+from shipmill.planner import (
+    MilestoneFinding,
+    MilestoneMissing,
+    MilestoneOvertaken,
+    MilestoneReleased,
+    MilestoneWaiting,
+    Planner,
+)
 from shipmill.plugin import GateCli, publish_fix
 from shipmill.policy import Policy
 from shipmill.refused import Refusal
@@ -96,6 +103,10 @@ CHAIN_ROWS = ("CHAIN_NO_GATE", "CHAIN_CYCLE", "CHAIN_UNREADABLE")  # CHAIN_CYCLE
 # stable tag overtook, renamed to the version the lane cuts next
 MILESTONE_WAITING = "MILESTONE_WAITING"
 MILESTONE_OVERTAKEN = "MILESTONE_OVERTAKEN"
+# spec 068's: an open milestone its release shipped, closed by its fix, and none above the
+# newest stable tag, created by its fix, the maintainer's step only (D-32)
+MILESTONE_RELEASED = "MILESTONE_RELEASED"
+MILESTONE_MISSING = "MILESTONE_MISSING"
 PRS_PARKED = "PRS_PARKED"  # #853: a person's open pull requests, each waiting on its assignees
 # #1155: a gate job on this host whose WorkingDirectory is gone, from watch_state.py's sessions section
 CHECKOUT_MISSING = "GATE_CHECKOUT_MISSING"
@@ -593,9 +604,11 @@ def read_upgrades(
 
 @dataclass(frozen=True, slots=True)
 class MilestoneRow:
-    """A spec 022 row as `shipmill milestones` prints it: MILESTONE_WAITING, a goal's milestone
-    waiting on its specs (report only, no fix), or MILESTONE_OVERTAKEN, an open milestone a
-    stable tag took, with its number, the version to rename it to, and the rename"""
+    """A spec 022 or 068 row as `shipmill milestones` prints it: MILESTONE_WAITING, a goal's
+    milestone waiting on its specs or its holds (report only, no fix); MILESTONE_OVERTAKEN, an
+    open milestone a stable tag took, with its number, the version to rename it to, and the
+    rename; MILESTONE_RELEASED, an open milestone its release shipped, with its number and the
+    close; or MILESTONE_MISSING, the version the lane cuts next and the create"""
 
     state: str
     milestone: str
@@ -623,24 +636,38 @@ class MilestoneRow:
         return line if self.fix is None else f"{line}\n  fix: {self.fix}"
 
 
-def milestone_rows(
-    repo: str, findings: Sequence[MilestoneWaiting | MilestoneOvertaken], command: str, app: bool
-) -> list[MilestoneRow]:
-    """S-022-8, S-022-10: the planner's milestone findings as rows, the milestone the subject:
-    a waiting goal's reasons, or the tag that overtook it, the version next, and the rename,
-    a write, so through `shipmill gh` (command is cli_command()'s form) as the App when
-    [agents] app_id is set (D-14), and plain gh without it (S-037-12), where `shipmill gh`
-    refuses a write; app is whether it is set"""
+def milestone_rows(repo: str, findings: Sequence[MilestoneFinding], command: str, app: bool) -> list[MilestoneRow]:
+    """S-022-8, S-022-10, S-068-7, S-068-8, S-068-10: the planner's milestone findings as
+    rows, the milestone the subject: a waiting goal's reasons or holds; the tag that overtook
+    it, the version next, and the rename; the tag that shipped it and the close; or the
+    version next and the create. Each fix is a write, so through `shipmill gh` (command is
+    cli_command()'s form) as the App when [agents] app_id is set (D-14), and plain gh without
+    it (S-037-12), where `shipmill gh` refuses a write; app is whether it is set"""
     rows = []
     writer = f"{command} gh" if app else "gh"
     for f in findings:
-        if isinstance(f, MilestoneWaiting):
-            rows.append(MilestoneRow(MILESTONE_WAITING, f.verdict.milestone, f.verdict.reason))
-        else:
-            detail = f"{f.version.tag} exists; the {f.lane} lane cuts {f.next} next"
-            number, title = f.milestone.number, str(f.next)
-            rename = f"{writer} api -X PATCH repos/{repo}/milestones/{number} -f title={title}"
-            rows.append(MilestoneRow(MILESTONE_OVERTAKEN, f.milestone.title, detail, number, title, rename))
+        match f:
+            case MilestoneWaiting():
+                rows.append(MilestoneRow(MILESTONE_WAITING, f.verdict.milestone, f.verdict.reason))
+            case MilestoneOvertaken():
+                detail = f"{f.version.tag} exists; the {f.lane} lane cuts {f.next} next"
+                number, title = f.milestone.number, str(f.next)
+                rename = f"{writer} api -X PATCH repos/{repo}/milestones/{number} -f title={title}"
+                rows.append(MilestoneRow(MILESTONE_OVERTAKEN, f.milestone.title, detail, number, title, rename))
+            case MilestoneReleased():
+                detail = f"{f.version.tag} exists and the milestone has no open issues: close it"
+                number = f.milestone.number
+                close = f"{writer} api -X PATCH repos/{repo}/milestones/{number} -f state=closed"
+                rows.append(MilestoneRow(MILESTONE_RELEASED, f.milestone.title, detail, number, None, close))
+            case MilestoneMissing():
+                above = f"above {f.newest.tag}" if f.newest is not None else "titled a stable version"
+                title = str(f.next)
+                detail = (
+                    f"no open milestone {above}: the {f.lane} lane cuts {title} next, and an accepted goal plan"
+                    " may name it (D-38); creating it is the maintainer's step (D-32)"
+                )
+                create = f"{writer} api -X POST repos/{repo}/milestones -f title={title}"
+                rows.append(MilestoneRow(MILESTONE_MISSING, title, detail, None, title, create))
     return rows
 
 

@@ -28,6 +28,10 @@ from .test_status_picture import facts, lines
 WATCH_STATE = Path(__file__).resolve().parents[1] / "skills" / "github-ship-watch" / "scripts" / "watch_state.py"
 
 
+# the candidate's milestone, open as GitHub lists it, so no MILESTONE_MISSING row (spec 068)
+OPEN = OpenMilestone(3, "1.1.0", 0)
+
+
 def read(repo: Repo, now: dt.datetime) -> tuple[list[MilestoneRow], str | None]:
     """The read `shipmill milestones` makes once it fetched the default branch"""
     repo.git.fetch("+refs/heads/main:refs/remotes/origin/main")
@@ -66,6 +70,7 @@ def test_s022_8_a_milestone_whose_goal_isnt_built_reads_waiting_with_its_reasons
         tmp_path, rc_cut, {"021-goal.md": spec(21, "approved", "#11"), "023-other.md": spec(23, "built", "#12")}
     )
     in_milestone(repo, (11, "Build A"), (12, "Build B"))
+    repo.github.open = [OPEN]
     repo.github.closes[12] = closed(12)
     rows, error = read(repo, at_day(5))
     reasons = (
@@ -81,6 +86,7 @@ def test_s022_8_a_fix_after_the_rc_names_the_rc(repos: Repos, tmp_path: Path) ->
     repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "#11")})
     late = repo.merge(2, "Fixed", "Fix B, after the rc")
     in_milestone(repo, (11, "Build A"))
+    repo.github.open = [OPEN]
     repo.github.closes[11] = closed(11, late)
     rows, _ = read(repo, at_day(5))
     assert rows == [MilestoneRow("MILESTONE_WAITING", "1.1.0", "milestone 1.1.0: S-021's #11 is not in v1.1.0rc1")]
@@ -89,6 +95,7 @@ def test_s022_8_a_fix_after_the_rc_names_the_rc(repos: Repos, tmp_path: Path) ->
 def test_s022_8_no_row_while_the_milestone_has_open_issues_or_its_goal_is_done(repos: Repos, tmp_path: Path) -> None:
     repo, fix = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "approved", "#11")})
     repo.github.milestones["1.1.0"] = Milestone(1, 1)  # the ordinary wait
+    repo.github.open = [OpenMilestone(3, "1.1.0", 1)]
     assert read(repo, at_day(5)) == ([], None)
     in_milestone(repo, (11, "Build A"))
     land_on_main(repo, "built", {"docs/specs/021-goal.md": spec(21, "built", "#11")})
@@ -99,7 +106,8 @@ def test_s022_8_no_row_while_the_milestone_has_open_issues_or_its_goal_is_done(r
 
 def test_s022_8_no_row_and_nothing_read_without_a_milestone_or_a_milestone_lane(repos: Repos, tmp_path: Path) -> None:
     repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "approved", "#11")})
-    assert read(repo, at_day(5)) == ([], None)  # no milestone named 1.1.0, none open
+    rows, error = read(repo, at_day(5))  # no milestone named 1.1.0, none open: only spec 068's missing one
+    assert ([r.state for r in rows], error) == (["MILESTONE_MISSING"], None)
     assert repo.github.milestone_reads == []
     milestone_policy_off(repo)
     repo.github.milestone_error = "no read is made without a lane that sets milestone = true"
@@ -166,7 +174,10 @@ def test_s037_12_the_rename_goes_through_shipmill_gh_only_with_app_id_set(repos:
     config = repo.root / ".github" / "shipmill.toml"
     config.write_text(config.read_text(encoding="utf-8") + '\n[agents]\nprompt = "/t"\napp_id = 7\n', encoding="utf-8")
     rows, _ = read(repo, at_day(6))
-    assert [r.fix for r in rows] == ["shipmill gh api -X PATCH repos/o/demo/milestones/3 -f title=1.1.1"]
+    assert [r.fix for r in rows] == [
+        "shipmill gh api -X PATCH repos/o/demo/milestones/3 -f title=1.1.1",
+        "shipmill gh api -X POST repos/o/demo/milestones -f title=1.1.1",  # S-068-8's, no milestone above v1.1.0
+    ]
 
 
 def test_s022_10_the_next_version_is_the_lanes_candidate(repos: Repos, tmp_path: Path) -> None:
@@ -174,7 +185,7 @@ def test_s022_10_the_next_version_is_the_lanes_candidate(repos: Repos, tmp_path:
     repo, _ = repos.after(tmp_path, stable_released)
     repo.merge(3, "Added", "Feature C")
     release(repo, plan(repo, at_day(6)))  # 1.2.0rc1
-    repo.github.open = [OpenMilestone(3, "1.1.0", 1)]
+    repo.github.open = [OpenMilestone(3, "1.1.0", 1), OpenMilestone(4, "1.2.0", 0)]
     rows, _ = read(repo, at_day(10))
     assert [r.detail for r in rows] == ["v1.1.0 exists; the stable lane cuts 1.2.0 next"]
 
@@ -187,16 +198,19 @@ def test_s022_10_no_row_while_no_stable_tag_took_an_open_milestone(repos: Repos,
 
 def test_s022_10_a_milestone_its_own_release_shipped_is_not_overtaken(repos: Repos, tmp_path: Path) -> None:
     """GitHub leaves a milestone open after its version ships: with no open issues, the tag
-    shipped its goal rather than took it, so there is nothing to rename"""
+    shipped its goal rather than took it, so there is nothing to rename; it reads released
+    instead (S-068-7)"""
     repo, fix = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "built", "#11")})
     in_milestone(repo, (11, "Build A"))
     repo.github.closes[11] = closed(11, fix)
     release(repo, plan_stable(repo))  # 1.1.0, due by its milestone
     assert repo.git.ok("rev-parse", "-q", "--verify", "refs/tags/v1.1.0")
     repo.merge(2, "Fixed", "Fix B")
-    repo.github.open = [OpenMilestone(3, "1.1.0", 0)]
-    assert read(repo, at_day(6)) == ([], None)
-    repo.github.open = [OpenMilestone(3, "1.1.0", 1)]  # an issue still open: taken before done
+    upcoming = OpenMilestone(4, "1.1.1", 0)
+    repo.github.open = [OpenMilestone(3, "1.1.0", 0), upcoming]
+    rows, _ = read(repo, at_day(6))
+    assert [r.state for r in rows] == ["MILESTONE_RELEASED"]
+    repo.github.open = [OpenMilestone(3, "1.1.0", 1), upcoming]  # an issue still open: taken before done
     rows, _ = read(repo, at_day(6))
     assert [r.state for r in rows] == ["MILESTONE_OVERTAKEN"]
 
@@ -222,7 +236,7 @@ def test_s022_10_shipmill_milestones_prints_the_overtaken_row_and_the_watch_read
     """#475: the row's milestone, number, next version, and the rename through `shipmill gh`;
     watch_state.py makes it an action with the rename as its fix, never an agent's"""
     repo, _ = repos.after(tmp_path, stable_released)
-    repo.github.open = [OpenMilestone(3, "1.1.0", 1)]
+    repo.github.open = [OpenMilestone(3, "1.1.0", 1), OpenMilestone(4, "1.2.0", 0)]
     on_github(repo)
     repo.git.run("push", "-q", "origin", "+HEAD:refs/tags/v0")  # a moving major tag, moved on origin
     repo.git.run("tag", "-f", "v0", "HEAD~1")
@@ -251,6 +265,7 @@ def test_s022_8_the_watch_reads_a_waiting_milestone_from_shipmill_milestones(
 ) -> None:
     repo, _ = repos.after(tmp_path, rc_cut, {"021-goal.md": spec(21, "approved", "#11")})
     in_milestone(repo, (11, "Build A"))
+    repo.github.open = [OPEN]
     on_github(repo)
     printed = milestones(repo, at_day(5), capsys, "--json")
     ws = watch_state()

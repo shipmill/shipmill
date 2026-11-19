@@ -207,6 +207,16 @@ reads nothing without a lane that sets `milestone = true`. github-ship-watch's
 `watch_state.py` runs it, so `shipmill status`, its `--rows` and `--json`, and a watch pass
 show both rows, and under "watch" the pass renames an overtaken milestone.
 
+Spec 068 adds three readings. An open milestone titled a stable version whose tag exists,
+with no open issues, prints MILESTONE_RELEASED with the `shipmill gh api` command that closes
+it. When no open milestone is titled a stable version above the newest stable tag,
+MILESTONE_MISSING names the version the lane cuts next and the command that creates its
+milestone; creating it is the maintainer's step (D-32). A milestone whose open issues each
+carry `shipmill-hold` or `needs-decision` is a hold, not unfinished work: it prints
+MILESTONE_WAITING with one reason per issue, `milestone 1.5.0: #12 holds it (shipmill-hold):
+<title>` or `milestone 1.5.0: #12 waits on a decision: <title>`, and `shipmill plan` names
+the same reasons; a milestone with any other open issue waits with no row.
+
 `[gates] veto_lanes`, empty by default, makes a lane wait for the veto window of each
 `notify` decision it would ship (spec 059), since a published version can only be yanked.
 **What a release ships** is read from GitHub alone: the merged pull requests whose merge
