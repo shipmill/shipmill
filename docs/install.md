@@ -750,6 +750,15 @@ the gate's own environment to choose another ceiling.
    (`version`, `status`, `error`), each null on a tick that reached no launch. Releases up
    to 0.59.1 also gave `plugin`, the daily update of `plugin_update = true`, which is gone
 
+### Keep private names and secrets off GitHub
+
+When the agents work in your public repos and your private ones from the same machine, list
+your private names, and the files that hold your secrets, in
+`~/.config/shipmill/private.toml`, outside every repo. shipmill then refuses an agent's
+write or push that would send one of them, before it leaves the machine (spec 081, D-94).
+[leaks.md](leaks.md) describes the file, the four detectors, and both refusals, and
+`shipmill doctor`'s `leaks` block shows what is checked.
+
 ## Contributors
 
 For you, the maintainer: what shipmill does when someone other than you works in a repo
