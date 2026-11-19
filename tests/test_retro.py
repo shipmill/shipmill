@@ -1719,6 +1719,208 @@ def test_findings_reads_120_pull_requests_in_3_queries(rt: ModuleType, capsys: p
     assert [c[:2] for c in github.calls] == [["pr", "list"], ["api", "--paginate"]]  # the pulls, then the proposals
 
 
+# -- proposal (spec 077) ----------------------------------------------------------------------
+
+RULE = "In apps/api the dev script is start:dev, not dev"
+FENCE = "```"
+
+
+def rule_body(place: str = "lint", pulls: str = "41,57", sections: Mapping[str, str | None] | None = None) -> str:
+    """A proposal body as rule-proposal.md writes it; a section given None is left out, one
+    given text replaces its content"""
+    parts: dict[str, str | None] = {
+        "Rule": RULE,
+        "Raised in": "- #41: the reviewer asked for start:dev\n- #57: the maintainer corrected dev",
+        "Place": "A lint rule: no-restricted-syntax in apps/api/.eslintrc.json.",
+    }
+    if place == "prose":
+        parts["Why prose"] = "No check the repo runs can read a README's wording."
+    else:
+        parts["Enforced by"] = f"{FENCE}diff\n+ rule: start:dev\n## Rule\n{FENCE}"  # a heading in a block is its text
+        parts["Shown failing"] = f"Command: npm run lint\nHead: {SHA}\nExit: 1\n\n{FENCE}\nerror: dev\n{FENCE}"
+        parts["On the default branch"] = "passes"
+    parts.update(sections or {})
+    body = [f"<!-- shipmill:rule-proposal pulls={pulls} place={place} -->"]
+    for name, text in parts.items():
+        if text is not None:
+            body += [f"## {name}", "", text, ""]
+    return "\n".join(body)
+
+
+def proposal_issue(
+    number: int, title: str, state: str = "open", reason: str | None = None, *labels: str, **who: Any
+) -> Any:
+    mark = f"<!-- shipmill:rule-proposal pulls=1,2 place=lint -->\n## Rule\n\n{title}"
+    names = [{"name": n} for n in ("rule-proposal", *labels)]
+    url = f"https://github.com/{REPO}/issues/{number}"
+    extra: dict[str, Any] = {"number": number, "title": title, "state": state, "state_reason": reason, "html_url": url}
+    return rest(mark, **who, **extra, labels=names, closed_at=None if state == "open" else "2021-01-04T00:00:00Z")
+
+
+def run_proposal(
+    rt: ModuleType,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    body: str,
+    issues: list[Any] | None = None,
+    *flags: str,
+) -> tuple[int, str, str, Forge]:
+    """proposal's exit code, stdout, and stderr over a forge holding issues, and the forge"""
+    path = tmp_path / "body.md"
+    path.write_text(body, encoding="utf-8")
+    github = forge([], issues=issues or [])
+    args = rt.parse(["proposal", str(path), "--repo", REPO, "--bot", APP, *flags])
+    try:
+        code = rt.proposal_command(args, github.read)
+    except SystemExit as e:  # a malformed body: exit 2
+        code = e.code
+    out, err = capsys.readouterr()
+    return int(code), out, err, github
+
+
+@pytest.mark.parametrize(
+    ("body", "fault"),
+    [
+        pytest.param("\n" + rule_body(), "the first line isn't", id="marker not first"),
+        pytest.param(rule_body().split("\n", 1)[1], "the first line isn't", id="no marker"),
+        pytest.param(rule_body().replace(" -->", "-->", 1), "the first line isn't", id="a marker out of form"),
+        pytest.param(rule_body(pulls="41,41"), "one distinct pull request", id="one distinct PR"),
+        pytest.param(rule_body(pulls="41"), "one distinct pull request", id="one PR"),
+        pytest.param(rule_body(place="docs"), "place is 'docs'", id="unknown place"),
+        pytest.param(rule_body(sections={"Rule": None}), "the Rule section is missing or empty", id="no Rule"),
+        pytest.param(rule_body(sections={"Rule": "  "}), "the Rule section is missing or empty", id="empty Rule"),
+        pytest.param(rule_body(sections={"Raised in": None}), "the Raised in section is missing", id="no Raised in"),
+        pytest.param(rule_body(sections={"Place": ""}), "the Place section is missing or empty", id="empty Place"),
+        pytest.param(
+            rule_body(sections={"Rule": f"{RULE}\nand more"}), "the Rule is more than one line", id="Rule two lines"
+        ),
+        pytest.param(
+            rule_body(sections={"Rule": "x" * 201}), "the Rule is 201 characters; it is at most 200", id="Rule too long"
+        ),
+        pytest.param(
+            rule_body(sections={"Raised in": "- #41: asked\n- see #57"}), "no `- #57` line", id="Raised in lacks a PR"
+        ),
+    ],
+)
+def test_s077_6_a_malformed_body_exits_2_naming_its_fault_and_reads_nothing(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path, body: str, fault: str
+) -> None:
+    code, out, err, github = run_proposal(rt, capsys, tmp_path, body)
+    assert (code, out) == (2, "")
+    assert fault in err and "fix the body and check it again" in err
+    assert github.calls == []
+
+
+def test_s077_6_a_rule_of_200_characters_on_one_line_passes(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    rule = "x" * 200
+    assert run_proposal(rt, capsys, tmp_path, rule_body(sections={"Rule": rule}))[:2] == (0, f"Rule: {rule}\n")
+
+
+def output(lines: int) -> str:
+    return f"Command: npm run lint\nHead: {SHA}\nExit: 1\n\n{FENCE}\n" + "\n".join(["e"] * lines) + f"\n{FENCE}"
+
+
+@pytest.mark.parametrize(
+    ("sections", "fault"),
+    [
+        ({"Enforced by": None}, "Enforced by has no fenced block"),
+        ({"Enforced by": "add no-restricted-syntax to .eslintrc.json"}, "Enforced by has no fenced block"),
+        ({"Enforced by": "    + rule: start:dev"}, "Enforced by has no fenced block"),  # indented, not fenced
+        ({"Shown failing": None}, "no `Command:` line"),
+        ({"Shown failing": output(1).replace("Command: npm run lint", "Command:")}, "no `Command:` line"),
+        ({"Shown failing": output(1).replace(SHA, SHA[:12])}, "no `Head:` line holding a full 40-character SHA"),
+        ({"Shown failing": output(1).replace(f"Head: {SHA}\n", "")}, "no `Head:` line"),
+        ({"Shown failing": output(1).replace("Exit: 1", "Exit: 0")}, "no `Exit:` line holding a non-zero"),
+        ({"Shown failing": output(1).replace("Exit: 1\n", "")}, "no `Exit:` line"),
+        ({"Shown failing": output(0)}, "no fenced output"),
+        ({"Shown failing": output(1).replace(f"\n\n{FENCE}\ne\n{FENCE}", "")}, "no fenced output"),
+        ({"Shown failing": output(31)}, "output is 31 lines; keep at most 30"),
+        ({"On the default branch": None}, "the On the default branch section is missing or empty"),
+        ({"On the default branch": ""}, "the On the default branch section is missing or empty"),
+    ],
+)
+def test_s077_7_a_check_place_needs_its_check_shown_failing_and_the_default_branch(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path, sections: dict[str, str | None], fault: str
+) -> None:
+    for place in ("lint", "type", "import", "test"):
+        code, out, err, github = run_proposal(rt, capsys, tmp_path, rule_body(place, sections=sections))
+        assert (code, out, github.calls) == (2, "", []), place
+        assert fault in err, (place, err)
+
+
+def test_s077_7_a_prose_body_needs_why_prose_and_none_of_the_check_sections(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    assert "Enforced by" not in rule_body(place="prose")
+    assert run_proposal(rt, capsys, tmp_path, rule_body(place="prose"))[:2] == (0, f"Rule: {RULE}\n")
+    in_cap = rule_body(sections={"Shown failing": output(30)})  # 30 lines of output is within the cap
+    assert run_proposal(rt, capsys, tmp_path, in_cap)[:2] == (0, f"Rule: {RULE}\n")
+    for why in (None, "", "\n  \n"):
+        code, out, err, _ = run_proposal(rt, capsys, tmp_path, rule_body("prose", sections={"Why prose": why}))
+        assert (code, out) == (2, "")
+        assert "a prose proposal needs a non-empty Why prose section" in err
+
+
+def test_s077_8_a_rule_proposed_before_in_any_state_is_a_duplicate(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    for state, reason, shown in (
+        ("closed", "not_planned", "declined"),  # declined long ago (2021): still refused
+        ("closed", "completed", "accepted"),
+        ("open", None, "open"),
+    ):
+        issues = [
+            proposal_issue(
+                30, "Rule: in APPS/api, the dev script is start:dev not dev!", association="NONE", login="zed"
+            ),
+            proposal_issue(12, "Rule:  in APPS/api, the dev-script is start:dev not dev.", state, reason),
+            proposal_issue(11, "Rule: another rule", "closed", "not_planned"),
+        ]
+        code, out, err, github = run_proposal(rt, capsys, tmp_path, rule_body(), issues)
+        assert (code, err) == (1, "")
+        assert out == f"DUPLICATE #12 ({shown}): Rule:  in APPS/api, the dev-script is start:dev not dev.\n"
+        assert [c[:2] for c in github.calls] == [["api", "--paginate"]]
+    # an outsider's issue with the same title is no Proposed issue
+    issues = [proposal_issue(30, f"Rule: {RULE}", association="NONE", login="zed")]
+    assert run_proposal(rt, capsys, tmp_path, rule_body(), issues)[:2] == (0, f"Rule: {RULE}\n")
+
+
+def test_s077_9_three_open_proposals_waiting_on_an_answer_hold_back_another(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    waiting = [proposal_issue(n, f"Rule: rule {n}", "open", None, "needs-decision") for n in (21, 22, 23)]
+    others = [
+        proposal_issue(24, "Rule: rule 24"),  # open without needs-decision
+        proposal_issue(25, "Rule: rule 25", "closed", "completed", "needs-decision"),  # closed
+        proposal_issue(26, "Rule: rule 26", "open", None, "needs-decision", association="NONE", login="zed"),
+    ]
+    code, out, err, _ = run_proposal(rt, capsys, tmp_path, rule_body(), waiting + others)
+    assert (code, out, err) == (1, "FULL: 3 proposals wait on an answer\n", "")
+    assert run_proposal(rt, capsys, tmp_path, rule_body(), waiting[:2] + others)[:2] == (0, f"Rule: {RULE}\n")
+    assert run_proposal(rt, capsys, tmp_path, rule_body(), waiting + others, "--max-open", "4")[:2] == (
+        0,
+        f"Rule: {RULE}\n",
+    )
+    code, out, _, _ = run_proposal(rt, capsys, tmp_path, rule_body(), waiting[:1], "--max-open", "1")
+    assert (code, out) == (1, "FULL: 1 proposals wait on an answer\n")
+    with pytest.raises(SystemExit) as refused:
+        rt.parse(["proposal", "body.md", "--repo", REPO, "--max-open", "0"])
+    assert refused.value.code == 2
+    assert "--max-open must be at least 1" in capsys.readouterr().err
+
+
+def test_proposal_refuses_a_body_file_it_cant_read(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    args = rt.parse(["proposal", str(tmp_path / "missing.md"), "--repo", REPO])
+    with pytest.raises(SystemExit) as refused:
+        rt.proposal_command(args, forge([]).read)
+    assert refused.value.code == 2
+    assert "can't read" in capsys.readouterr().err
+
+
 def test_findings_pages_on_alone_a_connection_longer_than_its_page(
     rt: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
