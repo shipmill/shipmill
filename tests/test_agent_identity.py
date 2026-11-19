@@ -1,7 +1,8 @@
 """Spec 082: whom agents write to GitHub as is chosen once per repo, at setup. [agents]
 identity reads "app", "host", or "none" in shipmill and in setup_state.py, setup_state.py
-prints one Identity row, and `shipmill gh`, `spec open`, and `app-token --check` refuse a write
-with the owner's choice or the three choices. No test reaches the network: gh is a fake"""
+prints one Identity row, `shipmill gh`, `spec open`, and `app-token --check` refuse a write
+with the owner's choice or the three choices, and doctor prints one identity row. No test
+reaches the network: gh, GitHub's API, and the signer are fakes"""
 
 import importlib.util
 import json
@@ -14,13 +15,20 @@ from typing import Any
 
 import pytest
 
+from shipmill import cli_command
 from shipmill.agents import AgentsConfig, WriteAs, gh_identity_of
+from shipmill.app import Answer
+from shipmill.doctor import Check, doctor, identity_on_host
 from shipmill.errors import ReleaseError
 
-from .test_app import APP_ID, REPO, FakeSigner
+from .conftest import POLICY
+from .test_app import APP_ID, REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, checkout, outside
+from .test_app_install import CHECK_APP, CHECK_PAGE
+from .test_app_install import Clock as CheckClock
 from .test_app_token import FAKE_GH, MintApi, executable
 from .test_contributors import check, run_setup, setup_repo, states
+from .test_gate_github_auth import ACCESS, REPO_PATH, SECRET, ReachApi
 from .test_gh_refuses_without_app import COMMENT, PR_CREATE, choices, one_call, refusal, run
 from .test_spec_open import FakeCheckout, FakeGh, repo_files, spec_text
 from .test_spec_open import cli as spec_open
@@ -443,3 +451,81 @@ def test_s082_6_check_with_app_id_answers_as_s033_16(tmp_path: Path, capsys: pyt
     with pytest.raises(ReleaseError, match=f"the App {APP_ID} isn't available here: no key at"):
         check(root, {}, tmp_path / "home")
     assert not (root / ".git" / "shipmill").exists()
+
+
+# -- S-082-10: doctor's identity row --------------------------------------------------------
+
+
+def files(top: Path) -> dict[str, bytes]:
+    return {str(p.relative_to(top)): p.read_bytes() for p in sorted(top.rglob("*")) if p.is_file()}
+
+
+def identity_rows(tmp_path: Path, text: str, api: ReachApi | None = None, key: bool = True) -> list[Check]:
+    """doctor's identity rows for a repo whose config adds text to POLICY, the App's key at its
+    default path in the home when key; the probe reads through the fake API and signer, and
+    doctor writes nothing, the token included"""
+    root = config(tmp_path / "repo", POLICY + text)
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    home = tmp_path / "home"
+    if key:
+        found = home / ".config" / "shipmill"
+        found.mkdir(parents=True)
+        key_file(found).rename(found / f"app-{APP_ID}.pem")
+    before = files(tmp_path)
+    probe = identity_on_host(None, home, FakeSigner(), api or ReachApi(app=CHECK_APP), CheckClock())
+    rows = [c for c in doctor(root, repo=REPO, home=home, identity=probe) if c.name == "identity"]
+    assert files(tmp_path) == before
+    return rows
+
+
+def test_s082_10_the_app_reading_the_repo_passes_naming_its_id_bot_and_the_repo(tmp_path: Path) -> None:
+    api = ReachApi(app=CHECK_APP)
+    rows = identity_rows(tmp_path, WITH_APP, api)
+    assert rows == [Check("PASS", "identity", f"the App {APP_ID} (demo-agent[bot]) can read {REPO}")]
+    assert (REPO_PATH, SECRET) in api.calls  # the token minted for the repo read it
+    assert [e for e in api.events if e.startswith("POST")] == [f"POST {ACCESS}"]  # the mint, and no write
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        ReachApi(app=CHECK_APP, installed=False),
+        ReachApi(app=CHECK_APP, repo=Answer(404, '{"message": "Not Found"}')),
+    ],
+)
+def test_s082_10_the_app_that_cant_read_the_repo_fails_naming_the_page_and_app_install(
+    tmp_path: Path, api: ReachApi
+) -> None:
+    [row] = identity_rows(tmp_path, WITH_APP, api)
+    assert (row.status, row.name) == ("FAIL", "identity")
+    assert row.detail.startswith(f"the App {APP_ID} can't read {REPO}: ")
+    assert CHECK_PAGE in row.detail and f"`{cli_command()} app-install {REPO}`" in row.detail
+
+
+def test_s082_10_the_app_without_its_key_on_the_host_warns(tmp_path: Path) -> None:
+    api = ReachApi(app=CHECK_APP)
+    rows = identity_rows(tmp_path, WITH_APP, api, key=False)
+    assert rows == [Check("WARN", "identity", f"the App {APP_ID}, unchecked: its key isn't on this host")]
+    assert api.events == []  # nothing asked of GitHub
+
+
+def test_s082_10_identity_host_passes(tmp_path: Path) -> None:
+    rows = identity_rows(tmp_path, HOST)
+    assert rows == [Check("PASS", "identity", "host: writes through shipmill gh go as the host's gh login")]
+
+
+def test_s082_10_identity_none_passes(tmp_path: Path) -> None:
+    rows = identity_rows(tmp_path, NONE)
+    assert rows == [Check("PASS", "identity", "none: agents don't write to GitHub here")]
+
+
+@pytest.mark.parametrize("text", [AGENTS, AGENTS + 'identity = "app"\n'])
+def test_s082_10_not_chosen_with_an_agents_section_warns_naming_the_three_choices(tmp_path: Path, text: str) -> None:
+    rows = identity_rows(tmp_path, text)
+    detail = "; ".join(["not chosen: a write through shipmill gh is refused", *choices(REPO)])
+    assert rows == [Check("WARN", "identity", detail)]
+
+
+def test_s082_10_not_chosen_without_an_agents_section_passes(tmp_path: Path) -> None:
+    rows = identity_rows(tmp_path, "")
+    assert rows == [Check("PASS", "identity", "; ".join(["not chosen (no [agents] section)", *choices(REPO)]))]

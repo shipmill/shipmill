@@ -178,6 +178,7 @@ from shipmill.agents import (
     WriteAs,
     app_id_of,
     gh_identity_of,
+    identity_choices,
 )
 from shipmill.app import (
     BOT_IDS,
@@ -312,6 +313,7 @@ from shipmill.doctor import (
     LeakProbe,
     doctor,
     gitleaks_version,
+    identity_on_host,
     product_on_host,
     read_plugin_rows,
     repo_visibility,
@@ -1451,6 +1453,7 @@ def main(
             session_app=session_app_on_host(key, user_home, hub_signer, hub_api, lambda: dt.datetime.now(dt.UTC)),
             rules=lambda: rules_reader or (GhRules(root) if has_gh else None),
             leaks=LeakProbe(private_home, gitleaks_version, lambda: repo_visibility(root, slug)),
+            identity=identity_on_host(key, user_home, hub_signer, hub_api, lambda: dt.datetime.now(dt.UTC)),
         )
         for check in checks:
             print(f"{check.status} {check.name}: {check.detail}")
@@ -1868,7 +1871,7 @@ def _app_check(root: Path, args: argparse.Namespace, environ: Mapping[str, str],
         repo = _refused_repo(top, top, _known_origin(top) if git.ok("rev-parse", "--show-toplevel") else None, None)
         if identity.identity is WriteAs.NONE:
             raise _owners_choice(repo)
-        lines = [f"the App isn't available here: no [agents] app_id in {top / CONFIG_PATH}", *_choices(repo)]
+        lines = [f"the App isn't available here: no [agents] app_id in {top / CONFIG_PATH}", *identity_choices(repo)]
         raise ReleaseError("\n".join(lines))
     found = availability(app_id, environ, home)
     if not found.available:
@@ -1982,18 +1985,6 @@ def _refused_repo(root: Path, top: Path | None, origin: str | None, gh_args: lis
     return named or origin or (str(top) if top is not None else f"the folder {root} (no git checkout)")
 
 
-def _choices(repo: str) -> list[str]:
-    """S-082-4: the three choices of whom agents write as, and the setup that records one; the
-    setup line names owner/name, a placeholder where the repo has none"""
-    command = cli_command()  # #236: the form the person can run, as every hint names it
-    slug = repo if is_plain_repo(repo) else "<owner/name>"
-    return [
-        f"choose whom agents write as here, in [agents] of {CONFIG_PATH}: the App (app_id = <id>, from "
-        f'`{command} app-create`), your own login (identity = "host"), or nobody (identity = "none")',
-        f"or let setup ask once and record it: /shipmill:shipmill-setup {slug}",
-    ]
-
-
 def _owners_choice(repo: str) -> ReleaseError:
     """S-082-2, S-082-3, S-082-5, S-082-6: the exit 2 of a write in a repo whose [agents]
     identity = "none"; it recommends no other identity, since the owner already chose"""
@@ -2018,7 +2009,7 @@ def _host_write_refused(
         why = f"{top} has no {CONFIG_PATH}, so no [agents] app_id"
     else:
         why = f"{CONFIG_PATH} sets no [agents] app_id"
-    lines = [f"refusing a write to {repo} as the host's gh login: {why}", *_choices(repo)]
+    lines = [f"refusing a write to {repo} as the host's gh login: {why}", *identity_choices(repo)]
     if gh_args is not None:
         lines.append(f"allow this one call: {cli_command()} gh {AS_HOST} {shlex.join(gh_args)}")
     return ReleaseError("\n".join(lines))
