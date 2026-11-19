@@ -206,4 +206,8 @@ Touched areas: `src/shipmill/environments.py` (`[environments.<name>.probes]`),
 
 ## Issues
 
+- shipmill/shipmill#1435: S-084-1, S-084-2, S-084-3, S-084-4, S-084-5, S-084-11
+- shipmill/shipmill#1436: S-084-6, S-084-7, S-084-8, S-084-9, S-084-10
+- shipmill/shipmill#1437: S-084-12, S-084-13
+
 ## Verification
