@@ -88,6 +88,11 @@ class Metric(StrEnum):
     PR_TO_MERGE_P90 = "pr_to_merge_p90"
     MERGE_TO_RELEASE_MEDIAN = "merge_to_release_median"  # Merged to release
     MERGE_TO_RELEASE_P90 = "merge_to_release_p90"
+    # Agent quality (spec 078)
+    FIRST_PASS_MERGE_RATE = "first_pass_merge_rate"  # First-pass merge rate
+    PLAN_MATCH = "plan_match"  # Plan match
+    REVIEW_TIME_MEDIAN = "review_time_median"  # Review time, median
+    REVIEW_TIME_P90 = "review_time_p90"  # Review time, p90
 
     @property
     def unit(self) -> Unit:
@@ -116,6 +121,10 @@ _METRIC_UNITS = {
     Metric.PR_TO_MERGE_P90: Unit.HOURS,
     Metric.MERGE_TO_RELEASE_MEDIAN: Unit.HOURS,
     Metric.MERGE_TO_RELEASE_P90: Unit.HOURS,
+    Metric.FIRST_PASS_MERGE_RATE: Unit.RATIO,
+    Metric.PLAN_MATCH: Unit.RATIO,
+    Metric.REVIEW_TIME_MEDIAN: Unit.HOURS,
+    Metric.REVIEW_TIME_P90: Unit.HOURS,
 }
 
 

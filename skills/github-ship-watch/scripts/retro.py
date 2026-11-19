@@ -355,6 +355,11 @@ METRIC_MEASURES = {
     "pr_to_merge_p90": ("PR opened to merged", "p90"),
     "merge_to_release_median": ("Merged to release", "value"),
     "merge_to_release_p90": ("Merged to release", "p90"),
+    # Agent quality (spec 078)
+    "first_pass_merge_rate": ("First-pass merge rate", "value"),
+    "plan_match": ("Plan match", "value"),
+    "review_time_median": ("Review time", "value"),
+    "review_time_p90": ("Review time", "p90"),
 }
 MET, NOT_MET, NO_DATA, NO_MEASURE = "met", "not met", "no data", "no measure"
 # A lead-time metric's stages (spec 066), in order: a not-met goal names the one that grew most
