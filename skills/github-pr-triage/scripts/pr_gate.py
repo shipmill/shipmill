@@ -105,14 +105,19 @@ A draft the --bot-login authored has no owner once its session ended (#914): its
 a gate session marks it ready once nothing it waits on is open, then runs the gate again.
 
 The base branch (D-75): the gate reads the checks on its head commit, one read of the commit's
-statuses (which names the commit) and one of its check runs, once per base branch and pass, and
-keeps the newest run per check as it does the PR's own (#962). A completed check there that failed
-(not one queued or running, nor a cancelled, skipped, neutral, or stale one) makes the verdict
-FAILED, `  base: red: <check> failed on <base>@<sha>`, save for the PR whose body has a line
-`Repairs: <URL>` naming it (after an optional list bullet, outside a fence): a workflow run's URL
-names its every job, a job's or a check run's URL that one, a commit status's exact target URL that
-status. A named failure prints `  base: repairs: ...` for the reviewer to check the claim. A
-failure outside the code clears by re-running the failed run on the default branch.
+statuses (which names the commit) and one of its check runs, every attempt, once per base branch
+and pass, and keeps the newest run per check as it does the PR's own (#962). A completed check
+there that failed (not one queued or running, nor a cancelled, skipped, neutral, or stale one)
+makes the verdict FAILED, `  base: red: <check> failed on <base>@<sha>`, save for the PR whose
+body has a line `Repairs: <URL>` naming it (after an optional list bullet, outside a fence): a
+workflow run's URL names its every job, a job's or a check run's URL that one, a commit status's
+exact target URL that status. A named failure prints `  base: repairs: ...` for the reviewer to
+check the claim. A failure outside the code clears by re-running the failed run on the default
+branch, and landing resumes once that run is green (#1310): a check run queued or running whose
+previous attempt on the head (its check suite and name) failed reads `  base: pending: <check>
+rerunning on <base>@<sha7>`, and a verdict that would otherwise read READY (or a later verdict
+READY gives way to: UNREVIEWED, QUEUED) reads PENDING; a first attempt still running keeps the
+verdict, as before, and a green rerun keeps it too.
 
 Closing keywords (D-76, D-79): a merge never closes an issue its PR is only part of, or one whose
 check has not run. A commit's (gh pr view's) closing keyword counts as GitHub closes by it (#988):
@@ -159,8 +164,9 @@ after <HH:MM> <timezone>`. A red, pending, conflicting, refused, unreviewed, or
 held-for-a-decision PR keeps that verdict: QUEUED only takes READY's place.
 
 Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base's (D-75),
-or gh failed; 3 a check is still pending (or --wait timed out); 4 a PR is not open, conflicts,
-or holds an unhandled veto (#1309); 5 a PR needs the maintainer's decision; 6 an agent's PR is refused for its plan, a
+or gh failed; 3 a check is still pending, on the PR's head or a base check rerunning a failure
+(#1310) (or --wait timed out); 4 a PR is not open, conflicts, or holds an unhandled veto
+(#1309); 5 a PR needs the maintainer's decision; 6 an agent's PR is refused for its plan, a
 spec PR names no open feature issue, or a PR's closing keyword names a Part of issue or an open
 one with a ## Check (D-76); 7 a PR only the maintainer
 merges, by hand (a `never` zone); 8 a draft PR (D-67); 9 an agent's code PR no review record
@@ -172,8 +178,9 @@ the worst verdict's, ranked 0, 1, 3, 10, 9, 4, 8, 5, 7, 6.
 
 --wait polls while the worst verdict is PENDING, or is NEEDS_DECISION and a NEEDS_DECISION PR has
 a check still pending on its own head (#1028): the question waits until its CI finished, and the
-exit code and its ranking stay as above. The base's checks are never pending (D-75), a PR with no
-checks has none pending, and every other verdict, UNREVIEWED and QUEUED too, stops the wait.
+exit code and its ranking stay as above. A base check is pending only while it reruns a failure
+(#1310), a PR with no checks has none pending, and every other verdict, UNREVIEWED and QUEUED
+too, stops the wait.
 """
 
 from __future__ import annotations
@@ -302,6 +309,7 @@ class Gate:
     own: bool = False  # a draft the --bot-login authored: a gate session marks it ready (D-67, #914)
     base_red: tuple[str, ...] = ()  # the base head's failed checks no Repairs: line names (D-75)
     base_repairs: tuple[str, ...] = ()  # the ones a Repairs: line names, for the reviewer to check
+    base_pending: tuple[str, ...] = ()  # the base head's checks rerunning after a failure, not green yet (#1310)
     unreviewed: str = ""  # why an agent's code PR that reads READY otherwise has no review record (spec 055)
     queued: tuple[str, ...] = ()  # why a held PR waits for the land window or its spacing (spec 056)
     vetoes: tuple[str, ...] = ()  # the unhandled vetoes of a decision taken at notify (D-48, #1309)
@@ -322,7 +330,12 @@ class Gate:
             return NEEDS_DECISION
         if self.base_red or any(c.done and c.conclusion not in GREEN for c in self.checks):
             return FAILED
-        if not self.checks or any(not c.done for c in self.checks) or self.mergeable != "MERGEABLE":
+        if (
+            not self.checks
+            or any(not c.done for c in self.checks)
+            or self.mergeable != "MERGEABLE"
+            or self.base_pending
+        ):
             return PENDING
         if self.unreviewed:
             return UNREVIEWED
@@ -422,6 +435,13 @@ def newest_checks(rollup: Iterable[dict]) -> tuple[Check, ...]:
     return tuple(check_of(entry) for entry in newest_entries(rollup))
 
 
+def key_of(entry: dict) -> tuple[str, ...]:
+    """Which check an entry is a run of: a CheckRun's (workflowName, name), a StatusContext's context"""
+    if "state" in entry and "status" not in entry:
+        return ("status", str(entry.get("context", "?")))
+    return ("run", str(entry.get("workflowName") or ""), str(entry.get("name", "?")))
+
+
 def newest_entries(rollup: Iterable[dict]) -> list[dict]:
     """One check per CheckRun (workflowName, name) or StatusContext context: a head checked
     twice (a PR closed and reopened) lists both runs, and only the newest counts (#962). The
@@ -430,10 +450,7 @@ def newest_entries(rollup: Iterable[dict]) -> list[dict]:
     never hidden behind an older pass wherever the rollup lists it"""
     newest: dict[tuple[str, ...], tuple[datetime | None, dict]] = {}
     for entry in rollup:
-        if "state" in entry and "status" not in entry:
-            key: tuple[str, ...] = ("status", str(entry.get("context", "?")))
-        else:
-            key = ("run", str(entry.get("workflowName") or ""), str(entry.get("name", "?")))
+        key = key_of(entry)
         started = started_of(entry)
         kept = newest.get(key)
         if kept is None or started is None:
@@ -1152,7 +1169,9 @@ def spec_problems(data: dict, number: int, repo: str | None) -> list[str]:
 def base_head(branch: str, number: int, repo: str | None) -> tuple[str, list[dict]]:
     """The base branch's head commit and its checks, the newest run of each as newest_checks reads
     the PR's (#962): one read of the commit's statuses, which names the commit, then one of its
-    check runs, every page. Each check is rollup-shaped, with the URLs a Repairs: line may name"""
+    check runs, every page, every attempt (filter=all; the default lists only the latest). Each
+    check is rollup-shaped, with the URLs a Repairs: line may name, and marked rerunning when it
+    is not done and its previous attempt on the head failed (#1310)"""
     ref = urllib.parse.quote(branch, safe="")
     cmd, env = api([f"repos/{{owner}}/{{repo}}/commits/{ref}/status?per_page=100"], repo)
     combined = json.loads(gh(cmd, number, env))
@@ -1163,10 +1182,24 @@ def base_head(branch: str, number: int, repo: str | None) -> tuple[str, list[dic
     if len(statuses) < int(combined.get("total_count") or 0):
         raise GateError(f"{branch}@{sha[:7]} has more than 100 commit statuses; the gate judges no partial list")
     entries = [status_entry(s, branch) for s in statuses]
-    path = f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?per_page=100"
+    path = f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?per_page=100&filter=all"
     cmd, env = api(["--paginate", path, "--jq", ".check_runs[]"], repo)
     entries += [run_entry(json.loads(line), branch) for line in gh(cmd, number, env).splitlines() if line.strip()]
-    return sha, newest_entries(entries)
+    return sha, [{**entry, "rerunning": rerunning(entry, entries)} for entry in newest_entries(entries)]
+
+
+def rerunning(entry: dict, entries: list[dict]) -> bool:
+    """Whether a check not done is a rerun of a failure (#1310): the newest earlier attempt of the
+    same check (its check suite and name) that completed failed, as base_failures reads red. A
+    commit status lists its newest state alone, so it is never a rerun here"""
+    if check_of(entry).done:
+        return False
+    earlier = [e for e in entries if e is not entry and key_of(e) == key_of(entry) and check_of(e).done]
+    if not earlier:
+        return False
+    oldest = datetime.min.replace(tzinfo=timezone.utc)  # noqa: UP017 (3.10)
+    previous = max(earlier, key=lambda e: started_of(e) or oldest)
+    return check_of(previous).conclusion not in NOT_RED
 
 
 def status_entry(status: object, branch: str) -> dict:
@@ -1229,16 +1262,22 @@ def repaired(entry: dict, named: list[str]) -> bool:
     return False
 
 
-def base_failures(branch: str, sha: str, entries: list[dict], body: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The base head's failed checks no Repairs: line of the body names, and those one does"""
+def base_failures(
+    branch: str, sha: str, entries: list[dict], body: str
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """The base head's failed checks no Repairs: line of the body names, those one does, and the
+    checks rerunning after a failure there, which are not green yet (D-75, #1310)"""
     named = repairs_of(body)
     red: list[str] = []
     repairs: list[str] = []
+    pending: list[str] = []
     for entry in entries:
         check = check_of(entry)
         if check.done and check.conclusion not in NOT_RED:
             (repairs if repaired(entry, named) else red).append(f"{check.name} failed on {branch}@{sha[:7]}")
-    return tuple(red), tuple(repairs)
+        elif entry.get("rerunning"):
+            pending.append(f"{check.name} rerunning on {branch}@{sha[:7]}")
+    return tuple(red), tuple(repairs), tuple(pending)
 
 
 def triage_state() -> ModuleType:
@@ -1936,6 +1975,7 @@ def render(gate: Gate) -> str:
     lines += [f"  pending: {c.name} ({c.waits})" for c in pending]
     lines += [f"  base: red: {line}" for line in gate.base_red]
     lines += [f"  base: repairs: {line}" for line in gate.base_repairs]
+    lines += [f"  base: pending: {line}" for line in gate.base_pending]
     lines += [f"  refused: {reason}" for reason in gate.refused]
     lines += [f"  spec: {reason}" for reason in gate.spec]
     lines += [f"  maintainer-only: {reason}" for reason in gate.never]
@@ -1958,7 +1998,8 @@ def render(gate: Gate) -> str:
 def polls(gates: list[Gate]) -> bool:
     """Whether --wait polls again: while the worst verdict is PENDING, or is NEEDS_DECISION and a
     NEEDS_DECISION PR has a check still pending on its own head, so the question waits for its CI
-    (#1028); the base's checks are never pending (D-75), and every other verdict stops the wait"""
+    (#1028); a base check rerunning a failure makes its PR PENDING (#1310), and every other
+    verdict stops the wait"""
     worst = max((g.verdict for g in gates), key=RANK.index)
     if worst == PENDING:
         return True
@@ -2065,8 +2106,8 @@ def main() -> int:
                     branch = str(data["baseRefName"])
                     if branch not in heads:
                         heads[branch] = base_head(branch, number, args.repo)
-                    red, repairs = base_failures(branch, *heads[branch], str(data.get("body") or ""))
-                    judged = replace(judged, base_red=red, base_repairs=repairs)
+                    red, repairs, rerun = base_failures(branch, *heads[branch], str(data.get("body") or ""))
+                    judged = replace(judged, base_red=red, base_repairs=repairs, base_pending=rerun)
                 # a review of the merging head (spec 055), before the window: QUEUED only takes READY's place
                 if judged.verdict == READY and agent and not docs_only(data, number, args.repo):
                     why = unreviewed(data, number, args.repo, args.bot_login, bases.checkout, bases.inside)

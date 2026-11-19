@@ -97,7 +97,7 @@ elif args[0] == "api" and any(a.endswith("/permission") for a in args):  # a rel
 elif args[0] == "api" and any(a.endswith("/status?per_page=100") for a in args):  # the base's statuses (D-75)
     statuses = base["statuses"]
     print(json.dumps({{"sha": base["sha"], "total_count": len(statuses), "statuses": statuses}}))
-elif args[0] == "api" and any(a.endswith("/check-runs?per_page=100") for a in args):
+elif args[0] == "api" and any(a.endswith("/check-runs?per_page=100&filter=all") for a in args):  # every attempt
     for run in base["check_runs"]:  # one object a line, as gh --jq .check_runs[] prints them
         print(json.dumps(run))
 elif args[:2] == ["pr", "diff"]:
@@ -715,6 +715,74 @@ def test_963_a_failed_commit_status_on_the_base_is_red_until_named(tmp_path: Pat
     assert named.stdout.splitlines()[1:] == ["  base: repairs: ci/ext failed on main@ba5e012"]
 
 
+RERUN = "  base: pending: test rerunning on main@ba5e012"
+MAIN_PENDING = MAIN_READY.replace("READY", "PENDING")
+LATER = "2026-11-08T09:00:00Z"  # a rerun's start, after the first attempt's
+
+
+@pytest.mark.parametrize(
+    "rerun",
+    [
+        pytest.param(base_run(None, "in_progress", job=905, started=LATER), id="running"),
+        pytest.param(base_run(None, "queued", job=905, started=None), id="queued"),
+    ],
+)
+@pytest.mark.parametrize("order", ["failure first", "rerun first"])
+def test_1310_a_base_check_rerunning_a_failure_is_pending(tmp_path: Path, rerun: dict[str, Any], order: str) -> None:
+    """D-75: landing resumes once the rerun is green, so the rerun's start doesn't let a PR through"""
+    runs = [base_run("failure"), rerun] if order == "failure first" else [rerun, base_run("failure")]
+    proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy")}, base={"check_runs": runs})
+    assert (proc.returncode, proc.stdout) == (gate.PENDING, MAIN_PENDING + RERUN + "\n"), proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("runs", "code", "lines"),
+    [
+        pytest.param(
+            [
+                base_run("failure", job=903, started="2026-11-08T07:00:00Z"),
+                base_run("success"),
+                base_run(None, "in_progress", job=905, started=LATER),
+            ],
+            0,
+            [],
+            id="the attempt before it passed",
+        ),
+        pytest.param(
+            [base_run("cancelled"), base_run(None, "in_progress", job=905, started=LATER)], 0, [], id="after a cancel"
+        ),
+        pytest.param(
+            [base_run("failure", run=910), base_run(None, "in_progress", run=900, job=905, started=LATER)],
+            1,
+            [RED],
+            id="a failure in another check suite is its own check",
+        ),
+    ],
+)
+def test_1310_a_rerun_of_no_failure_keeps_the_verdict(
+    tmp_path: Path, runs: list[dict[str, Any]], code: int, lines: list[str]
+) -> None:
+    proc = run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy")}, base={"check_runs": runs})
+    assert proc.returncode == code, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == lines
+
+
+def test_1310_a_red_pr_on_a_rerunning_base_stays_failed(tmp_path: Path) -> None:
+    data = pr(body="Fixes #7", login="amy")
+    data["statusCheckRollup"] = [{"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"}]
+    runs = [base_run("failure"), base_run(None, "in_progress", job=905, started=LATER)]
+    proc = run_gate(tmp_path, None, {7: data}, base={"check_runs": runs})
+    assert proc.returncode == gate.FAILED, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == ["  failed: test (FAILURE)", RERUN]
+
+
+def test_1310_the_base_check_runs_are_read_with_every_attempt_in_one_read(tmp_path: Path) -> None:
+    runs = [base_run("failure"), base_run(None, "in_progress", job=905, started=LATER)]
+    run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy")}, base={"check_runs": runs})
+    reads = [a for c in gh_calls(tmp_path) for a in c["args"] if "/check-runs" in a]
+    assert reads == ["repos/{owner}/{repo}/commits/ba5e0123456789/check-runs?per_page=100&filter=all"]
+
+
 def test_963_the_base_is_read_once_for_prs_that_share_it(tmp_path: Path) -> None:
     proc = run_gate(
         tmp_path, None, {7: pr(login="amy"), 8: pr(login="amy")}, base={"check_runs": [base_run("failure")]}
@@ -1328,7 +1396,7 @@ def test_1028_wait_polls_while_a_needs_decision_prs_check_is_pending() -> None:
         [judged(PASSED, asks=ASKS)],  # its head finished green
         [judged(BROKE, asks=ASKS)],  # finished red: the CI failure comes first, polling won't fix it
         [judged(asks=ASKS)],  # no checks at all: none is pending
-        [judged(PASSED, asks=ASKS, base_red=("test failed on main@ba5e012",))],  # the base's are never pending
+        [judged(PASSED, asks=ASKS, base_red=("test failed on main@ba5e012",))],  # a red base isn't pending
         [judged(RUNNING, never=("release: the release workflows",))],  # MAINTAINER_ONLY
         [judged(RUNNING, refused=("no plan",))],  # REFUSED
         [judged(RUNNING, draft=True)],  # DRAFT
@@ -1345,6 +1413,12 @@ def test_1028_wait_stops_once_nothing_it_waits_on_is_pending(gates: list[Any]) -
 @pytest.mark.parametrize("gates", [[judged(RUNNING)], [judged()], [judged(PASSED), judged(RUNNING)]])
 def test_1028_wait_polls_a_pending_verdict_as_before(gates: list[Any]) -> None:
     assert gate.polls(gates)
+
+
+def test_1310_wait_polls_while_a_base_check_reruns_a_failure() -> None:
+    rerunning = judged(PASSED, base_pending=("test rerunning on main@ba5e012",))
+    assert rerunning.verdict == gate.PENDING
+    assert gate.polls([rerunning])
 
 
 # D-52, then D-67: a person's draft pull request belongs to them; the App's own is resumed (#914)
