@@ -265,7 +265,8 @@ NO_APP = (
 ROLE_LABELS = {"role:maintainer"}  # spec 036: wanted wherever needs-decision is
 BASE_LABELS = {"postponed", "blocked", "shipmill-hold", "release-blocker"}
 # D-21, spec 017, spec 014's "not now", spec 038's report for another repo, spec 030's notify
-# decision, spec 034's question for a missing direction, spec 070's classes of service
+# decision, spec 034's question for a missing direction, spec 068's opportunity and its accept,
+# spec 070's classes of service
 AGENT_LABELS = {
     "needs-decision",
     "human",
@@ -273,6 +274,8 @@ AGENT_LABELS = {
     "upstream",
     "decided",
     "shipmill-direction",
+    "opportunity",
+    "planned",
     "expedite",
     "fixed-date",
 }
@@ -287,7 +290,7 @@ def test_s005_16_headless_wants_the_needs_decision_label(ss: ModuleType, tmp_pat
     assert (row.state, row.detail) == ("LABELS_MISSING", "needs-decision")
     assert ss.labels_row([], wanted).detail == (
         "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream, decided,"
-        " shipmill-direction, expedite, fixed-date, and the blocker label exist"
+        " shipmill-direction, opportunity, planned, expedite, fixed-date, and the blocker label exist"
     )
 
 
@@ -307,9 +310,48 @@ def test_d21_interactive_wants_the_needs_decision_label_too(ss: ModuleType, tmp_
     assert set(wanted) == BASE_LABELS | AGENT_LABELS | ROLE_LABELS | app
     assert ss.labels_row([], wanted).detail == (
         "postponed, blocked, shipmill-hold, needs-decision, human, shipmill-upgrade-later, upstream, decided,"
-        " shipmill-direction, expedite, fixed-date,"
+        " shipmill-direction, opportunity, planned, expedite, fixed-date,"
         f"{' shipmill-permission,' if app else ''} and the blocker label exist"
     )
+
+
+OPPORTUNITY_LABEL = ("0e8a16", "A user outcome waiting for the maintainer to accept or decline")
+PLANNED_LABEL = ("1d76db", "Accepted opportunity, goes through the spec gate")
+
+
+# proves: S-068-13
+@pytest.mark.parametrize("text", [HEADLESS, '[agents]\nprompt = "x"\n', '[agents]\nprompt = "x"\napp_id = 1\n'])
+def test_s068_13_labels_missing_names_opportunity_and_planned_with_agents(
+    ss: ModuleType, tmp_path: Path, text: str
+) -> None:
+    write(tmp_path, ".github/shipmill.toml", text)
+    wanted = ss.wanted_labels(tmp_path)
+    assert wanted["opportunity"] == OPPORTUNITY_LABEL
+    assert wanted["planned"] == PLANNED_LABEL
+    have = (BASE_LABELS | ROLE_LABELS | AGENT_LABELS | {"shipmill-permission"}) - {"opportunity", "planned"}
+    row = ss.labels_row([name for name in wanted if name not in have], wanted)
+    assert (row.state, row.detail) == ("LABELS_MISSING", "opportunity, planned")
+    gh = FakeGh("")
+    ss.create_labels("me/demo", wanted, ["opportunity", "planned"], ["gh"], gh)
+    assert gh.calls == [
+        [
+            *["gh", "label", "create", "opportunity", "-R", "me/demo", "--color", OPPORTUNITY_LABEL[0]],
+            *["--description", OPPORTUNITY_LABEL[1]],
+        ],
+        [
+            *["gh", "label", "create", "planned", "-R", "me/demo", "--color", PLANNED_LABEL[0]],
+            *["--description", PLANNED_LABEL[1]],
+        ],
+    ]
+
+
+# proves: S-068-13
+@pytest.mark.parametrize("text", ["", 'mode = "release"\n', "[roadmap]\n"])
+def test_s068_13_opportunity_and_planned_arent_wanted_without_agents(ss: ModuleType, tmp_path: Path, text: str) -> None:
+    write(tmp_path, ".github/shipmill.toml", text)
+    wanted = ss.wanted_labels(tmp_path)
+    assert "opportunity" not in wanted
+    assert "planned" not in wanted
 
 
 PERMISSION_LABEL = ("d93f0b", "A permission the App's owner grants and accepts on its installation")
