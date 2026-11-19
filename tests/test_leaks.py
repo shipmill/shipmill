@@ -3,6 +3,7 @@ secret's exact value, or a known token format, before gh runs. No test reaches t
 gh is a Runner, its reads a Visibility capture. Names are invented: `Acme`, `example` hosts"""
 
 import io
+import json
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -21,14 +22,17 @@ from shipmill.leaks import (
     PRIVATE_FILE,
     Destination,
     Detector,
+    Gitleaks,
     LeakRefused,
     Secret,
     Term,
     Text,
     Visibility,
     dotenv_secrets,
+    high_entropy,
     refusal,
     scan,
+    warning_lines,
 )
 
 from .test_agent_marker import AGENTS_NO_APP, HOST_IDENTITY
@@ -905,3 +909,178 @@ def test_a_finding_names_its_detector() -> None:
     [found] = scan([Text("the title", GITHUB_TOKEN)], (), ())
     assert found.detector is Detector.SECRET_FORMAT
     assert found.said() == "secret-format: the title holds a GitHub token (ghp_…)"
+
+
+# -- S-081-7: gitleaks ---------------------------------------------------------------------------
+
+# A key of a format only the stand-in gitleaks knows, put together at run time
+ACME_KEY = "acmekey" + "_" + "Q7x2Lm9Np4Rt8Vw3Zb6Kc1Hd"
+
+# Stands in for gitleaks: `version` prints its version; `stdin` reports each acme key in the text
+# to --report-path as gitleaks' JSON does, and behaves as gitleaks would on what would let one
+# through: a `.gitleaks.toml` in its working folder or a GITLEAKS_CONFIG variable reports none,
+# and a `gitleaks:allow` line is skipped unless --ignore-gitleaks-allow is given
+FAKE_GITLEAKS = """#!{python}
+import json, os, re, sys
+args = sys.argv[1:]
+if args == ["version"]:
+    print("{version}")
+    sys.exit(0)
+with open({record!r}, "a", encoding="utf-8") as out:
+    out.write(json.dumps({{"args": args, "cwd": os.getcwd(), "env": sorted(os.environ)}}) + "\\n")
+if {fail}:
+    print("gitleaks: something broke", file=sys.stderr)
+    sys.exit(126)
+text = sys.stdin.read()
+rows = []
+allowed = os.path.exists(".gitleaks.toml") or "GITLEAKS_CONFIG" in os.environ
+for number, line in enumerate(text.splitlines(), 1):
+    if "gitleaks:allow" in line and "--ignore-gitleaks-allow" not in args:
+        continue
+    for m in re.finditer(r"acmekey_[A-Za-z0-9]{{24}}", line):
+        if not allowed:
+            rows.append({{"RuleID": "acme-key", "Secret": m.group(0), "Match": m.group(0), "StartLine": number}})
+with open(args[args.index("--report-path") + 1], "w", encoding="utf-8") as report:
+    json.dump(rows, report)
+"""
+
+
+def with_gitleaks(host: Host, version: str = "8.21.2", fail: bool = False) -> Path:
+    """A stand-in gitleaks of version on the host's PATH; the file each of its scans records to"""
+    record = host.record / "gitleaks.jsonl"
+    text = FAKE_GITLEAKS.format(python=sys.executable, version=version, record=str(record), fail=fail)
+    executable(host.fakes / "gitleaks", text)
+    return record
+
+
+def test_s081_7_a_gitleaks_finding_is_refused_as_secret_format(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with_gitleaks(host)
+    said = refused(root, ["issue", "comment", "250", "--body", f"one\nkey {ACME_KEY}\n"], host)
+    assert "  secret-format: the body, line 2, holds gitleaks' acme-key (acme…)" in said.splitlines()
+    assert ACME_KEY[SHOWN_AFTER:] not in said
+
+
+@pytest.mark.parametrize("version", ["v8.19.0", "8.30.1", "9.0.0"])
+def test_s081_7_gitleaks_819_or_newer_is_read(tmp_path: Path, host: Host, version: str) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with_gitleaks(host, version)
+    assert "acme-key" in refused(root, ["issue", "comment", "250", "--body", ACME_KEY], host)
+
+
+@pytest.mark.parametrize("version", [None, "8.18.4", "v7.6.1", "unknown"])
+def test_s081_7_without_gitleaks_819_the_built_in_formats_alone_decide(
+    tmp_path: Path, host: Host, version: str | None
+) -> None:
+    """gitleaks missing, older, or of a version that can't be read: no failure, and only the
+    built-in formats refuse"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    record = with_gitleaks(host, version) if version is not None else host.record / "gitleaks.jsonl"
+    gh(root, ["issue", "comment", "250", "--body", ACME_KEY], host)
+    assert "GitHub token" in refused(root, ["issue", "comment", "250", "--body", GITHUB_TOKEN], host)
+    assert not record.exists()  # no scan ran
+
+
+def test_s081_7_no_allow_comment_repo_config_or_variable_passes_a_finding(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    (root / ".gitleaks.toml").write_text('[allowlist]\nregexes = ["acmekey_"]\n', encoding="utf-8")
+    (root / ".gitleaksignore").write_text("acme-key\n", encoding="utf-8")
+    record = with_gitleaks(host)
+    environ = {"GITLEAKS_CONFIG": str(root / ".gitleaks.toml"), "GITLEAKS_CONFIG_TOML": "[allowlist]"}
+    body = f"key {ACME_KEY} # gitleaks:allow"
+    said = refused(root, ["issue", "comment", "250", "--body", body], host, environ=environ)
+    assert "secret-format: the body, line 1, holds gitleaks' acme-key (acme…)" in said
+    [scanned] = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]  # one run a write
+    assert "--ignore-gitleaks-allow" in scanned["args"]
+    assert "--config" not in scanned["args"] and "-c" not in scanned["args"]
+    assert Path(scanned["cwd"]).resolve() != root.resolve()
+    assert not [name for name in scanned["env"] if name.startswith("GITLEAKS_")]
+
+
+def test_s081_7_one_run_places_each_finding_in_its_text(tmp_path: Path, host: Host) -> None:
+    with_gitleaks(host)
+    scanner = Gitleaks.find(host.env())
+    assert scanner is not None and scanner.version == "8.21.2"
+    texts = [Text("the title", "clean"), Text("the body", f"a\nb\n{ACME_KEY}\n"), Text("the field x", "no")]
+    found = scan(texts, (), (), scanner)
+    assert [f.said() for f in found] == ["secret-format: the body, line 3, holds gitleaks' acme-key (acme…)"]
+
+
+def test_s081_7_a_format_both_find_is_named_once(tmp_path: Path) -> None:
+    class Both:
+        def findings(self, texts: Sequence[str]) -> list[list[tuple[int, str]]]:
+            return [[(text.find(GITHUB_TOKEN), "gitleaks' github-pat (ghp_…)")] for text in texts]
+
+    found = scan([Text("the title", f"x {GITHUB_TOKEN}")], (), (), Both())
+    assert [f.said() for f in found] == ["secret-format: the title holds a GitHub token (ghp_…)"]
+
+
+def test_s081_7_a_gitleaks_run_that_fails_refuses_the_write(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with_gitleaks(host, fail=True)
+    failed(root, ["issue", "comment", "250", "--body", "plain text"], host, r"gitleaks 8\.21\.2 failed \(exit 126")
+
+
+# -- S-081-8: high entropy -----------------------------------------------------------------------
+
+ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def random_looking(size: int = 40, start: int = 0) -> str:
+    """A string of size distinct characters, put together at run time"""
+    return "".join(ALPHABET[(start + i * 7) % len(ALPHABET)] for i in range(size))
+
+
+SHA = "".join("0123456789abcdef"[(i * 7) % 16] for i in range(40))
+
+
+def test_s081_8_a_high_entropy_string_warns_and_the_write_goes_on(
+    tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    value = random_looking()
+    gh(root, ["issue", "comment", "250", "--body", f"seed\nvalue {value}\n"], host)  # gh ran, its exit 7 kept
+    err = capsys.readouterr().err
+    assert err.splitlines() == [
+        f"shipmill leaks: warning: high-entropy: the body, line 2, holds a high-entropy string of 40 characters "
+        f"({value[:SHOWN_AFTER]}…)"
+    ]
+    assert value[SHOWN_AFTER:] not in err
+
+
+def test_s081_8_at_most_five_warnings_then_a_count(
+    tmp_path: Path, host: Host, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    body = "\n".join(random_looking(start=n) for n in range(7))
+    gh(root, ["issue", "comment", "250", "--body", body], host)
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 6
+    assert all(line.startswith("shipmill leaks: warning: high-entropy: the body, line ") for line in lines[:5])
+    assert lines[5] == "shipmill leaks: warning: and 2 more"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        SHA,  # a commit SHA
+        SHA.upper() + SHA[:24],  # a 64-character checksum
+        random_looking(31),  # too short
+        "src/shipmill/leaks_and_their_warnings_module.py",  # no digit
+        "a1" * 20,  # a letter and a digit, but no entropy
+    ],
+)
+def test_s081_8_a_sha_and_other_strings_print_none(text: str) -> None:
+    assert high_entropy([Text("the body", f"x {text} y")]) == []
+
+
+@pytest.mark.parametrize("path", ["uv.lock", "sub/Cargo.lock", "web/package-lock.json"])
+def test_s081_8_a_string_in_a_lock_file_prints_none(path: str) -> None:
+    value = random_looking()
+    assert high_entropy([Text(path, value, path)]) == []
+    assert [f.detector for f in high_entropy([Text("src/app.py", value, "src/app.py")])] == [Detector.HIGH_ENTROPY]
+
+
+def test_s081_8_a_warning_never_refuses() -> None:
+    assert scan([Text("the body", random_looking())], (), ()) == []
+    assert warning_lines([]) == []

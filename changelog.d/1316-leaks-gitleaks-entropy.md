@@ -1,0 +1,3 @@
+### Added
+
+- `shipmill gh`'s leak check also runs the outgoing text through `gitleaks stdin` when gitleaks 8.19 or newer is on PATH, with its default rules alone, in an empty folder of its own and with `--ignore-gitleaks-allow`, so a `gitleaks:allow` comment, the checked repo's `.gitleaks.toml`, or a `GITLEAKS_CONFIG` variable passes nothing, and refuses each of its findings as `secret-format`; without it the built-in formats alone decide. A string of 32 or more characters that looks random (a letter and a digit, not hex only, 4.0 bits per character or more) outside a lock file prints a `shipmill leaks: warning:` line, at most 5 and then `and N more`, and the write goes on (#1316)

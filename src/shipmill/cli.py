@@ -375,7 +375,19 @@ from shipmill.launchd import (
     read_job,
     remove,
 )
-from shipmill.leaks import Destination, LeakRefused, Private, Visibility, account_home, refusal, scan, secrets
+from shipmill.leaks import (
+    Destination,
+    Gitleaks,
+    LeakRefused,
+    Private,
+    Visibility,
+    account_home,
+    high_entropy,
+    refusal,
+    scan,
+    secrets,
+    warning_lines,
+)
 from shipmill.lineedit import LineText
 from shipmill.merge_gate import GateRun, Queued, hold_gate, label_args, run_gate, unlabel_args
 from shipmill.notify import Desktop
@@ -2701,8 +2713,9 @@ def _leak_check(sent: _Sent, reach: _Reach, private_home: Path) -> bytes | None:
     read as a read) exits 2 before gh runs when the text it sends holds a private term and its
     repo is public, or a secret's exact value or a known token format in any repo; so does a
     private file that doesn't load or a secret file that can't be read, findings or not. The
-    repo's visibility is read once, and only when a term is listed (S-081-3, S-081-4). Nothing
-    turns it off (S-081-16)"""
+    repo's visibility is read once, and only when a term is listed (S-081-3, S-081-4). gitleaks
+    8.19 or newer on PATH adds its findings (S-081-7); a write that goes on prints its
+    high-entropy warnings (S-081-8). Nothing turns it off (S-081-16)"""
     if is_read(sent.gh_args):
         return None
     private = Private.load(private_home)
@@ -2720,9 +2733,11 @@ def _leak_check(sent: _Sent, reach: _Reach, private_home: Path) -> bytes | None:
     repo = write_repo(sent.gh_args, sent.default)
     visibility = _visibility(repo, reach) if private.terms and repo is not None else None
     destination = Destination(repo, visibility)
-    findings = scan(texts, private.terms if destination.public else (), known)
+    findings = scan(texts, private.terms if destination.public else (), known, Gitleaks.find(reach.env))
     if findings:
         raise refusal("shipmill gh", destination, findings)
+    for line in warning_lines(high_entropy(texts)):  # S-081-8: a warning, the write goes on
+        print(line, file=sys.stderr)
     return taken[0] if taken else None
 
 
