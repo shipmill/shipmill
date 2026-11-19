@@ -817,6 +817,58 @@ def test_s081_16_secret_files_home_is_the_accounts_not_home_variable(tmp_path: P
     assert "the value of API_TOKEN from ~/acme.env" in said
 
 
+@dataclass
+class ByRepo(Reads):
+    """Reads whose visibility is the checkout's private repo's, and public for any other"""
+
+    def __call__(self, argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
+        code, out = super().__call__(argv, env)
+        if "--jq" in argv:
+            return code, "private\n" if argv[2] == f"repos/{REPO}" else "public\n"
+        return code, out
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["issue", "comment", f"https://github.com/{PUBLIC}/issues/3", "--body", LEAKED],
+        ["pr", "comment", f"https://github.com/{PUBLIC}/pull/4", "--body", LEAKED],
+        ["issue", "edit", f"https://github.com/{PUBLIC}/issues/3", "--title", LEAKED],
+        ["pr", "review", f"https://www.github.com/{PUBLIC}/pull/4/files", "--comment", "-b", LEAKED],
+        ["repo", "edit", PUBLIC, "--description", LEAKED],
+    ],
+)
+def test_s081_3_a_url_naming_another_repo_is_that_repos_write(tmp_path: Path, host: Host, args: list[str]) -> None:
+    """gh writes to the repo an issue's or a pull request's URL, or `gh repo`'s argument, names,
+    whatever the checkout's"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with_term(host)
+    capture = ByRepo()
+    said = refused(root, args, host, capture)
+    assert f"({PUBLIC} is public)" in said
+    assert capture.reads == [PUBLIC]
+    gh(root, ["issue", "comment", f"https://github.com/{REPO}/issues/3", "--body", LEAKED], host, ByRepo())
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["project", "item-create", "1", "--owner", "acme", "--title", LEAKED],
+        ["issue", "comment", "https://git.example.com/acme/widgets/issues/3", "--body", LEAKED],
+        ["repo", "create", "widgets-next", "--description", LEAKED],
+    ],
+)
+def test_s081_3_a_write_off_the_checkouts_repo_is_public(tmp_path: Path, host: Host, args: list[str]) -> None:
+    """A project, an item URL off github.com, and a repo named without its owner are no
+    repo whose visibility can be read: public, though the checkout's repo is private"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with_term(host)
+    capture = ByRepo()
+    said = refused(root, args, host, capture)
+    assert "(it goes to no repo on github.com, so it is checked as public)" in said
+    assert capture.reads == []
+
+
 def test_stdin_is_named_where_it_is_read() -> None:
     texts = sent_texts(["api", "-X", "POST", "repos/o/r/labels", "--input", "-"], lambda flag, path: "x")
     assert texts[-1] == Text("the --input on stdin", "x")

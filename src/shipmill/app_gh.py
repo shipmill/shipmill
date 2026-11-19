@@ -1517,14 +1517,41 @@ def feed_gh(argv: Sequence[str], env: Mapping[str, str], stdin: str) -> int:
 
 
 _REPOS_PATH = re.compile(r"repos/([^/]+)/([^/]+)(?:/.*)?", re.IGNORECASE)
+# an issue's or a pull request's URL, whose repo gh writes to whatever repo it works on
+_TARGET_URL = re.compile(r"https?://(?:www\.)?github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/(?:issues|pull)/.*", re.I)
+_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def _named_target(args: Sequence[str]) -> tuple[bool, str | None]:
+    """The repo an argument of an issue, pr, or repo command names over -R and the checkout's:
+    (True, its owner/name), (True, None) for one read as public (a URL that names no repo on
+    github.com, a repo without its owner, a project, which belongs to no repo), else (False, None)"""
+    group = args[0]
+    if group == "project":
+        return True, None
+    if group not in ("issue", "pr", "repo"):
+        return False, None
+    flags = _SENT_FLAGS.get(group, _OTHER_FLAGS)
+    positional, _ = _scan(args[1:], flags.long, flags.short)
+    if group == "repo":
+        if len(positional) < 2:
+            return False, None
+        matched = _REPO.fullmatch(positional[1].removeprefix("https://").removesuffix(".git"))
+        return True, None if matched is None else matched.group(1)
+    for given in positional[1:]:
+        if _URL.match(given):
+            matched = _TARGET_URL.fullmatch(given)
+            return True, None if matched is None else matched.group(1)
+    return False, None
 
 
 def write_repo(args: Sequence[str], default: str | None) -> str | None:
     """S-081-2, S-081-3: the repo a write goes to, as owner/name: for `gh api`, the endpoint's
     `repos/<owner>/<name>` (its {owner} and {repo} filled from default), and None for any other
-    endpoint (graphql, a gist, the user), which names no repo; None for `gh gist`; else gh's
-    -R/--repo, None when it names a repo off github.com, else default, the repo gh works on.
-    None reads as public"""
+    endpoint (graphql, a gist, the user), which names no repo; None for `gh gist`; the repo an
+    issue's or a pull request's URL argument names, or `gh repo`'s repo argument; None for `gh
+    project`; else gh's -R/--repo, None when it names a repo off github.com, else default, the
+    repo gh works on. None reads as public"""
     if not args:
         return default
     if args[0] == "gist":
@@ -1542,6 +1569,9 @@ def write_repo(args: Sequence[str], default: str | None) -> str | None:
             owner = default_owner if owner == PLACEHOLDER[0] else owner
             name = default_name if name == PLACEHOLDER[1] else name
         return f"{owner}/{name}"
+    named, target = _named_target(args)
+    if named:
+        return target
     head = args[: list(args).index("--")] if "--" in args else args
     if head and head[-1] in _REPO_FLAGS:
         return None  # -R with no repo: gh refuses it, and nothing is sent
