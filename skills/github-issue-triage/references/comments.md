@@ -296,6 +296,19 @@ Checked after `@{login}` closed this: `{the check}` returned {what came back}.
 Reply `done` here when it's fixed, or close the issue.
 ```
 
+**STALE_HANDOFF**, the parent closed and the step is done or no longer needed: close the item (`gh issue close <n> --reason completed`, or `--reason "not planned"` for a step that went away) with a comment saying why, the parent named and the login in a code span (D-61):
+
+```markdown
+Closing: its parent {owner/repo#N} closed, and {the step was done in ... / the step is no longer needed because ...}.
+```
+
+**STALE_HANDOFF**, the step still waits on its person: the still-waits comment, which ends the state until the parent reopens and closes again. It counts from the `--bot-login`, or from an OWNER, MEMBER, or COLLABORATOR without the agent marker (D-62); post it once, never as a reminder, and mention nobody:
+
+```markdown
+<!-- shipmill:still-waits -->
+Its parent {owner/repo#N} closed, and this step still waits on `@{assignee}`: {why it is still needed}.
+```
+
 **NO_ASSIGNEE** gets no comment and no question: it means the state was read without the `--role` flags, so read it again with them ([triage-rubric.md](triage-rubric.md), A person's item). The roles say who does a step, so a session never asks. Only an ASSIGN_DUE assignment GitHub refuses goes to the maintainer, through the [needs-decision protocol](needs-decision.md): name the users it couldn't assign and GitHub's message, and recommend assigning the maintainer.
 
 A check the session can't run: a question through the [needs-decision protocol](needs-decision.md), in its format, with its marker and the `needs-decision` label. Say what the report claims and why the check can't run here, and give two options, the recommended one first, as the protocol asks: close it on the report when other evidence backs the report (a log line, a page that changed), it isn't done when nothing but the report does (then it comes first, with the `(recommended)` mark and why):

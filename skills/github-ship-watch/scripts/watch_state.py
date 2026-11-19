@@ -154,7 +154,11 @@ Intake (github-issue-triage's triage_state.py):
                   leave). Its fix is /shipmill:github-issue-triage <repo>; an agent's row. The
                   spec is merged content of the default branch, so the row is read with
                   --trusted-only too, and an open issue that links the spec follows it whoever
-                  opened it (it is in UNTRUSTED for a person then)
+                  opened it (it is in UNTRUSTED for a person then). triage_state.py's
+                  STALE_HANDOFF issues, a person's item whose sub-issue parent closed (#1313),
+                  are an ISSUES row of their own, `STALE_HANDOFF #N ...`, its fix "close it or
+                  say why it still waits on the maintainer: /shipmill:github-issue-triage
+                  <repo>"; an agent's row
   ISSUES_OPEN     the other open issues, by state: in progress, blocked, triaged, or
                   postponed, less the ones NEEDS_DECISION and UNTRUSTED list (reported,
                   never an action by itself). A person's item waiting on its assignees
@@ -529,6 +533,9 @@ DIRECTION = Path("docs/product.md")  # the product's direction (spec 024), whose
 PLAN_ACTION = ("PLAN_DUE", "PLAN_MALFORMED", "PLAN_ANSWERED", "PLAN_ACCEPTED")
 PLAN_STATES = frozenset({*PLAN_ACTION, "PLAN_WAITS", "PLAN_OPEN", "PLAN_FILED", "PLAN_DECLINED"})
 GOAL_ID = re.compile(r"G-[1-9]\d*")
+# triage_state.py's person's item under a closed parent (#1313), and what clears it
+STALE_HANDOFF = "STALE_HANDOFF"
+STALE_FIX = "close it or say why it still waits on the maintainer"
 # triage_state.py's ACTION: the issue states that make it exit 1
 TRIAGE_ACTION = {
     "NEW",
@@ -551,6 +558,7 @@ TRIAGE_ACTION = {
     "ASSIGN_DUE",  # spec 036: assign a person's item to its roles' users
     "VERIFY_CLOSED",
     "OFF_MILESTONE",
+    STALE_HANDOFF,  # #1313: a person's item whose parent closed, an ISSUES row of its own with its fix
     "AGENT_DRAFT",  # D-67 (#914): this script's AGENT_DRAFT row hands the draft itself, so it is in ISSUES_OPEN
 }
 VETOED = "VETOED"  # triage_state.py's state and this script's row for an unanswered veto (spec 030)
@@ -3155,10 +3163,15 @@ def intake(
     detail = "; ".join(
         f"{s} {' '.join(f'#{n}' for n in numbers)}"
         for s, numbers in sorted(counts.items())
-        if s in TRIAGE_ACTION - BY_PULL_REQUEST  # VETOED has a row of its own
+        if s in TRIAGE_ACTION - BY_PULL_REQUEST - {STALE_HANDOFF}  # VETOED has a row of its own
     )
     if code == 1 and detail:  # triage_state.py exits 1 only with an action line: an upgrade issue's, left out
         rows.append(Row("ISSUES", repo, detail, skill_fix("github-issue-triage", repo)))
+    stale = counts.get(STALE_HANDOFF, [])
+    if code == 1 and stale:  # #1313: an ISSUES row of its own, its fix saying what clears it
+        listed = " ".join(f"#{n}" for n in stale)
+        fix = f"{STALE_FIX}: {skill_fix('github-issue-triage', repo)}"
+        rows.append(Row("ISSUES", repo, f"{STALE_HANDOFF} {listed}", fix))
     elsewhere = (TRIAGE_ACTION - BY_PULL_REQUEST) | {VETOED, "NEEDS_DECISION", "UNTRUSTED"}  # rows of their own
     rest = "; ".join(
         f"{s} {' '.join(open_issue(n, waits_on) for n in numbers)}"

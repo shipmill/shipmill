@@ -338,6 +338,7 @@ from shipmill.gate import (
 from shipmill.github import UPGRADE_LABEL, GhCli, GitHub, find_gh
 from shipmill.github_auth import github_auth
 from shipmill.gitrepo import Git
+from shipmill.handoff_close import hold_close, issue_close
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
 from shipmill.land import ActionsRun, AppPush, Prepared, Stop, Waiting, cleanup, land, mint_land, prepare, work_branch
@@ -1974,6 +1975,9 @@ def _gh(
     if edit is not None:
         default = _gh_default(environ, _known_origin(top))
         gh_args = edited_args(edit, default, binary, as_app(environ, token), readers.current)
+    closing = issue_close(gh_args)
+    if closing is not None:  # #1313: as the App, no parent closes over a person's open sub-issue
+        hold_close(closing, _gh_default(environ, _known_origin(top)), binary, as_app(environ, token), readers.current)
     env = as_app(environ, token)
     # the App's bot login, read once however many readers ask for it
     bot_login = functools.cache(functools.partial(app_login(signer, api), app_id, path))

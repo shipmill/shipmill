@@ -140,6 +140,7 @@ An agent's text is told from a person's by its marker, never by its author (spec
 | NO_ASSIGNEE | A role's item nobody is assigned to, read without the `--role` flags the gate passes | The session reads the state again with them; it never asks who does a step |
 | HANDOFF_DUE | A person's item whose holds all closed, not yet handed off | The session mentions its assignees and its role's teams with what to do |
 | WITH_PERSON | A person's item handed off, no done report yet | Nothing: it waits on the person |
+| STALE_HANDOFF | A person's item whose sub-issue parent closed, with no `<!-- shipmill:still-waits -->` comment since | The session closes it, or posts the still-waits comment saying why it still waits on its person; `shipmill gh issue close` refuses to close a parent over a person's open sub-issue |
 | VERIFY_DUE | A person's item whose assignee replied `done` | The session runs its `## Check` and closes it, or hands it back |
 | VERIFY_CLOSED | A person's item closed by hand, its `## Check` not yet run; or a parent with a `## Check` closed by a PR, a commit, or the App before its check ran | The session runs the check, and reopens it if it fails |
 | VERIFY_DUE (a parent) | A parent with a `## Check` whose children all closed | The session runs the check: it holds, the parent closes with the check and what came back; it fails, the check-failed comment |
