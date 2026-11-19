@@ -1,6 +1,6 @@
 # S-073: The PR reviewer knows the touched area's history
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -111,3 +111,13 @@ Touched areas: `src/shipmill/review_history.py`, `src/shipmill/cli.py` (`review 
 - shipmill/shipmill#1257: S-073-9
 
 ## Verification
+
+- S-073-1: read `reverts` and `log` in `src/shipmill/review_history.py` and ran its S-073-1 tests on a real git checkout: a `This reverts commit` commit and a merged `Reverts #M` pull request on `a.py` are listed naming the commit or `#M`, and a revert older than `--days` or off the touched files is not; holds
+- S-073-2: ran `shipmill review history 1361 --days 30` on this repo: twenty decided comments on the pull requests that touched its files were found, ten shown with their sentence, the App as author, and `no veto followed`; the S-073-2 tests show a COLLABORATOR's answer cut at 600 characters with `…`, and an outsider's, another bot's, or an agent-marked reply never read as the answer; holds
+- S-073-3: read `incidents`, `postmortems`, and `incident_label` in `review_history.py`; the S-073-3 tests list an incident issue naming `src/app/a.py` or `src/app`, a postmortem changed in the window naming `src/app/`, read the label `incident` with no config and `sev` from `[operate] incident_label`, and leave out an issue naming `src/app/ab.py` or `src/application` only; holds
+- S-073-4: the same run listed #1393, #1390, and #1389 under open pull requests with their head branch, author, and the shared file, and never #1361 itself; holds
+- S-073-5: the same run numbered H-1 to H-13 across the kinds in the spec's order, printed `H: 10 of 20 settled decisions shown` at the default `--limit`, and `none` for reverts and incidents; `--json` holds a key per kind and an `id` per item (S-073-5 tests); holds
+- S-073-6: read `Trust` and each kind's reader: a pull request's, an incident's, or an open pull request's title from an author who isn't trusted or the App reads `(untrusted author, text left out)`, and a settled decision's question and answer are only ever a trusted author's (S-073-6 tests); holds
+- S-073-7: ran `shipmill review history 1385 --days 60 --before 8bb0e7c0`: the window ended at that commit's committer date; the S-073-7 test leaves out a revert made after it; settled decisions read only comments, and incidents only issues, dated before it; holds
+- S-073-8: ran `shipmill review history 1361 --days 0` and `shipmill review history 1384` (an issue, not a pull request): each exited 2 naming the fix and printed nothing; holds
+- S-073-9: read `skills/github-pr-triage/references/reviewer-brief.md`: the Open PR brief has the `{history}` field, filled by `review history <N>` in the checkout at `origin/<default>` with the pinned CLI, the step 3 check (`contradicts`, `consistent`, or `unrelated` per `H-n`, an unexplained `contradicts` a finding citing it), and the History part of the final report, all dropped when every kind prints `none`; the Post-merge review brief has none of them, and `SKILL.md` names the field; holds

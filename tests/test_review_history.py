@@ -643,6 +643,37 @@ def test_s073_8_a_checkout_without_the_default_branch_names_the_fetch(
     assert capsys.readouterr().out == ""
 
 
+# --- S-073-9: the reviewer gets the pack ----------------------------------------------------------
+
+PR_TRIAGE = Path(__file__).resolve().parents[1] / "skills" / "github-pr-triage"
+
+
+def flat(path: Path) -> str:
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def test_s073_9_the_open_pr_brief_holds_the_history_its_check_and_its_report() -> None:
+    brief = flat(PR_TRIAGE / "references" / "reviewer-brief.md")
+    fields, rest = brief.split("## Open PR", 1)
+    open_pr, post_merge = rest.split("## Post-merge review", 1)
+    # filled from a checkout at origin/<default> with the pinned CLI, as {review_rubric} is
+    assert "Read them in a checkout at `origin/<default>` after `git fetch`, never on the PR's branch" in fields
+    assert "run each as `uvx shipmill==" in fields
+    assert "- `{history}`: `shipmill review history <N>`, the touched area's history pack" in fields
+    assert "When it prints `none` for every kind, drop the field and its step 3 check and the History part" in fields
+    assert "The touched area's history, from the default branch: {history}" in open_pr
+    check = "For each `H-n`, whether the PR contradicts it: `contradicts`, `consistent`, or `unrelated`, with one line"
+    assert check in open_pr
+    assert "A `contradicts` the PR's body or plan doesn't explain" in open_pr
+    assert "is a finding citing the `H-n`" in open_pr
+    report = open_pr.split("5. Final report", 1)[1]
+    assert "a History part with one line per `H-n` and its word" in report and "goes into the review record" in report
+    for word in ("{history}", "H-n", "History", "contradicts"):
+        assert word not in post_merge
+    skill = flat(PR_TRIAGE / "SKILL.md")
+    assert "`{history}` (the touched area's history, `review history <N>`, spec 073)" in skill
+
+
 # --- GhReads: batched reads -----------------------------------------------------------------
 
 
