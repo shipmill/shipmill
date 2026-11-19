@@ -73,6 +73,14 @@ def test_s068_11_no_close_milestone_reason_without_the_key(repo: Repo) -> None:
     assert "close_milestone" not in land
 
 
+def test_s068_11_two_lanes_that_set_close_milestone_are_named_together(repo: Repo) -> None:
+    repo.write(str(CALLER), NO_GRANTS)
+    rc = "[lanes.rc]\n"
+    both = NOT_BREAKING.replace(STABLE, CLOSES).replace(rc, rc + "milestone = true\nclose_milestone = true\n")
+    [land] = permissions(repo, both)
+    assert land.startswith("lanes.rc, lanes.stable set close_milestone, so a release closes its milestone")
+
+
 @pytest.mark.parametrize("style", list(Style))
 @pytest.mark.parametrize("version_files", list(VersionFiles))
 @pytest.mark.parametrize("fragments", [True, False])

@@ -1333,7 +1333,8 @@ def _land_grant(policy: Policy, upgrades: int, caller: Path) -> Check | None:
         reasons.append(f"{_BREAKING}, so a release closes its lane's proposal issue")
     if closing := [str(rule.lane) for rule in policy.lanes.values() if rule.close_milestone]:
         lanes = ", ".join(f"lanes.{lane}" for lane in closing)
-        reasons.append(f"{lanes} sets close_milestone, so a release closes its milestone and moves what's left")
+        verb = "sets" if len(closing) == 1 else "set"
+        reasons.append(f"{lanes} {verb} close_milestone, so a release closes its milestone and moves what's left")
     if upgrades:
         reasons.append(f"upgrade autonomy is {policy.autonomy.upgrade} and {upgrades} upgrade(s) pending")
     if not reasons:
