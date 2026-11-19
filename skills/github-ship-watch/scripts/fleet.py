@@ -61,7 +61,8 @@ them now:
               shipmill-ready; since the label's newest event, else its opening
   PROMOTION   an open "Ready to promote" proposal issue in PROMOTION_DUE; since its opening
 triage_state.py --json --trusted-only (with the --bot-login) and, in the clone,
-intake_state.py --plans --json (with the --bot-login) name these, read the same way:
+intake_state.py --json (with the --bot-login, and --plans when the clone has
+docs/product.md, as the watch runs it) name these, read the same way:
   YOUR_ITEM   an open item triage_state.py reads WITH_PERSON whose "assignees" include the
               reader (logins compared ignoring case); one assigned only to other logins or
               only to a team is none; since the time its note gives ("since <time>")
@@ -486,7 +487,7 @@ NUMBERS = re.compile(r"#(\d+)")
 TO_MERGE_PART = re.compile(r"(?:^|; )TO_MERGE ((?:#\d+ ?)+)")
 PROPOSAL_DETAIL = re.compile(r"^#(\d+) ")
 CHUNK = 50  # items per GraphQL read: one read per 50 items of a repo
-FIELDS = """number title url state createdAt closedAt bodyauthorAssociation author { __typename login }
+FIELDS = """number title url state createdAt closedAt body authorAssociation author { __typename login }
 labels(first: 100) { nodes { name } }
 comments(last: 100) { nodes { author { __typename login } authorAssociation body createdAt } }
 timelineItems(itemTypes: [LABELED_EVENT], last: 100) { nodes { ... on LabeledEvent { createdAt label { name } } } }"""
@@ -549,10 +550,12 @@ def triage_command(e: Entry, bot_login: str | None) -> list[str]:
     return cmd + (["--bot-login", bot_login] if bot_login is not None else [])
 
 
-def intake_command(e: Entry, bot_login: str | None) -> list[str]:
-    """intake_state.py for one repo's opportunities and plans, run in the clone, where it
-    reads the config and the direction; the --bot-login's triage comments and revisions count"""
-    cmd = [sys.executable, str(WS.INTAKE_STATE), e.repo, "--plans", "--json"]
+def intake_command(e: Entry, bot_login: str | None, plans: bool) -> list[str]:
+    """intake_state.py for one repo's opportunities, and with plans its plans, run in the
+    clone, where it reads the config and the direction; the --bot-login's triage comments and
+    revisions count. plans only when the clone has docs/product.md, as the watch runs it:
+    --plans fails without a direction"""
+    cmd = [sys.executable, str(WS.INTAKE_STATE), e.repo, *(["--plans"] if plans else []), "--json"]
     return cmd + (["--bot-login", bot_login] if bot_login is not None else [])
 
 
@@ -780,7 +783,7 @@ def queue_repo(e: Entry, runner: Runner, workdir: Path, bot_login: str | None, l
     triaged = runner(triage_command(e, bot_login))
     if triaged.returncode not in (0, 1):
         return RepoError(e.repo, "triage_state.py", first_line(triaged, "triage_state.py"))
-    intake = runner(intake_command(e, bot_login), cwd=checkout)
+    intake = runner(intake_command(e, bot_login, (checkout / WS.DIRECTION).is_file()), cwd=checkout)
     if intake.returncode not in (0, 1):
         return RepoError(e.repo, "intake_state.py", first_line(intake, "intake_state.py"))
     kinds = wanted(watch_rows(e.repo, watched.stdout))

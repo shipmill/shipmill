@@ -93,7 +93,9 @@ def asked(number: int, title: str, at: str, **kw: Any) -> dict[str, Any]:
 @dataclass
 class FakeGh:
     """Answers the clone, watch_state.py, triage_state.py, intake_state.py, gh api user, and gh
-    api graphql, recording each call and the folder it ran in"""
+    api graphql, recording each call and the folder it ran in. The clone of a repo not in
+    undirected holds docs/product.md; intake_state.py --plans fails without it, as
+    `shipmill product show` does"""
 
     watch: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     triage: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -102,6 +104,7 @@ class FakeGh:
     failing: dict[str, tuple[str, str]] = field(default_factory=dict)  # repo: (step, stderr)
     calls: list[list[str]] = field(default_factory=list)
     folders: dict[tuple[str, str], Path | None] = field(default_factory=dict)  # (script, repo): its cwd
+    undirected: set[str] = field(default_factory=set)  # repos with no docs/product.md
 
     def __call__(self, cmd: Sequence[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         cmd = list(cmd)
@@ -121,7 +124,12 @@ class FakeGh:
         if failing is not None and failing[0] == step:
             return proc(2 if step != "graphql" else 1, err=failing[1])
         if step == "clone":
+            if repo not in self.undirected:
+                (Path(cmd[4]) / "docs").mkdir(parents=True)
+                (Path(cmd[4]) / "docs" / "product.md").write_text("# Product\n", encoding="utf-8")
             return proc(0)
+        if step == "intake_state.py" and "--plans" in cmd and not (cwd and (cwd / "docs" / "product.md").is_file()):
+            return proc(2, err="error: shipmill product show failed with exit 2: docs/product.md:1: no such file")
         scripted = {"watch_state.py": self.watch, "triage_state.py": self.triage, "intake_state.py": self.intake}
         if step in scripted:
             rows = scripted[step].get(repo, [])
@@ -288,6 +296,30 @@ def test_s069_3_open_opportunities_plans_and_unreasoned_declines_are_rows_and_no
     assert fake.folders["intake_state.py", "o/r"] == Path(clone[4])  # in the clone, where it reads the direction
     graphql = next(c for c in fake.calls if c[:3] == ["gh", "api", "graphql"])
     assert re.findall(r"\bi(\d+): issueOrPullRequest", graphql[4]) == ["20", "24", "25", "30"]
+
+
+def test_s069_3_a_repo_with_no_direction_reads_its_opportunities_without_plans(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeGh(
+        watch={"o/r": [watch_row("NEEDS_DECISION", "o/r", "#5")]},
+        intake={"o/r": [intake_line(20, "OPPORTUNITY_OPEN")]},
+        github={"o/r": {5: asked(5, "Pick", ago(hours=2)), 20: item(20, "Export to CSV", created=ago(days=9))}},
+        undirected={"o/r", "o/s"},
+    )
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+    assert code == 1
+    assert out.splitlines() == [
+        "o/r OPPORTUNITY #20    accept or decline the opportunity: Export to CSV (9d 0h)",
+        "o/r QUESTION    #5     answer the needs-decision question: Pick (2h)",
+    ]
+    intake = [c for c in fake.calls if c[1:2] == [str(fl.WS.INTAKE_STATE)]]
+    assert len(intake) == 2 and not any("--plans" in c for c in intake)  # as the watch: plans only with a direction
+
+
+def test_the_items_query_asks_github_for_every_field_a_row_reads(fl: ModuleType) -> None:
+    asked = set(fl.FIELDS.splitlines()[0].split())
+    assert {*fl.ITEM_KEYS, "closedAt"} - {"labels"} <= asked
 
 
 def test_s069_3_an_unreasoned_decline_reopened_since_is_no_row(fl: ModuleType) -> None:
