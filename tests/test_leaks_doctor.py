@@ -161,6 +161,24 @@ def test_s081_15_a_private_file_that_doesnt_parse_fails_naming_the_fix(
     assert found[0].detail.endswith("is refused: fix it as docs/leaks.md describes")
 
 
+@pytest.mark.parametrize(
+    ("text", "where"),
+    [
+        ('terms = []\n["Acme Rocket"]\n["Acme Rocket"]\n', "isn't valid TOML at line 3, column 15"),
+        ("terms = []\nx = {acmerocket = 1, acmerocket = 2}\n", "isn't valid TOML at line 2, column 36"),
+    ],
+)
+def test_s081_15_a_private_file_that_isnt_toml_fails_naming_where_never_a_term(
+    agents_repo: Repo, tmp_path: Path, text: str, where: str
+) -> None:
+    home = tmp_path / "home"
+    path = private(home, text)
+    (failed, _) = block(agents_repo, probe(home))
+    assert failed.status == "FAIL"
+    assert failed.detail.startswith(f"private file: {path} {where}; fix it")
+    assert "acme" not in failed.detail.lower().replace(str(path).lower(), "")
+
+
 def test_s081_15_an_unreadable_secret_file_fails_naming_the_key(agents_repo: Repo, tmp_path: Path) -> None:
     home = tmp_path / "home"
     path = private(home, 'secret_files = ["~/gone/acme.env"]\n')
