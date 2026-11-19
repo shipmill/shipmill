@@ -1,0 +1,13 @@
+# mergeMethod: REBASE in a comment names no method
+mutation($id: ID!, $method: PullRequestMergeMethod) {
+  mergePullRequest(
+    input: {
+      pullRequestId: $id
+      commitHeadline: "mergeMethod: REBASE (in a string, too)"
+      mergeMethod:
+        $method
+    }
+  ) {
+    clientMutationId
+  }
+}

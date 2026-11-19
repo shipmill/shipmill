@@ -1,0 +1,9 @@
+{
+  "query": "mutation($input: MergePullRequestInput!) { mergePullRequest(input: $input) { clientMutationId } }",
+  "variables": {
+    "input": {
+      "pullRequestId": "PR_kwDO",
+      "mergeMethod": "SQUASH"
+    }
+  }
+}
