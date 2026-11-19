@@ -38,9 +38,11 @@ The uv-run rule (D-82) applies only in a session shipmill gate started headless,
 --settings env sets SHIPMILL_GATE=1, read from the hook's own environment alone: there `uv run`
 starts only python, pytest, ruff, mypy, a [hooks] uv_run program, a path to a .py file, or an
 entry of the checkout's [project.scripts]; a call to test_proof.py, which starts the command
-after its `--`, is refused when that command would be (S-076-11). Its known limit: `uv run python -c`, the
-allowlist's `Bash(uvx *)`, and `uv tool run`, the long form of uvx, still start any program,
-so it narrows the routing around a denied command without closing it.
+after its `--`, is refused when that command would be, or when its program is none the headless
+allowlist runs as a call of its own: gh, git, uv, or uvx, as written (S-076-11). Its known
+limit: `uv run python -c`, the allowlist's `Bash(uvx *)`, and `uv tool run`, the long form of
+uvx, still start any program, so it narrows the routing around a denied command without closing
+it.
 """
 
 from __future__ import annotations
@@ -1580,10 +1582,10 @@ def _python_script(words: Sequence[str], at: int) -> int | None:
     return i if i < len(words) else None
 
 
-def proof_command(cmd: Simple) -> Simple | None:
-    """The command a call to test_proof.py runs, the words after its first `--`, read as a call of
-    its own: run directly, through python or python3, or through uv run either way. None for any
-    other command, and for a call with no `--`, which test_proof.py refuses running nothing"""
+def _proof_words(cmd: Simple) -> list[str] | None:
+    """The words after a test_proof.py call's first `--`, as the call wrote them: run directly,
+    through python or python3, or through uv run either way. None for any other command, and for
+    a call with no `--`, which test_proof.py refuses running nothing"""
     words = cmd.words
     at: int | None = 0
     found = uv_run(cmd)
@@ -1596,13 +1598,32 @@ def proof_command(cmd: Simple) -> Simple | None:
     if at is None or os.path.basename(words[at]) != TEST_PROOF or "--" not in words[at + 1 :]:
         return None
     rest = words[at + 1 :]
-    return _simple(list(rest[rest.index("--") + 1 :]), cmd.cwd)
+    return list(rest[rest.index("--") + 1 :])
 
+
+def proof_command(cmd: Simple) -> Simple | None:
+    """The command a call to test_proof.py runs, the words after its first `--`, read as a call of
+    its own; None for any other command and for a call with no `--` (_proof_words)"""
+    words = _proof_words(cmd)
+    return None if words is None else _simple(words, cmd.cwd)
+
+
+# The programs a headless gate session's allowlist runs as a Bash call of their own: the
+# Bash(<program> *) rules of HEADLESS_TOOLS in src/shipmill/gate.py, which the hook can't import;
+# a test keeps the two equal (#1406). Matched against the word as written, as the allowlist
+# matches it, so /bin/sh, ./git, env, and NAME=value are none of them
+HEADLESS_PROGRAMS = frozenset({"gh", "git", "uv", "uvx"})
 
 UV_RUN_INSTEAD = (
     "run the program itself when the allowlist has it; otherwise stop, as for any denied tool call:"
     " the needs-decision protocol asks the maintainer, who may add the program to [hooks] uv_run in"
     f" {CONFIG} through a pull request"
+)
+PROOF_INSTEAD = (
+    "give test_proof.py a command after -- that the allowlist runs as a call of its own (gh, git, uv,"
+    " or uvx; such as uv run pytest); otherwise stop, as for any denied tool call: the needs-decision"
+    " protocol asks the maintainer, who may add the program to [hooks] uv_run in"
+    f" {CONFIG} through a pull request, so -- uv run <program> passes"
 )
 
 
@@ -1610,10 +1631,13 @@ def _uv_run_check(cmd: Simple, config: Config, ctx: Context) -> str | None:
     """D-82: in a gate session, a uv run of anything but python, pytest, ruff, mypy, a [hooks]
     uv_run program, a path to a .py file, or the checkout's [project.scripts] entry; a NAME=value
     word where the program goes is refused too. pyproject.toml is read only when the program is
-    none of the others. A call to test_proof.py is refused when the command after its `--` is
-    (S-076-11)"""
+    none of the others. A call to test_proof.py is refused when the command after its `--` is,
+    or when its program, as written, is none the headless allowlist runs (S-076-11, #1406)"""
     inner = proof_command(cmd)
     if inner is not None:
+        words = _proof_words(cmd)
+        if not words or words[0] not in HEADLESS_PROGRAMS:
+            return PROOF_INSTEAD
         refused = _uv_run_check(inner, config, ctx)
         if refused is not None:
             return refused

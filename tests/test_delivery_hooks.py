@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from shipmill.gate import GATE_SESSION
+from shipmill.gate import GATE_SESSION, HEADLESS_TOOLS
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "hooks" / "delivery.py"
@@ -2190,6 +2190,47 @@ def test_s076_11_only_a_call_to_test_proof_py_has_its_command_judged(box: Sandbo
 def test_s076_11_the_outer_uv_run_is_still_judged(box: Sandbox) -> None:
     command = f"uv run sh {PROOF} fix --base origin/main -- uv run pytest"
     refused(bash(command, box.app, env=gate_env()), "uv-run", "D-82")
+
+
+# #1406: the command after `--` is judged as the headless allowlist would judge it as a call of
+# its own: its program is one HEADLESS_TOOLS allows, named as the allowlist matches it
+PROOF_OFF_ALLOWLIST = [
+    "sh -c ls",
+    "env X=1 uv run pytest",
+    "X=1 uv run pytest",
+    "npm test",
+    "bash",
+    "/bin/sh -c ls",
+    "./sh -c ls",
+    "/usr/bin/git status",
+]
+PROOF_ON_ALLOWLIST = ["git status", "uv sync --locked", "uvx ruff check src"]
+
+
+@pytest.mark.parametrize("call", PROOF_CALLS)
+@pytest.mark.parametrize("inner", PROOF_OFF_ALLOWLIST)
+def test_s076_11_a_test_proof_command_off_the_headless_allowlist_is_refused(
+    box: Sandbox, call: str, inner: str
+) -> None:
+    command = call.format(inner=inner)
+    for root in (box.app, box.agents):
+        instead = refused(bash(command, root, env=gate_env()), "uv-run", "D-82")
+        assert "needs-decision" in instead and "uv_run" in instead
+    allowed(bash(command, box.app))  # a person's session: unchanged
+    allowed(bash(command, box.outside, env=gate_env()))  # no [agents]: unchanged
+
+
+@pytest.mark.parametrize("call", PROOF_CALLS)
+@pytest.mark.parametrize("inner", PROOF_ON_ALLOWLIST)
+def test_s076_11_a_test_proof_command_on_the_headless_allowlist_passes(box: Sandbox, call: str, inner: str) -> None:
+    allowed(bash(call.format(inner=inner), box.app, env=gate_env()))
+
+
+def test_s076_11_the_hooks_programs_are_the_headless_allowlists(delivery: ModuleType) -> None:
+    """The hook can't import shipmill, so this keeps its list equal to HEADLESS_TOOLS' Bash rules"""
+    programs = re.findall(r"Bash\((\S+) \*\)", HEADLESS_TOOLS)
+    assert programs and len(programs) == HEADLESS_TOOLS.count("Bash(")
+    assert frozenset(programs) == delivery.HEADLESS_PROGRAMS
 
 
 def test_d82_the_shipmill_gh_branch_still_reads_uv_and_uvx(box: Sandbox) -> None:
