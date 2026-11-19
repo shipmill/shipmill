@@ -105,8 +105,8 @@ or `status: built`, the gate runs `specs.py same-approval --base origin/<base> <
 <head>`, the PR's own change to the spec against none. Format only, the `status:` line, or a change
 to Issues or Verification alone (what the split's docs PR and a build PR fill in) keeps the
 verdict; any other change reads NEEDS_DECISION, `  spec: <file> changes approved Behaviour`,
-whoever opened the PR, a spec PR too, until the maintainer's answer accepts it. Outside a checkout
-it isn't read.
+whoever opened the PR, a spec PR too, until the maintainer's answer accepts it; so does an approved
+or built spec the PR renames, named by its old path. Outside a checkout it isn't read.
 
 A draft PR is read as DRAFT, whatever its checks, plan, or zones, and the gate reads neither its
 files nor its zones (D-67). A person's draft belongs to them: it enters triage once marked ready.
@@ -1658,21 +1658,25 @@ def approved_edits(data: dict, number: int, repo: str | None, checkout: str) -> 
     same-approval --base origin/<base> compares the PR's own change to it, base against head (the
     merge-base as the answered head, whose own change is none). Exit 0, only format or the status:
     line, keeps the verdict, and so does exit 1 when every section it names is Issues or
-    Verification, which the split's docs PR and the build PR fill in; any other section asks. A spec
-    PR's added spec is spec_problems'"""
+    Verification, which the split's docs PR and the build PR fill in; any other section asks. An
+    approved spec the PR renames (the files API's previous_filename) asks by its old path, unread:
+    same-approval reads one path at both commits. A spec PR's added spec is spec_problems'"""
     candidates = modified_specs(data, number, repo)
-    if not candidates:
+    moved = tuple(p for p in data.get("previous") or () if SPEC_FILE.fullmatch(p))
+    if not candidates and not moved:
         return []
     base_ref = base_of(data, checkout)
     read = file_in(checkout)
     approved = [s for s in candidates if spec_status(read(base_ref, s) or "") in APPROVED_STATUSES]
+    found = [
+        CHANGES_APPROVED.format(spec=s) for s in moved if spec_status(read(base_ref, s) or "") in APPROVED_STATUSES
+    ]
     if not approved:
-        return []
+        return found
     head = str(data["headRefOid"])
     if not has_commit(checkout, head):
         raise GateError(f"#{number}'s head {head[:7]} is not in {checkout}: run `git -C {checkout} fetch origin`")
     merge_base = git(checkout, "merge-base", base_ref, head).strip()
-    found = []
     for spec in approved:
         cmd = [sys.executable, str(SPECS), "same-approval", "--base", base_ref, spec, merge_base, head]
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=checkout)

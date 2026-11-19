@@ -2776,6 +2776,25 @@ def test_1311_a_pr_changing_an_approved_spec_past_its_format_needs_a_decision(
         assert (proc.returncode, proc.stdout) == (0, ready_line(data["headRefOid"])), proc.stdout + proc.stderr
 
 
+def test_1311_a_renamed_approved_spec_needs_a_decision(tmp_path: Path) -> None:
+    """the files API reads a rename `renamed`, not `modified`: an approved spec renamed with a
+    Behaviour change still asks, named by its path on the base"""
+    work = checkout(tmp_path, {SPEC: BUILT_SPEC})
+    for where in (work, tmp_path / "origin"):
+        git(where, "config", "user.email", "t@example.com")
+        git(where, "config", "user.name", "t")
+    git(work, "switch", "-q", "-c", "feat", "origin/main")
+    renamed = "docs/specs/054-digest.md"
+    git(work, "mv", SPEC, renamed)
+    head = committed(work, {renamed: BUILT_SPEC.replace("each release.\n", "each week.\n")}, "Rename the spec")
+    data = headed(
+        head, ((head, at(10, 30)),), login="amy", body="Changes the app", files=(renamed,), renamed={renamed: SPEC}
+    )
+    proc = run_gate(tmp_path, work, {7: data})
+    assert proc.returncode == gate.NEEDS_DECISION == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [CHANGES_BEHAVIOUR]
+
+
 def test_1311_the_maintainers_answer_lifts_the_approved_spec_ask(tmp_path: Path) -> None:
     changed = BUILT_SPEC.replace("each release.\n", "each release, archived repos aside.\n")
     work, data = spec_edit(tmp_path, BUILT_SPEC, changed)
