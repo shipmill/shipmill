@@ -1919,6 +1919,12 @@ def test_proposal_refuses_a_body_file_it_cant_read(
         rt.proposal_command(args, forge([]).read)
     assert refused.value.code == 2
     assert "can't read" in capsys.readouterr().err
+    binary = tmp_path / "binary.md"
+    binary.write_bytes(b"\xff\xfe<!-- shipmill:rule-proposal pulls=1,2 place=lint -->\n")
+    with pytest.raises(SystemExit) as refused:
+        rt.proposal_command(rt.parse(["proposal", str(binary), "--repo", REPO]), forge([]).read)
+    assert refused.value.code == 2  # not 1, which means a well-formed body refused
+    assert "isn't UTF-8 text" in capsys.readouterr().err
 
 
 def test_findings_pages_on_alone_a_connection_longer_than_its_page(

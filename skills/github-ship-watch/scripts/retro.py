@@ -2138,6 +2138,8 @@ def proposal_command(args: argparse.Namespace, read: Callable[[list[str]], Any])
         body = Path(args.body_file).read_text(encoding="utf-8")
     except OSError as e:
         raise fail(f"proposal: can't read {args.body_file}: {e.strerror}") from e
+    except UnicodeDecodeError as e:
+        raise fail(f"proposal: {args.body_file} isn't UTF-8 text; write the body as UTF-8") from e
     fault = proposal_fault(body)
     if fault is not None:
         raise fail(f"proposal: {fault}; fix the body and check it again")
