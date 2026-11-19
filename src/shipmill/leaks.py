@@ -554,12 +554,12 @@ class LeakRefused(ReleaseError):
     """A write the leak check refused; its message is the whole stderr block, printed as it is"""
 
 
-def refusal(command: str, destination: Destination, findings: Sequence[Finding]) -> LeakRefused:
+def refusal(command: str, destination: Destination, findings: Sequence[Finding], fix: str = FIX) -> LeakRefused:
     """The exit 2 of a write with findings: who refused and where it went, up to 10 findings,
-    `and N more`, then the fix"""
+    `and N more`, then the fix (a push's says to rewrite its commits)"""
     lines = [f"{command}: refused, nothing was sent ({destination.said()})"]
     lines.extend(f"  {finding.said()}" for finding in findings[:LISTED])
     if len(findings) > LISTED:
         lines.append(f"  and {len(findings) - LISTED} more")
-    lines.append(FIX)
+    lines.append(fix)
     return LeakRefused("\n".join(lines))

@@ -376,6 +376,7 @@ from shipmill.launchd import (
     read_job,
     remove,
 )
+from shipmill.leak_push import PUSH_FIX, Push, outgoing
 from shipmill.leaks import (
     Destination,
     Gitleaks,
@@ -1072,6 +1073,18 @@ def _parser() -> argparse.ArgumentParser:
     )
     q.add_argument("--body-file", type=Path, help="text for the pull request's body, after its `Spec for #N` line")
 
+    p = sub.add_parser("leaks", help="check what would leave the machine for private terms and secrets (spec 081)")
+    leaking = p.add_subparsers(dest="leaks", required=True)
+    q = leaking.add_parser(
+        "push", help="exit 2 naming each finding in what a `git push` would send: its new commits and ref names"
+    )
+    q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the checkout the push runs in (default: .)")
+    q.add_argument("--all", "--branches", dest="all_branches", action="store_true", help="the push pushes all branches")
+    q.add_argument("--tags", action="store_true", help="the push pushes all tags")
+    q.add_argument("--mirror", action="store_true", help="the push mirrors every ref")
+    q.add_argument("remote", nargs="?", help="the push's remote or URL (default: git's for the current branch)")
+    q.add_argument("refspec", nargs="*", help="the push's refspecs (default: the current branch)")
+
     p = sub.add_parser("evals", help="check the agents' eval suite, evals/, and compare its runs (spec 025)")
     evaluating = p.add_subparsers(dest="evals", required=True)
     q = evaluating.add_parser("check", help="exit 1 naming each case of evals/ and the rule it breaks; no case passes")
@@ -1257,6 +1270,8 @@ def main(
         if args.command == "review":
             return _review_record(root, args, through)
         return _spec_open(root, args, through, spec_checkout)
+    if args.command == "leaks":  # reads no config: the private file and the push alone (spec 081)
+        return _leaks_push(root, args, env, gh_capture or capture_gh, private_home)
     if args.command == "plugin-clean":  # needs no --repo and no config (spec 039)
         where = stdin or sys.stdin
         return plugin_clean.clean(claude or run_command, user_home, args.apply, where.isatty(), print)
@@ -2819,6 +2834,34 @@ def _tracked_dotenvs(top: Path | None) -> list[str]:
         return []
     out = Git(top).run("ls-files", "-z", "--", *(f":(literal){name}" for name in names))
     return [name for name in out.split("\0") if name]
+
+
+def _leaks_push(
+    root: Path, args: argparse.Namespace, environ: Mapping[str, str], capture: GhCapture, private_home: Path
+) -> int:
+    """S-081-9, S-081-10: `leaks push` exits 2 naming each finding in what the push would send,
+    its new commits each read by itself and its destination ref names; a term only when the
+    remote's repo is public. A check that can't finish exits 2 too, so no push goes unchecked.
+    A push that goes on prints its high-entropy warnings (S-081-8)"""
+    git = Git(root)
+    private = Private.load(private_home)
+    sent = outgoing(
+        git, Push(args.remote, tuple(args.refspec), all_branches=args.all_branches, tags=args.tags, mirror=args.mirror)
+    )
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    known = secrets(top, _tracked_dotenvs(top), private)
+    visibility = None
+    if private.terms and sent.repo is not None:
+        binary = shutil.which("gh", path=environ.get("PATH", ""))
+        visibility = _visibility(sent.repo, _Reach(Path(binary), as_host(environ), capture)) if binary else None
+    destination = Destination(sent.repo, visibility)
+    terms = private.terms if destination.public else ()
+    findings = sent.placed(scan(sent.texts, terms, known, Gitleaks.find(environ)))
+    if findings:
+        raise refusal("shipmill leaks push", destination, findings, PUSH_FIX)
+    for line in warning_lines(sent.placed(high_entropy(sent.texts))):
+        print(line, file=sys.stderr)
+    return 0
 
 
 def _visibility(repo: str, reach: _Reach) -> Visibility | None:
