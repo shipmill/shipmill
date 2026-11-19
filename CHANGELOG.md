@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.147.1] - 2026-11-19
+
+### Fixed
+
+- Merge gate: a thread cut off at its newest 100 comments no longer reads READY when they hold a trusted veto whose decided marker is older than them; the pull request reads BLOCKED with a `decided: the thread of #N is cut off at 100 comments: a veto in it can't be ruled out handled or not, so a person looks` line, while a complete thread, or a cut-off one with no unanswered veto in the window, reads as before (#1330)
+- `shipmill gh issue edit` and `shipmill gh pr edit`, as the App, refuse with exit 2 to add the `needs-decision` label when a person's reply, a relay by the App (counted or not), or a `<!-- shipmill:withdrawn -->` comment already follows the item's newest needs-decision question, naming what came and asking for a new question first, so after a relay that isn't counted the label goes back on only with the re-ask D-93 requires (#1331)
+
 ## [0.147.0] - 2026-11-19
 
 ### Fixed
@@ -2670,7 +2677,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.147.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.147.1...HEAD
+[0.147.1]: https://github.com/shipmill/shipmill/compare/v0.147.0...v0.147.1
 [0.147.0]: https://github.com/shipmill/shipmill/compare/v0.146.2...v0.147.0
 [0.146.2]: https://github.com/shipmill/shipmill/compare/v0.146.1...v0.146.2
 [0.146.1]: https://github.com/shipmill/shipmill/compare/v0.146.0...v0.146.1
