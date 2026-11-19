@@ -107,6 +107,12 @@ def test_s037_12_each_skills_rule_names_the_refusal_without_app_id(skill: str) -
         (("skills", "github-issue-triage", "SKILL.md"), "**SUSPECT_CLOSE:**", "`shipmill gh issue comment"),
         (("skills", "github-issue-triage", "SKILL.md"), "**OFF_MILESTONE:**", "`shipmill gh issue edit"),
         (("skills", "github-ship-watch", "SKILL.md"), "| MILESTONE_OVERTAKEN |", "`shipmill gh api -X PATCH"),
+        (
+            ("skills", "github-ship-watch", "SKILL.md"),
+            "| MILESTONE_RELEASED |",
+            "`shipmill gh api -X PATCH",
+        ),  # spec 068
+        (("skills", "github-ship-watch", "SKILL.md"), "| MILESTONE_MISSING |", "`shipmill gh api -X POST"),
     ],
 )
 def test_s037_12_the_rows_name_shipmill_gh_only_with_app_id_set(doc: tuple[str, ...], state: str, write: str) -> None:

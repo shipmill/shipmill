@@ -1063,6 +1063,8 @@ REPORT_ROWS = [
     "UNTRUSTED",
     "MILESTONE_WAITING",
     "MILESTONE_OVERTAKEN",
+    "MILESTONE_RELEASED",  # spec 068
+    "MILESTONE_MISSING",
     "UPSTREAM_ASKED",
     "UPSTREAM_UNTRUSTED",
     "UPSTREAM_UNREADABLE",
@@ -1893,6 +1895,17 @@ OVERTAKEN = {
     "next": "1.1.1",
     "fix": RENAME,
 }
+# spec 068's: the close of a milestone its release shipped, and the create of the next one
+CLOSE = "shipmill gh api -X PATCH repos/o/r/milestones/2 -f state=closed"
+CREATE = "shipmill gh api -X POST repos/o/r/milestones -f title=1.2.0"
+RELEASED = OVERTAKEN | {"state": "MILESTONE_RELEASED", "milestone": "1.0.0", "number": 2, "next": None, "fix": CLOSE}
+MISSING = OVERTAKEN | {
+    "state": "MILESTONE_MISSING",
+    "milestone": "1.2.0",
+    "number": None,
+    "next": "1.2.0",
+    "fix": CREATE,
+}
 
 
 def gone_checkout(home: Path) -> Path:
@@ -1950,7 +1963,7 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         *ws.shadow_rows(home, SHIPMILL_SKILLS),
         *ws.hold_rows([issue(ws, 7, ("shipmill-hold",), title=TITLE)], NOW, REPO),
         *ws.upgrade_rows([upgrade_issue(ws, 11, TITLE)], "propose", False, lambda n: [], lambda name: [], REPO).rows,
-        *ws.milestone_rows(json.dumps({"milestones": [OVERTAKEN], "error": None})),
+        *ws.milestone_rows(json.dumps({"milestones": [OVERTAKEN, RELEASED, MISSING], "error": None})),
         *ws.plans_rows(
             json.dumps({"goal": "G-1", "kind": "goal", "number": None, "state": "PLAN_DUE", "title": TITLE}), REPO
         ).rows,
@@ -2022,6 +2035,8 @@ FIXES = {
     "DIRECTION_MISSING": ["/shipmill:github-ship-watch o/r"],
     "DIRECTION_PENDING": ["/shipmill:github-ship-watch o/r"],
     "MILESTONE_OVERTAKEN": [RENAME],
+    "MILESTONE_RELEASED": [CLOSE],  # spec 068
+    "MILESTONE_MISSING": [CREATE],
     "UPSTREAM_DUE": ["/shipmill:github-issue-triage o/r"],
     "UPSTREAM_ASKED": ["answer the needs-decision question on x/b#2"],
     "UPSTREAM_UNTRUSTED": ["review them in an interactive session: /shipmill:github-issue-triage o/r"],
@@ -2065,7 +2080,8 @@ def test_s011_1_every_json_line_adds_a_fix_and_keeps_the_rest(ws: ModuleType, tm
 
 
 def test_s011_2_every_action_state_is_fixed_and_a_fixed_row_needs_its_fix(ws: ModuleType) -> None:
-    notices = {"HOLD", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT", "DEPLOYMENTS_FORBIDDEN"}  # #973
+    # #973; spec 068's MILESTONE_MISSING, the maintainer's create
+    notices = {"HOLD", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT", "DEPLOYMENTS_FORBIDDEN", "MILESTONE_MISSING"}
     assert notices | ws.ACTION == ws.FIXED
     assert ws.ACTION <= ws.FIXED, "a state in ACTION but not in FIXED ships without a fix"
     assert set(FIXES) == ws.FIXED
@@ -2246,8 +2262,8 @@ def test_s011_8_every_fix_names_its_target_and_quotes_no_title(ws: ModuleType, t
         assert MARKER not in row.fix, row.state
         for command in re.findall(r"\bgh [^;,]*", row.fix):
             gh_fixes += 1
-            # gh api takes no -R: its path names the repo (#475's milestone rename)
-            named = command.startswith(("gh repo edit o/r ", "gh api -X PATCH repos/o/r/"))
+            # gh api takes no -R: its path names the repo (#475's milestone rename, spec 068's create)
+            named = command.startswith(("gh repo edit o/r ", "gh api -X PATCH repos/o/r/", "gh api -X POST repos/o/r/"))
             # #597: PYPI_WAIT's publish run is shipmill's own, as doctor's and status's fix names it
             named = named or (row.state == "PYPI_WAIT" and "--repo shipmill/shipmill" in command)
             assert "-R o/r" in command or named, command

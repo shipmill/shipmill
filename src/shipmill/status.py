@@ -118,6 +118,7 @@ YOURS_ROWS = (
     "BRANCH_DELETE_OFF",
     "PLUGIN_SHADOWING",  # S-039-6: a person removes the keyed installs, with plugin-clean
     MILESTONE_OVERTAKEN,
+    MILESTONE_RELEASED,  # spec 068: the close, which a watch pass runs as it does the rename
     *CHAIN_ROWS,
 )
 RELEASE_ROWS = ("BOT_OK", "BOT_NONE", "BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE")
@@ -146,6 +147,7 @@ PLACED = {
     "HOST_UNKNOWN",  # the sessions line says it
     "UPGRADE_PENDING",  # spec 014: the upgrade lines say it, each with its issue (S-014-15)
     MILESTONE_WAITING,  # spec 022: the milestone lines say both
+    MILESTONE_MISSING,  # spec 068: the milestone lines say it with its create, the maintainer's (D-32)
 }
 # the release rows the repo line names in place of "release ok" (S-009-17)
 RELEASE_PROBLEMS = ("BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE", "NOT_PUBLISHED")
@@ -1456,7 +1458,11 @@ def item_lines(facts: Facts) -> list[str]:
     untrusted = [(r, int(n)) for r in of("UNTRUSTED") for n in re.findall(r"#(\d+)", r.detail)]
     lines += _fixed("untrusted", [(item(repo, n, n in pulls), fixed(r)) for r, n in untrusted])
     lines += _fixed("chain", [(chain_value(r), fixed(r)) for r in of(*CHAIN_ROWS)])
-    lines += _fixed("milestone", [(milestone_value(r), fixed(r)) for r in of(MILESTONE_WAITING, MILESTONE_OVERTAKEN)])
+    # spec 068: a missing milestone is no reason for the verdict, but its line keeps its create
+    marked = of(MILESTONE_WAITING, MILESTONE_OVERTAKEN, MILESTONE_RELEASED, MILESTONE_MISSING)
+    lines += _fixed(
+        "milestone", [(milestone_value(r), r.fix if r.state == MILESTONE_MISSING else fixed(r)) for r in marked]
+    )
     for name, state, check in CLOSED_LINES:
         closed = sorted((i.number for i in facts.issues if i.state == state), reverse=True)
         lines += _group(name, [f"{item(repo, n, False)}{check}" for n in closed])
