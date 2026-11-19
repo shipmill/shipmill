@@ -1,14 +1,17 @@
 """Spec 082: whom agents write to GitHub as is chosen once per repo, at setup. [agents]
 identity reads "app", "host", or "none" in shipmill and in setup_state.py, setup_state.py
 prints one Identity row, `shipmill gh`, `spec open`, and `app-token --check` refuse a write
-with the owner's choice or the three choices, and doctor prints one identity row. No test
-reaches the network: gh, GitHub's API, and the signer are fakes"""
+with the owner's choice or the three choices, doctor prints one identity row, and setup asks
+the question, the six skills' write rule and docs/install.md say it. No test reaches the
+network: gh, GitHub's API, and the signer are fakes"""
 
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -295,6 +298,130 @@ def test_s082_7_a_bad_identity_stops_the_script_before_fix_changes_anything(tmp_
 def test_s082_7_the_docstring_names_the_rows(ss: ModuleType) -> None:
     for state in ("IDENTITY_APP", "IDENTITY_HOST", "IDENTITY_NONE", "IDENTITY_UNCHOSEN"):
         assert state in (ss.__doc__ or "")
+
+
+# -- S-082-9, S-082-11, S-082-12: the setup question, the skills' rule, and the docs --------
+
+ROOT = Path(__file__).resolve().parents[1]
+SIX_SKILLS = (
+    "github-issue-triage",
+    "github-issue-resolve",
+    "github-pr-triage",
+    "github-ship-watch",
+    "product-intake",
+    "shipmill-setup",
+)
+QUESTION = "Whom do agents write to GitHub as in this repo?"
+
+
+def folded(*parts: str) -> str:
+    """A doc with its line wrapping folded, so a statement reads as one line"""
+    return " ".join(ROOT.joinpath(*parts).read_text(encoding="utf-8").split())
+
+
+def between(text: str, start: str, end: str) -> str:
+    assert text.count(start) == 1, start
+    return text.split(start, 1)[1].split(end, 1)[0]
+
+
+def test_s082_9_setup_asks_whom_agents_write_as_only_when_unchosen() -> None:
+    text = folded("skills", "shipmill-setup", "SKILL.md")
+    assert text.count(QUESTION) == 1
+    step = between(text, "**Whom agents write as, asked once per repo (spec 082).**", "By hand instead")
+    assert "Ask only when it reads `IDENTITY_UNCHOSEN`" in step
+    assert "a repo whose row reads a recorded value is not asked" in step
+    assert "Ask in the round of the other questions (D-20)" in step
+    assert "and so does step 3's identity question when the checklist reads `IDENTITY_UNCHOSEN`" in text
+
+
+def test_s082_9_the_options_come_in_order_the_app_the_owners_login_nobody() -> None:
+    step = folded("skills", "shipmill-setup", "SKILL.md").split(QUESTION, 1)[1]
+    app = step.index("1. **The App (recommended).**")
+    host = step.index('2. **The owner\'s login** (`identity = "host"`)')
+    none = step.index('3. **Nobody** (`identity = "none"`)')
+    assert app < host < none
+    offered = step[app:host]
+    assert "When the row names an App" in offered and "offer it" in offered
+    assert "when it names none, offer to create one with `$CR app-create`" in offered
+    assert "these writes can't be told from the owner's own" in step[host:none]
+
+
+def test_s082_9_app_id_is_written_only_after_the_check_exits_0() -> None:
+    step = folded("skills", "shipmill-setup", "SKILL.md").split(QUESTION, 1)[1]
+    check_at = step.index("Before you write `app_id`, run `$CR app-install <owner/repo> --app-id <id> --check`")
+    assert check_at < step.index("On exit 0 (`App <id> (<slug>[bot]) can read <owner/repo>`), write `app_id = <id>`")
+    assert "On any other exit write no `app_id`" in step
+    assert "Write the answer to `[agents]` of `.github/shipmill.toml`" in step
+    assert "With `host` or `none` chosen, install no gate (D-19)" in step
+
+
+def write_rule(skill: str) -> str:
+    """The skill's "Write as the App" rule, folded: its paragraph or list item"""
+    text = folded("skills", skill, "SKILL.md")
+    assert text.count("**Write as the App") == 1, skill
+    at = text.index("**Write as the App")
+    ends = [i for i in (text.find(" **", at + 5), text.find(" ## ", at)) if i != -1]
+    return text[at : min(ends)] if ends else text[at:]
+
+
+@pytest.mark.parametrize("skill", SIX_SKILLS)
+def test_s082_11_every_write_runs_as_shipmill_gh_in_every_repo_whatever_the_config_sets(skill: str) -> None:
+    rule = write_rule(skill)
+    assert "runs as `shipmill gh <the same arguments>`" in rule
+    assert "in every repo, whatever `.github/shipmill.toml` sets" in rule
+    assert "sets `[agents] app_id`, every `gh` call" not in rule  # no longer only with app_id
+    assert "with `[agents] app_id` set, every `gh` call" not in rule
+    assert (
+        "runs `shipmill app-token --check` before its first write to GitHub, a push included, in every repo, "
+        "whatever the config sets"
+    ) in rule
+
+
+@pytest.mark.parametrize("skill", SIX_SKILLS)
+def test_s082_11_on_the_owners_choice_the_skill_stops_hands_over_and_never_passes_as_host(skill: str) -> None:
+    rule = write_rule(skill)
+    owners = between(rule, 'With `[agents] identity = "none"` the repo\'s owner chose', "Without `app_id`")
+    for phrase in (
+        "from the check or from `shipmill gh`, the skill stops",
+        "its report's first line says the owner chose that agents don't write here",
+        "shipmill wrote nothing to GitHub",
+        "hands over the text of each write it would have made, each with its target",
+        "it never offers or passes `--as-host` there",
+    ):
+        assert phrase in owners, (skill, phrase)
+
+
+@pytest.mark.parametrize("skill", SIX_SKILLS)
+def test_s082_11_no_instruction_files_prose_decides_the_identity(skill: str) -> None:
+    rule = write_rule(skill)
+    assert "Whom agents write as is the config's choice alone" in rule
+    assert "no instruction file's prose" in rule and "decides the identity" in rule
+
+
+@pytest.mark.parametrize("skill", SIX_SKILLS)
+def test_s082_11_no_other_paragraph_runs_shipmill_gh_only_with_app_id(skill: str) -> None:
+    # a write named outside the rule mustn't read as plain `gh` without app_id (the rule's "in every repo")
+    assert "through `shipmill gh` with `[agents] app_id` set" not in folded("skills", skill, "SKILL.md")
+
+
+def test_s082_11_the_version_pins_still_match_once_each() -> None:
+    config = tomllib.loads((ROOT / ".github" / "shipmill.toml").read_text(encoding="utf-8"))
+    lines = [line for line in config["version_lines"] if line["file"].endswith("/SKILL.md")]
+    assert {line["file"] for line in lines} == {f"skills/{skill}/SKILL.md" for skill in SIX_SKILLS}
+    for line in lines:
+        text = (ROOT / line["file"]).read_text(encoding="utf-8")
+        assert len(re.findall(line["pattern"], text)) == 1, (line["file"], line["pattern"])
+
+
+def test_s082_12_install_names_the_three_values_the_question_none_and_all_repositories() -> None:
+    section = between(folded("docs", "install.md"), "### Give the sessions their own identity", " ### ")
+    for value in ("`app_id = <id>`", '`identity = "host"`', '`identity = "none"`'):
+        assert value in section, value
+    assert QUESTION in section
+    assert '`identity = "none"` refuses every write through `shipmill gh`, and `--as-host` too' in section
+    assert "An App installed with access to **All repositories** of an account reaches a new repo there" in section
+    assert "with no installation step" in section
+    assert "the App can then read and write every repository of the account, private ones included" in section
 
 
 # -- S-082-2 to S-082-6: the two refusals and app-token --check -----------------------------

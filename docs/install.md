@@ -473,6 +473,31 @@ session's pull requests, comments, reviews, merges, and commits are made by the 
 metrics count its merges as a bot's. The token it uses reaches this one repo only, never
 everything your login can.
 
+Whom agents write to GitHub as is chosen once per repo, in `[agents]` of
+`.github/shipmill.toml`, and nowhere else (spec 082): the skills read the config for it,
+never the prose of an instruction file. It takes one of three values:
+
+| Config | A write through `shipmill gh` |
+|---|---|
+| `app_id = <id>` (`identity = "app"`, the default) | as the App's bot |
+| `identity = "host"` | as your own `gh` login, which on GitHub can't be told from your own writes |
+| `identity = "none"` | refused: agents don't write to GitHub here; they draft, and a person posts |
+
+With none of them recorded, a write is refused naming the three choices. When you connect a
+repo, `/shipmill:shipmill-setup <owner/repo>` asks "Whom do agents write to GitHub as in this
+repo?" once, only while the choice isn't recorded, recommending the App, and writes the
+answer in its pull request. Before it writes `app_id` it runs `shipmill app-install
+<owner/repo> --app-id <id> --check`, which reads the repo with a token minted for it, and
+writes none unless that exits 0. `identity = "none"` refuses every write through `shipmill
+gh`, and `--as-host` too: the repo's recorded choice outranks one call's flag. A read still
+runs as your `gh` login.
+
+An App installed with access to **All repositories** of an account reaches a new repo there
+with no installation step: nothing to click when you connect it. That is also what it
+grants: the App can then read and write every repository of the account, private ones
+included, with every permission below. Pick **Only select repositories** unless you want
+that.
+
 The quick way is one command:
 
 ```bash
@@ -617,9 +642,10 @@ lasts a year, so run `claude setup-token` again and save it over the old one
 
 The App's identity covers the sessions you start yourself too, not only the gate's. The
 shipmill skills run every `gh` call that writes (an issue, a comment, a label, a pull
-request, a review, a merge, a release) as `shipmill gh` when `app_id` is set, in every
-session, and stop rather than retry with plain `gh` when it fails. Before its first write a
-skill runs `shipmill app-token --check`, which says whether the App is available here: its
+request, a review, a merge, a release) as `shipmill gh` in every repo, whatever the config
+sets, in every session, and stop rather than retry with plain `gh` when it fails. Before its
+first write in every repo a skill runs `shipmill app-token --check`, which with `app_id` says
+whether the App is available here: its
 key at `~/.config/shipmill/app-<app_id>.pem`, or `SHIPMILL_APP_KEY` set, as the gate sets it
 on every session it starts (spec 033). Where it isn't, the skill writes nothing and hands you
 the text instead ([Contributors](#contributors)). Keep the key at its default path, or set
@@ -657,15 +683,16 @@ the protocol.
 With no `app_id` (no `.github/shipmill.toml`, no `[agents]` section, or one without
 `app_id`, or a folder outside any checkout), `shipmill gh` runs a read (`pr view`,
 `issue list`, `api` with `GET`, and the rest spec 037 lists) as your login, untouched, and
-refuses a write: exit 2 with three lines naming the repo, the missing `[agents] app_id`,
-and the two ways to allow it, and `gh` never runs (spec 037). A command the list doesn't
+refuses a write: exit 2 with lines naming the repo, the missing `[agents] app_id`, the
+three choices (the App, `identity = "host"`, `identity = "none"`), the setup that records
+one, and the one call that allows it, and `gh` never runs (specs 037 and 082). A command the list doesn't
 name counts as a write. To let writes go as your login:
 
 - for the repo: set `identity = "host"` in `[agents]`, so every write through `shipmill gh`
   runs as your `gh` login, as the repo chose; it can't go with `app_id`, and setting both
   exits 2
 - for one call: `shipmill gh --as-host <the same arguments>`, before `gh`'s first argument;
-  it exits 2 where `app_id` is set or with `--app-key`. The skills pass it only for a write
+  it exits 2 where `app_id` is set, where `identity = "none"`, or with `--app-key`. The skills pass it only for a write
   a person approved in the chat, never on their own and never in a headless session
 
 `shipmill app-token`
