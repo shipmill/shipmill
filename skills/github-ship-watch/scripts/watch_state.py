@@ -77,6 +77,22 @@ Hold and postmortems (a repo with a shipmill config):
                   issue's URL, or "#N" for the repo itself), read through the GitHub
                   contents API, not the checkout
 
+Class of service (spec 070; only for a config with an [agents] table): the open issues labelled
+both opportunity and planned (an accepted opportunity, D-10) are listed, and for those carrying
+expedite or fixed-date one GraphQL read takes their milestone's due date, their sub-issues, and
+their newest label events. A class label counts only when the newest labeled event adding it
+names a person (a User, not a Bot or the --bot-login) as its actor; one the App added, or whose
+actor can't be read, counts as no label. With both labels counting the opportunity reads as
+standard. Each row is an action for the maintainer, never an agent's, and in no --tier:
+  CLASS_CONFLICT  both expedite and fixed-date count; fix "remove one of `expedite` and
+                  `fixed-date` from #N"
+  FIXED_DATE_AT_RISK  a fixed-date opportunity whose milestone is due in 2 days or fewer (UTC
+                  dates), or past, with an open sub-issue or none at all, as `#N due
+                  YYYY-MM-DD, K build issues open`; fix "expedite #N or move its milestone's due
+                  date"
+  FIXED_DATE_NO_DATE  a fixed-date opportunity in no milestone, or in one without a due date;
+                  fix "set the due date of #N's milestone"
+
 Config upgrades (a repo with a shipmill config; spec 014's shipmill-upgrade issues, each
 with the `<!-- shipmill-upgrade: <id> <version> -->` marker on its first line):
   UPGRADE_PENDING an open upgrade issue an agent session takes up now, as #N with the
@@ -448,7 +464,8 @@ ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORT
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MISSING, GATE_SESSIONS_DEAD,
 GATE_CHECKOUT_MISSING, SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_CYCLE,
 CHAIN_UNREADABLE, MILESTONE_OVERTAKEN, MILESTONE_RELEASED,
-UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, VETOED, AGENT_DRAFT, or LAND_DUE row is present, 2
+UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, VETOED, AGENT_DRAFT, LAND_DUE, CLASS_CONFLICT,
+FIXED_DATE_AT_RISK, or FIXED_DATE_NO_DATE row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill
 milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
 `shipmill: ` error is the BOT_PLAN_FAILED row instead, and uv finding no pinned version the
@@ -659,6 +676,10 @@ ACTION = {
     VETOED,
     "AGENT_DRAFT",  # D-67: the App's own draft with nothing open on it, a session marks it ready (#914)
     "LAND_DUE",  # spec 056: the land window's queue head, landed where [autonomy] land isn't observe
+    # spec 070: an accepted opportunity's class waits on the maintainer's choice, never an agent's
+    "CLASS_CONFLICT",
+    "FIXED_DATE_AT_RISK",
+    "FIXED_DATE_NO_DATE",
 }
 # the states whose row needs an agent: --json marks each row's "agent" from this, and
 # shipmill gate starts a session on those rows (SKILL.md's repair table says what it does)
@@ -2416,6 +2437,161 @@ def hold_rows(issues: list[Issue], now: dt.datetime, repo: str) -> list[Row]:
         for i in issues
         if HOLD_LABEL in i.labels
     ]
+
+
+# -- class of service (spec 070) -------------------------------------------------------------
+
+# an accepted opportunity is labelled both (D-10); its class is a label a person adds to it
+OPPORTUNITY_LABEL = "opportunity"
+PLANNED_LABEL = "planned"
+EXPEDITE_LABEL = "expedite"
+FIXED_DATE_LABEL = "fixed-date"
+CLASS_LABELS = (EXPEDITE_LABEL, FIXED_DATE_LABEL)
+STANDARD = "standard"  # no class label that counts, or both: everything works as before spec 070
+EXPEDITE = "expedite"
+FIXED_DATE = "fixed date"
+AT_RISK_DAYS = 2  # a fixed date this many days away or fewer, or past, with work open, is at risk
+SUB_ISSUES_FIRST = 100  # an opportunity's sub-issues read; one with more is refused
+CLASS_STATES = ("CLASS_CONFLICT", "FIXED_DATE_AT_RISK", "FIXED_DATE_NO_DATE")
+
+
+@dataclass(frozen=True)
+class Opportunity:
+    """An open accepted opportunity with a class label (spec 070): the class labels that count,
+    each added by a person (the newest labeled event for it names a User other than the
+    --bot-login as its actor); whether it is in a milestone, and that milestone's due date as a
+    UTC date (None in no milestone or one without); its sub-issues, and how many are open"""
+
+    number: int
+    counted: frozenset[str]
+    milestone: bool
+    due: dt.date | None
+    subs: int
+    open_subs: int
+
+    @property
+    def conflict(self) -> bool:
+        """Both class labels count: the opportunity reads as standard (S-070-2)"""
+        return all(label in self.counted for label in CLASS_LABELS)
+
+    @property
+    def service(self) -> str:
+        """Its class of service: expedite, fixed date, or standard (S-070-1)"""
+        if self.conflict:
+            return STANDARD
+        if EXPEDITE_LABEL in self.counted:
+            return EXPEDITE
+        return FIXED_DATE if FIXED_DATE_LABEL in self.counted else STANDARD
+
+
+def classed(issues: list[Issue]) -> list[int]:
+    """The open accepted opportunities carrying a class label, whoever added it"""
+    accepted = [i for i in issues if OPPORTUNITY_LABEL in i.labels and PLANNED_LABEL in i.labels]
+    return sorted(i.number for i in accepted if any(label in i.labels for label in CLASS_LABELS))
+
+
+def added_by_person(events: list[Any], label: str, bot_login: str | None) -> bool:
+    """Whether the newest labeled event adding label names a person as its actor: a User, never
+    a Bot (the App) or the --bot-login; an event whose actor can't be read, or no such event in
+    those read, counts as no label, so choosing a class stays the maintainer's (N-3, D-10)"""
+    adding = [e for e in events if isinstance(e, dict) and (e.get("label") or {}).get("name") == label]
+    if not adding:
+        return False
+    actor = adding[-1].get("actor")
+    if not isinstance(actor, dict) or actor.get("__typename") != "User":
+        return False
+    login = actor.get("login")
+    if not isinstance(login, str) or not login or login.endswith("[bot]"):
+        return False
+    bot = (bot_login or "").removesuffix("[bot]")
+    return login.lower() != bot.lower()
+
+
+def read_opportunities(
+    repo: str, numbers: Sequence[int], bot_login: str | None, read: Callable[[list[str]], str] = run
+) -> list[Opportunity]:
+    """Each classed opportunity's milestone, sub-issues, and newest LABELED_LAST label events,
+    in one GraphQL query per COMMENTS_CHUNK issues; none without a number. An answer that isn't
+    the issue asked for, or an opportunity with more than SUB_ISSUES_FIRST sub-issues, is refused"""
+    owner, _, name = repo.partition("/")
+    events = (
+        f"timelineItems(itemTypes: [LABELED_EVENT], last: {LABELED_LAST})"
+        " { nodes { ... on LabeledEvent { label { name } actor { __typename login } } } }"
+    )
+    subs = f"subIssues(first: {SUB_ISSUES_FIRST}) {{ pageInfo {{ hasNextPage }} nodes {{ state }} }}"
+    fields = f"labels(first: 100) {{ nodes {{ name }} }} milestone {{ dueOn }} {subs} {events}"
+    wanted = sorted(set(numbers))
+    found: list[Opportunity] = []
+    for start in range(0, len(wanted), COMMENTS_CHUNK):
+        chunk = wanted[start : start + COMMENTS_CHUNK]
+        parts = " ".join(f"n{n}: issue(number: {n}) {{ {fields} }}" for n in chunk)
+        query = f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {parts} }} }}"
+        data = json.loads(
+            read(["gh", "api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}"])
+        )
+        repository = data.get("data", {}).get("repository") if isinstance(data, dict) else None
+        if not isinstance(repository, dict):
+            raise Refused(f"error: gh api graphql printed {str(data)[:200]} for the classed opportunities")
+        found += [opportunity(repo, n, repository.get(f"n{n}"), bot_login) for n in chunk]
+    return found
+
+
+def opportunity(repo: str, number: int, item: object, bot_login: str | None) -> Opportunity:
+    """One issue of read_opportunities' answer, refused unless it has the fields asked for"""
+    if not isinstance(item, dict):
+        raise Refused(f"error: gh api graphql printed {str(item)[:200]} for {repo}#{number}")
+    labels = (item.get("labels") or {}).get("nodes")
+    subs = item.get("subIssues")
+    events = (item.get("timelineItems") or {}).get("nodes")
+    milestone = item.get("milestone")
+    if (
+        not isinstance(labels, list)
+        or not isinstance(subs, dict)
+        or not isinstance(subs.get("nodes"), list)
+        or not isinstance(events, list)
+        or not (milestone is None or isinstance(milestone, dict))
+    ):
+        raise Refused(f"error: gh api graphql printed {str(item)[:200]} for {repo}#{number}")
+    if (subs.get("pageInfo") or {}).get("hasNextPage"):
+        raise Refused(f"error: {repo}#{number} has more than {SUB_ISSUES_FIRST} sub-issues")
+    names = {label.get("name") for label in labels if isinstance(label, dict)}
+    counted = frozenset(x for x in CLASS_LABELS if x in names and added_by_person(events, x, bot_login))
+    due_on = None if milestone is None else milestone.get("dueOn")
+    due = None if not due_on else parse_time(str(due_on)).astimezone(dt.timezone.utc).date()  # noqa: UP017 (3.10)
+    states = [s.get("state") for s in subs["nodes"] if isinstance(s, dict)]
+    return Opportunity(number, counted, milestone is not None, due, len(states), states.count("OPEN"))
+
+
+def class_rows(opportunities: list[Opportunity], now: dt.datetime) -> list[Row]:
+    """S-070-2, S-070-11, S-070-12: the classes that wait on the maintainer's choice, each an
+    action but never an agent's, since no session makes that choice: CLASS_CONFLICT for both
+    labels, and for a fixed date FIXED_DATE_NO_DATE without a due date, FIXED_DATE_AT_RISK when it
+    is AT_RISK_DAYS away or fewer, or past, while a sub-issue is open or none was filed"""
+    rows: list[Row] = []
+    today = now.astimezone(dt.timezone.utc).date()  # noqa: UP017 (dt.UTC needs 3.11)
+    for o in sorted(opportunities, key=lambda o: o.number):
+        subject = f"#{o.number}"
+        if o.conflict:
+            detail = f"labelled both {EXPEDITE_LABEL} and {FIXED_DATE_LABEL}: reads as {STANDARD}"
+            fix = f"remove one of `{EXPEDITE_LABEL}` and `{FIXED_DATE_LABEL}` from #{o.number}"
+            rows.append(Row("CLASS_CONFLICT", subject, detail, fix))
+        elif o.service == FIXED_DATE and o.due is None:
+            where = "its milestone has no due date" if o.milestone else "it is in no milestone"
+            rows.append(Row("FIXED_DATE_NO_DATE", subject, where, f"set the due date of #{o.number}'s milestone"))
+        elif o.service == FIXED_DATE and o.due is not None and (o.due - today).days <= AT_RISK_DAYS:
+            if o.open_subs or not o.subs:
+                detail = f"due {o.due:%Y-%m-%d}, {o.open_subs} build issues open"
+                rows.append(
+                    Row("FIXED_DATE_AT_RISK", subject, detail, f"expedite #{o.number} or move its milestone's due date")
+                )
+    return rows
+
+
+def service_rows(repo: str, bot_login: str | None, now: dt.datetime) -> list[Row]:
+    """The class rows of the open accepted opportunities; the label events, milestones, and
+    sub-issues are read only for those carrying a class label"""
+    numbers = classed(fetch_issues(repo, "--label", OPPORTUNITY_LABEL, "--label", PLANNED_LABEL))
+    return class_rows(read_opportunities(repo, numbers, bot_login), now) if numbers else []
 
 
 def ordered(rows: list[Row]) -> list[Row]:
@@ -5679,6 +5855,8 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         rows += gate_app_rows(table)
         read = config(text, policy, args.incident_label)
         rows += holds
+        if table is not None:  # spec 070: the accepted opportunities' classes, with [agents]
+            rows += service_rows(args.repo, args.bot_login, now)
         land = None if table is None else held_land(read.land, bool(holds))
         closed = fetch_issues(args.repo, "--label", read.incident_label, state="closed")
         if closed:  # the postmortems are read only once an incident has closed

@@ -133,6 +133,9 @@ ACTION = frozenset(
         "VETOED",
         "AGENT_DRAFT",  # D-67: the App's own draft, resumed by a session (#914)
         "LAND_DUE",  # spec 056: the land window's queue head
+        "CLASS_CONFLICT",  # spec 070: an accepted opportunity's class waits on the maintainer
+        "FIXED_DATE_AT_RISK",
+        "FIXED_DATE_NO_DATE",
     }
 )
 REPO_ERROR = "REPO_ERROR"

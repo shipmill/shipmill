@@ -1069,6 +1069,9 @@ REPORT_ROWS = [
     "UPSTREAM_UNTRUSTED",
     "UPSTREAM_UNREADABLE",
     "DEPLOYMENTS_FORBIDDEN",  # #973
+    "CLASS_CONFLICT",  # spec 070
+    "FIXED_DATE_AT_RISK",
+    "FIXED_DATE_NO_DATE",
 ]
 
 
@@ -1981,6 +1984,15 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         # spec 056: the land window's queue head, its title MARKER's
         *ws.land_rows(ws.Queue(ws.Window("UTC", True, None, NOW), NOW, {3: ws.Queued(3, TITLE, NOW)}), [3], REPO),
         *ws.direction_rows(REPO, "main", False, list, lambda: [], list, lambda n: [], None, lambda n: None).rows,
+        # spec 070: an opportunity labelled both classes, one due today with work open, one in no milestone
+        *ws.class_rows(
+            [
+                ws.Opportunity(21, frozenset({"expedite", "fixed-date"}), True, None, 0, 0),
+                ws.Opportunity(22, frozenset({"fixed-date"}), True, NOW.date(), 1, 1),
+                ws.Opportunity(23, frozenset({"fixed-date"}), False, None, 0, 0),
+            ],
+            NOW,
+        ),
     ]
     found: dict[str, list[Any]] = {}
     for row in rows:
@@ -2044,6 +2056,9 @@ FIXES = {
     "VETOED": ["take up each veto (needs-decision.md): /shipmill:github-issue-triage o/r"],
     "AGENT_DRAFT": ["mark each ready, then land it: /shipmill:github-pr-triage o/r"],  # #914
     "LAND_DUE": ["/shipmill:github-pr-triage o/r"],  # spec 056
+    "CLASS_CONFLICT": ["remove one of `expedite` and `fixed-date` from #21"],  # spec 070
+    "FIXED_DATE_AT_RISK": ["expedite #22 or move its milestone's due date"],
+    "FIXED_DATE_NO_DATE": ["set the due date of #23's milestone"],
     "PYPI_WAIT": [
         "check the publish.yml run for v0.66.0: gh run list --repo shipmill/shipmill --workflow publish.yml;"
         " if none passed, publish it: gh workflow run publish.yml --repo shipmill/shipmill -f tag=v0.66.0"
