@@ -33,7 +33,7 @@ Serves: {G-n}
 {Solutions the requests propose, the D-n rules it runs into, related opportunities. Optional.}
 ```
 
-The first line names the goal of the direction the outcome serves (SKILL.md, rule 8): `Serves: G-n`, several as `Serves: G-2, G-3`, or `Serves no goal`, followed by `; hits N-n: {the non-goal's words}` when it hits a non-goal. A repo without `docs/product.md` leaves the line out.
+The first line names the goal of the direction the outcome serves (SKILL.md, rule 8): `Serves: G-n`, several as `Serves: G-2, G-3`, or `Serves no goal`, followed by `; hits N-n: {the non-goal's words}` when it hits a non-goal. In a component (`[product] home`), a non-goal of the product, one `shipmill product show` prints under `## Product non-goals (<owner/home>)`, is named the same way with its home, `; hits <owner/home> N-n: {the non-goal's words}` (spec 071), and the opportunity is never proposed for acceptance on demand: the triage line below names it in place of `N-n` and recommends declining it, citing `<owner/home> N-n`. While `shipmill product show` exits 2 on the home's direction, open and update no opportunity (SKILL.md, step 1). A repo without `docs/product.md` leaves the line out.
 
 `intake_state.py` reads members only from the Evidence section, so link every request there and nowhere else counts. Other sections may link issues freely.
 

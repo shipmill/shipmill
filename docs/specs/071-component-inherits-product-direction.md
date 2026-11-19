@@ -1,6 +1,6 @@
 # S-071: A component inherits its product's non-goals and serves its goals
 
-status: approved
+status: built
 serves: G-5
 
 ## Problem
@@ -157,3 +157,17 @@ non-goals reach them through the same call; their texts say what to do with them
 - shipmill/shipmill#1256: S-071-12
 
 ## Verification
+
+- S-071-1: ran the S-071-1 tests of `tests/test_product_serves.py` over `src/shipmill/product.py`: `check --local` accepts serves lines under the item or the measure line, a moved Goals section included, and refuses each misplaced or malformed one naming the file, line, and rule; holds
+- S-071-2: ran the S-071-2 tests: a serves line in a repo without `[product] home`, and in a home with `[product] repos`, exits 1 naming the file and line with or without `--local`, and a direction without serves lines never reads the config; ran `shipmill product check` in this repo (no home): `docs/product.md: well formed, 23 items`; holds
+- S-071-3: ran the S-071-3 tests of `tests/test_product_inherits.py` over a fake GitHub for the home: an id the home's Goals don't list, a retired one included, exits 1 naming the file, line, id, and home, and exits 0 when every id is listed, a goal moved to `docs/product/` in the home included; holds
+- S-071-4: ran the S-071-4 test: with no serves line, `check` makes no request to the home; holds
+- S-071-5: ran the S-071-5 tests and read `Inherited.render` in `product.py`: `show --section non-goals` prints the component's, then `## Product non-goals (<owner/home>)` with `- <owner/home> N-n: <text>`, goals the same way, and `--json` adds one `product` key with `home`, `name`, and the sections asked; holds
+- S-071-6: ran the S-071-6 test: after the read token's mint over the home alone, every request is a GET of `/repos/<home>/contents/...` with no ref; holds
+- S-071-7: ran the S-071-7 test: no key, a failed read, no `docs/product.md`, and a home direction that breaks the grammar each exit 2 naming the home and the fix and print nothing; read `home_refusal` in `product.py`; holds
+- S-071-8: ran the S-071-8 tests, and `shipmill product show --section goals --json` and `--section non-goals --json` in this repo (no home): the component's own keys only, no `product` key, no other repo read; holds
+- S-071-9: ran the S-071-9 test and `shipmill product show --section goals --json` in this repo: each goal has `"serves": []`, and `product ids` lists no home id; holds
+- S-071-10: ran the S-071-10 tests: `product serves` writes, replaces, and `--clear`s only the goal's serves line, under the item or measure line and in a moved section's file, exits 2 without writing on a file `check --local` refuses, and `retire` removes the line while `add`, `edit`, and `measure` keep it; holds
+- S-071-11: ran the S-071-11 tests of `tests/test_pr_gate.py`, `tests/test_plans.py`, and `tests/test_specs.py`: each script reads the same ids with and without serves lines, with no error; holds
+- S-071-12: read `skills/github-issue-triage/references/triage-rubric.md` and `references/comments.md` (a request hitting a product non-goal is **won't fix**, citing `<owner/home> N-n`), `skills/product-intake/SKILL.md` and `references/opportunity.md` (`hits <owner/home> N-n` on the `Serves` line, never proposed on demand), and `skills/github-pr-triage/references/reviewer-brief.md` (a finding citing `<owner/home> N-n`); each says nothing on new behaviour is given while `shipmill product show` exits 2 on the home's direction; holds
+- S-071-13: read `hooks/delivery.py`, which runs `shipmill product check --local` after an edit of the direction, ran the S-071-13 tests (doctor's direction line reads nothing of the home), and read `skills/shipmill-setup/SKILL.md`'s component step, which shows the home's goals, asks which each serves, and writes the answer with `product serves`, never choosing; holds

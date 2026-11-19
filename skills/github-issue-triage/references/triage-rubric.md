@@ -24,11 +24,12 @@ When the default branch has `docs/product.md` (D-34, spec 024), new behaviour is
 Every verdict on an issue that asks for new behaviour (a small additive feature under **implement**, a **feature**, an **opportunity**) names the goal it serves in the comment's verdict line, `Serves: G-n` ([comments.md](comments.md)), or the non-goal it hits:
 
 - **It hits a non-goal:** **won't fix**, citing `N-n` and the non-goal's words. A request the maintainer wants anyway changes the direction first, which only the maintainer does
+- **It hits a non-goal of the product** (spec 071): in a component, whose config sets `[product] home`, `--section non-goals` also prints the home's under `## Product non-goals (<owner/home>)`. A request that hits one is **won't fix** as for the component's own, citing `<owner/home> N-n` and the non-goal's words; a request the maintainer wants anyway changes the home's direction first, which only the maintainer does
 - **It serves no goal:** a **feature** (new behaviour the maintainer already wants) gets **postpone**, saying which goal it would need; the maintainer adds the goal to the direction or lets it wait
 - **A user's request that serves no goal** still gets **opportunity** and goes to product intake: its verdict line says it serves no goal, the opportunity issue says so too, and the maintainer accepts or declines it there (D-10)
 - **A bug fix or a contract tweak** serves the quality bar and needs no goal: its verdict names none, and nothing here holds it
 
-A repo without `docs/product.md` keeps the verdicts above as they are, with no `Serves:` line. `shipmill product show` exits 2 on a direction that breaks its grammar: give no verdict on new behaviour until the maintainer fixes it, name the problem in the report, and go on with the bug fixes.
+A repo without `docs/product.md` keeps the verdicts above as they are, with no `Serves:` line. `shipmill product show` exits 2 on a direction that breaks its grammar: give no verdict on new behaviour until the maintainer fixes it, name the problem in the report, and go on with the bug fixes. In a component it also exits 2 when it can't read the home's direction (the read token, the read, a missing `docs/product.md`, or the home's own grammar), naming the home and the fix: the same holds, no verdict on new behaviour until the maintainer fixes it, and never `--local` to get one, which leaves the product's non-goals out.
 
 A reporter's open questions get answers in the comment. If the code can settle one, investigate: "does a library WARNING bypass redaction via `logging.lastResort`?" was answerable with a probe, and the answer was yes.
 
