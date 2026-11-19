@@ -734,23 +734,28 @@ MERGE_VALUE_SHORTS = "bFtAR"
 
 def _merge_swap(args: Sequence[str], method: str, to: str) -> list[str] | None:
     """gh pr merge's arguments with --<to> for --<method> or its letter (-r, -s), bundled or
-    not (as in -dr); None when no word names method"""
+    not (as in -dr); None when no word names method. A flag given any value (--squash=1, -s=T,
+    -ds=true, which gh's flag parser reads as true) names it too, so no spelling of a value
+    gets past the rule"""
     letter = method[0]
     out: list[str] = []
     named = False
     i = 0
     while i < len(args):
         word = args[i]
-        if word in (f"--{method}", f"--{method}=true"):
+        short = re.fullmatch(r"-([A-Za-z]+)(=.*)?", word, re.DOTALL)
+        if word == f"--{method}" or word.startswith(f"--{method}="):
             named = True
-        elif re.fullmatch(r"-[A-Za-z]+", word):  # -r, or bundled as in -dr
-            letters = word[1:]
+        elif short is not None:  # -r, bundled as in -dr, or with a value as in -r=true
+            letters, value = short.group(1), short.group(2) or ""
             cut = next((k for k, ch in enumerate(letters) if ch in MERGE_VALUE_SHORTS), len(letters))
             named = named or letter in letters[:cut]
             kept = letters[:cut].replace(letter, "") + letters[cut:]
+            if value and (cut < len(letters) or not letters.endswith(letter)):  # the value isn't method's
+                kept += value
             if kept:
                 out.append(f"-{kept}")
-            if cut == len(letters) - 1:  # a value option last: its value is the next word
+            if cut == len(letters) - 1 and not value:  # a value option last: its value is the next word
                 out.extend(args[i + 1 : i + 2])
                 i += 1
         elif word in MERGE_VALUE_OPTIONS:

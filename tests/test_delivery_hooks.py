@@ -696,6 +696,13 @@ def test_s072_12_the_fixtures_hold_the_rules_cases_and_a_config_for_each_value()
         ("gh pr merge 7 -ds", "gh pr merge 7 -d --merge"),
         ("gh pr merge 7 -sd --subject x", "gh pr merge 7 -d --subject x --merge"),
         ("gh pr merge 7 --squash=true --auto", "gh pr merge 7 --auto --merge"),
+        # gh's flag parser reads 1, t, T, True, and TRUE as true, and -s=<value> as -s's value
+        ("gh pr merge 7 --squash=1", "gh pr merge 7 --merge"),
+        ("gh pr merge 7 --squash=True", "gh pr merge 7 --merge"),
+        ("gh pr merge 7 -s=t", "gh pr merge 7 --merge"),
+        ("gh pr merge 7 -ds=1", "gh pr merge 7 -d --merge"),
+        ("gh pr merge 7 -sd=true", "gh pr merge 7 -d=true --merge"),
+        ("gh pr merge 7 -s -b=x", "gh pr merge 7 -b=x --merge"),
         ("shipmill gh pr merge 7 --squash", "shipmill gh pr merge 7 --merge"),
         (f"uvx {PINNED} gh pr merge 7 -s", f"uvx {PINNED} gh pr merge 7 --merge"),
         (f"{API_MERGE}squash", f"{API_MERGE}merge"),
@@ -719,7 +726,15 @@ def test_s072_2_the_fixtures_refuse_and_allow_under_merge(methods: dict[str | No
 
 @pytest.mark.parametrize("value", ["squash", None])
 @pytest.mark.parametrize(
-    "command", ["gh pr merge 7 --squash", "gh pr merge 7 --merge", "gh pr merge 7 -ds", f"{API_MERGE}squash"]
+    "command",
+    [
+        "gh pr merge 7 --squash",
+        "gh pr merge 7 --merge",
+        "gh pr merge 7 -ds",
+        "gh pr merge 7 -ds=true",
+        "gh pr merge 7 --squash -b=x",
+        f"{API_MERGE}squash",
+    ],
 )
 def test_s072_3_under_squash_or_no_key_both_methods_pass(
     methods: dict[str | None, Path], value: str | None, command: str
@@ -736,6 +751,9 @@ def test_s072_3_under_squash_or_no_key_both_methods_pass(
         ("gh pr merge 7 --rebase", "gh pr merge 7 --{method}"),
         ("gh pr merge 7 -r", "gh pr merge 7 --{method}"),
         ("gh pr merge 7 -dr", "gh pr merge 7 -d --{method}"),
+        ("gh pr merge 7 --rebase=1", "gh pr merge 7 --{method}"),
+        ("gh pr merge 7 -r=T", "gh pr merge 7 --{method}"),
+        ("gh pr merge 7 -dr=true", "gh pr merge 7 -d --{method}"),
         (f"{API_MERGE}rebase", API_MERGE + "{method}"),
     ],
 )
