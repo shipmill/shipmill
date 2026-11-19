@@ -95,7 +95,8 @@ def test_s022_12_the_parent_and_milestone_come_in_the_existing_queries(ts: Modul
     # one query asks for every open issue's parent and milestone, never a call per issue
     for query in (ts.QUERY, ts.OPEN_PAGE):
         assert "milestone { title }" in query
-        assert "parent { number repository { nameWithOwner } milestone { title } }" in query
+        # STALE_HANDOFF's state and closedAt (#1313) join the same field, no query of their own
+        assert "parent { number state closedAt repository { nameWithOwner } milestone { title } }" in query
     # a forge without sub-issues has no parent field either: the text query asks for neither
     for query in (ts.TEXT_QUERY, ts.TEXT_OPEN_PAGE):
         assert "parent" not in query and "milestone { title }" in query

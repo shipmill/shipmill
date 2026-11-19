@@ -185,8 +185,17 @@ human counts as role:maintainer. --role NAME=FILLER[,FILLER...], one flag per ro
 maintainer among them, gives each role's fillers already resolved: GitHub logins and teams
 as @<org>/<team-slug> (a malformed name or filler, an empty list, a name given twice, or no
 maintainer exits 2). A role no flag gives resolves to maintainer's fillers, and several
-roles to the union of theirs. After UNTRUSTED, UPSTREAM, NEEDS_DECISION, DECIDED, VETOED,
-and OFF_MILESTONE, it reads NO_ASSIGNEE (without --role) or ASSIGN_DUE (with it), else
+roles to the union of theirs. After UNTRUSTED, UPSTREAM, NEEDS_DECISION, DECIDED, and VETOED,
+it reads:
+  STALE_HANDOFF    its sub-issue parent (in any repo, read in the same query) is closed:
+                   the work it was handed for is done or dropped, so close it, or say why
+                   it still waits on its person (#1313). Its note is "parent
+                   owner/repo#N closed". A comment created after the parent's close whose
+                   first line is <!-- shipmill:still-waits -->, by the --bot-login or an
+                   OWNER, MEMBER, or COLLABORATOR without the agent marker (D-62), ends it;
+                   a reopen and a new close of the parent re-arm it. Read before
+                   OFF_MILESTONE and every state below, and an action
+After that and OFF_MILESTONE, it reads NO_ASSIGNEE (without --role) or ASSIGN_DUE (with it), else
 UNFILLED, MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, BLOCKED, REVISIT, or POSTPONED as any issue would, else, with every
 hold closed, one of:
   NO_ASSIGNEE      without --role flags, a person's item with no assignee: read again
@@ -310,7 +319,7 @@ uvx, or a broken plugin.json, when a read is due exits 2.
 
 Exit 0 when nothing needs action, 1 when any issue is NEW, NEEDS_PR, UNBLOCKED, UNFILLED,
 MALFORMED_DEPENDS, CYCLE, SPEC_REFUSED, REVISIT, DONE_NOT_CLOSED, DECIDED, RELAY_REFUSED, VETOED, SUSPECT_CLOSE,
-HANDOFF_DUE,
+HANDOFF_DUE, STALE_HANDOFF,
 VERIFY_DUE, NO_ASSIGNEE, ASSIGN_DUE, VERIFY_CLOSED, OFF_MILESTONE, or AGENT_DRAFT (never for NEEDS_DECISION,
 UNTRUSTED, UPSTREAM, WITH_PERSON, or AGENT_DRAFT_HELD),
 1 too when any is CHECK_FAILED (spec 042), 2 on bad input (an issue with more than 100
@@ -320,8 +329,8 @@ newest stable one, with one query when nothing is capped. A page GitHub rejects 
 resource limits is asked again at half the size, down to 10 items; one rejected at 10
 fails with one error line. When GitHub's schema has no blockedBy, subIssues, or parent (an
 undefinedField error naming one, such as a GitHub Enterprise Server without issue
-dependencies), it classifies on the text holds alone, with no OFF_MILESTONE, and prints one "note: native
-relations unavailable: <first error line>" line to stderr; any other gh error, an error
+dependencies), it classifies on the text holds alone, with no OFF_MILESTONE or STALE_HANDOFF,
+and prints one "note: native relations unavailable: <first error line>" line to stderr; any other gh error, an error
 on one issue's relations too, still exits 2. Needs the gh
 CLI, authenticated. Python 3.10+, standard library only.
 """
@@ -377,9 +386,10 @@ NATIVE_NODES = (
     "pageInfo { hasNextPage endCursor } nodes { number state stateReason closedAt repository { nameWithOwner } }"
 )
 NATIVE = "".join(f"\n        {field}(first: 50) {{ {NATIVE_NODES} }}" for field in NATIVE_FIELDS)
-# A build issue's feature issue is its sub-issue parent, whose milestone it should share
+# A build issue's feature issue is its sub-issue parent, whose milestone it should share; a
+# person's item reads STALE_HANDOFF once its parent closed (#1313), from the same field
 # (spec 022): one field of the same query, never a call per issue
-PARENT = "\n        parent { number repository { nameWithOwner } milestone { title } }"
+PARENT = "\n        parent { number state closedAt repository { nameWithOwner } milestone { title } }"
 # The fields only a forge with sub-issues and dependencies has: refusing one falls back
 NATIVE_SCHEMA = (*NATIVE_FIELDS, "parent")
 # A decision taken at notify carries this label (spec 030); a veto comment updates the item, so
@@ -803,6 +813,9 @@ CHECK_FAILED_MARKER = "<!-- shipmill:check-failed -->"
 # A trusted comment saying a person runs a parent's ## Check by hand, on the needs-decision answer
 # "leave it open" (#740): it reads WITH_PERSON until a hold closes or a check-failed or verified comment follows
 CHECK_WAITING_MARKER = "<!-- shipmill:check-waiting -->"
+# A comment after a person's item's parent closed saying the item still waits on its person: it
+# stops reading STALE_HANDOFF (#1313); by the --bot-login, or a trusted person without the agent marker (D-62)
+STILL_WAITS_MARKER = "<!-- shipmill:still-waits -->"
 # An @login, not an @org/team, bare or in a code span (`@login`, D-61): a backtick is no word character
 MENTION = re.compile(r"(?<![\w@/-])@(" + LOGIN_PATTERN + r")(?![\w/-])")
 # A relayed answer's first line (needs-decision.md, Answered in the session), the login bare or
@@ -833,6 +846,7 @@ ACTION = {
     "ASSIGN_DUE",
     "VERIFY_CLOSED",
     "OFF_MILESTONE",
+    "STALE_HANDOFF",  # #1313: a person's item whose sub-issue parent closed: close it or say why it waits
     "AGENT_DRAFT",  # D-67 (#914): the App's own draft, nothing open on it: a session resumes it
 }
 IN_FLIGHT = ("IN_PROGRESS", "AGENT_DRAFT", "AGENT_DRAFT_HELD")  # an open PR does its work: in progress under --wip
@@ -2022,7 +2036,11 @@ def classify_open(
     issue's ``Revisit on:`` line against the tags' changes (spec 061); without it, such an
     issue reads REVISIT on every stable tag, as one without the line does. ``window``, a build
     issue's hold by its spec's approval at notify (veto_windows, spec 067), reads BLOCKED, its
-    note first, whether triaged or not; without it the issue reads as before"""
+    note first, whether triaged or not; without it the issue reads as before. A person's item
+    whose sub-issue parent closed reads STALE_HANDOFF before any of these (stale_handoff, #1313)"""
+    stale = stale_handoff(issue, bot_login)
+    if stale is not None:
+        return stale
     missed = off_milestone(issue, repo) if milestone else None
     if missed is not None:
         return "OFF_MILESTONE", missed
@@ -2417,6 +2435,31 @@ def person_state(
     return "WITH_PERSON", f"with {who} since {comments[newest]['createdAt']}"
 
 
+def stale_handoff(issue: dict[str, Any], bot_login: str | None) -> tuple[str, str] | None:
+    """STALE_HANDOFF (#1313): an open person's item (labelled human or role:<name>) whose
+    sub-issue parent, in any repo, is closed, its note "parent owner/repo#N closed": the work
+    it was handed for is done or dropped, so a session closes it or says why it still waits.
+    None when it has no parent (or the forge reads none), the parent is open, or a comment
+    created after the parent's close has <!-- shipmill:still-waits --> as its first line, by the
+    --bot-login or an OWNER, MEMBER, or COLLABORATOR without the agent marker (D-62); with no
+    close time, no comment can be dated after it"""
+    parent = issue.get("parent")
+    if not parent or parent.get("state") != "CLOSED" or not person_item(issue):
+        return None
+    closed = parent.get("closedAt")
+    if closed:
+        since = timestamp(closed)
+        for c in issue["comments"]["nodes"]:
+            if timestamp(c["createdAt"]) <= since or not marked(c["body"], STILL_WAITS_MARKER):
+                continue
+            author, association = login(c.get("author")), str(c.get("authorAssociation") or "NONE")
+            if (bot_login is not None and same_login(author, bot_login)) or by_person(
+                author, association, c["body"], bot_login
+            ):
+                return None
+    return "STALE_HANDOFF", f"parent {parent['repository']['nameWithOwner']}#{parent['number']} closed"
+
+
 def parent_check(comments: list[dict[str, Any]], bot_login: str | None, ends: list[str], shown: str) -> tuple[str, str]:
     """A parent with a ## Check whose holds all closed (spec 042): WITH_PERSON while a check
     waits on a person (check_waiting, #740), else CHECK_FAILED when a trusted check-failed
@@ -2659,7 +2702,8 @@ def main() -> int:
             "UNBLOCKED POSTPONED REVISIT TRIAGED NEEDS_DECISION DECIDED RELAY_REFUSED VETOED UNTRUSTED UPSTREAM "
             "OFF_MILESTONE; "
             "for an issue labelled human or role:<name> "
-            "(a person's item) NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; for a closed issue "
+            "(a person's item) STALE_HANDOFF NO_ASSIGNEE ASSIGN_DUE HANDOFF_DUE WITH_PERSON VERIFY_DUE; "
+            "for a closed issue "
             "SUSPECT_CLOSE VERIFY_CLOSED VETOED; for a parent with a ## Check VERIFY_DUE CHECK_FAILED "
             "WITH_PERSON, closed VERIFY_CLOSED. The module docstring defines each."
         ),

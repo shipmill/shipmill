@@ -1260,3 +1260,53 @@ def edited_args(
     the repo gh works on when the args name none"""
     record = edit.record(default)
     return edit.args(carries(current_body(capture, binary, env, record, edit.what)))
+
+
+# -- #1313: a parent closes only once no person's sub-issue is left open under it ----------------
+
+
+@dataclass(frozen=True, slots=True)
+class IssueClose:
+    """The issue `gh issue close` names: its repo as the args name it (None for the repo gh
+    picks) and its number"""
+
+    repo: str | None
+    number: int
+
+    def target(self, default: str | None) -> str:
+        """The issue's repo: the one the args name, else default, the repo gh works on; exit 2
+        without one"""
+        repo = self.repo or default
+        if repo is None:
+            raise ReleaseError(
+                f"gh issue close {self.number} is refused: shipmill gh reads its open sub-issues before it closes "
+                "(#1313), and can't tell its repo here; name it with -R owner/name"
+            )
+        return repo
+
+
+def issue_close(args: Sequence[str]) -> IssueClose | None:
+    """#1313: the issue `gh issue close <number | url>` closes, flags anywhere; None for every
+    other call and for its --help. One that names no one issue by its number or URL exits 2,
+    since its sub-issues can't be read"""
+    if not args or args[0] != "issue":
+        return None
+    group = _GROUP_FLAGS["issue"]
+    positional, _ = _scan(args[1:], group.long, group.short)
+    if not positional or positional[0] != "close":
+        return None
+    positional, flags = _scan(args[1:], _CLOSE_FLAGS.long, _CLOSE_FLAGS.short)
+    if _helped(flags):
+        return None
+    targets = positional[1:]
+    url = _ITEM_URL.fullmatch(targets[0]) if len(targets) == 1 else None
+    numbered = _NUMBER.fullmatch(targets[0]) if len(targets) == 1 else None
+    if url is not None:
+        return IssueClose(url.group(1), int(url.group(2)))
+    if numbered is not None:
+        return IssueClose(named_repo(args), int(numbered.group(1)))
+    named = "names none" if not targets else f"names {' '.join(targets)}"
+    raise ReleaseError(
+        f"gh issue close {named}: shipmill gh reads the issue's open sub-issues before it closes (#1313), and needs "
+        "one issue by its number or URL"
+    )

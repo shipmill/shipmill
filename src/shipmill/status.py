@@ -155,6 +155,7 @@ ISSUE_LINES = (
             "MALFORMED_DEPENDS",  # spec 041: a Depends on line outside the strict shape
             "CYCLE",  # spec 041: on a cycle of the repo's open issues, ask which link is wrong
             "DONE_NOT_CLOSED",
+            "STALE_HANDOFF",  # #1313: a person's item whose parent closed: close it or say why it waits
             "HANDOFF_DUE",
             "VERIFY_DUE",
             "CHECK_FAILED",  # spec 042: a parent's ## Check failed, file the fix as a child

@@ -67,6 +67,7 @@ TIERS: dict[int, tuple[str, ...]] = {
             "OFF_MILESTONE",
             "VERIFY_DUE",
             "CHECK_FAILED",
+            "STALE_HANDOFF",  # #1313: a person's item whose parent closed: close it or say why it waits
             "ASSIGN_DUE",
             "HANDOFF_DUE",
             "NO_ASSIGNEE",
