@@ -1561,6 +1561,20 @@ def test_s077_1_records_reviews_and_inline_comments_of_the_window_are_listed(
     assert calls[0][calls[0].index("--search") + 1] == f"closed:>={END - dt.timedelta(days=28):%Y-%m-%d}"
 
 
+def test_s077_1_a_review_on_a_commit_github_no_longer_holds_is_listed_without_a_head(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # GraphQL gives commit null for a commit force-pushed away and collected (kubernetes#37549)
+    gone_review = {**review("Split this up.", day(2.6)), "commit": None}
+    outsider = {**review("Looks odd", day(2.7), state="COMMENTED", association="NONE", login="zed"), "commit": None}
+    gone_comment = {**line_comment("Rename it.", day(2.5), "a.py", 3), "originalCommit": None}
+    github = forge([closed_pull(57, day(2))], reviews={57: [outsider, gone_review]}, comments={57: [gone_comment]})
+    report, text = run_findings(rt, capsys, github)
+    found = listed_items(report)[57]
+    assert [(i["kind"], i["head"]) for i in found] == [("review", None), ("comment", None)]
+    assert "F-1 review by amy at a commit GitHub no longer holds" in text
+
+
 def test_s077_2_an_unmerged_pull_lists_its_newest_trusted_comment_at_the_close_as_a_refusal(
     rt: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -1571,11 +1571,12 @@ DECLINED = frozenset({"not_planned", "duplicate"})  # GitHub files "duplicate" u
 @dataclass(frozen=True)
 class Finding:
     """One thing a review raised: its kind (record, review, comment, refusal), author, the head it
-    was raised on, a comment's path and line, the rule ids it cites, its text, and when"""
+    was raised on (None when GitHub no longer holds that commit), a comment's path and line, the
+    rule ids it cites, its text, and when"""
 
     kind: str
     author: str
-    head: str
+    head: str | None
     path: str | None
     line: int | None
     cites: list[str]
@@ -1629,7 +1630,15 @@ def cited(text: str) -> list[str]:
     return list(dict.fromkeys(CITED.findall(text)))
 
 
-def raised(kind: str, node: dict[str, Any], head: str, at: str, path: str | None = None, line: Any = None) -> Finding:
+def oid(commit: dict[str, Any] | None) -> str | None:
+    """A review's or review comment's commit; GraphQL gives None for one force-pushed away and
+    no longer held, as REST gives a null commit_id"""
+    return None if commit is None else str(commit["oid"])
+
+
+def raised(
+    kind: str, node: dict[str, Any], head: str | None, at: str, path: str | None = None, line: Any = None
+) -> Finding:
     text = cleaned(node.get("body"))
     login = rest_login(node["author"])
     return Finding(kind, login, head, path, None if line is None else int(line), cited(text), cut(text), at)
@@ -1802,13 +1811,11 @@ def read_items(run: Runner, repo: str, pulls: list[dict[str, Any]]) -> dict[int,
 
 def pull_findings(pull: dict[str, Any], items: PullItems, bots: frozenset[str]) -> list[Finding]:
     """A closed pull request's items, oldest first"""
-    number = pull["number"]
     found: list[Finding] = []
     for review in items.reviews:
         if review.get("state") == "PENDING":  # the reader's own unsubmitted review
             continue
-        head = str(dig(review, ["commit", "oid"], f"a review's commit on #{number}"))
-        at = str(review["submittedAt"])
+        head, at = oid(review.get("commit")), str(review["submittedAt"])
         if bot_login(review, bots) and first_line(str(review.get("body") or "")) in RECORD_MARKS:
             found.append(raised("record", review, head, at))
         elif review["state"] == "CHANGES_REQUESTED" and persons(review, bots):
@@ -1817,7 +1824,7 @@ def pull_findings(pull: dict[str, Any], items: PullItems, bots: frozenset[str]) 
         if comment.get("state") != "PENDING" and persons(comment, bots):
             line = comment.get("originalLine")
             line = comment.get("line") if line is None else line
-            head = str(dig(comment, ["originalCommit", "oid"], f"a review comment's commit on #{number}"))
+            head = oid(comment.get("originalCommit"))
             found.append(raised("comment", comment, head, str(comment["createdAt"]), str(comment["path"]), line))
     if pull["mergedAt"] is None:
         closed = timestamp(pull["closedAt"])
@@ -1923,7 +1930,8 @@ def findings_text(
             where = f" {item['path']}" if item["path"] else ""
             where += f":{item['line']}" if item["path"] and item["line"] is not None else ""
             ids = f"; cites {', '.join(item['cites'])}" if item["cites"] else ""
-            lines.append(f"  {item['id']} {item['kind']} by {item['author']} at {item['head']}{where}{ids}")
+            head = item["head"] or "a commit GitHub no longer holds"
+            lines.append(f"  {item['id']} {item['kind']} by {item['author']} at {head}{where}{ids}")
             lines += [f"      {line}" if line else "" for line in item["text"].splitlines()]
     lines.append(f"Proposed: {len(proposals) or 'none'}")
     for p in proposals:
