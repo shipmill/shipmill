@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.151.0] - 2026-11-19
+
+### Changed
+
+- Docs: spec 082 (whom agents write to GitHub as is chosen once per repo, at setup) is built, each criterion verified on the default branch (#1235)
+
 ## [0.150.0] - 2026-11-19
 
 ### Added
@@ -2794,7 +2800,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.150.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.151.0...HEAD
+[0.151.0]: https://github.com/shipmill/shipmill/compare/v0.150.0...v0.151.0
 [0.150.0]: https://github.com/shipmill/shipmill/compare/v0.149.2...v0.150.0
 [0.149.2]: https://github.com/shipmill/shipmill/compare/v0.149.1...v0.149.2
 [0.149.1]: https://github.com/shipmill/shipmill/compare/v0.149.0...v0.149.1
