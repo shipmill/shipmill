@@ -251,7 +251,7 @@ def test_s026_19_hook_command_runs_the_script(box: Sandbox) -> None:
     if shutil.which("uv") is None:
         pytest.fail("uv runs the hooks")
     data = fixture("bash-rebase-merge-refused.json", box.agents)
-    refused(through_shell("PreToolUse", data, dict(os.environ)), "rebase-merge", "D-33")
+    refused(through_shell("PreToolUse", data, dict(os.environ)), "rebase-merge", "D-96")
 
 
 SHELLS = [s for s in ("/bin/sh", "/bin/bash", "/bin/dash", "/bin/zsh") if Path(s).is_file()]
@@ -261,7 +261,7 @@ SHELLS = [s for s in ("/bin/sh", "/bin/bash", "/bin/dash", "/bin/zsh") if Path(s
 def test_s026_19_hook_command_runs_under_each_shell(box: Sandbox, tmp_path: Path, shell: str) -> None:
     """A refused fixture still exits 2, and a missing uv exits 1, under every shell present"""
     data = fixture("bash-rebase-merge-refused.json", box.agents)
-    refused(through_shell("PreToolUse", data, dict(os.environ), shell=shell), "rebase-merge", "D-33")
+    refused(through_shell("PreToolUse", data, dict(os.environ), shell=shell), "rebase-merge", "D-96")
     empty = tmp_path / "empty"
     empty.mkdir()
     cant_start(through_shell("PreToolUse", data, clean_env(empty), shell=shell))
@@ -273,7 +273,7 @@ def test_s026_19_hook_command_quotes_a_plugin_root_with_spaces(box: Sandbox, tmp
     plugin = tmp_path / "plugin root"
     shutil.copytree(ROOT / "hooks", plugin / "hooks")
     data = fixture("bash-rebase-merge-refused.json", box.agents)
-    refused(through_shell("PreToolUse", data, dict(os.environ), plugin), "rebase-merge", "D-33")
+    refused(through_shell("PreToolUse", data, dict(os.environ), plugin), "rebase-merge", "D-96")
 
 
 def test_s026_19_allowed_command_through_the_hook_exits_0(box: Sandbox) -> None:
@@ -365,10 +365,32 @@ REFUSED_FIXTURES = sorted(p.name for p in FIXTURES.glob("bash-*-refused.json"))
 SOURCES = {
     "app-writes": "D-14",
     "default-branch-push": "D-36",
-    "rebase-merge": "D-33",
+    "rebase-merge": "D-96",
     "force-push": "D-36",
     "private-paths": "D-36",
+    "merge-method": '[agents] merge = "merge", D-96',  # spec 072's Rule line: merge-method (<source>)
 }
+# spec 072 (S-072-12): the [agents] merge configs the hook tests read, one per value and none
+METHOD_CONFIGS = {
+    "squash": "config-merge-squash.toml",
+    "merge": "config-merge-merge.toml",
+    None: "config-merge-none.toml",
+}
+
+
+@pytest.fixture(scope="module")
+def methods(tmp_path_factory: pytest.TempPathFactory) -> dict[str | None, Path]:
+    """A repo for each [agents] merge config fixture, by the value it sets (None: no key)"""
+    base = tmp_path_factory.mktemp("methods")
+    return {
+        value: git_repo(base / str(value), (FIXTURES / name).read_text(encoding="utf-8"))
+        for value, name in METHOD_CONFIGS.items()
+    }
+
+
+def rule_home(box: Sandbox, methods: dict[str | None, Path], rule: str) -> Path:
+    """Where a rule's refused fixture refuses: merge-method only under [agents] merge = "merge" """
+    return methods["merge"] if rule == "merge-method" else box.app
 
 
 def test_s026_17_fixtures_hold_a_refused_and_an_allowed_case_per_rule() -> None:
@@ -385,15 +407,16 @@ def test_s026_17_fixtures_hold_a_refused_and_an_allowed_case_per_rule() -> None:
 
 
 @pytest.mark.parametrize("rule", sorted(SOURCES))
-def test_s026_17_each_rules_fixtures_refuse_and_allow(box: Sandbox, rule: str) -> None:
-    refused(hook(fixture(f"bash-{rule}-refused.json", box.app)), rule, SOURCES[rule])
-    allowed(hook(fixture(f"bash-{rule}-allowed.json", box.app if rule != "rebase-merge" else box.agents)))
+def test_s026_17_each_rules_fixtures_refuse_and_allow(box: Sandbox, methods: dict[str | None, Path], rule: str) -> None:
+    refused(hook(fixture(f"bash-{rule}-refused.json", rule_home(box, methods, rule))), rule, SOURCES[rule])
+    where = {"rebase-merge": box.agents, "merge-method": methods["merge"]}.get(rule, box.app)
+    allowed(hook(fixture(f"bash-{rule}-allowed.json", where)))
 
 
 @pytest.mark.parametrize("name", REFUSED_FIXTURES)
-def test_s026_2_refused_fixtures_pass_where_no_agents(box: Sandbox, name: str) -> None:
+def test_s026_2_refused_fixtures_pass_where_no_agents(box: Sandbox, methods: dict[str | None, Path], name: str) -> None:
     rule = name.removeprefix("bash-").removesuffix("-refused.json")
-    refused(hook(fixture(name, box.app)), rule, SOURCES[rule])
+    refused(hook(fixture(name, rule_home(box, methods, rule))), rule, SOURCES[rule])
     for folder in (box.outside, box.bare, box.release, box.release / ".github"):
         allowed(hook(fixture(name, folder)))
 
@@ -579,7 +602,7 @@ def test_s033_7_the_availability_check_starts_no_process_and_reads_no_file(
 def test_s033_8_without_the_app_rebase_merge_keeps_plain_gh(box: Sandbox, tmp_path: Path, prefix: str) -> None:
     for env in no_app(tmp_path):
         command = f"{prefix}gh pr merge 1 --rebase"
-        instead = refused(bash(command, box.app, env), "rebase-merge", "D-33")
+        instead = refused(bash(command, box.app, env), "rebase-merge", "D-96")
         assert instead == shlex.split(f"{prefix}gh pr merge 1 --squash")
 
 
@@ -609,7 +632,7 @@ def test_s033_8_the_other_rules_answer_alike_with_and_without_the_app(box: Sandb
     ],
 )
 def test_s026_5_rebase_merge_refused(box: Sandbox, command: str, squashed: str | None) -> None:
-    instead = refused(bash(command, box.agents), "rebase-merge", "D-33")
+    instead = refused(bash(command, box.agents), "rebase-merge", "D-96")
     if squashed is not None:
         assert instead == shlex.split(squashed)
     else:
@@ -619,10 +642,10 @@ def test_s026_5_rebase_merge_refused(box: Sandbox, command: str, squashed: str |
 def test_s026_5_rebase_merge_takes_the_app_fix_too(box: Sandbox) -> None:
     """With app_id both rules refuse; the first names its rule, and Instead holds both fixes"""
     result = hook(fixture("bash-rebase-merge-refused.json", box.app))
-    assert refused(result, "rebase-merge", "D-33") == [*SHIPMILL, "gh", "pr", "merge", "412", "--squash"]
-    refused(bash("shipmill gh pr merge 412 -r", box.app), "rebase-merge", "D-33")
+    assert refused(result, "rebase-merge", "D-96") == [*SHIPMILL, "gh", "pr", "merge", "412", "--squash"]
+    refused(bash("shipmill gh pr merge 412 -r", box.app), "rebase-merge", "D-96")
     # the pinned form is shipmill gh too (spec 031): its rebase merge is refused, kept pinned
-    pinned = refused(bash(f"uvx {PINNED} gh pr merge 412 -r", box.app), "rebase-merge", "D-33")
+    pinned = refused(bash(f"uvx {PINNED} gh pr merge 412 -r", box.app), "rebase-merge", "D-96")
     assert pinned == [*SHIPMILL, "gh", "pr", "merge", "412", "--squash"]
 
 
@@ -631,7 +654,7 @@ def test_s031_4_any_shipmill_spec_uvx_runs_is_shipmill_gh_and_its_rebase_merge_i
     box: Sandbox, spec: str
 ) -> None:
     """uvx runs shipmill's gh from any requirement on the package, so none skips the rebase-merge rule"""
-    refused(bash(f"uvx '{spec}' gh pr merge 412 -r", box.app), "rebase-merge", "D-33")
+    refused(bash(f"uvx '{spec}' gh pr merge 412 -r", box.app), "rebase-merge", "D-96")
     allowed(bash(f"uvx '{spec}' gh pr comment 7 --body hi", box.app))
 
 
@@ -640,7 +663,7 @@ def test_s026_9_rebase_merge_refusal_reads_as_the_spec_shows(box: Sandbox) -> No
     assert result.returncode == 2
     assert result.stderr == (
         "shipmill hook rebase-merge: gh pr merge 412 --rebase\n"
-        "Rule: land with a squash, or a merge commit for a stack's base; never rebase-merge (D-33)\n"
+        "Rule: land with a squash, or a merge commit for a stack's base; never rebase-merge (D-96)\n"
         "Instead: gh pr merge 412 --squash\n"
     )
 
@@ -650,6 +673,119 @@ def test_s026_5_squash_and_merge_commit_pass(box: Sandbox, command: str) -> None
     allowed(bash(command, box.agents))
     allowed(bash(f"shipmill gh {command.removeprefix('gh ')}", box.app))
     allowed(hook(fixture("bash-rebase-merge-allowed.json", box.agents)))
+
+
+# --- Spec 072: [agents] merge, the merge-method rule ------------------------------------------
+
+MERGE_RULE = '[agents] merge = "merge", D-96'
+API_MERGE = "gh api -X PUT repos/o/r/pulls/7/merge -f merge_method="
+
+
+def test_s072_12_the_fixtures_hold_the_rules_cases_and_a_config_for_each_value() -> None:
+    assert {"bash-merge-method-refused.json", "bash-merge-method-allowed.json"} <= {p.name for p in FIXTURES.iterdir()}
+    for value, name in METHOD_CONFIGS.items():
+        agents = DELIVERY.tomllib.loads((FIXTURES / name).read_text(encoding="utf-8"))["agents"]
+        assert agents.get("merge") == value
+
+
+@pytest.mark.parametrize(
+    ("command", "merged"),
+    [
+        ("gh pr merge 7 --squash", "gh pr merge 7 --merge"),
+        ("gh pr merge 7 -s", "gh pr merge 7 --merge"),
+        ("gh pr merge 7 -ds", "gh pr merge 7 -d --merge"),
+        ("gh pr merge 7 -sd --subject x", "gh pr merge 7 -d --subject x --merge"),
+        ("gh pr merge 7 --squash=true --auto", "gh pr merge 7 --auto --merge"),
+        # gh's flag parser reads 1, t, T, True, and TRUE as true, and -s=<value> as -s's value
+        ("gh pr merge 7 --squash=1", "gh pr merge 7 --merge"),
+        ("gh pr merge 7 --squash=True", "gh pr merge 7 --merge"),
+        ("gh pr merge 7 -s=t", "gh pr merge 7 --merge"),
+        ("gh pr merge 7 -ds=1", "gh pr merge 7 -d --merge"),
+        ("gh pr merge 7 -sd=true", "gh pr merge 7 -d=true --merge"),
+        ("gh pr merge 7 -s -b=x", "gh pr merge 7 -b=x --merge"),
+        ("shipmill gh pr merge 7 --squash", "shipmill gh pr merge 7 --merge"),
+        (f"uvx {PINNED} gh pr merge 7 -s", f"uvx {PINNED} gh pr merge 7 --merge"),
+        (f"{API_MERGE}squash", f"{API_MERGE}merge"),
+    ],
+)
+def test_s072_2_under_merge_a_squash_is_refused_with_the_merge_command(
+    methods: dict[str | None, Path], command: str, merged: str
+) -> None:
+    result = bash(command, methods["merge"])
+    assert refused(result, "merge-method", MERGE_RULE) == shlex.split(merged)
+    assert result.stderr.splitlines()[1] == f"Rule: merge-method ({MERGE_RULE})"
+    assert result.stderr.startswith(f"shipmill hook merge-method: {command}\n")
+
+
+def test_s072_2_the_fixtures_refuse_and_allow_under_merge(methods: dict[str | None, Path]) -> None:
+    instead = refused(hook(fixture("bash-merge-method-refused.json", methods["merge"])), "merge-method", MERGE_RULE)
+    assert instead == ["gh", "pr", "merge", "412", "--merge"]
+    allowed(hook(fixture("bash-merge-method-allowed.json", methods["merge"])))
+    allowed(bash(f"{API_MERGE}merge", methods["merge"]))
+
+
+@pytest.mark.parametrize("value", ["squash", None])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gh pr merge 7 --squash",
+        "gh pr merge 7 --merge",
+        "gh pr merge 7 -ds",
+        "gh pr merge 7 -ds=true",
+        "gh pr merge 7 --squash -b=x",
+        f"{API_MERGE}squash",
+    ],
+)
+def test_s072_3_under_squash_or_no_key_both_methods_pass(
+    methods: dict[str | None, Path], value: str | None, command: str
+) -> None:
+    allowed(bash(command, methods[value]))
+    allowed(hook(fixture("bash-merge-method-refused.json", methods[value])))
+    allowed(hook(fixture("bash-merge-method-allowed.json", methods[value])))  # a stack's base takes --merge
+
+
+@pytest.mark.parametrize(("value", "method"), [("squash", "squash"), (None, "squash"), ("merge", "merge")])
+@pytest.mark.parametrize(
+    ("command", "fixed"),
+    [
+        ("gh pr merge 7 --rebase", "gh pr merge 7 --{method}"),
+        ("gh pr merge 7 -r", "gh pr merge 7 --{method}"),
+        ("gh pr merge 7 -dr", "gh pr merge 7 -d --{method}"),
+        ("gh pr merge 7 --rebase=1", "gh pr merge 7 --{method}"),
+        ("gh pr merge 7 -r=T", "gh pr merge 7 --{method}"),
+        ("gh pr merge 7 -dr=true", "gh pr merge 7 -d --{method}"),
+        (f"{API_MERGE}rebase", API_MERGE + "{method}"),
+    ],
+)
+def test_s072_4_a_rebase_is_refused_naming_d96_with_the_settings_method(
+    methods: dict[str | None, Path], value: str | None, method: str, command: str, fixed: str
+) -> None:
+    instead = refused(bash(command, methods[value]), "rebase-merge", "D-96")
+    assert instead == shlex.split(fixed.format(method=method))
+
+
+@pytest.mark.parametrize(
+    ("config", "error"),
+    [
+        ('[agents]\nmerge = "rebase"\n', '[agents] merge must be "squash" or "merge", got \'rebase\''),
+        ('[agents]\nmerge = "Merge"\n', "got 'Merge'"),
+        ("[agents]\nmerge = 1\n", "got 1"),
+        ("[agents]\nmerge = true\n", "got True"),
+    ],
+)
+def test_s072_5_a_malformed_merge_refuses_guarded_commands_with_the_configs_error(
+    tmp_path: Path, config: str, error: str
+) -> None:
+    root = git_repo(tmp_path / "broken", config)
+    for command in ("gh pr merge 7 --merge", "git push --force origin feat:feat"):
+        result = bash(command, root)
+        assert result.returncode == 2, (command, result.stderr)
+        lines = result.stderr.splitlines()
+        assert len(lines) == 3 and lines[0] == f"shipmill hook config: {command}"
+        assert lines[1].startswith("Rule: [agents] merge must be") and error in lines[1]
+        assert lines[1].endswith(" (.github/shipmill.toml)")
+        assert lines[2] == f"Instead: fix .github/shipmill.toml, then run: {command}"
+    allowed(bash("git status", root))
 
 
 # --- S-026-6: force-push ---------------------------------------------------------------------
@@ -984,11 +1120,11 @@ def test_plain_gh_merge_is_refused_with_app_id(box: Sandbox) -> None:
     ],
 )
 def test_s026_8_refused_command_found_in_a_compound_command(box: Sandbox, command: str) -> None:
-    refused(bash(command, box.agents), "rebase-merge", "D-33")
+    refused(bash(command, box.agents), "rebase-merge", "D-96")
 
 
 def test_s026_8_cd_and_git_c_decide_the_repo(box: Sandbox) -> None:
-    refused(bash(f"cd {box.agents} && gh pr merge 7 --rebase", box.outside), "rebase-merge", "D-33")
+    refused(bash(f"cd {box.agents} && gh pr merge 7 --rebase", box.outside), "rebase-merge", "D-96")
     refused(bash(f"cd {box.agents}/.github && git push -f origin x", box.outside), "force-push", "D-36")
     refused(bash(f"git -C {box.agents} push -f origin x", box.outside), "force-push", "D-36")
     refused(bash(f"git -C {box.outside} -C ../agents push -f origin x", box.outside), "force-push", "D-36")
@@ -996,7 +1132,7 @@ def test_s026_8_cd_and_git_c_decide_the_repo(box: Sandbox) -> None:
     allowed(bash(f"cd {box.release} && git push --force", box.agents))
     allowed(bash(f"git -C {box.outside} push -f origin x", box.agents))
     allowed(bash(f"(cd {box.agents}); gh pr merge 7 --rebase", box.outside))
-    refused(bash(f"(cd {box.outside}); gh pr merge 7 --rebase", box.agents), "rebase-merge", "D-33")
+    refused(bash(f"(cd {box.outside}); gh pr merge 7 --rebase", box.agents), "rebase-merge", "D-96")
 
 
 def test_s026_8_app_writes_follows_cd_to_the_app_repo(box: Sandbox) -> None:
@@ -1062,7 +1198,7 @@ def test_s026_8_double_quotes_in_a_quoted_substitution_are_its_own(box: Sandbox)
 def test_s026_9_refusal_cuts_the_command_to_200_characters(box: Sandbox) -> None:
     body = "x" * 300
     result = bash(f"gh pr merge 7 --rebase --body {body}", box.agents)
-    refused(result, "rebase-merge", "D-33")
+    refused(result, "rebase-merge", "D-96")
     first = result.stderr.splitlines()[0]
     assert first == f"shipmill hook rebase-merge: {f'gh pr merge 7 --rebase --body {body}'[:200]}"
 
@@ -1782,7 +1918,7 @@ def test_d82_the_shipmill_gh_branch_still_reads_uv_and_uvx(box: Sandbox) -> None
     for command in ("uvx shipmill==0.126.0 gh pr comment 7 --body hi", "uvx --from x shipmill gh issue close 8"):
         allowed(bash(command, box.app, env=gate_env()))
     squash = refused(
-        bash("uvx shipmill==0.126.0 gh pr merge 7 --rebase", box.app, env=gate_env()), "rebase-merge", "D-33"
+        bash("uvx shipmill==0.126.0 gh pr merge 7 --rebase", box.app, env=gate_env()), "rebase-merge", "D-96"
     )
     assert squash[-1] == "--squash"
 

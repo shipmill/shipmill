@@ -1,0 +1,2 @@
+[agents]
+prompt = "/shipmill:github-issue-triage {repo} triage the new issues"
