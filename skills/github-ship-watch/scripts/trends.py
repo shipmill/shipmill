@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import re
 import statistics
 import subprocess
@@ -161,7 +162,7 @@ def integer(raw: dict[str, Any], key: str, default: int, low: int, where: str) -
 
 def number(raw: dict[str, Any], key: str, default: float, where: str) -> float:
     value = raw.get(key, default)
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
         fail(f"{where} [trends]: {key} must be a number, got {value!r}")
     return float(value)
 

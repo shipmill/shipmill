@@ -649,6 +649,8 @@ def test_s078_8_trends_reads_its_series_and_defaults() -> None:
         ('series = ["lead_time"]\nlog_sigma = 0', "log_sigma must be above 0, got 0.0"),
         ('series = ["lead_time"]\nlog_sigma = -1.5', "log_sigma must be above 0, got -1.5"),
         ('series = ["lead_time"]\nlog_sigma = true', "log_sigma must be a number, got True"),
+        ('series = ["lead_time"]\nlog_sigma = nan', "log_sigma must be a number, got nan"),
+        ('series = ["lead_time"]\nreport_sigma = inf', "report_sigma must be a number, got inf"),
         ('series = ["lead_time"]\nreport_sigma = 0.5', "report_sigma must be at least log_sigma (1.0), got 0.5"),
     ],
 )

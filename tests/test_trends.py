@@ -178,6 +178,8 @@ def test_s078_8_trends_py_reads_the_section_and_its_defaults(tr: ModuleType, tmp
         ('series = ["lead_time"]\nbucket_days = 0', "bucket_days must be 1 or more, got 0"),
         ('series = ["lead_time"]\nbaseline = 3', "baseline must be 4 or more, got 3"),
         ('series = ["lead_time"]\nlog_sigma = 0', "log_sigma must be above 0, got 0.0"),
+        ('series = ["lead_time"]\nlog_sigma = nan', "log_sigma must be a number, got nan"),
+        ('series = ["lead_time"]\nreport_sigma = inf', "report_sigma must be a number, got inf"),
         ('series = ["lead_time"]\nlog_sigma = 1.5\nreport_sigma = 1.0', "report_sigma must be at least log_sigma"),
     ],
 )

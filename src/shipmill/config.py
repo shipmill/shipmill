@@ -1,6 +1,7 @@
 """The config file, .github/shipmill.toml, and the strict reader every section parser uses:
 one file, one section per layer (D-4)"""
 
+import math
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -157,9 +158,9 @@ class Table:
         return value
 
     def number(self, key: str, default: float) -> float:
-        """An integer or a float, never true or false"""
+        """A finite integer or float, never true or false, nan, or inf"""
         value = self._get(key, default, (int, float), "a number")
-        if isinstance(value, bool):
+        if isinstance(value, bool) or not math.isfinite(value):
             raise ReleaseError(f"{self.where}: {key} must be a number, got {value!r}")
         return float(value)
 
