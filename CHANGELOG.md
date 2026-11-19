@@ -7,6 +7,16 @@ bot.
 
 ## [Unreleased]
 
+## [0.149.1] - 2026-11-19
+
+### Fixed
+
+- In a headless gate session the delivery hook's uv-run rule also refuses a `test_proof.py` call whose command after `--` runs a program the headless allowlist doesn't (`gh`, `git`, `uv`, `uvx`, as written), so `-- sh -c ls`, `-- env X=1 uv run pytest`, and `-- npm test` no longer start a program past the allowlist; `-- uv run pytest tests/test_a.py` and `-- git status` still pass, and an interactive session is unchanged (S-076-11) (#1406)
+- A `~/.config/shipmill/private.toml` that isn't valid TOML no longer prints a private term: the error every refused write, push, and `shipmill doctor`'s `leaks` FAIL show names the file's line and column instead of the parser's message, which quoted the file's keys, and a file that isn't UTF-8 names only the byte offset (#1407)
+- The watch checks a component's direction with `shipmill product check --local`, its own `docs/product.md` only, so a product home it can't read no longer stops the whole watch (#1408)
+- `fleet.py queue` passes each clone's roles, as `shipmill roles --flags` prints them, to `triage_state.py` and `intake_state.py --plans`, so a goal plan the maintainer answered through a relayed decision (D-68) leaves the queue; a failed roles read is that repo's REPO_ERROR line (#1409)
+- github-pr-triage's reviewer brief rebases a pull request onto its own base branch (`{base}`, its `baseRefName`) and runs `test_proof.py` with `--base origin/{base}`, so a pull request stacked on another is read from its own commits and its base pull request's first commit is no longer taken for its test commit; an unstacked pull request's base is the default branch, as before (#1410)
+
 ## [0.149.0] - 2026-11-19
 
 ### Added
@@ -2757,7 +2767,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.149.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.149.1...HEAD
+[0.149.1]: https://github.com/shipmill/shipmill/compare/v0.149.0...v0.149.1
 [0.149.0]: https://github.com/shipmill/shipmill/compare/v0.148.2...v0.149.0
 [0.148.2]: https://github.com/shipmill/shipmill/compare/v0.148.1...v0.148.2
 [0.148.1]: https://github.com/shipmill/shipmill/compare/v0.148.0...v0.148.1
