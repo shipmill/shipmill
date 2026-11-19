@@ -6,9 +6,9 @@ marker (spec 050, `marked_args`), and those an edit writes, which carry it exact
 record's current body does (`body_edit`). Only the repo gh's `-R`/`--repo` names is read from them
 besides, to limit the token to it, and a merge they ask for (`merge_of`), which spec 030
 holds when the pull request has a `never` zone. shipmill's own `--decided-in <n>` of `issue
-create` is taken out (spec 051, `decided_in`), and a write's text gh would read from stdin is
-read first and passed inline, so the leak check reads what gh sends (spec 081, `stdin_inlined`,
-`sent_texts`). The token goes to gh in GH_TOKEN, never to output.
+create` is taken out (spec 051, `decided_in`). A write's text gh would read from stdin is read
+first by the leak check and fed to gh's stdin, its args unchanged (spec 081, `sent_texts`,
+`feed_gh`). The token goes to gh in GH_TOKEN, never to output.
 """
 
 import json
@@ -1415,10 +1415,6 @@ _NAMED = {  # how a finding names a flag's value
     "-n": "the notes",
     "--subject": "the subject",
 }
-_STDIN_REFUSED = (
-    "{what} reads stdin (`-`), which shipmill gh would have to take from gh to check it before it is sent "
-    "(spec 081); write the text to a file and pass its path"
-)
 
 
 def _values(args: Sequence[str], flags: _Flags) -> list[tuple[str | None, str]]:
@@ -1459,45 +1455,12 @@ def _values(args: Sequence[str], flags: _Flags) -> list[tuple[str | None, str]]:
     return found
 
 
-_INLINE = {  # per group: the flag whose `-` reads stdin, and the flag that takes the same text inline
-    "issue": {"--body-file": "--body", "-F": "--body"},
-    "pr": {"--body-file": "--body", "-F": "--body"},
-    "release": {"--notes-file": "--notes", "-F": "--notes"},
-}
-
-
-def stdin_inlined(args: Sequence[str], read: BodyRead) -> list[str]:
-    """gh's args with each text gh would read from stdin read first, with read, and passed
-    inline instead, so the leak check reads what gh sends and gh still gets it (spec 081): a
-    `--body-file -` or `--notes-file -` as `--body` or `--notes`, an `-F key=@-` field of `gh
-    api` or `gh workflow run` as `-f key=<text>`. Every other call's args as given; one whose
-    stdin has no inline form (`--input -`, a gist's `-`) is left for `sent_texts` to refuse"""
-    if not any(arg.endswith("-") for arg in args):  # no `-` and no `@-`: nothing reads stdin
-        return list(args)
-    group = args[0]
-    inline = _INLINE.get(group, {})
-    fields = _FIELD_FILES.get(group, frozenset())
-
-    def takes(name: str, value: str) -> bool:
-        return (name in inline and value == "-") or (name in fields and value.partition("=")[2] == "@-")
-
-    kept, taken, tail = _split(args, _SENT_FLAGS.get(group, _OTHER_FLAGS), takes)
-    if not taken:
-        return list(args)
-    if len(taken) > 1:
-        raise ReleaseError(f"gh {group} reads stdin {len(taken)} times; gh can read it once, so pass the rest as files")
-    name, value = taken[0]
-    if name in inline:
-        return [*kept, inline[name], read(name, "-"), *tail]
-    return [*kept, "-f", f"{value.partition('=')[0]}={read(name, '-')}", *tail]
-
-
 def sent_texts(args: Sequence[str], read: BodyRead) -> list[Text]:
     """S-081-1, S-081-2: every text gh's args send, as they reach gh: each argument, each flag's
     value (a title, a body, a label, a `-f name=value` field), and the content of each file the
     write reads (`--body-file`, `-F`, `--notes-file`, `--input`, an `@file` field, a gist's
-    files), read with read. A file named `-` exits 2: gh reads stdin itself there, and shipmill
-    gh couldn't check it without taking it from gh"""
+    files), read with read; a file named `-` is stdin, which read gives as well (the caller
+    hands gh the same text on its stdin). The args aren't changed"""
     if not args:
         return []
     group = args[0]
@@ -1507,18 +1470,13 @@ def sent_texts(args: Sequence[str], read: BodyRead) -> list[Text]:
         if name is None:
             texts.append(Text("an argument", value))
         elif name in files:
-            if value == "-":
-                raise ReleaseError(_STDIN_REFUSED.format(what=f"gh {group}'s {name}"))
             texts.append(Text(files[name], read(name, value)))
         elif name == "--input" and group == "api":
-            if value == "-":
-                raise ReleaseError(_STDIN_REFUSED.format(what="gh api's --input"))
-            texts.append(Text(f"the --input file {value}", read(name, value)))
+            where = "the --input on stdin" if value == "-" else f"the --input file {value}"
+            texts.append(Text(where, read(name, value)))
         elif name in _FIELDS.get(group, frozenset()):
             key, _, text = value.partition("=")
             if name in _FIELD_FILES.get(group, frozenset()) and text.startswith("@"):
-                if text == "@-":
-                    raise ReleaseError(_STDIN_REFUSED.format(what=f"gh {group}'s {name} {key}=@-"))
                 text = read(name, text[1:])
             texts.append(Text(f"the field {key}", text))
         else:
@@ -1529,16 +1487,25 @@ def sent_texts(args: Sequence[str], read: BodyRead) -> list[Text]:
 
 
 def _gist_files(args: Sequence[str], read: BodyRead) -> list[Text]:
-    """`gh gist create`'s files, which it uploads: each positional argument past `create`"""
+    """`gh gist create`'s files, which it uploads: each positional argument past `create`, `-`
+    for stdin"""
     positional, _ = _scan(args[1:], _GIST_FLAGS.long, _GIST_FLAGS.short)
     if not positional or positional[0] not in ("create", "new"):
         return []
-    texts: list[Text] = []
-    for path in positional[1:]:
-        if path == "-":
-            raise ReleaseError(_STDIN_REFUSED.format(what="gh gist create"))
-        texts.append(Text(f"the file {path}", read("gist create", path)))
-    return texts
+    return [
+        Text("the file on stdin" if path == "-" else f"the file {path}", read("gist create", path))
+        for path in positional[1:]
+    ]
+
+
+GhFeed = Callable[[Sequence[str], Mapping[str, str], str], int]  # argv, env, and gh's stdin in, its exit code out
+
+
+def feed_gh(argv: Sequence[str], env: Mapping[str, str], stdin: str) -> int:
+    """Run gh as `run_gh` does, but with stdin fed from the text shipmill read from its own
+    stdin for the leak check (spec 081), so gh reads the very text that was checked"""
+    code = subprocess.run(list(argv), env=dict(env), input=stdin, encoding="utf-8", check=False).returncode
+    return code if code >= 0 else 128 - code
 
 
 _REPOS_PATH = re.compile(r"repos/([^/]+)/([^/]+)(?:/.*)?", re.IGNORECASE)

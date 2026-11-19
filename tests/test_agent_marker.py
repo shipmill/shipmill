@@ -762,9 +762,8 @@ def test_s050_6_through_shipmill_gh_as_the_host(tmp_path: Path, host: Host, args
 
 def test_s050_6_a_merge_body_stays_a_commit_message_as_the_host(tmp_path: Path, host: Host) -> None:
     args = ["pr", "merge", "7", "--squash", "--body-file", "-"]
-    runner = run(checkout(tmp_path, HOST_IDENTITY), args, host, stdin="never marked")
-    # spec 081: the leak check reads stdin first, so gh gets the text inline, unmarked
-    assert runner.calls[0][0] == [host.gh, *args[:4], "--body", "never marked"]
+    runner = run(checkout(tmp_path, HOST_IDENTITY), args, host, stdin="never read")
+    assert runner.calls[0][0] == [host.gh, *args]
 
 
 def test_sent_is_what_shipmill_gh_hands_gh() -> None:

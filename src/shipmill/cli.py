@@ -234,6 +234,7 @@ from shipmill.app_gh import (
     PR_CREATE,
     BodyRead,
     GhCapture,
+    GhFeed,
     GhRunner,
     Merge,
     MergeReader,
@@ -247,6 +248,7 @@ from shipmill.app_gh import (
     created_body,
     decided_in,
     edited_args,
+    feed_gh,
     hold_method,
     hold_short_head,
     is_read,
@@ -263,7 +265,6 @@ from shipmill.app_gh import (
     repo_value,
     run_gh,
     sent_texts,
-    stdin_inlined,
     with_body,
     without_author_email,
     write_command,
@@ -1165,6 +1166,7 @@ def main(
     rules_reader: RulesReader | None = None,
     merge_gate: GateRun | None = None,
     history_reads: Callable[[Path], review_history.Reads] | None = None,
+    gh_feed: GhFeed | None = None,
 ) -> int:
     """github stands in for gh, http for the health checks, sessions for `claude agents`, api
     for GitHub's REST API, signer for openssl, stdin for git's credential request, state for
@@ -1183,8 +1185,9 @@ def main(
     now for the moment it reads the window at (spec 056), and rules_reader for the branch rules
     doctor's landing row reads (spec 054), and merge_gate for the pr_gate.py a `shipmill gh` merge
     runs (spec 055), and history_reads for what `review history` reads of GitHub in a checkout
-    (spec 073), as tests pass fakes; stdin is also a `shipmill gh` merge's
-    --body-file -, and gh_capture also the gh whose output `spec open` reads"""
+    (spec 073), and gh_feed for running `shipmill gh`'s gh with the stdin the leak check read
+    (spec 081), as tests pass fakes; stdin is also a `shipmill gh` merge's --body-file -, and
+    gh_capture also the gh whose output `spec open` reads"""
     refused.begin()  # each refused key is said once per command, however often it loads the config
     head, passed = _split_gh(argv)
     args = _parser().parse_args(head)
@@ -1193,6 +1196,9 @@ def main(
     user_home = home if home is not None else Path.home()
     # S-081-16: the private file's home is the account's, never $HOME, which a session can set
     private_home = home if home is not None else account_home()
+    # spec 081: gh fed the stdin the leak check read; a runner given without a feed runs it, as it
+    # runs every other gh (its stand-in reads no stdin)
+    feed = gh_feed or (feed_gh if gh_runner is None else _feed_through(gh_runner))
     if args.command == "gh":
         if passed is None:  # such as `shipmill -- gh ...`
             raise ReleaseError("only --repo PATH may come before gh, as in `shipmill --repo PATH gh pr list`")
@@ -1203,6 +1209,7 @@ def main(
             gh_capture or capture_gh,
             merge_gate or run_gate,
             private_home,
+            feed,
         )
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
         return _gh(root, passed, reach, env, user_home, gh_runner or run_gh, readers)
@@ -1214,6 +1221,7 @@ def main(
             gh_capture or capture_gh,
             merge_gate or run_gate,
             private_home,
+            feed,
         )
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
         through = _GhPath(reach, env, user_home, readers)
@@ -1994,6 +2002,7 @@ def _gh(
             runner,
             readers.current,
             readers.private_home,
+            readers.feed,
         )
     hold_short_head(gh_args)  # S-030-24: before any token, App or not; --product refuses a merge whole
     if not root.is_dir():  # a mistyped --repo must not read as a repo with no App
@@ -2040,8 +2049,8 @@ def _gh(
         if edit is not None:
             gh_args = edited_args(edit, _gh_default(environ, origin), binary, env, readers.current)
         sent = _Sent(gh_args, read, top if readable else None, _gh_default(environ, origin))
-        gh_args = _leak_check(sent, _Reach(binary, env, readers.current), readers.private_home)
-        return runner([str(binary), *gh_args], env)
+        fed = _leak_check(sent, _Reach(binary, env, readers.current), readers.private_home)
+        return _run_checked(runner, readers.feed, [str(binary), *gh_args], env, fed)
     if not readable:
         raise ReleaseError(
             f"git can't read the checkout at {top}, which sets [agents] app_id, so the App's token can't be had; "
@@ -2125,8 +2134,9 @@ def _gh(
         env = author.env
     # spec 081: the text as gh would send it, the repo's visibility read as the App
     sent = _Sent(gh_args, read, top, _gh_default(environ, _known_origin(top)))
-    gh_args = _leak_check(sent, _Reach(binary, as_app(environ, token), readers.current), readers.private_home)
-    code = runner([str(binary), *gh_args], env)  # S-051-12: every other command as the App
+    fed = _leak_check(sent, _Reach(binary, as_app(environ, token), readers.current), readers.private_home)
+    # S-051-12: every other command as the App
+    code = _run_checked(runner, readers.feed, [str(binary), *gh_args], env, fed)
     if held is not None and code == 0:  # S-056-8: as the App, whoever the merge went out as
         _unqueue(held, binary, as_app(environ, token), readers.current)
     return code
@@ -2255,7 +2265,8 @@ class _GhReaders:
     """What `shipmill gh` reads besides gh's arguments: the pull request a merge names (spec
     030), its deciders (spec 049), stdin, for a `--body-file -`, and an edit's current body
     through gh (spec 050), the pr_gate.py a merge as the App runs (spec 055), and the home whose
-    ~/.config/shipmill/private.toml the leak check reads (spec 081)"""
+    ~/.config/shipmill/private.toml the leak check reads, and the runner that feeds gh the stdin
+    it read (spec 081)"""
 
     merge: MergeReader
     credit: CreditReader
@@ -2263,6 +2274,7 @@ class _GhReaders:
     current: GhCapture
     gate: GateRun
     private_home: Path
+    feed: GhFeed
 
 
 def _credit_reader(top: Path, binary: Path, env: Mapping[str, str]) -> CreditReads:
@@ -2466,6 +2478,7 @@ def _gh_product(
     runner: GhRunner,
     current: GhCapture,
     private_home: Path,
+    feed: GhFeed,
 ) -> int:
     """S-038-9: gh with the coordinator's token over the listed repos of coordinated's owner,
     and the home repo when it has that owner (S-038-8, #1032), so a write that names both a
@@ -2513,8 +2526,8 @@ def _gh_product(
     env = {**as_app(environ, token), "GH_REPO": target}
     if edit is not None:
         gh_args = edited_args(edit, target, binary, env, current)
-    gh_args = _leak_check(_Sent(gh_args, read, top, target), _Reach(binary, env, current), private_home)
-    return runner([str(binary), *gh_args], env)
+    fed = _leak_check(_Sent(gh_args, read, top, target), _Reach(binary, env, current), private_home)
+    return _run_checked(runner, feed, [str(binary), *gh_args], env, fed)
 
 
 def _component_checkout(root: Path) -> tuple[Path, str] | None:
@@ -2676,27 +2689,50 @@ class _Reach:
     capture: GhCapture
 
 
-def _leak_check(sent: _Sent, reach: _Reach, private_home: Path) -> list[str]:
-    """Spec 081: gh's args to run, once the leak check passed them, with a text gh would read
-    from stdin passed inline (`stdin_inlined`). A write (any call `is_read` doesn't read as a
-    read) exits 2 before gh runs when the text it sends holds a private term and its repo is
-    public, or a secret's exact value or a known token format in any repo; so does a private
-    file that doesn't load or a secret file that can't be read, findings or not. The repo's
-    visibility is read once, and only when a term is listed (S-081-3, S-081-4). Nothing turns
-    it off (S-081-16)"""
+def _leak_check(sent: _Sent, reach: _Reach, private_home: Path) -> str | None:
+    """Spec 081: the text the write's args send through stdin (`--body-file -`, `-F key=@-`,
+    `--input -`, a gist's `-`), read once here so it is checked, for gh to get on its stdin
+    with its args unchanged; None when they read no stdin. A write (any call `is_read` doesn't
+    read as a read) exits 2 before gh runs when the text it sends holds a private term and its
+    repo is public, or a secret's exact value or a known token format in any repo; so does a
+    private file that doesn't load or a secret file that can't be read, findings or not. The
+    repo's visibility is read once, and only when a term is listed (S-081-3, S-081-4). Nothing
+    turns it off (S-081-16)"""
     if is_read(sent.gh_args):
-        return sent.gh_args
+        return None
     private = Private.load(private_home)
-    gh_args = stdin_inlined(sent.gh_args, sent.read)
-    texts = sent_texts(gh_args, sent.read)
+    taken: list[str] = []  # stdin, read once however many flags name it
+
+    def read(flag: str, path: str) -> str:
+        if path != "-":
+            return sent.read(flag, path)
+        if not taken:
+            taken.append(sent.read(flag, path))
+        return taken[0]
+
+    texts = sent_texts(sent.gh_args, read)
     known = secrets(sent.top, _tracked_dotenvs(sent.top), private)
-    repo = write_repo(gh_args, sent.default)
+    repo = write_repo(sent.gh_args, sent.default)
     visibility = _visibility(repo, reach) if private.terms and repo is not None else None
     destination = Destination(repo, visibility)
     findings = scan(texts, private.terms if destination.public else (), known)
     if findings:
         raise refusal("shipmill gh", destination, findings)
-    return gh_args
+    return taken[0] if taken else None
+
+
+def _feed_through(runner: GhRunner) -> GhFeed:
+    """A feed that runs gh with runner, which takes no stdin: for a stand-in runner given alone"""
+
+    def feed(argv: Sequence[str], env: Mapping[str, str], stdin: str) -> int:
+        return runner(argv, env)
+
+    return feed
+
+
+def _run_checked(runner: GhRunner, feed: GhFeed, argv: list[str], env: Mapping[str, str], stdin: str | None) -> int:
+    """gh run with argv as given: fed the stdin the leak check read, else on the terminal's"""
+    return runner(argv, env) if stdin is None else feed(argv, env, stdin)
 
 
 def _tracked_dotenvs(top: Path | None) -> list[str]:

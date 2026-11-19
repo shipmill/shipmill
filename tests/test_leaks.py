@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from shipmill.agent_marker import MARKER
-from shipmill.app_gh import sent_texts, stdin_inlined, write_repo
+from shipmill.app_gh import feed_gh, sent_texts, write_repo
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
 from shipmill.gitrepo import Git
@@ -637,80 +637,144 @@ def test_every_argument_and_flag_value_is_sent_text() -> None:
     ]
 
 
-@pytest.mark.parametrize("args", [["api", "-X", "POST", "repos/o/r/labels", "--input", "-"], ["gist", "create", "-"]])
-def test_a_write_gh_would_read_from_stdin_with_no_inline_form_exits_2(args: list[str]) -> None:
-    assert stdin_inlined(args, no_read) == args
-    with pytest.raises(ReleaseError, match="reads stdin"):
-        sent_texts(args, no_read)
+@dataclass
+class Feed:
+    """Stands in for the gh run with the stdin the leak check read: records argv and that text"""
+
+    calls: list[tuple[list[str], str]] = field(default_factory=list)
+
+    def __call__(self, argv: Sequence[str], env: Mapping[str, str], stdin: str) -> int:
+        self.calls.append((list(argv), stdin))
+        return 7
 
 
-def stdin(flag: str, path: str) -> str:
-    assert path == "-"
-    return LEAKED
+# writes whose args make gh read stdin, which shipmill gh hands gh as given (S-050-6)
+STDIN_WRITES = [
+    ["pr", "merge", "7", "--squash", "--body-file", "-"],
+    ["release", "create", "v1", "--notes-file", "-"],
+    ["api", f"repos/{PUBLIC}/labels", "-F", "description=@-"],
+    ["api", "-X", "POST", f"repos/{PUBLIC}/labels", "--input", "-"],
+    ["workflow", "run", "w.yml", "--field", "note=@-"],
+    ["gist", "create", "-"],
+]
 
 
-@pytest.mark.parametrize(
-    ("args", "inlined"),
-    [
-        (["pr", "merge", "7", "--squash", "--body-file", "-"], ["pr", "merge", "7", "--squash", "--body", LEAKED]),
-        (["pr", "merge", "-F", "-", "7"], ["pr", "merge", "7", "--body", LEAKED]),
-        (["release", "create", "v1", "--notes-file", "-"], ["release", "create", "v1", "--notes", LEAKED]),
-        (
-            ["api", "repos/o/r/labels", "-F", "note=@-", "-f", "a=b"],
-            ["api", "repos/o/r/labels", "-f", "a=b", "-f", f"note={LEAKED}"],
-        ),
-        (["workflow", "run", "w.yml", "--field", "note=@-"], ["workflow", "run", "w.yml", "-f", f"note={LEAKED}"]),
-    ],
-)
-def test_a_text_gh_would_read_from_stdin_is_read_first_and_passed_inline(args: list[str], inlined: list[str]) -> None:
-    assert stdin_inlined(args, stdin) == inlined
-    assert any(LEAKED in text.text for text in sent_texts(inlined, no_read))
+def fed(root: Path, args: list[str], host: Host, stdin: str) -> tuple[Runner, Feed]:
+    """`shipmill gh args` with stdin; the runner (terminal stdin) and the feed (stdin read)"""
+    runner, feed = Runner(), Feed()
+    main(
+        ["--repo", str(root), "gh", *args],
+        api=MintApi(),
+        signer=FakeSigner(),
+        environ=host.env(),
+        home=host.home,
+        gh_runner=runner,
+        stdin=io.StringIO(stdin),
+        gh_capture=Reads(),
+        gh_feed=feed,
+    )
+    return runner, feed
 
 
-@pytest.mark.parametrize("args", [["pr", "merge", "7", "--body-file", "b.md"], ["-R"], ["issue", "list", "-"]])
-def test_args_that_read_no_stdin_stay_as_given(args: list[str]) -> None:
-    assert stdin_inlined(args, no_read) == args
-
-
-def test_stdin_read_twice_exits_2() -> None:
-    with pytest.raises(ReleaseError, match="reads stdin 2 times"):
-        stdin_inlined(["api", "repos/o/r/labels", "-F", "a=@-", "-F", "b=@-"], stdin)
-
-
-def test_a_merge_body_on_stdin_is_checked(tmp_path: Path, host: Host) -> None:
+@pytest.mark.parametrize("args", STDIN_WRITES)
+def test_s081_6_a_token_on_stdin_is_refused_before_gh_runs(tmp_path: Path, host: Host, args: list[str]) -> None:
     root = checkout(tmp_path, HOST_IDENTITY)
-    with_term(host)
-    runner = Runner()
-    with pytest.raises(LeakRefused, match="term: the body"):
+    runner, feed = Runner(), Feed()
+    with pytest.raises(LeakRefused, match="secret-format: .* holds a GitHub token") as caught:
         main(
-            ["--repo", str(root), "gh", "pr", "merge", "7", "--squash", "--body-file", "-"],
+            ["--repo", str(root), "gh", *args],
             api=MintApi(),
             signer=FakeSigner(),
             environ=host.env(),
             home=host.home,
             gh_runner=runner,
-            stdin=io.StringIO(LEAKED),
+            stdin=io.StringIO(f"text\n{GITHUB_TOKEN}\n"),
             gh_capture=Reads(),
+            gh_feed=feed,
         )
+    assert GITHUB_TOKEN[SHOWN_AFTER:] not in str(caught.value)
     assert runner.calls == []
+    assert feed.calls == []
 
 
-def test_a_body_on_stdin_is_checked_once_shipmill_gh_inlines_it(tmp_path: Path, host: Host) -> None:
+@pytest.mark.parametrize("args", STDIN_WRITES)
+def test_s081_5_an_env_secret_on_stdin_to_a_private_repo_is_refused(
+    tmp_path: Path, host: Host, args: list[str]
+) -> None:
     root = checkout(tmp_path, HOST_IDENTITY)
-    with_term(host)
-    runner = Runner()
-    with pytest.raises(LeakRefused, match="term: the body"):
+    (root / ".env").write_text(f"API_TOKEN={TOKEN_VALUE}\n", encoding="utf-8")
+    runner, feed = Runner(), Feed()
+    with pytest.raises(LeakRefused, match="the value of API_TOKEN from .env") as caught:
         main(
-            ["--repo", str(root), "gh", "issue", "comment", "250", "--body-file", "-"],
+            ["--repo", str(root), "gh", *args],
             api=MintApi(),
             signer=FakeSigner(),
             environ=host.env(),
             home=host.home,
             gh_runner=runner,
-            stdin=io.StringIO(LEAKED),
-            gh_capture=Reads(),
+            stdin=io.StringIO(f"uses {TOKEN_VALUE}"),
+            gh_capture=private_repo(host),
+            gh_feed=feed,
         )
+    assert TOKEN_VALUE not in str(caught.value)
     assert runner.calls == []
+    assert feed.calls == []
+
+
+@pytest.mark.parametrize("args", STDIN_WRITES)
+def test_s081_1_a_clean_stdin_body_reaches_ghs_stdin_with_its_args_as_given(
+    tmp_path: Path, host: Host, args: list[str]
+) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with_term(host)
+    runner, feed = fed(root, args, host, CLEAN)
+    assert runner.calls == []
+    assert feed.calls == [([host.gh, *args], CLEAN)]
+
+
+@pytest.mark.parametrize("args", STDIN_WRITES)
+def test_s081_1_a_term_on_stdin_to_a_public_repo_is_refused(tmp_path: Path, host: Host, args: list[str]) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with_term(host)
+    with pytest.raises(LeakRefused, match=f'names the private term "{TERM}"'):
+        fed(root, args, host, LEAKED)
+
+
+def test_s081_2_stdin_named_twice_is_read_once_and_fed_whole(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    args = ["api", f"repos/{PUBLIC}/labels", "-F", "name=@-", "-F", "description=@-"]
+    runner, feed = fed(root, args, host, CLEAN)
+    assert feed.calls == [([host.gh, *args], CLEAN)]
+
+
+def test_s081_1_a_write_reading_no_stdin_runs_on_the_terminals(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    runner, feed = fed(root, ["pr", "merge", "7", "--squash", "--body", CLEAN], host, "")
+    assert feed.calls == []
+    assert runner.calls[0][0] == [host.gh, "pr", "merge", "7", "--squash", "--body", CLEAN]
+
+
+def test_s081_1_a_created_body_on_stdin_is_checked(tmp_path: Path, host: Host) -> None:
+    """A create's `--body-file -` is read and marked by spec 050, and checked as the body"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with_term(host)
+    with pytest.raises(LeakRefused, match="term: the body"):
+        fed(root, ["issue", "comment", "250", "--body-file", "-"], host, LEAKED)
+
+
+def test_s081_1_the_real_feed_hands_gh_the_text_on_its_stdin_and_the_args_as_given(tmp_path: Path) -> None:
+    gh_path = tmp_path / "gh"
+    executable(gh_path, '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$RECORD/args"\ncat > "$RECORD/stdin"\nexit 7\n')
+    args = ["pr", "merge", "7", "--squash", "--body-file", "-"]
+    assert feed_gh([str(gh_path), *args], {"RECORD": str(tmp_path), "PATH": "/usr/bin:/bin"}, CLEAN) == 7
+    assert (tmp_path / "args").read_text(encoding="utf-8").splitlines() == args
+    assert (tmp_path / "stdin").read_text(encoding="utf-8") == CLEAN
+
+
+def test_stdin_is_named_where_it_is_read() -> None:
+    texts = sent_texts(["api", "-X", "POST", "repos/o/r/labels", "--input", "-"], lambda flag, path: "x")
+    assert texts[-1] == Text("the --input on stdin", "x")
+    assert sent_texts(["gist", "create", "-"], lambda flag, path: "x")[-1] == Text("the file on stdin", "x")
 
 
 def test_a_finding_names_its_detector() -> None:
