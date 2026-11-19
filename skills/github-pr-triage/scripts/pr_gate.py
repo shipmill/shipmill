@@ -286,6 +286,7 @@ _HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$")
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 _ITEM = re.compile(r"^- ([A-Za-z]+)-([1-9][0-9]*): \S.*$")
 _MEASURE = re.compile(r"^  measure: \S.*$")  # a goal's measure line (spec 027)
+_SERVES = re.compile(r"^  serves: \S.*$")  # a component goal's serves line (spec 071)
 _MOVED = re.compile(r"^See \[([^\]]+)\]\(product/([A-Za-z0-9][A-Za-z0-9_-]*\.md)\)\.$")
 _PROTECTED_ITEM = re.compile(r"- `([^`]*)`: (\S.*)")
 _PLAN_FIELD = re.compile(r"^\s*(?:[-*]\s+)?(" + "|".join(PLAN_FIELDS) + r"):(.*)$")
@@ -551,8 +552,9 @@ def matches(glob: str, path: str) -> bool:
 def direction_ids(read: Callable[[str], str | None]) -> frozenset[str]:
     """Every item id docs/product.md lists, moved sections followed; a list line that isn't
     `- <prefix>-<n>: <text>` with its section's prefix, or a broken link, stops the gate; a
-    goal's `  measure: ...` line right under its item line is skipped (spec 027).
-    `shipmill product check` holds the full grammar"""
+    goal's `  measure: ...` line right under its item line (spec 027), and its `  serves: ...`
+    line right under that or its item line (spec 071), are skipped. `shipmill product check`
+    holds the full grammar"""
     text = read(DIRECTION)
     if text is None:
         raise GateError(f"no {DIRECTION} on the default branch")
@@ -580,20 +582,22 @@ def direction_ids(read: Callable[[str], str | None]) -> frozenset[str]:
             if heads != [(2, heading)] or any(line.strip() for _, line in parts[0][2]):
                 raise GateError(f"{file} holds only `## {heading}`; run `shipmill product check`")
             listed = parts[1][2]
-        after_goal = False  # the line before was a goal's item line, which a measure line may follow
+        # the lines the next may be: a goal's measure line, then its serves line, read no more from
+        follows: tuple[re.Pattern[str], ...] = ()
         for number, raw in listed:
             line = raw.rstrip()
             if not line.strip():
-                after_goal = False
+                follows = ()
                 continue
-            if after_goal and _MEASURE.match(line):  # spec 027: read no more from it
-                after_goal = False
+            tail = next((i for i, form in enumerate(follows) if form.match(line)), None)
+            if tail is not None:  # specs 027 and 071
+                follows = follows[tail + 1 :]
                 continue
             item = _ITEM.match(line)
             if item is None or item.group(1) != prefix:
                 raise GateError(f"{file}:{number}: not a `- {prefix}-<n>: <text>` item; run `shipmill product check`")
             ids.add(f"{prefix}-{item.group(2)}")
-            after_goal = prefix == "G"
+            follows = (_MEASURE, _SERVES) if prefix == "G" else ()
     return frozenset(ids)
 
 

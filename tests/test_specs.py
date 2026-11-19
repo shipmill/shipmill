@@ -571,6 +571,24 @@ def test_s027_6_check_accepts_a_spec_serving_a_goal_that_carries_a_measure(tmp_p
         assert "002-unknown.md:4: serves G-2, which docs/product.md doesn't list" in out.stdout
 
 
+def test_s071_11_check_reads_goals_that_carry_serves_lines_as_without_them(tmp_path: Path) -> None:
+    served = DIRECTION.replace(
+        "- G-1: Widgets reach buyers in a day\n",
+        "- G-1: Widgets reach buyers in a day\n  measure: human_touch <= 20%\n  serves: G-2, G-5\n",
+    ).replace("- G-3: Buyers can track a widget\n", "- G-3: Buyers can track a widget\n  serves: G-1\n")
+    goals = "## Goals\n\n- G-1: Widgets reach buyers in a day\n  serves: G-2\n- G-3: x\n  measure: human_touch <= 20%\n"
+    moved_text = DIRECTION.replace(
+        "- G-1: Widgets reach buyers in a day\n- G-3: Buyers can track a widget\n", "See [Goals](product/goals.md).\n"
+    )
+    # G-2 is named only on serves lines, the home's goals: a spec here still can't serve it
+    files = {"001-goals.md": serving(spec("001"), "G-1, G-3"), "002-home.md": serving(spec("002"), "G-2")}
+    for text, moved in ((served, {}), (moved_text, {"goals.md": goals})):
+        root = direction(repo(tmp_path / str(len(moved)), **files), text, **moved)
+        out = specs(root, "check")
+        assert out.returncode == 1, out.stdout
+        assert out.stdout.splitlines() == ["docs/specs/002-home.md:4: serves G-2, which docs/product.md doesn't list"]
+
+
 def test_s024_6_a_built_spec_needs_no_serves_line_and_may_serve_a_retired_goal(tmp_path: Path) -> None:
     root = direction(repo(tmp_path, **{"001-old.md": built("001"), "002-retired.md": serving(built("002"), "G-2")}))
     out = specs(root, "check")

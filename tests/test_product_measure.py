@@ -291,8 +291,9 @@ def test_s027_3_show_json_gives_every_goal_a_measure_key(tmp_path: Path, capsys:
                 "unit": "hours",
                 "text": "issue_to_release_median < 1d",
             },
+            "serves": [],
         },
-        {"id": "G-2", "text": "Buyers can track a widget", "measure": None},
+        {"id": "G-2", "text": "Buyers can track a widget", "measure": None, "serves": []},
         {
             "id": "G-3",
             "text": "People rarely touch the agents' work",
@@ -303,6 +304,7 @@ def test_s027_3_show_json_gives_every_goal_a_measure_key(tmp_path: Path, capsys:
                 "unit": "ratio",
                 "text": "human_touch <= 20%",
             },
+            "serves": [],
         },
     ]
     for key in ("users", "non_goals", "quality"):

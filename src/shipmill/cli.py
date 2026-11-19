@@ -379,7 +379,7 @@ from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
 from shipmill.plugin import CLI_RECORD, MARKERS, GateCli, PluginHost, Runner, load_cli
 from shipmill.policy import Lane, Policy
 from shipmill.pr_plan import hold_plan
-from shipmill.product import DIRECTION, GitRef, ItemId, Measure, Section
+from shipmill.product import DIRECTION, GitRef, ItemId, Measure, Section, Serves
 from shipmill.product import check as check_product
 from shipmill.product import read as read_product
 from shipmill.propose import close_released, propose, run_url
@@ -989,6 +989,23 @@ def _parser() -> argparse.ArgumentParser:
     measured = measuring.add_mutually_exclusive_group(required=True)
     measured.add_argument("measure", nargs="?", help='"<metric> <comparison> <target>", such as "human_touch <= 20%%"')
     measured.add_argument("--clear", action="store_true", help="remove the goal's measure line")
+    serving = acting.add_parser(
+        "serves",
+        help="in a component, write or replace the line naming the product goals a goal serves, or remove it with "
+        "--clear (spec 071); print it",
+    )
+    serving.add_argument("id", help="the component goal's id, such as G-3")
+    served = serving.add_mutually_exclusive_group(required=True)
+    served.add_argument(
+        "goals", nargs="*", default=[], help="the ids of the product home's goals it serves, such as G-2"
+    )
+    served.add_argument("--clear", action="store_true", help="remove the goal's serves line")
+    for each in (checking, showing):
+        each.add_argument(
+            "--local",
+            action="store_true",
+            help=f"read only this checkout's {DIRECTION}, never the product home's (spec 071)",
+        )
     for each in (
         checking,
         showing,
@@ -997,6 +1014,7 @@ def _parser() -> argparse.ArgumentParser:
         editing,
         retiring,
         measuring,
+        serving,
     ):  # also after it: `product check --repo DIR`
         each.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
 
@@ -3597,6 +3615,12 @@ def _product(root: Path, args: argparse.Namespace) -> int:
         written = None if args.clear else Measure.parse(str(LineText(args.measure)))
         measured = product.measure(root, goal, written)
         print(f"{goal} has no measure line; nothing written" if measured is None else measured.text)
+        return 0
+    if args.product == "serves":
+        goal = ItemId.parse(args.id)
+        serving = None if args.clear else Serves.of(args.goals)
+        served = product.serves(root, goal, serving)
+        print(f"{goal} has no serves line; nothing written" if served is None else served.text)
         return 0
     direction = read_product(root)
     if args.product == "ids":

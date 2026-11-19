@@ -409,6 +409,24 @@ def test_s027_6_the_gate_reads_the_goal_ids_of_a_direction_whose_goals_carry_mea
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+SERVED = MEASURED.replace(">= 5/week\n", ">= 5/week\n  serves: G-2, G-7\n").replace(
+    "- G-3: Ship faster\n  measure: lead_time_median < 2.5d\n", "- G-3: Ship faster\n  serves: G-1\n"
+)
+
+
+def test_s071_11_the_gate_reads_the_ids_of_a_direction_whose_goals_carry_serves_lines() -> None:
+    assert "  serves: G-1\n" in SERVED and "  serves: G-2, G-7\n" in SERVED
+    assert ids_of({"docs/product.md": SERVED}) == ids_of({"docs/product.md": MEASURED}) == {"U-1", "G-1", "G-3", "Q-1"}
+    moved = DIRECTION.replace("- G-1: Ship\n- G-3: Ship faster\n", "See [Goals](product/goals.md).\n")
+    goals = "## Goals\n\n- G-1: Ship\n  measure: human_touch <= 20%\n  serves: G-4\n- G-3: Ship faster\n  serves: G-2\n"
+    assert ids_of({"docs/product.md": moved, "docs/product/goals.md": goals}) == {"U-1", "G-1", "G-3", "Q-1"}
+    misplaced = SERVED.replace(
+        "- G-3: Ship faster\n  serves: G-1\n", "- G-3: Ship faster\n  serves: G-1\n  serves: G-2\n"
+    )
+    with pytest.raises(gate.GateError, match=r"not a `- G-<n>: <text>` item"):  # a second one still stops it
+        ids_of({"docs/product.md": misplaced})
+
+
 @pytest.mark.parametrize(
     ("text", "line"),
     [
