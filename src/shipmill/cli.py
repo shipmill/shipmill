@@ -253,6 +253,7 @@ from shipmill.app_gh import (
     write_command,
 )
 from shipmill.app_install import WAIT_SECONDS, guide
+from shipmill.app_install import check as app_install_check
 from shipmill.app_login import AsApp, UrllibWeb, UserLogin, Web, Writer, decider_token, remove_login, store_login
 from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold
 from shipmill.classify import (
@@ -877,6 +878,14 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--app-id", type=int, help="the App's id (default: [agents] app_id)")
     p.add_argument("--app-key", type=Path, help="the App's private key (default: ~/.config/shipmill/app-<app_id>.pem)")
     p.add_argument("--no-browser", action="store_true", help="print the page instead of opening it")
+    p.add_argument(
+        "--check",
+        action="store_true",
+        help=(
+            "open no page and wait for nothing: exit 0 when a token the App mints for the one repo reads it, "
+            "1 when it can't (spec 082)"
+        ),
+    )
     p.add_argument("--json", action="store_true", help="print the result as one JSON object")
 
     p = sub.add_parser(
@@ -3148,6 +3157,8 @@ def _app_install(
     if app_id is None:
         raise ReleaseError("no [agents] app_id in this checkout's config; pass --app-id")
     key = check_key(args.app_key if args.app_key is not None else default_key(app_id, Path.home()))
+    if args.check:
+        return _app_install_check(root, args, app_id, key, repos, api, signer, clock)
 
     def browse(url: str) -> None:
         if browser is not None:
@@ -3163,6 +3174,28 @@ def _app_install(
         record = guided.record(app_id, repos) | {"refused": refused.records(refused.in_checkout(root))}
         print(json.dumps(record, indent=2))
     return 1 if missing else 0
+
+
+def _app_install_check(
+    root: Path,
+    args: argparse.Namespace,
+    app_id: int,
+    key: Path,
+    repos: Sequence[str],
+    api: Api,
+    signer: Signer,
+    clock: Callable[[], dt.datetime],
+) -> int:
+    """S-082-8: whether the App's token, minted for the one repo, reads it; no page, no wait.
+    Its line goes where app-install's lines go (S-007-7): stdout, or stderr under --json, whose
+    object is then stdout's. Exit 1 when it can't"""
+    if len(repos) != 1:
+        raise ReleaseError(f"app-install --check checks one repo, got {len(repos)}: {' '.join(repos)}")
+    checked = app_install_check(app_id, key, repos[0], api, signer, clock)
+    print(checked.line(), file=sys.stderr if args.json else sys.stdout, flush=True)
+    if args.json:
+        print(json.dumps(checked.record() | {"refused": refused.records(refused.in_checkout(root))}, indent=2))
+    return 0 if checked.reads else 1
 
 
 def _login_app_id(root: Path, command: str) -> int:
