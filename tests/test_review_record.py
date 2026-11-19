@@ -4,6 +4,7 @@ the App faked (MintApi, FakeSigner), and nothing reaches the network"""
 
 import datetime as dt
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 from shipmill.agent_marker import MARKER
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
-from shipmill.review_record import Head, Request, Verdict, record
+from shipmill.review_record import Findings, Head, Request, Verdict, record
 
 from .test_app import REPO, FakeSigner, key_file
 from .test_app_gh import WITH_APP, Host, checkout
@@ -203,6 +204,150 @@ def test_s055_16_a_verdict_other_than_merge_or_refuse_is_refused_by_the_parser(t
             gh_capture=gh,
         )
     assert raised.value.code == 2 and gh.calls == []
+
+
+# --- S-075-4, S-075-5, S-075-6: the second look's finding counts ------------------------------------
+
+REFUSE_LINE = "<!-- shipmill:findings confirmed=2 rejected=1 minor=0 -->"
+
+
+@pytest.mark.parametrize(
+    "findings", ["confirmed=2,rejected=1,minor=0", "minor=0,confirmed=2,rejected=1", "rejected=1,minor=0,confirmed=2"]
+)
+def test_s075_4_a_refusal_carries_the_findings_line_after_its_marker_keys_in_one_order(
+    tmp_path: Path, findings: str
+) -> None:
+    hub = FakeHub()
+    record(Request(PULL, HEAD, Verdict.REFUSE, report(tmp_path), findings), hub, available)
+    (_, _, body), *rest = hub.posts
+    assert rest == []
+    assert body == f"<!-- shipmill:review refuse -->\n{REFUSE_LINE}\n\nVerdict: MERGE\n\nNo findings."
+
+
+def test_s075_4_without_a_report_the_body_ends_at_the_findings_line(tmp_path: Path) -> None:
+    hub = FakeHub()
+    record(
+        Request(PULL, HEAD, Verdict.REFUSE, report(tmp_path, "\n"), "confirmed=2,rejected=1,minor=0"), hub, available
+    )
+    assert hub.posts == [(PULL, HEAD, f"<!-- shipmill:review refuse -->\n{REFUSE_LINE}")]
+
+
+def test_s075_4_the_cli_posts_the_findings_line_after_the_refuse_marker(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, WITH_APP)
+    gh, api = FakeGh(), MintApi(expires_from=dt.datetime.now(dt.UTC))
+    args = ["--repo", str(root), "review", "record", str(PULL), "--head", HEAD, "--verdict", "refuse"]
+    findings = ["--findings", "rejected=1,confirmed=2,minor=0", "--body-file", str(report(root))]
+    code = main(
+        [*args, *findings],
+        api=api,
+        signer=FakeSigner(),
+        environ=host.env(SHIPMILL_APP_KEY=str(key_file(tmp_path))),
+        home=host.home,
+        gh_capture=gh,
+    )
+    assert code == 0
+    (_, _), (post, _) = gh.calls
+    assert field_of(post, "body").splitlines()[:4] == [
+        "<!-- shipmill:review refuse -->",
+        REFUSE_LINE,
+        "",
+        "Verdict: MERGE",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("findings", "says"),
+    [
+        ("confirmed=2,rejected=1", "lacks minor"),
+        ("confirmed=2", "lacks rejected, minor"),
+        ("", "'' in '' is not key=N"),
+        ("confirmed=2,rejected=1,minor=0,confirmed=1", "confirmed is given twice"),
+        ("confirmed=2,rejected=1,minor=0,major=1", "'major' .* is not one of confirmed, rejected, minor"),
+        ("confirmed=2,rejected=1,Minor=0", "'Minor' .* is not one of"),
+        ("confirmed=2,rejected=-1,minor=0", "rejected='-1' .* is not a whole number of 0 or more"),
+        ("confirmed=2,rejected=one,minor=0", "rejected='one' .* is not a whole number"),
+        ("confirmed=2,rejected=1.5,minor=0", "rejected='1.5' .* is not a whole number"),
+        ("confirmed=2,rejected=,minor=0", "rejected='' .* is not a whole number"),
+        ("confirmed=2,rejected=1,minor= 0", "minor=' 0' .* is not a whole number"),
+        ("confirmed=2 rejected=1 minor=0", "confirmed='2 rejected=1 minor=0' .* is not a whole number"),
+        ("confirmed=2,rejected=1,minor=0,", "'' in .* is not key=N"),
+        ("confirmed:2,rejected=1,minor=0", "'confirmed:2' in .* is not key=N"),
+    ],
+)
+def test_s075_5_a_malformed_findings_value_exits_2_naming_the_form_before_any_read(
+    tmp_path: Path, findings: str, says: str
+) -> None:
+    hub = FakeHub()
+    with pytest.raises(ReleaseError, match="--findings is confirmed=N,rejected=N,minor=N, each key once") as raised:
+        record(Request(PULL, HEAD, Verdict.REFUSE, report(tmp_path), findings), hub, available)
+    assert re.search(says, str(raised.value)), str(raised.value)
+    assert (hub.reads, hub.posts) == ([], [])
+
+
+def test_s075_5_a_negative_count_is_refused_when_built_directly() -> None:
+    with pytest.raises(ReleaseError, match="minor is -1"):
+        Findings(1, 0, -1)
+
+
+@pytest.mark.parametrize(
+    ("verdict", "findings", "says"),
+    [
+        (Verdict.REFUSE, "confirmed=0,rejected=2,minor=1", "confirmed no finding, so record --verdict merge"),
+        (Verdict.MERGE, "confirmed=1,rejected=0,minor=0", "a confirmed finding refuses, so record --verdict refuse"),
+    ],
+)
+def test_s075_5_a_verdict_the_counts_contradict_exits_2_before_any_read(
+    tmp_path: Path, verdict: Verdict, findings: str, says: str
+) -> None:
+    hub = FakeHub()
+    with pytest.raises(ReleaseError, match=says):
+        record(Request(PULL, HEAD, verdict, report(tmp_path), findings), hub, available)
+    assert (hub.reads, hub.posts) == ([], [])
+
+
+def test_s075_5_the_cli_exits_2_on_bad_findings_before_any_gh_call(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, WITH_APP)
+    gh, api = FakeGh(), MintApi(expires_from=dt.datetime.now(dt.UTC))
+    with pytest.raises(ReleaseError, match="a confirmed finding refuses"):
+        cli(
+            root,
+            host,
+            gh,
+            api,
+            "--findings",
+            "confirmed=1,rejected=0,minor=0",
+            SHIPMILL_APP_KEY=str(key_file(tmp_path)),
+        )
+    assert (gh.calls, api.posts) == ([], [])
+
+
+@pytest.mark.parametrize("verdict", list(Verdict))
+def test_s075_6_without_findings_the_body_is_as_before(tmp_path: Path, verdict: Verdict) -> None:
+    hub = FakeHub()
+    record(Request(PULL, HEAD, verdict, report(tmp_path)), hub, available)
+    assert hub.posts == [(PULL, HEAD, f"<!-- shipmill:review {verdict} -->\n\nVerdict: MERGE\n\nNo findings.")]
+    empty = FakeHub()
+    record(Request(PULL, HEAD, verdict, report(tmp_path, "")), empty, available)
+    assert empty.posts == [(PULL, HEAD, f"<!-- shipmill:review {verdict} -->")]
+
+
+def test_s075_6_an_overturned_refusal_records_merge_with_its_findings_line(tmp_path: Path) -> None:
+    hub = FakeHub()
+    record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path), "confirmed=0,rejected=2,minor=1"), hub, available)
+    assert hub.posts == [
+        (
+            PULL,
+            HEAD,
+            "<!-- shipmill:review merge -->\n<!-- shipmill:findings confirmed=0 rejected=2 minor=1 -->"
+            "\n\nVerdict: MERGE\n\nNo findings.",
+        )
+    ]
+
+
+def test_s075_6_a_parsed_findings_value_is_taken_as_it_is(tmp_path: Path) -> None:
+    hub = FakeHub()
+    record(Request(PULL, HEAD, Verdict.MERGE, report(tmp_path), Findings(0, 2, 1)), hub, available)
+    assert hub.posts[0][2].splitlines()[1] == "<!-- shipmill:findings confirmed=0 rejected=2 minor=1 -->"
 
 
 # --- S-055-18: the skills read the answer and record the reviewed head ------------------------------
