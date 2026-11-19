@@ -156,6 +156,7 @@ from shipmill import (
     factory,
     fragments,
     land_window,
+    merge_checks,
     plugin_clean,
     product,
     refused,
@@ -274,7 +275,7 @@ from shipmill.app_gh import (
 from shipmill.app_install import WAIT_SECONDS, guide
 from shipmill.app_install import check as app_install_check
 from shipmill.app_login import AsApp, UrllibWeb, UserLogin, Web, Writer, decider_token, remove_login, store_login
-from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold
+from shipmill.autonomy import Autonomy, AutonomyPolicy, EnvironmentName, Hold, Stage, StageKind
 from shipmill.classify import (
     DEFAULT_REF,
     Base,
@@ -596,6 +597,20 @@ def _parser() -> argparse.ArgumentParser:
         " lacks it",
     )
     p.add_argument("--json", action="store_true", help="print the window as one JSON object")
+
+    p = sub.add_parser(
+        "merge-checks",
+        help="print the checks a merge to the default branch waits for and what each proves: tests, a type check,"
+        " a lint, or only a build (spec 080)",
+    )
+    p.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    p.add_argument(
+        "--land",
+        metavar="LEVEL",
+        help="judge the checks as if [autonomy] land were LEVEL: observe, propose, or act (default: the configured"
+        " level, never the one a hold lowers it to)",
+    )
+    p.add_argument("--json", action="store_true", help="print the reading as one JSON object")
 
     p = sub.add_parser("review", help="check, show, or edit REVIEW.md, the review rubric (spec 024)")
     reviews = p.add_subparsers(dest="review_command", required=True)
@@ -1282,6 +1297,8 @@ def main(
         return _autonomy(root, args.ref, args.json, github or GhCli(root))
     if args.command == "window":
         return _window(root, args.ref, args.json, graphql or (lambda: GhCli(root)), now or dt.datetime.now(dt.UTC))
+    if args.command == "merge-checks":
+        return _merge_checks(root, args, rules_reader or (GhRules(root) if shutil.which("gh") is not None else None))
     if args.command == "evals":
         if args.evals == "compare":
             return _evals_compare(args.base, args.head, frozenset(args.changed), args.tolerance)
@@ -3537,6 +3554,22 @@ def _window(root: Path, ref: str, as_json: bool, graphql: Callable[[], land_wind
     for key, value in record.items():
         shown = ", ".join(value) if isinstance(value, list) else json.dumps(value).strip('"')
         print(f"{key}: {shown}")
+    return 0
+
+
+def _merge_checks(root: Path, args: argparse.Namespace, reader: RulesReader | None) -> int:
+    """Spec 080: the required checks on the default branch and what each proves, judged at
+    --land or the configured [autonomy] land, never the hold's; exit 0 whatever the reading says,
+    2 for a --land that isn't a level or a config that doesn't load. Reads no [agents] key"""
+    level = None if args.land is None else merge_checks.land_level(args.land)
+    policy = Policy.load(config_path(root))
+    land = level or policy.autonomy.configured(Stage(StageKind.LAND))
+    found = merge_checks.report(root, _known_origin(root), policy.branch, land, reader)
+    if args.json:
+        print(json.dumps(found.record(), indent=2))
+        return 0
+    for verdict, detail in found.lines():
+        print(f"{verdict} {merge_checks.ROW}: {detail}")
     return 0
 
 
