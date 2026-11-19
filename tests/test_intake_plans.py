@@ -354,6 +354,74 @@ def test_the_goals_are_read_strictly(ist: ModuleType) -> None:
             ist.parse_goals(bad)
 
 
+HOME_REFUSED = (
+    "shipmill: acme/home's product direction can't be read, so nothing of this component's is given either: "
+    "the read token can't be minted: no key; fix: put the App's key at ~/.shipmill/app.pem, "
+    "or pass --local to read only this checkout's docs/product.md (spec 071)\n"
+)
+OWN_GOALS = '{"goals": [{"id": "G-1", "text": "Ship", "measure": null, "serves": []}]}'
+
+
+def component_uvx(ran: list[list[str]]) -> Any:
+    """A stub uvx in a component whose product home can't be read: `shipmill product show`
+    exits 2 with spec 071's refusal (S-071-7) unless --local is passed"""
+
+    def execute(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        ran.append(cmd)
+        if "--local" not in cmd:
+            return subprocess.CompletedProcess(cmd, 2, "", HOME_REFUSED)
+        return subprocess.CompletedProcess(cmd, 0, OWN_GOALS, "")
+
+    return execute
+
+
+def test_plans_read_the_components_own_goals_so_an_unreadable_home_never_stops_them(ist: ModuleType) -> None:
+    """#1417: parse_goals reads only the direction's own goals, so --plans runs `product show`
+    with --local (S-071-8) and a product home it can't read no longer stops the script"""
+    ran: list[list[str]] = []
+    intake = ist.fetch(
+        "o/r",
+        label="opportunity",
+        accepted="planned",
+        marker="Triage:",
+        skip=set(ist.SKIP_LABELS),
+        categories=None,
+        autonomy="propose",
+        run=Fake(),
+    )
+    found = ist.fetch_plans(
+        "o/r",
+        intake,
+        goals=ist.uvx_goals("shipmill==1.2.3", component_uvx(ran)),
+        marker="Triage:",
+        bot_login=BOT,
+        wip=None,
+        room=lambda limit: 1,
+        run=Fake(),
+    )
+    assert [(r.goal, r.state, r.note) for r in found] == [("G-1", "PLAN_DUE", "no-work")]
+    assert ran == [
+        ["uvx", "--from", "shipmill==1.2.3", "shipmill", "product", "show", "--section", "goals", "--json", "--local"]
+    ]
+
+
+@pytest.mark.parametrize(
+    ("code", "out", "err"),
+    [
+        (2, "", "shipmill: docs/product.md:3: a goal item is G-n: text\n"),  # this repo's own direction
+        (1, "", "shipmill: something else\n"),
+        (0, "not json", ""),
+    ],
+)
+def test_any_product_show_failure_still_exits_2(ist: ModuleType, code: int, out: str, err: str) -> None:
+    def execute(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, code, out, err)
+
+    with pytest.raises(SystemExit) as stopped:
+        ist.uvx_goals("shipmill==1.2.3", execute)()
+    assert stopped.value.code == 2
+
+
 def test_the_plan_rows_print_after_the_opportunity_rows(ist: ModuleType) -> None:
     row = ist.PlanRow("G-1", "PLAN_DUE", "Releases go out on their own", "requested in #25", 25)
     assert ist.show_plan(row) == "G-1    PLAN_DUE         Releases go out on their own  [requested in #25]"

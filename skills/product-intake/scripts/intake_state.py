@@ -57,7 +57,8 @@ verdict is opportunity (triage's hand-off), else null, and null for an ACCEPTED
 opportunity. The text output has none of them.
 
 With --plans (spec 028), the goals of the direction come next, read with
-`uvx shipmill==<version> product show --section goals --json` in the current directory
+`uvx shipmill==<version> product show --section goals --json --local` in the current
+directory (--local: the repo's own goals, never a component's product home's, spec 071)
 (the version in the plugin's .claude-plugin/plugin.json, spec 031, run once more with
 `--refresh-package shipmill` when uv finds no such version, #597; --tool runs `uvx --from
 <tool> shipmill` instead), and a goal with no open plan issue (an issue labelled goal-plan whose body's
@@ -773,12 +774,14 @@ def run_uvx(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 def uvx_goals(
     tool: str | None, execute: Callable[[list[str]], subprocess.CompletedProcess[str]] = run_uvx
 ) -> GoalsReader:
-    """The default goals reader: the direction of the checkout in the current directory. A
-    pinned shipmill uv finds no version of runs once more with its index refreshed, as
-    watch_state.py's pinned does (#597)"""
+    """The default goals reader: the direction of the checkout in the current directory, with
+    --local: parse_goals reads only its own goals, so a component never reads its product
+    home's here, and a home it can't read doesn't stop it (spec 071, #1417). A pinned shipmill
+    uv finds no version of runs once more with its index refreshed, as watch_state.py's
+    pinned does (#597)"""
 
     def read() -> list[Goal]:
-        cmd = [*shipmill_command(tool), "product", "show", "--section", "goals", "--json"]
+        cmd = [*shipmill_command(tool), "product", "show", "--section", "goals", "--json", "--local"]
         try:
             proc: subprocess.CompletedProcess[str] = watch_module().pinned(cmd, execute)
         except FileNotFoundError:

@@ -280,6 +280,35 @@ def test_s027_7_a_direction_shipmill_refuses_exits_2(
     assert "shipmill product check" in capsys.readouterr().err
 
 
+HOME_REFUSED = (
+    "shipmill: acme/home's product direction can't be read, so nothing of this component's is given either: "
+    "the read token can't be minted: no key; fix: put the App's key at ~/.shipmill/app.pem, "
+    "or pass --local to read only this checkout's docs/product.md (spec 071)\n"
+)
+
+
+def test_a_components_retro_reads_its_own_goals_so_an_unreadable_home_never_stops_it(
+    rt: ModuleType, tmp_path: Path
+) -> None:
+    """#1417: the report per goal reads only the repo's own goals, so `product show` runs with
+    --local and a product home it can't read (S-071-7's exit 2) no longer stops the retro"""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "product.md").write_text("# Product\n", encoding="utf-8")
+    own: dict[str, Any] = {"goals": [{"id": "G-1", "text": "Ship", "measure": None, "serves": []}]}
+    ran: list[list[str]] = []
+
+    def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        ran.append(cmd)
+        if cmd[0] == "git":
+            return done(f"{SHA}\n{SHA}\n")
+        if "--local" not in cmd:  # a stub shipmill in a component whose home can't be read
+            return done(code=2, stderr=HOME_REFUSED)
+        return done(json.dumps(own))
+
+    assert rt.read_direction(sources(rt, run), tmp_path) == own
+    assert ran[-1] == ["shipmill", "product", "show", "--json", "--local", "--repo", str(tmp_path)]
+
+
 def test_s027_8_work_counts_under_the_goals_its_trusted_verdict_spec_or_plan_names(
     rt: ModuleType, tmp_path: Path
 ) -> None:
