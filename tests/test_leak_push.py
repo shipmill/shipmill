@@ -207,6 +207,21 @@ def test_s081_9_a_binary_file_is_left_out(box: Box) -> None:
     assert leaks_push(box, "origin", "main") == 0
 
 
+@pytest.mark.parametrize(
+    ("where", "attributes"),
+    [(".gitattributes", "*.md -diff"), (".gitattributes", "*.md binary"), (".git/info/attributes", "notes.md -diff")],
+)
+def test_s081_9_no_gitattributes_line_hides_a_text_files_added_lines(box: Box, where: str, attributes: str) -> None:
+    """A text file an attributes file marks binary is still read: no file of the repo or the
+    checkout turns the check off (D-94)"""
+    private(box)
+    (box.root / where).write_text(f"{attributes}\n", encoding="utf-8")
+    sha = box.commit({"notes.md": "one\ntwo\nacme rocket\n"})
+    assert f'  term: commit {sha[:7]}, notes.md, line 3, names the private term "Acme Rocket"' in refused(
+        box, "origin", "main"
+    )
+
+
 def test_s081_9_the_visibility_is_read_once_and_only_with_a_term(box: Box) -> None:
     box.commit({"notes.md": "one\n"})
     capture = Visibility()

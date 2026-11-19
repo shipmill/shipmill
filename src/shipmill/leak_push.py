@@ -27,12 +27,15 @@ PUSH_FIX = (
 )
 _HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _GITHUB = re.compile(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
-# `git show`'s options for a commit against its first parent, set whatever the git config says
+# `git show`'s options for a commit against its first parent, set whatever the git config says;
+# --text, so no attributes file (`-diff`, `binary`) hides a text file's lines: a file is binary
+# only by its content, a NUL byte in its added lines (D-94)
 _DIFF = (
     "--no-show-signature",
     "--no-color",
     "--no-ext-diff",
     "--no-textconv",
+    "--text",
     "--no-relative",
     "--submodule=short",
     "--src-prefix=a/",
@@ -239,7 +242,8 @@ def _commit(git: Git, sha: str) -> _Commit:
     paths = _paths(rest.lstrip("\0\n"))
     diff = git.run_bytes("show", *_DIFF, "-p", "--format=", sha).decode("utf-8", errors="replace")
     kept = tuple(path for path in paths if path is not None)
-    return _Commit(sha, message.rstrip("\n"), kept, _added(diff, paths))
+    added = {path: lines for path, lines in _added(diff, paths).items() if not any("\0" in t for _, t in lines)}
+    return _Commit(sha, message.rstrip("\n"), kept, added)
 
 
 def outgoing(git: Git, push: Push) -> Outgoing:
