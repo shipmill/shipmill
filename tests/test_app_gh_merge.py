@@ -13,7 +13,7 @@ from shipmill.app_gh import GhCapture, Merge, merge_of
 from shipmill.cli import main
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
-from shipmill.github import FileChange, PullChange, RunAttempt, RunJob, SpecIssue
+from shipmill.github import FileChange, MergeMethods, PullChange, RunAttempt, RunJob, SpecIssue
 
 from .conftest import POLICY, Repo
 from .test_agent_marker import HOST_IDENTITY, sent
@@ -36,6 +36,8 @@ class FakeReads:
     labels: tuple[str, ...] = ()
     numbers: list[int] = field(default_factory=list)
     selectors: list[str | None] = field(default_factory=list)
+    allowed: MergeMethods = MergeMethods(squash=True, merge=True)  # the repo's settings (spec 072)
+    methods_read: int = 0
 
     def pull_change(self, number: int) -> PullChange:
         self.numbers.append(number)
@@ -59,6 +61,10 @@ class FakeReads:
     def pull_of(self, selector: str | None) -> str:
         self.selectors.append(selector)
         return self.url + "\n"
+
+    def merge_methods(self) -> MergeMethods:
+        self.methods_read += 1
+        return self.allowed
 
 
 @dataclass

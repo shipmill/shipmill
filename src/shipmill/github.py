@@ -212,6 +212,32 @@ def spec_issue_of(found: Any, number: int) -> SpecIssue:
 
 
 @dataclass(frozen=True, slots=True)
+class MergeMethods:
+    """Which merge methods the repo's settings allow, as `GET /repos/<owner>/<repo>` gives them
+    (Settings > General > Pull Requests): allow_squash_merge and allow_merge_commit"""
+
+    squash: bool
+    merge: bool
+
+    @classmethod
+    def parse(cls, found: Any) -> MergeMethods:
+        """A field GitHub gave no boolean for stops it: the method's setting can't be told"""
+        if not isinstance(found, dict):
+            raise ReleaseError(f"gh api of the repo printed {str(found)[:300]}, not a repo")
+
+        def allowed(key: str) -> bool:
+            value = found.get(key)
+            if not isinstance(value, bool):
+                raise ReleaseError(
+                    f"GitHub gave the repo's {key} as {value!r}, not true or false, so the merge methods it allows "
+                    "can't be told (spec 072)"
+                )
+            return value
+
+        return cls(allowed("allow_squash_merge"), allowed("allow_merge_commit"))
+
+
+@dataclass(frozen=True, slots=True)
 class Milestone:
     open_issues: int
     closed_issues: int
@@ -852,6 +878,10 @@ class GhCli:
         """The URL of the pull request gh resolves selector to (a branch; None for the current
         branch's), as `gh pr view` does for `gh pr merge`"""
         return self._gh("pr", "view", *([] if selector is None else [selector]), "--json", "url", "--jq", ".url")
+
+    def merge_methods(self) -> MergeMethods:
+        """The merge methods the repo's settings allow (spec 072); a GET"""
+        return MergeMethods.parse(self._api("-X", "GET", "repos/{owner}/{repo}"))
 
     def _pages(self, path: str) -> list[Any]:
         """Every entry of a listing, across its pages, one JSON value a line"""

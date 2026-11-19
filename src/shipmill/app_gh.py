@@ -21,8 +21,11 @@ from urllib.parse import unquote
 
 from shipmill import cli_command
 from shipmill.agent_marker import BODY_LIMIT, carries, closed_with, decided_by, marked, stripped
+from shipmill.agents import MergeMethod
 from shipmill.classify import Pulls
+from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
+from shipmill.github import MergeMethods
 
 GhRunner = Callable[[Sequence[str], Mapping[str, str]], int]  # argv and env in, gh's exit code out
 
@@ -230,6 +233,10 @@ class MergeReads(Pulls, Protocol):
         """The pull request's URL, as `gh pr view <selector> --json url` prints it"""
         ...
 
+    def merge_methods(self) -> MergeMethods:
+        """The merge methods the repo's settings allow (spec 072)"""
+        ...
+
 
 MergeReader = Callable[[Path, Path, Mapping[str, str]], MergeReads]  # checkout, gh, and env in
 
@@ -424,6 +431,62 @@ def merge_flags(args: Sequence[str]) -> MergeFlags:
         bodies[-1] if bodies else None,
         files[-1] if files else None,
         any(name == "--disable-auto" for name, _ in switched),
+    )
+
+
+# -- S-072-6: a method the repo's settings don't allow -------------------------------------------
+
+_ALLOWS = {
+    MergeMethod.SQUASH: ("allow_squash_merge", "squash merges"),
+    MergeMethod.MERGE: ("allow_merge_commit", "merge commits"),
+}
+
+
+def named_method(args: Sequence[str]) -> MergeMethod | None:
+    """The method a merge's args name: `gh pr merge`'s --squash/-s or --merge/-m, read as
+    `merge_flags` reads them, or the merge API's merge_method field, the last given; None for a
+    rebase and when they name none"""
+    if args[0] == "pr":
+        method = merge_flags(args).method
+    else:
+        _, flags = _scan(args[1:], _API_LONG, _API_SHORT)
+        fields = [value.partition("=") for name, value in flags if name in _FIELD_FLAGS]
+        given = [value for key, equals, value in fields if key == "merge_method" and equals]
+        method = given[-1] if given else None
+    return MergeMethod(method) if method in {m.value for m in MergeMethod} else None
+
+
+def method_flag(args: Sequence[str], method: MergeMethod) -> str:
+    """How a merge of args names method: `--squash` for `gh pr merge`, `merge_method=squash`
+    for the merge API"""
+    return f"--{method}" if args[0] == "pr" else f"merge_method={method}"
+
+
+def hold_method(merge: Merge, args: Sequence[str], allowed: MergeMethods, setting: MergeMethod | None) -> None:
+    """S-072-6: a merge naming a method the repo's settings don't allow exits 2 before gh runs,
+    naming the repo setting, and [agents] merge when that names the method; never retried with
+    the other method (D-96). setting is the key's value, None without it. A merge naming no
+    method, or a rebase, passes"""
+    method = named_method(args)
+    if method is None or (allowed.squash if method is MergeMethod.SQUASH else allowed.merge):
+        return
+    key, what = _ALLOWS[method]
+    where = f"{key}, Settings > General > Pull Requests"
+    other = MergeMethod.MERGE if method is MergeMethod.SQUASH else MergeMethod.SQUASH
+    if setting is method:
+        raise ReleaseError(
+            f'{merge.command} is refused: [agents] merge = "{method}" in {CONFIG_PATH}, but the repo doesn\'t allow '
+            f'{what} ({where}); allow them, or set [agents] merge = "{other}" (D-96)'
+        )
+    if (setting or MergeMethod.SQUASH) is method:  # no key: the default, squash
+        fix = f'allow them, or set [agents] merge = "{other}" in {CONFIG_PATH}'
+    elif method is MergeMethod.MERGE:  # a stack's base under "squash"
+        fix = f"allow them, or land the stack's base with {method_flag(args, other)} and rebase its child"
+    else:
+        fix = f'allow them, or land with {method_flag(args, other)}, which [agents] merge = "{other}" names'
+    raise ReleaseError(
+        f"{merge.command} is refused: {method_flag(args, method)} needs {what}, which the repo doesn't allow "
+        f"({where}); {fix} (D-96)"
     )
 
 
