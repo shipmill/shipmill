@@ -1,6 +1,6 @@
 # S-076: A change's tests prove it, read from the pull request's history
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -160,3 +160,20 @@ Touched areas: `skills/github-pr-triage/scripts/test_proof.py`,
 - shipmill/shipmill#1286: S-076-12, S-076-13, S-076-14
 
 ## Verification
+
+Checked on the default branch plus #1285 and #1286, by running `test_proof.py` on throwaway git repositories (a `main` with `src.py` and `tests/test_old.py`, the change on a `topic` branch) and the delivery hook on this repo's checkout, besides the tests `specs.py coverage --spec 076` lists.
+
+- S-076-1: a test-only first commit, red on its tree, then the fix: `test_proof: PROVEN (fix)`, exit 0, four `ok:` lines; `tests/test_test_proof.py` (`test_s076_1_*`) passes
+- S-076-2: a first commit with `src.py` in it, a test that passes on the first commit, and a head still red each read `test_proof: UNPROVEN (fix)`, exit 1, with a `fail:` line naming the 7-character commit and the files (`changes files that aren't test files: src.py`, `the command exits 0 on the first commit's tree`, `exits 1 on the head's tree`); the last-40-lines output is asserted in `test_s076_2_*`
+- S-076-3: a later commit that only adds a line reads `ok: tests-kept`, one that changes a line reads `fail: tests-kept: <sha7> removes or changes 2 of tests/test_value.py`, exit 1, and a `--plan-file` whose `Tests changed:` names that file with a reason reads PROVEN, exempt; deletion and rename are covered in `test_s076_3_*`
+- S-076-4: a docs-only change reads `test_proof: NO_TEST (fix)`, exit 0, and a command that writes a marker file never ran
+- S-076-5: a refactor adding `tests/test_new.py` reads `PROVEN (refactor)`, exit 0; editing the base's `tests/test_old.py` reads `UNPROVEN`, exit 1, `fail: tests-unchanged: <sha7> modifies tests/test_old.py`
+- S-076-6: a base whose test fails reads `test_proof: BASELINE_RED (refactor)`, exit 1, with only the `baseline-green` check printed
+- S-076-7: a test at `checks/value_check.py` reads NO_TEST under the defaults and PROVEN with `--test-path 'checks/**'`; the default names are asserted in `test_s076_7_*`
+- S-076-8: the command `echo a; exit 1` runs as words without a shell (it exits 0, so `fails-before` fails); after every run `git worktree list` shows only the caller's checkout, still on `topic`; `{tests}` substitution is asserted in `test_s076_8_*`
+- S-076-9: `--head nope`, no command after `--`, a `Tests changed:` entry with no reason, an empty change, and a command past `--timeout 1` each exit 2 with a message naming the fix, and no worktree is left
+- S-076-10: `--json` prints one object, exit 0; its keys `verdict`, `kind`, `first_commit`, `test_files`, and `checks` (`name`, `ok`, `detail`) are asserted in `test_s076_10_json_prints_one_object`
+- S-076-11: `hooks/delivery.py pre` with `SHIPMILL_GATE=1` exits 2 (`shipmill hook uv-run`) on `uv run --no-project python skills/github-pr-triage/scripts/test_proof.py fix --base origin/main -- uv run sh -c ls` and 0 on the same call ending `-- uv run pytest tests/test_a.py`; without the variable both exit 0; `tests/test_delivery_hooks.py` (`test_s076_11_*`) covers `python`, `python3`, direct and `uv run` calls
+- S-076-12: `skills/github-issue-resolve/SKILL.md` Phase 4 holds "Say what kind of change it is", the `Kind: fix` commit-first rule, and the `Kind: refactor` rule; `implementer-brief.md` holds the "Commit order" line and `test-gate.md` its "Commit order" section; `tests/test_direction_skills.py` (`test_s076_12_*`) reads them
+- S-076-13: `reviewer-brief.md`'s Open PR step 2 runs `{test_proof_script} <kind>` after the rebase and before step 4's fixes, step 3 holds the missing-`Kind:` finding, step 5 the "Test proof" line, and the Post-merge brief none of them; `skills/github-pr-triage/SKILL.md` lists the script; `test_s076_13_*` reads them
+- S-076-14: `tests/test_pr_gate.py` (`test_s076_14_*`) runs `plan_problems` and the gate on plans with and without `Kind:` and `Tests changed:` lines, for passing and refused `Serves:` values: the same problems, exit code, and output

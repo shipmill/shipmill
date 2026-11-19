@@ -378,6 +378,37 @@ def test_s024_7_a_serves_naming_an_unknown_id_is_refused(tmp_path: Path, directe
     assert "  refused: `Serves:` names G-2, which docs/product.md doesn't list" in proc.stdout
 
 
+# S-076-14: the plan's optional `Kind:` and `Tests changed:` lines are not read
+KIND_LINES = (
+    "- Kind: fix\n- Tests changed: `tests/test_app.py`: the helper it imported was renamed;"
+    " `tests/test_b.py`: its fixture moved\n"
+)
+
+
+@pytest.mark.parametrize("kind", ["fix", "refactor"])
+@pytest.mark.parametrize("serves", ["G-3", "quality bar", "G-2", ""])
+def test_s076_14_kind_and_tests_changed_lines_leave_the_plans_problems_as_they_are(kind: str, serves: str) -> None:
+    body = PLAN.replace("- Serves: G-3", f"- Serves: {serves}")
+    extended = body.replace("- Proof: tests/test_app.py\n", "- Proof: tests/test_app.py\n" + KIND_LINES)
+    extended = extended.replace("Kind: fix", f"Kind: {kind}")
+    assert extended != body
+    ids = frozenset({"G-1", "G-3"})
+    assert gate.plan_problems(extended, ids) == gate.plan_problems(body, ids)
+    assert (gate.plan_problems(extended, ids) == []) == (serves in ("G-3", "quality bar"))
+
+
+@pytest.mark.parametrize("serves", ["G-3", "G-2"])
+def test_s076_14_the_gates_verdict_is_the_same_with_and_without_the_lines(
+    tmp_path: Path, directed: Path, serves: str
+) -> None:
+    body = PLAN.replace("G-3", serves)
+    extended = body.replace("- Proof: tests/test_app.py\n", "- Proof: tests/test_app.py\n" + KIND_LINES)
+    plain = run_gate(tmp_path, directed, {7: pr(body=body)}, "--bot-login", BOT)
+    kinded = run_gate(tmp_path, directed, {7: pr(body=extended)}, "--bot-login", BOT)
+    assert (kinded.returncode, kinded.stdout) == (plain.returncode, plain.stdout)
+    assert plain.returncode == (0 if serves == "G-3" else gate.REFUSED)
+
+
 def test_s024_7_a_moved_goals_section_lists_its_ids(tmp_path: Path) -> None:
     moved = DIRECTION.replace("- G-1: Ship\n- G-3: Ship faster\n", "See [Goals](product/goals.md).\n")
     goals = "## Goals\n\n- G-1: Ship\n- G-3: Ship faster\n"
