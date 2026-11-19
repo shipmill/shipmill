@@ -70,6 +70,8 @@ elif args[:2] == ["api", "graphql"]:
     print(json.dumps({"data": {"repository": repository}}))
 elif args[:2] == ["pr", "list"]:
     print(os.environ.get("FAKE_PRS", "[]"))
+elif args[:2] == ["issue", "list"] and "expedite" in args:  # spec 070's expedite outcomes
+    print("[]")
 else:
     sys.stderr.write("unexpected gh call: " + " ".join(args) + "\\n")
     sys.exit(1)
@@ -164,7 +166,11 @@ def tier(
     proc = subprocess.run([*cmd, "--known", str(path), *flags], capture_output=True, text=True, env=env, check=False)
     assert proc.returncode in (0, 1), proc.stderr
     calls = [json.loads(line) for line in log.read_text().splitlines()]
-    return [json.loads(line) for line in proc.stdout.splitlines()], calls
+    # S-070-3: a tier 3 or 6 read with a row an expedite outcome could be in, under [agents],
+    # lists the open expedite opportunities once; the other reads are each test's to check
+    expedite = [c for c in calls if c[:2] == ["issue", "list"] and "expedite" in c]
+    assert len(expedite) <= 1
+    return [json.loads(line) for line in proc.stdout.splitlines()], [c for c in calls if c not in expedite]
 
 
 def test_s046_7_tier_1_prints_its_rows_alone(tmp_path: Path) -> None:

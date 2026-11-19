@@ -62,7 +62,10 @@ def node(
     return {
         "labels": {"nodes": [{"name": n} for n in (*ACCEPTED, *labels)]},
         "milestone": {"dueOn": due} if milestone or due is not None else None,
-        "subIssues": {"pageInfo": {"hasNextPage": False}, "nodes": [{"state": s} for s in subs]},
+        "subIssues": {
+            "pageInfo": {"hasNextPage": False},
+            "nodes": [{"number": 100 + i, "state": s} for i, s in enumerate(subs)],
+        },
         "timelineItems": {"nodes": events},
     }
 

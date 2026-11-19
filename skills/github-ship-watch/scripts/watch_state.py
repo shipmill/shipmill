@@ -489,6 +489,17 @@ after its row, unless the row's detail already ends with it. The PRS_OPEN line a
 heads, each listed pull request's number (a string) mapped to its head commit's SHA, so a
 push to one changes the gate's fingerprint (#546); the table never prints it.
 
+Expedite rows (spec 070, S-070-3; a --tier 3 or --tier 6 read with an [agents] table and a
+LAND_DUE, PRS_OPEN, AGENT_DRAFT, or `STATE #N ...` ISSUES row): the read lists the open issues
+labelled opportunity, planned, and expedite once, and only with one, reads their label events
+and sub-issues in one GraphQL query and, with a pull request row, each such pull request's
+closing issues in one more. An expedite outcome is an opportunity of class expedite (its
+expedite label added by a person, and no fixed-date a person added beside it) and its
+sub-issues. Each row naming one of them, or a pull request closing one, is cut in two: an
+expedite row of those, whose --json line has "expedite": true, and the row of the others as
+it was; the gate's walk takes an expedite row before the tier's standard rows. A row naming
+none stays whole, and no other row or read ever has the key.
+
 Holds and incidents lead the report. Exit 0 when nothing needs action, 1 when any
 BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED,
 ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
@@ -566,7 +577,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
@@ -848,7 +859,9 @@ class Row:
     only, is each listed pull request's head SHA by number: in --json only, so the gate sees
     a push to one (#546). report_only, on a FEEDBACK_DUE row only, marks one read under
     [autonomy] intake = "observe" (spec 074): no action and no agent's, and in no --tier or
-    --sweep read"""
+    --sweep read. expedite marks a row of tier 3 or 6 naming only an expedite outcome's
+    issues or the pull requests closing one (S-070-3): in --json only, as "expedite": true, so
+    the gate's walk takes it before the tier's standard rows; a row without it prints no key"""
 
     state: str
     subject: str
@@ -856,6 +869,7 @@ class Row:
     fix: str | None = None
     heads: tuple[tuple[int, str], ...] = ()
     report_only: bool = False
+    expedite: bool = False
 
     def __post_init__(self) -> None:
         if self.state in FIXED and not self.fix:
@@ -864,6 +878,8 @@ class Row:
             raise ValueError(f"only a PRS_OPEN row has heads, not {self.state}")
         if self.report_only and self.state != "FEEDBACK_DUE":
             raise ValueError(f"only a FEEDBACK_DUE row is report-only by its level, not {self.state}")
+        if self.expedite and self.state not in EXPEDITABLE:
+            raise ValueError(f"a {self.state} row is never expedite")
 
     @property
     def action(self) -> bool:
@@ -886,6 +902,8 @@ class Row:
         }
         if self.heads:
             found["heads"] = {str(number): sha for number, sha in self.heads}
+        if self.expedite:
+            found["expedite"] = True
         return found
 
 
@@ -2522,7 +2540,8 @@ class Opportunity:
     """An open accepted opportunity with a class label (spec 070): the class labels that count,
     each added by a person (the newest labeled event for it names a User other than the
     --bot-login as its actor); whether it is in a milestone, and that milestone's due date as a
-    UTC date (None in no milestone or one without); its sub-issues, and how many are open"""
+    UTC date (None in no milestone or one without); its sub-issues, and how many are open; and
+    the sub-issues' numbers, its outcome's build issues (S-070-3)"""
 
     number: int
     counted: frozenset[str]
@@ -2530,6 +2549,7 @@ class Opportunity:
     due: dt.date | None
     subs: int
     open_subs: int
+    outcome: frozenset[int] = frozenset()
 
     @property
     def conflict(self) -> bool:
@@ -2555,18 +2575,10 @@ def classed(issues: list[Issue]) -> list[int]:
 def added_by_person(events: list[Any], label: str, bot_login: str | None) -> bool:
     """Whether the newest labeled event adding label names a person as its actor: a User, never
     a Bot (the App) or the --bot-login; an event whose actor can't be read, or no such event in
-    those read, counts as no label, so choosing a class stays the maintainer's (N-3, D-10)"""
-    adding = [e for e in events if isinstance(e, dict) and (e.get("label") or {}).get("name") == label]
-    if not adding:
-        return False
-    actor = adding[-1].get("actor")
-    if not isinstance(actor, dict) or actor.get("__typename") != "User":
-        return False
-    login = actor.get("login")
-    if not isinstance(login, str) or not login or login.endswith("[bot]"):
-        return False
-    bot = (bot_login or "").removesuffix("[bot]")
-    return login.lower() != bot.lower()
+    those read, counts as no label, so choosing a class stays the maintainer's (N-3, D-10).
+    triage_state.py's rule, which its --wip reads the class by too"""
+    found: bool = TRIAGE.added_by_person(events, label, bot_login)
+    return found
 
 
 def read_opportunities(
@@ -2580,7 +2592,7 @@ def read_opportunities(
         f"timelineItems(itemTypes: [LABELED_EVENT], last: {LABELED_LAST})"
         " { nodes { ... on LabeledEvent { label { name } actor { __typename login } } } }"
     )
-    subs = f"subIssues(first: {SUB_ISSUES_FIRST}) {{ pageInfo {{ hasNextPage }} nodes {{ state }} }}"
+    subs = f"subIssues(first: {SUB_ISSUES_FIRST}) {{ pageInfo {{ hasNextPage }} nodes {{ number state }} }}"
     fields = f"labels(first: 100) {{ nodes {{ name }} }} milestone {{ dueOn }} {subs} {events}"
     wanted = sorted(set(numbers))
     found: list[Opportunity] = []
@@ -2621,7 +2633,11 @@ def opportunity(repo: str, number: int, item: object, bot_login: str | None) -> 
     due_on = None if milestone is None else milestone.get("dueOn")
     due = None if not due_on else parse_time(str(due_on)).astimezone(dt.timezone.utc).date()  # noqa: UP017 (3.10)
     states = [s.get("state") for s in subs["nodes"] if isinstance(s, dict)]
-    return Opportunity(number, counted, milestone is not None, due, len(states), states.count("OPEN"))
+    numbers = [s.get("number") for s in subs["nodes"] if isinstance(s, dict)]
+    if not all(isinstance(n, int) and not isinstance(n, bool) and n > 0 for n in numbers):
+        raise Refused(f"error: gh api graphql printed a sub-issue without its number for {repo}#{number}")
+    outcome = frozenset(n for n in numbers if isinstance(n, int))
+    return Opportunity(number, counted, milestone is not None, due, len(states), states.count("OPEN"), outcome)
 
 
 def class_rows(opportunities: list[Opportunity], now: dt.datetime) -> list[Row]:
@@ -2654,6 +2670,119 @@ def service_rows(repo: str, bot_login: str | None, now: dt.datetime) -> list[Row
     sub-issues are read only for those carrying a class label"""
     numbers = classed(fetch_issues(repo, "--label", OPPORTUNITY_LABEL, "--label", PLANNED_LABEL))
     return class_rows(read_opportunities(repo, numbers, bot_login), now) if numbers else []
+
+
+# the rows of tiers 3 and 6 an expedite outcome's issue or pull request can be in (S-070-3)
+EXPEDITABLE = frozenset({"LAND_DUE", "PRS_OPEN", "AGENT_DRAFT", "ISSUES"})
+BY_PULL = frozenset({"LAND_DUE", "PRS_OPEN", "AGENT_DRAFT"})  # rows naming pull requests, not issues
+CLOSING_FIRST = 50  # the issues a pull request closes, read for whether one is an expedite outcome's
+
+
+def expedite_issues(repo: str, bot_login: str | None) -> frozenset[int]:
+    """S-070-3: the issues of the expedite outcomes, each open accepted opportunity of class
+    expedite (Opportunity.service) and its sub-issues. One gh issue list of the open accepted
+    opportunities labelled expedite, and only with one, read_opportunities' one GraphQL read"""
+    labels = ("--label", OPPORTUNITY_LABEL, "--label", PLANNED_LABEL, "--label", EXPEDITE_LABEL)
+    numbers = classed(fetch_issues(repo, *labels))
+    found: set[int] = set()
+    for o in read_opportunities(repo, numbers, bot_login) if numbers else []:
+        if o.service == EXPEDITE:
+            found |= {o.number, *o.outcome}
+    return frozenset(found)
+
+
+def closing_issues(
+    repo: str, numbers: Sequence[int], read: Callable[[list[str]], str] = run
+) -> dict[int, frozenset[int]]:
+    """The issues of this repo each pull request closes (its closingIssuesReferences), in one
+    GraphQL query per COMMENTS_CHUNK pull requests; none without a number. An answer that isn't
+    the pull request asked for is refused"""
+    owner, _, name = repo.partition("/")
+    refs = f"closingIssuesReferences(first: {CLOSING_FIRST}) {{ nodes {{ number repository {{ nameWithOwner }} }} }}"
+    wanted = sorted(set(numbers))
+    found: dict[int, frozenset[int]] = {}
+    for start in range(0, len(wanted), COMMENTS_CHUNK):
+        chunk = wanted[start : start + COMMENTS_CHUNK]
+        parts = " ".join(f"n{n}: pullRequest(number: {n}) {{ {refs} }}" for n in chunk)
+        query = f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {parts} }} }}"
+        data = json.loads(
+            read(["gh", "api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}"])
+        )
+        repository = data.get("data", {}).get("repository") if isinstance(data, dict) else None
+        for n in chunk:
+            item = repository.get(f"n{n}") if isinstance(repository, dict) else None
+            nodes = ((item or {}).get("closingIssuesReferences") or {}).get("nodes") if isinstance(item, dict) else None
+            if not isinstance(nodes, list):
+                raise Refused(f"error: gh api graphql printed {str(item)[:200]} for {repo}#{n}'s closing issues")
+            found[n] = frozenset(
+                int(c["number"])
+                for c in nodes
+                if isinstance(c, dict)
+                and str((c.get("repository") or {}).get("nameWithOwner", "")).lower() == repo.lower()
+            )
+    return found
+
+
+def listed_numbers(row: Row) -> tuple[str, list[int]] | None:
+    """An expeditable row's issues or pull requests, with the prefix its detail keeps: an ISSUES
+    row's `STATE ` and its `#N ...`, PRS_OPEN's and AGENT_DRAFT's `#N ...`, LAND_DUE's subject.
+    None for a row of any other shape, as SPEC_UNSPLIT's, which names a spec"""
+    if row.state == "LAND_DUE":
+        found = re.fullmatch(r"#(\d+)", row.subject)
+        return ("", [int(found.group(1))]) if found else None
+    head, _, rest = row.detail.partition(" ") if row.state == "ISSUES" else ("", "", row.detail)
+    words = rest.split(" ")
+    if not rest or not all(re.fullmatch(r"#\d+", w) for w in words):
+        return None
+    return (f"{head} " if head else "", [int(w[1:]) for w in words])
+
+
+def expedite_marked(rows: list[Row], issues: frozenset[int], closing: Mapping[int, frozenset[int]]) -> list[Row]:
+    """S-070-3: each row of tier 3 or 6 cut in two, an expedite row naming the issues of an
+    expedite outcome (issues) or the pull requests closing one (closing), and the row of the
+    others, which stays as it was; a row naming none stays whole, and every other row as it is"""
+    marked: list[Row] = []
+    for row in rows:
+        listed = listed_numbers(row) if row.state in EXPEDITABLE else None
+        if listed is None:
+            marked.append(row)
+            continue
+        prefix, numbers = listed
+        if row.state in BY_PULL:
+            fast = [n for n in numbers if closing.get(n, frozenset()) & issues]
+        else:
+            fast = [n for n in numbers if n in issues]
+        if not fast:
+            marked.append(row)
+            continue
+        if row.state == "LAND_DUE":
+            marked.append(replace(row, expedite=True))
+            continue
+        slow = [n for n in numbers if n not in fast]
+        for part, flag in ((fast, True), (slow, False)):
+            if part:
+                heads = tuple((n, sha) for n, sha in row.heads if n in part)
+                detail = prefix + " ".join(f"#{n}" for n in part)
+                marked.append(replace(row, detail=detail, heads=heads, expedite=flag))
+    return marked
+
+
+def tier_expedite(
+    args: argparse.Namespace, text: str | None, rows: list[Row], read: Callable[[list[str]], str] = run
+) -> list[Row]:
+    """A tier 3 or 6 read's rows with S-070-3's expedite rows marked, for a config with [agents]
+    (spec 070's classes need one); the closing issues are read only with an expedite outcome and
+    a pull request row"""
+    if text is None or agents_table(text, POLICY) is None:
+        return rows
+    if not any(r.state in EXPEDITABLE and listed_numbers(r) is not None for r in rows):
+        return rows  # no row an expedite outcome could be in: nothing more is read
+    issues = expedite_issues(args.repo, args.bot_login)
+    if not issues:
+        return rows
+    pulls = [n for r in rows if r.state in BY_PULL for n in (listed_numbers(r) or ("", []))[1]]
+    closing = closing_issues(args.repo, pulls, read) if pulls else {}
+    return expedite_marked(rows, issues, closing)
 
 
 def ordered(rows: list[Row]) -> list[Row]:
@@ -5749,7 +5878,7 @@ def landing_rows(
     land = land_level(args, text, known, now)
     queue, _ = land_queue(args.repo, repo_dir, text, default_branch(args.repo, known), prs, now, args.tool)
     rows = intake(args.repo, 0, "", prs, comments.__getitem__, args.bot_login, args.trusted_only, land, queue=queue)
-    return [r for r in rows if r.state in TIERS[3]]
+    return tier_expedite(args, text, [r for r in rows if r.state in TIERS[3]])
 
 
 def upgrade_issues(repo: str, text: str | None) -> list[Issue]:
@@ -5856,7 +5985,7 @@ def issue_rows(args: argparse.Namespace, repo_dir: Path, text: str | None, known
     branch = landing_branch(text, POLICY, default_branch(args.repo, known))
     fetch_landing(repo_dir, branch)
     found = [r for r in split_issues(rows, decided=False) if r.state == "ISSUES"] + relayed_rows(rows, triage)
-    return found + spec_rows(args.repo, repo_dir, branch, triage)
+    return tier_expedite(args, text, found) + spec_rows(args.repo, repo_dir, branch, triage)
 
 
 def relayed_rows(rows: list[Row], triage: str) -> list[Row]:

@@ -306,7 +306,12 @@ With --wip N (a work-in-progress limit, such as the config's [agents] wip), a la
 line says how many issues are IN_PROGRESS, AGENT_DRAFT, or AGENT_DRAFT_HELD (counting an
 OFF_MILESTONE one with an open PR), the room left under N, and the issues
 ready to start (NEEDS_PR or UNBLOCKED), oldest first; with --json, as one JSON object.
-A person's item never counts as in progress or ready: the limit is on agents' work.
+A person's item never counts as in progress or ready: the limit is on agents' work. The
+issues of an expedite outcome (spec 070: an open opportunity labelled planned and expedite,
+the expedite label added by a person and no fixed-date label a person added beside it, and
+each open issue whose sub-issue parent it is) come first among the ready ones, and count in
+progress like any other; their label events are read in one more query, only when an open
+issue carries opportunity, planned, and expedite.
 
 --bot-login names the login shipmill's sessions write as (an App's <slug>[bot]). --home
 names the product's home repo, the config's [product] home, as owner/name (letters, digits,
@@ -2739,17 +2744,98 @@ def closed_rows(
     return rows
 
 
+# Spec 070: an accepted opportunity (D-10) has a class of service, a label a person adds to it
+OPPORTUNITY_LABEL = "opportunity"
+PLANNED_LABEL = "planned"
+EXPEDITE_LABEL = "expedite"
+FIXED_DATE_LABEL = "fixed-date"
+CLASS_LABELS = (EXPEDITE_LABEL, FIXED_DATE_LABEL)
+LABELED_EVENTS = 100  # an opportunity's newest label events read, for who added its class label
+CLASS_CHUNK = 50  # opportunities one label-event query reads
+
+
+def added_by_person(events: list[Any], label: str, bot_login: str | None) -> bool:
+    """Whether the newest labeled event adding label names a person as its actor: a User, never
+    a Bot (the App) or the --bot-login; an event whose actor can't be read, or no such event in
+    those read, counts as no label, so choosing a class stays the maintainer's (N-3, D-10;
+    github-ship-watch's watch_state.py reads the class by this rule too)"""
+    adding = [e for e in events if isinstance(e, dict) and (e.get("label") or {}).get("name") == label]
+    if not adding:
+        return False
+    actor = adding[-1].get("actor")
+    if not isinstance(actor, dict) or actor.get("__typename") != "User":
+        return False
+    name = actor.get("login")
+    if not isinstance(name, str) or not name or name.endswith("[bot]"):
+        return False
+    bot = (bot_login or "").removesuffix("[bot]")
+    return name.lower() != bot.lower()
+
+
+def expedite_outcomes(
+    repo: str, issues: list[dict[str, Any]], bot_login: str | None, run: Runner = gh_graphql
+) -> frozenset[int]:
+    """Spec 070: the open accepted opportunities of class expedite, an `expedite` label a person
+    added (added_by_person) and no counted `fixed-date` beside it (both read as standard). Their
+    label events are read in one query per CLASS_CHUNK, and only for the open issues labelled
+    opportunity, planned, and expedite; none, no read"""
+    wanted = sorted(
+        issue["number"]
+        for issue in issues
+        if {OPPORTUNITY_LABEL, PLANNED_LABEL, EXPEDITE_LABEL} <= {n["name"] for n in issue["labels"]["nodes"]}
+    )
+    named = {issue["number"]: {n["name"] for n in issue["labels"]["nodes"]} for issue in issues}
+    owner, _, name = repo.partition("/")
+    events = (
+        f"timelineItems(itemTypes: [LABELED_EVENT], last: {LABELED_EVENTS})"
+        " { nodes { ... on LabeledEvent { label { name } actor { __typename login } } } }"
+    )
+    found: set[int] = set()
+    for start in range(0, len(wanted), CLASS_CHUNK):
+        chunk = wanted[start : start + CLASS_CHUNK]
+        parts = " ".join(f"n{n}: issue(number: {n}) {{ {events} }}" for n in chunk)
+        query = f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {parts} }} }}"
+        data = repository(run, query, {"owner": owner, "name": name})
+        for n in chunk:
+            nodes = ((data.get(f"n{n}") or {}).get("timelineItems") or {}).get("nodes")
+            if not isinstance(nodes, list):
+                fail(f"no label events for {repo}#{n} in the GraphQL response")
+            counted = {x for x in CLASS_LABELS if x in named[n] and added_by_person(nodes, x, bot_login)}
+            if counted == {EXPEDITE_LABEL}:
+                found.add(n)
+    return frozenset(found)
+
+
+def expedite_issues(issues: list[dict[str, Any]], outcomes: frozenset[int], repo: str) -> frozenset[int]:
+    """The open issues of an expedite outcome: each opportunity of outcomes, and each open issue
+    whose sub-issue parent, in this repo, is one"""
+    found = set(outcomes)
+    for issue in issues:
+        parent = issue.get("parent")
+        if parent and parent["repository"]["nameWithOwner"].lower() == repo.lower() and parent["number"] in outcomes:
+            found.add(issue["number"])
+    return frozenset(found)
+
+
 def wip_room(
-    rows: list[dict[str, Any]], wip: int, people: frozenset[int] = frozenset(), busy: frozenset[int] = frozenset()
+    rows: list[dict[str, Any]],
+    wip: int,
+    people: frozenset[int] = frozenset(),
+    busy: frozenset[int] = frozenset(),
+    expedite: frozenset[int] = frozenset(),
 ) -> dict[str, Any]:
     """How many more issues may start under a WIP limit of ``wip``, counting each issue with
     an open PR as in progress, and the issues ready to start (NEEDS_PR or UNBLOCKED), oldest
-    first: build issues are filed in build order. A person's item (one of ``people``) never
-    counts: the limit is on agents' work. ``busy`` are issues whose OFF_MILESTONE hides
-    IN_PROGRESS: they count as in progress too"""
+    first: build issues are filed in build order. The ``expedite`` ones (spec 070) come first,
+    oldest first among them, and count in progress like any other, so they take the next free
+    slot and never one past the limit. A person's item (one of ``people``) never counts: the
+    limit is on agents' work. ``busy`` are issues whose OFF_MILESTONE hides IN_PROGRESS: they
+    count as in progress too"""
     agents = [r for r in rows if r["number"] not in people]
     in_progress = sum(1 for r in agents if r["state"] in IN_FLIGHT or r["number"] in busy)
-    ready = sorted(r["number"] for r in agents if r["state"] in ("NEEDS_PR", "UNBLOCKED"))
+    ready = sorted(
+        (r["number"] for r in agents if r["state"] in ("NEEDS_PR", "UNBLOCKED")), key=lambda n: (n not in expedite, n)
+    )
     return {"wip": wip, "in_progress": in_progress, "room": max(wip - in_progress, 0), "ready": ready}
 
 
@@ -2970,7 +3056,9 @@ def main() -> int:
         else:
             print(f"#{r['number']:<5} {r['state']:<16} {r['title'][:70]}" + (f"  [{r['note']}]" if r["note"] else ""))
     if args.wip is not None:
-        room = wip_room(rows, args.wip, frozenset(people), frozenset(busy))
+        # spec 070: the expedite outcomes' issues go first among the ready ones
+        expedite = expedite_issues(issues, expedite_outcomes(args.repo, issues, args.bot_login), args.repo)
+        room = wip_room(rows, args.wip, frozenset(people), frozenset(busy), expedite)
         if args.json:
             print(json.dumps(room, sort_keys=True))
         else:

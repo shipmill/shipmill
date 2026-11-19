@@ -105,14 +105,20 @@ def tier_of(finding: Finding) -> int:
     return next((n for n, kinds in TIERS.items() if kind in kinds), UNPLACED)
 
 
-def order(findings: Iterable[Finding]) -> list[Finding]:
-    """A walk's fixed order (S-046-12): the tier, the kind's place in it, then the subject"""
+EXPEDITED = frozenset({3, 6})  # spec 070: the tiers whose expedite rows come before the standard ones
 
-    def key(f: Finding) -> tuple[int, int, int, str, str]:
-        kinds = TIERS.get(tier_of(f), ())
+
+def order(findings: Iterable[Finding]) -> list[Finding]:
+    """A walk's fixed order (S-046-12): the tier, the kind's place in it, then the subject. In
+    tiers 3 and 6 an expedite row comes before every standard row (S-070-4), and each group
+    keeps that order; tiers 1 and 2 still come first"""
+
+    def key(f: Finding) -> tuple[int, bool, int, int, str, str]:
+        tier = tier_of(f)
+        kinds = TIERS.get(tier, ())
         place = kinds.index(f.kind) if f.kind in kinds else len(kinds)
         number = int(f.subject[1:]) if re.fullmatch(r"#\d+", f.subject) else 0  # #9 before #10
-        return tier_of(f), place, number, f.subject, f.detail
+        return tier, not (f.expedite and tier in EXPEDITED), place, number, f.subject, f.detail
 
     return sorted(findings, key=key)
 
