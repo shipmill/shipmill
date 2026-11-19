@@ -2,12 +2,13 @@
 
 Fill in the `{...}` fields and send one brief per PR, all in one message so the agents run in parallel (`subagent_type: general-purpose`, `isolation: "worktree"`). Don't hand the reviewer a verdict; hand it the PR's specific risks.
 
-**The rubric, the direction, and the plan (spec 024).** Read them in a checkout at `origin/<default>` after `git fetch`, never on the PR's branch, which could rewrite its own rules; run each as `uvx shipmill==0.148.2 <command>`, the release this plugin pins, in every session:
+**The rubric, the direction, the plan (spec 024), and the history (spec 073).** Read them in a checkout at `origin/<default>` after `git fetch`, never on the PR's branch, which could rewrite its own rules; run each as `uvx shipmill==0.148.2 <command>`, the release this plugin pins, in every session:
 
 - `{review_rubric}`: `shipmill review show --path <file> ...` with every file of `gh api repos/{owner}/{repo}/pulls/<N>/files --paginate --jq '.[].filename'` (gh fills in `{owner}/{repo}`; `gh pr diff --name-only` fails with HTTP 406 past 300 files), which merges the root `REVIEW.md` with those of the directories the diff touches: Important rules (`I-n`, a subdirectory's cited as `skills/I-2`), the nit cap, Protected areas, and the free sections as they are. Without a `REVIEW.md`, drop the field
 - `{direction}`: `shipmill product show --section goals --section non-goals --section quality`. Without `docs/product.md`, drop the field
 - `{cap}`: the most nits a review raises, the merged rubric's `cap:` (5 when its files set none); without a `REVIEW.md`, drop the clauses that name it
 - `{plan}`: the PR body's `## Plan` section as written (`gh pr view <N> --json body`); without one, drop the field
+- `{history}`: `shipmill review history <N>`, the touched area's history pack: the reverts, settled decisions, incidents, and other open pull requests on the files the PR touches, each item with an id `H-n`. When it prints `none` for every kind, drop the field and its step 3 check and the History part of the final report
 
 Without a `REVIEW.md`, a `docs/product.md`, and a plan, the brief is as before: drop the lines that hold the dropped fields.
 
@@ -28,6 +29,9 @@ Review GitHub PR #{N} of {owner/repo} ("{title}", fixes #{issue}). The repo is a
 {When the PR body has a ## Plan section:} The PR's plan:
 {plan}
 
+{When review history lists an item:} The touched area's history, from the default branch:
+{history}
+
 1. `git fetch origin`, `git fetch origin pull/{N}/head:review-{N}`, `git checkout review-{N}`, then {for a PR whose head branch is in {owner/repo}, not a fork:} `git branch --set-upstream-to=origin/{head_branch} review-{N}` (the PR's `headRefName`), so `shipmill worktrees` finds the PR by its head branch once it merges, as it does by the number in `review-{N}` (D-91). Rebase onto origin/{default} locally and report which files conflicted and how you resolved each:
    - CHANGELOG: keep every entry from both sides, and check that new entries sit under Unreleased, not inside a released section. {When `.github/shipmill.toml` sets `[changelog] fragments`: the PR adds its entry as a new fragment in that folder and leaves `CHANGELOG.md` alone; `changelog_guard.py check --base origin/{default}` must exit 0, and on a line added under Unreleased move the entry into the fragment it names}. On a Breaking entry it refuses, move the entry under the `[bump] major` heading it names; never drop the marker
    - A count or version both sides changed: recompute it from each side's baseline and confirm by running the test
@@ -46,9 +50,10 @@ Review GitHub PR #{N} of {owner/repo} ("{title}", fixes #{issue}). The repo is a
    - {When the brief holds a plan:} Whether the diff departs from the plan (files it didn't name, steps it skipped, proof it doesn't hold) without the plan saying why: a finding
    - {When the brief holds a plan:} A PR whose linked issue or title calls it a bug fix with a new or changed test, or a refactor, while its plan has no `Kind:` line: a finding (spec 076)
    - {When the brief holds the direction:} A change that hits a non-goal (cite `N-n`), or breaks a quality-bar item (cite `Q-n`): a finding
+   - {When the brief holds the history:} For each `H-n`, whether the PR contradicts it: `contradicts`, `consistent`, or `unrelated`, with one line of reason. A `contradicts` the PR's body or plan doesn't explain (why the revert, the answer, or the incident no longer holds) is a finding citing the `H-n`
    - {When the brief holds a rubric:} A change that breaks an Important rule: a finding citing its id (`I-n`, or `skills/I-2` for a subdirectory's). A nit never blocks the verdict: report at most {cap} nits, the rubric's `cap:`, and drop the rest
 4. Reproduce each real bug before fixing it. Commit each small fix with proof that fails on the old code, by github-issue-resolve's [test gate](../../github-issue-resolve/references/test-gate.md) (a new regression test only when no existing test, type check or boundary model catches it), on review-{N}, and rerun the affected checks. Leave larger problems as findings.
-5. Final report, under 250 words: verdict (MERGE / MERGE AFTER SMALL FIX / REFUSE), rebase status, test results, {when the plan has a `Kind:` line: a "Test proof" line with `test_proof.py`'s verdict (`PROVEN`, `UNPROVEN`, `NO_TEST`, or `BASELINE_RED`), which goes into the review record,} findings with file:line (fixed or not){ and the `I-n`, `N-n`, or `Q-n` each cites}{, at most {cap} nits}, and the HEAD SHA of review-{N}, the head you reviewed: the landing session pushes it and records your verdict on it with `shipmill review record`, and `pr_gate.py` reads an agent's code PR UNREVIEWED until that record covers its head.
+5. Final report, under 250 words: verdict (MERGE / MERGE AFTER SMALL FIX / REFUSE), rebase status, test results, {when the plan has a `Kind:` line: a "Test proof" line with `test_proof.py`'s verdict (`PROVEN`, `UNPROVEN`, `NO_TEST`, or `BASELINE_RED`), which goes into the review record,} findings with file:line (fixed or not){ and the `I-n`, `N-n`, `Q-n`, or `H-n` each cites}{, at most {cap} nits}{, a History part with one line per `H-n` and its word, `contradicts`, `consistent`, or `unrelated`, which goes into the review record}, and the HEAD SHA of review-{N}, the head you reviewed: the landing session pushes it and records your verdict on it with `shipmill review record`, and `pr_gate.py` reads an agent's code PR UNREVIEWED until that record covers its head.
 ```
 
 ## Post-merge review
