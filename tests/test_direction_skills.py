@@ -196,7 +196,14 @@ def test_s076_13_the_open_pr_brief_runs_test_proof_after_the_rebase_before_own_f
     step2 = flat(brief.split("\n2. ", 1)[1].split("\n3. ", 1)[0])
     assert "{When the brief's plan has a `Kind:` line:} Test proof (spec 076)" in step2
     assert "after the rebase and before any fix of your own" in step2
-    assert "`{test_proof_script} <kind> --base origin/{default} --plan-file tmp/pr-{N}-body.md --" in step2
+    # The PR's own base, not the default branch: a stacked PR's range from the default branch
+    # starts with its base PR's commits, which `fix` would read as the test commit (#1410)
+    assert "`{test_proof_script} <kind> --base origin/{base} --plan-file tmp/pr-{N}-body.md --" in step2
+    assert "--base origin/{default}" not in step2
+    step1 = flat(brief.split("\n1. ", 1)[1].split("\n2. ", 1)[0])
+    assert "Rebase onto origin/{base} locally" in step1
+    fields = flat(read(PR_TRIAGE / "references" / "reviewer-brief.md").split("## Open PR", 1)[0])
+    assert "- `{base}`: the PR's base branch, its `baseRefName`" in fields
     assert "`UNPROVEN` is a finding quoting its `fail:` lines" in step2
     assert "`NO_TEST` on a `Kind: fix` plan is a finding" in step2
     assert "`BASELINE_RED` is the base's failure, reported as such and not a finding against the PR" in step2
