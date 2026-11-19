@@ -600,7 +600,11 @@ def test_the_agents_section_loads_without_release_keys(tmp_path: Path) -> None:
         ('name = "demo"\n', "no \\[agents\\] section"),
         ('[agents]\nprompt = "  "\n', "prompt must not be empty"),
         ('[agents]\nprompt = "/t"\nretry_hours = 0\n', "retry_hours must be in 1..168"),
-        ('[agents]\nprompt = "/t"\nmerge = true\n', "unknown keys \\['merge'\\]"),
+        ('[agents]\nprompt = "/t"\nmerge_when = true\n', "unknown keys \\['merge_when'\\]"),
+        (
+            '[agents]\nprompt = "/t"\nmerge = true\n',
+            '\\[agents\\] merge must be "squash" or "merge", got True',
+        ),  # spec 072
         ("[agents]\nprs = true\n", "prompt is required"),
     ],
 )
