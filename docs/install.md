@@ -634,6 +634,17 @@ else `SHIPMILL_APP_KEY`, else the default path; a missing key (with a second lin
 the App isn't available here), a key others can read, an App not installed on the repo, or
 a missing permission exits 2 naming the fix, and `gh` never runs.
 
+As the App, `shipmill gh` also refuses, with exit 2 before `gh` runs, a few writes the
+agents' protocols forbid: a `pr merge` of a pull request with a `never` zone or still
+labelled `needs-decision`, or one `pr_gate.py` doesn't read READY (specs 030 and 055); a
+`pr create` whose body's plan the merge gate would refuse (S-055-17); and an `issue edit` or
+`pr edit` that adds `needs-decision` (alone or in a comma list) to an item carrying no
+needs-decision question by the App or an OWNER, MEMBER, or COLLABORATOR, or removes it
+before a person's reply, a relay the relay grammar counts (D-93), or a
+`<!-- shipmill:withdrawn -->` comment follows the newest question (#1312). Each names what is
+missing and what would satisfy it; github-issue-triage's `references/needs-decision.md` has
+the protocol.
+
 With no `app_id` (no `.github/shipmill.toml`, no `[agents]` section, or one without
 `app_id`, or a folder outside any checkout), `shipmill gh` runs a read (`pr view`,
 `issue list`, `api` with `GET`, and the rest spec 037 lists) as your login, untouched, and

@@ -220,3 +220,19 @@ Once a trusted person replies, `triage_state.py` reads an issue as DECIDED, an a
 On a pull request, an answer that keeps the merge for the maintainer ("hold it: I merge it by hand") is taken up as `never` is: besides removing `needs-decision`, the session labels it `role:maintainer` and assigns the maintainer, so `watch_state.py` lists it in PRS_PARKED as `WITH_PERSON #N (@login)`, not in PRS_OPEN, and it starts no session.
 
 On a spec PR, a trusted answer that takes every recommendation unchanged is the spec's approval: the session lands the spec PR through github-pr-triage once it is mergeable and green, rather than leaving the merge to the maintainer, who may still merge it by hand; an answer that changes a recommendation revises the spec and asks again, and a spec PR that edits `docs/product.md` stays the maintainer's to merge (D-49, D-34, [spec-gate.md](spec-gate.md#approved-by-an-answer)).
+
+## What `shipmill gh` refuses
+
+With `[agents] app_id` set, `shipmill gh issue edit` and `shipmill gh pr edit` read the item's comments before the `needs-decision` label moves, by `triage_state.py`'s own question and reply readers and retro.py's `parse_relay`, and refuse with exit 2, gh never running, naming what is missing and the comment that would satisfy it (#1312). The flag counts alone or in a comma list (`--add-label bug,needs-decision`); every other edit reads nothing:
+
+- **`--add-label needs-decision`** is refused while the item carries no question: a comment whose first line is `<!-- shipmill:needs-decision -->`, by the App or an OWNER, MEMBER, or COLLABORATOR. Post the question first ([Asking](#asking)), then add the label
+- **`--remove-label needs-decision`** is refused unless, after the newest question, there is a reply by an OWNER, MEMBER, or COLLABORATOR without the agent marker, a relay by the App that [the relay grammar](#the-relay-grammar) counts, or a comment by the App or a trusted author whose first line is `<!-- shipmill:withdrawn -->`. A relay out of its grammar is named with its reason (`relay not counted: format`). An item labelled with no question at all is one a person parked: only a person takes that label off, by hand
+
+**Taking a question back.** When the question no longer needs an answer (the work it asked about was dropped, or another item decided it), post a comment whose first line is the withdrawn marker and whose next line says why, then remove the label:
+
+```markdown
+<!-- shipmill:withdrawn -->
+No longer needed: <why, naming the item or the decision that settled it>
+```
+
+**"Not now" is a postpone, not a label.** A maintainer who answers that the item should wait, with no date and no item it waits on, decided a postpone: take the label off after the reply, label the issue `postponed`, and post a `Triage: **postponed**` comment ([triage-rubric.md](triage-rubric.md)). The gate never clears `postponed` by itself: the issue comes back only as REVISIT, after a stable release (spec 061), so there is no separate hold label to learn.
