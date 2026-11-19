@@ -20,6 +20,7 @@ from shipmill.status import Row, Verdict, report
 from .test_gate import checkout
 from .test_gate_walk import Source, cfg, tick
 from .test_status_picture import URL, facts, lines
+from .test_watch_gate_idle import FAKE_GH, Host
 
 __all__ = ["checkout"]  # the fixture, imported for the tests below
 
@@ -271,3 +272,51 @@ def test_s070_13_a_gate_tick_with_only_the_class_rows_launches_no_session(ws: Mo
     source = Source({n: list(findings) for n in (1, 2, 3, 4, 6)}, swept=list(findings))
     decision = tick(checkout, source, agents=cfg())
     assert (decision.action, decision.work) == (Action.QUIET, ())
+
+
+# -- #1377: only a read that prints the class rows reads the accepted opportunities
+
+# test_watch_gate_idle's fake gh for the full report, each call logged to FAKE_LOG, and with
+# [agents] the direction issues' read answered (none, as --jq '.[]' prints them)
+LOGGING_GH = """#!{python}
+import json, os, subprocess, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_LOG"], "a") as log:
+    log.write(json.dumps(args) + "\\n")
+if args[:2] == ["api", "--paginate"] and "labels=shipmill-direction" in args[2]:
+    sys.exit(0)
+sys.exit(subprocess.run([sys.executable, os.environ["FAKE_GH"], *args]).returncode)
+"""
+
+
+def class_reads(host: Host, *flags: str) -> int:
+    """How many `gh issue list --label opportunity --label planned` reads one run made"""
+    log = host.tmp / "gh.log"
+    log.write_text("", encoding="utf-8")
+    proc = host.watch(*flags)
+    assert proc.returncode in (0, 1), proc.stderr
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert calls  # the fake gh logged the run's reads
+    return sum(1 for c in calls if c[:2] == ["issue", "list"] and "opportunity" in c and "planned" in c)
+
+
+def test_1377_only_the_reads_with_the_host_rows_read_the_classes(ws: ModuleType, tmp_path: Path) -> None:
+    host = Host(tmp_path)
+    fakes = host.tmp / "fakes"
+    (fakes / "gh-full").write_text(FAKE_GH.replace("{python}", sys.executable), encoding="utf-8")
+    (fakes / "gh").write_text(LOGGING_GH.replace("{python}", sys.executable), encoding="utf-8")
+    host.env |= {"FAKE_LOG": str(host.tmp / "gh.log"), "FAKE_GH": str(fakes / "gh-full")}
+    config = 'mode = "off"\n\n[agents]\nprompt = "/triage {repo}"\n'
+    (host.work / ".github" / "shipmill.toml").write_text(config, encoding="utf-8")
+    known = host.tmp / "known.json"
+    empty = {"default_branch": "main", "held": False, "prs": [], "incidents": [], "runs": []}
+    known.write_text(json.dumps(empty), encoding="utf-8")
+    # the full report and shipmill status's --no-host print the class rows: one read each
+    assert class_reads(host) == 1
+    assert class_reads(host, "--no-host") == 1
+    # the sweep and tiers 5 and 7 keep none of them (S-070-13), so they read none
+    kept = {s for n in (5, 7) for s in ws.TIERS[n]} | set(ws.SWEPT)
+    assert not set(ws.CLASS_STATES) & kept
+    assert class_reads(host, "--sweep") == 0
+    for n in (5, 7):
+        assert class_reads(host, "--tier", str(n), "--known", str(known)) == 0, n
