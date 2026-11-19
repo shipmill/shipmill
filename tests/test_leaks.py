@@ -771,6 +771,40 @@ def test_s081_1_the_real_feed_hands_gh_the_text_on_its_stdin_and_the_args_as_giv
     assert (tmp_path / "stdin").read_text(encoding="utf-8") == CLEAN
 
 
+@pytest.mark.parametrize("args", [["gist", "create"], ["gist", "new", "--filename", "notes.md", "-d", "d"]])
+def test_s081_1_a_gist_created_from_piped_stdin_is_checked(tmp_path: Path, host: Host, args: list[str]) -> None:
+    """`cat notes | gh gist create` uploads stdin with no `-` named: read, checked, and fed"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with pytest.raises(LeakRefused, match="secret-format: the file on stdin"):
+        fed(root, args, host, f"x {GITHUB_TOKEN}")
+    runner, feed = fed(root, args, host, CLEAN)
+    assert runner.calls == []
+    assert feed.calls == [([host.gh, *args], CLEAN)]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["gist", "edit", "abc123", "--filename", "notes.md", "{file}"],
+        ["gist", "edit", "abc123", "--add", "{file}"],
+        ["gist", "edit", "abc123", "-a{file}"],
+    ],
+)
+def test_s081_1_a_local_file_a_gist_edit_uploads_is_checked(tmp_path: Path, host: Host, args: list[str]) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    path = body_file(tmp_path, f"x {GITHUB_TOKEN}\n", "notes.md")
+    said = refused(root, [a.format(file=path) for a in args], host)
+    assert f"secret-format: the file {path} holds a GitHub token" in said
+
+
+def test_s081_1_a_gist_edit_reading_no_local_file_runs(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    gh(root, ["gist", "edit", "abc123", "--remove", "notes.md"], host)
+    gh(root, ["gist", "edit", "abc123", "--desc", "d"], host)
+    runner, feed = fed(root, ["gist", "edit", "abc123", "-f", "notes.md", "-"], host, CLEAN)
+    assert feed.calls == [([host.gh, "gist", "edit", "abc123", "-f", "notes.md", "-"], CLEAN)]
+
+
 def test_stdin_is_named_where_it_is_read() -> None:
     texts = sent_texts(["api", "-X", "POST", "repos/o/r/labels", "--input", "-"], lambda flag, path: "x")
     assert texts[-1] == Text("the --input on stdin", "x")

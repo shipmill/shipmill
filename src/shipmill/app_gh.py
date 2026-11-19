@@ -1389,7 +1389,7 @@ _RELEASE_FLAGS = _Flags(
     frozenset("nFRt"),
 )
 _WORKFLOW_FLAGS = _Flags(frozenset({"--field", "--raw-field", "--ref", "--repo"}), frozenset("fFrR"))
-_GIST_FLAGS = _Flags(frozenset({"--desc", "--filename"}), frozenset("df"))
+_GIST_FLAGS = _Flags(frozenset({"--add", "--desc", "--filename", "--remove"}), frozenset("adfr"))
 _OTHER_FLAGS = _Flags(frozenset({"--repo"}), frozenset("R"))
 _SENT_FLAGS = {
     "issue": _GROUP_FLAGS["issue"],
@@ -1487,14 +1487,22 @@ def sent_texts(args: Sequence[str], read: BodyRead) -> list[Text]:
 
 
 def _gist_files(args: Sequence[str], read: BodyRead) -> list[Text]:
-    """`gh gist create`'s files, which it uploads: each positional argument past `create`, `-`
-    for stdin"""
-    positional, _ = _scan(args[1:], _GIST_FLAGS.long, _GIST_FLAGS.short)
-    if not positional or positional[0] not in ("create", "new"):
+    """The local files a gist write uploads, `-` for stdin: `gh gist create`'s positional
+    arguments past `create`, or stdin when it names none (`cat notes | gh gist create`); `gh
+    gist edit`'s source file after the gist, else its `--add` file"""
+    positional, flags = _scan(args[1:], _GIST_FLAGS.long, _GIST_FLAGS.short)
+    if not positional:
+        return []
+    if positional[0] in ("create", "new"):
+        paths = positional[1:] or ["-"]
+    elif positional[0] == "edit":
+        added = [value for name, value in flags if name in ("-a", "--add")]
+        paths = positional[2:3] or added[-1:]
+    else:
         return []
     return [
-        Text("the file on stdin" if path == "-" else f"the file {path}", read("gist create", path))
-        for path in positional[1:]
+        Text("the file on stdin" if path == "-" else f"the file {path}", read(f"gist {positional[0]}", path))
+        for path in paths
     ]
 
 
