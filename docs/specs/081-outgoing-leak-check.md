@@ -213,4 +213,10 @@ Touched areas: `src/shipmill/leaks.py`, `src/shipmill/cli.py` (`leaks check`, `l
 
 ## Issues
 
+- shipmill/shipmill#1315: S-081-1, S-081-2, S-081-3, S-081-4, S-081-5, S-081-6, S-081-14, S-081-16
+- shipmill/shipmill#1316: S-081-7, S-081-8
+- shipmill/shipmill#1317: S-081-9, S-081-10, S-081-11
+- shipmill/shipmill#1318: S-081-12, S-081-13
+- shipmill/shipmill#1319: S-081-15, S-081-17
+
 ## Verification
