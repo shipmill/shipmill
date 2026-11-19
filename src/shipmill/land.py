@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from shipmill import fragments
+from shipmill import cli_command, fragments
 from shipmill.app import LAND_PERMISSIONS, Api, AuthFailure, Signer, mint
 from shipmill.environments import deployed_from
 from shipmill.errors import ReleaseError
@@ -320,11 +320,14 @@ def land(
     return Landed(version.tag, placed, synced, tuple(published), rollover)
 
 
-_WRITER = "shipmill gh"  # the command a failed milestone write names: as the App where it is set (D-14)
+def _writer() -> str:
+    """The command a failed milestone write names, as the App where it is set (D-14), in
+    cli_command()'s form, since the land job has no `shipmill` on PATH (#236)"""
+    return f"{cli_command()} gh"
 
 
 def _command(args: tuple[str, ...]) -> str:
-    return " ".join((_WRITER, *args))
+    return " ".join((_writer(), *args))
 
 
 def roll_milestone(github: GitHub, version: Version) -> Rollover:
@@ -339,7 +342,7 @@ def roll_milestone(github: GitHub, version: Version) -> Rollover:
     except ReleaseError as exc:
         return Rollover(
             failed=f"milestone {title}: reading the open milestones failed, so it was left as it is: {exc};"
-            " `shipmill milestones` names the milestone's fix once it reads"
+            f" `{cli_command()} milestones` names the milestone's fix once it reads"
         )
     own = next((m for m in found if m.title == title), None)
     if own is None:
@@ -359,7 +362,7 @@ def roll_milestone(github: GitHub, version: Version) -> Rollover:
         return Rollover(
             failed=f"milestone {title}: reading its issues failed, so none moved to {later.title} and it stays"
             f" open: {exc}; for each open issue N of {title} run"
-            f" {_WRITER} api -X PATCH repos/{{owner}}/{{repo}}/issues/N -F milestone={later.number}, then {close}"
+            f" {_writer()} api -X PATCH repos/{{owner}}/{{repo}}/issues/N -F milestone={later.number}, then {close}"
         )
     moved: list[int] = []
     for issue in listed.open:

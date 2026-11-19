@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from shipmill import cli_command
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
 from shipmill.github import MilestoneIssues, OpenIssue, OpenMilestone
@@ -23,6 +24,7 @@ from .test_milestone_status import read
 STABLE_TRIGGER = 'schedule = ["Mon 07:00 UTC"]\n'
 RC_RULE = '[lanes.rc]\nschedule = ["daily 07:00 UTC"]\n'
 CLOSING = "milestone = true\nclose_milestone = true\n"
+GH = f"{cli_command()} gh"  # #236: the hint names the CLI as a person can run it
 DAY = at_day(1).date()
 
 
@@ -175,7 +177,7 @@ def test_s068_6_a_failed_close_fails_land_after_the_release_naming_the_command(
     repo.github.open = [OpenMilestone(3, "1.1.0", 0)]
     code, out, err = failed_land(repo, capsys)
     assert code != 0
-    command = "shipmill gh api -X PATCH repos/{owner}/{repo}/milestones/3 -f state=closed"
+    command = f"{GH} api -X PATCH repos/{{owner}}/{{repo}}/milestones/3 -f state=closed"
     assert err.startswith("shipmill: v1.1.0 is released; milestone 1.1.0: closing it failed: ")
     assert "(HTTP 403)" in err and err.rstrip().endswith(f"run {command}")
     assert f"run {command}" in out  # the Release run's summary says it too
@@ -190,8 +192,8 @@ def test_s068_6_a_failed_move_names_the_move_and_the_close(
     code, _, err = failed_land(repo, capsys)
     assert code != 0
     assert "milestone 1.1.0: moving #12 to 1.2.0 failed, so 1.1.0 stays open" in err
-    assert "run shipmill gh api -X PATCH repos/{owner}/{repo}/issues/12 -F milestone=5" in err
-    assert err.rstrip().endswith("then shipmill gh api -X PATCH repos/{owner}/{repo}/milestones/3 -f state=closed")
+    assert f"run {GH} api -X PATCH repos/{{owner}}/{{repo}}/issues/12 -F milestone=5" in err
+    assert err.rstrip().endswith(f"then {GH} api -X PATCH repos/{{owner}}/{{repo}}/milestones/3 -f state=closed")
     assert repo.github.milestone_writes == [("#12", 5)]  # no close after a failed move
 
 
@@ -212,10 +214,9 @@ def test_s068_6_a_failed_read_fails_land_after_the_release(
     assert code != 0
     assert "milestone 1.1.0: reading its issues failed, so none moved to 1.2.0 and it stays open" in err
     assert (
-        "for each open issue N of 1.1.0 run shipmill gh api -X PATCH repos/{owner}/{repo}/issues/N -F milestone=5"
-        in err
+        f"for each open issue N of 1.1.0 run {GH} api -X PATCH repos/{{owner}}/{{repo}}/issues/N -F milestone=5" in err
     )
-    assert err.rstrip().endswith("then shipmill gh api -X PATCH repos/{owner}/{repo}/milestones/3 -f state=closed")
+    assert err.rstrip().endswith(f"then {GH} api -X PATCH repos/{{owner}}/{{repo}}/milestones/3 -f state=closed")
     assert repo.github.milestone_writes == []
 
 
