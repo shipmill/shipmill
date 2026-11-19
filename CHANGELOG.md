@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.148.2] - 2026-11-19
+
+### Security
+
+- `intake_state.py` reads a `Triage:` comment only from an OWNER, MEMBER, or COLLABORATOR or the `--bot-login` in its other readers too, so anyone else's `Triage: **feature**` no longer makes an accepted opportunity read HANDED_OFF, their `Triage: ... Serves: G-n` no longer marks a goal served and holds back its PLAN_DUE, and a decline reason skips only a trusted triage comment (#1384)
+
 ## [0.148.1] - 2026-11-19
 
 ### Fixed
@@ -2725,7 +2731,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.148.1...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.148.2...HEAD
+[0.148.2]: https://github.com/shipmill/shipmill/compare/v0.148.1...v0.148.2
 [0.148.1]: https://github.com/shipmill/shipmill/compare/v0.148.0...v0.148.1
 [0.148.0]: https://github.com/shipmill/shipmill/compare/v0.147.2...v0.148.0
 [0.147.2]: https://github.com/shipmill/shipmill/compare/v0.147.1...v0.147.2
