@@ -143,6 +143,8 @@ Triage: **won't fix**: it hits {N-n}, "{the non-goal's words}". {Why the request
 The direction is the maintainer's to change; if it changes, this can be reopened.
 ```
 
+In a component (`[product] home`), a request that hits a non-goal of the product, one `shipmill product show --section non-goals` prints under `## Product non-goals (<owner/home>)`, is **won't fix** too, citing it as `<owner/home> N-n` (spec 071): `Triage: **won't fix**: it hits <owner/home> N-n, "{the non-goal's words}".` The direction it names is the home's, the maintainer's to change. While `shipmill product show` exits 2 on the home's direction, post no verdict on new behaviour (triage-rubric.md, The direction).
+
 ## Clarify
 
 ```markdown
