@@ -75,7 +75,7 @@ Set aside every PR whose `isDraft` is true and whose author is a person: it is i
 - **Launch from the repo's root.** `isolation: "worktree"` makes a worktree of whatever repository the shell's cwd is in. Launched from a nested clone (a spec checkout under `tmp/`), six reviewers got worktrees of the spec repo, cloned the PR's repo inside them, and one reviewer's fix commits were deleted with its "unchanged" worktree when it finished. Check `git remote get-url origin` before the launch, and have each reviewer confirm it too
 - **Review a small docs-only PR inline:** read the diff, then check every claim it makes against the source (signatures, defaults, exit codes, link anchors). A reviewer agent costs more than it finds here. A docs-only PR needs no review record (hard rule 1).
 - **Record the reviewed head.** Each reviewer reports the head it reviewed. Once that head is the PR's (after the push of its fixes, if any), record its verdict on that head with `review record`, as [landing.md](references/landing.md#recording-the-review) shows: `pr_gate.py` reads an agent's code PR UNREVIEWED (exit 9) until a record covers the head it judges.
-- **Stacked PRs:** tell the reviewer the base PR and build the stack yourself, in order.
+- **Stacked PRs:** tell the reviewer the base PR and build the stack yourself, in order. The brief's `{base}` is the PR's `baseRefName`, the base PR's branch, which the reviewer rebases onto and reads the test proof against.
 
 ### 3. Verify each reviewer's report
 
