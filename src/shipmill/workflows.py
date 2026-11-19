@@ -99,11 +99,15 @@ def _display(value: str, job_id: str) -> str:
 class Step:
     """A step of a job (spec 080): its `run:` script, a block's lines without their indentation,
     or its `uses:` action, as written; and the `working-directory` its `run:` runs in, its own,
-    else the job's or the workflow's `defaults: run:` one (None: the repository's root)"""
+    else the job's or the workflow's `defaults: run:` one (None: the repository's root); whether
+    its `continue-on-error` may be true (any value but `false`), so its failure fails no job; and
+    the `shell` its `run:` runs in, found as the working directory is (None: the runner's default)"""
 
     run: str | None
     uses: str | None
     working_directory: str | None
+    continue_on_error: bool = False
+    shell: str | None = None
 
 
 _KEY = re.compile(r"^(?P<key>[\w-]+):(?:[ \t]+(?P<value>.*))?$")
@@ -187,35 +191,99 @@ def _block(under: list[str], folded: bool) -> str:
     return "\n".join(out)
 
 
-def _working_directory(keys: dict[str, tuple[str, list[str]]]) -> str | None:
-    """The `working-directory` of a mapping's `defaults: run:`; None without one"""
+def _run_default(keys: dict[str, tuple[str, list[str]]], key: str) -> str | None:
+    """A key of a mapping's `defaults: run:`, such as `working-directory`; None without one"""
     defaults = keys.get("defaults")
     run = _keys(defaults[1]).get("run") if defaults is not None else None
-    found = _keys(run[1]).get("working-directory") if run is not None else None
+    found = _keys(run[1]).get(key) if run is not None else None
     return _scalar(*found) if found is not None else None
+
+
+def _job_keys(text: str, job: Job) -> dict[str, tuple[str, list[str]]]:
+    return _keys(text.splitlines()[job.start : job.end - 1])
 
 
 def steps(text: str, job: Job) -> tuple[Step, ...]:
     """The steps of a workflow's job, in its order; none for a job without `steps:`, such as one
     that calls a reusable workflow"""
-    lines = text.splitlines()
-    keys = _keys(lines[job.start : job.end - 1])
+    keys = _job_keys(text, job)
     listed = keys.get("steps")
     if listed is None:
         return ()
-    default = _working_directory(keys) or _working_directory(_keys(lines))
+    top = _keys(text.splitlines())
+    where_default = _run_default(keys, "working-directory") or _run_default(top, "working-directory")
+    shell_default = _run_default(keys, "shell") or _run_default(top, "shell")
     found: list[Step] = []
     for item in _items(listed[1]):
         own = _keys(item)
         run, uses, where = own.get("run"), own.get("uses"), own.get("working-directory")
+        shell, continues = own.get("shell"), own.get("continue-on-error")
         found.append(
             Step(
                 _scalar(*run) if run is not None else None,
                 _scalar(*uses) if uses is not None else None,
-                _scalar(*where) if where is not None else default,
+                _scalar(*where) if where is not None else where_default,
+                continues is not None and _scalar(*continues) != "false",
+                _scalar(*shell) if shell is not None else shell_default,
             )
         )
     return tuple(found)
+
+
+def reported_name(text: str, job: Job) -> str | None:
+    """The name a job's check reports by (spec 080): its `name:` value, a quoted one unquoted,
+    else its id; None for a name holding an expression, which only a run fills in"""
+    named = _job_keys(text, job).get("name")
+    if named is None:
+        return job.id
+    value = _scalar(*named)
+    return None if not value or _EXPRESSION in value else value
+
+
+def has_matrix(text: str, job: Job) -> bool:
+    """Whether the job has a `strategy:` with a `matrix:`, so its runs report `<name> (<values>)`"""
+    strategy = _job_keys(text, job).get("strategy")
+    return strategy is not None and "matrix" in _keys(strategy[1])
+
+
+def calls(text: str, job: Job) -> str | None:
+    """The workflow a job calls with its `uses:` key, as written; None for a job of steps"""
+    uses = _job_keys(text, job).get("uses")
+    return _scalar(*uses) if uses is not None else None
+
+
+_ON = re.compile(r"""^(?:on|'on'|"on"):(?:[ \t]+(?P<value>.*))?$""")
+
+
+def events(text: str) -> frozenset[str]:
+    """The events a workflow's top-level `on:` names: a single one, a flow list, a block list, or
+    a mapping's keys; none without the key"""
+    lines = text.splitlines()
+    for number, line in enumerate(lines):
+        found = _ON.match(line)
+        if found is None:
+            continue
+        value = _COMMENT.sub("", found["value"] or "").strip()
+        if value:
+            return frozenset(w.strip(" \t'\"") for w in value.strip("[]").split(",") if w.strip(" \t'\""))
+        under: list[str] = []
+        for following in lines[number + 1 :]:
+            if _TOP.match(following):
+                break
+            under.append(following)
+        held = _content(under)
+        indent = _indent(held[0]) if held else 0
+        names: set[str] = set()
+        for item in held:
+            if _indent(item) != indent:
+                continue
+            entry = item[indent:]
+            if entry.startswith("-"):
+                names.add(_COMMENT.sub("", entry[1:]).strip().strip("'\""))
+            elif (key := _KEY.match(entry)) is not None:
+                names.add(key["key"])
+        return frozenset(names)
+    return frozenset()
 
 
 def _items(lines: list[str]) -> list[list[str]]:

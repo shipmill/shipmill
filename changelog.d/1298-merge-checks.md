@@ -1,0 +1,3 @@
+### Added
+
+- `shipmill merge-checks [--land observe|propose|act] [--json]` prints the status checks a merge to the default branch waits for, from its rulesets (by name) and classic protection, each matched to the pull-request workflow jobs that report it and with what their commands prove (tests, type check, lint, import boundaries, or only a build); under `land = "act"` its last line warns when no check is required or none that is required proves anything, naming the unrequired jobs that would, and a rules or protection read that fails is a warning at every level; a step under `continue-on-error` or in a shell other than bash or sh proves nothing (spec 080) (#1298)

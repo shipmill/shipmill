@@ -1,11 +1,31 @@
 import json
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from shipmill.autonomy import Autonomy
+from shipmill.cli import main
 from shipmill.errors import ReleaseError
-from shipmill.merge_checks import Command, Kind, Reading, classify, coverage, parts, read
-from shipmill.workflows import Step, jobs, steps
+from shipmill.landing import Classic, RulesReader, Unreadable
+from shipmill.merge_checks import (
+    Command,
+    Kind,
+    Reading,
+    Report,
+    Required,
+    classify,
+    coverage,
+    parts,
+    read,
+    report,
+    required_contexts,
+)
+from shipmill.workflows import Step, events, jobs, steps
+
+from .conftest import POLICY, FakeGitHub, Repo
 
 ROOT = Path(__file__).parent.parent
 
@@ -330,3 +350,433 @@ def test_s080_7_this_repos_ci_check_proves() -> None:
         c.text for c in reading.commands if c.kind is Kind.UNKNOWN
     }
     assert reading.actions[:2] == ("actions/checkout", "astral-sh/setup-uv")
+
+
+# --- The reading of what gates a merge (S-080-1, 2, 8 to 14, 16) ---------------------------------
+
+
+@dataclass
+class FakeRules:
+    """A RulesReader over fixed answers, recording each read; a ReleaseError value is raised"""
+
+    rules: list[dict[str, Any]] | ReleaseError = field(default_factory=list)
+    sets: dict[int, dict[str, Any]] = field(default_factory=dict)
+    classic: Classic | ReleaseError = field(default_factory=lambda: Classic(True, None))
+    reads: list[str] = field(default_factory=list)
+
+    def branch_rules(self, repo: str, branch: str) -> Sequence[Mapping[str, Any]]:
+        self.reads.append(f"rules {repo} {branch}")
+        if isinstance(self.rules, ReleaseError):
+            raise self.rules
+        return self.rules
+
+    def ruleset(self, repo: str, ruleset_id: int) -> Mapping[str, Any]:
+        self.reads.append(f"ruleset {ruleset_id}")
+        return self.sets[ruleset_id]
+
+    def rulesets(self, repo: str) -> Sequence[Mapping[str, Any]]:
+        raise AssertionError("merge-checks reads no ruleset list")
+
+    def protection(self, repo: str, branch: str) -> Classic:
+        self.reads.append(f"protection {branch}")
+        if isinstance(self.classic, ReleaseError):
+            raise self.classic
+        return self.classic
+
+
+def checks_rule(ruleset_id: int, *contexts: str) -> dict[str, Any]:
+    return {
+        "type": "required_status_checks",
+        "ruleset_id": ruleset_id,
+        "parameters": {"required_status_checks": [{"context": c} for c in contexts]},
+    }
+
+
+def classic(contexts: Sequence[str] = (), checks: Sequence[str] = ()) -> Classic:
+    status = {"contexts": list(contexts), "checks": [{"context": c, "app_id": 15368} for c in checks]}
+    return Classic(True, {"required_status_checks": status})
+
+
+SLUG = "o/demo"
+CI = """\
+name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+jobs:
+  checks:
+    name: "Checks"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: uv run pytest -q && uv run mypy
+  test:
+    strategy:
+      matrix:
+        python: ["3.13", "3.14"]
+    steps:
+      - run: uv run --python ${{ matrix.python }} pytest
+  build:
+    steps:
+      - run: uv build
+  named:
+    name: lint ${{ matrix.os }}
+    steps:
+      - run: uv run ruff check .
+  call:
+    uses: ./.github/workflows/reusable.yml
+  remote:
+    uses: o/other/.github/workflows/ci.yml@v1
+"""
+REUSABLE = """\
+on: workflow_call
+jobs:
+  lint:
+    name: Lint
+    steps:
+      - run: npx eslint .
+"""
+PUSH_ONLY = """\
+on: [push]
+jobs:
+  deploy:
+    steps:
+      - run: pytest
+"""
+
+
+def _workflows(root: Path, **files: str) -> None:
+    folder = root / ".github" / "workflows"
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        (folder / f"{name}.yml").write_text(text, encoding="utf-8")
+
+
+def _report(root: Path, reader: FakeRules | None, land: Autonomy = Autonomy.ACT, repo: str | None = SLUG) -> Report:
+    return report(root, repo, "main", land, reader)
+
+
+def test_s080_1_required_contexts_name_their_rulesets_and_classic_protection() -> None:
+    # proves: S-080-1
+    reader = FakeRules(
+        rules=[checks_rule(7, "checks", "both"), {"type": "deletion", "ruleset_id": 8}, checks_rule(9, "org")],
+        sets={7: {"name": "main"}, 9: {"name": "org rules"}},
+        classic=classic(contexts=["both", "classic"], checks=["app check"]),
+    )
+    found = required_contexts(reader, SLUG, "main")
+    assert found.unread == ()
+    assert found.required == (
+        Required("checks", ('ruleset "main"',)),
+        Required("both", ('ruleset "main"', "classic protection")),
+        Required("org", ('ruleset "org rules"',)),
+        Required("classic", ("classic protection",)),
+        Required("app check", ("classic protection",)),
+    )
+    assert reader.reads.count("ruleset 7") == 1  # each ruleset's name read once
+    assert "ruleset 8" not in reader.reads  # a ruleset with no status check rule isn't read
+
+
+def test_s080_1_the_command_lists_a_context_once_with_both_sources(tmp_path: Path) -> None:
+    # proves: S-080-1
+    _workflows(tmp_path, ci=CI)
+    reader = FakeRules(rules=[checks_rule(7, "Checks")], sets={7: {"name": "main"}}, classic=classic(["Checks"]))
+    lines = _report(tmp_path, reader).lines()
+    assert lines[0] == (
+        "PASS",
+        '`Checks` (ruleset "main", classic protection): ci.yml job Checks: tests (uv run pytest -q), type check'
+        " (uv run mypy); actions not read: actions/checkout",
+    )
+    assert len(lines) == 2
+
+
+def test_s080_2_contexts_match_jobs_by_name_matrix_and_local_reusable_workflow(tmp_path: Path) -> None:
+    # proves: S-080-2
+    _workflows(tmp_path, ci=CI, reusable=REUSABLE, push=PUSH_ONLY)
+    contexts = ["Checks", "test (3.14)", "build", "call / Lint", "deploy", "lint ubuntu", "remote / x", "test"]
+    reader = FakeRules(rules=[checks_rule(1, *contexts)], sets={1: {"name": "main"}})
+    found = _report(tmp_path, reader)
+    matched = {c.required.context: [str(j) for j in c.jobs] for c in found.checks}
+    assert matched == {
+        "Checks": ["ci.yml job Checks"],
+        "test (3.14)": ["ci.yml job test"],
+        "build": ["ci.yml job build"],
+        "call / Lint": ["reusable.yml job call / Lint"],
+        "deploy": [],  # its workflow runs on push alone
+        "lint ubuntu": [],  # a name holding an expression
+        "remote / x": [],  # a remote reusable workflow
+        "test": [],  # a matrix job reports `test (<values>)`
+    }
+    unknown = [line for _, line in found.lines() if line.startswith("`deploy`")]
+    assert unknown == [
+        '`deploy` (ruleset "main"): unknown: no job in .github/workflows reports it by a name its text tells'
+    ]
+    assert {c.required.context: str(c.coverage) for c in found.checks}["call / Lint"] == "lint"
+
+
+@pytest.mark.parametrize(
+    ("on", "names"),
+    [
+        ("on: pull_request", {"pull_request"}),
+        ("on: [push, pull_request_target]  # both", {"push", "pull_request_target"}),
+        ("on:\n  - push\n  - merge_group", {"push", "merge_group"}),
+        ("'on':\n  pull_request:\n    types: [opened]\n  push:", {"pull_request", "push"}),
+        ("name: x", set()),
+    ],
+)
+def test_s080_2_the_events_a_workflow_runs_on(on: str, names: set[str]) -> None:
+    # proves: S-080-2
+    assert events(f"{on}\njobs:\n  a:\n    steps: []\n") == frozenset(names)
+
+
+def test_s080_2_merge_group_workflows_report(tmp_path: Path) -> None:
+    # proves: S-080-2
+    _workflows(tmp_path, queue="on: merge_group\njobs:\n  q:\n    steps:\n      - run: pytest\n")
+    reader = FakeRules(rules=[checks_rule(1, "q")], sets={1: {"name": "main"}})
+    (check,) = _report(tmp_path, reader).checks
+    assert [str(j) for j in check.jobs] == ["queue.yml job q"]
+
+
+def test_s080_8_act_warns_when_no_check_is_required(tmp_path: Path) -> None:
+    # proves: S-080-8
+    _workflows(tmp_path, ci=CI, reusable=REUSABLE)
+    assert _report(tmp_path, FakeRules()).lines() == [
+        (
+            "WARN",
+            "no status check is required on main, so a pull request can merge on whichever checks reported: require"
+            ' one that runs tests, a type check, or a lint, or set [autonomy] land = "propose"; these jobs run on'
+            " pull requests and prove something: ci.yml job Checks (tests, type check), ci.yml job test (tests),"
+            " reusable.yml job call / Lint (lint)",
+        )
+    ]
+
+
+def test_s080_8_act_warns_when_no_required_check_proves(tmp_path: Path) -> None:
+    # proves: S-080-8
+    _workflows(tmp_path, ci=CI)
+    reader = FakeRules(rules=[checks_rule(1, "build", "codecov")], sets={1: {"name": "main"}})
+    status, detail = _report(tmp_path, reader).lines()[-1]
+    assert status == "WARN"
+    assert detail == (
+        "main requires 2 checks and none runs tests, a type check, a lint, or an import-boundary check (`build` build"
+        " only, `codecov` unknown): require one that runs tests, a type check, or a lint, or set [autonomy] land ="
+        ' "propose"; these jobs run on pull requests and prove something: ci.yml job Checks (tests, type check),'
+        " ci.yml job test (tests)"
+    )
+
+
+def test_s080_8_act_passes_when_a_required_check_proves(tmp_path: Path) -> None:
+    # proves: S-080-8
+    _workflows(tmp_path, ci=CI)
+    reader = FakeRules(rules=[checks_rule(1, "build", "Checks")], sets={1: {"name": "main"}})
+    assert _report(tmp_path, reader).lines()[-1] == (
+        "PASS",
+        "main requires 2 checks; 1 proves (tests, type check); land is act",
+    )
+
+
+@pytest.mark.parametrize("land", [Autonomy.OBSERVE, Autonomy.PROPOSE])
+def test_s080_9_observe_and_propose_pass_on_the_same_reading(tmp_path: Path, land: Autonomy) -> None:
+    # proves: S-080-9
+    _workflows(tmp_path, ci=CI)
+    assert _report(tmp_path, FakeRules(), land).lines() == [("PASS", f"main requires no status check; land is {land}")]
+    reader = FakeRules(rules=[checks_rule(1, "build")], sets={1: {"name": "main"}})
+    assert _report(tmp_path, reader, land).lines()[-1] == (
+        "PASS",
+        f"main requires 1 check; none proves (`build` build only); land is {land}",
+    )
+
+
+def test_s080_12_a_checks_line_names_at_most_5_commands_per_kind(tmp_path: Path) -> None:
+    # proves: S-080-12
+    lints = " && ".join(f"ruff check d{n}" for n in range(7))
+    unknowns = " && ".join(f"make t{n}" for n in range(6))
+    _workflows(tmp_path, ci=f"on: pull_request\njobs:\n  c:\n    steps:\n      - run: {lints} && {unknowns}\n")
+    reader = FakeRules(rules=[checks_rule(1, "c")], sets={1: {"name": "main"}})
+    line = _report(tmp_path, reader).lines()[0][1]
+    assert line == (
+        '`c` (ruleset "main"): ci.yml job c: lint (ruff check d0, ruff check d1, ruff check d2, ruff check d3, ruff'
+        " check d4, and 2 more); unknown: make t0, make t1, make t2, make t3, make t4, and 1 more"
+    )
+
+
+@pytest.mark.parametrize("land", list(Autonomy))
+def test_s080_13_a_read_that_fails_warns_at_every_level_and_keeps_the_rest(tmp_path: Path, land: Autonomy) -> None:
+    # proves: S-080-13
+    _workflows(tmp_path, ci=CI)
+    reader = FakeRules(
+        rules=[checks_rule(1, "Checks")],
+        sets={1: {"name": "main"}},
+        classic=Unreadable("GET repos/o/demo/branches/main/protection answered 404: Not Found"),
+    )
+    lines = _report(tmp_path, reader, land).lines()
+    assert lines[0][1].startswith('`Checks` (ruleset "main"): ci.yml job Checks: tests')
+    assert lines[-1] == (
+        "WARN",
+        "can't read main's classic protection: GET repos/o/demo/branches/main/protection answered 404: Not Found;"
+        f" the checks stay unjudged; main requires 1 check; 1 proves (tests, type check); land is {land}",
+    )
+    forbidden = FakeRules(rules=Unreadable("GET repos/o/demo/rules/branches/main answered 403: Forbidden"))
+    status, detail = _report(tmp_path, forbidden, land).lines()[-1]
+    assert status == "WARN"
+    assert detail.startswith("can't read main's rulesets: GET repos/o/demo/rules/branches/main answered 403")
+
+
+@pytest.mark.parametrize(
+    ("reader", "repo", "said"),
+    [
+        (None, SLUG, "can't read the required checks: gh isn't installed"),
+        (FakeRules(), None, "can't read the required checks: this checkout's origin isn't a GitHub repository"),
+    ],
+)
+def test_s080_13_no_gh_or_no_github_origin_warns(
+    tmp_path: Path, reader: FakeRules | None, repo: str | None, said: str
+) -> None:
+    # proves: S-080-13
+    for land in Autonomy:
+        assert _report(tmp_path, reader, land, repo).lines() == [
+            ("WARN", f"{said}; the checks stay unjudged; main requires no status check; land is {land}")
+        ]
+    assert reader is None or reader.reads == []
+
+
+def test_s080_6_steps_that_fail_no_job_give_their_parts_no_kind(tmp_path: Path) -> None:
+    # a failing part fails no job under continue-on-error, or in a shell other than bash or sh
+    text = """\
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  t:
+    steps:
+      - run: pytest
+        continue-on-error: true
+      - run: pytest -x
+        continue-on-error: ${{ matrix.experimental }}
+      - run: mypy
+      - run: ruff check
+        shell: bash
+      - run: pyright
+        shell: sh -e {0}
+      - run: eslint .
+        continue-on-error: false
+        shell: bash
+"""
+    assert _kinds(text, tmp_path) == {
+        "pytest": Kind.UNKNOWN,
+        "pytest -x": Kind.UNKNOWN,
+        "mypy": Kind.UNKNOWN,  # the workflow's default shell is pwsh
+        "ruff check": Kind.LINT,
+        "pyright": Kind.TYPE_CHECK,
+        "eslint .": Kind.LINT,
+    }
+
+
+# --- The command ---------------------------------------------------------------------------------
+
+
+def _github_origin(repo: Repo) -> None:
+    repo.git.run("remote", "set-url", "origin", f"https://github.com/{SLUG}.git")
+
+
+def _commit_ci(repo: Repo, config: str | None = None) -> None:
+    repo.write(".github/workflows/ci.yml", CI)
+    if config is not None:
+        repo.write(repo.policy_file, config)
+    repo.git.run("add", "-A")
+    repo.git.run("commit", "-qm", "ci")
+
+
+def _run(repo: Repo, *argv: str, reader: FakeRules, github: FakeGitHub | None = None) -> int:
+    return main(["merge-checks", "--repo", str(repo.root), *argv], github=github, rules_reader=reader)
+
+
+def test_s080_10_without_land_the_configured_level_counts_even_under_a_hold(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # proves: S-080-10
+    _github_origin(repo)
+    _commit_ci(repo, POLICY + '\n[autonomy]\nland = "act"\n')
+    held = FakeGitHub()
+    held.holds = ["88 hold everything"]
+    assert _run(repo, reader=FakeRules(), github=held) == 0
+    assert capsys.readouterr().out.startswith("WARN merge-checks: no status check is required on main")
+    assert held.labels_read == []  # the hold isn't read
+    _commit_ci(repo, POLICY)
+    assert _run(repo, reader=FakeRules()) == 0
+    assert capsys.readouterr().out == "PASS merge-checks: main requires no status check; land is propose\n"
+
+
+def test_s080_9_the_configured_observe_passes_without_land(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
+    # proves: S-080-9
+    _github_origin(repo)
+    _commit_ci(repo, POLICY + '\n[autonomy]\nland = "observe"\n')
+    assert _run(repo, reader=FakeRules()) == 0
+    assert capsys.readouterr().out == "PASS merge-checks: main requires no status check; land is observe\n"
+
+
+def test_s080_11_json_prints_one_object(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
+    # proves: S-080-11
+    _github_origin(repo)
+    _commit_ci(repo)
+    reader = FakeRules(rules=[checks_rule(1, "Checks", "codecov")], sets={1: {"name": "main"}})
+    assert _run(repo, "--land", "act", "--json", reader=reader) == 0
+    record = json.loads(capsys.readouterr().out)
+    assert set(record) >= {"branch", "land", "status", "summary", "required", "unrequired"}
+    assert (record["branch"], record["land"], record["status"]) == ("main", "act", "PASS")
+    assert record["summary"] == "main requires 2 checks; 1 proves (tests, type check); land is act"
+    checks, codecov = record["required"]
+    assert checks["context"] == "Checks"
+    assert checks["sources"] == ['ruleset "main"']
+    assert checks["kinds"] == ["tests", "type check"]
+    (job,) = checks["jobs"]
+    assert (job["workflow"], job["job"]) == ("ci.yml", "Checks")
+    assert job["commands"] == [
+        {"text": "uv run pytest -q", "kind": "tests"},
+        {"text": "uv run mypy", "kind": "type check"},
+    ]
+    assert (codecov["jobs"], codecov["kinds"], codecov["reads"]) == ([], [], "unknown")
+    assert record["unrequired"] == [{"workflow": "ci.yml", "job": "test", "kinds": ["tests"]}]
+
+
+def test_s080_13_the_command_exits_0_on_a_read_that_fails(repo: Repo, capsys: pytest.CaptureFixture[str]) -> None:
+    # proves: S-080-13
+    _commit_ci(repo)  # the fixture's origin is a local path, not a GitHub repository
+    assert _run(repo, "--land", "act", reader=FakeRules()) == 0
+    assert capsys.readouterr().out == (
+        "WARN merge-checks: can't read the required checks: this checkout's origin isn't a GitHub repository; the"
+        " checks stay unjudged; main requires no status check; land is act\n"
+    )
+
+
+def test_s080_14_a_land_that_isnt_a_level_exits_2_naming_the_levels(repo: Repo) -> None:
+    # proves: S-080-14
+    with pytest.raises(ReleaseError, match="--land 'merge' isn't a level: use one of observe, propose, act"):
+        _run(repo, "--land", "merge", reader=FakeRules())
+
+
+def test_s080_14_runs_without_agents_and_exits_2_on_a_config_that_doesnt_load(
+    repo: Repo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # proves: S-080-14
+    _github_origin(repo)
+    _commit_ci(repo)
+    assert "[agents]" not in repo.read(repo.policy_file)
+    assert _run(repo, "--land", "propose", reader=FakeRules()) == 0
+    assert capsys.readouterr().out.startswith("PASS merge-checks:")
+    repo.write(repo.policy_file, POLICY + "\n[autonomy]\nland = 3\n")
+    with pytest.raises(ReleaseError):
+        _run(repo, reader=FakeRules())
+
+
+def test_s080_16_the_reader_only_reads_and_a_run_writes_no_file(repo: Repo) -> None:
+    # proves: S-080-16
+    methods = {name for name in vars(RulesReader) if not name.startswith("_")}
+    assert methods == {"branch_rules", "ruleset", "rulesets", "protection"}  # each a GET
+    _github_origin(repo)
+    _commit_ci(repo)
+    reader = FakeRules(rules=[checks_rule(1, "Checks")], sets={1: {"name": "main"}})
+    assert _run(repo, "--land", "act", reader=reader) == 0
+    assert _run(repo, "--json", reader=reader) == 0
+    assert repo.git.run("status", "--porcelain", "--ignored") == ""
+    assert reader.reads == ["rules o/demo main", "ruleset 1", "protection main"] * 2
