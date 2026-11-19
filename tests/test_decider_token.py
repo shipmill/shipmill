@@ -164,6 +164,18 @@ class EnvRunner:
         return env["GH_TOKEN"]
 
 
+@dataclass
+class SubIssueReads:
+    """gh's reads: an issue's open sub-issues (#1313) read as none; any other read exits 7, as
+    FAKE_GH does. Records each argv and env"""
+
+    calls: list[tuple[list[str], dict[str, str]]] = field(default_factory=list)
+
+    def __call__(self, argv: Sequence[str], env: Mapping[str, str]) -> tuple[int, str]:
+        self.calls.append((list(argv), dict(env)))
+        return (0, "") if any(a.endswith("/sub_issues") for a in argv) else (7, "")
+
+
 def gh(
     repo: Repo,
     tmp_path: Path,
@@ -813,9 +825,11 @@ def test_s051_12_every_other_command_runs_with_the_apps_installation_token(
 ) -> None:
     key = connected(repo, tmp_path, ASSISTED)
     store(tmp_path)  # a token is stored, and still not used
-    api, runner = UserApi(), EnvRunner(capsys)
-    assert gh(repo, tmp_path, key, args, runner, api=api) == 0  # the credit reader raises when called
+    api, runner, reads = UserApi(), EnvRunner(capsys), SubIssueReads()
+    assert gh(repo, tmp_path, key, args, runner, api=api, capture=reads) == 0  # the credit reader raises when called
     assert runner.token == APP_TOKEN
+    assert all(env["GH_TOKEN"] == APP_TOKEN for _, env in reads.calls)  # #1313's sub-issue read too
+    assert any(a.endswith("/sub_issues") for argv, _ in reads.calls for a in argv) == (args[:2] == ["issue", "close"])
     assert runner.stderr == [""]
     assert not any(path == "/user" for path, _ in api.calls)
 
