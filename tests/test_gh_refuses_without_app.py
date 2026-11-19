@@ -349,7 +349,7 @@ def test_s037_7_any_other_identity_exits_2_naming_the_key_and_both_values(
         with pytest.raises(ReleaseError) as raised:
             load()
         message = str(raised.value)
-        assert '[agents] identity must be "app" (the default) or "host"' in message
+        assert '[agents] identity must be "app" (the default), "host", or "none"' in message
     assert runner.calls == []
 
 
