@@ -57,6 +57,8 @@ NAMED = re.compile(r"#([1-9][0-9]*)\b")  # a pull request a revert's title names
 # the mention and label a needs-decision question or a decided comment opens with (needs-decision.md)
 OPENING = re.compile(r"^(?:`?@[\w-]+(?:\[bot\])?`?[,:]?\s+)*(?:(?:Decision needed|Decided without waiting):\s*)?")
 SENTENCE = re.compile(r"^.*?[.?!](?=\s|$)")
+LABEL = re.compile(r"(?:Decision needed|Decided without waiting):")
+HIDDEN_LINE = re.compile(r"<!--.*?-->")  # a zone, relay-refused, or head line
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,10 +444,13 @@ def _commenter(comment: IssueComment) -> Author:
 
 
 def _sentence(body: str) -> str:
-    """The first sentence of a question or a decided comment, past its marker line and the
-    mention and label it opens with (needs-decision.md)"""
-    lines = body.strip().split("\n", 1)
-    text = OPENING.sub("", " ".join((lines[1] if len(lines) > 1 else "").split()))
+    """The first sentence of a question or a decided comment, past its marker line, the hidden
+    lines under it (a zone or relay-refused line), anything before the line carrying its
+    label (a `Relay not counted:` line), and the mention and label it opens with
+    (needs-decision.md)"""
+    lines = [line for line in body.strip().splitlines()[1:] if not HIDDEN_LINE.fullmatch(line.strip())]
+    start = next((i for i, line in enumerate(lines) if LABEL.search(line)), 0)
+    text = OPENING.sub("", " ".join(" ".join(lines[start:]).split()))
     found = SENTENCE.match(text)
     return text if found is None else found.group(0)
 
@@ -525,9 +530,11 @@ def settled(
 
 def _path_pattern(path: str, directory: bool) -> re.Pattern[str]:
     """A path named in text as a whole path, not part of a longer one; a directory with or
-    without its trailing slash, not a path inside it"""
+    without its trailing slash, not a path inside it. A top-level directory needs its slash:
+    bare, `tests` or `docs` is a word of prose, not a path"""
     if directory:
-        return re.compile(rf"(?<![\w./-]){re.escape(path)}/?(?![\w/-]|\.\w)")
+        slash = "/?" if "/" in path else "/"
+        return re.compile(rf"(?<![\w./-]){re.escape(path)}{slash}(?![\w/-]|\.\w)")
     return re.compile(rf"(?<![\w./-]){re.escape(path)}(?![\w/-]|\.\w)")
 
 

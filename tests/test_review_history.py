@@ -259,6 +259,27 @@ def test_s073_2_a_question_answered_by_a_collaborator_is_a_settled_decision(
     assert "outsider" not in text and "agent writing" not in text
 
 
+def test_s073_2_the_question_sentence_skips_the_zone_and_relay_refused_lines(
+    checkout: Checkout, capsys: pytest.CaptureFixture[str]
+) -> None:
+    checkout.commit("Drop the cache (#31)", ago(10), **{"a.py": "2\n"})
+    checkout.publish()
+    with_app(checkout)
+    asked = (
+        "<!-- shipmill:needs-decision -->\n<!-- shipmill:zone contract-change -->\n"
+        "<!-- shipmill:relay-refused format -->\nRelay not counted: format\n"
+        "@romamo Decision needed: Keep the cache or drop it?\nCI on abc1234: 5 checks green\n"
+    )
+    comments = (said(APP, asked, 14), said(COLLABORATOR, "Keep it.", 12))
+    reads = FakeReads(
+        merged={31: PullText(31, "Drop the cache", "", True, MEMBER, comments)}, apps={"shipmill-acme": 7}
+    )
+
+    (item,) = as_json(checkout, reads, capsys=capsys)["settled_decisions"]
+
+    assert item["question"] == "Keep the cache or drop it?"
+
+
 def test_s073_2_a_reply_by_an_outsider_or_with_the_agent_marker_is_no_answer(
     checkout: Checkout, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -346,6 +367,23 @@ def test_s073_3_incident_issues_naming_a_touched_file_or_its_directory_are_liste
     assert items[0]["title"] == UNTRUSTED and items[1]["title"] == "Incident 5"
     assert reads.labels == ["incident", "incident"]  # the default, with no config file
     assert "- H-2 incident #5 Incident 5 (open, " in text and "@alice); names src/app/a.py" in text
+
+
+def test_s073_3_a_top_level_directory_counts_only_with_its_slash(
+    checkout: Checkout, capsys: pytest.CaptureFixture[str]
+) -> None:
+    checkout.publish()
+    reads = FakeReads(
+        touched_files={PULL: ("tests/test_a.py",)},
+        incident_issues=(
+            incident(5, "The tests were green but the deploy failed.", 3),
+            incident(6, "Everything under tests/ is flaky.", 2),
+        ),
+    )
+
+    items = as_json(checkout, reads, capsys=capsys)["incidents"]
+
+    assert [(i["issue"], i["files"]) for i in items] == [(6, ["tests/"])]
 
 
 def test_s073_3_the_configured_incident_label_is_read(checkout: Checkout, capsys: pytest.CaptureFixture[str]) -> None:
