@@ -158,8 +158,10 @@ class Config:
     default_branch: bool = True  # [hooks] default_branch
     private: tuple[str, ...] = ()  # [hooks] private
     uv_run: tuple[str, ...] = ()  # [hooks] uv_run: programs a gate session's uv run may start besides the built-in
+    merge: str = "squash"  # [agents] merge: the method a pull request lands with, squash without the key (D-96)
 
 
+MERGE_METHODS = ("squash", "merge")  # [agents] merge's values, as shipmill's AgentsConfig reads them (spec 072)
 HOOKS_KEYS = frozenset({"default_branch", "private", "uv_run"})
 
 
@@ -178,6 +180,9 @@ def parse_config(text: str) -> Config | None:
     app_id = agents.get("app_id")
     if app_id is not None and (not isinstance(app_id, int) or isinstance(app_id, bool) or app_id < 1):
         raise ConfigError(f"[agents] app_id must be an integer of 1 or more, got {app_id!r}")
+    merge = agents.get("merge", "squash")
+    if not isinstance(merge, str) or merge not in MERGE_METHODS:
+        raise ConfigError(f'[agents] merge must be "squash" or "merge", got {merge!r}')
     hooks = data.get("hooks", {})
     if not isinstance(hooks, dict):
         raise ConfigError("[hooks] is not a table")
@@ -193,7 +198,7 @@ def parse_config(text: str) -> Config | None:
     uv_run = hooks.get("uv_run", [])
     if not isinstance(uv_run, list) or not all(isinstance(name, str) and name for name in uv_run):
         raise ConfigError(f"[hooks] uv_run must be a list of program names, got {uv_run!r}")
-    return Config(app_id, default_branch, tuple(private), tuple(uv_run))
+    return Config(app_id, default_branch, tuple(private), tuple(uv_run), merge)
 
 
 @dataclass(frozen=True)
@@ -727,20 +732,22 @@ MERGE_VALUE_OPTIONS = frozenset(
 MERGE_VALUE_SHORTS = "bFtAR"
 
 
-def _merge_squash(args: Sequence[str]) -> list[str] | None:
-    """gh pr merge's arguments with --squash for --rebase or -r; None when it doesn't rebase"""
+def _merge_swap(args: Sequence[str], method: str, to: str) -> list[str] | None:
+    """gh pr merge's arguments with --<to> for --<method> or its letter (-r, -s), bundled or
+    not (as in -dr); None when no word names method"""
+    letter = method[0]
     out: list[str] = []
-    rebase = False
+    named = False
     i = 0
     while i < len(args):
         word = args[i]
-        if word in ("--rebase", "--rebase=true"):
-            rebase = True
+        if word in (f"--{method}", f"--{method}=true"):
+            named = True
         elif re.fullmatch(r"-[A-Za-z]+", word):  # -r, or bundled as in -dr
             letters = word[1:]
             cut = next((k for k, ch in enumerate(letters) if ch in MERGE_VALUE_SHORTS), len(letters))
-            rebase = rebase or "r" in letters[:cut]
-            kept = letters[:cut].replace("r", "") + letters[cut:]
+            named = named or letter in letters[:cut]
+            kept = letters[:cut].replace(letter, "") + letters[cut:]
             if kept:
                 out.append(f"-{kept}")
             if cut == len(letters) - 1:  # a value option last: its value is the next word
@@ -752,31 +759,51 @@ def _merge_squash(args: Sequence[str]) -> list[str] | None:
         else:
             out.append(word)
         i += 1
-    return [*out, "--squash"] if rebase else None
+    return [*out, f"--{to}"] if named else None
 
 
-def _rebase_guards(cmd: Simple) -> bool:
-    call = gh_call(cmd)
-    if call is None:
-        return False
-    args = call.args(cmd)
-    return gh_command(args) == ("pr", "merge") or (
-        gh_command(args)[0] == "api" and any("merge_method=rebase" in word for word in args)
-    )
+def _merge_guards(method: str) -> Callable[[Simple], bool]:
+    """A rule judging every gh pr merge, and a gh api call whose merge_method is method"""
+
+    def guards(cmd: Simple) -> bool:
+        call = gh_call(cmd)
+        if call is None:
+            return False
+        args = call.args(cmd)
+        return gh_command(args) == ("pr", "merge") or (
+            gh_command(args)[0] == "api" and any(f"merge_method={method}" in word for word in args)
+        )
+
+    return guards
 
 
-def _rebase_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
+def _method_swapped(cmd: Simple, method: str, to: str) -> Simple | None:
+    """The command with method swapped for to: gh pr merge's flag, or a gh api call's
+    merge_method; None when it names no method"""
     call = gh_call(cmd)
     if call is None:
         return None
     args = call.args(cmd)
     group, sub = gh_command(args)
     if (group, sub) == ("pr", "merge"):
-        squash = _merge_squash(args)
-        return None if squash is None else _with_args(cmd, call, squash)
-    if group == "api" and any("merge_method=rebase" in word for word in args):
-        return _with_args(cmd, call, [word.replace("merge_method=rebase", "merge_method=squash") for word in args])
+        swapped = _merge_swap(args, method, to)
+        return None if swapped is None else _with_args(cmd, call, swapped)
+    field = f"merge_method={method}"
+    if group == "api" and any(field in word for word in args):
+        return _with_args(cmd, call, [word.replace(field, f"merge_method={to}") for word in args])
     return None
+
+
+def _rebase_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
+    """No rebase merge (D-96); instead, the method [agents] merge names"""
+    return _method_swapped(cmd, "rebase", config.merge)
+
+
+def _method_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
+    """Spec 072: under [agents] merge = "merge", a squash merge; instead, a merge commit. Under
+    "squash", or no key, both methods pass: --merge is how a stack's base lands, which the hook
+    can't tell from another pull request (S-026-10)"""
+    return _method_swapped(cmd, "squash", "merge") if config.merge == "merge" else None
 
 
 PUSH_VALUE_OPTIONS = frozenset({"-o", "--push-option", "--receive-pack", "--exec", "--repo"})
@@ -1268,9 +1295,17 @@ RULES = (
     Rule(
         "rebase-merge",
         "land with a squash, or a merge commit for a stack's base; never rebase-merge",
-        "D-33",
-        _rebase_guards,
+        "D-96",
+        _merge_guards("rebase"),
         _rebase_check,
+    ),
+    # after rebase-merge, whose fix under "merge" is --merge, which this rule then passes
+    Rule(
+        "merge-method",
+        "merge-method",
+        '[agents] merge = "merge", D-96',
+        _merge_guards("squash"),
+        _method_check,
     ),
     # force-push before default-branch-push: a force push to main names force-push, which has
     # no switch (S-026-6, the maintainer's answer on #470)
