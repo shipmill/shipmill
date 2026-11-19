@@ -3643,8 +3643,9 @@ def _review_history(
     top = Path(git.run("rev-parse", "--show-toplevel").strip())
     checkout = Git(top)
     app_id = gh_identity_of(top).app_id
+    label = review_history.incident_label(top)
     text = review_history.history(
-        checkout, lambda: reads(top), args.number, args.days, args.limit, args.before, app_id, now, args.json
+        checkout, lambda: reads(top), args.number, args.days, args.limit, args.before, app_id, label, now, args.json
     )
     sys.stdout.write(text)
     return 0
