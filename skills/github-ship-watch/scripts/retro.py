@@ -96,7 +96,20 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from metrics import PULL_COMMITS, Runner, Variables, agent_made, dig, gh_graphql, pages, pull_commits, sized, span
+from metrics import (
+    PULL_COMMITS,
+    Runner,
+    Variables,
+    advance,
+    agent_made,
+    dig,
+    gh_graphql,
+    pages,
+    pull_commits,
+    resource_limited,
+    sized,
+    span,
+)
 
 METRICS = Path(__file__).resolve().parent / "metrics.py"
 PR_LIMIT = 500  # closed pull requests in one window; more is refused, not truncated
@@ -1580,20 +1593,26 @@ def rest_author(record: dict[str, Any]) -> dict[str, Any]:
     return {"author": author if login else None, "authorAssociation": record.get("author_association")}
 
 
-def bot_login(record: dict[str, Any], bots: frozenset[str]) -> bool:
-    return bool(login_names(rest_author(record)["author"]) & {b.lower() for b in bots})
+def bot_login(node: dict[str, Any], bots: frozenset[str]) -> bool:
+    """A GraphQL review or comment by a --bot login"""
+    return bool(login_names(node.get("author")) & {b.lower() for b in bots})
 
 
-def persons(record: dict[str, Any], bots: frozenset[str]) -> bool:
-    """Written by an OWNER, MEMBER, or COLLABORATOR who is no --bot login, without the agent
-    marker (D-62); anyone else's is left out whole (D-16)"""
-    author = rest_author(record)
+def persons(node: dict[str, Any], bots: frozenset[str]) -> bool:
+    """A GraphQL review or comment written by an OWNER, MEMBER, or COLLABORATOR who is no --bot
+    login, without the agent marker (D-62); anyone else's is left out whole (D-16)"""
     return (
-        author["author"] is not None
-        and str(author["authorAssociation"] or "NONE") in TRUSTED
-        and not bot_login(record, bots)
-        and not by_agent(str(record.get("body") or ""))
+        bool((node.get("author") or {}).get("login"))
+        and str(node.get("authorAssociation") or "NONE") in TRUSTED
+        and not bot_login(node, bots)
+        and not by_agent(str(node.get("body") or ""))
     )
+
+
+def rest_login(author: dict[str, Any]) -> str:
+    """A GraphQL author's login as REST spells it, an App's with its "[bot]" suffix"""
+    login = str(author["login"])
+    return login + "[bot]" if author.get("__typename") == "Bot" else login
 
 
 def cleaned(body: str | None) -> str:
@@ -1610,9 +1629,9 @@ def cited(text: str) -> list[str]:
     return list(dict.fromkeys(CITED.findall(text)))
 
 
-def raised(kind: str, record: dict[str, Any], head: str, at: str, path: str | None = None, line: Any = None) -> Finding:
-    text = cleaned(record.get("body"))
-    login = str(record["user"]["login"])
+def raised(kind: str, node: dict[str, Any], head: str, at: str, path: str | None = None, line: Any = None) -> Finding:
+    text = cleaned(node.get("body"))
+    login = rest_login(node["author"])
     return Finding(kind, login, head, path, None if line is None else int(line), cited(text), cut(text), at)
 
 
@@ -1621,36 +1640,195 @@ def api_list(repo: str, path: str, query: str = "") -> list[str]:
     return ["api", "--paginate", f"repos/{repo}/{path}?{query}per_page=100", "--jq", ".[]"]
 
 
-def pull_findings(
-    read: Callable[[list[str]], Any], repo: str, pull: dict[str, Any], bots: frozenset[str]
-) -> list[Finding]:
+def findings_graphql(query: str, variables: Variables, run: Callable[[list[str]], Any] = run_command) -> dict[str, Any]:
+    """One `gh api graphql` call; a response GitHub rejected for its resource limits is handed
+    back for a smaller page, any other failure exits 2 naming the fix"""
+    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        # -F sends an int as a number; -f keeps a string a string (a cursor, a numeric repo name)
+        cmd += ["-F" if isinstance(value, int) else "-f", f"{key}={value}"]
+    proc = run(cmd)
+    if proc.returncode != 0:
+        try:
+            rejected = json.loads(proc.stdout)
+        except ValueError:
+            rejected = None
+        if isinstance(rejected, dict) and resource_limited(rejected):
+            return rejected
+        raise fail(f"gh api graphql: {proc.stderr.strip()}{GH_FIX}")
+    response: dict[str, Any] = json.loads(proc.stdout)
+    return response
+
+
+# A pull request's reviews, review threads with their comments, and conversation, read for
+# FINDINGS_BATCH pull requests per query; a connection longer than its page is paged on alone.
+# At 50 pull requests and 50 per page the query asks for about 132,500 nodes, inside GitHub's
+# 500,000, and `sized` halves the page while GitHub rejects it for its resource limits
+FINDINGS_BATCH = 50
+FINDINGS_PAGE = 50
+FINDINGS_MORE = 100  # the page of a connection paged on alone
+PAGE = "pageInfo { hasNextPage endCursor }"
+AUTHOR = "authorAssociation author { __typename login }"
+REVIEW = f"state body submittedAt commit {{ oid }} {AUTHOR}"
+REVIEW_COMMENT = f"fullDatabaseId state body createdAt path line originalLine originalCommit {{ oid }} {AUTHOR}"
+TALK = f"body createdAt {AUTHOR}"
+THREAD_COMMENTS = f"comments(first: $size) {{ {PAGE} nodes {{ {REVIEW_COMMENT} }} }}"
+THREADS = f"{PAGE} edges {{ cursor node {{ id {THREAD_COMMENTS} }} }}"
+PULL_ITEMS = f"""
+fragment items on PullRequest {{
+  reviews(first: $size) {{ {PAGE} nodes {{ {REVIEW} }} }}
+  reviewThreads(first: $size) {{ {THREADS} }}
+  comments(first: $size) {{ {PAGE} nodes {{ {TALK} }} }}
+}}
+"""
+ONE_PULL = """
+query($owner: String!, $name: String!, $size: Int!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      %s
+    }
+  }
+}
+"""
+MORE_REVIEWS = ONE_PULL % f"reviews(first: $size, after: $cursor) {{ {PAGE} nodes {{ {REVIEW} }} }}"
+MORE_TALK = ONE_PULL % f"comments(first: $size, after: $cursor) {{ {PAGE} nodes {{ {TALK} }} }}"
+MORE_THREADS = ONE_PULL % f"reviewThreads(first: $size, after: $cursor) {{ {THREADS} }}"
+# One thread, addressed by the cursor of the thread before it ($thread left out for the first)
+MORE_THREAD_COMMENTS = (
+    ONE_PULL.replace("$cursor: String)", "$cursor: String, $thread: String)")
+    % f"reviewThreads(first: 1, after: $thread) {{ nodes {{ id comments(first: $size, after: $cursor)"
+    f" {{ {PAGE} nodes {{ {REVIEW_COMMENT} }} }} }} }}"
+)
+
+
+def batch_query(count: int) -> str:
+    """The query for count pull requests, numbers $p0 to $p<count-1>, each under its alias"""
+    numbers = "".join(f", $p{i}: Int!" for i in range(count))
+    pulls = "".join(f"    p{i}: pullRequest(number: $p{i}) {{ ...items }}\n" for i in range(count))
+    head = f"query($owner: String!, $name: String!, $size: Int!{numbers}) {{\n"
+    return f"{head}  repository(owner: $owner, name: $name) {{\n{pulls}  }}\n}}\n{PULL_ITEMS}"
+
+
+@dataclass(frozen=True)
+class PullItems:
+    """What a pull request's findings are read from, as GraphQL nodes: its reviews, its review
+    comments in the order REST lists them, and its conversation"""
+
+    reviews: list[dict[str, Any]]
+    comments: list[dict[str, Any]]
+    talk: list[dict[str, Any]]
+
+
+def paged_on(
+    run: Runner, base: Variables, sizes: dict[str, int], connection: dict[str, Any], query: str, key: str, what: str
+) -> list[dict[str, Any]]:
+    """A connection's nodes, with the pages after the first read by query, which reads key"""
+    nodes = list(connection["nodes"])
+    if connection["pageInfo"]["hasNextPage"]:
+        cursor = advance(connection["pageInfo"]["endCursor"], set(), what)
+        nodes += pages(run, query, {**base, "cursor": cursor}, sizes, ["pullRequest", key], what)
+    return nodes
+
+
+def thread_comments(
+    run: Runner, base: Variables, sizes: dict[str, int], thread: dict[str, Any], before: str | None, what: str
+) -> list[dict[str, Any]]:
+    """A review thread's comments, every page; before is the cursor of the thread before it"""
+    connection = thread["comments"]
+    nodes = list(connection["nodes"])
+    seen: set[str] = set()
+    while connection["pageInfo"]["hasNextPage"]:
+        variables: Variables = {**base, "cursor": advance(connection["pageInfo"]["endCursor"], seen, what)}
+        if before is not None:
+            variables["thread"] = before
+        found = dig(sized(run, MORE_THREAD_COMMENTS, variables, sizes, what), ["pullRequest", "reviewThreads"], what)
+        if [t["id"] for t in found["nodes"]] != [thread["id"]]:
+            raise fail(f"{what} changed while they were read; run findings again")
+        connection = found["nodes"][0]["comments"]
+        nodes += connection["nodes"]
+    return nodes
+
+
+def review_comments(
+    run: Runner, base: Variables, sizes: dict[str, int], threads: dict[str, Any], what: str
+) -> list[dict[str, Any]]:
+    """Every comment of every review thread, every page of both"""
+    nodes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    before: str | None = None  # the cursor the page was read after
+    while True:
+        for edge in threads["edges"]:
+            nodes += thread_comments(run, base, sizes, edge["node"], before, what)
+            before = edge["cursor"]
+        if not threads["pageInfo"]["hasNextPage"]:
+            return nodes
+        before = advance(threads["pageInfo"]["endCursor"], seen, what)
+        variables: Variables = {**base, "cursor": before}
+        threads = dig(sized(run, MORE_THREADS, variables, sizes, what), ["pullRequest", "reviewThreads"], what)
+
+
+def read_items(run: Runner, repo: str, pulls: list[dict[str, Any]]) -> dict[int, PullItems]:
+    """Each pull request's items, FINDINGS_BATCH pull requests per query; an unmerged one's
+    conversation alone, as only its refusal is read from it"""
+    owner, _, name = repo.partition("/")
+    sizes = {MORE_REVIEWS: FINDINGS_MORE, MORE_TALK: FINDINGS_MORE, MORE_THREADS: FINDINGS_MORE}
+    sizes[MORE_THREAD_COMMENTS] = FINDINGS_MORE
+    found: dict[int, PullItems] = {}
+    for start in range(0, len(pulls), FINDINGS_BATCH):
+        batch = pulls[start : start + FINDINGS_BATCH]
+        query = batch_query(len(batch))
+        sizes.setdefault(query, FINDINGS_PAGE)
+        variables: Variables = {"owner": owner, "name": name}
+        variables.update({f"p{i}": int(p["number"]) for i, p in enumerate(batch)})
+        what = f"the reviews and comments of {len(batch)} pull requests"
+        data = sized(run, query, variables, sizes, what)
+        for i, pull in enumerate(batch):
+            number = int(pull["number"])
+            base: Variables = {"owner": owner, "name": name, "number": number}
+            items = dig(data, [f"p{i}"], f"#{number}")
+            comments = review_comments(run, base, sizes, items["reviewThreads"], f"the review threads of #{number}")
+            talk = []
+            if pull["mergedAt"] is None:
+                talk = paged_on(
+                    run, base, sizes, items["comments"], MORE_TALK, "comments", f"the comments of #{number}"
+                )
+            found[number] = PullItems(
+                paged_on(run, base, sizes, items["reviews"], MORE_REVIEWS, "reviews", f"the reviews of #{number}"),
+                sorted(comments, key=lambda c: int(c["fullDatabaseId"])),  # REST's order, by id
+                talk,
+            )
+    return found
+
+
+def pull_findings(pull: dict[str, Any], items: PullItems, bots: frozenset[str]) -> list[Finding]:
     """A closed pull request's items, oldest first"""
     number = pull["number"]
     found: list[Finding] = []
-    for review in read(api_list(repo, f"pulls/{number}/reviews")):
+    for review in items.reviews:
         if review.get("state") == "PENDING":  # the reader's own unsubmitted review
             continue
-        head, at = str(review["commit_id"]), str(review["submitted_at"])
+        head = str(dig(review, ["commit", "oid"], f"a review's commit on #{number}"))
+        at = str(review["submittedAt"])
         if bot_login(review, bots) and first_line(str(review.get("body") or "")) in RECORD_MARKS:
             found.append(raised("record", review, head, at))
         elif review["state"] == "CHANGES_REQUESTED" and persons(review, bots):
             found.append(raised("review", review, head, at))
-    for comment in read(api_list(repo, f"pulls/{number}/comments")):
-        if persons(comment, bots):
-            line = comment.get("original_line")
+    for comment in items.comments:
+        if comment.get("state") != "PENDING" and persons(comment, bots):
+            line = comment.get("originalLine")
             line = comment.get("line") if line is None else line
-            head, at = str(comment["original_commit_id"]), str(comment["created_at"])
-            found.append(raised("comment", comment, head, at, str(comment["path"]), line))
+            head = str(dig(comment, ["originalCommit", "oid"], f"a review comment's commit on #{number}"))
+            found.append(raised("comment", comment, head, str(comment["createdAt"]), str(comment["path"]), line))
     if pull["mergedAt"] is None:
         closed = timestamp(pull["closedAt"])
         before = [
             c
-            for c in read(api_list(repo, f"issues/{number}/comments"))
-            if timestamp(c["created_at"]) <= closed and c.get("user") and trusted(rest_author(c), bots)
+            for c in items.talk
+            if timestamp(c["createdAt"]) <= closed and (c.get("author") or {}).get("login") and trusted(c, bots)
         ]
         if before:
-            last = max(before, key=lambda c: timestamp(c["created_at"]))
-            found.append(raised("refusal", last, str(pull["headRefOid"]), str(last["created_at"])))
+            last = max(before, key=lambda c: timestamp(c["createdAt"]))
+            found.append(raised("refusal", last, str(pull["headRefOid"]), str(last["createdAt"])))
     return sorted(found, key=lambda f: timestamp(f.at))
 
 
@@ -1684,7 +1862,9 @@ def rule_proposals(read: Callable[[list[str]], Any], repo: str, bots: frozenset[
     return sorted(found, key=lambda p: -p["number"])
 
 
-def findings(args: argparse.Namespace, read: Callable[[list[str]], Any], now: dt.datetime) -> int:
+def findings(
+    args: argparse.Namespace, read: Callable[[list[str]], Any], now: dt.datetime, graphql: Runner = findings_graphql
+) -> int:
     """The review findings on the pull requests closed in the --days to now, and the proposals
     made so far; everything is read before anything is printed"""
     bots = frozenset(args.bot)
@@ -1697,11 +1877,12 @@ def findings(args: argparse.Namespace, read: Callable[[list[str]], Any], now: dt
         raise fail(f"{args.repo} closed {PR_LIMIT}+ pull requests since {start:%Y-%m-%d}; use a shorter --days")
     closed = [p for p in pulls if p["closedAt"] is not None and start <= timestamp(p["closedAt"]) <= now]
     closed.sort(key=lambda p: (timestamp(p["closedAt"]), p["number"]), reverse=True)
+    read_from = read_items(graphql, args.repo, closed)
     listed = []
     counter = 0
     for pull in closed:
         items = []
-        for item in pull_findings(read, args.repo, pull, bots):
+        for item in pull_findings(pull, read_from[int(pull["number"])], bots):
             counter += 1
             items.append({"id": f"F-{counter}", **asdict(item)})
         if items:

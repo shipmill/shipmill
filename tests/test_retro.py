@@ -1363,23 +1363,44 @@ def app(body: str, **extra: Any) -> Any:
     return rest(body + MARKED, "NONE", APP + "[bot]", "Bot", **extra)
 
 
+def node(body: str, association: str = "COLLABORATOR", login: str = "amy", kind: str = "User", **extra: Any) -> Any:
+    """A GraphQL review or comment; GraphQL spells an App's login without "[bot]" """
+    return {"body": body, "authorAssociation": association, "author": {"__typename": kind, "login": login}, **extra}
+
+
+def app_node(body: str, **extra: Any) -> Any:
+    return node(body + MARKED, "NONE", APP, "Bot", **extra)
+
+
+def said(body: str, when: str, **who: Any) -> Any:
+    """A conversation comment"""
+    return node(body, **who, createdAt=when)
+
+
 def review(body: str, when: str, state: str = "CHANGES_REQUESTED", head: str = SHA, **who: Any) -> Any:
-    return rest(body, **who, state=state, commit_id=head, submitted_at=when)
+    return node(body, **who, state=state, commit={"oid": head}, submittedAt=when)
 
 
 def app_review(body: str, when: str, head: str = SHA) -> Any:
-    return app(body, state="COMMENTED", commit_id=head, submitted_at=when)
+    return app_node(body, state="COMMENTED", commit={"oid": head}, submittedAt=when)
 
 
-def line_comment(body: str, when: str, path: str, line: int, head: str = SHA, **who: Any) -> Any:
+COMMENT_IDS = iter(range(2_500_000_000, 3_000_000_000))  # past 2**31, as GitHub's are
+
+
+def line_comment(
+    body: str, when: str, path: str, line: int, head: str = SHA, state: str = "SUBMITTED", **who: Any
+) -> Any:
     extra: dict[str, Any] = {
+        "fullDatabaseId": str(next(COMMENT_IDS)),
+        "state": state,
         "path": path,
-        "original_line": line,
+        "originalLine": line,
         "line": None,
-        "original_commit_id": head,
-        "created_at": when,
+        "originalCommit": {"oid": head},
+        "createdAt": when,
     }
-    return rest(body, **who, **extra)
+    return node(body, **who, **extra)
 
 
 def closed_pull(number: int, closed: str, merged: bool = False, head: str = SHA) -> Any:
@@ -1393,40 +1414,111 @@ def closed_pull(number: int, closed: str, merged: bool = False, head: str = SHA)
     }
 
 
+def page(nodes: list[Any], size: int, cursor: Any = None) -> dict[str, Any]:
+    """A connection's page after cursor, the index of the next node as a string"""
+    start = int(cursor or 0)
+    chunk = nodes[start : start + size]
+    return {
+        "pageInfo": {"hasNextPage": start + size < len(nodes), "endCursor": str(start + len(chunk))},
+        "nodes": chunk,
+    }
+
+
+class Forge:
+    """A scripted GitHub: the closed pull requests, each one's reviews, review threads, and
+    conversation over GraphQL, paged as GitHub pages them, and the repo's rule-proposal issues
+    over REST; it records every read and rejects a page past limit for its resource limits"""
+
+    def __init__(
+        self,
+        pulls: list[Any],
+        reviews: Mapping[int, list[Any]],
+        threads: Mapping[int, list[list[Any]]],
+        talk: Mapping[int, list[Any]],
+        issues: list[Any],
+        limit: int,
+    ) -> None:
+        self.pulls, self.reviews, self.threads, self.talk, self.issues = pulls, reviews, threads, talk, issues
+        self.limit = limit
+        self.calls: list[list[str]] = []
+        self.queries: list[tuple[str, dict[str, Any]]] = []
+
+    def read(self, cmd: list[str]) -> Any:
+        self.calls.append(cmd)
+        if cmd[:2] == ["pr", "list"]:
+            return self.pulls
+        assert cmd == ["api", "--paginate", f"repos/{REPO}/issues?labels=rule-proposal&state=all&per_page=100"] + [
+            "--jq",
+            ".[]",
+        ], cmd
+        return self.issues
+
+    def thread_page(self, number: int, size: int, cursor: Any = None) -> dict[str, Any]:
+        threads = self.threads.get(number, [])
+        start = int(cursor or 0)
+        edges = [
+            {"cursor": str(i + 1), "node": {"id": f"T{number}-{i}", "comments": page(threads[i], size)}}
+            for i in range(start, min(start + size, len(threads)))
+        ]
+        found = page(threads, size, cursor)
+        return {"pageInfo": found["pageInfo"], "edges": edges}
+
+    def graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        self.queries.append((query, variables))
+        assert (variables["owner"], variables["name"]) == tuple(REPO.split("/"))
+        size, cursor = variables["size"], variables.get("cursor")
+        if size > self.limit:
+            return {"errors": [{"type": "RESOURCE_LIMITS_EXCEEDED", "message": "too costly"}]}
+        if "fragment items" in query:
+            repository: dict[str, Any] = {}
+            for alias, n in variables.items():
+                if alias.startswith("p") and alias[1:].isdigit():
+                    repository[alias] = {
+                        "reviews": page(self.reviews.get(n, []), size),
+                        "reviewThreads": self.thread_page(n, size),
+                        "comments": page(self.talk.get(n, []), size),
+                    }
+            return {"data": {"repository": repository}}
+        number = int(variables["number"])
+        if "reviewThreads(first: 1," in query:
+            at = int(variables.get("thread", 0))
+            thread = {"id": f"T{number}-{at}", "comments": page(self.threads[number][at], size, cursor)}
+            pull: dict[str, Any] = {"reviewThreads": {"nodes": [thread]}}
+        elif "reviewThreads(first: $size, after: $cursor)" in query:
+            pull = {"reviewThreads": self.thread_page(number, size, cursor)}
+        elif "reviews(first: $size, after: $cursor)" in query:
+            pull = {"reviews": page(self.reviews[number], size, cursor)}
+        else:
+            assert "comments(first: $size, after: $cursor)" in query, query
+            pull = {"comments": page(self.talk[number], size, cursor)}
+        return {"data": {"repository": {"pullRequest": pull}}}
+
+
 def forge(
     pulls: list[Any],
     reviews: Mapping[int, list[Any]] | None = None,
     comments: Mapping[int, list[Any]] | None = None,
     talk: Mapping[int, list[Any]] | None = None,
     issues: list[Any] | None = None,
-    calls: list[list[str]] | None = None,
-) -> Callable[[list[str]], Any]:
-    """A scripted GitHub: the closed pull requests, each one's reviews, review comments, and
-    conversation, and the repo's rule-proposal issues, read as findings reads them"""
-    lists = {"reviews": reviews or {}, "comments": comments or {}}
-
-    def read(cmd: list[str]) -> Any:
-        if calls is not None:
-            calls.append(cmd)
-        if cmd[:2] == ["pr", "list"]:
-            return pulls
-        assert cmd[:2] == ["api", "--paginate"] and cmd[3:] == ["--jq", ".[]"], cmd
-        path = cmd[2].removeprefix(f"repos/{REPO}/")
-        if path == "issues?labels=rule-proposal&state=all&per_page=100":
-            return issues or []
-        kind, number, what = path.removesuffix("?per_page=100").split("/")
-        return ((talk or {}) if kind == "issues" else lists[what]).get(int(number), [])
-
-    return read
+    threads: Mapping[int, list[list[Any]]] | None = None,
+    limit: int = 1000,
+) -> Forge:
+    """A Forge where each of comments is a review thread of its own, after threads' threads"""
+    grouped = {n: list(found) for n, found in (threads or {}).items()}
+    for n, flat in (comments or {}).items():
+        grouped.setdefault(n, []).extend([c] for c in flat)
+    return Forge(pulls, reviews or {}, grouped, talk or {}, issues or [], limit)
 
 
 def run_findings(
-    rt: ModuleType, capsys: pytest.CaptureFixture[str], read: Callable[[list[str]], Any], *flags: str
+    rt: ModuleType, capsys: pytest.CaptureFixture[str], github: Forge, *flags: str
 ) -> tuple[dict[str, Any], str]:
     """findings' --json report and its text, over the same forge"""
-    assert rt.findings(rt.parse(["findings", REPO, "--bot", APP, *flags]), read, END) == 0
+    args = rt.parse(["findings", REPO, "--bot", APP, *flags])
+    assert rt.findings(args, github.read, END, github.graphql) == 0
     text = capsys.readouterr().out
-    assert rt.findings(rt.parse(["findings", REPO, "--bot", APP, "--json", *flags]), read, END) == 0
+    args = rt.parse(["findings", REPO, "--bot", APP, "--json", *flags])
+    assert rt.findings(args, github.read, END, github.graphql) == 0
     report: dict[str, Any] = json.loads(capsys.readouterr().out)
     return report, text
 
@@ -1441,8 +1533,7 @@ def test_s077_1_records_reviews_and_inline_comments_of_the_window_are_listed(
     record = (
         "<!-- shipmill:review refuse -->\n<!-- shipmill:findings confirmed=1 rejected=0 minor=0 -->\nBreaks I-2, D-16."
     )
-    calls: list[list[str]] = []
-    read = forge(
+    github = forge(
         [closed_pull(57, day(2), merged=True, head=SHA_C), closed_pull(40, day(30), merged=True)],
         reviews={
             57: [
@@ -1454,9 +1545,9 @@ def test_s077_1_records_reviews_and_inline_comments_of_the_window_are_listed(
         comments={
             57: [line_comment("The dev script is start:dev (I-4, I-4).", day(2.5), "apps/api/package.json", 12, SHA_B)]
         },
-        calls=calls,
     )
-    report, text = run_findings(rt, capsys, read)
+    report, text = run_findings(rt, capsys, github)
+    calls = github.calls
     assert [p["number"] for p in report["findings"]] == [57]
     found = listed_items(report)[57]
     assert [(i["id"], i["kind"], i["author"], i["head"], i["path"], i["line"], i["cites"]) for i in found] == [
@@ -1473,21 +1564,21 @@ def test_s077_1_records_reviews_and_inline_comments_of_the_window_are_listed(
 def test_s077_2_an_unmerged_pull_lists_its_newest_trusted_comment_at_the_close_as_a_refusal(
     rt: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    said = [
-        rest("First thoughts", created_at=day(3)),
-        app("Refused: it breaks D-16.", created_at=day(1.5)),
-        rest("Outsider's last word", "NONE", "zed", created_at=day(1.2)),
-        rest("After the close", created_at=day(0.5)),
+    conversation = [
+        said("First thoughts", day(3)),
+        app_node("Refused: it breaks D-16.", createdAt=day(1.5)),
+        said("Outsider's last word", day(1.2), association="NONE", login="zed"),
+        said("After the close", day(0.5)),
     ]
-    read = forge(
+    github = forge(
         [closed_pull(60, day(1), head=SHA_B), closed_pull(61, day(1), merged=True), closed_pull(62, day(2))],
         talk={
-            60: said,
-            61: [rest("Merged, thanks", "OWNER", created_at=day(1.5))],
-            62: [rest("No.", "MEMBER", "bo", created_at=day(2))],
+            60: conversation,
+            61: [said("Merged, thanks", day(1.5), association="OWNER")],
+            62: [said("No.", day(2), association="MEMBER", login="bo")],
         },
     )
-    report, text = run_findings(rt, capsys, read)
+    report, text = run_findings(rt, capsys, github)
     assert [p["number"] for p in report["findings"]] == [60, 62]
     assert [(i["id"], i["kind"], i["author"], i["head"], i["text"], i["cites"]) for i in listed_items(report)[60]] == [
         ("F-1", "refusal", APP + "[bot]", SHA_B, "Refused: it breaks D-16.", ["D-16"])
@@ -1500,14 +1591,15 @@ def test_s077_2_an_unmerged_pull_lists_its_newest_trusted_comment_at_the_close_a
 def test_s077_3_outsiders_and_marked_text_are_left_out_and_long_text_is_cut(
     rt: ModuleType, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    read = forge(
+    github = forge(
         [closed_pull(70, day(1), merged=True), closed_pull(71, day(2)), closed_pull(72, day(3), merged=True)],
         reviews={
             70: [
                 review("OUTSIDER-REVIEW", day(1.5), association="CONTRIBUTOR", login="zed"),
                 review("AGENT-REVIEW" + MARKED, day(1.4)),
-                review("APP-WITHOUT-RECORD", day(1.3), association="NONE", login=APP + "[bot]", kind="Bot"),
+                review("APP-WITHOUT-RECORD", day(1.3), association="NONE", login=APP, kind="Bot"),
                 review("Looks good", day(1.2), state="APPROVED"),
+                review("PENDING-REVIEW", day(1.1), state="PENDING"),
             ],
             72: [review("x" * 700, day(3.5))],
         },
@@ -1515,13 +1607,14 @@ def test_s077_3_outsiders_and_marked_text_are_left_out_and_long_text_is_cut(
             70: [
                 line_comment("OUTSIDER-COMMENT", day(1.5), "a.py", 1, association="NONE", login="zed"),
                 line_comment("AGENT-COMMENT" + MARKED, day(1.4), "a.py", 2),
+                line_comment("PENDING-COMMENT", day(1.3), "a.py", 3, state="PENDING"),
             ]
         },
-        talk={71: [rest("OUTSIDER-CLOSE", "FIRST_TIME_CONTRIBUTOR", "zed", created_at=day(2.5))]},
+        talk={71: [said("OUTSIDER-CLOSE", day(2.5), association="FIRST_TIME_CONTRIBUTOR", login="zed")]},
     )
-    report, text = run_findings(rt, capsys, read)
+    report, text = run_findings(rt, capsys, github)
     dumped = json.dumps(report)
-    for left_out in ("OUTSIDER", "AGENT-", "APP-WITHOUT-RECORD", "zed", "Looks good"):
+    for left_out in ("OUTSIDER", "AGENT-", "APP-WITHOUT-RECORD", "zed", "Looks good", "PENDING-"):
         assert left_out not in dumped and left_out not in text, left_out
     assert [p["number"] for p in report["findings"]] == [72]
     assert "#70" not in text and "#71" not in text
@@ -1569,9 +1662,9 @@ def test_s077_5_json_has_its_three_keys_and_bad_input_or_a_failed_read_exits_2_w
         rt.parse(["findings", REPO, "--days", "0"])
     assert refused.value.code == 2
     assert "--days must be at least 1" in capsys.readouterr().err
-    full = [closed_pull(n, day(1)) for n in range(rt.PR_LIMIT)]
+    full = forge([closed_pull(n, day(1)) for n in range(rt.PR_LIMIT)])
     with pytest.raises(SystemExit) as refused:
-        rt.findings(rt.parse(["findings", REPO, "--json"]), forge(full), END)
+        rt.findings(rt.parse(["findings", REPO, "--json"]), full.read, END, full.graphql)
     assert refused.value.code == 2
     out, err = capsys.readouterr()
     assert out == "" and "use a shorter --days" in err
@@ -1582,14 +1675,95 @@ def test_s077_5_json_has_its_three_keys_and_bad_input_or_a_failed_read_exits_2_w
     scripted = forge([closed_pull(57, day(1), merged=True)])
 
     def read(cmd: list[str]) -> Any:
-        return scripted(cmd) if cmd[0] == "pr" else rt.gh_read(cmd, failing)
+        return scripted.read(cmd) if cmd[0] == "pr" else rt.gh_read(cmd, failing)
 
-    for flags in ([], ["--json"]):
-        with pytest.raises(SystemExit) as refused:
-            rt.findings(rt.parse(["findings", REPO, *flags]), read, END)
-        assert refused.value.code == 2
-        out, err = capsys.readouterr()
-        assert out == "" and "HTTP 404" in err and "gh auth status" in err
+    def graphql(query: str, variables: dict[str, Any]) -> Any:
+        return rt.findings_graphql(query, variables, failing)
+
+    for reader, runner in ((read, scripted.graphql), (scripted.read, graphql)):  # a failed REST or GraphQL read
+        for flags in ([], ["--json"]):
+            with pytest.raises(SystemExit) as refused:
+                rt.findings(rt.parse(["findings", REPO, *flags]), reader, END, runner)
+            assert refused.value.code == 2
+            out, err = capsys.readouterr()
+            assert out == "" and "HTTP 404" in err and "gh auth status" in err
+
+
+def test_findings_reads_120_pull_requests_in_3_queries(rt: ModuleType, capsys: pytest.CaptureFixture[str]) -> None:
+    """#1376: up to 50 pull requests per GraphQL query, not two or three REST reads each"""
+    pulls = [closed_pull(n, day(1 + n / 1000), merged=True) for n in range(1, 121)]
+    github = forge(pulls, reviews={n: [review(f"Fix {n}", day(2))] for n in range(1, 121)})
+    args = rt.parse(["findings", REPO, "--bot", APP, "--json"])
+    assert rt.findings(args, github.read, END, github.graphql) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert len(report["findings"]) == 120
+    assert [(p["number"], [i["text"] for i in p["items"]]) for p in report["findings"]][:2] == [
+        (1, ["Fix 1"]),
+        (2, ["Fix 2"]),
+    ]
+    assert [len([k for k in v if k.startswith("p")]) for _, v in github.queries] == [50, 50, 20]
+    assert [c[:2] for c in github.calls] == [["pr", "list"], ["api", "--paginate"]]  # the pulls, then the proposals
+
+
+def test_findings_pages_on_alone_a_connection_longer_than_its_page(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pull request's reviews, review threads, a thread's comments, and conversation past
+    one page are each read on for that pull request alone, and every finding is listed"""
+    reviews = [review(f"R{i}", day(5 - i / 1000)) for i in range(120)]
+    long_first = [line_comment(f"A{i}", day(4 - i / 1000), "a.py", i + 1) for i in range(120)]
+    single = [[line_comment(f"S{i}", day(3 - i / 1000), "b.py", i + 1)] for i in range(54)]
+    long_later = [line_comment(f"B{i}", day(2.5 - i / 1000), "c.py", i + 1) for i in range(120)]
+    tail = [[line_comment(f"U{i}", day(2.3 - i / 1000), "d.py", i + 1)] for i in range(3)]
+    talk = [said(f"T{i}", day(2.4 - i / 1000)) for i in range(130)]
+    github = forge(
+        [closed_pull(9, day(1)), closed_pull(8, day(1.5), merged=True)],
+        reviews={9: reviews},
+        threads={9: [long_first, *single, long_later, *tail]},  # long_later is thread 55, on the second page
+        talk={9: talk},
+    )
+    args = rt.parse(["findings", REPO, "--bot", APP, "--json"])
+    assert rt.findings(args, github.read, END, github.graphql) == 0
+    items = listed_items(json.loads(capsys.readouterr().out))[9]
+    expected = [f"{kind}{i}" for kind, count in (("R", 120), ("A", 120), ("S", 54), ("B", 120)) for i in range(count)]
+    assert [i["text"] for i in items] == [*expected, "U0", "U1", "U2", "T129"]
+    assert [(i["path"], i["line"]) for i in items if i["text"] in ("A119", "B0")] == [("a.py", 120), ("c.py", 1)]
+    names = {
+        rt.MORE_THREAD_COMMENTS: "thread comments",
+        rt.MORE_THREADS: "threads",
+        rt.MORE_TALK: "talk",
+        rt.MORE_REVIEWS: "reviews",
+    }
+    paged = [(names[q], v["number"], v.get("thread"), v["cursor"]) for q, v in github.queries[1:]]
+    assert paged == [
+        ("thread comments", 9, None, "50"),
+        ("threads", 9, None, "50"),
+        ("thread comments", 9, "55", "100"),
+        ("talk", 9, None, "50"),
+        ("reviews", 9, None, "50"),
+    ]
+
+
+def test_findings_pages_shrink_while_github_rejects_them_for_their_resource_limits(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    github = forge([closed_pull(1, day(1), merged=True)], reviews={1: [review("Fix", day(2))]}, limit=25)
+    args = rt.parse(["findings", REPO, "--bot", APP, "--json"])
+    assert rt.findings(args, github.read, END, github.graphql) == 0
+    assert [p["number"] for p in json.loads(capsys.readouterr().out)["findings"]] == [1]
+    assert [v["size"] for _, v in github.queries] == [50, 25]
+
+
+def test_findings_graphql_sends_typed_variables_and_hands_back_a_resource_limit(rt: ModuleType) -> None:
+    sent: list[list[str]] = []
+    limited = {"errors": [{"type": "RESOURCE_LIMITS_EXCEEDED"}]}
+
+    def run(cmd: list[str]) -> Any:
+        sent.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, json.dumps(limited), "gh: too costly")
+
+    assert rt.findings_graphql("query", {"owner": "o", "name": "123", "p0": 7}, run) == limited
+    assert sent == [["gh", "api", "graphql", "-f", "query=query", "-f", "owner=o", "-f", "name=123", "-F", "p0=7"]]
 
 
 def test_findings_reads_every_page_as_json_lines(rt: ModuleType) -> None:
