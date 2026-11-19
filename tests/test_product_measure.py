@@ -112,6 +112,14 @@ STAGE_METRICS = tuple(
 )
 
 
+QUALITY_METRICS = {
+    "first_pass_merge_rate": "ratio",
+    "plan_match": "ratio",
+    "review_time_median": "hours",
+    "review_time_p90": "hours",
+}
+
+
 def test_s027_1_the_registry_is_the_spec_s_nine_metrics_and_spec_066_s_stages() -> None:
     assert {m.value: m.unit.value for m in Metric} == {
         "deploy_frequency": "per week",
@@ -124,7 +132,39 @@ def test_s027_1_the_registry_is_the_spec_s_nine_metrics_and_spec_066_s_stages() 
         "human_touch": "ratio",
         "agent_share": "ratio",
         **dict.fromkeys(STAGE_METRICS, "hours"),
+        **QUALITY_METRICS,
     }
+
+
+@pytest.mark.parametrize(("metric", "unit"), QUALITY_METRICS.items())
+def test_s078_7_check_takes_each_quality_metric_in_its_unit_and_refuses_another(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], metric: str, unit: str
+) -> None:
+    taken = {"ratio": (("80%", 0.8),), "hours": (("12h", 12.0), ("1.5d", 36.0))}[unit]
+    refused = {"ratio": ("12h", "2d", "5/week"), "hours": ("20%", "5/week")}[unit]
+    forms = {"ratio": "`<n>%`", "hours": "`<n>h` or `<n>d`"}[unit]
+    for target, value in taken:
+        root = write(tmp_path / target, WELL_FORMED.replace(G1_MEASURE, f"  measure: {metric} >= {target}\n"))
+        assert check(root) == ()
+        assert run(root, "check") == 0
+        capsys.readouterr()
+        assert run(root, "show", "--json") == 0
+        assert json.loads(capsys.readouterr().out)["goals"][0]["measure"] == {
+            "metric": metric,
+            "comparison": ">=",
+            "target": pytest.approx(value),
+            "unit": unit,
+            "text": f"{metric} >= {target}",
+        }
+    for target in refused:
+        root = write(
+            tmp_path / target.replace("/", "-"), WELL_FORMED.replace(G1_MEASURE, f"  measure: {metric} >= {target}\n")
+        )
+        assert [str(p) for p in check(root)] == [
+            f"docs/product.md:14: `{metric}` takes a target in {forms}, a non-negative number; got `{target}`"
+        ]
+        assert run(root, "check") == 1
+        capsys.readouterr()
 
 
 @pytest.mark.parametrize("metric", STAGE_METRICS)

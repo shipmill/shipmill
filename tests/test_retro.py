@@ -561,6 +561,43 @@ def test_s066_8_metric_measures_maps_each_registry_metric_and_reads_metrics_py_j
         assert rt.status(measure(metric.value, "<", value, "hours", "x"), empty)[:2] == ("no data", None)
 
 
+def test_s078_7_metric_measures_maps_each_quality_metric_and_setup_offers_it(rt: ModuleType) -> None:
+    from shipmill.product import Metric
+
+    from . import test_metrics as tm
+
+    quality = {
+        "first_pass_merge_rate": ("First-pass merge rate", "value", "ratio"),
+        "plan_match": ("Plan match", "value", "ratio"),
+        "review_time_median": ("Review time", "value", "hours"),
+        "review_time_p90": ("Review time", "p90", "hours"),
+    }
+    assert {m: rt.METRIC_MEASURES[m] for m in quality} == {m: (n, k) for m, (n, k, _) in quality.items()}
+    assert {m: Metric(m).unit.value for m in quality} == {m: u for m, (_, _, u) in quality.items()}
+    assert "rework_cycles" not in rt.METRIC_MEASURES and "rework_cycles" not in {m.value for m in Metric}
+    mx = sys.modules["metrics"]  # loaded by retro, as when it runs
+    approved, files = tm.review("APPROVED", tm.day(2)), tm.plan("- Files: `src/a.py`")
+    pulls = [
+        tm.agent(1, reviews=(approved,), files=("src/a.py",), body=files),
+        tm.agent(2, reviews=(tm.review("APPROVED", tm.day(1.5)),), files=("src/b.py",), body=files),
+        tm.pull(3, tm.day(2)),  # a person's PR: not measured
+    ]
+    w = tm.window(mx)
+    full = json.loads(mx.render("o/r", 30, w, mx.measures(tm.data(mx, pulls=pulls), w), "json"))
+    empty = json.loads(mx.render("o/r", 30, w, mx.measures(tm.data(mx), w), "json"))
+    for metric, (name, key, unit) in quality.items():
+        value = float(next(m for m in full["measures"] if m["measure"] == name)[key])
+        assert rt.status(measure(metric, "<=", value, unit, "x"), full)[:2] == ("met", value), metric
+        assert rt.status(measure(metric, "<", value, unit, "x"), full)[:2] == ("not met", value), metric
+        assert rt.status(measure(metric, "<", value, unit, "x"), empty)[:2] == ("no data", None), metric
+    assert rt.status(measure("plan_match", ">=", 0.5, "ratio", "x"), full)[:2] == ("met", 0.5)
+    setup = " ".join((SCRIPTS.parents[1] / "shipmill-setup" / "SKILL.md").read_text(encoding="utf-8").split())
+    offered = setup.split("offer a measure from the registry", 1)[1].split("Write only the measures", 1)[0]
+    for metric in quality:
+        assert f"`{metric}`" in offered, metric
+    assert "rework_cycles" not in offered
+
+
 def test_s066_9_a_missed_lead_time_goal_names_the_stage_that_grew_most(
     rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
