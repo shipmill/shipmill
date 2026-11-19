@@ -41,6 +41,21 @@ And one more after it (spec 040):
                    defaults (or from the prompt's words, with no end date: D-63).
                    shipmill-setup's Autonomy step asks and writes all three. --fix leaves it
 
+Identity (spec 082: whom agents write to GitHub as, from [agents] app_id and identity; one
+row, after the agents rows, the first that applies):
+  IDENTITY_APP     [agents] app_id is set: agents write as that App; the detail names its id
+  IDENTITY_HOST    [agents] identity = "host": agents write as the host's gh login
+  IDENTITY_NONE    [agents] identity = "none": agents don't write to GitHub here
+  IDENTITY_UNCHOSEN none of them: shipmill-setup asks once whom agents write as and writes
+                   the answer to [agents]. The detail names the Apps the host already has,
+                   each as <app_id> (<where>): a key file ~/.config/shipmill/app-<app_id>.pem
+                   (listed by name, never opened), and each sibling's app_id, the owner's
+                   repos listed as the Product row lists them, one config read each (a 404
+                   or a config it can't read is skipped). An action (exit 1) with an [agents]
+                   section, informational without one. --fix leaves it
+  [agents] identity other than "app", "host", or "none", or not a string, and "host" or
+  "none" with app_id, exits 2
+
 Product (spec 043: whether the repo is one of several that make up one product; one row,
 after the agents rows, the first that applies):
   PRODUCT_LISTED   this repo has no [product], and a sibling's [product] repos lists it
@@ -160,9 +175,11 @@ Gate checkout (a warning, read only on a Mac with the repo's gate job in ~/Libra
                  --fix leaves it: the job and the folder are the person's. A job with no
                  WorkingDirectory exits 2
 
-Exit 0 when every row is RELEASE_READY, AGENTS_OK, PRODUCT_OK, PLUGIN_OK, SKILLS_OK,
-LABELS_OK, or BRANCH_DELETE_ON (RUNNER_SHARED, CHANGELOG_RULES, and GATE_IN_TMP, warnings,
+Exit 0 when every row is RELEASE_READY, AGENTS_OK, IDENTITY_APP, IDENTITY_HOST, IDENTITY_NONE,
+PRODUCT_OK, PLUGIN_OK, SKILLS_OK, LABELS_OK, or BRANCH_DELETE_ON (RUNNER_SHARED,
+CHANGELOG_RULES, GATE_IN_TMP, and IDENTITY_UNCHOSEN without an [agents] section, warnings,
 leave the exit code alone), 1 otherwise (AGENTS_NO_APP, AGENTS_NO_MODE, AGENTS_UNPREFIXED, AUTONOMY_IMPLICIT,
+IDENTITY_UNCHOSEN with an [agents] section,
 PRODUCT_LISTED, PRODUCT_SIBLINGS, PLUGIN_COMMITTED, PLUGIN_OUTDATED, PLUGIN_SHADOWING, and
 SKILL_SHADOWED included; --fix reads the rows after its changes, so a PLUGIN_COMMITTED it
 removed reads as the host's install), 2 on bad input, a malformed
@@ -250,7 +267,18 @@ NO_MODE = (
     'no mode in [agents]: the gate runs interactive by default, which nobody chose; set mode = "interactive"'
     ' or mode = "headless" (shipmill-setup\'s step 4)'
 )
-DONE = {"RELEASE_READY", "AGENTS_OK", "PRODUCT_OK", "PLUGIN_OK", "SKILLS_OK", "LABELS_OK", "BRANCH_DELETE_ON"}
+DONE = {
+    "RELEASE_READY",
+    "AGENTS_OK",
+    "IDENTITY_APP",
+    "IDENTITY_HOST",
+    "IDENTITY_NONE",
+    "PRODUCT_OK",
+    "PLUGIN_OK",
+    "SKILLS_OK",
+    "LABELS_OK",
+    "BRANCH_DELETE_ON",
+}
 # rows that warn without being part of setup's done states: they leave the exit code alone
 WARNINGS = {"RUNNER_SHARED", "CHANGELOG_RULES", "GATE_IN_TMP"}
 # the repo's own contributor rules, read for a stale rule to edit Unreleased and never written (D-42)
@@ -274,6 +302,7 @@ IMPLICIT = (
 class Row:
     state: str
     detail: str
+    warning: bool = False  # informational here, whatever its state: it leaves the exit code alone
 
     def text(self) -> str:
         return f"{self.state:<17} {self.detail}"
@@ -581,6 +610,104 @@ def product_rows(
         return [Row("PRODUCT_SIBLINGS", f"{detail}{unread}")]
     owner = repo.partition("/")[0]
     return [Row("PRODUCT_OK", f"no other repo of {owner} sets app_id {app_id}{unread}")]
+
+
+# -- identity (spec 082) -------------------------------------------------------------------
+
+# [agents] identity, as shipmill's agents.WriteAs reads it: "app" is the default, also when absent
+IDENTITIES = ("app", "host", "none")
+IDENTITY_VALUES = '"app" (the default), "host", or "none"'
+KEYS = Path(".config") / "shipmill"  # under the home folder: the App's key file, app-<app_id>.pem (spec 004)
+KEY_FILE = re.compile(r"app-([1-9][0-9]*)\.pem")
+CHOICES = (
+    'the App (app_id = <id>, from `shipmill app-create`), your own login (identity = "host"),'
+    ' or nobody (identity = "none")'
+)
+
+
+@dataclass(frozen=True)
+class Identity:
+    """Whom agents write to GitHub as (spec 082), read from [agents]: app_id, then identity"""
+
+    section: bool  # the config has an [agents] section
+    app_id: str | None  # [agents] app_id as TOML writes it, a positive integer
+    identity: str  # one of IDENTITIES
+
+
+def identity_of(repo_dir: Path, ws: ModuleType) -> Identity:
+    """[agents] app_id and identity, read as watch_state.py reads [agents] (Python 3.10 too) and
+    validated as shipmill's AgentsConfig.parse validates them: an identity other than the three
+    values, or one that isn't a string, exits 2, and so does "host" or "none" with app_id"""
+    config = config_file(repo_dir)
+    if config is None:
+        return Identity(False, None, "app")
+    try:
+        table = ws.agents_table(config.read_text(encoding="utf-8"), config)
+    except ws.Refused as refused:
+        fail(str(refused).removeprefix("error: "))
+    if table is None:
+        return Identity(False, None, "app")
+    app_id = table.get("app_id")
+    if app_id is not None and APP_ID.fullmatch(app_id) is None:
+        fail(f"{config}: [agents] app_id must be a positive integer, got {app_id}")
+    raw = table.get("identity", '"app"')
+    value = json.loads(raw) if raw.startswith('"') else None
+    if value not in IDENTITIES:
+        fail(f"{config}: [agents] identity must be {IDENTITY_VALUES}, got {raw}")
+    if value != "app" and app_id is not None:
+        fail(
+            f'{config}: [agents] identity = "{value}" and [agents] app_id can\'t both be set: a repo with an App'
+            " writes as the App; delete one of them"
+        )
+    return Identity(True, app_id, value)
+
+
+def known_apps(repo: str, home: Path, ws: ModuleType, gh: Callable[[list[str]], str | None]) -> dict[str, list[str]]:
+    """The Apps the host already has, each id mapped to where it was found, in id order: a key
+    file at ~/.config/shipmill/app-<app_id>.pem (listed by name, never opened), and the app_id
+    of each sibling's default-branch config, the owner's repos the Product row lists (spec 043)"""
+    found: dict[str, list[str]] = {}
+    keys = home / KEYS
+    if keys.is_dir():
+        for name in sorted(path.name for path in keys.iterdir()):
+            key = KEY_FILE.fullmatch(name)
+            if key is not None:
+                found.setdefault(key.group(1), []).append(f"key at ~/{(KEYS / name).as_posix()}")
+    for name in owner_repos(repo, gh):
+        text = gh(["gh", "api", "-H", RAW, f"repos/{name}/contents/{CONFIG.as_posix()}"])
+        if text is None:  # no config, so no App there
+            continue
+        try:
+            app_id = (ws.agents_table(text, Path(f"{name}:{CONFIG.as_posix()}")) or {}).get("app_id")
+        except ws.Refused:  # another repo's to fix, as the Product row skips it
+            continue
+        if app_id is not None and APP_ID.fullmatch(app_id) is not None:
+            found.setdefault(app_id, []).append(name)
+    return {app_id: found[app_id] for app_id in sorted(found, key=int)}
+
+
+def identity_row(
+    repo: str, chosen: Identity, home: Path, ws: ModuleType, gh: Callable[[list[str]], str | None] = gh_get
+) -> Row:
+    """The Identity row (spec 082), the first that applies: IDENTITY_APP, IDENTITY_HOST,
+    IDENTITY_NONE, then IDENTITY_UNCHOSEN, which is a warning without an [agents] section"""
+    if chosen.app_id is not None:
+        return Row("IDENTITY_APP", f"agents write to GitHub as the App {chosen.app_id} ([agents] app_id)")
+    if chosen.identity == "host":
+        return Row("IDENTITY_HOST", '[agents] identity = "host": agents write to GitHub as the host\'s gh login')
+    if chosen.identity == "none":
+        return Row("IDENTITY_NONE", '[agents] identity = "none": agents don\'t write to GitHub here; a person posts')
+    apps = known_apps(repo, home, ws, gh)
+    named = (
+        "; the host's Apps: " + ", ".join(f"{app_id} ({', '.join(where)})" for app_id, where in apps.items())
+        if apps
+        else "; the host has no App yet"
+    )
+    detail = (
+        f"whom agents write to GitHub as isn't chosen in [agents] of {CONFIG}: {CHOICES};"
+        f" shipmill-setup asks once and records it{named}"
+    )
+    return Row("IDENTITY_UNCHOSEN", detail, warning=not chosen.section)
 
 
 # -- plugin --------------------------------------------------------------------------------
@@ -1325,6 +1452,7 @@ def main() -> int:
     write = gh_writer(repo_dir, ws) if args.fix else ["gh"]
 
     mode = plugin_mode(repo_dir, ws)  # before any change, as the config's other keys
+    chosen = identity_of(repo_dir, ws)  # before any change too: a bad identity stops --fix (S-082-1)
     settings_path = repo_dir / SETTINGS
     settings = load_settings(settings_path)
     if args.fix:
@@ -1350,6 +1478,7 @@ def main() -> int:
         agents_row(repo_dir),
         *prompt_rows(repo_dir, ws),
         *autonomy_rows(repo_dir, ws),
+        identity_row(args.repo, chosen, Path.home(), ws),  # reads only: --fix leaves it
         *product_rows(args.repo, repo_dir, ws),  # reads only: --fix leaves it (S-043-6)
         *plugin,
         *skill_rows(Path.home(), ws),
@@ -1366,7 +1495,7 @@ def main() -> int:
 
 def exit_code(rows: list[Row]) -> int:
     """0 when every row but a warning is done, 1 otherwise"""
-    return 0 if all(row.state in DONE for row in rows if row.state not in WARNINGS) else 1
+    return 0 if all(row.state in DONE for row in rows if row.state not in WARNINGS and not row.warning) else 1
 
 
 if __name__ == "__main__":

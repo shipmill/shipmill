@@ -53,17 +53,20 @@ def plugin_of(table: Table) -> Plugin:
 
 
 class WriteAs(StrEnum):
-    """[agents] identity: whom a write through `shipmill gh` goes as (spec 037)"""
+    """[agents] identity: whom a write through `shipmill gh` goes as (spec 037, spec 082)"""
 
     APP = "app"  # the App, when app_id is set; refused when it isn't
     HOST = "host"  # the host's gh login, as the repo chose; never with app_id (D-14)
+    NONE = "none"  # nobody: the repo's owner chose that agents don't write to GitHub here; never with app_id
 
 
 def identity_of(table: Table) -> WriteAs:
     """[agents] identity: "app" when absent; any other value, or one that isn't a string, exits 2"""
     value = table.raw.get("identity", WriteAs.APP.value)
     if not isinstance(value, str) or value not in {i.value for i in WriteAs}:
-        raise ReleaseError(f'{CONFIG_PATH}: [agents] identity must be "app" (the default) or "host", got {value!r}')
+        raise ReleaseError(
+            f'{CONFIG_PATH}: [agents] identity must be "app" (the default), "host", or "none", got {value!r}'
+        )
     return WriteAs(value)
 
 
@@ -351,6 +354,11 @@ class AgentsConfig:
             raise ReleaseError(
                 f'{CONFIG_PATH}: [agents] identity = "host" and [agents] app_id can\'t both be set: a repo with an '
                 'App writes as the App or not at all (D-14); delete identity, or set it to "app"'
+            )
+        if identity is WriteAs.NONE and app_id is not None:
+            raise ReleaseError(
+                f'{CONFIG_PATH}: [agents] identity = "none" and [agents] app_id can\'t both be set: "none" says '
+                "agents don't write to GitHub here, app_id that they write as the App; delete one of them"
             )
         retry = table.integer("retry_hours", default=24, low=1, high=_MAX_HOURS)
         prune_hours = table.integer("prune_hours", default=_PRUNE_HOURS, low=0, high=_MAX_HOURS)

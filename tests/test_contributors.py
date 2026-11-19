@@ -358,6 +358,12 @@ elif any(a.endswith("marketplace.json") for a in args):
     print(json.dumps({{"plugins": [entry]}}))
 elif args[:1] == ["api"] and "repos/romamo/demo" in args:
     print("true")
+elif args[:2] == ["api", "users/romamo"]:  # the Identity row's siblings (spec 082): the owner's kind
+    print("User")
+elif args[:2] == ["api", "user"]:
+    print("romamo")
+elif args[:2] == ["api", "--paginate"]:  # the owner's repos: this one alone, so no sibling
+    print("false romamo/demo")
 elif args[:2] == ["label", "create"]:
     pass
 else:
