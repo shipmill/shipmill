@@ -21,7 +21,14 @@ For each open issue:
                    IN_PROGRESS
   DONE_NOT_CLOSED  a PR that closes it merged, none open, issue still open. A merged
                    "Part of #N" PR alone doesn't count: the rest of the issue is
-                   still owed, so the issue reads as its other state
+                   still owed, so the issue reads as its other state. Nor does a
+                   merged #N the --bot-login's comment whose first line is
+                   <!-- shipmill:reverted #N by #R --> names (spec 079), while its
+                   revert #R stands: open, the issue reads BLOCKED, "revert #R of
+                   #N open", read right after IN_PROGRESS; merged, it reads its
+                   other state (NEEDS_PR for a triaged implement), #N noted
+                   #N:reverted. Once #R closed unmerged, #N counts again. The same
+                   marker by anyone else, or without --bot-login, counts for nothing
   BLOCKED          labelled blocked, or a comment says it is on hold / blocked /
                    waiting on an upstream issue that is still open, or on a pull
                    request (such as a spec PR) that is still open. The hold line
@@ -808,6 +815,9 @@ HANDOFF_MARKER = "<!-- shipmill:handoff -->"
 VERIFIED_MARKER = "<!-- shipmill:verified -->"
 # A trusted comment after a close saying it was right: SUSPECT_CLOSE stops reading it (D-29)
 CLOSE_CONFIRMED_MARKER = "<!-- shipmill:close-confirmed -->"
+# The --bot-login's comment on an issue `shipmill revert open` reopened (spec 079): merged #N,
+# which closed it, is being reverted in #R
+REVERTED_MARKER = re.compile(r"<!-- shipmill:reverted #(?P<pr>\d+) by #(?P<revert>\d+) -->")
 # A trusted comment saying a parent's ## Check failed: it reads CHECK_FAILED until a hold closes after it (spec 042)
 CHECK_FAILED_MARKER = "<!-- shipmill:check-failed -->"
 # A trusted comment saying a person runs a parent's ## Check by hand, on the needs-decision answer
@@ -1465,6 +1475,21 @@ def merged_mentions(issue: dict[str, Any]) -> list[int]:
     )
 
 
+def reverts(issue: dict[str, Any], bot_login: str | None) -> dict[int, int]:
+    """Spec 079: each merged pull request #N that `shipmill revert open` reopened the issue
+    over, with its revert #R, read from the --bot-login's comments whose first line is
+    `<!-- shipmill:reverted #N by #R -->`, the newest per #N. None without --bot-login: the
+    same marker by anyone else counts for nothing"""
+    if bot_login is None:
+        return {}
+    found: dict[int, int] = {}
+    for c in issue["comments"]["nodes"]:
+        mark = REVERTED_MARKER.fullmatch(first_line(c["body"]))
+        if mark is not None and same_login(login(c.get("author")), bot_login):
+            found[int(mark["pr"])] = int(mark["revert"])
+    return found
+
+
 def merged_closers(issue: dict[str, Any]) -> list[int]:
     """Same-repo merged PRs that close the issue: GitHub's willCloseTarget, or a closing
     keyword naming it by keyword_closes' rule, the link DONE_NOT_CLOSED reads too"""
@@ -2053,8 +2078,18 @@ def classify_open(
     triage = [c["body"] for c in triaged]
     prs = linked_prs(issue)
     open_prs = [n for n, s, _ in prs if s == "OPEN"]
-    merged = [n for n, s, whole in prs if s == "MERGED" and whole]
-    note = " ".join(f"#{n}:{s.lower()}" + ("" if whole else "(part)") for n, s, whole in prs)
+    # Spec 079: a merged #N whose revert #R the --bot-login reopened the issue over closes it
+    # no more while #R stands (open or merged); once #R closed unmerged, #N counts again
+    standing = {
+        n: (r, states.get((*repo, r), "UNKNOWN"))
+        for n, r in reverts(issue, bot_login).items()
+        if states.get((*repo, r)) != "CLOSED_UNMERGED"
+    }
+    merged = [n for n, s, whole in prs if s == "MERGED" and whole and n not in standing]
+    note = " ".join(
+        f"#{n}:{'reverted' if s == 'MERGED' and n in standing else s.lower()}" + ("" if whole else "(part)")
+        for n, s, whole in prs
+    )
     people = assignees(issue) if human else []
     teams: tuple[str, ...] = ()
     if human and roles is None and not people:
@@ -2072,6 +2107,10 @@ def classify_open(
         return ("AGENT_DRAFT_HELD" if any(drafts[n] for n in open_prs) else "AGENT_DRAFT"), shown
     if open_prs and not human:
         return "IN_PROGRESS", note
+    pending = [f"revert #{r} of #{n} {s.lower()}" for n, (r, s) in sorted(standing.items()) if s != "MERGED"]
+    if pending and not human:
+        # Spec 079: nothing builds the fix again until the revert lands
+        return "BLOCKED", " | ".join(pending)
     if merged and not human:
         return "DONE_NOT_CLOSED", note
     # The body's dependencies are older than every comment; a comment naming one too is newer.
@@ -2796,6 +2835,8 @@ def main() -> int:
     rows: list[dict[str, Any]] = []
     refs = {r for issue in data["open"]["nodes"] for r in upstream_refs(issue, (owner, name))}
     refs |= {r for issue in data["open"]["nodes"] for r in dependency_refs(issue, (owner, name))}
+    # Spec 079: the reverts the --bot-login reopened an issue over, whose state decides its reading
+    refs |= {(owner, name, r) for issue in data["open"]["nodes"] for r in reverts(issue, args.bot_login).values()}
     # The forge's relations came with their states: ask only for the others
     holds = {r: h for issue in data["open"]["nodes"] for r, h in native_holds(issue).items()}
     native = {r: s for r, (_, s, _) in holds.items()}

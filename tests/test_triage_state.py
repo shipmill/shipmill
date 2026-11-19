@@ -444,6 +444,77 @@ def test_416_a_line_start_or_title_closing_keyword_still_links(ts: ModuleType, t
     assert classify(ts, item) == "DONE_NOT_CLOSED"
 
 
+BOT = "shipmill-app[bot]"
+REVERTED = "<!-- shipmill:reverted #8 by #30 -->\nReopened: #8, which closed this, is being reverted in #30."
+
+
+def reopened(author: dict[str, Any] | None, verdict: str = "Triage: **implement**") -> dict[str, Any]:
+    """#12, which merged #8 closed and `shipmill revert open` reopened, with its marker comment"""
+    item = issue(("2026-09-01T10:00:00Z", verdict))
+    item["number"] = 12
+    item["comments"]["nodes"].append({"createdAt": "2026-09-05T10:00:00Z", "body": REVERTED, "author": author})
+    pr = {"number": 8, "state": "MERGED", "title": "a change", "body": "Fixes #12"}
+    item["timelineItems"] = {"nodes": [{"willCloseTarget": True, "isCrossRepository": False, "source": pr}]}
+    return item
+
+
+def read_reopened(ts: ModuleType, item: dict[str, Any], revert: str | None) -> tuple[str, str]:
+    states = {} if revert is None else {("o", "r", 30): revert}
+    found: tuple[str, str] = ts.classify_open(item, "Triage:", "postponed", states, None, REPO, BOT)
+    return found
+
+
+# proves: S-079-13
+@pytest.mark.parametrize(
+    ("revert", "expected"),
+    [
+        ("OPEN", ("BLOCKED", "revert #30 of #8 open")),
+        ("MERGED", ("NEEDS_PR", "#8:reverted")),
+        ("CLOSED_UNMERGED", ("DONE_NOT_CLOSED", "#8:merged")),
+    ],
+)
+def test_s079_13_an_issue_a_revert_reopened_reads_as_work_again(
+    ts: ModuleType, revert: str, expected: tuple[str, str]
+) -> None:
+    bot = {"login": "shipmill-app", "__typename": "Bot"}  # GraphQL spells a Bot's login without [bot]
+    item = reopened(bot)
+    assert ts.reverts(item, BOT) == {8: 30}
+    assert read_reopened(ts, item, revert) == expected
+
+
+def test_s079_13_a_merged_revert_leaves_a_triaged_issue_s_other_state(ts: ModuleType) -> None:
+    item = reopened({"login": "shipmill-app", "__typename": "Bot"}, "Triage: clarify, which flag?")
+    assert read_reopened(ts, item, "MERGED") == ("TRIAGED", "#8:reverted")
+
+
+# proves: S-079-13
+@pytest.mark.parametrize(
+    "author",
+    [{"login": "mallory", "__typename": "User"}, {"login": "octocat", "__typename": "User"}, None],
+)
+@pytest.mark.parametrize("revert", ["OPEN", "MERGED", None])
+def test_s079_13_the_marker_by_anyone_else_changes_nothing(
+    ts: ModuleType, author: dict[str, Any] | None, revert: str | None
+) -> None:
+    item = reopened(author)
+    assert ts.reverts(item, BOT) == {}
+    assert read_reopened(ts, item, revert) == ("DONE_NOT_CLOSED", "#8:merged")
+
+
+# proves: S-079-13
+def test_s079_13_without_bot_login_the_marker_counts_for_nothing(ts: ModuleType) -> None:
+    item = reopened({"login": "shipmill-app", "__typename": "Bot"})
+    assert ts.reverts(item, None) == {}
+    states = {("o", "r", 30): "OPEN"}
+    assert ts.classify_open(item, "Triage:", "postponed", states, None, REPO) == ("DONE_NOT_CLOSED", "#8:merged")
+
+
+def test_s079_13_a_marker_quoted_below_the_first_line_counts_for_nothing(ts: ModuleType) -> None:
+    item = reopened({"login": "shipmill-app", "__typename": "Bot"})
+    item["comments"]["nodes"][-1]["body"] = f"As the bot said:\n{REVERTED}"
+    assert read_reopened(ts, item, "OPEN") == ("DONE_NOT_CLOSED", "#8:merged")
+
+
 def test_416_github_s_link_and_part_of_anywhere_still_link(ts: ModuleType) -> None:
     # a cross-repo or full-URL closer reaches triage as GitHub's willCloseTarget
     linked = {"number": 8, "state": "MERGED", "title": "x", "body": "Fixes https://github.com/o/r/issues/12"}
