@@ -129,9 +129,10 @@ Labels (the triage skills and shipmill read them):
                    038), decided (a notify decision, spec 030), and
                    shipmill-direction (the question for a missing direction,
                    spec 034), opportunity and planned (product intake's
-                   opportunity and its accept, spec 068), and expedite and
+                   opportunity and its accept, spec 068), expedite and
                    fixed-date (an accepted opportunity's class of service,
-                   spec 070) don't exist, with
+                   spec 070), and rule-proposal (the weekly retro's proposed
+                   rule, spec 077) don't exist, with
                    [agents] app_id also
                    shipmill-permission (the App owner's item for a permission
                    to grant, spec 060), and with a [land.window] section, with
@@ -271,6 +272,10 @@ OPPORTUNITY = "opportunity"
 OPPORTUNITY_LABEL = ("0e8a16", "A user outcome waiting for the maintainer to accept or decline")
 PLANNED = "planned"
 PLANNED_LABEL = ("1d76db", "Accepted opportunity, goes through the spec gate")
+# Wanted wherever needs-decision is (spec 077): the weekly retro's proposed rule for a finding
+# that recurred, which the maintainer accepts or declines
+RULE_PROPOSAL = "rule-proposal"
+RULE_PROPOSAL_LABEL = ("c5def5", "A rule or check the weekly retro proposes for a recurring review finding")
 # Wanted with [agents] app_id (spec 060): the App's owner's item for a permission a release
 # added, which the gate finds its issue by
 PERMISSION = "shipmill-permission"
@@ -1010,6 +1015,7 @@ def wanted_labels(repo_dir: Path, ws: ModuleType | None = None) -> dict[str, tup
         wanted[PLANNED] = PLANNED_LABEL  # the maintainer's accept of an opportunity (spec 068)
         wanted[EXPEDITE] = EXPEDITE_LABEL  # an accepted opportunity's classes of service (spec 070)
         wanted[FIXED_DATE] = FIXED_DATE_LABEL
+        wanted[RULE_PROPOSAL] = RULE_PROPOSAL_LABEL  # the retro's proposed rule (spec 077)
         if sets_app_id(section):  # the App's owner's item for a permission to grant (spec 060)
             wanted[PERMISSION] = PERMISSION_LABEL
     mentions_land = config is not None and "land" in config.read_text(encoding="utf-8")

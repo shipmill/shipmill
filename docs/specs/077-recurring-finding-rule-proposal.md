@@ -1,6 +1,6 @@
 # S-077: A finding that recurs in a repo reaches the maintainer once, as a proposed rule or check
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -233,3 +233,20 @@ Touched areas: `skills/github-ship-watch/scripts/retro.py` (`findings`, `proposa
 - shipmill/shipmill#1284: S-077-10, S-077-11, S-077-12, S-077-13, S-077-14
 
 ## Verification
+
+Checked on the default branch plus #1284's pull request: `retro.py findings shipmill/shipmill --days 1` and `retro.py proposal` run against this repo, the documents read, and the tests `specs.py coverage --spec 077` lists, all passing.
+
+- S-077-1: `findings shipmill/shipmill --days 1 --bot shipmill-romamo[bot]` lists the day's closed pull requests newest first, each review record as an `F-n` `record` item with its author, head SHA, and cited `D-n` and `Q-n` ids; `test_s077_1_*` covers the `review` and `comment` items with `path:line` and a pull request closed before the window
+- S-077-2: `test_s077_2_*` lists an unmerged pull request's newest trusted comment at or before the close as a `refusal`, and none for a merged one
+- S-077-3: `test_s077_3_*` leaves out an outsider's review, comment, and closing comment and a person's marked review in the text and `--json`, drops a pull request left empty, and cuts a long text at 600 characters with `…`
+- S-077-4: `test_s077_4_*` lists the trusted, marked `rule-proposal` issues as `open`, `accepted`, and `declined` whatever their age, and leaves out an outsider's and an unmarked one
+- S-077-5: `test_s077_5_*` reads `--json`'s `window`, `findings`, and `proposed`, and exits 2 with no list on `--days 0`, a window at the closed pull request limit, and a failed read
+- S-077-6: `test_s077_6_*` exits 2 naming each fault of the marker, the sections, the Rule's length and lines, and a missing `- #N`, reading nothing; a 200-character Rule passes
+- S-077-7: `test_s077_7_*` exits 2 for each missing piece of a check place's Enforced by, Shown failing (`Command:`, a 40-character `Head:`, a non-zero `Exit:`, 1 to 30 output lines), and On the default branch, and for a prose body without Why prose
+- S-077-8: `test_s077_8_*` prints `DUPLICATE #N (<state>): <title>` with exit 1 for an open, an accepted, and a long-declined proposal of the same rule, case, punctuation, and spacing aside
+- S-077-9: `proposal tmp/rule-check.md --repo shipmill/shipmill`, a body filled from rule-proposal.md's template, exits 0 printing `Rule: In apps/api the dev script is start:dev, not dev`; `test_s077_9_*` prints `FULL: 3 proposals wait on an answer` with exit 1, an open proposal without `needs-decision` not counted
+- S-077-10: rule-proposal.md's template has the six sections in order and no `## Check`, and filled in it passes `proposal_fault`; The place gives the order and the first place the repo's CI can hold; Filing it files only a body `retro.py proposal` exits 0 on, as the App, with `rule-proposal` and `needs-decision` (`test_s077_10_*`)
+- S-077-11: rule-proposal.md's Shown failing runs the check in a throwaway worktree at a head a finding was raised on, a merged pull request's or a trusted author's only, drops a place whose check doesn't fail there, and removes the worktree with nothing pushed (`test_s077_11_*`)
+- S-077-12: the Weekly retro's step 2 runs `retro.py findings`, takes a group across two or more pull requests as recurring, names the three reasons to drop one, and proposes at most three; step 3 says its change proposals no longer come from review findings; the closing paragraph names `REVIEW.md`, `CLAUDE.md`, `AGENTS.md`, the repo's checks, and its CI workflows (`test_s077_12_*`)
+- S-077-13: rule-proposal.md's question has the zone line `unknown` and the options Accept and Decline; needs-decision.md's Taking up an answered item sends a `rule-proposal` issue there, an accept removing `needs-decision`, adding `role:maintainer`, assigning the maintainer's users, with no **implement** verdict, a decline commenting the reason and closing as not planned with the label kept (`test_s077_13_*`)
+- S-077-14: shipmill-setup's SKILL.md lists `rule-proposal` among the `[agents]` labels in both of its lists, and `setup_state.py`'s `wanted_labels` wants it with `[agents]` and not without (`test_s077_14_*`)

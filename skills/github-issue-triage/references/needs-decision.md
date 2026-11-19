@@ -221,6 +221,8 @@ On a pull request, an answer that keeps the merge for the maintainer ("hold it: 
 
 On a spec PR, a trusted answer that takes every recommendation unchanged is the spec's approval: the session lands the spec PR through github-pr-triage once it is mergeable and green, rather than leaving the merge to the maintainer, who may still merge it by hand; an answer that changes a recommendation revises the spec and asks again, and a spec PR that edits `docs/product.md` stays the maintainer's to merge (D-49, D-34, [spec-gate.md](spec-gate.md#approved-by-an-answer)).
 
+On an issue labelled `rule-proposal` (spec 077), the weekly retro's proposed rule, take the answer up as [rule-proposal.md](../../github-ship-watch/references/rule-proposal.md#taking-up-the-answer) says. An accept removes `needs-decision`, adds `role:maintainer`, and assigns the maintainer's users (as `shipmill roles` resolves the maintainer role), so the issue reads as a person's item, and posts no **implement** verdict: no implementer is dispatched, and shipmill writes none of the rule or its check. A decline comments the reason as given and closes the issue as not planned, with the `rule-proposal` label kept, so `retro.py findings` lists it as `declined` and the rule is never proposed again.
+
 ## What `shipmill gh` refuses
 
 With `[agents] app_id` set, `shipmill gh issue edit` and `shipmill gh pr edit` read the item's comments before the `needs-decision` label moves, by `triage_state.py`'s own question and reply readers and retro.py's `parse_relay`, and refuse with exit 2, gh never running, naming what is missing and the comment that would satisfy it (#1312). The flag counts alone or in a comma list (`--add-label bug,needs-decision`); every other edit reads nothing:

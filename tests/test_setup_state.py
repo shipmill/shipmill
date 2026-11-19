@@ -278,6 +278,7 @@ AGENT_LABELS = {
     "planned",
     "expedite",
     "fixed-date",
+    "rule-proposal",  # spec 077: the weekly retro's proposed rule
 }
 
 
