@@ -635,7 +635,7 @@ def test_s080_13_no_gh_or_no_github_origin_warns(
     # proves: S-080-13
     for land in Autonomy:
         assert _report(tmp_path, reader, land, repo).lines() == [
-            ("WARN", f"{said}; the checks stay unjudged; main requires no status check; land is {land}")
+            ("WARN", f"{said}; the checks stay unjudged; no required check was read; land is {land}")
         ]
     assert reader is None or reader.reads == []
 
@@ -745,7 +745,7 @@ def test_s080_13_the_command_exits_0_on_a_read_that_fails(repo: Repo, capsys: py
     assert _run(repo, "--land", "act", reader=FakeRules()) == 0
     assert capsys.readouterr().out == (
         "WARN merge-checks: can't read the required checks: this checkout's origin isn't a GitHub repository; the"
-        " checks stay unjudged; main requires no status check; land is act\n"
+        " checks stay unjudged; no required check was read; land is act\n"
     )
 
 

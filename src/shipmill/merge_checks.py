@@ -715,6 +715,8 @@ class Report:
         return tuple(c for c in self.checks if c.coverage.proves)
 
     def _facts(self) -> str:
+        if not self.checks and self.unread:  # a read that failed may have held some
+            return f"no required check was read; land is {self.land}"
         if not self.checks:
             return f"{self.branch} requires no status check; land is {self.land}"
         kinds = coverage(c for check in self.proving for job in check.jobs for c in job.reading.commands)
