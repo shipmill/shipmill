@@ -3542,6 +3542,54 @@ def test_1309_a_veto_on_an_issue_the_pr_is_only_part_of_keeps_the_verdict(tmp_pa
     assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
 
 
+# #1330: a thread cut off at its newest 100 comments, its decided marker older than them
+CUT_OFF_LINE = (
+    "  decided: the thread of #{n} is cut off at 100 comments: a veto in it can't be ruled out handled or not, "
+    "so a person looks"
+)
+
+
+@pytest.mark.parametrize("where", [7, 12], ids=["on the PR", "on the issue it closes"])
+def test_1330_a_veto_in_a_cut_off_thread_blocks_the_merge(tmp_path: Path, where: int) -> None:
+    """the decided marker is older than the window read, so unhandled_veto finds none in it; a
+    trusted veto in the window can't be ruled out, and the PR reads BLOCKED (exit 4)"""
+    cut = thread(comment("an earlier note", at(11)), VETO, whole=False)
+    threads = {7: cut if where == 7 else thread()}
+    issues = {12: cut if where == 12 else thread()}
+    data = pr(body="Fixes #12", login="amy")
+    proc = run_gate(tmp_path, None, {7: data}, "--bot-login", BOT, threads=threads, issues=issues)
+    line = CUT_OFF_LINE.format(n=where)
+    assert (proc.returncode, proc.stdout) == (gate.BLOCKED, MAIN_BLOCKED + line + "\n"), proc.stderr
+
+
+@pytest.mark.parametrize(
+    "comments",
+    [
+        pytest.param((comment("an earlier note", at(11)),), id="no veto in the window"),
+        pytest.param((VETO, HANDLED), id="a veto handled in the window"),
+        pytest.param((comment("Veto", at(12), login="amy", association="CONTRIBUTOR"),), id="outsider"),
+        pytest.param((comment("veto\n\n<!-- shipmill:agent -->", at(12)),), id="agent marker"),
+    ],
+)
+def test_1330_a_cut_off_thread_with_no_open_veto_keeps_the_verdict(
+    tmp_path: Path, comments: tuple[dict[str, Any], ...]
+) -> None:
+    proc = veto_gate(tmp_path, issues={12: thread(*comments, whole=False)})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+
+
+def test_1330_a_complete_thread_reads_as_before(tmp_path: Path) -> None:
+    """the same window, whole: no decided marker, so no veto counts"""
+    proc = veto_gate(tmp_path, issues={12: thread(comment("an earlier note", at(11)), VETO)})
+    assert (proc.returncode, proc.stdout) == (0, MAIN_READY), proc.stderr
+
+
+def test_1330_an_unhandled_veto_in_a_cut_off_thread_reads_as_before(tmp_path: Path) -> None:
+    """the decided marker is in the window: the veto reads as #1309 reads it"""
+    proc = veto_gate(tmp_path, issues={12: thread(decided_by_app(), VETO, whole=False)})
+    assert (proc.returncode, proc.stdout) == (gate.BLOCKED, MAIN_BLOCKED + VETOED_LINE + "\n"), proc.stderr
+
+
 def test_1309_a_vetoed_pr_reads_blocked_over_a_decision_or_red_ci(tmp_path: Path, directed: Path) -> None:
     """a vetoed PR waits on the veto's take-up first, even when a decision or red CI holds it too"""
     data = pr(files=("src/land.py",))

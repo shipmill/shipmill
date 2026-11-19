@@ -88,7 +88,11 @@ COLLABORATOR, a comment by an OWNER, MEMBER, or COLLABORATOR other than the --bo
 agent marker, whose first word is `veto`, with no newer `<!-- shipmill:veto-handled ... -->` by
 such an author. It reads the newest 100 comments of each, in one GraphQL read of the PR's thread
 and those of the issues it closes or names as Part of #N, which the answer above reads too. A
-vetoed PR reads BLOCKED whatever else holds it, a draft or a closed one aside.
+thread with older comments unread fails closed (#1330): when those 100 hold no veto it reads as
+VETOED but do hold such a veto with no newer veto-handled marker after it, its decided marker may
+be older than them, and the PR is BLOCKED, `  decided: the thread of #N is cut off at 100 comments:
+a veto in it can't be ruled out handled or not, so a person looks`. A vetoed PR reads BLOCKED
+whatever else holds it, a draft or a closed one aside.
 
 A spec pull request (spec 053), one that adds a file docs/specs/NNN-<slug>.md (the files API's
 `status: added`; an edit, a rename, or a copy is not checked), names its feature issue: a line
@@ -181,11 +185,11 @@ held-for-a-decision PR keeps that verdict: QUEUED only takes READY's place.
 Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base's (D-75),
 or gh failed; 3 a check is still pending, on the PR's head or a base check rerunning a failure
 (#1310) (or --wait timed out); 4 a PR is not open, conflicts, or holds an unhandled veto
-(#1309); 5 a PR needs the maintainer's decision; 6 an agent's PR is refused for its plan, a
-spec PR names no open feature issue, or a PR's closing keyword names a Part of issue, an open
-one with a ## Check (D-76), or an open pull request, or its title or a commit writes a Dependabot
-alert as #N (#1321); 7 a PR only the maintainer
-merges, by hand (a `never` zone); 8 a draft PR (D-67); 9 an agent's code PR no review record
+(#1309) or one a thread cut off at 100 comments can't place (#1330); 5 a PR needs the
+maintainer's decision; 6 an agent's PR is refused for its plan, a spec PR names no open feature
+issue, or a PR's closing keyword names a Part of issue, an open one with a ## Check (D-76), or an
+open pull request, or its title or a commit writes a Dependabot alert as #N (#1321); 7 a PR only
+the maintainer merges, by hand (a `never` zone); 8 a draft PR (D-67); 9 an agent's code PR no review record
 covers (spec 055); 10 a held PR waits for the land window or its spacing (spec 056); 2 bad
 arguments, a base branch the checkout lacks, a git failure, a REVIEW.md, docs/product.md, or
 config the gate can't read, or a `shipmill decide classify` or `shipmill window` that fails or
@@ -1498,6 +1502,24 @@ def threads_of(data: dict, number: int, repo: str | None) -> tuple[dict, Issues]
 
 # a trusted veto of a decision taken at notify, not handled (D-48, #1309)
 VETOED = "vetoed by @{login} at {at}, not handled"
+# a thread cut off at the newest 100 comments, holding a veto its read can't place (#1330)
+VETO_CUT_OFF = (
+    "the thread of {where} is cut off at 100 comments: a veto in it can't be ruled out handled or not, "
+    "so a person looks"
+)
+
+
+def open_veto_in(ts: ModuleType, read: list[tuple[str, str, str]], bot_login: str | None) -> bool:
+    """Whether a window of a thread's comments holds a veto (triage_state.py's vetoes) that no newer
+    veto-handled marker by the --bot-login or an OWNER, MEMBER, or COLLABORATOR in it answers: the
+    decided marker may be older than the window, so such a veto may count (#1330)"""
+    veto, handled = -1, -1
+    for i, (author, association, body) in enumerate(read):
+        if ts.VETO_HANDLED_MARKER.match(ts.first_line(body)) and ts.trusted(author, association, bot_login):
+            handled = i
+        elif ts.vetoes(read[i], bot_login):
+            veto = i
+    return veto > handled
 
 
 def vetoes_of(data: dict, number: int, thread: dict, issues: Issues, bot_login: str | None) -> tuple[str, ...]:
@@ -1506,7 +1528,9 @@ def vetoes_of(data: dict, number: int, thread: dict, issues: Issues, bot_login: 
     the first decided marker by the --bot-login or an OWNER, MEMBER, or COLLABORATOR, a comment by an
     OWNER, MEMBER, or COLLABORATOR other than the --bot-login, without the agent marker, whose first
     word is `veto`, with no newer veto-handled marker by such an author. The newest 100 comments of
-    each are read, as for the answer"""
+    each are read, as for the answer; a thread with older ones unread, where unhandled_veto finds
+    none but the window holds such a veto with no newer veto-handled marker, fails closed with
+    VETO_CUT_OFF, since its decided marker may be older than the window (#1330)"""
     ts = triage_state()
     closes = ts.keyword_closes(str(data.get("title") or ""), str(data.get("body") or ""))
     nodes = [(f"#{number}", thread)]
@@ -1516,13 +1540,15 @@ def vetoes_of(data: dict, number: int, thread: dict, issues: Issues, bot_login: 
             nodes.append((f"#{n}", issue))
     found: list[str] = []
     for where, node in nodes:
-        comments, _ = comments_of(node, where)
+        comments, whole = comments_of(node, where)
         read = ts.comment_tuples(node)
         at = ts.unhandled_veto(read, bot_login)
         if at is not None:
             when = moment(comments[at]["createdAt"], f"a comment of {where}'s createdAt")
             stamp = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: UP017 (3.10)
             found.append(VETOED.format(login=read[at][0], at=stamp))
+        elif not whole and open_veto_in(ts, read, bot_login):
+            found.append(VETO_CUT_OFF.format(where=where))
     return tuple(found)
 
 
