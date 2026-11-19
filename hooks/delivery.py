@@ -20,7 +20,9 @@ Stdlib only and Python 3.11+ (tomllib), since the plugin can't import the instal
 The hooks catch an agent's mistake: a command shlex can't split, and `bash -c`, `eval`,
 `$(...)`, and here-documents, pass; the trust filter (D-16) is the control against hostile
 text. No command but a `git push`, and no edit but of the direction or a REVIEW.md, may start
-a process, and each call reads a repo's config, and its pyproject.toml, at most once.
+a process, and each call reads a repo's config, and its pyproject.toml, at most once. A `gh api
+graphql` call's `-F query=@file`, `-F <variable>=@file`, and --input file are read too, to tell
+a merge mutation's mergeMethod (#1373); one the hook can't read, such as stdin, is refused.
 
 The app-writes rule applies only where the App is available to the session (spec 033, D-54):
 a non-empty SHIPMILL_APP_KEY in the hook's own environment, which shipmill gate sets on every
@@ -43,6 +45,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -632,13 +635,46 @@ API_VALUE_OPTIONS = frozenset(
 )
 
 
-def _api_write(args: Sequence[str]) -> bool:
-    """`gh api`: -X other than GET, or a field or --input without -X GET; for graphql, a query
-    that holds mutation. A query read from a file (`-F query=@file`) or --input counts as a
-    write, since the hook reads no file: `shipmill gh` runs a read as well"""
+@dataclass(frozen=True)
+class ApiField:
+    """One `gh api` field, `key=value`: its flag (-f, -F, --field, --raw-field), and the index of
+    the word holding it in gh's arguments"""
+
+    flag: str
+    text: str  # key=value
+    word: int
+
+    @property
+    def key(self) -> str:
+        return self.text.partition("=")[0]
+
+    @property
+    def value(self) -> str:
+        return self.text.partition("=")[2]
+
+    @property
+    def typed(self) -> bool:
+        """-F and --field read `@file` as the file's contents; -f and --raw-field never do"""
+        return self.flag in ("-F", "--field")
+
+
+@dataclass(frozen=True)
+class ApiCall:
+    method: str | None  # -X's value
+    fields: tuple[ApiField, ...]
+    inputs: tuple[str, ...]  # each --input's value
+    endpoint: str | None
+
+    @property
+    def graphql(self) -> bool:
+        return self.endpoint is not None and (self.endpoint == "graphql" or self.endpoint.endswith("/graphql"))
+
+
+def api_call(args: Sequence[str]) -> ApiCall:
+    """`gh api`'s method, fields, --input files, and endpoint, from gh's arguments"""
     method: str | None = None
-    fields: list[tuple[str, str]] = []
-    has_input = False
+    fields: list[ApiField] = []
+    inputs: list[str] = []
     endpoint: str | None = None
     i = 1
     while i < len(args):
@@ -652,27 +688,35 @@ def _api_write(args: Sequence[str]) -> bool:
         elif word.startswith("-X"):
             method = word[2:]
         elif word in API_FIELDS:
-            fields.append((word, value))
+            fields.append(ApiField(word, value, i + 1))
             i += 1
         elif eq and long in ("--field", "--raw-field"):
-            fields.append((long, attached))
+            fields.append(ApiField(long, attached, i))
         elif word[:2] in ("-f", "-F") and len(word) > 2:
-            fields.append((word[:2], word[2:]))
+            fields.append(ApiField(word[:2], word[2:], i))
         elif word == "--input" or long == "--input":
-            has_input = True
+            inputs.append(attached if eq else value)
             i += 0 if eq else 1
         elif word in API_VALUE_OPTIONS:
             i += 1
         elif not word.startswith("-") and endpoint is None:
             endpoint = word
         i += 1
-    if endpoint == "graphql":
-        queries = [(flag, v.partition("=")[2]) for flag, v in fields if v.partition("=")[0] == "query"]
-        from_file = any(flag in ("-F", "--field") and q.startswith("@") for flag, q in queries)
-        return has_input or from_file or any("mutation" in q for _, q in queries)
-    if method is not None:
-        return method.upper() != "GET"
-    return bool(fields) or has_input
+    return ApiCall(method, tuple(fields), tuple(inputs), endpoint)
+
+
+def _api_write(args: Sequence[str]) -> bool:
+    """`gh api`: -X other than GET, or a field or --input without -X GET; for graphql, a query
+    that holds mutation. A query read from a file (`-F query=@file`) or --input counts as a
+    write, since the hook reads no file to tell: `shipmill gh` runs a read as well"""
+    call = api_call(args)
+    if call.endpoint == "graphql":
+        queries = [f for f in call.fields if f.key == "query"]
+        from_file = any(f.typed and f.value.startswith("@") for f in queries)
+        return bool(call.inputs) or from_file or any("mutation" in f.value for f in queries)
+    if call.method is not None:
+        return call.method.upper() != "GET"
+    return bool(call.fields) or bool(call.inputs)
 
 
 def is_gh_write(args: Sequence[str]) -> bool:
@@ -767,24 +811,237 @@ def _merge_swap(args: Sequence[str], method: str, to: str) -> list[str] | None:
     return [*out, f"--{to}"] if named else None
 
 
+# GraphQL's merge mutations (#1373): each takes mergeMethod, MERGE when omitted
+GRAPHQL_MERGE = re.compile(r"\b(?:mergePullRequest|enablePullRequestAutoMerge)\s*\(")
+# what the hook reads past in a query: a block string, a string, a comment
+GRAPHQL_SKIP = re.compile(r'"""(?:\\"""|[^"]|"(?!""))*"""|"(?:\\.|[^"\\\n])*"|#[^\n\r]*')
+GRAPHQL_METHOD = re.compile(r"\bmergeMethod\b(?:\s*:\s*(\$?[A-Za-z_]\w*))?")
+GRAPHQL_INPUT = re.compile(r"\binput\s*:\s*\$([A-Za-z_]\w*)")
+GRAPHQL_FIELD_KEY = re.compile(r"^([^\[\]]+)\[([^\[\]]+)\]$")  # gh's nested field, input[mergeMethod]
+GRAPHQL_METHODS = frozenset({"MERGE", "SQUASH", "REBASE"})
+
+
+@dataclass(frozen=True)
+class Written:
+    """A value as gh sends it, and where the command writes it: the index of the word in gh's
+    arguments, or the file gh reads it from"""
+
+    value: object
+    word: int | None = None
+    file: str | None = None
+    literal: bool = False  # the word is a query that holds the value inline
+
+
+@dataclass(frozen=True)
+class Unread:
+    """A variable's value from a file the hook can't read, such as stdin"""
+
+    why: str
+
+
+@dataclass(frozen=True)
+class Merges:
+    """A gh api graphql call's merge mutations: each method it names (MERGE for one it omits),
+    upper-case, and why the hook can't tell one, or None when it can tell them all"""
+
+    methods: tuple[Written, ...]
+    unread: str | None
+
+
+GRAPHQL_FILE_MAX = 1 << 20  # a query or body file past this is not read: it counts as unread
+
+
+def _graphql_file(path: str, cwd: Path) -> str | None:
+    """A file gh reads for `@path` or --input path; None for stdin, a file the hook can't read,
+    one past GRAPHQL_FILE_MAX, or no regular file: a FIFO or a device such as /dev/zero or
+    /dev/stdin would hang the hook, which opens without blocking and reads regular files only"""
+    if path in ("", "-"):
+        return None
+    try:
+        fd = os.open(Path(cwd, os.path.expanduser(path)), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "rb") as file:
+            if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+                return None
+            data = file.read(GRAPHQL_FILE_MAX + 1)
+    except OSError:
+        return None
+    if len(data) > GRAPHQL_FILE_MAX:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _graphql_args(text: str, at: int) -> str | None:
+    """The argument list of the call whose ( is at text[at - 1], to its ); None if unclosed"""
+    depth = 1
+    for i in range(at, len(text)):
+        depth += {"(": 1, ")": -1}.get(text[i], 0)
+        if depth == 0:
+            return text[at:i]
+    return None
+
+
+def graphql_merges(cmd: Simple, args: Sequence[str]) -> Merges | None:
+    """A gh api graphql call's merge mutations, mergePullRequest and enablePullRequestAutoMerge:
+    the query from -f/-F query= (an -F @file read), or from an --input file's JSON, and each
+    mutation's mergeMethod from a literal, a variable a field or the --input's variables gives,
+    or GitHub's default, MERGE. None when the call is no graphql call, or holds no merge
+    mutation and its whole query is read"""
+    api = api_call(args)
+    if not api.graphql:
+        return None
+    unread: list[str] = []
+    queries: list[Written] = []
+    scalars: dict[str, list[Written]] = {}  # a variable gh sends: m from -f m=SQUASH
+    objects: dict[str, dict[str, list[Written]]] = {}  # input from -f input[mergeMethod]=SQUASH
+
+    def why(path: str) -> str:
+        return f"{'stdin' if path in ('', '-') else path} cannot be read"
+
+    def read(path: str) -> str | None:
+        text = _graphql_file(path, cmd.cwd)
+        if text is None:
+            unread.append(why(path))
+        return text
+
+    for f in api.fields:
+        if f.typed and f.value.startswith("@") and f.key == "query":
+            text = read(f.value[1:])
+            if text is None:
+                continue
+            written = Written(text, file=f.value[1:])
+        elif f.typed and f.value.startswith("@"):  # a variable's file counts only if a merge reads it
+            text = _graphql_file(f.value[1:], cmd.cwd)
+            written = Written(Unread(why(f.value[1:])) if text is None else text.strip(), file=f.value[1:])
+        else:
+            written = Written(f.value, word=f.word, literal=f.key == "query")
+        nested = GRAPHQL_FIELD_KEY.match(f.key)
+        if f.key == "query":
+            queries.append(written)
+        elif nested is not None:
+            objects.setdefault(nested.group(1), {}).setdefault(nested.group(2), []).append(written)
+        elif f.key != "operationName":
+            scalars.setdefault(f.key, []).append(written)
+    for path in api.inputs:
+        text = read(path)
+        if text is None:
+            continue
+        try:
+            body = json.loads(text)
+        except json.JSONDecodeError:
+            unread.append(f"{path} is not JSON")
+            continue
+        if not isinstance(body, dict):
+            unread.append(f"{path} is not a JSON object")
+            continue
+        if isinstance(body.get("query"), str):
+            queries.append(Written(body["query"], file=path))
+        variables = body.get("variables")
+        for name, value in (variables if isinstance(variables, dict) else {}).items():
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    objects.setdefault(name, {}).setdefault(key, []).append(Written(item, file=path))
+            else:
+                scalars.setdefault(name, []).append(Written(value, file=path))
+
+    methods: list[Written] = []
+
+    def method(found: Written) -> None:
+        name = found.value.upper() if isinstance(found.value, str) else None
+        if name in GRAPHQL_METHODS:
+            methods.append(replace(found, value=name))
+        elif isinstance(found.value, Unread):
+            unread.append(found.value.why)
+        else:
+            unread.append(f"mergeMethod {found.value!r} names no merge method")
+
+    for query in queries:
+        assert isinstance(query.value, str)
+        text = GRAPHQL_SKIP.sub(lambda m: '""' if m.group().startswith('"') else " ", query.value)
+        for call in GRAPHQL_MERGE.finditer(text):
+            inside = _graphql_args(text, call.end())
+            if inside is None:
+                unread.append("its arguments do not close")
+                continue
+            named = list(GRAPHQL_METHOD.finditer(inside))
+            for found in named:
+                value = found.group(1)
+                if value is None:
+                    unread.append("a mergeMethod holds no enum value")
+                elif value.startswith("$"):
+                    given = scalars.get(value[1:], [])
+                    if not given:
+                        unread.append(f"{value} is not given")
+                    for written in given:
+                        method(written)
+                else:
+                    method(replace(query, value=value))
+            variable = GRAPHQL_INPUT.search(inside)
+            if not named and variable is not None:
+                name = variable.group(1)
+                if name not in objects:
+                    unread.append(f"${name} is not given")
+                for written in objects.get(name, {}).get("mergeMethod", []):
+                    method(written)
+                if name in objects and "mergeMethod" not in objects[name]:
+                    methods.append(Written("MERGE"))
+            elif not named:
+                methods.append(Written("MERGE"))
+    if not methods and not unread:
+        return None
+    return Merges(tuple(methods), unread[0] if unread else None)
+
+
+def _graphql_swapped(cmd: Simple, call: GhCall, merges: Merges, method: str, to: str) -> Simple | str | None:
+    """The call with each mergeMethod that names method swapped for to: in the query, or in the
+    field that gives its variable; what to change when a file names it; None when none does"""
+    old, new = method.upper(), to.upper()
+    hits = [w for w in merges.methods if w.value == old]
+    if not hits:
+        return None
+    files = sorted({w.file for w in hits if w.file is not None})
+    if files:
+        return f"set mergeMethod to {new} in {', '.join(files)}, then run: {cmd.text()}"
+    args = list(call.args(cmd))
+    swap = re.compile(rf"(\bmergeMethod\s*:\s*){old}\b", re.IGNORECASE)
+    for w in hits:
+        assert w.word is not None
+        word = args[w.word]
+        if w.literal:
+            args[w.word] = swap.sub(rf"\g<1>{new}", word)
+        else:  # the field's value is the word's tail: key=SQUASH, -fkey=SQUASH, --field=key=SQUASH
+            head, _, _ = word.rpartition("=")
+            args[w.word] = f"{head}={new}"
+    return _with_args(cmd, call, args)
+
+
 def _merge_guards(method: str) -> Callable[[Simple], bool]:
-    """A rule judging every gh pr merge, and a gh api call whose merge_method is method"""
+    """A rule judging every gh pr merge, a gh api call whose merge_method is method, and a gh
+    api graphql call with a merge mutation, or a query the hook can't read"""
 
     def guards(cmd: Simple) -> bool:
         call = gh_call(cmd)
         if call is None:
             return False
         args = call.args(cmd)
-        return gh_command(args) == ("pr", "merge") or (
-            gh_command(args)[0] == "api" and any(f"merge_method={method}" in word for word in args)
-        )
+        if gh_command(args) == ("pr", "merge"):
+            return True
+        if gh_command(args)[0] != "api":
+            return False
+        return any(f"merge_method={method}" in word for word in args) or graphql_merges(cmd, args) is not None
 
     return guards
 
 
-def _method_swapped(cmd: Simple, method: str, to: str) -> Simple | None:
-    """The command with method swapped for to: gh pr merge's flag, or a gh api call's
-    merge_method; None when it names no method"""
+def _method_swapped(cmd: Simple, method: str, to: str) -> Simple | str | None:
+    """The command with method swapped for to: gh pr merge's flag, a gh api call's
+    merge_method, or a graphql merge mutation's mergeMethod; what to do when the hook can't
+    read a mutation's method (fail closed, #1373); None when it names no method"""
     call = gh_call(cmd)
     if call is None:
         return None
@@ -793,18 +1050,28 @@ def _method_swapped(cmd: Simple, method: str, to: str) -> Simple | None:
     if (group, sub) == ("pr", "merge"):
         swapped = _merge_swap(args, method, to)
         return None if swapped is None else _with_args(cmd, call, swapped)
+    if group != "api":
+        return None
+    merges = graphql_merges(cmd, args)
+    if merges is not None:
+        if merges.unread is not None:
+            return (
+                f"the hook cannot read the mergeMethod of a merge mutation ({merges.unread}); write it inline,"
+                f" mergeMethod: {to.upper()}, in -f query=, or give its variable as a -f field, then run the call"
+            )
+        return _graphql_swapped(cmd, call, merges, method, to)
     field = f"merge_method={method}"
-    if group == "api" and any(field in word for word in args):
+    if any(field in word for word in args):
         return _with_args(cmd, call, [word.replace(field, f"merge_method={to}") for word in args])
     return None
 
 
-def _rebase_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
+def _rebase_check(cmd: Simple, config: Config, ctx: Context) -> Simple | str | None:
     """No rebase merge (D-96); instead, the method [agents] merge names"""
     return _method_swapped(cmd, "rebase", config.merge)
 
 
-def _method_check(cmd: Simple, config: Config, ctx: Context) -> Simple | None:
+def _method_check(cmd: Simple, config: Config, ctx: Context) -> Simple | str | None:
     """Spec 072: under [agents] merge = "merge", a squash merge; instead, a merge commit. Under
     "squash", or no key, both methods pass: --merge is how a stack's base lands, which the hook
     can't tell from another pull request (S-026-10)"""

@@ -34,6 +34,7 @@ APP = '[agents]\nprs = true\napp_id = 5209412\n[hooks]\nprivate = ["owner/**"]\n
 AGENTS = "[agents]\nprs = true\n"
 OFF = "[hooks]\ndefault_branch = false\n"
 RELEASE_ONLY = 'name = "demo"\nmode = "release"\n'
+MUTATION = 'mutation { addComment(input: {subjectId: "I_1", body: "hi"}) { clientMutationId } }\n'
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -77,13 +78,18 @@ def box(tmp_path_factory: pytest.TempPathFactory) -> Sandbox:
     base = tmp_path_factory.mktemp("hooks")
     outside = base / "outside"
     outside.mkdir()
-    return Sandbox(
+    sandbox = Sandbox(
         app=git_repo(base / "app", APP, origin=True),
         agents=git_repo(base / "agents", AGENTS),
         release=git_repo(base / "release", RELEASE_ONLY),
         bare=git_repo(base / "bare", None),
         outside=outside,
     )
+    # the query file S-026-3's `-F query=@mutation.graphql` names: one the hook can read finds
+    # no merge mutation in it (#1373), so app-writes alone judges the call
+    for root in (sandbox.app, sandbox.agents):
+        (root / "mutation.graphql").write_text(MUTATION, encoding="utf-8")
+    return sandbox
 
 
 def fixture(name: str, cwd: Path, command: str | None = None) -> dict[str, Any]:
@@ -762,6 +768,186 @@ def test_s072_4_a_rebase_is_refused_naming_d96_with_the_settings_method(
 ) -> None:
     instead = refused(bash(command, methods[value]), "rebase-merge", "D-96")
     assert instead == shlex.split(fixed.format(method=method))
+
+
+# --- #1373: a GraphQL merge mutation names its method too -----------------------------------
+
+VAR_QUERY = (
+    'mutation($m: PullRequestMergeMethod) { mergePullRequest(input: {pullRequestId: "PR_1", mergeMethod: $m})'
+    " { clientMutationId } }"
+)
+INPUT_QUERY = "mutation($input: MergePullRequestInput!) { mergePullRequest(input: $input) { clientMutationId } }"
+
+
+def merge_query(arguments: str, name: str = "mergePullRequest") -> str:
+    return f'mutation {{ {name}(input: {{pullRequestId: "PR_1"{arguments}}}) {{ clientMutationId }} }}'
+
+
+def graphql(query: str, *fields: str, prefix: Sequence[str] = ("gh",), flag: str = "-f") -> str:
+    return shlex.join([*prefix, "api", "graphql", flag, f"query={query}", *fields])
+
+
+def instead_of(command: str) -> list[str]:
+    """A command's words as the Instead line shows them: a newline written as \\n"""
+    return shlex.split(command.replace("\n", "\\n"))
+
+
+# (command with {method}, the same command with the method the hook asks for): every form gh
+# sends a merge mutation's method in
+GRAPHQL_FORMS = [
+    graphql(merge_query(", mergeMethod: {method}")),
+    graphql(merge_query(",\n  mergeMethod :\n    {method}\n")),  # whitespace and newlines
+    graphql(merge_query(", mergeMethod: {method}", "enablePullRequestAutoMerge")),
+    graphql(merge_query(", mergeMethod: {method}"), flag="--raw-field"),
+    shlex.join(["gh", "api", "graphql", "--field=query=" + merge_query(", mergeMethod: {method}")]),
+    graphql(merge_query(", mergeMethod: {method}"), prefix=("shipmill", "gh")),
+    graphql(merge_query(", mergeMethod: {method}"), prefix=("uvx", PINNED, "gh")),
+    graphql(VAR_QUERY, "-f", "m={method}"),
+    graphql(VAR_QUERY, "-F", "m={method}"),
+    graphql(VAR_QUERY, "--raw-field=m={method}"),
+    graphql(VAR_QUERY, "-fm={method}"),
+    graphql(INPUT_QUERY, "-F", "input[pullRequestId]=PR_1", "-F", "input[mergeMethod]={method}"),
+]
+
+
+@pytest.mark.parametrize("form", GRAPHQL_FORMS)
+def test_s072_2_under_merge_a_graphql_squash_is_refused_with_the_merge_mutation(
+    methods: dict[str | None, Path], form: str
+) -> None:
+    command = form.replace("{method}", "SQUASH")
+    instead = refused(bash(command, methods["merge"]), "merge-method", MERGE_RULE)
+    assert instead == instead_of(form.replace("{method}", "MERGE"))
+    allowed(bash(form.replace("{method}", "MERGE"), methods["merge"]))
+
+
+@pytest.mark.parametrize("value", ["squash", None])
+@pytest.mark.parametrize("form", GRAPHQL_FORMS)
+def test_s072_3_under_squash_or_no_key_a_graphql_squash_or_merge_passes(
+    methods: dict[str | None, Path], value: str | None, form: str
+) -> None:
+    for method in ("SQUASH", "MERGE"):
+        allowed(bash(form.replace("{method}", method), methods[value]))
+
+
+@pytest.mark.parametrize(("value", "method"), [("squash", "SQUASH"), (None, "SQUASH"), ("merge", "MERGE")])
+@pytest.mark.parametrize("form", GRAPHQL_FORMS)
+def test_s072_4_a_graphql_rebase_is_refused_naming_d96_with_the_settings_method(
+    methods: dict[str | None, Path], value: str | None, method: str, form: str
+) -> None:
+    for rebase in ("REBASE", "rebase"):
+        instead = refused(bash(form.replace("{method}", rebase), methods[value]), "rebase-merge", "D-96")
+        assert instead == instead_of(form.replace("{method}", method))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        graphql(merge_query("")),  # no mergeMethod: GitHub's default, MERGE
+        graphql(merge_query(""), "-f", "m=SQUASH"),  # a field no mutation reads
+        graphql(INPUT_QUERY, "-F", "input[pullRequestId]=PR_1"),  # an input without mergeMethod
+        graphql(merge_query(', commitHeadline: "mergeMethod: SQUASH"')),  # in a string
+        graphql(merge_query("\n# mergeMethod: REBASE\n")),  # in a comment
+        graphql("query { viewer { login } }"),
+        graphql('query { repository(owner: "o", name: "r") { mergeCommitAllowed squashMergeAllowed } }'),
+        graphql('mutation { addComment(input: {subjectId: "I_1", body: "SQUASH"}) { clientMutationId } }'),
+        # a variable on stdin that no merge mutation reads
+        graphql('mutation($b: String!) { addComment(input: {subjectId: "I_1", body: $b}) { clientMutationId } }')
+        + " -F b=@-",
+        graphql(merge_query(", mergeMethod: MERGE"), "-F", "body=@-"),
+        "gh api repos/o/r/pulls/7",
+    ],
+)
+def test_s072_2_under_merge_graphql_without_a_squash_or_rebase_passes(
+    methods: dict[str | None, Path], command: str
+) -> None:
+    allowed(bash(command, methods["merge"]))
+
+
+def file_repo(tmp_path: Path, value: str) -> Path:
+    """A repo under [agents] merge = value, holding the mutation files gh reads"""
+    root = git_repo(tmp_path / value, (FIXTURES / f"config-merge-{value}.toml").read_text(encoding="utf-8"))
+    for name in ("graphql-merge.graphql", "graphql-merge-input.body"):
+        shutil.copy(FIXTURES / name, root / name)
+    (root / "method.txt").write_text("SQUASH\n", encoding="utf-8")
+    return root
+
+
+def test_s072_2_a_graphql_merge_read_from_a_file_is_judged(tmp_path: Path) -> None:
+    root = file_repo(tmp_path, "merge")
+    query = "gh api graphql -F query=@graphql-merge.graphql -f id=PR_1 -f method="
+    # the file's comment and string name REBASE; its mergeMethod is $method, given here
+    assert refused(bash(f"{query}SQUASH", root), "merge-method", MERGE_RULE) == shlex.split(f"{query}MERGE")
+    allowed(bash(f"{query}MERGE", root))
+    allowed(bash(f"cd {root.parent} && cd {root.name} && {query}MERGE", tmp_path))
+    refused(hook(fixture("graphql-merge-input.json", root)), "merge-method", MERGE_RULE)
+    for command, file in (
+        ("gh api graphql --input graphql-merge-input.body", "graphql-merge-input.body"),
+        ("gh api graphql --input=graphql-merge-input.body", "graphql-merge-input.body"),
+        ("gh api graphql -F query=@graphql-merge.graphql -f id=PR_1 -F method=@method.txt", "method.txt"),
+    ):
+        assert refused(bash(command, root), "merge-method", MERGE_RULE) == shlex.split(
+            f"set mergeMethod to MERGE in {file}, then run: {command}"
+        )
+    squash = file_repo(tmp_path, "squash")
+    allowed(hook(fixture("graphql-merge-input.json", squash)))
+    allowed(bash(f"{query}SQUASH", squash))
+    instead = refused(bash(f"{query}REBASE", squash), "rebase-merge", "D-96")
+    assert instead == shlex.split(f"{query}SQUASH")
+
+
+@pytest.mark.parametrize("value", ["squash", None, "merge"])
+@pytest.mark.parametrize(
+    ("command", "why"),
+    [
+        ("gh api graphql --input -", "stdin cannot be read"),
+        ("gh api graphql -F query=@-", "stdin cannot be read"),
+        ("gh api graphql -F query=@missing.graphql", "missing.graphql cannot be read"),
+        ("gh api graphql --input missing.json", "missing.json cannot be read"),
+        (graphql(VAR_QUERY), "$m is not given"),
+        (graphql(VAR_QUERY, "-F", "m=@-"), "stdin cannot be read"),
+        (graphql(VAR_QUERY, "-f", "m=FAST"), "mergeMethod 'FAST' names no merge method"),
+        (graphql(INPUT_QUERY), "$input is not given"),
+        (graphql("mutation { mergePullRequest(input: {mergeMethod: SQUASH}"), "arguments do not close"),
+    ],
+)
+def test_s072_4_a_graphql_merge_whose_method_the_hook_cannot_read_is_refused(
+    methods: dict[str | None, Path], value: str | None, command: str, why: str
+) -> None:
+    """Fail closed: a mutation, or a query, the hook can't read could rebase-merge"""
+    result = bash(command, methods[value])
+    refused(result, "rebase-merge", "D-96")
+    line = result.stderr.splitlines()[2]
+    assert why in line and f"mergeMethod: {(value or 'squash').upper()}" in line
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a FIFO")
+def test_s072_4_a_graphql_file_that_is_no_regular_file_or_too_big_is_refused_without_hanging(
+    tmp_path: Path,
+) -> None:
+    """#1373: a FIFO or a device (/dev/zero) never ends a read; the hook, as Claude Code starts
+    it, refuses them as unread instead of hanging past its timeout, which lets the call run"""
+    root = file_repo(tmp_path, "merge")
+    os.mkfifo(root / "query.fifo")
+    (root / "big.graphql").write_text("#" * (DELIVERY.GRAPHQL_FILE_MAX + 1), encoding="utf-8")
+    for path in ("query.fifo", "/dev/zero", "big.graphql"):
+        data = json.dumps(fixture("bash-read.json", root, f"gh api graphql -F query=@{path}"))
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "pre"], input=data, capture_output=True, text=True, timeout=10, check=False
+        )
+        refused(result, "rebase-merge", "D-96")
+        assert f"{path} cannot be read" in result.stderr
+
+
+def test_s072_2_the_graphql_fixtures_refuse_and_allow(box: Sandbox, methods: dict[str | None, Path]) -> None:
+    squash, rebase = "graphql-merge-squash.json", "graphql-merge-rebase.json"
+    refused(hook(fixture(squash, methods["merge"])), "merge-method", MERGE_RULE)
+    for value in ("squash", None):
+        allowed(hook(fixture(squash, methods[value])))
+    for where in (methods["merge"], methods["squash"], methods[None], box.agents):
+        refused(hook(fixture(rebase, where)), "rebase-merge", "D-96")
+    for folder in (box.outside, box.bare, box.release):
+        allowed(hook(fixture(squash, folder)))
+        allowed(hook(fixture(rebase, folder)))
 
 
 @pytest.mark.parametrize(
