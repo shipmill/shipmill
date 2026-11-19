@@ -2,6 +2,7 @@
 """Report many repos' issue-to-release pipelines at once: ship-watch's states across a fleet.
 
 Usage: fleet.py report --fleet FILE [--metrics] [--json]
+       fleet.py queue --fleet FILE [--login LOGIN] [--bot-login LOGIN] [--json]
 
 A fleet file lists the repos, in TOML:
 
@@ -47,6 +48,28 @@ Exit 0 when no repo has an action row, 1 when any has, 2 after printing everythi
 repo's check failed, and 2 on a malformed fleet file. Reads only: the repairs stay with
 each repo's own watch pass. Needs git, an authenticated gh, and uvx, as watch_state.py
 does. Python 3.10+, standard library only.
+
+queue (spec 069) reads the same fleet file with the same refusals and prints only what waits
+on the maintainer, across every repo, oldest first. On the same fresh clone, watch_state.py
+runs with --no-host, --trusted-only, and the --bot-login (the gate's App, <slug>[bot]), and
+names the items; one batched GraphQL read per repo (50 items each) reads them as GitHub has
+them now:
+  QUESTION    an open item in NEEDS_DECISION, still labelled needs-decision, whose question
+              has no trusted reply; waiting since the newest needs-decision marker comment by
+              a trusted author, else the label's newest event, else its opening
+  TO_MERGE    an open pull request in PRS_PARKED's TO_MERGE part, still labelled
+              shipmill-ready; since the label's newest event, else its opening
+  PROMOTION   an open "Ready to promote" proposal issue in PROMOTION_DUE; since its opening
+An item in QUESTION is in no other row. An item whose author is neither an OWNER, MEMBER, or
+COLLABORATOR nor the --bot-login (save the release workflow's upgrade issue, D-30) is in none.
+Each line: the repo, the kind, #N, what is asked (a fixed phrase, then the title), and how
+long it has waited (3d 4h, 5h, 12m), oldest first across repos, a tie to the fleet file's
+order, then the number. --login names the reader (default: `gh api user`'s login). --json
+prints {"login", "items": [{"repo", "kind", "number", "url", "asked", "title", "since",
+"waited_minutes"}], "errors": [{"repo", "step", "error"}]}. A repo whose clone, watch, or
+GitHub read fails gets one REPO_ERROR line after the queue, naming the step and the error's
+first line. Exit 0 on an empty queue, 1 with a row, 2 after printing everything when a repo's
+read failed, and 2 on a malformed fleet file. Reads only.
 """
 
 from __future__ import annotations
@@ -408,6 +431,277 @@ def utc_now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)  # noqa: UP017 (3.10 has no dt.UTC)
 
 
+# -- the queue (spec 069): what waits on the maintainer, across the fleet ---------------------
+
+QUESTION = "QUESTION"
+TO_MERGE = "TO_MERGE"
+PROMOTION = "PROMOTION"
+# what each kind asks of the maintainer: the fixed phrase the row's title follows
+ASKED = {
+    QUESTION: "answer the needs-decision question",
+    TO_MERGE: "merge the pull request",
+    PROMOTION: "approve the promotion",
+}
+# the watch's rows the queue reads: NEEDS_DECISION's "#N ...", PRS_PARKED's "TO_MERGE #N ..."
+# part, and PROMOTION_DUE's proposal part, whose detail starts "#N " (a deployment's never does)
+NUMBERS = re.compile(r"#(\d+)")
+TO_MERGE_PART = re.compile(r"(?:^|; )TO_MERGE ((?:#\d+ ?)+)")
+PROPOSAL_DETAIL = re.compile(r"^#(\d+) ")
+CHUNK = 50  # items per GraphQL read: one read per 50 items of a repo
+FIELDS = """number title url state createdAt body authorAssociation author { __typename login }
+labels(first: 100) { nodes { name } }
+comments(last: 100) { nodes { author { __typename login } authorAssociation body createdAt } }
+timelineItems(itemTypes: [LABELED_EVENT], last: 100) { nodes { ... on LabeledEvent { createdAt label { name } } } }"""
+ITEM_KEYS = ("number", "title", "url", "state", "createdAt", "body", "authorAssociation", "author", "labels")
+
+
+@dataclass(frozen=True)
+class Item:
+    """One row of the queue: what waits on the maintainer, and since when"""
+
+    repo: str
+    kind: str
+    number: int
+    url: str
+    title: str
+    since: dt.datetime
+
+    def waited(self, now: dt.datetime) -> int:
+        return max(0, int((now - self.since).total_seconds() // 60))
+
+    def json(self, now: dt.datetime) -> dict[str, Any]:
+        return {
+            "repo": self.repo,
+            "kind": self.kind,
+            "number": self.number,
+            "url": self.url,
+            "asked": ASKED[self.kind],
+            "title": self.title,
+            "since": self.since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),  # noqa: UP017 (3.10)
+            "waited_minutes": self.waited(now),
+        }
+
+
+@dataclass(frozen=True)
+class RepoError:
+    repo: str
+    step: str
+    error: str
+
+    def json(self) -> dict[str, str]:
+        return {"repo": self.repo, "step": self.step, "error": self.error}
+
+
+def first_line(proc: subprocess.CompletedProcess[str], step: str) -> str:
+    """A failed step's first line on stderr, or its exit when it wrote none"""
+    lines = [line.strip() for line in (proc.stderr or "").splitlines() if line.strip()]
+    return lines[0] if lines else f"{step} exited {proc.returncode}"
+
+
+def queue_watch_command(e: Entry, checkout: Path, bot_login: str | None) -> list[str]:
+    """watch_state.py for one repo's queue: the watch's trust (--trusted-only and the
+    --bot-login, D-16), and none of this host's rows"""
+    cmd = [*watch_command(e, checkout), "--no-host", "--trusted-only"]
+    return cmd + (["--bot-login", bot_login] if bot_login is not None else [])
+
+
+def wanted(rows: list[Row]) -> dict[int, str]:
+    """The watch rows' items the queue lists, each number with its kind; an item in QUESTION
+    is in no other kind (S-069-6)"""
+    kinds: dict[int, str] = {}
+    for row in rows:
+        if row.state == "PROMOTION_DUE" and (found := PROPOSAL_DETAIL.match(row.detail)) is not None:
+            kinds.setdefault(int(found.group(1)), PROMOTION)
+        elif row.state == "PRS_PARKED" and (part := TO_MERGE_PART.search(row.detail)) is not None:
+            for n in NUMBERS.findall(part.group(1)):
+                kinds.setdefault(int(n), TO_MERGE)
+    for row in rows:
+        if row.state == "NEEDS_DECISION":
+            for n in NUMBERS.findall(row.detail):
+                kinds[int(n)] = QUESTION
+    return kinds
+
+
+def items_query(numbers: Sequence[int]) -> str:
+    """One GraphQL read of the items by number, an alias each (issue or pull request alike)"""
+    aliases = "\n".join(f"i{n}: issueOrPullRequest(number: {n}) {{ __typename ...I ...P }}" for n in numbers)
+    return (
+        "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {\n"
+        f"{aliases}\n}} }}\nfragment I on Issue {{ {FIELDS} }}\nfragment P on PullRequest {{ {FIELDS} }}"
+    )
+
+
+def items_command(repo: str, numbers: Sequence[int]) -> list[str]:
+    owner, name = repo.split("/", 1)
+    query = items_query(numbers)
+    return ["gh", "api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}", "-f", f"name={name}"]
+
+
+def nodes(found: object, key: str, where: str) -> list[dict[str, Any]]:
+    """A connection's nodes, checked"""
+    if not isinstance(found, dict) or not isinstance(found.get(key), dict):
+        raise Refused(f"error: {where}: no {key}")
+    listed = found[key].get("nodes")
+    if not isinstance(listed, list) or not all(isinstance(n, dict) for n in listed):
+        raise Refused(f"error: {where}: {key} has no nodes")
+    return listed
+
+
+def trusted_item(node: dict[str, Any], bot_login: str | None) -> bool:
+    """The watch's trust (D-16, D-30): an item an OWNER, MEMBER, or COLLABORATOR opened, or the
+    --bot-login, or the release workflow's own upgrade issue; nobody else's is on the queue"""
+    author = WS.TRIAGE.login(node["author"])
+    if WS.TRIAGE.trusted(author, str(node["authorAssociation"]), bot_login):
+        return True
+    return node["__typename"] == "Issue" and bool(WS.TRIAGE.workflow_upgrade(node))
+
+
+def labelled_since(node: dict[str, Any], label: str, where: str) -> dt.datetime | None:
+    """The newest event adding label, or None"""
+    times = [
+        WS.TRIAGE.timestamp(str(event["createdAt"]))
+        for event in nodes(node, "timelineItems", where)
+        if isinstance(event.get("label"), dict) and event["label"].get("name") == label
+    ]
+    return max(times) if times else None
+
+
+def asked_since(comments: list[dict[str, Any]], bot_login: str | None) -> dt.datetime | None:
+    """The newest needs-decision marker comment by a trusted author (an outsider's never counts)"""
+    times = [
+        WS.TRIAGE.timestamp(str(c["createdAt"]))
+        for c in comments
+        if WS.TRIAGE.marked(str(c["body"] or ""))
+        and WS.TRIAGE.trusted(WS.TRIAGE.login(c.get("author")), str(c.get("authorAssociation") or "NONE"), bot_login)
+    ]
+    return max(times) if times else None
+
+
+def queue_item(repo: str, kind: str, node: dict[str, Any], bot_login: str | None) -> Item | None:
+    """The row for one item as GitHub has it now, or None: closed, untrusted (S-069-9), its label
+    gone, or its question answered since the watch read it (S-069-1)"""
+    where = f"gh api graphql for {repo}#{node.get('number')}"
+    missing = [k for k in ITEM_KEYS if k not in node]
+    if missing or node.get("__typename") not in ("Issue", "PullRequest"):
+        raise Refused(f"error: {where}: not an issue or pull request with {missing or ITEM_KEYS}")
+    labels = {str(label["name"]) for label in nodes(node, "labels", where)}
+    if node["state"] != "OPEN" or not trusted_item(node, bot_login):
+        return None
+    opened = WS.TRIAGE.timestamp(str(node["createdAt"]))
+    if kind == QUESTION:
+        comments = nodes(node, "comments", where)
+        thread = [
+            (WS.TRIAGE.login(c.get("author")), str(c.get("authorAssociation") or "NONE"), str(c["body"] or ""))
+            for c in comments
+        ]
+        if WS.TRIAGE.DECISION_LABEL not in labels or not WS.TRIAGE.waits_on_decision(thread, bot_login):
+            return None
+        since = asked_since(comments, bot_login) or labelled_since(node, WS.TRIAGE.DECISION_LABEL, where) or opened
+    elif kind == TO_MERGE:
+        if WS.READY_LABEL not in labels:
+            return None
+        since = labelled_since(node, WS.READY_LABEL, where) or opened
+    else:
+        since = opened
+    return Item(repo, kind, int(node["number"]), str(node["url"]), str(node["title"]), since)
+
+
+def read_items(repo: str, kinds: dict[int, str], runner: Runner, bot_login: str | None) -> list[Item] | RepoError:
+    """The queue's rows of one repo, from batched GraphQL reads, or the read's REPO_ERROR"""
+    found: list[Item] = []
+    numbers = sorted(kinds)
+    for start in range(0, len(numbers), CHUNK):
+        chunk = numbers[start : start + CHUNK]
+        proc = runner(items_command(repo, chunk))
+        if proc.returncode != 0:
+            return RepoError(repo, "gh api graphql", first_line(proc, "gh api graphql"))
+        data = decoded(proc.stdout, f"gh api graphql for {repo}")
+        inner = data.get("data") if isinstance(data, dict) else None
+        repository = inner.get("repository") if isinstance(inner, dict) else None
+        if not isinstance(repository, dict):
+            raise Refused(f"error: gh api graphql for {repo} printed no repository")
+        for n in chunk:
+            node = repository.get(f"i{n}")
+            if not isinstance(node, dict):
+                return RepoError(repo, "gh api graphql", f"#{n} is no issue or pull request")
+            item = queue_item(repo, kinds[n], node, bot_login)
+            if item is not None:
+                found.append(item)
+    return found
+
+
+def queue_repo(e: Entry, runner: Runner, workdir: Path, bot_login: str | None) -> list[Item] | RepoError:
+    """One repo's rows: the watch on a fresh clone names the items, GitHub times them"""
+    checkout = workdir / e.repo
+    checkout.parent.mkdir(parents=True, exist_ok=True)
+    cloned = runner(clone_command(e, checkout))
+    if cloned.returncode != 0:
+        return RepoError(e.repo, "gh repo clone", first_line(cloned, "gh repo clone"))
+    watched = runner(queue_watch_command(e, checkout, bot_login))
+    if watched.returncode not in (0, 1):
+        return RepoError(e.repo, "watch_state.py", first_line(watched, "watch_state.py"))
+    kinds = wanted(watch_rows(e.repo, watched.stdout))
+    return read_items(e.repo, kinds, runner, bot_login) if kinds else []
+
+
+def reader(given: str | None, runner: Runner) -> str:
+    """The reader: --login, else the authenticated gh user's login"""
+    if given is None:
+        proc = runner(["gh", "api", "user", "--jq", ".login"])
+        if proc.returncode != 0:
+            raise Refused(f"error: gh api user: {first_line(proc, 'gh api user')}")
+        given = proc.stdout.strip()
+    if not WS.LOGIN.match(given):
+        raise Refused(f"error: {given!r} is not a GitHub login")
+    return given
+
+
+def waited_text(minutes: int) -> str:
+    """How long a row has waited: 3d 4h, 5h, or 12m"""
+    days, rest = divmod(minutes, 24 * 60)
+    if days:
+        return f"{days}d {rest // 60}h"
+    return f"{rest // 60}h" if rest >= 60 else f"{rest}m"
+
+
+def queue_lines(items: list[Item], errors: list[RepoError], now: dt.datetime) -> list[str]:
+    """One line per row, oldest first, then one REPO_ERROR line per repo whose read failed"""
+    width = max([len(i.repo) for i in items] + [len(e.repo) for e in errors], default=0)
+    lines = [
+        f"{i.repo:<{width}} {i.kind:<10} {'#' + str(i.number):<6} {ASKED[i.kind]}: {i.title}"
+        f" ({waited_text(i.waited(now))})"
+        for i in items
+    ]
+    if not items:
+        lines.append("nothing waits on the maintainer")
+    return lines + [f"{e.repo:<{width}} REPO_ERROR {e.step}: {e.error}" for e in errors]
+
+
+def queue(args: argparse.Namespace, runner: Runner, clock: Callable[[], dt.datetime]) -> int:
+    """fleet.py queue: every repo's rows in one list, oldest first; reads only"""
+    entries = load(args.fleet)
+    login = reader(args.login, runner)
+    items: list[tuple[int, Item]] = []
+    errors: list[RepoError] = []
+    with tempfile.TemporaryDirectory(prefix="fleet-") as workdir:
+        for index, e in enumerate(entries):
+            found = queue_repo(e, runner, Path(workdir), args.bot_login)
+            if isinstance(found, RepoError):
+                errors.append(found)
+            else:
+                items += [(index, i) for i in found]
+    ordered = [i for _, i in sorted(items, key=lambda x: (x[1].since, x[0], x[1].number))]
+    now = clock()
+    if args.json:
+        found_json = {"login": login, "items": [i.json(now) for i in ordered], "errors": [e.json() for e in errors]}
+        print(json.dumps(found_json, indent=2, sort_keys=True))
+    else:
+        print("\n".join(queue_lines(ordered, errors, now)))
+    if errors:
+        return 2
+    return 1 if ordered else 0
+
+
 def arguments() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -415,12 +709,21 @@ def arguments() -> argparse.ArgumentParser:
     rep.add_argument("--fleet", required=True, type=Path, help="the fleet file")
     rep.add_argument("--metrics", action="store_true", help="add each repo's metrics.py measures")
     rep.add_argument("--json", action="store_true", help="one JSON object instead of a table")
+    que = commands.add_parser("queue", help="what waits on the maintainer across the fleet, oldest first")
+    que.add_argument("--fleet", required=True, type=Path, help="the fleet file")
+    que.add_argument("--login", help="the reader (default: the authenticated gh user)")
+    que.add_argument("--bot-login", help="the gate's App, <slug>[bot], whose items are trusted (D-16)")
+    que.add_argument("--json", action="store_true", help="one JSON object instead of a list")
     return parser
 
 
 def main(argv: Sequence[str] | None = None, runner: Runner = run, clock: Callable[[], dt.datetime] = utc_now) -> int:
     parser = arguments()
     args = parser.parse_args(argv)
+    if args.command == "queue":
+        if args.bot_login is not None and not WS.LOGIN.match(args.bot_login):
+            parser.error("--bot-login must be a GitHub login, such as <slug>[bot]")
+        return queue(args, runner, clock)
     entries = load(args.fleet)
     until = clock().isoformat() if args.metrics else None
     with tempfile.TemporaryDirectory(prefix="fleet-") as workdir:
