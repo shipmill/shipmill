@@ -8,9 +8,10 @@ person's reply, a relay by the App, counted or not, or a withdrawn marker by the
 author (#1331), so after a relay that isn't counted the label goes back on only after the re-ask
 (D-93). Removing it is refused unless, after the newest such question, there is a person's reply,
 a relay `parse_relay` counts (D-93), or a withdrawn marker by the App or a trusted author. The
-wheel's `triage_state.py` is the one reading: its `question`, `replies`, `relayed`,
-`relay_refused`, `marked`, and `trusted`, the code the scripts trust; nothing here parses a
-question or a relay itself.
+wheel's `triage_state.py` is the one reading: its `question`, `replies`, `relayed_after`,
+`relay_refused_to`, `marked`, and `trusted`, the code the scripts trust; nothing here parses a
+question or a relay itself. The relay is read after the question found here, a person's when
+one asked after the App, not after the one `relayed` would find (#1340).
 """
 
 import functools
@@ -96,8 +97,7 @@ def _settled_by(comments: list[Comment], bot_login: str, asked: int) -> str | No
     after = comments[asked + 1 :]
     if any(ts.replies(comment, bot_login) for comment in after):
         return "a person's reply"
-    relay: tuple[int, str] | None = ts.relayed(comments, bot_login)
-    if relay is not None and relay[0] > asked:
+    if ts.relayed_after(comments, bot_login, asked) is not None:
         return "a relay"
     if any(
         ts.marked(body, WITHDRAWN_MARKER) and ts.trusted(author, association, bot_login)
@@ -157,10 +157,10 @@ def removing_refusal(comments: list[Comment], bot_login: str, edit: LabelEdit, r
         for author, association, body in after
     ):
         return None
-    relay: tuple[int, str] | None = ts.relayed(comments, bot_login)
+    relay: tuple[int, str] | None = ts.relayed_after(comments, bot_login, asked)
     reason: str | None = None
-    if relay is not None and relay[0] > asked:
-        reason = ts.relay_refused(comments, bot_login, relay[0])
+    if relay is not None:
+        reason = ts.relay_refused_to(comments, asked, relay[0])
         if reason is None:
             return None
     found = "nothing answers it"

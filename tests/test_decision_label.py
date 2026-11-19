@@ -52,6 +52,8 @@ def relay_of(*lines: str) -> str:
 COUNTED = relay_of("Answered in the session: 1")
 REFUSED = relay_of("1", "Thanks, and rename the flag later.")  # a paragraph before Note:, out of the grammar
 WITHDRAWN = f"{WITHDRAWN_MARKER}\nNo longer needed: the flag went with #12.{AGENT}"
+# #1340: a person asked after the App, so the newest question is the person's, and the relay answers it
+ASKED_BY_PERSON = [(BOT, "NONE", QUESTION), (MAINTAINER, "OWNER", QUESTION.removesuffix(AGENT))]
 
 
 @dataclass
@@ -169,8 +171,19 @@ def test_1331_adding_the_label_while_the_newest_question_waits_runs(
         ([(BOT, "NONE", QUESTION), (BOT, "NONE", REFUSED)], "a relay"),  # D-93: the re-ask comes first
         ([(BOT, "NONE", QUESTION), (BOT, "NONE", WITHDRAWN)], "a withdrawn marker"),
         ([(MAINTAINER, "OWNER", QUESTION), (MAINTAINER, "MEMBER", WITHDRAWN)], "a withdrawn marker"),
+        ([*ASKED_BY_PERSON, (BOT, "NONE", COUNTED)], "a relay"),  # #1340
+        ([*ASKED_BY_PERSON, (BOT, "NONE", REFUSED)], "a relay"),  # #1340
     ],
-    ids=["answered", "answered-trusted", "relayed", "relay-not-counted", "withdrawn-app", "withdrawn-trusted"],
+    ids=[
+        "answered",
+        "answered-trusted",
+        "relayed",
+        "relay-not-counted",
+        "withdrawn-app",
+        "withdrawn-trusted",
+        "relayed-to-person",
+        "relay-to-person-not-counted",
+    ],
 )
 def test_1331_adding_the_label_after_its_question_was_answered_exits_2(
     tmp_path: Path, host: Host, thread: list[tuple[str, str, str]], found: str
@@ -228,8 +241,9 @@ def test_1312_adding_the_label_without_a_question_exits_2(
         [(BOT, "NONE", QUESTION), (BOT, "NONE", COUNTED)],  # a relay in the grammar
         [(BOT, "NONE", QUESTION), (BOT, "NONE", WITHDRAWN)],  # the App takes it back
         [(MAINTAINER, "OWNER", QUESTION), (MAINTAINER, "MEMBER", WITHDRAWN)],  # a trusted author takes it back
+        [*ASKED_BY_PERSON, (BOT, "NONE", COUNTED)],  # #1340: a relay answering a person's question
     ],
-    ids=["answer", "own-words", "relay", "withdrawn-app", "withdrawn-trusted"],
+    ids=["answer", "own-words", "relay", "withdrawn-app", "withdrawn-trusted", "relay-to-person"],
 )
 def test_1312_removing_the_label_after_a_settled_question_runs(
     tmp_path: Path, host: Host, thread: list[tuple[str, str, str]]
@@ -266,8 +280,15 @@ def test_1312_removing_the_label_with_nothing_settling_the_question_exits_2(
     refused_as_app(tmp_path, REMOVE, host, thread, f"nothing answers it.*relay grammar.*`{WITHDRAWN_MARKER}`")
 
 
-def test_1312_removing_the_label_after_a_relay_out_of_its_grammar_exits_2(tmp_path: Path, host: Host) -> None:
-    thread = [(BOT, "NONE", QUESTION), (BOT, "NONE", REFUSED)]
+@pytest.mark.parametrize(
+    "asked",
+    [[(BOT, "NONE", QUESTION)], ASKED_BY_PERSON],
+    ids=["app", "person"],  # #1340: a person's question asked after the App's
+)
+def test_1312_removing_the_label_after_a_relay_out_of_its_grammar_exits_2(
+    tmp_path: Path, host: Host, asked: list[tuple[str, str, str]]
+) -> None:
+    thread = [*asked, (BOT, "NONE", REFUSED)]
     refused_as_app(tmp_path, REMOVE, host, thread, r"its relay isn't counted \(relay not counted: format, D-93\)")
 
 

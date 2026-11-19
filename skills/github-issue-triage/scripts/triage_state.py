@@ -2250,6 +2250,15 @@ def relayed(comments: list[tuple[str, str, str]], bot_login: str | None) -> tupl
     asked = question(comments, bot_login)
     if asked is None or bot_login is None:
         return None
+    return relayed_after(comments, bot_login, asked)
+
+
+def relayed_after(comments: list[tuple[str, str, str]], bot_login: str, asked: int) -> tuple[int, str] | None:
+    """The newest relay after the question at index asked, as (its index, who answered), or
+    None: relayed's reading for a question its caller found, such as a person's asked after the
+    bot (#1340); comments are (login, author association, body), oldest first"""
+    if not 0 <= asked < len(comments):
+        fail(f"relayed_after wants a question's index, got {asked} for {len(comments)} comments")
     for i in range(len(comments) - 1, asked, -1):
         author, _, body = comments[i]
         found = DECISION_BY.match(first_line(body)) if same_login(author, bot_login) else None
@@ -2266,6 +2275,15 @@ def relay_refused(comments: list[tuple[str, str, str]], bot_login: str | None, a
     asked = question(comments, bot_login)
     if asked is None:
         fail(f"relay_refused wants a relay after a question, got index {at} with none")
+    return relay_refused_to(comments, asked, at)
+
+
+def relay_refused_to(comments: list[tuple[str, str, str]], asked: int, at: int) -> str | None:
+    """Why the relay at index at isn't counted against the question at index asked, as
+    relay_refused reads it (D-93), for a question its caller found, such as a person's asked
+    after the bot (#1340); at is relayed_after's index"""
+    if not 0 <= asked < at < len(comments):
+        fail(f"relay_refused_to wants a relay after its question, got question {asked} and relay {at}")
     rt = retro_module()
     refused: str | None = rt.relay_refusal(comments[asked][2], rt.parse_relay(comments[at][2]))
     return refused
