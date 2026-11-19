@@ -9,6 +9,7 @@ Usage: retro.py gather <owner/repo> [--days 7] [--environment NAME ...]
                                     [--role NAME=FILLER[,FILLER...] ...]]
                        [--reviews]
        retro.py findings <owner/repo> [--days 28] [--bot LOGIN ...] [--json]
+       retro.py proposal <body-file> --repo <owner/repo> [--bot LOGIN ...] [--max-open 3]
        retro.py dedupe <owner/repo> --title TITLE [--title TITLE ...] [--json]
 
 gather   runs metrics.py over the --days to now and over the --days before that, and prints
@@ -82,11 +83,24 @@ findings what reviews raised on the pull requests closed, merged or not, in the 
          whose first line is `<!-- shipmill:rule-proposal pulls=N,M place=P -->` and whose
          author is trusted as above, as open, accepted (closed as completed), or declined
          (closed as not planned). --json prints {window, findings, proposed}. Read-only
+proposal checks a rule proposal's body before it is filed (spec 077). Exit 2, naming the
+         first fault: the marker isn't the first line, names fewer than two distinct pull
+         requests, or a place outside lint, type, import, test, prose; Rule, Raised in, or
+         Place is missing or empty; Rule is more than one line or over 200 characters; Raised
+         in has no `- #N` line for a pull request of the marker. For a place other than prose:
+         Enforced by has no fenced block; Shown failing lacks `Command:`, `Head:` with a
+         40-character SHA, a non-zero `Exit:`, or fenced output of 1 to 30 lines; On the
+         default branch is missing. A prose proposal needs a non-empty Why prose. Exit 1 with
+         `DUPLICATE #N (<state>): <title>` when `Rule: <the rule>` matches a Proposed issue's
+         title in any state (as dedupe compares), or `FULL: K proposals wait on an answer`
+         when --max-open (3) or more open Proposed issues carry needs-decision. Exit 0
+         printing the title. Read-only
 dedupe   each proposed issue title against the repo's open issues: DUPLICATE with the open
          issue whose title matches (ignoring case, punctuation, and spacing), else NEW.
          Read-only: the retro opens only the NEW ones
 
-Exit 0 on success (dedupe: every title is new), 1 when dedupe finds a duplicate, 2 on bad
+Exit 0 on success (dedupe: every title is new), 1 when dedupe finds a duplicate or proposal
+refuses a well-formed body, 2 on bad
 input or a gh, git, shipmill, or metrics.py failure. Needs the gh CLI, authenticated, and for
 --goals git and uvx. Python 3.10+, standard library only.
 """
@@ -2000,10 +2014,12 @@ def proposal_state(issue: dict[str, Any]) -> str:
     return "declined" if issue.get("state_reason") in DECLINED else "accepted"
 
 
-def rule_proposals(read: Callable[[list[str]], Any], repo: str, bots: frozenset[str]) -> list[dict[str, Any]]:
+def labelled_proposals(
+    read: Callable[[list[str]], Any], repo: str, bots: frozenset[str]
+) -> list[tuple[dict[str, Any], frozenset[str]]]:
     """Every rule-proposal issue, in any state and of any age, whose first body line is the
     proposal marker and whose author is a --bot login or an OWNER, MEMBER, or COLLABORATOR,
-    newest first"""
+    newest first, each with its labels' names"""
     found = []
     for issue in read(api_list(repo, "issues", f"labels={PROPOSAL_LABEL}&state=all&")):
         if "pull_request" in issue or not issue.get("user") or not trusted(rest_author(issue), bots):
@@ -2011,17 +2027,21 @@ def rule_proposals(read: Callable[[list[str]], Any], repo: str, bots: frozenset[
         mark = PROPOSAL_MARK.match(first_line(str(issue.get("body") or "")))
         if mark is None:
             continue
-        found.append(
-            {
-                "number": int(issue["number"]),
-                "title": str(issue["title"]),
-                "url": str(issue.get("html_url") or ""),
-                "pulls": [int(n) for n in mark.group(1).split(",")],
-                "place": mark.group(2),
-                "state": proposal_state(issue),
-            }
-        )
-    return sorted(found, key=lambda p: -p["number"])
+        entry = {
+            "number": int(issue["number"]),
+            "title": str(issue["title"]),
+            "url": str(issue.get("html_url") or ""),
+            "pulls": [int(n) for n in mark.group(1).split(",")],
+            "place": mark.group(2),
+            "state": proposal_state(issue),
+        }
+        found.append((entry, frozenset(str(label["name"]) for label in issue.get("labels", []))))
+    return sorted(found, key=lambda p: -p[0]["number"])
+
+
+def rule_proposals(read: Callable[[list[str]], Any], repo: str, bots: frozenset[str]) -> list[dict[str, Any]]:
+    """The Proposed list: every rule-proposal issue labelled_proposals reads, newest first"""
+    return [entry for entry, _ in labelled_proposals(read, repo, bots)]
 
 
 def findings(
@@ -2136,6 +2156,162 @@ def dedupe_command(args: argparse.Namespace) -> int:
     return 1 if any(v.duplicate is not None for v in verdicts) else 0
 
 
+# -- proposal (spec 077) ----------------------------------------------------------------------
+
+PLACES = ("lint", "type", "import", "test", "prose")
+RULE_LIMIT = 200
+OUTPUT_LINES = 30
+MAX_OPEN = 3
+NEEDS_DECISION_LABEL = "needs-decision"
+SECTION_HEADING = re.compile(r"^##[ \t]+(.*?)[ \t]*$")
+ENDS_SECTION = re.compile(r"^#{1,2}(?:[ \t]|$)")  # a level 1 or 2 heading ends a section
+RAISED_LINE = re.compile(r"^- #([1-9][0-9]*)\b")
+COMMAND_LINE = re.compile(r"^Command:[ \t]*(\S.*)$")
+HEAD_LINE = re.compile(r"^Head:[ \t]*([0-9a-f]{40})[ \t]*$")
+EXIT_LINE = re.compile(r"^Exit:[ \t]*(-?[0-9]+)[ \t]*$")
+
+
+def closes(line: str, fence: str) -> bool:
+    """The line closes a block its opening fence opened: the fence's character, at least as many"""
+    found = _FENCE.match(line)
+    return (
+        bool(found)
+        and line.strip() == found.group(1)
+        and found.group(1)[0] == fence[0]
+        and len(found.group(1)) >= len(fence)
+    )
+
+
+def body_sections(lines: list[str]) -> dict[str, list[str]]:
+    """A body's `## <name>` sections, each its lines up to the next level 1 or 2 heading; a
+    heading inside a fenced block is the block's text. A section named twice exits 2"""
+    sections: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    fence: str | None = None
+    for line in lines:
+        opened = _FENCE.match(line)
+        if fence is None and opened:
+            fence = opened.group(1)
+        elif fence is not None and closes(line, fence):
+            fence = None
+        elif fence is None and ENDS_SECTION.match(line):
+            heading = SECTION_HEADING.match(line)
+            current = None
+            if heading:
+                name = heading.group(1)
+                if name in sections:
+                    raise fail(f"proposal: the {name} section appears twice; keep one")
+                current = sections[name] = []
+            continue
+        if current is not None:
+            current.append(line)
+    return sections
+
+
+def fenced_blocks(lines: list[str]) -> list[list[str]]:
+    """The fenced blocks of a section, each its lines between the fences; an unclosed fence
+    is no block"""
+    blocks: list[list[str]] = []
+    inside: list[str] | None = None
+    fence = ""
+    for line in lines:
+        if inside is None:
+            opened = _FENCE.match(line)
+            if opened:
+                inside, fence = [], opened.group(1)
+        elif closes(line, fence):
+            blocks.append(inside)
+            inside = None
+        else:
+            inside.append(line)
+    return blocks
+
+
+def text_of(lines: list[str]) -> str:
+    return "\n".join(lines).strip()
+
+
+def proposal_fault(body: str) -> str | None:
+    """The first fault of a rule proposal's body as spec 077 writes it, or None"""
+    lines = body.splitlines()
+    mark = PROPOSAL_MARK.match(lines[0]) if lines else None
+    if mark is None:
+        return "the first line isn't `<!-- shipmill:rule-proposal pulls=N,M place=P -->`"
+    pulls = [int(n) for n in mark.group(1).split(",")]
+    if len(set(pulls)) < 2:
+        return "the marker names one distinct pull request; a recurring finding spans at least two"
+    place = mark.group(2)
+    if place not in PLACES:
+        return f"the marker's place is {place!r}; it is one of {', '.join(PLACES)}"
+    sections = body_sections(lines[1:])
+    for name in ("Rule", "Raised in", "Place"):
+        if not text_of(sections.get(name, [])):
+            return f"the {name} section is missing or empty"
+    rule = text_of(sections["Rule"])
+    if "\n" in rule:
+        return "the Rule is more than one line; write it as one sentence on one line"
+    if len(rule) > RULE_LIMIT:
+        return f"the Rule is {len(rule)} characters; it is at most {RULE_LIMIT}"
+    listed = {int(m.group(1)) for line in sections["Raised in"] if (m := RAISED_LINE.match(line))}
+    missing = [n for n in dict.fromkeys(pulls) if n not in listed]
+    if missing:
+        return f"Raised in has no `- #{missing[0]}` line for a pull request the marker names"
+    if place == "prose":
+        if not text_of(sections.get("Why prose", [])):
+            return "a prose proposal needs a non-empty Why prose section"
+        return None
+    if not fenced_blocks(sections.get("Enforced by", [])):
+        return "Enforced by has no fenced block holding the check"
+    shown = sections.get("Shown failing", [])
+    if not any(COMMAND_LINE.match(line) for line in shown):
+        return "Shown failing has no `Command:` line"
+    if not any(HEAD_LINE.match(line) for line in shown):
+        return "Shown failing has no `Head:` line holding a full 40-character SHA"
+    exits = [int(m.group(1)) for line in shown if (m := EXIT_LINE.match(line))]
+    if not exits or exits[0] == 0:
+        return "Shown failing has no `Exit:` line holding a non-zero exit code"
+    blocks = fenced_blocks(shown)
+    output = text_of(blocks[0]).splitlines() if blocks else []
+    if not output:
+        return "Shown failing has no fenced output of the failing check"
+    if len(output) > OUTPUT_LINES:
+        return f"Shown failing's output is {len(output)} lines; keep at most {OUTPUT_LINES}"
+    if not text_of(sections.get("On the default branch", [])):
+        return "the On the default branch section is missing or empty"
+    return None
+
+
+def proposal_title(body: str) -> str:
+    """The title a well-formed proposal is filed under: `Rule: <the rule>`"""
+    return f"Rule: {text_of(body_sections(body.splitlines()[1:])['Rule'])}"
+
+
+def proposal_command(args: argparse.Namespace, read: Callable[[list[str]], Any]) -> int:
+    """Check a rule proposal's body before it is filed: 2 on a malformed body, naming the first
+    fault, 1 on a duplicate or when proposals wait on an answer, 0 printing the title"""
+    try:
+        body = Path(args.body_file).read_text(encoding="utf-8")
+    except OSError as e:
+        raise fail(f"proposal: can't read {args.body_file}: {e.strerror}") from e
+    except UnicodeDecodeError as e:
+        raise fail(f"proposal: {args.body_file} isn't UTF-8 text; write the body as UTF-8") from e
+    fault = proposal_fault(body)
+    if fault is not None:
+        raise fail(f"proposal: {fault}; fix the body and check it again")
+    title = proposal_title(body)
+    proposed = labelled_proposals(read, args.repo, frozenset(args.bot))
+    for entry, _ in proposed:
+        if normal(entry["title"]) == normal(title):
+            print(f"DUPLICATE #{entry['number']} ({entry['state']}): {entry['title']}")
+            return 1
+    waiting = [e for e, labels in proposed if e["state"] == "open" and NEEDS_DECISION_LABEL in labels]
+    if len(waiting) >= args.max_open:
+        print(f"FULL: {len(waiting)} proposals wait on an answer")
+        return 1
+    print(title)
+    return 0
+
+
 def parse(argv: list[str] | None = None) -> argparse.Namespace:
     """The command line, checked: a value out of range exits 2"""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -2210,6 +2386,13 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
     f.add_argument("--days", type=int, default=FINDINGS_DAYS, help="the window of closed pull requests, in days")
     f.add_argument("--bot", action="append", default=[], help="the App's login: its review records count")
     f.add_argument("--json", action="store_true")
+    p = sub.add_parser("proposal", help="check a rule proposal's body before it is filed (spec 077)")
+    p.add_argument("body_file", metavar="body-file", help="the proposal's body, as it would be filed")
+    p.add_argument("--repo", required=True, help="owner/name")
+    p.add_argument("--bot", action="append", default=[], help="the App's login: its proposals count")
+    p.add_argument(
+        "--max-open", type=int, default=MAX_OPEN, help="open proposals with needs-decision that hold back another"
+    )
     d = sub.add_parser("dedupe", help="each proposed title against the open issues")
     d.add_argument("repo", help="owner/name")
     d.add_argument("--title", action="append", required=True, help="a proposed issue's title")
@@ -2232,6 +2415,8 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error("--reviews counts the --bot logins' review records: give the App's login with --bot")
     if args.command == "findings" and args.days < 1:
         parser.error("--days must be at least 1; give a whole number of days, 28 by default")
+    if args.command == "proposal" and args.max_open < 1:
+        parser.error("--max-open must be at least 1, 3 by default")
     return args
 
 
@@ -2241,6 +2426,8 @@ def main() -> int:
         return gather(args, sources_for(args))
     if args.command == "findings":
         return findings(args, gh_read, dt.datetime.now(dt.timezone.utc))  # noqa: UP017 (runs under 3.10 too)
+    if args.command == "proposal":
+        return proposal_command(args, gh_read)
     return dedupe_command(args)
 
 
