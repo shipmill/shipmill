@@ -4,9 +4,8 @@ where each opportunity issue is in the maintainer's accept or decline.
 
 Usage: intake_state.py <owner/repo> [--config PATH] [--label opportunity]
                        [--accepted-label planned] [--marker "Triage:"] [--skip-label L]...
-                       [--category C]... [--json]
-                       [--plans [--wip N] [--bot-login LOGIN] [--tool SPEC]
-                                [--role NAME=FILLER[,FILLER...]]...]
+                       [--category C]... [--json] [--bot-login LOGIN]
+                       [--plans [--wip N] [--tool SPEC] [--role NAME=FILLER[,FILLER...]]...]
 
 Feedback is an open issue, or an open discussion when the repo enables Discussions, that:
   - carries none of SKIP_LABELS (bug, roadmap, and shipmill's own labels, goal-plan among
@@ -14,7 +13,8 @@ Feedback is an open issue, or an open discussion when the repo enables Discussio
     (repeatable, added to SKIP_LABELS), and not --label
   - has no triage verdict of implement, feature, duplicate, won't fix, or postponed: the
     verdict is the first bold word of the newest comment starting with --marker
-    ("Triage: **implement**"), so a bug, a contract change, or postponed work stays with
+    ("Triage: **implement**") by an OWNER, MEMBER, or COLLABORATOR or the --bot-login (D-16;
+    anyone else's reads as absent), so a bug, a contract change, or postponed work stays with
     triage; a newer verdict, such as triage's opportunity hand-off, makes it feedback again
   - for a discussion, sits in a --category (default: any category but Announcements)
 
@@ -50,8 +50,9 @@ means the default, propose).
 With --json, each NEW_FEEDBACK and ACCEPTED line also has (spec 074): author, the opener's
 login (a Bot's ending [bot], as --bot-login spells it) or null when GitHub returns none;
 association, the opener's author association, null for a discussion; and handed, the
-createdAt of the issue's newest triage comment when its verdict is opportunity (triage's
-hand-off), else null, and null for an ACCEPTED opportunity. The text output has none of them.
+createdAt of the issue's newest trusted triage comment, as feedback reads it, when its
+verdict is opportunity (triage's hand-off), else null, and null for an ACCEPTED
+opportunity. The text output has none of them.
 
 With --plans (spec 028), the goals of the direction come next, read with
 `uvx shipmill==<version> product show --section goals --json` in the current directory
@@ -175,13 +176,19 @@ ORDER = (
 )
 LIVE = {"OPPORTUNITY_OPEN", "ACCEPTED", "HANDED_OFF", "DECLINED", "NO_REASON"}  # an OVERLAP counts these
 
-ISSUE_FIELDS = """
+# A comment with its author, so a triage verdict counts only from a trusted one (D-16, #1374)
+COMMENT_FIELDS = "body createdAt author { __typename login } authorAssociation"
+ISSUE_FIELDS = (
+    """
         number title url state stateReason closedAt body milestone { title }
         author { __typename login } authorAssociation
         labels(first: 100) { pageInfo { hasNextPage } nodes { name } }
         reactions(content: THUMBS_UP) { totalCount }
-        comments(last: 50) { pageInfo { hasPreviousPage startCursor } nodes { body createdAt } }
+        comments(last: 50) { pageInfo { hasPreviousPage startCursor } nodes { """
+    + COMMENT_FIELDS
+    + """ } }
 """
+)
 OPEN_ISSUES = (
     """
 query($owner: String!, $name: String!, $cursor: String) {
@@ -224,15 +231,19 @@ query($owner: String!, $name: String!, $cursor: String) {
   }
 }
 """
-OLDER_COMMENTS = """
+OLDER_COMMENTS = (
+    """
 query($owner: String!, $name: String!, $number: Int!, $cursor: String!) {
   repository(owner: $owner, name: $name) {
     issue(number: $number) {
-      comments(last: 50, before: $cursor) { pageInfo { hasPreviousPage startCursor } nodes { body createdAt } }
+      comments(last: 50, before: $cursor) { pageInfo { hasPreviousPage startCursor } nodes { """
+    + COMMENT_FIELDS
+    + """ } }
     }
   }
 }
 """
+)
 REF = re.compile(
     r"https?://github\.com/(?P<o1>[\w.-]+)/(?P<n1>[\w.-]+)/(?:issues|discussions|pull)/(?P<k1>\d+)"
     r"|(?<![\w/#])(?:(?P<o2>[\w.-]+)/(?P<n2>[\w.-]+))?#(?P<k2>\d+)\b"
@@ -289,7 +300,7 @@ USER = re.compile(LOGIN_PATTERN)
 TEAM = re.compile(r"@" + LOGIN_PATTERN + r"/[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
 FILED_KINDS = ("feature", "fix")
 EXISTING_REF = re.compile(r"^(?:([\w.-]+)/([\w.-]+))?#([1-9][0-9]*)$")
-PLAN_COMMENT = "body createdAt author { __typename login } authorAssociation"
+PLAN_COMMENT = COMMENT_FIELDS
 PLAN_ISSUES = (
     """
 query($owner: String!, $name: String!, $label: String!, $cursor: String) {
@@ -439,14 +450,29 @@ def newest_verdict(issue: dict[str, Any], marker: str) -> str | None:
     return None if body is None else verdict(body, marker)
 
 
-def handed_at(issue: dict[str, Any], marker: str) -> str | None:
-    """The createdAt of the issue's newest triage comment when its verdict is triage's
-    opportunity hand-off (spec 074), None otherwise"""
+def trusted_triage(issue: dict[str, Any], marker: str, bot_login: str | None) -> dict[str, Any] | None:
+    """The issue's newest triage comment by an OWNER, MEMBER, or COLLABORATOR or the
+    --bot-login (D-16), None without one: anyone else's `Triage:` comment is read as absent,
+    so a stranger can neither hide a request from intake nor hand one over (#1374)"""
     for comment in reversed(issue["comments"]["nodes"]):
-        found = verdict(comment["body"], marker)
-        if found is not None:
-            return str(comment["createdAt"]) if found.startswith(OWN_VERDICT) else None
+        if verdict(comment["body"], marker) is not None and PLANS.trusted(comment, bot_login):
+            found: dict[str, Any] = comment
+            return found
     return None
+
+
+def trusted_verdict(issue: dict[str, Any], marker: str, bot_login: str | None) -> str | None:
+    comment = trusted_triage(issue, marker, bot_login)
+    return None if comment is None else verdict(comment["body"], marker)
+
+
+def handed_at(issue: dict[str, Any], marker: str, bot_login: str | None = None) -> str | None:
+    """The createdAt of the issue's newest trusted triage comment when its verdict is triage's
+    opportunity hand-off (spec 074), None otherwise"""
+    comment = trusted_triage(issue, marker, bot_login)
+    if comment is None or not (verdict(comment["body"], marker) or "").startswith(OWN_VERDICT):
+        return None
+    return str(comment["createdAt"])
 
 
 def opener(node: dict[str, Any]) -> str | None:
@@ -455,12 +481,15 @@ def opener(node: dict[str, Any]) -> str | None:
     return PLANS.login(author) if author else None
 
 
-def complete_comments(run: Runner, owner: str, name: str, issue: dict[str, Any], marker: str) -> None:
-    """Page an issue's comments back, oldest first, only while none of them is a triage comment:
-    the newest triage comment is all intake reads from an issue's history"""
+def complete_comments(
+    run: Runner, owner: str, name: str, issue: dict[str, Any], marker: str, bot_login: str | None = None
+) -> None:
+    """Page an issue's comments back, oldest first, only while none of them is a trusted
+    triage comment: the newest triage comment, and the newest trusted one, is all intake reads
+    from an issue's history"""
     comments = issue["comments"]
     seen: set[str] = set()
-    while comments["pageInfo"]["hasPreviousPage"] and newest_verdict(issue, marker) is None:
+    while comments["pageInfo"]["hasPreviousPage"] and trusted_triage(issue, marker, bot_login) is None:
         cursor = comments["pageInfo"]["startCursor"]
         if not cursor or cursor in seen:
             fail(f"GitHub reported more comments on #{issue['number']}, but the page cursor did not advance")
@@ -538,10 +567,10 @@ def skip_labels(extra: list[str]) -> set[str]:
     return {*SKIP_LABELS, *extra}
 
 
-def is_feedback(issue: dict[str, Any], skip: set[str], marker: str) -> bool:
+def is_feedback(issue: dict[str, Any], skip: set[str], marker: str, bot_login: str | None = None) -> bool:
     if labels(issue) & skip:
         return False
-    found = newest_verdict(issue, marker)
+    found = trusted_verdict(issue, marker, bot_login)
     return found is None or not found.startswith(CLOSING_VERDICTS)
 
 
@@ -585,6 +614,7 @@ def fetch(
     skip: set[str],
     categories: set[str] | None,
     autonomy: str,
+    bot_login: str | None = None,
     run: Runner = gh_graphql,
 ) -> Intake:
     owner, name = split_repo(repo)
@@ -593,7 +623,7 @@ def fetch(
     opened = [i for i in opened if label not in labels(i)]  # an open opportunity comes with the rest
     opps, _ = paged(run, OPPORTUNITIES, {**base, "label": label}, "issues")
     for issue in opened + opps:
-        complete_comments(run, owner, name, issue, marker)
+        complete_comments(run, owner, name, issue, marker, bot_login)
     thumbs = {i["number"]: i["reactions"]["totalCount"] for i in opened + opps}
     feedback = [
         Item(
@@ -604,10 +634,10 @@ def fetch(
             feedback=True,
             author=opener(i),
             association=i.get("authorAssociation"),
-            handed=handed_at(i, marker),
+            handed=handed_at(i, marker, bot_login),
         )
         for i in opened
-        if is_feedback(i, skip, marker)
+        if is_feedback(i, skip, marker, bot_login)
     ]
     if first["hasDiscussionsEnabled"]:
         discussions, _ = paged(run, DISCUSSIONS, base, "discussions")
@@ -1358,7 +1388,9 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="JSON lines instead of a table")
     parser.add_argument("--plans", action="store_true", help="also report the goals a plan is due for (spec 028)")
     parser.add_argument("--wip", type=int, help="with --plans: no-work plans wait while N issues are in progress")
-    parser.add_argument("--bot-login", help="with --plans: the login shipmill's sessions write as (<slug>[bot])")
+    parser.add_argument(
+        "--bot-login", help="the login shipmill's sessions write as (<slug>[bot]); its triage comments count (D-16)"
+    )
     parser.add_argument(
         "--tool", help="with --plans: where uvx gets shipmill (default: shipmill==<the plugin.json version>)"
     )
@@ -1371,8 +1403,8 @@ def main() -> int:
         "counts only when it names a maintainer (D-68)",
     )
     args = parser.parse_args()
-    if not args.plans and (args.wip is not None or args.bot_login is not None or args.role):
-        parser.error("--wip, --bot-login, and --role go with --plans")
+    if not args.plans and (args.wip is not None or args.role):
+        parser.error("--wip and --role go with --plans")
     if args.wip is not None and args.wip < 1:
         parser.error("--wip must be at least 1")
     if args.bot_login is not None and not args.bot_login.strip():
@@ -1391,6 +1423,7 @@ def main() -> int:
         skip=skip_labels(args.skip_label),
         categories=set(args.category) if args.category else None,
         autonomy=autonomy,
+        bot_login=args.bot_login,
     )
     found = rows(intake)
     planned: list[PlanRow] = []
