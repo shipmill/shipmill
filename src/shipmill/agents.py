@@ -70,6 +70,18 @@ def identity_of(table: Table) -> WriteAs:
     return WriteAs(value)
 
 
+def identity_choices(repo: str) -> list[str]:
+    """S-082-4, S-082-10: the three choices of whom agents write as, and the setup that records
+    one; the setup line names owner/name, a placeholder where the repo has none"""
+    command = cli_command()  # #236: the form the person can run, as every hint names it
+    slug = repo if is_plain_repo(repo) else "<owner/name>"
+    return [
+        f"choose whom agents write as here, in [agents] of {CONFIG_PATH}: the App (app_id = <id>, from "
+        f'`{command} app-create`), your own login (identity = "host"), or nobody (identity = "none")',
+        f"or let setup ask once and record it: /shipmill:shipmill-setup {slug}",
+    ]
+
+
 class Credit(StrEnum):
     """[agents] credit: whom a merge through `shipmill gh` names in Co-authored-by (spec 049)"""
 

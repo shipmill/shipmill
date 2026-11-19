@@ -17,7 +17,16 @@ from typing import Any, Protocol
 from shipmill import cli_command, deploy_runner, deprecations, fragments, ticks
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
-from shipmill.agents import AgentsConfig, Author, Credit, MergeMethod, ProductConfig, RolesError
+from shipmill.agents import (
+    AgentsConfig,
+    Author,
+    Credit,
+    MergeMethod,
+    ProductConfig,
+    RolesError,
+    WriteAs,
+    identity_choices,
+)
 from shipmill.app import (
     OPTIONAL_PERMISSIONS,
     PRODUCT_PERMISSIONS,
@@ -35,6 +44,8 @@ from shipmill.app import (
     product_token,
     with_home,
 )
+from shipmill.app_install import Checked
+from shipmill.app_install import check as app_reads
 from shipmill.app_login import client_secret_file, secret_refused, stored_logins
 from shipmill.autonomy import AGENT_STAGES, HOLD_LABEL, Autonomy, Hold, Stage
 from shipmill.changelog import Changelog
@@ -117,6 +128,8 @@ HookTester = Callable[[], HookTest]  # the delivery hooks' self-test (spec 026)
 AppProbe = Callable[[int], Installed | None]  # [downstream] app_id's installation check; None: no key on the host
 # [agents] app_id's installation on the repo, read with the App's key; None: no key on the host
 SessionApp = Callable[[int, str], Installation | None]
+# S-082-10: whether [agents] app_id's token, minted for the repo, reads it; None: no key on the host
+IdentityProbe = Callable[[int, str], Checked | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,6 +256,7 @@ def doctor(
     session_app: SessionApp | None = None,
     rules: Callable[[], RulesReader | None] | None = None,
     leaks: LeakProbe | None = None,
+    identity: IdentityProbe | None = None,
 ) -> list[Check]:
     """github reads the open hold and the shipmill-upgrade issues; None (no gh) reports that
     it can't. plugins reads the shipmill plugin's installs on this host; None checks none.
@@ -269,7 +283,9 @@ def doctor(
     rules the landing row reads (spec 054), only with a release workflow and releases on; None
     checks none, and a builder that returns None (no gh) reports that it can't read them. leaks
     reads the leak check's private file, secrets, and scanner, only with [agents] (spec 081);
-    None checks none"""
+    None checks none. identity reads whether [agents] app_id's token reads repo for the
+    identity row, which every repo gets (S-082-10); None, or a probe without the key, leaves
+    the App unchecked"""
     checks: list[Check] = []
 
     def add(ok: bool, name: str, detail: str, warn: bool = False) -> None:
@@ -298,6 +314,7 @@ def doctor(
             checks.extend(leaks_checks(root, leaks))
         checks.extend(deprecation_checks(policy, "credit") or [credit_check(policy.agents)])
         checks.append(author_check(policy.agents, Path.home() if home is None else home))
+        checks.append(identity_check(policy.agents, repo, identity))
         if session_app is not None and policy.agents.app_id is not None and repo is not None:
             checks.extend(optional_permission_checks(session_app, policy.agents.app_id, repo))
         uses = None if credential is None else credential()
@@ -307,6 +324,8 @@ def doctor(
             checks.append(auth_check(auth(None if uses is None else uses.token)))
         if policy.agents.verify:  # D-9: no list, no row and no read of the gate's state
             checks.extend(verify_checks(policy.agents.verify, state_dir(Git(root)) / VERIFY))
+    else:  # S-082-10, D-9: a release-only repo gets the row, as a PASS
+        checks.append(identity_check(None, repo, identity))
     checks.extend(decisions_checks(policy, raw, github))
     if (veto := veto_lanes_check(policy)) is not None:
         checks.append(veto)
@@ -1125,6 +1144,59 @@ def author_check(agents: AgentsConfig, home: Path) -> Check:
         detail = f'unset (spec 051); the deprecated [agents] credit = "{agents.credit}" reads as {reading} (spec 049)'
         return Check("PASS", "author", detail)
     return Check("PASS", "author", "unset (spec 051)")
+
+
+IDENTITY_ROW = "identity"  # doctor's row for whom agents write to GitHub as (spec 082)
+
+
+def identity_on_host(key: Path | None, home: Path, signer: Signer, api: Api, clock: Clock) -> IdentityProbe:
+    """S-082-10: the App's read of the repo, as `app-install --check` makes it: the token the
+    gate's preflight mints for the repo reads `GET /repos/<repo>` (app_read, spec 048), and goes
+    nowhere else; None when the key isn't on the host (no key passed and none at the default
+    path). Nothing is written"""
+
+    def probe(app_id: int, repo: str) -> Checked | None:
+        path = key if key is not None else default_key(app_id, home)
+        if key is None and not path.exists():
+            return None
+        return app_reads(app_id, path, repo, api, signer, clock)
+
+    return probe
+
+
+def identity_check(agents: AgentsConfig | None, repo: str | None, probe: IdentityProbe | None) -> Check:
+    """S-082-10: whom agents write to GitHub as here. With app_id, a PASS when the App's token
+    reads the repo, a FAIL naming the installation page and `app-install` when it can't, and a
+    WARN when it can't be checked (no key on the host, no repo, GitHub out of reach); without
+    it, the recorded host or none is a PASS, and no recorded choice a WARN naming the three
+    choices, or a PASS without an [agents] section (D-9)"""
+    slug = repo or "<owner/name>"
+    choices = "; ".join(identity_choices(slug))
+    if agents is None:
+        return Check("PASS", IDENTITY_ROW, f"not chosen (no [agents] section); {choices}")
+    app_id = agents.app_id
+    if app_id is None:
+        if agents.identity is WriteAs.HOST:
+            return Check("PASS", IDENTITY_ROW, "host: writes through shipmill gh go as the host's gh login")
+        if agents.identity is WriteAs.NONE:
+            return Check("PASS", IDENTITY_ROW, "none: agents don't write to GitHub here")
+        return Check("WARN", IDENTITY_ROW, f"not chosen: a write through shipmill gh is refused; {choices}")
+    if repo is None or probe is None:
+        why = "no GitHub repo to read for this checkout" if repo is None else "doctor reads no GitHub here"
+        return Check("WARN", IDENTITY_ROW, f"the App {app_id}, unchecked: {why}")
+    try:
+        checked = probe(app_id, repo)
+    except ReleaseError as exc:  # an open key, a refused JWT, GitHub out of reach: each names its fix
+        return Check("WARN", IDENTITY_ROW, f"the App {app_id}, unchecked on {repo}: {exc}")
+    if checked is None:
+        return Check("WARN", IDENTITY_ROW, f"the App {app_id}, unchecked: its key isn't on this host")
+    if checked.reads:
+        return Check("PASS", IDENTITY_ROW, f"the App {app_id} ({checked.slug}[bot]) can read {repo}")
+    detail = (
+        f"the App {app_id} can't read {repo}: {checked.problem}; install it on {repo} at {checked.page},"
+        f" then run `{cli_command()} app-install {repo}`"
+    )
+    return Check("FAIL", IDENTITY_ROW, detail)
 
 
 MERGE_ROW = "merge"  # doctor's row for [agents] merge (spec 072)
