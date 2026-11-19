@@ -362,7 +362,8 @@ or the tags are wrong; fix those, not the version.
    `upstream`, a report for another repo, spec 038, `decided`, a notify decision the
    maintainer may veto, spec 030, `opportunity` and `planned`, product intake's
    opportunity and the maintainer's accept of it, spec 068, and `expedite` and `fixed-date`,
-   the classes of service the maintainer adds to an accepted opportunity, spec 070; with
+   the classes of service the maintainer adds to an accepted opportunity, spec 070, and
+   `rule-proposal`, the weekly retro's proposed rule for a recurring finding, spec 077; with
    `[land.window]`, with or without `[agents]`, its
    `queued_label`, spec 056), and
    whether GitHub deletes a pull request's branch when it merges (`BRANCH_DELETE_ON` or
@@ -1010,8 +1011,9 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      `role:maintainer` and `role:<name>` for each role `[agents.roles]` defines (a role's
      item, spec 036), `human` (the older label for a person's item, spec 017), `upstream` (a report for another repo, spec 038), and
      `decided` (a notify decision, spec 030), `opportunity` and `planned` (an
-     opportunity and its accept, spec 068), and `expedite` and `fixed-date` (an accepted
-     opportunity's classes of service, spec 070); it
+     opportunity and its accept, spec 068), `expedite` and `fixed-date` (an accepted
+     opportunity's classes of service, spec 070), and `rule-proposal` (the weekly retro's
+     proposed rule for a recurring finding, spec 077); it
      reads `LABELS_MISSING` until then. Without `[agents]` none is wanted
    - **Notifications:** with `app_id`, the question is `<slug>[bot]`'s, so its mention
      notifies the user on GitHub and the gate sends no desktop notification. Without it,
