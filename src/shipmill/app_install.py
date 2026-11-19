@@ -14,8 +14,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from shipmill.app import Api, Signer, jwt
+from shipmill import cli_command
+from shipmill.app import (
+    Api,
+    GitHubUnavailable,
+    Lacks,
+    MintRefused,
+    NotInstalled,
+    RateLimited,
+    Signer,
+    check_key,
+    jwt,
+    rate_limited,
+    unavailable,
+)
 from shipmill.errors import ReleaseError
+from shipmill.github_auth import app_read
 
 POLL_SECONDS = 5
 WAIT_SECONDS = 600
@@ -136,6 +150,63 @@ class Guided:
                 }
             )
         return {"app_id": app_id, "slug": self.slug, "page": self.page, "repos": rows}
+
+
+@dataclass(frozen=True, slots=True)
+class Checked:
+    """S-082-8: whether the App's token, minted for the repo, reads it"""
+
+    app_id: int
+    slug: str
+    repo: str
+    page: str  # the App's installation settings page, its Install App page
+    problem: str | None  # None when the read answered 200
+
+    @property
+    def reads(self) -> bool:
+        return self.problem is None
+
+    def line(self) -> str:
+        bot = f"App {self.app_id} ({self.slug}[bot])"
+        if self.problem is None:
+            return f"{bot} can read {self.repo}"
+        return (
+            f"{bot} can't read {self.repo}: {self.problem}; install it on {self.repo} at {self.page},"
+            f" then run `{cli_command()} app-install {self.repo}`"
+        )
+
+    def record(self) -> dict[str, object]:
+        return {"app_id": self.app_id, "slug": self.slug, "repo": self.repo, "reads": self.reads, "page": self.page}
+
+
+def check(
+    app_id: int,
+    key: Path,
+    repo: str,
+    api: Api,
+    signer: Signer,
+    clock: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.UTC),
+) -> Checked:
+    """S-082-8: mint the token the gate's preflight mints for the repo and read `GET /repos/<repo>`
+    with it (app_read, spec 048); the token goes nowhere else. The App not installed on the repo,
+    its installation lacking a permission, a refused mint, and a read answering other than 200
+    are the Checked's problem; a missing or open key, a refused JWT, and GitHub out of reach or
+    rate-limiting raise, naming their fix"""
+    token = jwt(app_id, check_key(key), clock(), signer)
+    slug, page = app_page(api, token)
+    try:
+        read = app_read(app_id, key, repo, signer, api, clock)
+    except (NotInstalled, Lacks, MintRefused) as exc:
+        return Checked(app_id, slug, repo, page, exc.problem)
+    answer = read.answer
+    if answer.status == 200:
+        return Checked(app_id, slug, repo, page, None)
+    path = f"/repos/{repo}"
+    if unavailable(answer.status):
+        raise GitHubUnavailable("GET", path, answer.status)
+    if rate_limited(answer):
+        raise RateLimited("GET", path, answer)
+    return Checked(app_id, slug, repo, page, f"GET {path} answered {answer.status}")
 
 
 def guide(

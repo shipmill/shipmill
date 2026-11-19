@@ -20,6 +20,7 @@ from pathlib import Path
 from shipmill.app import (
     OPTIONAL_PERMISSIONS,
     PERMISSIONS,
+    Answer,
     Api,
     AuthFailure,
     Clock,
@@ -90,18 +91,34 @@ class GitHubAuth:
 GitHubPreflight = Callable[[Identity | None], GitHubAuth]  # the App's identity, or None for the host's login
 
 
+@dataclass(frozen=True, slots=True)
+class AppRead:
+    """What the App's read of a repo answered, and the notices of the token it read with; the
+    token itself is kept nowhere"""
+
+    answer: Answer
+    notices: tuple[str, ...]
+
+
+def app_read(app_id: int, key: Path, repo: str, signer: Signer, api: Api, clock: Clock = utc_now) -> AppRead:
+    """Mint the session's token for repo, then read `GET /repos/<repo>` with it; the token goes
+    nowhere else, never printed or cached. A failure to mint, and the API's own failures
+    (unreachable, an answer that isn't JSON), are ReleaseErrors"""
+    token = mint(app_id, repo, key, clock(), signer, api, PERMISSIONS, OPTIONAL_PERMISSIONS)
+    return AppRead(api.get(f"/repos/{repo}", token.value), token.notices)
+
+
 def app_reach(identity: Identity, repo: str, signer: Signer, api: Api, clock: Clock = utc_now) -> GitHubAuth:
-    """Mint the session's token for repo, then read the repo with it; the token goes nowhere else.
-    The API's own failures (unreachable, an answer that isn't JSON) are ReleaseErrors. An
-    optional permission the installation lacks is a notice, and the verdict stays ok (D-77)"""
+    """app_read, as the gate's preflight reads it: any failure is the verdict's. An optional
+    permission the installation lacks is a notice, and the verdict stays ok (D-77)"""
     path = f"/repos/{repo}"
     try:
-        token = mint(identity.app_id, repo, identity.key, clock(), signer, api, PERMISSIONS, OPTIONAL_PERMISSIONS)
-        answer = api.get(path, token.value)
+        read = app_read(identity.app_id, identity.key, repo, signer, api, clock)
     except ReleaseError as exc:
         return GitHubAuth.app_failed(exc, identity.app_id, repo)
+    answer = read.answer
     if answer.status == 200:
-        return GitHubAuth(None, notices=token.notices)
+        return GitHubAuth(None, notices=read.notices)
     if unavailable(answer.status):  # GitHub's own failure: no repair, the next tick tries again (#981)
         return GitHubAuth.of(GitHubUnavailable("GET", path, answer.status))
     if rate_limited(answer):  # a limit that resets: no repair, the next tick tries again (#1034)

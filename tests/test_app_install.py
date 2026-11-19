@@ -11,10 +11,15 @@ from pathlib import Path
 
 import pytest
 
+from shipmill import cli_command
 from shipmill.app import Answer
 from shipmill.app_install import Installed, Step, guide, steps
-from shipmill.cli import _app_install
+from shipmill.cli import _app_install, _parser
 from shipmill.errors import ReleaseError
+
+from .test_app import APP_ID as IDENTITY_APP_ID
+from .test_app import REPO, key_file
+from .test_gate_github_auth import ACCESS, REPO_PATH, SECRET, ReachApi
 
 APP_ID = 5209412
 
@@ -128,7 +133,14 @@ def test_s007_6_installations_are_reported_and_the_wait_ends() -> None:
 
 
 def args(**given: object) -> argparse.Namespace:
-    values: dict[str, object] = {"repos": [], "app_id": APP_ID, "app_key": None, "no_browser": True, "json": False}
+    values: dict[str, object] = {
+        "repos": [],
+        "app_id": APP_ID,
+        "app_key": None,
+        "no_browser": True,
+        "check": False,
+        "json": False,
+    }
     return argparse.Namespace(**(values | given))
 
 
@@ -247,3 +259,116 @@ def test_s007_10_the_docs_document_app_install() -> None:
     assert "$CR app-install" in install and "$CR app-install" in skill
     for doc in (install, skill):
         assert "Install App" in doc and "click" in doc
+
+
+# -- S-082-8: app-install --check -----------------------------------------------------------
+
+CHECK_APP = Answer(200, json.dumps({"slug": "demo-agent", "owner": {"login": "romamo", "type": "User"}}))
+CHECK_PAGE = "https://github.com/settings/apps/demo-agent/installations"
+
+
+def no_browser(url: str) -> None:
+    raise AssertionError(f"--check opened {url}")
+
+
+def no_sleep(seconds: float) -> None:
+    raise AssertionError("--check waited")
+
+
+def run_check(
+    tmp_path: Path, api: ReachApi, capsys: pytest.CaptureFixture[str], **given: object
+) -> tuple[int, str, str]:
+    """`shipmill app-install romamo/demo --app-id <id> --check`, its key at tmp_path/app.pem"""
+    key = tmp_path / "app.pem"
+    if not key.exists():
+        key_file(tmp_path)
+    values = {"repos": [REPO], "app_id": IDENTITY_APP_ID, "app_key": key, "check": True} | given
+    code = _app_install(tmp_path, args(**values), api, FakeSigner(), no_browser, None, Clock(), no_sleep, 600)
+    out, err = capsys.readouterr()
+    for text in (out, err):
+        assert SECRET not in text  # the token is never printed
+    files = [p for p in tmp_path.rglob("*") if p.is_file() and p.stat().st_mode & 0o400]
+    assert not any(SECRET in p.read_text(errors="replace") for p in files)  # nor cached
+    return code, out, err
+
+
+def test_s082_8_check_exits_0_when_the_apps_token_reads_the_repo(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    api = ReachApi(app=CHECK_APP)
+    code, out, err = run_check(tmp_path, api, capsys)
+    assert (code, out, err) == (0, f"App {IDENTITY_APP_ID} (demo-agent[bot]) can read {REPO}\n", "")
+    assert f"POST {ACCESS}" in api.events and f"GET {REPO_PATH}" in api.events  # minted for the repo, then read
+    assert (REPO_PATH, SECRET) in api.calls
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        ReachApi(app=CHECK_APP, installed=False),  # not installed on the repo
+        ReachApi(app=CHECK_APP, repo=Answer(404, '{"message": "Not Found"}')),  # the read doesn't answer 200
+        ReachApi(app=CHECK_APP, repo=Answer(403, '{"message": "Resource not accessible by integration"}')),
+    ],
+)
+def test_s082_8_check_exits_1_naming_the_repo_and_the_installation_page(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], api: ReachApi
+) -> None:
+    code, out, _ = run_check(tmp_path, api, capsys)
+    assert code == 1
+    assert out.startswith(f"App {IDENTITY_APP_ID} (demo-agent[bot]) can't read {REPO}: ")
+    assert CHECK_PAGE in out and f"`{cli_command()} app-install {REPO}`" in out
+
+
+def test_s082_8_check_exits_2_for_a_missing_or_open_key(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    api = ReachApi(app=CHECK_APP)
+    with pytest.raises(ReleaseError, match=r"no App private key at"):
+        run_check(tmp_path, api, capsys, app_key=tmp_path / "missing.pem")
+    key_file(tmp_path, 0o644)
+    with pytest.raises(ReleaseError, match=r"chmod 600"):
+        run_check(tmp_path, api, capsys)
+    assert api.events == []  # nothing asked of GitHub
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        ReachApi(app=CHECK_APP, repo=Answer(502, "")),
+        ReachApi(app=CHECK_APP, repo=Answer(403, '{"message": "API rate limit exceeded"}')),
+        ReachApi(app=Answer(503, "")),
+    ],
+)
+def test_s082_8_check_exits_2_when_github_cant_answer(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], api: ReachApi
+) -> None:
+    with pytest.raises(ReleaseError):
+        run_check(tmp_path, api, capsys)
+
+
+def test_s082_8_check_takes_one_repo(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(ReleaseError, match=r"--check checks one repo, got 2"):
+        run_check(tmp_path, ReachApi(app=CHECK_APP), capsys, repos=[REPO, "romamo/other"])
+
+
+@pytest.mark.parametrize(
+    ("api", "code", "reads"),
+    [(ReachApi(app=CHECK_APP), 0, True), (ReachApi(app=CHECK_APP, installed=False), 1, False)],
+)
+def test_s082_8_check_json_prints_one_object(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], api: ReachApi, code: int, reads: bool
+) -> None:
+    found, out, err = run_check(tmp_path, api, capsys, json=True)
+    assert found == code
+    assert json.loads(out) == {
+        "app_id": IDENTITY_APP_ID,
+        "slug": "demo-agent",
+        "repo": REPO,
+        "reads": reads,
+        "page": CHECK_PAGE,
+        "refused": [],  # S-052-11: no config here, so no refused key
+    }
+    assert REPO in err  # the line, on stderr under --json (S-007-7)
+
+
+def test_s082_8_check_is_a_flag_of_app_install() -> None:
+    parsed = _parser().parse_args(["app-install", "o/r", "--app-id", "7", "--check", "--json"])
+    assert (parsed.repos, parsed.app_id, parsed.check, parsed.json) == (["o/r"], 7, True, True)
