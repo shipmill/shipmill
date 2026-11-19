@@ -1344,3 +1344,257 @@ def test_s058_11_the_weekly_retro_and_the_usage_name_the_rate_and_the_outcomes(r
     for named in ("--lower-rate (90", "--lower-min (10)", "--revert-days", "rate", "`unzoned`", "reverted", "held"):
         assert named in usage, named
     assert "MIN_ASKS" not in SCRIPT.read_text(encoding="utf-8")
+
+
+# -- findings (spec 077) ----------------------------------------------------------------------
+
+REPO = "o/r"
+APP = "shipmill-app"
+SHA_B = "b" * 40
+SHA_C = "c" * 40
+MARKED = "\n\n<!-- shipmill:agent -->"
+
+
+def rest(body: str, association: str = "COLLABORATOR", login: str = "amy", kind: str = "User", **extra: Any) -> Any:
+    return {"body": body, "author_association": association, "user": {"login": login, "type": kind}, **extra}
+
+
+def app(body: str, **extra: Any) -> Any:
+    return rest(body + MARKED, "NONE", APP + "[bot]", "Bot", **extra)
+
+
+def review(body: str, when: str, state: str = "CHANGES_REQUESTED", head: str = SHA, **who: Any) -> Any:
+    return rest(body, **who, state=state, commit_id=head, submitted_at=when)
+
+
+def app_review(body: str, when: str, head: str = SHA) -> Any:
+    return app(body, state="COMMENTED", commit_id=head, submitted_at=when)
+
+
+def line_comment(body: str, when: str, path: str, line: int, head: str = SHA, **who: Any) -> Any:
+    extra: dict[str, Any] = {
+        "path": path,
+        "original_line": line,
+        "line": None,
+        "original_commit_id": head,
+        "created_at": when,
+    }
+    return rest(body, **who, **extra)
+
+
+def closed_pull(number: int, closed: str, merged: bool = False, head: str = SHA) -> Any:
+    return {
+        "number": number,
+        "title": f"PR {number}",
+        "url": f"https://github.com/{REPO}/pull/{number}",
+        "mergedAt": closed if merged else None,
+        "closedAt": closed,
+        "headRefOid": head,
+    }
+
+
+def forge(
+    pulls: list[Any],
+    reviews: Mapping[int, list[Any]] | None = None,
+    comments: Mapping[int, list[Any]] | None = None,
+    talk: Mapping[int, list[Any]] | None = None,
+    issues: list[Any] | None = None,
+    calls: list[list[str]] | None = None,
+) -> Callable[[list[str]], Any]:
+    """A scripted GitHub: the closed pull requests, each one's reviews, review comments, and
+    conversation, and the repo's rule-proposal issues, read as findings reads them"""
+    lists = {"reviews": reviews or {}, "comments": comments or {}}
+
+    def read(cmd: list[str]) -> Any:
+        if calls is not None:
+            calls.append(cmd)
+        if cmd[:2] == ["pr", "list"]:
+            return pulls
+        assert cmd[:2] == ["api", "--paginate"] and cmd[3:] == ["--jq", ".[]"], cmd
+        path = cmd[2].removeprefix(f"repos/{REPO}/")
+        if path == "issues?labels=rule-proposal&state=all&per_page=100":
+            return issues or []
+        kind, number, what = path.removesuffix("?per_page=100").split("/")
+        return ((talk or {}) if kind == "issues" else lists[what]).get(int(number), [])
+
+    return read
+
+
+def run_findings(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str], read: Callable[[list[str]], Any], *flags: str
+) -> tuple[dict[str, Any], str]:
+    """findings' --json report and its text, over the same forge"""
+    assert rt.findings(rt.parse(["findings", REPO, "--bot", APP, *flags]), read, END) == 0
+    text = capsys.readouterr().out
+    assert rt.findings(rt.parse(["findings", REPO, "--bot", APP, "--json", *flags]), read, END) == 0
+    report: dict[str, Any] = json.loads(capsys.readouterr().out)
+    return report, text
+
+
+def listed_items(report: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
+    return {p["number"]: p["items"] for p in report["findings"]}
+
+
+def test_s077_1_records_reviews_and_inline_comments_of_the_window_are_listed(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    record = (
+        "<!-- shipmill:review refuse -->\n<!-- shipmill:findings confirmed=1 rejected=0 minor=0 -->\nBreaks I-2, D-16."
+    )
+    calls: list[list[str]] = []
+    read = forge(
+        [closed_pull(57, day(2), merged=True, head=SHA_C), closed_pull(40, day(30), merged=True)],
+        reviews={
+            57: [
+                app_review(record, day(3)),
+                review("Use start:dev, see N-3 and Q-1, not XQ-12.", day(2.6), head=SHA_B),
+            ],
+            40: [review("Outside the window", day(31))],
+        },
+        comments={
+            57: [line_comment("The dev script is start:dev (I-4, I-4).", day(2.5), "apps/api/package.json", 12, SHA_B)]
+        },
+        calls=calls,
+    )
+    report, text = run_findings(rt, capsys, read)
+    assert [p["number"] for p in report["findings"]] == [57]
+    found = listed_items(report)[57]
+    assert [(i["id"], i["kind"], i["author"], i["head"], i["path"], i["line"], i["cites"]) for i in found] == [
+        ("F-1", "record", APP + "[bot]", SHA, None, None, ["I-2", "D-16"]),
+        ("F-2", "review", "amy", SHA_B, None, None, ["N-3", "Q-1"]),
+        ("F-3", "comment", "amy", SHA_B, "apps/api/package.json", 12, ["I-4"]),
+    ]
+    assert found[0]["text"] == "Breaks I-2, D-16."
+    assert f"F-3 comment by amy at {SHA_B} apps/api/package.json:12; cites I-4" in text
+    assert "#57 PR 57 (merged" in text and "#40" not in text and "Outside the window" not in text
+    assert calls[0][calls[0].index("--search") + 1] == f"closed:>={END - dt.timedelta(days=28):%Y-%m-%d}"
+
+
+def test_s077_2_an_unmerged_pull_lists_its_newest_trusted_comment_at_the_close_as_a_refusal(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    said = [
+        rest("First thoughts", created_at=day(3)),
+        app("Refused: it breaks D-16.", created_at=day(1.5)),
+        rest("Outsider's last word", "NONE", "zed", created_at=day(1.2)),
+        rest("After the close", created_at=day(0.5)),
+    ]
+    read = forge(
+        [closed_pull(60, day(1), head=SHA_B), closed_pull(61, day(1), merged=True), closed_pull(62, day(2))],
+        talk={
+            60: said,
+            61: [rest("Merged, thanks", "OWNER", created_at=day(1.5))],
+            62: [rest("No.", "MEMBER", "bo", created_at=day(2))],
+        },
+    )
+    report, text = run_findings(rt, capsys, read)
+    assert [p["number"] for p in report["findings"]] == [60, 62]
+    assert [(i["id"], i["kind"], i["author"], i["head"], i["text"], i["cites"]) for i in listed_items(report)[60]] == [
+        ("F-1", "refusal", APP + "[bot]", SHA_B, "Refused: it breaks D-16.", ["D-16"])
+    ]
+    assert [(i["kind"], i["author"]) for i in listed_items(report)[62]] == [("refusal", "bo")]
+    assert "#61" not in text and "Merged, thanks" not in text
+    assert "#60 PR 60 (closed without a merge" in text
+
+
+def test_s077_3_outsiders_and_marked_text_are_left_out_and_long_text_is_cut(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    read = forge(
+        [closed_pull(70, day(1), merged=True), closed_pull(71, day(2)), closed_pull(72, day(3), merged=True)],
+        reviews={
+            70: [
+                review("OUTSIDER-REVIEW", day(1.5), association="CONTRIBUTOR", login="zed"),
+                review("AGENT-REVIEW" + MARKED, day(1.4)),
+                review("APP-WITHOUT-RECORD", day(1.3), association="NONE", login=APP + "[bot]", kind="Bot"),
+                review("Looks good", day(1.2), state="APPROVED"),
+            ],
+            72: [review("x" * 700, day(3.5))],
+        },
+        comments={
+            70: [
+                line_comment("OUTSIDER-COMMENT", day(1.5), "a.py", 1, association="NONE", login="zed"),
+                line_comment("AGENT-COMMENT" + MARKED, day(1.4), "a.py", 2),
+            ]
+        },
+        talk={71: [rest("OUTSIDER-CLOSE", "FIRST_TIME_CONTRIBUTOR", "zed", created_at=day(2.5))]},
+    )
+    report, text = run_findings(rt, capsys, read)
+    dumped = json.dumps(report)
+    for left_out in ("OUTSIDER", "AGENT-", "APP-WITHOUT-RECORD", "zed", "Looks good"):
+        assert left_out not in dumped and left_out not in text, left_out
+    assert [p["number"] for p in report["findings"]] == [72]
+    assert "#70" not in text and "#71" not in text
+    assert listed_items(report)[72][0]["text"] == "x" * 600 + "…"
+    assert "x" * 600 + "…" in text and "x" * 601 not in text
+
+
+def proposal(number: int, state: str, reason: str | None, body: str, **who: Any) -> Any:
+    url = f"https://github.com/{REPO}/issues/{number}"
+    return rest(
+        body, **who, number=number, title=f"Rule: rule {number}", state=state, state_reason=reason, html_url=url
+    )
+
+
+def test_s077_4_proposed_lists_trusted_marked_rule_proposals_in_any_state(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mark = "<!-- shipmill:rule-proposal pulls=41,57 place=lint -->\n## Rule\n\nx"
+    issues = [
+        proposal(95, "open", None, mark, pull_request={"url": "x"}),  # a pull request, not an issue
+        proposal(94, "open", None, "## Rule\n" + mark),  # the marker isn't the first line
+        proposal(93, "open", None, mark, association="NONE", login="zed"),  # an outsider's
+        proposal(92, "closed", "not_planned", mark.replace("lint", "prose"), association="OWNER"),
+        proposal(91, "closed", "completed", mark.replace("41,57", "3,8,9")),
+        app(mark, number=90, title="Rule: rule 90", state="open", state_reason=None, html_url="u90"),
+    ]
+    report, text = run_findings(rt, capsys, forge([], issues=issues))
+    assert [(p["number"], p["title"], p["pulls"], p["place"], p["state"]) for p in report["proposed"]] == [
+        (92, "Rule: rule 92", [41, 57], "prose", "declined"),
+        (91, "Rule: rule 91", [3, 8, 9], "lint", "accepted"),
+        (90, "Rule: rule 90", [41, 57], "lint", "open"),
+    ]
+    assert "Proposed: 3" in text
+    assert "#92 declined: Rule: rule 92 (place prose; pulls #41, #57)" in text
+    assert "#93" not in text and "#94" not in text and "#95" not in text
+
+
+def test_s077_5_json_has_its_three_keys_and_bad_input_or_a_failed_read_exits_2_with_no_list(
+    rt: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report, _ = run_findings(rt, capsys, forge([]), "--days", "7")
+    assert set(report) == {"window", "findings", "proposed"}
+    assert report["window"] == {"start": "2026-09-27T00:00:00Z", "end": "2026-10-04T00:00:00Z", "days": 7}
+    with pytest.raises(SystemExit) as refused:
+        rt.parse(["findings", REPO, "--days", "0"])
+    assert refused.value.code == 2
+    assert "--days must be at least 1" in capsys.readouterr().err
+    full = [closed_pull(n, day(1)) for n in range(rt.PR_LIMIT)]
+    with pytest.raises(SystemExit) as refused:
+        rt.findings(rt.parse(["findings", REPO, "--json"]), forge(full), END)
+    assert refused.value.code == 2
+    out, err = capsys.readouterr()
+    assert out == "" and "use a shorter --days" in err
+
+    def failing(cmd: list[str]) -> Any:
+        return subprocess.CompletedProcess(cmd, 1, "", "HTTP 404: Not Found")
+
+    scripted = forge([closed_pull(57, day(1), merged=True)])
+
+    def read(cmd: list[str]) -> Any:
+        return scripted(cmd) if cmd[0] == "pr" else rt.gh_read(cmd, failing)
+
+    for flags in ([], ["--json"]):
+        with pytest.raises(SystemExit) as refused:
+            rt.findings(rt.parse(["findings", REPO, *flags]), read, END)
+        assert refused.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == "" and "HTTP 404" in err and "gh auth status" in err
+
+
+def test_findings_reads_every_page_as_json_lines(rt: ModuleType) -> None:
+    def pages(cmd: list[str]) -> Any:
+        return subprocess.CompletedProcess(cmd, 0, '{"n": 1}\n{"n": 2}\n', "")
+
+    cmd = ["api", "--paginate", "repos/o/r/pulls/1/reviews?per_page=100", "--jq", ".[]"]
+    assert rt.gh_read(cmd, pages) == [{"n": 1}, {"n": 2}]
