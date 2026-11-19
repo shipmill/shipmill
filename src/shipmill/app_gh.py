@@ -6,10 +6,12 @@ marker (spec 050, `marked_args`), and those an edit writes, which carry it exact
 record's current body does (`body_edit`). Only the repo gh's `-R`/`--repo` names is read from them
 besides, to limit the token to it, and a merge they ask for (`merge_of`), which spec 030
 holds when the pull request has a `never` zone. shipmill's own `--decided-in <n>` of `issue
-create` is taken out (spec 051, `decided_in`). The token goes to gh in GH_TOKEN, never to
-output.
+create` is taken out (spec 051, `decided_in`). A write's text gh would read from stdin is read
+first by the leak check and fed to gh's stdin, its args unchanged (spec 081, `sent_texts`,
+`feed_gh`). The token goes to gh in GH_TOKEN, never to output.
 """
 
+import io
 import json
 import re
 import subprocess
@@ -26,6 +28,7 @@ from shipmill.classify import Pulls
 from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.github import MergeMethods
+from shipmill.leaks import Text
 
 GhRunner = Callable[[Sequence[str], Mapping[str, str]], int]  # argv and env in, gh's exit code out
 
@@ -1373,3 +1376,217 @@ def issue_close(args: Sequence[str]) -> IssueClose | None:
         f"gh issue close {named}: shipmill gh reads the issue's open sub-issues before it closes (#1313), and needs "
         "one issue by its number or URL"
     )
+
+
+# -- S-081-1, S-081-2: the text a write sends, for the leak check -------------------------------
+
+# Per gh group: the flags that take a value, and, among them, those whose value names a file gh
+# reads and sends; a group not listed takes only -R/--repo, so any other flag's value reads as
+# an argument, which is checked all the same
+_RELEASE_FLAGS = _Flags(
+    frozenset(
+        {"--discussion-category", "--notes", "--notes-file", "--notes-start-tag", "--repo", "--target", "--title"}
+    ),
+    frozenset("nFRt"),
+)
+_WORKFLOW_FLAGS = _Flags(frozenset({"--field", "--raw-field", "--ref", "--repo"}), frozenset("fFrR"))
+_GIST_FLAGS = _Flags(frozenset({"--add", "--desc", "--filename", "--remove"}), frozenset("adfr"))
+_OTHER_FLAGS = _Flags(frozenset({"--repo"}), frozenset("R"))
+_SENT_FLAGS = {
+    "issue": _GROUP_FLAGS["issue"],
+    "pr": _Flags(_GROUP_FLAGS["pr"].long | _PR_MERGE_LONG, _GROUP_FLAGS["pr"].short | _PR_MERGE_SHORT),
+    "api": _Flags(_API_LONG, _API_SHORT),
+    "release": _RELEASE_FLAGS,
+    "workflow": _WORKFLOW_FLAGS,
+    "gist": _GIST_FLAGS,
+}
+_FILE_FLAGS = {  # the flags whose value is a file gh sends, and how a finding names its text
+    "issue": {"--body-file": "the body", "-F": "the body"},
+    "pr": {"--body-file": "the body", "-F": "the body"},
+    "release": {"--notes-file": "the notes", "-F": "the notes"},
+}
+_FIELD_FILES = {"api": frozenset({"-F", "--field"}), "workflow": frozenset({"-F", "--field"})}  # key=@file
+_FIELDS = {"api": _API_FIELDS, "workflow": frozenset({"-f", "-F", "--field", "--raw-field"})}
+_NAMED = {  # how a finding names a flag's value
+    "--body": "the body",
+    "-b": "the body",
+    "--title": "the title",
+    "-t": "the title",
+    "--notes": "the notes",
+    "-n": "the notes",
+    "--subject": "the subject",
+}
+
+
+def _values(args: Sequence[str], flags: _Flags) -> list[tuple[str | None, str]]:
+    """Every text args hold, with the flag it is the value of (None for an argument): a value
+    flag takes the next argument, or its rest after `=` or its letter, as `_scan` reads it; a
+    short cluster with no value flag in it is an argument itself, so a value bundled with a
+    flag the table doesn't know (`-dtext`) is still read. Nothing after `--` is a flag"""
+    found: list[tuple[str | None, str]] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        index += 1
+        if arg == "--":
+            found.extend((None, rest) for rest in args[index:])
+            break
+        if arg.startswith("--"):
+            name, equals, value = arg.partition("=")
+            if name in flags.long and not equals and index < len(args):
+                value, index = args[index], index + 1
+            if equals or name in flags.long:
+                found.append((name, value))
+            continue
+        if not arg.startswith("-") or len(arg) == 1:
+            found.append((None, arg))
+            continue
+        for at, letter in enumerate(arg[1:], start=2):
+            if letter not in flags.short:
+                continue
+            value = arg[at:].removeprefix("=")
+            if not value and index < len(args):
+                value, index = args[index], index + 1
+            found.append((f"-{letter}", value))
+            if at > 2:  # letters before it the table may misread (`-dAcme` as -d, -A, -c...): the cluster too
+                found.append((None, arg))
+            break
+        else:
+            found.append((None, arg))
+    return found
+
+
+def sent_texts(args: Sequence[str], read: BodyRead) -> list[Text]:
+    """S-081-1, S-081-2: every text gh's args send, as they reach gh: each argument, each flag's
+    value (a title, a body, a label, a `-f name=value` field), and the content of each file the
+    write reads (`--body-file`, `-F`, `--notes-file`, `--input`, an `@file` field, a gist's
+    files), read with read; a file named `-` is stdin, which read gives as well (the caller
+    hands gh the same text on its stdin). The args aren't changed"""
+    if not args:
+        return []
+    group = args[0]
+    texts: list[Text] = []
+    files = _FILE_FLAGS.get(group, {})
+    for name, value in _values(args[1:], _SENT_FLAGS.get(group, _OTHER_FLAGS)):
+        if name is None:
+            texts.append(Text("an argument", value))
+        elif name in files:
+            texts.append(Text(files[name], read(name, value)))
+        elif name == "--input" and group == "api":
+            where = "the --input on stdin" if value == "-" else f"the --input file {value}"
+            texts.append(Text(where, read(name, value)))
+        elif name in _FIELDS.get(group, frozenset()):
+            key, _, text = value.partition("=")
+            if name in _FIELD_FILES.get(group, frozenset()) and text.startswith("@"):
+                text = read(name, text[1:])
+            texts.append(Text(f"the field {key}", text))
+        else:
+            texts.append(Text(_NAMED.get(name, f"the {name}"), value))
+    if group == "gist":
+        texts.extend(_gist_files(args, read))
+    return texts
+
+
+def _gist_files(args: Sequence[str], read: BodyRead) -> list[Text]:
+    """The local files a gist write uploads, `-` for stdin: `gh gist create`'s positional
+    arguments past `create`, or stdin when it names none (`cat notes | gh gist create`); `gh
+    gist edit`'s source file after the gist, else its `--add` file"""
+    positional, flags = _scan(args[1:], _GIST_FLAGS.long, _GIST_FLAGS.short)
+    if not positional:
+        return []
+    if positional[0] in ("create", "new"):
+        paths = positional[1:] or ["-"]
+    elif positional[0] == "edit":
+        added = [value for name, value in flags if name in ("-a", "--add")]
+        paths = positional[2:3] or added[-1:]
+    else:
+        return []
+    return [
+        Text("the file on stdin" if path == "-" else f"the file {path}", read(f"gist {positional[0]}", path))
+        for path in paths
+    ]
+
+
+GhFeed = Callable[[Sequence[str], Mapping[str, str], bytes], int]  # argv, env, and gh's stdin in, its exit code out
+
+
+def stdin_bytes(stdin: TextIO) -> bytes:
+    """stdin's bytes as they came, for gh to get unchanged: a stream over bytes (the terminal's)
+    read from its buffer, so no decoder sees them; a text-only stream (a test's) as UTF-8"""
+    if isinstance(stdin, io.TextIOWrapper):
+        raw: bytes = stdin.buffer.read()
+        return raw
+    return stdin.read().encode("utf-8")
+
+
+def feed_gh(argv: Sequence[str], env: Mapping[str, str], stdin: bytes) -> int:
+    """Run gh as `run_gh` does, but with stdin fed the bytes shipmill read from its own stdin
+    for the leak check (spec 081), so gh reads the very bytes that were checked"""
+    code = subprocess.run(list(argv), env=dict(env), input=stdin, check=False).returncode
+    return code if code >= 0 else 128 - code
+
+
+_REPOS_PATH = re.compile(r"repos/([^/]+)/([^/]+)(?:/.*)?", re.IGNORECASE)
+# an issue's or a pull request's URL, whose repo gh writes to whatever repo it works on
+_TARGET_URL = re.compile(r"https?://(?:www\.)?github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/(?:issues|pull)/.*", re.I)
+_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def _named_target(args: Sequence[str]) -> tuple[bool, str | None]:
+    """The repo an argument of an issue, pr, or repo command names over -R and the checkout's:
+    (True, its owner/name), (True, None) for one read as public (a URL that names no repo on
+    github.com, a repo without its owner, a project, which belongs to no repo), else (False, None)"""
+    group = args[0]
+    if group == "project":
+        return True, None
+    if group not in ("issue", "pr", "repo"):
+        return False, None
+    flags = _SENT_FLAGS.get(group, _OTHER_FLAGS)
+    positional, _ = _scan(args[1:], flags.long, flags.short)
+    if group == "repo":
+        if len(positional) < 2:
+            return False, None
+        matched = _REPO.fullmatch(positional[1].removeprefix("https://").removesuffix(".git"))
+        return True, None if matched is None else matched.group(1)
+    for given in positional[1:]:
+        if _URL.match(given):
+            matched = _TARGET_URL.fullmatch(given)
+            return True, None if matched is None else matched.group(1)
+    return False, None
+
+
+def write_repo(args: Sequence[str], default: str | None) -> str | None:
+    """S-081-2, S-081-3: the repo a write goes to, as owner/name: for `gh api`, the endpoint's
+    `repos/<owner>/<name>` (its {owner} and {repo} filled from default), and None for any other
+    endpoint (graphql, a gist, the user), which names no repo; None for `gh gist`; the repo an
+    issue's or a pull request's URL argument names, or `gh repo`'s repo argument; None for `gh
+    project`; else gh's -R/--repo, None when it names a repo off github.com, else default, the
+    repo gh works on. None reads as public"""
+    if not args:
+        return default
+    if args[0] == "gist":
+        return None
+    if args[0] == "api":
+        positional, _ = _scan(args[1:], _API_LONG, _API_SHORT)
+        found = _REPOS_PATH.fullmatch(_endpoint(positional[0])) if positional else None
+        if found is None:
+            return None
+        owner, name = found.group(1), found.group(2)
+        if PLACEHOLDER[0] in (owner, name) or PLACEHOLDER[1] in (owner, name):
+            if default is None:
+                return None
+            default_owner, default_name = default.split("/")
+            owner = default_owner if owner == PLACEHOLDER[0] else owner
+            name = default_name if name == PLACEHOLDER[1] else name
+        return f"{owner}/{name}"
+    named, target = _named_target(args)
+    if named:
+        return target
+    head = args[: list(args).index("--")] if "--" in args else args
+    if head and head[-1] in _REPO_FLAGS:
+        return None  # -R with no repo: gh refuses it, and nothing is sent
+    given = repo_value(args)
+    if given is None:
+        return default
+    matched = _REPO.fullmatch(given)
+    return None if matched is None else matched.group(1)
