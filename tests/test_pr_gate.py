@@ -2936,8 +2936,8 @@ NO_RECORD = (
     f"  unreviewed: no review of {HEAD_SHA[:7]} on record; review it, then record it with shipmill review record"
 )
 REFUSED_RECORD = (
-    f"  unreviewed: the newest review of {HEAD_SHA[:7]} on record refuses it; fix it, review it again, then record "
-    "it with shipmill review record"
+    f"  unreviewed: the newest review of {HEAD_SHA[:7]} on record refuses it on findings no second reviewer "
+    "checked; verify them (reviewer-brief.md, Verify a refusal), then record it again"
 )
 MAIN_UNREVIEWED = MAIN_READY.replace("READY", "UNREVIEWED")
 MARKED = PLAN + "\n<!-- shipmill:agent -->\n"
@@ -3024,6 +3024,48 @@ def test_s055_13_unreviewed_ranks_between_pending_and_blocked_and_stops_the_wait
 def test_s055_14_the_records_that_cover_the_judged_head(
     tmp_path: Path, records: list[dict[str, Any]], code: int, line: str | None
 ) -> None:
+    proc = run_gate(tmp_path, None, {7: pr()}, "--bot-login", BOT, reviews={7: records})
+    expected = MAIN_READY if line is None else MAIN_UNREVIEWED + line + "\n"
+    assert (proc.returncode, proc.stdout) == (code, expected), proc.stderr
+
+
+def findings_record(verdict: str, second: str) -> dict[str, Any]:
+    """The App's record with `second` as its body's line right after the marker"""
+    body = f"<!-- shipmill:review {verdict} -->\n{second}\n\nThe report.\n\n<!-- shipmill:agent -->"
+    return review(body, HEAD_SHA, BOT, "COMMENTED", "NONE", "Bot")
+
+
+VERIFIED_RECORD = (
+    f"  unreviewed: the newest review of {HEAD_SHA[:7]} on record refuses it on 2 confirmed finding(s); fix them, "
+    "review it again, then record it with shipmill review record"
+)
+FINDINGS = "<!-- shipmill:findings confirmed=2 rejected=1 minor=0 -->"
+
+
+@pytest.mark.parametrize(
+    ("records", "code", "line"),
+    [
+        ([findings_record("refuse", FINDINGS)], 9, VERIFIED_RECORD),
+        ([findings_record("refuse", FINDINGS + "\r")], 9, VERIFIED_RECORD),  # a CRLF body reads the same
+        ([recorded("refuse")], 9, REFUSED_RECORD),  # no findings line
+        ([findings_record("refuse", "<!-- shipmill:findings confirmed=2 rejected=1 -->")], 9, REFUSED_RECORD),
+        ([findings_record("refuse", "<!-- shipmill:findings rejected=1 confirmed=2 minor=0 -->")], 9, REFUSED_RECORD),
+        ([findings_record("refuse", "<!-- shipmill:findings confirmed=two rejected=1 minor=0 -->")], 9, REFUSED_RECORD),
+        ([findings_record("refuse", "<!-- shipmill:findings confirmed=-2 rejected=1 minor=0 -->")], 9, REFUSED_RECORD),
+        ([findings_record("refuse", f"{FINDINGS} and more")], 9, REFUSED_RECORD),
+        ([findings_record("refuse", f"\n{FINDINGS}")], 9, REFUSED_RECORD),  # not right after the marker
+        ([findings_record("merge", "<!-- shipmill:findings confirmed=0 rejected=2 minor=1 -->")], 0, None),
+        ([findings_record("merge", "<!-- shipmill:findings broken -->")], 0, None),
+        ([recorded("merge")], 0, None),
+        ([findings_record("refuse", FINDINGS), findings_record("merge", FINDINGS.replace("=2", "=0"))], 0, None),
+    ],
+)
+def test_s075_7_the_gate_says_which_refusal_it_reads(
+    tmp_path: Path, records: list[dict[str, Any]], code: int, line: str | None
+) -> None:
+    """a refuse record stays UNREVIEWED, exit 9 (S-055-14), naming its confirmed count when its
+    second line is a readable findings line and saying no second reviewer checked it otherwise; a
+    merge record reads READY with or without a findings line"""
     proc = run_gate(tmp_path, None, {7: pr()}, "--bot-login", BOT, reviews={7: records})
     expected = MAIN_READY if line is None else MAIN_UNREVIEWED + line + "\n"
     assert (proc.returncode, proc.stdout) == (code, expected), proc.stderr
