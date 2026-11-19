@@ -13,13 +13,14 @@ import pytest
 
 from shipmill.agents import AgentsConfig
 from shipmill.classify import _changelog as classify_changelog
-from shipmill.config import Table, branch_in
+from shipmill.config import CONFIG_PATH, Series, Table, TrendsConfig, branch_in
 from shipmill.deprecations import warnings
+from shipmill.doctor import Check, doctor
 from shipmill.errors import ReleaseError
 from shipmill.policy import BumpFrom, HooksConfig, Lane, NoticesConfig, Policy, Style, VersionFiles
 from shipmill.version import Part
 
-from .conftest import POLICY
+from .conftest import POLICY, Repo
 
 TOP = 'name = "demo"\n'
 CHANGELOG = '[changelog]\nstyle = "keep-a-changelog"\n'
@@ -165,7 +166,7 @@ CASES: dict[str, list[Change]] = {
 
 
 MESSAGES: dict[str, str] = {
-    "top unknown key": "shipmill.toml: unknown keys ['colour']; allowed: ['after_stamp', 'agents', 'autonomy', 'bot', 'branch', 'bump', 'changelog', 'decisions', 'downstream', 'environments', 'gates', 'hooks', 'land', 'lanes', 'mode', 'name', 'notices', 'operate', 'product', 'publish', 'requires', 'roadmap', 'version_files', 'version_lines']",
+    "top unknown key": "shipmill.toml: unknown keys ['colour']; allowed: ['after_stamp', 'agents', 'autonomy', 'bot', 'branch', 'bump', 'changelog', 'decisions', 'downstream', 'environments', 'gates', 'hooks', 'land', 'lanes', 'mode', 'name', 'notices', 'operate', 'product', 'publish', 'requires', 'roadmap', 'trends', 'version_files', 'version_lines']",
     "top name required": "shipmill.toml: name is required",
     "top name a string": "shipmill.toml: name must be a string, got 1",
     "top mode enum": "shipmill.toml: mode must be one of ['off', 'dry-run', 'release'], got 'on'",
@@ -612,3 +613,58 @@ def test_889_a_branch_git_refuses_is_refused_naming_the_key_and_where(name: str)
 def test_889_the_policy_refuses_an_empty_branch() -> None:
     with pytest.raises(ReleaseError, match=r"^shipmill\.toml: branch must be a git branch name, got '': it is empty$"):
         Policy.parse(tomllib.loads(apply(POLICY, [('branch = "main"', 'branch = ""')])), "shipmill.toml")
+
+
+def trends(body: str) -> Policy:
+    return Policy.parse(tomllib.loads(POLICY + f"\n[trends]\n{body}\n"), "shipmill.toml")
+
+
+def test_s078_8_a_config_without_trends_loads_with_none() -> None:
+    assert Policy.parse(tomllib.loads(POLICY), "shipmill.toml").trends is None
+
+
+def test_s078_8_trends_reads_its_series_and_defaults() -> None:
+    read = trends('series = ["ci_pass_rate", "lead_time"]').trends
+    assert read == TrendsConfig((Series.CI_PASS_RATE, Series.LEAD_TIME), 7, 8, 1.0, 2.0)
+    given = trends('series = ["review_time"]\nbucket_days = 1\nbaseline = 4\nlog_sigma = 0.5\nreport_sigma = 0.5')
+    assert given.trends == TrendsConfig((Series.REVIEW_TIME,), 1, 4, 0.5, 0.5)
+    assert (
+        str(read) == "series ci_pass_rate, lead_time; buckets of 7 days against the 8 before; log at 1σ, report at 2σ"
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "refused"),
+    [
+        ("bucket_days = 7", "series is required"),
+        (
+            "series = []",
+            "series must name at least one of ['ci_pass_rate', 'flaky_reruns', 'review_time', 'lead_time']",
+        ),
+        ('series = ["ci_pass_rate", "uptime"]', "series holds ['uptime'], outside"),
+        ('series = ["lead_time", "lead_time"]', "series names a series twice"),
+        ('series = ["lead_time"]\ncolour = 1', "unknown keys ['colour']; allowed:"),
+        ('series = ["lead_time"]\nbucket_days = 0', "bucket_days must be 1 or more, got 0"),
+        ('series = ["lead_time"]\nbaseline = 3', "baseline must be 4 or more, got 3"),
+        ('series = ["lead_time"]\nlog_sigma = 0', "log_sigma must be above 0, got 0.0"),
+        ('series = ["lead_time"]\nlog_sigma = -1.5', "log_sigma must be above 0, got -1.5"),
+        ('series = ["lead_time"]\nlog_sigma = true', "log_sigma must be a number, got True"),
+        ('series = ["lead_time"]\nlog_sigma = nan', "log_sigma must be a number, got nan"),
+        ('series = ["lead_time"]\nreport_sigma = inf', "report_sigma must be a number, got inf"),
+        ('series = ["lead_time"]\nreport_sigma = 0.5', "report_sigma must be at least log_sigma (1.0), got 0.5"),
+    ],
+)
+def test_s078_8_a_bad_trends_section_fails_the_load_naming_the_key(body: str, refused: str) -> None:
+    assert refusal(lambda: trends(body)).startswith(f"shipmill.toml [trends]: {refused}")
+
+
+def test_doctor_prints_one_trends_line_only_with_the_section(repo: Repo) -> None:
+    """Spec 078: one doctor line for [trends], its series and bands; none without it (D-9)"""
+
+    def lines() -> list[Check]:
+        return [c for c in doctor(repo.root, repo.github) if c.name == "trends"]
+
+    assert lines() == []
+    repo.write(str(CONFIG_PATH), repo.read(str(CONFIG_PATH)) + '\n[trends]\nseries = ["lead_time"]\nbucket_days = 1\n')
+    detail = "series lead_time; buckets of 1 day against the 8 before; log at 1σ, report at 2σ"
+    assert lines() == [Check("PASS", "trends", detail)]

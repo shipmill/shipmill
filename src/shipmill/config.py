@@ -1,8 +1,10 @@
 """The config file, .github/shipmill.toml, and the strict reader every section parser uses:
 one file, one section per layer (D-4)"""
 
+import math
 import tomllib
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -155,6 +157,13 @@ class Table:
             raise ReleaseError(f"{self.where}: {key} must be in {low}..{high}, got {value}")
         return value
 
+    def number(self, key: str, default: float) -> float:
+        """A finite integer or float, never true or false, nan, or inf"""
+        value = self._get(key, default, (int, float), "a number")
+        if isinstance(value, bool) or not math.isfinite(value):
+            raise ReleaseError(f"{self.where}: {key} must be a number, got {value!r}")
+        return float(value)
+
     def strings(self, key: str, default: tuple[str, ...] | None = None) -> tuple[str, ...]:
         value = self._get(key, _REQUIRED if default is None else default, (list, tuple), "a list of strings")
         if not all(isinstance(v, str) and v for v in value):
@@ -188,3 +197,60 @@ class Table:
 
 
 _REQUIRED = object()
+
+
+class Series(StrEnum):
+    """A series the drift report reads (spec 078)"""
+
+    CI_PASS_RATE = "ci_pass_rate"
+    FLAKY_RERUNS = "flaky_reruns"
+    REVIEW_TIME = "review_time"
+    LEAD_TIME = "lead_time"
+
+
+# [trends]'s defaults (spec 078)
+BUCKET_DAYS = 7
+BASELINE = 8
+LOG_SIGMA = 1.0
+REPORT_SIGMA = 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class TrendsConfig:
+    """The [trends] section: the series trends.py compares, the bucket and baseline sizes, and
+    the bands in sample standard deviations (spec 078). Off without the section"""
+
+    series: tuple[Series, ...]
+    bucket_days: int = BUCKET_DAYS
+    baseline: int = BASELINE  # the buckets before the newest one
+    log_sigma: float = LOG_SIGMA
+    report_sigma: float = REPORT_SIGMA
+
+    @classmethod
+    def parse(cls, t: Table) -> TrendsConfig:
+        t.allow("series", "bucket_days", "baseline", "log_sigma", "report_sigma")
+        names = t.strings("series")
+        allowed = [s.value for s in Series]
+        if not names:
+            raise ReleaseError(f"{t.where}: series must name at least one of {allowed}")
+        if unknown := sorted(set(names) - set(allowed)):
+            raise ReleaseError(f"{t.where}: series holds {unknown}, outside {allowed}")
+        if len(set(names)) != len(names):
+            raise ReleaseError(f"{t.where}: series names a series twice")
+        bucket_days = t.integer("bucket_days", default=BUCKET_DAYS, low=1, high=None)
+        baseline = t.integer("baseline", default=BASELINE, low=4, high=None)
+        assert bucket_days is not None and baseline is not None  # defaults were given
+        log_sigma = t.number("log_sigma", default=LOG_SIGMA)
+        if log_sigma <= 0:
+            raise ReleaseError(f"{t.where}: log_sigma must be above 0, got {log_sigma}")
+        report_sigma = t.number("report_sigma", default=REPORT_SIGMA)
+        if report_sigma < log_sigma:
+            raise ReleaseError(f"{t.where}: report_sigma must be at least log_sigma ({log_sigma}), got {report_sigma}")
+        return cls(tuple(Series(n) for n in names), bucket_days, baseline, log_sigma, report_sigma)
+
+    def __str__(self) -> str:
+        days = "1 day" if self.bucket_days == 1 else f"{self.bucket_days} days"
+        return (
+            f"series {', '.join(self.series)}; buckets of {days} against the {self.baseline} before;"
+            f" log at {self.log_sigma:g}σ, report at {self.report_sigma:g}σ"
+        )

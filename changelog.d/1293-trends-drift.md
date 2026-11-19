@@ -1,0 +1,3 @@
+### Added
+
+- A drift report for CI and review (spec 078): the github-ship-watch skill's new `trends.py <owner/repo> --repo-dir <dir> [--until TIME] [--json]` compares the newest bucket of each series in a new `[trends]` section of `.github/shipmill.toml` (`ci_pass_rate`, `flaky_reruns`, `review_time`, `lead_time`) with the buckets before it, and reads `no data`, `ok`, `log`, or `report` by its distance from their mean in sample standard deviations, naming the workflows or pull requests behind a drift; the config reads `[trends]` strictly and `shipmill doctor` prints one line for it. Off without the section (#1293)

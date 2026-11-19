@@ -14,7 +14,7 @@ from shipmill import environments, land_window, requires
 from shipmill import refused as catalogue
 from shipmill.agents import AgentsConfig, ProductConfig
 from shipmill.autonomy import AutonomyPolicy
-from shipmill.config import Table, branch_name, read
+from shipmill.config import Table, TrendsConfig, branch_name, read
 from shipmill.decide import DecisionPolicy
 from shipmill.downstream import DownstreamConfig
 from shipmill.environments import Environment, OperateConfig
@@ -210,6 +210,7 @@ class Policy:
     product: ProductConfig | None = None  # [product]: the product's home or components (spec 038, D-47)
     decisions: DecisionPolicy = DecisionPolicy()  # [decisions]: each zone's level, or its default (spec 030, D-48)
     land_window: LandWindow | None = None  # [land.window]: the hours held pull requests merge in (spec 056)
+    trends: TrendsConfig | None = None  # [trends]: the series trends.py compares (spec 078); off without it
     # the catalogued keys the config sets, [agents]'s included, each dropped on load (spec 052, D-64)
     refused: tuple[catalogue.Refusal, ...] = ()
 
@@ -305,6 +306,7 @@ class Policy:
             "product",
             "decisions",
             "land",
+            "trends",
         )
         mode = top.enum("mode", Mode)
         # releases off: the release side's tables may be left out, and one that is there is read as ever (#856)
@@ -378,6 +380,7 @@ class Policy:
             product=product,
             decisions=decisions,
             land_window=window,
+            trends=TrendsConfig.parse(top.table("trends")) if "trends" in raw else None,
             refused=(*refusals, *(agents.refused if agents is not None else ())),
         )
 
