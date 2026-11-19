@@ -16,6 +16,7 @@ from shipmill.app import INSTEAD_OF, SSH_REMOTES
 from shipmill.cli import main
 from shipmill.errors import ReleaseError
 from shipmill.gate import StateRead, WatchState, skills_dir, watch_command
+from shipmill.roles import GATE_MAINTAINER
 from shipmill.walk import Changes
 
 NOW = dt.datetime(2026, 10, 27, 12, 0, tzinfo=dt.UTC)
@@ -77,6 +78,19 @@ def test_s008_1_the_default_repo_is_origins_with_the_checkouts_top_level(tmp_pat
     script = Script()
     assert status(root / "src", script) == 0
     assert script.seen == [[sys.executable, str(SCRIPT), REPO, "--repo-dir", str(root), *ROLES]]
+
+
+def test_1314_status_passes_the_gates_maintainer_without_reading_the_host_login(tmp_path: Path) -> None:
+    root = checkout(tmp_path / "repo")
+    script = Script()
+
+    def unreadable() -> str:
+        raise ReleaseError("gh api user -q .login exited 1: HTTP 403")
+
+    environ = {GATE_MAINTAINER: "monalisa"}
+    assert main(["--repo", str(root), "status", "--rows"], state=script, login=unreadable, environ=environ) == 0
+    roles = ["--role", "maintainer=monalisa"]
+    assert script.seen == [[sys.executable, str(SCRIPT), REPO, "--repo-dir", str(root), *roles]]
 
 
 def test_s008_2_an_origin_off_github_asks_for_the_repo(tmp_path: Path) -> None:

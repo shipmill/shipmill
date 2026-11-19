@@ -1,7 +1,8 @@
 """`shipmill roles` (spec 036): who receives each step an agent can't do. The checkout's
-[agents.roles] resolved: the maintainer is its listed users and teams, or with none the host's
-gh login; a role nobody fills yet falls back to the maintainer's fillers. Printed as lines, as
-JSON, or as the `--role NAME=FILLER,...` flags triage_state.py takes"""
+[agents.roles] resolved: the maintainer is its listed users and teams, or with none the gate's
+SHIPMILL_MAINTAINER in a gate session, else the host's gh login; a role nobody fills yet falls
+back to the maintainer's fillers. Printed as lines, as JSON, or as the `--role
+NAME=FILLER,...` flags triage_state.py takes"""
 
 import json
 from collections.abc import Callable, Sequence
@@ -14,6 +15,9 @@ from shipmill.config import CONFIG_PATH, Table, config_path, read
 from shipmill.errors import ReleaseError
 
 LoginReader = Callable[[], str]  # the host's gh login, `gh api user`, as gate.py's host_login reads it
+# The maintainer's login shipmill gate sets in every headless session's environment (gate.py's
+# MAINTAINER, spec 062); under the App's installation token `gh api user` answers 403 (#1314)
+GATE_MAINTAINER = "SHIPMILL_MAINTAINER"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,13 +63,23 @@ def configured(root: Path) -> RolesConfig:
     return agents.roles
 
 
-def resolve(config: RolesConfig, login: LoginReader) -> tuple[ResolvedRole, ...]:
-    """maintainer first, then the table's other roles in its order. login is read only when
-    the maintainer lists nobody; an unreadable one exits 2 (S-036-4)"""
+def resolve(config: RolesConfig, login: LoginReader, gate: str = "") -> tuple[ResolvedRole, ...]:
+    """maintainer first, then the table's other roles in its order. When the maintainer lists
+    nobody, it is gate, the gate's SHIPMILL_MAINTAINER, when non-empty (a malformed one exits 2
+    naming the variable, #1314), else login, read only then; an unreadable one exits 2 (S-036-4)"""
     name = RoleName(MAINTAINER)
     listed = config.get(MAINTAINER)
     if listed is not None and listed.fillers:
         maintainer = ResolvedRole(name, listed.users, listed.teams, fallback=False)
+    elif gate:
+        try:
+            given = Login(gate)
+        except ReleaseError as exc:
+            raise ReleaseError(
+                f"{ROLES} {MAINTAINER} lists nobody, so the maintainer is the gate's {GATE_MAINTAINER}, which is "
+                f"malformed: {exc}"
+            ) from None
+        maintainer = ResolvedRole(name, (given,), (), fallback=False)
     else:
         try:
             host = Login(login())

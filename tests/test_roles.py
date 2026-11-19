@@ -13,6 +13,7 @@ from shipmill.agents import AgentsConfig, RolesConfig, app_id_of
 from shipmill.cli import main
 from shipmill.doctor import doctor
 from shipmill.errors import ReleaseError
+from shipmill.roles import GATE_MAINTAINER
 
 from .conftest import POLICY, Repo
 
@@ -230,3 +231,57 @@ def test_s036_4_roles_exits_2_without_gh_when_the_maintainer_is_unset(repo: Repo
     assert done.returncode == 2, done.stderr
     assert done.stderr.startswith("shipmill: [agents.roles] maintainer lists nobody"), done.stderr
     assert "gh is not on PATH" in done.stderr
+
+
+# -- #1314: in a gate session the maintainer is the gate's SHIPMILL_MAINTAINER -------------------
+
+
+def gate_roles(repo: Repo, capsys: Captured, environ: dict[str, str], *flags: str) -> str:
+    capsys.readouterr()
+    assert main(["--repo", str(repo.root), "roles", *flags], login=unreadable, environ=environ) == 0
+    return capsys.readouterr().out
+
+
+@pytest.mark.parametrize("maintainer", ["", "maintainer = []\n"], ids=["unset", "empty"])
+def test_1314_the_gates_maintainer_is_read_before_the_host_login(repo: Repo, capsys: Captured, maintainer: str) -> None:
+    repo.write(repo.policy_file, POLICY + AGENTS + "[agents.roles]\n" + maintainer + "infra = []\n")
+    environ = {GATE_MAINTAINER: "monalisa"}
+    assert json.loads(gate_roles(repo, capsys, environ, "--json"))["roles"] == {
+        "maintainer": {"users": ["monalisa"], "teams": [], "fallback": False},
+        "infra": {"users": ["monalisa"], "teams": [], "fallback": True},
+    }
+    assert gate_roles(repo, capsys, environ, "--flags") == "--role maintainer=monalisa --role infra=monalisa\n"
+
+
+def test_1314_a_listed_maintainer_wins_over_the_gates(repo: Repo, capsys: Captured) -> None:
+    repo.write(repo.policy_file, POLICY + AGENTS + SPEC)
+    assert gate_roles(repo, capsys, {GATE_MAINTAINER: "monalisa"}).startswith("maintainer: @octocat\n")
+
+
+@pytest.mark.parametrize("environ", [{}, {GATE_MAINTAINER: ""}], ids=["unset", "empty"])
+def test_1314_without_the_gates_maintainer_the_host_login_is_read(
+    repo: Repo, capsys: Captured, environ: dict[str, str]
+) -> None:
+    repo.write(repo.policy_file, POLICY + AGENTS)
+    capsys.readouterr()
+    assert main(["--repo", str(repo.root), "roles"], login=HOST, environ=environ) == 0
+    assert capsys.readouterr().out == "maintainer: @hostuser\n"
+    with pytest.raises(ReleaseError, match="the maintainer is the host's gh login, which can't be read"):
+        main(["--repo", str(repo.root), "roles"], login=unreadable, environ=environ)
+
+
+@pytest.mark.parametrize("value", ["octo cat", "octocat-", "shipmill-bot[bot]", "@acme/core"])
+def test_1314_a_malformed_gate_maintainer_exits_2_naming_the_variable(repo: Repo, value: str) -> None:
+    repo.write(repo.policy_file, POLICY + AGENTS)
+    with pytest.raises(ReleaseError) as caught:
+        main(["--repo", str(repo.root), "roles"], login=HOST, environ={GATE_MAINTAINER: value})
+    assert str(caught.value).startswith(
+        f"[agents.roles] maintainer lists nobody, so the maintainer is the gate's {GATE_MAINTAINER}, which is malformed"
+    )
+
+
+def test_1314_roles_runs_without_gh_in_a_gate_session(repo: Repo) -> None:
+    repo.write(repo.policy_file, POLICY + AGENTS)
+    done = cli(repo, "roles", env={"PATH": "/nonexistent", GATE_MAINTAINER: "monalisa"})
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == "maintainer: @monalisa\n"
