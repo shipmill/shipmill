@@ -147,4 +147,10 @@ issue read in `github.py`; nothing else is read.
 
 ## Issues
 
+- shipmill/shipmill#1332: S-068-1, S-068-11, S-068-12
+- shipmill/shipmill#1335: S-068-2, S-068-3, S-068-4, S-068-5, S-068-6
+- shipmill/shipmill#1333: S-068-7, S-068-8, S-068-10
+- shipmill/shipmill#1336: S-068-9
+- shipmill/shipmill#1334: S-068-13
+
 ## Verification
