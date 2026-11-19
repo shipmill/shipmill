@@ -228,6 +228,20 @@ def test_check_skips_a_measure_line_in_a_moved_goals_section(
     assert check(plans, root, PLAN, capsys) == (0, "")
 
 
+def test_s071_11_check_reads_goals_that_carry_serves_lines_as_without_them(
+    plans: ModuleType, root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    served = DIRECTION.replace("own\n", "own\n  serves: G-2, G-4\n").replace(
+        "a goal\n", "a goal\n  measure: issue_to_release_p90 < 2d\n  serves: G-1\n"
+    )
+    (root / "docs" / "product.md").write_text(served, encoding="utf-8")
+    assert plans.goal_ids(root) == frozenset({"G-3", "G-6"})
+    assert check(plans, root, PLAN, capsys) == (0, "")
+    (root / "docs" / "product.md").write_text(DIRECTION.replace("own\n", "own\n\n  serves: G-2\n"), encoding="utf-8")
+    with pytest.raises(SystemExit):  # a serves line after a blank line still stops it
+        check(plans, root, PLAN, capsys)
+
+
 STRAY = [
     ("prose under a goal", MEASURED.replace("  measure:", "And more:"), f"docs/product.md:10: {NOT_A_GOAL}"),
     ("unindented measure", MEASURED.replace("  measure:", "measure:"), f"docs/product.md:10: {NOT_A_GOAL}"),

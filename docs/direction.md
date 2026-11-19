@@ -63,6 +63,10 @@ The structure is fixed, so code reads it without a model:
 - A section that outgrows a page moves to its own file under `docs/product/`, such as
   `docs/product/goals.md`, starting with the same `## Goals` heading; the section in
   `docs/product.md` keeps its heading and holds only `See [Goals](product/goals.md).`
+- In a component repo, one whose `.github/shipmill.toml` sets `[product] home`, a goal may
+  name the goals of the product's home direction it serves on one line right under its item
+  line, or under its measure line: `  serves: G-2, G-4` (spec 071). `product check` refuses
+  the line in any other repo, the home included
 
 A short example:
 
@@ -106,13 +110,14 @@ still lands through a pull request:
 
 | Command | Does |
 |---|---|
-| `shipmill product check [--ref REF]` | Exits 1 naming the file, line, and rule broken; 0 when well formed. `--ref` reads the files as committed at a git ref, such as `origin/main`, instead of the working tree; exits 1 with `no docs/product.md at <ref>` when the file is absent there, and 2 for a ref git can't resolve |
-| `shipmill product show [--section NAME] [--json]` | Prints the direction, or some sections (`mission`, `users`, `goals`, `non-goals`, `quality`), moved ones resolved |
+| `shipmill product check [--ref REF] [--local]` | Exits 1 naming the file, line, and rule broken; 0 when well formed. `--ref` reads the files as committed at a git ref, such as `origin/main`, instead of the working tree; exits 1 with `no docs/product.md at <ref>` when the file is absent there, and 2 for a ref git can't resolve. `--local` reads only this checkout's direction, never the product home's (spec 071) |
+| `shipmill product show [--section NAME] [--json] [--local]` | Prints the direction, or some sections (`mission`, `users`, `goals`, `non-goals`, `quality`), moved ones resolved |
 | `shipmill product ids` | Lists every id with its text, one per line |
 | `shipmill product add <users\|goals\|non-goals\|quality> "<text>"` | Appends an item with the next id, one above any the file's history held, and prints it |
 | `shipmill product edit <id> "<text>"` | Rewrites one item's text; its id stays |
 | `shipmill product retire <id>` | Removes one item; its id is never handed out again |
 | `shipmill product measure <G-n> "<metric> <comparison> <target>"` | Writes the goal's measure line, or replaces the one it has (spec 027); `--clear` removes it |
+| `shipmill product serves <G-n> <G-n> ...` | In a component (`[product] home`), writes the goal's serves line naming the goals of the product's home direction it serves, or replaces the one it has (spec 071); `--clear` removes it |
 
 Each takes `--repo DIR` (default: the current directory). An edit command exits 2 without
 writing when the file doesn't pass `check` first. In a session with the shipmill plugin,

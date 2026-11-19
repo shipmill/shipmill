@@ -4,9 +4,11 @@ a level-one heading naming the product, then the five sections in order, the fou
 sections holding only `- <prefix>-<n>: <text>` items. A section may move to its own file
 under docs/product/ through a single `See [<section>](product/<file>.md).` line. A goal may
 carry one measure on the line right after it, `  measure: <metric> <comparison> <target>`
-(spec 027). Only the maintainer merges a change to it (D-34); the edit commands at the end
-write one item line, or a goal's measure line, in the working tree, never a commit. `check`
-and `read` also read it as committed at a git ref (spec 034), so the watch checks the default
+(spec 027), and in a component repo one serves line naming the product goals it serves,
+`  serves: G-n[, G-n ...]`, right under its item line or its measure line (spec 071). Only
+the maintainer merges a change to it (D-34); the edit commands at the end write one item
+line, or a goal's measure or serves line, in the working tree, never a commit. `check` and
+`read` also read it as committed at a git ref (spec 034), so the watch checks the default
 branch's direction rather than whatever the checkout holds"""
 
 import posixpath
@@ -18,6 +20,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from shipmill import cli_command
+from shipmill.agents import ProductConfig
+from shipmill.config import CONFIG_PATH
 from shipmill.errors import ReleaseError
 from shipmill.gitrepo import Git
 from shipmill.lineedit import Document, LineText, history_numbers
@@ -35,6 +39,10 @@ _MEASURE_LINE = re.compile(r"^  measure: (?P<text>\S.*)$")
 _MEASURE_PARTS = re.compile(r"^(?P<metric>\S+) (?P<comparison>\S+) (?P<target>\S+)$")
 _TARGET = re.compile(r"^(?P<number>[0-9]+(?:\.[0-9]+)?)(?P<unit>/week|h|d|%)$")
 _MEASURE_FORM = "`  measure: <metric> <comparison> <target>`"
+_SERVES_LIKE = re.compile(r"^\s*serves:")  # any line that tries to be a serves line
+_SERVES_LINE = re.compile(r"^  serves: (?P<text>\S.*)$")
+_SERVES_FORM = "`  serves: G-n[, G-n ...]`"
+_GOAL_ID = re.compile(r"G-[1-9][0-9]*")
 
 
 class Unit(StrEnum):
@@ -267,22 +275,70 @@ class ItemId:
 
 
 @dataclass(frozen=True, slots=True)
+class Serves:
+    """The goals of the product's home direction a component goal serves (spec 071): goal
+    ids, at least one, none twice, in the order written"""
+
+    goals: tuple[ItemId, ...]
+
+    def __post_init__(self) -> None:
+        if not self.goals:
+            raise ReleaseError("a serves line names at least one goal id, such as G-2")
+        for goal in self.goals:
+            if goal.prefix is not Prefix.GOAL:
+                raise ReleaseError(f"a serves line names goal ids, G-n; got {goal}")
+        seen: set[ItemId] = set()
+        for goal in self.goals:
+            if goal in seen:
+                raise ReleaseError(f"a serves line names {goal} twice; it names each goal once")
+            seen.add(goal)
+
+    @classmethod
+    def parse(cls, text: str) -> Serves:
+        """`G-n[, G-n ...]`, a comma and one space between; refused naming the rule"""
+        return cls.of(text.split(", "))
+
+    @classmethod
+    def of(cls, ids: Sequence[str]) -> Serves:
+        """The goal ids as given, each `G-n`; refused naming the rule"""
+        for id in ids:
+            if _GOAL_ID.fullmatch(id) is None:
+                raise ReleaseError(
+                    f"a serves line names goal ids, `G-n` with n from 1, a comma and one space between; got {id!r}"
+                )
+        return cls(tuple(ItemId.parse(id) for id in ids))
+
+    def ids(self) -> list[str]:
+        return [str(goal) for goal in self.goals]
+
+    def __str__(self) -> str:
+        return f"  serves: {', '.join(self.ids())}"
+
+
+@dataclass(frozen=True, slots=True)
 class Item:
     id: ItemId
     text: str
     measure: Measure | None = None  # only a goal carries one (spec 027)
+    serves: Serves | None = None  # only a component's goal carries one (spec 071)
 
     def record(self) -> dict[str, Any]:
-        """A goal's record has a `measure` key, null without one; other items have none"""
+        """A goal's record has a `measure` key, null without one, and a `serves` list, empty
+        without one; other items have neither"""
         record: dict[str, Any] = {"id": str(self.id), "text": self.text}
         if self.id.prefix is Prefix.GOAL:
             record["measure"] = None if self.measure is None else self.measure.record()
+            record["serves"] = [] if self.serves is None else self.serves.ids()
         return record
 
     def lines(self) -> str:
-        """The item as the file writes it: its line, and its measure line under it"""
-        line = f"- {self}"
-        return line if self.measure is None else f"{line}\n{self.measure}"
+        """The item as the file writes it: its line, its measure line, then its serves line"""
+        written = [f"- {self}"]
+        if self.measure is not None:
+            written.append(str(self.measure))
+        if self.serves is not None:
+            written.append(str(self.serves))
+        return "\n".join(written)
 
     def __str__(self) -> str:
         return f"{self.id}: {self.text}"
@@ -389,13 +445,14 @@ class GitRef:
 def check(root: Path, at: GitRef | None = None) -> tuple[Problem, ...]:
     """Every rule docs/product.md and the files its sections moved to break; none when well
     formed. A missing docs/product.md is a problem too. Read from the working tree, or from
-    the commit `at` names"""
-    return _parse(_tree(root, at))[1]
+    the commit `at` names. A serves line is a problem in a repo whose config sets no
+    `[product] home` (spec 071); the config is read only when a goal carries one"""
+    return _parse(root, _tree(root, at))[1]
 
 
 def read(root: Path, at: GitRef | None = None) -> Direction:
     """The direction, moved sections resolved; refused (exit 2) when it isn't well formed"""
-    direction, problems = _parse(_tree(root, at))
+    direction, problems = _parse(root, _tree(root, at))
     if problems:
         listed = "\n".join(f"  {p}" for p in problems)
         raise ReleaseError(
@@ -558,9 +615,19 @@ class _Parser:
         self.problems: list[Problem] = []
         self.seen: dict[ItemId, str] = {}  # the file:line each id first appears on, for a duplicate's message
         self.bodies: dict[Section, _Body] = {}  # each section's lines, in the file a moved one moved to
+        self.served: list[tuple[Path, int]] = []  # where each well-placed serves line sits (spec 071)
 
     def fail(self, path: Path, line: int, rule: str) -> None:
         self.problems.append(Problem(path, line, rule))
+
+    def place(self, root: Path) -> None:
+        """S-071-2: a serves line only in a component; the config is read only when one is there"""
+        if not self.served:
+            return
+        reason = _unserved(root)
+        if reason is not None:
+            for path, number in self.served:
+                self.fail(path, number, f"{reason}; delete the line")
 
     def direction(self) -> Direction | None:
         if not self.tree.is_file(DIRECTION):
@@ -746,6 +813,9 @@ class _Parser:
             if _MEASURE_LIKE.match(line):
                 previous = self._measure(section, body, number, line, previous, items)
                 continue
+            if _SERVES_LIKE.match(line):
+                previous = self._serves(section, body, number, line, previous, items)
+                continue
             previous = _Previous.BROKEN
             m = _ITEM.match(line)
             broken = broken or m is None or m["prefix"] != prefix.value
@@ -784,6 +854,13 @@ class _Parser:
         if previous is _Previous.MEASURED:
             self.fail(body.path, number, f"a second measure line under {items[-1].id}; a goal carries at most one")
             return _Previous.BROKEN
+        if previous is _Previous.SERVED:
+            self.fail(
+                body.path,
+                number,
+                f"a measure line sits right under its goal's item line, above {items[-1].id}'s serves line",
+            )
+            return _Previous.BROKEN
         if previous is not _Previous.ITEM:
             where = "after a blank line" if previous is _Previous.BLANK else "before any goal"
             self.fail(body.path, number, f"a measure line sits right under its goal's item line; this one is {where}")
@@ -802,21 +879,74 @@ class _Parser:
         items[-1] = replace(items[-1], measure=measure)
         return _Previous.MEASURED
 
+    def _serves(
+        self, section: Section, body: _Body, number: int, line: str, previous: _Previous, items: list[Item]
+    ) -> _Previous:
+        """A serves line (spec 071): only right under a goal's item line or its measure line,
+        one per goal; the goal gets it. Returns what the next line follows"""
+        if section is not Section.GOALS:
+            self.fail(body.path, number, f"a serves line sits only under a goal; `## {section.value}` holds none")
+            return _Previous.BROKEN
+        if previous is _Previous.BROKEN:  # under a line already reported
+            return _Previous.BROKEN
+        if previous is _Previous.SERVED:
+            self.fail(body.path, number, f"a second serves line under {items[-1].id}; a goal carries at most one")
+            return _Previous.BROKEN
+        if previous not in (_Previous.ITEM, _Previous.MEASURED):
+            where = "after a blank line" if previous is _Previous.BLANK else "before any goal"
+            self.fail(
+                body.path,
+                number,
+                f"a serves line sits right under its goal's item line or its measure line; this one is {where}",
+            )
+            return _Previous.BROKEN
+        written = _SERVES_LINE.match(line)
+        if written is None:
+            self.fail(body.path, number, f"a serves line is {_SERVES_FORM}, indented by two spaces; got {_quote(line)}")
+            return _Previous.SERVED
+        try:
+            serves = Serves.parse(written["text"])
+        except ReleaseError as exc:
+            self.fail(body.path, number, str(exc))
+            return _Previous.SERVED
+        items[-1] = replace(items[-1], serves=serves)
+        self.served.append((body.path, number))
+        return _Previous.SERVED
+
 
 class _Previous(StrEnum):
-    """What the line before a list section's line was, for where a measure line may sit"""
+    """What the line before a list section's line was, for where a measure or serves line may sit"""
 
     START = "start"
     BLANK = "blank"
     ITEM = "item"
     MEASURED = "measured"  # a measure line, well formed or not
-    BROKEN = "broken"  # a line already reported, or one no measure may follow
+    SERVED = "served"  # a serves line, well formed or not (spec 071)
+    BROKEN = "broken"  # a line already reported, or one no measure or serves line may follow
 
 
-def _parse(tree: _Tree) -> tuple[Direction | None, tuple[Problem, ...]]:
+def _parse(root: Path, tree: _Tree) -> tuple[Direction | None, tuple[Problem, ...]]:
     parser = _Parser(tree)
     direction = parser.direction()
-    return direction, tuple(parser.problems)
+    parser.place(root)
+    return (None if parser.problems else direction), tuple(parser.problems)
+
+
+def _unserved(root: Path) -> str | None:
+    """Why this repo's goals can't carry a serves line, from its .github/shipmill.toml; None
+    in a component, which names its product's home (spec 038). Read only when one does"""
+    config = ProductConfig.load(root)
+    if config is not None and config.component:
+        return None
+    if config is not None:  # [product] repos: the home itself
+        return (
+            "a serves line names the product goals a component's goal serves; this repo is the product's home "
+            f"([product] repos in {CONFIG_PATH}), which serves no product above it"
+        )
+    return (
+        f"a serves line names the product goals a component's goal serves; {CONFIG_PATH} sets no "
+        "[product] home, so this repo is in no product"
+    )
 
 
 def _split(text: str) -> list[Line]:
@@ -893,8 +1023,10 @@ def retire(root: Path, id: ItemId) -> Edited:
         )
     document = Document.read(root / body.path)
     removed = document.content(number - 1)
-    if any(item.id == id and item.measure is not None for item in direction.items(section)):
-        document.delete(number)  # its measure line, right under its item line (spec 027)
+    item = next(item for item in direction.items(section) if item.id == id)
+    # its measure line (spec 027) and its serves line (spec 071), right under its item line
+    for _ in range((item.measure is not None) + (item.serves is not None)):
+        document.delete(number)
     document.delete(number - 1)
     document.write()
     return Edited(body.path, number, removed)
@@ -925,11 +1057,42 @@ def measure(root: Path, id: ItemId, written: Measure | None) -> Edited | None:
     return Edited(body.path, number + 1, line)
 
 
+def serves(root: Path, id: ItemId, written: Serves | None) -> Edited | None:
+    """Write a goal's serves line right under its measure line, or its item line without one,
+    replacing the one it has, or remove it when `written` is None (spec 071). Only a component
+    writes one. None when there was nothing to remove"""
+    if id.prefix is not Prefix.GOAL:
+        raise ReleaseError(f"only a goal serves a product goal; {id} is not a G-n id")
+    direction, bodies = _editable(root)
+    body, number = _located(bodies, id)
+    goal = next(item for item in direction.goals if item.id == id)
+    index = number + (goal.measure is not None)  # from 0: the line right under the measure or item line
+    document = Document.read(root / body.path)
+    if written is None:
+        if goal.serves is None:
+            return None
+        removed = document.content(index)
+        document.delete(index)
+        document.write()
+        return Edited(body.path, index + 1, removed)
+    reason = _unserved(root)
+    if reason is not None:
+        raise ReleaseError(f"{reason}; nothing was written")
+    line = str(written)
+    if goal.serves is not None:
+        document.replace(index, line)
+    else:
+        document.insert(index, [line])
+    document.write()
+    return Edited(body.path, index + 1, line)
+
+
 def _editable(root: Path) -> tuple[Direction, dict[Section, _Body]]:
     """The direction and each section's lines; refused (exit 2) when `check` refuses it, so
     nothing is written over a broken file"""
     parser = _Parser(_WorkTree(root))
     direction = parser.direction()
+    parser.place(root)
     if parser.problems:
         listed = "\n".join(f"  {p}" for p in parser.problems)
         raise ReleaseError(
