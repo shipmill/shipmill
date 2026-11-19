@@ -212,7 +212,7 @@ MESSAGES: dict[str, str] = {
     "lanes none": "shipmill.toml: [lanes] enables no lane",
     "lanes required": "shipmill.toml: lanes is required",
     "lane hotfix unknown key": "shipmill.toml [lanes] [hotfix]: unknown keys ['schedule']; allowed: ['after_publish', 'dispatch', 'github_release']",
-    "lane dev unknown key": "shipmill.toml [lanes] [dev]: unknown keys ['marker']; allowed: ['after_publish', 'dispatch', 'github_release', 'milestone', 'quiet_minutes', 'schedule']",
+    "lane dev unknown key": "shipmill.toml [lanes] [dev]: unknown keys ['marker']; allowed: ['after_publish', 'close_milestone', 'dispatch', 'github_release', 'milestone', 'quiet_minutes', 'schedule']",
     "lane quiet range": "shipmill.toml [lanes] [dev]: quiet_minutes must be in 0..300, got 301",
     "lane quiet not a bool": "shipmill.toml [lanes] [dev]: quiet_minutes must be an integer, got True",
     "lane promote_from": "shipmill.toml [lanes] [stable]: promote_from is 'rc' or absent, got 'dev'",
