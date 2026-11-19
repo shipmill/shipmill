@@ -1,6 +1,6 @@
 # S-078: Agent quality measures, and a drift report for CI and review
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -217,3 +217,24 @@ Touched areas: `skills/github-ship-watch/scripts/metrics.py`,
 - shipmill/shipmill#1295: S-078-16, S-078-17, S-078-18
 
 ## Verification
+
+Checked on the default branch plus #1295's pull request: `trends.py` run on this checkout and on one without a config, `watch_state.py` and the real `trends.py` run as subprocesses over a fake gh that scripts the runs per bucket, the skill's text read, and the tests `specs.py coverage --spec 078` lists, all passing.
+
+- S-078-1: `test_s078_1_*` reads the JSON `measures` list with Rework cycles, First-pass merge rate, Review time, and Plan match right after Agent share, counted over Agent share's `agent_made` pull requests, each `no data` with a null value with no agent pull request merged, and Review time's `p90` and `count` in `hours`
+- S-078-2: `test_s078_2_*` counts a Bot's, a `[bot]` login's, and a `--bot` login's review record and an OWNER's, MEMBER's, or COLLABORATOR's decision as verdicts, a COMMENTED review, an outsider's, and a person's marker review as none, and a record and an approval at one commit as one round
+- S-078-3: `test_s078_3_*` counts a one-parent commit authored after the creation, and neither a merge of the base nor an older commit rebased after it
+- S-078-4: over a scripted forge `test_s078_4_*` reads the mean rework cycles with the mean rounds and fix commits in the detail, and First-pass merge rate with `n of m`
+- S-078-5: `test_s078_5_*` reads Review time to the first verdict and names the pull requests with none in the detail
+- S-078-6: `test_s078_6_*` matches exact, `dir/`, and glob `Files:` paths and a renamed file's new path, and counts a pull request with no plan or no backticked path in the detail only
+- S-078-7: `shipmill product check` takes each ratio metric at `80%` and each hours metric at `12h` and `1.5d`, and refuses `12h`, `2d`, or `5/week` for a ratio and `20%` or `5/week` for hours, naming the unit (`test_s078_7_*`); `METRIC_MEASURES` maps the four and shipmill-setup's SKILL.md lists them
+- S-078-8: `trends.py` on this checkout, whose config has no `[trends]`, exits 2 naming the section to add; over the fake gh a config without `[trends]` makes the full report run no trends read and print no DRIFT row; each bad key fails `config.py`'s load naming it (`test_s078_8_*`)
+- S-078-9: `test_s078_9_*` counts the default branch's success over success, failure, and timed-out runs with cancelled and unfinished ones out, and the rerun-green runs on any branch, a bucket over 1,000 runs read day by day
+- S-078-10: `test_s078_10_*` gives each bucket the review and lead time `metrics.py` gives with that bucket as its window, from one read over the span
+- S-078-11: `test_s078_11_*` reads `ok`, `log`, and `report` by the worse-way distance in sample σ against the configured bands, and a better bucket `ok` however far
+- S-078-12: `test_s078_12_*` reads `no data` for a missing newest value or a baseline with 3 values, and on a flat baseline `report` with `flat baseline` when worse and `ok` when equal or better
+- S-078-13: `test_s078_13_*` prints one line per series with tier, newest, mean, σ, and deviation, `--json` each series' buckets, and a diagnosis of up to 3 workflows or pull requests
+- S-078-14: runs named and titled `SECRET-...` leave neither in `trends.py`'s output nor in the watch's DRIFT row; a workflow file not on the default branch prints as `(other workflow)`
+- S-078-15: `trends.py` exits 0 with and without a drift, and 2 with a message naming the fix and no report for a config without `[trends]` (run on this checkout and on `docs/`), a failed gh read, and a day over 1,000 runs (`test_s078_15_*`)
+- S-078-16: over the fake gh the full report, with and without `--no-host`, prints `DRIFT ci_pass_rate 50.0% against mean 95.0%, 7.8σ over 4 buckets of 1d: .github/workflows/ci.yml 5 failed, newest <run URL>` with the `trends.py` command as its fix and `agent` false, a steady series prints none, `--no-trends` makes no trends read and gives the same exit code, and a failing runs read exits 2; `fleet.py` lists the row among the report-only rows, with exit 0
+- S-078-17: `--tier 1` to `--tier 7` and `--sweep` over the same config print no DRIFT row and make neither of `trends.py`'s reads; `--no-trends` with either exits 2
+- S-078-18: github-ship-watch's SKILL.md names the four measures under Metrics and has a Trends section with the `[trends]` keys, the four series, the tiers, and the DRIFT row as reported, never acted on, read by `test_s078_18_*`

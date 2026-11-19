@@ -23,7 +23,9 @@ report runs watch_state.py for each repo, on a fresh clone (`gh repo clone`, blo
 temporary folder removed afterwards) with the repo's incident_label passed as
 --incident-label, and prints one table: the repo, then each row's state, subject, and
 detail as watch_state.py prints them. The rows watch_state.py counts as action come first,
-across all repos, then the report-only rows, each group in the fleet file's order.
+across all repos, then the report-only rows, each group in the fleet file's order. A repo
+whose config has [trends] reports its DRIFT rows (spec 078) among its report-only rows: never
+an action, so they leave the exit code as it was.
 
 A repo's incident label is the fleet entry's incident_label, else the [operate]
 incident_label of the clone's .github/shipmill.toml, else "incident". The watch and the
@@ -51,7 +53,8 @@ does. Python 3.10+, standard library only.
 
 queue (spec 069) reads the same fleet file with the same refusals and prints only what waits
 on the maintainer, across every repo, oldest first. On the same fresh clone, watch_state.py
-runs with --no-host, --trusted-only, and the --bot-login (the gate's App, <slug>[bot]), and
+runs with --no-host, --no-trends (no DRIFT row is a queue item), --trusted-only, and the
+--bot-login (the gate's App, <slug>[bot]), and
 names the items; one batched GraphQL read per repo (50 items each) reads them as GitHub has
 them now:
   QUESTION    an open item in NEEDS_DECISION, still labelled needs-decision, whose question
@@ -561,8 +564,8 @@ def first_line(proc: subprocess.CompletedProcess[str], step: str) -> str:
 
 def queue_watch_command(e: Entry, checkout: Path, bot_login: str | None) -> list[str]:
     """watch_state.py for one repo's queue: the watch's trust (--trusted-only and the
-    --bot-login, D-16), and none of this host's rows"""
-    cmd = [*watch_command(e, checkout), "--no-host", "--trusted-only"]
+    --bot-login, D-16), none of this host's rows, and no trends read: a DRIFT row is no item (spec 078)"""
+    cmd = [*watch_command(e, checkout), "--no-host", "--no-trends", "--trusted-only"]
     return cmd + (["--bot-login", bot_login] if bot_login is not None else [])
 
 

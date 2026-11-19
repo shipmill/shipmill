@@ -100,6 +100,7 @@ Each row that needs a person or an agent carries a `fix` (`--json`'s `"fix"` key
 | FIXED_DATE_NO_DATE | Only with `[agents]` (spec 070): an open opportunity of class fixed date in no milestone, or in one without a due date (D-32: the milestone and its date are the maintainer's). Give the user the row's fix, "set the due date of #N's milestone". An action (exit 1), never an agent's |
 | PYPI_WAIT | uv found no `shipmill==<version>` on PyPI for the pinned CLI, even with its index refreshed: a release's tag moves minutes before PyPI serves it (#597). The detail names the reads it stands in for; the rest of the watch stands. Report it with the row's fix, the release's `publish.yml` run, only when it outlasts a few passes. Report only |
 | DEPLOYMENTS_FORBIDDEN | Only with `[environments]`: a deployments or deployment-statuses read got GitHub's `Resource not accessible by integration (HTTP 403)`, so the token's GitHub App has no `deployments: read` (#973). One row per repo, naming the environments not read: their UNHEALTHY and deployment-based PROMOTION_DUE rows are skipped this pass, and the rest of the report stands. Give the user the row's fix: grant `deployments: read` in the App's settings and accept it on the installation (#968). Any other failure of these reads still exits 2. Report only, never an agent's |
+| DRIFT | Only in the full report, for a config with `[trends]` (spec 078): a series whose newest bucket reads the `report` tier against its own recent past, `DRIFT <series> <newest> against mean <mean>, <deviation>σ over <N> buckets of <D>d: <diagnosis>` ([Trends](#trends)). Tell the maintainer, with the diagnosis and the row's fix, the `trends.py` command that prints the whole report. Report only, never an agent's: the watch changes nothing on a drift |
 | PRS_OPEN, BOT_OK, BOT_NONE, NO_REGISTRY | Report only |
 
 `--json` prints one JSON object per row: `state`, `subject`, `detail`, and `agent`, which says whether the row needs an agent. `shipmill gate` starts a session only on `agent: true` rows (plus PRS_OPEN and LAND_DUE unless `[autonomy] land` is `observe`, spec 040, spec 056), and refuses a row without the field. The script's `AGENT` set decides it, next to this table; change both together:
@@ -152,7 +153,7 @@ HOLD and POSTMORTEM_DUE show for every repo with a shipmill config, since a hold
 
 ## Report
 
-Every report the user asks for covers the open issues (ISSUES and ISSUES_OPEN), the workflow runs (RUNS_ACTIVE), and the agents: the triage mode (TRIAGE_MODE), the sessions (AGENT_SESSION), the loops (LOOP, plus this session's own), and the subjects the gate keeps idle (GATE_IDLE); and whether this host's shipmill is current (SHIPMILL_VERSION, SHIPMILL_OUTDATED, PLUGIN_SHADOWING, SKILL_SHADOWED). Say "none open", "nothing running", or "no agents" when a row is absent; a status report that leaves one out reads as complete when it isn't.
+Every report the user asks for covers the open issues (ISSUES and ISSUES_OPEN), the workflow runs (RUNS_ACTIVE), and the agents: the triage mode (TRIAGE_MODE), the sessions (AGENT_SESSION), the loops (LOOP, plus this session's own), and the subjects the gate keeps idle (GATE_IDLE); and whether this host's shipmill is current (SHIPMILL_VERSION, SHIPMILL_OUTDATED, PLUGIN_SHADOWING, SKILL_SHADOWED). Say "none open", "nothing running", or "no agents" when a row is absent; a status report that leaves one out reads as complete when it isn't. A DRIFT row is told to the maintainer with its diagnosis, as a trend to look at; the pass changes nothing on it.
 
 Under /loop, a quiet pass (exit 0) is one line: "Nothing owed: bot OK, <latest tag> published and announced, no issues waiting." (add "held by #N" when a HOLD row shows). Otherwise lead with open incidents and holds, then what needs the user (each with a recommendation), then what the pass repaired with links, then what it left for the next pass.
 
@@ -265,15 +266,44 @@ The retro writes only the proposal issues, a rule proposal's question and its on
 
 ## Metrics
 
-`scripts/metrics.py <owner/repo> [--days 30] [--until TIME]` measures the line over a window from what GitHub already holds: the four DORA measures (deploy frequency, lead time for changes, change failure rate, time to restore) plus issue to release (an issue opened to the stable release that shipped the pull request closing it), human touch (merges a person merged or approved), and agent share (merges whose own work says an agent made them). Run it with `uv run --no-project python`; it changes nothing. `--json` is for a dashboard, `--markdown` for a post. The script's docstring defines each measure; the choices that matter when reading it:
+`scripts/metrics.py <owner/repo> [--days 30] [--until TIME]` measures the line over a window from what GitHub already holds: the four DORA measures (deploy frequency, lead time for changes, change failure rate, time to restore) plus issue to release (an issue opened to the stable release that shipped the pull request closing it), human touch (merges a person merged or approved), agent share (merges whose own work says an agent made them), and four measures of how the agent pull requests landed (rework cycles, first-pass merge rate, review time, plan match). Run it with `uv run --no-project python`; it changes nothing. `--json` is for a dashboard, `--markdown` for a post. The script's docstring defines each measure; the choices that matter when reading it:
 
 - A repo that has never deployed counts stable GitHub releases, and its change failures are `release-blocker` issues plus hotfix releases (on a `release/X.Y` branch). Pass `--environment` to count only the environments that matter (a `github-pages` deployment counts otherwise), and `--incident-label` when `[operate] incident_label` isn't `incident`
 - Lead time ends at the first stable release whose tag adds the PR's merge commit over the previous stable version, from GitHub's compare (one query per release in the window). It misreads one backport shape: a patch cut from main before the window, when the previous version is a later hotfix on a `release/X.Y` branch without it, has its commits credited to the next minor release (the docstring has the example)
 - Human touch reads the merge actor and approvals: an app is a bot, a `[bot]` login is a bot, and `--bot <login>` names a machine user. An agent merging with a person's token counts as that person. With `[agents] app_id` set, the gate's sessions merge and review as the GitHub App's `<slug>[bot]`, which counts as a bot without `--bot`, so the metrics tell agent work from the maintainer's (spec 004)
 - Agent share reads what the work itself says, not who clicked merge: a PR is agent-made when its body carries Claude Code's "Generated with [Claude Code]" footer or a commit carries a `Co-Authored-By: Claude` or `Claude-Session:` trailer (case-insensitive; add another agent's mark to `AGENT_MARKS`). Its detail counts the agent-made merges a person approved in a GitHub review, the human gate. Where agents merge with the owner's token, human touch reads 100% and agent share is the number to watch
+- Four measures follow Agent share, over the agent pull requests merged in the window, the ones Agent share counts (spec 078). A verdict is a review record (its first line a `shipmill:review` marker, by a Bot, a `[bot]` login, or a `--bot` login) or an APPROVED or CHANGES_REQUESTED review by an OWNER, MEMBER, or COLLABORATOR person; a review round is one commit verdicts were given at; a fix commit is a one-parent commit authored after the pull request opened, so a merge of the base or a rebased older commit is none
+  - **Rework cycles**: per pull request, its review rounds beyond the first plus its fix commits; the mean, with the mean rounds and fix commits in the detail
+  - **First-pass merge rate**: the share with 0 rework cycles, `n of m` in the detail
+  - **Review time**: the pull request's creation to its first verdict, median and p90 in hours; one with no verdict is left out, and the detail says how many
+  - **Plan match**: of the pull requests whose one `## Plan` has a `Files:` line with a backticked path, the share whose every changed file equals one, is under one ending in `/`, or matches one as a glob; the detail counts the ones with no such plan
 - A measure with nothing to measure says "no data", never 0. A 0% change failure rate means releases shipped and none failed
 
 The weekly metrics post is an option the user schedules, never a default: `/schedule` a weekly routine that runs `metrics.py <repo> --markdown` and posts the table as one comment on the tracking issue the user names (`gh issue comment <n> --body-file <file>`). Posting is the routine's only write.
+
+## Trends
+
+`scripts/trends.py <owner/repo> --repo-dir <dir> [--until TIME] [--json]` compares each configured series' newest bucket with its own recent past, so CI health or review speed sliding shows before something is stuck (spec 078). It reads GitHub through gh and the checkout's config, changes nothing, and no model reads or judges anything. It runs only for a config with a `[trends]` section; without it nothing is read and nothing is reported:
+
+```toml
+[trends]
+series = ["ci_pass_rate", "flaky_reruns", "review_time", "lead_time"]  # required, at least one
+bucket_days = 7     # default; at least 1
+baseline = 8        # default; at least 4: the buckets before the newest one
+log_sigma = 1.0     # default; above 0
+report_sigma = 2.0  # default; at least log_sigma
+```
+
+The four series, each bucket's value:
+
+- `ci_pass_rate`: the default branch's workflow runs that concluded `success` over those that concluded `success`, `failure`, or `timed_out`; lower is worse
+- `flaky_reruns`: the runs on any branch that went green only on a rerun (attempt above 1, `success`); higher is worse
+- `review_time`: the median Review time of the agent pull requests merged in the bucket; higher is worse
+- `lead_time`: the median lead time for changes of the pull requests a stable release published in the bucket first shipped; higher is worse
+
+The tiers, from the newest bucket's distance from the baseline's mean in the worse direction, in sample standard deviations σ (a better bucket is 0): `no data` when the newest bucket has no value or fewer than 4 baseline buckets have one; `ok` below `log_sigma`; `log` from `log_sigma`, a line in `trends.py`'s own output and nowhere else; `report` from `report_sigma`. A flat baseline (σ 0) reads `report` with `flat baseline` when the newest bucket is worse, else `ok`.
+
+The watch's full report (no `--tier`, `--sweep`, or `--host`) runs `trends.py` for a config with `[trends]` and adds one DRIFT row per series at `report`: `DRIFT <series> <newest> against mean <mean>, <deviation>σ over <N> buckets of <D>d: <diagnosis>`, the diagnosis the up to 3 workflows with the most failed or rerun-green runs (each with its count and newest run's URL), or the up to 3 pull requests with the longest time (each with its number and hours). Its fix is the `trends.py` command that prints the whole report. A DRIFT row is reported, never acted on: it is no action and no agent's, it leaves the exit code as it was, it is in no tier and not in the sweep, so no gate tick reads it or starts a session on it (D-58). Tell the maintainer the drift with its diagnosis; the watch changes nothing on it. `--no-trends` leaves the read out, and a `trends.py` failure stops the watch (exit 2) like any other read. The fleet report shows a repo's DRIFT rows with its other report-only rows.
 
 ## Fleet
 
