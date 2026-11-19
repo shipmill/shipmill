@@ -1,7 +1,8 @@
 """#1312: `shipmill gh issue|pr edit` as the App adds the needs-decision label only to an item
-that carries a question, and removes it only once a person's reply, a counted relay (D-93), or a
-withdrawn marker follows the newest question. No test reaches the network: gh is a Runner, the
-comments read a Comments fake, GitHub MintApi, and openssl FakeSigner"""
+whose newest question nothing answers, relays, or withdraws yet (#1331), and removes it only once a
+person's reply, a counted relay (D-93), or a withdrawn marker follows the newest question. No test
+reaches the network: gh is a Runner, the comments read a Comments fake, GitHub MintApi, and
+openssl FakeSigner"""
 
 import io
 import json
@@ -128,14 +129,65 @@ REMOVE = ["issue", "edit", "41", "--remove-label", "needs-decision"]
     [
         [(BOT, "NONE", QUESTION)],
         [(MAINTAINER, "OWNER", QUESTION)],  # a trusted person's question
-        [(BOT, "NONE", QUESTION), (MAINTAINER, "OWNER", "1")],  # answered, asked before: the plan reads a question
     ],
-    ids=["app", "trusted", "answered"],
+    ids=["app", "trusted"],
 )
 def test_1312_adding_the_label_to_an_item_with_a_question_runs(
     tmp_path: Path, host: Host, thread: list[tuple[str, str, str]]
 ) -> None:
     as_app(tmp_path, ADD, host, thread)
+
+
+REASK = QUESTION.replace(
+    "<!-- shipmill:zone contract-change -->\n",
+    "<!-- shipmill:zone contract-change -->\n<!-- shipmill:relay-refused format -->\nRelay not counted: format\n",
+)
+
+
+@pytest.mark.parametrize(
+    "thread",
+    [
+        [(BOT, "NONE", QUESTION), (MAINTAINER, "OWNER", "1"), (BOT, "NONE", QUESTION)],  # asked again after an answer
+        [(BOT, "NONE", QUESTION), (BOT, "NONE", REFUSED), (BOT, "NONE", REASK)],  # the re-ask after an uncounted relay
+        [(BOT, "NONE", QUESTION), (BOT, "NONE", "Still looking into it")],  # the App's own note answers nothing
+        [(BOT, "NONE", QUESTION), ("mallory", "NONE", "1")],  # an outsider's reply answers nothing
+    ],
+    ids=["asked-again", "re-ask", "own-note", "outsider"],
+)
+def test_1331_adding_the_label_while_the_newest_question_waits_runs(
+    tmp_path: Path, host: Host, thread: list[tuple[str, str, str]]
+) -> None:
+    as_app(tmp_path, ADD, host, thread)
+
+
+@pytest.mark.parametrize(
+    ("thread", "found"),
+    [
+        ([(BOT, "NONE", QUESTION), (MAINTAINER, "OWNER", "1")], "a person's reply"),
+        ([(MAINTAINER, "OWNER", QUESTION), (MAINTAINER, "MEMBER", "Keep it")], "a person's reply"),
+        ([(BOT, "NONE", QUESTION), (BOT, "NONE", COUNTED)], "a relay"),
+        ([(BOT, "NONE", QUESTION), (BOT, "NONE", REFUSED)], "a relay"),  # D-93: the re-ask comes first
+        ([(BOT, "NONE", QUESTION), (BOT, "NONE", WITHDRAWN)], "a withdrawn marker"),
+        ([(MAINTAINER, "OWNER", QUESTION), (MAINTAINER, "MEMBER", WITHDRAWN)], "a withdrawn marker"),
+    ],
+    ids=["answered", "answered-trusted", "relayed", "relay-not-counted", "withdrawn-app", "withdrawn-trusted"],
+)
+def test_1331_adding_the_label_after_its_question_was_answered_exits_2(
+    tmp_path: Path, host: Host, thread: list[tuple[str, str, str]], found: str
+) -> None:
+    refused_as_app(
+        tmp_path,
+        ADD,
+        host,
+        thread,
+        f"after .*newest needs-decision question, {found} came.*`{QUESTION_MARKER}`.* comment 41.*then add the label",
+    )
+
+
+def test_1331_adding_and_removing_after_an_uncounted_relay_names_both(tmp_path: Path, host: Host) -> None:
+    thread = [(BOT, "NONE", QUESTION), (BOT, "NONE", REFUSED)]
+    both = ["issue", "edit", "41", "--add-label", "needs-decision", "--remove-label", "needs-decision"]
+    refused_as_app(tmp_path, both, host, thread, r"(?s)--add-label .*a relay came.*\n.*--remove-label .*isn't counted")
 
 
 @pytest.mark.parametrize(

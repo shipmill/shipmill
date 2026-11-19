@@ -2,12 +2,15 @@
 
 `shipmill gh issue edit` and `shipmill gh pr edit` as the App, with --add-label or
 --remove-label naming needs-decision (`app_gh.label_edit`), read the item's comments first.
-Adding the label is refused, exit 2, unless the item carries a needs-decision question by the App
-or an OWNER, MEMBER, or COLLABORATOR; removing it is refused unless, after the newest such
-question, there is a person's reply, a relay `parse_relay` counts (D-93), or a withdrawn marker
-by the App or a trusted author. The wheel's `triage_state.py` is the one reading: its `question`,
-`replies`, `relayed`, `relay_refused`, `marked`, and `trusted`, the code the scripts trust;
-nothing here parses a question or a relay itself.
+Adding the label is refused, exit 2, unless the item's newest needs-decision question by the App
+or an OWNER, MEMBER, or COLLABORATOR is newer than every comment that answers or touches it: a
+person's reply, a relay by the App, counted or not, or a withdrawn marker by the App or a trusted
+author (#1331), so after a relay that isn't counted the label goes back on only after the re-ask
+(D-93). Removing it is refused unless, after the newest such question, there is a person's reply,
+a relay `parse_relay` counts (D-93), or a withdrawn marker by the App or a trusted author. The
+wheel's `triage_state.py` is the one reading: its `question`, `replies`, `relayed`,
+`relay_refused`, `marked`, and `trusted`, the code the scripts trust; nothing here parses a
+question or a relay itself.
 """
 
 import functools
@@ -86,17 +89,49 @@ def _asked(comments: list[Comment], bot_login: str) -> int | None:
     return found
 
 
+def _settled_by(comments: list[Comment], bot_login: str, asked: int) -> str | None:
+    """What came after the question at asked that answers or touches it, or None: a person's
+    reply, a relay by the App, counted or not, or a withdrawn marker by the App or a trusted author"""
+    ts = _triage()
+    after = comments[asked + 1 :]
+    if any(ts.replies(comment, bot_login) for comment in after):
+        return "a person's reply"
+    relay: tuple[int, str] | None = ts.relayed(comments, bot_login)
+    if relay is not None and relay[0] > asked:
+        return "a relay"
+    if any(
+        ts.marked(body, WITHDRAWN_MARKER) and ts.trusted(author, association, bot_login)
+        for author, association, body in after
+    ):
+        return "a withdrawn marker"
+    return None
+
+
 def adding_refusal(comments: list[Comment], bot_login: str, edit: LabelEdit, repo: str) -> str | None:
-    """Why adding the label is refused, or None: the item carries no question"""
-    if _asked(comments, bot_login) is not None:
-        return None
+    """Why adding the label is refused, or None: the newest question waits, with nothing after it
+    that answers or touches it (#1331). An item with no question, or whose newest question a
+    person's reply, a relay (counted or not, D-93), or a withdrawn marker follows, is refused"""
     group = edit.what.split()[1]
+    head = f"{edit.what} {edit.number} --add-label {DECISION_LABEL} is refused"
+    item = f"{repo}#{edit.number}"
+    ask = (
+        f"a comment whose first line is `{QUESTION_MARKER}` (`{cli_command()} gh {group} comment {edit.number} "
+        "--body-file <file>`, as github-issue-triage's needs-decision.md says), then add the label"
+    )
+    asked = _asked(comments, bot_login)
+    if asked is None:
+        return (
+            f"{head}: {item} carries no needs-decision question by the App or an OWNER, MEMBER, or COLLABORATOR, so "
+            f"the label would park it with nothing to answer (D-21). Post the question first, {ask}"
+        )
+    found = _settled_by(comments, bot_login, asked)
+    if found is None:
+        return None
     return (
-        f"{edit.what} {edit.number} --add-label {DECISION_LABEL} is refused: {repo}#{edit.number} carries no "
-        "needs-decision question by the App or an OWNER, MEMBER, or COLLABORATOR, so the label would park it with "
-        f"nothing to answer (D-21). Post the question first, a comment whose first line is `{QUESTION_MARKER}` "
-        f"(`{cli_command()} gh {group} comment {edit.number} --body-file <file>`, as github-issue-triage's "
-        "needs-decision.md says), then add the label"
+        f"{head}: after {item}'s newest needs-decision question, {found} came, so the label would park it on a "
+        "question already answered or taken back (D-21). Post a new question first, after a relay that isn't "
+        "counted with its `<!-- shipmill:relay-refused <reason> -->` and `Relay not counted` lines under the zone "
+        f"line (needs-decision.md, The relay grammar, D-93), {ask}"
     )
 
 
@@ -148,10 +183,11 @@ def hold_label(
     capture: GhCapture,
     bot_login: Callable[[], str],
 ) -> None:
-    """#1312: exit 2, before gh runs, when the edit adds the label to an item with no question,
-    or removes it with nothing after the newest question that settles it. The comments are read
-    with env, the App's, and bot_login gives the App's bot login, which tells its questions and
-    relays. Fails closed: a login or comments that can't be read refuse the edit"""
+    """#1312: exit 2, before gh runs, when the edit adds the label to an item with no question
+    or whose newest question something already answers or touches (#1331), or removes it with
+    nothing after the newest question that settles it. The comments are read with env, the App's,
+    and bot_login gives the App's bot login, which tells its questions and relays.
+    Fails closed: a login or comments that can't be read refuse the edit"""
     repo = edit.target(default)
     try:
         login = bot_login()
