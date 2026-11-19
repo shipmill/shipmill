@@ -132,7 +132,9 @@ Labels (the triage skills and shipmill read them):
                    shipmill-permission (the App owner's item for a permission
                    to grant, spec 060), and with a [land.window] section, with
                    or without [agents], its queued_label (default land-queued,
-                   the land window's queue, spec 056); --fix creates
+                   the land window's queue, spec 056), and with [autonomy] revert
+                   propose or act, revert (the revert pull request, spec 079; a
+                   value outside the three levels exits 2); --fix creates
                    them on GitHub through `uvx shipmill==<version> gh` (the version in
                    the plugin's .claude-plugin/plugin.json, spec 031) when the config has
                    an [agents] section (spec 012, spec 050), as the App with app_id,
@@ -239,6 +241,10 @@ ROLE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,44}")
 MAINTAINER = "maintainer"
 # Wanted with an [agents] section too (spec 014): a session marks a config upgrade's "not now" with it
 UPGRADE_LATER = "shipmill-upgrade-later"
+# Wanted once [autonomy] revert isn't observe (spec 079): the revert pull request `shipmill revert open` opens
+REVERT = "revert"
+REVERT_LABEL = ("b60205", "Backs out the merge that turned the default branch red")
+REVERT_LEVELS = ("observe", "propose", "act")
 UPGRADE_LATER_LABEL = ("ededed", "A config upgrade the maintainer put off until shipmill changes it")
 # Wanted wherever needs-decision is (spec 038): a report of a fault another repo owns, which waits outside
 UPSTREAM = "upstream"
@@ -990,7 +996,38 @@ def wanted_labels(repo_dir: Path, ws: ModuleType | None = None) -> dict[str, tup
     queued = queued_label(repo_dir, ws) if mentions_land else None
     if queued is not None:  # the land window's queue (spec 056), with or without [agents]
         wanted[queued] = QUEUED_LABEL
+    mentions_revert = config is not None and "revert" in config.read_text(encoding="utf-8")
+    if mentions_revert and revert_level(repo_dir, ws) != "observe":  # the revert pull request's (spec 079)
+        wanted[REVERT] = REVERT_LABEL
     return wanted
+
+
+def revert_level(repo_dir: Path, ws: ModuleType | None = None) -> str:
+    """[autonomy] revert (spec 079), observe without the key, read as watch_state.py reads the
+    config: with tomllib on Python 3.11+, a plain string key of a plain [autonomy] table on 3.10.
+    A value outside the three levels exits 2, as shipmill refuses it"""
+    config = repo_dir / CONFIG
+    text = config.read_text(encoding="utf-8")
+    ws = ws or watch_module()
+    if ws.tomllib is None:
+        try:
+            value: object = ws.autonomy_string_310(text, config, "revert")
+        except ws.Refused as refused:
+            fail(str(refused).removeprefix("error: "))
+    else:
+        try:
+            raw = ws.tomllib.loads(text)
+        except ws.tomllib.TOMLDecodeError as exc:
+            fail(f"{config}: {exc}")
+        table = raw.get("autonomy", {})
+        if not isinstance(table, dict):
+            fail(f"{config}: autonomy is not a table")
+        value = table.get("revert")
+    if value is None:
+        return "observe"
+    if not isinstance(value, str) or value not in REVERT_LEVELS:
+        fail(f"{config}: [autonomy] revert must be one of {list(REVERT_LEVELS)}, got {value!r}")
+    return value
 
 
 def sets_app_id(section: str) -> bool:
@@ -1104,7 +1141,7 @@ def labels_row(missing: list[str], wanted: dict[str, tuple[str, str]]) -> Row:
         return Row("LABELS_MISSING", ", ".join(missing))
     extra = "".join(
         f" {label},"
-        for label in (NEEDS_DECISION, HUMAN, UPGRADE_LATER, UPSTREAM, DECIDED, DIRECTION, PERMISSION)
+        for label in (NEEDS_DECISION, HUMAN, UPGRADE_LATER, UPSTREAM, DECIDED, DIRECTION, PERMISSION, REVERT)
         if label in wanted
     )
     extra += "".join(f" {label}," for label, value in wanted.items() if value == QUEUED_LABEL)

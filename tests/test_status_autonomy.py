@@ -49,7 +49,7 @@ def test_s040_10_the_autonomy_line_follows_the_repo_line_with_every_stage() -> N
     shown = lines(facts(autonomy=deploy, environments=(EnvironmentName("staging"),)))
     assert shown[2] == (
         "  autonomy       triage propose · fix act · land propose · release act · deploy.production propose"
-        " · deploy.staging act · rollback act · intake propose · upgrade propose"
+        " · deploy.staging act · rollback act · intake propose · upgrade propose · revert observe"
     )
     assert not shown[3].startswith(FIX)  # nothing to fix: no stage comes from the prompt
 
@@ -58,7 +58,7 @@ def test_s040_10_a_held_stage_says_so_and_the_hold_line_keeps_its_fix() -> None:
     text = lines(facts(HOLD))
     assert text[2] == (
         "  autonomy       triage propose (held) · fix propose (held) · land propose · release propose (held)"
-        " · rollback propose (held) · intake propose · upgrade propose"
+        " · rollback propose (held) · intake propose · upgrade propose · revert observe"
     )
     at = text.index(f"  hold           #3 {URL}/issues/3")
     assert text[at + 1] == f"{FIX}gh issue close 3 -R {REPO}"
@@ -143,7 +143,7 @@ def test_s040_10_json_carries_the_same_stages_after_watch_states_lines(
     last = printed[-1]
     assert (last["state"], last["subject"], last["agent"]) == ("AUTONOMY", REPO, False)
     stages = {s["stage"]: s for s in last["autonomy"]}
-    assert list(stages) == ["triage", "fix", "land", "release", "rollback", "intake", "upgrade"]
+    assert list(stages) == ["triage", "fix", "land", "release", "rollback", "intake", "upgrade", "revert"]
     assert stages["land"] == {"stage": "land", "configured": "act", "effective": "propose", "source": "hold"}
     assert stages["fix"] == {"stage": "fix", "configured": "act", "effective": "propose", "source": "hold"}
     assert stages["intake"]["source"] == "default"

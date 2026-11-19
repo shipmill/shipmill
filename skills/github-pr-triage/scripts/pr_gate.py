@@ -132,6 +132,16 @@ rerunning on <base>@<sha7>`, and a verdict that would otherwise read READY (or a
 READY gives way to: UNREVIEWED, QUEUED) reads PENDING; a first attempt still running keeps the
 verdict, as before, and a green rerun keeps it too.
 
+A revert (spec 079): a PR the --bot-login authored whose body has a `Reverts #N` line (retro.py's
+REVERTS) and a `Repairs:` line, both outside a fence, and that would otherwise read READY, reads
+BLOCKED, `  revert: [autonomy] revert is <level>; a person merges it`, unless the default
+branch's `[autonomy] revert` (read from its .github/shipmill.toml as REVIEW.md is; no config, or
+no checkout, reads observe) is act. At act one read of the open shipmill-hold issues (`gh issue
+list --label shipmill-hold`) is made for it, and an open hold reads act as propose, `  revert:
+[autonomy] revert is act, propose under shipmill-hold #N; a person merges it`. Otherwise it is
+judged as any PR: its review record, its plan, and its zones still apply, so it reads UNREVIEWED
+or NEEDS_DECISION first when one of them holds it.
+
 Closing keywords (D-76, D-79): a merge never closes an issue its PR is only part of, or one whose
 check has not run. A commit's (gh pr view's) closing keyword counts as GitHub closes by it (#988):
 any of close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved as a whole word, in any
@@ -185,7 +195,8 @@ held-for-a-decision PR keeps that verdict: QUEUED only takes READY's place.
 Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base's (D-75),
 or gh failed; 3 a check is still pending, on the PR's head or a base check rerunning a failure
 (#1310) (or --wait timed out); 4 a PR is not open, conflicts, or holds an unhandled veto
-(#1309) or one a thread cut off at 100 comments can't place (#1330); 5 a PR needs the
+(#1309) or one a thread cut off at 100 comments can't place (#1330), or is the App's revert
+below [autonomy] revert = "act" (spec 079); 5 a PR needs the
 maintainer's decision; 6 an agent's PR is refused for its plan, a spec PR names no open feature
 issue, or a PR's closing keyword names a Part of issue, an open one with a ## Check (D-76), or an
 open pull request, or its title or a commit writes a Dependabot alert as #N (#1321); 7 a PR only
@@ -259,6 +270,8 @@ SPECS = Path(__file__).resolve().parents[2] / "github-issue-triage" / "scripts" 
 # a body's "Part of #N", as triage_state.py's closes() reads a partial PR
 PART_OF = re.compile(r"\bpart of:?\s+#([0-9]+)\b", re.IGNORECASE)
 CONFIG = ".github/shipmill.toml"
+REVERT_LEVELS = ("observe", "propose", "act")  # [autonomy] revert, observe by default (spec 079)
+HOLD_LABEL = "shipmill-hold"  # shipmill's autonomy.HOLD_LABEL
 
 DIRECTION = "docs/product.md"
 DIRECTION_DIR = "docs/product/"
@@ -334,6 +347,7 @@ class Gate:
     queued: tuple[str, ...] = ()  # why a held PR waits for the land window or its spacing (spec 056)
     vetoes: tuple[str, ...] = ()  # the unhandled vetoes of a decision taken at notify (D-48, #1309)
     spec_asks: tuple[str, ...] = ()  # the approved specs it changes past format: the answer lifts them (#1311)
+    revert: str = ""  # why the App's revert PR waits for a person below [autonomy] revert = "act" (spec 079)
 
     @property
     def verdict(self) -> int:
@@ -360,6 +374,8 @@ class Gate:
             return PENDING
         if self.unreviewed:
             return UNREVIEWED
+        if self.revert:  # only an otherwise READY revert carries it (spec 079)
+            return BLOCKED
         if self.queued:  # QUEUED only takes READY's place (spec 056)
             return QUEUED
         return READY
@@ -393,6 +409,7 @@ class Base:
     # the maintainer (a relayed answer counts only when it names one, spec 055)
     maintainers: frozenset[str] = frozenset()
     window: bool = False  # the config has [land.window]: `shipmill window` reads it (spec 056)
+    revert: str = "observe"  # the config's [autonomy] revert (spec 079)
 
     def protected(self, files: tuple[str, ...]) -> list[Protected]:
         wanted = {REVIEW}
@@ -720,7 +737,66 @@ def read_base(checkout: str, ref: str) -> Base:
     agents = config is not None and has_agents(config, where)
     maintainers = frozenset() if config is None else maintainer_users(config, where)
     window = config is not None and has_land_window(config, where)
-    return Base(ids, reviews, agents, ref, maintainers, window)
+    revert = REVERT_LEVELS[0] if config is None else revert_level(config, where)
+    return Base(ids, reviews, agents, ref, maintainers, window, revert)
+
+
+def revert_level(text: str, where: str) -> str:
+    """The config's [autonomy] revert (spec 079), observe when it doesn't set it; any other
+    value than the three levels stops the gate, as shipmill's own reading refuses it. On Python
+    3.10, without tomllib, a plain string key of a plain [autonomy] table is read, and any other
+    form stops the gate rather than being misread"""
+    ws = watch_state()
+    if ws.tomllib is None:
+        try:
+            value: object = ws.autonomy_string_310(text, Path(where), "revert")
+        except ws.Refused as refused:
+            raise GateError(str(refused).removeprefix("error: ")) from None
+    else:
+        try:
+            raw = ws.tomllib.loads(text)
+        except ws.tomllib.TOMLDecodeError as exc:
+            raise GateError(f"{where}: {exc}") from None
+        table = raw.get("autonomy", {})
+        if not isinstance(table, dict):
+            raise GateError(f"{where}: autonomy is not a table")
+        value = table.get("revert")
+    if value is None:
+        return REVERT_LEVELS[0]
+    if not isinstance(value, str) or value not in REVERT_LEVELS:
+        raise GateError(f"{where}: [autonomy] revert must be one of {list(REVERT_LEVELS)}, got {value!r}")
+    return value
+
+
+def is_revert(body: str) -> bool:
+    """Whether the body has a `Reverts #N` line, as retro.py reads one (spec 058), and a
+    `Repairs:` line, both outside a fence: the revert `shipmill revert open` opens (spec 079)"""
+    reverts = retro().REVERTS
+    return bool(repairs_of(body)) and any(reverts.match(line) for line in unfenced(body))
+
+
+def revert_hold(level: str, number: int, repo: str | None) -> str:
+    """Why the App's otherwise READY revert waits for a person (spec 079), or "" at act: below
+    act a person merges it, and an open shipmill-hold issue reads act as propose (D-15), read
+    only at act"""
+    if level != "act":
+        return f"[autonomy] revert is {level}; a person merges it"
+    holds = open_holds(number, repo)
+    if not holds:
+        return ""
+    named = ", ".join(f"#{n}" for n in holds)
+    return f"[autonomy] revert is act, propose under {HOLD_LABEL} {named}; a person merges it"
+
+
+def open_holds(number: int, repo: str | None) -> list[int]:
+    """The open shipmill-hold issues' numbers, oldest first"""
+    cmd = ["gh", "issue", "list", "--label", HOLD_LABEL, "--state", "open", "--json", "number", "--limit", "100"]
+    if repo:
+        cmd += ["-R", repo]
+    data = json.loads(gh(cmd, number))
+    if not isinstance(data, list) or not all(isinstance(e, dict) and isinstance(e.get("number"), int) for e in data):
+        raise GateError(f"gh issue list --label {HOLD_LABEL} printed no list of issues: {str(data)[:200]}")
+    return sorted(e["number"] for e in data)
 
 
 def has_land_window(text: str, where: str) -> bool:
@@ -2115,6 +2191,7 @@ def render(gate: Gate) -> str:
     lines += [f"  notify: {reason}" for reason in gate.notices]
     lines += [f"  decided: {veto}" for veto in gate.vetoes]
     lines += [f"  unreviewed: {gate.unreviewed}"] if gate.verdict == UNREVIEWED else []
+    lines += [f"  revert: {gate.revert}"] if gate.revert else []
     if gate.verdict == QUEUED:
         lines += [f"  queued: {reason}" for reason in gate.queued]
     if gate.verdict == DRAFT and gate.own:
@@ -2253,6 +2330,9 @@ def main() -> int:
                 if judged.verdict == READY and agent and not docs_only(data, number, args.repo):
                     why = unreviewed(data, number, args.repo, args.bot_login, bases.checkout, bases.inside)
                     judged = replace(judged, unreviewed=why)
+                # the App's revert waits for a person below [autonomy] revert = "act" (spec 079)
+                if judged.verdict == READY and own and is_revert(str(data.get("body") or "")):
+                    judged = replace(judged, revert=revert_hold(base.revert, number, args.repo))
                 # one window per repo, for PRs into the branch its config was read from (spec 056)
                 if data["state"] == "OPEN" and base.window and base.ref == f"origin/{data['baseRefName']}":
                     window = windows.window(base.ref)  # read for every PR there: a failure stops them all

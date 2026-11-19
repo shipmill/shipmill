@@ -100,6 +100,8 @@ elif args[0] == "api" and any(a.endswith("/status?per_page=100") for a in args):
 elif args[0] == "api" and any(a.endswith("/check-runs?per_page=100&filter=all") for a in args):  # every attempt
     for run in base["check_runs"]:  # one object a line, as gh --jq .check_runs[] prints them
         print(json.dumps(run))
+elif args[:2] == ["issue", "list"] and args[args.index("--label") + 1] == "shipmill-hold":  # spec 079
+    print(json.dumps([{{"number": n}} for n in fake["holds"]]))
 elif args[:2] == ["pr", "diff"]:
     sys.exit("HTTP 406: Sorry, the diff exceeded the maximum number of files (300)")
 elif args[0] == "api" and any(reviews.fullmatch(a) for a in args):  # the review records (spec 055)
@@ -270,20 +272,22 @@ def run_gate(
     threads: dict[int, dict[str, Any]] | None = None,
     permissions: dict[str, str] | None = None,
     reviews: dict[int, list[dict[str, Any]]] | None = None,
+    holds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     """The gate with --checkout work, or, for None, run in a folder outside any checkout; issues
     are what GitHub's GraphQL answers for the repo demo/app's numbers; base, the base branch head's
     sha, statuses, and check_runs (default: a head with no checks); threads, each PR's comments
     and force-pushes as GraphQL answers them (default: none of either); permissions, each login's
     permission on the repo (any other login's read is a 404); reviews, each PR's reviews as the
-    REST API lists them (default: a trusted person's approval of HEAD_SHA, spec 055)"""
+    REST API lists them (default: a trusted person's approval of HEAD_SHA, spec 055); holds, the
+    open shipmill-hold issues' numbers (spec 079)"""
     fakes = tmp_path / "fakes"
     fakes.mkdir(exist_ok=True)
     gh = fakes / "gh"
     gh.write_text(FAKE_GH.format(python=sys.executable), encoding="utf-8")
     gh.chmod(0o700)
     data = tmp_path / "gh.json"
-    fake = {
+    fake: dict[str, Any] = {
         **{str(n): p for n, p in prs.items()},
         "repo": "demo/app",
         "issues": {str(n): i for n, i in (issues or {}).items()},
@@ -291,6 +295,7 @@ def run_gate(
         "threads": {str(n): (threads or {}).get(n, thread()) for n in prs},
         "permissions": permissions or {},
         "reviews": {str(n): (reviews or {}).get(n, [APPROVED]) for n in prs},
+        "holds": list(holds),
     }
     data.write_text(json.dumps(fake), encoding="utf-8")
     env = {
@@ -781,6 +786,85 @@ def test_1310_the_base_check_runs_are_read_with_every_attempt_in_one_read(tmp_pa
     run_gate(tmp_path, None, {7: pr(body="Fixes #7", login="amy")}, base={"check_runs": runs})
     reads = [a for c in gh_calls(tmp_path) for a in c["args"] if "/check-runs" in a]
     assert reads == ["repos/{owner}/{repo}/commits/ba5e0123456789/check-runs?per_page=100&filter=all"]
+
+
+# spec 079: the App's revert of the merge that turned the base red waits for a person below act
+
+REVERT_BODY = f"Reverts #5\nRepairs: {RUN_URL}\n"
+RED_BASE = {"check_runs": [base_run("failure")]}
+MAIN_BLOCKED = MAIN_READY.replace("READY", "BLOCKED")
+
+
+def revert_base(tmp_path: Path, level: str | None, config: str = "") -> Path:
+    """A checkout whose default branch's config sets [autonomy] revert to level (None: no key)"""
+    autonomy = "" if level is None else f'\n[autonomy]\nrevert = "{level}"\n'
+    return checkout(tmp_path, {".github/shipmill.toml": config + autonomy})
+
+
+@pytest.mark.parametrize("level", ["propose", "observe", None])
+def test_s079_12_the_apps_revert_below_act_reads_blocked_naming_the_level(tmp_path: Path, level: str | None) -> None:
+    work = revert_base(tmp_path, level)
+    proc = run_gate(tmp_path, work, {7: pr(body=REVERT_BODY)}, "--bot-login", BOT, base=RED_BASE)
+    assert proc.returncode == gate.BLOCKED == 4, proc.stdout + proc.stderr
+    named = level or "observe"  # no key reads observe (S-079-1)
+    assert proc.stdout == MAIN_BLOCKED + REPAIRS + f"\n  revert: [autonomy] revert is {named}; a person merges it\n"
+    assert "issue list" not in calls_of(tmp_path)  # the hold is read only at act
+
+
+def test_s079_12_the_apps_revert_at_act_reads_ready(tmp_path: Path) -> None:
+    work = revert_base(tmp_path, "act")
+    proc = run_gate(tmp_path, work, {7: pr(body=REVERT_BODY)}, "--bot-login", BOT, base=RED_BASE)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (gate.READY, MAIN_READY + REPAIRS + "\n", "")
+    assert calls_of(tmp_path)[-1] == "issue list"  # one read of the open holds
+
+
+def test_s079_12_an_open_hold_reads_act_as_propose(tmp_path: Path) -> None:
+    work = revert_base(tmp_path, "act")
+    proc = run_gate(tmp_path, work, {7: pr(body=REVERT_BODY)}, "--bot-login", BOT, base=RED_BASE, holds=(88, 89))
+    assert proc.returncode == gate.BLOCKED, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[-1] == (
+        "  revert: [autonomy] revert is act, propose under shipmill-hold #88, #89; a person merges it"
+    )
+
+
+def test_s079_12_at_act_a_revert_with_no_review_record_of_its_head_reads_unreviewed(tmp_path: Path) -> None:
+    work = revert_base(tmp_path, "act")
+    proc = run_gate(tmp_path, work, {7: pr(body=REVERT_BODY)}, "--bot-login", BOT, base=RED_BASE, reviews={7: []})
+    assert proc.returncode == gate.UNREVIEWED == 9, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[0].startswith("#7 UNREVIEWED ")
+    assert not any(line.startswith("  revert:") for line in proc.stdout.splitlines())
+
+
+def test_s079_12_at_act_a_revert_in_an_ask_zone_reads_its_needs_decision(tmp_path: Path) -> None:
+    work = revert_base(tmp_path, "act", AGENTS)
+    classify_as(tmp_path, {7: [PROTECTED_ZONE]})
+    data = pr(body=REVERT_BODY, files=("src/land.py",))
+    proc = run_gate(tmp_path, work, {7: data}, "--bot-login", BOT, base=RED_BASE)
+    assert proc.returncode == gate.NEEDS_DECISION == 5, proc.stdout + proc.stderr
+    assert f"  needs-decision: protected: {PROTECTED_ZONE['reason']}" in proc.stdout.splitlines()
+    assert not any(line.startswith("  revert:") for line in proc.stdout.splitlines())
+
+
+@pytest.mark.parametrize(
+    ("body", "login"),
+    [
+        pytest.param(REVERT_BODY, "amy", id="a person's revert"),
+        pytest.param("Reverts #5\n", "app/shipmill-demo", id="no Repairs: line"),
+        pytest.param(f"Repairs: {RUN_URL}\n", "app/shipmill-demo", id="no Reverts line"),
+        pytest.param(f"```\nReverts #5\n```\nRepairs: {RUN_URL}\n", "app/shipmill-demo", id="Reverts in a fence"),
+    ],
+)
+def test_s079_12_only_the_apps_pr_with_both_lines_is_a_revert(tmp_path: Path, body: str, login: str) -> None:
+    work = revert_base(tmp_path, "propose")
+    proc = run_gate(tmp_path, work, {7: pr(body=body, login=login)}, "--bot-login", BOT)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (gate.READY, MAIN_READY, "")
+
+
+def test_s079_12_a_revert_level_outside_the_three_stops_the_gate(tmp_path: Path) -> None:
+    work = revert_base(tmp_path, "auto")
+    proc = run_gate(tmp_path, work, {7: pr(body=REVERT_BODY)}, "--bot-login", BOT, base=RED_BASE)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "[autonomy] revert must be one of ['observe', 'propose', 'act'], got 'auto'" in proc.stderr
 
 
 def test_963_the_base_is_read_once_for_prs_that_share_it(tmp_path: Path) -> None:

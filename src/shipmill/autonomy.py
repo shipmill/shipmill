@@ -12,7 +12,9 @@ pull request waits for a person to merge it unless the config says otherwise. In
 autonomy is read by the product-intake skill, and is observe or propose only: the
 maintainer's accept is its valve.
 Upgrade autonomy is read by `shipmill upgrade` (spec 014): how far shipmill goes in proposing
-the config upgrades a release adds."""
+the config upgrades a release adds. Revert autonomy (spec 079) says how far shipmill goes in
+backing out the merge that turned the default branch red: observe by default, so no repo
+changes behaviour by upgrading (D-63)."""
 
 import re
 from collections.abc import Collection, Mapping
@@ -26,6 +28,7 @@ from shipmill.errors import ReleaseError
 HOLD_LABEL = "shipmill-hold"
 INTAKE = "intake"  # the [autonomy] key of the product-intake skill: not a StageKind, it never acts
 UPGRADE = "upgrade"  # the [autonomy] key of config upgrades (spec 014): not a StageKind, it releases nothing
+REVERT = "revert"  # the [autonomy] key of backing out a red default branch (spec 079): not a StageKind either
 _ENVIRONMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _LANDS = re.compile(r"\b(?:merge\s+when\s+green|land)\b", re.IGNORECASE)
 
@@ -160,6 +163,7 @@ class AutonomyPolicy:
     triage: Autonomy = Autonomy.ACT
     fix: Autonomy = Autonomy.ACT
     land: Autonomy = Autonomy.PROPOSE
+    revert: Autonomy = Autonomy.OBSERVE  # spec 079: no repo reverts a merge by upgrading (D-63)
     # the keys the config sets, as `shipmill autonomy` names them (deploy.<env> for a deploy level)
     explicit: frozenset[str] = field(default=frozenset(), compare=False)
     # the agent stages read from [agents] prompt by the legacy reading (spec 040), by name
@@ -167,7 +171,7 @@ class AutonomyPolicy:
 
     @classmethod
     def parse(cls, t: Table) -> AutonomyPolicy:
-        t.allow(*StageKind, INTAKE, UPGRADE)
+        t.allow(*StageKind, INTAKE, UPGRADE, REVERT)
         # its own words, not Table.table's: the message shows the shape a deploy level takes
         if not isinstance(t.raw.get("deploy", {}), dict):
             raise ReleaseError(f"{t.where}: deploy is a table of environments, such as deploy.production = 'propose'")
@@ -182,6 +186,7 @@ class AutonomyPolicy:
             triage=_level(t, StageKind.TRIAGE),
             fix=_level(t, StageKind.FIX),
             land=_level(t, StageKind.LAND, default=Autonomy.PROPOSE),
+            revert=_level(t, REVERT, default=Autonomy.OBSERVE),
             explicit=frozenset(keys),
         )
 
@@ -214,6 +219,10 @@ class AutonomyPolicy:
     def upgrades(self, hold: Hold) -> Autonomy:
         """The upgrade autonomy under the hold: an open hold turns act into propose (D-8)"""
         return Autonomy.PROPOSE if self.upgrade is Autonomy.ACT and hold.on else self.upgrade
+
+    def reverts(self, hold: Hold) -> Autonomy:
+        """The revert autonomy under the hold: an open hold turns act into propose (D-15)"""
+        return Autonomy.PROPOSE if self.revert is Autonomy.ACT and hold.on else self.revert
 
     def cause(self, stage: Stage, hold: Hold) -> str:
         """Why the stage doesn't act: the hold, or the configured level. Under propose the
@@ -249,13 +258,14 @@ class AutonomyPolicy:
     def levels(self, hold: Hold, environments: Collection[EnvironmentName] = ()) -> tuple[StageLevel, ...]:
         """Every stage, as `shipmill autonomy` lists it: the agent stages, release, a deploy per
         environment [autonomy] lists or environments names (an unlisted one acts, D-7),
-        rollback, intake, and upgrade; each configured, under the hold, and its source"""
+        rollback, intake, upgrade, and revert; each configured, under the hold, and its source"""
         envs = sorted({*self.deploy, *environments}, key=str)
         stages = (*(Stage(kind) for kind in AGENT_STAGES), Stage.release())
         stages += (*(Stage.deploy(e) for e in envs), Stage.rollback())
         rows = [self._row(str(s), self.configured(s), self.effective(s, hold)) for s in stages]
         rows.append(self._row(INTAKE, self.intake, self.intake))  # never act, so the hold has nothing to lower
         rows.append(self._row(UPGRADE, self.upgrade, self.upgrades(hold)))
+        rows.append(self._row(REVERT, self.revert, self.reverts(hold)))
         return tuple(rows)
 
     def _row(self, stage: str, configured: Autonomy, effective: Autonomy) -> StageLevel:

@@ -48,6 +48,12 @@
       "configured": "propose",
       "effective": "propose",
       "source": "default"
+    },
+    {
+      "stage": "revert",
+      "configured": "observe",
+      "effective": "observe",
+      "source": "default"
     }
   ]
 }
