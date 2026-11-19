@@ -110,6 +110,8 @@ MILESTONE_MISSING = "MILESTONE_MISSING"
 PRS_PARKED = "PRS_PARKED"  # #853: a person's open pull requests, each waiting on its assignees
 # #1155: a gate job on this host whose WorkingDirectory is gone, from watch_state.py's sessions section
 CHECKOUT_MISSING = "GATE_CHECKOUT_MISSING"
+# spec 070: an accepted opportunity's class of service that waits on the maintainer's choice
+CLASS_ROWS = ("CLASS_CONFLICT", "FIXED_DATE_AT_RISK", "FIXED_DATE_NO_DATE")
 YOURS_ROWS = (
     "HOLD",
     "PROMOTION_DUE",
@@ -120,6 +122,7 @@ YOURS_ROWS = (
     MILESTONE_OVERTAKEN,
     MILESTONE_RELEASED,  # spec 068: the close, which a watch pass runs as it does the rename
     *CHAIN_ROWS,
+    *CLASS_ROWS,
 )
 RELEASE_ROWS = ("BOT_OK", "BOT_NONE", "BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE")
 TAG_ROWS = ("PUBLISHED", "PUBLISHING", "NOT_PUBLISHED", "PREDATES_PUBLISH", "NO_REGISTRY")
@@ -1463,6 +1466,8 @@ def item_lines(facts: Facts) -> list[str]:
     lines += _fixed(
         "milestone", [(milestone_value(r), r.fix if r.state == MILESTONE_MISSING else fixed(r)) for r in marked]
     )
+    # spec 070: each opportunity whose class waits on you, with its link
+    lines += _fixed("class", [(f"{r.state} {_subject_item(repo, r)}: {r.detail}", fixed(r)) for r in of(*CLASS_ROWS)])
     for name, state, check in CLOSED_LINES:
         closed = sorted((i.number for i in facts.issues if i.state == state), reverse=True)
         lines += _group(name, [f"{item(repo, n, False)}{check}" for n in closed])
