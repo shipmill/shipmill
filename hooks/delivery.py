@@ -24,6 +24,11 @@ a process, and each call reads a repo's config, and its pyproject.toml, at most 
 graphql` call's `-F query=@file`, `-F <variable>=@file`, and --input file are read too, to tell
 a merge mutation's mergeMethod (#1373); one the hook can't read, such as stdin, is refused.
 
+The leaks rule (spec 081, D-94) judges a `git push` the other rules allow: it runs `uvx
+shipmill==<version> leaks push` with the push's remote and refspecs and refuses the push when
+that exits 2 with findings, can't run, or takes over 45 seconds, printing its output after the
+three lines.
+
 The app-writes rule applies only where the App is available to the session (spec 033, D-54):
 a non-empty SHIPMILL_APP_KEY in the hook's own environment, which shipmill gate sets on every
 session it starts, or the App's key file at $HOME/.config/shipmill/app-<app_id>.pem, checked
@@ -70,6 +75,8 @@ SHA = "<sha>"  # the lease's commit, which only the session knows: the remote br
 # A Bash rule sees one process; Runner starts one and Context carries it, so a test counts them
 Runner = Callable[[Sequence[str], Path], "subprocess.CompletedProcess[str]"]
 ReadConfig = Callable[[Path], "str | None"]  # the config's text; None when there is no such file
+# A Runner with a timeout in seconds, past which it raises subprocess.TimeoutExpired (spec 081)
+TimedRunner = Callable[[Sequence[str], Path, float], "subprocess.CompletedProcess[str]"]
 
 
 def run(cmd: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -735,6 +742,7 @@ class Context:
     configs: Configs
     plugin: Path = PLUGIN_JSON  # the plugin.json whose version the CLI runs at (spec 031)
     env: Mapping[str, str] = field(default_factory=lambda: os.environ)  # the hook's own environment (spec 033)
+    timed: TimedRunner | None = None  # for the leak check, which has a timeout (spec 081); None: runner's
 
 
 APP_KEY = "SHIPMILL_APP_KEY"  # the gate sets it on every session it starts (spec 033)
@@ -1630,6 +1638,7 @@ class Refusal:
     text: str
     source: str
     instead: str
+    details: tuple[str, ...] = ()  # lines after the three, such as the leak check's findings
 
     def lines(self) -> list[str]:
         def one(line: str) -> str:
@@ -1639,6 +1648,7 @@ class Refusal:
             f"shipmill hook {self.rule}: {one(self.command)[:CUT]}",
             f"Rule: {one(self.text)} ({self.source})",
             f"Instead: {one(self.instead)}",
+            *(one(line) for line in self.details),
         ]
 
 
@@ -1669,6 +1679,76 @@ def judge(cmd: Simple, ctx: Context) -> Refusal | None:
     return Refusal(first.name, cmd.text(), first.text, first.source, text)
 
 
+# --- The leaks rule (spec 081, D-94) ---------------------------------------------------------
+
+LEAKS = "leaks"
+LEAKS_TEXT = (
+    "a push sends no listed private term to a public repo, and no secret's value or known token format to any repo"
+)
+LEAKS_SOURCE = "D-94"
+LEAKS_TIMEOUT = 45  # seconds `shipmill leaks push` may take; past them the push is refused
+LEAKS_FLAGS = ("--all", "--branches", "--tags", "--mirror")  # the push's flags that pick its refs
+LEAKS_WARNING = "shipmill leaks: warning:"
+
+
+def run_timed(cmd: Sequence[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess[str]:
+    """cmd run as `run` runs it, raising subprocess.TimeoutExpired past timeout seconds"""
+    return subprocess.run(list(cmd), cwd=cwd, capture_output=True, text=True, check=False, timeout=timeout)
+
+
+def leaks_args(cmd: Simple, call: GitCall) -> list[str]:
+    """`shipmill leaks push`'s arguments for a git push: its --all, --branches, --tags, or
+    --mirror, then its remote and refspecs; a --delete push's refspecs as `:<ref>`, which send
+    no commit"""
+    positionals, options = _push_positionals(cmd.words, call.sub + 1)
+    words = [cmd.words[at] for at in positionals]
+    if words[1:] and options & {"-d", "--delete"}:
+        words = [words[0], *(f":{word.removeprefix('+')}" for word in words[1:])]
+    flags = [flag for flag in LEAKS_FLAGS if flag in options]
+    return [*flags, "--", *words] if words else flags
+
+
+def leaks_refusal(cmd: Simple, ctx: Context, stderr: TextIO) -> Refusal | None:
+    """S-081-11: a git push in a repo with [agents] runs `uvx shipmill==<pinned> leaks push`
+    with the push's remote and refspecs, and is refused with the command's findings when it
+    exits 2, and when it can't start, exits otherwise, or doesn't finish in 45 seconds: no
+    push goes unchecked. No other command starts it. A push that goes on passes on its
+    high-entropy warnings"""
+    call = git_call(cmd)
+    if call is None or cmd.words[call.sub] != "push":
+        return None
+    root = repo_root(call.where)
+    config = None if root is None else ctx.configs.at(root)
+    if config is None or isinstance(config, Broken):  # a broken config: judge refused the push already
+        return None
+    argv = (*shipmill(ctx.plugin), "leaks", "push", "--repo", str(call.where), *leaks_args(cmd, call))
+    shown = shlex.join(argv)
+    try:
+        timed = ctx.timed
+        result = ctx.runner(argv, call.where) if timed is None else timed(argv, call.where, LEAKS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        why = f"`{shown}` didn't finish in {LEAKS_TIMEOUT} s"
+        details: tuple[str, ...] = ()
+    except OSError as exc:
+        why = f"`{shown}` didn't start: {exc}"
+        details = ()
+    else:
+        said = f"{result.stderr}{result.stdout}".strip().splitlines()
+        if result.returncode == 0:
+            stderr.write("".join(f"{line}\n" for line in said if line.startswith(LEAKS_WARNING)))
+            return None
+        if result.returncode == 2:
+            instead = (
+                "rewrite the unpushed commits without what the check names below (amend or rebase them,"
+                f" never a pushed one), then run: {cmd.text()}"
+            )
+            return Refusal(LEAKS, cmd.text(), LEAKS_TEXT, LEAKS_SOURCE, instead, tuple(said))
+        why = f"`{shown}` exited {result.returncode}"
+        details = tuple(said)
+    instead = f"the leak check couldn't run ({why}); fix what stops it, then run: {cmd.text()}"
+    return Refusal(LEAKS, cmd.text(), LEAKS_TEXT, LEAKS_SOURCE, instead, details)
+
+
 # --- The modes -------------------------------------------------------------------------------
 
 
@@ -1682,6 +1762,8 @@ def pre(hook: HookInput, stderr: TextIO, ctx: Context) -> int:
         return 0
     for cmd in found:
         refusal = judge(cmd, ctx)
+        if refusal is None:  # spec 081: a push the other rules allow is checked for leaks
+            refusal = leaks_refusal(cmd, ctx, stderr)
         if refusal is not None:
             stderr.write("".join(f"{line}\n" for line in refusal.lines()))
             return 2
@@ -1989,10 +2071,14 @@ def main(
     plugin: Path = PLUGIN_JSON,
     env: Mapping[str, str] | None = None,
     temp: Path | None = None,
+    timed: TimedRunner | None = None,
 ) -> int:
     """env is the hook's own environment, os.environ unless a test passes one (spec 033); temp
     is where the Stop hook keeps its refusal records, the system's temporary directory unless a
-    test passes one (spec 062)"""
+    test passes one (spec 062); timed runs the leak check with its timeout (spec 081), run_timed
+    unless a test passes one, or runner when a test passes only that, so it sees every process"""
+    if timed is None and runner is run:
+        timed = run_timed
     if len(argv) != 1 or argv[0] not in (*EVENTS, "stop"):
         stderr.write("usage: delivery.py pre|post|stop, with Claude Code's hook input on stdin (specs 026, 062)\n")
         return 1
@@ -2008,7 +2094,7 @@ def main(
         hook = parse_input(stdin.read())
         if hook.event != EVENTS[argv[0]]:
             raise BadInput(f"`{argv[0]}` reads a {EVENTS[argv[0]]} input, got {hook.event}")
-        ctx = Context(runner, Configs(read_config), plugin, os.environ if env is None else env)
+        ctx = Context(runner, Configs(read_config), plugin, os.environ if env is None else env, timed)
         if argv[0] == "post":
             return post(hook, stderr, ctx)
         return pre(hook, stderr, ctx)

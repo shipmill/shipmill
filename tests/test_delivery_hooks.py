@@ -133,11 +133,39 @@ def app_available(tmp_path_factory: pytest.TempPathFactory) -> None:
     AVAILABLE["HOME"] = str(key_home(tmp_path_factory.mktemp("home")))
 
 
+def leaks_pass(cmd: Sequence[str], cwd: Path, timeout: float) -> subprocess.CompletedProcess[str]:
+    """Stands in for `uvx shipmill==<pinned> leaks push` finding nothing (spec 081), so the
+    cases of the other rules judge a push those rules allow as allowed"""
+    return subprocess.CompletedProcess(list(cmd), 0, "", "")
+
+
+# A uvx on PATH before the real one, for the script run as a process: `leaks push` finds nothing
+# and anything else runs the real uvx
+FAKE_UVX = """#!/bin/sh
+if [ "$2" = leaks ] && [ "$3" = push ]; then exit 0; fi
+exec {uvx} "$@"
+"""
+
+
+def leaks_path(folder: Path) -> str:
+    """PATH with a uvx whose `leaks push` finds nothing first"""
+    uvx = shutil.which("uvx")
+    if uvx is None:
+        pytest.fail("uvx runs the hooks' CLI")
+    folder.mkdir(exist_ok=True)
+    fake = folder / "uvx"
+    fake.write_text(FAKE_UVX.format(uvx=shlex.quote(uvx)), encoding="utf-8")
+    fake.chmod(0o700)
+    return os.pathsep.join([str(folder), os.environ.get("PATH", "")])
+
+
 def process(data: object, mode: str = "pre") -> subprocess.CompletedProcess[str]:
-    """delivery.py as Claude Code runs it: a subprocess, with the App available"""
+    """delivery.py as Claude Code runs it: a subprocess, with the App available, and a `leaks
+    push` that finds nothing"""
     where = Path(data["cwd"]) if isinstance(data, dict) else ROOT
     text = data if isinstance(data, str) else json.dumps(data)
     env = {**{k: v for k, v in os.environ.items() if k != APP_KEY}, **AVAILABLE}
+    env["PATH"] = leaks_path(Path(AVAILABLE["HOME"]) / "fake-uvx")
     return subprocess.run(
         [sys.executable, str(SCRIPT), mode], input=text, cwd=where, env=env, capture_output=True, text=True, check=False
     )
@@ -145,11 +173,11 @@ def process(data: object, mode: str = "pre") -> subprocess.CompletedProcess[str]
 
 def hook(data: object, mode: str = "pre", env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """delivery.py's main in process, as its __main__ calls it, with the App available unless
-    env says otherwise; the script writes nothing to stdout, which the cases that run it as a
-    process prove"""
+    env says otherwise, and a `leaks push` that finds nothing; the script writes nothing to
+    stdout, which the cases that run it as a process prove"""
     text = data if isinstance(data, str) else json.dumps(data)
     stderr = io.StringIO()
-    code = DELIVERY.main([mode], io.StringIO(text), stderr, env=AVAILABLE if env is None else env)
+    code = DELIVERY.main([mode], io.StringIO(text), stderr, env=AVAILABLE if env is None else env, timed=leaks_pass)
     assert isinstance(code, int)
     return subprocess.CompletedProcess([str(SCRIPT), mode], code, "", stderr.getvalue())
 
@@ -1472,15 +1500,16 @@ def test_s026_10_no_subprocess_and_one_config_read(delivery: ModuleType, box: Sa
 
 
 def test_s026_10_only_git_push_starts_git(delivery: ModuleType, box: Sandbox, tmp_path: Path) -> None:
-    """A push asks git for origin/HEAD (the counting runner answers nothing, so no more);
-    switched off, or in a repo without [agents], it asks nothing"""
+    """A push asks git for origin/HEAD (the counting runner answers nothing, so no more), then
+    runs the leak check (spec 081); switched off, it runs only the leak check, and in a repo
+    without [agents] it runs nothing"""
     _, counted = in_process(delivery, fixture("bash-read.json", box.app, "git push origin feat/x"))
-    assert (counted.runs, counted.reads) == (1, 1)
-    _, counted = in_process(delivery, fixture("bash-read.json", box.app, "git push && git push origin HEAD"))
     assert (counted.runs, counted.reads) == (2, 1)
+    _, counted = in_process(delivery, fixture("bash-read.json", box.app, "git push && git push origin HEAD"))
+    assert (counted.runs, counted.reads) == (4, 1)
     off = git_repo(tmp_path / "off", AGENTS + "[hooks]\ndefault_branch = false\n")
     _, counted = in_process(delivery, fixture("bash-read.json", off, "git push origin main"))
-    assert (counted.runs, counted.reads) == (0, 1)
+    assert (counted.runs, counted.reads) == (1, 1)
     _, counted = in_process(delivery, fixture("bash-read.json", box.release, "git push origin main"))
     assert counted.runs == 0
 
