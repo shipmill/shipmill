@@ -222,6 +222,7 @@ def arguments(checkout: Path, **overrides: Any) -> argparse.Namespace:
         "lower_min": 10,
         "revert_days": 14,
         "role": [],
+        "reviews": False,
     }
     return argparse.Namespace(**{**values, **overrides})
 
@@ -1786,3 +1787,128 @@ def test_findings_reads_every_page_as_json_lines(rt: ModuleType) -> None:
 
     cmd = ["api", "--paginate", "repos/o/r/pulls/1/reviews?per_page=100", "--jq", ".[]"]
     assert rt.gh_read(cmd, pages) == [{"n": 1}, {"n": 2}]
+
+
+# -- the review records (spec 075) ------------------------------------------------------------
+
+
+def findings_line(confirmed: int, rejected: int, minor: int) -> str:
+    return f"<!-- shipmill:findings confirmed={confirmed} rejected={rejected} minor={minor} -->"
+
+
+def record_review(
+    verdict: str, when: str, second: str = "", login: str = BOT, kind: str = "Bot", state: str = "COMMENTED"
+) -> dict[str, Any]:
+    """A review as GraphQL reads it, its body `shipmill review record`'s: the marker, an optional
+    findings line right after it, then the report"""
+    head = f"<!-- shipmill:review {verdict} -->" + (f"\n{second}" if second else "")
+    body = f"{head}\n\nThe report.\n\n<!-- shipmill:agent -->"
+    return {"state": state, "body": body, "submittedAt": when, "author": {"__typename": kind, "login": login}}
+
+
+def reviewed(number: int, *reviews: dict[str, Any], updated: str | None = None, cursor: str | None = None) -> Any:
+    """A pull request node of REVIEW_PULLS: its newest reviews, older ones left at cursor"""
+    moments = [r["submittedAt"] for r in reviews]
+    page = {"hasPreviousPage": cursor is not None, "startCursor": cursor}
+    return {
+        "number": number,
+        "updatedAt": updated or max(moments, default=iso(END)),
+        "reviews": {"pageInfo": page, "nodes": list(reviews)},
+    }
+
+
+def review_graphql(
+    rt: ModuleType, pulls: list[dict[str, Any]], older: dict[int, list[dict[str, Any]]] | None = None
+) -> tuple[list[str], Callable[..., dict[str, Any]]]:
+    asked: list[str] = []
+
+    def run(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        asked.append(query)
+        if query == rt.REVIEW_PULLS:
+            return {"data": {"repository": {"pullRequests": connection(pulls)}}}
+        assert query == rt.PULL_REVIEWS, query
+        nodes = (older or {})[variables["number"]]
+        page = {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": nodes}
+        return {"data": {"repository": {"pullRequest": {"reviews": page}}}}
+
+    return asked, run
+
+
+def test_s075_8_gather_reviews_counts_the_bots_records_of_the_window(
+    rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    unmarked = {**record_review("refuse", day(1)), "body": "Looks wrong\n<!-- shipmill:review refuse -->"}
+    pulls = [
+        reviewed(81, record_review("refuse", day(1), findings_line(2, 1, 0))),  # verified
+        reviewed(82, record_review("refuse", day(2))),  # unverified: no findings line
+        reviewed(83, record_review("refuse", day(2), "<!-- shipmill:findings confirmed=2 -->")),  # unreadable
+        reviewed(84, record_review("merge", day(3), findings_line(0, 2, 1))),  # overturned
+        reviewed(85, record_review("merge", day(3))),  # a merge without a second look counts for nothing
+        reviewed(86, record_review("refuse", day(4), findings_line(1, 0, 0))),  # verified
+        reviewed(
+            87,
+            record_review("refuse", day(1), login="mallory", kind="User"),  # anyone else's
+            record_review("refuse", day(1), findings_line(9, 9, 9), login="amy", kind="User"),
+            record_review("refuse", day(9)),  # before the window
+            record_review("refuse", day(1), state="PENDING"),
+            unmarked,  # its first line is no marker
+        ),
+        reviewed(88, record_review("refuse", day(8)), updated=day(8)),  # updated before the window: paging stops
+    ]
+    asked, run_graphql = review_graphql(rt, pulls)
+    _, run = commands()
+    assert rt.gather(arguments(tmp_path, goals=False, reviews=True), sources(rt, run, graphql=run_graphql)) == 0
+    assert json.loads(capsys.readouterr().out)["reviews"] == {
+        "refused": 4,
+        "verified": 2,
+        "unverified": 2,
+        "unverified_pulls": [82, 83],
+        "overturned": 1,
+        "confirmed": 3,
+        "rejected": 3,
+        "minor": 1,
+        "first_reviewer_wrong": 42,  # 3 of 7, rounded down
+    }
+    assert asked == [rt.REVIEW_PULLS]  # one query, one page
+    _, run_graphql = review_graphql(rt, pulls)
+    args = arguments(tmp_path, goals=False, reviews=True, json=False)
+    assert rt.gather(args, sources(rt, run, graphql=run_graphql)) == 0
+    assert capsys.readouterr().out.splitlines()[-2:] == [
+        "Review records: 4 refusals, 2 verified, 2 unverified (#82, #83); 1 overturned",
+        "  findings: 3 confirmed, 3 rejected, 1 minor; first reviewer wrong: 42%",
+    ]
+
+
+def test_s075_8_no_findings_line_is_no_data_and_without_reviews_nothing_is_read(
+    rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    asked, run_graphql = review_graphql(rt, [reviewed(82, record_review("refuse", day(2)))])
+    _, run = commands()
+    assert rt.gather(arguments(tmp_path, goals=False, reviews=True), sources(rt, run, graphql=run_graphql)) == 0
+    found = json.loads(capsys.readouterr().out)["reviews"]
+    assert (found["unverified_pulls"], found["first_reviewer_wrong"]) == ([82], "no data")
+    assert rt.reviews_text(found)[1] == "  findings: 0 confirmed, 0 rejected, 0 minor; first reviewer wrong: no data"
+    asked.clear()
+    assert rt.gather(arguments(tmp_path, goals=False), sources(rt, run, graphql=run_graphql)) == 0
+    assert "reviews" not in json.loads(capsys.readouterr().out) and asked == []
+
+
+def test_s075_8_a_pull_with_more_reviews_than_its_page_reads_the_older_ones_alone(
+    rt: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pulls = [reviewed(81, record_review("refuse", day(1), findings_line(1, 1, 0)), cursor="c1")]
+    older = {81: [record_review("refuse", day(9)), record_review("refuse", day(3))]}
+    asked, run_graphql = review_graphql(rt, pulls, older)
+    _, run = commands()
+    assert rt.gather(arguments(tmp_path, goals=False, reviews=True), sources(rt, run, graphql=run_graphql)) == 0
+    found = json.loads(capsys.readouterr().out)["reviews"]
+    assert (found["verified"], found["unverified"], found["first_reviewer_wrong"]) == (1, 1, 50)
+    assert asked == [rt.REVIEW_PULLS, rt.PULL_REVIEWS]
+
+
+def test_s075_8_reviews_needs_a_bot_login(rt: ModuleType) -> None:
+    assert rt.parse(["gather", "o/r", "--reviews", "--bot", "shipmill-app[bot]"]).reviews is True
+    assert rt.parse(["gather", "o/r"]).reviews is False
+    with pytest.raises(SystemExit) as stopped:
+        rt.parse(["gather", "o/r", "--reviews"])
+    assert stopped.value.code == 2
