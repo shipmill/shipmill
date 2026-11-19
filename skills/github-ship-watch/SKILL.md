@@ -341,6 +341,32 @@ own github-ship-watch pass.
 
 In a session, `/loop 1h` the same report.
 
+### The maintainer's queue
+
+`scripts/fleet.py queue --fleet <file> [--login LOGIN] [--bot-login <slug>[bot]] [--json]` reads the same fleet file, with the same refusals, and prints only what waits on a person, across every repo, oldest first (spec 069). It reads the same fresh clones as `report`, runs the state scripts with the watch's trust (`--trusted-only` and the `--bot-login`, D-16) and the clone's roles, and reads each item's waiting time from GitHub; it keeps no state and writes nothing. Each line: the repo, the kind, `#N`, what is asked and the item's title, and how long it has waited (`3d 4h`, `5h`, `12m`); a tie goes to the fleet file's order, then the number. The rows:
+
+- `QUESTION`: an open item labelled `needs-decision` whose newest question has no trusted reply, since that question. An item in `QUESTION` is in no other row
+- `YOUR_ITEM`: a person's item (WITH_PERSON) assigned to the reader, `--login` or else `gh api user`'s login, since its hand-off. One assigned only to others or to a team is none
+- `OPPORTUNITY`: an opportunity waiting for accept or decline, since its opening
+- `PLAN`: a goal plan waiting for its answer, since its newest revision
+- `SPEC_TO_MERGE`: an open, non-draft spec pull request (its body's first line `Spec for #N`) that no question holds and nothing lands by itself, read with `pr_gate.py`'s readers: no trusted answer taking every recommendation (D-49) and no decided comment of the `--bot-login` at `accepted-spec` (D-88). One that edits `docs/product.md` or `docs/product/` is a row either way, since only the maintainer merges it (D-34). Since it was marked ready, else its opening
+- `TO_MERGE`: a pull request labelled `shipmill-ready` under `[autonomy] land = "propose"`, since the label
+- `PROMOTION`: an open "Ready to promote" proposal issue of `shipmill operate`, since its opening
+- `NO_REASON`: an opportunity closed as not planned with no reason recorded, since its close
+
+An item an outsider opened is in no row; without `--bot-login`, an item the App opened reads as an outsider's. `--json` prints one object: `login`, `items` (each with `repo`, `kind`, `number`, `url`, `asked`, `title`, `since`, `waited_minutes`) in the table's order, and `errors`. A repo whose read fails gets one REPO_ERROR line after the queue, naming the step and the error's first line. Exit 0 on an empty queue, 1 with a row, 2 after printing everything when a repo's read failed, and 2 on a malformed fleet file.
+
+The queue is an option the user schedules, never a default. `/schedule` a routine whose prompt is:
+
+```text
+Clone shipmill/shipmill and <the repo holding the fleet file>. Run
+`uv run --no-project python skills/github-ship-watch/scripts/fleet.py queue --fleet <path to fleet.toml> --bot-login <slug>[bot] --login <your login>`.
+On exit 0, report one line: "Queue: nothing waits on you". Otherwise report every row
+oldest first, as the script prints them: the repo, the kind, the item's link, what is
+asked, and how long it has waited, then each REPO_ERROR. Change nothing: each step stays
+where it is, the question, the item, or the pull request.
+```
+
 ## Improve the skill
 
 When a pass misses something stuck, or repairs something it shouldn't have, add a state to `watch_state.py` (with a test in shipmill's `tests/test_ship_watch.py`) or a rule here. When a rule must hold, put it in code too (a script with its test, a hook, or the gate), since a skill's prose only makes it likely; the evals stopped (D-74), so add no case under `evals/`.

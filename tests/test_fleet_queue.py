@@ -107,6 +107,8 @@ class FakeGh:
     undirected: set[str] = field(default_factory=set)  # repos with no docs/product.md
     roles: dict[str, str] = field(default_factory=dict)  # repo: what `shipmill roles --flags` prints in its clone
     relayed: dict[str, set[int]] = field(default_factory=dict)  # repo: plans a relayed maintainer answer accepted
+    pulls: dict[str, list[dict[str, Any]]] = field(default_factory=dict)  # repo: its open pull requests
+    page: int = 0  # pull requests per page of the open pull requests' read; 0 for one page
 
     def cli(self, cmd: list[str], cwd: Path | None) -> subprocess.CompletedProcess[str]:
         """The pinned CLI's `--repo <clone> roles --flags`, the repo read from the clone's path"""
@@ -153,6 +155,13 @@ class FakeGh:
                 accepted = self.relayed.get(repo, set())
                 rows = [{**r, "state": "PLAN_ACCEPTED"} if r.get("number") in accepted else r for r in rows]
             return proc(0, "".join(json.dumps(r) + "\n" for r in rows))
+        if "pullRequests(" in fields["query"]:
+            pulls = self.pulls.get(repo, [])
+            start = int(fields.get("cursor", "0"))
+            end = start + self.page if self.page else len(pulls)
+            more = {"hasNextPage": end < len(pulls), "endCursor": str(end)}
+            found_pulls = {"pullRequests": {"pageInfo": more, "nodes": pulls[start:end]}}
+            return proc(0, json.dumps({"data": {"repository": found_pulls}}))
         numbers = [int(n) for n in re.findall(r"\bi(\d+): issueOrPullRequest", fields["query"])]
         found = {f"i{n}": self.github[repo].get(n) for n in numbers}
         return proc(0, json.dumps({"data": {"repository": found}}))
@@ -187,7 +196,7 @@ def test_s069_1_an_unanswered_question_is_a_row_and_an_answered_one_is_none(
     )
     code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
     assert code == 1
-    assert out.splitlines() == ["o/r QUESTION    #5     answer the needs-decision question: Pick a name (2d 3h)"]
+    assert out.splitlines() == ["o/r QUESTION      #5     answer the needs-decision question: Pick a name (2d 3h)"]
     watch = next(c for c in fake.calls if c[1] == str(fl.WATCH_STATE))
     assert {"--trusted-only", "--no-host"} <= set(watch) and watch[watch.index("--bot-login") + 1] == BOT
 
@@ -234,7 +243,7 @@ def test_s069_2_a_with_person_item_assigned_to_the_reader_is_your_item(
     fake = persons_fake()
     code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
     assert code == 1
-    assert out.splitlines() == ["o/r YOUR_ITEM   #7     do your item: Item 7 (2d 0h)"]  # since the hand-off
+    assert out.splitlines() == ["o/r YOUR_ITEM     #7     do your item: Item 7 (2d 0h)"]  # since the hand-off
     assert sum(c[:3] == ["gh", "api", "user"] for c in fake.calls) == 1  # the reader: gh api user's login, once
     triage = next(c for c in fake.calls if c[1] == str(fl.WS.TRIAGE_STATE))
     assert {"--json", "--trusted-only"} <= set(triage) and triage[triage.index("--bot-login") + 1] == BOT
@@ -249,8 +258,8 @@ def test_s069_2_the_reader_is_the_login_flag_before_gh(
     code, out = run_queue(fl, tmp_path, capsys, fake, "--login", "bob")
     assert code == 1
     assert out.splitlines() == [
-        "o/r YOUR_ITEM   #8     do your item: Item 8 (3d 0h)",
-        "o/r YOUR_ITEM   #7     do your item: Item 7 (2d 0h)",
+        "o/r YOUR_ITEM     #8     do your item: Item 8 (3d 0h)",
+        "o/r YOUR_ITEM     #7     do your item: Item 7 (2d 0h)",
     ]
     assert not any(c[:3] == ["gh", "api", "user"] for c in fake.calls)
 
@@ -305,9 +314,9 @@ def test_s069_3_open_opportunities_plans_and_unreasoned_declines_are_rows_and_no
     code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
     assert code == 1
     assert out.splitlines() == [
-        "o/r OPPORTUNITY #20    accept or decline the opportunity: Export to CSV (9d 0h)",
-        "o/r PLAN        #30    answer the goal plan: Plan for G-1 (6d 0h)",  # since the App's newest revision
-        "o/r NO_REASON   #24    record why the opportunity was declined: Dark mode (7h)",  # since the close
+        "o/r OPPORTUNITY   #20    accept or decline the opportunity: Export to CSV (9d 0h)",
+        "o/r PLAN          #30    answer the goal plan: Plan for G-1 (6d 0h)",  # since the App's newest revision
+        "o/r NO_REASON     #24    record why the opportunity was declined: Dark mode (7h)",  # since the close
     ]
     intake = next(c for c in fake.calls if c[1] == str(fl.WS.INTAKE_STATE))
     assert {"--plans", "--json"} <= set(intake) and intake[intake.index("--bot-login") + 1] == BOT
@@ -329,8 +338,8 @@ def test_s069_3_a_repo_with_no_direction_reads_its_opportunities_without_plans(
     code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
     assert code == 1
     assert out.splitlines() == [
-        "o/r OPPORTUNITY #20    accept or decline the opportunity: Export to CSV (9d 0h)",
-        "o/r QUESTION    #5     answer the needs-decision question: Pick (2h)",
+        "o/r OPPORTUNITY   #20    accept or decline the opportunity: Export to CSV (9d 0h)",
+        "o/r QUESTION      #5     answer the needs-decision question: Pick (2h)",
     ]
     intake = [c for c in fake.calls if c[1:2] == [str(fl.WS.INTAKE_STATE)]]
     assert len(intake) == 2 and not any("--plans" in c for c in intake)  # as the watch: plans only with a direction
@@ -366,6 +375,141 @@ def test_the_plan_revision_marker_is_intake_states() -> None:
     assert found is not None and f'REVISED = re.compile(r"{found.group(1)}")' in fleet
 
 
+SPEC_QUESTION = (
+    f"{MARKER}\n@maint Decision needed: approve this spec?\n"
+    "1. Take every recommendation (recommended): merge it as it stands\n"
+    "2. Change some: say which\n"
+)
+
+
+def pull(
+    number: int,
+    title: str,
+    *,
+    body: str = "Spec for #3\n\n## Decisions for you\n",
+    draft: bool = False,
+    comments: Sequence[dict[str, Any]] = (),
+    files: Sequence[str] = ("docs/specs/090-a-spec.md",),
+    more_files: bool = False,
+    ready: str | None = None,
+    author: str = BOT,
+    association: str = "NONE",
+) -> dict[str, Any]:
+    """An open pull request as the open pull requests' read gives it, the App's by default"""
+    node = item(number, title, pr=True, author=author, association=association, comments=comments)
+    node["body"] = body
+    node["isDraft"] = draft
+    node["comments"]["pageInfo"] = {"hasPreviousPage": False}
+    node["files"] = {"pageInfo": {"hasNextPage": more_files}, "nodes": [{"path": p} for p in files]}
+    node["timelineItems"] = {"nodes": [{"createdAt": ready}] if ready else []}
+    del node["labels"]
+    return node
+
+
+def spec_question(at: str, *answers: dict[str, Any]) -> list[dict[str, Any]]:
+    """The App's approval question on a spec pull request, then the replies"""
+    return [comment(SPEC_QUESTION, BOT, "NONE", at), *answers]
+
+
+def decided_comment(zone: str, author: str = BOT, association: str = "NONE") -> dict[str, Any]:
+    body = f"<!-- shipmill:decided zone={zone} until=2026-11-20T00:00:00Z -->\n<!-- shipmill:head {'a' * 40} -->"
+    return comment(body, author, association, ago(days=1))
+
+
+def test_s069_4_an_open_spec_pull_request_nothing_lands_is_a_row(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    takes = comment("1", "amy", "OWNER", ago(days=2))
+    pulls = [
+        pull(40, "Spec 090: export", ready=ago(days=4)),  # waiting since it was marked ready
+        pull(41, "Draft spec", draft=True),
+        pull(42, "Not a spec", body="Fixes #3\n\nSpec for #3"),  # `Spec for` isn't its first line
+        pull(43, "Asked, unanswered", comments=spec_question(ago(days=3))),  # a question holds it
+        pull(44, "Approved by an answer", comments=spec_question(ago(days=3), takes)),
+        pull(45, "Approved at notify", comments=[decided_comment("accepted-spec")]),
+        pull(
+            46, "Decided, edits the direction", comments=[decided_comment("accepted-spec")], files=("docs/product.md",)
+        ),
+        pull(
+            47,
+            "Answered, edits a moved section",
+            comments=spec_question(ago(days=3), takes),
+            files=("docs/product/u.md",),
+        ),
+        pull(
+            48, "Relayed approval", comments=spec_question(ago(days=3), comment("Decision by @maint\n1", BOT, "NONE"))
+        ),
+        pull(49, "Too many files to rule out", comments=[decided_comment("accepted-spec")], more_files=True),
+        pull(50, "A stranger's spec", author="stranger", association="NONE"),
+    ]
+    fake = FakeGh(pulls={"o/r": pulls}, page=4)
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+    assert code == 1
+    asked = "merge the spec pull request"
+    assert out.splitlines() == [
+        f"o/r SPEC_TO_MERGE #46    {asked}: Decided, edits the direction (30d 0h)",  # since its opening
+        f"o/r SPEC_TO_MERGE #47    {asked}: Answered, edits a moved section (30d 0h)",
+        f"o/r SPEC_TO_MERGE #49    {asked}: Too many files to rule out (30d 0h)",
+        f"o/r SPEC_TO_MERGE #40    {asked}: Spec 090: export (4d 0h)",
+    ]
+    reads = [c for c in fake.calls if c[:3] == ["gh", "api", "graphql"] and "pullRequests(" in c[4]]
+    assert [c[10] if len(c) > 9 else None for c in reads if "owner=o" in c and "name=r" in c] == [
+        None,
+        "cursor=4",
+        "cursor=8",
+    ]  # every page of the open pull requests
+
+
+def test_s069_4_an_untrusted_answer_or_decided_comment_never_lands_a_spec(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    changes = comment("2", "amy", "OWNER", ago(days=2))  # the maintainer changes a recommendation
+    stranger = comment("1", "stranger", "NONE", ago(days=1))  # an outsider takes it after
+    pulls = [
+        pull(60, "Changed, then a stranger's 1", comments=spec_question(ago(days=3), changes, stranger)),
+        pull(61, "A person's decided comment", comments=[decided_comment("accepted-spec", "amy", "OWNER")]),
+        pull(62, "The App decided another zone", comments=[decided_comment("scope")]),
+        pull(
+            63,
+            "A relay naming no maintainer",
+            comments=spec_question(ago(days=3), changes, comment("Decision by @bob\n1", BOT, "NONE")),
+        ),
+    ]
+    fake = FakeGh(pulls={"o/r": pulls})
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+    assert code == 1
+    assert [line.split()[2] for line in out.splitlines()] == ["#60", "#61", "#62", "#63"]
+
+
+def test_s069_4_a_spec_pull_request_in_question_is_only_a_question(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    held = asked(70, "Spec 091", ago(hours=2), pr=True)
+    fake = FakeGh(
+        watch={"o/r": [watch_row("NEEDS_DECISION", "o/r", "#70")]},
+        github={"o/r": {70: held}},
+        pulls={"o/r": [pull(70, "Spec 091", author="amy", association="OWNER")]},
+    )
+    _, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+    assert [line.split()[1:3] for line in out.splitlines()] == [["QUESTION", "#70"]]
+
+
+def test_s069_4_without_a_bot_login_no_decided_comment_counts(fl: ModuleType) -> None:
+    node = pull(80, "Decided", author="amy", association="OWNER", comments=[decided_comment("accepted-spec")])
+    assert fl.spec_item("o/r", node, BOT, frozenset({"maint"})) is None
+    found = fl.spec_item("o/r", node, None, frozenset({"maint"}))
+    assert found is not None and found.kind == fl.SPEC_TO_MERGE
+
+
+def test_s069_4_a_failed_pull_requests_read_is_a_repo_error(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeGh(pulls={"o/r": [pull(40, "Spec")]}, failing={"o/s": ("graphql", "error: HTTP 502\nmore")})
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+    assert code == 2
+    assert out.splitlines()[-1] == "o/s REPO_ERROR gh api graphql: error: HTTP 502"
+
+
 def test_s069_5_a_pull_request_to_merge_and_a_proposal_are_rows(
     fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -393,10 +537,10 @@ def test_s069_5_a_pull_request_to_merge_and_a_proposal_are_rows(
     code, out = run_queue(fl, tmp_path, capsys, fake)
     assert code == 1
     assert out.splitlines() == [
-        "o/r PROMOTION   #20    approve the promotion: Ready to promote v1.2.0 to production (5h)",
-        "o/r TO_MERGE    #12    merge the pull request: Fix the thing (12m)",
+        "o/r PROMOTION     #20    approve the promotion: Ready to promote v1.2.0 to production (5h)",
+        "o/r TO_MERGE      #12    merge the pull request: Fix the thing (12m)",
     ]
-    graphql = [c for c in fake.calls if c[:3] == ["gh", "api", "graphql"]]
+    graphql = [c for c in fake.calls if c[:3] == ["gh", "api", "graphql"] and "issueOrPullRequest" in c[4]]
     assert len(graphql) == 1  # one batched read for the repo's items
 
 
@@ -427,10 +571,10 @@ def test_s069_7_rows_from_several_repos_print_in_one_list_oldest_first(
     code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
     assert code == 1
     assert out.splitlines() == [
-        "o/s QUESTION    #9     answer the needs-decision question: Oldest (3d 4h)",
-        "o/r QUESTION    #2     answer the needs-decision question: Tied (1d 0h)",  # a tie: the fleet file's order
-        "o/s QUESTION    #8     answer the needs-decision question: Tied too (1d 0h)",
-        "o/r QUESTION    #1     answer the needs-decision question: Newest (40m)",
+        "o/s QUESTION      #9     answer the needs-decision question: Oldest (3d 4h)",
+        "o/r QUESTION      #2     answer the needs-decision question: Tied (1d 0h)",  # a tie: the fleet file's order
+        "o/s QUESTION      #8     answer the needs-decision question: Tied too (1d 0h)",
+        "o/r QUESTION      #1     answer the needs-decision question: Newest (40m)",
     ]
 
 
@@ -512,7 +656,7 @@ def test_s069_10_a_failed_repo_is_one_repo_error_line_and_the_rest_print(
         code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
         assert code == 2
         assert out.splitlines() == [
-            "o/r QUESTION    #1     answer the needs-decision question: Fine (1h)",
+            "o/r QUESTION      #1     answer the needs-decision question: Fine (1h)",
             f"o/s REPO_ERROR {named}: error: HTTP 502",
         ]
 
@@ -600,7 +744,7 @@ def test_1409_a_roles_read_that_fails_is_a_repo_error_and_never_a_queue_without_
     code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
     assert code == 2
     assert out.splitlines() == [
-        "o/r QUESTION    #1     answer the needs-decision question: Fine (1h)",
+        "o/r QUESTION      #1     answer the needs-decision question: Fine (1h)",
         f"o/s REPO_ERROR shipmill roles --flags: {unread}",
     ]
     assert not [c for c in fake.calls if c[0] not in ("gh", "uvx") and c[2] == "o/s"]  # no script ran without roles
@@ -624,6 +768,18 @@ def test_1409_roles_output_that_isnt_role_flags_stops_the_run(fl: ModuleType, te
     ]
     with pytest.raises(fl.Refused, match="shipmill roles --flags for o/r printed"):
         fl.role_values(text, "o/r")
+
+
+def test_s069_13_the_fleet_section_documents_the_queue_its_rows_and_a_routine(fl: ModuleType) -> None:
+    skill = (SCRIPTS.parent / "SKILL.md").read_text(encoding="utf-8")
+    fleet = re.search(r"^## Fleet\n(.*?)^## ", skill, re.MULTILINE | re.DOTALL)
+    assert fleet is not None
+    section = fleet.group(1)
+    assert "`scripts/fleet.py queue --fleet <file>" in section
+    for kind in fl.ASKED:
+        assert f"- `{kind}`: " in section, kind
+    routine = re.findall(r"```text\n(.*?)```", section, re.DOTALL)
+    assert any("fleet.py queue --fleet" in block and "oldest first" in block for block in routine)
 
 
 def test_waited_text_reads_days_hours_and_minutes(fl: ModuleType) -> None:

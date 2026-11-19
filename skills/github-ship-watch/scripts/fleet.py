@@ -79,6 +79,17 @@ login:
               the newest <!-- shipmill:plan-revised rev=k --> comment by the --bot-login
               whose rev is higher than the one before it, else its opening
   NO_REASON   a closed opportunity intake_state.py reads NO_REASON; since its close
+GitHub's GraphQL reads the open pull requests (25 a read, each with its newest 100 comments and
+first 100 files), and pr_gate.py's readers judge them:
+  SPEC_TO_MERGE  an open, non-draft pull request whose body's first line is `Spec for #N`
+              (spec_refs) that no question holds (its newest needs-decision question has a
+              trusted answer, or it has none) and that nothing lands by itself: no trusted answer
+              taking the recommended option (whole_reply, takes_recommended; a relay counts naming
+              a maintainer of the clone's roles, in its grammar) and no newest decided comment of
+              the --bot-login at accepted-spec. One of those would land is a row still when it
+              edits docs/product.md or docs/product/ (direction_edits), or its files run past
+              100, since only the maintainer merges it (D-34). An item another row lists is in
+              that row only. Since its newest ready-for-review, else its opening
 ACCEPTED, HANDED_OFF, DECLINED, PLAN_ACCEPTED, and every other state of the two scripts are
 no row. An item in QUESTION is in no other row. An item whose author is neither an OWNER, MEMBER, or
 COLLABORATOR nor the --bot-login (save the release workflow's upgrade issue, D-30) is in none.
@@ -167,6 +178,7 @@ REPO_ERROR = "REPO_ERROR"
 REPORT_ONLY_BY_LEVEL = "FEEDBACK_DUE"
 ROW_KEYS = {"state", "subject", "detail", "agent"}  # a watch_state.py --json line
 FIX_KEY = "fix"  # and its fix (spec 011), a string or null, which this report doesn't print
+HEADS_KEY = "heads"  # and a PRS_OPEN row's heads, number to sha, for the gate's fingerprint (#546): not printed
 KEYS = ("repo", "incident_label")  # the keys of a [[repos]] entry
 REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/(?!\.+$)[A-Za-z0-9._-]+$")  # owner/name; a name isn't only dots
 # the plain form Python 3.10 reads: a [[repos]] header or key = "string", each with an optional comment
@@ -187,6 +199,10 @@ def script(path: Path) -> ModuleType:
 
 # watch_state.py's config reader: the metrics read a repo's incident label as the watch does
 WS = script(WATCH_STATE)
+# pr_gate.py's readers: the queue reads a spec pull request's question, answer, decided comment,
+# and direction edits as the merge gate does (S-069-4)
+PR_GATE = SCRIPTS.parents[1] / "github-pr-triage" / "scripts" / "pr_gate.py"
+PG = script(PR_GATE)
 
 
 class Refused(SystemExit):
@@ -386,9 +402,10 @@ def watch_rows(repo: str, out: str) -> list[Row]:
         found = decoded(line, f"watch_state.py for {repo}")
         if (
             not isinstance(found, dict)
-            or set(found) - {FIX_KEY} != ROW_KEYS
+            or set(found) - {FIX_KEY, HEADS_KEY} != ROW_KEYS
             or not isinstance(found["agent"], bool)
             or not isinstance(found.get(FIX_KEY), (str, type(None)))
+            or not isinstance(found.get(HEADS_KEY, {}), dict)
         ):
             raise Refused(f"error: watch_state.py for {repo} printed {line!r}, not a row")
         state = str(found["state"])
@@ -486,9 +503,11 @@ YOUR_ITEM = "YOUR_ITEM"
 OPPORTUNITY = "OPPORTUNITY"
 PLAN = "PLAN"
 NO_REASON = "NO_REASON"
+SPEC_TO_MERGE = "SPEC_TO_MERGE"
 # what each kind asks of the maintainer: the fixed phrase the row's title follows
 ASKED = {
     QUESTION: "answer the needs-decision question",
+    SPEC_TO_MERGE: "merge the spec pull request",
     TO_MERGE: "merge the pull request",
     PROMOTION: "approve the promotion",
     YOUR_ITEM: "do your item",
@@ -820,6 +839,128 @@ def read_items(
     return found
 
 
+# -- SPEC_TO_MERGE (S-069-4): an open spec pull request nothing lands by itself -------------------
+
+PULLS_PAGE = 25  # open pull requests per GraphQL read, each with its newest 100 comments and 100 files
+PULL_FIELDS = """__typename number title url state isDraft createdAt body authorAssociation author { __typename login }
+files(first: 100) { pageInfo { hasNextPage } nodes { path } }
+comments(last: 100) { pageInfo { hasPreviousPage }
+nodes { author { __typename login } authorAssociation body createdAt } }
+timelineItems(itemTypes: [READY_FOR_REVIEW_EVENT], last: 1) { nodes { ... on ReadyForReviewEvent { createdAt } } }"""
+PULLS_QUERY = (
+    "query($owner: String!, $name: String!, $cursor: String) { repository(owner: $owner, name: $name) {\n"
+    f"pullRequests(states: OPEN, first: {PULLS_PAGE}, after: $cursor) {{ pageInfo {{ hasNextPage endCursor }}\n"
+    f"nodes {{ {PULL_FIELDS} }} }} }} }}"
+)
+
+
+def pulls_command(repo: str, cursor: str | None) -> list[str]:
+    """One page of the repo's open pull requests, read only"""
+    owner, name = repo.split("/", 1)
+    cmd = ["gh", "api", "graphql", "-f", f"query={PULLS_QUERY}", "-f", f"owner={owner}", "-f", f"name={name}"]
+    return cmd + (["-f", f"cursor={cursor}"] if cursor is not None else [])
+
+
+def open_pulls(repo: str, runner: Runner) -> list[dict[str, Any]] | RepoError:
+    """Every open pull request of the repo, a page at a time, or the read's REPO_ERROR"""
+    found: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        proc = runner(pulls_command(repo, cursor))
+        if proc.returncode != 0:
+            return RepoError(repo, "gh api graphql", first_line(proc, "gh api graphql"))
+        data = decoded(proc.stdout, f"gh api graphql for {repo}'s pull requests")
+        inner = data.get("data") if isinstance(data, dict) else None
+        repository = inner.get("repository") if isinstance(inner, dict) else None
+        where = f"gh api graphql for {repo}'s pull requests"
+        found += nodes(repository, "pullRequests", where)
+        page = repository["pullRequests"].get("pageInfo") if isinstance(repository, dict) else None
+        if not isinstance(page, dict) or not isinstance(page.get("hasNextPage"), bool):
+            raise Refused(f"error: {where}: no pageInfo")
+        if not page["hasNextPage"]:
+            return found
+        cursor = str(page["endCursor"])
+
+
+def spec_pull(node: dict[str, Any]) -> bool:
+    """A spec pull request: its body's first line is `Spec for #N`, read by pr_gate.py's spec_refs"""
+    return bool(PG.spec_refs(PG.retro().first_line(str(node.get("body") or ""))))
+
+
+def lands_itself(comments: list[dict[str, Any]], bot_login: str | None, maintainers: frozenset[str]) -> bool | None:
+    """Whether the spec pull request's thread lands it without the maintainer (D-49, D-88), read
+    by pr_gate.py's readers: the newest trusted answer to its newest needs-decision question
+    takes the recommended option (pr_gate.py's whole_reply, retro.py's takes_recommended; a relay
+    the --bot-login posts counts only naming a maintainer and in its grammar), or the
+    --bot-login's newest decided comment names the zone accepted-spec. None while its newest
+    question has no trusted answer: a question holds it"""
+    rt = PG.retro()
+    bots = frozenset({bot_login}) if bot_login else frozenset()
+    asked = PG.newest_question(comments, bots)
+    if asked is not None:
+        later = comments[asked + 1 :]
+        answer = rt.newest_answer_at(later, bots, maintainers)
+        if answer is None:
+            return None
+        reply = later[answer[0]]
+        relay = rt.parse_relay(str(reply["body"]))
+        refused = PG.by_bots(reply, bots) and rt.relay_refusal(comments[asked]["body"], relay) is not None
+        said = PG.whole_reply(reply, bots)
+        if not refused and said is not None and rt.takes_recommended(comments[asked]["body"], said):
+            return True
+    if not bot_login:
+        return False  # with no --bot-login, no decided comment counts (pr_gate.py's NO_BOT)
+    decided = [
+        PG.DECIDED_FIRST.fullmatch(rt.first_line(c["body"]))
+        for c in comments
+        if bot_login.lower() in rt.login_names(c.get("author"))
+    ]
+    zones = [found.group(1) for found in decided if found is not None]
+    return bool(zones) and zones[-1] == PG.ACCEPTED_SPEC
+
+
+def spec_item(repo: str, node: dict[str, Any], bot_login: str | None, maintainers: frozenset[str]) -> Item | None:
+    """The SPEC_TO_MERGE row of one open pull request, or None (S-069-4): a draft, not a spec
+    pull request, untrusted (S-069-9), a question holding it, or one that lands by itself, save
+    one that edits docs/product.md or docs/product/, which only the maintainer merges (D-34).
+    It has waited since its newest ready-for-review event, else its opening"""
+    where = f"gh api graphql for {repo}#{node.get('number')}"
+    missing = [k for k in (*ITEM_KEYS, "isDraft") if k != "labels" and k not in node]
+    if missing or node.get("__typename") != "PullRequest":
+        raise Refused(f"error: {where}: not a pull request with {missing or ITEM_KEYS}")
+    if node["state"] != "OPEN" or node["isDraft"] or not spec_pull(node) or not trusted_item(node, bot_login):
+        return None
+    try:
+        comments, _ = PG.comments_of(node, where)
+    except PG.GateError as error:
+        raise Refused(f"error: {error}") from None
+    lands = lands_itself(comments, bot_login, maintainers)
+    if lands is None:
+        return None
+    paths = [str(f.get("path")) for f in nodes(node, "files", where)]
+    page = node["files"].get("pageInfo")
+    # past the first 100 files a direction edit can't be ruled out, so the maintainer merges it
+    cut_off = not isinstance(page, dict) or page.get("hasNextPage") is not False
+    if lands and not cut_off and not PG.direction_edits(paths):
+        return None
+    ready = [
+        WS.TRIAGE.timestamp(str(e["createdAt"])) for e in nodes(node, "timelineItems", where) if e.get("createdAt")
+    ]
+    since = max(ready) if ready else WS.TRIAGE.timestamp(str(node["createdAt"]))
+    return Item(repo, SPEC_TO_MERGE, int(node["number"]), str(node["url"]), str(node["title"]), since)
+
+
+def spec_items(
+    repo: str, runner: Runner, bot_login: str | None, maintainers: frozenset[str], taken: Sequence[int]
+) -> list[Item] | RepoError:
+    """The repo's SPEC_TO_MERGE rows, save the items another row already holds (QUESTION's first)"""
+    pulls = open_pulls(repo, runner)
+    if isinstance(pulls, RepoError):
+        return pulls
+    found = [spec_item(repo, node, bot_login, maintainers) for node in pulls]
+    return [i for i in found if i is not None and i.number not in taken]
+
+
 def queue_repo(e: Entry, runner: Runner, workdir: Path, bot_login: str | None, login: str) -> list[Item] | RepoError:
     """One repo's rows: the watch, triage_state.py, and intake_state.py on a fresh clone name
     the items, GitHub times them; an item in QUESTION is in no other row (S-069-6). The clone's
@@ -846,7 +987,12 @@ def queue_repo(e: Entry, runner: Runner, workdir: Path, bot_login: str | None, l
     mine = person_items(triaged.stdout, e.repo, login)
     for n, kind in [*((n, YOUR_ITEM) for n in mine), *intake_items(intake.stdout, e.repo).items()]:
         kinds.setdefault(n, kind)
-    return read_items(e.repo, kinds, runner, bot_login, mine) if kinds else []
+    found = read_items(e.repo, kinds, runner, bot_login, mine) if kinds else []
+    if isinstance(found, RepoError):
+        return found
+    listed = [i.number for i in found]  # a spec pull request another row lists, QUESTION's first, is in that row only
+    specs = spec_items(e.repo, runner, bot_login, PG.retro().maintainer_logins(roles), listed)
+    return specs if isinstance(specs, RepoError) else found + specs
 
 
 def reader(given: str | None, runner: Runner) -> str:
