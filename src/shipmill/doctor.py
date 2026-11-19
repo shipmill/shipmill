@@ -15,7 +15,7 @@ from typing import Any, Protocol
 from shipmill import cli_command, deploy_runner, deprecations, fragments, ticks
 from shipmill.agent_as_person import NAME as AGENT_AS_PERSON
 from shipmill.agent_as_person import Flagged
-from shipmill.agents import AgentsConfig, Author, Credit, ProductConfig, RolesError
+from shipmill.agents import AgentsConfig, Author, Credit, MergeMethod, ProductConfig, RolesError
 from shipmill.app import (
     OPTIONAL_PERMISSIONS,
     PRODUCT_PERMISSIONS,
@@ -276,6 +276,7 @@ def doctor(
     if policy.agents is not None:
         checks.append(direction_check(root))
         checks.extend(hooks_checks(policy, Git(root), hooks, Path.home() if home is None else home))
+        checks.extend(merge_checks(policy.agents, github))
         checks.extend(deprecation_checks(policy, "credit") or [credit_check(policy.agents)])
         checks.append(author_check(policy.agents, Path.home() if home is None else home))
         if session_app is not None and policy.agents.app_id is not None and repo is not None:
@@ -1105,6 +1106,46 @@ def author_check(agents: AgentsConfig, home: Path) -> Check:
     return Check("PASS", "author", "unset (spec 051)")
 
 
+MERGE_ROW = "merge"  # doctor's row for [agents] merge (spec 072)
+_PULL_SETTINGS = "Settings > General > Pull Requests"
+
+
+def merge_checks(agents: AgentsConfig, github: GitHub | None) -> list[Check]:
+    """S-072-9: the merge method a pull request lands with and where it comes from, a PASS
+    when the repo's settings allow it; a WARN naming the repo setting when they don't, when
+    merge commits are off under "squash" (a stack's base can't take one), and when the settings
+    can't be read, never a guess. Only for a repo with [agents] (D-9)"""
+    method = agents.merge_method
+    named = f"{method} ([agents] merge)" if agents.merge is not None else f"{method} (default, D-96)"
+    if github is None:
+        return [Check("WARN", MERGE_ROW, f"{named}; can't read the repo's merge settings: gh isn't installed")]
+    try:
+        allowed = github.merge_methods()
+    except ReleaseError as exc:
+        return [Check("WARN", MERGE_ROW, f"{named}; can't read the repo's merge settings: {exc}")]
+    checks = []
+    if method is MergeMethod.MERGE and not allowed.merge:
+        detail = (
+            f"{named}, but the repo doesn't allow merge commits (allow_merge_commit, {_PULL_SETTINGS}),"
+            f' so every merge is refused: allow them, or set [agents] merge = "squash" in {CONFIG_FILE} (D-96)'
+        )
+        checks.append(Check("WARN", MERGE_ROW, detail))
+    if method is MergeMethod.SQUASH and not allowed.squash:
+        detail = (
+            f"{named}, but the repo doesn't allow squash merges (allow_squash_merge, {_PULL_SETTINGS}),"
+            f' so every merge is refused: allow them, or set [agents] merge = "merge" in {CONFIG_FILE} (D-96)'
+        )
+        checks.append(Check("WARN", MERGE_ROW, detail))
+    if method is MergeMethod.SQUASH and not allowed.merge:
+        detail = (
+            f"{named}, but the repo doesn't allow merge commits (allow_merge_commit, {_PULL_SETTINGS}),"
+            " so a stack's base lands with a squash and its child is rebased onto the default branch:"
+            " allow them to land a stack's base with a merge commit (D-96)"
+        )
+        checks.append(Check("WARN", MERGE_ROW, detail))
+    return checks or [Check("PASS", MERGE_ROW, named)]
+
+
 def hooks_checks(policy: Policy, git: Git, test: HookTester | None, home: Path) -> list[Check]:
     """S-026-15: the delivery hooks' block, for a repo with [agents]: one line per rule the hook
     holds, on or off and why (app-writes by where the App's key is, S-033-12); the self-test
@@ -1131,10 +1172,21 @@ def hooks_checks(policy: Policy, git: Git, test: HookTester | None, home: Path) 
         "on: in a headless gate session, uv run starts only python, pytest, ruff, mypy, the checkout's"
         f" [project.scripts], a .py file{widened} (D-82)"
     )
+    if agents.merge_method is MergeMethod.MERGE:
+        refuses = '[agents] merge = "merge", so a squash merge (--squash, merge_method=squash) is refused'
+    else:
+        refuses = f"[agents] merge is squash ({'[agents] merge' if agents.merge else 'default'}), so it refuses none:"
+        refuses += " --squash lands a pull request, --merge a stack's base"
     checks = [
         Check("PASS", "hooks", app_writes(agents.app_id, home)),
         Check("PASS", "hooks", f"default-branch-push {default_branch}"),
-        Check("PASS", "hooks", "rebase-merge on: always, a pull request lands with a squash or a merge commit (D-33)"),
+        Check(
+            "PASS",
+            "hooks",
+            f"rebase-merge on: always, a pull request lands with the [agents] merge method ({agents.merge_method}),"
+            " or a merge commit for a stack's base (D-96)",
+        ),
+        Check("PASS", "hooks", f"merge-method on: always, {refuses} (D-96)"),
         Check("PASS", "hooks", "force-push on: always, a force push needs a lease pinned to a commit"),
         Check("PASS", "hooks", f"private-paths {private}"),
         Check("PASS", "hooks", f"uv-run {uv_run}"),
