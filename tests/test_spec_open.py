@@ -474,11 +474,12 @@ def test_s053_7_without_app_id_it_exits_2_with_shipmill_ghs_refusal(tmp_path: Pa
     gh, fake, api = FakeGh(), FakeCheckout(), MintApi()
     with pytest.raises(ReleaseError) as raised:
         cli(root, host, gh, fake, api)
-    first, second = str(raised.value).split("\n")
+    first, second, third = str(raised.value).split("\n")  # S-082-5: no --as-host line
     assert first == (
         f"refusing a write to {APP_REPO} as the host's gh login: .github/shipmill.toml sets no [agents] app_id"
     )
-    assert 'set [agents] identity = "host"' in second
+    assert 'your own login (identity = "host")' in second
+    assert third == f"or let setup ask once and record it: /shipmill:shipmill-setup {APP_REPO}"
     assert (gh.calls, fake.published, api.posts) == ([], [], [])
 
 

@@ -55,6 +55,16 @@ def one_call(args: list[str]) -> str:
     return f"allow this one call: {cli_command()} gh --as-host {shlex.join(args)}"
 
 
+def choices(repo: str) -> list[str]:
+    """S-082-4: the refusal's second and third lines, the three choices and the setup line,
+    which replace spec 037's second line"""
+    return [
+        "choose whom agents write as here, in [agents] of .github/shipmill.toml: the App (app_id = <id>, from "
+        f'`{cli_command()} app-create`), your own login (identity = "host"), or nobody (identity = "none")',
+        f"or let setup ask once and record it: /shipmill:shipmill-setup {repo}",
+    ]
+
+
 def where(tmp_path: Path, config: str | None) -> Path:
     return outside(tmp_path) if config == "outside" else checkout(tmp_path, config)
 
@@ -98,20 +108,17 @@ def test_s037_1_no_config_refuses_a_write_naming_the_repo_and_both_fixes(
     tmp_path: Path, host: Host, args: list[str]
 ) -> None:
     root = checkout(tmp_path, None)
-    first, second, third = refusal(root, args, host)
+    first, *middle, last = refusal(root, args, host)
     repo = "owner/name" if args is PR_CREATE else REPO  # -R's, else origin's
     assert first == (
         f"refusing a write to {repo} as the host's gh login: {root} has no .github/shipmill.toml, so no [agents] app_id"
     )
-    assert second == (
-        f'allow it for this repo: give it an App ({cli_command()} app-create), or set [agents] identity = "host" in '
-        ".github/shipmill.toml"
-    )
-    assert third == one_call(args)
+    assert middle == choices(repo)
+    assert last == one_call(args)
 
 
 def test_s037_1_the_refusal_exits_2_and_never_starts_gh(tmp_path: Path, host: Host) -> None:
-    """Through `python -m shipmill`: exit 2, the three lines after `shipmill: `, and gh never ran"""
+    """Through `python -m shipmill`: exit 2, the four lines after `shipmill: `, and gh never ran"""
     root = checkout(tmp_path, None)
     env = {**host.env(), "HOME": str(host.home)}
     done = subprocess.run(
@@ -127,7 +134,7 @@ def test_s037_1_the_refusal_exits_2_and_never_starts_gh(tmp_path: Path, host: Ho
     assert lines[0].startswith("shipmill: refusing a write to owner/name as the host's gh login: ")
     assert "[agents] app_id" in lines[0]
     # the CLI as the person can run it (#236): here, with no shipmill on PATH, the uvx form
-    assert lines[2] == f"allow this one call: {UVX} gh --as-host {shlex.join(PR_CREATE)}"
+    assert lines[3] == f"allow this one call: {UVX} gh --as-host {shlex.join(PR_CREATE)}"
     assert not (host.record / "gh-args").exists()
 
 
@@ -137,28 +144,30 @@ def test_s037_2_a_config_without_app_id_refuses_with_the_same_message(
     tmp_path: Path, host: Host, config: str, args: list[str]
 ) -> None:
     root = checkout(tmp_path, config)
-    first, second, third = refusal(root, args, host)
+    first, *middle, last = refusal(root, args, host)
     repo = "owner/name" if args is PR_CREATE else REPO
     assert first == f"refusing a write to {repo} as the host's gh login: .github/shipmill.toml sets no [agents] app_id"
-    assert 'set [agents] identity = "host"' in second
-    assert third == one_call(args)
+    assert middle == choices(repo)
+    assert last == one_call(args)
 
 
 @pytest.mark.parametrize("args", WRITES)
 def test_s037_2_outside_any_checkout_the_refusal_names_the_folder(tmp_path: Path, host: Host, args: list[str]) -> None:
     folder = outside(tmp_path)
-    first, _, third = refusal(folder, args, host)
+    first, *middle, last = refusal(folder, args, host)
     assert f"the folder {folder}" in first
     assert "[agents] app_id" in first
-    if args is COMMENT:  # no -R: the folder is the repo the write names
+    if args is COMMENT:  # no -R: the folder is the repo the write names, and setup's line a placeholder
         assert first.startswith(f"refusing a write to the folder {folder} (no git checkout) as the host's gh login")
-    assert third == one_call(args)
+    assert middle == choices("owner/name" if args is PR_CREATE else "<owner/name>")
+    assert last == one_call(args)
 
 
 def test_s037_2_a_checkout_without_a_github_origin_is_named_by_its_path(tmp_path: Path, host: Host) -> None:
     root = checkout(tmp_path, None, origin="/elsewhere/repo.git")
-    first, _, _ = refusal(root, COMMENT, host)
+    first, _, setup, _ = refusal(root, COMMENT, host)
     assert first.startswith(f"refusing a write to {root} as the host's gh login")
+    assert setup == "or let setup ask once and record it: /shipmill:shipmill-setup <owner/name>"
 
 
 # --- S-037-3: a read runs as the host, untouched ------------------------------------------------
