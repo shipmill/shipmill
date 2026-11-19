@@ -103,6 +103,7 @@ ACTION = frozenset(
         "CHAIN_CYCLE",
         "CHAIN_UNREADABLE",
         "MILESTONE_OVERTAKEN",
+        "MILESTONE_RELEASED",  # spec 068
         "UPSTREAM_DUE",
         "UPSTREAM_ASKED",
         "UPSTREAM_UNREADABLE",

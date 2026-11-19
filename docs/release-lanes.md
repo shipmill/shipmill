@@ -215,7 +215,9 @@ milestone; creating it is the maintainer's step (D-32). A milestone whose open i
 carry `shipmill-hold` or `needs-decision` is a hold, not unfinished work: it prints
 MILESTONE_WAITING with one reason per issue, `milestone 1.5.0: #12 holds it (shipmill-hold):
 <title>` or `milestone 1.5.0: #12 waits on a decision: <title>`, and `shipmill plan` names
-the same reasons; a milestone with any other open issue waits with no row.
+the same reasons; a milestone with any other open issue waits with no row. A watch pass
+reads both new rows: under "watch" it closes a released milestone once, as the App, and it
+never creates a missing one, which it reports with the create for the maintainer.
 
 `[gates] veto_lanes`, empty by default, makes a lane wait for the veto window of each
 `notify` decision it would ship (spec 059), since a published version can only be yanked.

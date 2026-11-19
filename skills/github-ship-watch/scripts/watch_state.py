@@ -38,6 +38,12 @@ Milestones (spec 022; for a shipmill bot whose config has a lane with milestone 
   MILESTONE_OVERTAKEN an open milestone with open issues whose version a stable tag already
                   took: the version the lane cuts next, and the fix, the rename to it
                   through `shipmill gh api -X PATCH` (an action, never an agent's by itself)
+  MILESTONE_RELEASED an open milestone with no open issues whose version a stable tag took:
+                  its release shipped it (spec 068), and the fix closes it through `shipmill
+                  gh api -X PATCH ... -f state=closed` (an action, never an agent's by itself)
+  MILESTONE_MISSING no open milestone is titled a stable version above the newest stable
+                  tag: the version the lane cuts next, and the fix that creates its milestone,
+                  the maintainer's step (D-32; reported with its fix, never an action)
   A milestones read the planner failed is a warning on stderr with no row; a failing
   `shipmill milestones`, or JSON it can't read, stops the watch (exit 2)
 
@@ -428,7 +434,7 @@ item is in no agent row, so it neither starts a session nor changes the gate's f
 Each line has a fix too (spec 011): the one line that clears the row, an exact command where
 one exists (every gh naming the repo, every git its checkout with -C), else the decision to
 make; null for a row with nothing to clear. Every action row, HOLD,
-UNTRUSTED, UPSTREAM_UNTRUSTED, PYPI_WAIT, and DEPLOYMENTS_FORBIDDEN carry one, and PRS_OPEN unless
+UNTRUSTED, UPSTREAM_UNTRUSTED, PYPI_WAIT, DEPLOYMENTS_FORBIDDEN, and MILESTONE_MISSING carry one, and PRS_OPEN unless
 [autonomy] land is act with [agents].
 A fix is built from the repo, numbers, run ids, tags, paths, and config keys, never from an
 issue's or a pull request's text (D-16). The table prints it on an indented "fix:" line
@@ -441,7 +447,7 @@ BOT_FAILED, BOT_STALLED, BOT_PLAN_FAILED, WORK_BRANCH_STALE, NOT_PUBLISHED,
 ISSUES, PLANS, OPERATE_FAILED, UNHEALTHY, PROMOTION_DUE, INCIDENT_OPEN, POSTMORTEM_DUE,
 NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MISSING, GATE_SESSIONS_DEAD,
 GATE_CHECKOUT_MISSING, SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_CYCLE,
-CHAIN_UNREADABLE, MILESTONE_OVERTAKEN,
+CHAIN_UNREADABLE, MILESTONE_OVERTAKEN, MILESTONE_RELEASED,
 UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, VETOED, AGENT_DRAFT, or LAND_DUE row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill
 milestones`, or a failing intake_state.py --plans; a `shipmill plan` failing with its own
@@ -646,6 +652,7 @@ ACTION = {
     "CHAIN_CYCLE",
     "CHAIN_UNREADABLE",
     "MILESTONE_OVERTAKEN",
+    "MILESTONE_RELEASED",  # spec 068: a watch pass closes it, as it renames an overtaken one
     "UPSTREAM_DUE",
     "UPSTREAM_ASKED",
     "UPSTREAM_UNREADABLE",
@@ -673,7 +680,8 @@ AGENT = {
 # the states whose every row carries a fix, the one line that clears it (spec 011): every
 # action, and the report-only rows a person still has to act on. PRS_OPEN carries one unless
 # a gate lands pull requests ([autonomy] land act, land_fix); every other state's fix is None
-FIXED = ACTION | {"HOLD", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT", "DEPLOYMENTS_FORBIDDEN"}
+# (MILESTONE_MISSING: spec 068's create, the maintainer's step, D-32)
+FIXED = ACTION | {"HOLD", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT", "DEPLOYMENTS_FORBIDDEN", "MILESTONE_MISSING"}
 FIX_INDENT = " " * 15  # the table's fix line starts under the subject column
 RUN_ID = re.compile(r"/actions/runs/(\d+)(?:/|$)")  # a workflow run's URL names its id
 HEAD_SHA = re.compile(r"[0-9a-f]{40}")  # a pull request's headRefOid (#546)
@@ -1342,12 +1350,14 @@ def milestone_lanes_310(text: str, policy: Path) -> bool:
     return found
 
 
-MILESTONE_STATES = ("MILESTONE_WAITING", "MILESTONE_OVERTAKEN")
+MILESTONE_STATES = ("MILESTONE_WAITING", "MILESTONE_OVERTAKEN", "MILESTONE_RELEASED", "MILESTONE_MISSING")
 
 
 def milestone_rows(text: str) -> list[Row]:
     """`shipmill milestones --json`'s rows (#475, spec 022): MILESTONE_WAITING, report only,
-    and MILESTONE_OVERTAKEN, an action whose fix is the rename. Anything else it prints stops
+    and MILESTONE_OVERTAKEN, an action whose fix is the rename; spec 068's MILESTONE_RELEASED,
+    an action whose fix is the close, and MILESTONE_MISSING, reported with the create, the
+    maintainer's (D-32). Anything else it prints stops
     the watch (exit 2); a read the planner failed goes to stderr as a warning, with no row,
     since the release's own plan reports its errors as BOT_PLAN_FAILED"""
     try:
@@ -1373,15 +1383,24 @@ def milestone_rows(text: str) -> list[Row]:
 
 def milestone_item(item: dict[str, Any]) -> bool:
     """A well-formed row: a waiting one names no number, version, or fix; an overtaken one its
-    milestone's number, the version next, and the rename"""
+    milestone's number, the version next, and the rename; a released one its number and the
+    close, no version; a missing one no number, and the version next, its subject, and the
+    create"""
     texts = all(isinstance(item.get(k), str) and item[k] for k in ("milestone", "detail"))
-    if not texts or item.get("state") not in MILESTONE_STATES:
+    state = item.get("state")
+    if not texts or state not in MILESTONE_STATES:
         return False
-    if item["state"] == "MILESTONE_WAITING":
+    if state == "MILESTONE_WAITING":
         return all(item.get(k) is None for k in ("number", "next", "fix"))
     number = item.get("number")
     numbered = isinstance(number, int) and not isinstance(number, bool) and number > 0
-    return numbered and all(isinstance(item.get(k), str) and item[k] for k in ("next", "fix"))
+    fixed = isinstance(item.get("fix"), str) and bool(item["fix"])
+    following = isinstance(item.get("next"), str) and bool(item["next"])
+    if state == "MILESTONE_RELEASED":
+        return numbered and fixed and item.get("next") is None
+    if state == "MILESTONE_MISSING":
+        return number is None and fixed and following and item["next"] == item["milestone"]
+    return numbered and fixed and following
 
 
 def milestones(
