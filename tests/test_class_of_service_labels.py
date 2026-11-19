@@ -58,6 +58,18 @@ def test_s070_14_labels_missing_names_expedite_and_fixed_date_with_agents(
     assert all(cmd[cmd.index("--description") + 1].startswith("Class of service: ") for cmd in ran)
 
 
+def test_s070_14_the_class_labels_describe_the_choice_not_unbuilt_behaviour(ss: ModuleType, tmp_path: Path) -> None:
+    config(tmp_path, '[agents]\nprompt = "x"\nmode = "headless"\n')
+    wanted = ss.wanted_labels(tmp_path)
+    # setup never rewrites an existing label, so a description must hold before the release
+    # behaviour of spec 070 is built
+    assert wanted["expedite"] == ("b60205", "Class of service: the maintainer chose to expedite this accepted outcome")
+    assert wanted["fixed-date"] == (
+        "fbca04",
+        "Class of service: this accepted outcome is due by its milestone's due date",
+    )
+
+
 @pytest.mark.parametrize("text", ["", 'mode = "release"\n'])
 def test_s070_14_no_agents_wants_no_class_label(ss: ModuleType, tmp_path: Path, text: str) -> None:
     config(tmp_path, text)

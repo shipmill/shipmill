@@ -260,7 +260,7 @@ DIRECTION_LABEL = ("1d76db", "shipmill's question for the product's direction")
 # Wanted wherever needs-decision is (spec 070): the classes of service a person adds to an
 # accepted opportunity; a build issue never carries one
 EXPEDITE = "expedite"
-EXPEDITE_LABEL = ("b60205", "Class of service: this accepted outcome ships first and releases once complete")
+EXPEDITE_LABEL = ("b60205", "Class of service: the maintainer chose to expedite this accepted outcome")
 FIXED_DATE = "fixed-date"
 FIXED_DATE_LABEL = ("fbca04", "Class of service: this accepted outcome is due by its milestone's due date")
 # Wanted with [agents] app_id (spec 060): the App's owner's item for a permission a release
