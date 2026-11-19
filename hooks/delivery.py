@@ -45,6 +45,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -847,13 +848,31 @@ class Merges:
     unread: str | None
 
 
+GRAPHQL_FILE_MAX = 1 << 20  # a query or body file past this is not read: it counts as unread
+
+
 def _graphql_file(path: str, cwd: Path) -> str | None:
-    """A file gh reads for `@path` or --input path; None for stdin or a file the hook can't read"""
+    """A file gh reads for `@path` or --input path; None for stdin, a file the hook can't read,
+    one past GRAPHQL_FILE_MAX, or no regular file: a FIFO or a device such as /dev/zero or
+    /dev/stdin would hang the hook, which opens without blocking and reads regular files only"""
     if path in ("", "-"):
         return None
     try:
-        return Path(cwd, os.path.expanduser(path)).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+        fd = os.open(Path(cwd, os.path.expanduser(path)), os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "rb") as file:
+            if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+                return None
+            data = file.read(GRAPHQL_FILE_MAX + 1)
+    except OSError:
+        return None
+    if len(data) > GRAPHQL_FILE_MAX:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
         return None
 
 

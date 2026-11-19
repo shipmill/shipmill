@@ -920,6 +920,24 @@ def test_s072_4_a_graphql_merge_whose_method_the_hook_cannot_read_is_refused(
     assert why in line and f"mergeMethod: {(value or 'squash').upper()}" in line
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a FIFO")
+def test_s072_4_a_graphql_file_that_is_no_regular_file_or_too_big_is_refused_without_hanging(
+    tmp_path: Path,
+) -> None:
+    """#1373: a FIFO or a device (/dev/zero) never ends a read; the hook, as Claude Code starts
+    it, refuses them as unread instead of hanging past its timeout, which lets the call run"""
+    root = file_repo(tmp_path, "merge")
+    os.mkfifo(root / "query.fifo")
+    (root / "big.graphql").write_text("#" * (DELIVERY.GRAPHQL_FILE_MAX + 1), encoding="utf-8")
+    for path in ("query.fifo", "/dev/zero", "big.graphql"):
+        data = json.dumps(fixture("bash-read.json", root, f"gh api graphql -F query=@{path}"))
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "pre"], input=data, capture_output=True, text=True, timeout=10, check=False
+        )
+        refused(result, "rebase-merge", "D-96")
+        assert f"{path} cannot be read" in result.stderr
+
+
 def test_s072_2_the_graphql_fixtures_refuse_and_allow(box: Sandbox, methods: dict[str | None, Path]) -> None:
     squash, rebase = "graphql-merge-squash.json", "graphql-merge-rebase.json"
     refused(hook(fixture(squash, methods["merge"])), "merge-method", MERGE_RULE)
