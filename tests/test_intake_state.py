@@ -140,7 +140,7 @@ def test_feedback_is_what_triage_left_to_intake(ist: ModuleType) -> None:
             issue(1),  # untriaged
             issue(2, "Triage: **implement**"),  # a bug or a contract change: triage's
             issue(3, "Triage: **feature**. Spec in #9"),  # already in the spec gate
-            issue(4, "Triage: **postponed to 1.1**"),  # postponed requests are demand
+            issue(4, "Triage: **postponed to 1.1**"),  # postponed: triage's (spec 074)
             issue(5, labels=("bug",)),
             issue(6, "Triage: **won't fix**"),
             issue(7, "Triage: **implement**", "Triage: **needs a decision**"),  # the newest verdict counts
@@ -148,7 +148,80 @@ def test_feedback_is_what_triage_left_to_intake(ist: ModuleType) -> None:
         [],
     )
     found = states(ist, fake)
-    assert {n for n, (s, _) in found.items() if s == "NEW_FEEDBACK"} == {1, 4, 7}
+    assert {n for n, (s, _) in found.items() if s == "NEW_FEEDBACK"} == {1, 7}
+
+
+def test_s074_1_a_postponed_issue_is_feedback_again_only_after_a_newer_opportunity(ist: ModuleType) -> None:
+    """proves: S-074-1"""
+    postponed = triage_template("Postpone")
+    assert ist.verdict(postponed, "Triage:").startswith("postponed")
+    handed = triage_template("Opportunity")
+    reopened = issue(2)
+    reopened["comments"]["nodes"] = [
+        {"body": postponed, "createdAt": "2026-10-01T10:00:00Z"},
+        {"body": handed, "createdAt": "2026-10-05T10:00:00Z"},
+    ]
+    stale = issue(3)
+    stale["comments"]["nodes"] = [
+        {"body": handed, "createdAt": "2026-10-01T10:00:00Z"},
+        {"body": "Triage: **postponed**: it serves no goal of the direction.", "createdAt": "2026-10-05T10:00:00Z"},
+    ]
+    fake = Fake([issue(1, postponed), reopened, stale, issue(4, "Triage: **postponed to 1.1**")], [])
+    assert states(ist, fake) == {2: ("NEW_FEEDBACK", "issue")}
+
+
+def json_lines(ist: ModuleType, fake: Fake) -> dict[int, dict[str, Any]]:
+    intake = ist.fetch(
+        "o/r",
+        label="opportunity",
+        accepted="planned",
+        marker="Triage:",
+        skip=set(ist.SKIP_LABELS),
+        categories=None,
+        autonomy="propose",
+        run=fake,
+    )
+    return {r.number: ist.json_row(r) for r in ist.rows(intake)}
+
+
+def test_s074_2_feedback_and_accepted_lines_carry_author_association_and_handed(ist: ModuleType) -> None:
+    """proves: S-074-2"""
+    handed = triage_template("Opportunity")
+    untriaged = issue(1)
+    untriaged["author"] = {"__typename": "User", "login": "alice"}
+    untriaged["authorAssociation"] = "NONE"
+    over = issue(2)
+    over["author"] = {"__typename": "Bot", "login": "shipmill-o"}
+    over["authorAssociation"] = "CONTRIBUTOR"
+    over["comments"]["nodes"] = [
+        {"body": "Triage: **clarify** which flag", "createdAt": "2026-10-01T10:00:00Z"},
+        {"body": handed, "createdAt": "2026-10-03T10:00:00Z"},
+        {"body": "Thanks, any news?", "createdAt": "2026-10-04T10:00:00Z"},
+    ]
+    clarify = issue(3, "Triage: **clarify** which flag")
+    ghost = issue(4)
+    ghost["author"] = None
+    accepted = opportunity(10, "- #9", "Triage: **opportunity**", labels=("planned",))
+    accepted["author"] = {"__typename": "User", "login": "owner"}
+    accepted["authorAssociation"] = "OWNER"
+    waiting = opportunity(11, "- #8", "Triage: **opportunity**")
+    talk = discussion(20)
+    talk["author"] = {"__typename": "User", "login": "bob"}
+    fake = Fake([untriaged, over, clarify, ghost], [accepted, waiting], discussions=[talk])
+    found = json_lines(ist, fake)
+
+    assert found[1]["state"] == "NEW_FEEDBACK"
+    assert (found[1]["author"], found[1]["association"], found[1]["handed"]) == ("alice", "NONE", None)
+    assert (found[2]["author"], found[2]["association"]) == ("shipmill-o[bot]", "CONTRIBUTOR")
+    assert found[2]["handed"] == "2026-10-03T10:00:00Z"  # the hand-off's createdAt, not a later reply's
+    assert found[3]["handed"] is None  # the newest verdict isn't a hand-off
+    assert found[4]["author"] is None  # GitHub returned no opener
+    assert found[20]["kind"] == "discussion" and found[20]["state"] == "NEW_FEEDBACK"
+    assert (found[20]["author"], found[20]["association"], found[20]["handed"]) == ("bob", None, None)
+    assert found[10]["state"] == "ACCEPTED"
+    assert (found[10]["author"], found[10]["association"], found[10]["handed"]) == ("owner", "OWNER", None)
+    assert found[11]["state"] == "OPPORTUNITY_OPEN"
+    assert not {"author", "association", "handed"} & set(found[11])  # other lines keep their keys
 
 
 def test_an_opportunity_groups_its_members_instead_of_a_second_one(ist: ModuleType) -> None:
