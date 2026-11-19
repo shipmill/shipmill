@@ -1,3 +1,0 @@
-### Added
-
-- In a component (`[product] home`), `shipmill product show` adds the product's goals and non-goals from the home's `docs/product.md` on its default branch, under `## Product goals (<owner/home>)` and `## Product non-goals (<owner/home>)` and as a `product` key in `--json`, and `shipmill product check` refuses a serves line naming a goal the home's Goals don't list; both read the home through spec 065's read token and exit 2 naming the home and the fix when they can't, `--local` reads only the checkout as before, the delivery hooks run `product check --local`, and shipmill-setup asks which product goal each component goal serves (spec 071) (#1251)

@@ -1,3 +1,0 @@
-### Added
-
-- github-ship-watch runs `intake_state.py --json` once per repo, with `--plans` only when the checkout has `docs/product.md`, and reports two new rows (spec 074): SPEC_DUE names every accepted opportunity for triage's spec gate, and FEEDBACK_DUE names the requests triage handed to product intake at least 24 hours ago, for one intake pass. Both are in the gate's tier 7 and its sweep, so `shipmill gate` starts those sessions; FEEDBACK_DUE is report-only under `[autonomy] intake = "observe"`, an outsider's request or opportunity goes to UNTRUSTED under `--trusted-only`, and `shipmill status` lists both rows with their fix (#1258)

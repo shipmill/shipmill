@@ -1,3 +1,0 @@
-### Added
-
-- `shipmill doctor` prints a `merge` row in a repo with `[agents]`, naming the method a pull request lands with and where it comes from (`default` or `[agents] merge`), and warns naming the repo setting when GitHub doesn't allow that method, when merge commits are off under `"squash"`, or when the settings can't be read; its `hooks` block gains a `merge-method` line and its `rebase-merge` line names D-96. github-pr-triage's landing rules, `docs/flow.md`, and `docs/release-lanes.md` name `[agents] merge` and D-96, and a method the repo doesn't allow is reported, never swapped for the other (spec 072) (#1345)
