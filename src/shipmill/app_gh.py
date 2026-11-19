@@ -11,6 +11,7 @@ first by the leak check and fed to gh's stdin, its args unchanged (spec 081, `se
 `feed_gh`). The token goes to gh in GH_TOKEN, never to output.
 """
 
+import io
 import json
 import re
 import subprocess
@@ -1506,13 +1507,22 @@ def _gist_files(args: Sequence[str], read: BodyRead) -> list[Text]:
     ]
 
 
-GhFeed = Callable[[Sequence[str], Mapping[str, str], str], int]  # argv, env, and gh's stdin in, its exit code out
+GhFeed = Callable[[Sequence[str], Mapping[str, str], bytes], int]  # argv, env, and gh's stdin in, its exit code out
 
 
-def feed_gh(argv: Sequence[str], env: Mapping[str, str], stdin: str) -> int:
-    """Run gh as `run_gh` does, but with stdin fed from the text shipmill read from its own
-    stdin for the leak check (spec 081), so gh reads the very text that was checked"""
-    code = subprocess.run(list(argv), env=dict(env), input=stdin, encoding="utf-8", check=False).returncode
+def stdin_bytes(stdin: TextIO) -> bytes:
+    """stdin's bytes as they came, for gh to get unchanged: a stream over bytes (the terminal's)
+    read from its buffer, so no decoder sees them; a text-only stream (a test's) as UTF-8"""
+    if isinstance(stdin, io.TextIOWrapper):
+        raw: bytes = stdin.buffer.read()
+        return raw
+    return stdin.read().encode("utf-8")
+
+
+def feed_gh(argv: Sequence[str], env: Mapping[str, str], stdin: bytes) -> int:
+    """Run gh as `run_gh` does, but with stdin fed the bytes shipmill read from its own stdin
+    for the leak check (spec 081), so gh reads the very bytes that were checked"""
+    code = subprocess.run(list(argv), env=dict(env), input=stdin, check=False).returncode
     return code if code >= 0 else 128 - code
 
 

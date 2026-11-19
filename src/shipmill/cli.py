@@ -265,6 +265,7 @@ from shipmill.app_gh import (
     repo_value,
     run_gh,
     sent_texts,
+    stdin_bytes,
     with_body,
     without_author_email,
     write_command,
@@ -2003,6 +2004,7 @@ def _gh(
             readers.current,
             readers.private_home,
             readers.feed,
+            readers.stdin,
         )
     hold_short_head(gh_args)  # S-030-24: before any token, App or not; --product refuses a merge whole
     if not root.is_dir():  # a mistyped --repo must not read as a repo with no App
@@ -2048,7 +2050,7 @@ def _gh(
         origin = _known_origin(top) if top is not None and readable else None
         if edit is not None:
             gh_args = edited_args(edit, _gh_default(environ, origin), binary, env, readers.current)
-        sent = _Sent(gh_args, read, top if readable else None, _gh_default(environ, origin))
+        sent = _Sent(gh_args, read, readers.stdin, top if readable else None, _gh_default(environ, origin))
         fed = _leak_check(sent, _Reach(binary, env, readers.current), readers.private_home)
         return _run_checked(runner, readers.feed, [str(binary), *gh_args], env, fed)
     if not readable:
@@ -2133,7 +2135,7 @@ def _gh(
         author.say()
         env = author.env
     # spec 081: the text as gh would send it, the repo's visibility read as the App
-    sent = _Sent(gh_args, read, top, _gh_default(environ, _known_origin(top)))
+    sent = _Sent(gh_args, read, readers.stdin, top, _gh_default(environ, _known_origin(top)))
     fed = _leak_check(sent, _Reach(binary, as_app(environ, token), readers.current), readers.private_home)
     # S-051-12: every other command as the App
     code = _run_checked(runner, readers.feed, [str(binary), *gh_args], env, fed)
@@ -2479,6 +2481,7 @@ def _gh_product(
     current: GhCapture,
     private_home: Path,
     feed: GhFeed,
+    stdin: TextIO,
 ) -> int:
     """S-038-9: gh with the coordinator's token over the listed repos of coordinated's owner,
     and the home repo when it has that owner (S-038-8, #1032), so a write that names both a
@@ -2526,7 +2529,7 @@ def _gh_product(
     env = {**as_app(environ, token), "GH_REPO": target}
     if edit is not None:
         gh_args = edited_args(edit, target, binary, env, current)
-    fed = _leak_check(_Sent(gh_args, read, top, target), _Reach(binary, env, current), private_home)
+    fed = _leak_check(_Sent(gh_args, read, stdin, top, target), _Reach(binary, env, current), private_home)
     return _run_checked(runner, feed, [str(binary), *gh_args], env, fed)
 
 
@@ -2671,11 +2674,12 @@ def _gh_default(environ: Mapping[str, str], origin: str | None) -> str | None:
 @dataclass(frozen=True, slots=True)
 class _Sent:
     """A write the leak check reads (spec 081): gh's args as gh would get them, the reader of
-    the files they name, the checkout whose untracked .env files hold secrets (None outside one
-    git reads), and the repo gh works on when the args name none"""
+    the files they name, the stdin a `-` names, the checkout whose untracked .env files hold
+    secrets (None outside one git reads), and the repo gh works on when the args name none"""
 
     gh_args: list[str]
     read: BodyRead
+    stdin: TextIO
     top: Path | None
     default: str | None
 
@@ -2689,10 +2693,11 @@ class _Reach:
     capture: GhCapture
 
 
-def _leak_check(sent: _Sent, reach: _Reach, private_home: Path) -> str | None:
-    """Spec 081: the text the write's args send through stdin (`--body-file -`, `-F key=@-`,
-    `--input -`, a gist's `-`), read once here so it is checked, for gh to get on its stdin
-    with its args unchanged; None when they read no stdin. A write (any call `is_read` doesn't
+def _leak_check(sent: _Sent, reach: _Reach, private_home: Path) -> bytes | None:
+    """Spec 081: the bytes the write's args send through stdin (`--body-file -`, `-F key=@-`,
+    `--input -`, a gist's `-`), read once here and checked as their UTF-8 decode (a byte that
+    doesn't decode read as U+FFFD, so the text around it is still checked), for gh to get
+    unchanged on its stdin with its args unchanged; None when they read no stdin. A write (any call `is_read` doesn't
     read as a read) exits 2 before gh runs when the text it sends holds a private term and its
     repo is public, or a secret's exact value or a known token format in any repo; so does a
     private file that doesn't load or a secret file that can't be read, findings or not. The
@@ -2701,14 +2706,14 @@ def _leak_check(sent: _Sent, reach: _Reach, private_home: Path) -> str | None:
     if is_read(sent.gh_args):
         return None
     private = Private.load(private_home)
-    taken: list[str] = []  # stdin, read once however many flags name it
+    taken: list[bytes] = []  # stdin, read once however many flags name it
 
     def read(flag: str, path: str) -> str:
         if path != "-":
             return sent.read(flag, path)
         if not taken:
-            taken.append(sent.read(flag, path))
-        return taken[0]
+            taken.append(stdin_bytes(sent.stdin))
+        return taken[0].decode("utf-8", errors="replace")
 
     texts = sent_texts(sent.gh_args, read)
     known = secrets(sent.top, _tracked_dotenvs(sent.top), private)
@@ -2724,13 +2729,13 @@ def _leak_check(sent: _Sent, reach: _Reach, private_home: Path) -> str | None:
 def _feed_through(runner: GhRunner) -> GhFeed:
     """A feed that runs gh with runner, which takes no stdin: for a stand-in runner given alone"""
 
-    def feed(argv: Sequence[str], env: Mapping[str, str], stdin: str) -> int:
+    def feed(argv: Sequence[str], env: Mapping[str, str], stdin: bytes) -> int:
         return runner(argv, env)
 
     return feed
 
 
-def _run_checked(runner: GhRunner, feed: GhFeed, argv: list[str], env: Mapping[str, str], stdin: str | None) -> int:
+def _run_checked(runner: GhRunner, feed: GhFeed, argv: list[str], env: Mapping[str, str], stdin: bytes | None) -> int:
     """gh run with argv as given: fed the stdin the leak check read, else on the terminal's"""
     return runner(argv, env) if stdin is None else feed(argv, env, stdin)
 

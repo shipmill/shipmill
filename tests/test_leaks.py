@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parent.parent
 TERM = "Acme Rocket"
 LEAKED = "notes on acme  rocket's launch"  # a run of whitespace matches the term's space
 CLEAN = "notes on AcmeRocketry's launch"  # no word boundary: no match
+CLEAN_BYTES = CLEAN.encode("utf-8")  # as gh gets it on its stdin
 PUBLIC = "acme/widgets"
 
 # Tokens are put together at run time, so no file of the repo holds one whole
@@ -639,11 +640,11 @@ def test_every_argument_and_flag_value_is_sent_text() -> None:
 
 @dataclass
 class Feed:
-    """Stands in for the gh run with the stdin the leak check read: records argv and that text"""
+    """Stands in for the gh run with the stdin the leak check read: records argv and those bytes"""
 
-    calls: list[tuple[list[str], str]] = field(default_factory=list)
+    calls: list[tuple[list[str], bytes]] = field(default_factory=list)
 
-    def __call__(self, argv: Sequence[str], env: Mapping[str, str], stdin: str) -> int:
+    def __call__(self, argv: Sequence[str], env: Mapping[str, str], stdin: bytes) -> int:
         self.calls.append((list(argv), stdin))
         return 7
 
@@ -659,9 +660,11 @@ STDIN_WRITES = [
 ]
 
 
-def fed(root: Path, args: list[str], host: Host, stdin: str) -> tuple[Runner, Feed]:
-    """`shipmill gh args` with stdin; the runner (terminal stdin) and the feed (stdin read)"""
+def fed(root: Path, args: list[str], host: Host, stdin: str | bytes) -> tuple[Runner, Feed]:
+    """`shipmill gh args` with stdin, as a terminal's stdin over its bytes; the runner (terminal
+    stdin) and the feed (stdin read)"""
     runner, feed = Runner(), Feed()
+    raw = stdin if isinstance(stdin, bytes) else stdin.encode("utf-8")
     main(
         ["--repo", str(root), "gh", *args],
         api=MintApi(),
@@ -669,11 +672,34 @@ def fed(root: Path, args: list[str], host: Host, stdin: str) -> tuple[Runner, Fe
         environ=host.env(),
         home=host.home,
         gh_runner=runner,
-        stdin=io.StringIO(stdin),
+        stdin=io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8"),
         gh_capture=Reads(),
         gh_feed=feed,
     )
     return runner, feed
+
+
+BINARY = b"\x89PNG\r\n\x1a\n\x00\xff\xfe binary \xc3\x28 tail\r\n"
+BINARY_WRITES = [
+    ["api", "-X", "POST", f"repos/{PUBLIC}/labels", "--input", "-"],
+    ["gist", "create", "-"],
+]
+
+
+@pytest.mark.parametrize("args", BINARY_WRITES)
+def test_s081_1_binary_stdin_reaches_gh_byte_for_byte(tmp_path: Path, host: Host, args: list[str]) -> None:
+    """S-050-6: bytes that aren't UTF-8 are checked as their decode and fed to gh unchanged"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    runner, feed = fed(root, args, host, BINARY)
+    assert runner.calls == []
+    assert feed.calls == [([host.gh, *args], BINARY)]
+
+
+@pytest.mark.parametrize("args", BINARY_WRITES)
+def test_s081_6_a_token_in_binary_stdin_is_refused(tmp_path: Path, host: Host, args: list[str]) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with pytest.raises(LeakRefused, match="secret-format: .* holds a GitHub token"):
+        fed(root, args, host, BINARY + b" " + GITHUB_TOKEN.encode("ascii") + b"\n\xff")
 
 
 @pytest.mark.parametrize("args", STDIN_WRITES)
@@ -729,7 +755,7 @@ def test_s081_1_a_clean_stdin_body_reaches_ghs_stdin_with_its_args_as_given(
     with_term(host)
     runner, feed = fed(root, args, host, CLEAN)
     assert runner.calls == []
-    assert feed.calls == [([host.gh, *args], CLEAN)]
+    assert feed.calls == [([host.gh, *args], CLEAN_BYTES)]
 
 
 @pytest.mark.parametrize("args", STDIN_WRITES)
@@ -744,7 +770,7 @@ def test_s081_2_stdin_named_twice_is_read_once_and_fed_whole(tmp_path: Path, hos
     root = checkout(tmp_path, HOST_IDENTITY)
     args = ["api", f"repos/{PUBLIC}/labels", "-F", "name=@-", "-F", "description=@-"]
     runner, feed = fed(root, args, host, CLEAN)
-    assert feed.calls == [([host.gh, *args], CLEAN)]
+    assert feed.calls == [([host.gh, *args], CLEAN_BYTES)]
 
 
 def test_s081_1_a_write_reading_no_stdin_runs_on_the_terminals(tmp_path: Path, host: Host) -> None:
@@ -766,9 +792,9 @@ def test_s081_1_the_real_feed_hands_gh_the_text_on_its_stdin_and_the_args_as_giv
     gh_path = tmp_path / "gh"
     executable(gh_path, '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$RECORD/args"\ncat > "$RECORD/stdin"\nexit 7\n')
     args = ["pr", "merge", "7", "--squash", "--body-file", "-"]
-    assert feed_gh([str(gh_path), *args], {"RECORD": str(tmp_path), "PATH": "/usr/bin:/bin"}, CLEAN) == 7
+    assert feed_gh([str(gh_path), *args], {"RECORD": str(tmp_path), "PATH": "/usr/bin:/bin"}, BINARY) == 7
     assert (tmp_path / "args").read_text(encoding="utf-8").splitlines() == args
-    assert (tmp_path / "stdin").read_text(encoding="utf-8") == CLEAN
+    assert (tmp_path / "stdin").read_bytes() == BINARY  # byte for byte, as a real gh reads it
 
 
 @pytest.mark.parametrize("args", [["gist", "create"], ["gist", "new", "--filename", "notes.md", "-d", "d"]])
@@ -779,7 +805,7 @@ def test_s081_1_a_gist_created_from_piped_stdin_is_checked(tmp_path: Path, host:
         fed(root, args, host, f"x {GITHUB_TOKEN}")
     runner, feed = fed(root, args, host, CLEAN)
     assert runner.calls == []
-    assert feed.calls == [([host.gh, *args], CLEAN)]
+    assert feed.calls == [([host.gh, *args], CLEAN_BYTES)]
 
 
 @pytest.mark.parametrize(
@@ -802,7 +828,7 @@ def test_s081_1_a_gist_edit_reading_no_local_file_runs(tmp_path: Path, host: Hos
     gh(root, ["gist", "edit", "abc123", "--remove", "notes.md"], host)
     gh(root, ["gist", "edit", "abc123", "--desc", "d"], host)
     runner, feed = fed(root, ["gist", "edit", "abc123", "-f", "notes.md", "-"], host, CLEAN)
-    assert feed.calls == [([host.gh, "gist", "edit", "abc123", "-f", "notes.md", "-"], CLEAN)]
+    assert feed.calls == [([host.gh, "gist", "edit", "abc123", "-f", "notes.md", "-"], CLEAN_BYTES)]
 
 
 def test_s081_16_secret_files_home_is_the_accounts_not_home_variable(tmp_path: Path, host: Host) -> None:
