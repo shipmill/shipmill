@@ -1,6 +1,6 @@
 # S-075: A pull request is refused only on findings a second reviewer confirmed
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -139,3 +139,13 @@ and `tests/test_retro.py`.
 - shipmill/shipmill#1279: S-075-1, S-075-2, S-075-3, S-075-9
 
 ## Verification
+
+- S-075-1: read the Open PR brief in `skills/github-pr-triage/references/reviewer-brief.md`: its final report lists the fixed findings with file:line, then each unfixed one as `F-1`, `F-2`, ... with its file and line, a one-sentence claim, and `blocking` or `nit`, and says a REFUSE names at least one blocking finding, a report whose REFUSE names none going back to the reviewer; holds
+- S-075-2: read the brief's "Verify a refusal" section: a fresh `general-purpose` agent in a worktree, never the first reviewer or the landing session, given the PR, `{reviewed_head}`, and `{findings}` (id, file:line, claim) and no verdict (the brief's text holds neither `REFUSE` nor `verdict`); it pushes, comments, merges, and fixes nothing and marks each finding `confirmed` with a failure scenario, `rejected` with the handling file and line, or `minor` with a note, `minor` with `unproven:` when it can show neither, save a security finding, which is `confirmed`; holds
+- S-075-3: read step 3 of `skills/github-pr-triage/SKILL.md`: a REFUSE goes to the Verify a refusal brief before it is recorded or handed back, by an agent neither the first reviewer nor the landing session, in one message and in the foreground in a headless session; the verdict is REFUSE only with a `confirmed` finding, the recorded report gains a "Second look" part with one line per `F-n`, and the handback names only confirmed findings with their scenarios; holds
+- S-075-4: ran the S-075-4 tests and read `Findings` in `src/shipmill/review_record.py`: a refuse record with `--findings minor=0,confirmed=2,rejected=1` posts `<!-- shipmill:review refuse -->`, then `<!-- shipmill:findings confirmed=2 rejected=1 minor=0 -->`, then the report; holds
+- S-075-5: ran `shipmill review record 1 --head <40 hex> --verdict refuse --findings confirmed=0,rejected=1,minor=0`, `--verdict merge --findings confirmed=1,rejected=1,minor=0`, and `--findings confirmed=1,confirmed=1,minor=-1`, each with a body file that doesn't exist: each exited 2 naming the fix (record merge, record refuse, the `confirmed=N,rejected=N,minor=N` form) and nothing was read or written; the S-075-5 tests cover the missing, unknown, and non-numeric keys; holds
+- S-075-6: ran the S-075-6 tests: without `--findings` either verdict's body is the marker then the report as before, and `--verdict merge --findings confirmed=0,rejected=2,minor=1` writes the merge marker then the findings line; holds
+- S-075-7: read `FINDINGS_LINE`, `REVIEW_REFUSED`, and `REVIEW_UNVERIFIED` in `skills/github-pr-triage/scripts/pr_gate.py` and ran the S-075-7 test: a refuse record reads UNREVIEWED, exit 9, naming its confirmed count with a readable findings line and `refuses it on findings no second reviewer checked` without one or with one it can't read; a merge record reads READY either way; holds
+- S-075-8: read `reviews_report` and `findings_counts` in `skills/github-ship-watch/scripts/retro.py` and ran the S-075-8 tests: within the window the `--bot` logins' refuse records count `verified` or `unverified` (with their pull requests), merge records with a findings line `overturned`, the totals add up, `first_reviewer_wrong` rounds down or reads `no data`, `--json` holds `reviews`, anyone else's review counts for nothing, and `--reviews` without `--bot` exits 2; holds
+- S-075-9: read `skills/github-pr-triage/references/landing.md`'s "Recording the review", which shows `--findings confirmed=N,rejected=N,minor=N` and records a refusal only after the second look, and `skills/github-ship-watch/SKILL.md`'s weekly retro, whose gather step passes `--reviews` with the `--bot` login; holds

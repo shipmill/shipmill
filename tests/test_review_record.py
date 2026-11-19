@@ -387,6 +387,74 @@ def test_s055_18_the_reviewer_reports_its_head_and_landing_records_it() -> None:
     assert "Record the reviewed head." in skill and "(references/landing.md#recording-the-review)" in skill
 
 
+def section(path: Path, heading: str) -> str:
+    """The folded text under a heading line, up to the next heading of its level or above, fences skipped"""
+    level = len(heading) - len(heading.lstrip("#"))
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = lines.index(heading)
+    fenced = False
+    end = len(lines)
+    for at in range(start + 1, len(lines)):
+        line = lines[at]
+        if line.startswith("```"):
+            fenced = not fenced
+        elif not fenced and re.match(rf"#{{1,{level}}} ", line):
+            end = at
+            break
+    return " ".join(" ".join(lines[start:end]).split())
+
+
+BRIEF = SKILLS / "github-pr-triage" / "references" / "reviewer-brief.md"
+
+
+def test_s075_1_the_open_pr_report_lists_each_unfixed_finding_with_an_id() -> None:
+    open_pr = section(BRIEF, "## Open PR")
+    assert "each finding you did not fix as `F-1`, `F-2`, and so on" in open_pr
+    assert "its file and line, the claim in one sentence, and `blocking` when the verdict stands on it or `nit`" in (
+        open_pr
+    )
+    assert "A REFUSE names at least one blocking finding" in open_pr
+    assert "a report whose REFUSE names none is sent back to you" in open_pr
+
+
+def test_s075_2_the_verify_a_refusal_brief_marks_each_finding_by_the_code() -> None:
+    verify = section(BRIEF, "## Verify a refusal")
+    assert 'a fresh agent (`subagent_type: general-purpose`, `isolation: "worktree"`)' in verify
+    assert "never the first reviewer and never the landing session itself" in verify
+    assert "the PR, the reviewed head, and each blocking finding's id, file and line, and claim" in verify
+    assert "never the first reviewer's verdict or the rest of its report" in verify
+    assert "{reviewed_head}" in verify and "{findings:" in verify
+    assert "Do NOT push, comment on GitHub, merge, or fix anything." in verify
+    assert "`confirmed`, with the failure scenario" in verify
+    assert "`rejected`, with the file and line of the code that already handles it" in verify
+    assert "`minor`, with one line saying why it is real and doesn't block: a note" in verify
+    assert "mark it `minor` with the note starting `unproven:`" in verify
+    assert "Save a security finding" in verify and "mark it `confirmed`, with what you could not rule out" in verify
+    # The brief the agent receives names no verdict
+    fence = verify[verify.index("```text") :]
+    assert "REFUSE" not in fence and "verdict" not in fence
+
+
+def test_s075_3_the_landing_session_verifies_a_refusal_before_recording_it() -> None:
+    step = section(SKILLS / "github-pr-triage" / "SKILL.md", "### 3. Verify each reviewer's report")
+    assert "A reviewer's REFUSE is verified before it is recorded or handed back" in step
+    assert "(references/reviewer-brief.md#verify-a-refusal)" in step
+    assert "a fresh agent, neither the first reviewer nor this landing session" in step
+    assert "in the foreground in a headless session" in step
+    assert "the verdict is REFUSE only when at least one finding is `confirmed`" in step
+    assert 'followed by a "Second look" part, one line per `F-n`' in step
+    assert "The handback names only confirmed findings, each with its failure scenario" in step
+
+
+def test_s075_9_landing_records_the_counts_and_the_retro_reads_them() -> None:
+    landing = section(SKILLS / "github-pr-triage" / "references" / "landing.md", "## Recording the review")
+    assert "--findings confirmed=N,rejected=N,minor=N --body-file <report>" in landing
+    assert "A refusal is recorded only after the second look" in landing
+    watch = folded(SKILLS / "github-ship-watch" / "SKILL.md")
+    gather = watch[watch.index("1. Gather: `scripts/retro.py gather") : watch.index(" 2. Recurring findings")]
+    assert "also pass `--reviews`" in gather
+
+
 def test_s055_18_the_implementer_opens_the_pr_with_its_plan_in_the_body() -> None:
     brief = folded(SKILLS / "github-issue-triage" / "references" / "implementer-brief.md")
     assert "the body the PR is opened with" in brief
