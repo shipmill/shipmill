@@ -89,9 +89,11 @@ github-issue-triage sends a user's request for a new capability here instead of 
 ### 1. Take stock
 
 ```bash
-uv run --no-project python <skill>/scripts/intake_state.py <owner/repo>
+uv run --no-project python <skill>/scripts/intake_state.py <owner/repo> [--bot-login '<slug>[bot]']
 gh label list -R <owner/repo>
 ```
+
+Pass `--bot-login` whenever `[agents] app_id` is set: without it the App's own `Triage:` comments read as absent, and a request it postponed comes back as NEW_FEEDBACK.
 
 When the default branch has `docs/product.md`, read the parts of the direction intake uses (rule 8), from the checkout after `git fetch`, each as `uvx shipmill==0.148.0 product show ...`, the release this plugin pins, in every session:
 
