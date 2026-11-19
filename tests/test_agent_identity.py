@@ -7,6 +7,7 @@ network: gh, GitHub's API, and the signer are fakes"""
 
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -30,7 +31,7 @@ from .test_app_gh import WITH_APP, Host, checkout, outside
 from .test_app_install import CHECK_APP, CHECK_PAGE
 from .test_app_install import Clock as CheckClock
 from .test_app_token import FAKE_GH, MintApi, executable
-from .test_contributors import check, run_setup, setup_repo, states
+from .test_contributors import FAKE_SETUP_GH, check, run_setup, setup_repo, states
 from .test_gate_github_auth import ACCESS, REPO_PATH, SECRET, ReachApi
 from .test_gh_refuses_without_app import COMMENT, PR_CREATE, choices, one_call, refusal, run
 from .test_spec_open import FakeCheckout, FakeGh, repo_files, spec_text
@@ -293,6 +294,74 @@ def test_s082_7_a_bad_identity_stops_the_script_before_fix_changes_anything(tmp_
     done = run_setup(tmp_path, root, "--fix")
     assert done.returncode == 2 and f"[agents] identity must be {VALUES}" in done.stderr
     assert done.stdout == ""
+
+
+BAD_GATEWAY = "gh: Bad Gateway (HTTP 502)"
+FAILING_GH = """#!{python}
+import os, sys
+args = sys.argv[1:]
+if "repos/romamo/api/contents/.github/shipmill.toml" in args:  # one sibling read fails: not a 404
+    sys.stderr.write({error!r} + "\\n")
+    sys.exit(1)
+if args[:2] == ["api", "--paginate"]:  # the owner's repos: this one and a sibling
+    print("false romamo/demo")
+    print("false romamo/api")
+    sys.exit(0)
+os.execv({python!r}, [{python!r}, {standard!r}, *args])
+"""
+
+
+def run_failing_sibling(tmp_path: Path, text: str) -> subprocess.CompletedProcess[str]:
+    """setup_state.py on a repo whose owner has one sibling, romamo/api, whose config read
+    answers 502"""
+    root = setup_repo(tmp_path, text, None)
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    executable(fakes / "gh-standard", FAKE_SETUP_GH.format(python=sys.executable))
+    failing = FAILING_GH.format(python=sys.executable, standard=str(fakes / "gh-standard"), error=BAD_GATEWAY)
+    executable(fakes / "gh", failing)
+    executable(fakes / "uvx", failing)
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {"PATH": os.pathsep.join([str(fakes), "/usr/bin", "/bin"]), "HOME": str(home)}
+    command = [sys.executable, str(SCRIPT), REPO, "--repo-dir", str(root), "--json"]
+    return subprocess.run(command, capture_output=True, text=True, check=False, env=env)
+
+
+def test_s082_7_a_sibling_read_failing_other_than_404_is_named_unread_and_setup_goes_on(tmp_path: Path) -> None:
+    """#1375: without [agents] the Identity row is informational, so a 502 on one sibling's
+    config names that sibling as unread instead of stopping setup with exit 2: every row is
+    printed, and the exit code is the rows' (states() refuses a 2)"""
+    done = run_failing_sibling(tmp_path, 'mode = "release"\n')
+    found = states(done)
+    assert list(found)[-1] == "BRANCH_DELETE_ON"  # the run went on past the Identity row
+    detail = found["IDENTITY_UNCHOSEN"]
+    assert f"romamo/api (unread: {BAD_GATEWAY})" in detail
+    assert done.stderr == ""
+
+
+def test_s082_7_an_unread_sibling_leaves_the_exit_code_to_the_rows(ss: ModuleType, tmp_path: Path) -> None:
+    def failing(cmd: list[str]) -> str | None:
+        if cmd[-1] == "repos/me/api/contents/.github/shipmill.toml":
+            script = f"import sys; sys.stderr.write({BAD_GATEWAY!r}); sys.exit(1)"
+            read: str | None = ss.gh_try([sys.executable, "-c", script])  # raises GhFailed
+            return read
+        return FakeOwner({"me/api": None, "me/web": '[agents]\nprompt = "/t"\napp_id = 9\n'})(cmd)
+
+    ws = ss.watch_module()
+    found = ss.identity_row("me/demo", ss.identity_of(config(tmp_path / "demo", AGENTS), ws), tmp_path, ws, failing)
+    assert found.state == "IDENTITY_UNCHOSEN"
+    assert "the host's Apps: 9 (me/web)" in found.detail and f"me/api (unread: {BAD_GATEWAY})" in found.detail
+    done = [ss.Row(state, "") for state in sorted(ss.DONE)]
+    assert ss.exit_code([*done, found]) == 1  # an [agents] section: still an action, as before
+
+
+def test_s043_6_a_sibling_read_failing_with_502_still_exits_2_with_app_id(tmp_path: Path) -> None:
+    """#1375: the Identity row's tolerance doesn't reach the Product row, which reads the
+    siblings with [agents] app_id and stops on a read that fails with anything but 404"""
+    done = run_failing_sibling(tmp_path, WITH_APP)
+    assert done.returncode == 2
+    assert "repos/romamo/api/contents/.github/shipmill.toml" in done.stderr and BAD_GATEWAY in done.stderr
 
 
 def test_s082_7_the_docstring_names_the_rows(ss: ModuleType) -> None:

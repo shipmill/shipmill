@@ -120,7 +120,8 @@ applies: `IDENTITY_APP` (`app_id` set), `IDENTITY_HOST`, `IDENTITY_NONE`, or
 `IDENTITY_UNCHOSEN`. `IDENTITY_UNCHOSEN` names the Apps the host already has, each as
 `<app_id> (<where>)`: one with a key file at `~/.config/shipmill/app-<app_id>.pem` (the file
 is never opened), and the `app_id` of each sibling checkout's `.github/shipmill.toml` (the
-siblings the Product row already reads, spec 043). The row is done (`DONE`) for the three
+siblings the Product row already reads, spec 043). A sibling whose config read fails with
+anything but 404 is named in the row's detail as unread and doesn't stop setup (#1375). The row is done (`DONE`) for the three
 recorded values; `IDENTITY_UNCHOSEN` is an action (exit 1) only when the config has an
 `[agents]` section, and informational without one, as `AGENTS_MISSING` is.
 
