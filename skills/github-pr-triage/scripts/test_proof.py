@@ -267,7 +267,9 @@ def run_on(commit: str, command: list[str], timeout: int) -> Run:
                 os.killpg(proc.pid, signal.SIGKILL)
             else:
                 proc.kill()
-            proc.communicate()
+            proc.wait()  # not communicate(): a child that left the group may hold the output open
+            if proc.stdout is not None:
+                proc.stdout.close()
             raise Stop(
                 f"{' '.join(command)} ran past --timeout {timeout}s on {commit[:7]}; raise --timeout or narrow the "
                 "command to the touched tests"

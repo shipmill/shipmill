@@ -411,6 +411,22 @@ def test_s076_9_a_run_past_the_timeout_exits_2_and_leaves_no_worktree(repo: Path
     assert worktrees(repo) == before
 
 
+def test_s076_9_the_timeout_holds_when_a_detached_child_keeps_the_output_open(repo: Path) -> None:
+    fixed(repo)
+    before = worktrees(repo)
+    # a child in a session of its own outlives the killed process group and holds stdout open
+    spawn = (
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'], start_new_session=True)\n"
+        "time.sleep(30)\n"
+    )
+    words = [sys.executable, str(SCRIPT), "fix", "--base", "main", "--timeout", "1", "--", sys.executable, "-c", spawn]
+    proc = subprocess.run(words, cwd=repo, env=ENV, capture_output=True, text=True, timeout=15)
+    assert proc.returncode == 2
+    assert "ran past --timeout 1s" in proc.stderr
+    assert worktrees(repo) == before
+
+
 # S-076-10
 
 
