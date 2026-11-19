@@ -670,6 +670,25 @@ class GhCli:
             self._gh("api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", f"query={query}")
         )
 
+    def graphql_numbers(self, query: str, numbers: int) -> Any:
+        """The query's answer, as graphql's, where each `n<i>` alias (i below numbers) under
+        repository that GitHub has no pull request for answers null with its NOT_FOUND error
+        instead of failing; any other error fails (spec 073)"""
+        args = ("api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-f", f"query={query}")
+        proc = self._run(*args)
+        if proc.returncode != 0 and not _missing_numbers_only(_json_or_none(proc.stdout), numbers):
+            raise _failure(args, proc.stderr)
+        return json.loads(proc.stdout)
+
+    def pull_files(self, number: int) -> tuple[str, ...]:
+        """Every file the pull request changes, across its pages, a renamed file's old name too
+        (spec 073); Missing when GitHub has no such pull request"""
+        where = f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100"
+        listed = self._gh(
+            "api", "-X", "GET", "--paginate", where, "--jq", ".[] | .filename, (.previous_filename // empty)"
+        )
+        return tuple(dict.fromkeys(line for line in listed.splitlines() if line))
+
     def open_issues(self, label: str) -> list[str]:
         found = json.loads(
             self._gh(
