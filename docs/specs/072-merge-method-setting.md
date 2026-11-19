@@ -166,4 +166,8 @@ hooks section name D-96.
 
 ## Issues
 
+- shipmill/shipmill#1343: S-072-1, S-072-6, S-072-7, S-072-8
+- shipmill/shipmill#1344: S-072-2, S-072-3, S-072-4, S-072-5, S-072-12
+- shipmill/shipmill#1345: S-072-9, S-072-10, S-072-11
+
 ## Verification
