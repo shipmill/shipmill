@@ -286,12 +286,20 @@ def test_parse_spec_reads_status_and_issues() -> None:
 
 def test_parse_milestone_issues_is_strict() -> None:
     url = "https://github.com/o/demo/issues/"
-    found = parse_milestone_issues([{"number": 3, "body": "b", "url": url + "3"}], "1.1.0")
+
+    def item(n: int, **fields: object) -> dict[str, object]:
+        return {"number": n, "body": "b", "url": url + str(n), "state": "CLOSED", "title": "t", "labels": []} | fields
+
+    found = parse_milestone_issues([item(3)], "1.1.0")
     assert found == MilestoneIssues("o/demo", ((3, "b"),))
     with pytest.raises(ReleaseError, match="with the URL"):
-        parse_milestone_issues([{"number": 4, "body": "b", "url": url + "3"}], "1.1.0")
-    with pytest.raises(ReleaseError, match="needs a number"):
-        parse_milestone_issues([{"number": 4, "body": None, "url": url + "4"}], "1.1.0")
+        parse_milestone_issues([item(4, url=url + "3")], "1.1.0")
+    for bad in ({"body": None}, {"state": "open"}, {"title": None}):
+        with pytest.raises(ReleaseError, match="needs a number"):
+            parse_milestone_issues([item(4, **bad)], "1.1.0")
+    for labels in (None, ["hold"], [{"name": 1}]):
+        with pytest.raises(ReleaseError, match="not a list of names"):
+            parse_milestone_issues([item(4, labels=labels)], "1.1.0")
 
 
 def node(**fields: object) -> dict[str, object]:

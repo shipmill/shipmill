@@ -228,11 +228,22 @@ class OpenMilestone:
 
 
 @dataclass(frozen=True, slots=True)
+class OpenIssue:
+    """An open issue of a milestone: its number, title, and labels (spec 068)"""
+
+    number: int
+    title: str
+    labels: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
 class MilestoneIssues:
-    """The issues of a milestone, open and closed, with the repository they belong to"""
+    """The issues of a milestone, open and closed, with the repository they belong to, and
+    the open ones with their titles and labels"""
 
     repo: str  # owner/name, as GitHub spells it
     issues: tuple[tuple[int, str], ...]  # (number, body)
+    open: tuple[OpenIssue, ...] = ()  # by number
 
 
 class CloseReason(StrEnum):
@@ -664,7 +675,7 @@ class GhCli:
     def milestone_issues(self, title: str) -> MilestoneIssues:
         found = json.loads(
             self._gh(
-                "issue", "list", "--milestone", title, "--state", "all", "--json", "number,body,url",
+                "issue", "list", "--milestone", title, "--state", "all", "--json", "number,body,url,state,title,labels",
                 "--limit", str(MILESTONE_LIMIT),
             )
         )  # fmt: skip
@@ -1266,26 +1277,44 @@ _ISSUE_URL = re.compile(r"^https://[^/]+/([\w.-]+/[\w.-]+)/issues/(\d+)$")
 
 
 def parse_milestone_issues(found: Any, title: str) -> MilestoneIssues:
-    """`gh issue list --milestone --json number,body,url`'s output; the repository comes from
-    the issues' URLs, so a milestone with no issue has none"""
+    """`gh issue list --milestone --json number,body,url,state,title,labels`'s output; the
+    repository comes from the issues' URLs, so a milestone with no issue has none"""
     if not isinstance(found, list):
         raise ReleaseError(f"gh issue list --milestone {title} printed {type(found).__name__}, not a JSON array")
     if len(found) >= MILESTONE_LIMIT:
         raise ReleaseError(f"milestone {title} holds {MILESTONE_LIMIT} issues or more; shipmill reads fewer")
     repos = set()
     issues = []
+    opened = []
     for i in found:
         url = i.get("url") if isinstance(i, dict) else None
         link = _ISSUE_URL.match(url) if isinstance(url, str) else None
-        if link is None or not isinstance(i.get("number"), int) or not isinstance(i.get("body"), str):
-            raise ReleaseError(f"gh issue list printed {i!r}: an issue needs a number, a body, and an issue URL")
+        if (
+            link is None
+            or not isinstance(i.get("number"), int)
+            or not isinstance(i.get("body"), str)
+            or not isinstance(i.get("title"), str)
+            or i.get("state") not in ("OPEN", "CLOSED")
+        ):
+            raise ReleaseError(
+                f"gh issue list printed {i!r}: an issue needs a number, a body, a title, a state, and an issue URL"
+            )
         if int(link.group(2)) != i["number"]:
             raise ReleaseError(f"gh issue list printed #{i['number']} with the URL {url}")
+        labels = i.get("labels")
+        if not isinstance(labels, list) or not all(
+            isinstance(x, dict) and isinstance(x.get("name"), str) for x in labels
+        ):
+            raise ReleaseError(f"gh issue list printed #{i['number']} with labels {labels!r}, not a list of names")
         repos.add(link.group(1))
         issues.append((int(i["number"]), str(i["body"])))
+        if i["state"] == "OPEN":
+            opened.append(OpenIssue(int(i["number"]), str(i["title"]), frozenset(str(x["name"]) for x in labels)))
     if len(repos) > 1:
         raise ReleaseError(f"milestone {title} lists issues of several repositories: {sorted(repos)}")
-    return MilestoneIssues(repos.pop() if repos else "", tuple(sorted(issues)))
+    return MilestoneIssues(
+        repos.pop() if repos else "", tuple(sorted(issues)), tuple(sorted(opened, key=lambda o: o.number))
+    )
 
 
 def parse_open_milestones(found: Any) -> list[OpenMilestone]:

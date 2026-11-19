@@ -37,9 +37,11 @@
                   sessions, github app, shipmill, checkout, worktrees), each run on its own;
                   --json for one JSON object (spec 044)
   milestones      read-only: with a lane that sets milestone = true, print MILESTONE_WAITING for a goal's
-                  milestone waiting on its specs and MILESTONE_OVERTAKEN for an open milestone a stable
-                  tag took, with the version to rename it to and the `gh api` rename, run through
-                  shipmill gh; --json for one JSON object (spec 022)
+                  milestone waiting on its specs or holds, MILESTONE_OVERTAKEN for an open milestone a
+                  stable tag took, with the version to rename it to and the `gh api` rename,
+                  MILESTONE_RELEASED for one its release shipped, with the close, and MILESTONE_MISSING
+                  when none is above the newest stable tag, with the create; each fix run through
+                  shipmill gh; --json for one JSON object (specs 022 and 068)
   deprecations    read-only: which connected repos still rely on each deprecated key or reading
                   (spec 047, D-63), each with its migrating upgrade's state there, read from each
                   repo's config on its default branch and its shipmill-upgrade issues; the repos of
@@ -640,7 +642,10 @@ def _parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "milestones",
-        help="print the milestones a lane with milestone = true waits on or a stable tag overtook (spec 022)",
+        help=(
+            "print the milestones a lane with milestone = true waits on, a stable tag overtook or shipped,"
+            " or is missing (specs 022 and 068)"
+        ),
     )
     p.add_argument("--json", action="store_true", help="print the rows and the read's error as one JSON object")
     p.add_argument("--now", help="ISO time with offset (default: now)")

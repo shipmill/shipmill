@@ -12,9 +12,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
+from shipmill.autonomy import HOLD_LABEL
 from shipmill.errors import ReleaseError
 from shipmill.fragments import AtRevision
-from shipmill.github import CloseReason, GitHub, IssueClose, IssueComment, MilestoneIssues
+from shipmill.github import CloseReason, GitHub, IssueClose, IssueComment, MilestoneIssues, OpenIssue
 from shipmill.gitrepo import Git
 
 SPECS = "docs/specs"
@@ -26,6 +27,7 @@ STATUS = re.compile(r"^status: (\S+)$")
 ISSUE_ITEM = re.compile(r"^- (?:([\w.-]+/[\w.-]+))?#(\d+)(?![\w])")
 CLOSE_CONFIRMED = "<!-- shipmill:close-confirmed -->"
 TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+DECISION_LABEL = "needs-decision"  # github-issue-triage's needs-decision.md, as walk.py names it
 
 
 class GoalError(ReleaseError):
@@ -170,6 +172,49 @@ class Verdict:
         if self.specs:
             return f"milestone {self.milestone} built: {', '.join(str(s) for s in self.specs)}"
         return f"milestone {self.milestone} has no open issues"
+
+
+@dataclass(frozen=True, slots=True)
+class Held:
+    """A milestone whose open issues each carry the hold label or needs-decision: an issue
+    parked to stop a release is a hold, not unfinished work (spec 068, D-8)"""
+
+    milestone: str
+    issues: tuple[OpenIssue, ...]  # its open issues, every one held, by number
+
+    @property
+    def done(self) -> bool:
+        return False
+
+    @property
+    def reasons(self) -> list[str]:
+        """One line per issue: `milestone <title>: #N holds it (<label>): <issue title>`, or
+        `#N waits on a decision: <issue title>`"""
+        return [f"milestone {self.milestone}: {_held_by(i)}" for i in self.issues]
+
+    @property
+    def reason(self) -> str:
+        return "; ".join(self.reasons)
+
+
+def _held_by(issue: OpenIssue) -> str:
+    if HOLD_LABEL in issue.labels:
+        return f"#{issue.number} holds it ({HOLD_LABEL}): {issue.title}"
+    return f"#{issue.number} waits on a decision: {issue.title}"
+
+
+def held(github: GitHub, title: str) -> Held | None:
+    """The milestone as a hold when it has open issues and each carries the hold label or
+    needs-decision; None when any open issue carries neither, or none is open. GoalError for
+    a read that fails, as a goal's"""
+    try:
+        listed = github.milestone_issues(title)
+    except ReleaseError as error:
+        raise GoalError(str(error)) from error
+    holding = {HOLD_LABEL, DECISION_LABEL}
+    if not listed.open or any(not holding & i.labels for i in listed.open):
+        return None
+    return Held(title, listed.open)
 
 
 def confirmed(close: IssueClose, github: GitHub, app_id: int | None) -> bool:

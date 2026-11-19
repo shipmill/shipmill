@@ -124,10 +124,11 @@ class _Deferred:
 
 @dataclass(frozen=True, slots=True)
 class MilestoneWaiting:
-    """A lane's milestone with no open issues whose goal isn't done: what holds it (spec 022)"""
+    """A lane's milestone with no open issues whose goal isn't done (spec 022), or whose open
+    issues are each a hold (spec 068): what holds it"""
 
     lane: Lane
-    verdict: milestones.Verdict
+    verdict: milestones.Verdict | milestones.Held
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +140,30 @@ class MilestoneOvertaken:
     milestone: OpenMilestone
     version: Version  # the milestone's own, tagged already
     next: Version
+
+
+@dataclass(frozen=True, slots=True)
+class MilestoneReleased:
+    """An open milestone titled a stable version whose tag exists, with no open issues: its
+    release shipped it and GitHub left it open, so it is closed (spec 068)"""
+
+    lane: Lane
+    milestone: OpenMilestone
+    version: Version
+
+
+@dataclass(frozen=True, slots=True)
+class MilestoneMissing:
+    """No open milestone is titled a stable version above the newest stable tag, so the lane
+    has none to wait on; the version it cuts next, whose milestone the maintainer may create
+    (spec 068, D-32)"""
+
+    lane: Lane
+    newest: Version | None  # the newest stable tag's version, None before the first
+    next: Version
+
+
+type MilestoneFinding = MilestoneWaiting | MilestoneOvertaken | MilestoneReleased | MilestoneMissing
 
 
 @dataclass
@@ -323,9 +348,10 @@ class Planner:
 
     # -- triggers and gates ----------------------------------------------------------------
 
-    def _due(self, lane: Lane, candidate: _Candidate, head: str) -> str | milestones.Verdict | None:
+    def _due(self, lane: Lane, candidate: _Candidate, head: str) -> str | milestones.Verdict | milestones.Held | None:
         """Which trigger made the lane due; None when none did, or the milestone's verdict
-        when its issues are closed but the goal behind them isn't done (spec 022)"""
+        when its issues are closed but the goal behind them isn't done (spec 022), or the
+        hold when each of its open issues is one (spec 068)"""
         rule = self.policy.rule(lane)
         if rule.quiet_minutes is not None:
             quiet = self.now - self.git.commit_time(head)
@@ -341,6 +367,8 @@ class Planner:
             if milestone is not None and milestone.open_issues == 0 and milestone.closed_issues > 0:
                 found = self.milestone_verdict(candidate, head)
                 return found.reason if found.done else found
+            if milestone is not None and milestone.open_issues:
+                return milestones.held(self.github, str(candidate.version.release))
         return None
 
     def milestone_verdict(self, candidate: _Candidate, head: str) -> milestones.Verdict:
@@ -351,17 +379,20 @@ class Planner:
         title = str(candidate.version.release)
         return milestones.verdict(self.git, self.github, title, head, candidate.base, where, app_id)
 
-    def milestone_findings(self, head: str) -> list[MilestoneWaiting | MilestoneOvertaken]:
+    def milestone_findings(self, head: str) -> list[MilestoneFinding]:
         """What `shipmill status` says of the milestones of the lanes with milestone = true
         (spec 022), read with head as main's head: each milestone with no open issues and at
-        least one closed whose goal isn't done, then each open milestone with open issues a
-        stable tag of its version took already, with the version the first such lane cuts next. Nothing is read
-        when no lane sets milestone; nothing here changes what a plan decides"""
+        least one closed whose goal isn't done, or whose open issues are each a hold (spec
+        068); then each open milestone with open issues a stable tag of its version took
+        already, with the version the first such lane cuts next; each open milestone with no
+        open issues whose version is tagged; and, when no open milestone is titled a stable
+        version above the newest stable tag, the version that lane cuts next (spec 068).
+        Nothing is read when no lane sets milestone; nothing here changes what a plan decides"""
         lanes = [ln for ln in PRIORITY if ln in self.policy.lanes and self.policy.lanes[ln].milestone]
         if not lanes:
             return []
         candidates = {lane: self._candidate(lane, head) for lane in lanes}
-        found: list[MilestoneWaiting | MilestoneOvertaken] = []
+        found: list[MilestoneFinding] = []
         titles = set()
         for lane, candidate in candidates.items():
             if not isinstance(candidate, _Candidate) or self._has_tag(candidate.version):
@@ -371,25 +402,40 @@ class Planner:
                 continue
             titles.add(title)
             milestone = self.github.milestone(title)
-            if milestone is None or milestone.open_issues or not milestone.closed_issues:
-                continue  # open issues are the ordinary wait; an empty milestone is no goal
+            if milestone is None:
+                continue
+            if milestone.open_issues:  # the ordinary wait, unless each open issue is a hold
+                if (holding := milestones.held(self.github, title)) is not None:
+                    found.append(MilestoneWaiting(lane, holding))
+                continue
+            if not milestone.closed_issues:
+                continue  # an empty milestone is no goal
             verdict = self.milestone_verdict(candidate, head)
             if not verdict.done:
                 found.append(MilestoneWaiting(lane, verdict))
-        taken = []
+        taken: list[tuple[OpenMilestone, Version]] = []
+        released: list[tuple[OpenMilestone, Version]] = []
+        ahead = False  # an open milestone is titled a stable version above the newest stable tag
+        newest = self.last_stable()
         for m in self.github.open_milestones():
-            # with no open issue its own release shipped it (GitHub leaves it open) or it holds
-            # nothing: renamed, it would make the next version's milestone due at once
-            if not m.open_issues:
-                continue
             # named after a version as the lane names it (str of the release, D-32), else no goal's
             version = Version.parse(m.title) if PATTERN.fullmatch(m.title) else None
-            if version is not None and str(version) == m.title and version.is_stable and self._has_tag(version):
-                taken.append((m, version))
-        if taken:
-            lane = lanes[0]
-            upcoming = self._next_release(candidates[lane], head)
+            if version is None or str(version) != m.title or not version.is_stable:
+                continue
+            if newest is None or version > newest.version:
+                ahead = True
+            if not self._has_tag(version):
+                continue
+            # with no open issue its own release shipped it (GitHub leaves it open), so it is
+            # closed; renamed, it would make the next version's milestone due at once
+            (taken if m.open_issues else released).append((m, version))
+        lane = lanes[0]
+        upcoming = self._next_release(candidates[lane], head) if taken or not ahead else None
+        if upcoming is not None:
             found += [MilestoneOvertaken(lane, m, version, upcoming) for m, version in taken]
+        found += [MilestoneReleased(lane, m, version) for m, version in released]
+        if upcoming is not None and not ahead:
+            found.append(MilestoneMissing(lane, None if newest is None else newest.version, upcoming))
         return found
 
     def _next_release(self, candidate: _Candidate | _Deferred | str, head: str) -> Version:
@@ -498,7 +544,7 @@ class Planner:
                 skipped.append(f"{current}: {candidate.version.tag} exists already")
                 continue
             if lane:
-                due: str | milestones.Verdict | None = "started by hand"
+                due: str | milestones.Verdict | milestones.Held | None = "started by hand"
             elif current is Lane.STABLE:
                 # a goal the stable lane can't read (a spec naming no issue, #296's kind of
                 # error) doesn't stop rc and dev either; any other error, the milestone's own
@@ -515,8 +561,9 @@ class Planner:
             if due is None:
                 skipped.append(f"{current}: {candidate.version} is ready but no trigger is due")
                 continue
-            if isinstance(due, milestones.Verdict):
-                # what holds a goal is named even when a later lane releases (spec 022)
+            if isinstance(due, milestones.Verdict | milestones.Held):
+                # what holds a goal, or the holds parked in it (spec 068), is named even when a
+                # later lane releases (spec 022)
                 skipped.append(f"{current}: {candidate.version} is ready but no trigger is due; {due.reason}")
                 notes.append(f"{current}: {due.reason}")
                 continue
