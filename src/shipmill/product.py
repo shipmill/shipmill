@@ -13,7 +13,7 @@ branch's direction rather than whatever the checkout holds"""
 
 import posixpath
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -451,12 +451,19 @@ class GitRef:
         return self.name
 
 
-def check(root: Path, at: GitRef | None = None) -> tuple[Problem, ...]:
+def check(root: Path, at: GitRef | None = None, home: Callable[[], Inherited] | None = None) -> tuple[Problem, ...]:
     """Every rule docs/product.md and the files its sections moved to break; none when well
     formed. A missing docs/product.md is a problem too. Read from the working tree, or from
     the commit `at` names. A serves line is a problem in a repo whose config sets no
-    `[product] home` (spec 071); the config is read only when a goal carries one"""
-    return _parse(root, _tree(root, at))[1]
+    `[product] home` (spec 071); the config is read only when a goal carries one. With home,
+    the product's direction, a well-formed serves line naming a goal its Goals don't list is a
+    problem too; home is called only when a goal carries one (S-071-3, S-071-4)"""
+    parser = _Parser(_tree(root, at))
+    parser.direction()
+    parser.place(root)
+    if home is not None:
+        parser.listed(home)
+    return tuple(parser.problems)
 
 
 def read(root: Path, at: GitRef | None = None) -> Direction:
@@ -618,13 +625,115 @@ def _tree(root: Path, at: GitRef | None) -> _Tree:
     return _WorkTree(root) if at is None else _RefTree(Git(root), at)
 
 
+Fetch = Callable[[str], str | None]  # a file's text on the home's default branch, None when it has none
+
+
+@dataclass(slots=True)
+class _HomeTree:
+    """The product's home direction as GitHub gives it on the home's default branch (spec 071):
+    each file read once, through fetch, by its path in the home repo. GitHub follows no link
+    out of the repo, so every file read stays in it"""
+
+    fetch: Fetch
+    ref: None = None
+    _texts: dict[Path, str | None] = field(default_factory=dict)
+
+    def is_file(self, relative: Path) -> bool:
+        return self._text(relative) is not None
+
+    def contained(self, relative: Path, under: Path) -> bool:
+        return True
+
+    def lines(self, relative: Path) -> list[Line]:
+        text = self._text(relative)
+        if text is None:
+            raise ReleaseError(f"{relative} is not a file")
+        return _split(text)
+
+    def _text(self, relative: Path) -> str | None:
+        if relative not in self._texts:
+            self._texts[relative] = self.fetch(relative.as_posix())
+        return self._texts[relative]
+
+
+_INHERITED = (Section.GOALS, Section.NON_GOALS)  # what a component takes from its product's direction
+
+
+@dataclass(frozen=True, slots=True)
+class Inherited:
+    """The product's direction as a component reads it (spec 071): the home repo, owner/name,
+    and its direction, of which a component shows the goals and the non-goals"""
+
+    home: str
+    direction: Direction
+
+    @staticmethod
+    def wanted(sections: Sequence[Section]) -> tuple[Section, ...]:
+        """The product's sections `product show` adds for the sections asked: its goals with
+        goals, its non-goals with non-goals, both when none is asked"""
+        return tuple(s for s in _INHERITED if not sections or s in sections)
+
+    def record(self, sections: Sequence[Section]) -> dict[str, Any]:
+        """The `product` key of `product show --json` (S-071-5)"""
+        record: dict[str, Any] = {"home": self.home, "name": self.direction.name}
+        for section in self.wanted(sections):
+            record[section.key] = [item.record() for item in self.direction.items(section)]
+        return record
+
+    def render(self, sections: Sequence[Section]) -> str:
+        """`## Product goals (<owner/home>)` and `## Product non-goals (<owner/home>)`, each item
+        as `- <owner/home> G-n: <text>` (S-071-5); empty when neither is asked"""
+        blocks = []
+        for section in self.wanted(sections):
+            heading = f"## Product {section.value.lower()} ({self.home})"
+            body = "\n".join(f"- {self.home} {item}" for item in self.direction.items(section))
+            blocks.append(f"{heading}\n\n{body}" if body else heading)
+        return "\n\n".join(blocks) + "\n" if blocks else ""
+
+
+def home_refusal(home: str, why: str, fix: str) -> ReleaseError:
+    """S-071-7: the product's direction can't be read; the refusal names the home, why, and the
+    fix, and says how to go on without the home"""
+    return ReleaseError(
+        f"{home}'s product direction can't be read, so nothing of this component's is given either: {why}; "
+        f"fix: {fix}, or pass --local to read only this checkout's {DIRECTION} (spec 071)"
+    )
+
+
+def read_home(home: str, fetch: Fetch) -> Inherited:
+    """The product's direction, docs/product.md on the home's default branch and the files under
+    docs/product/ its moved sections link, parsed by the same grammar (spec 071). A home without
+    docs/product.md, or whose direction breaks the grammar, exits 2 naming the home and the fix
+    (S-071-7); the home serves no product above it, so a serves line there breaks it too"""
+    tree = _HomeTree(fetch)
+    if not tree.is_file(DIRECTION):
+        raise home_refusal(
+            home,
+            f"GitHub has no {DIRECTION} on {home}'s default branch",
+            f"ask the maintainer to write {home}'s {DIRECTION} (spec 024)",
+        )
+    parser = _Parser(tree)
+    direction = parser.direction()
+    for path, number, _ in parser.served:
+        parser.fail(path, number, "a serves line names a component's product goals; the product's home serves none")
+    if parser.problems or direction is None:
+        listed = "".join(f"\n  {home}:{p}" for p in parser.problems)
+        refused = home_refusal(
+            home,
+            f"its {DIRECTION} on its default branch breaks the grammar of spec 024",
+            f"ask the maintainer to fix it (`{cli_command()} product check` in {home}'s checkout names each line)",
+        )
+        raise ReleaseError(f"{refused}:{listed}")
+    return Inherited(home, direction)
+
+
 class _Parser:
     def __init__(self, tree: _Tree) -> None:
         self.tree = tree
         self.problems: list[Problem] = []
         self.seen: dict[ItemId, str] = {}  # the file:line each id first appears on, for a duplicate's message
         self.bodies: dict[Section, _Body] = {}  # each section's lines, in the file a moved one moved to
-        self.served: list[tuple[Path, int]] = []  # where each well-placed serves line sits (spec 071)
+        self.served: list[tuple[Path, int, Serves]] = []  # each well-formed serves line and where (spec 071)
 
     def fail(self, path: Path, line: int, rule: str) -> None:
         self.problems.append(Problem(path, line, rule))
@@ -635,8 +744,25 @@ class _Parser:
             return
         reason = _unserved(root)
         if reason is not None:
-            for path, number in self.served:
+            for path, number, _ in self.served:
                 self.fail(path, number, f"{reason}; delete the line")
+
+    def listed(self, home: Callable[[], Inherited]) -> None:
+        """S-071-3: each id a serves line names is a goal of the product's home direction, read
+        only when this direction is well formed and a goal carries a serves line (S-071-4)"""
+        if self.problems or not self.served:
+            return
+        inherited = home()
+        goals = {item.id for item in inherited.direction.goals}
+        for path, number, serving in self.served:
+            for goal in serving.goals:
+                if goal not in goals:
+                    self.fail(
+                        path,
+                        number,
+                        f"{goal} is not a goal of the product's direction, {inherited.home}:{DIRECTION} on its "
+                        f"default branch; name a goal its Goals list, or remove {goal}",
+                    )
 
     def direction(self) -> Direction | None:
         if not self.tree.is_file(DIRECTION):
@@ -919,7 +1045,7 @@ class _Parser:
             self.fail(body.path, number, str(exc))
             return _Previous.SERVED
         items[-1] = replace(items[-1], serves=serves)
-        self.served.append((body.path, number))
+        self.served.append((body.path, number, serves))
         return _Previous.SERVED
 
 
