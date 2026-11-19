@@ -313,6 +313,24 @@ def test_s074_6_an_observe_feedback_due_is_reported_and_no_action_in_the_fleet(
     assert code == 1 and out.splitlines()[0] == line
 
 
+def test_s078_16_a_drift_row_is_reported_with_a_repos_other_rows_and_no_action(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = quiet_fake()
+    detail = "50.0% against mean 95.0%, 7.8σ over 8 buckets of 7d: .github/workflows/ci.yml 5 failed"
+    fake.watch["owner/other"].append(row("DRIFT", "ci_pass_rate", detail))
+    code, out = fleet_run(fl, tmp_path, capsys, fake, FLEET)
+    assert code == 0 and "DRIFT" not in fl.ACTION
+    assert out.splitlines()[-1] == f"owner/other     DRIFT          ci_pass_rate     {detail}"
+    # an action elsewhere still leads, and the drift stays among the report-only rows
+    fake.watch["romamo/shipmill"].append(row("ISSUES", "romamo/shipmill", "NEW #12"))
+    code, out = fleet_run(fl, tmp_path, capsys, fake, FLEET)
+    assert code == 1 and out.splitlines()[0].startswith("romamo/shipmill ISSUES")
+    assert out.splitlines()[-1].startswith("owner/other     DRIFT")
+    # the queue lists no drift, so its watch makes no trends read
+    assert "--no-trends" in fl.queue_watch_command(fl.Entry("o/r", None), tmp_path, None)
+
+
 def test_s001_5_a_failed_check_is_one_repo_error_row_and_the_rest_is_reported(
     fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

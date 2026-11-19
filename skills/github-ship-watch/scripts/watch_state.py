@@ -5,7 +5,7 @@ recent releases, the environments shipmill operate runs, and the issue intake.
 Usage: watch_state.py <owner/repo> [--repo-dir PATH] [--releases N] [--grace MIN]
                       [--tool SPEC] [--incident-label LABEL] [--json]
                       [--bot-login LOGIN] [--trusted-only]
-                      [--role NAME=FILLER[,FILLER...] ...] [--no-host]
+                      [--role NAME=FILLER[,FILLER...] ...] [--no-host] [--no-trends]
        watch_state.py <owner/repo> --host {sessions,shipmill} [--host-wide] [--repo-dir PATH] [--json]
        watch_state.py <owner/repo> (--tier N [--known FILE] | --sweep) [--repo-dir PATH] [--json] ...
 
@@ -328,6 +328,19 @@ item reads ASSIGN_DUE (an ISSUES action) rather than NO_ASSIGNEE, and to intake_
 --plans, so a plan answer the --bot-login relays for a maintainer counts (D-68); flags
 triage_state.py would refuse exit 2 before anything is read.
 
+Trends (spec 078; only in the full report, with or without --no-host, for a config with a
+[trends] section: one `trends.py <owner/repo> --repo-dir <repo-dir> --json` run in the checkout,
+never under --tier, --sweep, or --host, nor with --no-trends; a config without [trends] makes
+no trends read):
+  DRIFT           one row per configured series trends.py reads at the report tier, subject the
+                  series: `<newest> against mean <mean>, <deviation>σ over <N> buckets of <D>d:
+                  <diagnosis>` (`flat baseline` in place of the deviation when the baseline is
+                  flat), the diagnosis the up to 3 workflows or pull requests trends.py names;
+                  its fix the trends.py command that prints the whole report. None for a series
+                  at log, ok, or no data. Reported, never an action and never an agent's: it
+                  leaves the exit code as it was, and no gate tick reads it (D-58). A trends.py
+                  failure stops the watch (exit 2) like any other read
+
 Repository settings:
   BRANCH_DELETE_OFF  delete_branch_on_merge is off: merged pull request branches stay on
                   GitHub, and a stacked pull request isn't retargeted when the one under it
@@ -467,8 +480,8 @@ session for. A waiting
 item is in no agent row, so it neither starts a session nor changes the gate's fingerprint.
 Each line has a fix too (spec 011): the one line that clears the row, an exact command where
 one exists (every gh naming the repo, every git its checkout with -C), else the decision to
-make; null for a row with nothing to clear. Every action row, HOLD,
-UNTRUSTED, UPSTREAM_UNTRUSTED, PYPI_WAIT, DEPLOYMENTS_FORBIDDEN, and MILESTONE_MISSING carry one, and PRS_OPEN unless
+make; null for a row with nothing to clear. Every action row, HOLD, UNTRUSTED,
+UPSTREAM_UNTRUSTED, PYPI_WAIT, DEPLOYMENTS_FORBIDDEN, MILESTONE_MISSING, and DRIFT carry one, and PRS_OPEN unless
 [autonomy] land is act with [agents].
 A fix is built from the repo, numbers, run ids, tags, paths, and config keys, never from an
 issue's or a pull request's text (D-16). The table prints it on an indented "fix:" line
@@ -733,7 +746,15 @@ AGENT = {
 # action, and the report-only rows a person still has to act on. PRS_OPEN carries one unless
 # a gate lands pull requests ([autonomy] land act, land_fix); every other state's fix is None
 # (MILESTONE_MISSING: spec 068's create, the maintainer's step, D-32)
-FIXED = ACTION | {"HOLD", "UNTRUSTED", "UPSTREAM_UNTRUSTED", "PYPI_WAIT", "DEPLOYMENTS_FORBIDDEN", "MILESTONE_MISSING"}
+FIXED = ACTION | {
+    "HOLD",
+    "UNTRUSTED",
+    "UPSTREAM_UNTRUSTED",
+    "PYPI_WAIT",
+    "DEPLOYMENTS_FORBIDDEN",
+    "MILESTONE_MISSING",
+    "DRIFT",  # spec 078: the trends.py command that prints the whole drift report
+}
 FIX_INDENT = " " * 15  # the table's fix line starts under the subject column
 RUN_ID = re.compile(r"/actions/runs/(\d+)(?:/|$)")  # a workflow run's URL names its id
 HEAD_SHA = re.compile(r"[0-9a-f]{40}")  # a pull request's headRefOid (#546)
@@ -5853,6 +5874,130 @@ def relayed_rows(rows: list[Row], triage: str) -> list[Row]:
     return found
 
 
+# -- trends (spec 078) -----------------------------------------------------------------------
+
+TRENDS = Path(__file__).resolve().parent / "trends.py"
+TREND_SERIES = ("ci_pass_rate", "flaky_reruns", "review_time", "lead_time")  # trends.py's SERIES
+RUN_TRENDS = frozenset({"ci_pass_rate", "flaky_reruns"})  # diagnosed by workflow, the others by pull request
+TREND_TIERS = frozenset({"no data", "ok", "log", "report"})
+DRIFT_TIER = "report"  # the one tier the watch reports; log is trends.py's own output alone
+TRENDS_HEADER = re.compile(r"^\s*\[+\s*[\"']?trends[\"']?\s*[\].]")  # [trends], [[trends]], [trends.x]
+TRENDS_ROOT_KEY = re.compile(r"^\s*[\"']?trends[\"']?\s*[.=]")  # a root key that sets trends inline
+
+
+def trends_configured(text: str, policy: Path) -> bool:
+    """Whether the config has a [trends] section (spec 078), the one thing that makes the full
+    report run trends.py; its keys are trends.py's to check, which refuses what it can't read"""
+    if tomllib is None:
+        return trends_configured_310(text)
+    try:
+        return "trends" in tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise Refused(f"error: {policy}: {exc}") from None
+
+
+def trends_configured_310(text: str) -> bool:
+    """Python 3.10's reading: a [trends] header in any form, or a root key setting trends, so
+    every form tomllib reads as the section runs trends.py, which refuses the ones it can't read"""
+    if any(TRENDS_HEADER.match(line) for line in text.splitlines()):
+        return True
+    return any(TRENDS_ROOT_KEY.match(line) for line in toml_tables(text).get("", "").splitlines())
+
+
+def trends_fix(repo: str, repo_dir: Path) -> str:
+    """The trends.py command that prints the whole drift report, from the repo and the path alone"""
+    return f"uv run --no-project python {TRENDS} {repo} --repo-dir {repo_dir}"
+
+
+def trend_value(series: str, value: float) -> str:
+    """A series' value as trends.py prints it: a percent, a count, or hours (days from 48 h)"""
+    if series == "ci_pass_rate":
+        return f"{value * 100:.1f}%"
+    if series == "flaky_reruns":
+        return f"{value:.1f}"
+    return f"{value:.1f} h" if value < 48 else f"{value / 24:.1f} d"
+
+
+def number_field(item: dict[str, Any], key: str, what: str) -> float:
+    value = item.get(key)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise Refused(f"error: trends.py printed {what} with {key} {value!r}, not a number")
+    return float(value)
+
+
+def drift_diagnosis(series: str, found: object) -> str:
+    """trends.py's diagnosis of a series, checked: workflows by path, count, and newest run URL,
+    or pull requests by number and hours; nothing an issue's or a pull request's author wrote"""
+    what = f"a {series} diagnosis"
+    if not isinstance(found, list):
+        raise Refused(f"error: trends.py printed {what} that isn't a list")
+    parts = []
+    for item in found:
+        if not isinstance(item, dict):
+            raise Refused(f"error: trends.py printed {what} entry that isn't an object")
+        if series in RUN_TRENDS:
+            workflow, count, url = item.get("workflow"), item.get("count"), item.get("url")
+            if set(item) != {"workflow", "count", "url"} or not isinstance(workflow, str) or not workflow:
+                raise Refused(f"error: trends.py printed {what} entry {sorted(item)} without a workflow")
+            if not isinstance(count, int) or isinstance(count, bool) or not isinstance(url, str):
+                raise Refused(f"error: trends.py printed {what} entry for {workflow} without a count and a URL")
+            done = "failed" if series == "ci_pass_rate" else "green on a rerun"
+            parts.append(f"{workflow} {count} {done}, newest {url}")
+            continue
+        number = item.get("number")
+        if set(item) != {"number", "hours"} or not isinstance(number, int) or isinstance(number, bool):
+            raise Refused(f"error: trends.py printed {what} entry {sorted(item)} without a pull request's number")
+        parts.append(f"#{number} {number_field(item, 'hours', what):.1f} h")
+    return ("; " if series in RUN_TRENDS else ", ").join(parts)
+
+
+def drift_row(item: object, days: int, fix: str) -> Row | None:
+    """One series of trends.py --json: a DRIFT row at the report tier, none at log, ok, or no data"""
+    if not isinstance(item, dict) or item.get("series") not in TREND_SERIES or item.get("tier") not in TREND_TIERS:
+        raise Refused(f"error: trends.py printed a series without a known name and tier: {json.dumps(item)[:200]}")
+    series = str(item["series"])
+    if item["tier"] != DRIFT_TIER:
+        return None
+    what = f"the {series} series"
+    newest, mean = number_field(item, "newest", what), number_field(item, "mean", what)
+    counted = item.get("baseline_buckets")
+    if not isinstance(counted, int) or isinstance(counted, bool):
+        raise Refused(f"error: trends.py printed {what} without its baseline_buckets")
+    flat = item.get("flat_baseline")
+    if not isinstance(flat, bool):
+        raise Refused(f"error: trends.py printed {what} without flat_baseline")
+    deviation = "flat baseline" if flat else f"{number_field(item, 'deviation', what):.1f}σ"
+    detail = (
+        f"{trend_value(series, newest)} against mean {trend_value(series, mean)},"
+        f" {deviation} over {counted} buckets of {days}d"
+    )
+    diagnosis = drift_diagnosis(series, item.get("diagnosis"))
+    return Row("DRIFT", series, f"{detail}: {diagnosis}" if diagnosis else detail, fix)
+
+
+def drift_rows(repo: str, repo_dir: Path, text: str) -> list[Row]:
+    """The DRIFT rows from trends.py --json's object, one per series at the report tier"""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: trends.py printed {text[:200]!r}, not JSON: {exc}") from None
+    days = data.get("bucket_days") if isinstance(data, dict) else None
+    if not isinstance(days, int) or isinstance(days, bool) or not isinstance(data.get("series"), list):
+        raise Refused("error: trends.py printed no bucket_days and series")
+    fix = trends_fix(repo, repo_dir)
+    found = [drift_row(item, days, fix) for item in data["series"]]
+    return [row for row in found if row is not None]
+
+
+def trends_rows(repo: str, repo_dir: Path, execute: Spawn = spawn) -> list[Row]:
+    """The full report's DRIFT rows: one trends.py --json run in the checkout, where it reads
+    [trends]; a run that fails stops the watch (exit 2), like any other read"""
+    proc = execute([sys.executable, str(TRENDS), repo, "--repo-dir", str(repo_dir), "--json"], repo_dir, None)
+    if proc.returncode != 0:
+        raise Refused(f"error: trends.py failed with exit {proc.returncode}: {proc.stderr.strip()}")
+    return drift_rows(repo, repo_dir, proc.stdout)
+
+
 def tier_rows(tier: int, args: argparse.Namespace, repo_dir: Path, known: Known | None, now: dt.datetime) -> list[Row]:
     """One tier's rows (spec 046); tiers 5 and 7 are the sweep's sections, read whole"""
     if tier in (5, 7):
@@ -5900,6 +6045,11 @@ def arguments() -> argparse.ArgumentParser:
         "--no-host",
         action="store_true",
         help="leave out the rows --host prints, which shipmill status reads on their own (#745)",
+    )
+    parser.add_argument(
+        "--no-trends",
+        action="store_true",
+        help="leave out the trends.py read, and so the DRIFT rows, of a config with [trends] (spec 078)",
     )
     parser.add_argument(
         "--role",
@@ -6070,6 +6220,9 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
     # sweep's: so neither reads the runs or their jobs, one read per active run (#1014, D-58)
     if not host:
         return merged_waits(rows)
+    # spec 078: the drift report, in the full report only, so no gate tick reads it (D-58)
+    if policy is not None and text is not None and not args.no_trends and trends_configured(text, policy):
+        rows += trends_rows(args.repo, repo_dir)
     rows += active_rows(fetch_active(args.repo), now, lambda r: fetch_jobs(args.repo, r.id))
     if args.no_host:  # shipmill status reads the host sections with --host, each on its own (#745)
         rows += [*launchd_rows(args.repo, now), *gate_idle_rows(args.repo, repo_dir, now)]
@@ -6102,6 +6255,8 @@ def main() -> int:
         parser.error("--tier and --sweep print no host row: they go without --host and --no-host")
     if args.known is not None and args.tier is None:
         parser.error("--known goes with --tier")
+    if args.no_trends and (args.tier is not None or args.sweep or args.host is not None):
+        parser.error("--no-trends goes with the full report: --tier, --sweep, and --host make no trends read")
     if "/" not in args.repo:
         parser.error("repo must be owner/name")
     if not 1 <= args.releases <= 20:
