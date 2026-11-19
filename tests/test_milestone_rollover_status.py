@@ -119,6 +119,17 @@ def test_s068_10_a_milestone_with_any_other_open_issue_reads_no_waiting_row(repo
     assert read(repo, at_day(5)) == ([], None)
 
 
+def test_s068_10_an_open_pull_request_in_the_milestone_is_not_a_hold(repos: Repos, tmp_path: Path) -> None:
+    """GitHub's milestone counts an open pull request among its open issues, and `gh issue
+    list` leaves it out: a pull request still open is unfinished work, so no WAITING row"""
+    repo, _ = repos.after(tmp_path, rc_cut)
+    held(repo, PARKED)
+    repo.github.milestones["1.1.0"] = Milestone(2, 0)  # #11 and an open pull request
+    repo.github.open = [OpenMilestone(3, "1.1.0", 2)]
+    assert read(repo, at_day(5)) == ([], None)
+    assert "milestone" not in plan_stable(repo).reason
+
+
 def test_s068_10_the_milestone_read_takes_each_open_issues_title_and_labels() -> None:
     url = "https://github.com/o/demo/issues/"
     found = parse_milestone_issues(

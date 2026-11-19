@@ -368,7 +368,7 @@ class Planner:
                 found = self.milestone_verdict(candidate, head)
                 return found.reason if found.done else found
             if milestone is not None and milestone.open_issues:
-                return milestones.held(self.github, str(candidate.version.release))
+                return milestones.held(self.github, str(candidate.version.release), milestone.open_issues)
         return None
 
     def milestone_verdict(self, candidate: _Candidate, head: str) -> milestones.Verdict:
@@ -405,7 +405,7 @@ class Planner:
             if milestone is None:
                 continue
             if milestone.open_issues:  # the ordinary wait, unless each open issue is a hold
-                if (holding := milestones.held(self.github, title)) is not None:
+                if (holding := milestones.held(self.github, title, milestone.open_issues)) is not None:
                     found.append(MilestoneWaiting(lane, holding))
                 continue
             if not milestone.closed_issues:

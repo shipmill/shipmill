@@ -203,16 +203,18 @@ def _held_by(issue: OpenIssue) -> str:
     return f"#{issue.number} waits on a decision: {issue.title}"
 
 
-def held(github: GitHub, title: str) -> Held | None:
+def held(github: GitHub, title: str, open_issues: int) -> Held | None:
     """The milestone as a hold when it has open issues and each carries the hold label or
-    needs-decision; None when any open issue carries neither, or none is open. GoalError for
-    a read that fails, as a goal's"""
+    needs-decision; None when any open issue carries neither, or none is open. open_issues is
+    the milestone's own count, which holds its open pull requests too: one the issue read
+    leaves out is unfinished work, so the milestone is no hold. GoalError for a read that
+    fails, as a goal's"""
     try:
         listed = github.milestone_issues(title)
     except ReleaseError as error:
         raise GoalError(str(error)) from error
     holding = {HOLD_LABEL, DECISION_LABEL}
-    if not listed.open or any(not holding & i.labels for i in listed.open):
+    if not listed.open or len(listed.open) != open_issues or any(not holding & i.labels for i in listed.open):
         return None
     return Held(title, listed.open)
 
