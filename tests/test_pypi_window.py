@@ -252,9 +252,9 @@ def test_plans_whose_goals_pypi_doesnt_serve_raise_the_wait(ws: ModuleType, vers
         return proc(cmd, 2, err=failed + "\n")
 
     with pytest.raises(ws.PypiWait):
-        ws.plans_run(REPO, tmp_path, None, None, None, execute)
+        ws.intake_run(REPO, tmp_path, True, None, None, None, execute)
     with pytest.raises(SystemExit, match="2"):  # --tool's form: as before
-        ws.plans_run(REPO, tmp_path, "shipmill==1.2.3", None, None, execute)
+        ws.intake_run(REPO, tmp_path, True, "shipmill==1.2.3", None, None, execute)
 
 
 def test_upstream_reports_pypi_doesnt_serve_are_the_row_not_unreadable(

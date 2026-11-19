@@ -136,6 +136,8 @@ ACTION = frozenset(
         "CLASS_CONFLICT",  # spec 070: an accepted opportunity's class waits on the maintainer
         "FIXED_DATE_AT_RISK",
         "FIXED_DATE_NO_DATE",
+        "SPEC_DUE",  # spec 074: accepted opportunities for the spec gate
+        "FEEDBACK_DUE",  # spec 074: handed-over requests for an intake pass
     }
 )
 REPO_ERROR = "REPO_ERROR"

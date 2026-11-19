@@ -1034,6 +1034,8 @@ AGENT_ROWS = [
     "UPSTREAM_DUE",
     "VETOED",
     "AGENT_DRAFT",  # #914 (D-67)
+    "SPEC_DUE",  # spec 074
+    "FEEDBACK_DUE",
 ]
 REPORT_ROWS = [
     "DIRECTION_MISSING",
@@ -1970,6 +1972,21 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
         *ws.plans_rows(
             json.dumps({"goal": "G-1", "kind": "goal", "number": None, "state": "PLAN_DUE", "title": TITLE}), REPO
         ).rows,
+        # spec 074: an accepted opportunity and a request handed over two days ago
+        *ws.feedback_rows(
+            "\n".join(
+                json.dumps(line)
+                for line in (
+                    {"autonomy": "propose"},
+                    {"number": 30, "kind": "opportunity", "state": "ACCEPTED", "title": TITLE, "note": TITLE}
+                    | {"author": "amy", "association": "OWNER", "handed": None},
+                    {"number": 31, "kind": "issue", "state": "NEW_FEEDBACK", "title": TITLE, "note": TITLE}
+                    | {"author": "amy", "association": "OWNER", "handed": (NOW - dt.timedelta(days=2)).isoformat()},
+                )
+            ),
+            REPO,
+            NOW,
+        ).rows,
         *ws.upstream_report_rows(
             REPO,
             1,
@@ -2010,6 +2027,8 @@ FIXES = {
     "NOT_PUBLISHED": ["gh run rerun 5 --failed -R o/r"],
     "ISSUES": ["/shipmill:github-issue-triage o/r"],
     "PLANS": ["/shipmill:product-intake o/r"],
+    "SPEC_DUE": ["/shipmill:github-issue-triage o/r"],  # spec 074
+    "FEEDBACK_DUE": ["/shipmill:product-intake o/r"],
     "OPERATE_FAILED": ["gh run rerun 5 --failed -R o/r"],
     "UNHEALTHY": [
         "operate rolls staging back after [operate] rollback_after failures; check its health check if it persists"

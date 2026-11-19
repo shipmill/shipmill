@@ -112,6 +112,9 @@ PRS_PARKED = "PRS_PARKED"  # #853: a person's open pull requests, each waiting o
 CHECKOUT_MISSING = "GATE_CHECKOUT_MISSING"
 # spec 070: an accepted opportunity's class of service that waits on the maintainer's choice
 CLASS_ROWS = ("CLASS_CONFLICT", "FIXED_DATE_AT_RISK", "FIXED_DATE_NO_DATE")
+# spec 074: the accepted opportunities the spec gate owes, and the requests triage handed to
+# intake a day ago or more, each line its issues and the row's fix
+INTAKE_LINES = (("spec due", "SPEC_DUE"), ("feedback due", "FEEDBACK_DUE"))
 YOURS_ROWS = (
     "HOLD",
     "PROMOTION_DUE",
@@ -151,6 +154,7 @@ PLACED = {
     "UPGRADE_PENDING",  # spec 014: the upgrade lines say it, each with its issue (S-014-15)
     MILESTONE_WAITING,  # spec 022: the milestone lines say both
     MILESTONE_MISSING,  # spec 068: the milestone lines say it with its create, the maintainer's (D-32)
+    *(state for _, state in INTAKE_LINES),  # spec 074: their own lines, with their fix
 }
 # the release rows the repo line names in place of "release ok" (S-009-17)
 RELEASE_PROBLEMS = ("BOT_FAILED", "BOT_STALLED", "BOT_PLAN_FAILED", "WORK_BRANCH_STALE", "NOT_PUBLISHED")
@@ -1478,6 +1482,9 @@ def item_lines(facts: Facts) -> list[str]:
     # spec 053: an approved spec nobody split, an ISSUES row of its own that triage_state.py doesn't read
     unsplit = [r for r in of("ISSUES") if r.detail.startswith(f"{SPEC_UNSPLIT} ")]
     lines += _fixed("to split", [(f"{r.detail.split(' ')[1]} {r.subject}", r.fix) for r in unsplit])
+    for name, state in INTAKE_LINES:  # spec 074: each issue's link, never its text (D-16)
+        listed = [(r, int(n)) for r in of(state) for n in re.findall(r"#(\d+)", r.detail)]
+        lines += _fixed(name, [(item(repo, n, False), r.fix) for r, n in listed])
     # an upgrade's issue is github-ship-watch's, listed on its upgrade line, never as triage's work
     owned = {o.issue for o in facts.upgrades if o.issue is not None}
     for name, states in ISSUE_LINES:

@@ -17,6 +17,8 @@ A goal of `docs/product.md` that nothing serves gets a **plan issue**: the work 
   - "intake" (the default): the report, plus the writes `[autonomy] intake` allows
   - "intake and triage": also hand ACCEPTED opportunities to github-issue-triage
 
+**A pass the gate starts (spec 074).** github-ship-watch reports FEEDBACK_DUE once triage handed a request over at least 24 hours before, and under `[autonomy] intake = "propose"` the gate starts an intake pass for it with the scope "intake": run the usual workflow on every request the script lists, not only the ones the row names. The ACCEPTED opportunities are triage's then: the watch's SPEC_DUE row starts github-issue-triage's spec gate on them, so a pass the gate started lists them as waiting for triage and hands none over itself.
+
 ## Autonomy
 
 `[autonomy] intake` in `.github/shipmill.toml` sets how far a pass goes; the script prints it on its first line:

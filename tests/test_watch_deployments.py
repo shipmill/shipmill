@@ -54,6 +54,8 @@ elif args[:2] == ["api", "graphql"] and any("open:" in a for a in args):
         "vetoable": {**page, "nodes": []},
     }
     print(json.dumps({"data": {"repository": repository}}))
+elif args[:2] == ["api", "graphql"] and any("issues(" in a for a in args):  # intake_state.py (spec 074)
+    print(json.dumps({"data": {"repository": {"hasDiscussionsEnabled": False, "issues": {**page, "nodes": []}}}}))
 elif args[:1] == ["api"] and "/deployments" in " ".join(args):
     mode = os.environ["FAKE_DEPLOYMENTS"]
     if mode == "403" or (mode == "statuses-403" and "/statuses" in " ".join(args)):

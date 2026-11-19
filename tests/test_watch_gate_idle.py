@@ -55,6 +55,8 @@ elif args[:2] == ["api", "graphql"] and any("open:" in a for a in args):
         "vetoable": {**page, "nodes": []},
     }
     print(json.dumps({"data": {"repository": repository}}))
+elif args[:2] == ["api", "graphql"] and any("issues(" in a for a in args):  # intake_state.py (spec 074)
+    print(json.dumps({"data": {"repository": {"hasDiscussionsEnabled": False, "issues": {**page, "nodes": []}}}}))
 elif args[:1] == ["api"] and "marketplace.json" in " ".join(args):
     source = {"source": "github", "repo": "shipmill/shipmill", "ref": "v0.137.0"}
     print(json.dumps({"plugins": [{"name": "shipmill", "source": source}]}))

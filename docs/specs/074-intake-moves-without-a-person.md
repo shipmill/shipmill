@@ -1,6 +1,6 @@
 # S-074: Handed-over requests and accepted opportunities start their own sessions
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -144,3 +144,13 @@ change only when the set of due issues does.
 - shipmill/shipmill#1258: S-074-3, S-074-4, S-074-5, S-074-6, S-074-7, S-074-8, S-074-9
 
 ## Verification
+
+- S-074-1: tests/test_intake_state.py (test_s074_1_*): a newest `postponed` verdict keeps an issue out of NEW_FEEDBACK, and a newer `opportunity` verdict brings it back; passes
+- S-074-2: tests/test_intake_state.py (test_s074_2_*): the NEW_FEEDBACK and ACCEPTED lines of `--json` carry `author`, `association`, and `handed`, with `handed` the hand-off's `createdAt` and null for an issue with no triage comment, a discussion, and an ACCEPTED opportunity; passes
+- S-074-3: tests/test_watch_feedback.py (test_s074_3_*): `intake_run` builds `intake_state.py <repo> --json --bot-login <login>` without `docs/product.md` and adds `--plans`, `--wip`, and `--role` with it; the full report run on a checkout without `docs/product.md` reads the intake's issues and calls no uvx, and with a failing intake read, or with `docs/product.md` and a failing goals read, exits 2 naming `intake_state.py` or `intake_state.py --plans`; passes
+- S-074-4: tests/test_watch_feedback.py (test_s074_4_*): `ACCEPTED #5 #9` for opportunities #9 and #5 with the fix `/shipmill:github-issue-triage o/r`, no row without an ACCEPTED line, and the full report prints `ACCEPTED #30` for the fake intake's accepted opportunity; passes
+- S-074-5: tests/test_watch_feedback.py (test_s074_5_*): `NEW_FEEDBACK #7 #3 #8` for hand-offs 48, 25, and exactly 24 hours old, with the 23.9-hour one, the one with `handed` null, and the discussion in no row; the full report lists only the request handed over two days ago; a malformed line or a missing autonomy line exits 2; passes
+- S-074-6: tests/test_watch_feedback.py (test_s074_6_*): run as the gate runs it, under `intake = "observe"` the full report prints FEEDBACK_DUE with `agent: false` and `--sweep` and `--tier 7` don't, under `propose` all three print it with `agent: true`, and SPEC_DUE prints in all six reads; passes
+- S-074-7: tests/test_watch_feedback.py (test_s074_7_*): with `--trusted-only` an outsider's request (handed over or not) and opportunity are in neither row and in the untrusted set, the `--bot-login`'s are kept, and the full report lists an outsider's handed-over request as `UNTRUSTED #31`; passes
+- S-074-8: tests/test_watch_feedback.py (test_s074_8_*), tests/test_gate.py, tests/test_watch_tiers.py: both files' tier 7 is `DIRECTION_PENDING, PLANS, SPEC_DUE, FEEDBACK_DUE`, both `SWEPT` hold the two rows, a walk over a sweep holding them hands SPEC_DUE, then FEEDBACK_DUE once SPEC_DUE is handed, SPEC_DUE again past `retry_hours`, and no item for an observe row; `shipmill status` lists both rows with their fix; passes
+- S-074-9: tests/test_watch_feedback.py (test_s074_9_*), tests/test_ship_watch.py (the fixed rows): with every title, body, and note set to a marker, the table and JSON of the full report, `--sweep`, and `--tier 7` never print it, and each row's detail is its state and `#N` numbers only; passes

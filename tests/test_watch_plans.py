@@ -174,7 +174,7 @@ def test_s028_13_the_watch_runs_intake_state_in_the_checkout(ws: ModuleType, tmp
         asked.append((cmd, cwd))
         return completed(1, intake_lines(goal_row("G-1", "PLAN_DUE")))
 
-    text = ws.plans_run("o/r", tmp_path, "shipmill==1.2.3", BOT, 3, execute)
+    text = ws.intake_run("o/r", tmp_path, True, "shipmill==1.2.3", BOT, 3, execute)
     assert ws.plans_rows(text, "o/r").rows[0].detail == "PLAN_DUE G-1"
     ((cmd, cwd),) = asked
     assert cwd == tmp_path
@@ -190,13 +190,13 @@ def test_s028_13_the_watch_runs_intake_state_in_the_checkout(ws: ModuleType, tmp
         "--bot-login",
         BOT,
     ]
-    ws.plans_run("o/r", tmp_path, "t", None, None, execute)
+    ws.intake_run("o/r", tmp_path, True, "t", None, None, execute)
     assert "--wip" not in asked[-1][0] and "--bot-login" not in asked[-1][0]
     # without --tool (the watch's default since spec 031) intake_state.py runs the plugin's pin
-    ws.plans_run("o/r", tmp_path, None, None, None, execute)
+    ws.intake_run("o/r", tmp_path, True, None, None, None, execute)
     assert asked[-1][0][1:] == [str(ws.INTAKE_STATE), "o/r", "--plans", "--json"]
     with pytest.raises(ws.Refused, match="exit 2: boom"):
-        ws.plans_run("o/r", tmp_path, "t", execute=lambda cmd, cwd, env: completed(2, err="boom"))
+        ws.intake_run("o/r", tmp_path, True, "t", execute=lambda cmd, cwd, env: completed(2, err="boom"))
 
 
 def test_s028_18_the_watch_passes_the_role_flags_to_intake_state(ws: ModuleType, tmp_path: Path) -> None:
@@ -206,7 +206,7 @@ def test_s028_18_the_watch_passes_the_role_flags_to_intake_state(ws: ModuleType,
         asked.append(cmd)
         return completed(0, intake_lines())
 
-    ws.plans_run("o/r", tmp_path, None, BOT, None, execute, roles=["maintainer=alice", "dev=@o/devs"])
+    ws.intake_run("o/r", tmp_path, True, None, BOT, None, execute, roles=["maintainer=alice", "dev=@o/devs"])
     assert asked[-1][1:] == [
         str(ws.INTAKE_STATE),
         "o/r",
