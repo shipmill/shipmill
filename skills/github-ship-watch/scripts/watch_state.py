@@ -5855,7 +5855,9 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         rows += gate_app_rows(table)
         read = config(text, policy, args.incident_label)
         rows += holds
-        if table is not None:  # spec 070: the accepted opportunities' classes, with [agents]
+        # spec 070: the accepted opportunities' classes, with [agents]; no tier and not the
+        # sweep keeps a class row, so only a read with the host's rows reads them (#1377)
+        if table is not None and host:
             rows += service_rows(args.repo, args.bot_login, now)
         land = None if table is None else held_land(read.land, bool(holds))
         closed = fetch_issues(args.repo, "--label", read.incident_label, state="closed")
