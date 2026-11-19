@@ -825,8 +825,12 @@ def test_s033_16_check_without_app_id_exits_2_naming_it(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], config: str | None
 ) -> None:
     root = checkout(tmp_path, config)
-    with pytest.raises(ReleaseError, match=r"no \[agents\] app_id in .*\.github/shipmill\.toml"):
+    with pytest.raises(ReleaseError) as raised:
         check(root, {APP_KEY: "/k.pem"}, tmp_path)
+    first, choices, setup = str(raised.value).split("\n")  # S-082-6: the three choices and setup's line
+    assert first == f"the App isn't available here: no [agents] app_id in {root / '.github' / 'shipmill.toml'}"
+    assert choices.startswith("choose whom agents write as here") and 'nobody (identity = "none")' in choices
+    assert setup == f"or let setup ask once and record it: /shipmill:shipmill-setup {REPO}"
     assert capsys.readouterr() == ("", "")
 
 

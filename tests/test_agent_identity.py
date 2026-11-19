@@ -1,6 +1,7 @@
 """Spec 082: whom agents write to GitHub as is chosen once per repo, at setup. [agents]
-identity reads "app", "host", or "none" in shipmill and in setup_state.py, and setup_state.py
-prints one Identity row. No test reaches the network: gh is a fake"""
+identity reads "app", "host", or "none" in shipmill and in setup_state.py, setup_state.py
+prints one Identity row, and `shipmill gh`, `spec open`, and `app-token --check` refuse a write
+with the owner's choice or the three choices. No test reaches the network: gh is a fake"""
 
 import importlib.util
 import json
@@ -16,9 +17,13 @@ import pytest
 from shipmill.agents import AgentsConfig, WriteAs, gh_identity_of
 from shipmill.errors import ReleaseError
 
-from .test_app import APP_ID
-from .test_app_gh import WITH_APP, checkout
-from .test_contributors import run_setup, setup_repo, states
+from .test_app import APP_ID, REPO, FakeSigner
+from .test_app_gh import WITH_APP, Host, checkout, outside
+from .test_app_token import FAKE_GH, MintApi, executable
+from .test_contributors import check, run_setup, setup_repo, states
+from .test_gh_refuses_without_app import COMMENT, PR_CREATE, choices, one_call, refusal, run
+from .test_spec_open import FakeCheckout, FakeGh, repo_files, spec_text
+from .test_spec_open import cli as spec_open
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "shipmill-setup" / "scripts" / "setup_state.py"
 AGENTS = '[agents]\nprompt = "/t"\n'
@@ -34,6 +39,18 @@ def ss() -> ModuleType:
     sys.modules[spec.name] = module  # dataclasses look their module up by name
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture
+def host(tmp_path: Path) -> Host:
+    fakes = tmp_path / "fakes"
+    fakes.mkdir()
+    executable(fakes / "gh", FAKE_GH)
+    record = tmp_path / "record"
+    record.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    return Host(fakes, record, home)
 
 
 def config(root: Path, text: str) -> Path:
@@ -270,3 +287,159 @@ def test_s082_7_a_bad_identity_stops_the_script_before_fix_changes_anything(tmp_
 def test_s082_7_the_docstring_names_the_rows(ss: ModuleType) -> None:
     for state in ("IDENTITY_APP", "IDENTITY_HOST", "IDENTITY_NONE", "IDENTITY_UNCHOSEN"):
         assert state in (ss.__doc__ or "")
+
+
+# -- S-082-2 to S-082-6: the two refusals and app-token --check -----------------------------
+
+NONE = AGENTS + 'identity = "none"\n'
+HOST = AGENTS + 'identity = "host"\n'
+# not chosen: no config, no [agents], [agents] setting neither key, identity = "app" without app_id
+UNCHOSEN = [None, "[release]\n", AGENTS, AGENTS + 'identity = "app"\n']
+NOT_IN_OWNERS_CHOICE = ("app-create", "app_id", '"host"', "--as-host")
+
+
+def owners_choice(repo: str) -> list[str]:
+    """The owner's-choice message, the spec's two lines without cli.run's `shipmill: `"""
+    return [
+        f'refusing a write to {repo}: .github/shipmill.toml sets [agents] identity = "none", so this repo\'s owner '
+        "chose that agents don't write to GitHub here",
+        "shipmill wrote nothing: hand the text to a person, who posts it as themselves",
+    ]
+
+
+@pytest.mark.parametrize("args", [PR_CREATE, COMMENT])
+def test_s082_2_identity_none_refuses_a_write_with_the_owners_choice(
+    tmp_path: Path, host: Host, args: list[str]
+) -> None:
+    lines = refusal(checkout(tmp_path, NONE), args, host)  # gh never ran, no token minted
+    assert lines == owners_choice("owner/name" if args is PR_CREATE else REPO)
+    for word in NOT_IN_OWNERS_CHOICE:
+        assert word not in "\n".join(lines)
+
+
+def test_s082_2_the_refusal_exits_2_on_stderr_and_never_starts_gh(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, NONE)
+    done = subprocess.run(
+        [sys.executable, "-m", "shipmill", "--repo", str(root), "gh", *PR_CREATE],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**host.env(), "HOME": str(host.home)},
+    )
+    assert (done.returncode, done.stdout) == (2, "")
+    first, second = owners_choice("owner/name")
+    assert done.stderr.splitlines() == [f"shipmill: {first}", second]
+    assert not (host.record / "gh-args").exists()
+
+
+def test_s082_2_identity_none_runs_a_read_as_the_host_with_ghs_exit(tmp_path: Path, host: Host) -> None:
+    api, signer = MintApi(), FakeSigner()
+    code, runner = run(checkout(tmp_path, NONE), ["pr", "view", "1"], host, api, signer, GH_TOKEN="")
+    assert code == 7  # gh's
+    [(argv, env)] = runner.calls
+    assert argv == [host.gh, "pr", "view", "1"]
+    assert "GH_TOKEN" not in env
+    assert (api.calls, api.posts, signer.signed) == ([], [], [])
+
+
+@pytest.mark.parametrize("args", [PR_CREATE, COMMENT])
+def test_s082_3_as_host_doesnt_lift_identity_none(tmp_path: Path, host: Host, args: list[str]) -> None:
+    lines = refusal(checkout(tmp_path, NONE), ["--as-host", *args], host)
+    assert lines == owners_choice("owner/name" if args is PR_CREATE else REPO)
+
+
+@pytest.mark.parametrize("text", UNCHOSEN)
+@pytest.mark.parametrize("args", [PR_CREATE, COMMENT])
+def test_s082_4_not_chosen_names_the_three_choices_the_setup_line_and_one_call(
+    tmp_path: Path, host: Host, text: str | None, args: list[str]
+) -> None:
+    first, *middle, last = refusal(checkout(tmp_path, text), args, host)
+    repo = "owner/name" if args is PR_CREATE else REPO
+    assert first.startswith(f"refusing a write to {repo} as the host's gh login: ")
+    assert middle == choices(repo)
+    for choice in ("app_id = <id>", "app-create`", 'identity = "host"', 'identity = "none"'):
+        assert choice in middle[0]
+    assert middle[1] == f"or let setup ask once and record it: /shipmill:shipmill-setup {repo}"
+    assert last == one_call(args)
+
+
+def test_s082_4_outside_a_checkout_the_setup_line_names_a_placeholder(tmp_path: Path, host: Host) -> None:
+    _, _, setup, _ = refusal(outside(tmp_path), COMMENT, host)
+    assert setup == "or let setup ask once and record it: /shipmill:shipmill-setup <owner/name>"
+
+
+def test_s082_4_identity_host_still_writes_as_the_host(tmp_path: Path, host: Host) -> None:
+    api, signer = MintApi(), FakeSigner()
+    code, runner = run(checkout(tmp_path, HOST), COMMENT, host, api, signer, GH_TOKEN="")
+    assert code == 7
+    [(argv, env)] = runner.calls
+    assert argv[:3] == [host.gh, "issue", "comment"] and "GH_TOKEN" not in env
+    assert (api.calls, api.posts, signer.signed) == ([], [], [])
+
+
+def test_s082_5_spec_open_refuses_identity_none_before_its_first_write(tmp_path: Path, host: Host) -> None:
+    root = checkout(tmp_path, NONE)
+    repo_files(root, spec_text())
+    gh, fake, api = FakeGh(), FakeCheckout(), MintApi()
+    with pytest.raises(ReleaseError) as raised:
+        spec_open(root, host, gh, fake, api)
+    assert str(raised.value).split("\n") == owners_choice(REPO)
+    assert (gh.calls, fake.published, api.posts) == ([], [], [])
+
+
+@pytest.mark.parametrize("text", [AGENTS, AGENTS + 'identity = "app"\n'])
+def test_s082_5_spec_open_not_chosen_names_the_choices_and_no_one_call(tmp_path: Path, host: Host, text: str) -> None:
+    root = checkout(tmp_path, text)
+    repo_files(root, spec_text())
+    gh, fake, api = FakeGh(), FakeCheckout(), MintApi()
+    with pytest.raises(ReleaseError) as raised:
+        spec_open(root, host, gh, fake, api)
+    first, *rest = str(raised.value).split("\n")
+    assert first == f"refusing a write to {REPO} as the host's gh login: .github/shipmill.toml sets no [agents] app_id"
+    assert rest == choices(REPO)  # no --as-host line: no one call allows a command of shipmill's own
+    assert (gh.calls, fake.published, api.posts) == ([], [], [])
+
+
+def test_s082_6_check_with_identity_host_exits_0_naming_the_hosts_login(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = checkout(tmp_path, HOST)
+    assert check(root, {}, tmp_path / "home") == 0
+    path = root / ".github" / "shipmill.toml"
+    assert capsys.readouterr() == (
+        f'writes here go as the host\'s gh login: {path} sets [agents] identity = "host"\n',
+        "",
+    )
+    assert not (root / ".git" / "shipmill").exists()  # no token cache: nothing minted
+
+
+def test_s082_6_check_with_identity_none_exits_2_with_the_owners_choice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = checkout(tmp_path, NONE)
+    with pytest.raises(ReleaseError) as raised:  # NoNetwork and NoSigner fail on any call
+        check(root, {"SHIPMILL_APP_KEY": "/k.pem"}, tmp_path / "home")
+    assert str(raised.value).split("\n") == owners_choice(REPO)
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("text", UNCHOSEN)
+def test_s082_6_check_not_chosen_exits_2_naming_the_choices_and_setup(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], text: str | None
+) -> None:
+    root = checkout(tmp_path, text)
+    with pytest.raises(ReleaseError) as raised:
+        check(root, {"SHIPMILL_APP_KEY": "/k.pem"}, tmp_path / "home")
+    first, *rest = str(raised.value).split("\n")
+    assert first == f"the App isn't available here: no [agents] app_id in {root / '.github' / 'shipmill.toml'}"
+    assert rest == choices(REPO)
+    assert capsys.readouterr() == ("", "")
+
+
+def test_s082_6_check_with_app_id_answers_as_s033_16(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = checkout(tmp_path, WITH_APP)
+    assert check(root, {"SHIPMILL_APP_KEY": "/nowhere/app.pem"}, tmp_path / "home") == 0
+    assert capsys.readouterr() == (f"the App {APP_ID} is available here: SHIPMILL_APP_KEY is set\n", "")
+    with pytest.raises(ReleaseError, match=f"the App {APP_ID} isn't available here: no key at"):
+        check(root, {}, tmp_path / "home")
+    assert not (root / ".git" / "shipmill").exists()

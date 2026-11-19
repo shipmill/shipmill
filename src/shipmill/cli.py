@@ -1792,8 +1792,10 @@ def _app_token(
 def _app_check(root: Path, args: argparse.Namespace, environ: Mapping[str, str], home: Path) -> int:
     """S-033-16: whether the App is available to the session, by the delivery hook's test: the
     checkout's [agents] app_id, then a non-empty SHIPMILL_APP_KEY or a key file at the default
-    path. One line either way; exit 2 (ReleaseError) when it isn't. It reads the config and
-    stats one path: no token, no network, no key's bytes"""
+    path. One line either way; exit 2 (ReleaseError) when it isn't. Without app_id (S-082-6):
+    exit 0 for [agents] identity = "host", the owner's choice for "none", and the three choices
+    when nothing is chosen. It reads the config and git's origin and stats one path: no token,
+    no network, no key's bytes"""
     passed = {
         "owner/name": args.slug,
         "--app-id": args.app_id,
@@ -1810,9 +1812,17 @@ def _app_check(root: Path, args: argparse.Namespace, environ: Mapping[str, str],
     git = Git(root)
     top = Path(git.run("rev-parse", "--show-toplevel").strip()) if git.ok("rev-parse", "--show-toplevel") else None
     top = top or _unreadable_top(root) or root
-    app_id = app_id_of(top)
-    if app_id is None:
-        raise ReleaseError(f"the App isn't available here: no [agents] app_id in {top / CONFIG_PATH}")
+    identity = gh_identity_of(top)
+    app_id = identity.app_id
+    if app_id is None:  # S-082-6: the repo's recorded choice, else the three choices
+        if identity.identity is WriteAs.HOST:
+            print(f'writes here go as the host\'s gh login: {top / CONFIG_PATH} sets [agents] identity = "host"')
+            return 0
+        repo = _refused_repo(top, top, _known_origin(top) if git.ok("rev-parse", "--show-toplevel") else None, None)
+        if identity.identity is WriteAs.NONE:
+            raise _owners_choice(repo)
+        lines = [f"the App isn't available here: no [agents] app_id in {top / CONFIG_PATH}", *_choices(repo)]
+        raise ReleaseError("\n".join(lines))
     found = availability(app_id, environ, home)
     if not found.available:
         raise ReleaseError(found.reason)
@@ -1918,29 +1928,52 @@ def _leading(passed: list[str]) -> _Leading:
 AS_HOST = "--as-host"
 
 
+def _refused_repo(root: Path, top: Path | None, origin: str | None, gh_args: list[str] | None) -> str:
+    """The repo a refused write names: gh's -R, else the checkout's origin, else its path, else
+    the folder outside any checkout"""
+    named = None if gh_args is None else repo_value(gh_args)
+    return named or origin or (str(top) if top is not None else f"the folder {root} (no git checkout)")
+
+
+def _choices(repo: str) -> list[str]:
+    """S-082-4: the three choices of whom agents write as, and the setup that records one; the
+    setup line names owner/name, a placeholder where the repo has none"""
+    command = cli_command()  # #236: the form the person can run, as every hint names it
+    slug = repo if is_plain_repo(repo) else "<owner/name>"
+    return [
+        f"choose whom agents write as here, in [agents] of {CONFIG_PATH}: the App (app_id = <id>, from "
+        f'`{command} app-create`), your own login (identity = "host"), or nobody (identity = "none")',
+        f"or let setup ask once and record it: /shipmill:shipmill-setup {slug}",
+    ]
+
+
+def _owners_choice(repo: str) -> ReleaseError:
+    """S-082-2, S-082-3, S-082-5, S-082-6: the exit 2 of a write in a repo whose [agents]
+    identity = "none"; it recommends no other identity, since the owner already chose"""
+    return ReleaseError(
+        f'refusing a write to {repo}: {CONFIG_PATH} sets [agents] identity = "none", so this repo\'s owner chose '
+        "that agents don't write to GitHub here\n"
+        "shipmill wrote nothing: hand the text to a person, who posts it as themselves"
+    )
+
+
 def _host_write_refused(
     root: Path, top: Path | None, origin: str | None, config: bool, gh_args: list[str] | None
 ) -> ReleaseError:
-    """S-037-1, S-037-2: the exit 2 of a write with no [agents] app_id, which neither the repo
-    ([agents] identity = "host") nor the call (--as-host) allows, naming the repo and both fixes;
-    without gh_args (spec open's writes, S-053-7) only the repo's fix, since no one call allows
-    a command of shipmill's own"""
-    named = None if gh_args is None else repo_value(gh_args)
-    repo = named or origin or (str(top) if top is not None else f"the folder {root} (no git checkout)")
+    """S-037-1, S-037-2, S-082-4: the exit 2 of a write with no [agents] app_id and no recorded
+    choice, which the call (--as-host) doesn't allow, naming the repo, the three choices, and
+    the setup that records one; without gh_args (spec open's writes, S-053-7, S-082-5) no
+    one-call line, since no one call allows a command of shipmill's own"""
+    repo = _refused_repo(root, top, origin, gh_args)
     if top is None:
         why = f"the folder {root} is in no git checkout, so it has no {CONFIG_PATH} and no [agents] app_id"
     elif not config:
         why = f"{top} has no {CONFIG_PATH}, so no [agents] app_id"
     else:
         why = f"{CONFIG_PATH} sets no [agents] app_id"
-    command = cli_command()  # #236: the form the person can run, as every hint names it
-    lines = [
-        f"refusing a write to {repo} as the host's gh login: {why}",
-        f'allow it for this repo: give it an App ({command} app-create), or set [agents] identity = "host" in '
-        f"{CONFIG_PATH}",
-    ]
+    lines = [f"refusing a write to {repo} as the host's gh login: {why}", *_choices(repo)]
     if gh_args is not None:
-        lines.append(f"allow this one call: {command} gh {AS_HOST} {shlex.join(gh_args)}")
+        lines.append(f"allow this one call: {cli_command()} gh {AS_HOST} {shlex.join(gh_args)}")
     return ReleaseError("\n".join(lines))
 
 
@@ -1974,7 +2007,8 @@ def _gh(
     With app_id set any failure to get the token exits 2 and gh never runs (D-14), and so does
     --as-host. Without it (spec 037), a read runs as the host's login, and a write too when
     [agents] identity = "host" or the call passes --as-host; any other write exits 2 and gh
-    never runs. GH_TOKEN is never set but empty. A merge naming its head commit by less than its
+    never runs, and with identity = "none" a write exits 2 with the owner's choice, --as-host
+    or not (spec 082). GH_TOKEN is never set but empty. A merge naming its head commit by less than its
     full SHA exits 2 before any token, in every mode (S-030-24). As the App, a merge of a pull
     request with a `never` zone or the needs-decision label exits 2 and gh never runs (S-030-13,
     S-030-23), and with [agents] author set, or without
@@ -2059,6 +2093,9 @@ def _gh(
     if top is None or app_id is None:
         if key is not None:
             raise ReleaseError(f"--app-key names an App's key, but no [agents] app_id is set in {CONFIG_PATH}")
+        if not is_read(gh_args) and identity.identity is WriteAs.NONE:  # S-082-2, S-082-3: --as-host too
+            origin = _known_origin(top) if top is not None and readable else None
+            raise _owners_choice(_refused_repo(root, top, origin, gh_args))
         if not (is_read(gh_args) or identity.identity is WriteAs.HOST or leading.as_host):
             origin = _known_origin(top) if top is not None and readable else None
             raise _host_write_refused(root, top, origin, identity.config, gh_args)
@@ -2816,10 +2853,13 @@ def _spec_open(root: Path, args: argparse.Namespace, path: _GhPath, checkout: sp
 def _spec_writes(top: Path, path: _GhPath) -> None:
     """S-053-7: what `shipmill gh` checks before a write's token, before spec open's first
     write: with [agents] app_id, the App's key (SHIPMILL_APP_KEY, else the default path);
-    without it, the refusal of a write as the host's login unless [agents] identity = "host".
-    The token itself is minted by the reads that follow, through `shipmill gh`"""
+    without it, the owner's choice for [agents] identity = "none" (S-082-5), and the refusal of
+    a write as the host's login unless [agents] identity = "host". The token itself is minted
+    by the reads that follow, through `shipmill gh`"""
     identity = gh_identity_of(top)
     if identity.app_id is None:
+        if identity.identity is WriteAs.NONE:
+            raise _owners_choice(_refused_repo(top, top, _known_origin(top), None))
         if identity.identity is not WriteAs.HOST:
             raise _host_write_refused(top, top, _known_origin(top), identity.config, None)
         return
