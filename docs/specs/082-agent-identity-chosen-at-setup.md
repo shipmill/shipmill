@@ -1,6 +1,6 @@
 # S-082: Whom agents write to GitHub as is chosen once per repo, at setup
 
-status: approved
+status: built
 serves: G-1
 
 ## Problem
@@ -241,4 +241,25 @@ Touched areas: `src/shipmill/agents.py` (`[agents] identity`), `src/shipmill/cli
 - shipmill/shipmill#1281: S-082-10
 - shipmill/shipmill#1282: S-082-9, S-082-11, S-082-12
 
+Each closed by its pull request: #1273 by #1357, #1276 by #1365, #1278 by #1393, #1281 by
+#1420, and #1282 by #1425.
+
 ## Verification
+
+Checked on origin/main at a585b221: `uv run pytest -q tests/test_agent_identity.py
+tests/test_app_install.py` passed (129 tests), and the commands below ran by hand in this
+checkout and in throwaway git checkouts under `tmp/`, each with a `.github/shipmill.toml`
+whose `[agents]` sets `identity = "none"`, `"host"`, `"nobody"`, or neither key.
+
+- S-082-1: ran tests/test_agent_identity.py's `test_s082_1_*`, the Python 3.10 run of `setup_state.py` included; by hand, `shipmill gh` with `identity = "nobody"` exits 2 with `[agents] identity must be "app" (the default), "host", or "none", got 'nobody'`, and `setup_state.py` on the same checkout exits 2 naming the key and the same three values, holds
+- S-082-2: ran `test_s082_2_*`; by hand, `shipmill gh issue comment 1 -R example/demo --body x` with `identity = "none"` exits 2 with the two owner's-choice lines, naming the repo and `[agents] identity = "none"` and none of `app-create`, `app_id`, `"host"`, or `--as-host`; `shipmill gh pr view 1425 -R shipmill/shipmill` there runs as the host's `gh` login and prints the pull request, exit 0, holds
+- S-082-3: ran `test_s082_3_as_host_doesnt_lift_identity_none`; by hand, `shipmill gh --as-host issue comment ...` with `identity = "none"` exits 2 with the same two lines, holds
+- S-082-4: ran `test_s082_4_*`; by hand, the same write with an `[agents]` section setting neither key exits 2 with spec 037's first line, the three choices (`app_id` from `app-create`, `identity = "host"`, `identity = "none"`), `/shipmill:shipmill-setup example/demo`, and `allow this one call: ... gh --as-host issue comment 1 -R example/demo --body x`; the no-config, no-section, `identity = "app"`, and `identity = "host"` cases are the tests', holds
+- S-082-5: ran `test_s082_5_*`; by hand, `shipmill spec open docs/specs/001-demo.md --issue 1` on an approved spec exits 2 with the owner's-choice lines for `identity = "none"`, and, not chosen, with the three choices and the setup line and no `--as-host` line; the checkout has no new branch after it, holds
+- S-082-6: ran `test_s082_6_*`; by hand, `shipmill app-token --check` exits 0 printing that writes go as the host's `gh` login because the config sets `identity = "host"`, exits 2 with the owner's-choice lines for `identity = "none"`, and exits 2 naming the three choices and the setup line when not chosen, printing no token, holds
+- S-082-7: ran `test_s082_7_*`; by hand, `setup_state.py shipmill/shipmill` prints `IDENTITY_APP` naming the App 5209412 in this checkout, `IDENTITY_NONE` for `identity = "none"`, and `IDENTITY_UNCHOSEN` naming the host's two Apps by their key files (`5209412 (key at ~/.config/shipmill/app-5209412.pem)`) with exit 1 for an `[agents]` section setting neither key, holds
+- S-082-8: ran tests/test_app_install.py's `test_s082_8_*`; by hand, `shipmill app-install shipmill/shipmill --check` prints `App 5209412 (shipmill-romamo[bot]) can read shipmill/shipmill`, exit 0, and with `--json` stdout is one object with `app_id`, `slug`, `repo`, `reads` true, and `page`; `shipmill app-install octocat/Hello-World --app-id 5209412 --check` exits 1 naming the repo, the App's installations page, and `app-install octocat/Hello-World`; neither prints a token, holds
+- S-082-9: ran `test_s082_9_*` and read `skills/shipmill-setup/SKILL.md`'s "Whom agents write as, asked once per repo": asked only on `IDENTITY_UNCHOSEN`, the App (recommended, offering a named App, else `app-create`), the owner's login with its warning, then nobody; `app-install ... --check` before `app_id`, none written unless it exits 0; no gate for `host` or `none`, holds
+- S-082-10: ran `test_s082_10_*`; by hand, `uv run shipmill doctor` in this checkout prints `PASS identity: the App 5209412 (shipmill-romamo[bot]) can read shipmill/shipmill`; the FAIL, WARN, `host`, `none`, and not-chosen rows are the tests', holds
+- S-082-11: ran `test_s082_11_*` and read the "Write as the App" rule of the six skills' `SKILL.md`: each runs every write as `shipmill gh` and `shipmill app-token --check` before its first write in every repo whatever the config sets, stops on the owner's choice handing over each write's text and target without `--as-host`, and reads no instruction file's prose for the identity, holds
+- S-082-12: ran `test_s082_12_*` and read `docs/install.md`'s "Give the sessions their own identity": the three values, the setup question, `identity = "none"` refusing `--as-host` too, and the All repositories note on reaching a new repo and reading and writing every repository of the account, private ones included, holds
