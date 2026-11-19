@@ -19,6 +19,7 @@ WRITING_SKILLS = (
 )
 RELAYED = "Decision by `@<login>`, relayed by <agent>"  # the login in a code span (D-61, #771)
 BARE_RELAYED = "Decision by @<login>, relayed by <agent>"
+RULE = "Write as the App, as the repo's config chooses"  # the rule's head, every repo since spec 082
 
 
 def folded(*parts: str) -> str:
@@ -33,11 +34,11 @@ def test_s012_5_the_six_skills_are_every_skill_that_writes() -> None:
 @pytest.mark.parametrize("skill", WRITING_SKILLS)
 def test_s012_5_each_skill_writes_through_shipmill_gh_in_every_session(skill: str) -> None:
     text = folded("skills", skill, "SKILL.md")
-    assert text.count("**Write as the App when the repo has one") == 1, "said once, in one place"
-    rule = text.split("**Write as the App when the repo has one", 1)[1][:900]  # the rule itself, not the rest
+    assert text.count(f"**{RULE}") == 1, "said once, in one place"
+    rule = text.split(f"**{RULE}", 1)[1][:1000]  # the rule itself, not the rest
     for phrase in (
-        "`[agents] app_id` set" if skill == "shipmill-setup" else "sets `[agents] app_id`",
-        "every `gh` call that writes",
+        "in every repo, whatever `.github/shipmill.toml` sets",  # S-082-11: no longer only with app_id
+        "very `gh` call that writes",  # Every, or every after setup's colon
         "runs as `shipmill gh <the same arguments>`",
         "in every session, gated or started by hand",
         "Reads may keep plain `gh`",
@@ -90,7 +91,7 @@ def test_s012_6_no_skill_keeps_its_own_copy_of_the_references() -> None:
 @pytest.mark.parametrize("skill", WRITING_SKILLS)
 def test_s037_12_each_skills_rule_names_the_refusal_without_app_id(skill: str) -> None:
     text = folded("skills", skill, "SKILL.md")
-    rule = text.split("**Write as the App when the repo has one", 1)[1].split("Without the App, shipmill drafts", 1)[0]
+    rule = text.split(f"**{RULE}", 1)[1].split("Without the App, shipmill drafts", 1)[0]
     for phrase in (
         "Without `app_id`, `shipmill gh` refuses a write with exit 2",
         'unless the config sets `[agents] identity = "host"` (spec 037)',
@@ -115,10 +116,12 @@ def test_s037_12_each_skills_rule_names_the_refusal_without_app_id(skill: str) -
         (("skills", "github-ship-watch", "SKILL.md"), "| MILESTONE_MISSING |", "`shipmill gh api -X POST"),
     ],
 )
-def test_s037_12_the_rows_name_shipmill_gh_only_with_app_id_set(doc: tuple[str, ...], state: str, write: str) -> None:
+def test_s037_12_the_rows_name_shipmill_gh_in_every_repo(doc: tuple[str, ...], state: str, write: str) -> None:
+    # S-082-11 supersedes "plain `gh` without app_id": every write runs as shipmill gh, whatever the config sets
     row = folded(*doc).split(state, 1)[1].split(" - **", 1)[0].split(" | ", 1)[0]
     after = row.split(write, 1)[1]
-    assert after.split("`", 1)[1].startswith(" with `[agents] app_id` set, plain `gh` without it"), row
+    assert after.split("`", 1)[1].startswith(", in every repo (")
+    assert "plain `gh` without it" not in row, row
 
 
 def test_s037_12_install_documents_the_refusal_identity_and_as_host() -> None:

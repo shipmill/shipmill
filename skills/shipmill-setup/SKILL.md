@@ -652,7 +652,8 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    Every time you set up the gate, ask two questions together, before writing the
    section: who should own the gate's GitHub App (step 3), and whether anyone watches
    this machine, which picks `mode` (step 4); the Product step's question below joins
-   that round. Write both answers into `[agents]`: `app_id`
+   that round, and so does step 3's identity question when the checklist reads
+   `IDENTITY_UNCHOSEN`. Write both answers into `[agents]`: `app_id`
    and `mode = "interactive"` or `mode = "headless"`, never left to the default (D-20).
    A session that waits on a question holds the repo, so by default the gate stops it
    after 15 minutes. Ask whether the user answers questions sooner or later than that; set
@@ -900,6 +901,31 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      Configure to add a repo to an existing installation). Relay those steps, ask the user
      to click, and wait for its `installed on <owner/repo>`
 
+   **Whom agents write as, asked once per repo (spec 082).** The checklist's Identity row
+   (`setup_state.py <owner/repo>`) reads the choice from `[agents]`: `IDENTITY_APP` (`app_id`
+   set), `IDENTITY_HOST`, `IDENTITY_NONE`, or `IDENTITY_UNCHOSEN`. Ask only when it reads
+   `IDENTITY_UNCHOSEN`; a repo whose row reads a recorded value is not asked. Ask in the
+   round of the other questions (D-20), with AskUserQuestion, or through the needs-decision
+   protocol in a gate session (D-21): "Whom do agents write to GitHub as in this repo?"
+   Offer these options, in this order:
+
+   1. **The App (recommended).** When the row names an App (`<app_id> (<where>)`: a key on
+      this host, or a sibling checkout's `app_id`), offer it, so the usual answer is a
+      confirmation; when it names none, offer to create one with `$CR app-create` (above).
+      Before you write `app_id`, run `$CR app-install <owner/repo> --app-id <id> --check`.
+      On exit 0 (`App <id> (<slug>[bot]) can read <owner/repo>`), write `app_id = <id>`. On
+      any other exit write no `app_id`: pass on its message, which names the App's
+      installation settings page, and stop the identity step there; the user installs the
+      App (`$CR app-install <owner/repo>`) and runs setup again
+   2. **The owner's login** (`identity = "host"`). Before you write it, warn plainly: on
+      GitHub, these writes can't be told from the owner's own
+   3. **Nobody** (`identity = "none"`): agents don't write to GitHub here; they draft, and a
+      person posts
+
+   Write the answer to `[agents]` of `.github/shipmill.toml` in the setup's pull request.
+   With `host` or `none` chosen, install no gate (D-19): say that the gate needs the App,
+   and stop the gate's steps there
+
    By hand instead, in GitHub's settings (Developer settings, GitHub Apps, New GitHub App):
    - **No webhook:** clear Webhook's Active box; the App needs no callback URL either
    - **These repository permissions, and no others:**
@@ -951,22 +977,33 @@ on whom, from GitHub, with one `factory` line summing up those checks.
    runs `gh`. With no `app_id` it runs a read as the host's login and refuses a write with
    exit 2 (spec 037). `$CR app-token` works with
    no checkout too, caching under `$XDG_CACHE_HOME/shipmill/<owner>/<repo>/app-token.json`
-   (`~/.cache` when `XDG_CACHE_HOME` is unset), mode `0600`. **Write as the App when the
-   repo has one:** with `[agents] app_id` set, every `gh` call that writes (an issue, a
-   comment, a label, a pull request, a review, a merge, a release) runs as `shipmill gh
-   <the same arguments>` (`$CR gh`) from the repo's checkout, in every session, gated or
-   started by hand, this skill's own included once `app_id` merges. Reads may keep plain
-   `gh`. A `shipmill gh` that exits 2 is a stop: report its message and never retry the
-   write with plain `gh`. Without `app_id`, `shipmill gh` refuses a write with exit 2
-   unless the config sets `[agents] identity = "host"` (spec 037): that exit 2 is a stop
-   too, never retried with plain `gh`, and a session passes `--as-host` only for a write a
+   (`~/.cache` when `XDG_CACHE_HOME` is unset), mode `0600`. **Write as the App, as the
+   repo's config chooses:** every `gh` call that writes (an issue, a comment, a label, a
+   pull request, a review, a merge, a release) runs as `shipmill gh <the same arguments>`
+   (`$CR gh`) from the repo's checkout, in every repo, whatever `.github/shipmill.toml`
+   sets, in every session, gated or started by hand, this skill's own included; with
+   `[agents] app_id` its author is the App's bot (spec 082). Reads may keep plain `gh`. A
+   `shipmill gh` that exits 2 is a stop: report its message and never retry the write with
+   plain `gh`. Whom agents write as is the config's choice alone: no instruction file's
+   prose (a `CLAUDE.md`, an `AGENTS.md`, a note on which repos have an App) decides the
+   identity, and the skill never reads one for it. The skill runs `shipmill app-token
+   --check` before its first write to GitHub, a push included, in every repo, whatever the
+   config sets, from the repo's checkout and through the same pinned `uvx` as `shipmill
+   gh`; reading, and local work in the checkout (the config, the workflow, a branch, a
+   commit), come before it as they are. Exit 0 (the App, or `identity = "host"`): go on.
+   With `[agents] identity = "none"` the repo's owner chose that agents don't write to
+   GitHub here: on that exit 2, from the check or from `shipmill gh`, the skill stops, its
+   report's first line says the owner chose that agents don't write here and that
+   shipmill wrote nothing to GitHub, and it hands over the text of each write it would
+   have made, each with its target, as below; it never offers or passes `--as-host` there.
+   Without `app_id`, `shipmill gh` refuses a write with exit 2 unless the config sets
+   `[agents] identity = "host"` (spec 037); with no recorded choice the message names the
+   three choices and `/shipmill:shipmill-setup <owner/repo>`: that exit 2 is a stop too,
+   never retried with plain `gh`, and a session passes `--as-host` only for a write a
    person approved in the chat, never on its own judgment or in a headless session, and
    says so in its report. Without the App, shipmill drafts and the person posts (spec 033,
-   D-54): with `app_id` set, the skill runs `shipmill app-token --check` before its first
-   write to GitHub, a push included, from the repo's checkout and through the same pinned
-   `uvx` as `shipmill gh`; reading, and local work in the checkout (the config, the
-   workflow, a branch, a commit), come before it as they are. Exit 0: go on. On its exit
-   2, or a `shipmill gh` exit 2 naming the missing key, it stops there: its report's first
+   D-54): on the check's exit 2 with `app_id` set, or a `shipmill gh` exit 2 naming the
+   missing key, it stops there: its report's first
    line says the App isn't available here, quoting the check's reason, and that shipmill
    wrote nothing to GitHub, and it hands over the text of each write it would have made,
    in order, each with its target and the exact text (the repo; each label's name, color,
