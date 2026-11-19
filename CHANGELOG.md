@@ -7,6 +7,18 @@ bot.
 
 ## [Unreleased]
 
+## [0.148.1] - 2026-11-19
+
+### Fixed
+
+- Delivery hooks: a `gh api graphql` `mergePullRequest` or `enablePullRequestAutoMerge` mutation is held to the merge method too, its `mergeMethod` read from the query, a `-f`/`-F` variable, an `-F @file`, or an `--input` body: `REBASE` is refused always, `SQUASH` under `[agents] merge = "merge"`, and a mutation or query the hook can't read, such as one on stdin, is refused (#1373)
+- `retro.py findings` reads the reviews, review threads, and conversation of up to 50 closed pull requests per GraphQL query instead of two or three REST reads per pull request, paging on alone only a connection longer than its page, so a 28-day window over hundreds of pull requests takes a handful of queries, not hours; the findings it lists are unchanged (#1376)
+- `watch_state.py --sweep` and `--tier 5` or `--tier 7` no longer read the accepted opportunities' classes of service, whose rows none of them prints; the full report and `--no-host` still read them once (#1377)
+
+### Security
+
+- `intake_state.py` counts a `Triage:` comment only from an OWNER, MEMBER, or COLLABORATOR or the `--bot-login`, which it now takes without `--plans` too, so anyone else's `Triage: **postponed**` no longer hides a request from intake and their `Triage: **opportunity**` no longer marks one `handed` (#1374)
+
 ## [0.148.0] - 2026-11-19
 
 ### Added
@@ -2713,7 +2725,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.148.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.148.1...HEAD
+[0.148.1]: https://github.com/shipmill/shipmill/compare/v0.148.0...v0.148.1
 [0.148.0]: https://github.com/shipmill/shipmill/compare/v0.147.2...v0.148.0
 [0.147.2]: https://github.com/shipmill/shipmill/compare/v0.147.1...v0.147.2
 [0.147.1]: https://github.com/shipmill/shipmill/compare/v0.147.0...v0.147.1
