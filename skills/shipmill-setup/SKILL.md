@@ -359,8 +359,9 @@ or the tags are wrong; fix those, not the version.
    `[agents]` section, in either mode, `needs-decision`, `role:maintainer` and
    `role:<name>` for each role `[agents.roles]` defines, a role's item (spec 036), `human`,
    the older label for a person's item in a chain (spec 017), `shipmill-upgrade-later`, a config upgrade's "not now",
-   `upstream`, a report for another repo, spec 038, and `decided`, a notify decision the
-   maintainer may veto, spec 030; with `[land.window]`, with or without `[agents]`, its
+   `upstream`, a report for another repo, spec 038, `decided`, a notify decision the
+   maintainer may veto, spec 030, and `expedite` and `fixed-date`, the classes of service
+   the maintainer adds to an accepted opportunity, spec 070; with `[land.window]`, with or without `[agents]`, its
    `queued_label`, spec 056), and
    whether GitHub deletes a pull request's branch when it merges (`BRANCH_DELETE_ON` or
    `BRANCH_DELETE_OFF`, the repo setting `delete_branch_on_merge`). That setting matters

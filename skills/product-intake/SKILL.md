@@ -127,7 +127,7 @@ Under `observe`, write nothing: put each proposed group in the report with its r
 
 ### 4. The maintainer's call
 
-Accepting is the `planned` label, declining is closing the opportunity as not planned with the reason in a comment. When a reason is a rule rather than a one-off ("shipmill stays GitHub-only"), recommend recording it in the decisions log through the [design gate](../github-issue-triage/references/design-gate.md) (Recording a decision); the log entry, not the opportunity, is what later designs are checked against. Don't add the entry yourself unless the maintainer says so.
+Accepting is the `planned` label, declining is closing the opportunity as not planned with the reason in a comment. With it the maintainer may choose a class of service other than standard (spec 070): `expedite`, or `fixed-date` with a due date on the milestone the opportunity is in. Only a label a person adds counts, so never add either yourself. When a reason is a rule rather than a one-off ("shipmill stays GitHub-only"), recommend recording it in the decisions log through the [design gate](../github-issue-triage/references/design-gate.md) (Recording a decision); the log entry, not the opportunity, is what later designs are checked against. Don't add the entry yourself unless the maintainer says so.
 
 ### 5. Hand an accepted opportunity to triage
 

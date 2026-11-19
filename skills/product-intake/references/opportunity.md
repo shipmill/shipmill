@@ -44,13 +44,15 @@ gh issue create -R {owner/repo} --title "{outcome}" --label opportunity --body-f
 ## Intake's triage line on the opportunity
 
 ```markdown
-Triage: **opportunity**.{ Serves: G-n.} {N} requests ask for this outcome; it waits for the maintainer's call: accept with the `planned` label, or decline by closing it as not planned with the reason in a comment. Once accepted, it goes through the spec gate as a feature.
+Triage: **opportunity**.{ Serves: G-n.} {N} requests ask for this outcome; it waits for the maintainer's call: accept with the `planned` label, or decline by closing it as not planned with the reason in a comment. For a class of service other than standard, accept with `planned` and add `expedite`, or `fixed-date` with a due date on the milestone it is in. Once accepted, it goes through the spec gate as a feature.
 ```
+
+The class of service is the maintainer's choice (spec 070): only a label a person adds counts, so never add `expedite` or `fixed-date` yourself, and never copy one onto a build issue.
 
 For an opportunity that serves no goal, the accept question says so instead of `{ Serves: G-n.}`, and demand alone never makes it a candidate:
 
 ```markdown
-Triage: **opportunity**. Serves no goal{; hits N-n: "{the non-goal's words}"}. {N} requests ask for this outcome, but demand alone doesn't make it a candidate: it serves no goal of the direction. It waits for the maintainer's call: add the goal it would need, such as "{a goal in the direction's words}", to `docs/product.md` and then accept it with the `planned` label, or decline it by closing it as not planned with the reason in a comment{; one that hits N-n is recommended for decline}.
+Triage: **opportunity**. Serves no goal{; hits N-n: "{the non-goal's words}"}. {N} requests ask for this outcome, but demand alone doesn't make it a candidate: it serves no goal of the direction. It waits for the maintainer's call: add the goal it would need, such as "{a goal in the direction's words}", to `docs/product.md` and then accept it with the `planned` label (adding `expedite` or `fixed-date` for a class other than standard), or decline it by closing it as not planned with the reason in a comment{; one that hits N-n is recommended for decline}.
 ```
 
 A repo without `docs/product.md` leaves `{ Serves: G-n.}` out and uses the first template only. Never use the word "implement" here: `triage_state.py` reads the newest triage comment's verdict from it.
