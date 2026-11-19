@@ -7,6 +7,7 @@ Usage: retro.py gather <owner/repo> [--days 7] [--environment NAME ...]
                        [--decisions [--checkout DIR] [--raise-at 2] [--lower-after 4]
                                     [--lower-rate 90] [--lower-min 10] [--revert-days 14]
                                     [--role NAME=FILLER[,FILLER...] ...]]
+                       [--reviews]
        retro.py findings <owner/repo> [--days 28] [--bot LOGIN ...] [--json]
        retro.py dedupe <owner/repo> --title TITLE [--title TITLE ...] [--json]
 
@@ -59,6 +60,15 @@ gather   runs metrics.py over the --days to now and over the --days before that,
          questions over the --lower-after windows number at least --lower-min (10) with at
          least --lower-rate (90, 1 to 100) percent recommended; never notify to act. A marker
          naming no zone id is listed apart
+         --reviews adds the review records (spec 075): the reviews submitted in the window by
+         a --bot login (needed) whose first line is `<!-- shipmill:review merge|refuse -->`,
+         read from GitHub alone. The refuse records, `verified` when the line right after the
+         marker is exactly `<!-- shipmill:findings confirmed=N rejected=N minor=N -->`, else
+         `unverified` (with their pull requests); the merge records with that line,
+         `overturned`; the confirmed, rejected, and minor totals over every record with it; and
+         `first_reviewer_wrong`, the percent rejected of the three, rounded down, or `no data`
+         when there are none. --json holds them under `reviews`. Anyone else's review counts
+         for nothing
 findings what reviews raised on the pull requests closed, merged or not, in the last --days
          (spec 077), newest pull request first, each item with an F-n id: `record`, a --bot
          login's review whose first line is `<!-- shipmill:review merge|refuse -->`; `review`,
@@ -281,6 +291,9 @@ def gather(args: argparse.Namespace, sources: Sources) -> int:
         if direction is not None:
             goals = goals_report(args, sources, direction, [current, previous])
     decisions = decisions_report(args, sources, levels, end, maintainers) if levels is not None else None
+    reviews = None
+    if args.reviews:
+        reviews = reviews_report(fetch_reviews(sources, args.repo, start), frozenset(args.bot), start, end)
     if args.json:
         window = {"start": current["start"], "end": current["end"], "previous_start": previous["start"]}
         report = {
@@ -293,6 +306,8 @@ def gather(args: argparse.Namespace, sources: Sources) -> int:
             report["goals"] = goals
         if decisions is not None:
             report["decisions"] = decisions
+        if reviews is not None:
+            report["reviews"] = reviews
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0
     print(f"{args.repo}: the {args.days} days to {end:%Y-%m-%d %H:%M} UTC, against the {args.days} days before")
@@ -306,6 +321,8 @@ def gather(args: argparse.Namespace, sources: Sources) -> int:
         print("\n".join(goals_text(goals)))
     if decisions is not None:
         print("\n".join(decisions_text(decisions)))
+    if reviews is not None:
+        print("\n".join(reviews_text(reviews)))
     return 0
 
 
@@ -1555,6 +1572,139 @@ def decisions_text(decisions: dict[str, Any]) -> list[str]:
     return lines
 
 
+# -- review records (spec 075) ----------------------------------------------------------------
+
+# The line `shipmill review record --findings` writes right after the verdict's marker, read as
+# pr_gate.py reads it: exactly this, else no findings line
+FINDINGS_LINE = re.compile(
+    r"<!-- shipmill:findings confirmed=(0|[1-9][0-9]*) rejected=(0|[1-9][0-9]*) minor=(0|[1-9][0-9]*) -->"
+)
+REVIEW_FIELDS = "pageInfo { hasPreviousPage startCursor } nodes { state body submittedAt author { __typename login } }"
+REVIEW_PULLS = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: $size, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number updatedAt reviews(last: 50) { """
+    + REVIEW_FIELDS
+    + """ } }
+    }
+  }
+}
+"""
+)
+PULL_REVIEWS = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { reviews(last: $size, before: $cursor) { """
+    + REVIEW_FIELDS
+    + """ } }
+  }
+}
+"""
+)
+
+
+def fetch_reviews(sources: Sources, repo: str, since: dt.datetime) -> dict[int, list[dict[str, Any]]]:
+    """Each pull request updated since (a review updates its pull request), with its reviews,
+    oldest first, paged back past since: one query pages the pull requests, and a pull request
+    with more reviews than its page reads the older ones alone"""
+    owner, _, name = repo.partition("/")
+    base: Variables = {"owner": owner, "name": name}
+    sizes = {REVIEW_PULLS: 50, PULL_REVIEWS: 100}
+    pulls = pages(
+        sources.graphql,
+        REVIEW_PULLS,
+        base,
+        sizes,
+        ["pullRequests"],
+        "pull requests updated in the window",
+        lambda n: timestamp(n["updatedAt"]) < since,
+    )
+    found: dict[int, list[dict[str, Any]]] = {}
+    for pull in pulls:
+        if timestamp(pull["updatedAt"]) < since:
+            continue
+        number = int(pull["number"])
+        reviews = pull["reviews"]
+        nodes = list(reviews["nodes"])
+        seen: set[str] = set()
+        while reviews["pageInfo"]["hasPreviousPage"] and (
+            not nodes or not nodes[0].get("submittedAt") or timestamp(nodes[0]["submittedAt"]) >= since
+        ):
+            what = f"the reviews of #{number}"
+            cursor = advance(reviews["pageInfo"]["startCursor"], seen, what)
+            page = sized(sources.graphql, PULL_REVIEWS, {**base, "number": number, "cursor": cursor}, sizes, what)
+            reviews = dig(page, ["pullRequest", "reviews"], what)
+            nodes = list(reviews["nodes"]) + nodes
+        found[number] = nodes
+    return found
+
+
+def findings_counts(body: str) -> tuple[int, int, int] | None:
+    """The confirmed, rejected, and minor counts of a record's findings line, the line right after
+    its marker, or None when that line isn't exactly the findings line"""
+    lines = body.lstrip().split("\n")
+    found = FINDINGS_LINE.fullmatch(lines[1].strip()) if len(lines) > 1 else None
+    return None if found is None else (int(found.group(1)), int(found.group(2)), int(found.group(3)))
+
+
+def reviews_report(
+    pulls: dict[int, list[dict[str, Any]]], bots: frozenset[str], start: dt.datetime, end: dt.datetime
+) -> dict[str, Any]:
+    """S-075-8: the --bot logins' review records submitted in the window: refusals verified by a
+    second look (a findings line) or not, merges that overturned a refusal (a findings line), and
+    the findings' totals; anyone else's review, or one outside the window, counts for nothing"""
+    verified = unverified = overturned = 0
+    unverified_pulls: set[int] = set()
+    totals = [0, 0, 0]
+    for number, reviews in pulls.items():
+        for review in reviews:
+            submitted = review.get("submittedAt")
+            if review.get("state") == "PENDING" or not submitted or not start <= timestamp(submitted) <= end:
+                continue
+            body = str(review.get("body") or "")
+            mark = first_line(body)
+            if not bot_login(review, bots) or mark not in RECORD_MARKS:
+                continue
+            counts = findings_counts(body)
+            if counts is not None:
+                totals = [total + count for total, count in zip(totals, counts, strict=True)]
+            if mark == RECORD_MARKS[1] and counts is None:
+                unverified += 1
+                unverified_pulls.add(number)
+            elif mark == RECORD_MARKS[1]:
+                verified += 1
+            elif counts is not None:
+                overturned += 1
+    confirmed, rejected, minor = totals
+    every = confirmed + rejected + minor
+    return {
+        "refused": verified + unverified,
+        "verified": verified,
+        "unverified": unverified,
+        "unverified_pulls": sorted(unverified_pulls),
+        "overturned": overturned,
+        "confirmed": confirmed,
+        "rejected": rejected,
+        "minor": minor,
+        "first_reviewer_wrong": rejected * 100 // every if every else NO_DATA,
+    }
+
+
+def reviews_text(reviews: dict[str, Any]) -> list[str]:
+    listed = ", ".join(f"#{n}" for n in reviews["unverified_pulls"])
+    wrong = reviews["first_reviewer_wrong"]
+    return [
+        f"Review records: {reviews['refused']} refusals, {reviews['verified']} verified, "
+        f"{reviews['unverified']} unverified{f' ({listed})' if listed else ''}; {reviews['overturned']} overturned",
+        f"  findings: {reviews['confirmed']} confirmed, {reviews['rejected']} rejected, {reviews['minor']} minor; "
+        f"first reviewer wrong: {wrong if wrong == NO_DATA else f'{wrong}%'}",
+    ]
+
+
 # -- findings (spec 077) ----------------------------------------------------------------------
 
 RECORD_MARKS = ("<!-- shipmill:review merge -->", "<!-- shipmill:review refuse -->")  # spec 055
@@ -1994,7 +2144,8 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "--bot",
         action="append",
         default=[],
-        help="passed to metrics.py; with --goals or --decisions, a trusted comment author",
+        help="passed to metrics.py; with --goals or --decisions, a trusted comment author; with --reviews, "
+        "whose review records count",
     )
     g.add_argument("--json", action="store_true")
     g.add_argument("--goals", action="store_true", help="add the report per goal of docs/product.md (spec 027)")
@@ -2043,6 +2194,12 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "`shipmill roles --flags` prints them; a --bot login's relay counts as an answer only when it "
         "names a maintainer (D-68, D-70)",
     )
+    g.add_argument(
+        "--reviews",
+        action="store_true",
+        help="add the --bot logins' review records of the window: refusals verified or not, overturned, and "
+        "the second look's findings (spec 075)",
+    )
     f = sub.add_parser("findings", help="what reviews raised on the closed PRs, and the rule proposals (spec 077)")
     f.add_argument("repo", help="owner/name")
     f.add_argument("--days", type=int, default=FINDINGS_DAYS, help="the window of closed pull requests, in days")
@@ -2066,6 +2223,8 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error("--lower-rate must be 1 to 100")
         if args.lower_min < 1 or args.revert_days < 1:
             parser.error("--lower-min and --revert-days must be at least 1")
+        if args.reviews and not args.bot:
+            parser.error("--reviews counts the --bot logins' review records: give the App's login with --bot")
     if args.command == "findings" and args.days < 1:
         parser.error("--days must be at least 1; give a whole number of days, 28 by default")
     return args
