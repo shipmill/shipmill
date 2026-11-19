@@ -895,6 +895,51 @@ def test_s081_3_a_write_off_the_checkouts_repo_is_public(tmp_path: Path, host: H
     assert capture.reads == []
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["co", "5", "--body", LEAKED],  # an alias
+        ["acme-notify", "--message", LEAKED],  # an extension
+        ["variable", "set", "NOTE", "--org", "acme", "--body", LEAKED],
+        ["variable", "set", "NOTE", "-oacme", "-b", LEAKED],
+        ["secret", "set", "NOTE", "--org=acme", "--body", LEAKED],
+        ["secret", "set", "NOTE", "-u", "--body", LEAKED],
+        ["attestation", "verify", "file.tgz", "--owner", "acme", "--bundle", LEAKED],
+        ["codespace", "edit", "-d", LEAKED],
+    ],
+)
+def test_s081_3_a_write_its_repo_cant_be_placed_is_public(tmp_path: Path, host: Host, args: list[str]) -> None:
+    """#1372: an alias, an extension, and an org-, owner- or user-scoped command go to a repo
+    shipmill can't place, so the checkout's private repo doesn't stand for it: public"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with_term(host)
+    capture = ByRepo()
+    said = refused(root, args, host, capture)
+    assert "(it goes to no repo on github.com, so it is checked as public)" in said
+    assert capture.reads == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["issue", "comment", "5", "--body", LEAKED],
+        ["label", "create", LEAKED],
+        ["variable", "set", "NOTE", "--env", "prod", "--body", LEAKED],
+        ["secret", "set", "NOTE", "-e", "prod", "--body", LEAKED],
+        ["release", "create", "v1", "--notes", LEAKED],
+    ],
+)
+def test_s081_3_a_repo_command_without_a_repo_goes_to_the_checkouts(
+    tmp_path: Path, host: Host, args: list[str]
+) -> None:
+    """#1372: gh's own repo commands with no -R write to the checkout's repo, private here"""
+    root = checkout(tmp_path, HOST_IDENTITY)
+    with_term(host)
+    capture = ByRepo()
+    gh(root, args, host, capture)
+    assert capture.reads == [REPO]
+
+
 def test_stdin_is_named_where_it_is_read() -> None:
     texts = sent_texts(["api", "-X", "POST", "repos/o/r/labels", "--input", "-"], lambda flag, path: "x")
     assert texts[-1] == Text("the --input on stdin", "x")
