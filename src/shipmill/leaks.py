@@ -116,12 +116,17 @@ class Private:
             raise ReleaseError(
                 f"{path} can't be read ({exc.strerror}); the leak check reads it before any write"
             ) from None
+        # Neither error's own text reaches the message: the parser's quotes the file's keys, which
+        # may be private terms, and the decoder's the bytes; only where it failed (#1407)
+        refuses = "fix it, the leak check refuses every write until then"
         try:
-            data = tomllib.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-            raise ReleaseError(
-                f"{path} isn't valid TOML ({exc}); fix it, the leak check refuses every write until then"
-            ) from None
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ReleaseError(f"{path} isn't UTF-8 at byte {exc.start}; {refuses}") from None
+        try:
+            data = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ReleaseError(f"{path} isn't valid TOML at line {exc.lineno}, column {exc.colno}; {refuses}") from None
         unknown = sorted(set(data) - _KEYS)
         if unknown:
             raise ReleaseError(

@@ -404,6 +404,37 @@ def test_s081_4_a_malformed_private_file_fails_every_write(tmp_path: Path, host:
     assert str(path) in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    ("raw", "where"),
+    [
+        (b'terms = []\n["Acme Rocket"]\n["Acme Rocket"]\n', "isn't valid TOML at line 3, column 15"),
+        (b"terms = []\nx = {acmerocket = 1, acmerocket = 2}\n", "isn't valid TOML at line 2, column 36"),
+        (b'terms = ["Acme Rocket \xff"]\n', "isn't UTF-8 at byte 22"),
+    ],
+)
+def test_s081_4_a_private_file_that_doesnt_parse_names_where_never_its_text(
+    tmp_path: Path, host: Host, raw: bytes, where: str
+) -> None:
+    root = checkout(tmp_path, HOST_IDENTITY)
+    path = host.home / PRIVATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    with pytest.raises(ReleaseError) as caught:
+        main(
+            ["--repo", str(root), "gh", "issue", "comment", "250", "--body", "clean"],
+            api=MintApi(),
+            signer=FakeSigner(),
+            environ=host.env(),
+            home=host.home,
+            gh_runner=Runner(),
+            gh_capture=Reads("private"),
+        )
+    said = str(caught.value)
+    assert said.startswith(f"{path} {where}; fix it, the leak check refuses every write until then")
+    assert "acme" not in said.lower().replace(str(path).lower(), "")
+    assert "0xff" not in said
+
+
 def test_s081_4_a_malformed_private_file_fails_no_read(tmp_path: Path, host: Host) -> None:
     root = checkout(tmp_path, HOST_IDENTITY)
     private(host, "allow = true\n")
