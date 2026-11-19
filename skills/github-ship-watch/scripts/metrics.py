@@ -58,6 +58,24 @@ before it):
                      trailer (AGENT_MARKS, case-insensitive). Of those, how many a person
                      approved in a GitHub review: the human gate
 
+The agent quality measures (spec 078), over the PRs Agent share counts as an agent's. A
+verdict is a review whose body's first line is a review record (`<!-- shipmill:review merge
+-->` or `refuse`) by a Bot, "[bot]" or --bot author, or an APPROVED or CHANGES_REQUESTED
+review by an OWNER, MEMBER, or COLLABORATOR who is a person; a review round is one distinct
+commit verdicts were given at; a fix commit is a one-parent commit authored after the PR's
+creation (a rebase keeps author dates):
+  Rework cycles      per PR, its review rounds beyond the first plus its fix commits (mean;
+                     the detail gives the mean rounds and the mean fix commits)
+  First-pass merge   PRs with 0 rework cycles / agent PRs
+  rate
+  Review time        the PR's creation to its first verdict (median, p90); a PR with no
+                     verdict is left out, and the detail counts it
+  Plan match         of the PRs whose body has one "## Plan" with a "Files:" line naming
+                     backticked paths, those whose every changed file (a rename by its new
+                     path) equals a path, is under one ending in "/", or matches one as a
+                     glob ("**" any run, "*" any run without "/", "?" one character but "/");
+                     the detail counts the PRs with no such plan
+
 A measure with nothing to measure (no releases, no merges, no deployments) reads "no data",
 never 0. Exit 0 on success, 2 on bad input or a gh failure. Every list is paged; a page GitHub
 rejects for its resource limits is asked again at half the size, down to 10 items; one
@@ -130,6 +148,8 @@ query($owner: String!, $name: String!, $branch: String!, $head: String!) {
   }
 }
 """
+# What a review needs to be read as a verdict (spec 078)
+VERDICT_FIELDS = " nodes { state authorAssociation submittedAt body commit { oid } author { __typename login } }"
 PULLS = (
     """
 query($owner: String!, $name: String!, $size: Int!, $cursor: String) {
@@ -154,8 +174,15 @@ query($owner: String!, $name: String!, $size: Int!, $cursor: String) {
         }
         commits(first: 100) { """
     + PAGE_INFO
-    + """ nodes { commit { authoredDate message } } }
+    + """ nodes { commit { authoredDate message parents { totalCount } } } }
         reviews(states: APPROVED, first: 50) { pageInfo { hasNextPage } nodes { author { __typename login } } }
+        verdicts: reviews(first: 50) { """
+    + PAGE_INFO
+    + VERDICT_FIELDS
+    + """ }
+        files(first: 100) { """
+    + PAGE_INFO
+    + """ nodes { path } }
       }
     }
   }
@@ -179,7 +206,30 @@ query($owner: String!, $name: String!, $size: Int!, $cursor: String, $number: In
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) { commits(first: $size, after: $cursor) { """
     + PAGE_INFO
-    + """ nodes { commit { authoredDate message } } } }
+    + """ nodes { commit { authoredDate message parents { totalCount } } } } }
+  }
+}
+"""
+)
+PULL_VERDICTS = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { verdicts: reviews(first: $size, after: $cursor) { """
+    + PAGE_INFO
+    + VERDICT_FIELDS
+    + """ } }
+  }
+}
+"""
+)
+PULL_FILES = (
+    """
+query($owner: String!, $name: String!, $size: Int!, $cursor: String, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { files(first: $size, after: $cursor) { """
+    + PAGE_INFO
+    + """ nodes { path } } }
   }
 }
 """
@@ -234,6 +284,8 @@ SIZES = {
     COMPARE: 100,
     PULLS: 50,
     PULL_COMMITS: 100,
+    PULL_VERDICTS: 100,
+    PULL_FILES: 100,
     ISSUE_COMMENTS: 100,
     DEPLOYMENTS: 100,
     LABELLED: 50,
@@ -465,7 +517,10 @@ def fetch(
     cutoff = oldest - dt.timedelta(days=1)
     pulls = pages(run, PULLS, base, sizes, ["pullRequests"], "merged pull requests", lambda n: _older(n, cutoff))
     for pr in pulls:
-        pull_commits(run, base, sizes, pr)
+        pull_commits(run, base, sizes, pr, window)
+        if measured(pr, window):  # the agent quality measures read all its reviews and files
+            extend(run, base, sizes, pr, "verdicts", PULL_VERDICTS, f"the reviews of PR #{pr['number']}")
+            extend(run, base, sizes, pr, "files", PULL_FILES, f"the changed files of PR #{pr['number']}")
 
     # Newest first, back to the window's start; with --environment, also back to a chosen
     # environment's deployment, so one deployed only before the window still counts as deployed
@@ -514,17 +569,45 @@ def issue_comments(run: Runner, sizes: Sizes, closed: Closed, bots: frozenset[st
         comments["pageInfo"] = page["pageInfo"]
 
 
-def pull_commits(run: Runner, base: Variables, sizes: Sizes, pr: Node) -> None:
-    """Page the PR's commits forwards while none carries an agent's mark"""
-    commits = pr["commits"]
+def extend(
+    run: Runner,
+    base: Variables,
+    sizes: Sizes,
+    pr: Node,
+    key: str,
+    query: str,
+    what: str,
+    stop: Callable[[], bool] = lambda: False,
+) -> None:
+    """Page the PR's connection at key forwards to its end, or until stop() holds"""
+    connection = pr[key]
     seen: set[str] = set()
-    what = f"the commits of PR #{pr['number']}"
-    while commits["pageInfo"]["hasNextPage"] and not agent_made(pr):
-        cursor = advance(commits["pageInfo"]["endCursor"], seen, what)
+    while connection["pageInfo"]["hasNextPage"] and not stop():
+        cursor = advance(connection["pageInfo"]["endCursor"], seen, what)
         variables: Variables = {**base, "number": pr["number"], "cursor": cursor}
-        page = dig(sized(run, PULL_COMMITS, variables, sizes, what), ["pullRequest", "commits"], what)
-        commits["nodes"] = commits["nodes"] + page["nodes"]
-        commits["pageInfo"] = page["pageInfo"]
+        page = dig(sized(run, query, variables, sizes, what), ["pullRequest", key], what)
+        connection["nodes"] = connection["nodes"] + page["nodes"]
+        connection["pageInfo"] = page["pageInfo"]
+
+
+def pull_commits(run: Runner, base: Variables, sizes: Sizes, pr: Node, window: Window | None = None) -> None:
+    """Page the PR's commits forwards while none carries an agent's mark, and to their end for
+    an agent's PR merged in the window, whose fix commits are counted (retro.py gives none)"""
+    what = f"the commits of PR #{pr['number']}"
+
+    def done() -> bool:
+        return agent_made(pr) and (window is None or not merged(pr, window))
+
+    extend(run, base, sizes, pr, "commits", PULL_COMMITS, what, done)
+
+
+def merged(pr: Node, window: Window) -> bool:
+    return bool(pr["mergedAt"]) and timestamp(pr["mergedAt"]) in window
+
+
+def measured(pr: Node, window: Window) -> bool:
+    """An agent's PR merged in the window: the ones the agent quality measures read"""
+    return merged(pr, window) and agent_made(pr)
 
 
 def agent_made(pr: Node) -> bool:
@@ -567,7 +650,7 @@ class Measure:
     value: float | None  # None: no data
     text: str  # the value as the table shows it
     detail: str
-    unit: str  # of value: "per week", "hours", or "ratio"
+    unit: str  # of value: "per week", "hours", "ratio", or "count"
     extra: dict[str, Any] = field(default_factory=dict)
 
     def json(self) -> dict[str, Any]:
@@ -636,14 +719,22 @@ def first_shipped(data: Data, window: Window) -> dict[str, Release]:
     return found
 
 
-def lead_time(data: Data, window: Window) -> Measure:
+def lead_times(data: Data, window: Window) -> list[tuple[int, float]]:
+    """Each merged PR a stable release published in the window first shipped: its number and
+    the hours from its first commit's author date to that release"""
     first_shipped_by = first_shipped(data, window)
-    values = []
+    found = []
     for pr in data.pulls:
         merge = (pr.get("mergeCommit") or {}).get("oid")
         commits = pr["commits"]["nodes"]
         if merge in first_shipped_by and commits:
-            values.append(hours(timestamp(commits[0]["commit"]["authoredDate"]), first_shipped_by[merge].published))
+            at = timestamp(commits[0]["commit"]["authoredDate"])
+            found.append((pr["number"], hours(at, first_shipped_by[merge].published)))
+    return found
+
+
+def lead_time(data: Data, window: Window) -> Measure:
+    values = [h for _, h in lead_times(data, window)]
     shipped = sum(1 for r in in_window_releases(data, window) if r.tag in data.shipped)
     detail = f"{len(values)} PRs in {shipped} releases"
     return durations("Lead time for changes", values, detail, "no merged PR shipped by a stable release in the window")
@@ -837,7 +928,7 @@ def approved_by_person(pr: Node, bots: frozenset[str]) -> bool:
 
 
 def merged_in(data: Data, window: Window) -> list[Node]:
-    return [p for p in data.pulls if p["mergedAt"] and timestamp(p["mergedAt"]) in window]
+    return [p for p in data.pulls if merged(p, window)]
 
 
 def human_touch(data: Data, window: Window) -> Measure:
@@ -874,6 +965,180 @@ def agent_share(data: Data, window: Window) -> Measure:
     return Measure(name, rate, f"{rate:.0%}", detail, "ratio", extra)
 
 
+# -- the agent quality measures (spec 078) -------------------------------------------------------
+
+TRUSTED = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})  # D-16: whose review is a verdict
+REVIEW_RECORDS = frozenset({"<!-- shipmill:review merge -->", "<!-- shipmill:review refuse -->"})  # spec 055
+NO_AGENT_PR = "no agent PR merged in the window"
+
+
+def verdict(review: Node, bots: frozenset[str]) -> bool:
+    """A review record (its body's first line a spec 055 marker) by a bot, or an APPROVED or
+    CHANGES_REQUESTED review by a trusted person; a pending review isn't submitted yet"""
+    if review["state"] == "PENDING" or not review["submittedAt"]:
+        return False
+    first = (review["body"] or "").lstrip().split("\n", 1)[0].strip()
+    if first in REVIEW_RECORDS and bot_author(review["author"], bots):
+        return True
+    return (
+        review["state"] in ("APPROVED", "CHANGES_REQUESTED")
+        and review["authorAssociation"] in TRUSTED
+        and person(review["author"], bots)
+    )
+
+
+def fix_commit(commit: Node, created: dt.datetime) -> bool:
+    """One parent (a merge of the base has two), authored after the PR's creation: a rebase
+    keeps author dates, so a commit written before the PR opened is none"""
+    c = commit["commit"]
+    return c["parents"]["totalCount"] == 1 and timestamp(c["authoredDate"]) > created
+
+
+@dataclass(frozen=True)
+class Rework:
+    """One agent PR's review rounds, fix commits, and first verdict"""
+
+    number: int
+    rounds: int  # distinct commits its verdicts were given at
+    fixes: int
+    created: dt.datetime
+    first_verdict: dt.datetime | None
+
+    @property
+    def cycles(self) -> int:
+        return max(self.rounds - 1, 0) + self.fixes
+
+
+def rework(pr: Node, bots: frozenset[str]) -> Rework:
+    verdicts = [r for r in pr["verdicts"]["nodes"] if verdict(r, bots)]
+    rounds = len({(r.get("commit") or {}).get("oid") for r in verdicts})
+    created = timestamp(pr["createdAt"])
+    fixes = sum(fix_commit(c, created) for c in pr["commits"]["nodes"])
+    first = min((timestamp(r["submittedAt"]) for r in verdicts), default=None)
+    return Rework(pr["number"], rounds, fixes, created, first)
+
+
+def reworks(data: Data, window: Window) -> list[Rework]:
+    """The agent PRs merged in the window, the ones Agent share counts"""
+    return [rework(pr, data.bots) for pr in data.pulls if measured(pr, window)]
+
+
+def rework_cycles(data: Data, window: Window) -> Measure:
+    name = "Rework cycles"
+    found = reworks(data, window)
+    if not found:
+        return Measure(name, None, NO_DATA, NO_AGENT_PR, "count")
+    mean = statistics.mean(r.cycles for r in found)
+    rounds = statistics.mean(r.rounds for r in found)
+    fixes = statistics.mean(r.fixes for r in found)
+    detail = f"{len(found)} agent PRs: mean {rounds:.1f} review rounds, {fixes:.1f} fix commits"
+    extra = {"count": len(found), "review_rounds": rounds, "fix_commits": fixes}
+    return Measure(name, mean, f"mean {mean:.1f}", detail, "count", extra)
+
+
+def first_pass_merge_rate(data: Data, window: Window) -> Measure:
+    name = "First-pass merge rate"
+    found = reworks(data, window)
+    if not found:
+        return Measure(name, None, NO_DATA, NO_AGENT_PR, "ratio")
+    first = sum(r.cycles == 0 for r in found)
+    rate = first / len(found)
+    detail = f"{first} of {len(found)} agent PRs merged with 0 rework cycles"
+    return Measure(name, rate, f"{rate:.0%}", detail, "ratio", {"first_pass": first, "agent_merges": len(found)})
+
+
+def review_times(data: Data, window: Window) -> list[tuple[int, float]]:
+    """Each agent PR merged in the window with a verdict: its number and the hours from its
+    creation to its first verdict"""
+    return [(r.number, hours(r.created, r.first_verdict)) for r in reworks(data, window) if r.first_verdict]
+
+
+def review_time(data: Data, window: Window) -> Measure:
+    found = reworks(data, window)
+    values = [h for _, h in review_times(data, window)]
+    left = len(found) - len(values)
+    detail = f"{len(values)} agent PRs; {left} with no verdict left out"
+    empty = f"no verdict on any of {left} agent PRs, all left out" if found else NO_AGENT_PR
+    return durations("Review time", values, detail, empty)
+
+
+FENCE = re.compile(r"^[ \t]*(```|~~~)")
+SECTION = re.compile(r"^#{1,2}(?:[ \t]|$)")  # a heading that ends a "## Plan" section
+FILES_LINE = re.compile(r"^[ \t]*(?:[-*+][ \t]+)?Files:(?P<paths>.*)$")
+BACKTICKED = re.compile(r"`([^`]+)`")
+
+
+def plan_paths(body: str | None) -> list[str] | None:
+    """The backticked paths on the Files: lines of the body's one "## Plan" section, outside a
+    fence; None when there isn't exactly one such section or its Files: lines name no path"""
+    sections: list[list[str]] = []
+    current: list[str] | None = None
+    fenced = False
+    for line in (body or "").splitlines():
+        if FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if line.strip() == "## Plan":
+            current = []
+            sections.append(current)
+        elif SECTION.match(line):
+            current = None
+        elif current is not None and (found := FILES_LINE.match(line)):
+            current += BACKTICKED.findall(found["paths"])
+    if len(sections) != 1 or not sections[0]:
+        return None
+    return sections[0]
+
+
+def glob_regex(path: str) -> re.Pattern[str]:
+    """A path as spec 061 reads a ``Revisit on:`` path: ``**`` any run of characters, ``/``
+    included, ``*`` any run without ``/``, ``?`` one character other than ``/``, anything else
+    itself"""
+    parts = []
+    i = 0
+    while i < len(path):
+        if path.startswith("**", i):
+            parts.append(".*")
+            i += 2
+        elif path[i] == "*":
+            parts.append("[^/]*")
+            i += 1
+        elif path[i] == "?":
+            parts.append("[^/]")
+            i += 1
+        else:
+            parts.append(re.escape(path[i]))
+            i += 1
+    return re.compile("".join(parts), re.DOTALL)
+
+
+def covered(changed: str, paths: list[str]) -> bool:
+    """The changed file equals a path, is under one ending in "/", or matches one as a glob"""
+    return any(
+        changed == p or (p.endswith("/") and changed.startswith(p)) or glob_regex(p).fullmatch(changed) for p in paths
+    )
+
+
+def plan_match(data: Data, window: Window) -> Measure:
+    name = "Plan match"
+    pulls = [pr for pr in data.pulls if measured(pr, window)]
+    planned = [(pr, paths) for pr in pulls if (paths := plan_paths(pr["body"])) is not None]
+    left = len(pulls) - len(planned)
+    if not planned:
+        empty = f"no plan naming its files on any of {left} agent PRs, all left out" if pulls else NO_AGENT_PR
+        return Measure(name, None, NO_DATA, empty, "ratio")
+    matched = sum(all(covered(f["path"], paths) for f in pr["files"]["nodes"]) for pr, paths in planned)
+    rate = matched / len(planned)
+    detail = (
+        f"{matched} of {len(planned)} planned agent PRs changed only files their plan names;"
+        f" {left} with no plan left out"
+    )
+    extra = {"matched": matched, "planned": len(planned), "no_plan": left}
+    return Measure(name, rate, f"{rate:.0%}", detail, "ratio", extra)
+
+
 def measures(data: Data, window: Window) -> list[Measure]:
     return [
         f(data, window)
@@ -891,6 +1156,10 @@ def measures(data: Data, window: Window) -> list[Measure]:
             merge_to_release,
             human_touch,
             agent_share,
+            rework_cycles,
+            first_pass_merge_rate,
+            review_time,
+            plan_match,
         )
     ]
 
