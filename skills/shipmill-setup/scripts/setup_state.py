@@ -128,8 +128,10 @@ Labels (the triage skills and shipmill read them):
                    now", spec 014), upstream (a report for another repo, spec
                    038), decided (a notify decision, spec 030), and
                    shipmill-direction (the question for a missing direction,
-                   spec 034), and expedite and fixed-date (an accepted
-                   opportunity's class of service, spec 070) don't exist, with
+                   spec 034), opportunity and planned (product intake's
+                   opportunity and its accept, spec 068), and expedite and
+                   fixed-date (an accepted opportunity's class of service,
+                   spec 070) don't exist, with
                    [agents] app_id also
                    shipmill-permission (the App owner's item for a permission
                    to grant, spec 060), and with a [land.window] section, with
@@ -263,6 +265,12 @@ EXPEDITE = "expedite"
 EXPEDITE_LABEL = ("b60205", "Class of service: the maintainer chose to expedite this accepted outcome")
 FIXED_DATE = "fixed-date"
 FIXED_DATE_LABEL = ("fbca04", "Class of service: this accepted outcome is due by its milestone's due date")
+# Wanted wherever needs-decision is (spec 068): product intake's opportunity, and the label the
+# maintainer accepts it with
+OPPORTUNITY = "opportunity"
+OPPORTUNITY_LABEL = ("0e8a16", "A user outcome waiting for the maintainer to accept or decline")
+PLANNED = "planned"
+PLANNED_LABEL = ("1d76db", "Accepted opportunity, goes through the spec gate")
 # Wanted with [agents] app_id (spec 060): the App's owner's item for a permission a release
 # added, which the gate finds its issue by
 PERMISSION = "shipmill-permission"
@@ -998,6 +1006,8 @@ def wanted_labels(repo_dir: Path, ws: ModuleType | None = None) -> dict[str, tup
         wanted[UPSTREAM] = UPSTREAM_LABEL  # a report for another repo (spec 038)
         wanted[DECIDED] = DECIDED_LABEL  # a notify decision, open to a veto (spec 030)
         wanted[DIRECTION] = DIRECTION_LABEL  # the question for a missing direction (spec 034)
+        wanted[OPPORTUNITY] = OPPORTUNITY_LABEL  # product intake's opportunity (spec 068)
+        wanted[PLANNED] = PLANNED_LABEL  # the maintainer's accept of an opportunity (spec 068)
         wanted[EXPEDITE] = EXPEDITE_LABEL  # an accepted opportunity's classes of service (spec 070)
         wanted[FIXED_DATE] = FIXED_DATE_LABEL
         if sets_app_id(section):  # the App's owner's item for a permission to grant (spec 060)
@@ -1158,6 +1168,8 @@ def labels_row(missing: list[str], wanted: dict[str, tuple[str, str]]) -> Row:
             UPSTREAM,
             DECIDED,
             DIRECTION,
+            OPPORTUNITY,
+            PLANNED,
             EXPEDITE,
             FIXED_DATE,
             PERMISSION,
