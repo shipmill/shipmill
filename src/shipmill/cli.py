@@ -630,6 +630,11 @@ def _parser() -> argparse.ArgumentParser:
         "--verdict", required=True, choices=[v.value for v in review_record.Verdict], help="the reviewer's verdict"
     )
     q.add_argument(
+        "--findings",
+        metavar="confirmed=N,rejected=N,minor=N",
+        help="the second look's marks over a refusal's findings, written on the line after the marker (spec 075)",
+    )
+    q.add_argument(
         "--body-file", required=True, type=Path, help="the reviewer's report, written after the verdict's marker line"
     )
 
@@ -2683,7 +2688,9 @@ def _review_record(root: Path, args: argparse.Namespace, path: _GhPath) -> int:
     repo = _origin_repo(top)
     if repo is None:
         raise ReleaseError(f"{top}'s origin isn't a GitHub repo, so review record has no pull request to review")
-    request = review_record.Request(args.number, args.head, review_record.Verdict(args.verdict), args.body_file)
+    request = review_record.Request(
+        args.number, args.head, review_record.Verdict(args.verdict), args.body_file, args.findings
+    )
     print(review_record.record(request, _ReviewHub(top, repo, path), lambda: _review_writes(top, path)))
     return 0
 
