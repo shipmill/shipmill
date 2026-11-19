@@ -105,10 +105,25 @@ class FakeGh:
     calls: list[list[str]] = field(default_factory=list)
     folders: dict[tuple[str, str], Path | None] = field(default_factory=dict)  # (script, repo): its cwd
     undirected: set[str] = field(default_factory=set)  # repos with no docs/product.md
+    roles: dict[str, str] = field(default_factory=dict)  # repo: what `shipmill roles --flags` prints in its clone
+    relayed: dict[str, set[int]] = field(default_factory=dict)  # repo: plans a relayed maintainer answer accepted
+
+    def cli(self, cmd: list[str], cwd: Path | None) -> subprocess.CompletedProcess[str]:
+        """The pinned CLI's `--repo <clone> roles --flags`, the repo read from the clone's path"""
+        assert cmd[-2:] == ["roles", "--flags"], cmd
+        clone = Path(cmd[cmd.index("--repo") + 1])
+        repo = f"{clone.parent.name}/{clone.name}"
+        self.folders["roles", repo] = cwd
+        failing = self.failing.get(repo)
+        if failing is not None and failing[0] == "roles":
+            return proc(2, err=failing[1])
+        return proc(0, self.roles.get(repo, "--role maintainer=maint\n"))
 
     def __call__(self, cmd: Sequence[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         cmd = list(cmd)
         self.calls.append(cmd)
+        if cmd[0] == "uvx":
+            return self.cli(cmd, cwd)
         if cmd[0] != "gh":
             self.folders[Path(cmd[1]).name, cmd[2]] = cwd
         if cmd[:3] == ["gh", "api", "user"]:
@@ -133,6 +148,10 @@ class FakeGh:
         scripted = {"watch_state.py": self.watch, "triage_state.py": self.triage, "intake_state.py": self.intake}
         if step in scripted:
             rows = scripted[step].get(repo, [])
+            if step == "intake_state.py" and any(a.startswith("maintainer=") for a in cmd):
+                # D-68: a relayed answer counts only when the --role flags name the maintainer
+                accepted = self.relayed.get(repo, set())
+                rows = [{**r, "state": "PLAN_ACCEPTED"} if r.get("number") in accepted else r for r in rows]
             return proc(0, "".join(json.dumps(r) + "\n" for r in rows))
         numbers = [int(n) for n in re.findall(r"\bi(\d+): issueOrPullRequest", fields["query"])]
         found = {f"i{n}": self.github[repo].get(n) for n in numbers}
@@ -538,9 +557,73 @@ def test_s069_12_queue_makes_only_reads_on_github(
         assert not any(arg.startswith("query=mutation") for arg in call)
         if call[:3] == ["gh", "api", "graphql"]:
             assert next(a for a in call if a.startswith("query=")).startswith("query=query(")
-    others = [c for c in fake.calls if c[0] != "gh"]
+    others = [c for c in fake.calls if c[0] not in ("gh", "uvx")]
     scripts = {str(fl.WATCH_STATE), str(fl.WS.TRIAGE_STATE), str(fl.WS.INTAKE_STATE)}  # each reads only (D-55)
     assert {c[1] for c in others} == scripts
+    assert all(c[-2:] == ["roles", "--flags"] for c in fake.calls if c[0] == "uvx")  # the CLI only reads the roles
+
+
+def role_values(cmd: list[str]) -> list[str]:
+    return [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--role"]
+
+
+def test_1409_both_state_scripts_carry_the_clones_roles(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = FakeGh(roles={"o/r": "--role maintainer=amy,@o/core --role reviewer=bob\n"}, undirected={"o/s"})
+    code, _ = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+    assert code == 0
+    clone = next(c for c in fake.calls if c[:3] == ["gh", "repo", "clone"] and c[3] == "o/r")
+    cli = [c for c in fake.calls if c[0] == "uvx"]
+    assert len(cli) == 2  # one roles read per repo
+    assert cli[0] == [*fl.WS.shipmill_cli(), "--repo", clone[4], "roles", "--flags"]  # the pinned CLI, as the watch's
+    assert fake.folders["roles", "o/r"] == Path(clone[4])  # in the clone, whose [agents.roles] it reads
+
+    def script(path: Path, repo: str) -> list[str]:
+        return next(c for c in fake.calls if c[1:3] == [str(path), repo])
+
+    assert role_values(script(fl.WS.TRIAGE_STATE, "o/r")) == ["maintainer=amy,@o/core", "reviewer=bob"]
+    assert role_values(script(fl.WS.INTAKE_STATE, "o/r")) == ["maintainer=amy,@o/core", "reviewer=bob"]
+    assert role_values(script(fl.WS.TRIAGE_STATE, "o/s")) == ["maintainer=maint"]
+    assert role_values(script(fl.WS.INTAKE_STATE, "o/s")) == []  # no --plans: intake_state.py takes --role only with it
+
+
+def test_1409_a_roles_read_that_fails_is_a_repo_error_and_never_a_queue_without_roles(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    unread = "error: [agents.roles] maintainer lists nobody, so the maintainer is the host's gh login: HTTP 401"
+    fake = FakeGh(
+        watch={"o/r": [watch_row("NEEDS_DECISION", "o/r", "#1")], "o/s": [watch_row("NEEDS_DECISION", "o/s", "#2")]},
+        github={"o/r": {1: asked(1, "Fine", ago(hours=1))}, "o/s": {2: asked(2, "Unread", ago(hours=2))}},
+        failing={"o/s": ("roles", f"{unread}\nsecond line")},
+    )
+    code, out = run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)
+    assert code == 2
+    assert out.splitlines() == [
+        "o/r QUESTION    #1     answer the needs-decision question: Fine (1h)",
+        f"o/s REPO_ERROR shipmill roles --flags: {unread}",
+    ]
+    assert not [c for c in fake.calls if c[0] not in ("gh", "uvx") and c[2] == "o/s"]  # no script ran without roles
+
+
+def test_1409_a_plan_the_maintainer_answered_through_a_relay_leaves_the_queue(
+    fl: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan = item(30, "Plan for G-1", author=BOT, association="NONE", created=ago(days=8))
+    fake = FakeGh(intake={"o/r": [intake_line(30, "PLAN_OPEN", "plan")]}, github={"o/r": {30: plan}})
+    assert run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT)[0] == 1  # unanswered: a PLAN row
+    fake.relayed["o/r"] = {30}  # the session relayed the maintainer's accept (D-68)
+    assert run_queue(fl, tmp_path, capsys, fake, "--bot-login", BOT) == (0, "nothing waits on the maintainer\n")
+
+
+@pytest.mark.parametrize("text", ["", "\n", "maintainer=amy\n", "--role\n", "--role maintainer=amy --flag x\n"])
+def test_1409_roles_output_that_isnt_role_flags_stops_the_run(fl: ModuleType, text: str) -> None:
+    assert fl.role_values("--role maintainer=amy --role reviewer=@o/core\n", "o/r") == [
+        "maintainer=amy",
+        "reviewer=@o/core",
+    ]
+    with pytest.raises(fl.Refused, match="shipmill roles --flags for o/r printed"):
+        fl.role_values(text, "o/r")
 
 
 def test_waited_text_reads_days_hours_and_minutes(fl: ModuleType) -> None:
