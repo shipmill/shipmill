@@ -7,6 +7,7 @@ Usage: retro.py gather <owner/repo> [--days 7] [--environment NAME ...]
                        [--decisions [--checkout DIR] [--raise-at 2] [--lower-after 4]
                                     [--lower-rate 90] [--lower-min 10] [--revert-days 14]
                                     [--role NAME=FILLER[,FILLER...] ...]]
+       retro.py findings <owner/repo> [--days 28] [--bot LOGIN ...] [--json]
        retro.py dedupe <owner/repo> --title TITLE [--title TITLE ...] [--json]
 
 gather   runs metrics.py over the --days to now and over the --days before that, and prints
@@ -58,6 +59,19 @@ gather   runs metrics.py over the --days to now and over the --days before that,
          questions over the --lower-after windows number at least --lower-min (10) with at
          least --lower-rate (90, 1 to 100) percent recommended; never notify to act. A marker
          naming no zone id is listed apart
+findings what reviews raised on the pull requests closed, merged or not, in the last --days
+         (spec 077), newest pull request first, each item with an F-n id: `record`, a --bot
+         login's review whose first line is `<!-- shipmill:review merge|refuse -->`; `review`,
+         a review that requested changes, and `comment`, an inline review comment (with its
+         path:line), by an OWNER, MEMBER, or COLLABORATOR who is no --bot login, without the
+         agent marker; `refusal`, the newest comment at or before the close of a pull request
+         closed unmerged, by a --bot login or an OWNER, MEMBER, or COLLABORATOR. Each names its
+         author, the head it was raised on, the I-n, N-n, Q-n, and D-n ids it cites, and its
+         text cut at 600 characters. Anyone else's is left out whole (D-16), and a pull request
+         with no item is not listed. Then Proposed: every `rule-proposal` issue, of any age,
+         whose first line is `<!-- shipmill:rule-proposal pulls=N,M place=P -->` and whose
+         author is trusted as above, as open, accepted (closed as completed), or declined
+         (closed as not planned). --json prints {window, findings, proposed}. Read-only
 dedupe   each proposed issue title against the repo's open issues: DUPLICATE with the open
          issue whose title matches (ignoring case, punctuation, and spacing), else NEW.
          Read-only: the retro opens only the NEW ones
@@ -116,11 +130,31 @@ def fail(message: str) -> SystemExit:
     return SystemExit(2)
 
 
-def gh(cmd: list[str]) -> Any:
-    proc = subprocess.run(["gh", *cmd], capture_output=True, text=True, check=False)
+def run_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def gh_output(cmd: list[str], fix: str = "", run: Callable[[list[str]], Any] = run_command) -> str:
+    proc = run(["gh", *cmd])
     if proc.returncode != 0:
-        raise fail(f"gh {' '.join(cmd[:2])}: {proc.stderr.strip()}")
-    return json.loads(proc.stdout)
+        raise fail(f"gh {' '.join(cmd[:2])}: {proc.stderr.strip()}{fix}")
+    return str(proc.stdout)
+
+
+def gh(cmd: list[str]) -> Any:
+    return json.loads(gh_output(cmd))
+
+
+GH_FIX = "; check `gh auth status` and the repo's name, then run findings again"
+
+
+def gh_read(cmd: list[str], run: Callable[[list[str]], Any] = run_command) -> Any:
+    """gh's JSON for a command, naming the fix when it fails; a `gh api --paginate ... --jq .[]`
+    read gives one JSON value per line, returned as a list"""
+    out = gh_output(cmd, GH_FIX, run)
+    if "--paginate" in cmd:
+        return [json.loads(line) for line in out.splitlines() if line.strip()]
+    return json.loads(out)
 
 
 def timestamp(text: str) -> dt.datetime:
@@ -167,10 +201,6 @@ def metrics(repo: str, days: int, until: str | None, extra: list[str]) -> dict[s
         raise fail(f"metrics.py: {proc.stderr.strip()}")
     found: dict[str, Any] = json.loads(proc.stdout)
     return found
-
-
-def run_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
 @dataclass(frozen=True)
@@ -1512,6 +1542,215 @@ def decisions_text(decisions: dict[str, Any]) -> list[str]:
     return lines
 
 
+# -- findings (spec 077) ----------------------------------------------------------------------
+
+RECORD_MARKS = ("<!-- shipmill:review merge -->", "<!-- shipmill:review refuse -->")  # spec 055
+# The proposal marker, the first line of a rule-proposal issue's body
+PROPOSAL_MARK = re.compile(r"^<!-- shipmill:rule-proposal pulls=([1-9][0-9]*(?:,[1-9][0-9]*)*) place=([a-z]+) -->$")
+PROPOSAL_LABEL = "rule-proposal"
+SHIPMILL_LINE = re.compile(r"^\s*<!-- shipmill:[^>]*-->\s*$")  # a marker line, left out of an item's text
+CITED = re.compile(r"(?<![\w-])([DINQ]-[1-9][0-9]*)(?![\w-])")
+TEXT_LIMIT = 600
+FINDINGS_DAYS = 28
+DECLINED = frozenset({"not_planned", "duplicate"})  # GitHub files "duplicate" under not planned
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One thing a review raised: its kind (record, review, comment, refusal), author, the head it
+    was raised on, a comment's path and line, the rule ids it cites, its text, and when"""
+
+    kind: str
+    author: str
+    head: str
+    path: str | None
+    line: int | None
+    cites: list[str]
+    text: str
+    at: str
+
+
+def rest_author(record: dict[str, Any]) -> dict[str, Any]:
+    """A REST record's author and association as trusted() reads a GraphQL comment's: an App's
+    login without its "[bot]" suffix, typed Bot; no author when the login can't be read"""
+    user = record.get("user") or {}
+    login = str(user.get("login") or "")
+    bot = user.get("type") == "Bot"
+    author = {"__typename": "Bot" if bot else "User", "login": login.removesuffix("[bot]") if bot else login}
+    return {"author": author if login else None, "authorAssociation": record.get("author_association")}
+
+
+def bot_login(record: dict[str, Any], bots: frozenset[str]) -> bool:
+    return bool(login_names(rest_author(record)["author"]) & {b.lower() for b in bots})
+
+
+def persons(record: dict[str, Any], bots: frozenset[str]) -> bool:
+    """Written by an OWNER, MEMBER, or COLLABORATOR who is no --bot login, without the agent
+    marker (D-62); anyone else's is left out whole (D-16)"""
+    author = rest_author(record)
+    return (
+        author["author"] is not None
+        and str(author["authorAssociation"] or "NONE") in TRUSTED
+        and not bot_login(record, bots)
+        and not by_agent(str(record.get("body") or ""))
+    )
+
+
+def cleaned(body: str | None) -> str:
+    """A body without shipmill's marker lines, stripped"""
+    return "\n".join(line for line in (body or "").splitlines() if not SHIPMILL_LINE.match(line)).strip()
+
+
+def cut(text: str) -> str:
+    return text if len(text) <= TEXT_LIMIT else text[:TEXT_LIMIT] + "…"
+
+
+def cited(text: str) -> list[str]:
+    """The I-n, N-n, Q-n, and D-n ids a text cites, in the order they first appear"""
+    return list(dict.fromkeys(CITED.findall(text)))
+
+
+def raised(kind: str, record: dict[str, Any], head: str, at: str, path: str | None = None, line: Any = None) -> Finding:
+    text = cleaned(record.get("body"))
+    login = str(record["user"]["login"])
+    return Finding(kind, login, head, path, None if line is None else int(line), cited(text), cut(text), at)
+
+
+def api_list(repo: str, path: str, query: str = "") -> list[str]:
+    """A `gh api` read of every page of a REST list, one record per line"""
+    return ["api", "--paginate", f"repos/{repo}/{path}?{query}per_page=100", "--jq", ".[]"]
+
+
+def pull_findings(
+    read: Callable[[list[str]], Any], repo: str, pull: dict[str, Any], bots: frozenset[str]
+) -> list[Finding]:
+    """A closed pull request's items, oldest first"""
+    number = pull["number"]
+    found: list[Finding] = []
+    for review in read(api_list(repo, f"pulls/{number}/reviews")):
+        if review.get("state") == "PENDING":  # the reader's own unsubmitted review
+            continue
+        head, at = str(review["commit_id"]), str(review["submitted_at"])
+        if bot_login(review, bots) and first_line(str(review.get("body") or "")) in RECORD_MARKS:
+            found.append(raised("record", review, head, at))
+        elif review["state"] == "CHANGES_REQUESTED" and persons(review, bots):
+            found.append(raised("review", review, head, at))
+    for comment in read(api_list(repo, f"pulls/{number}/comments")):
+        if persons(comment, bots):
+            line = comment.get("original_line")
+            line = comment.get("line") if line is None else line
+            head, at = str(comment["original_commit_id"]), str(comment["created_at"])
+            found.append(raised("comment", comment, head, at, str(comment["path"]), line))
+    if pull["mergedAt"] is None:
+        closed = timestamp(pull["closedAt"])
+        before = [
+            c
+            for c in read(api_list(repo, f"issues/{number}/comments"))
+            if timestamp(c["created_at"]) <= closed and c.get("user") and trusted(rest_author(c), bots)
+        ]
+        if before:
+            last = max(before, key=lambda c: timestamp(c["created_at"]))
+            found.append(raised("refusal", last, str(pull["headRefOid"]), str(last["created_at"])))
+    return sorted(found, key=lambda f: timestamp(f.at))
+
+
+def proposal_state(issue: dict[str, Any]) -> str:
+    if issue["state"] == "open":
+        return "open"
+    return "declined" if issue.get("state_reason") in DECLINED else "accepted"
+
+
+def rule_proposals(read: Callable[[list[str]], Any], repo: str, bots: frozenset[str]) -> list[dict[str, Any]]:
+    """Every rule-proposal issue, in any state and of any age, whose first body line is the
+    proposal marker and whose author is a --bot login or an OWNER, MEMBER, or COLLABORATOR,
+    newest first"""
+    found = []
+    for issue in read(api_list(repo, "issues", f"labels={PROPOSAL_LABEL}&state=all&")):
+        if "pull_request" in issue or not issue.get("user") or not trusted(rest_author(issue), bots):
+            continue
+        mark = PROPOSAL_MARK.match(first_line(str(issue.get("body") or "")))
+        if mark is None:
+            continue
+        found.append(
+            {
+                "number": int(issue["number"]),
+                "title": str(issue["title"]),
+                "url": str(issue.get("html_url") or ""),
+                "pulls": [int(n) for n in mark.group(1).split(",")],
+                "place": mark.group(2),
+                "state": proposal_state(issue),
+            }
+        )
+    return sorted(found, key=lambda p: -p["number"])
+
+
+def findings(args: argparse.Namespace, read: Callable[[list[str]], Any], now: dt.datetime) -> int:
+    """The review findings on the pull requests closed in the --days to now, and the proposals
+    made so far; everything is read before anything is printed"""
+    bots = frozenset(args.bot)
+    start = now - dt.timedelta(days=args.days)
+    fields = "number,title,url,mergedAt,closedAt,headRefOid"
+    search = f"closed:>={start:%Y-%m-%d}"
+    cmd = ["pr", "list", "-R", args.repo, "--state", "closed", "--search", search, "-L", str(PR_LIMIT)]
+    pulls = read([*cmd, "--json", fields])
+    if len(pulls) >= PR_LIMIT:
+        raise fail(f"{args.repo} closed {PR_LIMIT}+ pull requests since {start:%Y-%m-%d}; use a shorter --days")
+    closed = [p for p in pulls if p["closedAt"] is not None and start <= timestamp(p["closedAt"]) <= now]
+    closed.sort(key=lambda p: (timestamp(p["closedAt"]), p["number"]), reverse=True)
+    listed = []
+    counter = 0
+    for pull in closed:
+        items = []
+        for item in pull_findings(read, args.repo, pull, bots):
+            counter += 1
+            items.append({"id": f"F-{counter}", **asdict(item)})
+        if items:
+            listed.append(
+                {
+                    "number": pull["number"],
+                    "title": pull["title"],
+                    "url": pull["url"],
+                    "merged": pull["mergedAt"] is not None,
+                    "closed_at": pull["closedAt"],
+                    "head": pull["headRefOid"],
+                    "items": items,
+                }
+            )
+    proposals = rule_proposals(read, args.repo, bots)
+    window = {"start": iso_z(start), "end": iso_z(now), "days": args.days}
+    if args.json:
+        print(json.dumps({"window": window, "findings": listed, "proposed": proposals}, indent=2, sort_keys=True))
+        return 0
+    print("\n".join(findings_text(args.repo, args.days, now, listed, proposals)))
+    return 0
+
+
+def iso_z(moment: dt.datetime) -> str:
+    return moment.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def findings_text(
+    repo: str, days: int, now: dt.datetime, listed: list[dict[str, Any]], proposals: list[dict[str, Any]]
+) -> list[str]:
+    lines = [f"{repo}: review findings on the pull requests closed in the {days} days to {now:%Y-%m-%d %H:%M} UTC"]
+    if not listed:
+        lines.append("  none")
+    for pull in listed:
+        how = "merged" if pull["merged"] else "closed without a merge"
+        lines.append(f"#{pull['number']} {pull['title']} ({how} {pull['closed_at']}) {pull['url']}")
+        for item in pull["items"]:
+            where = f" {item['path']}" if item["path"] else ""
+            where += f":{item['line']}" if item["path"] and item["line"] is not None else ""
+            ids = f"; cites {', '.join(item['cites'])}" if item["cites"] else ""
+            lines.append(f"  {item['id']} {item['kind']} by {item['author']} at {item['head']}{where}{ids}")
+            lines += [f"      {line}" if line else "" for line in item["text"].splitlines()]
+    lines.append(f"Proposed: {len(proposals) or 'none'}")
+    for p in proposals:
+        pulls = ", ".join(f"#{n}" for n in p["pulls"])
+        lines.append(f"  #{p['number']} {p['state']}: {p['title']} (place {p['place']}; pulls {pulls}) {p['url']}")
+    return lines
+
+
 # -- dedupe ---------------------------------------------------------------------------------
 
 
@@ -1615,6 +1854,11 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "`shipmill roles --flags` prints them; a --bot login's relay counts as an answer only when it "
         "names a maintainer (D-68, D-70)",
     )
+    f = sub.add_parser("findings", help="what reviews raised on the closed PRs, and the rule proposals (spec 077)")
+    f.add_argument("repo", help="owner/name")
+    f.add_argument("--days", type=int, default=FINDINGS_DAYS, help="the window of closed pull requests, in days")
+    f.add_argument("--bot", action="append", default=[], help="the App's login: its review records count")
+    f.add_argument("--json", action="store_true")
     d = sub.add_parser("dedupe", help="each proposed title against the open issues")
     d.add_argument("repo", help="owner/name")
     d.add_argument("--title", action="append", required=True, help="a proposed issue's title")
@@ -1633,6 +1877,8 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error("--lower-rate must be 1 to 100")
         if args.lower_min < 1 or args.revert_days < 1:
             parser.error("--lower-min and --revert-days must be at least 1")
+    if args.command == "findings" and args.days < 1:
+        parser.error("--days must be at least 1; give a whole number of days, 28 by default")
     return args
 
 
@@ -1640,6 +1886,8 @@ def main() -> int:
     args = parse()
     if args.command == "gather":
         return gather(args, sources_for(args))
+    if args.command == "findings":
+        return findings(args, gh_read, dt.datetime.now(dt.timezone.utc))  # noqa: UP017 (runs under 3.10 too)
     return dedupe_command(args)
 
 
