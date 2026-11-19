@@ -52,11 +52,18 @@ def pull(
     more: str | None = None,
     closes: tuple[tuple[int, str] | dict[str, Any], ...] = (),
     created: str = "",
+    reviews: tuple[dict[str, Any], ...] = (),
+    files: tuple[str, ...] = (),
+    commits: tuple[dict[str, Any], ...] = (),
+    more_reviews: str | None = None,
+    more_files: str | None = None,
 ) -> dict[str, Any]:
     """messages: the PR's commit messages, oldest first; more: a cursor to more commits;
     closes: the issues GitHub links it to close, as (number, createdAt) or a closing() node;
-    created: when the PR was opened (default its first commit, else its merge)"""
-    commits = [{"commit": {"authoredDate": first or merged, "message": m}} for m in messages]
+    created: when the PR was opened (default its first commit, else its merge); reviews: every
+    review (review()), files: its changed files' paths, commits: commit() nodes in place of
+    messages, each with a cursor to more"""
+    listed = list(commits) or [commit(first or merged, m) for m in messages]
     return {
         "number": number,
         "createdAt": created or first or merged,
@@ -66,11 +73,36 @@ def pull(
         "mergeCommit": {"oid": merge or f"m{number}"},
         "mergedBy": {"__typename": by[0], "login": by[1]},
         "closingIssuesReferences": {"nodes": [c if isinstance(c, dict) else closing(*c) for c in closes]},
-        "commits": {"pageInfo": {"hasNextPage": more is not None, "endCursor": more}, "nodes": commits},
+        "commits": {"pageInfo": {"hasNextPage": more is not None, "endCursor": more}, "nodes": listed},
         "reviews": {
             "pageInfo": {"hasNextPage": False},
             "nodes": [{"author": {"__typename": t, "login": login}} for t, login in approvers],
         },
+        "verdicts": page(list(reviews), more_reviews),
+        "files": page([{"path": p} for p in files], more_files),
+    }
+
+
+def commit(authored: str, message: str = "Fix a thing", parents: int = 1) -> dict[str, Any]:
+    return {"commit": {"authoredDate": authored, "message": message, "parents": {"totalCount": parents}}}
+
+
+def review(
+    state: str,
+    at: str,
+    oid: str = "h1",
+    author: tuple[str, str] = ("User", "alice"),
+    association: str = "MEMBER",
+    body: str = "",
+) -> dict[str, Any]:
+    """A review as PULLS reads its verdicts"""
+    return {
+        "state": state,
+        "authorAssociation": association,
+        "submittedAt": at,
+        "body": body,
+        "commit": {"oid": oid},
+        "author": {"__typename": author[0], "login": author[1]},
     }
 
 
@@ -367,6 +399,8 @@ class FakeGitHub:
             mx.LINE: self.line,
             mx.PULLS: self.pulls,
             mx.PULL_COMMITS: self.pull_commits,
+            mx.PULL_VERDICTS: self.pull_verdicts,
+            mx.PULL_FILES: self.pull_files,
             mx.ISSUE_COMMENTS: self.issue_comments,
             mx.DEPLOYMENTS: self.deployments,
             mx.LABELLED: lambda v: ok({"issues": page([])}),
@@ -397,8 +431,13 @@ class FakeGitHub:
 
     def pull_commits(self, v: dict[str, Any]) -> dict[str, Any]:
         assert (v["number"], v["cursor"]) == (1, "p1")
-        commit = {"commit": {"authoredDate": day(3), "message": "Last\n\nClaude-Session: https://x"}}
-        return ok({"pullRequest": {"commits": page([commit])}})
+        return ok({"pullRequest": {"commits": page([commit(day(3), "Last\n\nClaude-Session: https://x")])}})
+
+    def pull_verdicts(self, v: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError(f"no PR's reviews should be paged here: {v}")
+
+    def pull_files(self, v: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError(f"no PR's files should be paged here: {v}")
 
     def issue_comments(self, v: dict[str, Any]) -> dict[str, Any]:
         raise AssertionError(f"no issue's comments should be paged here: {v}")
@@ -479,6 +518,7 @@ STAGES = [
     "PR opened to merged",
     "Merged to release",
 ]
+QUALITY = ["Rework cycles", "First-pass merge rate", "Review time", "Plan match"]  # spec 078
 BEFORE = ["Deploy frequency", "Lead time for changes", "Change failure rate", "Time to restore", "Issue to release"]
 
 
@@ -501,7 +541,7 @@ def staged(mx: ModuleType) -> Any:
 def test_s066_1_the_stages_follow_issue_to_release_in_the_json(mx: ModuleType) -> None:
     w = window(mx)
     found = json.loads(mx.render("o/r", 30, w, mx.measures(staged(mx), w), "json"))["measures"]
-    assert [m["measure"] for m in found] == [*BEFORE, *STAGES, "Human touch", "Agent share"]
+    assert [m["measure"] for m in found] == [*BEFORE, *STAGES, "Human touch", "Agent share", *QUALITY]
     for m in found[len(BEFORE) : len(BEFORE) + len(STAGES)]:
         assert m["unit"] == "hours", m["measure"]
         assert set(m) >= {"value", "p90", "count", "text"}, m["measure"]
@@ -620,3 +660,195 @@ def test_s066_6_metrics_reads_nothing_but_github_through_gh(mx: ModuleType) -> N
     assert 'cmd = ["gh", "api", "graphql"' in source
     for other in ("open(", "os.environ", "getenv", "urllib", "http.client", "socket", "pathlib", "read_text"):
         assert other not in source, other
+
+
+# -- spec 078: agent quality measures --------------------------------------------------------------
+
+FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+RECORD = "<!-- shipmill:review merge -->\n\nVerdict: MERGE"
+
+
+def agent(number: int, merged: str = "", created: str = "", body: str = "", **kw: Any) -> dict[str, Any]:
+    """An agent's PR (Claude Code's footer), opened day 3 and merged day 1 unless given; its
+    commits are authored when it was opened, so none is a fix commit"""
+    created = created or day(3)
+    return pull(number, merged or day(1), first=created, created=created, body=f"{body}\n\n{FOOTER}", **kw)
+
+
+def plan(*files_lines: str) -> str:
+    return "\n".join(
+        ["## Plan", "", "- Serves: G-2", *files_lines, "- Order: tests first", "", "## Summary", "", "Text"]
+    )
+
+
+def test_s078_1_the_quality_measures_follow_agent_share_over_its_agent_prs(mx: ModuleType) -> None:
+    pulls = [
+        agent(1, reviews=(review("APPROVED", day(2)),), files=("src/a.py",), body=plan("- Files: `src/a.py`")),
+        agent(2),
+        pull(3, day(2)),  # a person's PR: not measured
+        agent(4, merged=day(50), created=day(51)),  # merged before the window
+    ]
+    w = window(mx)
+    found = json.loads(mx.render("o/r", 30, w, mx.measures(data(mx, pulls=pulls), w), "json"))["measures"]
+    names = [m["measure"] for m in found]
+    share = names.index("Agent share")
+    assert names[share + 1 :] == QUALITY
+    quality = {m["measure"]: m for m in found[share + 1 :]}
+    assert quality["Rework cycles"]["count"] == found[share]["agent_made"] == 2
+    assert quality["Rework cycles"]["unit"] == "count"
+    assert (quality["First-pass merge rate"]["unit"], quality["Plan match"]["unit"]) == ("ratio", "ratio")
+    timed = quality["Review time"]
+    assert (timed["unit"], timed["value"], timed["p90"], timed["count"]) == ("hours", 24.0, 24.0, 1)
+    assert quality["Plan match"]["value"] == 1.0
+    for empty in (data(mx), data(mx, pulls=[pull(3, day(2))])):  # no PR merged; only a person's
+        measured = json.loads(mx.render("o/r", 30, w, mx.measures(empty, w), "json"))["measures"]
+        for m in measured[share + 1 :]:
+            assert (m["value"], m["text"]) == (None, "no data"), m["measure"]
+            assert by_name(mx, empty)[m["measure"]].detail == "no agent PR merged in the window"
+
+
+def test_s078_2_a_verdict_is_a_bot_review_record_or_a_trusted_persons_decision(mx: ModuleType) -> None:
+    bots = frozenset({"release-robot"})
+    verdicts = [
+        review("COMMENTED", day(2), body=RECORD, author=("Bot", "shipmill-app"), association="NONE"),
+        review("COMMENTED", day(2), body="  <!-- shipmill:review refuse -->\nNo", author=("User", "ci[bot]")),
+        review("COMMENTED", day(2), body=RECORD, author=("User", "release-robot")),  # a --bot login
+        review("APPROVED", day(2), association="OWNER"),
+        review("CHANGES_REQUESTED", day(2), association="COLLABORATOR"),
+        review("APPROVED", day(2), association="MEMBER", body="Looks good"),
+    ]
+    nones = [
+        review("COMMENTED", day(2), association="OWNER"),  # a trusted person's comment
+        review("APPROVED", day(2), association="CONTRIBUTOR"),  # an outsider (D-16)
+        review("CHANGES_REQUESTED", day(2), association="NONE"),
+        review("COMMENTED", day(2), body=RECORD),  # a person's marker
+        review("APPROVED", day(2), author=("Bot", "copilot"), association="NONE"),  # a bot's approval, no record
+        review("APPROVED", day(2), author=("User", "release-robot")),  # a --bot login is no person
+        review("COMMENTED", day(2), body="<!-- shipmill:review merge --> quoted", author=("Bot", "shipmill-app")),
+        review("PENDING", day(2), body=RECORD, author=("Bot", "shipmill-app")),  # not submitted
+    ]
+    assert all(mx.verdict(r, bots) for r in verdicts)
+    assert not any(mx.verdict(r, bots) for r in nones)
+    # a record and an approval at h1 are one round; the request for changes at h2 another
+    rounds = (
+        *verdicts[:1],
+        verdicts[3],
+        review("CHANGES_REQUESTED", day(1.5), oid="h2"),
+        review("COMMENTED", day(1), oid="h3"),
+    )
+    assert mx.rework(agent(1, reviews=rounds), bots).rounds == 2
+
+
+def test_s078_3_a_fix_commit_is_one_parent_authored_after_the_pr_opened(mx: ModuleType) -> None:
+    commits = (
+        commit(day(6)),  # written before the PR opened, rebased after it: kept its author date
+        commit(day(4)),  # a fix
+        commit(day(3), "Merge branch 'main'", parents=2),  # a merge of the base
+        commit(day(2)),  # a fix
+    )
+    found = mx.rework(agent(1, created=day(5), commits=commits), frozenset())
+    assert (found.fixes, found.rounds, found.cycles) == (2, 0, 2)
+
+
+class ReworkForge(FakeGitHub):
+    """Three agent PRs merged in the window: #1 with its second round, its fix commit, and a
+    changed file on second pages; a person's PR and an agent's merged before the window, each
+    with more pages that must not be read"""
+
+    def pulls(self, v: dict[str, Any]) -> dict[str, Any]:
+        first = agent(
+            1,
+            created=day(6),
+            commits=(commit(day(7), "Start\n\nClaude-Session: https://x"),),
+            more="c1",
+            reviews=(review("CHANGES_REQUESTED", day(5.5)),),
+            more_reviews="v1",
+            files=("src/a.py",),
+            more_files="f1",
+            body=plan("- Files: `src/`"),
+        )
+        nodes = [
+            first,
+            agent(2, created=day(6), reviews=(review("APPROVED", day(5)),)),
+            agent(3, created=day(6)),
+            pull(4, day(2), reviews=(review("APPROVED", day(3)),), more_reviews="x", more_files="x"),
+            agent(5, merged=day(40), created=day(41), more="x", more_reviews="x", more_files="x"),
+        ]
+        return ok({"pullRequests": page(nodes)})
+
+    def pull_commits(self, v: dict[str, Any]) -> dict[str, Any]:
+        assert (v["number"], v["cursor"]) == (1, "c1")
+        return ok({"pullRequest": {"commits": page([commit(day(5), "Address the review")])}})
+
+    def pull_verdicts(self, v: dict[str, Any]) -> dict[str, Any]:
+        assert (v["number"], v["cursor"]) == (1, "v1")
+        record = review("COMMENTED", day(4), oid="h2", body=RECORD, author=("Bot", "shipmill-app"), association="NONE")
+        return ok({"pullRequest": {"verdicts": page([record])}})
+
+    def pull_files(self, v: dict[str, Any]) -> dict[str, Any]:
+        assert (v["number"], v["cursor"]) == (1, "f1")
+        return ok({"pullRequest": {"files": page([{"path": "src/b/c.py"}])}})
+
+
+def test_s078_4_rework_cycles_and_first_pass_merge_rate_over_a_scripted_forge(mx: ModuleType) -> None:
+    gh = ReworkForge(mx)
+    d = mx.fetch("o/r", window(mx), frozenset(), "incident", "release-blocker", run=gh)
+    paged = [(name, v["number"], v["cursor"]) for name, v in gh.calls if name.startswith("PULL_")]
+    assert paged == [("PULL_COMMITS", 1, "c1"), ("PULL_VERDICTS", 1, "v1"), ("PULL_FILES", 1, "f1")]
+    assert [(r.number, r.rounds, r.fixes, r.cycles) for r in mx.reworks(d, window(mx))] == [
+        (1, 2, 1, 2),  # rounds h1 and h2, one fix commit
+        (2, 1, 0, 0),
+        (3, 0, 0, 0),  # no verdict, no fix
+    ]
+    found = by_name(mx, d)
+    cycles = found["Rework cycles"]
+    assert cycles.value == pytest.approx(2 / 3)
+    assert cycles.extra == {"count": 3, "review_rounds": pytest.approx(1.0), "fix_commits": pytest.approx(1 / 3)}
+    assert cycles.detail == "3 agent PRs: mean 1.0 review rounds, 0.3 fix commits"
+    rate = found["First-pass merge rate"]
+    assert (rate.value, rate.text) == (pytest.approx(2 / 3), "67%")
+    assert rate.extra == {"first_pass": 2, "agent_merges": 3}
+    assert rate.detail == "2 of 3 agent PRs merged with 0 rework cycles"
+    assert found["Plan match"].extra == {"matched": 1, "planned": 1, "no_plan": 2}  # src/b/c.py is under src/
+
+
+def test_s078_5_review_time_runs_to_the_first_verdict_and_leaves_out_prs_without_one(mx: ModuleType) -> None:
+    pulls = [
+        agent(
+            1,
+            created=day(4),
+            reviews=(review("COMMENTED", day(3.9)), review("APPROVED", day(3.5)), review("APPROVED", day(2), oid="h2")),
+        ),  # 12 h: a comment is no verdict
+        agent(2, created=day(4), reviews=(review("CHANGES_REQUESTED", day(3)),)),  # 24 h
+        agent(3, created=day(4), reviews=(review("COMMENTED", day(3)),)),  # no verdict
+        agent(4, created=day(4)),  # no review
+    ]
+    d = data(mx, pulls=pulls)
+    assert mx.review_times(d, window(mx)) == [(1, pytest.approx(12.0)), (2, pytest.approx(24.0))]
+    m = by_name(mx, d)["Review time"]
+    assert (m.value, m.extra) == (pytest.approx(18.0), {"p90": pytest.approx(24.0), "count": 2})
+    assert m.detail == "2 agent PRs; 2 with no verdict left out"
+    m = by_name(mx, data(mx, pulls=pulls[2:]))["Review time"]
+    assert (m.value, m.text, m.detail) == (None, "no data", "no verdict on any of 2 agent PRs, all left out")
+
+
+def test_s078_6_plan_match_reads_the_files_line_of_the_one_plan(mx: ModuleType) -> None:
+    pulls = [
+        agent(1, body=plan("- Files: `src/a.py`, `docs/`"), files=("src/a.py", "docs/x/y.md")),  # equal, under
+        agent(
+            2, body=plan("- Files: `skills/**/*.py`, `tests/test_?.py`"), files=("skills/a/b/c.py", "tests/test_x.py")
+        ),
+        agent(3, body=plan("- Files: `src/*.py`"), files=("src/a.py", "src/sub/b.py")),  # * doesn't cross /
+        agent(4, body=plan("- Files: `src/new.py`"), files=("src/new.py",)),  # renamed: listed by its new path
+        agent(5, body="Fixes #1", files=("src/a.py",)),  # no plan
+        agent(6, body=plan("- Files: src/a.py"), files=("src/a.py",)),  # a Files: line with no backticked path
+        agent(7, body=plan("- Files: `src/a.py`") + "\n\n" + plan("- Files: `src/a.py`"), files=("src/a.py",)),
+        agent(8, body="## Plan\n\n- Serves: G-2\n\n## Summary\n\n- Files: `src/a.py`", files=("src/a.py",)),
+        agent(9, body="```\n## Plan\n- Files: `src/a.py`\n```", files=("src/a.py",)),  # a fenced example
+    ]
+    m = by_name(mx, data(mx, pulls=pulls))["Plan match"]
+    assert (m.value, m.text) == (pytest.approx(3 / 4), "75%")
+    assert m.extra == {"matched": 3, "planned": 4, "no_plan": 5}
+    assert m.detail == "3 of 4 planned agent PRs changed only files their plan names; 5 with no plan left out"
+    m = by_name(mx, data(mx, pulls=pulls[4:]))["Plan match"]
+    assert (m.value, m.detail) == (None, "no plan naming its files on any of 5 agent PRs, all left out")
