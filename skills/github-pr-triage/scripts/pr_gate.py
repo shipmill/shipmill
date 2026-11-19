@@ -36,9 +36,9 @@ commit, and every head whose own change, `git diff $(git merge-base origin/<base
 same-approval` reads the same (exit 0) and whose other files' patch is the same. Otherwise the
 asks stay, with `  needs-decision: answered at <sha7>, and the change differs since`,
 `  needs-decision: the answer doesn't take the recommended option`, or `  needs-decision: the
-question names no head: ask again with its `<!-- shipmill:head <sha> -->` line`. It costs one
-GraphQL read of the PR's opener, newest 100 comments, and force-pushes, and one of the issues'
-when the PR has no question; a never zone stays MAINTAINER_ONLY whatever the answer. The answer
+question names no head: ask again with its `<!-- shipmill:head <sha> -->` line`. It reads the PR's
+opener, newest 100 comments, and force-pushes, and the issues' threads, from the one GraphQL read
+the veto below makes for every open PR; a never zone stays MAINTAINER_ONLY whatever the answer. The answer
 is the only acceptance: --maintainer-accepted, which once said the maintainer accepted, exits 2
 before any read.
 
@@ -79,6 +79,16 @@ claims renumbered by a rebase, and the lines citing it, read the same, #1265). O
 lifts; a decided comment by anyone else, the maintainer too, never counts.
 
 Without [agents] on that branch the gate judges as it did before spec 030.
+
+A veto (D-48, #1309): an open PR is BLOCKED, `  decided: vetoed by @<login> at <time>, not handled`
+(the time in UTC), while it or an issue its title or body closes (triage_state.py's keyword_closes)
+holds a veto triage_state.py would read as VETOED (its unhandled_veto): after the first comment
+whose first line is `<!-- shipmill:decided ... -->` by the --bot-login or an OWNER, MEMBER, or
+COLLABORATOR, a comment by an OWNER, MEMBER, or COLLABORATOR other than the --bot-login, without the
+agent marker, whose first word is `veto`, with no newer `<!-- shipmill:veto-handled ... -->` by
+such an author. It reads the newest 100 comments of each, in one GraphQL read of the PR's thread
+and those of the issues it closes or names as Part of #N, which the answer above reads too. A
+vetoed PR reads BLOCKED whatever else holds it, a draft or a closed one aside.
 
 A spec pull request (spec 053), one that adds a file docs/specs/NNN-<slug>.md (the files API's
 `status: added`; an edit, a rename, or a copy is not checked), names its feature issue: a line
@@ -149,8 +159,8 @@ after <HH:MM> <timezone>`. A red, pending, conflicting, refused, unreviewed, or
 held-for-a-decision PR keeps that verdict: QUEUED only takes READY's place.
 
 Exit codes: 0 every PR is ready; 1 a check failed, on the PR's head or the base's (D-75),
-or gh failed; 3 a check is still pending (or --wait timed out); 4 a PR is not open or
-conflicts; 5 a PR needs the maintainer's decision; 6 an agent's PR is refused for its plan, a
+or gh failed; 3 a check is still pending (or --wait timed out); 4 a PR is not open, conflicts,
+or holds an unhandled veto (#1309); 5 a PR needs the maintainer's decision; 6 an agent's PR is refused for its plan, a
 spec PR names no open feature issue, or a PR's closing keyword names a Part of issue or an open
 one with a ## Check (D-76); 7 a PR only the maintainer
 merges, by hand (a `never` zone); 8 a draft PR (D-67); 9 an agent's code PR no review record
@@ -294,6 +304,7 @@ class Gate:
     base_repairs: tuple[str, ...] = ()  # the ones a Repairs: line names, for the reviewer to check
     unreviewed: str = ""  # why an agent's code PR that reads READY otherwise has no review record (spec 055)
     queued: tuple[str, ...] = ()  # why a held PR waits for the land window or its spacing (spec 056)
+    vetoes: tuple[str, ...] = ()  # the unhandled vetoes of a decision taken at notify (D-48, #1309)
 
     @property
     def verdict(self) -> int:
@@ -301,7 +312,7 @@ class Gate:
             return BLOCKED
         if self.draft:
             return DRAFT
-        if self.mergeable == "CONFLICTING":
+        if self.mergeable == "CONFLICTING" or self.vetoes:
             return BLOCKED
         if self.refused or self.spec:
             return REFUSED
@@ -1069,16 +1080,16 @@ def added_specs(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
     return tuple(f for f, status in statuses.items() if status == "added" and SPEC_FILE.fullmatch(f))
 
 
-def issues_read(numbers: list[int], wanted: str = "state") -> list[str]:
+def issues_read(numbers: list[int], wanted: str = "state", pull: str = "") -> list[str]:
     """`gh api`'s arguments for the GraphQL read of the numbers, each under the alias i<N>, an issue
-    with the wanted fields; the github-pr-triage eval cases record this read, so a change here
-    re-records it there"""
+    with the wanted fields, after pull (a pullRequest field of the same repository, or nothing); the
+    github-pr-triage eval cases record this read, so a change here re-records it there"""
     fields = " ".join(
         f"i{n}: issueOrPullRequest(number: {n}) {{ __typename ... on Issue {{ {wanted} }} }}" for n in numbers
     )
     query = (
         "query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { nameWithOwner "
-        f"{fields} }} }}"
+        f"{pull + ' ' if pull else ''}{fields} }} }}"
     )
     return ["graphql", "-F", "owner={owner}", "-F", "repo={repo}", "-f", f"query={query}"]
 
@@ -1089,8 +1100,17 @@ def issues_of(
     """The repo's owner/name and, for each number, its issue or pull request ({__typename} and, for
     an issue, the wanted fields), or None for a number the repo lacks: one GraphQL read. A NOT_FOUND
     error for one of the numbers is an answer; any other failure exits 1, as gh's always has"""
+    found, nodes = repository_of(numbers, number, repo, wanted)
+    return found["nameWithOwner"], nodes
+
+
+def repository_of(
+    numbers: list[int], number: int, repo: str | None, wanted: str = "state", pull: str = ""
+) -> tuple[dict, dict[int, dict | None]]:
+    """issues_of's read, with pull's field too: the repository object GraphQL answers and the
+    numbers' nodes"""
     aliases = {f"i{n}": n for n in numbers}
-    cmd, env = api(issues_read(numbers, wanted), repo)
+    cmd, env = api(issues_read(numbers, wanted, pull), repo)
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     try:
         answer = json.loads(proc.stdout) if proc.stdout.strip() else None
@@ -1107,7 +1127,7 @@ def issues_of(
         sys.exit(f"pr_gate: gh failed for #{number}: {proc.stderr.strip() or proc.stdout.strip()}")
     if proc.returncode != 0 and not errors:
         sys.exit(f"pr_gate: gh failed for #{number}: {proc.stderr.strip()}")
-    return found["nameWithOwner"], {n: found.get(alias) for alias, n in aliases.items()}
+    return found, {n: found.get(alias) for alias, n in aliases.items()}
 
 
 def spec_problems(data: dict, number: int, repo: str | None) -> list[str]:
@@ -1341,11 +1361,16 @@ RELAY_NOT_COUNTED = "relay not counted: {reason}"  # a relay out of its grammar 
 NO_HEAD = "the question names no head: ask again with its `<!-- shipmill:head <sha> -->` line"
 
 
+def pull_field(number: int) -> str:
+    """The GraphQL field of pull request number's thread"""
+    return f"pullRequest(number: {number}) {{ {OPENED_BY} {THREAD} {FORCE_PUSHES} }}"
+
+
 def thread_read(number: int) -> list[str]:
     """`gh api`'s arguments for the GraphQL read of pull request number's thread"""
     query = (
         "query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { "
-        f"pullRequest(number: {number}) {{ {OPENED_BY} {THREAD} {FORCE_PUSHES} }} }} }}"
+        f"{pull_field(number)} }} }}"
     )
     return ["graphql", "-F", "owner={owner}", "-F", "repo={repo}", "-f", f"query={query}"]
 
@@ -1361,6 +1386,60 @@ def pr_thread(number: int, repo: str | None) -> dict:
     if not isinstance(node, dict):
         raise GateError(f"GitHub's GraphQL gave no thread for #{number}: {answer!r}")
     return node
+
+
+def named_issues(data: dict, number: int) -> list[int]:
+    """The issues the pull request closes (triage_state.py's keyword_closes) or names as Part of #N"""
+    body = str(data.get("body") or "")
+    refs = triage_state().keyword_closes(str(data.get("title") or ""), body) | {int(n) for n in PART_OF.findall(body)}
+    return sorted(n for n in refs if 0 < n <= GRAPHQL_INT and n != number)
+
+
+Issues = dict[int, dict | None]  # the named issues' threads, by number (None: no such issue)
+
+
+def threads_of(data: dict, number: int, repo: str | None) -> tuple[dict, Issues]:
+    """The pull request's thread and, in the same GraphQL read, the threads of the issues it closes
+    or names as Part of #N (named_issues), which the veto (#1309) and the answer (spec 055) read;
+    without such an issue, pr_thread's read alone"""
+    numbers = named_issues(data, number)
+    if not numbers:
+        return pr_thread(number, repo), {}
+    found, nodes = repository_of(numbers, number, repo, THREAD, pull_field(number))
+    node = found.get("pullRequest")
+    if not isinstance(node, dict):
+        raise GateError(f"GitHub's GraphQL gave no thread for #{number}: {found!r}")
+    return node, nodes
+
+
+# a trusted veto of a decision taken at notify, not handled (D-48, #1309)
+VETOED = "vetoed by @{login} at {at}, not handled"
+
+
+def vetoes_of(data: dict, number: int, thread: dict, issues: Issues, bot_login: str | None) -> tuple[str, ...]:
+    """Each unhandled veto of a decision taken at notify on the pull request or on an issue it closes
+    (triage_state.py's keyword_closes), read as triage_state.py reads VETOED (unhandled_veto): after
+    the first decided marker by the --bot-login or an OWNER, MEMBER, or COLLABORATOR, a comment by an
+    OWNER, MEMBER, or COLLABORATOR other than the --bot-login, without the agent marker, whose first
+    word is `veto`, with no newer veto-handled marker by such an author. The newest 100 comments of
+    each are read, as for the answer"""
+    ts = triage_state()
+    closes = ts.keyword_closes(str(data.get("title") or ""), str(data.get("body") or ""))
+    nodes = [(f"#{number}", thread)]
+    for n in sorted(closes):
+        issue = issues.get(n)
+        if isinstance(issue, dict) and issue.get("__typename") == "Issue":
+            nodes.append((f"#{n}", issue))
+    found: list[str] = []
+    for where, node in nodes:
+        comments, _ = comments_of(node, where)
+        read = ts.comment_tuples(node)
+        at = ts.unhandled_veto(read, bot_login)
+        if at is not None:
+            when = moment(comments[at]["createdAt"], f"a comment of {where}'s createdAt")
+            stamp = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: UP017 (3.10)
+            found.append(VETOED.format(login=read[at][0], at=stamp))
+    return tuple(found)
 
 
 def comments_of(node: dict, where: str) -> tuple[list[dict], bool]:
@@ -1386,15 +1465,16 @@ def newest_question(comments: list[dict], bots: frozenset[str]) -> int | None:
     return None
 
 
-def issue_question(data: dict, number: int, repo: str | None, bots: frozenset[str]) -> tuple[list[dict], int] | None:
+def issue_question(
+    data: dict, number: int, repo: str | None, bots: frozenset[str], issues: Issues | None = None
+) -> tuple[list[dict], int] | None:
     """The newest question on an issue the pull request closes (triage_state.py's keyword_closes) or
-    names as Part of #N, with that issue's comments: one GraphQL read; None without one"""
-    body = str(data.get("body") or "")
-    refs = triage_state().keyword_closes(str(data.get("title") or ""), body) | {int(n) for n in PART_OF.findall(body)}
-    numbers = sorted(n for n in refs if 0 < n <= GRAPHQL_INT and n != number)
+    names as Part of #N, with that issue's comments: one GraphQL read, or none when issues holds
+    threads_of's read of them; None without one"""
+    numbers = named_issues(data, number)
     if not numbers:
         return None
-    _, nodes = issues_of(numbers, number, repo, THREAD)
+    nodes = issues_of(numbers, number, repo, THREAD)[1] if issues is None else issues
     newest: tuple[datetime, list[dict], int] | None = None
     for n in numbers:
         node = nodes.get(n)
@@ -1566,6 +1646,7 @@ def acceptance(
     checkout: str,
     maintainers: Maintainers,
     thread: dict | None = None,
+    issues: Issues | None = None,
 ) -> tuple[bool, str | None]:
     """Whether the maintainer's answer covers the judged head (spec 055), and, when it doesn't,
     the needs-decision line that says why (None for no line): the newest question on the pull
@@ -1578,7 +1659,7 @@ def acceptance(
     retro.py's takes_recommended; given on an issue before the pull request opened, or at the
     head the question names in full (its `<!-- shipmill:head <sha> -->` line) or one whose own
     change is the judged head's. Anything else leaves the question open. thread is the pull
-    request's, when this pass already read it"""
+    request's, and issues the threads of the issues it names, when this pass already read them"""
     rt = retro()
     bots = frozenset({bot_login}) if bot_login else frozenset()
     thread = pr_thread(number, repo) if thread is None else thread
@@ -1590,7 +1671,7 @@ def acceptance(
             return False, None  # its own question may be older than the comments read
         if not rt.trusted(thread, bots):
             return False, None  # anyone may write `Fixes #N` in a body: an outsider's PR asks its own
-        found = issue_question(data, number, repo, bots)
+        found = issue_question(data, number, repo, bots, issues)
         if found is None:
             return False, None
         (comments, asked), on_issue = found, True
@@ -1860,6 +1941,7 @@ def render(gate: Gate) -> str:
     lines += [f"  maintainer-only: {reason}" for reason in gate.never]
     lines += [f"  needs-decision: {reason}" for reason in gate.asks]
     lines += [f"  notify: {reason}" for reason in gate.notices]
+    lines += [f"  decided: {veto}" for veto in gate.vetoes]
     lines += [f"  unreviewed: {gate.unreviewed}"] if gate.verdict == UNREVIEWED else []
     if gate.verdict == QUEUED:
         lines += [f"  queued: {reason}" for reason in gate.queued]
@@ -1961,9 +2043,13 @@ def main() -> int:
                 if base.agents and base.ref is not None:
                     zones = classifier.zones(number, base.ref, str(data["headRefOid"]))
                 judged = judge(data, number, base, agent, zones, spec)
-                thread: dict | None = None  # the PR's thread, read once a pass for both checks below
-                if data["state"] == "OPEN" and notify_zone(zones, ACCEPTED_SPEC):  # spec 067
-                    thread = pr_thread(number, args.repo)
+                # the PR's thread and its issues', read once a pass for the checks below
+                thread: dict | None = None
+                issues: Issues | None = None
+                if data["state"] == "OPEN":  # an unhandled veto of a notify decision blocks it (D-48, #1309)
+                    thread, issues = threads_of(data, number, args.repo)
+                    judged = replace(judged, vetoes=vetoes_of(data, number, thread, issues, args.bot_login))
+                if thread is not None and notify_zone(zones, ACCEPTED_SPEC):  # spec 067
                     why = decided(data, number, args.repo, args.bot_login, bases.checkout, thread)
                     if why is not None:
                         judged = replace(judged, asks=(*judged.asks, f"{ACCEPTED_SPEC}: {why}"))
@@ -1971,7 +2057,9 @@ def main() -> int:
                     if base.maintainers not in maintainers:  # one per base read: its permission reads too
                         maintainers[base.maintainers] = Maintainers(base.maintainers, args.repo)
                     who = maintainers[base.maintainers]
-                    covered, why = acceptance(data, number, args.repo, args.bot_login, bases.checkout, who, thread)
+                    covered, why = acceptance(
+                        data, number, args.repo, args.bot_login, bases.checkout, who, thread, issues
+                    )
                     judged = replace(judged, asks=() if covered else (*judged.asks, *([why] if why else [])))
                 if data["state"] == "OPEN":
                     branch = str(data["baseRefName"])

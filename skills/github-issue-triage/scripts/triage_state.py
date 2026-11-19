@@ -2269,9 +2269,16 @@ def vetoes(comment: tuple[str, str, str], bot_login: str | None) -> bool:
 
 def vetoed(comments: list[tuple[str, str, str]], bot_login: str | None) -> str | None:
     """Who vetoed a decided item and is still unanswered, or None; comments are (login, author
-    association, body), oldest first. A veto counts after the first decided marker (its first
-    line, by the --bot-login or an OWNER, MEMBER, or COLLABORATOR, as D-29's markers), until a
-    newer veto-handled marker by such an author answers it"""
+    association, body), oldest first, as unhandled_veto reads them"""
+    veto = unhandled_veto(comments, bot_login)
+    return None if veto is None else comments[veto][0]
+
+
+def unhandled_veto(comments: list[tuple[str, str, str]], bot_login: str | None) -> int | None:
+    """The index of the newest veto of a decided item still unanswered, or None; comments are
+    (login, author association, body), oldest first. A veto counts after the first decided marker
+    (its first line, by the --bot-login or an OWNER, MEMBER, or COLLABORATOR, as D-29's markers),
+    until a newer veto-handled marker by such an author answers it. pr_gate.py reads it too (#1309)"""
     marks = (
         i
         for i, (author, association, body) in enumerate(comments)
@@ -2289,7 +2296,7 @@ def vetoed(comments: list[tuple[str, str, str]], bot_login: str | None) -> str |
             veto = i
     if veto is None or handled > veto:
         return None
-    return comments[veto][0]
+    return veto
 
 
 def comment_tuples(issue: dict[str, Any]) -> list[tuple[str, str, str]]:
