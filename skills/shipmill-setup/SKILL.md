@@ -811,6 +811,17 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      coordinator's product permissions (contents, issues, and pull requests read, issues
      write, metadata read) are a subset of a session's, so an installation made for
      sessions covers them
+   - **In a component, the product goals each goal serves (spec 071).** Once the
+     component's goals are written (the direction above), its `docs/product.md` passes `$CR
+     product check --local`, and its `[product] home` is set, run `$CR product show
+     --section goals` and show the maintainer the home's goals, which it prints under `##
+     Product goals (<owner/home>)`. For each component goal, ask which
+     of those goals it serves: one or several, or none. Write each answer with `$CR product
+     serves G-n <the home's G-n ids>`, never by hand, and a goal they link to none gets no
+     serves line. Never choose a product goal for a component goal yourself, not even the
+     one that looks obvious: the maintainer's answer is the link. When `product show` exits
+     2 (the App's key isn't on this host, or the home doesn't list this repo yet), relay its
+     message and its fix, and leave the serves lines for a later run rather than guessing
 
    Then tell the maintainer what works today and what doesn't yet:
 
@@ -820,10 +831,12 @@ on whom, from GitHub, with one `factory` line summing up those checks.
      coordinator routes it (`upstream_state.py`, `chains.py link --product --child`) and
      closes it. `doctor` checks the product's repos and their links back
      (shipmill/shipmill#604, closed), and the coordinator routes a report filed in the
-     home repo itself (shipmill/shipmill#596, closed)
+     home repo itself (shipmill/shipmill#596, closed). A component's `$CR product show`
+     adds the home's goals and non-goals, and `$CR product check` refuses a serves line
+     naming a goal the home doesn't list (spec 071)
    - **Not yet:** a plan across repos (D-46, on hold); the maintainer's queue across
-     repos; a component reading its home's direction (shipmill/shipmill#579). Each line
-     goes when its issue closes
+     repos; triage, intake, and review in a component citing the product's non-goals
+     (shipmill/shipmill#579). Each line goes when its issue closes
 
    **With `[product]` set, the links back are doctor's.** Run no check of the links back
    of your own. The `$CR doctor` run before you report the agent side connected prints a

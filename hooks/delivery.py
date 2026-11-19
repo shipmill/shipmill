@@ -4,8 +4,8 @@
 forbid, in a repo whose .github/shipmill.toml has an [agents] section: exit 2 with three lines
 on stderr, the refused command, the rule, and the command to run instead. `delivery.py post`
 reads a PostToolUse input for Edit, Write, and MultiEdit, and after an edit of the direction
-(docs/product.md, docs/product/) or a REVIEW.md runs `shipmill product check` or `shipmill
-review check`: exit 2 shows a failed check's output to the model. Exit 0 allows; exit 1 means
+(docs/product.md, docs/product/) or a REVIEW.md runs `shipmill product check --local` (spec
+071: never the product home's direction) or `shipmill review check`: exit 2 shows a failed check's output to the model. Exit 0 allows; exit 1 means
 the input wasn't the hook JSON, or a check couldn't run. hooks/hooks.json runs it with a
 Python 3.11+ that uv finds or installs, and exits 1 itself, letting the command run, when it
 can't start it (D-40).
@@ -1723,7 +1723,9 @@ def post(hook: HookInput, stderr: TextIO, ctx: Context) -> int:
     if isinstance(config, Broken):
         stderr.write(f"shipmill hook: {check} check didn't run: {config.message} ({CONFIG})\n")
         return 1
-    command = (*shipmill(ctx.plugin), check, "check", "--repo", str(root))
+    # S-071-13: the direction's check reads only this checkout, never the product home's over the network
+    local = ("--local",) if check == "product" else ()
+    command = (*shipmill(ctx.plugin), check, "check", *local, "--repo", str(root))
     try:
         result = ctx.runner(command, root)
     except OSError as exc:

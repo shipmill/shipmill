@@ -62,13 +62,12 @@ def run(root: Path, *args: str) -> int:
     return main(["--repo", str(root), "product", *args])
 
 
-@pytest.mark.parametrize("local", [[], ["--local"]])
 def test_s071_1_check_accepts_serves_lines_under_the_item_or_the_measure_line(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], local: list[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = write(tmp_path, SERVED)
     assert check(root) == ()
-    assert run(root, "check", *local) == 0
+    assert run(root, "check", "--local") == 0  # without it the ids are checked against the home's (S-071-3)
     assert capsys.readouterr().out == f"{DIRECTION}: well formed, 6 items\n"
     goals = read(root).goals
     assert [g.serves for g in goals] == [Serves.parse("G-2, G-4"), Serves.parse("G-1"), None]
@@ -205,14 +204,14 @@ def test_s071_2_a_direction_without_serves_lines_never_reads_the_config(tmp_path
 def test_s071_9_show_json_gives_each_goal_a_serves_list_and_ids_lists_only_this_repo_s(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    root = write(tmp_path, SERVED)
-    assert run(root, "show", "--json", "--section", "goals") == 0
+    root = write(tmp_path, SERVED)  # --local: the product's part is S-071-5's
+    assert run(root, "show", "--local", "--json", "--section", "goals") == 0
     goals = json.loads(capsys.readouterr().out)["goals"]
     assert [(g["id"], g["serves"]) for g in goals] == [("G-1", ["G-2", "G-4"]), ("G-2", ["G-1"]), ("G-3", [])]
-    assert run(root, "show", "--json") == 0
+    assert run(root, "show", "--local", "--json") == 0
     whole = json.loads(capsys.readouterr().out)
     assert all("serves" not in item for key in ("users", "non_goals", "quality") for item in whole[key])
-    assert run(root, "show", "--section", "goals") == 0  # the text form prints the line as the file has it
+    assert run(root, "show", "--local", "--section", "goals") == 0  # the text form prints the line as the file has it
     assert capsys.readouterr().out == SERVED[SERVED.index("## Goals") : SERVED.index("\n## Non-goals")]
     assert run(root, "ids") == 0
     assert capsys.readouterr().out.splitlines() == [

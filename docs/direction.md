@@ -68,6 +68,16 @@ The structure is fixed, so code reads it without a model:
   line, or under its measure line: `  serves: G-2, G-4` (spec 071). `product check` refuses
   the line in any other repo, the home included
 
+In a component, `product check` also reads the home's direction, as committed on its default
+branch, and refuses a serves line naming a goal the home's Goals don't list; `product show`
+adds the product's goals and non-goals after the component's own, under `## Product goals
+(<owner/home>)` and `## Product non-goals (<owner/home>)`, and in `--json` as one `product`
+key. Both read the home with the App's read-only token (spec 065), so they need the App's key
+on the host and the home's `[product] repos` listing the component; when the home can't be
+read they exit 2 naming the home and the fix, and `--local` reads only the checkout, as on a
+laptop or in CI. A component whose goals carry no serves line reads nothing of the home in
+`check`.
+
 A short example:
 
 ```markdown
@@ -121,7 +131,7 @@ still lands through a pull request:
 
 Each takes `--repo DIR` (default: the current directory). An edit command exits 2 without
 writing when the file doesn't pass `check` first. In a session with the shipmill plugin,
-an edit of the direction runs `shipmill product check` right away and shows a broken line
+an edit of the direction runs `shipmill product check --local` right away and shows a broken line
 with its number. A goal you retire that an unbuilt spec still serves makes `specs.py check`
 fail for that spec, which lists the specs to revisit.
 

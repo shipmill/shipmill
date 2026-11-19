@@ -1599,13 +1599,20 @@ CHECKED = [
 ]
 
 
+def check_call(check: str, root: Path) -> list[str]:
+    """The CLI call an edit's check makes; the direction's reads only the checkout (S-071-13)"""
+    local = ["--local"] if check == "product" else []
+    return [PINNED, check, "check", *local, "--repo", str(root)]
+
+
+# proves: S-071-13
 @pytest.mark.parametrize("name", EDIT_FIXTURES)
 @pytest.mark.parametrize(("rel", "check"), CHECKED)
 def test_s026_13_edit_runs_its_check_and_a_pass_is_silent(
     box: Sandbox, stub: Stub, name: str, rel: str, check: str
 ) -> None:
     allowed(stub.run(edit(name, box.agents, rel), 0, out="ok\n"))
-    assert stub.calls() == [[PINNED, check, "check", "--repo", str(box.agents)]]
+    assert stub.calls() == [check_call(check, box.agents)]
 
 
 @pytest.mark.parametrize(("rel", "check"), CHECKED)
@@ -1620,7 +1627,7 @@ def test_s026_13_a_check_exiting_2_exits_1(box: Sandbox, stub: Stub, rel: str, c
     result = stub.run(edit("post-write.json", box.agents, rel), 2, err="error: bad input")
     assert result.returncode == 1
     assert result.stderr.startswith("error: bad input\n")
-    assert f"{check} check --repo {box.agents}" in result.stderr and "exited 2" in result.stderr
+    assert shlex.join(check_call(check, box.agents)[1:]) in result.stderr and "exited 2" in result.stderr
 
 
 def test_s026_13_a_check_that_cant_start_exits_1(box: Sandbox, tmp_path: Path) -> None:
@@ -1689,7 +1696,7 @@ def test_s026_13_a_relative_file_path_is_read_against_the_cwd(box: Sandbox, stub
     data = fixture("post-product-check.json", box.agents / ".github")
     data["tool_input"]["file_path"] = "../docs/product.md"
     allowed(stub.run(data))
-    assert stub.calls() == [[PINNED, "product", "check", "--repo", str(box.agents)]]
+    assert stub.calls() == [check_call("product", box.agents)]
 
 
 def test_s026_13_a_broken_config_exits_1_naming_it(tmp_path: Path, stub: Stub) -> None:
@@ -1707,7 +1714,7 @@ def test_s026_17_post_fixtures_hold_a_case_for_each_check(box: Sandbox, stub: St
         rel = Path(data["tool_input"]["file_path"]).relative_to(data["cwd"]).as_posix()
         stub.log.unlink(missing_ok=True)
         allowed(stub.run(edit(name, box.agents, rel)))
-        assert stub.calls() == [[PINNED, check, "check", "--repo", str(box.agents)]]
+        assert stub.calls() == [check_call(check, box.agents)]
 
 
 @pytest.mark.parametrize(

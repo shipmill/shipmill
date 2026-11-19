@@ -385,9 +385,10 @@ from shipmill.planner import Actor, Event, Hotfix, Planner, Proposal
 from shipmill.plugin import CLI_RECORD, MARKERS, GateCli, PluginHost, Runner, load_cli
 from shipmill.policy import Lane, Policy
 from shipmill.pr_plan import hold_plan
-from shipmill.product import DIRECTION, GitRef, ItemId, Measure, Section, Serves
+from shipmill.product import DIRECTION, GitRef, Inherited, ItemId, Measure, Section, Serves
 from shipmill.product import check as check_product
 from shipmill.product import read as read_product
+from shipmill.product_home import HomeReach, inherited
 from shipmill.propose import close_released, propose, run_url
 from shipmill.roles import LoginReader
 from shipmill.ruleset import ruleset as branch_ruleset
@@ -1269,7 +1270,7 @@ def main(
     if args.command == "upgrade":
         return _upgrade(root, args, github or GhCli(root))
     if args.command == "product":
-        return _product(root, args)
+        return _product(root, args, HomeReach(api or UrllibApi(), signer or Openssl(), env, user_home))
     if args.command == "review" and args.review_command == "history":
         history_of = history_reads or (lambda top: review_history.GhReads(GhCli(top)))
         return _review_history(root, args, history_of, now or dt.datetime.now(dt.UTC))
@@ -3726,11 +3727,33 @@ def _upgrade(root: Path, args: argparse.Namespace, github: GitHub) -> int:
     return 0
 
 
-def _product(root: Path, args: argparse.Namespace) -> int:
-    """Spec 024: check exits 1 naming each broken rule; show and ids refuse a broken direction"""
+def _home_of(root: Path, args: argparse.Namespace, reach: HomeReach) -> Callable[[], Inherited] | None:
+    """Spec 071: in a component ([product] home), without --local, what reads its product's
+    direction when called; None elsewhere, so a repo in no product, and the home itself, read
+    only their own direction, as before (S-071-8)"""
+    if args.local:
+        return None
+    config = ProductConfig.load(root)
+    home = None if config is None else config.home
+    if home is None:
+        return None
+
+    def read() -> Inherited:
+        git = Git(root)
+        top = Path(git.run("rev-parse", "--show-toplevel").strip()) if git.ok("rev-parse", "--show-toplevel") else root
+        return inherited(root, home, _known_origin(top), reach, dt.datetime.now(dt.UTC))
+
+    return read
+
+
+def _product(root: Path, args: argparse.Namespace, reach: HomeReach) -> int:
+    """Spec 024: check exits 1 naming each broken rule; show and ids refuse a broken direction.
+    Spec 071: in a component, check reads its product's direction for its serves lines' ids, and
+    show adds the product's goals and non-goals; either exits 2, printing nothing, when the
+    product's direction can't be read"""
     if args.product == "check":
         at = None if args.ref is None else GitRef.resolve(root, args.ref)  # S-034-1: an unknown ref exits 2
-        problems = check_product(root, at)
+        problems = check_product(root, at, _home_of(root, args, reach))
         for problem in problems:
             print(problem)
         if problems:
@@ -3766,10 +3789,17 @@ def _product(root: Path, args: argparse.Namespace) -> int:
             print(item)
         return 0
     sections = [Section.named(option) for option in args.section]
+    home = _home_of(root, args, reach) if Inherited.wanted(sections) else None
+    product_part = None if home is None else home()  # read whole before a line is printed (S-071-7)
     if args.json:
-        print(json.dumps(direction.record(sections), indent=2, ensure_ascii=False))
-    else:
+        record = direction.record(sections)
+        if product_part is not None:
+            record["product"] = product_part.record(sections)
+        print(json.dumps(record, indent=2, ensure_ascii=False))
+    elif product_part is None:
         sys.stdout.write(direction.render(sections))
+    else:
+        sys.stdout.write(direction.render(sections) + "\n" + product_part.render(sections))
     return 0
 
 
