@@ -88,6 +88,8 @@ A PR that departs from a settled decision (`D-n`) without a superseding entry th
 
 Verdicts: **MERGE**, **MERGE AFTER SMALL FIX**, or **REFUSE** (with the reason, and what would change the verdict). Security findings, such as secrets reaching envelopes, logs, or another caller's output, rank first in the report.
 
+**A refusal gets a second look (spec 075).** The reviewer lists each finding it didn't fix as `F-n`, `blocking` or nit; a REFUSE that names no blocking finding goes back to its reviewer. A reviewer's REFUSE is verified before it is recorded or handed back: send [Verify a refusal](references/reviewer-brief.md#verify-a-refusal) with the reviewed head and each blocking finding to a fresh agent, neither the first reviewer nor this landing session, all of them in one message, and in the foreground in a headless session, as reviewers are. Take the verdict from its marks: a `rejected` finding is dropped, a `minor` one becomes a note, and the verdict is REFUSE only when at least one finding is `confirmed`; with none confirmed it is the reviewer's verdict without the refusal, MERGE or MERGE AFTER SMALL FIX. The report you record is the reviewer's followed by a "Second look" part, one line per `F-n` with its mark and its failure scenario, handling code, or note, and the record carries the counts (`--findings`, [landing.md](references/landing.md#recording-the-review)). The handback names only confirmed findings, each with its failure scenario, as the reason of a REFUSE; notes travel in the review record and the report, never as work the author owes, and they don't count against the rubric's nit cap.
+
 ### 4. Land
 
 Follow [references/landing.md](references/landing.md). In short:

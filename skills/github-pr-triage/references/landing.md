@@ -45,6 +45,8 @@ Once the reviewer's head is the PR's head (its fixes pushed, as above), record t
 uvx shipmill==0.149.2 review record <n> --head <reviewed head> --verdict merge|refuse --body-file <report>
 ```
 
+A refusal is recorded only after the second look ([SKILL.md](../SKILL.md#3-verify-each-reviewers-report), spec 075), with `--findings` holding the verifier's counts of confirmed, rejected, and minor findings, `review record <n> --head <reviewed head> --verdict refuse --findings confirmed=N,rejected=N,minor=N --body-file <report>`, and a report that ends with its "Second look" part. A refusal it overturned (nothing confirmed) is recorded `merge` with its `--findings`, which is how the retro counts it; `review record` exits 2 writing nothing on `refuse` with `confirmed=0` or `merge` with a `confirmed` above 0. Without a second look, as for a reviewer's MERGE, leave `--findings` out.
+
 It posts a COMMENT review at that head whose first line is `<!-- shipmill:review merge -->` or `<!-- shipmill:review refuse -->`, and exits 2 writing nothing when the head isn't the full 40-character SHA, isn't the PR's current head (it moved since the review: review the new head), or the App isn't available (hard rule 8). Then run the gate again. A record covers the judged head at its own commit, and after a rebase or a merge of the base that leaves the PR's own change the same; a push that changes the PR's own change needs a review of the new head and a new record. The App's newest record covering the head counts, so a refuse keeps the PR UNREVIEWED until a merge record follows it. A trusted person's APPROVED review without the agent marker is a record too.
 
 ## Merge style

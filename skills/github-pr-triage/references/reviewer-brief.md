@@ -54,7 +54,7 @@ Review GitHub PR #{N} of {owner/repo} ("{title}", fixes #{issue}). The repo is a
    - {When the brief holds the history:} For each `H-n`, whether the PR contradicts it: `contradicts`, `consistent`, or `unrelated`, with one line of reason. A `contradicts` the PR's body or plan doesn't explain (why the revert, the answer, or the incident no longer holds) is a finding citing the `H-n`
    - {When the brief holds a rubric:} A change that breaks an Important rule: a finding citing its id (`I-n`, or `skills/I-2` for a subdirectory's). A nit never blocks the verdict: report at most {cap} nits, the rubric's `cap:`, and drop the rest
 4. Reproduce each real bug before fixing it. Commit each small fix with proof that fails on the old code, by github-issue-resolve's [test gate](../../github-issue-resolve/references/test-gate.md) (a new regression test only when no existing test, type check or boundary model catches it), on review-{N}, and rerun the affected checks. Leave larger problems as findings.
-5. Final report, under 250 words: verdict (MERGE / MERGE AFTER SMALL FIX / REFUSE), rebase status, test results, {when the plan has a `Kind:` line: a "Test proof" line with `test_proof.py`'s verdict (`PROVEN`, `UNPROVEN`, `NO_TEST`, or `BASELINE_RED`), which goes into the review record,} findings with file:line (fixed or not){ and the `I-n`, `N-n`, `Q-n`, or `H-n` each cites}{, at most {cap} nits}{, a History part with one line per `H-n` and its word, `contradicts`, `consistent`, or `unrelated`, which goes into the review record}, and the HEAD SHA of review-{N}, the head you reviewed: the landing session pushes it and records your verdict on it with `shipmill review record`, and `pr_gate.py` reads an agent's code PR UNREVIEWED until that record covers its head.
+5. Final report, under 250 words: verdict (MERGE / MERGE AFTER SMALL FIX / REFUSE), rebase status, test results, {when the plan has a `Kind:` line: a "Test proof" line with `test_proof.py`'s verdict (`PROVEN`, `UNPROVEN`, `NO_TEST`, or `BASELINE_RED`), which goes into the review record,} the findings you fixed with file:line, then each finding you did not fix as `F-1`, `F-2`, and so on: its file and line, the claim in one sentence, and `blocking` when the verdict stands on it or `nit`{ and the `I-n`, `N-n`, `Q-n`, or `H-n` each cites}{, at most {cap} nits}{, a History part with one line per `H-n` and its word, `contradicts`, `consistent`, or `unrelated`, which goes into the review record}, and the HEAD SHA of review-{N}, the head you reviewed: the landing session pushes it and records your verdict on it with `shipmill review record`, and `pr_gate.py` reads an agent's code PR UNREVIEWED until that record covers its head. A REFUSE names at least one blocking finding: a report whose REFUSE names none is sent back to you, and a second reviewer checks each blocking finding before the refusal is recorded (spec 075).
 ```
 
 ## Post-merge review
@@ -68,6 +68,26 @@ Post-merge review of GitHub PR #{N} of {owner/repo} ("{title}"). It is already m
 2. {pr_specific_risks}. Also check it composes with PRs that merged next to it and touched the same code ({neighbours}).
 3. Run the project's checks, then fix each real bug on review-{N} with proof by the test gate (the CHANGELOG entry goes under Unreleased → Fixed, or in a new fragment under `### Fixed` when `.github/shipmill.toml` sets `[changelog] fragments`).
 4. Final report, under 250 words: CLEAN / BUGS FOUND, findings with file:line, test results, HEAD SHA.
+```
+
+## Verify a refusal
+
+Use this for each PR whose reviewer reports REFUSE, before anything is recorded or handed back (spec 075). Send it to a fresh agent (`subagent_type: general-purpose`, `isolation: "worktree"`), never the first reviewer and never the landing session itself, all such agents in one message, and in the foreground in a headless session, as reviewers are. Give it the PR, the reviewed head, and each blocking finding's id, file and line, and claim, copied from the report; never the first reviewer's verdict or the rest of its report.
+
+```text
+Verify findings on GitHub PR #{N} of {owner/repo} ("{title}") at head {reviewed_head}. The repo is at {repo_path}, and you are in an isolated worktree of it. Goal: settle each finding below by the code. Do NOT push, comment on GitHub, merge, or fix anything.
+{In a headless gate session:} the same one-command-per-Bash-call paragraph as the Open PR brief.
+
+The findings:
+{findings: one line each, `F-n`, file:line, the claim in one sentence}
+
+1. `git fetch origin`, `git fetch origin pull/{N}/head:verify-{N}`, then `git checkout --detach {reviewed_head}`. Read `git diff origin/{base}...HEAD` and the code each finding names.
+2. Mark every finding with exactly one of:
+   - `confirmed`, with the failure scenario: the input or steps, what happens, and what should; run it where it can be run (a failing test or command and its output), otherwise trace it through the code with file and line
+   - `rejected`, with the file and line of the code that already handles it, or of the rule or test that shows the claim is wrong
+   - `minor`, with one line saying why it is real and doesn't block: a note
+3. Agree or reject by the code, never by default. A finding you can neither show failing nor show handled is not confirmed: mark it `minor` with the note starting `unproven:`. Save a security finding (a secret reaching output, a missing check on an entry path) you can't settle either way: mark it `confirmed`, with what you could not rule out.
+4. Final report, under 250 words: one line per `F-n` with its mark and its scenario, handling code, or note, and the head you checked.
 ```
 
 ## Risks worth naming, by PR type
