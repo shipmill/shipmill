@@ -99,6 +99,15 @@ and the maintainer's answer doesn't lift it. The check reads the files API, and 
 once for the issues the lines name; a PR that gh pr view lists whole, with no spec path, reads
 neither.
 
+An approved spec changed (D-81, #1311): in a checkout, for every spec file a PR modifies (the files
+API's `status: modified`, from the read above) whose text on origin/<base> says `status: approved`
+or `status: built`, the gate runs `specs.py same-approval --base origin/<base> <spec> <merge-base>
+<head>`, the PR's own change to the spec against none. Format only, the `status:` line, or a change
+to Issues or Verification alone (what the split's docs PR and a build PR fill in) keeps the
+verdict; any other change reads NEEDS_DECISION, `  spec: <file> changes approved Behaviour`,
+whoever opened the PR, a spec PR too, until the maintainer's answer accepts it; so does an approved
+or built spec the PR renames, named by its old path. Outside a checkout it isn't read.
+
 A draft PR is read as DRAFT, whatever its checks, plan, or zones, and the gate reads neither its
 files nor its zones (D-67). A person's draft belongs to them: it enters triage once marked ready.
 A draft the --bot-login authored has no owner once its session ended (#914): its line says so, and
@@ -320,6 +329,7 @@ class Gate:
     unreviewed: str = ""  # why an agent's code PR that reads READY otherwise has no review record (spec 055)
     queued: tuple[str, ...] = ()  # why a held PR waits for the land window or its spacing (spec 056)
     vetoes: tuple[str, ...] = ()  # the unhandled vetoes of a decision taken at notify (D-48, #1309)
+    spec_asks: tuple[str, ...] = ()  # the approved specs it changes past format: the answer lifts them (#1311)
 
     @property
     def verdict(self) -> int:
@@ -333,7 +343,7 @@ class Gate:
             return REFUSED
         if self.never:
             return MAINTAINER_ONLY
-        if self.asks:
+        if self.asks or self.spec_asks:
             return NEEDS_DECISION
         if self.base_red or any(c.done and c.conclusion not in GREEN for c in self.checks):
             return FAILED
@@ -1617,6 +1627,67 @@ def same_approval(checkout: str, base_ref: str, spec: str, answered: str, head: 
     return subprocess.run(cmd, capture_output=True, text=True, cwd=checkout).returncode == 0
 
 
+APPROVED_STATUSES = ("approved", "built")  # a spec whose Behaviour a change asks about (D-81, #1311)
+CHANGES_APPROVED = "{spec} changes approved Behaviour"
+# the sections filled in on an approved spec after its approval, which same-approval reads as a
+# change but which ask nothing here: Issues, by the split's docs PR (spec-gate.md, Split it, step 5),
+# and Verification, by the build PR beside its status: line (spec-gate.md, Verify the whole spec)
+FILLED_AFTER_APPROVAL = frozenset({"Issues", "Verification"})
+
+
+def modified_specs(data: dict, number: int, repo: str | None) -> tuple[str, ...]:
+    """The spec files the PR modifies (the files API's `status: modified`), read as added_specs
+    reads the ones it adds, and from the same read"""
+    added_specs(data, number, repo)
+    statuses: dict[str, str] = data.get("statuses") or {}
+    return tuple(f for f, status in statuses.items() if status == "modified" and SPEC_FILE.fullmatch(f))
+
+
+def spec_status(text: str) -> str | None:
+    """A spec's status, its first `status: <word>` line, as specs.py reads it; None without one"""
+    for line in text.splitlines():
+        found = specs_script().STATUS.match(line)
+        if found is not None:
+            return found.group(1)
+    return None
+
+
+def approved_edits(data: dict, number: int, repo: str | None, checkout: str) -> list[str]:
+    """Each approved or built spec the PR changes past its format (D-81, #1311): for every spec file
+    it modifies whose text on origin/<base> says `status: approved` or `status: built`, specs.py
+    same-approval --base origin/<base> compares the PR's own change to it, base against head (the
+    merge-base as the answered head, whose own change is none). Exit 0, only format or the status:
+    line, keeps the verdict, and so does exit 1 when every section it names is Issues or
+    Verification, which the split's docs PR and the build PR fill in; any other section asks. An
+    approved spec the PR renames (the files API's previous_filename) asks by its old path, unread:
+    same-approval reads one path at both commits. A spec PR's added spec is spec_problems'"""
+    candidates = modified_specs(data, number, repo)
+    moved = tuple(p for p in data.get("previous") or () if SPEC_FILE.fullmatch(p))
+    if not candidates and not moved:
+        return []
+    base_ref = base_of(data, checkout)
+    read = file_in(checkout)
+    approved = [s for s in candidates if spec_status(read(base_ref, s) or "") in APPROVED_STATUSES]
+    found = [
+        CHANGES_APPROVED.format(spec=s) for s in moved if spec_status(read(base_ref, s) or "") in APPROVED_STATUSES
+    ]
+    if not approved:
+        return found
+    head = str(data["headRefOid"])
+    if not has_commit(checkout, head):
+        raise GateError(f"#{number}'s head {head[:7]} is not in {checkout}: run `git -C {checkout} fetch origin`")
+    merge_base = git(checkout, "merge-base", base_ref, head).strip()
+    for spec in approved:
+        cmd = [sys.executable, str(SPECS), "same-approval", "--base", base_ref, spec, merge_base, head]
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=checkout)
+        if proc.returncode not in (0, 1):
+            raise GateError(f"specs.py same-approval {spec} failed for #{number}: {proc.stderr.strip()}")
+        sections = {line[3:].strip() for line in proc.stdout.splitlines() if line.startswith("## ")}
+        if proc.returncode == 1 and not sections <= FILLED_AFTER_APPROVAL:
+            found.append(CHANGES_APPROVED.format(spec=spec))
+    return found
+
+
 def file_in(checkout: str) -> Callable[[str, str], str | None]:
     """A reader of a file's text at a commit of the checkout, None when the commit hasn't it"""
 
@@ -2012,7 +2083,7 @@ def render(gate: Gate) -> str:
     lines += [f"  base: repairs: {line}" for line in gate.base_repairs]
     lines += [f"  base: pending: {line}" for line in gate.base_pending]
     lines += [f"  refused: {reason}" for reason in gate.refused]
-    lines += [f"  spec: {reason}" for reason in gate.spec]
+    lines += [f"  spec: {reason}" for reason in (*gate.spec, *gate.spec_asks)]
     lines += [f"  maintainer-only: {reason}" for reason in gate.never]
     lines += [f"  needs-decision: {reason}" for reason in gate.asks]
     lines += [f"  notify: {reason}" for reason in gate.notices]
@@ -2089,6 +2160,7 @@ def main() -> int:
         specs: dict[tuple[int, str, str], tuple[str, ...]] = {}  # by PR, head, and body: a --wait reads each once
         closings: dict[tuple[int, str, str, str], tuple[str, ...]] = {}  # the same and the title, for its
         # closing keywords (D-76, #987)
+        edits: dict[tuple[int, str], tuple[str, ...]] = {}  # the approved specs each head changes (#1311)
         maintainers: dict[frozenset[str], Maintainers] = {}  # who a relayed answer may name (spec 055)
         while True:
             gates = []
@@ -2119,6 +2191,11 @@ def main() -> int:
                 if base.agents and base.ref is not None:
                     zones = classifier.zones(number, base.ref, str(data["headRefOid"]))
                 judged = judge(data, number, base, agent, zones, spec)
+                if data["state"] == "OPEN" and bases.inside:  # D-81, #1311
+                    edit = (number, str(data["headRefOid"]))
+                    if edit not in edits:
+                        edits[edit] = tuple(approved_edits(data, number, args.repo, bases.checkout))
+                    judged = replace(judged, spec_asks=edits[edit])
                 # the PR's thread and its issues', read once a pass for the checks below
                 thread: dict | None = None
                 issues: Issues | None = None
@@ -2136,7 +2213,10 @@ def main() -> int:
                     covered, why = acceptance(
                         data, number, args.repo, args.bot_login, bases.checkout, who, thread, issues
                     )
-                    judged = replace(judged, asks=() if covered else (*judged.asks, *([why] if why else [])))
+                    if covered:
+                        judged = replace(judged, asks=(), spec_asks=())
+                    else:
+                        judged = replace(judged, asks=(*judged.asks, *([why] if why else [])))
                 if data["state"] == "OPEN":
                     branch = str(data["baseRefName"])
                     if branch not in heads:

@@ -2685,6 +2685,124 @@ def test_1265_a_claimed_decision_renumbered_by_a_rebase_is_still_covered(
         ]
 
 
+# #1311: a PR editing an approved or built spec past its format asks again (D-81)
+
+APPROVED_SPEC = """\
+# S-054: Release digest
+
+status: approved
+serves: G-1
+
+## Problem
+
+Releases go out and nobody reads what changed in them.
+
+## Behaviour
+
+A digest is posted with each release.
+
+## Acceptance criteria
+
+- S-054-1: a digest is posted with each release
+
+## Issues
+
+## Verification
+"""
+BUILT_SPEC = APPROVED_SPEC.replace("status: approved", "status: built")
+VERIFIED = "\n- S-054-1: tests/test_digest.py passes on main\n"
+SPLIT = APPROVED_SPEC.replace("## Issues\n", "## Issues\n\n- demo/app#30: S-054-1\n")  # the split's docs PR
+CHANGES_BEHAVIOUR = f"  spec: {SPEC} changes approved Behaviour"
+
+
+def spec_edit(tmp_path: Path, base_text: str, head_text: str) -> tuple[Path, dict[str, Any]]:
+    """A checkout whose main holds the spec as base_text, and a person's PR editing it to head_text
+    beside a code change: its data at the head, a real commit"""
+    work = checkout(tmp_path, {SPEC: base_text})
+    for where in (work, tmp_path / "origin"):
+        git(where, "config", "user.email", "t@example.com")
+        git(where, "config", "user.name", "t")
+    git(work, "switch", "-q", "-c", "feat", "origin/main")
+    head = committed(work, {SPEC: head_text, "src/app.py": "x = 1\n"}, "Change the app")
+    return work, headed(head, ((head, at(10, 30)),), login="amy", body="Changes the app", files=(SPEC, "src/app.py"))
+
+
+@pytest.mark.parametrize(
+    ("base_text", "head_text", "asks"),
+    [
+        pytest.param(
+            BUILT_SPEC,
+            BUILT_SPEC.replace("each release.\n", "each release, archived repos aside.\n"),
+            True,
+            id="a Behaviour rule added to a built spec",
+        ),
+        pytest.param(
+            APPROVED_SPEC,
+            APPROVED_SPEC.replace("release\n", "release\n- S-054-2: the digest names each pull request\n"),
+            True,
+            id="a criterion added to an approved spec",
+        ),
+        pytest.param(APPROVED_SPEC, BUILT_SPEC + VERIFIED, False, id="a build PR: status built, Verification filled"),
+        pytest.param(BUILT_SPEC, BUILT_SPEC + VERIFIED, False, id="only Verification filled"),
+        pytest.param(APPROVED_SPEC, SPLIT, False, id="only Issues filled, the split's docs PR"),
+        pytest.param(
+            APPROVED_SPEC,
+            SPLIT.replace("each release.\n", "each week.\n"),
+            True,
+            id="Issues filled beside a Behaviour change",
+        ),
+        pytest.param(APPROVED_SPEC, BUILT_SPEC, False, id="only status moved"),
+        pytest.param(
+            BUILT_SPEC, BUILT_SPEC.replace("go out and nobody", "go out\nand nobody"), False, id="only rewrapped"
+        ),
+        pytest.param(
+            APPROVED_SPEC.replace("status: approved", "status: draft"),
+            APPROVED_SPEC.replace("status: approved", "status: draft").replace("each release.\n", "each week.\n"),
+            False,
+            id="a draft spec's Behaviour edited",
+        ),
+    ],
+)
+def test_1311_a_pr_changing_an_approved_spec_past_its_format_needs_a_decision(
+    tmp_path: Path, base_text: str, head_text: str, asks: bool
+) -> None:
+    work, data = spec_edit(tmp_path, base_text, head_text)
+    proc = run_gate(tmp_path, work, {7: data})
+    if asks:
+        assert proc.returncode == gate.NEEDS_DECISION == 5, proc.stdout + proc.stderr
+        assert proc.stdout.splitlines()[0].startswith("#7 NEEDS_DECISION ")
+        assert proc.stdout.splitlines()[1:] == [CHANGES_BEHAVIOUR]
+    else:
+        assert (proc.returncode, proc.stdout) == (0, ready_line(data["headRefOid"])), proc.stdout + proc.stderr
+
+
+def test_1311_a_renamed_approved_spec_needs_a_decision(tmp_path: Path) -> None:
+    """the files API reads a rename `renamed`, not `modified`: an approved spec renamed with a
+    Behaviour change still asks, named by its path on the base"""
+    work = checkout(tmp_path, {SPEC: BUILT_SPEC})
+    for where in (work, tmp_path / "origin"):
+        git(where, "config", "user.email", "t@example.com")
+        git(where, "config", "user.name", "t")
+    git(work, "switch", "-q", "-c", "feat", "origin/main")
+    renamed = "docs/specs/054-digest.md"
+    git(work, "mv", SPEC, renamed)
+    head = committed(work, {renamed: BUILT_SPEC.replace("each release.\n", "each week.\n")}, "Rename the spec")
+    data = headed(
+        head, ((head, at(10, 30)),), login="amy", body="Changes the app", files=(renamed,), renamed={renamed: SPEC}
+    )
+    proc = run_gate(tmp_path, work, {7: data})
+    assert proc.returncode == gate.NEEDS_DECISION == 5, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[1:] == [CHANGES_BEHAVIOUR]
+
+
+def test_1311_the_maintainers_answer_lifts_the_approved_spec_ask(tmp_path: Path) -> None:
+    changed = BUILT_SPEC.replace("each release.\n", "each release, archived repos aside.\n")
+    work, data = spec_edit(tmp_path, BUILT_SPEC, changed)
+    head = data["headRefOid"]
+    proc = protected(tmp_path, work, data, thread(asked(head=head), comment("1", at(12))))
+    assert (proc.returncode, proc.stdout) == (0, ready_line(head)), proc.stdout + proc.stderr
+
+
 def test_1271_a_covering_answer_clears_the_accepted_spec_ask_with_a_stricter_zone(tmp_path: Path, agents: Path) -> None:
     """accepted-spec at notify with no decided comment, and scope at ask: the maintainer's answer
     covering the head lifts both asks"""
