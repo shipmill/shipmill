@@ -167,8 +167,8 @@ def test_s034_2_the_check_runs_the_pinned_cli_at_the_default_branch(ws: ModuleTy
 
     assert ws.direction_problems(tmp_path, "main", None, execute) == []
     pinned = f"shipmill=={ws.plugin_version()}"
-    want = ["uvx", pinned, "--repo", str(tmp_path), "product", "check", "--ref", "origin/main"]
-    assert calls == [(want, tmp_path)]
+    want = ["uvx", pinned, "--repo", str(tmp_path), "product", "check", "--ref", "origin/main", "--local"]
+    assert calls == [(want, tmp_path)]  # --local: a component's check never reads its home (#1408)
     ws.direction_problems(tmp_path, "main", "git+https://x/y", execute)
     assert calls[-1][0][:4] == ["uvx", "--from", "git+https://x/y", "shipmill"]
 
