@@ -641,7 +641,9 @@ labelled `needs-decision`, or one `pr_gate.py` doesn't read READY (specs 030 and
 issue with an open sub-issue labelled `role:<name>` or `human`, a person's step, or whose
 sub-issues can't be read (#1313); and an `issue edit` or
 `pr edit` that adds `needs-decision` (alone or in a comma list) to an item carrying no
-needs-decision question by the App or an OWNER, MEMBER, or COLLABORATOR, or removes it
+needs-decision question by the App or an OWNER, MEMBER, or COLLABORATOR, or whose newest
+question a person's reply, a relay (counted or not), or a withdrawn marker already follows
+(#1331), or removes it
 before a person's reply, a relay the relay grammar counts (D-93), or a
 `<!-- shipmill:withdrawn -->` comment follows the newest question (#1312). Each names what is
 missing and what would satisfy it; github-issue-triage's `references/needs-decision.md` has
