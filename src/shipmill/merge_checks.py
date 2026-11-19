@@ -96,8 +96,11 @@ WRAPPERS: Mapping[tuple[str, ...], frozenset[str]] = {
 }
 
 # The shell's own words that lead a command, and those that make a whole part, which runs nothing
-_LEADING = frozenset({"if", "elif", "then", "else", "while", "until", "do", "!", "{", "("})
+_LEADING = frozenset({"then", "else", "do", "{", "("})
 _CLOSING = frozenset({"then", "else", "fi", "do", "done", "esac", "}", ")"})
+# A condition's or a negated command's exit never fails the step, so the part stays `unknown`
+_CONDITION = frozenset({"if", "elif", "while", "until", "!"})
+_SHELL = _LEADING | _CLOSING | _CONDITION
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _HEREDOC = re.compile(r"<<-?[ \t]*(?P<quote>['\"]?)(?P<word>[\w.-]+)(?P=quote)")
 _NEWLINES = re.compile(r"[ \t]*\n\s*")
@@ -354,7 +357,7 @@ def classify(part: str, load: Callable[[], Scripts | None]) -> list[Command]:
     words = _words(part)
     if words is None:
         return [Command(part, Kind.UNKNOWN)]
-    if words and all(w in _CLOSING or w in _LEADING for w in words):
+    if words and all(w in _SHELL for w in words):
         return []
     rest, module = _program(words)
     name = _script(rest)

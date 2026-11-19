@@ -152,7 +152,14 @@ pytest
 def test_s080_3_shell_keywords_alone_are_no_command(tmp_path: Path) -> None:
     text = "jobs:\n  t:\n    steps:\n      - run: |\n          if ruff check .; then\n"
     text += "            mypy src\n          fi\n"
-    assert _kinds(text, tmp_path) == {"if ruff check .": Kind.LINT, "mypy src": Kind.TYPE_CHECK}
+    assert _kinds(text, tmp_path) == {"if ruff check .": Kind.UNKNOWN, "mypy src": Kind.TYPE_CHECK}
+
+
+@pytest.mark.parametrize("part", ["if pytest", "elif ruff check .", "while mypy src", "until pytest", "! pytest"])
+def test_s080_6_a_command_whose_failure_fails_no_step_is_unknown(part: str) -> None:
+    # proves: S-080-6
+    # a condition's or a negated command's exit never fails the step, so it proves nothing
+    assert classify(part, lambda: None) == [Command(part, Kind.UNKNOWN)]
 
 
 @pytest.mark.parametrize(
