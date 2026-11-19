@@ -537,6 +537,15 @@ def test_s011_10_fleet_reads_the_lines_watch_state_prints_with_their_fix(fl: Mod
             fl.watch_rows("o/r", json.dumps(bad) + "\n")
 
 
+def test_fleet_reads_a_prs_open_row_with_its_heads(fl: ModuleType, ws: ModuleType) -> None:
+    # watch_state.py --json adds the open pull requests' heads to PRS_OPEN (#546): read, never printed
+    row = ws.Row("PRS_OPEN", "o/r", "#3 #4", None, ((3, "a" * 40), (4, "b" * 40)))
+    assert '"heads": ' in json.dumps(row.json())
+    assert fl.watch_rows("o/r", json.dumps(row.json()) + "\n") == [fl.Row("PRS_OPEN", "o/r", "#3 #4")]
+    with pytest.raises(SystemExit, match="not a row"):
+        fl.watch_rows("o/r", json.dumps({**row.json(), "heads": ["a" * 40]}) + "\n")
+
+
 def test_the_fixture_action_rows_are_agent_rows(ws: ModuleType) -> None:
     assert WATCH_ACTION <= ws.AGENT
 

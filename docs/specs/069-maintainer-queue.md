@@ -1,6 +1,6 @@
 # S-069: One queue of what waits on the maintainer, across the fleet
 
-status: approved
+status: built
 serves: G-4
 
 ## Problem
@@ -105,3 +105,17 @@ state: each row comes from a state script that already reads it, on the same fre
 - shipmill/shipmill#1246: S-069-4, S-069-13
 
 ## Verification
+
+- S-069-1: tests/test_fleet_queue.py (test_s069_1_*): an unanswered needs-decision item is a `QUESTION` row naming `o/r` and `#5`, one a trusted reply answered since the watch read it is none, and an outsider's marker never times it; `fleet.py queue` against shipmill/shipmill listed its unanswered needs-decision pull requests (#1370, #1371, #1379) as `QUESTION` rows; passes
+- S-069-2: tests/test_fleet_queue.py (test_s069_2_*): a WITH_PERSON item assigned to the reader (in another case) is a `YOUR_ITEM` row, one assigned to another login or to a team only is none, and the reader is `--login`, else `gh api user`'s login, read once; passes
+- S-069-3: tests/test_fleet_queue.py (test_s069_3_*): OPPORTUNITY_OPEN, PLAN_OPEN, and NO_REASON are rows and ACCEPTED, HANDED_OFF, DECLINED, and PLAN_ACCEPTED are none; the live run listed shipmill/shipmill's open opportunities (#338, #479) and plans (#565, #566) as `OPPORTUNITY` and `PLAN` rows; passes
+- S-069-4: tests/test_fleet_queue.py (test_s069_4_*): an open spec pull request with no question and no approval is a `SPEC_TO_MERGE` row since it was marked ready; a draft, a pull request whose first line isn't `Spec for #N`, one with an unanswered question, one a trusted answer or a maintainer's relay approved, one the App decided at `accepted-spec`, and a stranger's are none; one so approved that edits `docs/product.md` or `docs/product/`, or whose files run past 100, is a row; an untrusted answer, a person's decided comment, the App's decided comment for another zone, and a relay naming no maintainer land none; a spec pull request in `QUESTION` is only a question; the open pull requests' query ran against shipmill/shipmill's five open pull requests and read none as a spec pull request; passes
+- S-069-5: tests/test_fleet_queue.py (test_s069_5_*): PRS_PARKED's TO_MERGE part is a `TO_MERGE` row since its label's newest event and a "Ready to promote" proposal a `PROMOTION` row, from one batched read of the items; passes. A proposal `operate.yml` opens as `github-actions[bot]` reads as an outsider's under S-069-9, which shipmill/shipmill#1371 asks about
+- S-069-6: tests/test_fleet_queue.py (test_s069_6_*, test_s069_4_a_spec_pull_request_in_question_is_only_a_question): an item in `QUESTION` is in no other row; passes
+- S-069-7: tests/test_fleet_queue.py (test_s069_7_*): rows of two repos print in one list, oldest first, a tie in the fleet file's order; the live run printed the repo, kind, `#N`, what is asked, the title, and the wait (`40d 9h`, `43m`); passes
+- S-069-8: tests/test_fleet_queue.py (test_s069_8_*): `--json` prints `login`, `items` with the eight keys in the table's order, and `errors`; passes
+- S-069-9: tests/test_fleet_queue.py (test_s069_9_*, test_s069_4_*): an outsider's item and spec pull request are in no row, and the App's only with `--bot-login`; passes
+- S-069-10: tests/test_fleet_queue.py (test_s069_10_*, test_s069_4_a_failed_pull_requests_read_is_a_repo_error): a failed watch, triage_state.py, intake_state.py, items read, or open pull requests' read is one REPO_ERROR line with its step and first line, the other repo's rows print, and the run exits 2; passes
+- S-069-11: tests/test_fleet_queue.py (test_s069_11_*): exit 0 on an empty queue and 1 with a row; a fleet file `report` refuses, `queue` refuses with the same exit 2 and message; the live run exited 1; passes
+- S-069-12: tests/test_fleet_queue.py (test_s069_12_*): against a fake gh the run makes only `gh api user`, `gh repo clone`, and `gh api graphql` queries, no mutation; passes
+- S-069-13: tests/test_fleet_queue.py (test_s069_13_*): `skills/github-ship-watch/SKILL.md`'s Fleet section names `scripts/fleet.py queue --fleet <file>`, each row kind, and a `/schedule` routine prompt running it and reporting oldest first; passes

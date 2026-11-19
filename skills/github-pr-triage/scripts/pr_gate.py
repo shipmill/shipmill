@@ -641,6 +641,12 @@ def plan_problems(body: str, ids: frozenset[str]) -> list[str]:
     return problems
 
 
+def direction_edits(files: Iterable[str]) -> list[str]:
+    """The files that edit the product's direction, docs/product.md or one under docs/product/,
+    which only the maintainer changes (D-34); fleet.py queue reads a spec PR's by it too"""
+    return [f for f in files if f == DIRECTION or f.startswith(DIRECTION_DIR)]
+
+
 def unfenced(text: str) -> list[str]:
     """The lines of a body outside fenced code, with sections()' fence rule"""
     found: list[str] = []
@@ -2178,7 +2184,7 @@ def judge(
         asks = [z.line() for z in zones if z.level == "ask"]
         notices = [z.line() for z in zones if z.level == "notify"]
     elif base.ids is not None or base.reviews:
-        edited = [f for f in files if f == DIRECTION or f.startswith(DIRECTION_DIR)]
+        edited = direction_edits(files)
         asks += [f"{f} edits the product's direction, which only the maintainer changes (D-34)" for f in edited]
         for area in base.protected(files):
             asks += [f"{f} matches `{area.glob}` ({area.file}): {area.why}" for f in files if area.covers(f)]
