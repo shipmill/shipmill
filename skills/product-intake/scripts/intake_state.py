@@ -12,9 +12,10 @@ Feedback is an open issue, or an open discussion when the repo enables Discussio
   - carries none of SKIP_LABELS (bug, roadmap, and shipmill's own labels, goal-plan among
     them, so a plan issue or a request for one is never feedback), no --skip-label
     (repeatable, added to SKIP_LABELS), and not --label
-  - has no triage verdict of implement, feature, duplicate, or won't fix: the verdict is
-    the first bold word of the newest comment starting with --marker
-    ("Triage: **implement**"), so a bug or a contract change stays with triage
+  - has no triage verdict of implement, feature, duplicate, won't fix, or postponed: the
+    verdict is the first bold word of the newest comment starting with --marker
+    ("Triage: **implement**"), so a bug, a contract change, or postponed work stays with
+    triage; a newer verdict, such as triage's opportunity hand-off, makes it feedback again
   - for a discussion, sits in a --category (default: any category but Announcements)
 
 An opportunity is an issue labelled --label, open or closed. Its members are the issues
@@ -45,6 +46,12 @@ Each opportunity's evidence: its members, and the thumbs-up reactions on them an
 opportunity itself. The first line (text) or the first JSON line is the [autonomy] intake
 level from the shipmill config (.github/shipmill.toml in the current directory; none
 means the default, propose).
+
+With --json, each NEW_FEEDBACK and ACCEPTED line also has (spec 074): author, the opener's
+login (a Bot's ending [bot], as --bot-login spells it) or null when GitHub returns none;
+association, the opener's author association, null for a discussion; and handed, the
+createdAt of the issue's newest triage comment when its verdict is opportunity (triage's
+hand-off), else null, and null for an ACCEPTED opportunity. The text output has none of them.
 
 With --plans (spec 028), the goals of the direction come next, read with
 `uvx shipmill==<version> product show --section goals --json` in the current directory
@@ -150,7 +157,8 @@ SKIP_LABELS = (
     "goal-plan",  # a goal's plan, or the maintainer's request for one (spec 028): never a request for a feature
 )
 SKIP_CATEGORIES = ("Announcements",)
-CLOSING_VERDICTS = ("implement", "feature", "duplicate", "won't fix", "won’t fix", "wont fix")
+# A postponed issue is triage's too (spec 074): an unattended pass must not group it
+CLOSING_VERDICTS = ("implement", "feature", "duplicate", "won't fix", "won’t fix", "wont fix", "postpone")
 OWN_VERDICT = "opportunity"  # intake's triage comment on an opportunity it opens
 REASON_WINDOW = dt.timedelta(hours=1)  # "close with comment" posts the comment just before the close
 ACTION = {"NEW_FEEDBACK", "ACCEPTED", "NO_REASON", "OVERLAP"}
@@ -208,7 +216,10 @@ query($owner: String!, $name: String!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     discussions(first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
       pageInfo { hasNextPage endCursor }
-      nodes { number title url closed category { name } reactions(content: THUMBS_UP) { totalCount } }
+      nodes {
+        number title url closed category { name } reactions(content: THUMBS_UP) { totalCount }
+        author { __typename login }
+      }
     }
   }
 }
@@ -428,6 +439,22 @@ def newest_verdict(issue: dict[str, Any], marker: str) -> str | None:
     return None if body is None else verdict(body, marker)
 
 
+def handed_at(issue: dict[str, Any], marker: str) -> str | None:
+    """The createdAt of the issue's newest triage comment when its verdict is triage's
+    opportunity hand-off (spec 074), None otherwise"""
+    for comment in reversed(issue["comments"]["nodes"]):
+        found = verdict(comment["body"], marker)
+        if found is not None:
+            return str(comment["createdAt"]) if found.startswith(OWN_VERDICT) else None
+    return None
+
+
+def opener(node: dict[str, Any]) -> str | None:
+    """The opener's login as --bot-login spells it (a Bot's ending [bot]), None when GitHub returns none"""
+    author = node.get("author")
+    return PLANS.login(author) if author else None
+
+
 def complete_comments(run: Runner, owner: str, name: str, issue: dict[str, Any], marker: str) -> None:
     """Page an issue's comments back, oldest first, only while none of them is a triage comment:
     the newest triage comment is all intake reads from an issue's history"""
@@ -530,6 +557,11 @@ class Item:
     state: str = ""
     note: str = ""
     members: list[int] = field(default_factory=list)
+    # spec 074: the opener, their author association (None for a discussion), and when
+    # triage handed the issue over (its opportunity verdict's createdAt), None otherwise
+    author: str | None = None
+    association: str | None = None
+    handed: str | None = None
 
 
 @dataclass
@@ -564,7 +596,16 @@ def fetch(
         complete_comments(run, owner, name, issue, marker)
     thumbs = {i["number"]: i["reactions"]["totalCount"] for i in opened + opps}
     feedback = [
-        Item(i["number"], "issue", i["title"], i["reactions"]["totalCount"], feedback=True)
+        Item(
+            i["number"],
+            "issue",
+            i["title"],
+            i["reactions"]["totalCount"],
+            feedback=True,
+            author=opener(i),
+            association=i.get("authorAssociation"),
+            handed=handed_at(i, marker),
+        )
         for i in opened
         if is_feedback(i, skip, marker)
     ]
@@ -575,13 +616,15 @@ def fetch(
             category = (d.get("category") or {}).get("name", "")
             counted = category in categories if categories is not None else category not in SKIP_CATEGORIES
             if not d["closed"] and counted:
-                feedback.append(Item(d["number"], "discussion", d["title"], d["reactions"]["totalCount"], True))
+                thumbs_up = d["reactions"]["totalCount"]
+                feedback.append(Item(d["number"], "discussion", d["title"], thumbs_up, True, author=opener(d)))
     opportunities = []
     for issue in opps:
         state, note = opportunity_state(issue, accepted, marker)
         members = sorted(evidence(issue["body"], owner, name) - {issue["number"]})
         item = Item(issue["number"], "opportunity", issue["title"], issue["reactions"]["totalCount"])
         item.state, item.note, item.members = state, note, members
+        item.author, item.association = opener(issue), issue.get("authorAssociation")
         opportunities.append(item)
     missing = sorted({m for o in opportunities for m in o.members} - set(thumbs))
     thumbs.update(member_thumbs(run, owner, name, missing))
@@ -1282,6 +1325,25 @@ def show(row: Item) -> str:
     return f"#{row.number:<5} {row.state:<16} {row.title[:70]}  [{'; '.join(detail)}]"
 
 
+PLACED = {"NEW_FEEDBACK", "ACCEPTED"}  # the lines the watch places (spec 074)
+
+
+def json_row(row: Item) -> dict[str, Any]:
+    """A row's --json line; a NEW_FEEDBACK or ACCEPTED line also has author, association, and handed"""
+    line: dict[str, Any] = {
+        "number": row.number,
+        "kind": row.kind,
+        "state": row.state,
+        "title": row.title,
+        "thumbs": row.thumbs,
+        "members": row.members,
+        "note": row.note,
+    }
+    if row.state in PLACED:
+        line.update(author=row.author, association=row.association, handed=row.handed)
+    return line
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("repo", help="owner/name")
@@ -1346,20 +1408,7 @@ def main() -> int:
     if args.json:
         print(json.dumps({"autonomy": autonomy}))
         for r in found:
-            print(
-                json.dumps(
-                    {
-                        "number": r.number,
-                        "kind": r.kind,
-                        "state": r.state,
-                        "title": r.title,
-                        "thumbs": r.thumbs,
-                        "members": r.members,
-                        "note": r.note,
-                    },
-                    sort_keys=True,
-                )
-            )
+            print(json.dumps(json_row(r), sort_keys=True))
         for p in planned:
             row = {"goal": p.goal, "kind": p.kind, "number": p.number, "state": p.state, "title": p.title}
             print(json.dumps({**row, "note": p.note, "author": p.author}, sort_keys=True))
