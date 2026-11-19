@@ -7,6 +7,24 @@ bot.
 
 ## [Unreleased]
 
+## [0.147.0] - 2026-11-19
+
+### Fixed
+
+- Merge gate: a trusted veto of a decision taken at notify, on the pull request or on an issue it closes, reads BLOCKED with a `decided: vetoed by @<login> at <time>, not handled` line until a veto-handled comment answers it, read as triage_state.py reads VETOED (#1309)
+- Merge gate: a base check rerunning after it failed on the base's head reads PENDING with a `base: pending: <check> rerunning on <base>@<sha7>` line instead of letting a pull request read READY, so landing resumes only once the rerun is green (D-75); the base's check runs are read with every attempt, in the same one read (#1310)
+- `pr_gate.py` compares every `approved` or `built` spec a pull request modifies with `specs.py same-approval`, base against head, so a code pull request that changes an approved spec's Behaviour reads NEEDS_DECISION with `spec: <file> changes approved Behaviour` until the maintainer's answer; a change to its format, `status:` line, Issues, or Verification alone keeps the verdict (#1311)
+- `shipmill roles` and `shipmill status` work in a gate session on a repo whose `[agents.roles]` lists no maintainer: they read the gate's `SHIPMILL_MAINTAINER` before `gh api user`, which answers 403 under the App's installation token, and a malformed value exits 2 naming the variable; outside the gate the host's `gh` login is read as before (#1314)
+
+### Changed
+
+- `shipmill gh issue edit` and `shipmill gh pr edit`, as the App, refuse with exit 2 to add the `needs-decision` label to an item carrying no needs-decision question, and to remove it before a person's reply, a relay the relay grammar counts, or a `<!-- shipmill:withdrawn -->` comment follows the newest question, each naming the comment that would satisfy it; a maintainer's "not now" is a postpone with the `postponed` label (#1312)
+- `pr_gate.py` refuses a pull request whose title, commit, or body has a closing keyword naming another open pull request (`closes #N, an open pull request`), or whose title or a commit writes a Dependabot alert as `#N` (`writes Dependabot alert #N: write alert N or its URL`), since GitHub reads that `#N` as the repo's own issue or pull request and its merge closed unrelated ones; github-issue-resolve and the implementer brief tell agents to write `alert N` or the alert's URL (#1321)
+
+### Added
+
+- `triage_state.py` reads an open person's item (labelled `role:<name>` or `human`) whose sub-issue parent closed as STALE_HANDOFF, an action noted `parent owner/repo#N closed`, until a trusted `<!-- shipmill:still-waits -->` comment after the close; `watch_state.py` lists it in an ISSUES row whose fix is "close it or say why it still waits on the maintainer"; and `shipmill gh issue close`, as the App, refuses with exit 2 to close an issue with an open person's sub-issue, naming it (#1313)
+
 ## [0.146.2] - 2026-11-18
 
 ### Fixed
@@ -2652,7 +2670,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.146.2...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.147.0...HEAD
+[0.147.0]: https://github.com/shipmill/shipmill/compare/v0.146.2...v0.147.0
 [0.146.2]: https://github.com/shipmill/shipmill/compare/v0.146.1...v0.146.2
 [0.146.1]: https://github.com/shipmill/shipmill/compare/v0.146.0...v0.146.1
 [0.146.0]: https://github.com/shipmill/shipmill/compare/v0.145.0...v0.146.0
