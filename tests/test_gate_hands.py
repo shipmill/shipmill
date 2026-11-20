@@ -14,7 +14,7 @@ import pytest
 from shipmill.agents import Mode
 from shipmill.errors import ReleaseError
 from shipmill.findings import Finding
-from shipmill.gate import CUT_LINE, RECORD, TICK, Action, Deaths, Decision, state_dir
+from shipmill.gate import CUT_LINE, RECORD, TICK, Action, Deaths, Decision, Launch, save_launch, state_dir
 from shipmill.gitrepo import Git
 from shipmill.walk import (
     CURSOR,
@@ -32,7 +32,20 @@ from shipmill.walk import (
 )
 
 from .test_gate import FakeClaude, checkout
-from .test_gate_walk import INCIDENT, NOW, ONE, REPO, Source, cfg, dead_launch, handed, tick
+from .test_gate_walk import (
+    INCIDENT,
+    NOW,
+    ONE,
+    REPO,
+    Source,
+    cfg,
+    changed,
+    dead_launch,
+    graphql_answer,
+    handed,
+    pull,
+    tick,
+)
 
 __all__ = ["checkout"]  # the fixture, imported for the tests below
 
@@ -329,6 +342,64 @@ def test_s061_4_a_subject_whose_session_ended_dead_is_never_idle(checkout: Git) 
     decision = tick(checkout, source, later, cfg(Mode.HEADLESS, sweep_hours=48), claude)
     assert decision.work == (row,) and len(claude.started) == 1
     assert "idle" not in handed(checkout)["ISSUES VERIFY_DUE #842"]
+
+
+def test_1447_a_question_answered_while_its_session_ran_is_handed_on_the_next_tick(checkout: Git) -> None:
+    """#1447: #3 is handed at NOW; its session asks on it (needs-decision) and the maintainer
+    answers before the session ends, so no walk ever sees #3 waiting. The first tick after the
+    session ended drops the hand of the question's pull request and hands #3 again at once,
+    instead of after retry_hours; the change check's labels tell, with no read more"""
+    pulls = {3: Pull(Head(SHA, "SUCCESS"), NOW)}
+    claude = FakeClaude()
+    assert tick(checkout, Source({3: [PRS]}, pulls=pulls), claude=claude).work == (PRS,)
+    moved = "b" * 40  # the session pushed, asked, and the answer came in, all while it ran
+    answered = Pull(Head(moved, "SUCCESS"), NOW + dt.timedelta(minutes=20), asked=True)
+    row = Finding("PRS_OPEN", REPO, "#3", False, ((3, moved),), "land")
+    source = Source({3: [row]}, signature="answered", pulls={3: answered})
+    decision = tick(checkout, source, NOW + dt.timedelta(minutes=35), claude=claude)
+    assert (decision.action, decision.work) == (Action.LAUNCH, (row,))
+    assert handed(checkout)["PRS_OPEN #3"]["session"] == "s2" and len(claude.launched) == 2
+
+
+def test_1447_a_question_still_waiting_drops_its_hand_once_and_the_next_tick_is_quiet(checkout: Git) -> None:
+    claude = FakeClaude()
+    tick(checkout, Source({3: [PRS]}, pulls={3: Pull(Head(SHA, "SUCCESS"), NOW)}), claude=claude)
+    waiting = Pull(Head(SHA, "SUCCESS"), NOW + dt.timedelta(minutes=10), asked=True)
+    source = Source({4: [Finding("NEEDS_DECISION", REPO, "#3", False, (), "answer")]}, pulls={3: waiting})
+    later = NOW + dt.timedelta(minutes=30)
+    assert tick(checkout, source, later, claude=claude).action is Action.QUIET  # nothing to hand
+    assert "PRS_OPEN #3" not in handed(checkout)
+    source.reads.clear()
+    again = tick(checkout, source, later + dt.timedelta(minutes=15), claude=claude)
+    assert again.action is Action.QUIET and source.reads == ["changes"]  # no walk: the drop was a change once
+    assert len(claude.launched) == 1
+
+
+def test_1447_the_change_check_reads_which_open_pull_requests_are_labelled_needs_decision() -> None:
+    labelled = {**pull(4), "labels": {"nodes": [{"name": "needs-decision"}]}}
+    found = changed(graphql_answer(pulls=[pull(3), labelled]))
+    assert {n: p.asked for n, p in found.pulls.items()} == {3: False, 4: True}
+
+
+def test_1447_only_the_ended_sessions_asked_pull_requests_lose_their_hands(checkout: Git) -> None:
+    """D-87 as it was: a pull request the ended session didn't ask on, another session's
+    asked one, and an issue subject keep their hands, so none is handed again"""
+    within = NOW - dt.timedelta(hours=1)
+    seed(
+        checkout,
+        {
+            "PRS_OPEN #3": hand(within, "s1", Head(SHA, "SUCCESS")),
+            "PRS_OPEN #4": hand(within, "s0", Head(SHA, "SUCCESS")),
+            "ISSUES VERIFY_DUE #842": hand(within, "s1"),
+        },
+    )
+    save_launch(state_dir(checkout) / RECORD, Launch("PRS_OPEN #3", "s1", within, item="PRS_OPEN #3"))
+    rows = [Finding("PRS_OPEN", REPO, "#3 #4", False, ((3, SHA), (4, SHA)), "land")]
+    pulls = {3: Pull(Head(SHA, "SUCCESS"), within), 4: Pull(Head(SHA, "SUCCESS"), within, asked=True)}
+    source = Source({3: rows, 6: [Finding("ISSUES", REPO, "VERIFY_DUE #842", True, (), "triage")]}, pulls=pulls)
+    decision = tick(checkout, source)
+    assert decision.action is Action.UNCHANGED
+    assert set(handed(checkout)) == {"PRS_OPEN #3", "PRS_OPEN #4", "ISSUES VERIFY_DUE #842"}
 
 
 # -- a hand-off is read again
