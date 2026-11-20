@@ -375,6 +375,18 @@ def test_1447_a_question_still_waiting_drops_its_hand_once_and_the_next_tick_is_
     assert len(claude.launched) == 1
 
 
+def test_1447_an_ended_session_that_wrote_nothing_on_a_labelled_pull_request_keeps_its_hand(checkout: Git) -> None:
+    """An answered pull request, still labelled needs-decision, is handed to s1, whose session
+    ends without writing on it (updatedAt before the hand): its hand stays, so the ticks after
+    it ended launch no second session before retry_hours (D-87), instead of one per tick"""
+    answered = Pull(Head(SHA, "SUCCESS"), NOW - dt.timedelta(hours=1), asked=True)
+    claude = FakeClaude()
+    source = Source({3: [PRS]}, pulls={3: answered})
+    actions = [tick(checkout, source, NOW + dt.timedelta(minutes=m), claude=claude).action for m in (0, 15, 30, 45)]
+    assert actions[0] is Action.LAUNCH and Action.LAUNCH not in actions[1:]
+    assert len(claude.launched) == 1 and handed(checkout)["PRS_OPEN #3"]["session"] == "s1"
+
+
 def test_1447_the_change_check_reads_which_open_pull_requests_are_labelled_needs_decision() -> None:
     labelled = {**pull(4), "labels": {"nodes": [{"name": "needs-decision"}]}}
     found = changed(graphql_answer(pulls=[pull(3), labelled]))
