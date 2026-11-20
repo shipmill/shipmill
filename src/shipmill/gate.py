@@ -1962,7 +1962,9 @@ def tick_walk(
     reads every tier drops the hand of an item it no longer finds (#926). With no change and no
     sweep due the tick reads nothing more: QUIET, `no change since <cursor>` (S-046-1). An item
     of tier 3, 4, or 6 is handed by its subjects (spec 061, walk): a subject's hand that a walk
-    found idle stays past retry_hours, marked so, and is no change by itself (S-061-8)"""
+    found idle stays past retry_hours, marked so, and is no change by itself (S-061-8). Once
+    the last session ended, its hand of a pull request now labelled needs-decision comes off,
+    so an answer that came in while it ran is handed on the next tick (#1447)"""
     cursor = Cursor.load(state / CURSOR)
     recorded = (state / HANDED).is_file()
     handed = Handed.load(state / HANDED)
@@ -1976,6 +1978,12 @@ def tick_walk(
     known = Swept.load(state / SWEEP)
     # spec 079: tier 2 reads base_red.py on a failing default head, or after a reading not GREEN
     changes = base_read(source.changes(None if cursor is None else cursor.at), cursor)
+    # #1447: the last session ended (busy and still_working let the tick on): a pull request it
+    # was handed and asked on loses its hand, a change once, since a dropped hand is gone the
+    # next tick; a dead session's hands are all gone already
+    asked = handed if last is None or dead is not None else handed.unasked(last.session, changes.pulls)
+    dropped = len(asked.hands) < len(handed.hands)
+    handed = asked
     sweeping = sweep_now or known is None or known.due(now, sweep_hours)
     change = (
         walk_now
@@ -1986,6 +1994,7 @@ def tick_walk(
         or changes.window  # spec 056: the land window opened, or its spacing passed, with a queue
         or handed.expired(now, retry)
         or unseen  # a capped one holds its item: its expiry is the change
+        or dropped  # #1447: an ended session's question on a pull request
     )
     if cursor is not None and not change and not sweeping:
         since = cursor.at.isoformat(timespec="minutes")

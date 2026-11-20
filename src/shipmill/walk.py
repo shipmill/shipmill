@@ -310,10 +310,12 @@ class Head:
 
 @dataclass(frozen=True, slots=True)
 class Pull:
-    """An open pull request as the change check read it: its head and when GitHub last updated it"""
+    """An open pull request as the change check read it: its head, when GitHub last updated it,
+    and whether it is labelled needs-decision (#1447), from the same query's labels"""
 
     head: Head
     updated: dt.datetime
+    asked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,6 +427,21 @@ class Handed:
     def without(self, session: str) -> Handed:
         """A dead session's handing doesn't count (S-046-15)"""
         return Handed({k: h for k, h in self.hands.items() if h.session != session})
+
+    def unasked(self, session: str, pulls: Mapping[int, Pull]) -> Handed:
+        """#1447: an ended session's hands of pull request subjects the change check reads
+        labelled needs-decision come off: it asked there, so the next walk meets the pull request
+        as waiting, or, the answer already in, hands it at once instead of after retry_hours.
+        Every other hand stays as it is (D-87): an idle one, another session's, an issue
+        subject's, and an item's fingerprint"""
+
+        def asked(key: str, hand: Hand) -> bool:
+            if hand.session != session or hand.idle or SUBJECT_KEY.fullmatch(key) is None:
+                return False
+            pull = pulls.get(int(key.rsplit("#", 1)[1]))
+            return pull is not None and pull.asked
+
+        return Handed({k: h for k, h in self.hands.items() if not asked(k, h)})
 
     def handing(self, item: Finding, session: str, now: dt.datetime, pulls: Mapping[int, Pull] | None = None) -> Handed:
         """A launch's hands: one per subject of the (cut) item, a pull request's with its head
@@ -817,7 +834,11 @@ def changes_of(
     }
     numbers = tuple(sorted({int(n["number"]) for n in updated}))
     opened = {
-        int(p["number"]): Pull(Head(str(p["headRefOid"]), rollup(p)), moment(p["updatedAt"], "updatedAt"))
+        int(p["number"]): Pull(
+            Head(str(p["headRefOid"]), rollup(p)),
+            moment(p["updatedAt"], "updatedAt"),
+            DECISION_LABEL in label_names(p),
+        )
         for p in pulls
     }
     return Changes(signature, numbers, asked, tag, known, flight=flight_of(pulls, default), pulls=opened)
