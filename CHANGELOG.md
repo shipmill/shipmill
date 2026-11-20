@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.152.0] - 2026-11-20
+
+### Added
+
+- An expedite outcome is taken first (spec 070): with `[agents]`, `watch_state.py --tier 3` and `--tier 6` mark as expedite the rows naming an accepted opportunity whose `expedite` label a person added, one of its sub-issues, or a pull request closing one, and the gate's walk takes them before every standard row of the tier; `triage_state.py --wip N` lists those issues first among the ready ones and counts them in progress like any other (#1250)
+- Merge gate: `skills/github-pr-triage/scripts/base_red.py` reads a red default branch from GitHub and the merges that may have turned it red: GREEN, RERUN_DUE with each first-attempt run to re-run, CULPRIT or CANDIDATES from each failed check's last green and first red on the first-parent history (each candidate's pull request and whether it is revertable: merged by the `--bot-login` and in no tag), or NO_GREEN, then the open repair pull requests and the question issue; a check rerunning after a failure reads PENDING, never GREEN, as `pr_gate.py` reads it (#1288)
+
 ## [0.151.0] - 2026-11-19
 
 ### Changed
@@ -2800,7 +2807,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.151.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.152.0...HEAD
+[0.152.0]: https://github.com/shipmill/shipmill/compare/v0.151.0...v0.152.0
 [0.151.0]: https://github.com/shipmill/shipmill/compare/v0.150.0...v0.151.0
 [0.150.0]: https://github.com/shipmill/shipmill/compare/v0.149.2...v0.150.0
 [0.149.2]: https://github.com/shipmill/shipmill/compare/v0.149.1...v0.149.2
