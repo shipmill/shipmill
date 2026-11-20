@@ -212,10 +212,10 @@ def _refused(what: str, branch: str, error: str, app: AppPush | None) -> Release
 
 @dataclass(frozen=True, slots=True)
 class Rollover:
-    """What land did to the milestone titled a stable release, under close_milestone (spec
-    068): the Release run's summary line, empty when it read or wrote none worth saying; and
-    when a read or write failed, the problem with the command that does the write, else empty.
-    A failure comes after the tag and the publish, so the release stands"""
+    """What the release did to the milestone titled a stable release, under close_milestone
+    (spec 068): the Release run's summary line, empty when it read or wrote none worth saying;
+    and when a read or write failed, the problem with the command that does the write, else
+    empty. It runs in land.yml's milestone job, after the land job, so the release stands"""
 
     said: str = ""
     failed: str = ""
@@ -227,7 +227,6 @@ class Landed:
     placed: str  # where the release commit went: main, release/X.Y, or the tag alone
     synced: bool  # a sync commit brought the release into main
     published: tuple[str, ...]
-    milestone: Rollover = Rollover()
 
 
 def land(
@@ -314,15 +313,24 @@ def land(
         for workflow in rule.after_publish:
             github.dispatch(workflow, policy.branch, version.tag)
             published.append(workflow)
-    # last, after the publish and the references it moves (D-50): a milestone that fails leaves
-    # the release as it stands (S-068-6); a pre-release closes nothing (S-068-5)
-    rollover = roll_milestone(github, version) if rule.close_milestone and version.is_stable else Rollover()
-    return Landed(version.tag, placed, synced, tuple(published), rollover)
+    # the milestone (spec 068) is land.yml's milestone job, after this one: its writes need the
+    # caller's `issues: write`, which the land job's own permissions don't grant
+    return Landed(version.tag, placed, synced, tuple(published))
+
+
+def close_milestone(policy: Policy, github: GitHub, lane: Lane, version: Version) -> Rollover:
+    """Spec 068: after the land job released version, after its publish and the references it
+    moves (D-50), roll the milestone titled it when the lane sets close_milestone. A pre-release,
+    or a lane without the key, reads nothing from GitHub (S-068-5), so the job needs no
+    `issues` grant there"""
+    if not (policy.rule(lane).close_milestone and version.is_stable):
+        return Rollover()
+    return roll_milestone(github, version)
 
 
 def _writer() -> str:
     """The command a failed milestone write names, as the App where it is set (D-14), in
-    cli_command()'s form, since the land job has no `shipmill` on PATH (#236)"""
+    cli_command()'s form, since the milestone job has no `shipmill` on PATH (#236)"""
     return f"{cli_command()} gh"
 
 

@@ -31,7 +31,10 @@ def _jobs(text: str) -> dict[str, str]:
 
 @pytest.mark.parametrize(
     ("workflow", "jobs"),
-    [("prepare.yml", ["settle", "prepare", "propose"]), ("land.yml", ["land", "close-proposal", "cleanup", "upgrade"])],
+    [
+        ("prepare.yml", ["settle", "prepare", "propose"]),
+        ("land.yml", ["land", "close-proposal", "cleanup", "upgrade", "milestone"]),
+    ],
 )
 def test_s015_1_every_release_job_runs_on_the_input(workflow: str, jobs: list[str]) -> None:
     text = (WORKFLOWS / workflow).read_text(encoding="utf-8")
