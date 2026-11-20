@@ -20,7 +20,10 @@ class Finding:
     """One watch_state.py row; agent is its own verdict that the row needs an agent. heads,
     on a PRS_OPEN row only, is each listed pull request's head SHA by number (#546), so a
     push to one is new work; () for every other row and for a watch_state.py before it. fix
-    is the one line that clears it (spec 011), built from trusted values only, None without"""
+    is the one line that clears it (spec 011), built from trusted values only, None without.
+    expedite marks a row of tier 3 or 6 naming an expedite outcome's issues or the pull
+    requests closing one (S-070-3), which the walk takes before the tier's standard rows; it
+    joins no fingerprint, so a row hashes as it did before spec 070"""
 
     state: str
     subject: str
@@ -28,6 +31,7 @@ class Finding:
     agent: bool
     heads: tuple[tuple[int, str], ...] = ()
     fix: str | None = None
+    expedite: bool = False
 
     @property
     def kind(self) -> str:
@@ -75,7 +79,10 @@ def parse_findings(text: str) -> list[Finding]:
         fix = row.get("fix")
         if fix is not None and not isinstance(fix, str):
             raise ReleaseError(f"watch_state.py printed {line[:200]!r}: a row's fix must be a string or null")
-        findings.append(Finding(row["state"], row["subject"], row["detail"], row["agent"], heads, fix))
+        expedite = row.get("expedite", False)
+        if not isinstance(expedite, bool):
+            raise ReleaseError(f"watch_state.py printed {line[:200]!r}: a row's expedite must be true or false")
+        findings.append(Finding(row["state"], row["subject"], row["detail"], row["agent"], heads, fix, expedite))
     return findings
 
 

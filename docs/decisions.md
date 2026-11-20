@@ -811,3 +811,11 @@ entry that supersedes it, never by editing an old one.
 - Applies to: skills/github-pr-triage/SKILL.md, skills/github-pr-triage/references/landing.md (Merge style), hooks/delivery.py, src/shipmill/agents.py, src/shipmill/cli.py, src/shipmill/app_gh.py, src/shipmill/doctor.py, [agents] merge, gh pr merge, shipmill gh pr merge
 - Supersedes: D-33
 - Enforced by: the delivery hook's merge-method and rebase-merge rules, and the tests of spec 072
+
+## D-97: A walk of tier 3 reads the open expedite opportunities, though the change check covers the tier
+
+- Decided: 2026-11-20, in shipmill/shipmill#1405
+- Rule: As D-58, save that a gate's read of tier 3 with an [agents] table and a row an expedite outcome could be in (LAND_DUE, PRS_OPEN, AGENT_DRAFT) makes one gh issue list of the open issues labelled opportunity, planned, and expedite, as spec 070's "Taken first" asks; only when one is open does it also read their label events and sub-issues, and the closing issues of the tier's pull requests, in one GraphQL query each per chunk. With no expedite opportunity open the list is the tier's only read, and no other tier the change check covers gains a read. This refines D-58
+- Why: Expedite work is taken first only if the walk knows which rows are an expedite outcome's, and the change check's query carries no labels of issues it doesn't list; one short read per walk of tier 3 costs well under a second. Decided by `@romamo` on #1405 (option 1, relayed 2026-11-20)
+- Applies to: skills/github-ship-watch/scripts/watch_state.py, src/shipmill/gate.py, src/shipmill/walk.py, docs/specs/070-class-of-service.md, docs/specs/046-gate-work-queue.md, tier 3
+- Enforced by: tests/test_expedite_order.py (test_s070_3_tier_3_marks_the_pull_request_closing_a_sub_issue_and_no_other)
