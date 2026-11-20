@@ -1963,8 +1963,9 @@ def tick_walk(
     sweep due the tick reads nothing more: QUIET, `no change since <cursor>` (S-046-1). An item
     of tier 3, 4, or 6 is handed by its subjects (spec 061, walk): a subject's hand that a walk
     found idle stays past retry_hours, marked so, and is no change by itself (S-061-8). Once
-    the last session ended, its hand of a pull request now labelled needs-decision comes off,
-    so an answer that came in while it ran is handed on the next tick (#1447)"""
+    the last session ended, its hand of a pull request now labelled needs-decision and updated
+    since the hand comes off, so an answer that came in while it ran is handed on the next tick
+    (#1447)"""
     cursor = Cursor.load(state / CURSOR)
     recorded = (state / HANDED).is_file()
     handed = Handed.load(state / HANDED)
@@ -1979,8 +1980,8 @@ def tick_walk(
     # spec 079: tier 2 reads base_red.py on a failing default head, or after a reading not GREEN
     changes = base_read(source.changes(None if cursor is None else cursor.at), cursor)
     # #1447: the last session ended (busy and still_working let the tick on): a pull request it
-    # was handed and asked on loses its hand, a change once, since a dropped hand is gone the
-    # next tick; a dead session's hands are all gone already
+    # was handed and wrote on, now labelled needs-decision, loses its hand, a change once, since
+    # a dropped hand is gone the next tick; a dead session's hands are all gone already
     asked = handed if last is None or dead is not None else handed.unasked(last.session, changes.pulls)
     dropped = len(asked.hands) < len(handed.hands)
     handed = asked

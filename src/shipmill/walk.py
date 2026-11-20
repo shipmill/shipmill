@@ -430,16 +430,18 @@ class Handed:
 
     def unasked(self, session: str, pulls: Mapping[int, Pull]) -> Handed:
         """#1447: an ended session's hands of pull request subjects the change check reads
-        labelled needs-decision come off: it asked there, so the next walk meets the pull request
-        as waiting, or, the answer already in, hands it at once instead of after retry_hours.
-        Every other hand stays as it is (D-87): an idle one, another session's, an issue
+        labelled needs-decision and updated since the hand come off: it asked there, so the next
+        walk meets the pull request as waiting, or, the answer already in, hands it at once
+        instead of after retry_hours. Every other hand stays as it is (D-87): one whose pull
+        request nobody wrote on since the hand (a labelled one the session left untouched would
+        otherwise be handed after every session), an idle one, another session's, an issue
         subject's, and an item's fingerprint"""
 
         def asked(key: str, hand: Hand) -> bool:
             if hand.session != session or hand.idle or SUBJECT_KEY.fullmatch(key) is None:
                 return False
             pull = pulls.get(int(key.rsplit("#", 1)[1]))
-            return pull is not None and pull.asked
+            return pull is not None and pull.asked and not untouched(hand, pull.updated)
 
         return Handed({k: h for k, h in self.hands.items() if not asked(k, h)})
 
@@ -1023,12 +1025,17 @@ def idle(hand: Hand, number: int, pulls: Mapping[int, Pull], issues: Mapping[int
     """Nothing changed on a subject since its hand (spec 061): its updatedAt earlier than the
     hand's at less CURSOR_OVERLAP, and an open pull request's head and rollup the hand's. One
     whose updatedAt the gate couldn't read reads changed: one more session, never a missed one"""
-    edge = hand.at - CURSOR_OVERLAP
     pull = pulls.get(number)
     if pull is not None:
-        return hand.head == pull.head and pull.updated < edge
+        return hand.head == pull.head and untouched(hand, pull.updated)
     updated = issues.get(number)
-    return updated is not None and updated < edge
+    return updated is not None and untouched(hand, updated)
+
+
+def untouched(hand: Hand, updated: dt.datetime) -> bool:
+    """A subject's updatedAt earlier than its hand's at less CURSOR_OVERLAP: nobody wrote on it
+    since the hand"""
+    return updated < hand.at - CURSOR_OVERLAP
 
 
 def walk(
