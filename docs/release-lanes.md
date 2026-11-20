@@ -198,6 +198,16 @@ then the plan names what holds it, the first reason per spec, such as
 `milestone 1.5.0: S-021's #40 is not in v1.5.0rc3`; once done, its reason names the specs,
 `milestone 1.5.0 built: S-021, S-023`. A milestone no spec belongs to is done as before.
 
+With `[agents]`, a merge that completes an **expedite outcome** is a trigger too (spec 070):
+an accepted opportunity (`opportunity` and `planned`) whose `expedite` label a person added
+is complete once every sub-issue is closed, and its completing merge is that of the pull
+request that closed the last of them (or, with no sub-issue, the opportunity itself). When
+the candidate holds that merge and the lane's newest tag doesn't, the stable lane is due with
+the reason `expedite #N complete`, or, when stable promotes, the rc lane is, and the
+promotion keeps its own triggers. It is read only when quiet time, the windows, and a
+milestone made nothing due, in one GraphQL query of the issues labelled `expedite`; every
+gate still applies. A config without `[agents]` reads nothing new.
+
 `shipmill milestones` prints the same reasons as a MILESTONE_WAITING row. A stable release
 made by another trigger ships what is merged and keeps its bump, so it can take an
 unfinished goal's version: the open milestone, with issues still open, is then overtaken, and
