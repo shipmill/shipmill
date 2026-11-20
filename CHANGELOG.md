@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.154.1] - 2026-11-20
+
+### Fixed
+
+- `shipmill gate`: a `needs-decision` question a session asked on a pull request and the maintainer answered while that session still ran is handed on the first tick after the session ends, instead of waiting out `retry_hours`; the tick drops the ended session's hand of each pull request the change check reads labelled `needs-decision` and updated since the hand, and leaves every other hand as it was, so a labelled pull request the session left untouched still waits (#1447)
+
 ## [0.154.0] - 2026-11-20
 
 ### Added
@@ -2820,7 +2826,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.154.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.154.1...HEAD
+[0.154.1]: https://github.com/shipmill/shipmill/compare/v0.154.0...v0.154.1
 [0.154.0]: https://github.com/shipmill/shipmill/compare/v0.153.0...v0.154.0
 [0.153.0]: https://github.com/shipmill/shipmill/compare/v0.152.0...v0.153.0
 [0.152.0]: https://github.com/shipmill/shipmill/compare/v0.151.0...v0.152.0
