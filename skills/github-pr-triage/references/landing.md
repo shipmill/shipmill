@@ -42,7 +42,7 @@ test "$(git rev-list --count origin/<default>.."$sha")" -gt 0
 Once the reviewer's head is the PR's head (its fixes pushed, as above), record the reviewer's verdict on it, with its report as the body, through the App:
 
 ```bash
-uvx shipmill==0.152.0 review record <n> --head <reviewed head> --verdict merge|refuse --body-file <report>
+uvx shipmill==0.153.0 review record <n> --head <reviewed head> --verdict merge|refuse --body-file <report>
 ```
 
 A refusal is recorded only after the second look ([SKILL.md](../SKILL.md#3-verify-each-reviewers-report), spec 075), with `--findings` holding the verifier's counts of confirmed, rejected, and minor findings, `review record <n> --head <reviewed head> --verdict refuse --findings confirmed=N,rejected=N,minor=N --body-file <report>`, and a report that ends with its "Second look" part. A refusal it overturned (nothing confirmed) is recorded `merge` with its `--findings`, which is how the retro counts it; `review record` exits 2 writing nothing on `refuse` with `confirmed=0` or `merge` with a `confirmed` above 0. Without a second look, as for a reviewer's MERGE, leave `--findings` out.
@@ -96,7 +96,7 @@ scripts/changelog_guard.py check --base origin/<default>
 scripts/changelog_guard.py move --base origin/<default>
 scripts/changelog_guard.py check --base origin/<default>
 git commit --amend --no-edit CHANGELOG.md  # the planner reads the committed CHANGELOG, not the working tree
-# then the release planner's dry run, where the repo has one (shipmill: `uvx shipmill==0.152.0 plan --dry-run`, the release this plugin pins, in every session)
+# then the release planner's dry run, where the repo has one (shipmill: `uvx shipmill==0.153.0 plan --dry-run`, the release this plugin pins, in every session)
 awk '/^## \[Unreleased\]/{p=1; print; next} /^## \[/{p=0} p' CHANGELOG.md
 ```
 

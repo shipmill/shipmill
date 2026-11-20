@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.153.0] - 2026-11-20
+
+### Added
+
+- The watch reports a red default branch: a `BASE_RED <branch>@<sha7>` row, first in tier 2, for every reading of `base_red.py` but GREEN, and `green again, close #Q` while its question is open, each with a fix and an agent's row only under `[autonomy] revert` propose or act; the gate's change check reads the default head's check rollup in its one query, so a check failing on an unchanged head makes the tick walk (spec 079) (#1292)
+- `shipmill revert open <PR>... --run <URL>` backs out the merges that turned the default branch red (spec 079): it checks first and writes nothing when `[autonomy] revert` is `observe`, the App isn't available, `--run` names no failed check of the default head, a pull request isn't the App's untagged merge, or an open pull request already repairs the run; then, as the App, it pushes `revert/<N>-<sha7>` with one revert per pull request, newest first, opens its pull request labelled `revert` with `Reverts #N`, `Repairs:`, and a plan, and reopens each issue a reverted pull request closed with one `<!-- shipmill:reverted #N by #R -->` comment (#1294)
+
 ## [0.152.0] - 2026-11-20
 
 ### Added
@@ -2807,7 +2814,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.152.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.153.0...HEAD
+[0.153.0]: https://github.com/shipmill/shipmill/compare/v0.152.0...v0.153.0
 [0.152.0]: https://github.com/shipmill/shipmill/compare/v0.151.0...v0.152.0
 [0.151.0]: https://github.com/shipmill/shipmill/compare/v0.150.0...v0.151.0
 [0.150.0]: https://github.com/shipmill/shipmill/compare/v0.149.2...v0.150.0

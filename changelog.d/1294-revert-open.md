@@ -1,3 +1,0 @@
-### Added
-
-- `shipmill revert open <PR>... --run <URL>` backs out the merges that turned the default branch red (spec 079): it checks first and writes nothing when `[autonomy] revert` is `observe`, the App isn't available, `--run` names no failed check of the default head, a pull request isn't the App's untagged merge, or an open pull request already repairs the run; then, as the App, it pushes `revert/<N>-<sha7>` with one revert per pull request, newest first, opens its pull request labelled `revert` with `Reverts #N`, `Repairs:`, and a plan, and reopens each issue a reverted pull request closed with one `<!-- shipmill:reverted #N by #R -->` comment (#1294)
