@@ -369,6 +369,32 @@ class Planner:
                 return found.reason if found.done else found
             if milestone is not None and milestone.open_issues:
                 return milestones.held(self.github, str(candidate.version.release), milestone.open_issues)
+        return self._expedited(lane, candidate)
+
+    def _expedited(self, lane: Lane, candidate: _Candidate) -> str | None:
+        """`expedite #N complete` when the candidate ships the merge that completed an expedite
+        outcome #N (spec 070): the stable lane's trigger, or the rc lane's when stable promotes,
+        so a promotion keeps its own triggers. Read only with [agents], whose classes these are,
+        and only when the lane's range holds a commit; S-070-10, a merge the lane's newest tag
+        holds makes nothing due"""
+        stable = self.policy.lanes.get(Lane.STABLE)
+        if self.policy.agents is None or stable is None or lane is not (Lane.RC if stable.promote else Lane.STABLE):
+            return None
+        tags = self._lane_tags(lane)
+        newest = max(tags, key=lambda t: t.date) if tags else None
+        if newest is None:  # no release of the lane yet: what merged lately, as the veto windows read
+            since = self.now - veto.LONGEST
+            for outcome in self.github.expedite_outcomes(since):
+                commit = outcome.completing
+                if commit is not None and self.git.is_ancestor(commit, candidate.base):
+                    return f"expedite #{outcome.number} complete"
+            return None
+        commits = self.git.commits_since(newest.commit, candidate.base)
+        if not commits:
+            return None
+        for outcome in self.github.expedite_outcomes(min(commits.values()) - veto.SLACK):
+            if outcome.completing in commits:
+                return f"expedite #{outcome.number} complete"
         return None
 
     def milestone_verdict(self, candidate: _Candidate, head: str) -> milestones.Verdict:
