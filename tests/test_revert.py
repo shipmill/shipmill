@@ -267,6 +267,8 @@ def test_s079_8_without_the_app_nothing_is_read_or_written(tmp_path: Path) -> No
     [
         "https://github.com/demo/app/actions/runs/999",  # no check of the head
         "https://github.com/demo/app/actions/runs/910",  # lint, which passed
+        "https://github.com/other/repo/actions/runs/900",  # the failed run's id, in another repo
+        "https://evil.example/demo/app/actions/runs/900/job/901",  # the failed job, on another host
     ],
 )
 def test_s079_8_a_run_naming_no_failed_check_of_the_head_is_refused(tmp_path: Path, run: str) -> None:

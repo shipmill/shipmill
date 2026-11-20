@@ -227,7 +227,7 @@ def _prepare(
     gate = module.gate
     head, entries = gate.head_checks(base, api.text)
     failed = [e for e in entries if gate.check_of(e).done and gate.check_of(e).conclusion not in gate.NOT_RED]
-    named = [e for e in failed if gate.repaired(e, [request.run])]
+    named = [e for e in failed if gate.repaired(e, [request.run]) and _same_repo(request.run, e)]
     if not named:
         listed = ", ".join(f"{gate.check_of(e).name} ({_url(e)})" for e in failed) or "none"
         raise ReleaseError(
@@ -274,6 +274,21 @@ def _prepare(
     labels = api.lines("repos/{owner}/{repo}/labels?per_page=100", ".[]")
     missing = not any(str(label.get("name") or "").lower() == LABEL for label in labels)
     return _Prepared(head, check, branch, commit, title, body, missing, reverted, closes)
+
+
+def _same_repo(run: str, entry: dict[str, object]) -> bool:
+    """Whether run sits on the host and in the repo of one of the check's own URLs: pr_gate.py's
+    `repaired` matches an Actions run by its id alone, whatever host and repo the URL names, and
+    the URL is written into the pull request and each reopened issue"""
+    urls = entry.get("urls")
+    if not isinstance(urls, list):
+        return False
+    return _repo_of(run) in {_repo_of(str(u)) for u in urls if u}
+
+
+def _repo_of(url: str) -> tuple[str, ...]:
+    """A URL's scheme, host, owner, and name, lowercased"""
+    return tuple(part.lower() for part in url.split("/", 5)[:5])
 
 
 def _url(entry: dict[str, object]) -> str:
