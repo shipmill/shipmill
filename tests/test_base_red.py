@@ -533,11 +533,11 @@ def test_s079_14_ci_failures_holds_the_four_steps_for_a_red_default_branch() -> 
     # each step in its order, keyed to the lines base_red.py prints
     order = [
         "1. **RERUN_DUE: re-run once.** Re-run each run a `rerun: <run URL>` line names, once,"
-        " `shipmill gh run rerun <id> --failed`, and leave",
+        " `gh run rerun <id> --failed` through `shipmill gh`, and leave",
         "2. **CANDIDATES with a run to re-run: re-run the unjudged candidates' cancelled runs.** Re-run every run a"
         " candidate's `unjudged, rerun: <run URL>` part names",
         "3. **CULPRIT, or CANDIDATES with no run left to re-run, at most three and every one `revertable`: revert.**",
-        "`shipmill revert open <PR>... --run <failed run URL>`",
+        "`revert open <PR>... --run <failed run URL>` (`shipmill revert open`)",
         "4. **Anything else: ask on one issue per branch.** A candidate `not revertable` (`no pull request`, `merged by"
         " a person`, `released in <tag>`), more than three candidates, NO_GREEN, a `revert open` that exits 2 on a"
         " conflict, or a revert pull request whose own head fails the check it repairs: no revert.",
@@ -545,7 +545,7 @@ def test_s079_14_ci_failures_holds_the_four_steps_for_a_red_default_branch() -> 
         "[needs-decision protocol](../../github-issue-triage/references/needs-decision.md)",
         "One such issue is open per branch at a time",
         "the row reads `green again, close #Q`: close it with a comment naming the head,"
-        ' `shipmill gh issue close <Q> --comment "<branch>@<sha7> is green again"`',
+        ' `gh issue close <Q> --comment "<branch>@<sha7> is green again"` through `shipmill gh`',
     ]
     at = [steps.find(part) for part in order]
     assert -1 not in at, [part for part, i in zip(order, at, strict=True) if i == -1]
