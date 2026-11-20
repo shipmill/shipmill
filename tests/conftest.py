@@ -24,6 +24,7 @@ from shipmill.github import (
     Milestone,
     MilestoneIssues,
     OpenMilestone,
+    Outcome,
     PullRequest,
     RunState,
     ShippedPull,
@@ -155,6 +156,9 @@ class FakeGitHub:
     shipped_error: str = ""  # when set, reading the shipped pull requests fails with it
     allowed: MergeMethods = MergeMethods(squash=True, merge=True)  # the repo's merge settings (spec 072)
     allowed_error: str = ""  # when set, reading the merge settings fails with it, as gh would
+    outcomes: list[Outcome] = field(default_factory=list)  # the expedite-labelled issues (spec 070)
+    outcome_reads: list[dt.datetime] = field(default_factory=list)  # the since of each expedite_outcomes call
+    outcomes_error: str = ""  # when set, reading the expedite outcomes fails with it
 
     def deploy(self, environment: str, ref: str, at: dt.datetime, *states: DeploymentState) -> int:
         """Record a deployment of ref, with its statuses one minute apart from at; its id"""
@@ -305,6 +309,12 @@ class FakeGitHub:
         if self.shipped_error:
             raise ReleaseError(f"gh api graphql failed: {self.shipped_error}")
         return sorted(self.shipped, key=lambda p: p.number)
+
+    def expedite_outcomes(self, since: dt.datetime) -> list[Outcome]:
+        self.outcome_reads.append(since)
+        if self.outcomes_error:
+            raise ReleaseError(f"gh api graphql failed: {self.outcomes_error}")
+        return sorted(self.outcomes, key=lambda o: o.number)
 
 
 @dataclass
