@@ -60,6 +60,10 @@ elif args[:2] == ["api", "graphql"] and any("issues(" in a for a in args):  # in
 elif args[:1] == ["api"] and "marketplace.json" in " ".join(args):
     source = {"source": "github", "repo": "shipmill/shipmill", "ref": "v0.137.0"}
     print(json.dumps({"plugins": [{"name": "shipmill", "source": source}]}))
+elif args[:1] == ["api"] and "/commits/" in " ".join(args):  # base_red.py: a green default head (spec 079)
+    print(json.dumps({"sha": "c" * 40, "statuses": [], "total_count": 0}) if "/status?" in " ".join(args) else "")
+elif args[:1] == ["api"] and "/issues?state=open" in " ".join(args):  # base_red.py's open items, with --bot-login
+    print("")
 else:
     sys.stderr.write("unexpected gh call: " + " ".join(args) + "\\n")
     sys.exit(1)

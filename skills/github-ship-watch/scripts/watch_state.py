@@ -28,6 +28,19 @@ one branch fetched, and every read at origin/<branch> reads it.
                   run cancelled before its cleanup job left it, and each later run stops
                   at it unless its prepare job may list the runs (actions: read)
 
+A red default branch (spec 079; GitHub's default branch, read by github-pr-triage's
+base_red.py --json with the --bot-login, run once in the checkout; a run that fails exits 2):
+  BASE_RED        <branch>@<sha7> for every reading but GREEN, its detail the state in words
+                  and the numbers it names (`rerun due`, `rerun running`, `culprit #N`,
+                  `candidates #A #B`, `no green in the last 30 commits`), then `repair open:
+                  #R` and `asked in #Q` when the reading has them; and `green again, close #Q`
+                  for a GREEN reading while the question issue is open. Its fix: land the
+                  repair, answer the question, rerun the failed runs, wait for a running
+                  rerun, close the question, or github-pr-triage, whose ci-failures.md says
+                  what to do. An action; an agent's row only under [autonomy] revert propose
+                  or act (default observe), and then for green again or a reading with
+                  neither a repair nor a question open, save a rerun still running
+
 The watch never reads worktrees (spec 044): `shipmill factory` reports the kept ones.
 
 Milestones (spec 022; for a shipmill bot whose config has a lane with milestone = true, from
@@ -474,7 +487,8 @@ deployments read GitHub refuses the App, the DEPLOYMENTS_FORBIDDEN row (#973).
 --json prints one JSON object per row: state, subject, detail, and agent, true when the
 row needs an agent (BOT_FAILED, BOT_STALLED, WORK_BRANCH_STALE, NOT_PUBLISHED,
 ISSUES, PLANS, OPERATE_FAILED, INCIDENT_OPEN, UPGRADE_PENDING, DIRECTION_PENDING, UPSTREAM_DUE, VETOED,
-SPEC_DUE, and FEEDBACK_DUE but under intake = "observe"): the rows
+SPEC_DUE, and FEEDBACK_DUE but under intake = "observe"; a BASE_RED row by its reading and
+[autonomy] revert, above): the rows
 shipmill gate starts a
 session for. A waiting
 item is in no agent row, so it neither starts a session nor changes the gate's fingerprint.
@@ -507,8 +521,8 @@ NEEDS_DECISION, BRANCH_DELETE_OFF, SHIPMILL_OUTDATED, GATE_NO_APP, DIRECTION_MIS
 GATE_CHECKOUT_MISSING, SKILL_SHADOWED, PLUGIN_SHADOWING, UPGRADE_PENDING, DIRECTION_PENDING, CHAIN_NO_GATE, CHAIN_CYCLE,
 CHAIN_UNREADABLE, MILESTONE_OVERTAKEN, MILESTONE_RELEASED,
 UPSTREAM_DUE, UPSTREAM_ASKED, UPSTREAM_UNREADABLE, VETOED, AGENT_DRAFT, LAND_DUE, CLASS_CONFLICT,
-FIXED_DATE_AT_RISK, FIXED_DATE_NO_DATE, SPEC_DUE, or FEEDBACK_DUE (not under intake = "observe")
-row is present, 2
+FIXED_DATE_AT_RISK, FIXED_DATE_NO_DATE, SPEC_DUE, BASE_RED, or FEEDBACK_DUE (not under intake =
+"observe") row is present, 2
 on bad input or a git, gh, or uvx failure (a failing `shipmill
 milestones`, or a failing intake_state.py; a `shipmill plan` failing with its own
 `shipmill: ` error is the BOT_PLAN_FAILED row instead, and uv finding no pinned version the
@@ -534,13 +548,15 @@ sessions section's.
 --tier N and --sweep are the reads shipmill gate's walk makes (spec 046), and print no host
 row and no report-only row, save tier 3's PRS_PARKED (S-061-11), on which no session starts.
 The gate walks seven tiers in order and stops at the first item no
-session has taken: 1 INCIDENT_OPEN, OPERATE_FAILED; 2 BOT_FAILED, NOT_PUBLISHED,
+session has taken: 1 INCIDENT_OPEN, OPERATE_FAILED; 2 BASE_RED, BOT_FAILED, NOT_PUBLISHED,
 WORK_BRANCH_STALE, BOT_STALLED; 3 LAND_DUE, PRS_OPEN; 4 VETOED and triage's DECIDED; 5 UPGRADE_PENDING,
 UPSTREAM_DUE; 6 triage's other action states and SPEC_UNSPLIT; 7 DIRECTION_PENDING, PLANS,
 SPEC_DUE, FEEDBACK_DUE (D-69 retired tier 8, UNANNOUNCED). --tier N prints that tier's rows, and NEEDS_DECISION
 in tiers 3 and 4, where the gate's headless notifications read it; its ISSUES rows are one
-per triage state, `STATE #N ...`. Tier 2 reads NOT_PUBLISHED for the newest tag alone and
-leaves BOT_STALLED to the sweep; tier 3 reads the open pull requests and one batched GraphQL
+per triage state, `STATE #N ...`. Tier 2 reads BASE_RED first, from base_red.py only when
+--known's base_read is true or absent (spec 079: the gate sets it when the default head's
+check rollup fails or its last reading wasn't GREEN), reads NOT_PUBLISHED for the newest tag
+alone, and leaves BOT_STALLED to the sweep; tier 3 reads the open pull requests and one batched GraphQL
 read of the comments of those labelled needs-decision or decided, and the land window's queue
 as the full report does; tier 4 runs triage_state.py --label needs-decision
 --label decided, less a DECIDED read from a relay; tier 6 runs triage_state.py on every open
@@ -552,8 +568,8 @@ UPGRADE_PENDING, UPSTREAM_DUE, DIRECTION_PENDING, PLANS, SPEC_DUE, and FEEDBACK_
 (FEEDBACK_DUE only under intake = "propose"). --known FILE (with --tier)
 holds what the gate's change check read already: GitHub's default branch, whether a hold is
 open, the open pull requests, the open incidents, and the newest workflow runs, so tiers 1
-and 3 make no gh read of them again; a workflow none of those runs belongs to is read with gh
-run list.
+and 3 make no gh read of them again, and base_read or not; a workflow none of those runs
+belongs to is read with gh run list.
 
 Every shipmill command runs as `uvx shipmill==<version>`, the version in the plugin's own
 .claude-plugin/plugin.json three folders above scripts/ (spec 031), or as `uvx --from <tool>
@@ -636,6 +652,7 @@ TRIAGE_ACTION = {
     "AGENT_DRAFT",  # D-67 (#914): this script's AGENT_DRAFT row hands the draft itself, so it is in ISSUES_OPEN
 }
 VETOED = "VETOED"  # triage_state.py's state and this script's row for an unanswered veto (spec 030)
+BASE_RED = "BASE_RED"  # spec 079: the default branch read anything but GREEN by base_red.py
 # triage's action states this script hands by another row, never in ISSUES: VETOED its own, and
 # AGENT_DRAFT the pull request's own AGENT_DRAFT row (D-67, #914), the issue listed in ISSUES_OPEN
 BY_PULL_REQUEST = frozenset({VETOED, "AGENT_DRAFT"})
@@ -733,6 +750,7 @@ ACTION = {
     "FIXED_DATE_NO_DATE",
     "SPEC_DUE",  # spec 074: accepted opportunities the spec gate hasn't taken
     "FEEDBACK_DUE",  # spec 074: handed-over requests, report-only under [autonomy] intake = "observe"
+    BASE_RED,  # spec 079: a red default branch, an agent's row by its reading and [autonomy] revert
 }
 # the states whose row needs an agent: --json marks each row's "agent" from this, and
 # shipmill gate starts a session on those rows (SKILL.md's repair table says what it does)
@@ -861,7 +879,9 @@ class Row:
     [autonomy] intake = "observe" (spec 074): no action and no agent's, and in no --tier or
     --sweep read. expedite marks a row of tier 3 or 6 naming only an expedite outcome's
     issues or the pull requests closing one (S-070-3): in --json only, as "expedite": true, so
-    the gate's walk takes it before the tier's standard rows; a row without it prints no key"""
+    the gate's walk takes it before the tier's standard rows; a row without it prints no key.
+    needs_agent, on a BASE_RED row only, is its own verdict that it needs an agent (S-079-6):
+    the state alone doesn't say, so BASE_RED is in no AGENT set"""
 
     state: str
     subject: str
@@ -870,10 +890,13 @@ class Row:
     heads: tuple[tuple[int, str], ...] = ()
     report_only: bool = False
     expedite: bool = False
+    needs_agent: bool = False
 
     def __post_init__(self) -> None:
         if self.state in FIXED and not self.fix:
             raise ValueError(f"a {self.state} row needs a fix: {self.subject} {self.detail}")
+        if self.needs_agent and self.state != BASE_RED:
+            raise ValueError(f"only a {BASE_RED} row says itself whether it needs an agent, not {self.state}")
         if self.heads and self.state != "PRS_OPEN":
             raise ValueError(f"only a PRS_OPEN row has heads, not {self.state}")
         if self.report_only and self.state != "FEEDBACK_DUE":
@@ -897,7 +920,7 @@ class Row:
             "state": self.state,
             "subject": self.subject,
             "detail": self.detail,
-            "agent": self.state in AGENT and not self.report_only,
+            "agent": (self.state in AGENT and not self.report_only) or self.needs_agent,
             "fix": self.fix,
         }
         if self.heads:
@@ -1817,6 +1840,7 @@ class Config:
     incident_label: str
     upgrade: str = "propose"  # [autonomy] upgrade: observe, propose (the default), or act (spec 014)
     land: str = "propose"  # [autonomy] land, with the legacy reading of [agents] prompt (spec 040)
+    revert: str = "observe"  # [autonomy] revert: observe (the default), propose, or act (spec 079)
 
 
 def ago(span: dt.timedelta) -> str:
@@ -1829,14 +1853,16 @@ def ago(span: dt.timedelta) -> str:
 
 
 def config(text: str, policy: Path, incident_label: str | None = None) -> Config:
-    """The environments, the incident label, and the upgrade and land autonomy of the config, read as
-    shipmill reads it: with tomllib on Python 3.11+, with the regex fallback on 3.10. A given
-    incident_label (the --incident-label flag) takes the place of the config's, which is still
-    checked"""
+    """The environments, the incident label, and the upgrade, land, and revert autonomy of the
+    config, read as shipmill reads it: with tomllib on Python 3.11+, with the regex fallback on
+    3.10. A given incident_label (the --incident-label flag) takes the place of the config's,
+    which is still checked"""
     if tomllib is None:
         envs, levels = environments_310(text, policy), deploy_autonomy_310(text, policy)
         label, upgrade = incident_label_310(text, policy), upgrade_autonomy_310(text, policy)
         land = land_autonomy_310(text, policy)
+        found = autonomy_string_310(text, policy, "revert")
+        revert = revert_level("observe" if found is None else found, policy)
     else:
         try:
             raw = tomllib.loads(text)
@@ -1845,8 +1871,23 @@ def config(text: str, policy: Path, incident_label: str | None = None) -> Config
         envs, levels = environments_toml(raw, policy), deploy_autonomy_toml(raw, policy)
         label, upgrade = incident_label_toml(raw, policy), upgrade_autonomy_toml(raw, policy)
         land = land_autonomy_toml(raw, policy)
+        revert = revert_autonomy_toml(raw, policy)
     deployed = [replace(e, deploy=levels.get(e.name, "act")) for e in envs]
-    return Config(deployed, incident_label or label, upgrade, land)
+    return Config(deployed, incident_label or label, upgrade, land, revert)
+
+
+def revert_level(value: object, policy: Path) -> str:
+    if not isinstance(value, str) or value not in AUTONOMY:
+        raise Refused(f"error: {policy}: [autonomy] revert must be one of {list(AUTONOMY)}, got {value!r}")
+    return value
+
+
+def revert_autonomy_toml(raw: dict[str, object], policy: Path) -> str:
+    """[autonomy] revert of the parsed config, or its default, observe (spec 079, D-63)"""
+    table = raw.get("autonomy", {})
+    if not isinstance(table, dict):
+        raise Refused(f"error: {policy}: autonomy is not a table")
+    return revert_level(table.get("revert", "observe"), policy)
 
 
 # -- requires (spec 031): the oldest shipmill the config is written for, checked against the
@@ -5597,6 +5638,145 @@ def host_rows(section: str, repo: str, repo_dir: Path, now: dt.datetime, *, host
     return [*shipmill_rows(repo, repo_dir, host_wide=host_wide), *shadow_rows(Path.home(), skill_names())]
 
 
+# -- a red default branch (spec 079) ---------------------------------------------------------
+
+BASE_RED_SCRIPT = SKILLS / "github-pr-triage" / "scripts" / "base_red.py"
+BASE_LIMIT = 30  # base_red.py's --limit, which a NO_GREEN row names
+BASE_STATES = ("GREEN", "PENDING", "RERUN_DUE", "CULPRIT", "CANDIDATES", "NO_GREEN")
+BASE_KEYS = frozenset({"state", "branch", "sha", "failed", "pending", "rerun", "candidates", "repair", "asked"})
+BASE_SHA = re.compile(r"[0-9a-f]{7,64}")
+LAND_SKILL = "github-pr-triage"  # its ci-failures.md's "A red default branch" says what a session does
+
+
+@dataclass(frozen=True)
+class BaseReading:
+    """base_red.py --json's reading, checked: what a BASE_RED row names of it. candidates are
+    each candidate's merged pull request number, or None for a commit no pull request merged,
+    with its SHA"""
+
+    state: str
+    branch: str
+    sha: str
+    pending: tuple[str, ...]
+    rerun: tuple[str, ...]
+    candidates: tuple[tuple[str, int | None], ...]
+    repair: tuple[int, ...]
+    asked: tuple[int, ...]
+
+
+def base_numbers(data: dict[str, Any], key: str) -> tuple[int, ...]:
+    found = data[key]
+    if not isinstance(found, list) or not all(isinstance(n, int) and not isinstance(n, bool) for n in found):
+        raise Refused(f"error: base_red.py printed {key} {found!r}, not a list of numbers")
+    return tuple(found)
+
+
+def base_urls(items: object, key: str) -> tuple[str, ...]:
+    if not isinstance(items, list) or not all(isinstance(u, str) and u.startswith("https://") for u in items):
+        raise Refused(f"error: base_red.py printed {key} {items!r}, not a list of URLs")
+    return tuple(items)
+
+
+def base_reading(text: str, branch: str) -> BaseReading:
+    """base_red.py --json's object, refused unless it has every key with the shape it names"""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"error: base_red.py printed {text[:200]!r}, not JSON: {exc}") from None
+    if not isinstance(data, dict) or not set(data) >= BASE_KEYS:
+        raise Refused(
+            f"error: base_red.py printed {str(data)[:200]}, not a reading with {', '.join(sorted(BASE_KEYS))}"
+        )
+    if data["state"] not in BASE_STATES or data["branch"] != branch:
+        raise Refused(f"error: base_red.py read {data['state']!r} of {data['branch']!r}, not a state of {branch}")
+    sha = data["sha"]
+    if not isinstance(sha, str) or BASE_SHA.fullmatch(sha) is None:
+        raise Refused(f"error: base_red.py printed sha {sha!r}, not a commit")
+    pending = data["pending"]
+    if not isinstance(pending, list) or not all(isinstance(p, dict) for p in pending):
+        raise Refused(f"error: base_red.py printed pending {pending!r}, not a list of checks")
+    candidates = []
+    found = data["candidates"]
+    if not isinstance(found, list):
+        raise Refused(f"error: base_red.py printed candidates {found!r}, not a list")
+    for candidate in found:
+        commit = candidate.get("sha") if isinstance(candidate, dict) else None
+        pull = candidate.get("pull") if isinstance(candidate, dict) else None
+        number = isinstance(pull, int) and not isinstance(pull, bool)
+        if not isinstance(commit, str) or BASE_SHA.fullmatch(commit) is None or not (pull is None or number):
+            raise Refused(f"error: base_red.py printed candidate {str(candidate)[:200]}, not a commit and its pull")
+        candidates.append((commit, pull))
+    return BaseReading(
+        data["state"],
+        branch,
+        sha,
+        base_urls([p.get("url") for p in pending], "pending"),
+        base_urls(data["rerun"], "rerun"),
+        tuple(candidates),
+        base_numbers(data, "repair"),
+        base_numbers(data, "asked"),
+    )
+
+
+def numbered(numbers: Sequence[int]) -> str:
+    return " ".join(f"#{n}" for n in numbers)
+
+
+def base_row(reading: BaseReading, level: str, repo: str) -> Row | None:
+    """The BASE_RED row of a reading (S-079-6): for every state but GREEN, its detail the state
+    in words and the numbers it names, then the repair or question open; for GREEN with the
+    question issue still open, `green again, close #Q`; else none. An agent's row only under
+    [autonomy] revert propose or act, and then for green again, or a reading with neither a
+    repair nor a question open (with one, it is tier 3's or tier 4's), save PENDING, a rerun
+    still running, which has nothing for a session to do yet"""
+    subject = f"{reading.branch}@{reading.sha[:7]}"
+    acts = level in ("propose", "act")
+    if reading.state == "GREEN":
+        if not reading.asked:
+            return None
+        said = shlex.quote(f"{subject} is green again")
+        fix = "; ".join(f"shipmill gh issue close {n} -R {repo} --comment {said}" for n in reading.asked)
+        return Row(BASE_RED, subject, f"green again, close {numbered(reading.asked)}", fix, needs_agent=acts)
+    names = " ".join(f"#{pull}" if pull is not None else sha[:7] for sha, pull in reading.candidates)
+    words = {
+        "PENDING": "rerun running",
+        "RERUN_DUE": "rerun due",
+        "CULPRIT": f"culprit {names}",
+        "CANDIDATES": f"candidates {names}",
+        "NO_GREEN": f"no green in the last {BASE_LIMIT} commits",
+    }[reading.state]
+    parts = [words]
+    parts += [f"repair open: {numbered(reading.repair)}"] if reading.repair else []
+    parts += [f"asked in {numbered(reading.asked)}"] if reading.asked else []
+    if reading.repair:
+        fix = skill_fix(LAND_SKILL, repo)  # land the repair (D-75)
+    elif reading.asked:
+        fix = f"answer the needs-decision question on {repo} {numbered(reading.asked)}"
+    elif reading.state == "RERUN_DUE":
+        fix = "; ".join(rerun_fix(repo, url) for url in reading.rerun)
+    elif reading.state == "PENDING":
+        fix = f"wait for the rerun: {' '.join(reading.pending)}"
+    else:
+        fix = skill_fix(LAND_SKILL, repo)
+    agent = acts and reading.state != "PENDING" and not reading.repair and not reading.asked
+    return Row(BASE_RED, subject, "; ".join(parts), fix, needs_agent=agent)
+
+
+def base_red_rows(
+    repo: str, repo_dir: Path, branch: str, bot_login: str | None, level: str, execute: Spawn = spawn
+) -> list[Row]:
+    """The BASE_RED row of base_red.py's reading of the default branch (spec 079), run once in
+    the checkout with the --bot-login; a run that fails stops the watch (exit 2), like any
+    other read, and it writes nothing"""
+    bot = [] if bot_login is None else ["--bot-login", bot_login]
+    cmd = [sys.executable, str(BASE_RED_SCRIPT), repo, "--branch", branch, "--limit", str(BASE_LIMIT), *bot, "--json"]
+    proc = execute(cmd, repo_dir, None)
+    if proc.returncode != 0:
+        raise Refused(f"error: base_red.py failed with exit {proc.returncode}: {proc.stderr.strip()}")
+    row = base_row(base_reading(proc.stdout, branch), level, repo)
+    return [] if row is None else [row]
+
+
 # -- the gate's tiers (spec 046) -------------------------------------------------------------
 
 # shipmill gate walks the tiers in order and stops at the first item no session has taken. A
@@ -5606,7 +5786,7 @@ def host_rows(section: str, repo: str, repo_dir: Path, now: dt.datetime, *, host
 # reads them from its last --sweep. D-69 (#921) retired tier 8, UNANNOUNCED
 TIERS: dict[int, tuple[str, ...]] = {
     1: ("INCIDENT_OPEN", "OPERATE_FAILED"),
-    2: ("BOT_FAILED", "NOT_PUBLISHED", "WORK_BRANCH_STALE", "BOT_STALLED"),
+    2: (BASE_RED, "BOT_FAILED", "NOT_PUBLISHED", "WORK_BRANCH_STALE", "BOT_STALLED"),  # BASE_RED first (spec 079)
     # LAND_DUE: the land window's queue head (spec 056); AGENT_DRAFT: the App's own draft to resume (D-67)
     # PRS_PARKED: report only, so tier 3 shows what it left out of PRS_OPEN (S-061-11)
     3: ("LAND_DUE", "PRS_OPEN", "AGENT_DRAFT", "NEEDS_DECISION", "PRS_PARKED"),
@@ -5632,25 +5812,34 @@ class Known:
     it again (spec 046): GitHub's default branch, whether a shipmill-hold is open (the gate
     walks only without one, D-15), the open pull requests as `gh pr list --json
     number,isDraft,isCrossRepository,labels,headRefOid,assignees,author` prints them, the open incidents, and
-    the newest workflow runs, each with its workflow's file name"""
+    the newest workflow runs, each with its workflow's file name. base_read (spec 079): whether
+    tier 2 runs base_red.py, which the gate says from the default head's check rollup and its
+    last reading; a file without the key, as a gate before it writes, reads it"""
 
     default_branch: str
     held: bool
     prs: list[dict[str, Any]]
     incidents: list[Issue]
     runs: list[tuple[str, Run]]
+    base_read: bool = True
+
+
+KNOWN_KEYS = frozenset({"default_branch", "held", "prs", "incidents", "runs"})
+BASE_READ = "base_read"  # spec 079: known.json's one optional key
 
 
 def read_known(path: Path) -> Known:
-    """--known's file, refused unless it holds exactly what Known names"""
+    """--known's file, refused unless it holds exactly what Known names, base_read or not"""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or set(data) != {"default_branch", "held", "prs", "incidents", "runs"}:
-            raise ValueError("expected exactly default_branch, held, prs, incidents, and runs")
+        if not isinstance(data, dict) or set(data) - {BASE_READ} != KNOWN_KEYS:
+            raise ValueError("expected exactly default_branch, held, prs, incidents, and runs, and base_read or not")
         if not isinstance(data["default_branch"], str) or not data["default_branch"]:
             raise ValueError("default_branch must be a branch name")
         if not isinstance(data["held"], bool):
             raise ValueError("held must be true or false")
+        if not isinstance(data.get(BASE_READ, True), bool):
+            raise ValueError("base_read must be true or false")
         for key in ("prs", "incidents", "runs"):
             if not isinstance(data[key], list) or not all(isinstance(item, dict) for item in data[key]):
                 raise ValueError(f"{key} must be a list of objects")
@@ -5683,7 +5872,7 @@ def read_known(path: Path) -> Known:
         ]
     except (OSError, KeyError, TypeError, ValueError) as exc:  # json.JSONDecodeError is a ValueError
         raise Refused(f"error: --known {path}: {exc}") from None
-    return Known(data["default_branch"], data["held"], list(data["prs"]), incidents, runs)
+    return Known(data["default_branch"], data["held"], list(data["prs"]), incidents, runs, data.get(BASE_READ, True))
 
 
 def known_pr(pr: dict[str, Any]) -> bool:
@@ -5830,10 +6019,11 @@ def production_rows(
 def lane_rows(
     args: argparse.Namespace, repo_dir: Path, text: str | None, known: Known | None, now: dt.datetime
 ) -> list[Row]:
-    """Tier 2 but BOT_STALLED (the sweep's): BOT_FAILED from the change check's runs, the work
-    branches, and NOT_PUBLISHED for the newest tag alone"""
+    """Tier 2 but BOT_STALLED (the sweep's): BASE_RED from base_red.py when the change check
+    asks for it (spec 079), BOT_FAILED from the change check's runs, the work branches, and
+    NOT_PUBLISHED for the newest tag alone"""
     grace = dt.timedelta(minutes=args.grace)
-    rows: list[Row] = []
+    rows = tier_base_rows(args, repo_dir, text, known)
     bot = bot_workflow(repo_dir)
     if bot is not None and text is not None:
         workflow, shipmill = bot
@@ -5859,6 +6049,17 @@ def lane_rows(
         )
         rows += [row] if row.state == "NOT_PUBLISHED" else []
     return rows
+
+
+def tier_base_rows(
+    args: argparse.Namespace, repo_dir: Path, text: str | None, known: Known | None, execute: Spawn = spawn
+) -> list[Row]:
+    """Tier 2's BASE_RED (spec 079): base_red.py's reading of GitHub's default branch, run only
+    when --known asks for it (base_read) or there is no --known, with [autonomy] revert"""
+    if known is not None and not known.base_read:
+        return []
+    level = "observe" if text is None else config(text, POLICY, args.incident_label).revert
+    return base_red_rows(args.repo, repo_dir, default_branch(args.repo, known), args.bot_login, level, execute)
 
 
 def land_level(args: argparse.Namespace, text: str | None, known: Known | None, now: dt.datetime) -> str | None:
@@ -6245,6 +6446,11 @@ def report_rows(args: argparse.Namespace, repo_dir: Path, now: dt.datetime, host
         rows += work_branch_rows(branches, owners, workflow, args.repo)
         if shipmill:
             rows += milestones(repo_dir, policy, args.tool)
+    # spec 079: the default branch's head as base_red.py reads it, with [autonomy] revert; in the
+    # full report only, as tier 2 reads it for the gate, so the sweep never reads it (D-58)
+    if host:
+        revert = "observe" if config_text is None else config(config_text, policy, args.incident_label).revert
+        rows += base_red_rows(args.repo, repo_dir, view["defaultBranchRef"]["name"], args.bot_login, revert)
 
     tags = version_tags(repo_dir)
     package = package_name(repo_dir)

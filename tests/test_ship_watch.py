@@ -2010,6 +2010,12 @@ def fixed_rows(ws: ModuleType, home: Path) -> dict[str, list[Any]]:
             ],
             NOW,
         ),
+        # spec 079: a red default branch whose failed run is on its first attempt
+        ws.base_row(
+            ws.BaseReading("RERUN_DUE", "main", "c" * 40, (), ("https://github.com/o/r/actions/runs/5",), (), (), ()),
+            "observe",
+            REPO,
+        ),
         # spec 078: a series trends.py reads at the report tier
         *ws.drift_rows(
             REPO,
@@ -2101,6 +2107,7 @@ FIXES = {
         " installation (shipmill/shipmill#968)"
     ],
     "DRIFT": ["uv run --no-project python {trends} o/r --repo-dir /work/r"],  # spec 078
+    "BASE_RED": ["gh run rerun 5 --failed -R o/r"],  # spec 079
 }
 
 

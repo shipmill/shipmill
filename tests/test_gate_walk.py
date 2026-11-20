@@ -199,9 +199,11 @@ def graphql_answer(
     updated: Sequence[int] = (),
     more: bool = False,
     landed: Sequence[tuple[int, str | None]] = (),
+    base: str | None = "SUCCESS",
 ) -> dict[str, Any]:
     """landed: the default branch's last commits' pull requests, each its number and mergedAt
-    (None for one not merged), as the change check's history reads them (spec 048)"""
+    (None for one not merged), as the change check's history reads them (spec 048); base: the
+    default head's check rollup state, None for a head with no checks (spec 079)"""
 
     def page(nodes: list[dict[str, Any]], has: bool = False) -> dict[str, Any]:
         return {"pageInfo": {"hasNextPage": has, "endCursor": "c1" if has else None}, "nodes": nodes}
@@ -214,10 +216,12 @@ def graphql_answer(
         "closedByPullRequestsReferences": {"nodes": []},
     }
     commits = [{"associatedPullRequests": {"nodes": [{"number": n, "mergedAt": at}]}} for n, at in landed]
+    rollup = None if base is None else {"state": base}
+    target = {"oid": head, "statusCheckRollup": rollup, "history": {"nodes": commits}}
     return {
         "data": {
             "repository": {
-                "defaultBranchRef": {"name": "main", "target": {"oid": head, "history": {"nodes": commits}}},
+                "defaultBranchRef": {"name": "main", "target": target},
                 "latestRelease": None if tag is None else {"tagName": tag},
                 "updated": page([{"number": n, "labels": {"nodes": []}} for n in updated]),
                 "pulls": page(list(pulls), more),
