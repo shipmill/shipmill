@@ -104,15 +104,22 @@ def test_s070_3_each_row_is_cut_into_its_expedite_and_standard_subjects(ws: Modu
 
 
 def test_s070_3_the_outcome_is_the_expedite_opportunity_and_its_sub_issues(ws: ModuleType) -> None:
-    def node(labels: tuple[str, ...], events: list[dict[str, Any]], subs: tuple[int, ...]) -> dict[str, Any]:
+    def node(
+        labels: tuple[str, ...], events: list[dict[str, Any]], subs: tuple[int, ...], repo: str = "O/R"
+    ) -> dict[str, Any]:
+        nodes = [{"number": n, "state": "OPEN", "repository": {"nameWithOwner": repo}} for n in subs]
         return {
             "labels": {"nodes": [{"name": n} for n in ("opportunity", "planned", *labels)]},
             "milestone": None,
-            "subIssues": {"pageInfo": {"hasNextPage": False}, "nodes": [{"number": n, "state": "OPEN"} for n in subs]},
+            "subIssues": {"pageInfo": {"hasNextPage": False}, "nodes": nodes},
             "timelineItems": {"nodes": events},
         }
 
+    across = node(("expedite",), [labeled("expedite", person("alice"))], (101,))
+    # a sub-issue in another repo is no issue of this one, whatever its number
+    across["subIssues"]["nodes"].append({"number": 104, "state": "OPEN", "repository": {"nameWithOwner": "o/other"}})
     answer = {
+        "n4": across,
         "n5": node(("expedite",), [labeled("expedite", person("alice"))], (101, 102)),
         "n6": node(("expedite",), [labeled("expedite", APP)], (103,)),  # the App's label: standard
         # both labels a person added: standard (S-070-2)
@@ -124,8 +131,9 @@ def test_s070_3_the_outcome_is_the_expedite_opportunity_and_its_sub_issues(ws: M
     def read(cmd: list[str]) -> str:
         return json.dumps({"data": {"repository": answer}})
 
-    found = ws.read_opportunities("o/r", [5, 6, 7], BOT, read)
+    found = ws.read_opportunities("o/r", [4, 5, 6, 7], BOT, read)
     assert {o.number: (o.service, o.outcome) for o in found} == {
+        4: ("expedite", frozenset({101})),
         5: ("expedite", frozenset({101, 102})),
         6: ("standard", frozenset({103})),
         7: ("standard", frozenset()),
@@ -204,7 +212,10 @@ def tier_3(tmp_path: Path, expedite: list[dict[str, Any]], prs: list[dict[str, o
         "n5": {
             "labels": {"nodes": [{"name": n} for n in ("opportunity", "planned", "expedite")]},
             "milestone": None,
-            "subIssues": {"pageInfo": {"hasNextPage": False}, "nodes": [{"number": 101, "state": "OPEN"}]},
+            "subIssues": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{"number": 101, "state": "OPEN", "repository": {"nameWithOwner": "o/r"}}],
+            },
             "timelineItems": {"nodes": [labeled("expedite", person("alice"))]},
         }
     }

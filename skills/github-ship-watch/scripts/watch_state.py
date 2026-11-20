@@ -2592,7 +2592,10 @@ def read_opportunities(
         f"timelineItems(itemTypes: [LABELED_EVENT], last: {LABELED_LAST})"
         " { nodes { ... on LabeledEvent { label { name } actor { __typename login } } } }"
     )
-    subs = f"subIssues(first: {SUB_ISSUES_FIRST}) {{ pageInfo {{ hasNextPage }} nodes {{ number state }} }}"
+    subs = (
+        f"subIssues(first: {SUB_ISSUES_FIRST})"
+        " { pageInfo { hasNextPage } nodes { number state repository { nameWithOwner } } }"
+    )
     fields = f"labels(first: 100) {{ nodes {{ name }} }} milestone {{ dueOn }} {subs} {events}"
     wanted = sorted(set(numbers))
     found: list[Opportunity] = []
@@ -2633,10 +2636,15 @@ def opportunity(repo: str, number: int, item: object, bot_login: str | None) -> 
     due_on = None if milestone is None else milestone.get("dueOn")
     due = None if not due_on else parse_time(str(due_on)).astimezone(dt.timezone.utc).date()  # noqa: UP017 (3.10)
     states = [s.get("state") for s in subs["nodes"] if isinstance(s, dict)]
-    numbers = [s.get("number") for s in subs["nodes"] if isinstance(s, dict)]
-    if not all(isinstance(n, int) and not isinstance(n, bool) and n > 0 for n in numbers):
-        raise Refused(f"error: gh api graphql printed a sub-issue without its number for {repo}#{number}")
-    outcome = frozenset(n for n in numbers if isinstance(n, int))
+    numbers = [
+        (s.get("number"), (s.get("repository") or {}).get("nameWithOwner"))
+        for s in subs["nodes"]
+        if isinstance(s, dict)
+    ]
+    if not all(isinstance(n, int) and not isinstance(n, bool) and n > 0 and isinstance(r, str) for n, r in numbers):
+        raise Refused(f"error: gh api graphql printed a sub-issue without its number or repo for {repo}#{number}")
+    # a sub-issue in another repo is no issue of this one, whatever its number
+    outcome = frozenset(n for n, r in numbers if isinstance(n, int) and str(r).lower() == repo.lower())
     return Opportunity(number, counted, milestone is not None, due, len(states), states.count("OPEN"), outcome)
 
 

@@ -64,7 +64,9 @@ def node(
         "milestone": {"dueOn": due} if milestone or due is not None else None,
         "subIssues": {
             "pageInfo": {"hasNextPage": False},
-            "nodes": [{"number": 100 + i, "state": s} for i, s in enumerate(subs)],
+            "nodes": [
+                {"number": 100 + i, "state": s, "repository": {"nameWithOwner": "o/r"}} for i, s in enumerate(subs)
+            ],
         },
         "timelineItems": {"nodes": events},
     }
