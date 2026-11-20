@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.154.0] - 2026-11-20
+
+### Added
+
+- A session handed the watch's BASE_RED row under `[autonomy] revert` propose or act follows four steps in github-pr-triage's `ci-failures.md`: re-run the failed run once, re-run the unjudged candidates' cancelled runs, `shipmill revert open` for a culprit or at most three revertable candidates, and otherwise ask on one `<!-- shipmill:base-red <branch> -->` issue per branch, closed once the branch reads green; under observe it only reports (spec 079) (#1296)
+
 ## [0.153.0] - 2026-11-20
 
 ### Added
@@ -2814,7 +2820,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.153.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.154.0...HEAD
+[0.154.0]: https://github.com/shipmill/shipmill/compare/v0.153.0...v0.154.0
 [0.153.0]: https://github.com/shipmill/shipmill/compare/v0.152.0...v0.153.0
 [0.152.0]: https://github.com/shipmill/shipmill/compare/v0.151.0...v0.152.0
 [0.151.0]: https://github.com/shipmill/shipmill/compare/v0.150.0...v0.151.0
