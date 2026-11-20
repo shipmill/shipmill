@@ -72,6 +72,8 @@ elif args[:1] == ["api"] and "/deployments" in " ".join(args):
         print("[]")
     else:
         print(json.dumps([{"id": 1, "ref": "v1.0.0", "sha": "b" * 40, "created_at": "2026-11-01T00:00:00Z"}]))
+elif args[:1] == ["api"] and "/commits/" in " ".join(args):  # base_red.py: a green default head (spec 079)
+    print(json.dumps({"sha": "c" * 40, "statuses": [], "total_count": 0}) if "/status?" in " ".join(args) else "")
 else:
     sys.stderr.write("unexpected gh call: " + " ".join(args) + "\\n")
     sys.exit(1)

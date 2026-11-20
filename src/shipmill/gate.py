@@ -95,6 +95,8 @@ from shipmill.walk import (
     Source,
     Swept,
     Walked,
+    base_read,
+    base_reading,
     check,
     cut,
     issue_updates,
@@ -1972,7 +1974,8 @@ def tick_walk(
     if dead is not None and not capped:
         handed = handed.without(dead.session)
     known = Swept.load(state / SWEEP)
-    changes = source.changes(None if cursor is None else cursor.at)
+    # spec 079: tier 2 reads base_red.py on a failing default head, or after a reading not GREEN
+    changes = base_read(source.changes(None if cursor is None else cursor.at), cursor)
     sweeping = sweep_now or known is None or known.due(now, sweep_hours)
     change = (
         walk_now
@@ -2004,7 +2007,7 @@ def tick_walk(
         permissions=None if noticed is None else noticed.line,
     )
     stored = found.swept if sweeping or found.swept != known else None
-    after = Cursor(now - CURSOR_OVERLAP, changes.signature)
+    after = Cursor(now - CURSOR_OVERLAP, changes.signature, base_reading(found.tiers, found.rows, cursor))
     # a walk that stopped at an item didn't read the tiers below it, so it keeps their hands,
     # a subject's past retry_hours too (spec 061); one that read every tier keeps the idle ones
     hands = found.handed.stopped(now, retry) if found.item is not None else found.handed.kept(now, retry)

@@ -42,6 +42,7 @@ LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\[bot\])?")  # w
 AUTHOR = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?")
 # D-67 (#914): watch_state.py's row for the App's own draft with nothing open on it, a session's to resume
 AGENT_DRAFT = "AGENT_DRAFT"
+BASE_RED = "BASE_RED"  # spec 079: watch_state.py's row for a default branch base_red.py reads anything but GREEN
 LAND_DUE = "LAND_DUE"  # spec 056: watch_state.py's head of the land window's queue, due to land
 # land-stage items: a walk takes them only when land isn't observe
 LANDING = frozenset({LAND_DUE, PRS_OPEN, AGENT_DRAFT})
@@ -50,7 +51,7 @@ LANDING = frozenset({LAND_DUE, PRS_OPEN, AGENT_DRAFT})
 # or ISSUES and its triage state. A kind no tier names is read in tier 6 (S-046-12)
 TIERS: dict[int, tuple[str, ...]] = {
     1: ("INCIDENT_OPEN", "OPERATE_FAILED"),
-    2: ("BOT_FAILED", "NOT_PUBLISHED", "WORK_BRANCH_STALE", "BOT_STALLED"),
+    2: (BASE_RED, "BOT_FAILED", "NOT_PUBLISHED", "WORK_BRANCH_STALE", "BOT_STALLED"),  # BASE_RED first (spec 079)
     3: (LAND_DUE, PRS_OPEN, AGENT_DRAFT),
     4: ("VETOED", f"{ISSUES} DECIDED"),
     5: ("UPGRADE_PENDING", "UPSTREAM_DUE"),
@@ -166,10 +167,14 @@ def malformed(path: Path, exc: Exception) -> ReleaseError:
 
 @dataclass(frozen=True, slots=True)
 class Cursor:
-    """cursor.json: the last walk's start less CURSOR_OVERLAP, and the change check's signature"""
+    """cursor.json: the last walk's start less CURSOR_OVERLAP, the change check's signature, and
+    whether the last tier 2 read printed a BASE_RED row, so the default branch's last reading
+    wasn't GREEN (spec 079); None when unknown, as in a file written before it, which a tick
+    reads as not GREEN: one base_red.py read more, never one missed"""
 
     at: dt.datetime
     signature: str
+    base_red: bool | None = None
 
     @classmethod
     def load(cls, path: Path) -> Cursor | None:
@@ -177,16 +182,20 @@ class Cursor:
             return None
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or set(data) != {"at", "signature"}:
-                raise ValueError("expected exactly at and signature")
+            if not isinstance(data, dict) or set(data) - {"base_red"} != {"at", "signature"}:
+                raise ValueError("expected exactly at and signature, and base_red or not")
             if not isinstance(data["signature"], str) or not data["signature"]:
                 raise ValueError("signature must be a non-empty string")
-            return cls(moment(data["at"], "at"), data["signature"])
+            base_red = data.get("base_red")
+            if base_red is not None and not isinstance(base_red, bool):
+                raise ValueError("base_red must be true, false, or null")
+            return cls(moment(data["at"], "at"), data["signature"], base_red)
         except ValueError as exc:  # json.JSONDecodeError is one
             raise malformed(path, exc) from None
 
     def save(self, path: Path) -> None:
-        write(path, {"at": self.at.isoformat(), "signature": self.signature})
+        found: dict[str, object] = {"at": self.at.isoformat(), "signature": self.signature}
+        write(path, found | ({} if self.base_red is None else {"base_red": self.base_red}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -550,14 +559,17 @@ HISTORY = (
     f"... on Commit {{ history(first: {LANDED}) {{ nodes {{ associatedPullRequests(first: 1)"
     " { nodes { number mergedAt } } } } }"
 )
+# spec 079: the default head's check rollup, so a check finishing there is a change the gate sees
+BASE_ROLLUP = "... on Commit { statusCheckRollup { state } }"
 
 
 def change_query(names: Sequence[str], after: Mapping[str, str] | None = None, first: bool = True) -> str:
-    """The change check's one query (S-046-3): the default branch with its last LANDED commits'
-    merged pull requests (S-048-21), the newest release, and the connections; a later page asks
-    only for the connections that have more"""
+    """The change check's one query (S-046-3): the default branch with its head's check rollup
+    (S-079-7) and its last LANDED commits' merged pull requests (S-048-21), the newest release,
+    and the connections; a later page asks only for the connections that have more"""
     pages = " ".join(connection(n, None if after is None else after.get(n)) for n in names)
-    head = f"defaultBranchRef {{ name target {{ oid {HISTORY} }} }} latestRelease {{ tagName }} " if first else ""
+    target = f"target {{ oid {BASE_ROLLUP} {HISTORY} }}"
+    head = f"defaultBranchRef {{ name {target} }} latestRelease {{ tagName }} " if first else ""
     declared = ", ".join(f"${v}: {VARIABLES[v]}" for v in query_variables(names))
     return f"query({declared}) {{ repository(owner: $owner, name: $name) {{ {head}{pages} }} }}"
 
@@ -670,6 +682,42 @@ def rollup(node: Mapping[str, Any]) -> str | None:
     return None if status is None else str(status["state"])
 
 
+BASE_READ = "base_read"  # known.json's key: whether tier 2 runs base_red.py (spec 079)
+BASE_GREEN = frozenset({None, "SUCCESS"})  # a default head's rollups the signature leaves out (spec 079)
+
+
+def base_rollup(default: Mapping[str, Any]) -> str | None:
+    """The default head's check rollup state (S-079-7), None for a head with no checks; an
+    answer without the field is one the gate can't read, never a green head"""
+    target = default["target"]
+    if not isinstance(target, dict) or "statusCheckRollup" not in target:
+        raise ReleaseError(f"gh api graphql printed no check rollup for the default head: {str(default)[:300]}")
+    status = target["statusCheckRollup"]
+    if status is None:
+        return None
+    if not isinstance(status, dict) or not isinstance(status.get("state"), str):
+        raise ReleaseError(f"gh api graphql printed the default head's check rollup as {str(status)[:200]}")
+    return str(status["state"])
+
+
+def base_read(changes: Changes, cursor: Cursor | None) -> Changes:
+    """The change check's answer with tier 2's base_red.py read asked for also when the last
+    reading wasn't GREEN, or isn't known (no cursor, or one written before spec 079), so a
+    branch going green again reads once more and its question's `green again` row shows. A
+    source without the key (rows a test hands) is left as it is"""
+    if BASE_READ not in changes.known or (cursor is not None and cursor.base_red is False):
+        return changes
+    return replace(changes, known={**changes.known, BASE_READ: True})
+
+
+def base_reading(tiers: Sequence[int], rows: Iterable[Finding], cursor: Cursor | None) -> bool | None:
+    """The last reading for the next cursor: whether a walk that read tier 2 found a BASE_RED
+    row; one that didn't read tier 2 keeps the cursor's"""
+    if 2 not in tiers:
+        return None if cursor is None else cursor.base_red
+    return any(r.state == BASE_RED for r in rows)
+
+
 def workflow_runs(answer: Any, workflows: Sequence[str]) -> list[dict[str, Any]]:
     """The newest runs of the watched workflows, as watch_state.py --known reads them"""
     if not isinstance(answer, dict) or not isinstance(answer.get("workflow_runs"), list):
@@ -715,7 +763,8 @@ def changes_of(
     pulls = sorted(nodes["pulls"], key=lambda p: int(p["number"]))
     incidents = sorted(nodes["incidents"], key=lambda i: int(i["number"]))
     workflows = sorted({str(r["workflow"]) for r in runs})
-    signed = {
+    base = base_rollup(default)
+    signed: dict[str, object] = {
         "head": default["target"]["oid"],
         "tag": tag,
         "pulls": [
@@ -725,6 +774,10 @@ def changes_of(
         "incidents": [i["number"] for i in incidents],
         "runs": [run_state(runs, w) for w in workflows],
     }
+    # S-079-7: the default head's rollup, so a check failing on an unchanged head is a change; a
+    # green head, or one with no checks, signs nothing, so a cursor written before still matches it
+    if base not in BASE_GREEN:
+        signed["base"] = base
     signature = hashlib.sha256(json.dumps(signed, sort_keys=True).encode()).hexdigest()[:16]
     updated = list(nodes["updated"])
     if since is not None:
@@ -759,6 +812,8 @@ def changes_of(
             for i in incidents
         ],
         "runs": [{k: r[k] for k in ("workflow", "status", "conclusion", "createdAt", "url")} for r in runs],
+        # spec 079: tier 2 reads base_red.py when the head's rollup fails; the tick adds the last reading
+        BASE_READ: base in FAILS_CI,
     }
     numbers = tuple(sorted({int(n["number"]) for n in updated}))
     opened = {
