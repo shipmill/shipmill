@@ -37,14 +37,14 @@ maintainer's decision to let the release edit the milestone the version is named
 ### What the release does
 
 After a stable version X is tagged and published by a lane with `close_milestone = true`,
-including the waits and reference moves of `after_publish` (D-50), `land`
-(`src/shipmill/land.py`) reads the open milestone titled X (`str` of the release, as spec 022
-names it):
+including the waits and reference moves of `after_publish` (D-50), land.yml's `milestone` job,
+after the land job, runs `shipmill close-milestone` (`src/shipmill/land.py`), which reads the
+open milestone titled X (`str` of the release, as spec 022 names it):
 
 - **No open issues:** it closes milestone X
 - **Open issues, and a later milestone:** the later milestone is the open milestone whose
   title is the lowest stable version above X (titles that aren't a stable version are
-  ignored). `land` moves each open issue of X to it, then closes X. Closed issues stay in X,
+  ignored). It moves each open issue of X to it, then closes X. Closed issues stay in X,
   so X keeps the record of what its release shipped. A spec whose build issues span both
   milestones belongs to both (spec 022's belonging is unchanged), so an unfinished goal
   keeps holding the later one
@@ -57,9 +57,10 @@ names it):
 The Release run's summary names what it did: `milestone 1.5.0 closed`, or
 `milestone 1.5.0 closed; #12, #14 moved to 1.6.0`. The writes go through the code host port
 (`src/shipmill/github.py`: closing a milestone and setting an issue's milestone, the one
-milestone write #322 names) with the land job's token, which needs `issues: write`.
+milestone write #322 names) with the milestone job's token, which sets no permissions of its
+own and so takes the caller's grant on its land job, which needs `issues: write`.
 
-A milestone write that fails fails the land job after the tag and publish, naming the
+A milestone write that fails fails the milestone job after the tag and publish, naming the
 milestone and the `shipmill gh api` command that does the write; the release stands, and
 the MILESTONE_RELEASED row below carries the same fix until the milestone is closed.
 
@@ -114,10 +115,10 @@ issue read in `github.py`; nothing else is read.
 
 - S-068-1: The policy reads `close_milestone` on a lane as `false` when absent, and exits 2 naming the key and the lane when it isn't a boolean or is `true` on a lane without `milestone = true`
 - S-068-2: After a stable release X by a lane with `close_milestone = true`, an open milestone titled X with no open issues is closed, and the Release run's summary says `milestone X closed`
-- S-068-3: When milestone X has open issues and an open milestone titled the lowest stable version above X exists, `land` moves each open issue of X to it and then closes X, leaving X's closed issues in X, and the summary names the moved issues and the milestone they moved to
-- S-068-4: When milestone X has open issues and no open milestone is titled a stable version above X, `land` writes no milestone, and `shipmill milestones` reports MILESTONE_OVERTAKEN for X as S-022-10 says
-- S-068-5: `land` reads and writes no milestone for a pre-release, for a lane without `close_milestone`, or when no milestone is titled X
-- S-068-6: A milestone write that fails makes the land job exit non-zero after the tag is pushed and the release published, with a message naming the milestone and the `shipmill gh api` command that does the write
+- S-068-3: When milestone X has open issues and an open milestone titled the lowest stable version above X exists, the milestone job moves each open issue of X to it and then closes X, leaving X's closed issues in X, and the summary names the moved issues and the milestone they moved to
+- S-068-4: When milestone X has open issues and no open milestone is titled a stable version above X, the milestone job writes no milestone, and `shipmill milestones` reports MILESTONE_OVERTAKEN for X as S-022-10 says
+- S-068-5: The milestone job reads and writes no milestone for a pre-release, for a lane without `close_milestone`, or when no milestone is titled X
+- S-068-6: A milestone write that fails makes the milestone job exit non-zero after the tag is pushed and the release published, so the release stands, with a message naming the milestone and the `shipmill gh api` command that does the write
 - S-068-7: With a lane that sets `milestone = true`, `shipmill milestones` reports MILESTONE_RELEASED for an open milestone titled a stable version whose tag exists and which has no open issues, with the fix that closes it, and reports no such row for a milestone with open issues or whose version has no tag
 - S-068-8: With a lane that sets `milestone = true`, `shipmill milestones` reports MILESTONE_MISSING, naming the version the lane cuts next and the fix that creates its milestone, when no open milestone is titled a stable version above the newest stable tag, and no such row when one is
 - S-068-9: github-ship-watch's state lists MILESTONE_RELEASED and MILESTONE_MISSING from `shipmill milestones --json`, and its skill runs MILESTONE_RELEASED's fix under "watch" and never MILESTONE_MISSING's
