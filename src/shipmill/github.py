@@ -1337,7 +1337,9 @@ def _outcome(node: Any, here: str, refuse: Callable[[str], ReleaseError]) -> Out
     found = frozenset(str(n["name"]) for n in names if isinstance(n, dict) and isinstance(n.get("name"), str))
     labelled = node.get("labelled")
     events = labelled.get("nodes") if isinstance(labelled, dict) else None
-    if not isinstance(events, list):
+    if not isinstance(events, list) or not all(
+        isinstance(e, dict) and isinstance(e.get("label"), dict) for e in events
+    ):
         raise refuse(f"#{issue.number} without its label events")
     counted = frozenset(x for x in (EXPEDITE_LABEL, FIXED_DATE_LABEL) if x in found and _person_added(events, x))
     subs = node.get("subIssues")

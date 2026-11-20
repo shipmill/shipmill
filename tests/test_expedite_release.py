@@ -367,3 +367,10 @@ def test_s070_7_the_read_refuses_a_list_longer_than_it_reads() -> None:
         parse_expedite_outcomes(_answer(many))
     with pytest.raises(ReleaseError, match="errors or no object"):
         parse_expedite_outcomes({"errors": [{"message": "Bad credentials"}]})
+
+
+def test_s070_7_the_read_refuses_a_label_event_without_its_label() -> None:
+    malformed = _opportunity(40, {"__typename": "User", "login": "amy"})
+    malformed["labelled"]["nodes"][0]["label"] = "expedite"
+    with pytest.raises(ReleaseError, match="#40 without its label events"):
+        parse_expedite_outcomes(_answer(malformed))
