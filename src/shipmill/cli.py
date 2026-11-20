@@ -99,6 +99,12 @@
                   spec and each --with PATH, opens the pull request whose body starts "Spec for #N"
                   (then --body-file's text), comments the feature verdict holding #N on it, and
                   prints its URL; it never files the feature issue
+  revert          back out the merges that turned the default branch red (spec 079): `revert open
+                  <PR>... --run <URL>` checks first ([autonomy] revert propose or act, the App, --run
+                  a failed check of the default head, each pull request merged by the App's bot and in
+                  no tag, no open Repairs: line naming the run, the reverts apply) and writes nothing on
+                  a failure; then pushes revert/<N>-<sha7>, opens its pull request labelled revert,
+                  reopens each issue a reverted pull request closed, and prints the URL and each issue
   evals           the agents' eval suite, evals/ (spec 025): check exits 1 naming each case and the
                   rule it breaks, without a model; a repository with no case under evals/ passes;
                   check --gate also exits 1 while the suite is short of 8 verdict, 4 decision,
@@ -161,6 +167,7 @@ from shipmill import (
     product,
     refused,
     requires,
+    revert,
     review,
     review_history,
     review_record,
@@ -1081,6 +1088,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     q.add_argument("--body-file", type=Path, help="text for the pull request's body, after its `Spec for #N` line")
 
+    p = sub.add_parser("revert", help="back out the merges that turned the default branch red (spec 079)")
+    reverting = p.add_subparsers(dest="revert", required=True)
+    q = reverting.add_parser(
+        "open", help="push revert/<N>-<sha7>, open its pull request, and reopen the issues the reverted merges closed"
+    )
+    q.add_argument("--repo", type=Path, default=argparse.SUPPRESS, help="the repository checkout (default: .)")
+    q.add_argument("pulls", metavar="PR", type=int, nargs="+", help="a merged pull request's number to revert")
+    q.add_argument("--run", required=True, help="the URL of the failed run on the default branch's head it repairs")
+
     p = sub.add_parser("leaks", help="check what would leave the machine for private terms and secrets (spec 081)")
     leaking = p.add_subparsers(dest="leaks", required=True)
     q = leaking.add_parser(
@@ -1274,7 +1290,7 @@ def main(
         )
         reach = _GhHub(api or UrllibApi(), signer or Openssl(), web or UrllibWeb())
         return _gh(root, passed, reach, env, user_home, gh_runner or run_gh, readers)
-    if args.command == "spec" or (args.command == "review" and args.review_command == "record"):
+    if args.command in ("spec", "revert") or (args.command == "review" and args.review_command == "record"):
         readers = _GhReaders(
             merge_reader or _gh_reader,
             credit_reader or _credit_reader,
@@ -1288,6 +1304,8 @@ def main(
         through = _GhPath(reach, env, user_home, readers)
         if args.command == "review":
             return _review_record(root, args, through)
+        if args.command == "revert":
+            return _revert_open(root, args, through)
         return _spec_open(root, args, through, spec_checkout)
     if args.command == "leaks":  # reads no config: the private file and what is checked alone (spec 081)
         if args.leaks == "check":
@@ -3088,6 +3106,106 @@ class _SpecHub:
         code, _ = self._run(["issue", "comment", str(number), "-R", self._repo, "--body", body])
         if code != 0:
             raise ReleaseError(f"gh issue comment {number} exited {code}")
+
+
+def _revert_open(root: Path, args: argparse.Namespace, path: _GhPath) -> int:
+    """Spec 079: `revert open`, in the checkout's own repo, its GitHub reads and writes through
+    `shipmill gh`'s path, as the App only; prints the pull request's URL and each reopened issue"""
+    if not root.is_dir():
+        raise ReleaseError(f"--repo {root} is not a folder")
+    git = Git(root)
+    if not git.ok("rev-parse", "--show-toplevel"):
+        raise ReleaseError(
+            f"revert open runs in the repo's checkout, and git can't read {root}: `git -C {root} status`"
+        )
+    top = Path(git.run("rev-parse", "--show-toplevel").strip())
+    repo = _origin_repo(top)
+    if repo is None:
+        raise ReleaseError(
+            f"{top}'s origin isn't a GitHub repo, so revert open has no repo to open the pull request in"
+        )
+    request = revert.Request(tuple(args.pulls), args.run)
+    hub = _RevertHub(top, repo, path)
+    leaks = _RevertLeaks(top, repo, _through_vet(top, path))
+    opened = revert.open_revert(top, repo, request, hub, hub, lambda: _revert_app(top, path), leaks)
+    sys.stdout.write(opened.text())
+    return 0
+
+
+REVERT_PUSH_FIX = "Take the private term or the secret out of the commits the reverts undo, then revert by hand"
+
+
+def _revert_app(top: Path, path: _GhPath) -> str:
+    """S-079-8: the App's bot login, which every revert write is made as (D-54) and the merges it
+    reverts must be by; without [agents] app_id, or without the App's key, it exits 2 before any
+    GitHub write, whatever [agents] identity says"""
+    identity = gh_identity_of(top)
+    if identity.app_id is None:
+        if identity.identity is WriteAs.NONE:
+            raise _owners_choice(_refused_repo(top, top, _known_origin(top), None))
+        raise ReleaseError(
+            f"the App isn't available: {CONFIG_PATH} sets no [agents] app_id, and revert open writes as the App "
+            "alone and reverts only the App's merges (spec 079, D-54); nothing was written"
+        )
+    key = require_key(session_key(identity.app_id, path.environ, path.home))
+    return app_login(path.reach.signer, path.reach.api)(identity.app_id, key)
+
+
+@dataclass(frozen=True, slots=True)
+class _RevertLeaks:
+    """spec 081: revert open's leak check, the body to the checkout's repo and the push to origin"""
+
+    top: Path
+    repo: str
+    vet: _Vet
+
+    def body(self, text: str) -> None:
+        self.vet.check("shipmill revert open", [Text("the body", text)], self.repo)
+
+    def push(self, refspec: str) -> None:
+        sent = outgoing(Git(self.top), Push(REMOTE, (refspec,)))
+        self.vet.check("shipmill revert open", sent.texts, sent.repo, REVERT_PUSH_FIX, sent.placed)
+
+
+class _RevertHub:
+    """revert open's GitHub calls, each one `shipmill gh`'s (`_gh`): its reads and its writes as
+    the App, with the agent marker on every body it writes (D-62)"""
+
+    def __init__(self, top: Path, repo: str, path: _GhPath) -> None:
+        self._top = top
+        self._repo = repo
+        self._path = path
+
+    def _write(self, gh_args: list[str], what: str) -> str:
+        code, out = _through_gh(self._top, self._path, gh_args)
+        if code != 0:
+            raise ReleaseError(f"{what} exited {code}")
+        return out
+
+    def text(self, args: list[str]) -> str:
+        filled = [arg.replace("{owner}/{repo}", self._repo) for arg in args]
+        code, out = _through_gh(self._top, self._path, ["api", *filled])
+        if code != 0:
+            raise ReleaseError(f"gh api {' '.join(filled)[:200]} exited {code}")
+        return out
+
+    def create_label(self, name: str, color: str, description: str) -> None:
+        args = ["label", "create", name, "-R", self._repo, "--color", color, "--description", description]
+        self._write(args, f"gh label create {name}")
+
+    def open_pull(self, title: str, body: str, head: str, base: str, label: str) -> str:
+        args = ["pr", "create", "-R", self._repo, "--head", head, "--base", base, "--title", title, "--body", body]
+        lines = [line.strip() for line in self._write([*args, "--label", label], "gh pr create").splitlines()]
+        found = [line for line in lines if line]
+        if not found:
+            raise ReleaseError("gh pr create printed no pull request URL")
+        return found[-1]
+
+    def comment(self, number: int, body: str) -> None:
+        self._write(["issue", "comment", str(number), "-R", self._repo, "--body", body], f"gh issue comment {number}")
+
+    def reopen(self, number: int) -> None:
+        self._write(["issue", "reopen", str(number), "-R", self._repo], f"gh issue reopen {number}")
 
 
 def _through_gh(top: Path, path: _GhPath, gh_args: list[str]) -> tuple[int, str]:
