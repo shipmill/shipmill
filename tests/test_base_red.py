@@ -512,3 +512,66 @@ def test_s079_5_a_failed_read_a_limit_below_2_or_an_unknown_branch_exits_2_with_
     proc = base_red(tmp_path, github, "--bot-login", BOT, *args)
     assert (proc.returncode, proc.stdout) == (2, ""), proc.stdout
     assert error in proc.stderr
+
+
+# -- S-079-14: the session's steps in ci-failures.md, and the watch's row in its SKILL.md
+
+SKILLS = SCRIPT.parents[2]
+
+
+def folded(path: Path) -> str:
+    """A file with its line wrapping folded, so a statement reads as one line"""
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def test_s079_14_ci_failures_holds_the_four_steps_for_a_red_default_branch() -> None:
+    text = folded(SKILLS / "github-pr-triage" / "references" / "ci-failures.md")
+    section = text.split("## A red default branch ", 1)[1].split(" ## ", 1)[0]
+    steps = section.split("### The watch's BASE_RED row ", 1)[1]
+    assert "Under `observe` it reports the row and changes nothing" in steps
+    assert "Under `propose` or `act` it reads the branch itself, `scripts/base_red.py <owner/repo>" in steps
+    # each step in its order, keyed to the lines base_red.py prints
+    order = [
+        "1. **RERUN_DUE: re-run once.** Re-run each run a `rerun: <run URL>` line names, once,"
+        " `gh run rerun <id> --failed` through `shipmill gh`, and leave",
+        "2. **CANDIDATES with a run to re-run: re-run the unjudged candidates' cancelled runs.** Re-run every run a"
+        " candidate's `unjudged, rerun: <run URL>` part names",
+        "3. **CULPRIT, or CANDIDATES with no run left to re-run, at most three and every one `revertable`: revert.**",
+        "`revert open <PR>... --run <failed run URL>` (`shipmill revert open`)",
+        "4. **Anything else: ask on one issue per branch.** A candidate `not revertable` (`no pull request`, `merged by"
+        " a person`, `released in <tag>`), more than three candidates, NO_GREEN, a `revert open` that exits 2 on a"
+        " conflict, or a revert pull request whose own head fails the check it repairs: no revert.",
+        "its body's first line `<!-- shipmill:base-red <branch> -->`",
+        "[needs-decision protocol](../../github-issue-triage/references/needs-decision.md)",
+        "One such issue is open per branch at a time",
+        "the row reads `green again, close #Q`: close it with a comment naming the head,"
+        ' `gh issue close <Q> --comment "<branch>@<sha7> is green again"` through `shipmill gh`',
+    ]
+    at = [steps.find(part) for part in order]
+    assert -1 not in at, [part for part, i in zip(order, at, strict=True) if i == -1]
+    assert at == sorted(at)
+    # the marker is the one base_red.py reads as asked, and the CLI's own usage
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert 'ASKED = "<!-- shipmill:base-red {branch} -->"' in script
+    usage = subprocess.run(
+        [sys.executable, "-m", "shipmill", "revert", "open", "--help"], capture_output=True, text=True, check=True
+    ).stdout
+    assert "--run RUN PR [PR ...]" in usage
+
+
+def test_s079_14_pr_triage_and_the_watch_name_the_steps_and_the_row() -> None:
+    rule_1 = folded(SKILLS / "github-pr-triage" / "SKILL.md").split(" 1. **Merge only on a finished", 1)[1]
+    rule_1 = rule_1.split(" 2. **", 1)[0]
+    assert (
+        'reports it under `[autonomy] revert = "observe"`, and under `propose` or `act` takes the four steps' in rule_1
+    )
+    assert "(references/ci-failures.md#the-watchs-base_red-row)" in rule_1
+    watch = folded(SKILLS / "github-ship-watch" / "SKILL.md")
+    row = watch.split("| BASE_RED | ", 1)[1].split(" |", 1)[0]
+    for words in ("`rerun due`", "`culprit #N`", "`candidates #A #B`", "`repair open: #R`", "`asked in #Q`"):
+        assert words in row, words
+    assert "`green again, close #Q`" in row
+    assert "Give the user the row's fix" in row
+    assert "[ci-failures.md](../github-pr-triage/references/ci-failures.md)" in row
+    agent = watch.split("| by its reading | BASE_RED | ", 1)[1].split(" |", 1)[0]
+    assert "Never under `observe`" in agent
