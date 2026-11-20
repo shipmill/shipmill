@@ -1,6 +1,6 @@
 # S-079: A merge that turns the default branch red is backed out without a person
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -253,3 +253,20 @@ and `tests/test_base_red.py`, `tests/test_revert.py`.
 - shipmill/shipmill#1296: S-079-14
 
 ## Verification
+
+Checked on main at 131fd4ba plus #1296's branch, with the tests `specs.py coverage --spec 079` lists for each criterion passing (990 tests in the seven test files).
+
+- S-079-1: read `src/shipmill/autonomy.py`'s `revert` key, and ran `shipmill autonomy` in this repo's checkout, which prints `revert observe observe default` for a config without the key; `tests/test_autonomy.py` and `tests/test_setup_state.py` cover the three levels, the exit 2 on another value, and `propose` under a hold, all passing
+- S-079-2: ran `base_red.py shipmill/shipmill --bot-login shipmill-app[bot]` against GitHub, which printed `GREEN main@131fd4b`; `tests/test_base_red.py`'s S-079-2 tests cover a queued, running, cancelled, skipped, neutral, or stale check as not red and `RERUN_DUE` with its `rerun:` line, passing
+- S-079-3: read `base_red.py`'s `blame` and `walk` (last green, first red, unjudged commits between, oldest first, NO_GREEN when no green within `--limit`); its S-079-3 tests pass
+- S-079-4: read `Candidate.line` and `judge_candidate`, which print `revertable`, `not revertable: no pull request`, `merged by a person`, `released in <tag>`, and `unjudged, rerun: <run URL>`; its S-079-4 tests pass
+- S-079-5: ran `base_red.py ... --json`, which printed one object with `state`, `branch`, `sha`, `failed`, `pending`, `rerun`, `candidates`, `repair`, and `asked`, and `--limit 1`, which exited 2 with `--limit is at least 2, got 1` and nothing on stdout; its S-079-5 tests cover `repair:`, `asked:`, a failed read, and an unknown branch, passing
+- S-079-6: read `watch_state.py`'s `base_row`, which builds every non-GREEN row with a fix and `green again, close #Q`, an agent's row only at propose or act with neither a repair nor a question (PENDING, a running rerun, never); ran `watch_state.py shipmill/shipmill --tier 2 --json` on this repo (observe, green), which printed no row; `tests/test_base_red_row.py`'s S-079-6 tests pass
+- S-079-7: read `TIERS` in `watch_state.py` and `src/shipmill/walk.py`, BASE_RED first in tier 2, and `change_query` reading the default head's rollup; its S-079-7 tests, a check failing on an unchanged head walking the tiers included, pass
+- S-079-8: ran `shipmill revert open 1 --run <URL>` in this repo's checkout under `observe`, which exited 2 with `Nothing was written`; `tests/test_revert.py`'s S-079-8 tests cover the App, the run, an unmerged, person-merged, or tagged pull request, and an open repair, passing
+- S-079-9: read `revert.py`'s `_reverts`, which builds one revert commit per pull request, newest first, from git objects, and raises naming the conflicting files; its S-079-9 tests pass
+- S-079-10: read `revert.py`'s title, body, label, and plan (`plan_problems` checked before the push); its S-079-10 tests pass
+- S-079-11: read `revert.py`'s reopen step and `MARKER`, the one `triage_state.py` reads; its S-079-11 tests pass
+- S-079-12: read `pr_gate.py`'s revert verdict, BLOCKED with `revert: [autonomy] revert is propose; a person merges it` below `act`; `tests/test_pr_gate.py`'s S-079-12 tests, UNREVIEWED and the `ask` zone at `act` included, pass
+- S-079-13: read `triage_state.py`'s `REVERTED_MARKER` handling, counting only the `--bot-login`'s comment; `tests/test_triage_state.py`'s S-079-13 tests pass
+- S-079-14: read `skills/github-pr-triage/references/ci-failures.md`'s "The watch's BASE_RED row", which holds the four steps keyed to the lines `base_red.py` prints and the usage `shipmill revert open --help` prints, and `skills/github-ship-watch/SKILL.md`'s BASE_RED row and its fix, which match `watch_state.py`'s `base_row`; `tests/test_base_red.py`'s S-079-14 tests pass
