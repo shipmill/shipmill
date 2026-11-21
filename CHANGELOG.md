@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.157.0] - 2026-11-21
+
+### Added
+
+- `docs/release-lanes.md` documents comparing a deploy's answers: the `[[environments.<name>.probes]]` table and its limits, the deploy job's `environment: { name, url }` that GitHub Actions records as `environment_url`, the `Changes answers:` line, the three `shipmill compare:` statuses, and that an unexplained difference opens an incident at once and rolls back under `[autonomy] rollback`; `shipmill operate --dry-run` is tested to report the compare outcome it would write (`would mark`, `would open an incident`, the rollback) while writing nothing, and github-issue-resolve tells an implementer to add `Changes answers: <probe names>` to a pull request that alters an answer a declared probe covers (spec 084) (#1437)
+
 ## [0.156.0] - 2026-11-21
 
 ### Added
@@ -2838,7 +2844,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.156.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.157.0...HEAD
+[0.157.0]: https://github.com/shipmill/shipmill/compare/v0.156.0...v0.157.0
 [0.156.0]: https://github.com/shipmill/shipmill/compare/v0.155.0...v0.156.0
 [0.155.0]: https://github.com/shipmill/shipmill/compare/v0.154.1...v0.155.0
 [0.154.1]: https://github.com/shipmill/shipmill/compare/v0.154.0...v0.154.1
