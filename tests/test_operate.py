@@ -3,6 +3,7 @@ unbroken bake, a missed lane deploy, autonomy and the hold, --approve, and the o
 rollback and incidents (#31)"""
 
 import datetime as dt
+import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -15,9 +16,12 @@ from shipmill.autonomy import HOLD_LABEL
 from shipmill.cli import main
 from shipmill.doctor import OPERATE_CALLER, doctor
 from shipmill.errors import ReleaseError
-from shipmill.github import PROPOSAL_LABEL, Deployment, DeploymentState, Issue
+from shipmill.github import PROPOSAL_LABEL, Deployment, DeploymentState, DeploymentStatus, GhCli, Issue, address
 from shipmill.init import BOT_REF, BOT_REPO, init_operate, operate_caller_text
 from shipmill.operate import (
+    BODY_LIMIT,
+    COMPARE_PREFIX,
+    PROBE_BODY_LIMIT,
     STATUS_PREFIX,
     HttpResponse,
     Report,
@@ -62,10 +66,15 @@ class FakeHttp:
 
     answers: dict[str, HttpResponse | Unreachable] = field(default_factory=dict)
     asked: list[tuple[str, float]] = field(default_factory=list)
+    limits: dict[str, int] = field(default_factory=dict)  # the bytes each URL's last read was capped at
+    # answers given in turn before the one in `answers`, by URL: a release that answers differently each time
+    turns: dict[str, list[HttpResponse | Unreachable]] = field(default_factory=dict)
 
-    def get(self, url: str, timeout: float) -> HttpResponse:
+    def get(self, url: str, timeout: float, limit: int = BODY_LIMIT) -> HttpResponse:
         self.asked.append((url, timeout))
-        answer = self.answers[url]
+        self.limits[url] = limit
+        queued = self.turns.get(url)
+        answer = queued.pop(0) if queued else self.answers[url]
         if isinstance(answer, Unreachable):
             raise answer
         return answer
@@ -846,3 +855,297 @@ def test_a_deployed_proposal_is_closed_when_found_by_its_label_past_the_scan(set
     repo.github.deploy("production", "v1.1.0rc1", minutes(62), S.IN_PROGRESS, S.SUCCESS)
     http.answer(PRODUCTION, '{"version": "v1.1.0rc1"}')
     assert run(repo, http, minutes(70))["production"].action.endswith(f"closed proposal #{number}: v1.1.0rc1 deployed")
+
+
+# -- compare (spec 084) ----------------------------------------------------------------------
+
+OLD = "https://v1-0-0rc1---staging.example.run.app"  # the previous release, still addressable
+NEW = "https://staging.example.com/"
+NEW_AT = NEW.rstrip("/")
+ITEMS = "/api/items?limit=100"
+PROBES = f"""
+[environments.staging]
+lane = "rc"
+workflow = "deploy.yml"
+health = "{STAGING}"
+
+[[environments.staging.probes]]
+name = "items"
+path = "{ITEMS}"
+ignore = ["/generated_at", "/items/*/updated_at"]
+
+[[environments.staging.probes]]
+name = "home"
+path = "/"
+
+[environments.production]
+from = "staging"
+workflow = "deploy.yml"
+bake_minutes = 60
+"""
+SAME = f"{COMPARE_PREFIX} same answers as v1.0.0rc1 on 2 probes"
+
+
+def items(stamp: str, count: int = 2, request: str = "r1") -> str:
+    found = [{"id": i, "updated_at": stamp} for i in range(count)]
+    return json.dumps({"generated_at": stamp, "request_id": request, "items": found})
+
+
+def located(repo: Repo, deployment: int, url: str) -> None:
+    """The deploy job's `environment: url`, as GitHub Actions records it on the success status"""
+    statuses = repo.github.statuses[deployment]
+    statuses[-1] = replace(statuses[-1], environment_url=url)
+
+
+def probes_asked(http: FakeHttp) -> list[str]:
+    return [url for url, _ in http.asked if url != STAGING]
+
+
+def compare_writes(repo: Repo) -> list[tuple[DeploymentState, str]]:
+    return [(state, text) for _, state, text in repo.github.status_writes if text.startswith(COMPARE_PREFIX)]
+
+
+@dataclass
+class Probed:
+    repo: Repo
+    http: FakeHttp
+    old: int  # the previous release's deployment
+    new: int  # the current one's
+
+
+@pytest.fixture
+def probed(repo: Repo) -> Probed:
+    """staging ran v1.0.0rc1 and runs v1.1.0rc1 since T0; both answer the probes alike, but
+    for the time stamps the probe ignores"""
+    repo.write(repo.policy_file, POLICY + PROBES)
+    tag(repo, "v1.1.0rc1", minutes(-5))
+    old = repo.github.deploy("staging", "v1.0.0rc1", T0 - dt.timedelta(days=2), S.IN_PROGRESS, S.SUCCESS)
+    new = repo.github.deploy("staging", "v1.1.0rc1", minutes(-1), S.IN_PROGRESS, S.SUCCESS)
+    located(repo, old, OLD)
+    located(repo, new, NEW)
+    http = FakeHttp()
+    http.answer(STAGING, '{"version": "1.1.0rc1"}')
+    http.answer(OLD + ITEMS, items("2026-10-03T00:00:00Z"))
+    http.answer(OLD + "/", "<h1>Home</h1>")
+    http.answer(NEW_AT + ITEMS, items("2026-10-05T00:00:00Z"))
+    http.answer(NEW_AT + "/", "<h1>Home</h1>")
+    return Probed(repo, http, old, new)
+
+
+def test_s084_1_an_environment_without_probes_sends_only_its_health_check(setup: tuple[Repo, FakeHttp]) -> None:
+    repo, http = setup
+    found = run(repo, http, minutes(10))
+    assert sorted({url for url, _ in http.asked}) == [PRODUCTION, STAGING]
+    assert not any("compare" in r.action for r in found.values())
+    assert compare_writes(repo) == []
+
+
+def test_s084_2_a_deployment_status_carries_its_environment_url(tmp_path: Path) -> None:
+    statuses = [
+        {"id": 1, "state": "in_progress", "created_at": "2026-10-05T00:00:00Z", "description": ""},
+        {"id": 2, "state": "success", "created_at": "2026-10-05T00:01:00Z", "description": "", "environment_url": NEW},
+        {"id": 3, "state": "success", "created_at": "2026-10-05T00:02:00Z", "description": SAME, "environment_url": ""},
+    ]
+    (tmp_path / "statuses.json").write_text(json.dumps(statuses), encoding="utf-8")
+    script = tmp_path / "gh"
+    script.write_text(f"#!/bin/sh\ncat {tmp_path / 'statuses.json'}\n", encoding="utf-8")
+    script.chmod(0o755)
+    found = GhCli(tmp_path, gh=str(script)).deployment_statuses(1000)
+    assert [s.environment_url for s in found] == ["", NEW, ""]
+    assert address(found) == NEW  # the newest non-empty one
+    assert address(found[:1]) is None
+
+
+@pytest.mark.parametrize("which", ["new", "old"])
+def test_s084_2_a_release_without_an_address_is_not_compared(probed: Probed, which: str) -> None:
+    repo, http = probed.repo, probed.http
+    located(repo, probed.new if which == "new" else probed.old, "")
+    missing = "v1.1.0rc1" if which == "new" else "v1.0.0rc1"
+    for at in (0, 10):  # the next run tries again
+        found = run(repo, http, minutes(at))
+        assert f"not compared: {missing} has no environment_url" in found["staging"].action
+    assert probes_asked(http) == [] and compare_writes(repo) == [] and repo.github.issues == {}
+
+
+def test_s084_2_a_previous_release_answering_no_probe_is_unreachable(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.answers[OLD + ITEMS] = Unreachable("connection refused")
+    http.answers[OLD + "/"] = Unreachable("connection refused")
+    found = run(repo, http, minutes(0))
+    assert f"not compared: v1.0.0rc1 at {OLD} unreachable" in found["staging"].action
+    assert compare_writes(repo) == [] and repo.github.issues == {}
+    asked = len(probes_asked(http))
+    run(repo, http, minutes(10))  # the next run tries again
+    assert len(probes_asked(http)) == 2 * asked
+
+
+def test_s084_3_each_probe_is_a_get_twice_to_the_previous_release_and_once_to_the_new(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    found = run(repo, http, minutes(0))
+    assert "compared with v1.0.0rc1: same on 2 probes" in found["staging"].action
+    assert probes_asked(http) == [OLD + ITEMS, OLD + ITEMS, NEW_AT + ITEMS, OLD + "/", OLD + "/", NEW_AT + "/"]
+    # through the Http protocol, which sends no body and no credential: a URL, a timeout, a read cap
+    assert {timeout for _, timeout in http.asked} == {10.0}
+    assert {http.limits[url] for url in probes_asked(http)} == {PROBE_BODY_LIMIT} == {1024 * 1024}
+    assert http.limits[STAGING] == BODY_LIMIT  # the health check reads as before
+
+
+def test_s084_3_json_noise_of_the_previous_release_is_removed(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.turns[OLD + ITEMS] = [HttpResponse(200, items("2026-10-03T00:00:00Z", request="r1"), 0.1)]
+    http.answer(OLD + ITEMS, items("2026-10-03T00:00:00Z", request="r2"))  # a request id: noise
+    http.answer(NEW_AT + ITEMS, items("2026-10-05T00:00:00Z", request="r3"))
+    found = run(repo, http, minutes(0))
+    assert "same on 2 probes" in found["staging"].action
+    assert compare_writes(repo) == [(S.SUCCESS, SAME)]
+
+
+def test_s084_3_a_non_json_probe_whose_previous_answers_differ_is_unstable(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.turns[OLD + "/"] = [HttpResponse(200, "<h1>Home</h1><!-- 1 -->", 0.1)]
+    found = run(repo, http, minutes(0))
+    assert "compared with v1.0.0rc1: same on 1 probes (unstable: home)" in found["staging"].action
+    assert compare_writes(repo) == [(S.SUCCESS, f"{COMPARE_PREFIX} same answers as v1.0.0rc1 on 1 probes")]
+
+
+def test_no_steady_probe_writes_nothing_and_the_next_run_tries_again(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.turns[OLD + "/"] = [HttpResponse(200, "<h1>Home</h1><!-- 1 -->", 0.1)]
+    http.turns[OLD + ITEMS] = [HttpResponse(500, "", 0.1)]  # the previous release's statuses differ
+    found = run(repo, http, minutes(0))
+    assert "not compared: no probe answered steadily on v1.0.0rc1 (unstable: items, home)" in found["staging"].action
+    assert compare_writes(repo) == []
+    assert "same on 2 probes" in run(repo, http, minutes(10))["staging"].action
+
+
+def test_s084_3_non_json_answers_read_the_same_only_when_identical(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.answer(NEW_AT + "/", "<h1>Home </h1>")
+    found = run(repo, http, minutes(0))
+    assert "compared with v1.0.0rc1: differs on home" in found["staging"].action
+    assert compare_writes(repo) == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "differs"),
+    [
+        (items("2026-10-05T00:00:00Z", count=1), True),  # half the items
+        (items("2026-10-05T00:00:00Z").replace('"id"', '"key"'), True),  # a field gone
+        (items("2026-10-05T00:00:00Z", request="r9"), True),  # the previous release's two answers agreed on it
+        ("not json", True),
+        (items("2026-10-06T00:00:00Z"), False),  # differs only at the ignore pointers
+    ],
+)
+def test_s084_3_json_answers_differ_beyond_the_ignore_pointers(probed: Probed, answer: str, differs: bool) -> None:
+    repo, http = probed.repo, probed.http
+    http.answer(NEW_AT + ITEMS, answer)
+    found = run(repo, http, minutes(0))["staging"].action
+    assert ("differs on items" in found) is differs
+    assert compare_writes(repo) == ([] if differs else [(S.SUCCESS, SAME)])
+
+
+def test_s084_3_a_status_that_differs_is_a_difference(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.answer(NEW_AT + ITEMS, "", status=404)
+    assert "differs on items" in run(repo, http, minutes(0))["staging"].action
+
+
+def test_s084_4_a_difference_is_sent_again_and_counts_only_when_it_holds(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.turns[NEW_AT + ITEMS] = [HttpResponse(200, items("2026-10-05T00:00:00Z", count=1), 0.1)]  # once
+    found = run(repo, http, minutes(0))
+    assert "compared with v1.0.0rc1: same on 2 probes" in found["staging"].action
+    assert probes_asked(http)[:5] == [OLD + ITEMS, OLD + ITEMS, NEW_AT + ITEMS, OLD + ITEMS, NEW_AT + ITEMS]
+    assert compare_writes(repo) == [(S.SUCCESS, SAME)]
+
+
+def test_s084_4_a_difference_that_holds_writes_nothing_yet(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.answer(NEW_AT + ITEMS, items("2026-10-05T00:00:00Z", count=1))
+    found = run(repo, http, minutes(0))
+    assert "compared with v1.0.0rc1: differs on items" in found["staging"].action
+    assert compare_writes(repo) == [] and repo.github.issues == {}
+    assert probes_asked(http).count(OLD + ITEMS) == 3
+
+
+def test_s084_4_no_answer_from_the_new_release_is_a_difference(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.answers[NEW_AT + "/"] = Unreachable("timed out")
+    found = run(repo, http, minutes(0))
+    assert "compared with v1.0.0rc1: differs on home" in found["staging"].action
+
+
+def test_s084_4_no_answer_from_the_previous_release_leaves_a_probe_unchecked(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.answers[OLD + "/"] = Unreachable("timed out")
+    found = run(repo, http, minutes(0))
+    assert "compared with v1.0.0rc1: same on 1 probes (unchecked: home)" in found["staging"].action
+
+
+def test_s084_5_same_answers_write_one_success_status_and_are_not_compared_again(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    found = run(repo, http, minutes(0))
+    assert "; compared with v1.0.0rc1: same on 2 probes, marked success;" in found["staging"].action
+    assert compare_writes(repo) == [(S.SUCCESS, SAME)]
+    assert [d for d, _, text in repo.github.status_writes if text == SAME] == [probed.new]
+    asked = len(probes_asked(http))
+    for at in (10, 20):
+        found = run(repo, http, minutes(at))
+        assert "compare" not in found["staging"].action
+    assert len(probes_asked(http)) == asked and len(compare_writes(repo)) == 1
+
+
+def test_a_compare_status_is_not_a_health_status(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    run(repo, http, minutes(0))  # baking for production: in_progress, then the compare's success
+    run(repo, http, minutes(10))
+    staging = [(s, t) for d, s, t in repo.github.status_writes if d == probed.new]
+    assert staging == [(S.IN_PROGRESS, f"{STATUS_PREFIX}: baking for 60 min"), (S.SUCCESS, SAME)]  # no second
+    http.answer(STAGING, "", status=500)
+    assert "1 of 3 failed checks" in run(repo, http, minutes(20))["staging"].health
+    assert "2 of 3 failed checks" in run(repo, http, minutes(30))["staging"].health
+    http.answer(STAGING, '{"version": "1.1.0rc1"}')
+    found = run(repo, http, minutes(40))  # the bake restarts at the recovery, not at the compare
+    assert "baking 0 of 60 min" in found["staging"].health
+
+
+def test_a_dry_run_compares_and_writes_nothing(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    found = run(repo, http, minutes(0), dry_run=True)
+    assert "compared with v1.0.0rc1: same on 2 probes, would mark success" in found["staging"].action
+    assert repo.github.status_writes == []
+
+
+def test_s084_11_a_rollback_is_not_compared_with_the_release_it_replaced(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    back = repo.github.deploy("staging", "v1.0.0rc1", minutes(5), S.IN_PROGRESS, S.SUCCESS)
+    located(repo, back, OLD)
+    http.answer(STAGING, '{"version": "1.0.0rc1"}')
+    found = run(repo, http, minutes(10))
+    assert "compare" not in found["staging"].action
+    assert probes_asked(http) == [] and compare_writes(repo) == []
+
+
+def test_s084_11_a_deployment_compared_already_is_not_compared_again(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    repo.github.statuses[probed.new].append(
+        DeploymentStatus(99, S.SUCCESS, minutes(0), f"{COMPARE_PREFIX} answers differ from v1.0.0rc1 on items")
+    )
+    run(repo, http, minutes(10))
+    assert probes_asked(http) == [] and compare_writes(repo) == []
+
+
+def test_s084_11_a_failed_health_check_this_run_sends_no_probe(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.answer(STAGING, "", status=503)
+    found = run(repo, http, minutes(0))
+    assert found["staging"].health.startswith("unhealthy: HTTP 503")
+    assert probes_asked(http) == [] and compare_writes(repo) == []
+
+
+def test_without_health_a_deployment_is_compared_on_its_success(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    repo.write(repo.policy_file, repo.read(repo.policy_file).replace(f'health = "{STAGING}"\n', ""))
+    found = run(repo, http, minutes(0))
+    assert STAGING not in [url for url, _ in http.asked]
+    assert "same on 2 probes" in found["staging"].action

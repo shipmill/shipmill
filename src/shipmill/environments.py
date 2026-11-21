@@ -16,6 +16,45 @@ _MAX_BAKE = 7 * 24 * 60  # a week
 _ROLLBACK_AFTER = 3  # the default
 _INCIDENT_LABEL = "incident"  # the default
 _MAX_ROLLBACK_AFTER = 20  # failed checks in a row; at the 10-minute schedule, over three hours
+_MAX_PROBES = 20  # in one environment
+_PROBE_NAME = re.compile(r"[A-Za-z0-9._-]+")
+_PROBE_PATH = re.compile(r"/\S*")
+_WILDCARD = "*"
+
+
+@dataclass(frozen=True, slots=True)
+class Pointer:
+    """A JSON pointer an `ignore` names (RFC 6901, `~0` for `~` and `~1` for `/`), whose `*`
+    segment matches any one segment"""
+
+    text: str
+    segments: tuple[str, ...]
+
+    @classmethod
+    def parse(cls, text: str) -> Pointer:
+        """Raises ValueError for a pointer that doesn't start with `/` or holds a bad escape"""
+        if not text.startswith("/"):
+            raise ValueError("a JSON pointer starts with '/'")
+        segments = text[1:].split("/")
+        for segment in segments:
+            if re.search(r"~(?![01])", segment):
+                raise ValueError("'~' in a JSON pointer is '~0' or '~1'")
+        return cls(text, tuple(s.replace("~1", "/").replace("~0", "~") for s in segments))
+
+    def matches(self, path: tuple[str, ...]) -> bool:
+        return len(path) == len(self.segments) and all(
+            want in (_WILDCARD, have) for want, have in zip(self.segments, path, strict=True)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Probe:
+    """A request `shipmill operate` sends to the new and the previous release, to compare
+    their answers (spec 084): a GET of the release's address with `path` appended"""
+
+    name: str
+    path: str  # starts with '/'; may hold a query
+    ignore: tuple[Pointer, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +65,7 @@ class Environment:
     source: str | None  # `from`: the environment this one is promoted from; None when it takes a lane
     health: str | None  # a URL that answers while the environment is healthy
     bake_minutes: int  # with `from`: how long the source must stay healthy before promotion
+    probes: tuple[Probe, ...] = ()  # compared after a deploy; none: health alone, as before
 
     @property
     def inputs(self) -> Mapping[str, str]:
@@ -68,7 +108,7 @@ def deployed_from(environments: Mapping[str, Environment], lane: Lane) -> tuple[
 def _environment(name: str, t: Table, lanes: Mapping[Lane, object]) -> Environment:
     if not _NAME.fullmatch(name):
         raise ReleaseError(f"{t.where}: an environment name is letters, digits, '.', '_', and '-'")
-    t.allow("lane", "from", "workflow", "health", "bake_minutes")
+    t.allow("lane", "from", "workflow", "health", "bake_minutes", "probes")
     lane_text = t.string("lane", default="")
     source = t.string("from", default="")
     if bool(lane_text) == bool(source):
@@ -90,7 +130,33 @@ def _environment(name: str, t: Table, lanes: Mapping[Lane, object]) -> Environme
     bake = t.integer("bake_minutes", default=None, low=0, high=_MAX_BAKE)
     if bake is not None and lane is not None:
         raise ReleaseError(f"{t.where}: bake_minutes applies to an environment promoted with from, not lane")
-    return Environment(name, workflow, lane, source or None, health or None, bake or 0)
+    return Environment(name, workflow, lane, source or None, health or None, bake or 0, _probes(t))
+
+
+def _probes(t: Table) -> tuple[Probe, ...]:
+    """The [[environments.<name>.probes]] tables, in order"""
+    tables = t.tables("probes")
+    if len(tables) > _MAX_PROBES:
+        raise ReleaseError(f"{t.where}: probes holds {len(tables)} tables; at most {_MAX_PROBES}")
+    found: dict[str, Probe] = {}
+    for p in tables:
+        p.allow("name", "path", "ignore")
+        name = p.string("name")
+        if not _PROBE_NAME.fullmatch(name):
+            raise ReleaseError(f"{p.where}: name is letters, digits, '.', '_', and '-', got {name!r}")
+        if name in found:
+            raise ReleaseError(f"{p.where}: name {name!r} names another probe of this environment")
+        path = p.string("path")
+        if not _PROBE_PATH.fullmatch(path):
+            raise ReleaseError(f"{p.where}: path starts with '/' and holds no whitespace, got {path!r}")
+        ignore = []
+        for text in p.strings("ignore", default=()):
+            try:
+                ignore.append(Pointer.parse(text))
+            except ValueError as exc:
+                raise ReleaseError(f"{p.where}: ignore holds {text!r}: {exc}") from None
+        found[name] = Probe(name, path, tuple(ignore))
+    return tuple(found.values())
 
 
 def _chain(env: Environment, found: Mapping[str, Environment], where: str) -> None:
