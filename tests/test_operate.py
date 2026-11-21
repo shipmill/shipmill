@@ -39,6 +39,7 @@ from shipmill.operate import (
     operate,
     probe,
     shown_url,
+    summary,
     tag_of,
 )
 from shipmill.planner import Decision, Event, Planner
@@ -1423,3 +1424,95 @@ def test_a_dry_run_of_a_difference_writes_nothing(probed: Probed) -> None:
         in found["staging"].action
     )
     assert repo.github.status_writes == [] and repo.github.issues == {} and repo.github.dispatched == []
+
+
+def written(repo: Repo) -> tuple[object, ...]:
+    """Every write the fake records: statuses, issues, comments, edits, labels, closes, dispatches"""
+    gh = repo.github
+    return (
+        list(gh.status_writes),
+        dict(gh.issues),
+        {n: list(c) for n, c in gh.comments.items()},
+        gh.edits,
+        dict(gh.labels),
+        dict(gh.closed),
+        list(gh.dispatched),
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "action"),
+    [
+        ("same", "compared with v1.0.0rc1: same on 2 probes, would mark success"),
+        ("explained", "compared with v1.0.0rc1: differs on items, explained by #7, would mark success"),
+        (
+            "act",
+            "compared with v1.0.0rc1: differs on items, would mark failure; would open an incident;"
+            " would roll back: start deploy.yml with v1.0.0rc1",
+        ),
+        (
+            "propose",
+            "differs on items, would mark failure; would open an incident;"
+            " would roll back to v1.0.0rc1, but rollback autonomy is propose",
+        ),
+        (
+            "hold",
+            "differs on items, would mark failure; would open an incident;"
+            " would roll back to v1.0.0rc1, but held by shipmill-hold #7",
+        ),
+        (
+            "observe",
+            "differs on items, would mark failure; would open an incident;"
+            " would roll back to v1.0.0rc1, but rollback autonomy is observe",
+        ),
+        (
+            "open",
+            "differs on items, would mark failure; would comment on incident #100: answers differently;"
+            " would roll back: start deploy.yml with v1.0.0rc1",
+        ),
+    ],
+)
+def test_s084_12_a_dry_run_reports_the_outcome_it_would_write_and_writes_nothing(
+    probed: Probed, case: str, action: str
+) -> None:
+    repo, http = probed.repo, probed.http
+    if case in ("propose", "observe"):
+        rollback_autonomy(repo, case)
+    if case == "hold":
+        repo.github.holds = ["#7 Investigating"]
+    if case == "explained":
+        land(repo)
+        repo.github.bodies = {7: "Changes answers: items", 8: "Refactor"}
+    if case == "open":  # the tag's incident, healthy again: a compare failure comments on it
+        healthy = "<!-- shipmill:incident env=staging tag=v1.1.0rc1 to=v1.0.0rc1 state=healthy -->\nChecks failed."
+        repo.github.create_issue("Incident: staging fails its health checks on v1.1.0rc1", healthy, ("incident",))
+    if case != "same":
+        http.answer(NEW_AT + ITEMS, HALF)
+    before = written(repo)
+    found = run(repo, http, minutes(0), dry_run=True)
+    assert action in found["staging"].action
+    assert written(repo) == before  # no status, issue, comment, label, close, or workflow run
+    assert OLD + ITEMS in probes_asked(http)  # the probes are sent: reads are allowed
+    assert repo.github.body_reads == ([8, 7] if case == "explained" else [])
+    # the next run, for real, still compares: a dry run marked nothing
+    assert "compared with v1.0.0rc1" in run(repo, http, minutes(1))["staging"].action
+
+
+def test_s084_12_the_summary_names_the_compare_outcome_and_the_unstable_and_unchecked_probes(
+    probed: Probed,
+) -> None:
+    repo, http = probed.repo, probed.http
+    http.turns[OLD + "/"] = [HttpResponse(200, "<h1>Home</h1><!-- 1 -->", 0.1)]  # home: unstable
+    http.answer(NEW_AT + ITEMS, HALF)
+    repo.github.now = minutes(0)
+    shown = summary(operate(repo.policy, repo.git, repo.github, http, minutes(0), True), True)
+    assert shown.startswith("### shipmill operate (dry run)\n")
+    [row] = [line for line in shown.splitlines() if line.startswith("| staging |")]
+    assert "compared with v1.0.0rc1: differs on items (unstable: home), would mark failure" in row
+    for value in ("Home", "updated_at", "2026-10-05"):  # no answer's value in the summary
+        assert value not in shown
+    http.answers[OLD + "/"] = Unreachable("timed out")  # home: unchecked
+    http.answer(NEW_AT + ITEMS, items("2026-10-05T00:00:00Z"))
+    shown = summary(operate(repo.policy, repo.git, repo.github, http, minutes(0), True), True)
+    assert "compared with v1.0.0rc1: same on 1 probes (unchecked: home), would mark success" in shown
+    assert repo.github.status_writes == [] and repo.github.issues == {}

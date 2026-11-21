@@ -1,6 +1,6 @@
 # S-084: A deploy is verified against the previous release's answers
 
-status: approved
+status: built
 serves: G-2
 
 ## Problem
@@ -210,4 +210,25 @@ Touched areas: `src/shipmill/environments.py` (`[environments.<name>.probes]`),
 - shipmill/shipmill#1436: S-084-6, S-084-7, S-084-8, S-084-9, S-084-10
 - shipmill/shipmill#1437: S-084-12, S-084-13
 
+Built in #1449 (#1435), #1450 (#1436), and the pull request for #1437, which marks the spec
+built.
+
 ## Verification
+
+Checked on main at b6c53bba (0.156.0) plus #1437's pull request, by reading the code and running the
+tests named below (`tests/test_environments.py`, `tests/test_operate.py`,
+`tests/test_compare_docs.py`), all passing.
+
+- S-084-1: `environments._probes` reads `name`, `path`, `ignore`, refusing an unknown key, a duplicate name, a bad path or pointer, and a 21st table with the table named (`test_s084_1_probes_load_with_their_name_path_and_ignore_pointers`, `test_s084_1_a_malformed_probe_names_its_table_and_key`, `test_s084_1_a_21st_probe_is_refused`); an environment without probes asks only its health URLs and reports no compare text (`test_s084_1_an_environment_without_probes_sends_only_its_health_check`), holds
+- S-084-2: `GhCli.deployment_statuses` reads `environment_url` and `address()` takes the newest non-empty one (`test_s084_2_a_deployment_status_carries_its_environment_url`); a missing address and an unreachable previous release report `not compared`, write nothing, and are tried again (`test_s084_2_a_release_without_an_address_is_not_compared`, `test_s084_2_a_previous_release_answering_no_probe_is_unreachable`), holds
+- S-084-3: the probe order, timeout, and read cap through `Http` (`test_s084_3_each_probe_is_a_get_twice_to_the_previous_release_and_once_to_the_new`), noise and `ignore` removal (`test_s084_3_json_noise_of_the_previous_release_is_removed`, `test_s084_3_json_answers_differ_beyond_the_ignore_pointers`), text answers and `unstable` (`test_s084_3_non_json_answers_read_the_same_only_when_identical`, `test_s084_3_a_non_json_probe_whose_previous_answers_differ_is_unstable`), holds
+- S-084-4: a difference sent again and counted only when it holds, no answer from the new release a difference, none from the previous one `unchecked` (`test_s084_4_a_difference_is_sent_again_and_counts_only_when_it_holds`, `test_s084_4_no_answer_from_the_new_release_is_a_difference`, `test_s084_4_no_answer_from_the_previous_release_leaves_a_probe_unchecked`), holds
+- S-084-5: one `success` status and no probe on later runs (`test_s084_5_same_answers_write_one_success_status_and_are_not_compared_again`), holds
+- S-084-6: `gitrepo` reads first-parent subjects and `pull_body` the issues endpoint; an explained difference writes `success` and opens nothing, bodies are read only on a difference, and a failed read writes nothing (`test_s084_6_a_difference_a_pull_request_names_is_explained`, `test_s084_6_bodies_are_read_only_when_a_difference_holds`, `test_s084_6_a_failed_read_of_a_body_stops_the_run_writing_nothing`, `test_s084_6_a_pull_requests_body_is_read_through_the_issues_endpoint`), holds
+- S-084-7: one `failure` status outside the health history and the bake, promotion waiting, and no rollback to it (`test_s084_7_an_unexplained_difference_writes_one_failure_outside_health_and_promotion`, `test_s084_7_a_deployment_that_answers_differently_is_no_rollback_target`), holds
+- S-084-8: the incident opens at the first check with its title, `cause=compare`, and a body of names, paths, statuses, pointers, and lengths but no value; an old line parses as a health incident (`test_s084_8_an_unexplained_difference_opens_the_incident_at_once_quoting_no_value`, `test_s084_8_the_incident_names_both_statuses`, `test_s084_8_an_incident_line_without_a_cause_is_a_health_incident`), holds
+- S-084-9: the rollback under `act`, `propose`, the hold, and `observe`, and a comment on the tag's open incident (`test_s084_9_the_compare_rollback_follows_the_rollback_autonomy`, `test_s084_9_a_compare_failure_comments_on_the_tags_open_incident`), holds
+- S-084-10: no healthy comment while the bad tag runs, one once another tag passes (`test_s084_10_a_compare_incident_stays_open_on_the_bad_tag_and_heals_on_another`), holds for an environment with `health`; without `health` such an incident never reads healthy (#1451)
+- S-084-11: a rollback, a deployment compared already, and a failed check this run send no probe (`test_s084_11_a_rollback_is_not_compared_with_the_release_it_replaced`, `test_s084_11_a_deployment_compared_already_is_not_compared_again`, `test_s084_11_a_failed_health_check_this_run_sends_no_probe`), holds
+- S-084-12: a dry run of each outcome (same, explained, unexplained under `act`, `propose`, the hold, and `observe`, and an open incident) says `would mark`, `would open an incident` or `would comment`, and the rollback, while the fake records no status, issue, comment, edit, label, close, or dispatch (`test_s084_12_a_dry_run_reports_the_outcome_it_would_write_and_writes_nothing`); `summary()` names the outcome and the `unstable` and `unchecked` probes (`test_s084_12_the_summary_names_the_compare_outcome_and_the_unstable_and_unchecked_probes`), holds
+- S-084-13: `docs/release-lanes.md` (Environments; Operate) and `skills/github-issue-resolve/SKILL.md` hold the probes table, `environment: { name, url }`, the `Changes answers:` line, the incident and the rollback, matched against the code's status descriptions and incident title (`test_s084_13_release_lanes_documents_the_probes_and_the_environment_url`, `test_s084_13_release_lanes_says_what_a_difference_does`, `test_s084_13_the_resolve_skill_asks_for_a_changes_answers_line`), holds

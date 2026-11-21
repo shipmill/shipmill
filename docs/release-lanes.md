@@ -462,6 +462,43 @@ allowing only `main`, and rejects a run on `v1.2.0`. Add a tag rule `v*` under S
 Environments → `<environment>` → Deployment branches and tags, or run
 `gh api -X POST repos/<owner>/<repo>/environments/<environment>/deployment-branch-policies -f name='v*' -f type=tag`.
 
+**Probes.** An environment may declare probes: requests `shipmill operate` sends to the new
+release and to the release before it after a deploy, to compare their answers (spec 084,
+[Comparing answers](#operate-health-bake-promotion-and-rollback) below):
+
+```toml
+[[environments.production.probes]]
+name = "items"                       # letters, digits, '.', '_', '-'; unique in the environment
+path = "/api/items?limit=100"        # starts with '/', holds no whitespace; may hold a query
+ignore = ["/generated_at", "/items/*/updated_at"]   # JSON pointers; '*' matches any one segment
+```
+
+`name` and `path` are required, `ignore` defaults to none. An `ignore` pointer starts with
+`/` and writes `~` as `~0` and `/` as `~1` (RFC 6901). Any other key, a duplicate name, a
+path or pointer that breaks those rules, or more than 20 probes in one environment fails the
+config, naming the table. A probe is a `GET` with no body, cookie, or credential, the
+`User-Agent` `shipmill-operate`, a 10-second timeout, and its answer read up to 1 MiB, so
+declare only idempotent, public reads. An environment without probes compares nothing and
+gets no request beyond its health check.
+
+A probe goes to the address where each release answers, which the deploy job says by
+setting `environment: { name, url }`; GitHub Actions writes the `url` as the deployment
+status's `environment_url`:
+
+```yaml
+  deploy:
+    needs: ref
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.deploy.outputs.url }}   # where this release answers
+```
+
+A deployment's address is the newest non-empty `environment_url` among its statuses, and a
+probe's URL is that address with the probe's `path` appended. The platform keeps the
+previous release addressable at its own URL (a Cloud Run revision tag, a Vercel deployment
+URL); shipmill never redeploys it to compare.
+
 ### Operate: health, bake, promotion, and rollback
 
 With `from` or `health` in use, run `shipmill init --operate` (the CLI from `uv tool install
@@ -541,7 +578,65 @@ incident_label = "incident"       # the label of the incident issue, which holds
 - **An open incident holds releases**: the planner treats `incident_label` like
   `blocker_label`, for the lanes in `[gates] blocker_lanes`. Close it by hand, or let a
   hotfix pull request's "Fixes #N" close it, and releases flow again. A repository with no
-  `health` URL can't open one, so its plan doesn't read the label
+  `health` URL in any environment doesn't read the label, so a compare incident (below)
+  there doesn't hold releases
+
+**Comparing answers.** An environment with [probes](#environments) compares its current
+deployment with the previous release, the one a rollback would deploy, once: at the first
+run where it passes its health check (or, without `health`, once it reached `success`),
+while it carries no `shipmill compare:` status and the previous release's tag is lower, so a
+rollback is never compared with the release it replaced. Each probe goes twice to the
+previous release and once to the new one. Two answers are the same when their HTTP statuses
+match and, for JSON, their values match once the `ignore` pointers and every pointer where
+the previous release's two answers differ are removed; any other body must be the same
+text. A probe the previous release answers inconsistently is `unstable`, one it gives no
+HTTP answer is `unchecked`, and neither counts. A difference is sent once more to both and
+counts only when it holds; no HTTP answer from the new release is a difference.
+
+A difference a change meant to make is explained by a pull request merged between the two
+tags (a first-parent commit `<title> (#N)` or `Merge pull request #N`) whose body holds a
+line naming the probes it changes:
+
+```markdown
+Changes answers: items, orders
+```
+
+shipmill reads those bodies only when a difference holds, and a failed read stops the run
+with nothing written for that environment. The outcome is one status on the current
+deployment:
+
+| Outcome | State | Description |
+|---|---|---|
+| Every counted probe the same | `success` | `shipmill compare: same answers as <previous tag> on <n> probes` |
+| Every difference explained | `success` | `shipmill compare: differs from <previous tag> on <names>, explained by #N` |
+| A difference unexplained | `failure` | `shipmill compare: answers differ from <previous tag> on <names>` |
+
+A `shipmill compare:` status is no health check: it doesn't count among the failed checks in
+a row, and it doesn't restart a bake. An unexplained difference:
+
+- **Opens the incident at once**, without waiting for `rollback_after`: one per environment
+  and bad tag as above, titled `Incident: <env> answers differently on <tag> than <previous
+  tag>`, its hidden line holding `cause=compare`. It lists each differing probe's name, its
+  path without the query, both HTTP statuses, and at most ten JSON pointers that differ,
+  with an array's length on each side (`/items`: 100 vs 50 items); it quotes no value of
+  either answer. On a tag whose incident is open already, it comments there instead
+- **Rolls back** as a failed check does, under `rollback` in `[autonomy]` and the hold:
+  `act` starts the environment's workflow on the previous tag, `propose` (or `act` under a
+  `shipmill-hold` issue) has the incident say so for `approve-rollback`, `observe` only says
+  so
+- **Holds the deployment back**: an environment promoted `from` it reports `<source>
+  answers differently on <tag>` and waits, and a rollback never targets it. Its incident
+  isn't commented healthy while the bad tag still runs and passes its health check, only
+  once the environment runs another tag that passes
+
+The run summary's action names the outcome: `compared with <tag>: same on <n> probes`,
+`... differs on <names>, explained by #N`, `... differs on <names>`, or `not compared:
+<reason>` (`no previous release`, `<tag> has no environment_url`, `<tag>'s environment_url
+<url> is not an http(s) URL`, `<tag> at <address> unreachable`, `no probe answered steadily
+on <tag>`), with `(unstable: <names>)` and `(unchecked: <names>)` after it. A `not compared`
+writes no status and opens no incident, and the next run tries again. `--dry-run` sends the
+probes and says what it would write (`would mark` the status, `would open an incident`, the
+rollback it would start), writing nothing.
 
 The operate job needs `deployments: write` (statuses) and `actions: write` (deploys), and
 `issues: write` to open a proposal or an incident; `init --operate` grants them, and
