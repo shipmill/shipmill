@@ -7,6 +7,13 @@ bot.
 
 ## [Unreleased]
 
+## [0.157.1] - 2026-11-21
+
+### Fixed
+
+- `shipmill operate` comments a compare incident healthy again in an environment with probes and no `health`: once the environment's newest successful deployment runs a tag other than the one that answered differently, the incident reads healthy, where before it stayed open until a person closed it. A deployment still in progress ends nothing, and the incident's body says what ends it there (#1451)
+- A compare incident in a repository whose environments declare probes but no `health` URL now holds the lanes in `[gates] blocker_lanes` as a health incident does, and `shipmill doctor` wants the operate caller, with `issues: write`, and a deploy workflow that starts it once an environment declares probes; a repository with neither reads as before (#1453)
+
 ## [0.157.0] - 2026-11-21
 
 ### Added
@@ -2844,7 +2851,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.157.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.157.1...HEAD
+[0.157.1]: https://github.com/shipmill/shipmill/compare/v0.157.0...v0.157.1
 [0.157.0]: https://github.com/shipmill/shipmill/compare/v0.156.0...v0.157.0
 [0.156.0]: https://github.com/shipmill/shipmill/compare/v0.155.0...v0.156.0
 [0.155.0]: https://github.com/shipmill/shipmill/compare/v0.154.1...v0.155.0
