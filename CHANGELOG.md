@@ -7,6 +7,12 @@ bot.
 
 ## [Unreleased]
 
+## [0.156.0] - 2026-11-21
+
+### Added
+
+- A difference `shipmill operate`'s compare finds now counts: a `Changes answers: <probe>, <probe>` line in the body of a pull request merged between the two tags (named by its first-parent commit subject, read only when a difference holds) explains it with a `shipmill compare: differs from <tag> on <names>, explained by #N` success status; an unexplained one opens the environment's incident at once (`Incident: <env> answers differently on <tag> than <previous tag>`, naming each probe, its path without the query, both HTTP statuses, and at most ten differing JSON pointers, never a value), rolls back under `[autonomy] rollback` as a failed health check does, and writes a `failure` compare status that keeps the deployment from promotion and from being a rollback's target, while leaving the health count and the bake as they were; the incident reads healthy again only once another tag passes (spec 084) (#1436)
+
 ## [0.155.0] - 2026-11-21
 
 ### Added
@@ -2832,7 +2838,8 @@ bot.
   commit before tagging, then sync a stable release made off main back into main
 - `init` and `doctor` commands, and a setup skill for agents
 
-[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.155.0...HEAD
+[Unreleased]: https://github.com/shipmill/shipmill/compare/v0.156.0...HEAD
+[0.156.0]: https://github.com/shipmill/shipmill/compare/v0.155.0...v0.156.0
 [0.155.0]: https://github.com/shipmill/shipmill/compare/v0.154.1...v0.155.0
 [0.154.1]: https://github.com/shipmill/shipmill/compare/v0.154.0...v0.154.1
 [0.154.0]: https://github.com/shipmill/shipmill/compare/v0.153.0...v0.154.0
