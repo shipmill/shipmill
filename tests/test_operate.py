@@ -1415,6 +1415,36 @@ def test_s084_10_a_compare_incident_stays_open_on_the_bad_tag_and_heals_on_anoth
     assert len(repo.github.comments[number]) == 1
 
 
+def test_s084_10_without_health_a_compare_incident_heals_once_another_tag_succeeds(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    repo.write(repo.policy_file, repo.read(repo.policy_file).replace(f'health = "{STAGING}"\n', ""))
+    http.answer(NEW_AT + ITEMS, HALF)
+    run(repo, http, minutes(0))
+    issue = incident(repo)
+    number = issue.number
+    assert "state=rolled-back cause=compare" in issue.body
+    assert "runs a tag other than v1.1.0rc1 whose deployment reaches success" in issue.body
+    assert "healthy again" not in run(repo, http, minutes(10))["staging"].action  # the bad tag still runs
+    repo.github.deploy("staging", "v1.0.0rc1", minutes(15), S.IN_PROGRESS)  # the rollback, not yet done
+    assert "healthy again" not in run(repo, http, minutes(20))["staging"].action
+    assert number not in repo.github.comments and "state=rolled-back cause=compare" in incident(repo).body
+    back = repo.github.deploy("staging", "v1.0.0rc1", minutes(25), S.IN_PROGRESS, S.SUCCESS)
+    located(repo, back, OLD)
+    dry = run(repo, http, minutes(30), dry_run=True)
+    assert f"would comment on incident #{number}: healthy again" in dry["staging"].action
+    assert number not in repo.github.comments
+    found = run(repo, http, minutes(30))
+    assert repo.github.comments[number] == [
+        "staging is healthy again on v1.0.0rc1 (its deployment reached success; staging has no health check)."
+    ]
+    assert "state=healthy cause=compare" in incident(repo).body
+    assert f"comment on incident #{number}: healthy again" in found["staging"].action
+    assert STAGING not in [url for url, _ in http.asked]
+    run(repo, http, minutes(40))
+    assert len(repo.github.comments[number]) == 1
+    assert len(repo.github.issues) == 1  # no health incident opens without a health check
+
+
 def test_a_dry_run_of_a_difference_writes_nothing(probed: Probed) -> None:
     repo, http = probed.repo, probed.http
     http.answer(NEW_AT + ITEMS, HALF)
