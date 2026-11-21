@@ -6,6 +6,9 @@
   prepare         stamp a planned release into the checkout, optionally commit and push it
   land            push, tag, sync main, and publish a release commit that passed CI
   close-proposal  close the lane's proposal issue once land released it
+  close-milestone close the milestone titled a stable release once land released it, first moving
+                  its open issues to the lowest stable milestone above it, on a lane with
+                  close_milestone (spec 068); exits 1 naming the command of a write left undone
   cleanup         delete a release commit's work branch
   sync            bring a stable release made off main into main's CHANGELOG (recovery)
   notes           print a release's notes
@@ -374,7 +377,19 @@ from shipmill.gitrepo import REMOTE, Git
 from shipmill.handoff_close import hold_close, issue_close
 from shipmill.hooks import HookTest, run_hook, self_test
 from shipmill.init import RunsOn, init, init_caller, init_downstream, init_operate
-from shipmill.land import ActionsRun, AppPush, Prepared, Stop, Waiting, cleanup, land, mint_land, prepare, work_branch
+from shipmill.land import (
+    ActionsRun,
+    AppPush,
+    Prepared,
+    Stop,
+    Waiting,
+    cleanup,
+    close_milestone,
+    land,
+    mint_land,
+    prepare,
+    work_branch,
+)
 from shipmill.landing import ENVIRONMENT as LAND_ENVIRONMENT
 from shipmill.landing import GhRules, RulesReader
 from shipmill.launchd import (
@@ -541,6 +556,13 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     p = sub.add_parser("close-proposal", help="close the lane's proposal issue once land released it")
+    _release_args(p)
+
+    p = sub.add_parser(
+        "close-milestone",
+        help="close the milestone titled a stable release once land released it, moving its open issues"
+        " to the next milestone, on a lane with close_milestone (spec 068)",
+    )
     _release_args(p)
 
     p = sub.add_parser("cleanup", help="delete a release commit's work branch")
@@ -1569,6 +1591,18 @@ def main(
         )
     elif args.command == "close-proposal":
         print(close_released(policy, hub(), Lane(args.lane), args.version, run_url(os.environ)))
+    elif args.command == "close-milestone":
+        # land.yml's milestone job, after the land job; a pre-release or a lane without
+        # close_milestone calls GitHub for nothing, so it needs no `issues` grant (S-068-5)
+        rolled = close_milestone(policy, hub(), Lane(args.lane), args.version)
+        if rolled.said:
+            print(rolled.said)  # stdout is the Release run's summary (land.yml)
+        if rolled.failed:
+            # S-068-6: the land job pushed the tag and published the release; this job fails after them
+            problem = f"{args.version.tag} is released; {rolled.failed}"
+            print(problem)
+            print(f"shipmill: {problem}", file=sys.stderr)
+            return 1
     elif args.command == "cleanup":
         print("deleted the work branch" if cleanup(git, args.version) else "no work branch to delete")
     elif args.command == "sync":

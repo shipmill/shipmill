@@ -9,7 +9,8 @@ name: shipmill land
 # Whatever happened, the work branch is deleted: a failed release is planned again. Under
 # release = "propose", or for a stable lane that can hold a breaking change (spec 029), it
 # then closes the lane's proposal issue, and it proposes the config upgrades the repo hasn't
-# decided (spec 014).
+# decided (spec 014). A lane with close_milestone then closes the release's milestone, moving
+# its open issues to the next one (spec 068).
 #
 # With land-environment set (spec 054), the land job runs in that environment of the caller's
 # repository and reads its SHIPMILL_LAND_KEY secret, the private key of the App in [agents]
@@ -47,9 +48,9 @@ on:
         type: string
         default: ""
 
-# No workflow-level permissions: each job sets its own, except close-proposal and upgrade,
-# which take the caller's grant, so a caller that grants no `issues: write` still starts this
-# workflow
+# No workflow-level permissions: each job sets its own, except close-proposal, upgrade, and
+# milestone, which take the caller's grant, so a caller that grants no `issues: write` still
+# starts this workflow
 
 jobs:
   land:
@@ -186,3 +187,31 @@ jobs:
           TOOL: ${{ inputs.tool }}
         run: |
           uvx --from "$TOOL" shipmill upgrade --propose | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Spec 068: on a lane with close_milestone, after a stable release landed, closes the open
+  # milestone titled the version, first moving its open issues to the lowest stable milestone
+  # above it. It sets no permissions, so it runs with the caller's grant: the writes need
+  # `issues: write` on the caller's land job, which the land job's own permissions never give.
+  # For a pre-release or a lane without close_milestone it reads nothing from GitHub. No job
+  # needs it, so a failed write fails this job only, naming the command, after the release landed
+  milestone:
+    needs: land
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.13.7"
+
+      - name: Close the release's milestone
+        shell: bash # -eo pipefail: a failed write fails the step, though its output goes through tee
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TOOL: ${{ inputs.tool }}
+          LANE: ${{ inputs.lane }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          uvx --from "$TOOL" shipmill close-milestone --lane "$LANE" --version "$VERSION" | tee -a "$GITHUB_STEP_SUMMARY"

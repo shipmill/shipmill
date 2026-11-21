@@ -220,6 +220,21 @@ the same reasons; a milestone with any other open issue waits with no row. A wat
 reads both new rows: under "watch" it closes a released milestone once, as the App, and it
 never creates a missing one, which it reports with the create for the maintainer.
 
+A lane that also sets `close_milestone = true` closes the milestone itself (D-95). Once its
+stable release X is tagged and published, after the `after_publish` workflows (D-50), the
+`milestone` job of `land.yml` (`shipmill close-milestone`), which runs once the land job
+succeeded, closes the open milestone titled X when it has no open issues. With open issues it
+moves each to the open milestone titled the lowest stable version above X, then closes X;
+closed issues stay in X. With open issues and no such milestone it writes nothing, and X
+reads MILESTONE_OVERTAKEN as above. A pre-release, or no milestone titled X, reads and writes
+no milestone. The Release run's summary says `milestone 1.5.0 closed`, or
+`milestone 1.5.0 closed; #12, #14 moved to 1.6.0`. The `milestone` job sets no permissions,
+so it runs with the caller's grant, like `close-proposal`: the writes need `issues: write` on
+the caller's land job, which `shipmill doctor` warns about. A lane without the key calls
+GitHub for nothing there, so a caller without that grant keeps working. A write that fails
+fails the `milestone` job after the release, naming the `shipmill gh api` command that does
+it, and MILESTONE_RELEASED carries the close until then; the release and the other jobs stand.
+
 `[gates] veto_lanes`, empty by default, makes a lane wait for the veto window of each
 `notify` decision it would ship (spec 059), since a published version can only be yanked.
 **What a release ships** is read from GitHub alone: the merged pull requests whose merge
@@ -1207,6 +1222,7 @@ The workflows call these; you can run them locally too.
 | `prepare` | Stamp a planned release; `--commit`, `--push` |
 | `land` | Push, tag, sync main, and publish a release commit that passed CI |
 | `close-proposal` | Close the lane's proposal issue once its release landed, under `release = "propose"` or on a stable lane that can hold a breaking change |
+| `close-milestone` | Close the milestone titled a stable release once it landed, first moving its open issues to the next stable milestone, on a lane with `close_milestone`; exit 1 naming the command of a write left undone |
 | `cleanup` | Delete a release commit's work branch |
 | `sync` | Bring a stable release made off main into main, to recover a failed sync |
 | `notes` | Print a release's notes |

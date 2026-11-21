@@ -8,21 +8,21 @@ import datetime as dt
 import re
 import time
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from shipmill import fragments
+from shipmill import cli_command, fragments
 from shipmill.app import LAND_PERMISSIONS, Api, AuthFailure, Signer, mint
 from shipmill.environments import deployed_from
 from shipmill.errors import ReleaseError
-from shipmill.github import Forbidden, GitHub
+from shipmill.github import Forbidden, GitHub, OpenMilestone, close_milestone_args, set_milestone_args
 from shipmill.gitrepo import Git
 from shipmill.plugin import PYPI_PROJECT, Fetch
 from shipmill.policy import Lane, Policy, VersionFiles
 from shipmill.stamp import notes, stamp, sync
-from shipmill.version import Version
+from shipmill.version import PATTERN, Version
 
 WORK_PREFIX = "shipmill/"  # the branch a release commit waits on while CI runs
 # A branch named the prefix itself blocks every work branch: git can't hold both
@@ -211,6 +211,17 @@ def _refused(what: str, branch: str, error: str, app: AppPush | None) -> Release
 
 
 @dataclass(frozen=True, slots=True)
+class Rollover:
+    """What the release did to the milestone titled a stable release, under close_milestone
+    (spec 068): the Release run's summary line, empty when it read or wrote none worth saying;
+    and when a read or write failed, the problem with the command that does the write, else
+    empty. It runs in land.yml's milestone job, after the land job, so the release stands"""
+
+    said: str = ""
+    failed: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class Landed:
     tag: str
     placed: str  # where the release commit went: main, release/X.Y, or the tag alone
@@ -302,7 +313,112 @@ def land(
         for workflow in rule.after_publish:
             github.dispatch(workflow, policy.branch, version.tag)
             published.append(workflow)
+    # the milestone (spec 068) is land.yml's milestone job, after this one: its writes need the
+    # caller's `issues: write`, which the land job's own permissions don't grant
     return Landed(version.tag, placed, synced, tuple(published))
+
+
+def close_milestone(policy: Policy, github: GitHub, lane: Lane, version: Version) -> Rollover:
+    """Spec 068: after the land job released version, after its publish and the references it
+    moves (D-50), roll the milestone titled it when the lane sets close_milestone. A pre-release,
+    or a lane without the key, reads nothing from GitHub (S-068-5), so the job needs no
+    `issues` grant there"""
+    if not (policy.rule(lane).close_milestone and version.is_stable):
+        return Rollover()
+    return roll_milestone(github, version)
+
+
+def _writer() -> str:
+    """The command a failed milestone write names, as the App where it is set (D-14), in
+    cli_command()'s form, since the milestone job has no `shipmill` on PATH (#236)"""
+    return f"{cli_command()} gh"
+
+
+def _command(args: tuple[str, ...]) -> str:
+    return " ".join((_writer(), *args))
+
+
+def roll_milestone(github: GitHub, version: Version) -> Rollover:
+    """Spec 068, D-95: close the open milestone titled the stable version, first moving its
+    open issues to the open milestone titled the lowest stable version above it. With open
+    issues and no such milestone it writes nothing, and spec 022's overtaken rename applies
+    (S-022-10); with no open milestone titled the version it reads nothing more. Closed issues
+    stay where they are. A read or a write that fails is returned, never raised"""
+    title = str(version)
+    try:
+        found = github.open_milestones()
+    except ReleaseError as exc:
+        return Rollover(
+            failed=f"milestone {title}: reading the open milestones failed, so it was left as it is: {exc};"
+            f" `{cli_command()} milestones` names the milestone's fix once it reads"
+        )
+    own = next((m for m in found if m.title == title), None)
+    if own is None:
+        return Rollover()
+    close = _command(close_milestone_args(own.number))
+    if own.open_issues == 0:
+        return _close(github, own, close, ())
+    later = _next_milestone(found, version)
+    if later is None:
+        return Rollover(
+            f"milestone {title} left open: it has open issues, and no open milestone is titled a stable version"
+            " above it (spec 022 renames it once overtaken)"
+        )
+    try:
+        listed = github.milestone_issues(title)
+    except ReleaseError as exc:
+        return Rollover(
+            failed=f"milestone {title}: reading its issues failed, so none moved to {later.title} and it stays"
+            f" open: {exc}; for each open issue N of {title} run"
+            f" {_writer()} api -X PATCH repos/{{owner}}/{{repo}}/issues/N -F milestone={later.number}, then {close}"
+        )
+    moved: list[int] = []
+    for issue in listed.open:
+        try:
+            github.set_milestone(issue.number, later.number)
+        except ReleaseError as exc:
+            move = _command(set_milestone_args(issue.number, later.number))
+            return Rollover(
+                _moved(title, moved, later, closed=False),
+                f"milestone {title}: moving #{issue.number} to {later.title} failed, so {title} stays open: {exc};"
+                f" run {move}, the same for each open issue left in {title}, then {close}",
+            )
+        moved.append(issue.number)
+    return _close(github, own, close, tuple(moved), later)
+
+
+def _next_milestone(found: list[OpenMilestone], version: Version) -> OpenMilestone | None:
+    """The open milestone titled the lowest stable version above version, as str of the
+    version spells it; a title that is no stable version is ignored"""
+    above: list[tuple[Version, OpenMilestone]] = []
+    for m in found:
+        if not PATTERN.fullmatch(m.title):
+            continue
+        titled = Version.parse(m.title)
+        if titled.is_stable and str(titled) == m.title and titled > version:
+            above.append((titled, m))
+    return min(above, key=lambda pair: pair[0])[1] if above else None
+
+
+def _moved(title: str, moved: Sequence[int], later: OpenMilestone | None, closed: bool) -> str:
+    """`milestone X closed`, with `; #12, #14 moved to Y` when issues moved"""
+    said = f"milestone {title} closed" if closed else f"milestone {title} left open"
+    if moved and later is not None:
+        said += f"; {', '.join(f'#{n}' for n in moved)} moved to {later.title}"
+    return said
+
+
+def _close(
+    github: GitHub, own: OpenMilestone, close: str, moved: tuple[int, ...], later: OpenMilestone | None = None
+) -> Rollover:
+    try:
+        github.close_milestone(own.number)
+    except ReleaseError as exc:
+        return Rollover(
+            _moved(own.title, moved, later, closed=False) if moved else "",
+            f"milestone {own.title}: closing it failed: {exc}; run {close}",
+        )
+    return Rollover(_moved(own.title, moved, later, closed=True))
 
 
 PUBLISH_TIMEOUT = 30 * 60.0  # seconds land waits for the publish runs and PyPI, together (D-50)
