@@ -51,8 +51,12 @@ row, after the agents rows, the first that applies):
                    each as <app_id> (<where>): a key file ~/.config/shipmill/app-<app_id>.pem
                    (listed by name, never opened), and each sibling's app_id, the owner's
                    repos listed as the Product row lists them, one config read each (a 404
-                   or a config it can't read is skipped). An action (exit 1) with an [agents]
-                   section, informational without one. --fix leaves it
+                   or a config it can't parse is skipped). The reads are best effort: one
+                   that fails with anything but 404 (a 5xx, a rate limit, SAML) names the
+                   repo as `owner/name (unread: <reason>)` and the run goes on, its exit
+                   code set by the rows; a failed listing still exits 2 (#1375). An action
+                   (exit 1) with an [agents] section, informational without one. --fix
+                   leaves it
   [agents] identity other than "app", "host", or "none", or not a string, and "host" or
   "none" with app_id, exits 2
 
@@ -71,8 +75,9 @@ after the agents rows, the first that applies):
   are listed with the host's gh (/user/repos?affiliation=owner for the gh login's own
   account, /orgs/<owner>/repos for an organization, /users/<owner>/repos for another
   user), then each one's config is read, one call each. A 404 is no config, and so no
-  sibling; any other gh failure exits 2. A sibling config that can't be read is named in
-  the row's detail and skipped
+  sibling; for the Product row, any other gh failure exits 2 (S-043-6), while the Identity
+  row names that repo unread and goes on. A sibling config that can't be parsed is named
+  in the row's detail and skipped
 
 Skills (the home folder's user skills, which shadow the plugin's by name):
   SKILL_SHADOWED   a link or copy of a shipmill skill in ~/.claude/skills or ~/.agents/skills
@@ -523,15 +528,40 @@ RAW = "Accept: application/vnd.github.raw"
 STEP = "shipmill-setup's Product step"
 
 
-def gh_get(cmd: list[str]) -> str | None:
-    """A gh read: its output, or None when GitHub answers 404; any other failure exits 2"""
+class GhFailed(Exception):
+    """A gh read that failed with anything but 404: the whole command, and gh's own words"""
+
+    def __init__(self, cmd: list[str], stderr: str) -> None:
+        super().__init__(f"{' '.join(cmd)}: {stderr}")
+        self.reason = stderr.splitlines()[0][:120] if stderr else "gh failed with no message"
+
+
+def gh_try(cmd: list[str]) -> str | None:
+    """A gh read: its output, or None when GitHub answers 404; any other failure raises GhFailed"""
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode == 0:
         return proc.stdout
     if NOT_FOUND.search(proc.stderr):
         return None
-    sys.stderr.write(f"error: {' '.join(cmd)}: {proc.stderr.strip()}\n")  # the whole command names the repo read
-    raise SystemExit(2)
+    raise GhFailed(cmd, proc.stderr.strip())
+
+
+def gh_strict(gh: Callable[[list[str]], str | None]) -> Callable[[list[str]], str | None]:
+    """gh, with a GhFailed turned into exit 2, the whole command naming the repo read"""
+
+    def read(cmd: list[str]) -> str | None:
+        try:
+            return gh(cmd)
+        except GhFailed as failed:
+            sys.stderr.write(f"error: {failed}\n")
+            raise SystemExit(2) from None
+
+    return read
+
+
+def gh_get(cmd: list[str]) -> str | None:
+    """A gh read: its output, or None when GitHub answers 404; any other failure exits 2"""
+    return gh_strict(gh_try)(cmd)
 
 
 def gh_need(gh: Callable[[list[str]], str | None], cmd: list[str]) -> str:
@@ -689,19 +719,28 @@ def identity_of(repo_dir: Path, ws: ModuleType) -> Identity:
     return Identity(True, app_id, value)
 
 
-def known_apps(repo: str, home: Path, ws: ModuleType, gh: Callable[[list[str]], str | None]) -> dict[str, list[str]]:
+def known_apps(
+    repo: str, home: Path, ws: ModuleType, gh: Callable[[list[str]], str | None]
+) -> tuple[dict[str, list[str]], list[str]]:
     """The Apps the host already has, each id mapped to where it was found, in id order: a key
     file at ~/.config/shipmill/app-<app_id>.pem (listed by name, never opened), and the app_id
-    of each sibling's default-branch config, the owner's repos the Product row lists (spec 043)"""
+    of each sibling's default-branch config, the owner's repos the Product row lists (spec 043).
+    Then the repos whose config read failed with anything but 404, each as `owner/name (unread:
+    <reason>)`: the reads are best effort (#1375), while the owner's listing exits 2 on a failure"""
     found: dict[str, list[str]] = {}
+    unread: list[str] = []
     keys = home / KEYS
     if keys.is_dir():
         for name in sorted(path.name for path in keys.iterdir()):
             key = KEY_FILE.fullmatch(name)
             if key is not None:
                 found.setdefault(key.group(1), []).append(f"key at ~/{(KEYS / name).as_posix()}")
-    for name in owner_repos(repo, gh):
-        text = gh(["gh", "api", "-H", RAW, f"repos/{name}/contents/{CONFIG.as_posix()}"])
+    for name in owner_repos(repo, gh_strict(gh)):
+        try:
+            text = gh(["gh", "api", "-H", RAW, f"repos/{name}/contents/{CONFIG.as_posix()}"])
+        except GhFailed as failed:  # a 5xx, a rate limit, SAML: named, and the row goes on
+            unread.append(f"{name} (unread: {failed.reason})")
+            continue
         if text is None:  # no config, so no App there
             continue
         try:
@@ -710,29 +749,32 @@ def known_apps(repo: str, home: Path, ws: ModuleType, gh: Callable[[list[str]], 
             continue
         if app_id is not None and APP_ID.fullmatch(app_id) is not None:
             found.setdefault(app_id, []).append(name)
-    return {app_id: found[app_id] for app_id in sorted(found, key=int)}
+    return {app_id: found[app_id] for app_id in sorted(found, key=int)}, unread
 
 
 def identity_row(
-    repo: str, chosen: Identity, home: Path, ws: ModuleType, gh: Callable[[list[str]], str | None] = gh_get
+    repo: str, chosen: Identity, home: Path, ws: ModuleType, gh: Callable[[list[str]], str | None] = gh_try
 ) -> Row:
     """The Identity row (spec 082), the first that applies: IDENTITY_APP, IDENTITY_HOST,
-    IDENTITY_NONE, then IDENTITY_UNCHOSEN, which is a warning without an [agents] section"""
+    IDENTITY_NONE, then IDENTITY_UNCHOSEN, which is a warning without an [agents] section.
+    gh raises GhFailed on a failure other than 404, as gh_try does: a sibling's config read
+    that fails is named unread (#1375)"""
     if chosen.app_id is not None:
         return Row("IDENTITY_APP", f"agents write to GitHub as the App {chosen.app_id} ([agents] app_id)")
     if chosen.identity == "host":
         return Row("IDENTITY_HOST", '[agents] identity = "host": agents write to GitHub as the host\'s gh login')
     if chosen.identity == "none":
         return Row("IDENTITY_NONE", '[agents] identity = "none": agents don\'t write to GitHub here; a person posts')
-    apps = known_apps(repo, home, ws, gh)
+    apps, unread = known_apps(repo, home, ws, gh)
     named = (
         "; the host's Apps: " + ", ".join(f"{app_id} ({', '.join(where)})" for app_id, where in apps.items())
         if apps
         else "; the host has no App yet"
     )
+    skipped = f"; a sibling's app_id may be missing: {', '.join(unread)}" if unread else ""
     detail = (
         f"whom agents write to GitHub as isn't chosen in [agents] of {CONFIG}: {CHOICES};"
-        f" shipmill-setup asks once and records it{named}"
+        f" shipmill-setup asks once and records it{named}{skipped}"
     )
     return Row("IDENTITY_UNCHOSEN", detail, warning=not chosen.section)
 
