@@ -35,7 +35,12 @@ before by definition. It is still started once: a deployment of it after the bad
 run of the workflow on it since the checks began failing, means it was. Later runs comment
 on the incident instead of opening another: when the environment is healthy again, and
 when the rollback's tag fails its checks too, where shipmill stops rather than guess a
-second time. The planner holds the blocker lanes while an incident is open."""
+second time. The planner holds the blocker lanes while an incident is open.
+
+Compare (spec 084): an environment that declares probes has its current deployment's answers
+compared once with the previous release's, at its first passing check, each probe a GET of
+the address the deploy job's `environment: url` recorded. Every counted probe the same writes
+a `shipmill compare:` success status, which is not part of the health history."""
 
 import datetime as dt
 import http.client
@@ -52,9 +57,10 @@ from typing import Protocol
 
 from shipmill.autonomy import HOLD_LABEL, Autonomy, EnvironmentName, Hold, Stage
 from shipmill.doctor import OPERATE_CALLER
-from shipmill.environments import Environment
+from shipmill.environments import Environment, Pointer
+from shipmill.environments import Probe as DeclaredProbe
 from shipmill.errors import ReleaseError
-from shipmill.github import Deployment, DeploymentState, DeploymentStatus, GitHub, Issue, WorkflowRun
+from shipmill.github import Deployment, DeploymentState, DeploymentStatus, GitHub, Issue, WorkflowRun, address
 from shipmill.gitrepo import Tag
 from shipmill.policy import Lane, Policy
 from shipmill.propose import find_proposal, upsert
@@ -62,8 +68,10 @@ from shipmill.version import PATTERN, TAG_PREFIX, Version
 
 HEALTH_TIMEOUT = 10.0  # seconds
 MISSED_GRACE = dt.timedelta(minutes=30)  # land dispatches right after tagging; give that deploy time to show
-STATUS_PREFIX = "shipmill health"  # starts the description of every status shipmill writes
-_BODY_LIMIT = 64 * 1024
+STATUS_PREFIX = "shipmill health"  # starts the description of every health status shipmill writes
+COMPARE_PREFIX = "shipmill compare:"  # starts a compare status's (spec 084), which is not a health status
+BODY_LIMIT = 64 * 1024  # bytes of a health answer read
+PROBE_BODY_LIMIT = 1024 * 1024  # bytes of a probe's answer read
 _DESCRIPTION_LIMIT = 140  # GitHub's limit on a status description
 _EXCERPT_LIMIT = 300  # characters of a failing health body an incident quotes
 _SHA = re.compile(r"[0-9a-f]{40}")
@@ -84,22 +92,23 @@ class Unreachable(Exception):
 
 
 class Http(Protocol):
-    def get(self, url: str, timeout: float) -> HttpResponse:
-        """GET the URL; raises Unreachable when no HTTP answer comes back"""
+    def get(self, url: str, timeout: float, limit: int = BODY_LIMIT) -> HttpResponse:
+        """GET the URL with no body, cookie, or credential, reading up to limit bytes of the
+        answer; raises Unreachable when no HTTP answer comes back"""
         ...
 
 
 class UrllibHttp:
-    def get(self, url: str, timeout: float) -> HttpResponse:
+    def get(self, url: str, timeout: float, limit: int = BODY_LIMIT) -> HttpResponse:
         request = urllib.request.Request(url, headers={"User-Agent": "shipmill-operate"})
         start = time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=timeout) as answer:
-                body = answer.read(_BODY_LIMIT)
+                body = answer.read(limit)
                 status = int(answer.status)
         except urllib.error.HTTPError as exc:  # 4xx and 5xx: an answer, not a broken connection
             try:
-                body = exc.read(_BODY_LIMIT) if exc.fp is not None else b""
+                body = exc.read(limit) if exc.fp is not None else b""
             except OSError, http.client.HTTPException:  # the status is the answer; its body is a bonus
                 body = b""
             return HttpResponse(exc.code, body.decode(errors="replace"), time.monotonic() - start)
@@ -195,7 +204,13 @@ def tag_of(deployment: Deployment, tags: Sequence[Tag]) -> Version | None:
 
 
 def _ours(status: DeploymentStatus) -> bool:
+    """A health status shipmill wrote"""
     return status.description.startswith(STATUS_PREFIX)
+
+
+def _compared(status: DeploymentStatus) -> bool:
+    """A compare status shipmill wrote: not part of the health history"""
+    return status.description.startswith(COMPARE_PREFIX)
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,11 +264,12 @@ def observe(github: GitHub, http: Http, env: Environment, tags: Sequence[Tag], n
         # each failed check writes a failure status (up to rollback_after): the ones that end
         # the history are the checks failed in a row before this one, the first of them its start
         trailing = 0
-        for status in reversed(statuses):
+        health = [s for s in statuses if not _compared(s)]
+        for status in reversed(health):
             if not (_ours(status) and status.state is DeploymentState.FAILURE):
                 break
             trailing += 1
-        failing_since = statuses[-trailing].created_at if trailing else now
+        failing_since = health[-trailing].created_at if trailing else now
         failed_checks = trailing + 1
     return Observed(env, deployments, deployment, statuses, tag, checked, bake_start, failing_since, failed_checks)
 
@@ -322,10 +338,18 @@ def incident_title(env: str, tag: Version) -> str:
     return f"Incident: {env} fails its health checks on {tag.tag}"
 
 
-def _last_good(github: GitHub, seen: Observed, tags: Sequence[Tag]) -> Version | None:
-    """The tag of the newest deployment before the current one that reached success there,
-    on another tag, whose last health check (if shipmill wrote one) didn't fail"""
-    assert seen.current is not None and seen.tag is not None  # only a checked deployment rolls back
+@dataclass(frozen=True, slots=True)
+class Previous:
+    """The release before the current one in an environment: its tag and its statuses"""
+
+    tag: Version
+    statuses: tuple[DeploymentStatus, ...]  # oldest first
+
+
+def _previous(github: GitHub, seen: Observed, tags: Sequence[Tag]) -> Previous | None:
+    """The newest deployment before the current one that reached success there, on another
+    tag, whose last health check (if shipmill wrote one) didn't fail"""
+    assert seen.current is not None and seen.tag is not None  # only a checked deployment has one
     for deployment in seen.deployments:
         tag = tag_of(deployment, tags)
         if deployment.id >= seen.current.id or tag is None or tag == seen.tag:
@@ -336,8 +360,14 @@ def _last_good(github: GitHub, seen: Observed, tags: Sequence[Tag]) -> Version |
             continue
         if ours and ours[-1].state is DeploymentState.FAILURE:
             continue
-        return tag
+        return Previous(tag, tuple(sorted(statuses, key=lambda s: s.id)))
     return None
+
+
+def _last_good(github: GitHub, seen: Observed, tags: Sequence[Tag]) -> Version | None:
+    """The tag a rollback deploys: the previous release's"""
+    found = _previous(github, seen, tags)
+    return found.tag if found is not None else None
 
 
 def _rolled_back(github: GitHub, seen: Observed, to: Version) -> str | None:
@@ -506,6 +536,182 @@ def _incident(
     )
 
 
+# -- compare (spec 084) ----------------------------------------------------------------------
+
+
+class Verdict(StrEnum):
+    """What one probe found, comparing the new release's answer with the previous one's"""
+
+    SAME = "same"
+    DIFFERENT = "different"
+    UNSTABLE = "unstable"  # the previous release's own answers differ beyond what the compare removes
+    UNCHECKED = "unchecked"  # the previous release gave no HTTP answer
+
+
+type JsonPath = tuple[str, ...]  # a JSON pointer's segments, unescaped
+_NOT_JSON = object()
+_GONE = object()  # an array element removed from both sides, so the indices after it still line up
+_MAX_DEPTH = 64  # nesting deeper than this is compared as text
+
+
+def _json(body: str) -> object:
+    """The body's JSON value, or _NOT_JSON"""
+    try:
+        value: object = json.loads(body)
+    except ValueError, RecursionError:  # JSONDecodeError, or an integer past Python's digit limit
+        return _NOT_JSON
+    level = [value]
+    for _ in range(_MAX_DEPTH):
+        level = [v for x in level for v in (x.values() if isinstance(x, dict) else x if isinstance(x, list) else ())]
+        if not level:
+            return value
+    return _NOT_JSON
+
+
+def _differing(a: object, b: object, at: JsonPath, found: set[JsonPath]) -> None:
+    """Add each pointer at which two JSON values differ: a key one side lacks, an array whose
+    length differs, or a scalar of another type or value"""
+    if isinstance(a, dict) and isinstance(b, dict):
+        for key in sorted(a.keys() | b.keys()):
+            if key in a and key in b:
+                _differing(a[key], b[key], (*at, key), found)
+            else:
+                found.add((*at, key))
+    elif isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+        for i, (x, y) in enumerate(zip(a, b, strict=True)):
+            _differing(x, y, (*at, str(i)), found)
+    elif type(a) is not type(b) or a != b:
+        found.add(at)
+
+
+def _strip(value: object, ignore: Sequence[Pointer], noise: set[JsonPath], at: JsonPath) -> object:
+    """The value without what an ignore pointer or a noise pointer names"""
+
+    def gone(path: JsonPath) -> bool:
+        return path in noise or any(p.matches(path) for p in ignore)
+
+    if isinstance(value, dict):
+        return {k: _strip(v, ignore, noise, (*at, k)) for k, v in value.items() if not gone((*at, k))}
+    if isinstance(value, list):
+        return [_GONE if gone((*at, str(i))) else _strip(v, ignore, noise, (*at, str(i))) for i, v in enumerate(value)]
+    return value
+
+
+def _verdict(previous: Sequence[HttpResponse], new: HttpResponse | None, ignore: Sequence[Pointer]) -> Verdict:
+    """The new release's answer against the previous release's, the first of them the one
+    compared with, the others telling the previous release's own noise"""
+    reference = previous[0]
+    if any(p.status != reference.status for p in previous):
+        return Verdict.UNSTABLE
+    if new is None or new.status != reference.status:
+        return Verdict.DIFFERENT
+    parsed = [_json(p.body) for p in previous]
+    if all(v is not _NOT_JSON for v in parsed):
+        noise: set[JsonPath] = set()
+        for other in parsed[1:]:
+            _differing(parsed[0], other, (), noise)
+        if () in noise:  # the whole answer changes by itself
+            return Verdict.UNSTABLE
+        theirs = _json(new.body)
+        if theirs is _NOT_JSON:
+            return Verdict.DIFFERENT
+        found: set[JsonPath] = set()
+        _differing(_strip(parsed[0], ignore, noise, ()), _strip(theirs, ignore, noise, ()), (), found)
+        return Verdict.DIFFERENT if found else Verdict.SAME
+    if any(p.body != reference.body for p in previous):
+        return Verdict.UNSTABLE
+    return Verdict.SAME if new.body == reference.body else Verdict.DIFFERENT
+
+
+def _send(http: Http, url: str) -> HttpResponse | None:
+    """A probe's GET: None when no HTTP answer comes back"""
+    try:
+        return http.get(url, HEALTH_TIMEOUT, PROBE_BODY_LIMIT)
+    except Unreachable:
+        return None
+
+
+def _probe_url(address: str, probe: DeclaredProbe) -> str:
+    return address.rstrip("/") + probe.path
+
+
+def _compare_probe(http: Http, probe: DeclaredProbe, before: str, after: str) -> Verdict:
+    """Send the probe twice to the previous release's address and once to the new one's; a
+    difference is sent once more to both, and counts only when it holds"""
+    old, new = _probe_url(before, probe), _probe_url(after, probe)
+    first, second = _send(http, old), _send(http, old)
+    answer = _send(http, new)
+    if first is None or second is None:
+        return Verdict.UNCHECKED
+    verdict = _verdict((first, second), answer, probe.ignore)
+    if verdict is not Verdict.DIFFERENT:
+        return verdict
+    third = _send(http, old)
+    again = _send(http, new)
+    if third is None:
+        return Verdict.UNCHECKED
+    return _verdict((third, first, second), again, probe.ignore)
+
+
+def _compare_description(previous: Version, probes: int) -> str:
+    return f"{COMPARE_PREFIX} same answers as {previous.tag} on {probes} probes"[:_DESCRIPTION_LIMIT]
+
+
+def _web(address: str) -> bool:
+    return urllib.parse.urlsplit(address).scheme in ("http", "https")
+
+
+def _compare(github: GitHub, http: Http, seen: Observed, tags: Sequence[Tag], dry_run: bool) -> str | None:
+    """Compare the current deployment's answers with the previous release's, once per
+    deployment (spec 084); what it found, or None when this run doesn't compare"""
+    env = seen.env
+    if not env.probes or seen.current is None or seen.tag is None:
+        return None  # an environment without probes makes no request beyond its health check (D-63)
+    if env.health is not None and (seen.probe is None or not seen.probe.healthy):
+        return None
+    if any(_compared(s) for s in seen.statuses):
+        return None
+    previous = _previous(github, seen, tags)
+    if previous is None:
+        return "not compared: no previous release"
+    if previous.tag >= seen.tag:  # a rollback: never compared with the release it replaced
+        return None
+    addresses = []
+    for tag, statuses in ((seen.tag, seen.statuses), (previous.tag, previous.statuses)):
+        found = address(statuses)
+        if found is None:
+            return f"not compared: {tag.tag} has no environment_url"
+        if not _web(found):
+            return f"not compared: {tag.tag}'s environment_url {shown_url(found)} is not an http(s) URL"
+        addresses.append(found)
+    after, before = addresses
+    verdicts = {p.name: _compare_probe(http, p, before, after) for p in env.probes}
+
+    def named(verdict: Verdict) -> list[str]:
+        return [name for name, v in verdicts.items() if v is verdict]
+
+    unchecked, unstable = named(Verdict.UNCHECKED), named(Verdict.UNSTABLE)
+    if len(unchecked) == len(verdicts):
+        return f"not compared: {previous.tag.tag} at {shown_url(before)} unreachable"
+    notes = "".join(
+        f" ({label}: {', '.join(names)})"
+        for label, names in (("unstable", unstable), ("unchecked", unchecked))
+        if names
+    )
+    if differ := named(Verdict.DIFFERENT):
+        # a difference writes no status yet: explaining it and acting on it build on this (#1436)
+        return f"compared with {previous.tag.tag}: differs on {', '.join(differ)}{notes}"
+    same = named(Verdict.SAME)
+    if not same:
+        return f"not compared: no probe answered steadily on {previous.tag.tag}{notes}"
+    if not dry_run:
+        github.create_deployment_status(
+            seen.current.id, DeploymentState.SUCCESS, _compare_description(previous.tag, len(same))
+        )
+    mark = "would mark" if dry_run else "marked"
+    return f"compared with {previous.tag.tag}: same on {len(same)} probes{notes}, {mark} {DeploymentState.SUCCESS}"
+
+
 # -- one run ---------------------------------------------------------------------------------
 
 
@@ -567,7 +773,8 @@ def _status(seen: Observed, target: int, rollback_after: int, now: dt.datetime) 
         wanted = (DeploymentState.SUCCESS, f"{STATUS_PREFIX}: baked" if target else f"{STATUS_PREFIX}: healthy")
     else:
         wanted = (DeploymentState.IN_PROGRESS, f"{STATUS_PREFIX}: baking for {target} min")
-    if seen.statuses and seen.statuses[-1].state is wanted[0]:
+    health = [s for s in seen.statuses if not _compared(s)]
+    if health and health[-1].state is wanted[0]:
         return None
     return wanted[0], wanted[1][:_DESCRIPTION_LIMIT]
 
@@ -738,6 +945,9 @@ def operate(
             actions.append(f"{'would mark' if dry_run else 'marked'} {status[0]}")
         if incident is not None:
             actions.append(incident)
+        # after the health status: the compare follows a check this run passed
+        if (compared := _compare(github, http, seen, tags, dry_run)) is not None:
+            actions.append(compared)
         wanted = _wanted(seen, observed, tags, now)
         waits = False  # a deploy waits: its proposal is updated, not closed
         if isinstance(wanted, str):

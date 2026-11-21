@@ -396,6 +396,13 @@ class DeploymentStatus:
     state: DeploymentState
     created_at: dt.datetime
     description: str
+    environment_url: str = ""  # where the release answers, as the deploy job's `environment: url` set it
+
+
+def address(statuses: Sequence[DeploymentStatus]) -> str | None:
+    """Where a deployment answers: the newest non-empty environment_url among its statuses"""
+    found = [s.environment_url for s in sorted(statuses, key=lambda s: s.id) if s.environment_url]
+    return found[-1] if found else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -539,6 +546,14 @@ def _time(text: str) -> dt.datetime:
     if when.tzinfo is None:
         raise ReleaseError(f"GitHub sent a time without a zone: {text!r}")
     return when
+
+
+def _environment_url(status: Mapping[str, Any], deployment: int) -> str:
+    """A deployment status's environment_url: GitHub sends "" or null when none was set"""
+    url = status.get("environment_url")
+    if url is not None and not isinstance(url, str):
+        raise ReleaseError(f"GitHub sent deployment {deployment} a status whose environment_url is {url!r}")
+    return url or ""
 
 
 def fit(text: str, limit: int, link: str, kept: int = 0) -> str:
@@ -985,7 +1000,13 @@ class GhCli:
             "-X", "GET", f"repos/{{owner}}/{{repo}}/deployments/{deployment}/statuses", "-f", "per_page=100"
         )
         statuses = [
-            DeploymentStatus(int(s["id"]), DeploymentState(s["state"]), _time(s["created_at"]), s["description"] or "")
+            DeploymentStatus(
+                int(s["id"]),
+                DeploymentState(s["state"]),
+                _time(s["created_at"]),
+                s["description"] or "",
+                _environment_url(s, deployment),
+            )
             for s in found
         ]
         return sorted(statuses, key=lambda s: s.id)
