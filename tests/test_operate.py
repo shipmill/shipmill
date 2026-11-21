@@ -17,17 +17,22 @@ from shipmill.cli import main
 from shipmill.doctor import OPERATE_CALLER, doctor
 from shipmill.errors import ReleaseError
 from shipmill.github import PROPOSAL_LABEL, Deployment, DeploymentState, DeploymentStatus, GhCli, Issue, address
+from shipmill.gitrepo import pull_numbers
 from shipmill.init import BOT_REF, BOT_REPO, init_operate, operate_caller_text
 from shipmill.operate import (
     BODY_LIMIT,
     COMPARE_PREFIX,
     PROBE_BODY_LIMIT,
     STATUS_PREFIX,
+    Cause,
     HttpResponse,
+    Incident,
+    IncidentState,
     Report,
     Unreachable,
     approve,
     approve_rollback,
+    changes_answers,
     deploy_marker,
     excerpt,
     named_version,
@@ -111,7 +116,7 @@ def setup(repo: Repo) -> tuple[Repo, FakeHttp]:
 
 def run(repo: Repo, http: FakeHttp, at: dt.datetime, dry_run: bool = False) -> dict[str, Report]:
     repo.github.now = at
-    reports = operate(repo.policy, repo.git.tags(), repo.github, http, at, dry_run)
+    reports = operate(repo.policy, repo.git, repo.github, http, at, dry_run)
     return {r.environment: r for r in reports}
 
 
@@ -886,6 +891,11 @@ bake_minutes = 60
 SAME = f"{COMPARE_PREFIX} same answers as v1.0.0rc1 on 2 probes"
 
 
+def differ(names: str) -> str:
+    """The failure compare status an unexplained difference writes"""
+    return f"{COMPARE_PREFIX} answers differ from v1.0.0rc1 on {names}"
+
+
 def items(stamp: str, count: int = 2, request: str = "r1") -> str:
     found = [{"id": i, "updated_at": stamp} for i in range(count)]
     return json.dumps({"generated_at": stamp, "request_id": request, "items": found})
@@ -918,6 +928,7 @@ def probed(repo: Repo) -> Probed:
     """staging ran v1.0.0rc1 and runs v1.1.0rc1 since T0; both answer the probes alike, but
     for the time stamps the probe ignores"""
     repo.write(repo.policy_file, POLICY + PROBES)
+    tag(repo, "v1.0.0rc1", T0 - dt.timedelta(days=3))
     tag(repo, "v1.1.0rc1", minutes(-5))
     old = repo.github.deploy("staging", "v1.0.0rc1", T0 - dt.timedelta(days=2), S.IN_PROGRESS, S.SUCCESS)
     new = repo.github.deploy("staging", "v1.1.0rc1", minutes(-1), S.IN_PROGRESS, S.SUCCESS)
@@ -1023,7 +1034,7 @@ def test_s084_3_non_json_answers_read_the_same_only_when_identical(probed: Probe
     http.answer(NEW_AT + "/", "<h1>Home </h1>")
     found = run(repo, http, minutes(0))
     assert "compared with v1.0.0rc1: differs on home" in found["staging"].action
-    assert compare_writes(repo) == []
+    assert compare_writes(repo) == [(S.FAILURE, differ("home"))]
 
 
 @pytest.mark.parametrize(
@@ -1041,7 +1052,7 @@ def test_s084_3_json_answers_differ_beyond_the_ignore_pointers(probed: Probed, a
     http.answer(NEW_AT + ITEMS, answer)
     found = run(repo, http, minutes(0))["staging"].action
     assert ("differs on items" in found) is differs
-    assert compare_writes(repo) == ([] if differs else [(S.SUCCESS, SAME)])
+    assert compare_writes(repo) == ([(S.FAILURE, differ("items"))] if differs else [(S.SUCCESS, SAME)])
 
 
 def test_s084_3_a_status_that_differs_is_a_difference(probed: Probed) -> None:
@@ -1059,12 +1070,12 @@ def test_s084_4_a_difference_is_sent_again_and_counts_only_when_it_holds(probed:
     assert compare_writes(repo) == [(S.SUCCESS, SAME)]
 
 
-def test_s084_4_a_difference_that_holds_writes_nothing_yet(probed: Probed) -> None:
+def test_s084_4_a_difference_that_holds_is_sent_three_times_to_the_previous_release(probed: Probed) -> None:
     repo, http = probed.repo, probed.http
     http.answer(NEW_AT + ITEMS, items("2026-10-05T00:00:00Z", count=1))
     found = run(repo, http, minutes(0))
     assert "compared with v1.0.0rc1: differs on items" in found["staging"].action
-    assert compare_writes(repo) == [] and repo.github.issues == {}
+    assert compare_writes(repo) == [(S.FAILURE, differ("items"))]
     assert probes_asked(http).count(OLD + ITEMS) == 3
 
 
@@ -1157,3 +1168,255 @@ def test_s084_3_an_answer_json_cannot_hold_is_compared_as_text(probed: Probed) -
     http.answer(OLD + "/", huge)
     http.answer(NEW_AT + "/", huge)
     assert "same on 2 probes" in run(repo, http, minutes(0))["staging"].action
+
+
+# -- a difference: explained, or an incident and a rollback (#1436) ---------------------------
+
+ROLLBACK_STAGING = ("deploy.yml", "v1.0.0rc1", "v1.0.0rc1", {"environment": "staging"})
+HALF = items("2026-10-05T00:00:00Z", count=1)  # half the items the previous release answers
+
+
+def land(repo: Repo) -> None:
+    """Between v1.0.0rc1 and v1.1.0rc1 on main: a squash (#7), a merge commit (#8) whose
+    branch holds a squash subject (#9) off the first-parent line, and a commit naming none"""
+    repo.git.run("commit", "-q", "--allow-empty", "-m", "Halve the page (#7)")
+    repo.git.run("checkout", "-q", "-b", "side")
+    repo.git.run("commit", "-q", "--allow-empty", "-m", "Side work (#9)")
+    repo.git.run("checkout", "-q", "main")
+    repo.git.run("merge", "-q", "--no-ff", "side", "-m", "Merge pull request #8 from o/side")
+    repo.git.run("commit", "-q", "--allow-empty", "-m", "Tidy up")
+    repo.git.run("tag", "-f", "-a", "v1.1.0rc1", "-m", "v1.1.0rc1")
+
+
+def rollback_autonomy(repo: Repo, level: str) -> None:
+    repo.write(repo.policy_file, POLICY + PROBES + f'\n[autonomy]\nrollback = "{level}"\n')
+
+
+def test_s084_6_a_difference_a_pull_request_names_is_explained(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    land(repo)
+    repo.github.bodies = {7: "Halves the page.\r\n\r\nChanges answers: items\r\n", 8: "Refactor"}
+    http.answer(NEW_AT + ITEMS, HALF)
+    found = run(repo, http, minutes(0))
+    explained = f"{COMPARE_PREFIX} differs from v1.0.0rc1 on items, explained by #7"
+    assert compare_writes(repo) == [(S.SUCCESS, explained)]
+    assert "compared with v1.0.0rc1: differs on items, explained by #7, marked success" in found["staging"].action
+    # the first-parent subjects, newest first: #9 is off that line, so its body is never read
+    assert repo.github.body_reads == [8, 7]
+    assert repo.github.issues == {} and repo.github.dispatched == []
+
+
+def test_s084_6_bodies_are_read_only_when_a_difference_holds(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    land(repo)
+    assert "same on 2 probes" in run(repo, http, minutes(0))["staging"].action
+    assert repo.github.body_reads == []
+
+
+def test_s084_6_a_failed_read_of_a_body_stops_the_run_writing_nothing(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    land(repo)
+    repo.github.bodies = {7: "Changes answers: items"}  # #8, read first, is not found
+    http.answer(NEW_AT + ITEMS, HALF)
+    with pytest.raises(ReleaseError, match=r"issues/8 failed: Not Found \(HTTP 404\)"):
+        run(repo, http, minutes(0))
+    # not even staging's health status: the run exits before it writes for the environment
+    assert repo.github.status_writes == [] and repo.github.issues == {} and repo.github.dispatched == []
+
+
+def test_s084_6_a_difference_on_a_probe_no_body_names_is_unexplained(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    land(repo)
+    repo.github.bodies = {7: "Changes answers: home", 8: "Changes answers: items-v2"}
+    http.answer(NEW_AT + ITEMS, HALF)
+    run(repo, http, minutes(0))
+    assert compare_writes(repo) == [(S.FAILURE, differ("items"))]
+
+
+def test_s084_6_a_pull_requests_body_is_read_through_the_issues_endpoint(tmp_path: Path) -> None:
+    script = tmp_path / "gh"
+    log = tmp_path / "args"
+    answer = tmp_path / "answer.json"
+    script.write_text(f'#!/bin/sh\necho "$@" > {log}\ncat {answer}\n', encoding="utf-8")
+    script.chmod(0o755)
+    gh = GhCli(tmp_path, gh=str(script))
+    answer.write_text(json.dumps({"number": 7, "body": "Changes answers: items", "pull_request": {}}), encoding="utf-8")
+    assert gh.pull_body(7) == "Changes answers: items"
+    assert log.read_text(encoding="utf-8").split() == ["api", "-X", "GET", "repos/{owner}/{repo}/issues/7"]
+    answer.write_text(json.dumps({"number": 7, "body": None}), encoding="utf-8")
+    assert gh.pull_body(7) == ""
+
+
+def test_pull_numbers_read_squash_and_merge_subjects() -> None:
+    subjects = ["Fix it (#12)", "Merge pull request #13 from o/b", "Fix it again (#12)", "Tidy (#x)", "Release 1.0"]
+    assert pull_numbers(subjects) == [12, 13]
+    assert changes_answers("Changes answers: items, `orders` ,\n  Changes answers: home\nchanges answers: x") == {
+        "items",
+        "orders",
+        "home",
+    }
+
+
+def test_s084_7_an_unexplained_difference_writes_one_failure_outside_health_and_promotion(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    rollback_autonomy(repo, "observe")
+    http.answer(NEW_AT + ITEMS, HALF)
+    found = run(repo, http, minutes(0))
+    assert "compared with v1.0.0rc1: differs on items, marked failure; opened incident" in found["staging"].action
+    assert compare_writes(repo) == [(S.FAILURE, differ("items"))]
+    # a health status, not the compare's, counts the bake: still from the success at T0
+    assert run(repo, http, minutes(10))["staging"].health.endswith("baking 10 of 60 min")
+    assert len(compare_writes(repo)) == 1  # compared once
+    found = run(repo, http, minutes(61))
+    assert "staging answers differently on v1.1.0rc1" in found["production"].action
+    http.answer(STAGING, "", status=500)
+    assert "1 of 3 failed checks" in run(repo, http, minutes(70))["staging"].health
+    assert repo.github.dispatched == []
+
+
+def test_s084_7_a_deployment_that_answers_differently_is_no_rollback_target(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    rollback_autonomy(repo, "observe")
+    http.answer(NEW_AT + ITEMS, HALF)
+    run(repo, http, minutes(0))
+    repo.github.deploy("staging", "v1.2.0rc1", minutes(5), S.IN_PROGRESS, S.SUCCESS)
+    http.answer(STAGING, "", status=503)
+    for at in (10, 20, 30):
+        found = run(repo, http, minutes(at))
+    rolls = [i.body for i in repo.github.issues.values() if "tag=v1.2.0rc1" in i.body]
+    assert len(rolls) == 1 and "tag=v1.2.0rc1 to=v1.0.0rc1 state=failing -->" in rolls[0]
+    assert "would roll back to v1.0.0rc1" in found["staging"].action
+
+
+def test_s084_7_a_promotion_from_a_source_with_only_same_answers_goes_ahead(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    run(repo, http, minutes(0))
+    assert compare_writes(repo) == [(S.SUCCESS, SAME)]
+    run(repo, http, minutes(61))
+    assert ("deploy.yml", "v1.1.0rc1", "v1.1.0rc1", {"environment": "production"}) in repo.github.dispatched
+
+
+def test_s084_8_an_unexplained_difference_opens_the_incident_at_once_quoting_no_value(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    secret = {"owner": "alice-Distinctive-7731", "items": [{"id": i, "name": "Widget-Secret-9137"} for i in range(3)]}
+    changed = {"owner": "bob-Distinctive-4410", "items": [{"id": 0, "name": "Widget-Secret-9137"}]}
+    http.answer(OLD + ITEMS, json.dumps(secret))
+    http.answer(NEW_AT + ITEMS, json.dumps(changed))
+    http.answer(OLD + "/", json.dumps({f"a{i:02}": "old-value-5521" for i in range(12)}))
+    http.answer(NEW_AT + "/", json.dumps({f"a{i:02}": "new-value-6632" for i in range(12)}))
+    found = run(repo, http, minutes(0))  # its first check: no failed check counted at all
+    issue = incident(repo)
+    assert issue.title == "Incident: staging answers differently on v1.1.0rc1 than v1.0.0rc1"
+    line = "<!-- shipmill:incident env=staging tag=v1.1.0rc1 to=v1.0.0rc1 state=rolled-back cause=compare -->"
+    assert issue.body.startswith(line + "\n")
+    assert (
+        "- `items` (`/api/items`): HTTP 200 on v1.0.0rc1, HTTP 200 on v1.1.0rc1; differs at `/items`: 3 vs 1 items,"
+        " `/owner`\n" in issue.body
+    )
+    home = [text for text in issue.body.splitlines() if text.startswith("- `home`")]
+    assert home == [
+        "- `home` (`/`): HTTP 200 on v1.0.0rc1, HTTP 200 on v1.1.0rc1; differs at "
+        + ", ".join(f"`/a{i:02}`" for i in range(10))
+        + ", and 2 more"
+    ]
+    for value in ("Distinctive", "Widget-Secret", "old-value", "new-value", "limit=100", OLD, NEW_AT):
+        assert value not in issue.body
+    assert f"opened incident #{issue.number}; rolled back" in found["staging"].action
+    assert compare_writes(repo) == [(S.FAILURE, differ("items, home"))]
+
+
+def test_s084_8_the_incident_names_both_statuses(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.answer(NEW_AT + ITEMS, "Not Found: item-store-secret", status=404)
+    http.answers[NEW_AT + "/"] = Unreachable("connection refused")
+    run(repo, http, minutes(0))
+    body = incident(repo).body
+    assert "- `items` (`/api/items`): HTTP 200 on v1.0.0rc1, HTTP 404 on v1.1.0rc1\n" in body
+    assert "- `home` (`/`): HTTP 200 on v1.0.0rc1, no HTTP answer on v1.1.0rc1\n" in body
+    assert "item-store-secret" not in body and "connection refused" not in body
+
+
+def test_s084_8_an_incident_line_without_a_cause_is_a_health_incident() -> None:
+    old = "<!-- shipmill:incident env=production tag=v1.1.0rc1 to=v1.0.0 state=rolled-back -->\nbody"
+    found = Incident.read(Issue(5, "Incident: production fails its health checks on v1.1.0rc1", old))
+    assert found is not None and found.cause is Cause.HEALTH and found.state is IncidentState.ROLLED_BACK
+    assert found.moved(IncidentState.HEALTHY, found.to) == old.replace("rolled-back", "healthy")  # still no cause
+    compare = Incident.read(Issue(6, "t", old.replace("rolled-back -->", "rolled-back cause=compare -->")))
+    assert compare is not None and compare.cause is Cause.COMPARE and compare.to == Version(1, 0, 0)
+    with pytest.raises(ReleaseError, match="incident #7 has an unknown cause 'drift'"):
+        Incident.read(Issue(7, "t", old.replace("rolled-back -->", "rolled-back cause=drift -->")))
+
+
+@pytest.mark.parametrize("level", ["act", "propose", "hold", "observe"])
+def test_s084_9_the_compare_rollback_follows_the_rollback_autonomy(probed: Probed, level: str) -> None:
+    repo, http = probed.repo, probed.http
+    rollback_autonomy(repo, "act" if level == "hold" else level)
+    if level == "hold":
+        repo.github.holds = ["#7 Investigating"]
+    http.answer(NEW_AT + ITEMS, HALF)
+    run(repo, http, minutes(0))
+    run(repo, http, minutes(10))
+    body = incident(repo).body
+    if level == "act":
+        assert repo.github.dispatched == [ROLLBACK_STAGING]
+        assert "state=rolled-back cause=compare" in body
+        return
+    assert repo.github.dispatched == []
+    if level == "observe":
+        assert "state=failing cause=compare" in body and "but rollback autonomy is observe." in body
+        with pytest.raises(ReleaseError, match="no open incident proposes a rollback of staging"):
+            approve_rollback(repo.policy, repo.github, "staging", dry_run=False)
+        return
+    assert "state=proposed cause=compare" in body
+    assert "gh workflow run operate.yml -f approve-rollback=staging -f dry-run=false" in body
+    repo.github.holds = []
+    approve_rollback(repo.policy, repo.github, "staging", dry_run=False)
+    assert repo.github.dispatched == [ROLLBACK_STAGING]
+    with pytest.raises(ReleaseError, match="no open incident proposes a rollback of staging"):
+        approve_rollback(repo.policy, repo.github, "staging", dry_run=False)
+
+
+def test_s084_9_a_compare_failure_comments_on_the_tags_open_incident(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    healthy = "<!-- shipmill:incident env=staging tag=v1.1.0rc1 to=v1.0.0rc1 state=healthy -->\nChecks failed."
+    number = repo.github.create_issue("Incident: staging fails its health checks on v1.1.0rc1", healthy, ("incident",))
+    http.answer(NEW_AT + ITEMS, HALF)
+    found = run(repo, http, minutes(0))
+    assert list(repo.github.issues) == [number]
+    [comment] = repo.github.comments[number]
+    assert comment.startswith("staging answers differently on v1.1.0rc1 than v1.0.0rc1.\n\n- `items` (`/api/items`)")
+    assert "state=rolled-back cause=compare -->" in incident(repo).body
+    assert repo.github.dispatched == [ROLLBACK_STAGING]
+    assert f"comment on incident #{number}: answers differently; rolled back" in found["staging"].action
+
+
+def test_s084_10_a_compare_incident_stays_open_on_the_bad_tag_and_heals_on_another(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.answer(NEW_AT + ITEMS, HALF)
+    run(repo, http, minutes(0))
+    number = incident(repo).number
+    for at in (10, 20):  # the bad tag still runs and passes its health check
+        assert "healthy again" not in run(repo, http, minutes(at))["staging"].action
+    assert number not in repo.github.comments and "state=rolled-back cause=compare" in incident(repo).body
+    back = repo.github.deploy("staging", "v1.0.0rc1", minutes(25), S.IN_PROGRESS, S.SUCCESS)  # the rollback ran
+    located(repo, back, OLD)
+    http.answer(STAGING, '{"version": "1.0.0rc1"}')
+    asked = len(probes_asked(http))
+    found = run(repo, http, minutes(30))
+    assert repo.github.comments[number] == ["staging is healthy again on v1.0.0rc1 (HTTP 200, version 1.0.0rc1)."]
+    assert "state=healthy cause=compare" in incident(repo).body
+    assert f"comment on incident #{number}: healthy again" in found["staging"].action
+    assert len(probes_asked(http)) == asked  # the rollback is not compared with the release it replaced
+    run(repo, http, minutes(40))
+    assert len(repo.github.comments[number]) == 1
+
+
+def test_a_dry_run_of_a_difference_writes_nothing(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    http.answer(NEW_AT + ITEMS, HALF)
+    found = run(repo, http, minutes(0), dry_run=True)
+    assert (
+        "differs on items, would mark failure; would open an incident; would roll back: start deploy.yml with v1.0.0rc1"
+        in found["staging"].action
+    )
+    assert repo.github.status_writes == [] and repo.github.issues == {} and repo.github.dispatched == []
