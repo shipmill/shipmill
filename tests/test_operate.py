@@ -1149,3 +1149,11 @@ def test_without_health_a_deployment_is_compared_on_its_success(probed: Probed) 
     found = run(repo, http, minutes(0))
     assert STAGING not in [url for url, _ in http.asked]
     assert "same on 2 probes" in found["staging"].action
+
+
+def test_s084_3_an_answer_json_cannot_hold_is_compared_as_text(probed: Probed) -> None:
+    repo, http = probed.repo, probed.http
+    huge = "1" * 5000  # past Python's limit on an integer's digits: json.loads raises ValueError
+    http.answer(OLD + "/", huge)
+    http.answer(NEW_AT + "/", huge)
+    assert "same on 2 probes" in run(repo, http, minutes(0))["staging"].action

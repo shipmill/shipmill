@@ -558,7 +558,7 @@ def _json(body: str) -> object:
     """The body's JSON value, or _NOT_JSON"""
     try:
         value: object = json.loads(body)
-    except json.JSONDecodeError, RecursionError:
+    except ValueError, RecursionError:  # JSONDecodeError, or an integer past Python's digit limit
         return _NOT_JSON
     level = [value]
     for _ in range(_MAX_DEPTH):
