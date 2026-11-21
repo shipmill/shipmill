@@ -627,7 +627,8 @@ a row, and it doesn't restart a bake. An unexplained difference:
 - **Holds the deployment back**: an environment promoted `from` it reports `<source>
   answers differently on <tag>` and waits, and a rollback never targets it. Its incident
   isn't commented healthy while the bad tag still runs and passes its health check, only
-  once the environment runs another tag that passes
+  once the environment runs another tag that passes; in an environment without `health`,
+  once another tag's deployment reaches `success`
 
 The run summary's action names the outcome: `compared with <tag>: same on <n> probes`,
 `... differs on <names>, explained by #N`, `... differs on <names>`, or `not compared:

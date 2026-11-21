@@ -491,6 +491,30 @@ def incident_body(policy: Policy, seen: Observed, rollback: Rollback, now: dt.da
     return "\n".join(lines) + "\n"
 
 
+def _compare_ended(seen: Observed, known: Sequence[Incident]) -> Incident | None:
+    """The environment's open compare incident that the current tag, not its bad one, ends"""
+    ended = [
+        i
+        for i in known
+        if i.env == seen.env.name
+        and i.cause is Cause.COMPARE
+        and i.tag != seen.tag
+        and not i.issue.closed
+        and i.state is not IncidentState.HEALTHY
+    ]
+    return ended[0] if ended else None
+
+
+def _healthy_again(github: GitHub, seen: Observed, incident: Incident, detail: str, dry_run: bool) -> str:
+    """Comment that the environment is healthy again and mark the incident so"""
+    assert seen.tag is not None
+    if not dry_run:
+        github.comment_issue(incident.number, f"{seen.env.name} is healthy again on {seen.tag.tag} ({detail}).")
+        healthy = incident.moved(IncidentState.HEALTHY, incident.to)
+        github.update_issue(incident.number, incident.issue.title, healthy)
+    return f"{'would ' if dry_run else ''}comment on incident #{incident.number}: healthy again"
+
+
 def _incident(
     policy: Policy,
     github: GitHub,
@@ -502,7 +526,17 @@ def _incident(
     dry_run: bool,
 ) -> str | None:
     """Open, comment on, or roll back for this environment's incident; what it did"""
-    if seen.current is None or seen.probe is None or seen.tag is None:
+    if seen.current is None or seen.tag is None:
+        return None
+    if seen.env.health is None:
+        # no health check: no health incident, but a compare incident still ends once another
+        # tag's deployment reached success, the signal the compare itself waits for here (#1451)
+        ended = _compare_ended(seen, known)
+        if ended is None:
+            return None
+        detail = f"its deployment reached success; {seen.env.name} has no health check"
+        return _healthy_again(github, seen, ended, detail, dry_run)
+    if seen.probe is None:
         return None
     env = seen.env.name
     # an incident closed before the current stretch of failed checks began is history: the
@@ -522,23 +556,10 @@ def _incident(
             return None  # its answers differ: passing the health check on the bad tag doesn't end it
         if incident is None or incident.issue.closed or incident.state is IncidentState.HEALTHY:
             # a compare incident ends once the environment runs another tag that passes
-            ended = [
-                i
-                for i in known
-                if i.env == env
-                and i.cause is Cause.COMPARE
-                and i.tag != seen.tag
-                and not i.issue.closed
-                and i.state is not IncidentState.HEALTHY
-            ]
-            if not ended:
+            incident = _compare_ended(seen, known)
+            if incident is None:
                 return None
-            incident = ended[0]
-        if not dry_run:
-            github.comment_issue(incident.number, f"{env} is healthy again on {seen.tag.tag} ({seen.probe.detail}).")
-            healthy = incident.moved(IncidentState.HEALTHY, incident.to)
-            github.update_issue(incident.number, incident.issue.title, healthy)
-        return f"{would}comment on incident #{incident.number}: healthy again"
+        return _healthy_again(github, seen, incident, seen.probe.detail, dry_run)
     if seen.failed_checks < policy.operate.rollback_after:
         return None
     if incident is not None and incident.issue.closed:
@@ -919,12 +940,13 @@ def compare_incident_body(policy: Policy, seen: Observed, compared: Compared, ro
     ]
     if rollback.how:
         lines += ["", *rollback.how]
+    passes = "that passes its health check" if seen.env.health is not None else "whose deployment reaches success"
     lines += [
         "",
         f"While this issue is open, the {lanes} lanes don't release: the `{policy.operate.incident_label}`"
         " label holds them like the blocker label. Close it once resolved, by hand or with a hotfix pull"
-        f' request\'s "Fixes #N". shipmill comments here once {env} runs a tag other than {seen.tag.tag} that'
-        " passes its health check, and doesn't roll back a second time if the rollback fails its checks too.",
+        f' request\'s "Fixes #N". shipmill comments here once {env} runs a tag other than {seen.tag.tag} {passes},'
+        " and doesn't roll back a second time if the rollback fails its checks too.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -1234,7 +1256,9 @@ def operate(policy: Policy, git: Git, github: GitHub, http: Http, now: dt.dateti
     }
     differing = frozenset(failed | {name for name, seen in observed.items() if _differed(seen.statuses)})
     checked = any(seen.probe is not None for seen in observed.values())
-    known = incidents(policy, github) if checked or failed else []
+    # without a health check, a compared environment's deployment success may end its compare incident
+    unchecked = any(s.env.health is None and s.env.probes and s.current is not None for s in observed.values())
+    known = incidents(policy, github) if checked or failed or unchecked else []
     reports = []
     for name, seen in observed.items():
         target = _bake_target(seen.env, environments)
